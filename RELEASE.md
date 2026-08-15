@@ -53,6 +53,7 @@ Before a stable release tag is pushed:
 8. the license metadata and root `LICENSE` agree.
 9. the npm trusted publisher points at this repository/workflow/environment.
 10. GitHub private vulnerability reporting is enabled for the canonical repository.
+11. the complete macOS/Windows `arm64`/`x64` Node-API prebuild matrix is produced from the release tag and verified under Node and Electron.
 
 ## Required local validation
 
@@ -99,17 +100,19 @@ Do not push another commit to `main` between the final verification and the tag 
 
 For a valid version tag, `.github/workflows/publish.yml`:
 
-1. checks out the tagged commit with full history;
-2. verifies tag name and `package.json` version agree;
-3. classifies stable versus prerelease channel;
-4. for stable releases, verifies the tag commit equals the current `main` commit;
-5. validates evidence-record syntax/integrity without manufacturing support claims;
-6. runs package, plugin, lint/typecheck, generated-artifact, packed-consumer, and deterministic Electron checks;
-7. runs the required Android/Expo/native-host build and ABI gates;
-8. verifies package contents and generated dependency artifacts;
-9. publishes through npm trusted publishing with provenance;
-10. waits for the registry artifact and verifies the published tarball/digest path;
-11. creates the GitHub Release only after npm publication succeeds.
+1. checks out the tagged commit and builds Node-API v8 prebuilds for macOS and Windows on `arm64` and `x64` native runners;
+2. loads each prebuild under Node and the same file under Electron;
+3. assembles and hashes the complete prebuild matrix into `native/PREBUILDS.json`;
+4. verifies tag name and `package.json` version agree;
+5. classifies stable versus prerelease channel;
+6. for stable releases, verifies the tag commit equals the current `main` commit;
+7. validates evidence-record syntax/integrity without manufacturing support claims;
+8. runs package, plugin, lint/typecheck, generated-artifact, packed-consumer, and deterministic Electron checks;
+9. runs the required Android/Expo/native-host gates;
+10. verifies package contents and generated dependency artifacts;
+11. publishes the exact prebuild-bearing tarball through npm trusted publishing with provenance;
+12. waits for the registry artifact and verifies the published tarball/digest path;
+13. creates the GitHub Release only after npm publication succeeds.
 
 Stable versions publish to `latest`. Hyphenated SemVer prereleases publish to `next` and create GitHub prereleases.
 

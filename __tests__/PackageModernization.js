@@ -34,6 +34,7 @@ describe('canonical package modernization', () => {
       './profiles/ieee-11073',
       './profiles/standard-commands',
       './react-native',
+      './tauri',
       './testing',
       './web'
     ])

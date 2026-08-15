@@ -2,6 +2,7 @@
 
 'use strict'
 
+const crypto = require('crypto')
 const fs = require('fs')
 const path = require('path')
 const zlib = require('zlib')
@@ -13,6 +14,7 @@ const {
   assertNoForbiddenNobleManifestDependencies,
   assertNoForbiddenNobleRuntimeReferences
 } = require('./forbidden-runtime-dependencies')
+const { NODE_API_VERSION, NATIVE_PREBUILD_TARGETS } = require('../native-prebuilds/targets')
 
 /** Exact declaration-only source emitted by the React Native Codegen/type build. */
 const internalTypeOnlySourceFiles = Object.freeze([])
@@ -46,6 +48,7 @@ const publicProfileSourceFiles = Object.freeze([
 
 /** Source inputs a consumer needs to build either packaged Electron Node-API addon. */
 const requiredElectronNativeSourceEntries = Object.freeze([
+  'package/native/load-node-api-addon.js',
   'package/native/electron/corebluetooth/binding.gyp',
   'package/native/electron/corebluetooth/index.js',
   'package/native/electron/corebluetooth/src/addon.mm',
@@ -55,6 +58,10 @@ const requiredElectronNativeSourceEntries = Object.freeze([
   'package/native/electron/winrt/src/addon.cpp',
   'package/native/electron/winrt/src/winrt-boundary.inc'
 ])
+
+const expectedNativePrebuildEntries = Object.freeze(
+  NATIVE_PREBUILD_TARGETS.map(target => `package/${target.prebuildPath}`).sort()
+)
 
 const publishedOptionalHostDependencies = Object.freeze({
   'node-addon-api': '8.9.0',
@@ -301,11 +308,15 @@ function assertNoUndeclaredElectronNativeRuntimeLoaders(files) {
   const loaderSpecifications = Object.freeze([
     {
       entryPath: 'package/native/electron/corebluetooth/index.js',
-      allowedRuntimeModules: new Set(['path', 'fs'])
+      allowedRuntimeModules: new Set(['../../load-node-api-addon'])
     },
     {
       entryPath: 'package/native/electron/winrt/index.js',
-      allowedRuntimeModules: new Set(['path'])
+      allowedRuntimeModules: new Set(['../../load-node-api-addon'])
+    },
+    {
+      entryPath: 'package/native/load-node-api-addon.js',
+      allowedRuntimeModules: new Set(['fs', 'path'])
     }
   ])
 
@@ -325,6 +336,71 @@ function assertNoUndeclaredElectronNativeRuntimeLoaders(files) {
       }
     }
   }
+}
+
+function assertNativePrebuildSet(files, packageJson) {
+  const actualEntries = [...files.keys()]
+    .filter(entryPath => entryPath.startsWith('package/native/') && entryPath.endsWith('.node'))
+    .sort()
+  const manifestEntry = 'package/native/PREBUILDS.json'
+
+  if (actualEntries.length === 0) {
+    if (files.has(manifestEntry)) {
+      throw new Error('Packed native prebuild manifest exists without native prebuild binaries')
+    }
+    return new Set()
+  }
+
+  const missing = expectedNativePrebuildEntries.filter(entryPath => !actualEntries.includes(entryPath))
+  const unexpected = actualEntries.filter(entryPath => !expectedNativePrebuildEntries.includes(entryPath))
+  if (missing.length > 0 || unexpected.length > 0) {
+    throw new Error(
+      `Packed native prebuild set must be complete and exact. Missing: ${missing.join(', ') || 'none'}. Unexpected: ${unexpected.join(', ') || 'none'}.`
+    )
+  }
+
+  const manifestBuffer = files.get(manifestEntry)
+  if (manifestBuffer === undefined) {
+    throw new Error('Packed complete native prebuild set is missing native/PREBUILDS.json')
+  }
+  const manifest = JSON.parse(manifestBuffer.toString('utf8'))
+  if (manifest.schemaVersion !== 1) throw new Error('Packed native prebuild manifest schemaVersion must equal 1')
+  if (manifest.package !== `${packageJson.name}@${packageJson.version}`) {
+    throw new Error('Packed native prebuild manifest package identity does not match package.json')
+  }
+  if (manifest.nodeApiVersion !== NODE_API_VERSION) {
+    throw new Error(`Packed native prebuild manifest must target Node-API v${String(NODE_API_VERSION)}`)
+  }
+  if (!Array.isArray(manifest.entries) || manifest.entries.length !== NATIVE_PREBUILD_TARGETS.length) {
+    throw new Error('Packed native prebuild manifest must describe every maintained target exactly once')
+  }
+
+  const manifestByPath = new Map(manifest.entries.map(entry => [entry.path, entry]))
+  if (manifestByPath.size !== manifest.entries.length) {
+    throw new Error('Packed native prebuild manifest contains duplicate paths')
+  }
+  for (const target of NATIVE_PREBUILD_TARGETS) {
+    const entry = manifestByPath.get(target.prebuildPath)
+    if (entry === undefined) throw new Error(`Packed native prebuild manifest is missing ${target.prebuildPath}`)
+    const archivePath = `package/${target.prebuildPath}`
+    const contents = files.get(archivePath)
+    if (contents === undefined || contents.length === 0) {
+      throw new Error(`Packed native prebuild is missing or empty: ${archivePath}`)
+    }
+    const digest = crypto.createHash('sha256').update(contents).digest('hex')
+    if (
+      entry.backend !== target.backend ||
+      entry.platform !== target.platform ||
+      entry.arch !== target.arch ||
+      entry.nodeApiVersion !== NODE_API_VERSION ||
+      entry.bytes !== contents.length ||
+      entry.sha256 !== digest
+    ) {
+      throw new Error(`Packed native prebuild manifest metadata or digest is invalid for ${target.prebuildPath}`)
+    }
+  }
+
+  return new Set(expectedNativePrebuildEntries)
 }
 
 function isRootArchiveEntryAllowed(
@@ -384,6 +460,7 @@ function verifyRootTarball(tarballPath) {
   if (packageJson.name !== 'unified-ble-manager') {
     throw new Error(`Expected canonical package name unified-ble-manager, received ${String(packageJson.name)}`)
   }
+  const allowedNativePrebuildEntries = assertNativePrebuildSet(files, packageJson)
   assertNoForbiddenNobleManifestDependencies(packageJson, 'Packed canonical package manifest')
   assertExactObjectKeys(packageJson.bin, ['ubm'], 'Packed canonical bin')
   if (packageJson.bin.ubm !== 'bin/ubm.js') {
@@ -576,7 +653,7 @@ function verifyRootTarball(tarballPath) {
       entryPath.includes('/benchmarks/') ||
       entryPath.includes('/lab/') ||
       entryPath.startsWith('package/native/protocol/tests/') ||
-      entryPath.endsWith('.node') ||
+      (entryPath.endsWith('.node') && !allowedNativePrebuildEntries.has(entryPath)) ||
       (entryPath.includes('/build/') && !entryPath.startsWith('package/plugin/build/')) ||
       entryPath.includes('/obj.target/')
     ) {

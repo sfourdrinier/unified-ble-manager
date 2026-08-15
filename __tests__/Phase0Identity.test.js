@@ -38,6 +38,7 @@ describe('Phase 0 product identity (unified-ble-manager)', () => {
       './profiles/ieee-11073',
       './profiles/standard-commands',
       './react-native',
+      './tauri',
       './testing',
       './web'
     ])

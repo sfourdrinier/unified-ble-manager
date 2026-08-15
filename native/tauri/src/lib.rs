@@ -45,15 +45,8 @@ pub struct PluginState {
 }
 
 impl PluginState {
-    async fn dispatch(
-        &self,
-        caller: AuthenticatedCaller,
-        request: Value,
-        event_channel: Channel<Value>,
-    ) -> Value {
-        self.dispatcher
-            .dispatch(caller, request, event_channel)
-            .await
+    pub(crate) fn dispatcher(&self) -> Arc<dyn IpcDispatcher> {
+        Arc::clone(&self.dispatcher)
     }
 }
 

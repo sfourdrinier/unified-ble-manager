@@ -2,10 +2,19 @@
 
 'use strict'
 
-const path = require('path')
+const { loadNodeApiAddon } = require('../../load-node-api-addon')
 
-const addonPath = path.join(__dirname, 'build', 'Release', 'unified_ble_winrt.node')
-const nativeModule = require(addonPath)
+if (process.platform !== 'win32') {
+  throw new Error('WinRT contract boundary is Windows-only')
+}
+
+const nativeModule = loadNodeApiAddon({
+  moduleDirectory: __dirname,
+  addonName: 'unified_ble_winrt'
+})
+if (nativeModule === null) {
+  throw new Error('WinRT contract boundary requires a package prebuild for this architecture or a local source build')
+}
 const boundaryVersion = 2
 const requiredBoundaryMethods = [
   'listAdapters',

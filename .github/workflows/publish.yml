@@ -33,14 +33,74 @@ on:
       - 'v*.*.*'
 
 permissions:
-  contents: write # GitHub Release after successful publish
-  id-token: write # npm Trusted Publishing (OIDC)
+  contents: read
 
 jobs:
+  native-prebuild-plan:
+    name: Plan native Node-API prebuilds
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - name: Checkout tag
+        uses: actions/checkout@v7.0.0
+
+      - name: Emit maintained prebuild matrix
+        id: matrix
+        shell: bash
+        run: echo "matrix=$(node scripts/native-prebuilds/print-github-matrix.js)" >> "$GITHUB_OUTPUT"
+
+  # Node-API v8 is ABI-stable across the maintained Node lines and modern
+  # Electron. Build once per OS/CPU, then bundle all four binaries in npm.
+  native-prebuild:
+    name: Native prebuild (${{ matrix.platform }}-${{ matrix.arch }})
+    needs: native-prebuild-plan
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.native-prebuild-plan.outputs.matrix) }}
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Checkout tag
+        uses: actions/checkout@v7.0.0
+
+      - name: Setup Python for node-gyp
+        uses: actions/setup-python@v6.0.0
+        with:
+          python-version: '3.12'
+
+      - name: Setup JS package
+        uses: ./.github/actions/setup-js-package
+        with:
+          prepack: 'false'
+          node-version: '24'
+
+      - name: Build and load maintained Node-API prebuild
+        shell: bash
+        run: pnpm native-prebuild:build -- --backend "${{ matrix.backend }}"
+
+      - name: Build public package artifacts for Electron prebuild smoke
+        run: pnpm prepack
+
+      - name: Load the same prebuild under Electron main
+        shell: bash
+        run: ./node_modules/.bin/electron scripts/ci/electron-main-smoke.js
+
+      - name: Upload path-preserving native prebuild
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.artifactName }}
+          path: .native-prebuild-artifact
+          if-no-files-found: error
+          retention-days: 7
+
   publish:
     name: Publish canonical package
+    needs: native-prebuild
     runs-on: ubuntu-latest
     environment: npm
+    permissions:
+      contents: write # GitHub Release after successful publish
+      id-token: write # npm Trusted Publishing (OIDC)
     env:
       NODE_OPTIONS: --max-old-space-size=8192
       GRADLE_OPTS: -Dorg.gradle.jvmargs=-Xmx6g\ -XX:MaxMetaspaceSize=1g\ -Dfile.encoding=UTF-8
@@ -84,6 +144,16 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      - name: Assemble native prebuild matrix
+        uses: actions/download-artifact@v8
+        with:
+          pattern: 'native-prebuild-*'
+          path: .
+          merge-multiple: true
+
+      - name: Verify and bind complete native prebuild matrix
+        run: pnpm native-prebuild:verify --require-all --write-manifest
 
       - name: Run package tests
         run: pnpm test:package
