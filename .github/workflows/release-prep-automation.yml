@@ -108,12 +108,12 @@ jobs:
             `        run: |\n` +
             `          set -euo pipefail\n` +
             `          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main\n` +
-            `          TAG_COMMIT="$(git rev-parse "${GITHUB_REF_NAME}^{commit}")"\n` +
+            `          TAG_COMMIT="$(git rev-parse "\${GITHUB_REF_NAME}^{commit}")"\n` +
             `          MAIN_COMMIT="$(git rev-parse refs/remotes/origin/main)"\n` +
-            `          if [ "${TAG_COMMIT}" != "${MAIN_COMMIT}" ]; then\n` +
-            `            echo "Stable tag ${GITHUB_REF_NAME} must point to the current main commit."\n` +
-            `            echo "tag=${TAG_COMMIT}"\n` +
-            `            echo "main=${MAIN_COMMIT}"\n` +
+            `          if [ "\${TAG_COMMIT}" != "\${MAIN_COMMIT}" ]; then\n` +
+            `            echo "Stable tag \${GITHUB_REF_NAME} must point to the current main commit."\n` +
+            `            echo "tag=\${TAG_COMMIT}"\n` +
+            `            echo "main=\${MAIN_COMMIT}"\n` +
             `            exit 1\n` +
             `          fi\n\n`
 
