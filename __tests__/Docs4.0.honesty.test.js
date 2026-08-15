@@ -11,10 +11,11 @@ const path = require('path')
 const root = path.join(__dirname, '..')
 const read = relativePath => fs.readFileSync(path.join(root, relativePath), 'utf8').replace(/\r\n/g, '\n')
 const packageVersion = JSON.parse(read('package.json')).version
+const stable40 = packageVersion === '4.0.0'
 const alphaVersionMatch = /^4\.0\.0-alpha\.(\d+)$/u.exec(packageVersion)
-if (alphaVersionMatch === null) throw new Error(`Expected a 4.0 alpha package version, received ${packageVersion}`)
-const currentAlpha = Number(alphaVersionMatch[1])
-const previousAlphaVersion = `v4.0.0-alpha.${String(currentAlpha - 1)}`
+if (!stable40 && alphaVersionMatch === null) throw new Error(`Expected 4.0.0 or a 4.0 alpha package version, received ${packageVersion}`)
+const currentAlpha = alphaVersionMatch === null ? null : Number(alphaVersionMatch[1])
+const previousAlphaVersion = currentAlpha === null ? null : `v4.0.0-alpha.${String(currentAlpha - 1)}`
 
 const architectureAuthorityDocuments = [
   'README.md',
@@ -65,7 +66,11 @@ const deletedTransitionalAdrs = [
 ]
 
 describe('4.0 documentation honesty', () => {
-  test('current public documentation cannot drift behind the package prerelease', () => {
+  test('current public documentation follows the package release channel', () => {
+    if (stable40) {
+      expect(packageVersion).toBe('4.0.0')
+      return
+    }
     for (const document of architectureAuthorityDocuments) {
       const withoutDeclaredPreviousRelease = read(document).replaceAll(previousAlphaVersion, '')
       const alphaReferences = [...withoutDeclaredPreviousRelease.matchAll(/alpha\.(\d+)/gu)]
@@ -100,10 +105,12 @@ describe('4.0 documentation honesty', () => {
   test('gap inventory separates implemented code from missing physical proof', () => {
     const gaps = read('docs/GAPS.4.0.md')
 
-    expect(gaps).toContain('Current implementation and release-proof inventory')
+    expect(gaps).toContain('Current implementation and evidence inventory')
     expect(gaps).toContain('Implementation/package state')
-    expect(gaps).toContain('Remaining evidence or release work')
+    expect(gaps).toContain('Remaining evidence work')
     expect(gaps).toContain('Implemented contract/core/TCK path')
+    expect(gaps).toContain('not architecture authority')
+    expect(gaps).toContain('implementation proof')
     expect(gaps).not.toContain('WinRT remains incomplete')
     expect(gaps).not.toContain('The pre-4.0 source tree contains a transitional')
   })
@@ -250,51 +257,51 @@ describe('4.0 documentation honesty', () => {
   test('roadmap rejects compatibility, dual APIs, static matrices, Noble, and reduced scope', () => {
     const roadmap = read('ROADMAP.4.0.md')
 
-    expect(roadmap).toMatch(/not a\s+compatibility\s+release/)
-    expect(roadmap).toContain('bytes-only public and backend BLE contracts')
+    expect(roadmap).toMatch(/not a compatibility release/)
+    expect(roadmap).toContain('bytes-only public/backend BLE contracts')
     expect(roadmap).toContain('does not preserve a permanent 3.x API')
     expect(roadmap).toContain('Meta Quest, peripheral mode, Bluetooth Classic, LE Audio, L2CAP CoC')
-    expect(roadmap).toContain('retains an evidence-bound `Live Preview` target but is not a 4.0 gate')
-    expect(roadmap).toContain('are deferred to 4.1')
+    expect(roadmap).toContain('remain deferred to 4.1')
+    expect(roadmap).toContain('Stable `4.0.0` defines the public 4.x package/API contract')
+    expect(roadmap).toContain('`v4.0.0-alpha.40` is retained as the final alpha')
     expect(roadmap).not.toMatch(/hard compatibility guarantee/i)
     expect(roadmap).not.toMatch(/Base64 still available unless 5\.0/i)
     expect(roadmap).not.toMatch(/thin install\/import shim/i)
   })
 
-  test('migration documents the current v4 package without inventing a compatibility path', () => {
+  test('migration documents stable 4.0 without inventing a compatibility path', () => {
     const migration = read('MIGRATION_4.0.md')
     const release = read('RELEASE.md')
 
-    expect(migration).toContain('current published 4.0 prerelease')
-    expect(migration).toContain('unified-ble-manager@4.0.0-alpha.40')
-    expect(migration).toContain('stable `hostSessionScope`')
+    expect(migration).toContain('stable `unified-ble-manager@4.0.0`')
+    expect(migration).toContain('`hostSessionScope` should be a stable security/ownership scope')
     expect(migration).toContain('`Uint8Array`')
     expect(migration).toContain('`AbortSignal`')
-    expect(migration).toContain('`await manager.destroy()`')
+    expect(migration).toContain('Await `manager.destroy()`')
     expect(migration).toContain('not a source-compatible rename')
-    expect(migration).toContain('Base64 only as an explicit codec helper')
+    expect(migration).toContain('encode/decode explicitly through `unified-ble-manager/codecs`')
+    expect(migration).toContain('`v4.0.0-alpha.40` is the repository-migration checkpoint')
     expect(migration).not.toMatch(/zero-change (JS )?API/i)
     expect(migration).not.toMatch(/optional bytes codemod/i)
-    expect(migration).not.toContain('no released 4.0 API instructions yet')
 
-    expect(release).toContain('does not define a 4.0 API')
-    expect(release).toContain('does not authorize publishing 4.0')
-    expect(release).toContain('no permanent scoped shim')
+    expect(release).toContain('Release branch: `main`')
+    expect(release).toContain('Stable SemVer and platform support qualification are independent')
+    expect(release).toContain('git tag -a v4.0.0')
     expect(release).not.toMatch(/publishes the \*\*4\.0 dual identity\*\*/i)
   })
 
-  test('public README provides only current alpha.40 prerelease construction and plugin guidance', () => {
+  test('public README provides stable 4.0 construction, plugin guidance, and preserved alpha history', () => {
     const readme = read('README.md')
     const changelog = read('CHANGELOG.md')
+    const history = read('CHANGELOG_HISTORY.md')
 
-    expect(readme).toContain('unified-ble-manager@4.0.0-alpha.40')
-    expect(readme).toContain('pnpm add unified-ble-manager@4.0.0-alpha.40')
-    expect(readme).toContain('`v4.0.0-alpha.39` is the previous published prerelease')
-    expect(changelog).toContain('## [4.0.0-alpha.40] - 2026-08-02 (published prerelease)')
-    expect(changelog).toContain('## [4.0.0-alpha.28] - 2026-08-01 (published prerelease)')
-    expect(changelog).toContain('## [4.0.0-alpha.27] - 2026-08-01 (published historical prerelease)')
+    expect(readme).toContain('4.0.0 is the first stable release')
+    expect(readme).toContain('pnpm add unified-ble-manager@4.0.0')
+    expect(readme).toContain('`v4.0.0-alpha.40` was the migration point')
+    expect(changelog).toContain('## [4.0.0] - 2026-08-16')
+    expect(history).toContain('## [4.0.0-alpha.40]')
     expect(readme).toContain('createReactNativeBleManager')
-    expect(readme).toContain('stable `hostSessionScope`')
+    expect(readme).toContain('`hostSessionScope` is a stable host-owned security scope')
     expect(readme).toContain('`Uint8Array`')
     expect(readme).toContain('`AbortSignal`')
     expect(readme).toContain('iosNativeProtocolRestoration')
@@ -302,36 +309,28 @@ describe('4.0 documentation honesty', () => {
       /iosEnableRestoration|iosRestorationIdentifier|iosNativeProtocolRestorationIdentifier|androidEnableForegroundService/
     )
     expect(readme).not.toMatch(/new\s+BleManager\s*\(/)
-    expect(readme).not.toMatch(/npm install/)
-    expect(changelog).toContain('## [4.0.0-alpha.17] - 2026-07-30')
-    expect(changelog).toContain('node-addon-api')
-    expect(changelog).toContain('hostSessionScope')
   })
 
-  test('alpha.40 published documentation preserves exact release, evidence, and deferral boundaries', () => {
+  test('stable 4.0 documentation preserves release, evidence, and deferral boundaries', () => {
     const readme = read('README.md')
     const release = read('RELEASE.md')
     const platforms = read('docs/PLATFORMS.md')
 
-    expect(readme).toContain('`next` dist-tag')
-    expect(readme).toMatch(/Do not install\s+the bare package name or `@latest`/)
-    expect(release).toContain('v4.0.0-alpha.40')
-    expect(release).toContain('protected GitHub Actions trusted-publishing workflow')
-    expect(release).toContain('`v4.0.0-alpha.39` is the previous published prerelease')
-    expect(release).toMatch(/GitHub Actions\s+as the trusted publisher/)
-    expect(release).toContain('SLSA provenance')
-    expect(platforms).toContain('No current evidence record binds the published alpha.40')
-    expect(platforms).toContain('makes no Windows live-radio claim')
-    expect(platforms).toContain(
-      'Meta Quest and an nRF52840-based controllable fault-injection controller are deferred to 4.1'
-    )
+    expect(readme).toContain('Stable versions publish to npm `latest`; prereleases publish to `next`')
+    expect(readme).toContain('npm trusted publishing/OIDC with provenance')
+    expect(release).toContain('git tag -a v4.0.0')
+    expect(release).toContain('npm trusted publishing/OIDC')
+    expect(release).toContain('publishes with provenance')
+    expect(platforms).toContain('`unified-ble-manager@4.0.0` is the first **stable package/API release**')
+    expect(platforms).toContain('WinRT compilation or ABI loading, for example, is not by itself a Windows live-radio claim')
+    expect(platforms).toContain('Meta Quest and the controllable nRF52840 fault-injection controller remain deferred to 4.1')
   })
 
   test('platform pages make instantiated backend evidence, not static source behavior, authoritative', () => {
     const platforms = read('docs/PLATFORMS.md')
     const gaps = read('docs/GAPS.4.0.md')
 
-    expect(platforms).toContain('not a static 4.0 capability matrix')
+    expect(platforms).toContain('not a static compatibility matrix')
     expect(platforms).toContain('typed capabilities of its instantiated backend')
     expect(gaps).toContain('not architecture authority')
     expect(gaps).toContain('implementation proof')

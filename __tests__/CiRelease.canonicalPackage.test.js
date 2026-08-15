@@ -79,14 +79,14 @@ describe('ci-release canonical package (4.0)', () => {
     expect(w).not.toMatch(/vite build|example-web\/vite\.config\.js/)
   })
 
-  test('RELEASE.md makes the clean-baseline plan the 4.0 publication authority', () => {
+  test('RELEASE.md defines canonical stable 4.0 publication from main', () => {
     const doc = read('RELEASE.md')
-    expect(doc).toContain('unified-ble-manager')
-    expect(doc).toContain('@sfourdrinier/react-native-ble-plx')
+    expect(doc).toContain('sfourdrinier/unified-ble-manager')
+    expect(doc).toContain('Release branch: `main`')
+    expect(doc).toContain('Stable SemVer and platform support qualification are independent')
+    expect(doc).toContain('git tag -a v4.0.0')
+    expect(doc).toContain('npm trusted publisher')
     expect(doc).toContain('UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md')
-    expect(doc).toContain('does not authorize publishing 4.0')
-    expect(doc).toContain('no permanent scoped shim')
-    expect(doc).toContain('packed artifact')
     expect(doc).not.toMatch(/publishes the \*\*4\.0 dual identity\*\*/i)
   })
 
@@ -216,12 +216,12 @@ describe('ci-release canonical package (4.0)', () => {
     expect(smoke).toMatch(/published 4\.0 entrypoints/)
   })
 
-  test('verify-release omits the retired web example while RELEASE stays plan-gated', () => {
+  test('verify-release omits the retired web example while RELEASE stays artifact-gated', () => {
     const sh = read('scripts/verify-release.sh')
     const release = read('RELEASE.md')
     expect(sh).not.toMatch(/vite build|example-web\/vite\.config\.js/)
-    expect(release).toContain('controlling plan')
-    expect(release).toContain('packed artifact')
+    expect(release).toContain('SBOM.cdx.json')
+    expect(release).toContain('canonical CI is green')
   })
 
   // R2-F038: Linux BlueZ soft-probe (explicit skip, never silent success)

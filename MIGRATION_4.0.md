@@ -1,3 +1,5 @@
+<!-- MIGRATION_4.0.md -->
+
 # Migrating to Unified BLE Manager 4.0
 
 Unified BLE Manager 4.0 is a new package and public contract. It is not a source-compatible rename of `react-native-ble-plx` 3.x, and it intentionally does not ship a compatibility facade that hides the new ownership, byte, cancellation, or host-selection rules.

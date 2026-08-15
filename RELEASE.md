@@ -1,3 +1,5 @@
+<!-- RELEASE.md -->
+
 # Release process
 
 This document is the canonical release procedure for `unified-ble-manager`.
@@ -147,3 +149,7 @@ Future prereleases use normal SemVer suffixes such as `4.1.0-alpha.1`. They publ
 `SBOM.cdx.json`, `THIRD_PARTY_LICENSES.json`, generated platform support, and retained evidence records must be reproducible from the tagged source. Evidence records can justify platform support claims, but absence of an optional physical-radio qualification record does not change the SemVer of an otherwise validated stable package.
 
 The release process must never synthesize, backdate, or relabel hardware evidence merely to make a release gate pass.
+
+## Architecture authority
+
+The normative 4.0 architecture and public-contract decisions are recorded in [`docs/UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md`](docs/UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md). This release procedure controls publication mechanics; it does not override those architecture decisions.

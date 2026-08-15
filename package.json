@@ -1,7 +1,7 @@
 {
   "name": "unified-ble-manager",
-  "version": "4.0.0-alpha.40",
-  "description": "Unified Bluetooth Low Energy manager for React Native, Electron, Web, and desktop (4.0 train)",
+  "version": "4.0.0",
+  "description": "Unified Bluetooth Low Energy manager for React Native, Electron, Web, and desktop",
   "packageManager": "pnpm@10.14.0",
   "main": "lib/commonjs/index.js",
   "module": "lib/module/index.js",
@@ -119,14 +119,14 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/sfourdrinier/react-native-ble-plx.git"
+    "url": "git+https://github.com/sfourdrinier/unified-ble-manager.git"
   },
   "author": "sfourdrinier",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "bugs": {
-    "url": "https://github.com/sfourdrinier/react-native-ble-plx/issues"
+    "url": "https://github.com/sfourdrinier/unified-ble-manager/issues"
   },
-  "homepage": "https://github.com/sfourdrinier/react-native-ble-plx#readme",
+  "homepage": "https://github.com/sfourdrinier/unified-ble-manager#readme",
   "publishConfig": {
     "registry": "https://registry.npmjs.org/",
     "access": "public",

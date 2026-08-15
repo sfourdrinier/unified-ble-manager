@@ -6,6 +6,8 @@
 
 **4.0.0 is the first stable release of the Unified BLE Manager package and public API contract.** It is a new package line, not a source-compatible rename of `react-native-ble-plx` 3.x.
 
+**Architecture authority:** [`docs/UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md`](docs/UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md)
+
 > [!IMPORTANT]
 > Stable package SemVer and platform support qualification are separate dimensions. `4.0.0` stabilizes the package/API contract; a backend is only Preview, Supported, or Reliability-qualified when the corresponding retained evidence says so. See [`docs/PLATFORMS.md`](docs/PLATFORMS.md) and the generated [platform support report](docs/generated/PLATFORM_SUPPORT.md).
 

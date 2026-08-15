@@ -14,7 +14,7 @@ Pod::Spec.new do |s|
   s.authors      = package["author"]
 
   s.platforms    = { :ios => "16.4", :tvos => "16.4" }
-  s.source       = { :git => "https://github.com/sfourdrinier/react-native-ble-plx.git", :tag => "v#{s.version}" }
+  s.source       = { :git => "https://github.com/sfourdrinier/unified-ble-manager.git", :tag => "v#{s.version}" }
 
   # The 4.0 product is the Unified BLE Protocol control module and its owned
   # CoreBluetooth radio. Keep this list explicit: the retired 3.x bridge must never

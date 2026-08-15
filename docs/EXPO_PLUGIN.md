@@ -11,7 +11,7 @@ Configure the published plugin as `unified-ble-manager`. The plugin's supported
 options are exactly the schema implemented in `plugin/src/withBLE.ts`:
 
 ```sh
-pnpm add unified-ble-manager@4.0.0-alpha.40 expo@^57.0.0
+pnpm add unified-ble-manager@4.0.0 expo@^57.0.0
 ```
 
 `expo` is an optional host peer. The plugin imports Expo's supported
