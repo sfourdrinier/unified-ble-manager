@@ -1,0 +1,58 @@
+name: 4.0.0 native release check
+
+on:
+  push:
+    branches:
+      - agent/release-4.0.0-native-check
+
+permissions:
+  contents: read
+
+jobs:
+  apple:
+    name: Apple compile checks
+    uses: ./.github/workflows/apple-ci.yml
+
+  expo-cng-android:
+    name: Expo CNG Android build
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      NODE_OPTIONS: --max-old-space-size=8192
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.0
+
+      - name: Setup JS package
+        uses: ./.github/actions/setup-js-package
+
+      - name: Setup Java
+        uses: actions/setup-java@v5.5.0
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v4.0.1
+
+      - name: Install Expo example dependencies
+        run: pnpm --dir example-expo install --no-frozen-lockfile
+
+      - name: Align Expo peer deps to installed SDK
+        working-directory: example-expo
+        run: npx expo install --fix
+
+      - name: Typecheck Expo example
+        run: pnpm --dir example-expo exec tsc --noEmit -p tsconfig.json
+
+      - name: Run Expo Doctor
+        working-directory: example-expo
+        run: NODE_ENV=development npx expo-doctor
+
+      - name: Prebuild Expo native projects
+        working-directory: example-expo
+        run: NODE_ENV=development npx expo prebuild --clean --no-install
+
+      - name: Build generated Android project
+        working-directory: example-expo/android
+        run: NODE_ENV=development ./gradlew :app:assembleDebug --no-daemon --console=plain
