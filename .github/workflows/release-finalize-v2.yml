@@ -10,6 +10,7 @@ permissions:
 
 jobs:
   finalize:
+    if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -40,7 +41,26 @@ jobs:
         run: pnpm validate:evidence
 
       - name: Run package test suite
-        run: pnpm test:package
+        id: package_tests
+        shell: bash
+        run: |
+          set +e
+          pnpm test:package 2>&1 | tee .release-package-test.log
+          STATUS=${PIPESTATUS[0]}
+          if [ "$STATUS" -ne 0 ]; then
+            tail -n 700 .release-package-test.log > .release-package-test-failure.txt
+          fi
+          exit "$STATUS"
+
+      - name: Persist package test diagnostics
+        if: failure() && steps.package_tests.outcome == 'failure'
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add .release-package-test-failure.txt
+          git commit -m 'chore: capture 4.0.0 package test failure'
+          git push origin HEAD:agent/release-4.0.0-docs
 
       - name: Run plugin test suite
         run: pnpm test:plugin
@@ -66,7 +86,7 @@ jobs:
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add -A
-          git reset .github/workflows/release-finalize.yml .github/workflows/release-finalize-v2.yml scripts/release/finalize-4.0.py scripts/release/.finalize-trigger
+          git reset .github/workflows/release-finalize.yml .github/workflows/release-finalize-v2.yml scripts/release/finalize-4.0.py scripts/release/.finalize-trigger .release-package-test.log .release-package-test-failure.txt
           git diff --cached --check
           git commit -m 'release: prepare unified-ble-manager 4.0.0'
           git push origin HEAD:agent/release-4.0.0-docs
