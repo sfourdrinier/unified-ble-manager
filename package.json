@@ -505,6 +505,17 @@
         "default": "./lib/commonjs/electron-renderer.js"
       },
       "default": "./lib/commonjs/electron-renderer.js"
+    },
+    "./tauri": {
+      "import": {
+        "types": "./lib/typescript/module/src/tauri.d.ts",
+        "default": "./lib/module/tauri.js"
+      },
+      "require": {
+        "types": "./lib/typescript/commonjs/src/tauri.d.ts",
+        "default": "./lib/commonjs/tauri.js"
+      },
+      "default": "./lib/commonjs/tauri.js"
     }
   },
   "optionalDependencies": {

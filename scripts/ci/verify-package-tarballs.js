@@ -225,14 +225,15 @@ function isPublishedSourceFile(sourceFile) {
     sourceRelative === 'node-corebluetooth.ts' ||
     sourceRelative === 'node-winrt.ts' ||
     sourceRelative === 'electron-main.ts' ||
-    sourceRelative === 'electron-renderer.ts'
+    sourceRelative === 'electron-renderer.ts' ||
+    sourceRelative === 'tauri.ts'
   ) {
     return true
   }
   if (publicProfileSourceFiles.includes(sourceRelative)) {
     return true
   }
-  return /^(backend-contract|backends\/(?:bluez|corebluetooth|reactnative|winrt)|core|diagnostics|electron|manager|tck|testing|web)\/.+\.(?:ts|tsx)$/.test(
+  return /^(backend-contract|backends\/(?:bluez|corebluetooth|reactnative|winrt)|core|diagnostics|electron|ipc|manager|tauri|tck|testing|web)\/.+\.(?:ts|tsx)$/.test(
     sourceRelative
   )
 }

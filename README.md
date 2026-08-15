@@ -40,6 +40,7 @@ React Native, Web, macOS CoreBluetooth, and Windows WinRT consumers do not need 
 | `unified-ble-manager/web` | Browser Web Bluetooth provider, chooser, and matched manager session. |
 | `unified-ble-manager/electron/main` | Trusted Electron-main backend factories and IPC router/binding. |
 | `unified-ble-manager/electron/renderer` | Versioned renderer IPC client; never a radio factory. |
+| `unified-ble-manager/tauri` | Tauri v2 webview transport over the shared desktop IPC contract. |
 | `unified-ble-manager/node/corebluetooth` | macOS CoreBluetooth Node provider. |
 | `unified-ble-manager/node/winrt` | Windows WinRT Node provider. |
 | `unified-ble-manager/node/bluez` | Linux BlueZ D-Bus provider. |
@@ -164,6 +165,12 @@ Use:
 - `unified-ble-manager/electron/renderer` in untrusted renderer code.
 
 See [`docs/ELECTRON.md`](docs/ELECTRON.md) for ownership, reload/rebind, and IPC requirements.
+
+## Tauri v2
+
+Tauri webviews use `TauriBleIpcTransport` with the official Tauri v2 `invoke`
+and `Channel` APIs. The Rust plugin owns the radio; the webview imports no Node
+backend or native addon. See [`docs/TAURI.md`](docs/TAURI.md).
 
 ## Node and desktop
 

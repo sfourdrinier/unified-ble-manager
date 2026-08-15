@@ -34,6 +34,7 @@ describe('ci-release canonical package (4.0)', () => {
       './profiles/ieee-11073',
       './profiles/standard-commands',
       './react-native',
+      './tauri',
       './testing',
       './web'
     ])
@@ -41,6 +42,7 @@ describe('ci-release canonical package (4.0)', () => {
     expect(rootPkg.exports['./node/bluez']).toBeDefined()
     expect(rootPkg.exports['./node/winrt']).toBeDefined()
     expect(rootPkg.exports['./electron/renderer']).toBeDefined()
+    expect(rootPkg.exports['./tauri']).toBeDefined()
     expect(rootPkg.exports['./electron']).toBeUndefined()
     expect(rootPkg.exports['./node']).toBeUndefined()
     expect(rootPkg.files).toContain('native')
