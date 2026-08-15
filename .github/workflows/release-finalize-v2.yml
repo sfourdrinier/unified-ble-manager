@@ -36,16 +36,29 @@ jobs:
           pnpm docs:backend-sdk
           pnpm release:artifacts
 
-      - name: Validate release candidate
-        run: |
-          pnpm validate:evidence
-          pnpm test:package
-          pnpm test:plugin
-          pnpm lint
-          pnpm docs:check
-          pnpm release:artifacts:check
-          node scripts/ci/pack-install-smoke.js
-          npm pack --dry-run
+      - name: Validate retained evidence
+        run: pnpm validate:evidence
+
+      - name: Run package test suite
+        run: pnpm test:package
+
+      - name: Run plugin test suite
+        run: pnpm test:plugin
+
+      - name: Lint and typecheck
+        run: pnpm lint
+
+      - name: Check generated documentation
+        run: pnpm docs:check
+
+      - name: Check reproducible release artifacts
+        run: pnpm release:artifacts:check
+
+      - name: Run packed-consumer smoke
+        run: node scripts/ci/pack-install-smoke.js
+
+      - name: Inspect npm package allowlist
+        run: npm pack --dry-run
 
       - name: Commit finalized candidate
         run: |
