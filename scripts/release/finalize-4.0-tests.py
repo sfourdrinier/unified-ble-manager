@@ -53,8 +53,9 @@ if authority_line not in readme:
     readme = readme.replace(stable_intro, stable_intro + "\n\n" + authority_line, 1)
     write("README.md", readme)
 
-# SECURITY.md now gives a safer fallback when GitHub private vulnerability reporting
-# has not yet been enabled instead of forbidding the existence of a public issue at all.
+# SECURITY/SUPPORT/CONTRIBUTING now describe the canonical stable repository.
+# Keep their self-audit focused on the actual documented checks rather than obsolete
+# prerelease wording.
 replace_required(
     "__tests__/ReleaseArtifacts.test.js",
     "expect(security).toContain('Do not open a public issue')",
@@ -64,6 +65,16 @@ replace_required(
     "__tests__/ReleaseArtifacts.test.js",
     "expect(support).toContain('Evidence-backed support labels')",
     "expect(support).toContain('Platform/backend support labels are a separate evidence-backed dimension')",
+)
+replace_required(
+    "__tests__/ReleaseArtifacts.test.js",
+    "expect(contributing).toContain('pnpm verify:release')",
+    "expect(contributing).toContain('pnpm release:artifacts:check')",
+)
+replace_required(
+    "__tests__/ReleaseArtifacts.test.js",
+    "expect(contributing).toContain('zero warnings')",
+    "expect(contributing).toContain('canonical package checks')",
 )
 
 # The migration guide says exactly how Base64 remains available: explicit codecs at
