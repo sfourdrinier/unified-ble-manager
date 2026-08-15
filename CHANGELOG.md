@@ -51,8 +51,8 @@ All notable changes to `unified-ble-manager` are documented here.
 
 ## [4.0.0-alpha.39] - 2026-08-01 (published prerelease)
 
-- Previous 4.0 prerelease. See Git history and release records for the complete alpha train.
+- Previous 4.0 prerelease. See the preserved detailed history for the complete alpha train.
 
 ## Earlier history
 
-The complete pre-alpha.39 and inherited project history is preserved in Git. The 4.0 line evolved from the `react-native-ble-plx` lineage; older changelog records remain available from historical commits and tags.
+The complete detailed pre-stable changelog is preserved byte-for-byte in [`CHANGELOG_HISTORY.md`](CHANGELOG_HISTORY.md), in addition to the full Git ancestry. It contains the alpha train and inherited project release notes without forcing the new canonical changelog to carry every historical entry inline.
