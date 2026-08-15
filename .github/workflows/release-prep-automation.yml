@@ -1,0 +1,149 @@
+name: One-shot 4.0.0 release prep
+
+on:
+  push:
+    branches: [agent/release-4.0.0-prep]
+
+permissions:
+  contents: write
+
+env:
+  NODE_OPTIONS: --max-old-space-size=8192
+
+jobs:
+  prepare:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout release-prep branch
+        uses: actions/checkout@v7.0.0
+        with:
+          ref: agent/release-4.0.0-prep
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6.4.0
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Enable pnpm
+        run: corepack enable
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Update canonical package and repository metadata
+        run: |
+          node <<'NODE'
+          const fs = require('fs')
+
+          const packagePath = 'package.json'
+          const pkg = JSON.parse(fs.readFileSync(packagePath, 'utf8'))
+          pkg.version = '4.0.0'
+          pkg.description = 'Unified Bluetooth Low Energy manager for React Native, Web, Electron, Node, and desktop'
+          pkg.repository = {
+            type: 'git',
+            url: 'git+https://github.com/sfourdrinier/unified-ble-manager.git'
+          }
+          pkg.bugs = { url: 'https://github.com/sfourdrinier/unified-ble-manager/issues' }
+          pkg.homepage = 'https://github.com/sfourdrinier/unified-ble-manager#readme'
+          pkg.license = 'Apache-2.0'
+          fs.writeFileSync(packagePath, JSON.stringify(pkg, null, 2) + '\n')
+
+          function replace(path, from, to) {
+            const source = fs.readFileSync(path, 'utf8')
+            if (!source.includes(from)) {
+              throw new Error(`${path}: expected text not found: ${from.slice(0, 120)}`)
+            }
+            fs.writeFileSync(path, source.replaceAll(from, to))
+          }
+
+          replace(
+            'unified-ble-manager.podspec',
+            'https://github.com/sfourdrinier/react-native-ble-plx.git',
+            'https://github.com/sfourdrinier/unified-ble-manager.git'
+          )
+          replace(
+            'scripts/verify-release.sh',
+            '/tmp/react-native-ble-plx-generated-release-',
+            '/tmp/unified-ble-manager-generated-release-'
+          )
+          replace(
+            'scripts/evidence/validate-stable-release.js',
+            'refs/remotes/origin/master',
+            'refs/remotes/origin/main'
+          )
+          replace(
+            'scripts/evidence/validate-stable-release.js',
+            'tag/master ancestry',
+            'tag/main ancestry'
+          )
+
+          const planPath = 'docs/UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md'
+          let plan = fs.readFileSync(planPath, 'utf8')
+          plan = plan.replace('**Status:** Verified implementation-ready plan of record', '**Status:** Implemented 4.0 architecture plan of record')
+          plan = plan.replace('**Branch:** `4.0`', '**Canonical branch:** `main`')
+          fs.writeFileSync(planPath, plan)
+
+          const publishPath = '.github/workflows/publish.yml'
+          let publish = fs.readFileSync(publishPath, 'utf8')
+          publish = publish.replaceAll('Repository:        react-native-ble-plx', 'Repository:        unified-ble-manager')
+          publish = publish.replaceAll('react-native-ble-plx', 'unified-ble-manager')
+          publish = publish.replaceAll('master', 'main')
+
+          const gateStart = publish.indexOf('      # A GA tag requires complete artifact-bound evidence.')
+          const nextStart = publish.indexOf('      # Soft check so a re-run after npm success')
+          if (gateStart < 0 || nextStart <= gateStart) {
+            throw new Error('publish.yml: could not locate legacy stable evidence gate')
+          }
+
+          const stableBlock = `      # Stable SemVer declares the package/API contract stable. Platform support\n` +
+            `      # labels remain independently evidence-bound and may still be Experimental.\n` +
+            `      # A stable tag must identify the exact current main commit; publish then reruns\n` +
+            `      # all package, native build, artifact, and supply-chain gates below.\n` +
+            `      - name: Verify stable tag is the current main commit\n` +
+            `        if: steps.release_channel.outputs.is_stable == 'true'\n` +
+            `        run: |\n` +
+            `          set -euo pipefail\n` +
+            `          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main\n` +
+            `          TAG_COMMIT="$(git rev-parse "${GITHUB_REF_NAME}^{commit}")"\n` +
+            `          MAIN_COMMIT="$(git rev-parse refs/remotes/origin/main)"\n` +
+            `          if [ "${TAG_COMMIT}" != "${MAIN_COMMIT}" ]; then\n` +
+            `            echo "Stable tag ${GITHUB_REF_NAME} must point to the current main commit."\n` +
+            `            echo "tag=${TAG_COMMIT}"\n` +
+            `            echo "main=${MAIN_COMMIT}"\n` +
+            `            exit 1\n` +
+            `          fi\n\n`
+
+          publish = publish.slice(0, gateStart) + stableBlock + publish.slice(nextStart)
+          fs.writeFileSync(publishPath, publish)
+          NODE
+
+      - name: Regenerate release artifacts for 4.0.0
+        run: |
+          pnpm release:artifacts
+          pnpm docs:backend-sdk
+
+      - name: Validate prepared package
+        run: |
+          pnpm validate:evidence
+          pnpm test:package
+          pnpm test:plugin
+          pnpm lint
+          pnpm release:artifacts:check
+          node scripts/ci/pack-install-smoke.js
+          npm pack --dry-run
+          git diff --check
+
+      - name: Remove one-shot workflow and commit generated release prep
+        run: |
+          set -euo pipefail
+          rm .github/workflows/release-prep-automation.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git diff --cached --check
+          git commit -m 'chore: prepare 4.0.0 release metadata'
+          git push origin HEAD:agent/release-4.0.0-prep
