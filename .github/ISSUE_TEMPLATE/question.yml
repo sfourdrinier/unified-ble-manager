@@ -1,31 +1,52 @@
-name: 'Question'
-description: 'Ask question related to the library.'
-title: 'Question' 
+name: ❓ Usage question
+description: Ask a focused public question about integrating Unified BLE Manager.
+title: "❓ "
 labels: [question]
-
 body:
   - type: checkboxes
     id: prerequisites
     attributes:
       label: Prerequisites
       options:
-        - label: I checked the documentation and FAQ without finding a solution
+        - label: I searched the README, host documentation, and existing issues.
           required: true
-        - label: I checked to make sure that this issue has not already been filed
+        - label: This question does not contain private vulnerability details.
           required: true
-        - label: I'm sure that question is related to the library itself and not Bluetooth Low Energy or Classic in general. If that so, please post your question on [StackOverflow](https://stackoverflow.com/questions/tagged/react-native-ble-plx?sort=active).
-          required: true
-        - label: I'm running the latest version
-    
-  - type: textarea
+
+  - type: input
+    id: version
     attributes:
-      label: Question
-      placeholder: Please describe the question.
+      label: unified-ble-manager version
+      placeholder: "4.0.0"
     validations:
       required: true
-      
-  - type: textarea
+
+  - type: input
+    id: host
     attributes:
-      label: Question related code
-      placeholder: Please provide as much context of your issue as it is possible including information how you initialize your ble manager and how you use it.
-      render: markdown
+      label: Host / entrypoint
+      description: For example React Native Android, Web Bluetooth, Electron renderer, Node/BlueZ, or backend-sdk.
+    validations:
+      required: true
+
+  - type: textarea
+    id: goal
+    attributes:
+      label: What are you trying to do?
+      description: Describe the desired BLE flow and relevant ownership/lifecycle context.
+    validations:
+      required: true
+
+  - type: textarea
+    id: attempted
+    attributes:
+      label: What have you tried?
+      description: Include a small code example and any typed error/capability information that helps answer the question.
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Include relevant OS/runtime/framework/browser/adapter details when the question is host-specific.
