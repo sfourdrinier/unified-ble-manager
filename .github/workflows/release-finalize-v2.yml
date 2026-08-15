@@ -25,7 +25,10 @@ jobs:
           package-manager-cache: false
 
       - name: Prepare stable metadata and release guards
-        run: python3 scripts/release/finalize-4.0.py
+        run: |
+          rm -f .release-package-test.log .release-package-test-failure.txt
+          python3 scripts/release/finalize-4.0.py
+          python3 scripts/release/finalize-4.0-tests.py
 
       - name: Install dependencies
         run: |
@@ -48,7 +51,7 @@ jobs:
           pnpm test:package 2>&1 | tee .release-package-test.log
           STATUS=${PIPESTATUS[0]}
           if [ "$STATUS" -ne 0 ]; then
-            tail -n 700 .release-package-test.log > .release-package-test-failure.txt
+            tail -n 1200 .release-package-test.log > .release-package-test-failure.txt
           fi
           exit "$STATUS"
 
@@ -86,7 +89,7 @@ jobs:
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add -A
-          git reset .github/workflows/release-finalize.yml .github/workflows/release-finalize-v2.yml scripts/release/finalize-4.0.py scripts/release/.finalize-trigger .release-package-test.log .release-package-test-failure.txt
+          git reset .github/workflows/release-finalize.yml .github/workflows/release-finalize-v2.yml scripts/release/finalize-4.0.py scripts/release/finalize-4.0-tests.py scripts/release/.finalize-trigger .release-package-test.log .release-package-test-failure.txt
           git diff --cached --check
           git commit -m 'release: prepare unified-ble-manager 4.0.0'
           git push origin HEAD:agent/release-4.0.0-docs
