@@ -1,137 +1,105 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This repository contains **Unified BLE Manager 4.x** (`unified-ble-manager`), a host-neutral Bluetooth Low Energy central/GATT package for React Native, Web, Electron, and Node/desktop hosts.
 
-## Package Manager
+Treat `AGENTS.md`, `docs/UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md`, `README.md`, and `RELEASE.md` as the current project guidance. Do not infer 4.x behavior from inherited `react-native-ble-plx` 3.x source/docs.
 
-This project uses **pnpm**, not npm or yarn. All package manager commands should use `pnpm`.
+## Package manager and common checks
 
-## Common Commands
+This repository uses **pnpm** and Corepack.
 
-### Testing
-- `pnpm test:package` - Run main package tests (`__tests__/` including BleManager + host/port suites)
-- `pnpm test:plugin` - Run Expo config plugin tests
-- `pnpm test` - Alias for `pnpm test:package`
-- `pnpm test:expo` - Test Expo example app prebuild
+```sh
+corepack enable
+pnpm install --frozen-lockfile
+pnpm validate:evidence
+pnpm test:package
+pnpm test:plugin
+pnpm lint
+pnpm prepack
+pnpm release:artifacts:check
+node scripts/ci/pack-install-smoke.js
+```
 
-### Building
-- `pnpm run prepack` - Build the package (uses react-native-builder-bob)
-- `pnpm build:plugin` - Compile TypeScript plugin to `plugin/build/`
-- `pnpm build:android` - Build example Android app
-- `pnpm build:ios` - Build example iOS app
+Useful focused commands include:
 
-### Development
-- `pnpm typecheck` - Run TypeScript type checking
-- `pnpm lint` - Run all linters (ESLint, documentation lint, typecheck)
-- `pnpm lint:plugin` - Lint Expo config plugin code
-- `pnpm clean` - Clean all build artifacts
-- `pnpm clean:plugin` - Clean plugin build artifacts
-- `pnpm bootstrap` - Install dependencies for all workspaces
+- `pnpm test:native-protocol`
+- `pnpm test:native-protocol:android`
+- `pnpm test:native-protocol:apple`
+- `pnpm test:native-protocol:winrt`
+- `pnpm build:example:web`
+- `pnpm build:electron:macos`
+- `pnpm build:electron:winrt`
+- `pnpm performance:check`
 
-### Publishing
-Follow the authoritative process in `RELEASE.md` (summarized). The canonical package release path is:
+CI owns the broader cross-platform compile/ABI matrix.
 
-release branch → `pnpm verify:release` → PR → merge to `master` → tag `vX.Y.Z` and push → approve `npm` environment if required → `publish.yml` publishes `unified-ble-manager` through OIDC with provenance and creates the GitHub Release from `CHANGELOG.md`.
+## Public architecture
 
+The neutral root exports shared public manager/types and does **not** choose a radio. Consumers use explicit host entrypoints:
 
-## Architecture Overview
+- `unified-ble-manager/react-native`
+- `unified-ble-manager/web`
+- `unified-ble-manager/electron/main`
+- `unified-ble-manager/electron/renderer`
+- `unified-ble-manager/node/corebluetooth`
+- `unified-ble-manager/node/winrt`
+- `unified-ble-manager/node/bluez`
+- `unified-ble-manager/backend-sdk`
+- `unified-ble-manager/testing`
+- `unified-ble-manager/codecs`
+- `unified-ble-manager/cli`
 
-### Core Components
+Profile exports are documented in `README.md` and `docs/PROFILES_AND_COMMANDS.md`.
 
-This is a React Native Bluetooth Low Energy library with native modules for iOS (Objective-C/Swift) and Android (Java).
+## 4.x contract invariants
 
-**JavaScript Layer** (`src/`):
-- `BleManager.ts` - Main singleton manager, entry point for all BLE operations
-- `Device.ts` - Represents a BLE device with connection methods
-- `Service.ts` - Represents a GATT service
-- `Characteristic.ts` - Represents a GATT characteristic (read/write/notify)
-- `Descriptor.ts` - Represents a GATT descriptor
-- `BleModule.ts` - TypeScript interfaces for native module bridge
-- `BleError.ts` - Error types and codes
-- `TypeDefinition.ts` - Type definitions and enums
+- Public BLE values are `Uint8Array` / `Readonly<Uint8Array>`.
+- Base64 is an explicit codec for external protocols, not the native BLE value contract.
+- Cancellable public operations use `AbortSignal`; applications do not create public transaction IDs.
+- Managers own backend resources and expose asynchronous teardown.
+- Connection/GATT/subscription lifetimes are explicit; stale discoveries/handles are not immortal device-object state.
+- Capabilities are typed and backend-reported at runtime.
+- The root does not silently pick/fallback to a backend.
+- Electron main owns the radio/backend; renderers use the versioned IPC client.
+- Native/private backend protocols are versioned and fail closed.
+- Deterministic backends/mocks are test infrastructure, never production radio fallbacks.
 
-**Native Bridge Pattern**:
-- JS classes (Device, Service, Characteristic, Descriptor) wrap native objects
-- Each wrapper stores a `_manager: BleManager` reference (non-enumerable via `Object.defineProperty`)
-- Methods delegate to BleManager, which calls native module via `BleModule`
-- All data passed as Base64 strings for characteristic/descriptor values
-- **Important**: The `_manager` property is set via `Object.defineProperty` with `writable: false` (default). Do NOT add a redundant `this._manager = manager` assignment after `Object.defineProperty` as it will throw a read-only error. Use the definite assignment assertion (`_manager!: BleManager`) to satisfy TypeScript.
+Do not reintroduce the legacy 3.x `BleManager`/`Device`/`Service`/`Characteristic` facade, Base64 public payloads, caller transaction IDs, static `supports()` matrices, or Noble compatibility paths into the 4.x contract.
 
-**Platform Differences**:
-- Monitor methods have different signatures on iOS vs Android
-- Android supports `subscriptionType` parameter, iOS does not
-- Use explicit conditional calls for TypeScript compatibility:
-  ```ts
-  if (isIOS) {
-    return this._manager._monitorCharacteristic(this.id, listener, transactionId ?? undefined)
-  }
-  return this._manager._monitorCharacteristic(this.id, listener, transactionId ?? undefined, subscriptionType)
-  ```
-- **Note**: Avoid array spread patterns (`...args`) for platform-specific arguments as TypeScript cannot verify spread arrays against function signatures (TS2556 error)
+## Host implementations
 
-### Expo Config Plugin (`plugin/`)
+### React Native
 
-The plugin configures native projects for Expo managed workflow:
-- `withBLE.ts` - Main plugin orchestrator
-- `withBLEAndroidManifest.ts` - Adds Android permissions
-- `withBluetoothPermissions.ts` - Adds iOS permissions to Info.plist
-- `withBLEBackgroundModes.ts` - Configures iOS background modes
-- `withBLERestorationPodfile.ts` - Adds optional iOS BLE state restoration subspec
+The React Native host uses the versioned `UnifiedBleProtocolControl` boundary and explicit manager construction. The modernization floor is React Native 0.86+; Expo integration targets SDK 57+. The package contains native code and does not run in Expo Go.
 
-**Important**: CocoaPods / plugin identity on 4.0 is **`unified-ble-manager`** (Restoration: `unified-ble-manager/Restoration`). Use the canonical package name in Podfile and plugin config.
+### Web
 
-### iOS State Restoration (Optional Feature)
+Web Bluetooth uses its explicit chooser/session integration. Browser user-activation/security restrictions are part of the host contract; do not emulate process-level background scanning/restoration that Web Bluetooth does not provide.
 
-When `iosEnableRestoration: true` in plugin config:
-- Plugin adds `unified-ble-manager/Restoration` subspec to Podfile
-- Writes `BlePlxRestoreIdentifier` to Info.plist
-- Owned CoreBluetooth path handles `willRestoreState` on `OwnedCoreBluetoothAdapter` (reporting only; host reconnects)
-- Optional Restoration subspec adapter registers with host restoration registry when present
-- JS must pass same identifier to `BleManager` constructor's `restoreStateIdentifier` option
+### Electron
 
-### Testing Strategy
+Only trusted main-process code selects/owns the radio. Renderer reload/rebind is an ownership/security boundary. Do not load Node-API radio addons in untrusted renderer code.
 
-**Test Infrastructure**:
-- Jest with mocked `BleModule` native module
-- Mock helpers create realistic native objects: `createMockDevice()`, `createMockService()`, etc.
-- Singleton reset: `BleManager.sharedInstance = null` in `beforeEach()`
-- All tests must return proper mock objects (not `undefined`) due to TypeScript strict checks
+### Node desktop
 
-**Defensive Programming**:
-- All constructors validate input: `if (!nativeDevice) throw new Error(...)`
-- This prevents TypeScript crashes when mocks return undefined
-- TypeScript is stricter than Flow: `this.id = nativeDevice.id` throws if `nativeDevice` is undefined
+First-party desktop backends are owned CoreBluetooth, WinRT, and BlueZ implementations. CoreBluetooth/WinRT addons are built for the exact Node/Electron ABI and architecture that loads them. BlueZ is isolated behind its explicit entrypoint and optional `dbus-next` dependency.
 
-**Platform-Specific Tests**:
-- Monitor tests verify iOS doesn't receive `subscriptionType` parameter
-- Use spread operator pattern to avoid passing extra args on iOS
+## Evidence and support
 
-## Key Technical Details
+Package SemVer and backend support qualification are independent. Stable `4.0.0` stabilizes the documented package/API contract; it does not automatically promote a backend's evidence label.
 
-### Dependencies (modernization floor)
-- React ~19.2
-- React Native ~0.86 (peer `>=0.86.0`)
-- Expo SDK 57 (`expo` ^57, `@expo/config-plugins` ^57)
-- TypeScript 5.2.2+
+`docs/generated/PLATFORM_SUPPORT.md` is generated from retained evidence. Compilation, deterministic tests, ABI loading, and mocks prove only those levels and must not be described as live-radio evidence.
 
-### Node Compatibility
-- Requires Node `^20.19.4 || ^22.13.0 || ^24.3.0 || >=25.0.0` (see `package.json` engines / `.nvmrc`)
+## Generated artifacts
 
-### Package Structure
-- Main package: **`unified-ble-manager`** (4.0 train; npm + CocoaPods + Android + Expo plugin)
-- TypeScript source in `src/`, compiled output in `lib/`
-- Native code in `android/` (Kotlin/Java) and `ios/` (owned Swift CoreBluetooth + ObjC++ bridge)
-- Config plugin in `plugin/` (TypeScript, compiled to `plugin/build/`)
-- Example apps in `example/` (bare RN), `example-expo/` (Expo), `example-web/`, `example-electron/`
+Do not hand-edit generated support/reference artifacts, `SBOM.cdx.json`, or `THIRD_PARTY_LICENSES.json` when a generator owns them. Use the repository scripts and verify reproducibility with `pnpm release:artifacts:check` / documentation checks.
 
-### Commit Conventions
-- `fix:` - Bug fixes (patch version bump)
-- `feat:` - New features (minor version bump)
-- `chore:` - Maintenance tasks
-- `docs:` - Documentation updates
+## Releases
 
-### Important Notes
-- This is a **forked** repo from `dotintent/react-native-ble-plx`
-- Upstream repo is stale (last update Feb 2025), this fork is actively maintained
-- When making changes, ensure both iOS and Android platforms are considered
-- Always test on both platforms when modifying monitor/subscription logic
+`main` is the canonical release branch. Follow `RELEASE.md`. Version tags drive `.github/workflows/publish.yml`, which publishes `unified-ble-manager` through npm trusted publishing/OIDC with provenance after the release gates pass.
+
+Never publish a normal release manually, move a published version tag, or weaken evidence/support labels merely to make a stable package release pass.
+
+## Historical fixture names
+
+Some inherited native/example identifiers such as `BlePlxExample` may remain when they are internal fixture/scheme names. Cosmetic native renames are not a release goal; change them only with an explicit compatibility/build rationale and complete validation.
