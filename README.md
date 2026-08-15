@@ -173,7 +173,15 @@ Node hosts select a backend explicitly:
 - `unified-ble-manager/node/winrt` — Windows WinRT;
 - `unified-ble-manager/node/bluez` — Linux BlueZ/D-Bus.
 
-The package ships the CoreBluetooth and WinRT Node-API build sources and the required build tooling, not a universal prebuilt `.node` binary. Native addons must be built for the exact Node or Electron ABI, architecture, and runtime that will load them.
+Published releases bundle Node-API v8 prebuilds for macOS and Windows on both
+`arm64` and `x64`. The same platform/architecture binary is selected for Node
+and modern Electron because Node-API is ABI-stable across those runtimes. Linux
+BlueZ uses D-Bus and does not require a native addon.
+
+The package also retains the CoreBluetooth and WinRT build sources plus
+`node-gyp` as an explicit fallback for an unsupported architecture or a locally
+modified native boundary. A normal supported install should not compile native
+code.
 
 For host Node on macOS:
 
@@ -183,7 +191,11 @@ pnpm --dir node_modules/unified-ble-manager exec node-gyp rebuild \
   --directory native/electron/corebluetooth
 ```
 
-For Electron, target the exact Electron headers; a Node-ABI build is not interchangeable with an Electron build.
+Electron packagers must leave `.node` files outside ASAR (most detect this
+automatically) and include them in the application's normal signing and
+notarization process. The npm release workflow builds each prebuild on its
+native GitHub runner, loads it under Node, loads that same file under Electron,
+then assembles the complete matrix into the provenance-bearing npm tarball.
 
 ## Platform support and evidence
 

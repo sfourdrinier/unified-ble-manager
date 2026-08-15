@@ -262,12 +262,15 @@ describe('ci-release canonical package (4.0)', () => {
   })
 
   // R2-F059: never ship host-local native build products in the npm tarball
-  test('R2-F059 package.json files excludes native build artifacts and .node binaries', () => {
+  test('R2-F059 package.json excludes local native builds while allowing verified release prebuilds', () => {
     const pkg = JSON.parse(read('package.json'))
+    const tarballVerifier = read('scripts/ci/verify-package-tarballs.js')
     expect(pkg.files).toContain('native')
     expect(pkg.files).toContain('!native/**/build')
-    expect(pkg.files).toContain('!native/**/*.node')
+    expect(pkg.files).not.toContain('!native/**/*.node')
     expect(pkg.files).toContain('!native/**/obj.target')
+    expect(tarballVerifier).toContain('assertNativePrebuildSet')
+    expect(tarballVerifier).toContain('Packed native prebuild set must be complete and exact')
   })
 
   // R2-F096: job name must not overstate lint/prepack/multi-host as running on every OS

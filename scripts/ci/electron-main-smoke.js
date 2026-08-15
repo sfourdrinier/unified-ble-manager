@@ -3,18 +3,17 @@
 /**
  * Headless Electron main-process public-boundary smoke (L3 wiring, not radio L4).
  *
- * Run under the Electron binary (not plain Node) after `@electron/rebuild`
- * when a native addon is present.
+ * Run under the Electron binary (not plain Node) after a Node-API prebuild or
+ * explicit local source build is present.
  *
  * Always: imports the public Electron-main boundary under the Electron runtime.
- * On darwin after rebuild: also creates the public CoreBluetooth contract boundary
- * under the Electron ABI (R3-F012) so an unloadable rebuild fails CI.
+ * On darwin: also creates the public CoreBluetooth contract boundary so an
+ * unloadable Node-API prebuild or source build fails CI.
  *
- *   npx --yes @electron/rebuild -f -w native/electron/corebluetooth   # macOS after node-gyp
  *   ./node_modules/.bin/electron scripts/ci/electron-main-smoke.js
  *
- * On Windows after a WinRT Electron-ABI rebuild, also creates and validates the
- * public WinRT contract boundary. No branch starts a scan or claims live radio.
+ * On Windows, also creates and validates the public WinRT contract boundary.
+ * No branch starts a scan or claims live radio.
  */
 'use strict'
 
@@ -54,7 +53,7 @@ async function main() {
     electron: process.versions.electron
   })
 
-  // R3-F012: after @electron/rebuild on darwin, the direct boundary must load under Electron ABI.
+  // R3-F012: the direct Node-API boundary must load under Electron.
   if (process.platform === 'darwin') {
     if (typeof createNativeCoreBluetoothBoundary !== 'function') {
       throw new Error('createNativeCoreBluetoothBoundary missing from Electron-main entrypoint')

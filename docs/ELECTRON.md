@@ -19,13 +19,10 @@ There is no Noble dependency, renderer Web Bluetooth fallback, legacy
 `BlePort`, `PortBleManager`, or mock-radio production fallback in these
 entrypoints.
 
-The published `4.0.0-alpha.40` Electron prerelease is Experimental. The release
-workflow's packed Electron smoke is deterministic L1 package/IPC proof, not an
-Electron host, adapter, or peripheral support claim. No current evidence record
-binds alpha.40 to a physical Electron radio journey.
-
-WinRT compile and ABI checks are L2/L3 evidence only; alpha.40 makes no Windows
-live-radio claim.
+The release workflow's packed Electron smoke is deterministic L1 package/IPC
+proof, not an Electron host, adapter, or peripheral support claim. Native
+prebuild compilation and runtime loading are L2/L3 evidence only; they do not
+by themselves establish a physical-radio support claim.
 
 ## Main-process backend selection
 
@@ -45,9 +42,11 @@ Select one concrete backend in main. The native loaders are fail-closed:
 
 An Electron application chooses the backend from trusted main-process platform
 configuration. Renderer-provided data is never a backend selector. Native
-addons must be rebuilt or supplied for the exact Electron ABI; an absent,
+addons must be available for the host platform and architecture; an absent,
 incompatible, unauthorized, or unavailable native backend reports a typed
-failure rather than silently using a simulated radio.
+failure rather than silently using a simulated radio. Published builds use
+Node-API v8, so one prebuild per OS/CPU is shared by maintained Node and modern
+Electron runtimes.
 
 ## IPC integration requirements
 
@@ -114,31 +113,30 @@ public-manager scenario only. It is useful as a fast deterministic check, but
 it does not substitute for the packed router/client boundary smoke or an
 Electron-runtime security test.
 
-The package publishes CoreBluetooth source plus `node-gyp`, not a prebuilt
-addon. Build from the installed package source. On macOS, a host-Node build
-uses the current Node ABI:
+Published packages include these Node-API prebuilds:
+
+- macOS `arm64` and `x64` CoreBluetooth;
+- Windows `arm64` and `x64` WinRT.
+
+The release matrix builds each artifact on its native runner and loads the same
+file under both Node and Electron before npm publication. Native `.node` files
+must remain unpacked from ASAR and must be included in the consumer
+application's signing/notarization process.
+
+Source and `node-gyp` remain available as an explicit fallback. For example:
 
 ```sh
 pnpm --dir node_modules/unified-ble-manager exec node-gyp rebuild --release --directory native/electron/corebluetooth
 ```
 
-An Electron main process must use an Electron-targeted rebuild. Run this from
-the consumer project after installing its exact Electron dependency:
-
-```sh
-ELECTRON_VERSION="$(node -p \"require('electron/package.json').version\")"
-pnpm --dir node_modules/unified-ble-manager exec node-gyp rebuild --release --directory native/electron/corebluetooth --target="$ELECTRON_VERSION" --dist-url=https://electronjs.org/headers
-```
-
-The Node and Electron commands are not interchangeable: they produce addons
-for different ABIs. Rebuild after any target runtime, ABI, architecture, or
-package-version change. Windows and Linux have their own native/runtime
-requirements and are not implied by a macOS build. Windows CI builds and loads
-the actual WinRT addon under Node, rebuilds it for the pinned Electron ABI, and
-loads the v2 public boundary under Electron main. That smoke checks the method
-surface and destroys the boundary; it does not start a scan, observe an
-advertisement, or establish live-radio support. Published evidence records
-state the exact backend, package digest, OS/runtime/ABI, hardware, scenario,
-limitations, and proof level.
+With Node-API v8, an Electron-targeted rebuild is not required merely because
+Electron's module ABI differs from Node's. Rebuild only when using an
+unsupported target, changing native source, or deliberately overriding the
+bundled prebuild. Windows and Linux still have their own native/runtime
+requirements and are not implied by a macOS build. The Node/Electron load smoke
+checks the method surface and destroys the boundary; it does not start a scan,
+observe an advertisement, or establish live-radio support. Published evidence
+records state the exact backend, package digest, OS/runtime/ABI, hardware,
+scenario, limitations, and proof level.
 See [`PLATFORMS.md`](PLATFORMS.md) and the controlling
 [`UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md`](UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md).

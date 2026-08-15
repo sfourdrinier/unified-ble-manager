@@ -11,7 +11,7 @@
               "<!@(node -p \"require('node-addon-api').include\")"
             ],
             "dependencies": ["<!(node -p \"require('node-addon-api').gyp\")"],
-            "defines": ["NAPI_DISABLE_CPP_EXCEPTIONS"],
+            "defines": ["NAPI_DISABLE_CPP_EXCEPTIONS", "NAPI_VERSION=8"],
             "xcode_settings": {
               "GCC_ENABLE_CPP_EXCEPTIONS": "YES",
               "CLANG_ENABLE_OBJC_ARC": "YES",
@@ -33,7 +33,7 @@
               "<!@(node -p \"require('node-addon-api').include\")"
             ],
             "dependencies": ["<!(node -p \"require('node-addon-api').gyp\")"],
-            "defines": ["NAPI_DISABLE_CPP_EXCEPTIONS"]
+            "defines": ["NAPI_DISABLE_CPP_EXCEPTIONS", "NAPI_VERSION=8"]
           }
         ]
       ]
