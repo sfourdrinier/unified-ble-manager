@@ -2,25 +2,49 @@
 
 name: CI
 
+# Cost policy (#20):
+# - package: every PR/main push (cheap Ubuntu)
+# - expo-cng-android: only when Android/native-related paths change (or manual)
+# - Apple (macOS): NOT on every PR commit. Runs on:
+#     • push to main when Apple-related paths change
+#     • pull_request with label `ci:apple` (opt-in before merge)
+#     • workflow_dispatch (manual)
+# Superseded runs for the same PR/branch are cancelled.
+
 on:
   push:
-    branches: [main]
+    branches:
+      - main
   pull_request:
-    branches: [main]
-    types: [opened, reopened, synchronize, ready_for_review]
+    branches:
+      - main
+    types: [opened, reopened, synchronize, ready_for_review, labeled]
   workflow_dispatch:
 
+# Official concurrency docs:
+# https://docs.github.com/en/actions/writing-workflows/choosing-what-your-workflow-does/control-the-concurrency-of-workflows-and-jobs
+# Group includes workflow name so we never cancel publish.yml; PR number keeps
+# each PR isolated; github.ref covers branch/tag pushes.
+# Do not cancel in-progress CI when someone applies an unrelated PR label —
+# that would replace a real package run with a skipped/success check (Codex P1).
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ !(github.event_name == 'pull_request' && github.event.action == 'labeled' && github.event.label.name != 'ci:apple') }}
 
+# Hardened defaults: paths-filter needs pull-requests:read on pull_request events
+# (dorny/paths-filter PR files API). Checkout needs contents:read.
 permissions:
   contents: read
   pull-requests: read
 
 jobs:
+  # Always run JS/package tests — including labeled events — so required checks
+  # never get replaced by a skipped success from an unrelated label.
+  # Multi-OS matrix: pure TS / Jest port+host tests run on Ubuntu, Windows, macOS.
+  # Linux matrices Node 20.19.4 (engines floor), Node 22 (engines mid), Node 24 (publish line).
+  # Job name is honest: lint/prepack/multi-host smoke run only on Linux (R2-F096).
   package:
-    name: JS/package (${{ matrix.os }}, Node ${{ matrix.node }})
+    name: JS tests (${{ matrix.os }}, Node ${{ matrix.node }})
     strategy:
       fail-fast: false
       matrix:
@@ -32,16 +56,25 @@ jobs:
           - os: ubuntu-latest
             node: '24'
           - os: windows-latest
+            node: '20.19.4'
+          # Keep Windows package coverage at the engines floor. Native Node-API
+          # compilation runs under Node 22 for the maintained native-toolchain gate.
+          - os: windows-latest
             node: '22'
+          - os: macos-latest
+            node: '20.19.4'
+          # Keep the engines-floor suite on Node 20 and run native node-gyp gates
+          # on Node 22 for the maintained native-toolchain gate.
           - os: macos-latest
             node: '22'
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
     steps:
       - name: Checkout
         uses: actions/checkout@v7.0.0
 
-      - name: Setup Python for native Node-API builds
+      # Node 20 keeps macOS and Windows package coverage. Native build gates run
+      # on Node 22 for the maintained native-toolchain gate.
+      - name: Setup Python for native Node22 builds
         if: (runner.os == 'macOS' || runner.os == 'Windows') && matrix.node == '22'
         uses: actions/setup-python@v6.0.0
         with:
@@ -53,56 +86,59 @@ jobs:
           prepack: 'false'
           node-version: ${{ matrix.node }}
 
-      - name: Validate evidence records
-        run: pnpm validate:evidence
-
       - name: Run package tests
         run: pnpm test:package
+
+      - name: Validate current evidence records
+        run: pnpm validate:evidence
 
       - name: Run plugin tests
         run: pnpm test:plugin
 
-      - name: Lint and typecheck
-        if: runner.os == 'Linux' && matrix.node == '22'
-        run: pnpm lint
-
-      - name: Execute native protocol C++ host tests
+      # C++ codec/runtime execution only. It compiles and runs the host harness,
+      # but cannot prove a physical adapter, peripheral, or radio lifecycle.
+      - name: Execute Native Protocol C++ host tests (L2; no physical radio)
         if: runner.os == 'Linux' && matrix.node == '22'
         run: pnpm test:native-protocol
 
+      # Lint/typecheck + prepack once on Linux (path/tooling quirks differ on Windows)
+      - name: Lint and typecheck
+        if: runner.os == 'Linux'
+        run: pnpm lint
+
       - name: Build package artifacts
-        if: matrix.node == '22'
+        if: runner.os == 'Linux'
         run: pnpm prepack
 
-      - name: Build Web Bluetooth example
+      - name: Build 4.0 Web Bluetooth public example
         if: runner.os == 'Linux' && matrix.node == '22'
         run: pnpm build:example:web
 
-      - name: Production performance benchmark
+      - name: Production performance benchmark gate (host-native + JS)
         if: runner.os == 'Linux' && matrix.node == '22'
         run: pnpm performance:check
 
-      - name: Verify reproducible SBOM and production licenses
+      - name: Reproducible SBOM and production-license audit
         if: runner.os == 'Linux' && matrix.node == '22'
         run: pnpm release:artifacts:check
 
-      - name: Electron deterministic smoke
-        if: runner.os == 'Linux' && matrix.node == '22'
+      # L1 only: Fake multi-device demo under Node (not Electron binary / native radio).
+      - name: Electron Fake multi-device demo smoke (L1)
+        if: runner.os == 'Linux'
         run: node example-electron/smoke.js
 
-      - name: Verify canonical host exports
-        if: runner.os == 'Linux' && matrix.node == '22'
-        run: node scripts/ci/check-host-exports.js
+      # The full package suite above covers the public backend and package boundaries;
+      # the release workflow does not repeat individual suites here.
 
-      - name: Electron main-process smoke
-        if: runner.os == 'Linux' && matrix.node == '22'
-        run: ./node_modules/.bin/electron --no-sandbox scripts/ci/electron-main-smoke.js
+      # L2 needs compiled hosts (src/*.ts is not resolvable by plain Node). prepack is Linux-only above;
+      # emit lib/ here before requireNative probes (R2-F005).
+      - name: Build package artifacts (macOS/Windows L2 hosts)
+        if: (runner.os == 'macOS' && matrix.node == '22') || (runner.os == 'Windows' && matrix.node == '22')
+        run: pnpm prepack
 
-      - name: Canonical pack/install smoke
-        if: runner.os == 'Linux' && matrix.node == '22'
-        run: node scripts/ci/pack-install-smoke.js
-
-      - name: CoreBluetooth Node-API boundary build and load
+      # L2: compile the CoreBluetooth Node-API addon, then load the public 4.0
+      # contract boundary directly. No legacy BlePort host participates in this gate.
+      - name: CoreBluetooth native boundary L2 (node-gyp Node ABI + public boundary)
         if: runner.os == 'macOS' && matrix.node == '22'
         env:
           npm_config_python: ${{ env.pythonLocation }}/bin/python
@@ -110,28 +146,36 @@ jobs:
           set -euo pipefail
           pnpm run build:electron:macos
           test -f native/electron/corebluetooth/build/Release/unified_ble_corebluetooth.node
-          node - <<'NODE'
-          const { createNativeCoreBluetoothBoundary } = require('./lib/commonjs/node-corebluetooth')
-          const boundary = createNativeCoreBluetoothBoundary()
-          const required = [
-            'adapterSnapshot', 'startScan', 'stopScan', 'connect', 'disconnect',
-            'connectionState', 'discover', 'read', 'write', 'startNotify',
-            'stopNotify', 'onDisconnect', 'onAdapterState', 'destroy'
-          ]
-          for (const method of required) {
-            if (typeof boundary[method] !== 'function') throw new Error(`Missing CoreBluetooth method: ${method}`)
-          }
-          Promise.resolve(boundary.destroy()).catch(error => {
-            console.error(error)
-            process.exitCode = 1
-          })
-          NODE
+          node -e "
+            const { createNativeCoreBluetoothBoundary } = require('./lib/commonjs/node-corebluetooth');
+            const boundary = createNativeCoreBluetoothBoundary();
+            const required = [
+              'adapterSnapshot', 'startScan', 'stopScan', 'connect', 'disconnect',
+              'connectionState', 'discover', 'read', 'write', 'startNotify',
+              'stopNotify', 'onDisconnect', 'onAdapterState', 'destroy'
+            ];
+            for (const method of required) {
+              if (typeof boundary[method] !== 'function') {
+                throw new Error('CoreBluetooth boundary method is missing: ' + method);
+              }
+            }
+            Promise.resolve(boundary.destroy()).then(() => {
+              console.log('CoreBluetooth public boundary L2 ok');
+            }, error => {
+              console.error('CoreBluetooth boundary destroy failed:', error);
+              process.exitCode = 1;
+            });
+          "
 
-      - name: CoreBluetooth Electron ABI rebuild and load
+      # L3: Node ABI ≠ Electron ABI. Rebuild for Electron, then headless main-process smoke (R2-F037).
+      # electron-main-smoke loads public Electron-main exports and the direct
+      # CoreBluetooth boundary under the Electron ABI on macOS (R3-F012).
+      # Not radio L4 — no BrowserWindow or live peripheral is involved.
+      - name: Electron ABI rebuild + main-process smoke (L3, Node ABI ≠ Electron ABI)
         if: runner.os == 'macOS' && matrix.node == '22'
         run: |
           set -euo pipefail
-          ELECTRON_VERSION="$(node -p "require('./node_modules/electron/package.json').version")"
+          ELECTRON_VERSION=$(node -p "require('./node_modules/electron/package.json').version")
           (
             cd native/electron/corebluetooth
             ../../../node_modules/.bin/node-gyp rebuild \
@@ -142,31 +186,49 @@ jobs:
           test -f native/electron/corebluetooth/build/Release/unified_ble_corebluetooth.node
           ./node_modules/.bin/electron scripts/ci/electron-main-smoke.js
 
-      - name: WinRT Node-API boundary build and load
+      # This is Node-API ABI and boundary-shape proof only. It does not claim a
+      # live adapter, advertisement, peripheral, or radio-support result.
+      - name: WinRT native boundary Node ABI build and load (Windows; no live radio)
         if: runner.os == 'Windows' && matrix.node == '22'
         shell: bash
         run: |
           set -euo pipefail
           pnpm run build:electron:winrt
           test -f native/electron/winrt/build/Release/unified_ble_winrt.node
-          node - <<'NODE'
-          const native = require('./native/electron/winrt')
-          if (native.boundaryVersion !== 2 || typeof native.createContractBoundary !== 'function') {
-            throw new Error('WinRT addon does not expose boundary protocol v2')
-          }
-          const boundary = native.createContractBoundary()
-          Promise.resolve(boundary.destroy().completion).catch(error => {
-            console.error(error)
-            process.exitCode = 1
-          })
-          NODE
+          node -e "
+            const native = require('./native/electron/winrt');
+            if (native.boundaryVersion !== 2 || typeof native.createContractBoundary !== 'function') {
+              throw new Error('WinRT addon does not expose boundary protocol v2');
+            }
+            const boundary = native.createContractBoundary();
+            const required = [
+              'listAdapters', 'selectAdapter', 'adapterSnapshot', 'startScan', 'stopScan',
+              'connect', 'disconnect', 'discover', 'read', 'write', 'readDescriptor',
+              'writeDescriptor', 'startNotify', 'stopNotify', 'onConnectionLost',
+              'onDatabaseChanged', 'onAdapterState', 'onScanTerminal', 'ingressTelemetry', 'destroy'
+            ];
+            for (const method of required) {
+              if (typeof boundary[method] !== 'function') {
+                throw new Error('WinRT boundary method is missing: ' + method);
+              }
+            }
+            boundary.destroy().completion.then(() => {
+              console.log('WinRT Node-API compile and ABI load passed; no live-radio test ran.');
+            }, error => {
+              console.error('WinRT native destroy after ABI load failed:', error);
+              process.exitCode = 1;
+            });
+          "
 
-      - name: WinRT Electron ABI rebuild and load
+      # Rebuild the actual addon for Electron's Node ABI, then load the public
+      # WinRT boundary from Electron main. This remains compile/load evidence;
+      # electron-main-smoke does not start a scan or claim live-radio support.
+      - name: WinRT native boundary Electron ABI rebuild and load (Windows; no live radio)
         if: runner.os == 'Windows' && matrix.node == '22'
         shell: bash
         run: |
           set -euo pipefail
-          ELECTRON_VERSION="$(node -p "require('./node_modules/electron/package.json').version")"
+          ELECTRON_VERSION=$(node -p "require('./node_modules/electron/package.json').version")
           (
             cd native/electron/winrt
             ../../../node_modules/.bin/node-gyp rebuild \
@@ -177,8 +239,53 @@ jobs:
           test -f native/electron/winrt/build/Release/unified_ble_winrt.node
           ./node_modules/.bin/electron scripts/ci/electron-main-smoke.js
 
+      # L2 packaging: resolve every canonical host entrypoint after prepack.
+      - name: Canonical host export resolve (L2)
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          node scripts/ci/check-host-exports.js
+
+      # L3 wiring under the Electron binary on Linux. This uses Electron's
+      # documented CI-safe no-sandbox mode and still executes the public smoke.
+      - name: Electron main-process public-boundary smoke under Electron binary (L3, Linux)
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          ./node_modules/.bin/electron --no-sandbox scripts/ci/electron-main-smoke.js
+
+      # BlueZ soft-probe: never silent success; skip explicitly when daemon/adapter absent (R2-F038 / GAP-CI-LIN).
+      - name: BlueZ system soft-probe (L2/L3 soft; mock Jest remains L1)
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          if ! command -v systemctl >/dev/null 2>&1; then
+            echo "systemctl missing — skipped BlueZ L3 soft-probe (mock Jest remains L1)"
+            exit 0
+          fi
+          if ! systemctl is-active --quiet bluetooth 2>/dev/null; then
+            echo "bluetooth service inactive — skipped BlueZ L3 (mock Jest remains L1)"
+            exit 0
+          fi
+          if command -v dbus-send >/dev/null 2>&1; then
+            if ! dbus-send --system --dest=org.bluez --print-reply / org.freedesktop.DBus.Introspectable.Introspect >/dev/null 2>&1; then
+              echo "BlueZ D-Bus soft-probe failed (daemon flagged active but no reply) — skipped L3"
+              exit 0
+            fi
+          fi
+          node scripts/ci/bluez-soft-probe.js
+
+      # Real pack+install (not dry-run) — proves the canonical files allowlist and host exports (R2-F039).
+      - name: Canonical npm pack + install export smoke
+        if: runner.os == 'Linux'
+        run: node scripts/ci/pack-install-smoke.js
+
   changes:
-    name: Detect native path changes
+    name: Detect path changes
+    if: |
+      github.event_name != 'pull_request' ||
+      github.event.action != 'labeled' ||
+      github.event.label.name == 'ci:apple'
     runs-on: ubuntu-latest
     outputs:
       android: ${{ steps.filter.outputs.android }}
@@ -188,6 +295,7 @@ jobs:
         uses: actions/checkout@v7.0.0
 
       - name: Filter paths
+        # Latest: https://github.com/dorny/paths-filter/releases (v4 = Node 24 runtime)
         uses: dorny/paths-filter@v4.0.2
         id: filter
         with:
@@ -203,7 +311,7 @@ jobs:
               - 'src/**'
               - 'package.json'
               - 'pnpm-lock.yaml'
-              - '.github/workflows/**'
+              - '.github/workflows/ci.yml'
               - '.github/actions/**'
             apple:
               - 'ios/**'
@@ -211,7 +319,8 @@ jobs:
               - 'scripts/native-protocol/**'
               - 'example/ios/**'
               - 'example/package.json'
-              - 'example/**/Gemfile*'
+              - 'example/**/Gemfile'
+              - 'example/**/Gemfile.lock'
               - 'example-expo/**'
               - 'plugin/**'
               - 'app.plugin.js'
@@ -220,79 +329,135 @@ jobs:
               - 'scripts/ci/**'
               - 'package.json'
               - 'pnpm-lock.yaml'
-              - '.github/workflows/**'
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/apple-ci.yml'
               - '.github/actions/**'
               - 'native/electron/**'
               - 'example-electron/**'
 
+  expo-cng-android:
+    name: Expo CNG Android build
+    needs: changes
+    if: |
+      always() &&
+      needs.changes.result == 'success' &&
+      (
+        github.event_name == 'workflow_dispatch' ||
+        needs.changes.outputs.android == 'true'
+      )
+    runs-on: ubuntu-latest
+    env:
+      NODE_OPTIONS: --max-old-space-size=8192
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.0
+
+      - name: Setup JS package
+        uses: ./.github/actions/setup-js-package
+
+      - name: Setup Java
+        uses: actions/setup-java@v5.5.0
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v4.0.1
+
+      - name: Install Expo example dependencies
+        run: pnpm --dir example-expo install --no-frozen-lockfile
+
+      - name: Align Expo peer deps to installed SDK
+        # package.json uses caret floors; let Expo pick compatible peers for the resolved SDK.
+        working-directory: example-expo
+        run: npx expo install --fix
+
+      - name: Typecheck Expo example
+        run: pnpm --dir example-expo exec tsc --noEmit -p tsconfig.json
+
+      - name: Run Expo Doctor
+        working-directory: example-expo
+        run: NODE_ENV=development npx expo-doctor
+
+      - name: Prebuild Expo native projects
+        working-directory: example-expo
+        run: NODE_ENV=development npx expo prebuild --clean --no-install
+
+      - name: Build generated Android project
+        working-directory: example-expo/android
+        run: NODE_ENV=development ./gradlew :app:assembleDebug --no-daemon --console=plain
+
+  # Classic RN example Android compile — same android/ library sources as Expo,
+  # wired through the bare example app (not only CNG). Gated by android path filter.
   classic-rn-android:
     name: Classic RN Android assemble
     needs: changes
-    if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.android == 'true'
+    if: |
+      always() &&
+      needs.changes.result == 'success' &&
+      (
+        github.event_name == 'workflow_dispatch' ||
+        needs.changes.outputs.android == 'true'
+      )
     runs-on: ubuntu-latest
-    timeout-minutes: 60
     env:
       NODE_OPTIONS: --max-old-space-size=8192
+      # JetifyTransform of react-android AAR OOM'd on default heap (see CI logs).
       GRADLE_OPTS: -Dorg.gradle.jvmargs=-Xmx6g\ -XX:MaxMetaspaceSize=1g\ -Dfile.encoding=UTF-8
     steps:
       - name: Checkout
         uses: actions/checkout@v7.0.0
+
       - name: Setup JS package
         uses: ./.github/actions/setup-js-package
+
       - name: Setup Java
         uses: actions/setup-java@v5.5.0
         with:
           distribution: temurin
           java-version: 21
+
       - name: Setup Android SDK
         uses: android-actions/setup-android@v4.0.1
-      - name: Install example dependencies
+
+      - name: Install classic example dependencies
+        # example/.npmrc uses node-linker=hoisted so @react-native/gradle-plugin is at
+        # example/node_modules/@react-native/gradle-plugin (required by settings.gradle).
         run: pnpm --dir example install --no-frozen-lockfile
-      - name: Run Android native protocol tests
+
+      - name: Verify React Native gradle plugin path
+        run: test -d example/node_modules/@react-native/gradle-plugin
+
+      # Executes the package's JVM dispatcher command/result/event coverage;
+      # no emulator, adapter, peripheral, or physical-radio assertion is made.
+      - name: Execute Android Native Protocol dispatcher JVM tests (JVM; no physical BLE radio)
         run: pnpm test:native-protocol:android
-      - name: Assemble classic example
+
+      - name: Assemble classic example debug APK
         working-directory: example/android
         run: ./gradlew :app:assembleDebug --no-daemon --console=plain -PreactNativeArchitectures=arm64-v8a
 
-  expo-cng-android:
-    name: Expo CNG Android build
-    needs: changes
-    if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.android == 'true'
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    env:
-      NODE_OPTIONS: --max-old-space-size=8192
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v7.0.0
-      - name: Setup JS package
-        uses: ./.github/actions/setup-js-package
-      - name: Setup Java
-        uses: actions/setup-java@v5.5.0
-        with:
-          distribution: temurin
-          java-version: 21
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v4.0.1
-      - name: Install Expo dependencies
-        run: pnpm --dir example-expo install --no-frozen-lockfile
-      - name: Align Expo dependencies
-        working-directory: example-expo
-        run: npx expo install --fix
-      - name: Typecheck Expo example
-        run: pnpm --dir example-expo exec tsc --noEmit -p tsconfig.json
-      - name: Run Expo Doctor
-        working-directory: example-expo
-        run: NODE_ENV=development npx expo-doctor
-      - name: Prebuild Expo native projects
-        working-directory: example-expo
-        run: NODE_ENV=development npx expo prebuild --clean --no-install
-      - name: Assemble Expo Android app
-        working-directory: example-expo/android
-        run: NODE_ENV=development ./gradlew :app:assembleDebug --no-daemon --console=plain
-
+  # --- Apple compile checks (#20) ---
+  # Compile/link only. No simulator boot, no BLE runtime (see #14).
+  # Expensive: gated by main path changes, `ci:apple` label, or manual run.
+  # Implementation lives in reusable workflow apple-ci.yml + composite actions under
+  # .github/actions/ (select-xcode, setup-js-package) so we do not triple-copy jobs.
   apple:
     name: Apple compile checks
     needs: changes
-    if: github.event_name == 'workflow_dispatch' || needs.changes.outputs.apple == 'true'
+    if: |
+      always() &&
+      needs.changes.result == 'success' &&
+      (
+        github.event_name == 'workflow_dispatch' ||
+        (
+          github.event_name == 'pull_request' &&
+          contains(github.event.pull_request.labels.*.name, 'ci:apple')
+        ) ||
+        (
+          github.event_name == 'push' &&
+          github.ref == 'refs/heads/main' &&
+          needs.changes.outputs.apple == 'true'
+        )
+      )
     uses: ./.github/workflows/apple-ci.yml
