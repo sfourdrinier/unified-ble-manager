@@ -27,6 +27,34 @@ same IPC authority.
 The consuming Tauri application already owns that runtime and passes its
 official `invoke` and `Channel` exports to the transport.
 
+## Rust plugin
+
+The npm artifact includes the publishable Tauri v2 crate source. Until the crate
+is released independently on crates.io, reference that exact source from the
+application:
+
+```toml
+[dependencies]
+tauri-plugin-unified-ble-manager = { path = "../node_modules/unified-ble-manager/native/tauri" }
+```
+
+Register the plugin with the native IPC dispatcher:
+
+```rust,ignore
+tauri::Builder::default()
+    .plugin(tauri_plugin_unified_ble_manager::PluginBuilder::new(dispatcher).build())
+```
+
+Grant the generated default permission only to intended application windows:
+
+```json
+{
+  "identifier": "main",
+  "windows": ["main"],
+  "permissions": ["unified-ble-manager:default"]
+}
+```
+
 ## Security boundary
 
 - Rust/plugin code owns the adapter, connections, and GATT resources.
@@ -38,7 +66,7 @@ official `invoke` and `Channel` exports to the transport.
 - Tauri command permissions must grant the plugin only to intended windows and
   webviews.
 
-The Rust crate, generated Tauri permissions, physical platform backends, and
-full `BleManager` proxy are tracked as required 4.0 slices in
-[`#19`](https://github.com/sfourdrinier/unified-ble-manager/issues/19). This
-document does not claim physical-radio support until those native gates land.
+The physical platform dispatcher and full `BleManager` proxy remain required
+4.0 slices tracked in
+[`#19`](https://github.com/sfourdrinier/unified-ble-manager/issues/19). The
+plugin boundary alone does not claim physical-radio support.

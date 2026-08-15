@@ -1,0 +1,5 @@
+"$schema" = "schemas/schema.json"
+
+[default]
+description = "Allows the Unified BLE Manager webview transport to invoke its versioned IPC boundary."
+permissions = ["allow-invoke"]

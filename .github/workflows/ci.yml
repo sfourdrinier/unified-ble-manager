@@ -38,6 +38,27 @@ permissions:
   pull-requests: read
 
 jobs:
+  tauri-plugin:
+    name: Tauri v2 Rust plugin boundary
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.0
+
+      - name: Install stable Rust components
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt --component clippy
+          rustup default stable
+
+      - name: Check Rust formatting
+        run: cargo fmt --manifest-path native/tauri/Cargo.toml -- --check
+
+      - name: Test Tauri plugin crate
+        run: cargo test --manifest-path native/tauri/Cargo.toml
+
+      - name: Reject Rust warnings
+        run: cargo clippy --manifest-path native/tauri/Cargo.toml -- -D warnings
+
   # Always run JS/package tests — including labeled events — so required checks
   # never get replaced by a skipped success from an unrelated label.
   # Multi-OS matrix: pure TS / Jest port+host tests run on Ubuntu, Windows, macOS.
