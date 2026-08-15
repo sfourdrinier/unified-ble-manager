@@ -42,12 +42,28 @@ replace_required(
     "expect(rootPackage.version).toBe('4.0.0')",
 )
 
+# Keep the public README connected to the normative architecture authority rather
+# than making the stable landing page look like a separate source of truth.
+readme = read("README.md")
+authority_line = "**Architecture authority:** [`docs/UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md`](docs/UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md)"
+if authority_line not in readme:
+    stable_intro = "**4.0.0 is the first stable release of the Unified BLE Manager package and public API contract.** It is a new package line, not a source-compatible rename of `react-native-ble-plx` 3.x."
+    if stable_intro not in readme:
+        raise RuntimeError("README stable introduction not found")
+    readme = readme.replace(stable_intro, stable_intro + "\n\n" + authority_line, 1)
+    write("README.md", readme)
+
 # SECURITY.md now gives a safer fallback when GitHub private vulnerability reporting
 # has not yet been enabled instead of forbidding the existence of a public issue at all.
 replace_required(
     "__tests__/ReleaseArtifacts.test.js",
     "expect(security).toContain('Do not open a public issue')",
     "expect(security).toContain('Do not put vulnerability details in a public issue')",
+)
+replace_required(
+    "__tests__/ReleaseArtifacts.test.js",
+    "expect(support).toContain('Evidence-backed support labels')",
+    "expect(support).toContain('Platform/backend support labels are a separate evidence-backed dimension')",
 )
 
 # The migration guide says exactly how Base64 remains available: explicit codecs at
@@ -132,7 +148,7 @@ replace_test(
     expect(migration).toContain('`hostSessionScope` should be a stable security/ownership scope')
     expect(migration).toContain('`Uint8Array`')
     expect(migration).toContain('`AbortSignal`')
-    expect(migration).toContain('`await manager.destroy()`')
+    expect(migration).toContain('Await `manager.destroy()`')
     expect(migration).toContain('not a source-compatible rename')
     expect(migration).toContain('encode/decode explicitly through `unified-ble-manager/codecs`')
     expect(migration).toContain('`v4.0.0-alpha.40` is the repository-migration checkpoint')
