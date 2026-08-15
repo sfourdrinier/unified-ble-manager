@@ -1,0 +1,49 @@
+name: Restore proven CI semantics
+
+on:
+  push:
+    branches:
+      - agent/bootstrap-main-ci
+
+permissions:
+  contents: write
+
+jobs:
+  restore:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7.0.0
+        with:
+          ref: agent/bootstrap-main-ci
+          fetch-depth: 0
+      - name: Restore alpha.40 CI semantics and migrate branch identity only
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          git show origin/main:.github/workflows/ci.yml > .github/workflows/ci.yml
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('.github/workflows/ci.yml')
+          s = p.read_text()
+          old = """  push:\n    branches:\n      - master\n      - '4.0'\n  pull_request:\n    branches:\n      - master\n      - '4.0'\n"""
+          new = """  push:\n    branches:\n      - main\n  pull_request:\n    branches:\n      - main\n"""
+          if old not in s:
+              raise SystemExit('Expected legacy branch trigger block not found')
+          s = s.replace(old, new, 1)
+          s = s.replace('PR/master push', 'PR/main push')
+          s = s.replace('push to master', 'push to main')
+          s = s.replace('refs/heads/master', 'refs/heads/main')
+          s = s.replace('refs/heads/4.0', 'refs/heads/main')
+          s = s.replace("github.ref == 'refs/heads/main' || github.ref == 'refs/heads/main'", "github.ref == 'refs/heads/main'")
+          p.write_text(s)
+          PY
+          rm .github/workflows/main-bootstrap.yml 2>/dev/null || true
+          rm .github/workflows/restore-ci-semantics.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git diff --cached --check
+          git commit -m 'ci: preserve proven matrix on main'
+          git push origin HEAD:agent/bootstrap-main-ci
