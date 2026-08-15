@@ -1017,7 +1017,7 @@ describe('WinRT contract-v2 deterministic native-boundary vertical slice', () =>
         return boundary
       },
       now: () => 20,
-      hostKind: 'electron-main'
+      hostKind: 'desktop-native'
     })
     const manager = await createBleManagerFromProvider(
       {

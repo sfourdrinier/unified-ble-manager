@@ -169,7 +169,7 @@ describe('CoreBluetooth contract-v1 vertical slice', () => {
         return boundary
       },
       now: () => 20,
-      hostKind: 'electron-main'
+      hostKind: 'desktop-native'
     })
     const manager = await createBleManagerFromProvider(
       {
@@ -513,7 +513,7 @@ describe('CoreBluetooth contract-v1 vertical slice', () => {
         now += 1
         return now
       },
-      hostKind: 'electron-main'
+      hostKind: 'desktop-native'
     })
     const manager = await createBleManagerFromProvider(
       {

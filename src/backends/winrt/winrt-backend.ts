@@ -391,7 +391,7 @@ export class WinRtBackend implements BleCentralBackend<string, HostNeutralBacken
     readonly boundary: WinRtBoundary,
     readonly selectedAdapter: WinRtAdapterRecord,
     readonly now: () => number,
-    private readonly hostKind: 'node' | 'electron-main'
+    private readonly hostKind: 'node' | 'desktop-native'
   ) {
     this.backendInstanceId = opaqueId(`winrt-backend-${allocateBackendInstance()}`, 'backend-instance', 'winrt')
     this.adapterStateSnapshot = validateWinRtAdapterSnapshot(boundary.adapterSnapshot())

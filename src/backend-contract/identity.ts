@@ -15,7 +15,7 @@ import type {
   SerializableRecord
 } from './primitives'
 
-export type HostKind = 'browser' | 'native-mobile' | 'node' | 'electron-main' | 'electron-renderer' | 'test'
+export type HostKind = 'browser' | 'native-mobile' | 'node' | 'desktop-native' | 'desktop-webview' | 'test'
 export type AdapterAvailability = 'available' | 'unavailable' | 'unsupported' | 'unknown'
 export type AdapterAuthorization = 'granted' | 'denied' | 'restricted' | 'not-determined' | 'unavailable'
 export type AdapterPower = 'on' | 'off' | 'resetting' | 'unsupported' | 'unknown'

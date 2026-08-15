@@ -130,6 +130,15 @@ export type {
 } from './identity'
 export { attachmentRecordsEqual } from './identity'
 export type {
+  IpcArbiter,
+  IpcArbiterAuthority,
+  IpcArbiterHandlers,
+  IpcClientIdentity,
+  IpcClientLeaseIdentity,
+  TrustedIpcCaller
+} from './ipc'
+export { IPC_MAX_ACTIVE_CLIENT_LEASES_PER_IDENTITY, IpcArbiterContext } from './ipc'
+export type {
   BackendOperationDispatch,
   CancellationAcknowledgement,
   LongWriteChunkProgress,
