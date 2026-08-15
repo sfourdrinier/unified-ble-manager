@@ -18,6 +18,7 @@ on:
   pull_request:
     branches:
       - main
+      - 'agent/**'
     types: [opened, reopened, synchronize, ready_for_review, labeled]
   workflow_dispatch:
 
