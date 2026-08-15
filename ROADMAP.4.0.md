@@ -2,113 +2,107 @@
 
 # Roadmap 4.0 — `unified-ble-manager`
 
-**Status:** product scope and release goals
+**Status:** implemented 4.0 product scope; stable package/API release target
 
-**Architecture and sequencing authority:** [`docs/UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md`](docs/UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md)
+**Architecture authority:** [`docs/UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md`](docs/UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md)
 
 **Platform proof inventory:** [`docs/GAPS.4.0.md`](docs/GAPS.4.0.md)
 
 ## Product decision
 
-`unified-ble-manager@4.0.0` is a new open-source package line launched with no
-released 4.0 consumer baseline. It is a clean-baseline release, not a compatibility
-release of `react-native-ble-plx`. The controlling implementation plan is the
-only authority for 4.0 architecture, contracts, sequencing, deletion gates, and
-engineering acceptance criteria.
+`unified-ble-manager@4.0.0` is a new open-source package line with no released 4.0 consumer baseline before this work. It is a clean-baseline product, not a compatibility release of `react-native-ble-plx` 3.x.
 
-4.0 establishes one versioned backend contract, one shared policy core, bytes-only public and backend BLE contracts, `AbortSignal` cancellation, typed capabilities reported by instantiated backends, and bounded normalized events. It does not preserve a permanent 3.x API, Base64/bytes dual API, static host capability table, legacy manager/port architecture, Noble wrapper, or scoped-package shim.
+4.0 establishes one versioned backend contract, one shared policy core, bytes-only public/backend BLE contracts, `AbortSignal` cancellation, typed capabilities reported by instantiated backends, explicit manager/resource ownership, and bounded normalized events.
 
-## Scope
+It intentionally does not preserve a permanent 3.x API, Base64/bytes dual API, static host capability table, legacy manager/port architecture, Noble wrapper, or scoped-package shim.
 
-Stable 4.0 is comprehensive. It requires the plan's public API, deterministic backend, conformance kit, scenarios, backend SDK, diagnostics, CLI, documentation, evidence, packaging, governance, and live proof for every claimed support label. It includes:
+## 4.0 package scope
 
+The stable 4.0 package includes:
+
+- host-neutral public manager/core and public backend SDK;
+- deterministic backend, conformance/TCK surface, scenarios, diagnostics, testing utilities, CLI, profiles, and generated contract documentation;
 - React Native Android and Apple backends;
-- Web Bluetooth;
+- browser Web Bluetooth integration;
 - owned BlueZ, CoreBluetooth, and WinRT desktop backends;
-- Electron main/renderer IPC;
-- independent-consumer and bun-mono convergence gates;
+- Electron main/renderer ownership and IPC boundary;
+- explicit package exports and independent packed-consumer validation;
+- supply-chain artifacts, governance, security, support, release automation, and evidence infrastructure.
 
-Meta Quest, peripheral mode, Bluetooth Classic, LE Audio, L2CAP CoC, and an
-nRF52840-based controllable physical fault-injection controller are deferred to 4.1.
-Quest retains an evidence-bound `Live Preview` target but is not a 4.0 gate.
-Deterministic fault injection remains mandatory 4.0 proof, but must never be
-presented as live-radio proof.
-
-Reducing this scope requires an explicit maintainer-approved scope ADR. Schedule pressure, a simulator, compilation, or a passing mock cannot silently narrow the release.
+Meta Quest, peripheral mode, Bluetooth Classic, LE Audio, L2CAP CoC, and the controllable nRF52840 physical fault-injection controller remain deferred to 4.1. Deterministic fault injection remains part of the 4.0 engineering proof, but is never presented as physical-radio evidence.
 
 ## Product ownership
 
-The package owns portable BLE-central mechanics: adapter state, scanning, chooser behavior, connection and GATT lifecycles, cancellation, operation ordering, bounded event streams, capability composition, normalized errors, and diagnostics.
+The package owns portable BLE-central mechanics: adapter state, scanning/chooser behavior, connection and GATT lifecycles, cancellation, operation ordering, bounded streams, capability composition, normalized errors, and diagnostics.
 
-Applications and vendor libraries own device choice, vendor protocols, product reconnect policy, persistence, telemetry, UI, and product state. `bun-mono` is a proving consumer and release-blocking fixture; it is never public API authority.
+Applications and vendor libraries own device choice, vendor protocols, product reconnect policy, persistence, telemetry, UI, and product state. First-party consuming applications may be proving fixtures; they are never public API authority.
 
-## Alpha prerelease and support claims
+## Stable package and support claims
 
-`unified-ble-manager@4.0.0-alpha.40` is published under npm's `next` dist-tag
-through GitHub Actions trusted publishing, with npm SLSA provenance and a
-GitHub prerelease. Its host-neutral root and explicit public subpaths are the
-prerelease package contract; users must pin
-an exact alpha version rather than infer an API from transitional source files
-or examples. The alpha has no 3.x compatibility layer. `v4.0.0-alpha.39` is the
-previous published prerelease, not the current prerelease.
+Stable `4.0.0` defines the public 4.x package/API contract. It replaces the alpha train as the normal installation target and publishes through the canonical `sfourdrinier/unified-ble-manager` repository.
 
-The prerelease package support label is Experimental. There is no current
-evidence record linking alpha.40's published artifact to a passed physical-radio
-backend scenario, so it makes no Preview-or-higher platform claim. Hardware
-evidence is required
-only for the corresponding support label; it does not erase package or
-deterministic proof.
+`v4.0.0-alpha.40` is retained as the final alpha and repository-migration checkpoint. The earlier alpha train remains historical evidence of implementation and hardening, not the current consumer installation target.
 
-WinRT compile and ABI checks are L2/L3 evidence only; alpha.40 makes no Windows
-live-radio claim.
+Platform support labels remain evidence-based and independent from package SemVer:
 
-Support labels are evidence-based:
-
-| Label | Minimum evidence |
+| Label | Minimum evidence meaning |
 | --- | --- |
-| Experimental | Contract/TCK work may change; no stability promise |
-| Preview | Complete intended surface, package proof, deterministic TCK, explicit live limitations |
-| Live Preview | Preview requirements plus the declared essential physical-radio vertical slice |
-| Supported | Declared live-radio scenarios and packaging pass |
-| Reliability-qualified | Required background, reconnect, and soak evidence also passes |
+| Experimental | Contract/implementation exists but support qualification is incomplete or may change. |
+| Preview | Intended surface plus deterministic/package proof with explicit live limitations. |
+| Live Preview | Preview requirements plus the declared essential physical-radio vertical slice. |
+| Supported | Declared live-radio scenarios and packaging requirements pass. |
+| Reliability-qualified | Required background, reconnect, soak, and reliability evidence also passes. |
 
-No static host matrix can substitute for an instantiated backend's typed capability report and evidence manifest.
+No static platform matrix, package version, compile result, or mock can substitute for an instantiated backend's typed capability report and retained evidence.
+
+A backend may remain Experimental while the package/API is stable. That is an explicit design choice: SemVer answers “what public contract can consumers depend on?” while the evidence label answers “what has this backend been proven to do on real host/radio conditions?”
+
+## 4.0 completion boundary
+
+The stable package release requires:
+
+- final public package/API contract and exports;
+- deterministic/TCK regression proof;
+- relevant native compile/ABI gates;
+- packed-consumer and clean-install proof;
+- generated docs/artifacts in sync;
+- SBOM/license inventory and source licensing consistency;
+- trusted-publishing release path from `main`;
+- honest generated support labels.
+
+It does not require every implemented backend to reach the same support label on the same day. Higher platform labels continue to require their own retained evidence after 4.0.0 where evidence is incomplete.
 
 ## Release progression
 
-| Milestone | Required minimum |
+| Milestone | Meaning |
 | --- | --- |
-| Alpha | Phase 0 executable semantics, accepted draft ADRs, `G1`, and `G2` |
-| Beta | `G4A`, `G4B`, and `G5`; all claimed backend surfaces implemented |
-| Release candidate | `G6A`, `G6B`, `G7`, evidence, independent consumption, and clean artifacts |
-| Stable 4.0.0 | Every requirement in Section 31 of the controlling plan |
+| Alpha train | Public 4.0 contract implementation and hardening; published on npm `next`. |
+| Repository migration | `v4.0.0-alpha.40`; canonical source moves to `sfourdrinier/unified-ble-manager`. |
+| Stable 4.0.0 | Public package/API contract moves to normal SemVer and npm `latest`; support labels remain evidence-derived. |
+| 4.0.x | Backward-compatible fixes/hardening within the stable 4.0 contract. |
+| 4.1 | Deferred features/platform work and any compatible contract extensions planned for the next minor line. |
 
-The 3.9 line remains a separately documented historical/current release line. Its API, Base64 bridge, `BlePort`, `PortBleManager`, static `supports()` matrix, examples, source layout, and any scoped package are characterization inputs for migration only. They are not a 4.0 promise or a release path.
+The 3.x `react-native-ble-plx` line remains separate historical/maintenance context. Its API, Base64 bridge, `BlePort`, `PortBleManager`, static `supports()` matrix, examples, and source layout are migration/characterization inputs only and do not define 4.x behavior.
 
 ## Documentation rules
 
-- [`MIGRATION_4.0.md`](MIGRATION_4.0.md) must describe the new-package migration honestly; it must not promise zero-change 3.x compatibility.
-- [`RELEASE.md`](RELEASE.md) must not authorize publishing 4.0 outside the controlling plan's gated release workflow.
-- Getting-started and platform pages must distinguish transitional source characterization from the current alpha contract.
-- [`docs/GAPS.4.0.md`](docs/GAPS.4.0.md) records platform proof and current baseline evidence. A transitional item marked done is not a completed clean-baseline replacement.
+- [`MIGRATION_4.0.md`](MIGRATION_4.0.md) describes an explicit migration, not zero-change compatibility.
+- [`RELEASE.md`](RELEASE.md) is the canonical tag/OIDC publication procedure from `main`.
+- [`docs/PLATFORMS.md`](docs/PLATFORMS.md) distinguishes stable package SemVer from backend evidence labels.
+- [`docs/GAPS.4.0.md`](docs/GAPS.4.0.md) records remaining platform/lab proof without blocking unrelated package/API stability.
+- Generated support pages remain source-of-truth projections of evidence rather than hand-maintained marketing matrices.
 
 ## Historical baseline boundary
 
-Historical source and documentation inherited from a 3.x-style architecture
-remain audit material only. They identify prior native work, Base64 bridge
-behavior, port-host behavior, live-run history, and gaps that had to be
-re-proven through the unified core. They do not define shipping 4.0 behavior.
+Historical 3.x source/docs remain audit and migration material. Historical live runs, compilation, or examples do not automatically establish current 4.0 backend support.
 
-Before a backend can receive a public 4.0 support label, the relevant plan work
-package, ADR, TCK/scenario gate, evidence record, and artifact gate must be
-complete. Users may evaluate the published alpha using its current host factories
-and exact package version, but must not infer live-radio support from historical
-examples, compilation, or deterministic checks.
+Before a backend receives a higher public support label, its relevant contract/TCK work, live scenario, evidence record, artifact binding where required, and revalidation rules must justify that label.
 
 ## Related records
 
-- [`docs/UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md`](docs/UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md) — controlling architecture and sequence
+- [`docs/UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md`](docs/UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md) — implemented architecture and sequencing record
 - [`docs/GAPS.4.0.md`](docs/GAPS.4.0.md) — platform, CI, lab, and proof inventory
-- [`MIGRATION_4.0.md`](MIGRATION_4.0.md) — new-package migration boundary
-- [`RELEASE.md`](RELEASE.md) — release procedure and publication gate
+- [`docs/PLATFORMS.md`](docs/PLATFORMS.md) — support/evidence interpretation
+- [`MIGRATION_4.0.md`](MIGRATION_4.0.md) — migration boundary
+- [`RELEASE.md`](RELEASE.md) — release procedure
 - [`ROADMAP.md`](ROADMAP.md) — historical 3.x product record
