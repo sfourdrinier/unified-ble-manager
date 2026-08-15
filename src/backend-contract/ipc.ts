@@ -400,7 +400,7 @@ export class IpcArbiterContext<Attachment extends string> implements ElectronMai
     incomingEntryCount: number
   ): void {
     while (
-        accounting.replayLedger.size + incomingEntryCount > IpcArbiterContext.maximumTerminalReplayEntries ||
+      accounting.replayLedger.size + incomingEntryCount > IpcArbiterContext.maximumTerminalReplayEntries ||
       accounting.retainedBytes + incomingBytes > this.authority.quota.maximumRetainedBytes
     ) {
       const oldestTerminal = this.oldestTerminalReplayKey(accounting)
