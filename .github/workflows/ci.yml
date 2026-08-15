@@ -46,6 +46,20 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7.0.0
 
+      - name: Install Tauri Linux system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libxdo-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev
+
       - name: Install stable Rust components
         run: |
           rustup toolchain install stable --profile minimal --component rustfmt --component clippy
