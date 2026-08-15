@@ -2,14 +2,14 @@ name: Preserve changelog history
 
 on:
   push:
-    branches: [agent/release-4.0.0-docs]
+    branches:
+      - agent/release-4.0.0-docs
 
 permissions:
   contents: write
 
 jobs:
   repair:
-    if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7.0.0
@@ -17,43 +17,45 @@ jobs:
           ref: agent/release-4.0.0-docs
           fetch-depth: 0
       - name: Restore full changelog and insert 4.0.0
+        shell: bash
         run: |
+          set -euo pipefail
           git fetch origin main
           git show origin/main:CHANGELOG.md > /tmp/CHANGELOG.original.md
-          node <<'NODE'
-          const fs = require('fs')
-          let source = fs.readFileSync('/tmp/CHANGELOG.original.md', 'utf8')
-          const marker = '## [Unreleased]\n'
-          if (!source.includes(marker)) throw new Error('Unreleased marker missing')
-          const section = `
+          python3 - <<'PY'
+          from pathlib import Path
+          source = Path('/tmp/CHANGELOG.original.md').read_text()
+          marker = '## [Unreleased]\n'
+          if marker not in source:
+              raise SystemExit('Unreleased marker missing')
+          section = '''
 ## [4.0.0] - 2026-08-16
 
 ### Stable package and public contract
 
 - Promoted the Unified BLE Manager 4.0 package/API contract to its first stable release.
-- Established \`sfourdrinier/unified-ble-manager\` and \`main\` as the canonical repository and release branch while preserving the complete Git ancestry of the 4.0 work.
-- Kept platform support qualification independent from package SemVer: stable \`4.0.0\` does not promote a backend beyond the support label justified by retained evidence.
+- Established sfourdrinier/unified-ble-manager and main as the canonical repository and release branch while preserving the complete Git ancestry of the 4.0 work.
+- Kept platform support qualification independent from package SemVer: stable 4.0.0 does not promote a backend beyond the support label justified by retained evidence.
 
 ### Release integrity
 
-- Migrated canonical CI and release automation from the legacy \`master\`/\`4.0\` topology to \`main\`.
-- Stable publication requires the release tag to identify the exact current \`main\` commit and reruns package, native-build, ABI, artifact, packed-consumer, and supply-chain checks before npm publication.
+- Migrated canonical CI and release automation from the legacy master/4.0 topology to main.
+- Stable publication requires the release tag to identify the exact current main commit and reruns package, native-build, ABI, artifact, packed-consumer, and supply-chain checks before npm publication.
 - Canonicalized repository, issue, homepage, podspec, SBOM, release, and licensing metadata to the new repository and Apache-2.0.
 - Regenerated the SBOM and third-party license inventory from the final 4.0.0 package metadata.
 
 ### Documentation and migration
 
 - Reworked the README, migration and release guides, support/security guidance, roadmap/evidence documentation, and issue intake for the standalone multi-host project.
-- \`v4.0.0-alpha.40\` remains the historical repository-migration checkpoint and final published alpha before stable 4.0.0.
+- v4.0.0-alpha.40 remains the historical repository-migration checkpoint and final published alpha before stable 4.0.0.
 
-`
-          source = source.replace(marker, marker + section)
-          fs.writeFileSync('CHANGELOG.md', source)
-          NODE
+'''
+          Path('CHANGELOG.md').write_text(source.replace(marker, marker + section, 1))
+          PY
           rm .github/workflows/changelog-repair.yml
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add CHANGELOG.md .github/workflows/changelog-repair.yml
+          git add -A
           git diff --cached --check
           git commit -m 'docs: add 4.0.0 without dropping alpha history'
           git push origin HEAD:agent/release-4.0.0-docs
