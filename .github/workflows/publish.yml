@@ -277,27 +277,8 @@ jobs:
           fi
           echo "Publishing ${ROOT_NAME}@${ROOT_VER} from tag ${GITHUB_REF_NAME}"
 
-      # Stable releases must be cut from the exact current main commit. This
-      # replaces the old evidence-only-descendant publication topology: evidence
-      # continues to gate support labels, while package stability follows SemVer.
-      - name: Fetch main for stable tag verification
-        if: steps.release_channel.outputs.is_stable == 'true'
-        run: git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
-
-      - name: Verify stable tag points at current main
-        if: steps.release_channel.outputs.is_stable == 'true'
-        run: |
-          set -euo pipefail
-          TAG_COMMIT="$(git rev-parse "${GITHUB_REF_NAME}^{commit}")"
-          MAIN_COMMIT="$(git rev-parse refs/remotes/origin/main)"
-          if [ "${TAG_COMMIT}" != "${MAIN_COMMIT}" ]; then
-            echo "Stable tag ${GITHUB_REF_NAME} must point exactly at current main"
-            echo "tag:  ${TAG_COMMIT}"
-            echo "main: ${MAIN_COMMIT}"
-            exit 1
-          fi
-
-      # Soft check so a re-run after npm success can still create the GitHub Release.
+      # Check before enforcing current-main so an immutable npm publication can
+      # finish its GitHub Release on a rerun even if main has advanced.
       - name: Check whether versions are already on npm
         id: npm_status
         run: |
@@ -318,6 +299,26 @@ jobs:
             echo "already_published=false" >> "$GITHUB_OUTPUT"
           fi
 
+      # Stable releases must be cut from the exact current main commit before
+      # their initial npm publication. Once npm contains the immutable version,
+      # reruns reuse that registry tarball solely to finish release creation.
+      - name: Fetch main for stable tag verification
+        if: steps.release_channel.outputs.is_stable == 'true' && steps.npm_status.outputs.package_published != 'true'
+        run: git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+
+      - name: Verify stable tag points at current main
+        if: steps.release_channel.outputs.is_stable == 'true' && steps.npm_status.outputs.package_published != 'true'
+        run: |
+          set -euo pipefail
+          TAG_COMMIT="$(git rev-parse "${GITHUB_REF_NAME}^{commit}")"
+          MAIN_COMMIT="$(git rev-parse refs/remotes/origin/main)"
+          if [ "${TAG_COMMIT}" != "${MAIN_COMMIT}" ]; then
+            echo "Stable tag ${GITHUB_REF_NAME} must point exactly at current main before initial publication"
+            echo "tag:  ${TAG_COMMIT}"
+            echo "main: ${MAIN_COMMIT}"
+            exit 1
+          fi
+
       # Do NOT set NODE_AUTH_TOKEN. npm exchanges the GitHub OIDC identity for
       # this publish command; a long-lived token would defeat that boundary.
       - name: Publish unified-ble-manager (OIDC + provenance)
@@ -325,10 +326,11 @@ jobs:
         run: npm publish "${PUBLISH_TARBALL}" --provenance --access public --tag "${NPM_DIST_TAG}"
 
       - name: Bind npm tarball to the generated release artifact
+        env:
+          ALREADY_PUBLISHED: ${{ steps.npm_status.outputs.package_published }}
         run: |
           set -euo pipefail
           VER="$(node -p "require('./package.json').version")"
-          LOCAL_TARBALL_SHA256="$(node -e "const crypto = require('crypto'); const fs = require('fs'); process.stdout.write(crypto.createHash('sha256').update(fs.readFileSync(process.argv[1])).digest('hex'))" "${PUBLISH_TARBALL}")"
           REGISTRY_TARBALL=""
           for ATTEMPT in $(seq 1 12); do
             if REGISTRY_TARBALL="$(npm view "unified-ble-manager@${VER}" dist.tarball --json 2>/dev/null | node -e "let body = ''; process.stdin.setEncoding('utf8'); process.stdin.on('data', chunk => { body += chunk }); process.stdin.on('end', () => { const value = JSON.parse(body); if (typeof value !== 'string' || !value.startsWith('https://')) { throw new Error('npm dist.tarball must be an HTTPS URL'); } process.stdout.write(value) })")"; then
@@ -341,7 +343,22 @@ jobs:
             echo "npm registry metadata did not become visible within the bounded retry window"
             exit 1
           fi
-          REGISTRY_TARBALL_SHA256="$(curl --fail --location --silent --show-error --proto '=https' "${REGISTRY_TARBALL}" | node -e "const crypto = require('crypto'); const hash = crypto.createHash('sha256'); process.stdin.on('data', chunk => hash.update(chunk)); process.stdin.on('end', () => process.stdout.write(hash.digest('hex')))")"
+
+          REGISTRY_TARBALL_COPY="$(mktemp)"
+          trap 'rm -f "${REGISTRY_TARBALL_COPY}"' EXIT
+          curl --fail --location --silent --show-error --proto '=https' \
+            --output "${REGISTRY_TARBALL_COPY}" \
+            "${REGISTRY_TARBALL}"
+
+          # A post-publish rerun must attach and hash the immutable npm bytes,
+          # not a newly linked native build that may differ byte-for-byte.
+          if [ "${ALREADY_PUBLISHED}" = true ]; then
+            cp "${REGISTRY_TARBALL_COPY}" "${PUBLISH_TARBALL}"
+            echo "Restored exact published npm tarball for release recovery"
+          fi
+
+          LOCAL_TARBALL_SHA256="$(node -e "const crypto = require('crypto'); const fs = require('fs'); process.stdout.write(crypto.createHash('sha256').update(fs.readFileSync(process.argv[1])).digest('hex'))" "${PUBLISH_TARBALL}")"
+          REGISTRY_TARBALL_SHA256="$(node -e "const crypto = require('crypto'); const fs = require('fs'); process.stdout.write(crypto.createHash('sha256').update(fs.readFileSync(process.argv[1])).digest('hex'))" "${REGISTRY_TARBALL_COPY}")"
           if [ "${REGISTRY_TARBALL_SHA256}" != "${LOCAL_TARBALL_SHA256}" ]; then
             echo "Registry tarball SHA-256 does not match the exact generated publish tarball"
             exit 1
