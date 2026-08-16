@@ -47,6 +47,8 @@ struct DispatcherState {
     adapter: Option<Adapter>,
     attachment: Option<Attachment>,
     callers: HashMap<String, CallerState>,
+    scan_owner: Option<String>,
+    peer_owners: HashMap<String, String>,
 }
 
 #[derive(Clone)]
@@ -79,6 +81,7 @@ struct ScanResource {
 
 #[derive(Clone)]
 struct ConnectionResource {
+    peer_id: String,
     peripheral: Peripheral,
 }
 
@@ -166,6 +169,8 @@ impl BtleplugDispatcher {
                 adapter: None,
                 attachment: None,
                 callers: HashMap::new(),
+                scan_owner: None,
+                peer_owners: HashMap::new(),
             })),
             next_id: Arc::new(AtomicU64::new(1)),
             next_revocation: Arc::new(AtomicU64::new(1)),
@@ -282,7 +287,14 @@ impl BtleplugDispatcher {
     ) -> Result<IpcValue, DispatchError> {
         let attachment = self.ensure_adapter().await?;
         let key = caller_key(&caller);
-        self.release(&key).await;
+        let cleanup = self.release(&key).await;
+        if !is_released(&cleanup) {
+            return Err(DispatchError::new(
+                "platform.failure",
+                "cleanup",
+                "tauri.bootstrap-prior-release",
+            ));
+        }
         let lease_id = self.id("tauri-lease");
         let lease_generation = self.id("tauri-lease-generation");
         self.revoked_callers
@@ -403,20 +415,40 @@ impl BtleplugDispatcher {
                 .insert(correlation.clone(), cancellation.clone());
         }
 
-        let operation = self.execute(&caller, &command, payload, binary_payload);
-        tokio::pin!(operation);
+        let operation_dispatcher = self.clone();
+        let operation_caller = caller.clone();
+        let operation_command = command.clone();
+        let mut operation = tauri::async_runtime::spawn(async move {
+            operation_dispatcher
+                .execute(
+                    &operation_caller,
+                    &operation_command,
+                    payload,
+                    binary_payload,
+                )
+                .await
+        });
         let result = tokio::select! {
-            result = &mut operation => result,
+            result = &mut operation => result.map_err(|error| {
+                DispatchError::new("platform.failure", "ipc", format!("tauri.{command}.join"))
+                    .platform(error.to_string())
+            })?,
             () = cancellation.cancelled() => {
-                let late_result = operation.await;
-                if command == "gatt.write" || command == "gatt.descriptor.write" {
-                    late_result
-                } else {
-                if let Ok(late_payload) = &late_result {
-                    self.quarantine_cancelled_success(&caller, &command, late_payload).await;
-                }
+                let quarantine_dispatcher = self.clone();
+                let quarantine_caller = caller.clone();
+                let quarantine_command = command.clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Ok(Ok(late_payload)) = operation.await {
+                        quarantine_dispatcher
+                            .quarantine_cancelled_success(
+                                &quarantine_caller,
+                                &quarantine_command,
+                                &late_payload,
+                            )
+                            .await;
+                    }
+                });
                 Err(DispatchError::new("operation.aborted", "ipc", format!("tauri.{command}")))
-                }
             },
         };
         if let Some(caller_state) = self
@@ -569,8 +601,16 @@ impl BtleplugDispatcher {
         let manufacturer_filters = manufacturer_filters(&payload)?;
         let adapter = self.adapter().await?;
         let key = caller_key(caller);
+        let requested_services = service_uuids.clone();
         {
             let mut state = self.inner.lock().await;
+            if state.scan_owner.is_some() {
+                return Err(DispatchError::new(
+                    "scan.already-active",
+                    "scan",
+                    "tauri.scan-global-owner",
+                ));
+            }
             let caller_state = state.callers.get_mut(&key).ok_or_else(|| {
                 DispatchError::new("ownership.denied", "scan", "tauri.scan-owner")
             })?;
@@ -582,6 +622,7 @@ impl BtleplugDispatcher {
                 ));
             }
             caller_state.scan_admitting = true;
+            state.scan_owner = Some(key.clone());
         }
         if let Err(error) = adapter
             .start_scan(ScanFilter {
@@ -589,8 +630,12 @@ impl BtleplugDispatcher {
             })
             .await
         {
-            if let Some(caller_state) = self.inner.lock().await.callers.get_mut(&key) {
+            let mut state = self.inner.lock().await;
+            if let Some(caller_state) = state.callers.get_mut(&key) {
                 caller_state.scan_admitting = false;
+            }
+            if state.scan_owner.as_deref() == Some(&key) {
+                state.scan_owner = None;
             }
             return Err(
                 DispatchError::new("scan.start-failed", "scan", "tauri.scan-start")
@@ -604,17 +649,34 @@ impl BtleplugDispatcher {
         let stream_owner = key.clone();
         let task = tauri::async_runtime::spawn(async move {
             let mut interval = tokio::time::interval(SCAN_POLL_INTERVAL);
+            interval.tick().await;
             loop {
                 interval.tick().await;
                 let peripherals = match scan_adapter.peripherals().await {
                     Ok(peripherals) => peripherals,
-                    Err(_) => break,
+                    Err(_) => {
+                        dispatcher
+                            .terminal(&stream_owner, &stream_handle, "source-failed")
+                            .await
+                            .ok();
+                        dispatcher
+                            .fail_scan_stream(&stream_owner, &stream_handle)
+                            .await;
+                        return;
+                    }
                 };
                 for peripheral in peripherals {
                     let properties = match peripheral.properties().await {
                         Ok(Some(properties)) => properties,
                         _ => continue,
                     };
+                    if !requested_services.is_empty()
+                        && !requested_services
+                            .iter()
+                            .all(|uuid| properties.services.contains(uuid))
+                    {
+                        continue;
+                    }
                     if let Some(prefix) = &local_name_prefix {
                         if !properties
                             .local_name
@@ -643,6 +705,13 @@ impl BtleplugDispatcher {
                         .await
                         .is_err()
                     {
+                        dispatcher
+                            .terminal(&stream_owner, &stream_handle, "source-failed")
+                            .await
+                            .ok();
+                        dispatcher
+                            .fail_scan_stream(&stream_owner, &stream_handle)
+                            .await;
                         return;
                     }
                 }
@@ -651,6 +720,9 @@ impl BtleplugDispatcher {
         let mut state = self.inner.lock().await;
         let Some(caller_state) = state.callers.get_mut(&key) else {
             task.abort();
+            if state.scan_owner.as_deref() == Some(&key) {
+                state.scan_owner = None;
+            }
             drop(state);
             adapter.stop_scan().await.ok();
             return Err(DispatchError::new(
@@ -673,29 +745,35 @@ impl BtleplugDispatcher {
         payload: BTreeMap<String, IpcValue>,
     ) -> Result<IpcValue, DispatchError> {
         let handle = required_string(&payload, "scanHandle", "tauri.scan-stop")?;
-        let scan = {
-            let mut state = self.inner.lock().await;
-            let caller_state = state.callers.get_mut(&caller_key(caller)).ok_or_else(|| {
+        let key = caller_key(caller);
+        {
+            let state = self.inner.lock().await;
+            let caller_state = state.callers.get(&key).ok_or_else(|| {
                 DispatchError::new("ownership.denied", "scan", "tauri.scan-stop-owner")
             })?;
-            match caller_state.scan.take() {
-                Some(scan) if scan.handle == handle => scan,
-                Some(scan) => {
-                    caller_state.scan = Some(scan);
+            match caller_state.scan.as_ref() {
+                Some(scan) if scan.handle == handle => scan.task.abort(),
+                Some(_) => {
                     return Err(DispatchError::new(
                         "ownership.denied",
                         "scan",
                         "tauri.scan-stop-handle",
-                    ));
+                    ))
                 }
                 None => return Ok(released()),
             }
-        };
-        scan.task.abort();
+        }
         self.adapter().await?.stop_scan().await.map_err(|error| {
             DispatchError::new("scan.stop-failed", "scan", "tauri.scan-stop")
                 .platform(error.to_string())
         })?;
+        let mut state = self.inner.lock().await;
+        if let Some(caller_state) = state.callers.get_mut(&key) {
+            caller_state.scan.take();
+        }
+        if state.scan_owner.as_deref() == Some(&key) {
+            state.scan_owner = None;
+        }
         Ok(released())
     }
 
@@ -720,23 +798,71 @@ impl BtleplugDispatcher {
             .ok_or_else(|| {
                 DispatchError::new("connection.not-found", "connection", "tauri.connect-peer")
             })?;
-        if !peripheral.is_connected().await.map_err(|error| {
-            DispatchError::new("connection.failed", "connection", "tauri.connect-state")
-                .platform(error.to_string())
-        })? {
-            peripheral.connect().await.map_err(|error| {
+        let key = caller_key(caller);
+        {
+            let mut state = self.inner.lock().await;
+            if state.peer_owners.contains_key(&peer_id) {
+                return Err(DispatchError::new(
+                    "connection.already-owned",
+                    "connection",
+                    "tauri.connect-peer-owner",
+                ));
+            }
+            if !state.callers.contains_key(&key) {
+                return Err(DispatchError::new(
+                    "ownership.denied",
+                    "connection",
+                    "tauri.connect-owner",
+                ));
+            }
+            state.peer_owners.insert(peer_id.clone(), key.clone());
+        }
+        let already_connected = match peripheral.is_connected().await {
+            Ok(connected) => connected,
+            Err(error) => {
+                self.clear_peer_owner(&peer_id, &key).await;
+                return Err(DispatchError::new(
+                    "connection.failed",
+                    "connection",
+                    "tauri.connect-state",
+                )
+                .platform(error.to_string()));
+            }
+        };
+        if already_connected {
+            self.clear_peer_owner(&peer_id, &key).await;
+            return Err(DispatchError::new(
+                "connection.already-owned",
+                "connection",
+                "tauri.connect-existing-link",
+            ));
+        }
+        if let Err(error) = peripheral.connect().await {
+            self.clear_peer_owner(&peer_id, &key).await;
+            return Err(
                 DispatchError::new("connection.failed", "connection", "tauri.connect")
-                    .platform(error.to_string())
-            })?;
+                    .platform(error.to_string()),
+            );
         }
         let handle = self.id("connection");
         let mut state = self.inner.lock().await;
-        let caller_state = state.callers.get_mut(&caller_key(caller)).ok_or_else(|| {
-            DispatchError::new("ownership.denied", "connection", "tauri.connect-owner")
-        })?;
-        caller_state
-            .connections
-            .insert(handle.clone(), ConnectionResource { peripheral });
+        let Some(caller_state) = state.callers.get_mut(&key) else {
+            state.peer_owners.remove(&peer_id);
+            drop(state);
+            peripheral.disconnect().await.ok();
+            return Err(DispatchError::new(
+                "ownership.denied",
+                "connection",
+                "tauri.connect-owner",
+            ));
+        };
+        caller_state.connections.insert(
+            handle.clone(),
+            ConnectionResource {
+                peer_id: peer_id.clone(),
+                peripheral,
+            },
+        );
         Ok(object([
             ("handle", string(handle)),
             ("peerId", string(peer_id)),
@@ -749,12 +875,28 @@ impl BtleplugDispatcher {
         payload: BTreeMap<String, IpcValue>,
     ) -> Result<IpcValue, DispatchError> {
         let handle = required_string(&payload, "connectionHandle", "tauri.disconnect")?;
-        let (connection, subscriptions) = {
-            let mut state = self.inner.lock().await;
-            let caller_state = state.callers.get_mut(&caller_key(caller)).ok_or_else(|| {
+        let key = caller_key(caller);
+        let connection = {
+            let state = self.inner.lock().await;
+            let caller_state = state.callers.get(&key).ok_or_else(|| {
                 DispatchError::new("ownership.denied", "connection", "tauri.disconnect-owner")
             })?;
-            let connection = caller_state.connections.remove(&handle);
+            caller_state.connections.get(&handle).cloned()
+        };
+        let Some(connection) = connection else {
+            return Ok(released());
+        };
+        connection.peripheral.disconnect().await.map_err(|error| {
+            DispatchError::new("platform.failure", "connection", "tauri.disconnect")
+                .platform(error.to_string())
+        })?;
+        let subscriptions = {
+            let mut state = self.inner.lock().await;
+            let Some(caller_state) = state.callers.get_mut(&key) else {
+                state.peer_owners.remove(&connection.peer_id);
+                return Ok(released());
+            };
+            caller_state.connections.remove(&handle);
             let database_handles = caller_state
                 .databases
                 .iter()
@@ -780,21 +922,11 @@ impl BtleplugDispatcher {
             caller_state
                 .databases
                 .retain(|database_handle, _| !database_handles.contains(database_handle));
-            (connection, subscriptions)
+            state.peer_owners.remove(&connection.peer_id);
+            subscriptions
         };
         for subscription in subscriptions {
             subscription.task.abort();
-            subscription
-                .peripheral
-                .unsubscribe(&subscription.characteristic)
-                .await
-                .ok();
-        }
-        if let Some(connection) = connection {
-            connection.peripheral.disconnect().await.map_err(|error| {
-                DispatchError::new("platform.failure", "connection", "tauri.disconnect")
-                    .platform(error.to_string())
-            })?;
         }
         Ok(released())
     }
@@ -954,14 +1086,35 @@ impl BtleplugDispatcher {
                     .await
                     .is_err()
                 {
+                    dispatcher
+                        .terminal(&key, &stream_handle, "source-failed")
+                        .await
+                        .ok();
+                    dispatcher
+                        .fail_subscription_stream(&key, &stream_handle)
+                        .await;
                     return;
                 }
             }
+            dispatcher
+                .terminal(&key, &stream_handle, "source-failed")
+                .await
+                .ok();
+            dispatcher
+                .fail_subscription_stream(&key, &stream_handle)
+                .await;
         });
         let mut state = self.inner.lock().await;
-        let caller_state = state.callers.get_mut(&caller_key(caller)).ok_or_else(|| {
-            DispatchError::new("ownership.denied", "gatt", "tauri.subscribe-owner")
-        })?;
+        let Some(caller_state) = state.callers.get_mut(&caller_key(caller)) else {
+            task.abort();
+            drop(state);
+            peripheral.unsubscribe(&characteristic).await.ok();
+            return Err(DispatchError::new(
+                "ownership.denied",
+                "gatt",
+                "tauri.subscribe-owner",
+            ));
+        };
         caller_state.subscriptions.insert(
             handle.clone(),
             SubscriptionResource {
@@ -1072,6 +1225,17 @@ impl BtleplugDispatcher {
             .adapter
             .clone()
             .ok_or_else(|| DispatchError::new("adapter.unavailable", "adapter", "tauri.adapter"))
+    }
+
+    async fn clear_peer_owner(&self, peer_id: &str, owner: &str) {
+        let mut state = self.inner.lock().await;
+        if state
+            .peer_owners
+            .get(peer_id)
+            .is_some_and(|value| value == owner)
+        {
+            state.peer_owners.remove(peer_id);
+        }
     }
 
     async fn connection(
@@ -1214,11 +1378,8 @@ impl BtleplugDispatcher {
             })?;
             validate_lease(caller_state, &lease, "tauri.release-lease")?;
         }
-        self.release(&key).await;
-        Ok(object([
-            ("kind", string("release")),
-            ("cleanup", released()),
-        ]))
+        let cleanup = self.release(&key).await;
+        Ok(object([("kind", string("release")), ("cleanup", cleanup)]))
     }
 
     async fn emit(
@@ -1269,11 +1430,104 @@ impl BtleplugDispatcher {
         })
     }
 
-    async fn release(&self, key: &str) {
-        let caller = self.inner.lock().await.callers.remove(key);
-        if let Some(caller) = caller {
-            self.settle_caller(caller).await;
+    async fn terminal(
+        &self,
+        caller_key: &str,
+        stream_id: &str,
+        reason: &str,
+    ) -> Result<(), DispatchError> {
+        let (sink, lease_id, lease_generation, event_id) = {
+            let mut state = self.inner.lock().await;
+            let caller_state = state.callers.get_mut(caller_key).ok_or_else(|| {
+                DispatchError::new("ownership.denied", "stream", "tauri.terminal-owner")
+            })?;
+            let event_id = self.id("event-terminal");
+            caller_state.pending_events.insert(event_id.clone());
+            (
+                caller_state.event_sink.clone(),
+                caller_state.lease_id.clone(),
+                caller_state.lease_generation.clone(),
+                event_id,
+            )
+        };
+        sink.send(object([
+            (
+                "rendererLease",
+                object([
+                    ("leaseId", string(lease_id)),
+                    ("generation", string(lease_generation)),
+                ]),
+            ),
+            ("eventId", string(event_id)),
+            ("streamId", string(stream_id)),
+            (
+                "item",
+                object([("kind", string("terminal")), ("reason", string(reason))]),
+            ),
+        ]))
+        .map_err(|error| {
+            DispatchError::new("platform.transport", "stream", "tauri.terminal-send")
+                .platform(error.to_string())
+        })
+    }
+
+    async fn fail_scan_stream(&self, caller_key: &str, stream_id: &str) {
+        let should_stop = {
+            let mut state = self.inner.lock().await;
+            let scan = state
+                .callers
+                .get_mut(caller_key)
+                .and_then(|caller| caller.scan.take());
+            let owned = scan.as_ref().is_some_and(|scan| scan.handle == stream_id);
+            if !owned {
+                if let Some(scan) = scan {
+                    if let Some(caller) = state.callers.get_mut(caller_key) {
+                        caller.scan = Some(scan);
+                    }
+                }
+                false
+            } else {
+                if state.scan_owner.as_deref() == Some(caller_key) {
+                    state.scan_owner = None;
+                }
+                true
+            }
+        };
+        if should_stop {
+            if let Ok(adapter) = self.adapter().await {
+                adapter.stop_scan().await.ok();
+            }
         }
+    }
+
+    async fn fail_subscription_stream(&self, caller_key: &str, stream_id: &str) {
+        let subscription = self
+            .inner
+            .lock()
+            .await
+            .callers
+            .get_mut(caller_key)
+            .and_then(|caller| caller.subscriptions.remove(stream_id));
+        if let Some(subscription) = subscription {
+            subscription
+                .peripheral
+                .unsubscribe(&subscription.characteristic)
+                .await
+                .ok();
+        }
+    }
+
+    async fn release(&self, key: &str) -> IpcValue {
+        let caller = self.inner.lock().await.callers.remove(key);
+        let Some(mut caller) = caller else {
+            return released();
+        };
+        let cleanup = self.settle_caller(key, &mut caller).await;
+        if !is_released(&cleanup) {
+            let mut state = self.inner.lock().await;
+            state.callers.entry(key.to_owned()).or_insert(caller);
+        }
+        cleanup
     }
 
     fn is_revoked(&self, key: &str) -> bool {
@@ -1284,45 +1538,102 @@ impl BtleplugDispatcher {
     }
 
     async fn release_revoked(&self, key: String, revocation: u64) {
-        let caller = {
-            let mut state = self.inner.lock().await;
+        if self
+            .revoked_callers
+            .lock()
+            .expect("revocation mutex poisoned")
+            .get(&key)
+            .copied()
+            != Some(revocation)
+        {
+            return;
+        }
+        let cleanup = self.release(&key).await;
+        if is_released(&cleanup) {
             let mut revoked = self
                 .revoked_callers
                 .lock()
                 .expect("revocation mutex poisoned");
-            if revoked.get(&key).copied() != Some(revocation) {
-                return;
+            if revoked.get(&key).copied() == Some(revocation) {
+                revoked.remove(&key);
             }
-            let caller = state.callers.remove(&key);
-            revoked.remove(&key);
-            caller
-        };
-        if let Some(caller) = caller {
-            self.settle_caller(caller).await;
         }
     }
 
-    async fn settle_caller(&self, mut caller: CallerState) {
+    async fn settle_caller(&self, key: &str, caller: &mut CallerState) -> IpcValue {
+        let mut failures = Vec::new();
         for cancellation in caller.operations.values() {
             cancellation.cancel();
         }
-        if let Some(scan) = caller.scan.take() {
+        caller.operations.clear();
+        if let Some(scan) = caller.scan.as_ref() {
             scan.task.abort();
-            if let Ok(adapter) = self.adapter().await {
-                adapter.stop_scan().await.ok();
+            match self.adapter().await {
+                Ok(adapter) => match adapter.stop_scan().await {
+                    Ok(()) => {
+                        caller.scan.take();
+                        let mut state = self.inner.lock().await;
+                        if state.scan_owner.as_deref() == Some(key) {
+                            state.scan_owner = None;
+                        }
+                    }
+                    Err(error) => failures.push(cleanup_failure(
+                        "scan",
+                        "tauri.release.scan",
+                        error.to_string(),
+                    )),
+                },
+                Err(error) => failures.push(cleanup_failure(
+                    "scan",
+                    "tauri.release.scan-adapter",
+                    error
+                        .platform
+                        .unwrap_or_else(|| "adapter unavailable".to_owned()),
+                )),
             }
         }
-        for (_, subscription) in caller.subscriptions.drain() {
+        let subscription_handles = caller.subscriptions.keys().cloned().collect::<Vec<_>>();
+        for handle in subscription_handles {
+            let Some(subscription) = caller.subscriptions.get(&handle) else {
+                continue;
+            };
             subscription.task.abort();
-            subscription
+            match subscription
                 .peripheral
                 .unsubscribe(&subscription.characteristic)
                 .await
-                .ok();
+            {
+                Ok(()) => {
+                    caller.subscriptions.remove(&handle);
+                }
+                Err(error) => failures.push(cleanup_failure(
+                    "subscription",
+                    "tauri.release.subscription",
+                    error.to_string(),
+                )),
+            }
         }
-        for (_, connection) in caller.connections.drain() {
-            connection.peripheral.disconnect().await.ok();
+        let connection_handles = caller.connections.keys().cloned().collect::<Vec<_>>();
+        for handle in connection_handles {
+            let Some(connection) = caller.connections.get(&handle).cloned() else {
+                continue;
+            };
+            match connection.peripheral.disconnect().await {
+                Ok(()) => {
+                    caller.connections.remove(&handle);
+                    caller
+                        .databases
+                        .retain(|_, database| database.connection_handle != handle);
+                    self.clear_peer_owner(&connection.peer_id, key).await;
+                }
+                Err(error) => failures.push(cleanup_failure(
+                    "connection",
+                    "tauri.release.connection",
+                    error.to_string(),
+                )),
+            }
         }
+        cleanup_record(failures)
     }
 }
 
@@ -1614,6 +1925,52 @@ fn released() -> IpcValue {
         ("state", string("released")),
         ("failures", IpcValue::Array(Vec::new())),
     ])
+}
+
+fn cleanup_record(failures: Vec<IpcValue>) -> IpcValue {
+    object([
+        (
+            "state",
+            string(if failures.is_empty() {
+                "released"
+            } else {
+                "release-failed"
+            }),
+        ),
+        ("failures", IpcValue::Array(failures)),
+    ])
+}
+
+fn cleanup_failure(resource_kind: &str, operation: &str, message: String) -> IpcValue {
+    object([
+        ("resourceKind", string(resource_kind)),
+        (
+            "error",
+            object([
+                ("code", string("platform.failure")),
+                ("domain", string("cleanup")),
+                ("operation", string(operation)),
+                (
+                    "platform",
+                    object([
+                        ("domain", string("btleplug")),
+                        ("code", string("cleanup-failed")),
+                        ("safeMessage", string(message)),
+                        ("metadata", object([])),
+                    ]),
+                ),
+                ("retryability", string("caller-decides")),
+            ]),
+        ),
+    ])
+}
+
+fn is_released(value: &IpcValue) -> bool {
+    matches!(
+        value,
+        IpcValue::Object(record)
+            if matches!(record.get("state"), Some(IpcValue::String(state)) if state == "released")
+    )
 }
 
 fn object<const N: usize>(entries: [(&str, IpcValue); N]) -> IpcValue {

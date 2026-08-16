@@ -211,9 +211,31 @@ describe('Tauri v2 public manager', () => {
     const manager = await createTauriBleProvider({ invoke, Channel: FakeChannel }).createManager()
 
     await expect(manager.connect('polar-h10', { timeoutMs: 1 })).rejects.toMatchObject({
-      normalized: { code: 'operation.aborted' }
+      normalized: { code: 'operation.timed-out' }
     })
     expect(invoke.mock.calls.some(([, args]) => args.request.envelope?.command === 'operation.cancel')).toBe(true)
     await manager.destroy()
+  })
+
+  test('allows destroy to be retried after a transient transport rejection', async () => {
+    let releases = 0
+    const releaseError = new Error('transport unavailable')
+    const invoke = jest.fn(async (_command, args) => {
+      if (args.request.kind === 'bootstrap') return { kind: 'bootstrap', bootstrap: bootstrap() }
+      if (args.request.kind === 'release') {
+        releases += 1
+        if (releases === 1) throw releaseError
+        return { kind: 'release', cleanup: { state: 'released', failures: [] } }
+      }
+      if (args.request.kind === 'event.ack') return { kind: 'event.ack' }
+      return { kind: 'route', payload: { state: bootstrap().attachment.adapter.state } }
+    })
+    const { createTauriBleManager } = require('../src/tauri')
+    const manager = await createTauriBleManager({ invoke, Channel: FakeChannel })
+
+    await expect(manager.destroy()).rejects.toThrow('transport unavailable')
+    expectConsoleError('[ElectronRendererBleClient] Release failed; client remains retryable:', releaseError)
+    await expect(manager.adapterState()).resolves.toMatchObject({ power: 'on' })
+    await expect(manager.destroy()).resolves.toMatchObject({ state: 'released' })
   })
 })

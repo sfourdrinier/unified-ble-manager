@@ -1,4 +1,4 @@
-import type { CleanupRecord } from '../backend-contract/errors'
+import { BackendContractError, contractError, type CleanupRecord } from '../backend-contract/errors'
 import type { BoundedAsyncStream, StreamItem } from '../backend-contract/streams'
 import { byteLimit, capacity, ownBytes, resourceCount, type SerializableRecord } from '../backend-contract/primitives'
 import { CoreBoundedStream } from '../core/bounded-stream'
@@ -126,18 +126,25 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
     if (this.lifecycle === 'released') return Promise.resolve({ state: 'released', failures: [] })
     if (this.releaseResult !== null) return this.releaseResult
     this.lifecycle = 'releasing'
-    this.releaseResult = this.client.destroy().then(async cleanup => {
-      if (cleanup.state === 'released') {
-        this.lifecycle = 'released'
-        for (const stream of this.streams.values()) stream.source.closeWithReason('owner-released')
-        this.streams.clear()
-        await this.eventPump
-      } else {
+    this.releaseResult = this.client
+      .destroy()
+      .then(async cleanup => {
+        if (cleanup.state === 'released') {
+          this.lifecycle = 'released'
+          for (const stream of this.streams.values()) stream.source.closeWithReason('owner-released')
+          this.streams.clear()
+          await this.eventPump
+        } else {
+          this.lifecycle = 'active'
+          this.releaseResult = null
+        }
+        return cleanup
+      })
+      .catch(error => {
         this.lifecycle = 'active'
         this.releaseResult = null
-      }
-      return cleanup
-    })
+        throw error
+      })
     return this.releaseResult
   }
 
@@ -161,10 +168,22 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
     const forwardAbort = () => controller.abort()
     signal?.addEventListener('abort', forwardAbort, { once: true })
     if (signal?.aborted === true) forwardAbort()
-    const timer = globalThis.setTimeout(() => controller.abort(), Math.max(0, deadline - globalThis.performance.now()))
+    let timedOut = false
+    const timer = globalThis.setTimeout(
+      () => {
+        timedOut = true
+        controller.abort()
+      },
+      Math.max(0, deadline - globalThis.performance.now())
+    )
     try {
       const receipt = await this.client.request({ command, payload, binaryPayload, signal: controller.signal })
       return receipt.payload
+    } catch (error) {
+      if (timedOut && signal?.aborted !== true && error instanceof BackendContractError) {
+        throw contractError('operation.timed-out', 'ipc', `ipc-manager.${command}`)
+      }
+      throw error
     } finally {
       globalThis.clearTimeout(timer)
       signal?.removeEventListener('abort', forwardAbort)
