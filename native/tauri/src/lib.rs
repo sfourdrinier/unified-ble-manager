@@ -5,9 +5,8 @@ use std::{future::Future, pin::Pin, sync::Arc};
 
 use serde::{Deserialize, Serialize};
 use tauri::{
-    plugin::TauriPlugin,
-    webview::PageLoadEvent,
-    Manager, RunEvent, Runtime, WebviewWindow, WindowEvent,
+    plugin::TauriPlugin, webview::PageLoadEvent, Manager, RunEvent, Runtime, WebviewWindow,
+    WindowEvent,
 };
 
 pub use wire::{IpcEventSink, IpcValue};
