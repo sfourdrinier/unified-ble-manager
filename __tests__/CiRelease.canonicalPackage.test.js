@@ -123,6 +123,13 @@ describe('ci-release canonical package (4.0)', () => {
     expect(ci).toContain('native/electron/**')
   })
 
+  test('superseded CI cancels dependent platform builds instead of keeping the latest run queued', () => {
+    const ci = read('.github/workflows/ci.yml')
+    expect(ci).toContain('cancel-in-progress:')
+    expect(ci.match(/!cancelled\(\) &&/g)).toHaveLength(3)
+    expect(ci).not.toMatch(/always\(\) &&\s+needs\.changes\.result/)
+  })
+
   // R2-F005: L2 must load the compiled public CoreBluetooth boundary after prepack.
   test('R2-F005 ci.yml CoreBluetooth L2 requires the public compiled boundary after prepack', () => {
     const ci = read('.github/workflows/ci.yml')
