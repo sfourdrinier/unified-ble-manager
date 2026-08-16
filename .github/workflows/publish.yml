@@ -397,6 +397,23 @@ jobs:
           } > SHA256SUMS
           shasum -a 256 --check SHA256SUMS
 
+      - name: Bind npm provenance to this exact tag commit
+        run: |
+          set -euo pipefail
+          VER="$(node -p "require('./package.json').version")"
+          ATTESTATIONS_URL="$(npm view "unified-ble-manager@${VER}" dist.attestations.url --json | node -e "let body = ''; process.stdin.setEncoding('utf8'); process.stdin.on('data', chunk => { body += chunk }); process.stdin.on('end', () => { const value = JSON.parse(body); if (typeof value !== 'string' || !value.startsWith('https://registry.npmjs.org/')) throw new Error('npm attestation URL must use the npm registry HTTPS origin'); process.stdout.write(value) })")"
+          ATTESTATIONS_FILE="$(mktemp)"
+          trap 'rm -f "${ATTESTATIONS_FILE}"' EXIT
+          curl --fail --location --silent --show-error --proto '=https' \
+            --output "${ATTESTATIONS_FILE}" \
+            "${ATTESTATIONS_URL}"
+          node scripts/ci/verify-npm-provenance-source.js \
+            "${ATTESTATIONS_FILE}" \
+            "${GITHUB_SHA}" \
+            "${GITHUB_REF_NAME}" \
+            "https://github.com/sfourdrinier/unified-ble-manager"
+
+
       # Tags remain manual. After npm succeeds, create the GitHub Release from
       # CHANGELOG.md notes so the Releases page matches the published package.
       - name: Create GitHub Release
