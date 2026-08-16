@@ -77,9 +77,7 @@ impl IpcValue {
                 );
                 Value::Object(object)
             }
-            Self::Array(values) => {
-                Value::Array(values.into_iter().map(Self::into_wire).collect())
-            }
+            Self::Array(values) => Value::Array(values.into_iter().map(Self::into_wire).collect()),
             Self::Object(object) => Value::Object(
                 object
                     .into_iter()
@@ -131,8 +129,6 @@ mod tests {
     #[test]
     fn malformed_byte_tags_are_rejected() {
         assert!(IpcValue::from_wire(json!({ (BYTES_WIRE_TAG): [256] })).is_err());
-        assert!(
-            IpcValue::from_wire(json!({ (BYTES_WIRE_TAG): [1], "extra": true })).is_err()
-        );
+        assert!(IpcValue::from_wire(json!({ (BYTES_WIRE_TAG): [1], "extra": true })).is_err());
     }
 }
