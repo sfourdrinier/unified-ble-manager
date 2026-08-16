@@ -22,7 +22,7 @@ All notable changes to `unified-ble-manager` are documented here.
 ### Release integrity
 
 - Migrated canonical CI and release automation from the legacy `master`/`4.0` topology to `main`.
-- Stable publication now requires the release tag to identify the exact current `main` commit and reruns package, native-build, ABI, artifact, packed-consumer, and supply-chain checks before npm publication.
+- Initial stable publication requires the release tag to identify the exact current `main` commit and reruns package, native-build, ABI, artifact, packed-consumer, and supply-chain checks before npm publication; post-publish recovery reuses the immutable npm tarball.
 - Canonicalized package repository, issue, homepage, podspec, SBOM, and release metadata to the new repository.
 - Canonicalized project licensing to Apache-2.0 and regenerated the SBOM and third-party license inventory from the final release metadata.
 - Retained evidence-based platform labels without inventing physical-radio proof that has not been captured.
@@ -55,4 +55,4 @@ All notable changes to `unified-ble-manager` are documented here.
 
 ## Earlier history
 
-The complete detailed pre-stable changelog is preserved byte-for-byte in [`CHANGELOG_HISTORY.md`](CHANGELOG_HISTORY.md), in addition to the full Git ancestry. It contains the alpha train and inherited project release notes without forcing the new canonical changelog to carry every historical entry inline.
+The complete detailed pre-stable changelog is preserved byte-for-byte in [`CHANGELOG_HISTORY.md`](https://github.com/sfourdrinier/unified-ble-manager/blob/main/CHANGELOG_HISTORY.md), in addition to the full Git ancestry. It contains the alpha train and inherited project release notes without forcing the new canonical changelog to carry every historical entry inline.

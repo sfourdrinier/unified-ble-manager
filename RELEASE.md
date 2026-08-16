@@ -76,7 +76,7 @@ CI additionally owns the platform-specific native compilation and ABI lanes.
 
 ## Releasing 4.0.0
 
-The source version is prepared on `main` before the tag. The release workflow verifies that a stable tag points at the exact current `main` commit; do not create a stable tag from a side branch or an older commit.
+The source version is prepared on `main` before the tag. The release workflow verifies that a stable tag points at the exact current `main` commit before initial publication; do not create a stable tag from a side branch or an older commit.
 
 On release day:
 
@@ -105,14 +105,15 @@ For a valid version tag, `.github/workflows/publish.yml`:
 3. assembles and hashes the complete prebuild matrix into `native/PREBUILDS.json`;
 4. verifies tag name and `package.json` version agree;
 5. classifies stable versus prerelease channel;
-6. for stable releases, verifies the tag commit equals the current `main` commit;
+6. before an initial stable publication, verifies the tag commit equals the current `main` commit;
 7. validates evidence-record syntax/integrity without manufacturing support claims;
 8. runs package, plugin, lint/typecheck, generated-artifact, packed-consumer, and deterministic Electron checks;
 9. runs the required Android/Expo/native-host gates;
 10. verifies package contents and generated dependency artifacts;
 11. publishes the exact prebuild-bearing tarball through npm trusted publishing with provenance;
 12. waits for the registry artifact and verifies the published tarball/digest path;
-13. creates the GitHub Release only after npm publication succeeds.
+13. on a post-publish recovery rerun, replaces any newly built local tarball with the immutable npm registry tarball;
+14. creates the GitHub Release only after npm publication and provenance verification succeed.
 
 Stable versions publish to `latest`. Hyphenated SemVer prereleases publish to `next` and create GitHub prereleases.
 
@@ -140,7 +141,7 @@ Then verify:
 Never move or recreate a published version tag to hide a failed release.
 
 - If the workflow fails **before npm publication**, fix the source on `main`, increment/version as appropriate, and create the correct new tag.
-- If npm publication succeeds but a later GitHub-release step fails, preserve the immutable npm version and repair/re-run only the idempotent post-publish path supported by the workflow.
+- If npm publication succeeds but a later GitHub-release step fails, preserve the immutable npm version and rerun the workflow. The recovery path skips the current-`main` admission check and attaches the exact npm registry tarball rather than newly linked native binaries.
 - If a defect is discovered after `4.0.0` is published, fix it and release `4.0.1`; do not replace `4.0.0`.
 
 ## Prereleases after 4.0.0
