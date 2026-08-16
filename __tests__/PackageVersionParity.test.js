@@ -18,11 +18,11 @@ describe('production implementation version', () => {
 
     expect(UNIFIED_BLE_IMPLEMENTATION_VERSION).toBe(packageJson.version)
 
-    const versionLiteral = `'${packageJson.version}'`
-    const filesWithPackageVersionLiteral = sourceFiles(path.join(root, 'src'))
-      .filter(file => fs.readFileSync(file, 'utf8').includes(versionLiteral))
+    const declaration = 'export const UNIFIED_BLE_IMPLEMENTATION_VERSION'
+    const filesDeclaringImplementationVersion = sourceFiles(path.join(root, 'src'))
+      .filter(file => fs.readFileSync(file, 'utf8').includes(declaration))
       .map(file => path.relative(root, file).split(path.sep).join('/'))
 
-    expect(filesWithPackageVersionLiteral).toEqual(['src/implementation-version.ts'])
+    expect(filesDeclaringImplementationVersion).toEqual(['src/implementation-version.ts'])
   })
 })

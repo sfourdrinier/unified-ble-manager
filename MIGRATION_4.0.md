@@ -1,68 +1,48 @@
 <!-- MIGRATION_4.0.md -->
 
-# Migration to `unified-ble-manager` 4.0
+# Migrating to Unified BLE Manager 4.0
 
-**Status:** current published 4.0 prerelease
+Unified BLE Manager 4.0 is a new package and public contract. It is not a source-compatible rename of `react-native-ble-plx` 3.x, and it intentionally does not ship a compatibility facade that hides the new ownership, byte, cancellation, or host-selection rules.
 
-**Architecture and sequencing authority:** [`docs/UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md`](docs/UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md)
+This guide covers migration to stable `unified-ble-manager@4.0.0`.
 
-`unified-ble-manager@4.0.0-alpha.40` is the current published 4.0 prerelease. 4.0
-started as a new package with no released 4.0 consumer baseline. This is an
-adoption guide for a project that chooses to move from another BLE integration,
-not a supported in-place upgrade from `@sfourdrinier/react-native-ble-plx`.
-There is no legacy scoped-name shim, Base64 compatibility surface, public
-transaction-ID API, Noble wrapper, singleton manager fallback, or
-source-compatible rename. It is not a source-compatible rename.
-`v4.0.0-alpha.39` is the previous published prerelease, not the
-current prerelease.
-
-Install the exact prerelease package line with your application's
-package manager:
+## Install the new package
 
 ```sh
-pnpm add unified-ble-manager@4.0.0-alpha.40
+pnpm remove react-native-ble-plx
+pnpm add unified-ble-manager@4.0.0
 ```
 
-`next` is the mutable prerelease dist-tag. Pin the exact version you evaluate, and do not use
-a bare install or `@latest`
-to select the 4.0 alpha train. The prerelease package is Experimental: no
-current evidence record links alpha.40's published artifact to a hardware-backed
-backend support claim. See [`docs/PLATFORMS.md`](docs/PLATFORMS.md).
+For Linux/BlueZ consumers, add the optional host dependency explicitly:
 
-WinRT compile and ABI checks are L2/L3 evidence only; alpha.40 makes no Windows
-live-radio claim.
-
-Use only documented package subpaths. The root export is host-neutral; import
-the host factory from `unified-ble-manager/react-native`,
-`unified-ble-manager/web`, `unified-ble-manager/electron/main`,
-`unified-ble-manager/electron/renderer`, `unified-ble-manager/node/corebluetooth`,
-or `unified-ble-manager/node/winrt` as appropriate.
-
-## Construction and lifecycle
-
-Create one owning manager for an application's selected physical backend. Keep
-the manager in application-owned lifecycle state, not in a module-level
-singleton, and destroy it before replacing the host session or shutting down:
-
-```ts
-const manager = await createReactNativeBleManager(options)
-
-try {
-  // Create scans, connections, databases, and subscriptions from this manager.
-} finally {
-  await manager.destroy()
-}
+```sh
+pnpm add dbus-next@^0.10.2
 ```
 
-`destroy()` is asynchronous and returns a cleanup record. Call
-`await manager.destroy()`; do not discard it or substitute a best-effort native cleanup call. Release a scan,
-connection, or subscription when its narrower UI operation ends, then destroy
-the manager only when its owning host lifetime ends.
+Do not keep both packages merely to preserve a legacy manager API. Migrate one owning BLE integration at a time and remove the old package once no code path constructs or imports it.
 
-### React Native
+## Choose an explicit host entrypoint
 
-React Native applications construct the manager through the generated protocol
-control and select `apple` or `android` explicitly:
+The root package is host-neutral and selects no radio.
+
+| Host | Import |
+| --- | --- |
+| React Native Android / Apple | `unified-ble-manager/react-native` |
+| Browser Web Bluetooth | `unified-ble-manager/web` |
+| Electron main process | `unified-ble-manager/electron/main` |
+| Electron renderer | `unified-ble-manager/electron/renderer` |
+| macOS Node/CoreBluetooth | `unified-ble-manager/node/corebluetooth` |
+| Windows Node/WinRT | `unified-ble-manager/node/winrt` |
+| Linux Node/BlueZ | `unified-ble-manager/node/bluez` |
+| Custom backend authors | `unified-ble-manager/backend-sdk` |
+
+The explicit host boundary is intentional. A failed native backend does not silently turn into Web Bluetooth, Noble, or a simulated radio.
+
+## Replace the legacy manager construction
+
+There is no drop-in `new BleManager()` compatibility constructor in 4.0. Create the manager/provider for the host that actually owns the radio.
+
+React Native example:
 
 ```ts
 import { Platform } from 'react-native'
@@ -81,152 +61,123 @@ const manager = await createReactNativeBleManager({
 })
 ```
 
-`hostSessionScope` is a stable host-owned security scope, not a generated value,
-render counter, or per-operation identifier. Keep it stable for the lifetime
-and restoration identity of the app host. It binds the authenticated native
-restoration adopter to the manager's client identity. The native protocol
-rejects an empty scope.
+Keep one clearly owned manager per host session. Await `manager.destroy()` before replacing that session or shutting it down.
 
-The Expo plugin's `iosNativeProtocolRestoration` option accepts one complete
-native identity: identifier, namespace, epoch, client ID, and host-session
-scope. It rejects partial objects and writes all five Info.plist values together;
-it does not create a second central, restore a connection, or define product
-reconnection policy. See [`docs/EXPO_PLUGIN.md`](docs/EXPO_PLUGIN.md) for the
-current supported option names. An application that calls
-`manager.adoptRestoration(...)` must supply its own validated, host-owned
-adoption request and handle every explicit outcome. Do not infer restoration
-support merely from configuring that identity.
+## Base64 values become bytes
 
-### Web
+The normal 4.0 public BLE contract uses `Uint8Array` / `Readonly<Uint8Array>`.
 
-Browser integrations create one matched manager/chooser session from
-`unified-ble-manager/web` with `createNavigatorWebBleManager(options)`. Call
-the returned chooser only from a transient user activation, use its selected
-peer with that session's manager, and destroy `session.manager` when replacing
-the session. Web Bluetooth does not provide continuous scanning, background
-execution, or process-level restoration; those limits are reported as explicit
-capabilities rather than emulated by a fallback.
-
-### Electron and Node
-
-Electron creates its selected radio in the main process through
-`unified-ble-manager/electron/main`; the preload/renderer uses only
-`unified-ble-manager/electron/renderer` and the narrow versioned IPC transport.
-Use `createElectronMainCoreBluetoothBackendProvider` on macOS or
-`createElectronMainWinRtBackendProvider` on Windows. Native addons are direct,
-package-controlled Node-API artifacts that must match the host Electron ABI;
-an unavailable or incompatible artifact fails closed and must not fall back to
-Web Bluetooth, Noble, or a simulated radio. See [`docs/ELECTRON.md`](docs/ELECTRON.md).
-
-Node hosts use the matching explicit `node/corebluetooth` or `node/winrt`
-provider. BlueZ is a separate optional Node host dependency through
-`node/bluez`; it is not loaded by the neutral root import.
-
-## Bytes and cancellation
-
-All public BLE payloads are `Uint8Array`. Read results and notification values
-are bytes; writes accept `Readonly<Uint8Array>`. Base64 only as an explicit codec helper is available from `unified-ble-manager/codecs` when an external protocol requires textual encoding. Do not preserve `*AsBytes`/`*FromBytes` parallel methods or pass Base64 strings through manager APIs.
-
-Every cancellable public operation takes an `AbortSignal` through its operation
-options. Use an `AbortController` owned by the UI or host operation; do not
-invent public transaction IDs:
+Before:
 
 ```ts
-const abortController = new AbortController()
+const base64 = await characteristic.read()
+```
 
-await database.write(characteristicPath, new Uint8Array([0x01]), {
-  mode: 'with-response',
-  signal: abortController.signal,
+4.0 code should operate on bytes at the BLE boundary. If an external protocol truly requires Base64, encode/decode explicitly through `unified-ble-manager/codecs` rather than treating text as the native BLE value type.
+
+This makes byte ownership, validation, copying, and cross-host behavior explicit.
+
+## Public transaction IDs become AbortSignal
+
+Applications no longer invent transaction IDs for cancellation.
+
+Use an `AbortController` and pass its signal to cancellable operations:
+
+```ts
+const controller = new AbortController()
+
+const result = database.read(characteristicPath, {
+  signal: controller.signal,
   deadline: null
 })
 
-// Cancel only when the owning interaction is no longer valid.
-abortController.abort()
+controller.abort()
+await result
 ```
 
-Pass `signal: null` when an operation is intentionally not cancellable. The
-manager normalizes abort, deadline, and backend failures; callers must handle
-the resulting error and still perform their lifecycle cleanup.
+The library owns opaque backend correlation and quarantines late completions according to the backend contract.
 
-## Connection lifecycle migration
+## Device objects become explicit connection/database ownership
 
-Do not infer connection loss from a failed GATT operation, a notification
-stream ending, or adapter state. Every `Connection` owns a bounded,
-generation-bound `connection.events` stream. Start consuming it as soon as
-`connect()` returns:
+Do not treat an arbitrary device object as an immortal handle to mutable GATT state.
 
-```ts
-async function observeConnection(connection: Connection<string, HostNeutralBackendIdentity<string>>) {
-  for await (const item of connection.events) {
-    if (item.kind === 'overflow') {
-      // The stream is lossy by contract. Reconcile application state from the
-      // newest retained event and the terminal notice; do not invent history.
-      continue
-    }
-    if (item.kind === 'terminal') {
-      return
-    }
+The 4.0 lifecycle is explicit:
 
-    const event = item.value
-    if (event.cause === 'peer-link-loss') {
-      // Stop product-level work for this exact connectionGeneration.
-    } else if (event.cause === 'requested-disconnect') {
-      // The application requested the disconnect.
-    }
-  }
-}
-```
+1. scan or choose a peer;
+2. establish an owned connection;
+3. discover an owned GATT database/revision;
+4. read/write/subscribe through that database and its paths;
+5. release subscriptions and connections;
+6. await manager destruction at the owning host boundary.
 
-The stream distinguishes `requested-disconnect`, `peer-link-loss`,
-`adapter-loss`, `backend-restart`, `released`, `manager-destroyed`, and
-`backend-failure`. Each event carries the exact attachment, peer, connection
-ID, connection generation, and owner lease. Reject or ignore cached
-application work whose generation does not equal the event's
-`connectionGeneration`; a late event from an older connection cannot describe
-the replacement connection.
+A disconnect, Services Changed event, backend generation change, or manager teardown can invalidate previously discovered state. Handle the typed terminal/error instead of reusing a stale object graph.
 
-A terminal lifecycle event is delivered before the stream's terminal notice.
-`peer-link-loss`, `adapter-loss`, `backend-restart`, and `backend-failure` end
-the stream with `connection-lost`; requested disconnect, explicit release, and
-manager destruction end it with `owner-released`. Active notification streams
-are also terminated and their physical subscription ownership is released.
-Call `await connection.events.close()` only to cancel lifecycle observation; it
-does not disconnect or release the connection. Continue to await
-`connection.disconnect()`, `connection.release()`, or `manager.destroy()` for
-resource ownership cleanup.
+## Capability checks are runtime/backend-owned
 
-## Adoption checklist
+Do not infer support from a platform name or old static compatibility matrix. Instantiate the selected backend and inspect the capabilities it actually reports.
 
-1. Replace any older BLE integration imports and constructors with the explicit
-   v4 host construction entrypoint; this is a deliberate rewrite, not a shimmed
-   compatibility migration.
-2. Select and own exactly one backend/radio at the trusted host boundary.
-3. Replace Base64 API calls with `Uint8Array` reads, writes, and notifications.
-4. Replace public transaction IDs with `AbortSignal` and deadline options.
-5. Preserve one stable `hostSessionScope` for each React Native host identity.
-   If the application configures `iosNativeProtocolRestoration`, provide all
-   five validated values and ensure the configured client ID and host-session
-   scope match the manager-owned adoption request. Do not configure or claim
-   restoration behavior the application has not validated.
-6. Await scan, connection, subscription, renderer, binding, and manager cleanup
-   before the relevant owner is replaced or destroyed.
-7. Consume each connection's bounded lifecycle stream and branch on its typed
-   cause and exact `connectionGeneration`; do not infer peer loss from
-   notification completion or a failed GATT call.
-8. Validate the packed package artifact and the selected host's native/runtime
-   integration before shipping. Hardware-backed claims additionally need the
-   host's current physical evidence; a successful build or deterministic test
-   is not live-radio proof.
+Package stability is also not the same thing as a support label. `4.0.0` is stable SemVer for the public package/API contract; Preview/Supported/Reliability labels remain bound to retained platform evidence.
 
-Meta Quest and an nRF52840-based controllable fault-injection controller are
-deferred to 4.1 and have no 4.0 adoption path or support claim. No compatibility
-path may be introduced without explicit maintainer approval, an owner, a
-deletion condition, and tests.
+See [`docs/PLATFORMS.md`](docs/PLATFORMS.md).
 
-## Related records
+## React Native and Expo
 
-- [`ROADMAP.4.0.md`](ROADMAP.4.0.md) — product scope
-- [`docs/UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md`](docs/UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md) — controlling architecture and sequence
-- [`docs/GAPS.4.0.md`](docs/GAPS.4.0.md) — proof inventory
-- [`docs/EXPO_PLUGIN.md`](docs/EXPO_PLUGIN.md) — current Expo option reference
-- [`RELEASE.md`](RELEASE.md) — publication gate
+React Native 4.0 uses the versioned `UnifiedBleProtocolControl` native boundary and the owned Android/CoreBluetooth implementations.
+
+Current floors:
+
+- React Native 0.86+
+- Expo SDK 57+ when using Expo
+- Android min SDK 24
+- iOS deployment target 16.4
+
+For Expo, configure the `unified-ble-manager` plugin and regenerate the native projects. The package cannot run in Expo Go.
+
+See [`docs/EXPO_PLUGIN.md`](docs/EXPO_PLUGIN.md).
+
+## Restoration and host identity
+
+Restoration identity is explicit and host-owned. `clientId`, `managerId`, and `hostSessionScope` are not disposable operation identifiers.
+
+In particular, `hostSessionScope` should be a stable security/ownership scope for the host session. Do not derive it from a React render, request counter, scan, or connection attempt.
+
+Restoration adoption remains manager-owned; configuring a restoration identifier does not create a second central manager or silently reconnect arbitrary peripherals.
+
+## Electron
+
+Only the trusted Electron main process owns or selects the radio. Renderers use the versioned renderer client and authenticated IPC lease; they do not load a native addon.
+
+A renderer reload/replacement is an ownership boundary. Do not cache native/backend handles across the renderer lifecycle.
+
+See [`docs/ELECTRON.md`](docs/ELECTRON.md).
+
+## Node desktop hosts
+
+The CoreBluetooth and WinRT integrations ship Node-API source, not a universal native binary. Build against the exact Node or Electron ABI and architecture that will load the addon.
+
+BlueZ is isolated behind the `/node/bluez` entrypoint and optional `dbus-next` dependency.
+
+## Error handling
+
+Prefer typed errors and terminal events over string matching. In particular, treat unsupported, unavailable, permission, cancellation, deadline, adapter-loss, and stale-generation conditions as distinct control-flow outcomes where the API exposes them.
+
+Do not add a fallback backend merely to make an error disappear; doing so changes the radio/security boundary.
+
+## Suggested migration order
+
+1. Install `unified-ble-manager` without changing production behavior yet.
+2. Pick the correct explicit host entrypoint.
+3. Replace legacy manager construction with explicit host ownership.
+4. Convert Base64 BLE values to bytes.
+5. Replace public transaction-ID cancellation with `AbortSignal`.
+6. Move connection/GATT state to explicit connection/database lifetimes.
+7. Update capability and error handling.
+8. Update Expo/native host configuration where applicable.
+9. Run package tests plus real-device validation for the host you ship.
+10. Remove `react-native-ble-plx` and any local compatibility wrapper.
+
+## Project lineage
+
+The 4.0 work began in the `sfourdrinier/react-native-ble-plx` lineage and became the standalone `unified-ble-manager` package. The complete Git ancestry is preserved in the new canonical repository. `v4.0.0-alpha.40` is the repository-migration checkpoint; stable 4.0.0 and later 4.x work live in `sfourdrinier/unified-ble-manager`.
+
+For the public architecture and current host documentation, start with [`README.md`](README.md), [`docs/PLATFORMS.md`](docs/PLATFORMS.md), and [`docs/UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md`](docs/UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md).

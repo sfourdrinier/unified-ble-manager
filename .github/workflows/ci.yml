@@ -3,10 +3,10 @@
 name: CI
 
 # Cost policy (#20):
-# - package: every PR/master push (cheap Ubuntu)
+# - package: every PR/main push (cheap Ubuntu)
 # - expo-cng-android: only when Android/native-related paths change (or manual)
 # - Apple (macOS): NOT on every PR commit. Runs on:
-#     • push to master when Apple-related paths change
+#     • push to main when Apple-related paths change
 #     • pull_request with label `ci:apple` (opt-in before merge)
 #     • workflow_dispatch (manual)
 # Superseded runs for the same PR/branch are cancelled.
@@ -14,12 +14,11 @@ name: CI
 on:
   push:
     branches:
-      - master
-      - '4.0'
+      - main
   pull_request:
     branches:
-      - master
-      - '4.0'
+      - main
+      - 'agent/**'
     types: [opened, reopened, synchronize, ready_for_review, labeled]
   workflow_dispatch:
 
@@ -40,6 +39,41 @@ permissions:
   pull-requests: read
 
 jobs:
+  tauri-plugin:
+    name: Tauri v2 Rust plugin boundary
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.0
+
+      - name: Install Tauri Linux system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libxdo-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev
+
+      - name: Install stable Rust components
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt --component clippy
+          rustup default stable
+
+      - name: Check Rust formatting
+        run: cargo fmt --manifest-path native/tauri/Cargo.toml -- --check
+
+      - name: Test Tauri plugin crate
+        run: cargo test --manifest-path native/tauri/Cargo.toml
+
+      - name: Reject Rust warnings
+        run: cargo clippy --manifest-path native/tauri/Cargo.toml -- -D warnings
+
   # Always run JS/package tests — including labeled events — so required checks
   # never get replaced by a skipped success from an unrelated label.
   # Multi-OS matrix: pure TS / Jest port+host tests run on Ubuntu, Windows, macOS.
@@ -341,7 +375,7 @@ jobs:
     name: Expo CNG Android build
     needs: changes
     if: |
-      always() &&
+      !cancelled() &&
       needs.changes.result == 'success' &&
       (
         github.event_name == 'workflow_dispatch' ||
@@ -395,7 +429,7 @@ jobs:
     name: Classic RN Android assemble
     needs: changes
     if: |
-      always() &&
+      !cancelled() &&
       needs.changes.result == 'success' &&
       (
         github.event_name == 'workflow_dispatch' ||
@@ -441,15 +475,14 @@ jobs:
 
   # --- Apple compile checks (#20) ---
   # Compile/link only. No simulator boot, no BLE runtime (see #14).
-  # Expensive: gated by master/4.0 path changes, `ci:apple` label, or manual run.
-  # 4.0 is included so owned CoreBluetooth + podspec changes are compile-checked before GA.
+  # Expensive: gated by main path changes, `ci:apple` label, or manual run.
   # Implementation lives in reusable workflow apple-ci.yml + composite actions under
   # .github/actions/ (select-xcode, setup-js-package) so we do not triple-copy jobs.
   apple:
     name: Apple compile checks
     needs: changes
     if: |
-      always() &&
+      !cancelled() &&
       needs.changes.result == 'success' &&
       (
         github.event_name == 'workflow_dispatch' ||
@@ -459,7 +492,7 @@ jobs:
         ) ||
         (
           github.event_name == 'push' &&
-          (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/4.0') &&
+          github.ref == 'refs/heads/main' &&
           needs.changes.outputs.apple == 'true'
         )
       )

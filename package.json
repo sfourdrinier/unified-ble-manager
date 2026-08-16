@@ -1,7 +1,7 @@
 {
   "name": "unified-ble-manager",
-  "version": "4.0.0-alpha.40",
-  "description": "Unified Bluetooth Low Energy manager for React Native, Electron, Web, and desktop (4.0 train)",
+  "version": "4.0.0",
+  "description": "Unified Bluetooth Low Energy manager for React Native, Electron, Web, and desktop",
   "packageManager": "pnpm@10.14.0",
   "main": "lib/commonjs/index.js",
   "module": "lib/module/index.js",
@@ -45,7 +45,6 @@
     "!android/gradlew.bat",
     "!android/local.properties",
     "!native/**/build",
-    "!native/**/*.node",
     "!native/**/obj.target",
     "!native/protocol/tests/**",
     "!**/__tests__",
@@ -97,6 +96,8 @@
     "test:plugin": "jest --config plugin/jest.config.js",
     "build:electron:macos": "cd native/electron/corebluetooth && node-gyp rebuild --release",
     "build:electron:winrt": "cd native/electron/winrt && node-gyp rebuild --release",
+    "native-prebuild:build": "node scripts/native-prebuilds/build.js",
+    "native-prebuild:verify": "node scripts/native-prebuilds/verify.js",
     "example:electron": "pnpm prepack && node example-electron/smoke.js",
     "build:example:web": "node scripts/examples/build-web-example.js",
     "example:web": "pnpm prepack && pnpm build:example:web && node scripts/examples/serve-web-example.js",
@@ -119,14 +120,14 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/sfourdrinier/react-native-ble-plx.git"
+    "url": "git+https://github.com/sfourdrinier/unified-ble-manager.git"
   },
   "author": "sfourdrinier",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "bugs": {
-    "url": "https://github.com/sfourdrinier/react-native-ble-plx/issues"
+    "url": "https://github.com/sfourdrinier/unified-ble-manager/issues"
   },
-  "homepage": "https://github.com/sfourdrinier/react-native-ble-plx#readme",
+  "homepage": "https://github.com/sfourdrinier/unified-ble-manager#readme",
   "publishConfig": {
     "registry": "https://registry.npmjs.org/",
     "access": "public",
@@ -505,6 +506,17 @@
         "default": "./lib/commonjs/electron-renderer.js"
       },
       "default": "./lib/commonjs/electron-renderer.js"
+    },
+    "./tauri": {
+      "import": {
+        "types": "./lib/typescript/module/src/tauri.d.ts",
+        "default": "./lib/module/tauri.js"
+      },
+      "require": {
+        "types": "./lib/typescript/commonjs/src/tauri.d.ts",
+        "default": "./lib/commonjs/tauri.js"
+      },
+      "default": "./lib/commonjs/tauri.js"
     }
   },
   "optionalDependencies": {

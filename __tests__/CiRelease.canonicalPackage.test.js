@@ -34,6 +34,7 @@ describe('ci-release canonical package (4.0)', () => {
       './profiles/ieee-11073',
       './profiles/standard-commands',
       './react-native',
+      './tauri',
       './testing',
       './web'
     ])
@@ -41,6 +42,7 @@ describe('ci-release canonical package (4.0)', () => {
     expect(rootPkg.exports['./node/bluez']).toBeDefined()
     expect(rootPkg.exports['./node/winrt']).toBeDefined()
     expect(rootPkg.exports['./electron/renderer']).toBeDefined()
+    expect(rootPkg.exports['./tauri']).toBeDefined()
     expect(rootPkg.exports['./electron']).toBeUndefined()
     expect(rootPkg.exports['./node']).toBeUndefined()
     expect(rootPkg.files).toContain('native')
@@ -79,14 +81,14 @@ describe('ci-release canonical package (4.0)', () => {
     expect(w).not.toMatch(/vite build|example-web\/vite\.config\.js/)
   })
 
-  test('RELEASE.md makes the clean-baseline plan the 4.0 publication authority', () => {
+  test('RELEASE.md defines canonical stable 4.0 publication from main', () => {
     const doc = read('RELEASE.md')
-    expect(doc).toContain('unified-ble-manager')
-    expect(doc).toContain('@sfourdrinier/react-native-ble-plx')
+    expect(doc).toContain('sfourdrinier/unified-ble-manager')
+    expect(doc).toContain('Release branch: `main`')
+    expect(doc).toContain('Stable SemVer and platform support qualification are independent')
+    expect(doc).toContain('git tag -a v4.0.0')
+    expect(doc).toContain('npm trusted publisher')
     expect(doc).toContain('UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md')
-    expect(doc).toContain('does not authorize publishing 4.0')
-    expect(doc).toContain('no permanent scoped shim')
-    expect(doc).toContain('packed artifact')
     expect(doc).not.toMatch(/publishes the \*\*4\.0 dual identity\*\*/i)
   })
 
@@ -119,6 +121,13 @@ describe('ci-release canonical package (4.0)', () => {
     expect(ci).toContain('unified-ble-manager.podspec')
     expect(ci).not.toContain('react-native-ble-plx.podspec')
     expect(ci).toContain('native/electron/**')
+  })
+
+  test('superseded CI cancels dependent platform builds instead of keeping the latest run queued', () => {
+    const ci = read('.github/workflows/ci.yml')
+    expect(ci).toContain('cancel-in-progress:')
+    expect(ci.match(/!cancelled\(\) &&/g)).toHaveLength(3)
+    expect(ci).not.toMatch(/always\(\) &&\s+needs\.changes\.result/)
   })
 
   // R2-F005: L2 must load the compiled public CoreBluetooth boundary after prepack.
@@ -216,12 +225,12 @@ describe('ci-release canonical package (4.0)', () => {
     expect(smoke).toMatch(/published 4\.0 entrypoints/)
   })
 
-  test('verify-release omits the retired web example while RELEASE stays plan-gated', () => {
+  test('verify-release omits the retired web example while RELEASE stays artifact-gated', () => {
     const sh = read('scripts/verify-release.sh')
     const release = read('RELEASE.md')
     expect(sh).not.toMatch(/vite build|example-web\/vite\.config\.js/)
-    expect(release).toContain('controlling plan')
-    expect(release).toContain('packed artifact')
+    expect(release).toContain('SBOM.cdx.json')
+    expect(release).toContain('canonical CI is green')
   })
 
   // R2-F038: Linux BlueZ soft-probe (explicit skip, never silent success)
@@ -262,12 +271,15 @@ describe('ci-release canonical package (4.0)', () => {
   })
 
   // R2-F059: never ship host-local native build products in the npm tarball
-  test('R2-F059 package.json files excludes native build artifacts and .node binaries', () => {
+  test('R2-F059 package.json excludes local native builds while allowing verified release prebuilds', () => {
     const pkg = JSON.parse(read('package.json'))
+    const tarballVerifier = read('scripts/ci/verify-package-tarballs.js')
     expect(pkg.files).toContain('native')
     expect(pkg.files).toContain('!native/**/build')
-    expect(pkg.files).toContain('!native/**/*.node')
+    expect(pkg.files).not.toContain('!native/**/*.node')
     expect(pkg.files).toContain('!native/**/obj.target')
+    expect(tarballVerifier).toContain('assertNativePrebuildSet')
+    expect(tarballVerifier).toContain('Packed native prebuild set must be complete and exact')
   })
 
   // R2-F096: job name must not overstate lint/prepack/multi-host as running on every OS

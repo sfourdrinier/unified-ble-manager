@@ -310,7 +310,7 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
   constructor(
     readonly boundary: CoreBluetoothBoundary,
     private readonly now: () => number,
-    private readonly hostKind: 'node' | 'electron-main' | 'native-mobile',
+    private readonly hostKind: 'node' | 'desktop-native' | 'native-mobile',
     private readonly identityOptions: DirectGattBackendIdentityOptions = coreBluetoothIdentityOptions
   ) {
     this.features = createCoreBluetoothRuntimeFeatureRegistry({

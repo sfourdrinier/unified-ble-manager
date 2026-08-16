@@ -239,7 +239,7 @@ function verificationContext(fixture, overrides = {}) {
 }
 
 describe('stable release evidence gate', () => {
-  test('runs the GA evidence gate only for final version tags', () => {
+  test('publishes stable SemVer from current main while retaining strict evidence qualification separately', () => {
     const workflow = fs.readFileSync(path.join(repositoryRoot, '.github', 'workflows', 'publish.yml'), 'utf8')
     const releaseGuide = fs.readFileSync(path.join(repositoryRoot, 'RELEASE.md'), 'utf8')
     const evidenceGuide = fs.readFileSync(path.join(repositoryRoot, 'evidence', 'v1', 'README.md'), 'utf8')
@@ -248,16 +248,16 @@ describe('stable release evidence gate', () => {
     expect(workflow).toContain('echo "is_stable=true" >> "$GITHUB_OUTPUT"')
     expect(workflow).toContain("if: steps.release_channel.outputs.is_stable == 'true'")
     expect(workflow).toContain('fetch-depth: 0')
-    expect(workflow).toContain('git fetch --no-tags origin +refs/heads/master:refs/remotes/origin/master')
-    expect(workflow).toContain('--publish-tarball "${PUBLISH_TARBALL}"')
+    expect(workflow).toContain('git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main')
+    expect(workflow).toContain('Verify stable tag points at current main')
     expect(workflow).toContain('npm publish "${PUBLISH_TARBALL}" --provenance --access public --tag "${NPM_DIST_TAG}"')
     expect(workflow).toContain('npm view "unified-ble-manager@${VER}" dist.tarball --json')
     expect(workflow).toContain('for ATTEMPT in $(seq 1 12)')
     expect(workflow).toContain('npm registry metadata did not become visible within the bounded retry window')
     expect(workflow).toContain('Registry tarball SHA-256 does not match the exact generated publish tarball')
     expect(workflow).toContain("curl --fail --location --silent --show-error --proto '=https'")
-    expect(releaseGuide).toContain('evidence-only release commit')
-    expect(evidenceGuide).toContain('evidence-only descendant')
+    expect(releaseGuide).toContain('Stable SemVer and platform support qualification are independent')
+    expect(evidenceGuide).toContain('Strict support-qualification manifest')
   })
 
   test('keeps the runtime requirements synchronized with the stable release schema', () => {
@@ -310,7 +310,7 @@ describe('stable release evidence gate', () => {
       runGit(root, ['add', 'evidence/v1/releases/v4.0.0.json'])
       runGit(root, ['commit', '-m', 'release evidence'])
       const releaseCommit = runGit(root, ['rev-parse', 'HEAD'])
-      runGit(root, ['update-ref', 'refs/remotes/origin/master', releaseCommit])
+      runGit(root, ['update-ref', 'refs/remotes/origin/main', releaseCommit])
       runGit(root, ['tag', 'v4.0.0', releaseCommit])
       expect(verifyStableTagCommit(root, 'v4.0.0', approvedCommit)).toEqual({
         sourceCommit: approvedCommit,
@@ -323,7 +323,7 @@ describe('stable release evidence gate', () => {
       runGit(root, ['commit', '-m', 'third'])
       const unapprovedCommit = runGit(root, ['rev-parse', 'HEAD'])
       runGit(root, ['tag', 'v4.0.1', unapprovedCommit])
-      runGit(root, ['update-ref', 'refs/remotes/origin/master', unapprovedCommit])
+      runGit(root, ['update-ref', 'refs/remotes/origin/main', unapprovedCommit])
       expect(() => verifyStableTagCommit(root, 'v4.0.1', approvedCommit)).toThrow('non-release path fixture.txt')
     } finally {
       fs.rmSync(root, { recursive: true, force: true })

@@ -12,7 +12,7 @@ const exampleExpoPackage = require('../example-expo/package.json')
 describe('canonical package modernization', () => {
   test('publishes the strict unified-ble-manager package boundary', () => {
     expect(rootPackage.name).toBe('unified-ble-manager')
-    expect(rootPackage.version).toMatch(/^4\.0\.0-alpha\./)
+    expect(rootPackage.version).toBe('4.0.0')
     expect(Object.keys(rootPackage.exports).sort()).toEqual([
       '.',
       './app.plugin.js',
@@ -34,6 +34,7 @@ describe('canonical package modernization', () => {
       './profiles/ieee-11073',
       './profiles/standard-commands',
       './react-native',
+      './tauri',
       './testing',
       './web'
     ])

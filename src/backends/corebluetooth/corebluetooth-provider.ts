@@ -30,7 +30,7 @@ export interface CoreBluetoothBackendProviderOptions {
   readonly boundaryFactory: () => CoreBluetoothBoundary
   readonly prepareBoundary?: (boundary: CoreBluetoothBoundary) => Promise<void>
   readonly now: () => number
-  readonly hostKind: 'node' | 'electron-main'
+  readonly hostKind: 'node' | 'desktop-native'
 }
 
 /** Creates a provider for the one explicitly selected CoreBluetooth central adapter. */

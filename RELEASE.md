@@ -1,142 +1,159 @@
 <!-- RELEASE.md -->
 
-# Release procedure
+# Release process
 
-## Release authority
+This document is the canonical release procedure for `unified-ble-manager`.
 
-This document describes release mechanics. It does not define a 4.0 API, compatibility policy, package topology, or support claim.
+## Canonical release identity
 
-This document does not authorize publishing 4.0 outside the reviewed tag and
-GitHub Actions workflow described here. A package publication does not promote a
-backend support label.
+- GitHub repository: `sfourdrinier/unified-ble-manager`
+- Release branch: `main`
+- npm package: `unified-ble-manager`
+- GitHub Actions workflow: `.github/workflows/publish.yml`
+- GitHub Environment used by the publish job: `npm`
+- Stable npm dist-tag: `latest`
+- Prerelease npm dist-tag: `next`
 
-The 4.0 artifact has no permanent scoped shim.
+Releases are tag-driven and published by GitHub Actions through npm trusted publishing/OIDC. Do not use a long-lived `NPM_TOKEN` or publish a normal release from a developer laptop.
 
-The controlling plan for `unified-ble-manager@4.0.0` is
-[`docs/UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md`](docs/UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md),
-especially its package, evidence, deletion, and Section 31 release gates.
-[`ROADMAP.4.0.md`](ROADMAP.4.0.md) controls product scope and
-[`docs/GAPS.4.0.md`](docs/GAPS.4.0.md) controls the platform-proof inventory.
+## Trusted publisher configuration
 
-## Current prerelease
+The npm package's trusted publisher must identify this repository, not the legacy `react-native-ble-plx` repository:
 
-`unified-ble-manager@4.0.0-alpha.40` is released from
-`v4.0.0-alpha.40` by the protected GitHub Actions trusted-publishing workflow.
-npm identifies GitHub Actions as the trusted publisher, exposes the package on
-the `next` dist-tag, and includes an npm SLSA provenance attestation. The
-[GitHub Release](https://github.com/sfourdrinier/react-native-ble-plx/releases/tag/v4.0.0-alpha.40)
-is a prerelease with notes generated from the alpha.40 section of
-[`CHANGELOG.md`](CHANGELOG.md).
+- provider: GitHub Actions
+- owner/user: `sfourdrinier`
+- repository: `unified-ble-manager`
+- workflow filename: `publish.yml`
+- environment: `npm`
+- package: `unified-ble-manager`
 
-`v4.0.0-alpha.39` is the previous published prerelease. It is not the
-current prerelease and does not bind alpha.40's package or evidence state.
+The workflow requests `id-token: write` and publishes with provenance.
 
-The prerelease support label is Experimental. Its source and deterministic
-package gates verify the intended public package contract; publication does not
-establish that any backend has hardware support. The prerelease has no bound
-physical-radio scenario. No backend is thereby Preview,
-Live Preview, Supported, or Reliability-qualified.
-WinRT compile and ABI checks are L2/L3 evidence only; alpha.40 makes no Windows
-live-radio claim.
-See [`docs/PLATFORMS.md`](docs/PLATFORMS.md) and
-[`evidence/v1/README.md`](evidence/v1/README.md).
+If the trusted publisher still points at the legacy repository, update it before pushing a stable tag. A valid source tree and green CI cannot compensate for an OIDC publisher identity mismatch.
 
-The former `@sfourdrinier/react-native-ble-plx` 3.x line is historical
-characterization only. It is not a 4.0 package identity, upgrade path, or
-compatibility promise.
+## Stable package versus platform support
 
-## Version and release-channel semantics
+Stable SemVer and platform support qualification are independent.
 
-The workflow derives the release channel from the package version after
-verifying that the pushed `vX.Y.Z` tag exactly matches `package.json`:
+A stable `4.0.0` release means the documented public package/API contract is the supported 4.0 contract and is governed by normal SemVer expectations. It does **not** automatically promote any React Native, Web, Electron, CoreBluetooth, WinRT, or BlueZ backend to Preview, Supported, or Reliability-qualified.
 
-| Version form | npm dist-tag | GitHub Release state | Consumer guidance |
-| --- | --- | --- | --- |
-| Hyphenated SemVer prerelease, such as `4.0.0-alpha.40` | `next` | prerelease | Pin the exact version for reproducible evaluation; `@next` is mutable. |
-| Final SemVer version, such as `4.0.0` | `latest` | normal release | Use the final version only after its published evidence supports the required host claim. |
+Backend labels are derived from retained evidence and remain fail-closed. See [`docs/PLATFORMS.md`](docs/PLATFORMS.md) and [`docs/generated/PLATFORM_SUPPORT.md`](docs/generated/PLATFORM_SUPPORT.md).
 
-Do not use a bare install or `@latest` to select a 4.0 alpha. The exact package
-version is the public API and artifact identity being evaluated.
+## Release invariants
 
-## Workflow and release checks
+Before a stable release tag is pushed:
 
-The tag workflow runs these release gates before publication:
+1. `main` is the exact source to be released.
+2. `package.json` contains the final version with no prerelease suffix.
+3. `CHANGELOG.md` contains the release entry and intended release date.
+4. generated platform documentation is current.
+5. `SBOM.cdx.json` and `THIRD_PARTY_LICENSES.json` are generated from the same package metadata/lockfile.
+6. canonical CI is green for the release commit.
+7. package/repository/homepage/bug URLs point at `sfourdrinier/unified-ble-manager`.
+8. the license metadata and root `LICENSE` agree.
+9. the npm trusted publisher points at this repository/workflow/environment.
+10. GitHub private vulnerability reporting is enabled for the canonical repository.
+11. the complete macOS/Windows `arm64`/`x64` Node-API prebuild matrix is produced from the release tag and verified under Node and Electron.
 
-- package and plugin tests, evidence-record validation, lint/typecheck, and
-  package build;
-- public export resolution, canonical pack/install smoke, and packed artifact
-  tarball inventory;
-- deterministic Electron main/router/renderer L1 smoke;
-- classic React Native Android assembly plus Expo SDK 57 CNG prebuild and
-  Android assembly; and
-- reproducible CycloneDX SBOM and production-license audit; and
-- npm OIDC trusted publishing with `--provenance`, followed by a GitHub Release
-  containing the canonical tarball, SBOM, license inventory, and verified
-  SHA-256 checksums.
+## Required local validation
 
-Final SemVer tags have an additional fail-closed GA gate before any `latest`
-publication. It requires a versioned stable release manifest under
-`evidence/v1/releases/` whose retained tarball, complete supported evidence
-collection, generated support matrix, Section 31 reconciliation, verified
-successful `ci.yml` run, clean source/tag/master ancestry, and governance,
-security, SBOM, license, provenance, and package-shape artifacts all bind the
-same tested source commit and package artifact.
-
-The stable tag points to an **evidence-only release commit** above that tested
-source commit. This avoids the impossible requirement for a committed manifest
-to contain its own future Git hash. The validator proves ancestry and rejects
-every change between source and tag except evidence records/artifacts/releases
-and the deterministically generated platform-support page. Deletions and all
-implementation, package metadata, policy, or hand-edited documentation changes
-are rejected. Publication reruns package gates at the tagged commit and verifies
-that its generated tarball exactly matches the retained artifact.
-
-The manifest does not exist while the required stable proof is incomplete, so a
-stable tag is intentionally rejected. This gate is not a support-label waiver
-and does not change prerelease publication to `next`.
-
-Apple and Windows host gates remain their own CI lanes. A green package release
-does not silently convert a platform's compile, ABI, deterministic, or system
-proof into physical-radio evidence.
-
-## Independent verification
-
-Check the published version, dist-tag, integrity, attestation, and trusted
-publisher from npm:
+From a clean checkout of the release commit:
 
 ```sh
-npm view unified-ble-manager@4.0.0-alpha.40 version dist-tags dist.integrity dist.attestations _npmUser --json
+corepack enable
+pnpm install --frozen-lockfile
+pnpm validate:evidence
+pnpm test:package
+pnpm test:plugin
+pnpm lint
+pnpm prepack
+pnpm release:artifacts:check
+node scripts/ci/pack-install-smoke.js
+npm pack --dry-run
 ```
 
-Then cross-check the matching tag and GitHub Release:
+CI additionally owns the platform-specific native compilation and ABI lanes.
+
+## Releasing 4.0.0
+
+The source version is prepared on `main` before the tag. The release workflow verifies that a stable tag points at the exact current `main` commit before initial publication; do not create a stable tag from a side branch or an older commit.
+
+On release day:
 
 ```sh
-gh release view v4.0.0-alpha.40 --repo sfourdrinier/react-native-ble-plx --json tagName,isPrerelease,publishedAt,url
+git fetch origin --tags
+git checkout main
+git pull --ff-only origin main
+
+test "$(git branch --show-current)" = "main"
+test "$(node -p "require('./package.json').version")" = "4.0.0"
+git diff --exit-code
+git diff --cached --exit-code
+
+git tag -a v4.0.0 -m "v4.0.0"
+git push origin v4.0.0
 ```
 
-After alpha.40 publication, npm must report the exact version, `next`, integrity,
-a SLSA provenance attestation, and GitHub Actions trusted publisher; GitHub must
-report the matching `v4.0.0-alpha.40` tag with `isPrerelease: true`. These checks verify release
-identity and supply chain metadata only. They do not verify BLE hardware
-behavior, platform permissions, browser availability, background operation,
-restoration, reconnect, or reliability.
+Do not push another commit to `main` between the final verification and the tag push.
 
-## Support, security, and deferred work
+## What the publish workflow does
 
-Meta Quest and an nRF52840-based controllable fault-injection controller are
-deferred to 4.1. They are not 4.0 release gates and must not appear in 4.0
-backend, hardware, Live Preview, Supported, or Reliability-qualified claims.
-Deterministic fault injection remains useful 4.0 contract proof but is never
-physical-radio proof.
+For a valid version tag, `.github/workflows/publish.yml`:
 
-GitHub private vulnerability reporting is enabled for the repository. Report
-suspected vulnerabilities through the private GitHub Security Advisory flow and
-follow the supported-version and response policy in [`SECURITY.md`](SECURITY.md).
-Do not open a public issue before coordinated disclosure.
+1. checks out the tagged commit and builds Node-API v8 prebuilds for macOS and Windows on `arm64` and `x64` native runners;
+2. loads each prebuild under Node and the same file under Electron;
+3. assembles and hashes the complete prebuild matrix into `native/PREBUILDS.json`;
+4. verifies tag name and `package.json` version agree;
+5. classifies stable versus prerelease channel;
+6. before an initial stable publication, verifies the tag commit equals the current `main` commit;
+7. validates evidence-record syntax/integrity without manufacturing support claims;
+8. runs package, plugin, lint/typecheck, generated-artifact, packed-consumer, and deterministic Electron checks;
+9. runs the required Android/Expo/native-host gates;
+10. verifies package contents and generated dependency artifacts;
+11. publishes the exact prebuild-bearing tarball through npm trusted publishing with provenance;
+12. waits for the registry artifact and verifies the published tarball/digest path;
+13. on a post-publish recovery rerun, replaces any newly built local tarball with the immutable npm registry tarball;
+14. creates the GitHub Release only after npm publication and provenance verification succeed.
 
-## Related records
+Stable versions publish to `latest`. Hyphenated SemVer prereleases publish to `next` and create GitHub prereleases.
 
-- [`docs/UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md`](docs/UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md)
-- [`ROADMAP.4.0.md`](ROADMAP.4.0.md)
-- [`docs/GAPS.4.0.md`](docs/GAPS.4.0.md)
-- [`MIGRATION_4.0.md`](MIGRATION_4.0.md)
+## Post-release verification
+
+After the workflow succeeds:
+
+```sh
+npm view unified-ble-manager@4.0.0 version
+npm view unified-ble-manager dist-tags --json
+npm view unified-ble-manager@4.0.0 repository --json
+npm view unified-ble-manager@4.0.0 license
+```
+
+Then verify:
+
+- npm `latest` resolves to `4.0.0`;
+- the npm package page shows provenance for the published artifact;
+- the GitHub Release exists at `v4.0.0` and is not marked prerelease;
+- its attached tarball/SBOM/license artifacts correspond to the release workflow output;
+- a clean consumer can install `unified-ble-manager@4.0.0` and import the documented host entrypoints.
+
+## Failed release or partial publish
+
+Never move or recreate a published version tag to hide a failed release.
+
+- If the workflow fails **before npm publication**, fix the source on `main`, increment/version as appropriate, and create the correct new tag.
+- If npm publication succeeds but a later GitHub-release step fails, preserve the immutable npm version and rerun the workflow. The recovery path skips the current-`main` admission check and attaches the exact npm registry tarball rather than newly linked native binaries.
+- If a defect is discovered after `4.0.0` is published, fix it and release `4.0.1`; do not replace `4.0.0`.
+
+## Prereleases after 4.0.0
+
+Future prereleases use normal SemVer suffixes such as `4.1.0-alpha.1`. They publish to `next` and must never replace `latest` until a final version is released.
+
+## Release artifacts and evidence
+
+`SBOM.cdx.json`, `THIRD_PARTY_LICENSES.json`, generated platform support, and retained evidence records must be reproducible from the tagged source. Evidence records can justify platform support claims, but absence of an optional physical-radio qualification record does not change the SemVer of an otherwise validated stable package.
+
+The release process must never synthesize, backdate, or relabel hardware evidence merely to make a release gate pass.
+
+## Architecture authority
+
+The normative 4.0 architecture and public-contract decisions are recorded in [`docs/UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md`](docs/UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md). This release procedure controls publication mechanics; it does not override those architecture decisions.

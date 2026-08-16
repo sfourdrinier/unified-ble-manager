@@ -32,7 +32,7 @@ export const winRtCompatibility: BackendCompatibilityOffer = Object.freeze({
 export interface WinRtBackendProviderOptions {
   readonly boundaryFactory: () => WinRtBoundary
   readonly now: () => number
-  readonly hostKind: 'node' | 'electron-main'
+  readonly hostKind: 'node' | 'desktop-native'
 }
 
 function winRtProviderError(

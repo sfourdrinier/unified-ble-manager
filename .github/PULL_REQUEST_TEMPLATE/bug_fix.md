@@ -1,23 +1,39 @@
 ---
 name: 'Bug Fix'
-about: 'Send a bug fix.'
-title: 'Bug Fix'
+about: 'Fix a reproducible Unified BLE Manager defect.'
+title: 'fix: '
 labels: bug
 ---
 
-## Prerequisites
+## Problem
 
-Please answer the following questions for yourself before submitting an issue. **YOU MAY DELETE THE PREREQUISITES SECTION.**
+Describe the defect, affected host/backend, and observable failure.
 
-- [ ] I am working on the latest version of the library.
-- [ ] I tested all the changes locally both on iOS and Android devices.
-- [ ] I ran `pnpm run lint` and `pnpm test` to verify my fix.
-- [ ] I added local regression tests if possible.
+## Fix
 
-## Bug description
+Describe the behavioral change and why it addresses the root cause rather than masking the symptom.
 
-Please describe the bug which was fixed.
+## Contract / lifecycle impact
 
-## Details
+- [ ] No public API or backend-contract change.
+- [ ] Public API/backend-contract change is documented and SemVer-compatible.
+- [ ] Ownership, cancellation, teardown, late-completion, and capability semantics remain explicit.
+- [ ] No production backend fallback or support claim was introduced implicitly.
 
-Please describe how you fixed a bug and what are the alternatives?
+Explain any checked item that needs context.
+
+## Validation
+
+- [ ] Added or updated deterministic regression coverage.
+- [ ] Ran the focused tests for the changed area.
+- [ ] Ran `pnpm validate:evidence`, `pnpm test:package`, `pnpm test:plugin`, and `pnpm lint` when applicable.
+- [ ] Updated/regenerated documentation or release artifacts when applicable.
+- [ ] Native/host-specific validation is identified below when the change touches native code.
+
+### Host-specific proof
+
+List the OS/runtime/device/build/ABI/live-radio validation actually performed. Do not describe compilation, mocks, or deterministic injection as physical-radio evidence.
+
+## Compatibility / migration
+
+Describe any consumer-visible compatibility or migration impact. If none, say `None`.

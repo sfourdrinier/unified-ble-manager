@@ -67,35 +67,25 @@ Every passed L4/L5 live-radio scenario must name a physical peripheral, a concre
 
 Collections validate claim/revision uniqueness, contiguous in-claim revisions, reciprocal supersession references, cycle freedom, and the captured-at revalidation cadence. `nextDueAt` cannot exceed the declared cadence from capture.
 
-## Stable GA publication gate
+## Strict support-qualification manifest
 
-Final SemVer publication also requires a separately versioned manifest at
+The evidence system also supports an optional, stricter versioned manifest at
 `evidence/v1/releases/vX.Y.Z.json`, validated by
-`scripts/evidence/validate-stable-release.js`. The gate reuses the manifest
-validator for every required claim, then verifies that the release tarball,
-source commit, tag, approved successful `ci.yml` run, generated support matrix,
-Section 31 reconciliation, and governance, security, SBOM, license,
-provenance, and package-shape receipts are mutually bound. Every required claim
-must be clean, passed, receipt-backed, and meet its plan-bound floor (`Preview`
-for deterministic proof and at least `Supported` for platform/host claims); no
-blocked, skipped, failed, or `reported-unverified` scenario can satisfy GA.
-Each release-policy receipt must include the exact kind-specific subject list
-and SHA-256 digests enforced by the validator; a free-form `passed` assertion is
-not evidence.
+`scripts/evidence/validate-stable-release.js`. This binds a package artifact,
+source commit, approved CI run, generated support matrix, policy receipts, and
+required platform/host evidence into one fail-closed support-qualification bundle.
 
-The manifest and final evidence cannot be committed at the tested source commit
-because a Git commit cannot contain its own hash. The stable tag therefore points
-to an evidence-only descendant of the manifest's tested `sourceCommit`. The CLI
-proves that ancestry and permits only additions or modifications under
-`evidence/v1/artifacts/`, `evidence/v1/records/`, `evidence/v1/releases/`, plus
-the deterministic `docs/generated/PLATFORM_SUPPORT.md`. It rejects deletions and
-every implementation, package, policy, or other documentation change. The
-approved `ci.yml` run remains bound to the tested source commit; the publish
-workflow reruns the complete package gates on the final tagged evidence commit.
+This strict manifest is **not required merely to publish a stable SemVer package**.
+Stable package SemVer describes the public package/API compatibility contract;
+backend Preview, Supported, and Reliability-qualified labels remain independently
+derived from retained evidence. A release must never manufacture, backdate, or
+relabel physical-radio evidence to satisfy a version-number gate.
 
-The stable manifest is intentionally absent until those artifacts genuinely
-exist. This makes a current final tag fail closed without changing the
-Experimental prerelease path or relabelling any current record.
+When a strict qualification manifest is produced, its evidence-only descendant
+model remains intentional: the manifest cannot contain its own Git commit hash, so
+the validator permits only evidence/generated-support changes between the tested
+source commit and the qualified tag commit and verifies ancestry against canonical
+`main`.
 
 ## Current Phase 0 records
 

@@ -1,93 +1,94 @@
 <!-- README.md -->
 
-# unified-ble-manager
+# Unified BLE Manager
 
-`unified-ble-manager@4.0.0-alpha.40` is the current published 4.0 prerelease for
-explicit, bytes-first Bluetooth Low Energy management across React Native, Web,
-Electron, and Node hosts. 4.0 is a new package line with no released 4.0
-consumer baseline; adopting it is an explicit integration, not a source-
-compatible upgrade of the retired 3.x distribution. Do not expect a legacy
-constructor, compatibility shim, Base64 manager surface, public transaction IDs,
-or a radio fallback.
+`unified-ble-manager` is a host-neutral Bluetooth Low Energy central/GATT library for React Native, Web, Electron, and Node. It provides one bytes-first manager contract, explicit host integrations, typed backend capabilities, deterministic lifecycle semantics, and first-party desktop backends without silently falling back to a different radio implementation.
 
-The controlling architecture and sequencing record is
-[`docs/UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md`](docs/UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md).
-[`MIGRATION_4.0.md`](MIGRATION_4.0.md) is the complete v4 migration guide.
+**4.0.0 is the first stable release of the Unified BLE Manager package and public API contract.** It is a new package line, not a source-compatible rename of `react-native-ble-plx` 3.x.
 
-## Release status and evidence boundary
+**Architecture authority:** [`docs/UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md`](docs/UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md)
 
-`v4.0.0-alpha.40` was published by GitHub Actions trusted publishing under
-npm's `next` dist-tag with an npm SLSA provenance attestation. The
-[GitHub Release](https://github.com/sfourdrinier/react-native-ble-plx/releases/tag/v4.0.0-alpha.40)
-proves the package release path, not Bluetooth behavior.
-
-`v4.0.0-alpha.39` is the previous published prerelease; it is not the
-current prerelease or an alpha.40 evidence record.
-
-The package and deterministic contract surface are **Experimental**. No current
-evidence record binds the published alpha.40 artifact to a hardware-backed
-backend scenario, so no React Native, Web, Node, or Electron backend is
-Preview, Live Preview, Supported, or Reliability-qualified. Missing hardware
-evidence blocks those labels only; it does not invalidate deterministic or
-package-artifact proof. See [`docs/PLATFORMS.md`](docs/PLATFORMS.md) for the
-per-host boundary.
-
-The package remains **Experimental**. WinRT compile and ABI checks are L2/L3
-evidence only; alpha.40 makes no Windows live-radio claim.
-
-Meta Quest and an nRF52840-based controllable fault-injection controller are
-deferred to 4.1. Neither is a 4.0 backend claim, release gate, or hardware
-validation substitute.
-
-## Requirements
-
-- React Native 0.86+ and Expo SDK 57+ for the React Native host
-- Node.js 20.19.4+, 22.13.0+, 24.3.0+, or 25+
-- Android min SDK 24 and iOS deployment target 16.4 for React Native native
-  projects
-- A physical-device or host-native validation path for any Bluetooth claim
+> [!IMPORTANT]
+> Stable package SemVer and platform support qualification are separate dimensions. `4.0.0` stabilizes the package/API contract; a backend is only Preview, Supported, or Reliability-qualified when the corresponding retained evidence says so. See [`docs/PLATFORMS.md`](docs/PLATFORMS.md) and the generated [platform support report](docs/generated/PLATFORM_SUPPORT.md).
 
 ## Install
 
-Pin the exact prerelease you validated. pnpm is used in this repository:
-
 ```sh
-pnpm add unified-ble-manager@4.0.0-alpha.40
+pnpm add unified-ble-manager@4.0.0
 ```
 
-`next` is the mutable prerelease dist-tag. Pin the exact alpha.40 version you
-evaluate; a later alpha can change
-it without changing your lockfile intent. Do not install
-the bare package name or `@latest` when adopting 4.0 alpha: those do not select
-the 4.0 prerelease train. Use your package manager's exact-version syntax when
-pnpm is not your package manager.
+The package is also usable with npm, yarn, or Bun. This repository uses pnpm for reproducible development and release validation.
 
-The neutral root entrypoint does not select a platform or radio. Import the
-explicit public subpath that owns the integration. Deep imports are unsupported:
+### Host-specific dependencies
 
-| Subpath | Purpose |
+The neutral root does not select or load a radio backend. Import the explicit host entrypoint you need.
+
+For Linux BlueZ, install the optional D-Bus peer in the consuming application:
+
+```sh
+pnpm add unified-ble-manager@4.0.0 dbus-next@^0.10.2
+```
+
+React Native, Web, macOS CoreBluetooth, and Windows WinRT consumers do not need `dbus-next`.
+
+## Public entrypoints
+
+| Import | Purpose |
 | --- | --- |
-| `unified-ble-manager` | Host-neutral manager and shared public types; it selects no radio. |
+| `unified-ble-manager` | Host-neutral manager and shared public types; selects no radio. |
 | `unified-ble-manager/react-native` | React Native Android/Apple provider and manager construction. |
 | `unified-ble-manager/web` | Browser Web Bluetooth provider, chooser, and matched manager session. |
 | `unified-ble-manager/electron/main` | Trusted Electron-main backend factories and IPC router/binding. |
-| `unified-ble-manager/electron/renderer` | Renderer IPC protocol and client only; never a radio factory. |
+| `unified-ble-manager/electron/renderer` | Versioned renderer IPC client; never a radio factory. |
+| `unified-ble-manager/tauri` | Tauri v2 webview transport over the shared desktop IPC contract. |
 | `unified-ble-manager/node/corebluetooth` | macOS CoreBluetooth Node provider. |
 | `unified-ble-manager/node/winrt` | Windows WinRT Node provider. |
-| `unified-ble-manager/node/bluez` | Linux BlueZ D-Bus provider; `dbus-next` is an optional host dependency. |
-| `unified-ble-manager/backend-sdk`, `/testing`, `/codecs`, `/cli` | Backend authoring, deterministic testing, explicit codecs, and Node CLI. |
+| `unified-ble-manager/node/bluez` | Linux BlueZ D-Bus provider. |
+| `unified-ble-manager/backend-sdk` | Public backend contract and third-party backend authoring surface. |
+| `unified-ble-manager/testing` | Deterministic backend, TCK, and test utilities. |
+| `unified-ble-manager/codecs` | Explicit codecs such as Base64 helpers for external protocols. |
+| `unified-ble-manager/cli` | Node CLI surface. |
 
-The profile entrypoints are also public: `profiles/commands`,
-`profiles/standard-commands`, `profiles/heart-rate`, `profiles/battery-service`,
-`profiles/device-information`, `profiles/health-thermometer`,
-`profiles/blood-pressure`, and `profiles/ieee-11073`. See
-[`docs/PROFILES_AND_COMMANDS.md`](docs/PROFILES_AND_COMMANDS.md).
+Profile entrypoints are also public: `profiles/commands`, `profiles/standard-commands`, `profiles/heart-rate`, `profiles/battery-service`, `profiles/device-information`, `profiles/health-thermometer`, `profiles/blood-pressure`, and `profiles/ieee-11073`. See [`docs/PROFILES_AND_COMMANDS.md`](docs/PROFILES_AND_COMMANDS.md).
 
-## React Native construction
+Deep imports are unsupported. Use only documented package exports.
 
-Create one owning manager for the selected native platform. Keep it in
-application-owned lifecycle state and destroy it before replacing the host
-session or shutting the app down.
+## Core contract
+
+### Bytes first
+
+BLE values are `Uint8Array`. Writes accept `Readonly<Uint8Array>`. The normal public contract does not use Base64; import `unified-ble-manager/codecs` only when an external protocol requires text encoding.
+
+### Cancellation
+
+Cancellable operations accept `AbortSignal`. Application code does not create public transaction IDs; backend operation correlation remains internal.
+
+```ts
+const abortController = new AbortController()
+
+await database.write(characteristicPath, new Uint8Array([0x01]), {
+  mode: 'with-response',
+  signal: abortController.signal,
+  deadline: null
+})
+
+abortController.abort()
+```
+
+### Explicit ownership and cleanup
+
+Managers own scans, connections, GATT databases, subscriptions, and backend resources. `destroy()` is asynchronous and must be awaited when the owning host session ends.
+
+## React Native
+
+Requirements for the React Native host:
+
+- React Native 0.86+
+- Expo SDK 57+ when using Expo
+- Android min SDK 24
+- iOS deployment target 16.4
+
+Create the platform-specific manager explicitly:
 
 ```ts
 import { Platform } from 'react-native'
@@ -106,51 +107,17 @@ const manager = await createReactNativeBleManager({
 })
 
 try {
-  // Create scans, connections, databases, and subscriptions from this manager.
+  // Scan, connect, discover, read, write, and subscribe through this manager.
 } finally {
   await manager.destroy()
 }
 ```
 
-`hostSessionScope` is a stable host-owned security scope. Do not derive it from
-a render, request, or operation counter: it binds the authenticated native
-restoration adopter to the app host identity, and an empty scope is rejected.
-The manager's asynchronous `destroy()` returns cleanup evidence and must be
-awaited.
+`hostSessionScope` is a stable host-owned security scope. Do not derive it from a render, request, or operation counter.
 
-## Bytes and cancellation
+### Expo plugin
 
-All public BLE values are `Uint8Array`. Writes accept
-`Readonly<Uint8Array>`; Base64 is available only from the explicit
-`unified-ble-manager/codecs` helpers when an external protocol requires text.
-
-Pass an `AbortSignal` to every cancellable operation. The library owns opaque
-backend operation correlation; applications must not invent transaction IDs.
-
-```ts
-const abortController = new AbortController()
-
-await database.write(characteristicPath, new Uint8Array([0x01]), {
-  mode: 'with-response',
-  signal: abortController.signal,
-  deadline: null
-})
-
-abortController.abort()
-```
-
-## Expo plugin
-
-Add the package plugin to your Expo config, then regenerate and build the native
-project. The plugin uses Expo's supported `expo/config-plugins` subpath and
-declares `expo` as an optional host peer, so non-Expo consumers do not receive
-Expo tooling:
-
-```sh
-pnpm add unified-ble-manager@4.0.0-alpha.40 expo@^57.0.0
-```
-
-The package cannot run in Expo Go because it contains native code.
+Add `unified-ble-manager` to the Expo config and build a native development or production app. The package contains native code and does not run in Expo Go.
 
 ```json
 {
@@ -177,177 +144,131 @@ The package cannot run in Expo Go because it contains native code.
 }
 ```
 
-The supported plugin options are `debug`, `isBackgroundEnabled`,
-`neverForLocation`, `modes`, `bluetoothAlwaysPermission`, and
-`iosNativeProtocolRestoration`. The restoration option is all-or-nothing: its
-five non-empty values configure the CoreBluetooth identifier plus the native
-namespace, epoch, client ID, and host-session scope. The plugin rejects
-unknown option names, type coercion, unsupported modes, duplicate modes, and
-partial restoration objects before it changes a native project.
+See [`docs/EXPO_PLUGIN.md`](docs/EXPO_PLUGIN.md) for the complete option contract and restoration behavior.
 
-`isBackgroundEnabled` adds the required Android BLE hardware feature; it does
-not create a foreground service or change manager lifetime. The native protocol
-restoration object writes the complete native identity. It does not create a
-second CoreBluetooth central, restore a connection, reconnect a peripheral, or
-define product restoration policy. Any restoration adoption remains
-manager-owned and must use the same stable `clientId` and stable `hostSessionScope`
-above.
+## Web
 
-See [`docs/EXPO_PLUGIN.md`](docs/EXPO_PLUGIN.md) for the exact option behavior.
+Use `createNavigatorWebBleManager` from `unified-ble-manager/web` to create a matched chooser/manager session. Browser chooser calls must happen from a transient user activation in a secure Web Bluetooth context.
 
-## Web, Electron, and Node hosts
+Web Bluetooth does not provide continuous background scanning or process-level restoration. Destroy the matched manager when its session ends.
 
-Web applications create one matched manager/chooser session with
-`createNavigatorWebBleManager` from `unified-ble-manager/web`. Invoke the
-chooser only from a transient user activation, use the selected peer with that
-session's manager, and destroy `session.manager` when the session ends. Web
-Bluetooth does not provide continuous scanning, background execution, or
-process-level restoration.
+See [`docs/WEB.md`](docs/WEB.md).
 
-Electron creates and owns its radio only in the main process through
-`unified-ble-manager/electron/main`; renderers use the narrow, versioned IPC
-client from `unified-ble-manager/electron/renderer`. Select the trusted host
-backend in the main process with
-`createElectronMainCoreBluetoothBackendProvider` on macOS or
-`createElectronMainWinRtBackendProvider` on Windows. The renderer never selects
-the radio or loads a native addon.
+## Electron
 
-Node hosts select `node/corebluetooth`, `node/winrt`, or `node/bluez`
-explicitly. BlueZ remains an optional host dependency and is not loaded by the
-neutral root package. A Linux BlueZ host installs the selected boundary peer
-explicitly:
+The main process owns the radio and backend. Renderers use the narrow, versioned IPC client and never load a native radio addon directly.
+
+Use:
+
+- `createElectronMainCoreBluetoothBackendProvider` on macOS;
+- `createElectronMainWinRtBackendProvider` on Windows;
+- `unified-ble-manager/electron/renderer` in untrusted renderer code.
+
+See [`docs/ELECTRON.md`](docs/ELECTRON.md) for ownership, reload/rebind, and IPC requirements.
+
+## Tauri v2
+
+Tauri webviews use `TauriBleIpcTransport` with the official Tauri v2 `invoke`
+and `Channel` APIs. The Rust plugin owns the radio; the webview imports no Node
+backend or native addon. See [`docs/TAURI.md`](docs/TAURI.md).
+
+## Node and desktop
+
+Node hosts select a backend explicitly:
+
+- `unified-ble-manager/node/corebluetooth` — macOS CoreBluetooth;
+- `unified-ble-manager/node/winrt` — Windows WinRT;
+- `unified-ble-manager/node/bluez` — Linux BlueZ/D-Bus.
+
+Published releases bundle Node-API v8 prebuilds for macOS and Windows on both
+`arm64` and `x64`. The same platform/architecture binary is selected for Node
+and modern Electron because Node-API is ABI-stable across those runtimes. Linux
+BlueZ uses D-Bus and does not require a native addon.
+
+The package also retains the CoreBluetooth and WinRT build sources plus
+`node-gyp` as an explicit fallback for an unsupported architecture or a locally
+modified native boundary. A normal supported install should not compile native
+code.
+
+For host Node on macOS:
 
 ```sh
-pnpm add unified-ble-manager@4.0.0-alpha.40 dbus-next@^0.10.2
+pnpm --dir node_modules/unified-ble-manager exec node-gyp rebuild \
+  --release \
+  --directory native/electron/corebluetooth
 ```
 
-React Native, Web, Apple desktop, and Windows consumers do not install the
-Linux-only D-Bus dependency.
+Electron packagers must leave `.node` files outside ASAR (most detect this
+automatically) and include them in the application's normal signing and
+notarization process. The npm release workflow builds each prebuild on its
+native GitHub runner, loads it under Node, loads that same file under Electron,
+then assembles the complete matrix into the provenance-bearing npm tarball.
 
-## Electron native addons
+## Platform support and evidence
 
-The published package includes the CoreBluetooth and WinRT Node-API build
-sources and declares `node-addon-api` plus `node-gyp` as production dependencies,
-so a packed consumer has the required native build input and tool. The loaders
-use only the direct package-controlled Release or Debug addon locations; they
-fail closed when an artifact is missing or incompatible. They never substitute a
-different loader, Web Bluetooth, Noble, or a simulated radio.
+The package deliberately distinguishes implementation from support qualification. Compilation, deterministic tests, mocks, or an ABI smoke test are valuable evidence, but they are not substitutes for a retained physical-radio run when a support label requires one.
 
-The package publishes the Node-API sources and the `node-gyp` build tool, not a
-prebuilt `.node` file. Build the addon from the installed package for the ABI
-that will load it. For host Node on macOS:
+The current authoritative support projection is generated from repository evidence:
 
-```sh
-pnpm --dir node_modules/unified-ble-manager exec node-gyp rebuild --release --directory native/electron/corebluetooth
-```
+- [`docs/PLATFORMS.md`](docs/PLATFORMS.md) — how to interpret support;
+- [`docs/generated/PLATFORM_SUPPORT.md`](docs/generated/PLATFORM_SUPPORT.md) — generated support table;
+- [`docs/GAPS.4.0.md`](docs/GAPS.4.0.md) — remaining platform and reliability evidence.
 
-For Electron, use the exact target Electron release and its headers; a Node ABI
-build is not Electron-compatible:
+A stable `4.0.0` package does not automatically promote any backend support label.
+
+## Development and verification
 
 ```sh
-ELECTRON_VERSION="$(node -p \"require('electron/package.json').version\")"
-pnpm --dir node_modules/unified-ble-manager exec node-gyp rebuild --release --directory native/electron/corebluetooth --target="$ELECTRON_VERSION" --dist-url=https://electronjs.org/headers
-```
-
-Windows WinRT requires its matching Windows toolchain and Electron/Node ABI
-build. Rebuild whenever the target runtime, ABI, architecture, or package
-version changes.
-
-See [`docs/ELECTRON.md`](docs/ELECTRON.md) for the IPC boundary and
-host-integration requirements. A native build or deterministic smoke check is
-not live-radio validation.
-
-## Verification
-
-```sh
+corepack enable
+pnpm install --frozen-lockfile
+pnpm validate:evidence
 pnpm test:package
 pnpm test:plugin
 pnpm lint
 pnpm prepack
+pnpm release:artifacts:check
 node scripts/ci/pack-install-smoke.js
 ```
 
-The packed-consumer smoke verifies the published artifact, public host
-entrypoints, TypeScript consumer imports, Electron native build dependency
-closure, and the authenticated Electron router/client deterministic L1 journey.
-It does not replace physical-device validation.
+CI additionally exercises platform-specific native build and ABI lanes on Linux, macOS, Windows, Android, Expo CNG, and Apple targets when relevant paths change.
 
-## Examples and host checks
+## Examples
 
-- [`example/`](example/) is the classic React Native repository fixture. It
-  uses the v4 React Native entrypoint, but its `file:..` dependency means it is
-  not an installed-package recipe.
-- [`example-expo/`](example-expo/) is the Expo SDK 57 CNG fixture. It requires
-  `expo prebuild` and a native Android or iOS build; it cannot run in Expo Go.
-- [`example-electron/`](example-electron/) is the deterministic L1 package
-  smoke, not a live Electron-radio demo.
-- [`example-web/`](example-web/) is a historical source-characterization
-  fixture. It is not a 4.0 installation or support example; use the `/web`
-  entrypoint and [`docs/WEB.md`](docs/WEB.md) for current integration rules.
+- [`example/`](example/) — classic React Native repository fixture.
+- [`example-expo/`](example-expo/) — Expo SDK 57 CNG fixture; requires native prebuild/build.
+- [`example-electron/`](example-electron/) — deterministic Electron package/IPC fixture, not a live-radio claim.
+- [`example-web/`](example-web/) — source-characterization fixture; use `/web` plus [`docs/WEB.md`](docs/WEB.md) for the current public integration.
 
-Run the repository fixtures only when working from this checkout. A consuming
-application should validate its installed tarball, selected host integration,
-and real hardware separately.
+The examples in this checkout may use `file:..`; consuming applications should validate the installed package artifact separately.
 
-## Troubleshooting
+## Migrating from react-native-ble-plx 3.x
 
-- **Wrong package line:** install the exact alpha version rather than the bare
-  package name, `@latest`, or an old scoped package. Confirm the resolved
-  version with `pnpm why unified-ble-manager`.
-- **Expo Go or a JavaScript-only build:** native code and the config plugin need
-  CNG/native compilation. Run a development or production native build after
-  configuring the plugin; Expo Go is not a supported runtime.
-- **Web chooser is rejected or scanning is expected:** call the chooser from a
-  transient user activation in a Web Bluetooth-capable secure context. Web
-  Bluetooth has no continuous scan, background execution, or process-level
-  restoration in this package.
-- **Electron or Node cannot load an addon:** rebuild the package-controlled
-  source for the exact Node or Electron ABI, architecture, and package version.
-  A Node-ABI addon cannot load in Electron. Do not replace a failed addon with
-  Web Bluetooth, Noble, or a simulated production radio.
-- **A host reports unavailable, permission, or unsupported:** handle its typed
-  error and inspect capabilities from the instantiated backend. Platform name,
-  successful compilation, or a deterministic test does not establish radio
-  availability or hardware support.
+4.0 is intentionally a new contract. Do not expect the legacy `BleManager` constructor, Base64 characteristic values, public transaction IDs, static host support helpers, or a compatibility shim.
 
-## Release and security verification
+Read [`MIGRATION_4.0.md`](MIGRATION_4.0.md) before migrating an existing application.
 
-The release workflow verifies package tests, the evidence-record validator,
-plugin tests, lint/typecheck, packed exports, classic React Native Android,
-Expo CNG Android, and the deterministic Electron smoke before npm publication.
-It publishes with GitHub OIDC and `npm publish --provenance`; it marks a
-hyphenated SemVer version as both npm `next` and a GitHub prerelease, while a
-final version uses npm `latest` and a normal GitHub Release.
+## Project history
 
-Check the installed prerelease against npm metadata before integrating it:
+Unified BLE Manager evolved from the 4.0 development work that began in [`sfourdrinier/react-native-ble-plx`](https://github.com/sfourdrinier/react-native-ble-plx), itself derived from the broader `react-native-ble-plx` project lineage. The Git commit ancestry is intentionally preserved so authorship, debugging history, and design decisions remain available.
 
-```sh
-npm view unified-ble-manager@4.0.0-alpha.40 version dist-tags dist.integrity dist.attestations _npmUser --json
-```
+`v4.0.0-alpha.40` was the migration point at which the 4.0 branch and published `unified-ble-manager` package moved into this canonical repository. The old repository remains the historical and 3.x home; 4.x issues, documentation, and releases belong here.
 
-The result must identify the exact version, `next`
-dist-tag, package integrity, a SLSA provenance attestation, and GitHub Actions
-as the npm trusted publisher. Cross-check the tag and release notes at the GitHub Release linked
-above. Provenance and integrity do not verify live Bluetooth behavior; that
-still needs host-specific evidence.
+## Release integrity
 
-The repository has no published private vulnerability-reporting endpoint at the
-time of this release. Do not place secrets, user data, exploit details, or BLE
-payload captures in a public issue. A private reporting channel and supported-
-version response policy require repository configuration and publication before
-they can be claimed.
+Releases are built and published by GitHub Actions from version tags. The release workflow verifies the tag/version relationship, package tests, lint/typecheck, native compile/ABI lanes, packed-consumer behavior, generated SBOM and third-party license inventory, and package contents before publishing.
 
-## Historical material
+Stable versions publish to npm `latest`; prereleases publish to `next`. Publication uses npm trusted publishing/OIDC with provenance rather than a long-lived npm write token.
 
-Historical pre-4.0 release notes remain in [`CHANGELOG.md`](CHANGELOG.md) and
-older source records remain in the repository for audit only. They are not
-installation, plugin, native, lifecycle, or migration instructions for the
-current package.
+See [`RELEASE.md`](RELEASE.md).
+
+## Security
+
+Do not post vulnerability details in a public issue. Follow [`SECURITY.md`](SECURITY.md) for private reporting and the supported security-response path.
 
 ## Contributing
 
-Use pnpm and run the verification commands above before proposing a change. Do
-not add compatibility shims, deprecated APIs, alternate native loaders, or
-silent platform fallbacks. See [`MIGRATION_4.0.md`](MIGRATION_4.0.md),
-[`ROADMAP.4.0.md`](ROADMAP.4.0.md), and
-[`docs/UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md`](docs/UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md).
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) and [`GOVERNANCE.md`](GOVERNANCE.md). Changes to public contracts, backend semantics, capability claims, or support labels require matching tests/evidence rather than documentation-only claims.
+
+## License
+
+Apache License 2.0. See [`LICENSE`](LICENSE) and [`THIRD_PARTY_LICENSES.json`](THIRD_PARTY_LICENSES.json).

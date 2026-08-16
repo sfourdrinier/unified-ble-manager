@@ -134,10 +134,10 @@ function verifyStableTagCommit(root, tag, sourceCommit) {
       throw new Error(`stable release commit changed non-release path ${relativePath}`)
   }
   if (changedPaths.length === 0) throw new Error('stable release commit contains no evidence or generated support change')
-  const masterAncestry = git(root, ['merge-base', '--is-ancestor', tagCommit, 'refs/remotes/origin/master'])
-  if (masterAncestry.error) throw new Error(`cannot verify tag/master ancestry: ${masterAncestry.error.message}`)
+  const masterAncestry = git(root, ['merge-base', '--is-ancestor', tagCommit, 'refs/remotes/origin/main'])
+  if (masterAncestry.error) throw new Error(`cannot verify tag/main ancestry: ${masterAncestry.error.message}`)
   if (masterAncestry.status !== 0)
-    throw new Error(`tag commit ${tagCommit} is not an ancestor of refs/remotes/origin/master`)
+    throw new Error(`tag commit ${tagCommit} is not an ancestor of refs/remotes/origin/main`)
   return { sourceCommit, tagCommit }
 }
 

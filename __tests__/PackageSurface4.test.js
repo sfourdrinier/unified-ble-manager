@@ -199,7 +199,8 @@ describe('4.0 public package surface', () => {
       './node/corebluetooth',
       './node/winrt',
       './electron/main',
-      './electron/renderer'
+      './electron/renderer',
+      './tauri'
     ])
     expect(packageJson.files).toContain('src')
     expect(packageJson.codegenConfig.jsSrcsDir).toBe('src')

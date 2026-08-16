@@ -28,7 +28,7 @@ export function createElectronMainCoreBluetoothBackendProvider(
     boundaryFactory: createNativeCoreBluetoothBoundary,
     prepareBoundary: prepareNativeCoreBluetoothBoundary,
     now: options.now,
-    hostKind: 'electron-main'
+    hostKind: 'desktop-native'
   }
   return createCoreBluetoothBackendProvider(providerOptions)
 }
@@ -40,7 +40,7 @@ export function createElectronMainWinRtBackendProvider(
   const providerOptions: WinRtBackendProviderOptions = {
     boundaryFactory: createNativeWinRtBoundary,
     now: options.now,
-    hostKind: 'electron-main'
+    hostKind: 'desktop-native'
   }
   return createWinRtBackendProvider(providerOptions)
 }

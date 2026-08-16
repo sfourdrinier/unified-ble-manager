@@ -1,0 +1,22 @@
+[package]
+name = "tauri-plugin-unified-ble-manager"
+version = "4.0.0"
+description = "Tauri v2 IPC plugin boundary for Unified BLE Manager"
+authors = ["Unified BLE Manager contributors"]
+license = "Apache-2.0"
+edition = "2021"
+rust-version = "1.77"
+repository = "https://github.com/sfourdrinier/unified-ble-manager"
+links = "tauri-plugin-unified-ble-manager"
+include = ["build.rs", "permissions", "src"]
+
+[lib]
+crate-type = ["rlib"]
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri = { version = "2", default-features = false }
+
+[build-dependencies]
+tauri-plugin = { version = "2", features = ["build"] }

@@ -8,16 +8,26 @@
 
 The repository maintainer owns releases, security embargoes, contributor access, and final conflict resolution. Contributors propose changes through pull requests with tests and evidence. Review is based on technical merit, portability, contract consistency, security, maintenance cost, and the documented release scope.
 
-Material architecture decisions are recorded as an **ADR** under `docs/adr/`. A release schedule is not authority to weaken a contract invariant, evidence label, or zero-diagnostic gate.
+Material architecture decisions are recorded as an **ADR** under `docs/ADR/`. A release schedule is not authority to weaken a contract invariant, evidence label, or zero-diagnostic gate.
 
 ## Backend contract governance
 
 The versioned backend contract, error vocabulary, capability registry, event model, ownership rules, and TCK are one governed surface. A backend-specific requirement must be expressed as a general contract capability or remain isolated behind that backend; it may not silently change shared semantics.
 
-After `4.0.0`, breaking public API or contract changes require semantic-versioning treatment. Deprecation requires replacement guidance and a documented removal window. Silent downgrades and hidden compatibility branches are not accepted.
+Starting with `4.0.0`, breaking public API or contract changes require semantic-versioning treatment. Deprecation requires replacement guidance and a documented removal window. Silent downgrades and hidden compatibility branches are not accepted.
 
-## Releases and support claims
+## Releases
 
-Only release automation publishes npm artifacts. Stable releases require the plan's complete evidence and artifact gates. Platform support labels are generated from evidence manifests. The maintainer may publish prereleases with explicitly incomplete live evidence, but may not describe that evidence as a higher support label.
+Only canonical release automation publishes npm artifacts. A stable package release requires the source/tag/version relationship, package contract, tests, native build/ABI lanes, packed-consumer checks, generated artifacts, licensing metadata, and supply-chain publication path to pass their release gates.
+
+The release branch is `main`. Stable tags must identify the exact release commit on `main`; a side branch or stale commit is not a stable release source.
+
+## Support claims
+
+Package SemVer and backend support qualification are governed independently.
+
+Platform support labels are generated from retained evidence. A stable package version does not automatically make every backend Supported, and missing optional hardware qualification does not require an otherwise stable package/API contract to remain prerelease forever.
+
+The maintainer may only promote a platform/backend label to the level justified by the retained evidence. Compilation, deterministic tests, or ABI proof may not be described as live-radio validation. Conversely, a backend that remains Experimental does not make the host-neutral package contract itself prerelease.
 
 Governance changes use the same pull-request and ADR process and become effective when merged by the maintainer.

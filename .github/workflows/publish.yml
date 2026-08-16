@@ -1,26 +1,29 @@
 # .github/workflows/publish.yml
-# Publish the canonical unified-ble-manager 4.0 package with npm Trusted
-# Publishing (OIDC) and provenance.
+# Publish the canonical unified-ble-manager package with npm Trusted Publishing
+# (OIDC) and provenance.
 #
 # Prerequisites (one-time):
 # 1. GitHub Environment named "npm" (optional: required reviewers).
 # 2. npm Trusted Publisher for unified-ble-manager:
 #    Organization/user: sfourdrinier
-#    Repository:        react-native-ble-plx
+#    Repository:        unified-ble-manager
 #    Workflow filename: publish.yml
 #    Environment name:  npm
 #    Allowed actions:   npm publish
 #    https://www.npmjs.com/package/unified-ble-manager/access
 #
-# Release flow: merge release PR → manually tag vX.Y.Z on master → push tag →
+# Release flow: merge release PR → manually tag vX.Y.Z on main → push tag →
 # approve npm environment if required → this workflow publishes the package
 # with provenance, then creates the GitHub Release. Tags stay manual. See RELEASE.md.
 #
+# Stable SemVer describes the public package/API contract. Backend support labels
+# remain evidence-derived and are not promoted merely because the package is stable.
+#
 # GA gates (Ubuntu): package/plugin/lint/prepack, electron Fake L1 smoke, host
-# export resolution, classic RN Android assemble, Expo CNG
-# prebuild+assemble, canonical npm pack dry-run. Apple compile remains a pre-merge
-# gate (ci:apple on the release PR / master path filter) — not re-run here.
-# Align with scripts/verify-release.sh (R2-F040).
+# export resolution, classic RN Android assemble, Expo CNG prebuild+assemble,
+# canonical npm pack/install smoke, artifact reproducibility and registry binding.
+# Apple compile remains a pre-merge gate (ci:apple on the release PR / main path
+# filter) and is not redundantly re-run here. Align with scripts/verify-release.sh.
 
 name: Publish to npm
 
@@ -30,15 +33,75 @@ on:
       - 'v*.*.*'
 
 permissions:
-  actions: read # Verify the approved ci.yml run bound by a stable release manifest
-  contents: write # GitHub Release after successful publish
-  id-token: write # npm Trusted Publishing (OIDC)
+  contents: read
 
 jobs:
+  native-prebuild-plan:
+    name: Plan native Node-API prebuilds
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - name: Checkout tag
+        uses: actions/checkout@v7.0.0
+
+      - name: Emit maintained prebuild matrix
+        id: matrix
+        shell: bash
+        run: echo "matrix=$(node scripts/native-prebuilds/print-github-matrix.js)" >> "$GITHUB_OUTPUT"
+
+  # Node-API v8 is ABI-stable across the maintained Node lines and modern
+  # Electron. Build once per OS/CPU, then bundle all four binaries in npm.
+  native-prebuild:
+    name: Native prebuild (${{ matrix.platform }}-${{ matrix.arch }})
+    needs: native-prebuild-plan
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.native-prebuild-plan.outputs.matrix) }}
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Checkout tag
+        uses: actions/checkout@v7.0.0
+
+      - name: Setup Python for node-gyp
+        uses: actions/setup-python@v6.0.0
+        with:
+          python-version: '3.12'
+
+      - name: Setup JS package
+        uses: ./.github/actions/setup-js-package
+        with:
+          prepack: 'false'
+          node-version: '24'
+
+      - name: Build and load maintained Node-API prebuild
+        shell: bash
+        run: pnpm native-prebuild:build -- --backend "${{ matrix.backend }}"
+
+      - name: Build public package artifacts for Electron prebuild smoke
+        run: pnpm prepack
+
+      - name: Load the same prebuild under Electron main
+        shell: bash
+        run: ./node_modules/.bin/electron scripts/ci/electron-main-smoke.js
+
+      - name: Upload path-preserving native prebuild
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.artifactName }}
+          path: .native-prebuild-artifact
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
+
   publish:
     name: Publish canonical package
+    needs: native-prebuild
     runs-on: ubuntu-latest
     environment: npm
+    permissions:
+      contents: write # GitHub Release after successful publish
+      id-token: write # npm Trusted Publishing (OIDC)
     env:
       NODE_OPTIONS: --max-old-space-size=8192
       GRADLE_OPTS: -Dorg.gradle.jvmargs=-Xmx6g\ -XX:MaxMetaspaceSize=1g\ -Dfile.encoding=UTF-8
@@ -47,7 +110,7 @@ jobs:
       - name: Checkout tag
         uses: actions/checkout@v7.0.0
         with:
-          fetch-depth: 0 # Stable tags must prove their source commit is on master.
+          fetch-depth: 0 # Stable tags must prove their commit is current main.
 
       # Trusted publishing: Node ≥22.14.0, npm ≥11.5.1.
       # npm's current GitHub Actions guidance requires an explicit registry URL;
@@ -63,12 +126,11 @@ jobs:
 
       - name: Ensure npm supports trusted publishing
         run: |
-          # Pin npm 11.x (docs floor 11.5.1). Avoid npm@latest (12.x engines differ).
-          # Node 24 LTS currently ships npm 11.x (e.g. v24.18.0 → 11.16.0).
+          # Pin npm 11.x (docs floor 11.5.1). Avoid npm@latest if its engines
+          # move beyond the selected Node release line.
           npm install -g 'npm@^11.5.1'
           node --version
           npm --version
-          # Prove OIDC env is present (GitHub always sets these on GHA).
           test -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" || {
             echo "ACTIONS_ID_TOKEN_REQUEST_URL missing — OIDC will not work"
             exit 1
@@ -83,6 +145,16 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      - name: Assemble native prebuild matrix
+        uses: actions/download-artifact@v8
+        with:
+          pattern: 'native-prebuild-*'
+          path: .
+          merge-multiple: true
+
+      - name: Verify and bind complete native prebuild matrix
+        run: pnpm native-prebuild:verify --require-all --write-manifest
 
       - name: Run package tests
         run: pnpm test:package
@@ -108,8 +180,6 @@ jobs:
       - name: Reproducible SBOM and production-license audit
         run: pnpm release:artifacts:check
 
-      # Multi-host GA smoke (Ubuntu): Fake L1 electron, host export resolution,
-      # classic Android, Expo CNG Android. Apple compile is pre-merge only.
       - name: Electron Fake multi-device demo smoke (L1)
         run: node example-electron/smoke.js
 
@@ -134,7 +204,6 @@ jobs:
         working-directory: example/android
         run: ./gradlew :app:assembleDebug --no-daemon --console=plain -PreactNativeArchitectures=arm64-v8a
 
-      # Align with verify-release.sh Expo CNG gate (R2-F040) — publish always ran classic only.
       - name: Install Expo example dependencies
         run: pnpm --dir example-expo install --no-frozen-lockfile
 
@@ -157,7 +226,6 @@ jobs:
         working-directory: example-expo/android
         run: NODE_ENV=development ./gradlew :app:assembleDebug --no-daemon --console=plain
 
-      # R3-F044: same canonical pack+install export smoke as PR CI / verify-release
       - name: Canonical pack+install export smoke
         run: node scripts/ci/pack-install-smoke.js
 
@@ -166,10 +234,6 @@ jobs:
           set -euo pipefail
           rm -rf .release-package
           mkdir .release-package
-          # npm forwards prepare/prepack child output to stdout even with
-          # --json, so JSON capture is not a stable machine boundary. The final
-          # non-empty stdout line is npm's documented tarball filename; bind it
-          # to the exact package identity and require one generated archive.
           PACK_OUTPUT="$(npm pack --pack-destination .release-package)"
           TARBALL_NAME="$(printf '%s' "${PACK_OUTPUT}" | node -e '
             const fs = require("fs")
@@ -213,22 +277,8 @@ jobs:
           fi
           echo "Publishing ${ROOT_NAME}@${ROOT_VER} from tag ${GITHUB_REF_NAME}"
 
-      # A GA tag requires complete artifact-bound evidence. Prereleases retain
-      # the existing `next` OIDC/provenance path and deliberately skip this gate.
-      - name: Fetch master for stable tag verification
-        if: steps.release_channel.outputs.is_stable == 'true'
-        run: git fetch --no-tags origin +refs/heads/master:refs/remotes/origin/master
-
-      - name: Validate stable GA evidence and release policies
-        if: steps.release_channel.outputs.is_stable == 'true'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: >-
-          node scripts/evidence/validate-stable-release.js
-          --tag "${GITHUB_REF_NAME}"
-          --publish-tarball "${PUBLISH_TARBALL}"
-
-      # Soft check so a re-run after npm success can still create the GitHub Release.
+      # Check before enforcing current-main so an immutable npm publication can
+      # finish its GitHub Release on a rerun even if main has advanced.
       - name: Check whether versions are already on npm
         id: npm_status
         run: |
@@ -249,6 +299,26 @@ jobs:
             echo "already_published=false" >> "$GITHUB_OUTPUT"
           fi
 
+      # Stable releases must be cut from the exact current main commit before
+      # their initial npm publication. Once npm contains the immutable version,
+      # reruns reuse that registry tarball solely to finish release creation.
+      - name: Fetch main for stable tag verification
+        if: steps.release_channel.outputs.is_stable == 'true' && steps.npm_status.outputs.package_published != 'true'
+        run: git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+
+      - name: Verify stable tag points at current main
+        if: steps.release_channel.outputs.is_stable == 'true' && steps.npm_status.outputs.package_published != 'true'
+        run: |
+          set -euo pipefail
+          TAG_COMMIT="$(git rev-parse "${GITHUB_REF_NAME}^{commit}")"
+          MAIN_COMMIT="$(git rev-parse refs/remotes/origin/main)"
+          if [ "${TAG_COMMIT}" != "${MAIN_COMMIT}" ]; then
+            echo "Stable tag ${GITHUB_REF_NAME} must point exactly at current main before initial publication"
+            echo "tag:  ${TAG_COMMIT}"
+            echo "main: ${MAIN_COMMIT}"
+            exit 1
+          fi
+
       # Do NOT set NODE_AUTH_TOKEN. npm exchanges the GitHub OIDC identity for
       # this publish command; a long-lived token would defeat that boundary.
       - name: Publish unified-ble-manager (OIDC + provenance)
@@ -256,10 +326,11 @@ jobs:
         run: npm publish "${PUBLISH_TARBALL}" --provenance --access public --tag "${NPM_DIST_TAG}"
 
       - name: Bind npm tarball to the generated release artifact
+        env:
+          ALREADY_PUBLISHED: ${{ steps.npm_status.outputs.package_published }}
         run: |
           set -euo pipefail
           VER="$(node -p "require('./package.json').version")"
-          LOCAL_TARBALL_SHA256="$(node -e "const crypto = require('crypto'); const fs = require('fs'); process.stdout.write(crypto.createHash('sha256').update(fs.readFileSync(process.argv[1])).digest('hex'))" "${PUBLISH_TARBALL}")"
           REGISTRY_TARBALL=""
           for ATTEMPT in $(seq 1 12); do
             if REGISTRY_TARBALL="$(npm view "unified-ble-manager@${VER}" dist.tarball --json 2>/dev/null | node -e "let body = ''; process.stdin.setEncoding('utf8'); process.stdin.on('data', chunk => { body += chunk }); process.stdin.on('end', () => { const value = JSON.parse(body); if (typeof value !== 'string' || !value.startsWith('https://')) { throw new Error('npm dist.tarball must be an HTTPS URL'); } process.stdout.write(value) })")"; then
@@ -272,7 +343,22 @@ jobs:
             echo "npm registry metadata did not become visible within the bounded retry window"
             exit 1
           fi
-          REGISTRY_TARBALL_SHA256="$(curl --fail --location --silent --show-error --proto '=https' "${REGISTRY_TARBALL}" | node -e "const crypto = require('crypto'); const hash = crypto.createHash('sha256'); process.stdin.on('data', chunk => hash.update(chunk)); process.stdin.on('end', () => process.stdout.write(hash.digest('hex')))")"
+
+          REGISTRY_TARBALL_COPY="$(mktemp)"
+          trap 'rm -f "${REGISTRY_TARBALL_COPY}"' EXIT
+          curl --fail --location --silent --show-error --proto '=https' \
+            --output "${REGISTRY_TARBALL_COPY}" \
+            "${REGISTRY_TARBALL}"
+
+          # A post-publish rerun must attach and hash the immutable npm bytes,
+          # not a newly linked native build that may differ byte-for-byte.
+          if [ "${ALREADY_PUBLISHED}" = true ]; then
+            cp "${REGISTRY_TARBALL_COPY}" "${PUBLISH_TARBALL}"
+            echo "Restored exact published npm tarball for release recovery"
+          fi
+
+          LOCAL_TARBALL_SHA256="$(node -e "const crypto = require('crypto'); const fs = require('fs'); process.stdout.write(crypto.createHash('sha256').update(fs.readFileSync(process.argv[1])).digest('hex'))" "${PUBLISH_TARBALL}")"
+          REGISTRY_TARBALL_SHA256="$(node -e "const crypto = require('crypto'); const fs = require('fs'); process.stdout.write(crypto.createHash('sha256').update(fs.readFileSync(process.argv[1])).digest('hex'))" "${REGISTRY_TARBALL_COPY}")"
           if [ "${REGISTRY_TARBALL_SHA256}" != "${LOCAL_TARBALL_SHA256}" ]; then
             echo "Registry tarball SHA-256 does not match the exact generated publish tarball"
             exit 1
@@ -311,11 +397,25 @@ jobs:
           } > SHA256SUMS
           shasum -a 256 --check SHA256SUMS
 
+      - name: Bind npm provenance to this exact tag commit
+        run: |
+          set -euo pipefail
+          VER="$(node -p "require('./package.json').version")"
+          ATTESTATIONS_URL="$(npm view "unified-ble-manager@${VER}" dist.attestations.url --json | node -e "let body = ''; process.stdin.setEncoding('utf8'); process.stdin.on('data', chunk => { body += chunk }); process.stdin.on('end', () => { const value = JSON.parse(body); if (typeof value !== 'string' || !value.startsWith('https://registry.npmjs.org/')) throw new Error('npm attestation URL must use the npm registry HTTPS origin'); process.stdout.write(value) })")"
+          ATTESTATIONS_FILE="$(mktemp)"
+          trap 'rm -f "${ATTESTATIONS_FILE}"' EXIT
+          curl --fail --location --silent --show-error --proto '=https' \
+            --output "${ATTESTATIONS_FILE}" \
+            "${ATTESTATIONS_URL}"
+          node scripts/ci/verify-npm-provenance-source.js \
+            "${ATTESTATIONS_FILE}" \
+            "${GITHUB_SHA}" \
+            "${GITHUB_REF_NAME}" \
+            "https://github.com/sfourdrinier/unified-ble-manager"
+
+
       # Tags remain manual. After npm succeeds, create the GitHub Release from
       # CHANGELOG.md notes so the Releases page matches the published package.
-      # SemVer prereleases must also be GitHub prereleases: npm publishes them
-      # to `next`, while final versions publish to `latest` and create normal
-      # GitHub releases.
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -344,7 +444,7 @@ jobs:
               echo "See CHANGELOG.md for ${TAG} details."
             fi
             echo
-            echo "### npm packages (published with provenance)"
+            echo "### npm package (published with provenance)"
             echo
             echo "- \`unified-ble-manager@${VER}\` — canonical product"
             echo "  - tarball: https://registry.npmjs.org/unified-ble-manager/-/unified-ble-manager-${VER}.tgz"

@@ -200,7 +200,7 @@ async function loadNodeBackendDefinition(
 }
 
 function assertNodeCapableHost(hostKind: HostKind): void {
-  if (hostKind !== 'node' && hostKind !== 'electron-main' && hostKind !== 'test') {
+  if (hostKind !== 'node' && hostKind !== 'desktop-native' && hostKind !== 'test') {
     throw new UnifiedBleCliFailureError(
       'cli.host-unsupported',
       `CLI cannot drive ${hostKind}; select an explicit Node-capable backend`

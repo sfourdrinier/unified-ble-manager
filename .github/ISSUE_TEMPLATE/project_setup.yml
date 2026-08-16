@@ -1,80 +1,77 @@
-name: 'Project Setup'
-description: 'Describe your problem related to the project setup.'
-title: 'Project Setup'
-labels: [setup]
-
+name: 🧩 Project setup / integration help
+description: Ask for help getting Unified BLE Manager integrated into a concrete host project.
+title: "🧩 "
+labels: [question]
 body:
   - type: checkboxes
     id: prerequisites
     attributes:
       label: Prerequisites
       options:
-        - label: I checked the documentation and FAQ without finding a solution
+        - label: I read the README, migration guide, and documentation for my selected host.
           required: true
-        - label: I checked to make sure that this issue has not already been filed
+        - label: I selected an explicit host entrypoint rather than expecting the neutral root to choose a radio.
           required: true
 
   - type: input
-    id: library-version
+    id: version
     attributes:
-      label: Library version
-      description: What version of the library are you using?
-      placeholder: "x.x.x"
+      label: unified-ble-manager version
+      placeholder: "4.0.0"
     validations:
       required: true
 
-  - type: input
-    id: platform
+  - type: dropdown
+    id: host
     attributes:
-      label: Platform
-      placeholder: "Android/iOS"
-    validations:
-      required: true
-
-  - type: textarea
-    id: setup_description
-    attributes:
-      label: Setup Description
-      description: |
-        Please describe the problem you are experiencing.
-    validations:
-      required: true
-
-  - type: textarea
-    id: steps_to_reproduce
-    attributes:
-      label: Steps to Reproduce
-      description: |
-        Please provide detailed steps for reproducing the issue.
-      value: |
-        1. step 1
-        2. step 2
-        3. ...
+      label: Integration target
+      options:
+        - React Native Android
+        - React Native Apple
+        - Expo / CNG
+        - Browser Web Bluetooth
+        - Electron macOS / CoreBluetooth
+        - Electron Windows / WinRT
+        - Node macOS / CoreBluetooth
+        - Node Windows / WinRT
+        - Node Linux / BlueZ
+        - Custom backend SDK
+        - Other
     validations:
       required: true
 
   - type: textarea
-    id: logs
+    id: environment
     attributes:
-      label: Relevant log output
-      description: Please provide any relevant log output. This is important in case the issue is not reproducible except for under certain conditions. Both JS and platform logs can be enabled via [setLogLevel](https://dotintent.github.io/react-native-ble-plx/#blemanagersetloglevel) function call. 
+      label: Project environment
+      description: Include package manager, OS, architecture, runtime/framework versions, and relevant native toolchain versions.
+      placeholder: |
+        Package manager: pnpm 10.x
+        OS/arch: Ubuntu 26.x x64
+        Runtime/framework: Node 24.x / Electron 43.x / RN 0.86.x / Expo 57.x
+    validations:
+      required: true
+
+  - type: textarea
+    id: setup
+    attributes:
+      label: Current setup
+      description: Show the package install, import/entrypoint, manager/provider construction, and any Expo/native configuration involved.
+      render: typescript
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Where does setup fail?
+      description: Include the exact command/error and whether the failure occurs at install, build, load, permission, adapter, scan, connection, or GATT time.
+    validations:
+      required: true
+
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics
+      description: Paste relevant redacted logs and package resolution output. Do not include credentials or sensitive BLE/user data.
       render: shell
-    validations:
-      required: true
-
-  - type: textarea
-    id: package_json
-    attributes:
-      label: Contents of the `package.json` file
-      description: |
-        Please provide the contents of the `package.json` file.
-    validations:
-      required: true
-
-  - type: textarea
-    id: additional
-    attributes:
-      label: Additional Information
-      description: |
-        Provide any additional information you think might be relevant ex. related issues, links to projects using the feature, etc.
-  
