@@ -13,7 +13,7 @@ const outputPath = path.join(root, 'docs/generated/BACKEND_SDK_REFERENCE.md')
 const checkOnly = process.argv.slice(2).includes('--check')
 
 function extractStringUnion(source, typeName) {
-  const match = new RegExp(`export type ${typeName}\s*=\s*([\s\S]*?)\n+export (?:type|const) `).exec(source)
+  const match = new RegExp(`export type ${typeName}\\s*=\\s*([\\s\\S]*?)\\n+export (?:type|const) `).exec(source)
   if (match === null || match[1] === undefined) {
     throw new Error(`Unable to locate canonical ${typeName} union`)
   }
@@ -29,7 +29,7 @@ function requireScenarioImplementations(ids, contractSource, scenarioSource) {
     if (scenarioSource.includes(`id: '${id}'`)) {
       continue
     }
-    const declaration = new RegExp(`export const ([A-Z][A-Z0-9_]*)\s*=\s*'${escapeRegExp(id)}'`).exec(contractSource)
+    const declaration = new RegExp(`export const ([A-Z][A-Z0-9_]*)\\s*=\\s*'${escapeRegExp(id)}'`).exec(contractSource)
     const identifier = declaration?.[1]
     if (identifier === undefined || !scenarioSource.includes(`id: ${identifier}`)) {
       throw new Error(`Canonical TCK scenario ${id} has no literal or exported-constant scenario definition`)
