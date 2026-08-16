@@ -47,7 +47,7 @@ impl IpcValue {
                     .map(|value| {
                         value
                             .as_u64()
-                            .filter(|value| *value <= u8::MAX.into())
+                            .filter(|value| *value <= u64::from(u8::MAX))
                             .map(|value| value as u8)
                             .ok_or_else(|| "malformed Unified BLE Tauri byte value".to_owned())
                     })
