@@ -3,7 +3,15 @@
 const fs = require('fs')
 const path = require('path')
 
-function nodeApiAddonCandidates({ moduleDirectory, addonName, platform = process.platform, arch = process.arch }) {
+const SOURCE_BUILD_ENV = 'UNIFIED_BLE_MANAGER_NATIVE_SOURCE'
+
+function nodeApiAddonCandidates({
+  moduleDirectory,
+  addonName,
+  platform = process.platform,
+  arch = process.arch,
+  preferSourceBuild = process.env[SOURCE_BUILD_ENV] === '1'
+}) {
   if (typeof moduleDirectory !== 'string' || moduleDirectory.length === 0) {
     throw new TypeError('moduleDirectory must be a non-empty string')
   }
@@ -13,12 +21,19 @@ function nodeApiAddonCandidates({ moduleDirectory, addonName, platform = process
   if (typeof platform !== 'string' || typeof arch !== 'string' || platform.length === 0 || arch.length === 0) {
     throw new TypeError('platform and arch must be non-empty strings')
   }
+  if (typeof preferSourceBuild !== 'boolean') {
+    throw new TypeError('preferSourceBuild must be a boolean')
+  }
+
   const filename = `${addonName}.node`
-  return Object.freeze([
-    path.join(moduleDirectory, 'prebuilds', `${platform}-${arch}`, filename),
+  const prebuildCandidate = path.join(moduleDirectory, 'prebuilds', `${platform}-${arch}`, filename)
+  const sourceBuildCandidates = [
     path.join(moduleDirectory, 'build', 'Release', filename),
     path.join(moduleDirectory, 'build', 'Debug', filename)
-  ])
+  ]
+  return Object.freeze(
+    preferSourceBuild ? [...sourceBuildCandidates, prebuildCandidate] : [prebuildCandidate, ...sourceBuildCandidates]
+  )
 }
 
 function loadNodeApiAddon(options) {
@@ -34,4 +49,8 @@ function loadNodeApiAddon(options) {
   return null
 }
 
-module.exports = Object.freeze({ loadNodeApiAddon, nodeApiAddonCandidates })
+module.exports = Object.freeze({
+  SOURCE_BUILD_ENV,
+  loadNodeApiAddon,
+  nodeApiAddonCandidates
+})

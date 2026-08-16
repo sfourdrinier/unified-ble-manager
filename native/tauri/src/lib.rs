@@ -4,7 +4,11 @@ mod wire;
 use std::{future::Future, pin::Pin, sync::Arc};
 
 use serde::{Deserialize, Serialize};
-use tauri::{plugin::TauriPlugin, Manager, Runtime, WebviewWindow};
+use tauri::{
+    plugin::TauriPlugin,
+    webview::PageLoadEvent,
+    Manager, RunEvent, Runtime, WebviewWindow, WindowEvent,
+};
 
 pub use wire::{IpcEventSink, IpcValue};
 
@@ -21,11 +25,18 @@ pub struct AuthenticatedCaller {
 }
 
 impl AuthenticatedCaller {
-    pub(crate) fn from_window<R: Runtime>(window: &WebviewWindow<R>) -> Self {
+    pub(crate) fn new(app_identifier: String, window_label: String) -> Self {
         Self {
-            app_identifier: window.app_handle().config().identifier.clone(),
-            window_label: window.label().to_owned(),
+            app_identifier,
+            window_label,
         }
+    }
+
+    pub(crate) fn from_window<R: Runtime>(window: &WebviewWindow<R>) -> Self {
+        Self::new(
+            window.app_handle().config().identifier.clone(),
+            window.label().to_owned(),
+        )
     }
 }
 
@@ -40,6 +51,13 @@ pub trait IpcDispatcher: Send + Sync + 'static {
         request: IpcValue,
         event_sink: IpcEventSink,
     ) -> DispatchFuture<'a>;
+
+    /// Revokes all leases and resources owned by this authenticated caller.
+    ///
+    /// Implementations must make the caller inadmissible before returning so
+    /// a replacement document cannot race cleanup and inherit stale ownership.
+    /// Slow native settlement may continue internally after that revocation.
+    fn release_caller(&self, caller: AuthenticatedCaller);
 }
 
 pub struct PluginState {
@@ -69,14 +87,36 @@ impl PluginBuilder {
     }
 
     pub fn build<R: Runtime>(self) -> TauriPlugin<R> {
-        let dispatcher = self.dispatcher;
+        let setup_dispatcher = Arc::clone(&self.dispatcher);
+        let page_dispatcher = Arc::clone(&self.dispatcher);
+        let event_dispatcher = self.dispatcher;
+
         tauri::plugin::Builder::new("unified-ble-manager")
             .invoke_handler(tauri::generate_handler![commands::invoke])
             .setup(move |app, _api| {
                 let _ = app.manage(PluginState {
-                    dispatcher: Arc::clone(&dispatcher),
+                    dispatcher: Arc::clone(&setup_dispatcher),
                 });
                 Ok(())
+            })
+            .on_page_load(move |webview, payload| {
+                if payload.event() == PageLoadEvent::Started {
+                    let window = webview.window();
+                    page_dispatcher.release_caller(AuthenticatedCaller::new(
+                        webview.app_handle().config().identifier.clone(),
+                        window.label().to_owned(),
+                    ));
+                }
+            })
+            .on_event(move |app, event| {
+                if let RunEvent::WindowEvent { label, event, .. } = event {
+                    if matches!(event, WindowEvent::Destroyed) {
+                        event_dispatcher.release_caller(AuthenticatedCaller::new(
+                            app.config().identifier.clone(),
+                            label.clone(),
+                        ));
+                    }
+                }
             })
             .build()
     }

@@ -7,11 +7,15 @@ const path = require('path')
 const { NODE_API_VERSION, NATIVE_PREBUILD_TARGETS } = require('./targets')
 
 const root = path.resolve(__dirname, '../..')
+const LOCAL_BUILD_DIRECTORIES = new Set(['build', 'obj.target', 'target'])
 
 function listNativeBinaries(directory) {
   if (!fs.existsSync(directory)) return []
   const files = []
   for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+    if (entry.isDirectory() && LOCAL_BUILD_DIRECTORIES.has(entry.name)) {
+      continue
+    }
     const entryPath = path.join(directory, entry.name)
     if (entry.isDirectory()) files.push(...listNativeBinaries(entryPath))
     else if (entry.isFile() && entry.name.endsWith('.node')) files.push(entryPath)
@@ -79,4 +83,8 @@ function main(argv) {
   )
 }
 
-main(process.argv.slice(2))
+if (require.main === module) {
+  main(process.argv.slice(2))
+}
+
+module.exports = Object.freeze({ LOCAL_BUILD_DIRECTORIES, listNativeBinaries, main })
