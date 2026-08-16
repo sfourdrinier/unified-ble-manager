@@ -1,10 +1,12 @@
 mod commands;
+mod wire;
 
 use std::{future::Future, pin::Pin, sync::Arc};
 
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
-use tauri::{ipc::Channel, plugin::TauriPlugin, Manager, Runtime, WebviewWindow};
+use tauri::{plugin::TauriPlugin, Manager, Runtime, WebviewWindow};
+
+pub use wire::{IpcEventSink, IpcValue};
 
 /// Full frontend command used by `unified-ble-manager/tauri`.
 pub const PLUGIN_COMMAND: &str = "plugin:unified-ble-manager|invoke";
@@ -27,7 +29,7 @@ impl AuthenticatedCaller {
     }
 }
 
-pub type DispatchFuture<'a> = Pin<Box<dyn Future<Output = Value> + Send + 'a>>;
+pub type DispatchFuture<'a> = Pin<Box<dyn Future<Output = IpcValue> + Send + 'a>>;
 
 /// Framework-neutral command authority implemented by the native BLE host.
 /// It receives only authenticated caller facts plus copied IPC data.
@@ -35,8 +37,8 @@ pub trait IpcDispatcher: Send + Sync + 'static {
     fn dispatch<'a>(
         &'a self,
         caller: AuthenticatedCaller,
-        request: Value,
-        event_channel: Channel<Value>,
+        request: IpcValue,
+        event_sink: IpcEventSink,
     ) -> DispatchFuture<'a>;
 }
 

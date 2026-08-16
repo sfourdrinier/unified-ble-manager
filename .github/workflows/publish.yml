@@ -90,6 +90,7 @@ jobs:
         with:
           name: ${{ matrix.artifactName }}
           path: .native-prebuild-artifact
+          include-hidden-files: true
           if-no-files-found: error
           retention-days: 7
 

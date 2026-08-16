@@ -25,7 +25,21 @@ describe('Tauri v2 Rust plugin boundary', () => {
     expect(commands).toContain('WebviewWindow<R>')
     expect(commands).toContain('AuthenticatedCaller::from_window')
     expect(commands).toContain('Channel<Value>')
+    expect(commands).toContain('IpcValue::from_wire')
+    expect(commands).toContain('response.into_wire()')
     expect(commands).not.toMatch(/authenticatedClientId.*request/i)
+  })
+
+  test('preserves byte identity through a typed Rust wire value and encoded event sink', () => {
+    const wire = read('native/tauri/src/wire.rs')
+    const plugin = read('native/tauri/src/lib.rs')
+
+    expect(wire).toContain('pub enum IpcValue')
+    expect(wire).toContain('Bytes(Vec<u8>)')
+    expect(wire).toContain('$__unifiedBleBytesV1')
+    expect(wire).toContain('pub struct IpcEventSink')
+    expect(plugin).toContain('request: IpcValue')
+    expect(plugin).toContain('event_sink: IpcEventSink')
   })
 
   test('provides an injectable dispatcher rather than embedding a second public BLE API', () => {

@@ -12,6 +12,7 @@ import type {
 
 /** Tauri v2 plugin command registered by the Rust crate. */
 export const TAURI_BLE_PLUGIN_COMMAND = 'plugin:unified-ble-manager|invoke'
+const TAURI_BYTES_WIRE_TAG = '$__unifiedBleBytesV1'
 
 /** Structural subset of `@tauri-apps/api/core.invoke` used by this package. */
 export type TauriInvoke = <Response>(command: string, args?: Record<string, unknown>) => Promise<Response>
@@ -42,7 +43,7 @@ export class TauriBleIpcTransport<Attachment extends string, Client extends stri
 {
   private readonly invokeCore: TauriInvoke
   private readonly command: string
-  private readonly eventChannel: TauriChannel<IpcBleEvent>
+  private readonly eventChannel: TauriChannel<unknown>
   private readonly listeners = new Set<(event: IpcBleEvent) => void>()
 
   constructor(options: TauriBleIpcTransportOptions) {
@@ -54,21 +55,23 @@ export class TauriBleIpcTransport<Attachment extends string, Client extends stri
     if (this.command.length === 0) {
       throw new TypeError('TauriBleIpcTransport command must not be empty')
     }
-    this.eventChannel = new options.Channel<IpcBleEvent>()
-    this.eventChannel.onmessage = event => {
+    this.eventChannel = new options.Channel<unknown>()
+    this.eventChannel.onmessage = wireEvent => {
+      const event = decodeTauriWireValue(wireEvent) as IpcBleEvent
       for (const listener of [...this.listeners]) {
         listener(event)
       }
     }
   }
 
-  invoke<Operation extends string>(
+  async invoke<Operation extends string>(
     request: IpcBleRequest<Attachment, Client, Operation>
   ): Promise<IpcBleResponse<Attachment, Client>> {
-    return this.invokeCore<IpcBleResponse<Attachment, Client>>(this.command, {
-      request,
+    const response = await this.invokeCore<unknown>(this.command, {
+      request: encodeTauriWireValue(request),
       eventChannel: this.eventChannel
     })
+    return decodeTauriWireValue(response) as IpcBleResponse<Attachment, Client>
   }
 
   subscribe(listener: (event: IpcBleEvent) => void): () => void {
@@ -78,13 +81,63 @@ export class TauriBleIpcTransport<Attachment extends string, Client extends stri
     }
   }
 
-  acknowledge(
+  async acknowledge(
     rendererLease: IpcClientLeaseIdentity,
     eventId: string
   ): Promise<IpcEventAcknowledgeResponse | IpcFailureResponse> {
-    return this.invokeCore<IpcEventAcknowledgeResponse | IpcFailureResponse>(this.command, {
-      request: { kind: 'event.ack', rendererLease, eventId },
+    const response = await this.invokeCore<unknown>(this.command, {
+      request: encodeTauriWireValue({ kind: 'event.ack', rendererLease, eventId }),
       eventChannel: this.eventChannel
     })
+    return decodeTauriWireValue(response) as IpcEventAcknowledgeResponse | IpcFailureResponse
   }
+}
+
+/** Encodes bytes explicitly before Tauri serializes nested command arguments as JSON. */
+export function encodeTauriWireValue(value: unknown): unknown {
+  if (value instanceof Uint8Array) {
+    return { [TAURI_BYTES_WIRE_TAG]: Array.from(value) }
+  }
+  if (Array.isArray(value)) {
+    return value.map(item => encodeTauriWireValue(item))
+  }
+  if (isWireRecord(value)) {
+    const encoded: Record<string, unknown> = {}
+    for (const [key, item] of Object.entries(value)) {
+      encoded[key] = encodeTauriWireValue(item)
+    }
+    return encoded
+  }
+  return value
+}
+
+/** Reconstructs independently owned bytes from Rust responses and Channel messages. */
+export function decodeTauriWireValue(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(item => decodeTauriWireValue(item))
+  }
+  if (!isWireRecord(value)) {
+    return value
+  }
+  if (Object.prototype.hasOwnProperty.call(value, TAURI_BYTES_WIRE_TAG)) {
+    const keys = Object.keys(value)
+    const bytes = value[TAURI_BYTES_WIRE_TAG]
+    if (keys.length !== 1 || !Array.isArray(bytes) || !bytes.every(isByte)) {
+      throw new TypeError('Malformed Unified BLE Tauri byte value')
+    }
+    return new Uint8Array(bytes)
+  }
+  const decoded: Record<string, unknown> = {}
+  for (const [key, item] of Object.entries(value)) {
+    decoded[key] = decodeTauriWireValue(item)
+  }
+  return decoded
+}
+
+function isWireRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function isByte(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= 255
 }

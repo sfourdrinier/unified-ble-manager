@@ -64,6 +64,7 @@ describe('native Node-API prebuild distribution', () => {
     expect(publish).toContain('native-prebuild-plan:')
     expect(publish).toContain('native-prebuild:')
     expect(publish).toContain('actions/upload-artifact@v7')
+    expect(publish).toContain('include-hidden-files: true')
     expect(publish).toContain('actions/download-artifact@v8')
     expect(publish).toContain("pattern: 'native-prebuild-*'")
     expect(publish).toContain('pnpm native-prebuild:verify --require-all --write-manifest')

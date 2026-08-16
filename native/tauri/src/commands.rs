@@ -1,7 +1,7 @@
 use serde_json::Value;
 use tauri::{ipc::Channel, Runtime, State, WebviewWindow};
 
-use crate::{AuthenticatedCaller, PluginState};
+use crate::{AuthenticatedCaller, IpcEventSink, IpcValue, PluginState};
 
 #[tauri::command]
 pub async fn invoke<R: Runtime>(
@@ -12,5 +12,8 @@ pub async fn invoke<R: Runtime>(
 ) -> Result<Value, String> {
     let caller = AuthenticatedCaller::from_window(&window);
     let dispatcher = state.dispatcher();
-    Ok(dispatcher.dispatch(caller, request, event_channel).await)
+    let request = IpcValue::from_wire(request)?;
+    let event_sink = IpcEventSink::new(event_channel);
+    let response = dispatcher.dispatch(caller, request, event_sink).await;
+    Ok(response.into_wire())
 }
