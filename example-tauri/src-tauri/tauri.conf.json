@@ -3,7 +3,7 @@
   "productName": "Unified BLE Tauri Proof",
   "version": "0.1.0",
   "identifier": "com.unifiedblemanager.tauriproof",
-  "build": { "frontendDist": ".." },
+  "build": { "frontendDist": "../frontend" },
   "app": {
     "windows": [{ "label": "main", "title": "Unified BLE Tauri Proof", "width": 720, "height": 480 }],
     "security": { "csp": null }
