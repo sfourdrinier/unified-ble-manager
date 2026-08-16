@@ -1,0 +1,12 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Unified BLE Tauri Proof",
+  "version": "0.1.0",
+  "identifier": "com.unifiedblemanager.tauriproof",
+  "build": { "frontendDist": ".." },
+  "app": {
+    "windows": [{ "label": "main", "title": "Unified BLE Tauri Proof", "width": 720, "height": 480 }],
+    "security": { "csp": null }
+  },
+  "bundle": { "active": false, "icon": ["../../docs/logo.png"] }
+}

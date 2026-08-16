@@ -1,0 +1,9 @@
+{
+  "name": "unified-ble-manager-tauri-example",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@tauri-apps/api": "^2.0.0",
+    "unified-ble-manager": "file:.."
+  }
+}

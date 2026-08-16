@@ -31,6 +31,11 @@ The stable 4.0 package includes:
 
 Meta Quest, peripheral mode, Bluetooth Classic, LE Audio, L2CAP CoC, and the controllable nRF52840 physical fault-injection controller remain deferred to 4.1. Deterministic fault injection remains part of the 4.0 engineering proof, but is never presented as physical-radio evidence.
 
+Tauri v2 desktop is part of 4.0: the package includes an isolated webview
+surface and Rust plugin source for macOS, Windows, and Linux. Its public support
+label remains evidence-driven; compile and deterministic proof alone do not
+claim a physical-radio run.
+
 ## Product ownership
 
 The package owns portable BLE-central mechanics: adapter state, scanning/chooser behavior, connection and GATT lifecycles, cancellation, operation ordering, bounded streams, capability composition, normalized errors, and diagnostics.
@@ -45,13 +50,13 @@ Stable `4.0.0` defines the public 4.x package/API contract. It replaces the alph
 
 Platform support labels remain evidence-based and independent from package SemVer:
 
-| Label | Minimum evidence meaning |
-| --- | --- |
-| Experimental | Contract/implementation exists but support qualification is incomplete or may change. |
-| Preview | Intended surface plus deterministic/package proof with explicit live limitations. |
-| Live Preview | Preview requirements plus the declared essential physical-radio vertical slice. |
-| Supported | Declared live-radio scenarios and packaging requirements pass. |
-| Reliability-qualified | Required background, reconnect, soak, and reliability evidence also passes. |
+| Label                 | Minimum evidence meaning                                                              |
+| --------------------- | ------------------------------------------------------------------------------------- |
+| Experimental          | Contract/implementation exists but support qualification is incomplete or may change. |
+| Preview               | Intended surface plus deterministic/package proof with explicit live limitations.     |
+| Live Preview          | Preview requirements plus the declared essential physical-radio vertical slice.       |
+| Supported             | Declared live-radio scenarios and packaging requirements pass.                        |
+| Reliability-qualified | Required background, reconnect, soak, and reliability evidence also passes.           |
 
 No static platform matrix, package version, compile result, or mock can substitute for an instantiated backend's typed capability report and retained evidence.
 
@@ -74,13 +79,13 @@ It does not require every implemented backend to reach the same support label on
 
 ## Release progression
 
-| Milestone | Meaning |
-| --- | --- |
-| Alpha train | Public 4.0 contract implementation and hardening; published on npm `next`. |
-| Repository migration | `v4.0.0-alpha.40`; canonical source moves to `sfourdrinier/unified-ble-manager`. |
-| Stable 4.0.0 | Public package/API contract moves to normal SemVer and npm `latest`; support labels remain evidence-derived. |
-| 4.0.x | Backward-compatible fixes/hardening within the stable 4.0 contract. |
-| 4.1 | Deferred features/platform work and any compatible contract extensions planned for the next minor line. |
+| Milestone            | Meaning                                                                                                      |
+| -------------------- | ------------------------------------------------------------------------------------------------------------ |
+| Alpha train          | Public 4.0 contract implementation and hardening; published on npm `next`.                                   |
+| Repository migration | `v4.0.0-alpha.40`; canonical source moves to `sfourdrinier/unified-ble-manager`.                             |
+| Stable 4.0.0         | Public package/API contract moves to normal SemVer and npm `latest`; support labels remain evidence-derived. |
+| 4.0.x                | Backward-compatible fixes/hardening within the stable 4.0 contract.                                          |
+| 4.1                  | Deferred features/platform work and any compatible contract extensions planned for the next minor line.      |
 
 The 3.x `react-native-ble-plx` line remains separate historical/maintenance context. Its API, Base64 bridge, `BlePort`, `PortBleManager`, static `supports()` matrix, examples, and source layout are migration/characterization inputs only and do not define 4.x behavior.
 

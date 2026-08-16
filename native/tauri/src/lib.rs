@@ -1,3 +1,4 @@
+mod btleplug_dispatcher;
 mod commands;
 mod wire;
 
@@ -9,6 +10,7 @@ use tauri::{
     WindowEvent,
 };
 
+pub use btleplug_dispatcher::{BtleplugDispatcher, BtleplugDispatcherOptions};
 pub use wire::{IpcEventSink, IpcValue};
 
 /// Full frontend command used by `unified-ble-manager/tauri`.
