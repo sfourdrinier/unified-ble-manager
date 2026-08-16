@@ -4,18 +4,36 @@ Tauri desktop support uses the same versioned IPC contract and client policy as
 Electron, while the Rust plugin owns the physical BLE adapter. Webview code
 cannot select or load a Node native addon.
 
-## Frontend transport
+## Install
+
+Install the JavaScript package and Tauri API in the application:
+
+```sh
+pnpm add unified-ble-manager @tauri-apps/api
+```
+
+The npm artifact contains the Rust crate source, so Cargo builds it for the
+consumer's exact operating system and architecture. There is no Node addon in
+the webview and no native binary download or postinstall script.
+
+Reference the packaged crate from `src-tauri/Cargo.toml`:
+
+```toml
+[dependencies]
+tauri-plugin-unified-ble-manager = { path = "../node_modules/unified-ble-manager/native/tauri" }
+```
+
+## Frontend manager
 
 Pass the official Tauri v2 core APIs explicitly:
 
 ```ts
 import { Channel, invoke } from '@tauri-apps/api/core'
-import { TauriBleClient, TauriBleIpcTransport } from 'unified-ble-manager/tauri'
+import { createTauriBleManager } from 'unified-ble-manager/tauri'
 
-const transport = new TauriBleIpcTransport({ invoke, Channel })
-const client = new TauriBleClient(transport)
-
-await client.initialize()
+const manager = await createTauriBleManager({ invoke, Channel })
+const state = await manager.adapterState()
+const scan = await manager.scan({ serviceUuids: ['180d'] })
 ```
 
 The transport calls the scoped `plugin:unified-ble-manager|invoke` command for
@@ -27,23 +45,27 @@ same IPC authority.
 The consuming Tauri application already owns that runtime and passes its
 official `invoke` and `Channel` exports to the transport.
 
-## Rust plugin
+`createTauriBleProvider({ invoke, Channel })` is also available when an
+application wants a reusable host factory. Low-level `TauriBleIpcTransport` and
+`TauriBleClient` exports remain available for protocol tests and custom hosts.
 
-The npm artifact includes the publishable Tauri v2 crate source. Until the crate
-is released independently on crates.io, reference that exact source from the
-application:
+## Rust plugin and radio backend
 
-```toml
-[dependencies]
-tauri-plugin-unified-ble-manager = { path = "../node_modules/unified-ble-manager/native/tauri" }
-```
+Register the included production dispatcher:
 
-Register the plugin with the native IPC dispatcher:
-
-```rust,ignore
+```rust
 tauri::Builder::default()
-    .plugin(tauri_plugin_unified_ble_manager::PluginBuilder::new(dispatcher).build())
+    .plugin(
+        tauri_plugin_unified_ble_manager::PluginBuilder::new(
+            tauri_plugin_unified_ble_manager::BtleplugDispatcher::default(),
+        )
+        .build(),
+    )
 ```
+
+It uses CoreBluetooth on macOS, WinRT on Windows, and BlueZ/D-Bus on Linux.
+Multiple-adapter hosts fail closed until trusted Rust configuration supplies an
+exact `BtleplugDispatcherOptions.adapter_id`.
 
 Grant the generated default permission only to intended application windows:
 
@@ -66,7 +88,18 @@ Grant the generated default permission only to intended application windows:
 - Tauri command permissions must grant the plugin only to intended windows and
   webviews.
 
-The physical platform dispatcher and full `BleManager` proxy remain required
-4.0 slices tracked in
-[`#19`](https://github.com/sfourdrinier/unified-ble-manager/issues/19). The
-plugin boundary alone does not claim physical-radio support.
+## Platform prerequisites
+
+- macOS: add an appropriate Bluetooth usage description to the app bundle and
+  grant Bluetooth permission when prompted.
+- Windows: package with the Bluetooth capability required by the application.
+- Linux: install BlueZ and grant the app/user access to its system D-Bus API;
+  build hosts also need `pkg-config` and D-Bus development headers.
+
+## Evidence status
+
+The implementation and CI provide deterministic JavaScript proof plus Rust
+compile/lint proof on macOS, Windows, and Linux. This is not physical-radio
+evidence. The backend remains Experimental until retained scan/connect/GATT and
+sustained-notification runs justify a higher support label. See
+[`docs/GAPS.4.0.md`](GAPS.4.0.md).

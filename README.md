@@ -33,21 +33,21 @@ React Native, Web, macOS CoreBluetooth, and Windows WinRT consumers do not need 
 
 ## Public entrypoints
 
-| Import | Purpose |
-| --- | --- |
-| `unified-ble-manager` | Host-neutral manager and shared public types; selects no radio. |
-| `unified-ble-manager/react-native` | React Native Android/Apple provider and manager construction. |
-| `unified-ble-manager/web` | Browser Web Bluetooth provider, chooser, and matched manager session. |
-| `unified-ble-manager/electron/main` | Trusted Electron-main backend factories and IPC router/binding. |
-| `unified-ble-manager/electron/renderer` | Versioned renderer IPC client; never a radio factory. |
-| `unified-ble-manager/tauri` | Tauri v2 webview transport over the shared desktop IPC contract. |
-| `unified-ble-manager/node/corebluetooth` | macOS CoreBluetooth Node provider. |
-| `unified-ble-manager/node/winrt` | Windows WinRT Node provider. |
-| `unified-ble-manager/node/bluez` | Linux BlueZ D-Bus provider. |
-| `unified-ble-manager/backend-sdk` | Public backend contract and third-party backend authoring surface. |
-| `unified-ble-manager/testing` | Deterministic backend, TCK, and test utilities. |
-| `unified-ble-manager/codecs` | Explicit codecs such as Base64 helpers for external protocols. |
-| `unified-ble-manager/cli` | Node CLI surface. |
+| Import                                   | Purpose                                                               |
+| ---------------------------------------- | --------------------------------------------------------------------- |
+| `unified-ble-manager`                    | Host-neutral manager and shared public types; selects no radio.       |
+| `unified-ble-manager/react-native`       | React Native Android/Apple provider and manager construction.         |
+| `unified-ble-manager/web`                | Browser Web Bluetooth provider, chooser, and matched manager session. |
+| `unified-ble-manager/electron/main`      | Trusted Electron-main backend factories and IPC router/binding.       |
+| `unified-ble-manager/electron/renderer`  | Versioned renderer IPC client; never a radio factory.                 |
+| `unified-ble-manager/tauri`              | Tauri v2 webview transport over the shared desktop IPC contract.      |
+| `unified-ble-manager/node/corebluetooth` | macOS CoreBluetooth Node provider.                                    |
+| `unified-ble-manager/node/winrt`         | Windows WinRT Node provider.                                          |
+| `unified-ble-manager/node/bluez`         | Linux BlueZ D-Bus provider.                                           |
+| `unified-ble-manager/backend-sdk`        | Public backend contract and third-party backend authoring surface.    |
+| `unified-ble-manager/testing`            | Deterministic backend, TCK, and test utilities.                       |
+| `unified-ble-manager/codecs`             | Explicit codecs such as Base64 helpers for external protocols.        |
+| `unified-ble-manager/cli`                | Node CLI surface.                                                     |
 
 Profile entrypoints are also public: `profiles/commands`, `profiles/standard-commands`, `profiles/heart-rate`, `profiles/battery-service`, `profiles/device-information`, `profiles/health-thermometer`, `profiles/blood-pressure`, and `profiles/ieee-11073`. See [`docs/PROFILES_AND_COMMANDS.md`](docs/PROFILES_AND_COMMANDS.md).
 
@@ -92,10 +92,7 @@ Create the platform-specific manager explicitly:
 
 ```ts
 import { Platform } from 'react-native'
-import {
-  createReactNativeBleManager,
-  getNativeUnifiedBleProtocolControl
-} from 'unified-ble-manager/react-native'
+import { createReactNativeBleManager, getNativeUnifiedBleProtocolControl } from 'unified-ble-manager/react-native'
 
 const manager = await createReactNativeBleManager({
   platform: Platform.OS === 'ios' ? 'apple' : 'android',
@@ -168,9 +165,11 @@ See [`docs/ELECTRON.md`](docs/ELECTRON.md) for ownership, reload/rebind, and IPC
 
 ## Tauri v2
 
-Tauri webviews use `TauriBleIpcTransport` with the official Tauri v2 `invoke`
-and `Channel` APIs. The Rust plugin owns the radio; the webview imports no Node
-backend or native addon. See [`docs/TAURI.md`](docs/TAURI.md).
+Tauri webviews use `createTauriBleManager({ invoke, Channel })` with the
+official Tauri v2 APIs. The included Rust crate owns CoreBluetooth, WinRT, or
+BlueZ; the webview imports no Node backend or native addon. Cargo compiles the
+packaged crate source for the consumer's target. See
+[`docs/TAURI.md`](docs/TAURI.md).
 
 ## Node and desktop
 
