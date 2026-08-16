@@ -129,6 +129,14 @@ Source and `node-gyp` remain available as an explicit fallback. For example:
 pnpm --dir node_modules/unified-ble-manager exec node-gyp rebuild --release --directory native/electron/corebluetooth
 ```
 
+Published prebuilds remain the default after a source build. To deliberately
+load the local `build/Release` (then `build/Debug`) artifact before the bundled
+prebuild, set the explicit process-level override:
+
+```sh
+UNIFIED_BLE_MANAGER_NATIVE_SOURCE=1 your-electron-command
+```
+
 With Node-API v8, an Electron-targeted rebuild is not required merely because
 Electron's module ABI differs from Node's. Rebuild only when using an
 unsupported target, changing native source, or deliberately overriding the
