@@ -72,4 +72,13 @@ describe('native Node-API prebuild distribution', () => {
       publish.indexOf('PACK_OUTPUT="$(npm pack --pack-destination .release-package)"')
     )
   })
+
+  test('accepts pnpm extra -- before --backend', () => {
+    const { parseBackend } = require('../scripts/native-prebuilds/build.js')
+
+    expect(parseBackend(['--backend', 'winrt'])).toBe('winrt')
+    expect(parseBackend(['--', '--backend', 'corebluetooth'])).toBe('corebluetooth')
+    expect(() => parseBackend([])).toThrow(/Usage/)
+    expect(() => parseBackend(['--backend'])).toThrow(/Usage/)
+  })
 })

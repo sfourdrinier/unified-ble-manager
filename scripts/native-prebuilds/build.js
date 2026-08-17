@@ -9,11 +9,16 @@ const { NODE_API_VERSION, NATIVE_PREBUILD_TARGETS } = require('./targets')
 const root = path.resolve(__dirname, '../..')
 
 function parseBackend(argv) {
-  const backendIndex = argv.indexOf('--backend')
-  if (backendIndex === -1 || backendIndex + 1 >= argv.length || argv.length !== 2) {
+  const args = argv.filter(argument => argument !== '--')
+  const backendIndex = args.indexOf('--backend')
+  if (backendIndex === -1 || backendIndex + 1 >= args.length) {
     throw new Error('Usage: node scripts/native-prebuilds/build.js --backend <corebluetooth|winrt>')
   }
-  return argv[backendIndex + 1]
+  const backend = args[backendIndex + 1]
+  if (backend !== 'corebluetooth' && backend !== 'winrt') {
+    throw new Error('Usage: node scripts/native-prebuilds/build.js --backend <corebluetooth|winrt>')
+  }
+  return backend
 }
 
 function runNodeGyp(target) {
@@ -88,4 +93,8 @@ function main(argv) {
   )
 }
 
-main(process.argv.slice(2))
+module.exports = { parseBackend, main }
+
+if (require.main === module) {
+  main(process.argv.slice(2))
+}
