@@ -636,7 +636,7 @@ const scopedLongWriteTerminal: OperationTerminalRecord<'package-surface-attachme
 
 const browserNavigatorManagerOptions: NavigatorWebBleManagerOptions = {
   environment: {
-    implementationVersion: '4.0.0',
+    implementationVersion: '4.0.0-rc.0',
     browserEngine: 'test',
     bluetooth: navigator.bluetooth,
     isSecureContext: () => true,

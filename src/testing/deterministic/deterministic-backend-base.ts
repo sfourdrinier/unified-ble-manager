@@ -81,6 +81,7 @@ import {
   type DiagnosticTraceDocument,
   type DiagnosticTraceRecord
 } from '../../diagnostics/trace-format'
+import { UNIFIED_BLE_IMPLEMENTATION_VERSION } from '../../implementation-version'
 
 export interface DeterministicBackendTraceRecord extends DiagnosticTraceRecord {
   readonly cause: BleErrorCode | null
@@ -180,7 +181,7 @@ function createDeterministicMaximumWriteLengthRegistration(
     evidence: Object.freeze({
       receiptId: 'deterministic-maximum-write-length-v1',
       evidenceLevel: 'deterministic' as const,
-      implementationVersion: '4.0.0',
+      implementationVersion: UNIFIED_BLE_IMPLEMENTATION_VERSION,
       sourceDigest: 'deterministic-virtual-peripheral-max-write-length-v1',
       scenarioIds,
       limitations

@@ -12,8 +12,11 @@ const root = path.join(__dirname, '..')
 const read = relativePath => fs.readFileSync(path.join(root, relativePath), 'utf8').replace(/\r\n/g, '\n')
 const packageVersion = JSON.parse(read('package.json')).version
 const stable40 = packageVersion === '4.0.0'
+const rcVersionMatch = /^4\.0\.0-rc\.(\d+)$/u.exec(packageVersion)
 const alphaVersionMatch = /^4\.0\.0-alpha\.(\d+)$/u.exec(packageVersion)
-if (!stable40 && alphaVersionMatch === null) throw new Error(`Expected 4.0.0 or a 4.0 alpha package version, received ${packageVersion}`)
+if (!stable40 && rcVersionMatch === null && alphaVersionMatch === null) {
+  throw new Error(`Expected 4.0.0, a 4.0 RC, or a 4.0 alpha package version, received ${packageVersion}`)
+}
 const currentAlpha = alphaVersionMatch === null ? null : Number(alphaVersionMatch[1])
 const previousAlphaVersion = currentAlpha === null ? null : `v4.0.0-alpha.${String(currentAlpha - 1)}`
 
@@ -67,8 +70,8 @@ const deletedTransitionalAdrs = [
 
 describe('4.0 documentation honesty', () => {
   test('current public documentation follows the package release channel', () => {
-    if (stable40) {
-      expect(packageVersion).toBe('4.0.0')
+    if (stable40 || rcVersionMatch) {
+      expect(packageVersion).toMatch(/^4\.0\.0(?:-rc\.\d+)?$/u)
       return
     }
     for (const document of architectureAuthorityDocuments) {
@@ -296,9 +299,10 @@ describe('4.0 documentation honesty', () => {
     const history = read('CHANGELOG_HISTORY.md')
 
     expect(readme).toContain('4.0.0 is the first stable release')
-    expect(readme).toContain('pnpm add unified-ble-manager@4.0.0')
+    expect(readme).toContain('pnpm add unified-ble-manager')
+    expect(readme).not.toContain('pnpm add unified-ble-manager@4.0.0')
     expect(readme).toContain('`v4.0.0-alpha.40` was the migration point')
-    expect(changelog).toContain('## [4.0.0] - 2026-08-16')
+    expect(changelog).toContain('## [4.0.0-rc.0]')
     expect(history).toContain('## [4.0.0-alpha.40]')
     expect(readme).toContain('createReactNativeBleManager')
     expect(readme).toContain('`hostSessionScope` is a stable host-owned security scope')
@@ -316,8 +320,9 @@ describe('4.0 documentation honesty', () => {
     const release = read('RELEASE.md')
     const platforms = read('docs/PLATFORMS.md')
 
-    expect(readme).toContain('Stable versions publish to npm `latest`; prereleases publish to `next`')
+    expect(readme).toContain('`4.0.0-rc.*` versions publish to npm `latest`')
     expect(readme).toContain('npm trusted publishing/OIDC with provenance')
+    expect(release).toContain('git tag -a v4.0.0-rc.0')
     expect(release).toContain('git tag -a v4.0.0')
     expect(release).toContain('npm trusted publishing/OIDC')
     expect(release).toContain('publishes with provenance')

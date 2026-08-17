@@ -74,9 +74,31 @@ npm pack --dry-run
 
 CI additionally owns the platform-specific native compilation and ABI lanes.
 
+## Releasing 4.0.0-rc.0
+
+`4.0.0-rc.*` is the first publication from this repository. Those versions publish to npm `latest` so a bare `pnpm add unified-ble-manager` installs the current 4.0 line. The GitHub Release is marked prerelease. The workflow still requires the tag to identify the exact current `main` commit before initial publication.
+
+On release day:
+
+```sh
+git fetch origin --tags
+git checkout main
+git pull --ff-only origin main
+
+test "$(git branch --show-current)" = "main"
+test "$(node -p "require('./package.json').version")" = "4.0.0-rc.0"
+git diff --exit-code
+git diff --cached --exit-code
+
+git tag -a v4.0.0-rc.0 -m "v4.0.0-rc.0"
+git push origin v4.0.0-rc.0
+```
+
+Do not push another commit to `main` between the final verification and the tag push.
+
 ## Releasing 4.0.0
 
-The source version is prepared on `main` before the tag. The release workflow verifies that a stable tag points at the exact current `main` commit before initial publication; do not create a stable tag from a side branch or an older commit.
+The source version is prepared on `main` before the tag. The release workflow verifies that a latest-channel tag points at the exact current `main` commit before initial publication; do not create that tag from a side branch or an older commit.
 
 On release day:
 
@@ -104,7 +126,7 @@ For a valid version tag, `.github/workflows/publish.yml`:
 2. loads each prebuild under Node and the same file under Electron;
 3. assembles and hashes the complete prebuild matrix into `native/PREBUILDS.json`;
 4. verifies tag name and `package.json` version agree;
-5. classifies stable versus prerelease channel;
+5. classifies the npm dist-tag (`4.0.0-rc.*` and later stables to `latest`; other prereleases to `next`);
 6. before an initial stable publication, verifies the tag commit equals the current `main` commit;
 7. validates evidence-record syntax/integrity without manufacturing support claims;
 8. runs package, plugin, lint/typecheck, generated-artifact, packed-consumer, and deterministic Electron checks;
@@ -122,19 +144,21 @@ Stable versions publish to `latest`. Hyphenated SemVer prereleases publish to `n
 After the workflow succeeds:
 
 ```sh
-npm view unified-ble-manager@4.0.0 version
+npm view unified-ble-manager@4.0.0-rc.0 version
 npm view unified-ble-manager dist-tags --json
-npm view unified-ble-manager@4.0.0 repository --json
-npm view unified-ble-manager@4.0.0 license
+npm view unified-ble-manager@4.0.0-rc.0 repository --json
+npm view unified-ble-manager@4.0.0-rc.0 license
 ```
 
 Then verify:
 
-- npm `latest` resolves to `4.0.0`;
+- npm `latest` resolves to `4.0.0-rc.0`;
 - the npm package page shows provenance for the published artifact;
-- the GitHub Release exists at `v4.0.0` and is not marked prerelease;
+- the GitHub Release exists at `v4.0.0-rc.0` and is marked prerelease;
 - its attached tarball/SBOM/license artifacts correspond to the release workflow output;
-- a clean consumer can install `unified-ble-manager@4.0.0` and import the documented host entrypoints.
+- a clean consumer can install `unified-ble-manager` (no version pin) and import the documented host entrypoints.
+
+After the later stable tag, repeat the same checks for `4.0.0`. `latest` then moves to `4.0.0`.
 
 ## Failed release or partial publish
 

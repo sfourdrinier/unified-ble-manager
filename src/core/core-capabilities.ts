@@ -12,6 +12,7 @@ import { contractError } from '../backend-contract/errors'
 import type { CharacteristicPath, MaximumWriteLengthObservation } from '../backend-contract/gatt'
 import type { WriteMode } from '../backend-contract/operations'
 import { version, versionRange, type SerializableRecord } from '../backend-contract/primitives'
+import { UNIFIED_BLE_IMPLEMENTATION_VERSION } from '../implementation-version'
 
 type CurrentCharacteristicPath<Attachment extends string> = CharacteristicPath<
   Attachment,
@@ -121,7 +122,7 @@ function createLongWriteRegistration() {
     evidence: Object.freeze({
       receiptId: 'deterministic-core-long-write-v1',
       evidenceLevel: 'deterministic' as const,
-      implementationVersion: '4.0.0',
+      implementationVersion: UNIFIED_BLE_IMPLEMENTATION_VERSION,
       sourceDigest: 'core-emulated-sequential-chunked-write-v1',
       scenarioIds: longWriteScenarioIds,
       limitations: Object.freeze([

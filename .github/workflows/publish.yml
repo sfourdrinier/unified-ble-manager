@@ -15,6 +15,7 @@
 # Release flow: merge release PR → manually tag vX.Y.Z on main → push tag →
 # approve npm environment if required → this workflow publishes the package
 # with provenance, then creates the GitHub Release. Tags stay manual. See RELEASE.md.
+# 4.0.0-rc.* publishes to npm latest so a bare install gets the current 4.0 line.
 #
 # Stable SemVer describes the public package/API contract. Backend support labels
 # remain evidence-derived and are not promoted merely because the package is stable.
@@ -268,7 +269,10 @@ jobs:
             echo "Root package name must be unified-ble-manager, got ${ROOT_NAME}"
             exit 1
           fi
-          if [[ "$ROOT_VER" == *-* ]]; then
+          if [[ "$ROOT_VER" == 4.0.0-rc.* ]]; then
+            echo "NPM_DIST_TAG=latest" >> "$GITHUB_ENV"
+            echo "is_stable=false" >> "$GITHUB_OUTPUT"
+          elif [[ "$ROOT_VER" == *-* ]]; then
             echo "NPM_DIST_TAG=next" >> "$GITHUB_ENV"
             echo "is_stable=false" >> "$GITHUB_OUTPUT"
           else
@@ -303,17 +307,17 @@ jobs:
       # their initial npm publication. Once npm contains the immutable version,
       # reruns reuse that registry tarball solely to finish release creation.
       - name: Fetch main for stable tag verification
-        if: steps.release_channel.outputs.is_stable == 'true' && steps.npm_status.outputs.package_published != 'true'
+        if: env.NPM_DIST_TAG == 'latest' && steps.npm_status.outputs.package_published != 'true'
         run: git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
 
       - name: Verify stable tag points at current main
-        if: steps.release_channel.outputs.is_stable == 'true' && steps.npm_status.outputs.package_published != 'true'
+        if: env.NPM_DIST_TAG == 'latest' && steps.npm_status.outputs.package_published != 'true'
         run: |
           set -euo pipefail
           TAG_COMMIT="$(git rev-parse "${GITHUB_REF_NAME}^{commit}")"
           MAIN_COMMIT="$(git rev-parse refs/remotes/origin/main)"
           if [ "${TAG_COMMIT}" != "${MAIN_COMMIT}" ]; then
-            echo "Stable tag ${GITHUB_REF_NAME} must point exactly at current main before initial publication"
+            echo "Latest-channel tag ${GITHUB_REF_NAME} must point exactly at current main before initial publication"
             echo "tag:  ${TAG_COMMIT}"
             echo "main: ${MAIN_COMMIT}"
             exit 1

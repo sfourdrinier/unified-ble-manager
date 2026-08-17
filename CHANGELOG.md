@@ -4,7 +4,9 @@ All notable changes to `unified-ble-manager` are documented here.
 
 ## [Unreleased]
 
-## [4.0.0] - 2026-08-16
+## [4.0.0-rc.0] - 2026-08-17
+
+First publication from `sfourdrinier/unified-ble-manager`. This is the 4.0 package/API contract as a release candidate on npm `latest`, so `pnpm add unified-ble-manager` installs this build. It does not promote backend support labels.
 
 ### Stable package and public contract
 

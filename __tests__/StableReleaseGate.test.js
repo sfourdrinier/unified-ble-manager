@@ -246,7 +246,9 @@ describe('stable release evidence gate', () => {
     expect(workflow).toContain('id: release_channel')
     expect(workflow).toContain('echo "is_stable=false" >> "$GITHUB_OUTPUT"')
     expect(workflow).toContain('echo "is_stable=true" >> "$GITHUB_OUTPUT"')
-    expect(workflow).toContain("if: steps.release_channel.outputs.is_stable == 'true'")
+    expect(workflow).toContain(
+      "if: env.NPM_DIST_TAG == 'latest' && steps.npm_status.outputs.package_published != 'true'"
+    )
     expect(workflow).toContain('fetch-depth: 0')
     expect(workflow).toContain('git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main')
     expect(workflow).toContain('Verify stable tag points at current main')

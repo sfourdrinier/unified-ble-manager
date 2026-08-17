@@ -65,8 +65,10 @@ describe('ci-release canonical package (4.0)', () => {
     expect(w).toContain(
       'npm publish "${PUBLISH_TARBALL}" --provenance --access public --tag "${NPM_DIST_TAG}"'
     )
+    expect(w).toContain('4.0.0-rc.*')
     expect(w).toContain('echo "NPM_DIST_TAG=next" >> "$GITHUB_ENV"')
     expect(w).toContain('echo "NPM_DIST_TAG=latest" >> "$GITHUB_ENV"')
+    expect(w).toMatch(/ROOT_VER" == 4\.0\.0-rc\.\*[\s\S]*NPM_DIST_TAG=latest/)
     expect(w).toMatch(
       /if \[\[ "\$\{VER\}" == \*-\* \]\]; then[\s\S]+?gh release create[\s\S]+?--prerelease[\s\S]+?\n\s+else[\s\S]+?gh release create/
     )
@@ -86,7 +88,9 @@ describe('ci-release canonical package (4.0)', () => {
     expect(doc).toContain('sfourdrinier/unified-ble-manager')
     expect(doc).toContain('Release branch: `main`')
     expect(doc).toContain('Stable SemVer and platform support qualification are independent')
+    expect(doc).toContain('git tag -a v4.0.0-rc.0')
     expect(doc).toContain('git tag -a v4.0.0')
+    expect(doc).toContain('4.0.0-rc.*')
     expect(doc).toContain('npm trusted publisher')
     expect(doc).toContain('UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md')
     expect(doc).not.toMatch(/publishes the \*\*4\.0 dual identity\*\*/i)

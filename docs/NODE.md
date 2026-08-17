@@ -24,7 +24,7 @@ Use exactly one of these factories in the host composition root:
   only in a BlueZ composition root:
 
   ```sh
-  pnpm add unified-ble-manager@4.0.0 dbus-next@^0.10.2
+  pnpm add unified-ble-manager dbus-next@^0.10.2
   ```
 - `unified-ble-manager/node/winrt` exports
   `createNativeWinRtBackendProvider({ now })`. It is Windows-only and rejects

@@ -4,7 +4,7 @@
 
 `unified-ble-manager` is a host-neutral Bluetooth Low Energy central/GATT library for React Native, Web, Electron, and Node. It provides one bytes-first manager contract, explicit host integrations, typed backend capabilities, deterministic lifecycle semantics, and first-party desktop backends without silently falling back to a different radio implementation.
 
-**4.0.0 is the first stable release of the Unified BLE Manager package and public API contract.** It is a new package line, not a source-compatible rename of `react-native-ble-plx` 3.x.
+**4.0.0 is the first stable release of the Unified BLE Manager package and public API contract.** The current published package is `4.0.0-rc.0` on npm `latest`. It is a new package line, not a source-compatible rename of `react-native-ble-plx` 3.x.
 
 **Architecture authority:** [`docs/UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md`](docs/UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md)
 
@@ -14,10 +14,10 @@
 ## Install
 
 ```sh
-pnpm add unified-ble-manager@4.0.0
+pnpm add unified-ble-manager
 ```
 
-The package is also usable with npm, yarn, or Bun. This repository uses pnpm for reproducible development and release validation.
+That installs npm `latest`, currently `4.0.0-rc.0`. The package is also usable with npm, yarn, or Bun. This repository uses pnpm for reproducible development and release validation.
 
 ### Host-specific dependencies
 
@@ -26,7 +26,7 @@ The neutral root does not select or load a radio backend. Import the explicit ho
 For Linux BlueZ, install the optional D-Bus peer in the consuming application:
 
 ```sh
-pnpm add unified-ble-manager@4.0.0 dbus-next@^0.10.2
+pnpm add unified-ble-manager dbus-next@^0.10.2
 ```
 
 React Native, Web, macOS CoreBluetooth, and Windows WinRT consumers do not need `dbus-next`.
@@ -246,17 +246,19 @@ The examples in this checkout may use `file:..`; consuming applications should v
 
 Read [`MIGRATION_4.0.md`](MIGRATION_4.0.md) before migrating an existing application.
 
-## Project history
+## Origin and current status
 
-Unified BLE Manager evolved from the 4.0 development work that began in [`sfourdrinier/react-native-ble-plx`](https://github.com/sfourdrinier/react-native-ble-plx), itself derived from the broader `react-native-ble-plx` project lineage. The Git commit ancestry is intentionally preserved so authorship, debugging history, and design decisions remain available.
+This project started as the 4.0 rewrite inside [`sfourdrinier/react-native-ble-plx`](https://github.com/sfourdrinier/react-native-ble-plx), itself descended from the original `react-native-ble-plx` line. The Git ancestry is kept so authorship and design history stay intact.
 
-`v4.0.0-alpha.40` was the migration point at which the 4.0 branch and published `unified-ble-manager` package moved into this canonical repository. The old repository remains the historical and 3.x home; 4.x issues, documentation, and releases belong here.
+`v4.0.0-alpha.40` was the migration point: the package, `main` branch, and 4.x work moved here. The old repository remains the historical and 3.x home.
+
+**Now:** `4.0.0-rc.0` is the first publication from this repository. The 4.0 package/API contract is complete; host backends (React Native, Web, Electron, Tauri, CoreBluetooth, WinRT, BlueZ) are implemented and remain Experimental until retained live-radio evidence says otherwise. Meta Quest, peripheral mode, and the physical fault-injection controller are 4.1.
 
 ## Release integrity
 
 Releases are built and published by GitHub Actions from version tags. The release workflow verifies the tag/version relationship, package tests, lint/typecheck, native compile/ABI lanes, packed-consumer behavior, generated SBOM and third-party license inventory, and package contents before publishing.
 
-Stable versions publish to npm `latest`; prereleases publish to `next`. Publication uses npm trusted publishing/OIDC with provenance rather than a long-lived npm write token.
+`4.0.0-rc.*` versions publish to npm `latest` so a bare install gets the current 4.0 line. After the first stable `4.0.0`, later prereleases publish to `next`. Publication uses npm trusted publishing/OIDC with provenance rather than a long-lived npm write token.
 
 See [`RELEASE.md`](RELEASE.md).
 

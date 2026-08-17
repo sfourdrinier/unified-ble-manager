@@ -5,12 +5,13 @@
 Unified BLE Manager 4.0 is a new package and public contract. It is not a source-compatible rename of `react-native-ble-plx` 3.x, and it intentionally does not ship a compatibility facade that hides the new ownership, byte, cancellation, or host-selection rules.
 
 This guide covers migration to stable `unified-ble-manager@4.0.0`.
+The current published package is `4.0.0-rc.0` on npm `latest`.
 
 ## Install the new package
 
 ```sh
 pnpm remove react-native-ble-plx
-pnpm add unified-ble-manager@4.0.0
+pnpm add unified-ble-manager
 ```
 
 For Linux/BlueZ consumers, add the optional host dependency explicitly:
