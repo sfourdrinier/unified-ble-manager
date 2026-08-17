@@ -129,6 +129,7 @@ describe('ci-release canonical package (4.0)', () => {
 
   test('superseded CI cancels dependent platform builds instead of keeping the latest run queued', () => {
     const ci = read('.github/workflows/ci.yml')
+    expect(ci).toContain('group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}')
     expect(ci).toContain('cancel-in-progress:')
     expect(ci.match(/!cancelled\(\) &&/g)).toHaveLength(3)
     expect(ci).not.toMatch(/always\(\) &&\s+needs\.changes\.result/)

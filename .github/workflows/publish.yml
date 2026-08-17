@@ -33,6 +33,12 @@ on:
     tags:
       - 'v*.*.*'
 
+# A retag of the same version cancels the superseded run. A different tag
+# (v4.0.0 vs v4.0.0-rc.0) is a different github.ref and is not cancelled.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
@@ -405,12 +411,25 @@ jobs:
         run: |
           set -euo pipefail
           VER="$(node -p "require('./package.json').version")"
-          ATTESTATIONS_URL="$(npm view "unified-ble-manager@${VER}" dist.attestations.url --json | node -e "let body = ''; process.stdin.setEncoding('utf8'); process.stdin.on('data', chunk => { body += chunk }); process.stdin.on('end', () => { const value = JSON.parse(body); if (typeof value !== 'string' || !value.startsWith('https://registry.npmjs.org/')) throw new Error('npm attestation URL must use the npm registry HTTPS origin'); process.stdout.write(value) })")"
           ATTESTATIONS_FILE="$(mktemp)"
           trap 'rm -f "${ATTESTATIONS_FILE}"' EXIT
-          curl --fail --location --silent --show-error --proto '=https' \
-            --output "${ATTESTATIONS_FILE}" \
-            "${ATTESTATIONS_URL}"
+          ATTESTATIONS_READY=false
+          for ATTEMPT in $(seq 1 12); do
+            if ATTESTATIONS_URL="$(npm view "unified-ble-manager@${VER}" dist.attestations.url --json 2>/dev/null | node -e "let body = ''; process.stdin.setEncoding('utf8'); process.stdin.on('data', chunk => { body += chunk }); process.stdin.on('end', () => { const value = JSON.parse(body); if (typeof value !== 'string' || !value.startsWith('https://registry.npmjs.org/')) throw new Error('npm attestation URL must use the npm registry HTTPS origin'); process.stdout.write(value) })")" && \
+              curl --fail --location --silent --show-error --proto '=https' \
+                --output "${ATTESTATIONS_FILE}" \
+                "${ATTESTATIONS_URL}" && \
+              test -s "${ATTESTATIONS_FILE}"; then
+              ATTESTATIONS_READY=true
+              break
+            fi
+            echo "npm provenance attestations are not visible yet (attempt ${ATTEMPT}/12)"
+            sleep 5
+          done
+          if [ "${ATTESTATIONS_READY}" != true ]; then
+            echo "npm provenance attestations did not become visible within the bounded retry window"
+            exit 1
+          fi
           node scripts/ci/verify-npm-provenance-source.js \
             "${ATTESTATIONS_FILE}" \
             "${GITHUB_SHA}" \

@@ -34,6 +34,24 @@ describe('release retry safety', () => {
     expect(workflow.indexOf('LOCAL_TARBALL_SHA256=')).toBeGreaterThan(restore)
   })
 
+  test('retries npm attestation download after publish instead of failing on a first 404', () => {
+    const workflow = read('.github/workflows/publish.yml')
+    const bindProvenance = workflow.indexOf('- name: Bind npm provenance to this exact tag commit')
+    const download = workflow.indexOf('npm provenance attestations are not visible yet', bindProvenance)
+    const verify = workflow.indexOf('verify-npm-provenance-source.js', bindProvenance)
+
+    expect(bindProvenance).toBeGreaterThan(-1)
+    expect(download).toBeGreaterThan(bindProvenance)
+    expect(workflow).toContain('npm provenance attestations did not become visible within the bounded retry window')
+    expect(verify).toBeGreaterThan(download)
+  })
+
+  test('cancels a superseded run of the same tag without cancelling a different version tag', () => {
+    const workflow = read('.github/workflows/publish.yml')
+    expect(workflow).toContain('group: ${{ github.workflow }}-${{ github.ref }}')
+    expect(workflow).toMatch(/concurrency:\n(?:  .+\n)*  cancel-in-progress: true/)
+  })
+
   test('the installed changelog points to preserved history that remains reachable outside the tarball', () => {
     const changelog = read('CHANGELOG.md')
     expect(changelog).toContain(
