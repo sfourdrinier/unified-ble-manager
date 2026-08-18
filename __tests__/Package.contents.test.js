@@ -1,6 +1,4 @@
-// __tests__/PackageArtifactHonesty.test.js
-
-// __tests__/PackageArtifactHonesty.test.js
+// __tests__/Package.contents.test.js
 
 const fs = require('fs')
 const path = require('path')
@@ -15,7 +13,7 @@ const {
   assertNoForbiddenNobleRuntimeReferences
 } = require('../scripts/ci/forbidden-runtime-dependencies')
 
-describe('package artifact honesty gate', () => {
+describe('published package contains the files and scripts it claims', () => {
   test('build and prepack verify the current published artifact surface', () => {
     expect(packageJson.scripts.build).toBe('pnpm prepack')
     expect(packageJson.scripts.lint).toContain('--max-warnings 0')

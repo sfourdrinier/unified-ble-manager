@@ -2,11 +2,6 @@
 
 # Expo plugin option reference
 
-**Status:** current 4.0 alpha option reference; native and live-radio proof
-remain host-specific
-
-**Architecture and sequencing authority:** [`UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md`](UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md)
-
 Configure the published plugin as `unified-ble-manager`. The plugin's supported
 options are exactly the schema implemented in `plugin/src/withBLE.ts`:
 
@@ -19,12 +14,8 @@ pnpm add unified-ble-manager expo@^57.0.0
 `@expo/config-plugins` package directly. Web, bare React Native, and Node
 consumers do not resolve Expo tooling.
 
-The plugin configuration is part of the published Experimental 4.0 alpha.40
-prerelease. The
-release workflow validates Expo SDK 57 CNG prebuild and Android assembly, but no
-current evidence record binds alpha.40 to a physical device, permission,
-background, or restoration scenario. Configuration and compilation therefore do
-not make a live-radio or restoration support claim.
+The plugin writes native project configuration. That is not a live-radio or
+restoration support claim. See [`PLATFORMS.md`](PLATFORMS.md).
 
 | Option | Type | Effect |
 | --- | --- | --- |
@@ -73,7 +64,7 @@ it only with the explicit manager-owned adoption flow in
 `hostSessionScope` exactly match the app's host-owned manager/adoption values.
 Do not claim restoration support from plugin configuration alone.
 
-The following alpha-era/3.x option names are not accepted by this plugin:
+These `react-native-ble-plx` plugin keys are not accepted:
 
 - `iosEnableRestoration`
 - `iosRestorationIdentifier`

@@ -2,12 +2,12 @@
 
 # Profiles, codecs, and GATT commands
 
-The 4.0 profile surface is optional, host-neutral, and built only on the public
-`Connection`, `DiscoveredGattDatabase`, and `Subscription` handles. It does not
-select a backend, connect a device, retry, or apply a product policy.
+Optional helpers for SIG services (Heart Rate, Battery, DIS, thermometer, blood
+pressure). They sit on the public `Connection`, `DiscoveredGattDatabase`, and
+`Subscription` handles. They do not pick a backend or reconnect.
 
-Normal BLE operations use `Uint8Array` and structured GATT paths. There is no
-Base64 profile, command, or manager API.
+BLE values stay `Uint8Array`. `unified-ble-manager/codecs` is IEEE-11073 and
+byte views — not Base64.
 
 ## Public subpaths
 

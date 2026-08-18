@@ -2,87 +2,133 @@
 
 # Getting started
 
-## 4.0 status
+**Current package:** `4.0.0-rc.0` on npm `latest`.
 
-`unified-ble-manager@4.0.0-rc.0` is the current published 4.0 package.
-It is a clean API line: choose one explicit host entrypoint and build the
-matching native integration before making a Bluetooth claim. It is not a
-source-compatible rename of the retired 3.x package.
+This page gets you to a first scan, connect, read, notify, and teardown on React Native. Other hosts are linked at the bottom. The root import does not turn Bluetooth on.
 
-The architecture and implementation sequence are controlled by [`UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md`](UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md). Product scope is in [`../ROADMAP.4.0.md`](../ROADMAP.4.0.md), and backend/platform proof is in [`GAPS.4.0.md`](GAPS.4.0.md).
+## Pick a host
 
-## Install and select a host
+| You are building | Import | Next page |
+| --- | --- | --- |
+| React Native / Expo | `unified-ble-manager/react-native` | this page |
+| Browser | `unified-ble-manager/web` | [`WEB.md`](WEB.md) |
+| Electron | `electron/main` + `electron/renderer` | [`ELECTRON.md`](ELECTRON.md) |
+| Node on macOS / Windows / Linux | `node/corebluetooth`, `node/winrt`, or `node/bluez` | [`NODE.md`](NODE.md) |
+| Tauri v2 | `unified-ble-manager/tauri` | [`TAURI.md`](TAURI.md) |
+
+## React Native / Expo in one hour
+
+### 1. Install
 
 ```sh
 pnpm add unified-ble-manager
 ```
 
-That installs npm `latest`, currently `4.0.0-rc.0`. The package is
-Experimental, and no current evidence record binds this artifact to a
-physical-radio backend result. Package builds and deterministic tests remain
-useful proof at their own scope, but do not create a platform support label.
+Expo also needs a native build. The package does not run in Expo Go.
 
-The package support label remains Experimental. WinRT compile and ABI checks are
-L2/L3 evidence only; this release candidate makes no Windows live-radio claim.
+```sh
+pnpm add expo@^57.0.0
+```
 
-The root import is host-neutral. Import the selected integration explicitly:
+Add the plugin (full option table: [`EXPO_PLUGIN.md`](EXPO_PLUGIN.md)):
 
-- `unified-ble-manager/react-native`
-- `unified-ble-manager/web`
-- `unified-ble-manager/electron/main`
-- `unified-ble-manager/electron/renderer`
-- `unified-ble-manager/node/corebluetooth`
-- `unified-ble-manager/node/winrt`
-- `unified-ble-manager/node/bluez`
+```json
+{
+  "expo": {
+    "plugins": [
+      [
+        "unified-ble-manager",
+        {
+          "isBackgroundEnabled": false,
+          "modes": ["central"],
+          "neverForLocation": false,
+          "bluetoothAlwaysPermission": "Allow $(PRODUCT_NAME) to connect to Bluetooth devices"
+        }
+      ]
+    ]
+  }
+}
+```
 
-React Native applications create one manager with
-`createReactNativeBleManager`, a generated control, a stable client/manager
-identity, and a stable `hostSessionScope`. Web applications create one matched
-manager/chooser session through `createNavigatorWebBleManager`. Electron main
-owns the radio and renderer code uses only the versioned IPC client.
+Then generate native projects and run a development build:
 
-All BLE payloads are `Uint8Array`; cancellable operations use `AbortSignal` and
-deadline options. Do not use a legacy constructor, Base64 manager surface,
-public transaction IDs, automatic radio selection, or a fallback backend.
+```sh
+npx expo prebuild
+npx expo run:ios
+# or: npx expo run:android
+```
 
-## Native and Expo setup
+### 2. Ask Android for runtime permission
 
-The React Native Expo plugin is configured as `unified-ble-manager` and cannot
-run in Expo Go. Expo consumers install the plugin host peer explicitly with
-`pnpm add unified-ble-manager expo@^57.0.0`; the plugin uses
-Expo's public `expo/config-plugins` subpath.
-Its optional `iosNativeProtocolRestoration` object requires all
-five native identity values: identifier, namespace, epoch, client ID, and
-host-session scope. See [`EXPO_PLUGIN.md`](EXPO_PLUGIN.md) before configuring
-restoration.
+The plugin writes the manifest. Android 12+ still needs a runtime request. The library will not do this for you.
 
-The CoreBluetooth package contains build sources and `node-gyp`, but no
-prebuilt addon. Build against the host Node ABI or, for Electron, run the
-Electron-targeted `node-gyp` command with `--target` and Electron headers from
-[`ELECTRON.md`](ELECTRON.md). A Node ABI addon cannot be loaded by Electron.
+```ts
+import { PermissionsAndroid, Platform } from 'react-native'
 
-`example/` and `example-expo/` are repository fixtures using `file:..`, not
-published-package installation recipes. The Electron fixture is deterministic
-L1 only, while `example-web/` is historical source characterization. See the
-root [`README.md`](../README.md) for their current boundaries.
+async function ensureAndroidBluetoothPermission(): Promise<void> {
+  if (Platform.OS !== 'android') {
+    return
+  }
+  if (Platform.Version < 31) {
+    const location = await PermissionsAndroid.request(PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION)
+    if (location !== PermissionsAndroid.RESULTS.GRANTED) {
+      throw new Error('Location permission was not granted. Android 11 and below need it to scan.')
+    }
+    return
+  }
+  const result = await PermissionsAndroid.requestMultiple([
+    PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN,
+    PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT
+  ])
+  const scan = result[PermissionsAndroid.PERMISSIONS.BLUETOOTH_SCAN]
+  const connect = result[PermissionsAndroid.PERMISSIONS.BLUETOOTH_CONNECT]
+  if (scan !== PermissionsAndroid.RESULTS.GRANTED || connect !== PermissionsAndroid.RESULTS.GRANTED) {
+    throw new Error('Bluetooth permission was not granted.')
+  }
+}
+```
 
-## Verify the selected host
+### 3. Create one manager and keep it
 
-Run the packed-artifact, platform-native, and physical-device checks appropriate
-to the selected backend. A deterministic scenario or successful native build
-proves package wiring only; it is not live-radio evidence. Inspect the typed
-capabilities of the instantiated backend and retain the evidence limits in the
-product's own release decision.
+```ts
+import { Platform } from 'react-native'
+import { createReactNativeBleManager, getNativeUnifiedBleProtocolControl } from 'unified-ble-manager/react-native'
 
-For an end-to-end React Native manager construction and the supported Expo
-plugin object, use the canonical examples in [`../README.md`](../README.md).
-Meta Quest and an nRF52840-based controllable fault-injection controller are
-deferred to 4.1 and are not 4.0 host or hardware claims.
+const manager = await createReactNativeBleManager({
+  platform: Platform.OS === 'ios' ? 'apple' : 'android',
+  control: getNativeUnifiedBleProtocolControl(),
+  now: () => performance.now(),
+  clientId: 'signed-in-user-ble-client',
+  managerId: 'main-mobile-ble-manager',
+  hostSessionScope: 'com.example.app.mobile-ble'
+})
+```
 
-## Related records
+`hostSessionScope` is the security scope for this app session. Use a stable string, not a React render id.
 
-- [`../MIGRATION_4.0.md`](../MIGRATION_4.0.md)
-- [`PLATFORMS.md`](PLATFORMS.md)
-- [`EXPO_PLUGIN.md`](EXPO_PLUGIN.md)
-- [`UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md`](UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md)
-- [`../RELEASE.md`](../RELEASE.md)
+### 4. Check the adapter, then run the loop
+
+```ts
+const adapter = await manager.adapterState()
+if (adapter.power !== 'on' || adapter.authorization !== 'granted' || adapter.availability !== 'available') {
+  throw new Error(`Bluetooth is not ready: ${adapter.power} / ${adapter.authorization}`)
+}
+```
+
+Then scan → connect → discover → read or subscribe → `remove` / `release` → `destroy()`. Copy the complete loop from the root [`README.md`](../README.md). More recipes: [`TUTORIALS.md`](TUTORIALS.md) and [`HELPERS.md`](HELPERS.md).
+
+### What will hurt you
+
+- Expo Go has no native module. You need a prebuild / dev client.
+- Android 12 without the runtime permission fails the first scan with `permission.denied`. Android 11 and below need `ACCESS_FINE_LOCATION`. `neverForLocation: true` is only honest if you do not use BLE for location.
+- Bare React Native still needs `NSBluetoothAlwaysUsageDescription` in Info.plist. The Expo plugin writes that for Expo apps.
+- Creating a new manager on every render leaks the radio. Create one, await `destroy()` when the session ends.
+- `isBackgroundEnabled: true` only marks the Android BLE hardware feature. It does not start a foreground service.
+
+## Coming from react-native-ble-plx
+
+This is a rewrite. There is no `new BleManager()` and no Base64 characteristic values. Start with [`MIGRATION_4.0.md`](../MIGRATION_4.0.md).
+
+## Maintainers
+
+Normative contract and evidence rules: [`UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md`](UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md), [`PLATFORMS.md`](PLATFORMS.md).

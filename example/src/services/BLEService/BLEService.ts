@@ -81,6 +81,7 @@ const DEVICE_INFORMATION_CHARACTERISTICS: readonly DeviceInformationCharacterist
 ]
 
 let nextExampleManagerId = 1
+const BARE_APPLICATION_HOST_SESSION_SCOPE = 'com.sfourdrinier.bleplxexample'
 
 /** The bare app owns exactly one canonical 4.0 manager and no legacy compatibility facade. */
 class CanonicalBleExampleService {
@@ -277,7 +278,8 @@ class CanonicalBleExampleService {
       control: getNativeUnifiedBleProtocolControl(),
       now: monotonicNow,
       clientId: `bare-example-client-${managerId.toString()}`,
-      managerId: `bare-example-manager-${managerId.toString()}`
+      managerId: `bare-example-manager-${managerId.toString()}`,
+      hostSessionScope: BARE_APPLICATION_HOST_SESSION_SCOPE
     })
     this.managerCreation = creation
     try {

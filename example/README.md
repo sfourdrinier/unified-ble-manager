@@ -3,9 +3,10 @@
 # Classic React Native fixture
 
 This is a repository fixture for the 4.0 React Native host. It constructs the
-manager through `unified-ble-manager/react-native` and the generated protocol
-control. Its dependency is `unified-ble-manager: file:..`, so it exercises this
-checkout; it is not a published-package install recipe.
+manager through `createReactNativeBleManager` with a stable `hostSessionScope`,
+bytes, `AbortSignal`, and snapshot-derived paths. Its dependency is
+`unified-ble-manager: file:..`, so it exercises this checkout; it is not a
+published-package install recipe.
 
 Use a React Native 0.86+ native project with Android min SDK 24 or iOS deployment
 target 16.4. From the repository root, install the fixture and its iOS pods when

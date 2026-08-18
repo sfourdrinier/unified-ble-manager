@@ -2,8 +2,44 @@
 
 # Electron
 
+Main owns the radio. The renderer uses a versioned IPC client and never loads a native addon.
+
+**Current package:** `4.0.0-rc.0`. Published Node-API v8 prebuilds cover macOS and Windows `arm64`/`x64` for both Node and modern Electron.
+
 `unified-ble-manager/electron/main` and
 `unified-ble-manager/electron/renderer` are the only Electron entrypoints.
+
+In main, build a `BleManager` from a provider the same way Node does, then bind
+IPC. The renderer uses `ElectronRendererBleClient` — not `BleManager`.
+
+```ts
+import { createBleManagerFromProvider, DEFAULT_BLE_MANAGER_OPTIONS } from 'unified-ble-manager'
+import {
+  coreBluetoothCompatibility,
+  createElectronMainCoreBluetoothBackendProvider
+} from 'unified-ble-manager/electron/main'
+
+const now = () => performance.now()
+const provider = createElectronMainCoreBluetoothBackendProvider({ now })
+const adapters = await provider.listAdapters()
+if (adapters[0] === undefined) {
+  throw new Error('No adapter is available.')
+}
+const manager = await createBleManagerFromProvider(
+  {
+    provider,
+    selection: { selectedAdapterId: adapters[0].adapterId },
+    coreCompatibility: coreBluetoothCompatibility,
+    manager: {
+      clientId: 'electron-main-client',
+      managerId: 'electron-main-manager',
+      ownerMode: 'owning'
+    }
+  },
+  { ...DEFAULT_BLE_MANAGER_OPTIONS, now }
+)
+```
+
 They deliberately split physical-radio ownership from renderer use:
 
 - the Electron **main** process creates one selected owned backend and owns the

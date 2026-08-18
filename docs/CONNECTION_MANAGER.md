@@ -13,10 +13,12 @@ radio singleton.
 ## One connection lease
 
 ```ts
+import { deadline } from 'unified-ble-manager'
+
 const abortController = new AbortController()
 const options = {
   signal: abortController.signal,
-  deadline: manager.monotonicNow() + 15_000
+  deadline: deadline(manager.monotonicNow() + 15_000)
 }
 
 const connection = await manager.connect(peerId, options)
@@ -70,7 +72,7 @@ async function connectWithProductPolicy(manager, peerId, signal) {
     try {
       return await manager.connect(peerId, {
         signal,
-        deadline: manager.monotonicNow() + 15_000
+        deadline: deadline(manager.monotonicNow() + 15_000)
       })
     } catch (error) {
       if (!isProductRetryableBleError(error) || attempt === 5) {

@@ -28,6 +28,8 @@ function assertCanonicalService(source) {
   expect(source).toContain('await database.subscribe(await this.characteristicPath')
   expect(source).toContain('assertReleased(await subscription.remove()')
   expect(source).toContain('assertReleased(await manager.destroy()')
+  expect(source).toContain('hostSessionScope:')
+  expect(source).toMatch(/APPLICATION_HOST_SESSION_SCOPE = 'com\.sfourdrinier\.bleplxexample'/)
   expect(source).not.toContain('new BleManager(')
   expect(source).not.toContain('connectToDevice')
   expect(source).not.toContain('readCharacteristicForDevice')
@@ -43,8 +45,15 @@ function normalizeServiceSource(source) {
   return source
     .replace('// example-expo/', '// example/')
     .replace('The Expo app owns', 'The bare app owns')
-    .replace("// This application identifier is stable across manager recreation and native restoration adoption.\nconst EXPO_APPLICATION_HOST_SESSION_SCOPE = 'com.sfourdrinier.bleplxexample'\n\n", '')
-    .replace(',\n      hostSessionScope: EXPO_APPLICATION_HOST_SESSION_SCOPE', '')
+    .replace(
+      "// This application identifier is stable across manager recreation and native restoration adoption.\n",
+      ''
+    )
+    .replaceAll('EXPO_APPLICATION_HOST_SESSION_SCOPE', 'BARE_APPLICATION_HOST_SESSION_SCOPE')
+    .replace(
+      'let nextExampleManagerId = 1\n\nconst BARE_APPLICATION_HOST_SESSION_SCOPE',
+      'let nextExampleManagerId = 1\nconst BARE_APPLICATION_HOST_SESSION_SCOPE'
+    )
     .replaceAll('expo-example-', 'bare-example-')
 }
 
