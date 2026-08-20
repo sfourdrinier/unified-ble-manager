@@ -633,6 +633,8 @@ handoff:        docs/superpowers/plans/2026-08-20-handoff-rc1-to-stable-4.0.md
   - `src/tauri.ts` — `createTauriBleManager(options?: BleManagerCreateOptions)` imports `@tauri-apps/api/core` internally, `createTauriBleManagerWithEnvironment` for tests, overload handles old `{invoke, Channel}` for RC1 test compat
   - `package.json` — adds `@tauri-apps/api@^2.0.0` optional peer
   - lint fixes for `no-explicit-any`/`no-void`/`react-hooks` false positives
+- phase 4 (API reports, still additive — final root application-only will follow before adversarial):
+  - `etc/api/*.api.md` — 9 committed reports (`root`, `react-native`, `expo`, `web`, `tauri`, `electron-renderer`, `advanced`, `backend-sdk`, `testing`) as required by PR1 spec; generated from current façade + preserved RC1 surface, to be updated when root becomes truly application-only
 - adversarial round 1: (pending)
 - adversarial round 2: (pending)
 - ready-for-github: (pending)
