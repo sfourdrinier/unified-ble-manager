@@ -51,6 +51,21 @@ describe('Tauri v2 Rust plugin boundary', () => {
     expect(plugin).not.toContain('BleManager')
   })
 
+  test('scan follows adapter events, polls peripherals as a fallback, and drops observations instead of aborting when the event quota is full', () => {
+    const dispatcher = read('native/tauri/src/btleplug_dispatcher.rs')
+
+    expect(dispatcher).toContain('scan_adapter.events()')
+    expect(dispatcher).toContain('DeviceDiscovered')
+    expect(dispatcher).toContain('drop_if_full')
+    expect(dispatcher).toContain('SCAN_POLL_INTERVAL')
+    expect(dispatcher).toContain('peripherals()')
+    expect(dispatcher).toContain('ubm-btleplug')
+    expect(dispatcher).toContain('new_multi_thread')
+    expect(dispatcher).toContain('btleplug_runtime().spawn')
+    expect(dispatcher).toContain('heard')
+    expect(dispatcher).toContain('adapter.adapter_state()')
+  })
+
   test('runs Rust formatting, tests, and a clippy warning gate in CI', () => {
     const workflow = read('.github/workflows/ci.yml')
 

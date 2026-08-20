@@ -238,4 +238,29 @@ describe('Tauri v2 public manager', () => {
     await expect(manager.adapterState()).resolves.toMatchObject({ power: 'on' })
     await expect(manager.destroy()).resolves.toMatchObject({ state: 'released' })
   })
+
+  test('delivers scan advertisements that arrived before the renderer registered the stream', async () => {
+    const invoke = jest.fn(async (_command, args) => {
+      const request = args.request
+      if (request.kind === 'bootstrap') return { kind: 'bootstrap', bootstrap: bootstrap() }
+      if (request.kind === 'event.ack') return { kind: 'event.ack' }
+      if (request.kind === 'release') return { kind: 'release', cleanup: { state: 'released', failures: [] } }
+      if (request.envelope.command === 'scan.start') {
+        streamValue('scan-1', { peerId: 'early-peer', localName: 'Early', rssi: -40 })
+        return { kind: 'route', payload: { handle: 'scan-1' } }
+      }
+      if (request.envelope.command === 'scan.stop') {
+        return { kind: 'route', payload: { state: 'released', failures: [] } }
+      }
+      return { kind: 'route', payload: { accepted: true } }
+    })
+    const { createTauriBleManager } = require('../src/tauri')
+    const manager = await createTauriBleManager({ invoke, Channel: FakeChannel })
+    const scan = await manager.scan()
+    const first = await scan.observations[Symbol.asyncIterator]().next()
+    expect(first.done).toBe(false)
+    expect(first.value).toMatchObject({ kind: 'value', value: { peerId: 'early-peer' } })
+    await scan.stop()
+    await manager.destroy()
+  })
 })

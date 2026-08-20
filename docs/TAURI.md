@@ -28,7 +28,9 @@ const state = await manager.adapterState()
 const scan = await manager.scan({ serviceUuids: ['180d'] })
 ```
 
-`IpcBleManager.scan` takes optional `serviceUuids`, `manufacturerData`, `localNamePrefix`, `signal`, and `timeoutMs`. That is not `BleManager.scan`.
+`IpcBleManager.scan` takes optional `serviceUuids`, `manufacturerData`, `localNamePrefix`, `signal`, and `timeoutMs`. That is not `BleManager.scan`. Call `manager.scan()` with no options to hear every advertisement. Native filters are AND predicates: a `localNamePrefix` drops ads that omit a local name, which is common on CoreBluetooth.
+
+Filter in the webview with `advertisementPassesViewFilter` (name or peer id, min/max RSSI, service UUID, manufacturer company id, named-only). Observations include `serviceUuids`, `manufacturerData`, `txPowerLevel`, and `serviceData` in addition to `peerId` / `localName` / `rssi`.
 
 ## Rust plugin
 
