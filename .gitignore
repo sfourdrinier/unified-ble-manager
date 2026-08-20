@@ -61,6 +61,11 @@ buck-out/
 */fastlane/Preview.html
 */fastlane/screenshots
 
+# Tauri plugin is a library crate. Do not commit its build tree or lockfile.
+# example-tauri/src-tauri/Cargo.lock stays tracked (that crate is an app).
+native/tauri/target/
+native/tauri/Cargo.lock
+
 # Bundle artifact
 *.jsbundle
 /.artifacts/
