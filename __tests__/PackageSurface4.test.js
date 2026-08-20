@@ -209,7 +209,9 @@ describe('4.0 public package surface', () => {
       './node/winrt',
       './electron/main',
       './electron/renderer',
-      './tauri'
+      './tauri',
+      './advanced',
+      './expo'
     ])
     expect(packageJson.files).toContain('src')
     expect(packageJson.codegenConfig.jsSrcsDir).toBe('src')

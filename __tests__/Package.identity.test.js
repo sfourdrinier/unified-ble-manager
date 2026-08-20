@@ -19,12 +19,14 @@ describe('package identity (unified-ble-manager)', () => {
   test('strict package exports isolate manager, backend authoring, and deterministic testing', () => {
     expect(Object.keys(pkg.exports).sort()).toEqual([
       '.',
+      './advanced',
       './app.plugin.js',
       './backend-sdk',
       './cli',
       './codecs',
       './electron/main',
       './electron/renderer',
+      './expo',
       './node/bluez',
       './node/corebluetooth',
       './node/winrt',

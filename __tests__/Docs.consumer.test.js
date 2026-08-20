@@ -58,7 +58,8 @@ const canonicalAdrDocuments = [
   'docs/ADR/2026-07-4.0-boundary.md',
   'docs/ADR/2026-07-4.0-rn-restoration-bootstrap.md',
   'docs/ADR/2026-07-4.0-packaging.md',
-  'docs/ADR/2026-07-4.0-open-source-governance.md'
+  'docs/ADR/2026-07-4.0-open-source-governance.md',
+  'docs/ADR/2026-08-4.0-public-contract-reset.md'
 ]
 
 const deletedTransitionalAdrs = [
@@ -221,7 +222,7 @@ describe('consumer documentation matches the published package', () => {
     expect(document).toContain('UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md')
   })
 
-  test('the seven canonical ADRs replace every transitional ADR path', () => {
+  test('the eight canonical ADRs replace every transitional ADR path', () => {
     const adrDirectory = path.join(root, 'docs/ADR')
     const actual = fs.readdirSync(adrDirectory).sort()
     const expected = canonicalAdrDocuments.map(relativePath => path.basename(relativePath)).sort()

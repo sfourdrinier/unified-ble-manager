@@ -554,7 +554,7 @@ Update this section in the **same branch** as the work, before opening the GitHu
 
 | # | Branch | GitHub PR | Adv. rounds | CodeRabbit rounds | Merged SHA | Tag / npm | Status |
 |---:|---|---|---:|---:|---|---|---|
-| 1 | `feat/4.0-public-contract-reset` | — | 0 | 0 | — | — | **next** |
+| 1 | `feat/4.0-public-contract-reset` | — | 0 | 0 | — | — | **in-progress** |
 | 2 | `feat/4.0-cross-host-semantics` | — | 0 | 0 | — | — | blocked on 1 |
 | 3 | `feat/4.0-gatt-object-model` | — | 0 | 0 | — | — | blocked on 2 |
 | 4 | `feat/4.0-high-level-workflow-scan-freeze` | — | 0 | 0 | — | `v4.0.0-rc.2` after merge | blocked on 3 |
@@ -599,6 +599,38 @@ handoff:        docs/superpowers/plans/2026-08-20-handoff-rc1-to-stable-4.0.md
 - publish: tag / workflow URL / npm version (or n/a)
 - leftover follow-ups (must be empty unless truly out of this PR's spec):
 ```
+
+### PR 1 log — `feat/4.0-public-contract-reset` (in-progress)
+
+- started: 2026-08-20
+- branch: `feat/4.0-public-contract-reset`
+- implementer session: mineral-mira (66d2d0bc-e491-46cb-9bbe-bc855931eae5)
+- head SHA at first push: (pending — phase 1 local only)
+- local gates run: `pnpm validate:evidence` ✓, `pnpm test:package` 103/103 ✓, `pnpm lint` ✓, `pnpm prepack` ✓, `pnpm release:artifacts:check` ✓, `node scripts/ci/pack-install-smoke.js` ✓ (npm exit-handler warning ignored, smoke still verified)
+- phase 1 (ADR + public façade utilities):
+  - `docs/ADR/2026-08-4.0-public-contract-reset.md` — accepted design baseline, 8th canonical ADR
+  - `src/public/operation-options.ts` — `OperationOptions` + `normalizeOperationOptions` + `composeAbortSignal` (timeoutMs→Deadline, preserves earliest deadline, validates signal)
+  - `src/public/stream-presets.ts` — `StreamPreset` → exact `StreamBudget` (`latest`/`balanced`/`lossless-bounded`/`custom`)
+  - `src/public/host-identity.ts` — `deriveRestorationIdentity` (SHA-256 domain-separated, case-normalized appId, fixtures), `createEphemeralHostIdentity`, `BleManagerCreateOptions` + `normalizeBleManagerCreateOptions`
+  - `src/public/index.ts` — façade barrel
+  - `src/advanced.ts` — expert entrypoint re-exports
+  - `src/expo.ts` — thin Expo composition stub (PR10)
+  - `__tests__/fixtures/restoration-identity.golden.json` — 6 vectors
+  - `__tests__/public-contract-reset.test.js` — TDD coverage for above
+  - `package.json` exports `+ ./advanced`, `+ ./expo`
+  - `scripts/ci/verify-package-artifacts.js` — allow `advanced.ts`, `expo.ts`, `public/**`
+  - updated 5 package-surface tests to reflect new exports and 8th ADR
+- adversarial round 1: (pending)
+- adversarial round 2: (pending)
+- ready-for-github: (pending)
+- GitHub PR: (pending)
+- CodeRabbit round 1: (pending)
+- CodeRabbit round 2: (pending)
+- merged: (pending)
+- publish: n/a (PR1 has no publish per §6)
+- leftover follow-ups (must be empty unless truly out of this PR's spec):
+  - Façade non-generic BleManager, full host-factory zero-plumbing (RN/Web/Tauri/Node), root application-only re-export, removal of RC1 compatibility aliases, API reports `etc/api/*.api.md`, README/migration table — all still to land in same PR before adversarial review (per §7 PR1 spec). Phase 1 keeps tests green while preserving RC1 exports; subsequent commits will replace root exports and update helpers/packed consumers.
+
 
 ---
 

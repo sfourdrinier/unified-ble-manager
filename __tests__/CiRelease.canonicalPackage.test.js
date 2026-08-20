@@ -15,12 +15,14 @@ describe('ci-release canonical package (4.0)', () => {
     expect(rootPkg.name).toBe('unified-ble-manager')
     expect(Object.keys(rootPkg.exports).sort()).toEqual([
       '.',
+      './advanced',
       './app.plugin.js',
       './backend-sdk',
       './cli',
       './codecs',
       './electron/main',
       './electron/renderer',
+      './expo',
       './node/bluez',
       './node/corebluetooth',
       './node/winrt',

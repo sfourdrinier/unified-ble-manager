@@ -518,6 +518,28 @@
         "default": "./lib/commonjs/tauri.js"
       },
       "default": "./lib/commonjs/tauri.js"
+    },
+    "./advanced": {
+      "import": {
+        "types": "./lib/typescript/module/src/advanced.d.ts",
+        "default": "./lib/module/advanced.js"
+      },
+      "require": {
+        "types": "./lib/typescript/commonjs/src/advanced.d.ts",
+        "default": "./lib/commonjs/advanced.js"
+      },
+      "default": "./lib/commonjs/advanced.js"
+    },
+    "./expo": {
+      "import": {
+        "types": "./lib/typescript/module/src/expo.d.ts",
+        "default": "./lib/module/expo.js"
+      },
+      "require": {
+        "types": "./lib/typescript/commonjs/src/expo.d.ts",
+        "default": "./lib/commonjs/expo.js"
+      },
+      "default": "./lib/commonjs/expo.js"
     }
   },
   "optionalDependencies": {
