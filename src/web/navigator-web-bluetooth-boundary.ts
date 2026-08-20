@@ -111,6 +111,7 @@ export function createDefaultNavigatorWebBluetoothEnvironment(): NavigatorWebBlu
     }
     readonly isSecureContext?: boolean
     readonly document?: {
+      readonly visibilityState?: string
       addEventListener(type: string, listener: () => void): void
       removeEventListener(type: string, listener: () => void): void
     }
@@ -134,7 +135,11 @@ export function createDefaultNavigatorWebBluetoothEnvironment(): NavigatorWebBlu
       globalThis.clearTimeout((handle as { readonly id: ReturnType<typeof setTimeout> }).id)
     },
     addPageLifecycleListener: listener => {
-      const onHidden = () => listener('page-hidden')
+      const onHidden = () => {
+        if (globalObject.document?.visibilityState === 'hidden') {
+          listener('page-hidden')
+        }
+      }
       const onPageHide = () => listener('page-unloaded')
       globalObject.document?.addEventListener('visibilitychange', onHidden)
       globalObject.window?.addEventListener('pagehide', onPageHide)

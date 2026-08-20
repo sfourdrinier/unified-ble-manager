@@ -7,12 +7,8 @@
 
 const bridgeNames = Object.freeze([
   'initialize',
-  'scan',
-  'connect',
-  'discover',
-  'read',
-  'subscribe',
-  'release',
+  'request',
+  'subscribeConnectionEvents',
   'destroy'
 ])
 

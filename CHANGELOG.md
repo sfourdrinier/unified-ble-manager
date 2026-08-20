@@ -17,6 +17,8 @@ Documentation correctness and pre-stable API fixes on the 4.0 contract. This doe
 - Added application factories `createReactNativeBleManager({ clientId, managerId, hostSessionScope })`, `createNavigatorWebBleManager` default environment, and `createCoreBluetoothBleManager` / `createWinRtBleManager` / `createBluezBleManager`.
 - Added `BleManager.adapterStates()`, `defaultScanDelivery()`, `scanForServices()`, `withDiscoveredConnection()`, and `throwIfCleanupFailed()`.
 - Renamed the injectable RN factory to `createReactNativeBleManagerWithEnvironment`.
+- Default Web `visibilitychange` handling now reports `page-hidden` only when the document is hidden.
+- `adapterStates({ signal })` re-checks abort after `watchState()` and closes the watch instead of leaking it.
 
 ### Documentation and examples
 

@@ -17,7 +17,11 @@ const session = await createNavigatorWebBleManager({
 })
 ```
 
-Call `session.chooser.choose()` from a click handler. `getDevices()` can return previously granted devices. Iframes need the `bluetooth` Permissions Policy. Then run a finite `read` or `firstNotification` and `throwIfCleanupFailed(await session.manager.destroy(), 'manager.destroy')`.
+Call `session.chooser.choose()` from a click handler. Chromium's
+`navigator.bluetooth.getDevices()` can return previously granted devices; this
+package does not wrap that browser API. Iframes need the `bluetooth`
+Permissions Policy. Then run a finite `read` or `firstNotification` and
+`throwIfCleanupFailed(await session.manager.destroy(), 'manager.destroy')`.
 
 Inject `environment` only for tests or unusual hosts:
 

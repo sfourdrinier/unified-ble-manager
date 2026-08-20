@@ -218,7 +218,15 @@ export function throwIfCleanupFailed(cleanup: CleanupRecord, operation: string):
     domain: 'cleanup',
     code: 'release-failed',
     safeMessage: 'Owned BLE resources did not release cleanly',
-    metadata: Object.freeze({ failureCount: cleanup.failures.length })
+    metadata: Object.freeze({
+      failureCount: cleanup.failures.length,
+      failures: cleanup.failures.map(failure =>
+        Object.freeze({
+          resourceKind: failure.resourceKind,
+          code: failure.error.code
+        })
+      )
+    })
   })
 }
 

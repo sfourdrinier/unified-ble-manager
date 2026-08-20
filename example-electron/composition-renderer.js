@@ -8,12 +8,13 @@ const rendererEntrypoint = 'unified-ble-manager/electron/renderer'
 const clientExport = 'ElectronRendererBleClient'
 
 async function runRendererJourney(client) {
-  const scan = await client.scan()
-  const connection = await client.connect(scan.peerId)
-  const database = await client.discover(connection.handle)
-  await client.read(database.handle)
-  const subscription = await client.subscribe(database.handle)
-  await client.release(subscription.handle)
+  await client.initialize()
+  await client.request({
+    command: 'adapter.state',
+    payload: Object.freeze({}),
+    binaryPayload: null,
+    signal: null
+  })
   await client.destroy()
 }
 

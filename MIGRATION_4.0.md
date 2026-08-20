@@ -136,12 +136,21 @@ const value = await database.read(readablePath, { signal: abort.signal, deadline
 ```
 
 ```ts
-const writablePath = await resolveCharacteristicPath(snapshot, applicationWriteSelector())
-await database.write(writablePath, new Uint8Array([1]), {
-  signal: abort.signal,
-  deadline: journeyDeadline,
-  mode: 'with-response'
-})
+import { BackendContractError } from 'unified-ble-manager'
+import { encodeResetEnergyExpended, heartRateControlPointSelector } from 'unified-ble-manager/profiles/heart-rate'
+
+try {
+  const writablePath = await resolveCharacteristicPath(snapshot, heartRateControlPointSelector())
+  await database.write(writablePath, encodeResetEnergyExpended(), {
+    signal: abort.signal,
+    deadline: journeyDeadline,
+    mode: 'with-response'
+  })
+} catch (error) {
+  if (!(error instanceof BackendContractError) || (error.normalized.code !== 'gatt.not-found' && error.normalized.code !== 'gatt.property-not-supported')) {
+    throw error
+  }
+}
 ```
 
 `value` is `Uint8Array`. If an HTTP API wants Base64, encode at that boundary yourself. `unified-ble-manager/codecs` is IEEE-11073 and byte views, not a Base64 helper. Battery Level is read-oriented; do not write it. Use a distinct application characteristic (or Heart Rate Control Point only after it exists) for writes.

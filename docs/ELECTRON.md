@@ -16,8 +16,8 @@ Runnable composition lives in [`example-electron/`](../example-electron/)
 2. create the router and install the binding;
 3. authenticate `WebContents`;
 4. expose a narrow preload bridge (no generic `ipcRenderer`);
-5. initialize `ElectronRendererBleClient`;
-6. scan → connect → discover → read/subscribe;
+5. initialize `ElectronRendererBleClient` (`initialize`, `request`, `subscribeConnectionEvents`, `destroy`);
+6. issue versioned `client.request` commands for scan/connect/GATT — the renderer client has no `scan()`/`connect()` methods;
 7. release renderer resources, destroy the binding, destroy the manager.
 
 BrowserWindow must use `contextIsolation: true` and `nodeIntegration: false`.

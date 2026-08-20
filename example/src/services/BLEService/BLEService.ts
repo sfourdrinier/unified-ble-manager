@@ -77,7 +77,9 @@ class CanonicalBleExampleService {
   private manager: CanonicalManager | null = null
   private managerCreation: Promise<CanonicalManager> | null = null
   private destroying = false
+  private ownerGeneration = 0
   private scan: ScanSession<string> | null = null
+  private scanAbort: AbortController | null = null
   private connection: CanonicalConnection | null = null
   private database: CanonicalDatabase | null = null
   private notification: CanonicalSubscription | null = null
@@ -89,6 +91,8 @@ class CanonicalBleExampleService {
   async scanForPeers(serviceUuids: readonly string[], onPeer: (peer: ExamplePeer) => void): Promise<void> {
     await this.stopScan()
     const manager = await this.ensureManager()
+    const abort = new AbortController()
+    this.scanAbort = abort
     const scan = await manager.scan({
       filter: {
         serviceUuids: serviceUuids.map(canonicalUuid),
@@ -103,7 +107,8 @@ class CanonicalBleExampleService {
         reservedControlCapacity: capacity(2),
         overflowPolicy: 'drop-oldest'
       },
-      ...this.operation(),
+      signal: abort.signal,
+      deadline: null,
       sharing: { mode: 'owner', allowSharing: false }
     })
     this.scan = scan
@@ -111,6 +116,9 @@ class CanonicalBleExampleService {
   }
 
   async stopScan(): Promise<void> {
+    const abort = this.scanAbort
+    this.scanAbort = null
+    abort?.abort()
     const scan = this.scan
     if (scan === null) {
       return
@@ -231,6 +239,8 @@ class CanonicalBleExampleService {
   }
 
   async destroy(): Promise<void> {
+    const generation = this.ownerGeneration + 1
+    this.ownerGeneration = generation
     this.destroying = true
     const failures: unknown[] = []
     const pendingCreation = this.managerCreation
@@ -240,9 +250,19 @@ class CanonicalBleExampleService {
       failures.push(error)
     }
     try {
-      await this.disconnect()
+      await this.stopNotification()
     } catch (error) {
       failures.push(error)
+    }
+    const connection = this.connection
+    this.connection = null
+    this.database = null
+    if (connection !== null) {
+      try {
+        assertReleased(await connection.disconnect(), 'connection disconnect')
+      } catch (error) {
+        failures.push(error)
+      }
     }
     let manager = this.manager
     if (pendingCreation !== null) {
@@ -261,6 +281,9 @@ class CanonicalBleExampleService {
     }
     this.manager = null
     this.managerCreation = null
+    if (this.ownerGeneration === generation) {
+      this.destroying = false
+    }
     if (failures.length === 1) {
       throw failures[0]
     }
@@ -285,27 +308,32 @@ class CanonicalBleExampleService {
     if (this.managerCreation !== null) {
       return this.managerCreation
     }
-    const managerId = nextExampleManagerId
-    nextExampleManagerId += 1
-    const creation = createReactNativeBleManager({
-      clientId: BARE_APPLICATION_BLE_CLIENT_ID,
-      managerId: `bare-example-manager-${managerId.toString()}`,
-      hostSessionScope: BARE_APPLICATION_HOST_SESSION_SCOPE
-    })
+    const generation = this.ownerGeneration
+    const creation = this.createOwnedManager(generation)
     this.managerCreation = creation
     try {
-      const manager = await creation
-      if (this.destroying) {
-        await manager.destroy()
-        throw new Error('CanonicalBleExampleService is destroying.')
-      }
-      this.manager = manager
-      return manager
+      return await creation
     } finally {
       if (this.managerCreation === creation) {
         this.managerCreation = null
       }
     }
+  }
+
+  private async createOwnedManager(generation: number): Promise<CanonicalManager> {
+    const managerId = nextExampleManagerId
+    nextExampleManagerId += 1
+    const manager = await createReactNativeBleManager({
+      clientId: BARE_APPLICATION_BLE_CLIENT_ID,
+      managerId: `bare-example-manager-${managerId.toString()}`,
+      hostSessionScope: BARE_APPLICATION_HOST_SESSION_SCOPE
+    })
+    if (this.destroying || this.ownerGeneration !== generation) {
+      await manager.destroy()
+      throw new Error('CanonicalBleExampleService is destroying.')
+    }
+    this.manager = manager
+    return manager
   }
 
   private requireConnection(): CanonicalConnection {

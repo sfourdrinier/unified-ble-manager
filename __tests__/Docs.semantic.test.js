@@ -78,6 +78,25 @@ describe('teaching documentation semantic BLE rules', () => {
     }
   })
 
+  test('Heart Rate Measurement is not read in a teaching fence', () => {
+    for (const { relativePath, text } of documents) {
+      for (const fence of fences(text)) {
+        if (fence.includes('heartRateMeasurementSelector')) {
+          expect(`${relativePath}:${fence}`).not.toContain('database.read')
+        }
+      }
+    }
+  })
+
+  test('does not invent applicationWriteSelector or treat getDevices as a package API', () => {
+    for (const { relativePath, text } of documents) {
+      expect(`${relativePath}:${text}`).not.toContain('applicationWriteSelector')
+      if (text.includes('getDevices()')) {
+        expect(`${relativePath}:${text}`).toMatch(/navigator\.bluetooth\.getDevices/)
+      }
+    }
+  })
+
   test('example README AbortSignal claim matches the service', () => {
     const exampleReadme = read('example/README.md')
     const service = read('example/src/services/BLEService/BLEService.ts')

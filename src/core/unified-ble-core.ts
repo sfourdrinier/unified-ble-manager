@@ -232,10 +232,14 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
     stop(): Promise<CleanupRecord>
   }> {
     this.assertReady('adapter-states')
-    if (options.signal?.aborted === true) {
+    if (abortRequested(options.signal)) {
       throw contractError('operation.aborted', 'adapter', 'adapter-states')
     }
     const watch: AdapterStateWatch<Attachment> = await this.backend.adapter.watchState()
+    if (abortRequested(options.signal)) {
+      await closeAdapterStateStream(watch.transitions)
+      throw contractError('operation.aborted', 'adapter', 'adapter-states')
+    }
     const session = {
       initial: watch.initial,
       values: watch.transitions,
@@ -248,7 +252,7 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
     options.signal?.addEventListener(
       'abort',
       () => {
-        void session.stop()
+        this.lifecycleObserver.observeCleanup(session.stop(), 'adapter-states-abort-stop')
       },
       { once: true }
     )
@@ -989,6 +993,10 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
     }
     return cleanup
   }
+}
+
+function abortRequested(signal: AbortSignal | null | undefined): boolean {
+  return signal !== null && signal !== undefined && signal.aborted
 }
 
 function closeAdapterStateStream(stream: BoundedAsyncStream<unknown>): Promise<CleanupRecord> {

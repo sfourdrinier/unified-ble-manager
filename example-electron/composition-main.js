@@ -15,6 +15,12 @@ const browserWindowWebPreferences = Object.freeze({
   preload: path.join(__dirname, 'composition-preload.js')
 })
 
+const mainEntrypoint = 'unified-ble-manager/electron/main'
+const mainExports = Object.freeze([
+  'ElectronMainBleRouter',
+  'createElectronMainCoreBluetoothBackendProvider'
+])
+
 async function createMainOwnedManager(createManager) {
   return createManager({
     clientId: 'electron-main-client',
@@ -24,5 +30,7 @@ async function createMainOwnedManager(createManager) {
 
 module.exports = {
   browserWindowWebPreferences,
-  createMainOwnedManager
+  createMainOwnedManager,
+  mainEntrypoint,
+  mainExports
 }

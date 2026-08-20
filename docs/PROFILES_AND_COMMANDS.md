@@ -34,7 +34,7 @@ address. Commands operate on the generation-bound path returned by discovery
 and fail with `gatt.ambiguous-path` when the selector is not specific enough.
 
 ```ts
-import type { PublicOperationOptions } from 'unified-ble-manager'
+import { defaultScanDelivery, firstNotification } from 'unified-ble-manager'
 import { resolveCharacteristicPath } from 'unified-ble-manager/profiles/commands'
 import {
   HEART_RATE_SERVICE,
@@ -58,8 +58,11 @@ const selectedPath = await resolveCharacteristicPath(
   heartRateMeasurementSelector({ serviceOccurrence: String(selectedService.path.serviceOccurrence) })
 )
 
-const options: PublicOperationOptions = { signal: abortController.signal, deadline: journeyDeadline }
-const bytes = await database.read(selectedPath, options)
+const bytes = await firstNotification(database, selectedPath, {
+  signal: abortController.signal,
+  deadline: journeyDeadline,
+  delivery: defaultScanDelivery()
+})
 ```
 
 Selector occurrences may be copied from a current snapshot. Full paths, database

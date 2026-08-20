@@ -288,9 +288,19 @@ describe('host-neutral public helpers', () => {
     try {
       expect(defaultScanDelivery().overflowPolicy).toBe('drop-oldest')
       throwIfCleanupFailed({ state: 'released', failures: [] }, 'noop')
-      expect(() =>
-        throwIfCleanupFailed({ state: 'release-failed', failures: [{ resourceKind: 'scan', error: { code: 'scan.stop-failed' } }] }, 'helpers.cleanup')
-      ).toThrow(/lifecycle.invalid-state/)
+      try {
+        throwIfCleanupFailed(
+          { state: 'release-failed', failures: [{ resourceKind: 'scan', error: { code: 'scan.stop-failed' } }] },
+          'helpers.cleanup'
+        )
+        throw new Error('expected throwIfCleanupFailed to throw')
+      } catch (error) {
+        expect(error.normalized.code).toBe('lifecycle.invalid-state')
+        expect(error.normalized.platform.metadata).toEqual({
+          failureCount: 1,
+          failures: [{ resourceKind: 'scan', code: 'scan.stop-failed' }]
+        })
+      }
 
       const found = scanForServices(manager, [], {
         matches: observation => observation.localName.state === 'present'
@@ -308,6 +318,23 @@ describe('host-neutral public helpers', () => {
         value: { kind: 'value', value: { safeReason: 'adapter-state-watch-update' } }
       })
       await session.stop()
+
+      const abort = new AbortController()
+      const abortedSession = await manager.adapterStates({ signal: abort.signal })
+      abort.abort()
+      await activate(fixture)
+      await expect(settle(fixture, abortedSession.values[Symbol.asyncIterator]().next())).resolves.toMatchObject({
+        done: false,
+        value: { kind: 'terminal' }
+      })
+      await expect(abortedSession.stop()).resolves.toMatchObject({ state: 'released' })
+
+      const abortDuringWatch = new AbortController()
+      const pendingWatch = manager.adapterStates({ signal: abortDuringWatch.signal })
+      abortDuringWatch.abort()
+      await expect(settle(fixture, pendingWatch)).rejects.toMatchObject({
+        normalized: { code: 'operation.aborted' }
+      })
 
       const discovered = await settle(
         fixture,
