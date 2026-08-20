@@ -4,13 +4,24 @@
 
 Use `unified-ble-manager/web` in a secure context (HTTPS or localhost) from a user gesture. There is no background scan and no process-level restoration.
 
-**Current package:** `4.0.0-rc.0`. The backend is Experimental until a bound live-radio receipt says otherwise. See [`PLATFORMS.md`](PLATFORMS.md).
+**Current package:** `4.0.0-rc.1`. The backend is Experimental until artifact-bound physical-hardware validation says otherwise. See [`PLATFORMS.md`](PLATFORMS.md).
 
 ## Create a matched chooser and manager
 
 ```ts
 import { createNavigatorWebBleManager } from 'unified-ble-manager/web'
 
+const session = await createNavigatorWebBleManager({
+  clientId: 'web-app-ble-client',
+  managerId: 'web-app-ble-manager'
+})
+```
+
+Call `session.chooser.choose()` from a click handler. `getDevices()` can return previously granted devices. Iframes need the `bluetooth` Permissions Policy. Then run a finite `read` or `firstNotification` and `throwIfCleanupFailed(await session.manager.destroy(), 'manager.destroy')`.
+
+Inject `environment` only for tests or unusual hosts:
+
+```ts
 const timers = new Map<object, ReturnType<typeof window.setTimeout>>()
 
 const session = await createNavigatorWebBleManager({

@@ -1,14 +1,14 @@
 <!-- README.md -->
 
-> Sponsored by [Imagi Explain](https://imagiexplain.com) — researched, narrated whiteboard explainers from a prompt, a PDF, or your notes.
-
 # Unified BLE Manager
 
 `unified-ble-manager` is a Bluetooth Low Energy **central** library. You pick a host — React Native, Web, Electron, Tauri, or Node — create one manager, talk to a peripheral in bytes, cancel work with `AbortSignal`, and destroy what you create.
 
-It is an evolution of `react-native-ble-plx`, rewritten as a **cross-platform unified product**. Same manager contract on every host. The root package never picks a radio for you, and it will not quietly fall back to a simulator or a different backend.
+It is an evolution of `react-native-ble-plx`, rewritten as a **cross-platform unified product**. One bytes-first BLE model and lifecycle semantics across hosts, with host-specific construction and ownership. The root package never picks a radio for you, and it will not quietly fall back to a simulator or a different backend.
 
-**Current package:** `4.0.0-rc.0` on npm `latest`. That is the 4.0 public API. Each radio backend stays Experimental until a bound live-radio receipt says otherwise. See [`docs/PLATFORMS.md`](docs/PLATFORMS.md).
+**Current package:** `4.0.0-rc.1` on npm `latest`. That is the 4.0 public API. Package SemVer and backend support labels are independent: each radio backend stays Experimental until artifact-bound physical-hardware validation says otherwise. See [`docs/PLATFORMS.md`](docs/PLATFORMS.md).
+
+> Sponsored by [Imagi Explain](https://imagiexplain.com) — researched, narrated whiteboard explainers from a prompt, a PDF, or your notes.
 
 ## Documentation map
 
@@ -28,7 +28,7 @@ It is an evolution of `react-native-ble-plx`, rewritten as a **cross-platform un
 pnpm add unified-ble-manager
 ```
 
-Works with npm, yarn, or Bun. This repository uses pnpm.
+Installable with npm, yarn, or Bun. This repository uses pnpm. Bun as a runtime is not a tested host.
 
 Linux BlueZ also needs the optional D-Bus peer in the **application**:
 
@@ -67,16 +67,12 @@ Deep imports are unsupported.
 Requirements: React Native 0.86+, Expo SDK 57+ when using Expo, Android min SDK 24, iOS 16.4. The package contains native code and does not run in Expo Go.
 
 ```ts
-import { Platform } from 'react-native'
-import { createReactNativeBleManager, getNativeUnifiedBleProtocolControl } from 'unified-ble-manager/react-native'
+import { createReactNativeBleManager } from 'unified-ble-manager/react-native'
 
 const manager = await createReactNativeBleManager({
-  platform: Platform.OS === 'ios' ? 'apple' : 'android',
-  control: getNativeUnifiedBleProtocolControl(),
-  now: () => performance.now(),
-  clientId: 'signed-in-user-ble-client',
-  managerId: 'main-mobile-ble-manager',
-  hostSessionScope: 'com.example.app.mobile-ble'
+  clientId: 'com.example.app.ble-client',
+  managerId: 'com.example.app.ble-manager',
+  hostSessionScope: 'com.example.app'
 })
 ```
 
@@ -93,7 +89,7 @@ On Android 12+ the app must request `BLUETOOTH_SCAN` and `BLUETOOTH_CONNECT` its
       [
         "unified-ble-manager",
         {
-          "isBackgroundEnabled": true,
+          "requiresBluetoothLeHardware": true,
           "modes": ["central"],
           "neverForLocation": false,
           "bluetoothAlwaysPermission": "Allow $(PRODUCT_NAME) to connect to Bluetooth devices",
@@ -101,7 +97,7 @@ On Android 12+ the app must request `BLUETOOTH_SCAN` and `BLUETOOTH_CONNECT` its
             "identifier": "com.example.app.ble",
             "namespace": "com.example.app.ble",
             "epoch": "2026-07-30",
-            "clientId": "signed-in-user-ble-client",
+            "clientId": "com.example.app.ble-client",
             "hostSessionScope": "com.example.app.mobile-ble"
           }
         }
@@ -111,100 +107,67 @@ On Android 12+ the app must request `BLUETOOTH_SCAN` and `BLUETOOTH_CONNECT` its
 }
 ```
 
-Then `npx expo prebuild` and run a development or production native build. `isBackgroundEnabled` only marks the Android BLE hardware feature; it does not start a foreground service. See [`docs/EXPO_PLUGIN.md`](docs/EXPO_PLUGIN.md).
+Then `npx expo prebuild` and run a development or production native build. `requiresBluetoothLeHardware` only marks the Android BLE hardware feature; it does not start a foreground service. See [`docs/EXPO_PLUGIN.md`](docs/EXPO_PLUGIN.md).
 
 ## One complete loop
 
 Values are `Uint8Array`. Cancellable work takes `AbortSignal`. Scan and connect deadlines on `BleManager` use `deadline()`. Advertised names live on `localName`, not `device.name`.
 
 ```ts
-import { capacity, deadline, scanUntil } from 'unified-ble-manager'
+// @ubm-recipe finite-hrs
+import {
+  deadline,
+  defaultScanDelivery,
+  firstNotification,
+  scanUntil,
+  throwIfCleanupFailed,
+  withConnection
+} from 'unified-ble-manager'
 import { resolveCharacteristicPath } from 'unified-ble-manager/profiles/commands'
-import { batteryLevelSelector } from 'unified-ble-manager/profiles/battery-service'
 import {
   HEART_RATE_SERVICE,
-  encodeResetEnergyExpended,
-  heartRateControlPointSelector,
   heartRateMeasurementSelector,
   parseHeartRateMeasurement
 } from 'unified-ble-manager/profiles/heart-rate'
 
 const abort = new AbortController()
-const until = deadline(manager.monotonicNow() + 20_000)
-const op = { signal: abort.signal, deadline: until }
-
-const observation = await scanUntil(manager, {
-  scan: {
-    filter: {
-      serviceUuids: [HEART_RATE_SERVICE],
-      manufacturerData: [],
-      localNamePrefix: null
-    },
-    duplicatePolicy: 'merged',
-    timestampPolicy: 'source-then-receipt',
-    delivery: {
-      itemCapacity: capacity(32),
-      byteCapacity: capacity(16 * 1024),
-      reservedControlCapacity: capacity(2),
-      overflowPolicy: 'drop-oldest'
-    },
-    deadline: until,
-    signal: abort.signal,
-    sharing: { mode: 'owner', allowSharing: false }
-  },
-  matches: candidate => candidate.localName.state === 'present'
-})
-
-const connection = await manager.connect(observation.device.id, op)
-const database = await connection.discover(op)
-const snapshot = await database.snapshot()
-const batteryPath = await resolveCharacteristicPath(snapshot, batteryLevelSelector())
-const measurementPath = await resolveCharacteristicPath(snapshot, heartRateMeasurementSelector())
-const controlPath = await resolveCharacteristicPath(snapshot, heartRateControlPointSelector())
-
-const battery = await database.read(batteryPath, op)
-const receipt = await database.write(controlPath, encodeResetEnergyExpended(), {
-  ...op,
-  mode: 'with-response'
-})
-
-const subscription = await database.subscribe(measurementPath, {
-  ...op,
-  delivery: {
-    itemCapacity: capacity(64),
-    byteCapacity: capacity(64 * 1024),
-    reservedControlCapacity: capacity(2),
-    overflowPolicy: 'drop-oldest'
-  }
-})
+const journeyDeadline = deadline(manager.monotonicNow() + 20_000)
+const op = { signal: abort.signal, deadline: journeyDeadline }
 
 try {
-  for await (const item of subscription.values) {
-    if (item.kind === 'value') {
-      consume(parseHeartRateMeasurement(item.value.value))
-    } else if (item.kind === 'overflow') {
-      reportLoss(item)
-    } else {
-      break
-    }
-  }
+  const observation = await scanUntil(manager, {
+    scan: {
+      filter: {
+        serviceUuids: [HEART_RATE_SERVICE],
+        manufacturerData: [],
+        localNamePrefix: null
+      },
+      duplicatePolicy: 'merged',
+      timestampPolicy: 'source-then-receipt',
+      delivery: defaultScanDelivery(),
+      deadline: journeyDeadline,
+      signal: abort.signal,
+      sharing: { mode: 'owner', allowSharing: false }
+    },
+    matches: candidate => candidate.localName.state === 'present'
+  })
+
+  await withConnection(manager, observation.device.id, op, async connection => {
+    const database = await connection.discover(op)
+    const snapshot = await database.snapshot()
+    const measurementPath = await resolveCharacteristicPath(snapshot, heartRateMeasurementSelector())
+    const bytes = await firstNotification(database, measurementPath, {
+      ...op,
+      delivery: defaultScanDelivery()
+    })
+    consume(parseHeartRateMeasurement(bytes))
+  })
 } finally {
-  const removed = await subscription.remove()
-  if (removed.state === 'release-failed') {
-    throw new Error('Subscription did not release cleanly.')
-  }
-}
-
-const released = await connection.release()
-if (released.state === 'release-failed') {
-  throw new Error('Connection did not release cleanly.')
-}
-
-const destroyed = await manager.destroy()
-if (destroyed.state === 'release-failed') {
-  throw new Error('Manager did not release cleanly.')
+  throwIfCleanupFailed(await manager.destroy(), 'manager.destroy')
 }
 ```
+
+`journeyDeadline` is one budget for the whole sample, not 20 seconds per call. Battery Level and Heart Rate Control Point are optional or conditional; see [`docs/TUTORIALS.md`](docs/TUTORIALS.md). Persistent subscriptions also live there.
 
 Web Bluetooth replaces the scan with `session.chooser.choose(...)` from a user gesture. Tauri and the Electron renderer use different client types — see those host pages.
 
@@ -229,7 +192,8 @@ Web Bluetooth replaces the scan with `session.chooser.choose(...)` from a user g
 | `scan(options)` | Start a bounded `ScanSession`. You must `stop()` it. |
 | `connect(peerId, { signal, deadline })` | Open a connection lease. |
 | `destroy()` | Async teardown. Await it. Inspect `CleanupRecord`. |
-| `adapterState()` | One snapshot of power / authorization / availability. No public watch. |
+| `adapterState()` | One snapshot of power / authorization / availability. |
+| `adapterStates()` | Bounded stream of adapter-state transitions. Stop it. |
 | `supports(id)` / `capability(id)` / `capabilities()` | Runtime features of **this** backend. |
 | `monotonicNow()` | Clock for `deadline()`. |
 | `adoptRestoration(request)` | Consume a native restoration journal. Does not auto-reconnect. |
@@ -280,28 +244,33 @@ Copy paths from `snapshot()` or `resolveCharacteristicPath`. Hand-built generati
 | Helper | Use |
 | --- | --- |
 | `scanUntil` / `find` | Scan until a predicate matches, then stop |
+| `scanForServices` | `scanUntil` with a service UUID filter and `defaultScanDelivery()` |
 | `connectAndDiscover` | Connect + discover; releases the connection if discovery fails |
 | `firstNotification` | One payload, then `remove()` |
 | `collectNotifications` | Up to `maximumValues` payloads, then `remove()` |
 | `withConnection` | Run a function and always `release()` the lease |
+| `withDiscoveredConnection` | Connect, discover, run, then `release()` |
+| `throwIfCleanupFailed` | Throw if a `CleanupRecord` is `release-failed` |
 | `capacity()` / `deadline()` / `canonicalUuid()` | Branded scan/connect primitives |
 
 ### Host factories
 
 | Factory | Returns |
 | --- | --- |
-| `createReactNativeBleManager` | `BleManager` |
-| `createNavigatorWebBleManager` | `{ chooser, manager }` |
+| `createReactNativeBleManager` | App factory: `{ clientId, managerId, hostSessionScope }` |
+| `createReactNativeBleManagerWithEnvironment` | Injectable RN factory for tests |
+| `createNavigatorWebBleManager` | `{ chooser, manager }`; default navigator environment |
+| `createCoreBluetoothBleManager` / `createWinRtBleManager` / `createBluezBleManager` | One-call Node managers |
 | `createElectronMainCoreBluetoothBackendProvider` / `WinRt` | Main-process provider; you still build a `BleManager` |
 | `ElectronRendererBleClient` | IPC client, not `BleManager` |
 | `createTauriBleManager` | `IpcBleManager` — simpler options, not `BleManager.scan` |
-| `createNativeCoreBluetoothBackendProvider` (+ WinRT / BlueZ) | Provider; then `createBleManagerFromProvider` |
+| `createBleManagerFromProvider` | Advanced provider construction |
 
 ## Other hosts
 
 - **Web:** user-gesture `chooser.choose()`, then the same `connect` / GATT handles. No continuous scan. [`docs/WEB.md`](docs/WEB.md)
 - **Electron:** main owns the radio; the renderer uses the IPC client. [`docs/ELECTRON.md`](docs/ELECTRON.md)
-- **Node:** pick CoreBluetooth, WinRT, or BlueZ, list adapters, then `createBleManagerFromProvider`. Published releases ship Node-API v8 prebuilds for macOS and Windows `arm64`/`x64`. [`docs/NODE.md`](docs/NODE.md)
+- **Node:** `createCoreBluetoothBleManager` / `createWinRtBleManager` / `createBluezBleManager`, or list adapters and `createBleManagerFromProvider`. Published releases ship Node-API v8 prebuilds for macOS and Windows `arm64`/`x64`. [`docs/NODE.md`](docs/NODE.md)
 - **Tauri:** `createTauriBleManager({ invoke, Channel })` returns `IpcBleManager`. [`docs/TAURI.md`](docs/TAURI.md)
 
 `4.0.0-rc.*` versions publish to npm `latest` so a bare install gets the current 4.0 line. After the first stable `4.0.0`, later prereleases publish to `next`. Publication uses npm trusted publishing/OIDC with provenance.
@@ -334,7 +303,7 @@ pnpm prepack
 
 ## Maintainers
 
-Contract, evidence, and release process live in [`docs/UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md`](docs/UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md), [`docs/PLATFORMS.md`](docs/PLATFORMS.md), [`RELEASE.md`](RELEASE.md), [`CONTRIBUTING.md`](CONTRIBUTING.md), and [`GOVERNANCE.md`](GOVERNANCE.md).
+Contract, evidence, and release process live in [`docs/UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md`](docs/UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md), [`docs/PLATFORMS.md`](docs/PLATFORMS.md), [`RELEASE.md`](RELEASE.md), [`CONTRIBUTING.md`](CONTRIBUTING.md), [`GOVERNANCE.md`](GOVERNANCE.md), [`SECURITY.md`](SECURITY.md), and [`SUPPORT.md`](SUPPORT.md).
 
 ## License
 

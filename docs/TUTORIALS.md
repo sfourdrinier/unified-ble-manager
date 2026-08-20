@@ -2,7 +2,7 @@
 
 # Public API tutorials
 
-These recipes assume you already constructed a `BleManager` for your host. See [`GETTING_STARTED.md`](GETTING_STARTED.md). Web Bluetooth replaces the scan with `chooser.choose()`. Tauri and the Electron renderer use different client types. On `BleManager`, pass `deadline(...)` into `scan` and `connect`; GATT methods accept that same value.
+These recipes assume you already constructed a `BleManager` for your host. See [`GETTING_STARTED.md`](GETTING_STARTED.md). Web Bluetooth replaces the scan with `chooser.choose()`. Tauri and the Electron renderer use different client types. On `BleManager`, pass `deadline(...)` into `scan` and `connect`; GATT methods accept that same value. Import `BackendContractError` from `unified-ble-manager` when catching optional-feature absence.
 
 Every cancellable call takes an `AbortSignal`. Scan and connect deadlines on `BleManager` use `deadline()`. GATT helpers on `Connection` / `DiscoveredGattDatabase` accept the same `deadline` value.
 
@@ -68,13 +68,25 @@ const bytes = await database.read(batteryPath, {
   signal: controller.signal,
   deadline: until
 })
+```
 
-const hrsControlPath = await resolveCharacteristicPath(snapshot, heartRateControlPointSelector())
-const receipt = await database.write(hrsControlPath, encodeResetEnergyExpended(), {
-  signal: controller.signal,
-  deadline: until,
-  mode: 'with-response'
-})
+Battery Level is optional relative to Heart Rate Service. Catch only `gatt.not-found` or `gatt.property-not-supported` if the peripheral may omit it.
+
+Heart Rate Control Point is conditional (Energy Expended). Resolve it separately and write only after it exists:
+
+```ts
+try {
+  const hrsControlPath = await resolveCharacteristicPath(snapshot, heartRateControlPointSelector())
+  const receipt = await database.write(hrsControlPath, encodeResetEnergyExpended(), {
+    signal: controller.signal,
+    deadline: until,
+    mode: 'with-response'
+  })
+} catch (error) {
+  if (!(error instanceof BackendContractError) || (error.normalized.code !== 'gatt.not-found' && error.normalized.code !== 'gatt.property-not-supported')) {
+    throw error
+  }
+}
 ```
 
 A new connection or rediscovery needs a fresh snapshot and fresh paths. Stale paths throw `gatt.stale-handle`.

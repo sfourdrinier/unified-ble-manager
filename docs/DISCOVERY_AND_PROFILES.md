@@ -104,16 +104,14 @@ and bounded delivery configuration without changing them.
 ```ts
 import {
   readBatteryLevel,
-  readHeartRateMeasurement,
   subscribeHeartRateMeasurements
 } from 'unified-ble-manager/profiles/standard-commands'
 
-const operation = { signal: abortController.signal, deadline: null }
+const operation = { signal: abortController.signal, deadline: journeyDeadline }
 const batteryPercent = await readBatteryLevel(database, operation)
-const measurement = await readHeartRateMeasurement(database, operation)
 const subscription = await subscribeHeartRateMeasurements(database, {
   ...operation,
-  delivery: streamDelivery
+  delivery
 })
 
 try {

@@ -102,6 +102,50 @@ interface BrowserBluetooth {
   requestDevice(options?: BrowserBluetoothRequestOptions): Promise<BrowserBluetoothDevice>
 }
 
+export function createDefaultNavigatorWebBluetoothEnvironment(): NavigatorWebBluetoothEnvironment {
+  const globalObject = globalThis as typeof globalThis & {
+    readonly navigator?: {
+      readonly bluetooth?: BrowserBluetooth
+      readonly userAgent?: string
+      readonly userActivation?: { readonly isActive?: boolean }
+    }
+    readonly isSecureContext?: boolean
+    readonly document?: {
+      addEventListener(type: string, listener: () => void): void
+      removeEventListener(type: string, listener: () => void): void
+    }
+    readonly window?: {
+      addEventListener(type: string, listener: () => void): void
+      removeEventListener(type: string, listener: () => void): void
+    }
+  }
+  return {
+    implementationVersion: 'unified-ble-manager-web',
+    browserEngine: globalObject.navigator?.userAgent ?? 'unknown',
+    bluetooth: globalObject.navigator?.bluetooth ?? null,
+    isSecureContext: () => globalObject.isSecureContext === true,
+    hasTransientUserActivation: () => globalObject.navigator?.userActivation?.isActive === true,
+    now: () => performance.now(),
+    setTimer: (callback, delayMilliseconds) => {
+      const handle = { id: globalThis.setTimeout(callback, delayMilliseconds) }
+      return handle
+    },
+    clearTimer: handle => {
+      globalThis.clearTimeout((handle as { readonly id: ReturnType<typeof setTimeout> }).id)
+    },
+    addPageLifecycleListener: listener => {
+      const onHidden = () => listener('page-hidden')
+      const onPageHide = () => listener('page-unloaded')
+      globalObject.document?.addEventListener('visibilitychange', onHidden)
+      globalObject.window?.addEventListener('pagehide', onPageHide)
+      return () => {
+        globalObject.document?.removeEventListener('visibilitychange', onHidden)
+        globalObject.window?.removeEventListener('pagehide', onPageHide)
+      }
+    }
+  }
+}
+
 export interface NavigatorWebBluetoothEnvironment {
   readonly implementationVersion: string
   readonly browserEngine: string

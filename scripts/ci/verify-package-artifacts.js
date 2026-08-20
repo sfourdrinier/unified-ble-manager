@@ -28,6 +28,8 @@ const internalRuntimeSourceFiles = Object.freeze([
   'native-protocol/rn-android-protocol-records.ts',
   'native-protocol/rn-jsi-binary-runtime.ts',
   'react-native-manager.ts',
+  'react-native-app-manager.ts',
+  'node-host-manager.ts',
   'native-protocol/v1-codec.ts'
 ])
 

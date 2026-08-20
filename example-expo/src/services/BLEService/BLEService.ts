@@ -1,9 +1,10 @@
 // example-expo/src/services/BLEService/BLEService.ts
 
-import { Platform } from 'react-native'
 import {
+  BackendContractError,
   canonicalUuid,
   capacity,
+  deadline,
   type AdvertisementObservation,
   type Connection,
   type DiscoveredGattDatabase,
@@ -12,18 +13,13 @@ import {
   type Subscription,
   type Uuid
 } from 'unified-ble-manager'
-import { createReactNativeBleManager, getNativeUnifiedBleProtocolControl } from 'unified-ble-manager/react-native'
+import { createReactNativeBleManager } from 'unified-ble-manager/react-native'
+import { characteristicSelector, resolveCharacteristicPath } from 'unified-ble-manager/profiles/commands'
 import {
   BATTERY_LEVEL_CHARACTERISTIC,
   BATTERY_SERVICE,
   parseBatteryLevel
 } from 'unified-ble-manager/profiles/battery-service'
-import {
-  BLOOD_PRESSURE_MEASUREMENT_CHARACTERISTIC,
-  BLOOD_PRESSURE_SERVICE,
-  parseBloodPressureMeasurement,
-  type BloodPressureMeasurement
-} from 'unified-ble-manager/profiles/blood-pressure'
 import {
   decodeDeviceInformationString,
   DEVICE_INFORMATION_SERVICE,
@@ -35,12 +31,6 @@ import {
   SOFTWARE_REVISION_CHARACTERISTIC,
   type DeviceInformationStringField
 } from 'unified-ble-manager/profiles/device-information'
-import {
-  HEALTH_THERMOMETER_SERVICE,
-  parseTemperatureMeasurement,
-  TEMPERATURE_MEASUREMENT_CHARACTERISTIC,
-  type TemperatureMeasurement
-} from 'unified-ble-manager/profiles/health-thermometer'
 
 type CanonicalManager = Awaited<ReturnType<typeof createReactNativeBleManager>>
 type CanonicalConnection = Connection<string, CanonicalManager['identity']>
@@ -62,8 +52,6 @@ export type ProfileRead<Value> = Value | { readonly skipped: true; readonly reas
 export interface ExampleCommonProfiles {
   readonly battery: ProfileRead<number>
   readonly deviceInformation: Readonly<Partial<Record<DeviceInformationStringField, ProfileRead<string>>>>
-  readonly temperature: ProfileRead<TemperatureMeasurement>
-  readonly bloodPressure: ProfileRead<BloodPressureMeasurement>
 }
 
 interface DeviceInformationCharacteristic {
@@ -83,12 +71,14 @@ const DEVICE_INFORMATION_CHARACTERISTICS: readonly DeviceInformationCharacterist
 let nextExampleManagerId = 1
 
 // This application identifier is stable across manager recreation and native restoration adoption.
+const EXPO_APPLICATION_BLE_CLIENT_ID = 'expo-example-ble-client'
 const EXPO_APPLICATION_HOST_SESSION_SCOPE = 'com.sfourdrinier.bleplxexample'
 
 /** The Expo app owns exactly one canonical 4.0 manager and no legacy compatibility facade. */
 class CanonicalBleExampleService {
   private manager: CanonicalManager | null = null
   private managerCreation: Promise<CanonicalManager> | null = null
+  private destroying = false
   private scan: ScanSession<string> | null = null
   private connection: CanonicalConnection | null = null
   private database: CanonicalDatabase | null = null
@@ -115,8 +105,7 @@ class CanonicalBleExampleService {
         reservedControlCapacity: capacity(2),
         overflowPolicy: 'drop-oldest'
       },
-      deadline: null,
-      signal: null,
+      ...this.operation(),
       sharing: { mode: 'owner', allowSharing: false }
     })
     this.scan = scan
@@ -139,9 +128,9 @@ class CanonicalBleExampleService {
     if (this.connection !== null) {
       await this.disconnect()
     }
-    const connection = await (await this.ensureManager()).connect(peer.peerId, operation())
+    const connection = await (await this.ensureManager()).connect(peer.peerId, this.operation())
     try {
-      const database = await connection.discover(operation())
+      const database = await connection.discover(this.operation())
       this.connection = connection
       this.database = database
     } catch (error) {
@@ -178,25 +167,13 @@ class CanonicalBleExampleService {
   async readCommonProfiles(): Promise<ExampleCommonProfiles> {
     return {
       battery: await this.readProfileValue(BATTERY_SERVICE, BATTERY_LEVEL_CHARACTERISTIC, 'Battery Level', parseBatteryLevel),
-      deviceInformation: await this.readDeviceInformation(),
-      temperature: await this.readProfileValue(
-        HEALTH_THERMOMETER_SERVICE,
-        TEMPERATURE_MEASUREMENT_CHARACTERISTIC,
-        'Temperature Measurement',
-        parseTemperatureMeasurement
-      ),
-      bloodPressure: await this.readProfileValue(
-        BLOOD_PRESSURE_SERVICE,
-        BLOOD_PRESSURE_MEASUREMENT_CHARACTERISTIC,
-        'Blood Pressure Measurement',
-        parseBloodPressureMeasurement
-      )
+      deviceInformation: await this.readDeviceInformation()
     }
   }
 
   async readCharacteristic(serviceUuid: string, characteristicUuid: string): Promise<Uint8Array> {
     const database = this.requireDatabase()
-    return database.read(await this.characteristicPath(serviceUuid, characteristicUuid), operation())
+    return database.read(await this.characteristicPath(serviceUuid, characteristicUuid), this.operation())
   }
 
   async writeCharacteristic(
@@ -207,20 +184,20 @@ class CanonicalBleExampleService {
   ): Promise<void> {
     const database = this.requireDatabase()
     await database.write(await this.characteristicPath(serviceUuid, characteristicUuid), bytes, {
-      ...operation(),
+      ...this.operation(),
       mode
     })
   }
 
   async readRssi(): Promise<number> {
     return this.requireConnection()
-      .readRssi(operation())
+      .readRssi(this.operation())
       .then(measurement => measurement.rssi)
   }
 
   async requestMtu(requestedMtu: number): Promise<number> {
     return this.requireConnection()
-      .requestMtu(requestedMtu, operation())
+      .requestMtu(requestedMtu, this.operation())
       .then(result => result.negotiatedMtu)
   }
 
@@ -232,7 +209,7 @@ class CanonicalBleExampleService {
     await this.stopNotification()
     const database = this.requireDatabase()
     const subscription = await database.subscribe(await this.characteristicPath(serviceUuid, characteristicUuid), {
-      ...operation(),
+      ...this.operation(),
       delivery: {
         itemCapacity: capacity(16),
         byteCapacity: capacity(32 * 1024),
@@ -256,17 +233,54 @@ class CanonicalBleExampleService {
   }
 
   async destroy(): Promise<void> {
-    await this.stopScan()
-    await this.disconnect()
-    const manager = this.manager
-    if (manager === null) {
-      return
+    this.destroying = true
+    const failures: unknown[] = []
+    const pendingCreation = this.managerCreation
+    try {
+      await this.stopScan()
+    } catch (error) {
+      failures.push(error)
     }
-    assertReleased(await manager.destroy(), 'manager destruction')
+    try {
+      await this.disconnect()
+    } catch (error) {
+      failures.push(error)
+    }
+    let manager = this.manager
+    if (pendingCreation !== null) {
+      try {
+        manager = await pendingCreation
+      } catch (error) {
+        failures.push(error)
+      }
+    }
+    if (manager !== null) {
+      try {
+        assertReleased(await manager.destroy(), 'manager destruction')
+      } catch (error) {
+        failures.push(error)
+      }
+    }
     this.manager = null
+    this.managerCreation = null
+    if (failures.length === 1) {
+      throw failures[0]
+    }
+    if (failures.length > 1) {
+      throw new AggregateError(failures, 'CanonicalBleExampleService cleanup failed')
+    }
+  }
+
+  private operation() {
+    const abort = new AbortController()
+    const now = this.manager === null ? monotonicNow() : this.manager.monotonicNow()
+    return { signal: abort.signal, deadline: deadline(now + 15_000) }
   }
 
   private async ensureManager(): Promise<CanonicalManager> {
+    if (this.destroying) {
+      throw new Error('CanonicalBleExampleService is destroying.')
+    }
     if (this.manager !== null) {
       return this.manager
     }
@@ -276,16 +290,17 @@ class CanonicalBleExampleService {
     const managerId = nextExampleManagerId
     nextExampleManagerId += 1
     const creation = createReactNativeBleManager({
-      platform: nativePlatform(),
-      control: getNativeUnifiedBleProtocolControl(),
-      now: monotonicNow,
-      clientId: `expo-example-client-${managerId.toString()}`,
+      clientId: EXPO_APPLICATION_BLE_CLIENT_ID,
       managerId: `expo-example-manager-${managerId.toString()}`,
       hostSessionScope: EXPO_APPLICATION_HOST_SESSION_SCOPE
     })
     this.managerCreation = creation
     try {
       const manager = await creation
+      if (this.destroying) {
+        await manager.destroy()
+        throw new Error('CanonicalBleExampleService is destroying.')
+      }
       this.manager = manager
       return manager
     } finally {
@@ -310,21 +325,9 @@ class CanonicalBleExampleService {
   }
 
   private async characteristicPath(serviceUuid: string, characteristicUuid: string) {
-    const found = await this.findCharacteristicPath(serviceUuid, characteristicUuid)
-    if (found !== null) {
-      return found
-    }
-    throw new Error(`Characteristic ${characteristicUuid} was not found in service ${serviceUuid}.`)
-  }
-
-  private async findCharacteristicPath(serviceUuid: string, characteristicUuid: string) {
-    const service = canonicalUuid(serviceUuid)
-    const characteristic = canonicalUuid(characteristicUuid)
-    const snapshot = await this.requireDatabase().snapshot()
-    return (
-      snapshot.characteristics.find(
-      candidate => candidate.path.serviceUuid === service && candidate.path.characteristicUuid === characteristic
-      )?.path ?? null
+    return resolveCharacteristicPath(
+      await this.requireDatabase().snapshot(),
+      characteristicSelector(canonicalUuid(serviceUuid), canonicalUuid(characteristicUuid))
     )
   }
 
@@ -334,42 +337,26 @@ class CanonicalBleExampleService {
     label: string,
     decode: (bytes: Readonly<Uint8Array>) => Value
   ): Promise<ProfileRead<Value>> {
-    const path = await this.findCharacteristicPath(serviceUuid, characteristicUuid)
-    if (path === null) {
-      return null
-    }
     try {
-      return decode(await this.requireDatabase().read(path, operation()))
+      return decode(await this.requireDatabase().read(await this.characteristicPath(serviceUuid, characteristicUuid), this.operation()))
     } catch (error) {
-      const reason = errorMessage(error)
+      if (isOptionalFeatureAbsence(error)) {
+        return { skipped: true, reason: error.normalized.code }
+      }
       console.error(`[CanonicalBleExampleService.readProfileValue] ${label} read failed:`, error)
-      return { skipped: true, reason }
+      throw error
     }
   }
 
   private async readDeviceInformation(): Promise<Readonly<Partial<Record<DeviceInformationStringField, ProfileRead<string>>>>> {
-    const database = this.requireDatabase()
-    const snapshot = await database.snapshot()
     const values: Partial<Record<DeviceInformationStringField, ProfileRead<string>>> = {}
     for (const characteristic of DEVICE_INFORMATION_CHARACTERISTICS) {
-      const path = snapshot.characteristics.find(
-        candidate =>
-          candidate.path.serviceUuid === DEVICE_INFORMATION_SERVICE &&
-          candidate.path.characteristicUuid === characteristic.characteristicUuid
-      )?.path
-      if (path === undefined) {
-        continue
-      }
-      try {
-        values[characteristic.field] = decodeDeviceInformationString(await database.read(path, operation()))
-      } catch (error) {
-        const reason = errorMessage(error)
-        console.error(
-          `[CanonicalBleExampleService.readDeviceInformation] ${characteristic.field} read failed:`,
-          error
-        )
-        values[characteristic.field] = { skipped: true, reason }
-      }
+      values[characteristic.field] = await this.readProfileValue(
+        DEVICE_INFORMATION_SERVICE,
+        characteristic.characteristicUuid,
+        characteristic.field,
+        decodeDeviceInformationString
+      )
     }
     return values
   }
@@ -380,6 +367,10 @@ class CanonicalBleExampleService {
         if (item.kind === 'terminal') {
           console.error('[CanonicalBleExampleService.consumeScan] Scan terminal:', item.reason)
           return
+        }
+        if (item.kind === 'overflow') {
+          console.error('[CanonicalBleExampleService.consumeScan] Scan overflow:', item)
+          continue
         }
         if (item.kind === 'value') {
           onPeer(peerFromObservation(item.value))
@@ -409,6 +400,10 @@ class CanonicalBleExampleService {
           console.error('[CanonicalBleExampleService.consumeNotification] Notification terminal:', item.reason)
           return
         }
+        if (item.kind === 'overflow') {
+          console.error('[CanonicalBleExampleService.consumeNotification] Notification overflow:', item)
+          continue
+        }
         if (item.kind === 'value') {
           onValue(item.value.value)
         }
@@ -426,20 +421,6 @@ class CanonicalBleExampleService {
       }
     }
   }
-}
-
-function operation() {
-  return { signal: null, deadline: null }
-}
-
-function nativePlatform(): 'android' | 'apple' {
-  if (Platform.OS === 'android') {
-    return 'android'
-  }
-  if (Platform.OS === 'ios') {
-    return 'apple'
-  }
-  throw new Error(`The bare example does not support the ${Platform.OS} React Native platform.`)
 }
 
 function monotonicNow(): number {
@@ -466,8 +447,11 @@ function assertReleased(cleanup: { readonly state: 'released' | 'release-failed'
   }
 }
 
-function errorMessage<Value>(error: Value): string {
-  return error instanceof Error ? error.message : 'The BLE operation failed with a non-Error value.'
+function isOptionalFeatureAbsence(error: unknown): error is BackendContractError {
+  return (
+    error instanceof BackendContractError &&
+    (error.normalized.code === 'gatt.not-found' || error.normalized.code === 'gatt.property-not-supported')
+  )
 }
 
 export const BLEService = new CanonicalBleExampleService()

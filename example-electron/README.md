@@ -14,11 +14,17 @@ The smoke imports only these public entrypoints:
 - `unified-ble-manager/testing` for the deterministic scenario factory
 - `unified-ble-manager/electron/main` for `ElectronMainBleRouter`
 
-Run it from the repository root after producing the package artifacts:
+Composition sources (`main.js`, `preload.js`, `renderer.js`) show the ownership
+sequence: main owns the radio, preload exposes a narrow bridge, the renderer
+uses `ElectronRendererBleClient`. `node example-electron/composition.js` checks
+those files without opening a window. That is not live-radio proof.
+
+Run the L1 packed smoke from the repository root after producing the package artifacts:
 
 ```bash
 pnpm prepack
 node example-electron/smoke.js
+node example-electron/composition.js
 ```
 
 Success ends with `example-electron L1 smoke OK`. The deterministic boundary

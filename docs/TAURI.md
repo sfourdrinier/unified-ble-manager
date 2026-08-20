@@ -26,9 +26,21 @@ import { createTauriBleManager } from 'unified-ble-manager/tauri'
 const manager = await createTauriBleManager({ invoke, Channel })
 const state = await manager.adapterState()
 const scan = await manager.scan({ serviceUuids: ['180d'] })
+// consume scan.observations (value / overflow / terminal), then:
+await scan.stop()
+const connection = await manager.connect(peerId, { timeoutMs: 15_000 })
+const database = await connection.discover()
+const snapshot = await database.snapshot()
+const bytes = await database.read(path)
+const subscription = await database.subscribe(path)
+await subscription.remove()
+await connection.disconnect()
+await manager.destroy()
 ```
 
 `IpcBleManager.scan` takes optional `serviceUuids`, `manufacturerData`, `localNamePrefix`, `signal`, and `timeoutMs`. That is not `BleManager.scan`. Call `manager.scan()` with no options to hear every advertisement. Native filters are AND predicates: a `localNamePrefix` drops ads that omit a local name, which is common on CoreBluetooth.
+
+Remote streams use a drop-oldest policy with item capacity 128 and a 512 KiB byte bound. Overflow is a stream item, not a silent loss. `IpcGattDatabase` exposes `snapshot()`, path-based `read` / `write` / `subscribe`, plus handle-based `IpcCharacteristic` methods.
 
 Filter in the webview with `advertisementPassesViewFilter` (name or peer id, min/max RSSI, service UUID, manufacturer company id, named-only). Observations include `serviceUuids`, `manufacturerData`, `txPowerLevel`, and `serviceData` in addition to `peerId` / `localName` / `rssi`.
 

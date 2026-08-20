@@ -1,7 +1,7 @@
 // src/profiles/commands.ts
 
 import { contractError } from '../backend-contract/errors'
-import type { CharacteristicPath, GattDatabaseSnapshot } from '../backend-contract/gatt'
+import type { CharacteristicPath, CharacteristicProperties, GattDatabaseSnapshot } from '../backend-contract/gatt'
 import type { BackendIdentity } from '../backend-contract/identity'
 import type {
   PublicOperationOptions,
@@ -82,7 +82,9 @@ export async function readCharacteristic<Attachment extends string, Identity ext
   selector: CharacteristicSelector,
   options: PublicOperationOptions
 ): Promise<OwnedBytes> {
-  const path = await resolveCharacteristicPath(await database.snapshot(), selector)
+  const snapshot = await database.snapshot()
+  const path = await resolveCharacteristicPath(snapshot, selector)
+  assertRequiredProperty(snapshot, path, 'read', 'profiles.read-characteristic')
   return database.read(path, options)
 }
 
@@ -92,7 +94,14 @@ export async function writeCharacteristic<Attachment extends string, Identity ex
   value: Readonly<Uint8Array>,
   options: WritePolicy
 ): Promise<WriteReceipt<Attachment, string>> {
-  const path = await resolveCharacteristicPath(await database.snapshot(), selector)
+  const snapshot = await database.snapshot()
+  const path = await resolveCharacteristicPath(snapshot, selector)
+  assertRequiredProperty(
+    snapshot,
+    path,
+    options.mode === 'without-response' ? 'writeWithoutResponse' : 'writeWithResponse',
+    'profiles.write-characteristic'
+  )
   return database.write(path, value, options)
 }
 
@@ -101,8 +110,31 @@ export async function subscribeCharacteristic<Attachment extends string, Identit
   selector: CharacteristicSelector,
   options: SubscriptionOptions
 ): Promise<Subscription<Attachment, Identity>> {
-  const path = await resolveCharacteristicPath(await database.snapshot(), selector)
+  const snapshot = await database.snapshot()
+  const path = await resolveCharacteristicPath(snapshot, selector)
+  assertRequiredProperty(snapshot, path, 'notify', 'profiles.subscribe-characteristic')
   return database.subscribe(path, options)
+}
+
+function assertRequiredProperty<Attachment extends string>(
+  snapshot: GattDatabaseSnapshot<Attachment, string, string>,
+  path: CurrentCharacteristicPath<Attachment>,
+  property: keyof CharacteristicProperties,
+  operation: string
+): void {
+  const record = snapshot.characteristics.find(
+    characteristic =>
+      characteristic.path.serviceUuid === path.serviceUuid &&
+      characteristic.path.characteristicUuid === path.characteristicUuid &&
+      String(characteristic.path.serviceOccurrence) === String(path.serviceOccurrence) &&
+      String(characteristic.path.characteristicOccurrence) === String(path.characteristicOccurrence)
+  )
+  if (record === undefined) {
+    throw contractError('gatt.not-found', 'gatt', operation)
+  }
+  if (record.properties[property] !== true) {
+    throw contractError('gatt.property-not-supported', 'gatt', operation)
+  }
 }
 
 function matchesSelector<Attachment extends string>(

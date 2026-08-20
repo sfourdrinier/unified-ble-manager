@@ -8,10 +8,14 @@ Helpers sit on the host-neutral `BleManager`, `Connection`, `DiscoveredGattDatab
 import {
   collectNotifications,
   connectAndDiscover,
+  defaultScanDelivery,
   find,
   firstNotification,
+  scanForServices,
   scanUntil,
-  withConnection
+  throwIfCleanupFailed,
+  withConnection,
+  withDiscoveredConnection
 } from 'unified-ble-manager'
 ```
 
@@ -55,7 +59,13 @@ const connected = await connectAndDiscover(manager, observation.device.id, {
 })
 ```
 
-`connectAndDiscover()` returns `{ connection, database, snapshot }`. If discovery fails, it releases the connection.
+`connectAndDiscover()` returns `{ connection, database, snapshot }` and leaves the connection owned by the caller on success. If discovery fails, it releases the connection and preserves both the operation error and the cleanup error (`AggregateError` when both fail). The deadline is the one you passed in.
+
+`scanForServices(manager, uuids, { matches, scan })` fills a Heart Rate-style filter and `defaultScanDelivery()` unless you override them.
+
+`withDiscoveredConnection(manager, peerId, options, fn)` connects, discovers, runs `fn({ connection, database, snapshot })`, and always releases the lease.
+
+`throwIfCleanupFailed(record, operation)` throws a `BackendContractError` when `record.state === 'release-failed'`.
 
 ## Notifications
 

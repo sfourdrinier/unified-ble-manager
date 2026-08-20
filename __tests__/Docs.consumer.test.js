@@ -434,4 +434,62 @@ describe('consumer documentation matches the published package', () => {
     expect(tauri).toContain('IpcBleManager')
     expect(tauri).toMatch(/not the host-neutral `BleManager`|not BleManager\.scan/)
   })
+
+  test('teaching files that mention 4.0.0-rc. use the current package version', () => {
+    const teaching = [
+      'README.md',
+      'MIGRATION_4.0.md',
+      'docs/GETTING_STARTED.md',
+      'docs/WEB.md',
+      'docs/NODE.md',
+      'docs/ELECTRON.md',
+      'docs/EXPO_PLUGIN.md',
+      'example/README.md'
+    ]
+    for (const relativePath of teaching) {
+      const document = read(relativePath)
+      if (document.includes('4.0.0-rc.')) {
+        expect(document).toContain(packageVersion)
+      }
+    }
+  })
+
+  test('relative markdown links in teaching files exist', () => {
+    const teaching = [
+      'README.md',
+      'MIGRATION_4.0.md',
+      'docs/GETTING_STARTED.md',
+      'docs/TUTORIALS.md',
+      'docs/HELPERS.md',
+      'docs/WEB.md',
+      'docs/NODE.md',
+      'docs/ELECTRON.md',
+      'docs/ELECTRON_SECURITY_MODEL.md',
+      'docs/TAURI.md',
+      'docs/PROFILES_AND_COMMANDS.md',
+      'docs/EXPO_PLUGIN.md'
+    ]
+    const link = /\[[^\]]*\]\(([^)]+)\)/g
+    for (const relativePath of teaching) {
+      const document = read(relativePath)
+      const fromDirectory = path.dirname(path.join(root, relativePath))
+      let match
+      while ((match = link.exec(document)) !== null) {
+        const target = match[1]
+        if (target.startsWith('http:') || target.startsWith('https:') || target.startsWith('mailto:')) {
+          continue
+        }
+        const withoutAnchor = target.split('#')[0]
+        if (withoutAnchor.length === 0) {
+          continue
+        }
+        const resolved = path.resolve(fromDirectory, withoutAnchor)
+        expect({ relativePath, target, exists: fs.existsSync(resolved) }).toEqual({
+          relativePath,
+          target,
+          exists: true
+        })
+      }
+    }
+  })
 })

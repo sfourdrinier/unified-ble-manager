@@ -1,7 +1,12 @@
 // src/node-bluez.ts
 
 import type { BackendProvider, HostNeutralBackendIdentity } from './backend-contract/identity'
-import { createBluezBackendProvider, type BluezBackendProviderOptions } from './backends/bluez/bluez-backend-provider'
+import {
+  bluezCompatibility,
+  createBluezBackendProvider,
+  type BluezBackendProviderOptions
+} from './backends/bluez/bluez-backend-provider'
+import { createNodeBleManagerFromProvider, type NodeBleManagerAppOptions } from './node-host-manager'
 import type { BluezBusKind } from './backends/bluez/bluez-dbus-contract'
 import { DbusNextBluezBoundaryFactory } from './backends/bluez/bluez-dbus-next-boundary'
 
@@ -33,6 +38,22 @@ export type { BluezBackendProviderOptions } from './backends/bluez/bluez-backend
 export interface DbusNextBluezProviderOptions {
   readonly busKind: BluezBusKind
   readonly now: () => number
+}
+
+export type { NodeBleManagerAppOptions }
+
+export interface BluezBleManagerAppOptions extends NodeBleManagerAppOptions {
+  readonly busKind?: BluezBusKind
+}
+
+/** One-call Node BlueZ manager. Does not fall back to another backend. */
+export async function createBluezBleManager(options: BluezBleManagerAppOptions) {
+  const now = options.now ?? (() => performance.now())
+  return createNodeBleManagerFromProvider(
+    createDbusNextBluezBackendProvider({ busKind: options.busKind ?? 'system', now }),
+    bluezCompatibility,
+    options
+  )
 }
 
 /** Creates the production Node BlueZ provider for one explicitly selected D-Bus bus. */

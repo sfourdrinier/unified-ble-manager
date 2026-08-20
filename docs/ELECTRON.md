@@ -4,10 +4,24 @@
 
 Main owns the radio. The renderer uses a versioned IPC client and never loads a native addon.
 
-**Current package:** `4.0.0-rc.0`. Published Node-API v8 prebuilds cover macOS and Windows `arm64`/`x64` for both Node and modern Electron.
+**Current package:** `4.0.0-rc.1`. Published Node-API v8 prebuilds cover macOS and Windows `arm64`/`x64` for both Node and modern Electron.
 
 `unified-ble-manager/electron/main` and
 `unified-ble-manager/electron/renderer` are the only Electron entrypoints.
+
+Runnable composition lives in [`example-electron/`](../example-electron/)
+(`main.js`, `preload.js`, `renderer.js`). Sequence:
+
+1. create a main-process provider and `BleManager`;
+2. create the router and install the binding;
+3. authenticate `WebContents`;
+4. expose a narrow preload bridge (no generic `ipcRenderer`);
+5. initialize `ElectronRendererBleClient`;
+6. scan → connect → discover → read/subscribe;
+7. release renderer resources, destroy the binding, destroy the manager.
+
+BrowserWindow must use `contextIsolation: true` and `nodeIntegration: false`.
+Security internals live in [`ELECTRON_SECURITY_MODEL.md`](ELECTRON_SECURITY_MODEL.md).
 
 In main, build a `BleManager` from a provider the same way Node does, then bind
 IPC. The renderer uses `ElectronRendererBleClient` — not `BleManager`.

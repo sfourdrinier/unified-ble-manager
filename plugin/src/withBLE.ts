@@ -8,7 +8,7 @@ import { withBLEAndroidManifest } from './withBLEAndroidManifest'
 import { BackgroundMode, withBLEBackgroundModes } from './withBLEBackgroundModes'
 import { withBluetoothPermissions } from './withBluetoothPermissions'
 import { withBLEDebugLogging } from './withBLEDebugLogging'
-import { blePlxPluginDebugLog, isBlePlxPluginDebugEnabled } from './debugLog'
+import { isUnifiedBlePluginDebugEnabled, unifiedBlePluginDebugLog } from './debugLog'
 
 export interface IosNativeProtocolRestorationConfig {
   /** The one CoreBluetooth restoration identifier owned by this app host. */
@@ -24,9 +24,9 @@ export interface IosNativeProtocolRestorationConfig {
 }
 
 export interface UnifiedBlePluginOptions {
-  /** Enable debug logging for this config plugin (also controllable via BLEPLX_PLUGIN_DEBUG=1). */
+  /** Enable debug logging for this config plugin (also controllable via UNIFIED_BLE_MANAGER_PLUGIN_DEBUG=1). */
   readonly debug?: boolean
-  readonly isBackgroundEnabled?: boolean
+  readonly requiresBluetoothLeHardware?: boolean
   readonly neverForLocation?: boolean
   readonly modes?: readonly BackgroundMode[]
   readonly bluetoothAlwaysPermission?: string | false
@@ -36,7 +36,7 @@ export interface UnifiedBlePluginOptions {
 
 const pluginOptionNames = Object.freeze([
   'debug',
-  'isBackgroundEnabled',
+  'requiresBluetoothLeHardware',
   'neverForLocation',
   'modes',
   'bluetoothAlwaysPermission',
@@ -96,7 +96,7 @@ function optionalBackgroundModes(value: unknown): readonly BackgroundMode[] | un
   }
   const modes: BackgroundMode[] = []
   for (const mode of value) {
-    if (mode !== BackgroundMode.Central && mode !== BackgroundMode.Peripheral) {
+    if (mode !== BackgroundMode.Central) {
       throw new Error(`modes contains an unsupported background mode: ${String(mode)}`)
     }
     if (modes.includes(mode)) {
@@ -136,7 +136,7 @@ export function validateBlePluginOptions(value: unknown): UnifiedBlePluginOption
   rejectUnknownProperties(value, pluginOptionNames, 'unified-ble-manager Expo plugin options')
   return Object.freeze({
     debug: optionalBoolean(value.debug, 'debug'),
-    isBackgroundEnabled: optionalBoolean(value.isBackgroundEnabled, 'isBackgroundEnabled'),
+    requiresBluetoothLeHardware: optionalBoolean(value.requiresBluetoothLeHardware, 'requiresBluetoothLeHardware'),
     neverForLocation: optionalBoolean(value.neverForLocation, 'neverForLocation'),
     modes: optionalBackgroundModes(value.modes),
     bluetoothAlwaysPermission: optionalBluetoothAlwaysPermission(value.bluetoothAlwaysPermission),
@@ -167,13 +167,13 @@ export function applyNativeProtocolRestorationInfoPlist(
  */
 const withBLE: ConfigPlugin<UnifiedBlePluginOptions | void> = (config, props) => {
   const validatedProps = validateBlePluginOptions(props)
-  const debugEnabled = isBlePlxPluginDebugEnabled(validatedProps.debug)
-  blePlxPluginDebugLog(debugEnabled, 'Plugin running with props:', JSON.stringify(props))
-  blePlxPluginDebugLog(debugEnabled, 'Package name from pkg.json:', pkg.name)
+  const debugEnabled = isUnifiedBlePluginDebugEnabled(validatedProps.debug)
+  unifiedBlePluginDebugLog(debugEnabled, 'Plugin running with props:', JSON.stringify(props))
+  unifiedBlePluginDebugLog(debugEnabled, 'Package name from pkg.json:', pkg.name)
 
   config = withBLEDebugLogging(config, { debugEnabled })
 
-  blePlxPluginDebugLog(
+  unifiedBlePluginDebugLog(
     debugEnabled,
     'iosNativeProtocolRestoration configured:',
     validatedProps.iosNativeProtocolRestoration !== undefined
@@ -190,7 +190,7 @@ const withBLE: ConfigPlugin<UnifiedBlePluginOptions | void> = (config, props) =>
 
   // Android
   config = withBLEAndroidManifest(config, {
-    isBackgroundEnabled: validatedProps.isBackgroundEnabled ?? false,
+    requiresBluetoothLeHardware: validatedProps.requiresBluetoothLeHardware ?? false,
     neverForLocation: validatedProps.neverForLocation ?? false
   })
 

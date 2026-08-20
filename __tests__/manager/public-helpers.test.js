@@ -7,9 +7,13 @@ const {
   createBleManager,
   createManagerOwnershipAuthority,
   deadline,
+  defaultScanDelivery,
   find,
   firstNotification,
-  withConnection
+  scanForServices,
+  throwIfCleanupFailed,
+  withConnection,
+  withDiscoveredConnection
 } = require('../../src')
 const { DEFAULT_BLE_MANAGER_OPTIONS } = require('../../src/manager/ble-manager')
 const { capacity, opaqueId, version, versionRange } = require('../../src/backend-contract/primitives')
@@ -272,6 +276,49 @@ describe('host-neutral public helpers', () => {
         )
       )
       expect(result).toBeGreaterThan(0)
+      expectZeroCounters(manager.localResourceCounters())
+    } finally {
+      await settle(fixture, manager.destroy())
+      expectZeroCounters(fixture.backend.resourceCounters())
+    }
+  })
+
+  test('scan presets, discovered-connection helper, cleanup assertion, and adapterStates', async () => {
+    const { fixture, manager } = await createFixture()
+    try {
+      expect(defaultScanDelivery().overflowPolicy).toBe('drop-oldest')
+      throwIfCleanupFailed({ state: 'released', failures: [] }, 'noop')
+      expect(() =>
+        throwIfCleanupFailed({ state: 'release-failed', failures: [{ resourceKind: 'scan', error: { code: 'scan.stop-failed' } }] }, 'helpers.cleanup')
+      ).toThrow(/lifecycle.invalid-state/)
+
+      const found = scanForServices(manager, [], {
+        matches: observation => observation.localName.state === 'present'
+      })
+      await activate(fixture)
+      fixture.controller.emitAdvertisement(deterministicScenarioAdvertisement())
+      await expect(settle(fixture, found)).resolves.toMatchObject({ device: { id: expect.any(String) } })
+
+      const session = await manager.adapterStates()
+      expect(session.initial.power).toBe('on')
+      const next = session.values[Symbol.asyncIterator]().next()
+      fixture.controller.setAdapterState('available', 'granted', 'on', 'adapter-state-watch-update')
+      await expect(next).resolves.toMatchObject({
+        done: false,
+        value: { kind: 'value', value: { safeReason: 'adapter-state-watch-update' } }
+      })
+      await session.stop()
+
+      const discovered = await settle(
+        fixture,
+        withDiscoveredConnection(
+          manager,
+          opaqueId('deterministic-peer', 'peer', 'deterministic'),
+          operation(),
+          async current => current.snapshot.services.length
+        )
+      )
+      expect(discovered).toBeGreaterThan(0)
       expectZeroCounters(manager.localResourceCounters())
     } finally {
       await settle(fixture, manager.destroy())

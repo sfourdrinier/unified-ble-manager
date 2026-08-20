@@ -9,11 +9,7 @@ import type {
 } from '../backend-contract/operations'
 import type { DiscoveredGattDatabase, Subscription } from '../manager'
 import { parseBatteryLevel, batteryLevelSelector } from './battery-service'
-import {
-  parseBloodPressureMeasurement,
-  bloodPressureMeasurementSelector,
-  type BloodPressureMeasurement
-} from './blood-pressure'
+import { bloodPressureMeasurementSelector } from './blood-pressure'
 import {
   decodeDeviceInformationString,
   deviceInformationStringSelector,
@@ -30,15 +26,9 @@ import {
   encodeResetEnergyExpended,
   heartRateControlPointSelector,
   heartRateMeasurementSelector,
-  parseBodySensorLocation,
-  parseHeartRateMeasurement,
-  type HeartRateMeasurement
+  parseBodySensorLocation
 } from './heart-rate'
-import {
-  parseTemperatureMeasurement,
-  temperatureMeasurementSelector,
-  type TemperatureMeasurement
-} from './health-thermometer'
+import { temperatureMeasurementSelector } from './health-thermometer'
 import {
   readCharacteristic,
   subscribeCharacteristic,
@@ -84,16 +74,6 @@ export async function readPnpId<Attachment extends string, Identity extends Back
   return parsePnpId(await readCharacteristic(database, pnpIdSelector(occurrence), options))
 }
 
-export async function readHeartRateMeasurement<Attachment extends string, Identity extends BackendIdentity<Attachment>>(
-  database: DiscoveredGattDatabase<Attachment, Identity>,
-  options: PublicOperationOptions,
-  occurrence: CharacteristicSelectorOptions = {}
-): Promise<HeartRateMeasurement> {
-  return parseHeartRateMeasurement(
-    await readCharacteristic(database, heartRateMeasurementSelector(occurrence), options)
-  )
-}
-
 export async function readBodySensorLocation<Attachment extends string, Identity extends BackendIdentity<Attachment>>(
   database: DiscoveredGattDatabase<Attachment, Identity>,
   options: PublicOperationOptions,
@@ -118,19 +98,6 @@ export function resetHeartRateEnergyExpended<Attachment extends string, Identity
   return writeCharacteristic(database, heartRateControlPointSelector(occurrence), encodeResetEnergyExpended(), options)
 }
 
-export async function readTemperatureMeasurement<
-  Attachment extends string,
-  Identity extends BackendIdentity<Attachment>
->(
-  database: DiscoveredGattDatabase<Attachment, Identity>,
-  options: PublicOperationOptions,
-  occurrence: CharacteristicSelectorOptions = {}
-): Promise<TemperatureMeasurement> {
-  return parseTemperatureMeasurement(
-    await readCharacteristic(database, temperatureMeasurementSelector(occurrence), options)
-  )
-}
-
 export function subscribeTemperatureMeasurements<
   Attachment extends string,
   Identity extends BackendIdentity<Attachment>
@@ -140,19 +107,6 @@ export function subscribeTemperatureMeasurements<
   occurrence: CharacteristicSelectorOptions = {}
 ): Promise<Subscription<Attachment, Identity>> {
   return subscribeCharacteristic(database, temperatureMeasurementSelector(occurrence), options)
-}
-
-export async function readBloodPressureMeasurement<
-  Attachment extends string,
-  Identity extends BackendIdentity<Attachment>
->(
-  database: DiscoveredGattDatabase<Attachment, Identity>,
-  options: PublicOperationOptions,
-  occurrence: CharacteristicSelectorOptions = {}
-): Promise<BloodPressureMeasurement> {
-  return parseBloodPressureMeasurement(
-    await readCharacteristic(database, bloodPressureMeasurementSelector(occurrence), options)
-  )
 }
 
 export function subscribeBloodPressureMeasurements<

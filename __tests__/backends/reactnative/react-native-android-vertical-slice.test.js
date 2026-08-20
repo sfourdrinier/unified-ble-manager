@@ -6,7 +6,7 @@ const { createBleManagerFromProvider, DEFAULT_BLE_MANAGER_OPTIONS } = require('.
 const {
   createReactNativeAndroidBackendProvider,
   createReactNativeAppleBackendProvider,
-  createReactNativeBleManager
+  createReactNativeBleManagerWithEnvironment
 } = require('../../../src/react-native')
 const { decodeNativeProtocolRecord, encodeNativeProtocolRecord } = require('../../../src/native-protocol/v1-codec')
 const { ReactNativeAndroidProtocolBoundary } = require('../../../src/native-protocol/rn-android-boundary')
@@ -215,7 +215,7 @@ describe('React Native Android canonical protocol vertical slice', () => {
     const control = new DeterministicAndroidControl()
     const runtime = new DeterministicAndroidProtocolRuntime(control)
     global.__unifiedBleNativeProtocolV1 = runtime
-    const manager = await createReactNativeBleManager({
+    const manager = await createReactNativeBleManagerWithEnvironment({
       platform: 'android',
       control,
       now: () => 20,

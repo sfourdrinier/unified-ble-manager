@@ -2,7 +2,7 @@
 
 # Migrating from react-native-ble-plx
 
-`unified-ble-manager@4.0.0-rc.0` is a new package and a new contract. It is **not a source-compatible rename**. There is no `new BleManager()` facade, no Base64 characteristic values, and no public transaction IDs.
+`unified-ble-manager@4.0.0-rc.1` is a new package and a new contract. It is **not a source-compatible rename**. There is no `new BleManager()` facade, no Base64 characteristic values, and no public transaction IDs.
 
 This page is for a React Native app that already uses `react-native-ble-plx`. Web, Electron, Node, and Tauri are new hosts — use those pages after you understand the RN rewrite.
 
@@ -10,8 +10,8 @@ This page is for a React Native app that already uses `react-native-ble-plx`. We
 
 | You used to write | You write now |
 | --- | --- |
-| `import { BleManager } from 'react-native-ble-plx'` | `import { createReactNativeBleManager, getNativeUnifiedBleProtocolControl } from 'unified-ble-manager/react-native'` |
-| `new BleManager()` | `await createReactNativeBleManager({ platform, control, now, clientId, managerId, hostSessionScope })` |
+| `import { BleManager } from 'react-native-ble-plx'` | `import { createReactNativeBleManager } from 'unified-ble-manager/react-native'` |
+| `new BleManager()` | `await createReactNativeBleManager({ clientId, managerId, hostSessionScope })` |
 | `characteristic.value` as Base64 | `Uint8Array` |
 | `cancelTransaction('tx-id')` | `AbortController` + `signal` |
 | Immortal `Device` with methods | Scan observation → `Connection` lease → `snapshot()` paths |
@@ -22,11 +22,10 @@ This page is for a React Native app that already uses `react-native-ble-plx`. We
 ## Install
 
 ```sh
-pnpm remove react-native-ble-plx
 pnpm add unified-ble-manager
 ```
 
-Do not keep both packages just to preserve the old API. Migrate one owning BLE session, then delete the old import.
+Both packages may be installed temporarily. Only one BLE stack may own the radio/session. Feature-flag the new stack, migrate one owning session, then `pnpm remove react-native-ble-plx`.
 
 ## Construct
 
@@ -35,19 +34,12 @@ Do not keep both packages just to preserve the old API. Migrate one owning BLE s
 const manager = new BleManager()
 
 // unified-ble-manager
-import { Platform } from 'react-native'
-import {
-  createReactNativeBleManager,
-  getNativeUnifiedBleProtocolControl
-} from 'unified-ble-manager/react-native'
+import { createReactNativeBleManager } from 'unified-ble-manager/react-native'
 
 const manager = await createReactNativeBleManager({
-  platform: Platform.OS === 'ios' ? 'apple' : 'android',
-  control: getNativeUnifiedBleProtocolControl(),
-  now: () => performance.now(),
-  clientId: 'signed-in-user-ble-client',
-  managerId: 'main-mobile-ble-manager',
-  hostSessionScope: 'com.example.app.mobile-ble'
+  clientId: 'com.example.app.ble-client',
+  managerId: 'com.example.app.ble-manager',
+  hostSessionScope: 'com.example.app'
 })
 ```
 
@@ -68,7 +60,7 @@ if (state.power !== 'on' || state.authorization !== 'granted' || state.availabil
 }
 ```
 
-There is no public `onStateChange`. Poll `adapterState()` or watch your own app lifecycle.
+There is no public `onStateChange`. Use `adapterState()` for a snapshot, or `manager.adapterStates()` for a bounded stream of transitions. Stop the stream.
 
 ## Scan
 
@@ -83,11 +75,11 @@ import { capacity, deadline, scanUntil } from 'unified-ble-manager'
 import { HEART_RATE_SERVICE } from 'unified-ble-manager/profiles/heart-rate'
 
 const abort = new AbortController()
-const until = deadline(manager.monotonicNow() + 20_000)
+const journeyDeadline = deadline(manager.monotonicNow() + 20_000)
 const observation = await scanUntil(manager, {
   scan: {
     filter: { serviceUuids: [HEART_RATE_SERVICE], manufacturerData: [], localNamePrefix: null },
-    duplicatePolicy: 'first',
+    duplicatePolicy: 'merged',
     timestampPolicy: 'source-then-receipt',
     delivery: {
       itemCapacity: capacity(32),
@@ -95,7 +87,7 @@ const observation = await scanUntil(manager, {
       reservedControlCapacity: capacity(2),
       overflowPolicy: 'drop-oldest'
     },
-    deadline: until,
+    deadline: journeyDeadline,
     signal: abort.signal,
     sharing: { mode: 'owner', allowSharing: false }
   },
@@ -118,8 +110,8 @@ const services = await device.services()
 const characteristics = await device.characteristicsForService(hrsUuid)
 
 // unified-ble-manager
-const connection = await manager.connect(peerId, { signal: abort.signal, deadline: until })
-const database = await connection.discover({ signal: abort.signal, deadline: until })
+const connection = await manager.connect(peerId, { signal: abort.signal, deadline: journeyDeadline })
+const database = await connection.discover({ signal: abort.signal, deadline: journeyDeadline })
 const snapshot = await database.snapshot()
 ```
 
@@ -139,18 +131,22 @@ await device.writeCharacteristicWithResponseForDevice(id, service, char, Buffer.
 import { resolveCharacteristicPath } from 'unified-ble-manager/profiles/commands'
 import { batteryLevelSelector } from 'unified-ble-manager/profiles/battery-service'
 
-const path = await resolveCharacteristicPath(snapshot, batteryLevelSelector())
-const value = await database.read(path, { signal: abort.signal, deadline: until })
-await database.write(path, new Uint8Array([1]), {
+const readablePath = await resolveCharacteristicPath(snapshot, batteryLevelSelector())
+const value = await database.read(readablePath, { signal: abort.signal, deadline: journeyDeadline })
+```
+
+```ts
+const writablePath = await resolveCharacteristicPath(snapshot, applicationWriteSelector())
+await database.write(writablePath, new Uint8Array([1]), {
   signal: abort.signal,
-  deadline: until,
+  deadline: journeyDeadline,
   mode: 'with-response'
 })
 ```
 
-`value` is `Uint8Array`. If an HTTP API wants Base64, encode at that boundary yourself. `unified-ble-manager/codecs` is IEEE-11073 and byte views, not a Base64 helper.
+`value` is `Uint8Array`. If an HTTP API wants Base64, encode at that boundary yourself. `unified-ble-manager/codecs` is IEEE-11073 and byte views, not a Base64 helper. Battery Level is read-oriented; do not write it. Use a distinct application characteristic (or Heart Rate Control Point only after it exists) for writes.
 
-Or use `readBatteryLevel` from `unified-ble-manager/profiles/standard-commands`.
+Or use `readBatteryLevel` from `unified-ble-manager/profiles/standard-commands`. `journeyDeadline` is one budget for the whole sample, not 20 seconds per call.
 
 ## Notify
 
@@ -167,7 +163,7 @@ import { parseHeartRateMeasurement } from 'unified-ble-manager/profiles/heart-ra
 
 const sub = await subscribeHeartRateMeasurements(database, {
   signal: abort.signal,
-  deadline: until,
+  deadline: journeyDeadline,
   delivery: {
     itemCapacity: capacity(16),
     byteCapacity: capacity(32 * 1024),
@@ -175,13 +171,17 @@ const sub = await subscribeHeartRateMeasurements(database, {
     overflowPolicy: 'drop-oldest'
   }
 })
-for await (const item of sub.values) {
-  if (item.kind === 'value') consume(parseHeartRateMeasurement(item.value.value))
-  else if (item.kind === 'overflow') reportLoss(item)
-  else break
+const stop = setTimeout(() => abort.abort(), 5_000)
+try {
+  for await (const item of sub.values) {
+    if (item.kind === 'value') consume(parseHeartRateMeasurement(item.value.value))
+    else if (item.kind === 'overflow') reportLoss(item)
+    else break
+  }
+} finally {
+  clearTimeout(stop)
+  await sub.remove()
 }
-abort.abort()
-await sub.remove()
 ```
 
 `monitorCharacteristicForDevice` + `cancelTransaction` become `database.subscribe` + `AbortSignal` + `subscription.remove()`.
@@ -189,12 +189,12 @@ await sub.remove()
 ## RSSI, MTU, long write
 
 ```ts
-const rssi = (await connection.readRssi({ signal: abort.signal, deadline: until })).rssi
+const rssi = (await connection.readRssi({ signal: abort.signal, deadline: journeyDeadline })).rssi
 if (manager.supports('connection:request-att-mtu')) {
-  await connection.requestMtu(185, { signal: abort.signal, deadline: until })
+  await connection.requestMtu(185, { signal: abort.signal, deadline: journeyDeadline })
 }
 const maxWrite = await database.maximumWriteLength(path, 'without-response')
-await database.writeLong(path, largeBytes, { signal: abort.signal, deadline: until, mode: 'with-response' })
+await database.writeLong(path, largeBytes, { signal: abort.signal, deadline: journeyDeadline, mode: 'with-response' })
 ```
 
 ## Destroy
@@ -215,7 +215,7 @@ if (gone.state === 'release-failed') {
 | react-native-ble-plx | unified-ble-manager |
 | --- | --- |
 | `new BleManager()` | `createReactNativeBleManager(...)` |
-| `state()` / `onStateChange` | `adapterState()` snapshot. No public watch. |
+| `state()` / `onStateChange` | `adapterState()` snapshot or `adapterStates()` stream |
 | `startDeviceScan` / `stopDeviceScan` | `manager.scan` + `ScanSession.stop`, or `scanUntil` / `find` |
 | `connectToDevice` | `manager.connect(peerId, { signal, deadline })` |
 | `discoverAllServicesAndCharacteristics` | `connection.discover` |
@@ -239,7 +239,7 @@ if (gone.state === 'release-failed') {
 | `createBond` / `removeBond` / `bondedDevices` | OS pairing only. See [`docs/BONDING.md`](docs/BONDING.md). |
 | `enable()` / `disable()` | The library does not toggle the adapter. |
 | `devices()` / `isDeviceConnected` / `connectedDevices()` | Own the `Connection` you created. |
-| `requestConnectionPriority` | Inspect `manager.capabilities()`. |
+| `requestConnectionPriority` | No direct 4.0 replacement. Inspect `manager.capabilities()` and apply host-specific policy only where explicitly supported. |
 | `checkBluetoothPermissions` helpers | `adapterState().authorization` + OS APIs. |
 | `setLogLevel` | `manager.traces()` / `traceDocument()` if you need diagnostics. |
 | Android `scanMode` / `callbackType` | `duplicatePolicy`, `filter`, `delivery`. |
@@ -251,7 +251,7 @@ Restoration identity (`clientId`, `hostSessionScope`, Expo `iosNativeProtocolRes
 
 ## Suggested order
 
-1. Install `unified-ble-manager` next to the old package.
+1. Install `unified-ble-manager` next to the old package if you need a feature-flagged rollback. Only one stack may own the radio.
 2. Create one RN manager with a stable `hostSessionScope`.
 3. Replace scan / connect / discover.
 4. Convert Base64 reads and writes to `Uint8Array`.

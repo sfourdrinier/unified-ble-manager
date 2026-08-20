@@ -8,9 +8,11 @@ import {
 } from './backend-contract/identity'
 import type { CoreBluetoothBoundary } from './backends/corebluetooth/corebluetooth-boundary'
 import {
+  coreBluetoothCompatibility,
   createCoreBluetoothBackendProvider,
   type CoreBluetoothBackendProviderOptions
 } from './backends/corebluetooth/corebluetooth-provider'
+import { createNodeBleManagerFromProvider, type NodeBleManagerAppOptions } from './node-host-manager'
 
 interface CoreBluetoothNativeModule {
   createContractBoundary(): CoreBluetoothBoundary
@@ -124,6 +126,18 @@ export function createNativeCoreBluetoothBoundary(): CoreBluetoothBoundary {
       'The CoreBluetooth native boundary could not be created for this macOS process'
     )
   }
+}
+
+export type { NodeBleManagerAppOptions }
+
+/** One-call Node CoreBluetooth manager. Does not fall back to another backend. */
+export async function createCoreBluetoothBleManager(options: NodeBleManagerAppOptions) {
+  const now = options.now ?? (() => performance.now())
+  return createNodeBleManagerFromProvider(
+    createNativeCoreBluetoothBackendProvider({ now }),
+    coreBluetoothCompatibility,
+    options
+  )
 }
 
 /** Creates the production Node CoreBluetooth provider for the selected default central adapter. */

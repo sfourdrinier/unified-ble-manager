@@ -2,7 +2,7 @@
 
 # Getting started
 
-**Current package:** `4.0.0-rc.0` on npm `latest`.
+**Current package:** `4.0.0-rc.1` on npm `latest`.
 
 This page gets you to a first scan, connect, read, notify, and teardown on React Native. Other hosts are linked at the bottom. The root import does not turn Bluetooth on.
 
@@ -19,6 +19,14 @@ This page gets you to a first scan, connect, read, notify, and teardown on React
 ## React Native / Expo in one hour
 
 ### 1. Install
+
+Three native setup paths:
+
+**Expo / CNG.** Install with `npx expo install unified-ble-manager` (or `pnpm add` plus Expo 57). Add the plugin, run `npx expo prebuild`, then a development client or production binary. Config-plugin changes require a native rebuild. The package does not run in Expo Go.
+
+**Bare React Native adopting Expo modules.** Install Expo modules first (`npx install-expo-modules@latest`), then add this plugin and prebuild.
+
+**Bare React Native without Prebuild.** Declare Android Bluetooth permissions and the BLE hardware feature yourself, request runtime permissions on Android 12+, add `NSBluetoothAlwaysUsageDescription` on iOS, run pods, and rebuild.
 
 ```sh
 pnpm add unified-ble-manager
@@ -39,7 +47,7 @@ Add the plugin (full option table: [`EXPO_PLUGIN.md`](EXPO_PLUGIN.md)):
       [
         "unified-ble-manager",
         {
-          "isBackgroundEnabled": false,
+          "requiresBluetoothLeHardware": false,
           "modes": ["central"],
           "neverForLocation": false,
           "bluetoothAlwaysPermission": "Allow $(PRODUCT_NAME) to connect to Bluetooth devices"
@@ -91,16 +99,12 @@ async function ensureAndroidBluetoothPermission(): Promise<void> {
 ### 3. Create one manager and keep it
 
 ```ts
-import { Platform } from 'react-native'
-import { createReactNativeBleManager, getNativeUnifiedBleProtocolControl } from 'unified-ble-manager/react-native'
+import { createReactNativeBleManager } from 'unified-ble-manager/react-native'
 
 const manager = await createReactNativeBleManager({
-  platform: Platform.OS === 'ios' ? 'apple' : 'android',
-  control: getNativeUnifiedBleProtocolControl(),
-  now: () => performance.now(),
-  clientId: 'signed-in-user-ble-client',
-  managerId: 'main-mobile-ble-manager',
-  hostSessionScope: 'com.example.app.mobile-ble'
+  clientId: 'com.example.app.ble-client',
+  managerId: 'com.example.app.ble-manager',
+  hostSessionScope: 'com.example.app'
 })
 ```
 
@@ -124,7 +128,62 @@ one; `'not-determined'` means the user has not been asked yet, and since the
 prompt is raised by *using* the radio rather than by reading the state, blocking
 on it would stop the prompt from ever appearing.
 
-Then scan → connect → discover → read or subscribe → `remove` / `release` → `destroy()`. Copy the complete loop from the root [`README.md`](../README.md). More recipes: [`TUTORIALS.md`](TUTORIALS.md) and [`HELPERS.md`](HELPERS.md).
+Then run the finite helper journey (`scanUntil` → `withConnection` → `firstNotification` → `destroy`) from the root [`README.md`](../README.md):
+
+```ts
+import {
+  deadline,
+  defaultScanDelivery,
+  firstNotification,
+  scanUntil,
+  throwIfCleanupFailed,
+  withConnection
+} from 'unified-ble-manager'
+import { resolveCharacteristicPath } from 'unified-ble-manager/profiles/commands'
+import {
+  HEART_RATE_SERVICE,
+  heartRateMeasurementSelector,
+  parseHeartRateMeasurement
+} from 'unified-ble-manager/profiles/heart-rate'
+
+const abort = new AbortController()
+const journeyDeadline = deadline(manager.monotonicNow() + 20_000)
+const op = { signal: abort.signal, deadline: journeyDeadline }
+
+try {
+  const observation = await scanUntil(manager, {
+    scan: {
+      filter: {
+        serviceUuids: [HEART_RATE_SERVICE],
+        manufacturerData: [],
+        localNamePrefix: null
+      },
+      duplicatePolicy: 'merged',
+      timestampPolicy: 'source-then-receipt',
+      delivery: defaultScanDelivery(),
+      deadline: journeyDeadline,
+      signal: abort.signal,
+      sharing: { mode: 'owner', allowSharing: false }
+    },
+    matches: candidate => candidate.localName.state === 'present'
+  })
+
+  await withConnection(manager, observation.device.id, op, async connection => {
+    const database = await connection.discover(op)
+    const snapshot = await database.snapshot()
+    const measurementPath = await resolveCharacteristicPath(snapshot, heartRateMeasurementSelector())
+    const bytes = await firstNotification(database, measurementPath, {
+      ...op,
+      delivery: defaultScanDelivery()
+    })
+    consume(parseHeartRateMeasurement(bytes))
+  })
+} finally {
+  throwIfCleanupFailed(await manager.destroy(), 'manager.destroy')
+}
+```
+
+`journeyDeadline` is one budget for the whole sample. More recipes: [`TUTORIALS.md`](TUTORIALS.md) and [`HELPERS.md`](HELPERS.md). You can also watch adapter transitions with `manager.adapterStates()` instead of polling.
 
 ### What will hurt you
 
@@ -132,7 +191,7 @@ Then scan → connect → discover → read or subscribe → `remove` / `release
 - Android 12 without the runtime permission fails the first scan with `permission.denied`. Android 11 and below need `ACCESS_FINE_LOCATION`. `neverForLocation: true` is only honest if you do not use BLE for location.
 - Bare React Native still needs `NSBluetoothAlwaysUsageDescription` in Info.plist. The Expo plugin writes that for Expo apps.
 - Creating a new manager on every render leaks the radio. Create one, await `destroy()` when the session ends.
-- `isBackgroundEnabled: true` only marks the Android BLE hardware feature. It does not start a foreground service.
+- `requiresBluetoothLeHardware: true` only marks the Android BLE hardware feature. It does not start a foreground service.
 
 ## Coming from react-native-ble-plx
 

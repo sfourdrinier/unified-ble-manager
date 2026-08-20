@@ -265,6 +265,10 @@ export class BleManager<Attachment extends string, Identity extends BackendIdent
     return this.core.adapterState()
   }
 
+  adapterStates(options: { readonly signal?: AbortSignal | null } = {}) {
+    return this.core.adapterStates(options)
+  }
+
   /** Called only by the explicit authority during settled owner revocation. */
   revokeForOwnerDestroy(): Promise<CleanupRecord> {
     return this.releaseOwnedResources()

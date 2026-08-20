@@ -17,13 +17,17 @@ export {
   createBleManagerFromProvider,
   createManagerOwnershipAuthority,
   DEFAULT_BLE_MANAGER_OPTIONS,
+  defaultScanDelivery,
   DiscoveredGattDatabase,
   find,
   firstNotification,
   ScanSession,
+  scanForServices,
   scanUntil,
   Subscription,
-  withConnection
+  throwIfCleanupFailed,
+  withConnection,
+  withDiscoveredConnection
 } from './manager'
 export type {
   BleConnectionHandle,

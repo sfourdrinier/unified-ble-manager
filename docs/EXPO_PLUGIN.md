@@ -19,10 +19,10 @@ restoration support claim. See [`PLATFORMS.md`](PLATFORMS.md).
 
 | Option | Type | Effect |
 | --- | --- | --- |
-| `debug` | `boolean` | Enables plugin diagnostics; `BLEPLX_PLUGIN_DEBUG=1` also enables them. |
-| `isBackgroundEnabled` | `boolean` | Adds the required Android BLE hardware feature. It does not create a foreground service or change manager lifecycle. |
-| `neverForLocation` | `boolean` | Adds Android's `neverForLocation` scan flag and caps legacy location permissions at API 30. Set it only when the product makes that assertion. |
-| `modes` | `('central' \| 'peripheral')[]` | Adds the matching iOS Bluetooth background mode values. |
+| `debug` | `boolean` | Enables plugin diagnostics; `UNIFIED_BLE_MANAGER_PLUGIN_DEBUG=1` also enables them. `BLEPLX_PLUGIN_DEBUG=1` remains a deprecated alias. |
+| `requiresBluetoothLeHardware` | `boolean` | Adds the required Android BLE hardware feature (`android.hardware.bluetooth_le`). It does not create a foreground service or change manager lifecycle. |
+| `neverForLocation` | `boolean` | Adds Android's `neverForLocation` scan flag and caps legacy location permissions at API 30. Android treats this as a strong assertion and may filter some BLE beacons. Set it only when the product makes that assertion. |
+| `modes` | `('central')[]` | Adds iOS `bluetooth-central` background mode. Peripheral mode is rejected; this library is a BLE central. |
 | `bluetoothAlwaysPermission` | `string \| false` | Sets, or suppresses, `NSBluetoothAlwaysUsageDescription`. |
 | `iosNativeProtocolRestoration` | `{ identifier, namespace, epoch, clientId, hostSessionScope }` | Atomically writes the five non-empty native restoration identity values required by `UnifiedBleProtocolControl`. |
 
@@ -32,7 +32,7 @@ For example:
 [
   "unified-ble-manager",
   {
-    "isBackgroundEnabled": true,
+    "requiresBluetoothLeHardware": true,
     "modes": ["central"],
     "neverForLocation": false,
     "bluetoothAlwaysPermission": "Allow $(PRODUCT_NAME) to connect to Bluetooth devices",
@@ -40,7 +40,7 @@ For example:
       "identifier": "com.example.app.ble",
       "namespace": "com.example.app.ble",
       "epoch": "2026-07-30",
-      "clientId": "signed-in-user-ble-client",
+      "clientId": "com.example.app.ble-client",
       "hostSessionScope": "com.example.app.mobile-ble"
     }
   }

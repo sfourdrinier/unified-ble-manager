@@ -5,7 +5,7 @@ import { contractError, type CleanupRecord } from '../backend-contract/errors'
 import type { BackendIdentity } from '../backend-contract/identity'
 import type { CharacteristicPath, NotificationValue } from '../backend-contract/gatt'
 import type { PublicOperationOptions, SubscriptionOptions } from '../backend-contract/operations'
-import type { OwnedBytes, PeerId } from '../backend-contract/primitives'
+import { capacity, type OwnedBytes, type PeerId, type Uuid } from '../backend-contract/primitives'
 import type {
   BoundedAsyncStream,
   BoundedAsyncStreamIterator,
@@ -156,6 +156,70 @@ export async function withConnection<Attachment extends string, Identity extends
     () => connection.release(),
     'helpers.with-connection.release'
   )
+}
+
+export function defaultScanDelivery() {
+  return Object.freeze({
+    itemCapacity: capacity(32),
+    byteCapacity: capacity(16 * 1024),
+    reservedControlCapacity: capacity(2),
+    overflowPolicy: 'drop-oldest' as const
+  })
+}
+
+export function scanForServices<Attachment extends string, Identity extends BackendIdentity<Attachment>>(
+  manager: BleManager<Attachment, Identity>,
+  serviceUuids: readonly Uuid[],
+  options: Omit<ScanUntilOptions<Attachment>, 'scan'> & {
+    readonly scan?: Partial<ScanUntilOptions<Attachment>['scan']>
+  }
+) {
+  const scan = options.scan ?? {}
+  return scanUntil(manager, {
+    matches: options.matches,
+    scan: {
+      filter: {
+        serviceUuids,
+        manufacturerData: scan.filter?.manufacturerData ?? [],
+        localNamePrefix: scan.filter?.localNamePrefix ?? null
+      },
+      duplicatePolicy: scan.duplicatePolicy ?? 'merged',
+      timestampPolicy: scan.timestampPolicy ?? 'source-then-receipt',
+      delivery: scan.delivery ?? defaultScanDelivery(),
+      deadline: scan.deadline ?? null,
+      signal: scan.signal ?? null,
+      sharing: scan.sharing ?? { mode: 'owner', allowSharing: false }
+    }
+  })
+}
+
+export async function withDiscoveredConnection<
+  Attachment extends string,
+  Identity extends BackendIdentity<Attachment>,
+  Value
+>(
+  manager: BleManager<Attachment, Identity>,
+  peerId: PeerId<Attachment>,
+  options: PublicOperationOptions,
+  fn: (session: ConnectedGattDatabase<Attachment, Identity>) => Promise<Value>
+): Promise<Value> {
+  return withConnection(manager, peerId, options, async connection => {
+    const database = await connection.discover(options)
+    const snapshot = await database.snapshot()
+    return fn(Object.freeze({ connection, database, snapshot }))
+  })
+}
+
+export function throwIfCleanupFailed(cleanup: CleanupRecord, operation: string): void {
+  if (cleanup.state !== 'release-failed') {
+    return
+  }
+  throw contractError('lifecycle.invalid-state', 'cleanup', operation, {
+    domain: 'cleanup',
+    code: 'release-failed',
+    safeMessage: 'Owned BLE resources did not release cleanly',
+    metadata: Object.freeze({ failureCount: cleanup.failures.length })
+  })
 }
 
 async function nextMatchingObservation<Attachment extends string>(
