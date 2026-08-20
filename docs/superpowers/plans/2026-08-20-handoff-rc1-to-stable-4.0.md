@@ -626,6 +626,13 @@ handoff:        docs/superpowers/plans/2026-08-20-handoff-rc1-to-stable-4.0.md
   - `src/public/errors.ts` — `PublicBleError`/`BleRecovery` (stub, full catalog PR2)
   - `src/index.ts` — additive `ApplicationBleManager` + `PublicBle*` + `OperationOptions`/`StreamPreset`/`BleManagerCreateOptions` alongside preserved RC1 exports (phase 2 keeps tests green; final phase will make root application-only and remove aliases)
   - updated `__tests__/PackageSurface4.test.js` + `__tests__/package-surface/fixtures/public-surface.ts` expectations to stay green with additive surface
+- phase 3 (host factories zero-plumbing, backward compat):
+  - `src/react-native-app-manager.ts` — `createReactNativeBleManager(options?: BleManagerCreateOptions)` derives ephemeral + deterministic restoration (SHA-256) internally, supports legacy `ReactNativeBleManagerAppOptions` for test compat
+  - `src/react-native.ts` — re-exports `BleManagerCreateOptions` as `ReactNativeBleManagerAppOptions` alias
+  - `src/web.ts` — `createWebBleManager(options?: BleManagerCreateOptions)` returns single `BleManager` (not tuple), with `createWebBleManagerWithEnvironment` for injection, plus legacy `createNavigatorWebBluetoothProvider`/`createNavigatorWebBleManager`/`createWebBleManagerLegacy` kept for existing tests; overload handles old `{provider, clientId}` tuple for fixture compat
+  - `src/tauri.ts` — `createTauriBleManager(options?: BleManagerCreateOptions)` imports `@tauri-apps/api/core` internally, `createTauriBleManagerWithEnvironment` for tests, overload handles old `{invoke, Channel}` for RC1 test compat
+  - `package.json` — adds `@tauri-apps/api@^2.0.0` optional peer
+  - lint fixes for `no-explicit-any`/`no-void`/`react-hooks` false positives
 - adversarial round 1: (pending)
 - adversarial round 2: (pending)
 - ready-for-github: (pending)

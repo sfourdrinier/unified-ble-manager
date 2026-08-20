@@ -196,7 +196,8 @@
     "dbus-next": "^0.10.2",
     "expo": "^57.0.0",
     "react": "*",
-    "react-native": ">=0.86.0"
+    "react-native": ">=0.86.0",
+    "@tauri-apps/api": "^2.0.0"
   },
   "peerDependenciesMeta": {
     "expo": {
@@ -209,6 +210,9 @@
       "optional": true
     },
     "react-native": {
+      "optional": true
+    },
+    "@tauri-apps/api": {
       "optional": true
     }
   },
