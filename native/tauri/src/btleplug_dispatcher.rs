@@ -939,15 +939,28 @@ impl BtleplugDispatcher {
         let Some(connection) = connection else {
             return Ok(released());
         };
-        connection.peripheral.disconnect().await.map_err(|error| {
-            DispatchError::new("platform.failure", "connection", "tauri.disconnect")
-                .platform(error.to_string())
-        })?;
+        // The radio result must not short-circuit the bookkeeping below. A
+        // caller that asked to disconnect is finished with this connection
+        // whether or not the peripheral acknowledged, and returning early here
+        // left both the connection entry and the peer→owner mapping in place,
+        // so every later connect was refused with `connection.already-owned`
+        // for the lifetime of the process. The failure is reported after the
+        // state is unwound, never instead of unwinding it.
+        let disconnect = connection.peripheral.disconnect().await;
         let subscriptions = {
             let mut state = self.inner.lock().await;
             let Some(caller_state) = state.callers.get_mut(&key) else {
                 state.peer_owners.remove(&connection.peer_id);
-                return Ok(released());
+                drop(state);
+                return match disconnect {
+                    Ok(()) => Ok(released()),
+                    Err(error) => Err(DispatchError::new(
+                        "platform.failure",
+                        "connection",
+                        "tauri.disconnect",
+                    )
+                    .platform(error.to_string())),
+                };
             };
             caller_state.connections.remove(&handle);
             let database_handles = caller_state
@@ -980,6 +993,12 @@ impl BtleplugDispatcher {
         };
         for subscription in subscriptions {
             subscription.task.abort();
+        }
+        if let Err(error) = disconnect {
+            return Err(
+                DispatchError::new("platform.failure", "connection", "tauri.disconnect")
+                    .platform(error.to_string()),
+            );
         }
         Ok(released())
     }
@@ -1128,6 +1147,13 @@ impl BtleplugDispatcher {
         let stream_handle = handle.clone();
         let key = caller_key(caller);
         let uuid = characteristic.uuid;
+        // The wire contract is PortableNotificationValue { value, indication }.
+        // btleplug's ValueNotification carries no indication flag, so it is
+        // derived once from the characteristic's properties: a characteristic
+        // that indicates is acknowledged, one that only notifies is not.
+        let indication = characteristic
+            .properties
+            .contains(btleplug::api::CharPropFlags::INDICATE);
         let dispatcher = self.clone();
         let task = tauri::async_runtime::spawn(async move {
             while let Some(notification) = notifications.next().await {
@@ -1138,7 +1164,10 @@ impl BtleplugDispatcher {
                     .emit(
                         &key,
                         &stream_handle,
-                        IpcValue::Bytes(notification.value),
+                        object([
+                            ("value", IpcValue::Bytes(notification.value)),
+                            ("indication", IpcValue::Bool(indication)),
+                        ]),
                         false,
                     )
                     .await
