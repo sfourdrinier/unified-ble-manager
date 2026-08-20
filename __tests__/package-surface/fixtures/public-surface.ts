@@ -241,7 +241,7 @@ interface PeerAttachmentRecord {
     readonly displayName: string | null
     readonly state: {
       readonly availability: 'available' | 'unavailable' | 'unsupported' | 'unknown'
-      readonly authorization: 'granted' | 'denied' | 'restricted' | 'not-determined' | 'unavailable'
+      readonly authorization: 'granted' | 'denied' | 'restricted' | 'not-determined' | 'unavailable' | 'unknown'
       readonly power: 'on' | 'off' | 'resetting' | 'unsupported' | 'unknown'
       readonly backendGeneration: string
       readonly updatedAt: number

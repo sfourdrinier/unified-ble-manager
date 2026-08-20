@@ -1,7 +1,11 @@
 // src/node-corebluetooth.ts
 
 import { BackendContractError, contractError } from './backend-contract/errors'
-import type { BackendProvider, HostNeutralBackendIdentity } from './backend-contract/identity'
+import {
+  isAuthorizationBlocking,
+  type BackendProvider,
+  type HostNeutralBackendIdentity
+} from './backend-contract/identity'
 import type { CoreBluetoothBoundary } from './backends/corebluetooth/corebluetooth-boundary'
 import {
   createCoreBluetoothBackendProvider,
@@ -39,7 +43,7 @@ export interface NativeCoreBluetoothProviderOptions {
 const NATIVE_COREBLUETOOTH_INITIALIZATION_TIMEOUT_MILLISECONDS = 10_000
 
 function isUsableAdapterState(state: ReturnType<CoreBluetoothBoundary['adapterSnapshot']>): boolean {
-  return state.availability === 'available' && state.authorization === 'granted' && state.power === 'on'
+  return state.availability === 'available' && !isAuthorizationBlocking(state.authorization) && state.power === 'on'
 }
 
 /** Waits for CoreBluetooth's asynchronous first central-manager state callback before backend attachment. */

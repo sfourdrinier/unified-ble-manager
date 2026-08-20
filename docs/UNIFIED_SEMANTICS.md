@@ -177,9 +177,18 @@ implementation MUST reject a stale handle before dispatching it to a backend.
 The adapter state is a typed snapshot with `availability`, `authorization`,
 `power`, `backendGeneration`, `updatedAt`, and an optional reason. Availability
 is one of `available`, `unavailable`, `unsupported`, or `unknown`; authorization
-is `granted`, `denied`, `restricted`, `not-determined`, or `unavailable`; power
-is `on`, `off`, `resetting`, `unsupported`, or `unknown`. `unknown` means the
-backend did not receive a valid answer; it MUST NOT be converted to `on`.
+is `granted`, `denied`, `restricted`, `not-determined`, `unavailable`, or
+`unknown`; power is `on`, `off`, `resetting`, `unsupported`, or `unknown`.
+`unknown` means the backend did not receive a valid answer; it MUST NOT be
+converted to `on` or to `granted`. An `unknown` authorization means the platform
+exposes no per-application authorization concept, as BlueZ does, or that this
+host did not query one; it MUST NOT be read as a denial and MUST NOT block
+adapter readiness. `not-determined` likewise MUST NOT block: the platform prompt
+is raised by using the radio, not by reading the state, so refusing to proceed
+would leave the decision pending forever. Only an explicit refusal — `denied`,
+`restricted`, `unavailable` — blocks readiness. Every readiness decision uses
+the single shared `isAuthorizationBlocking` predicate rather than a hand-rolled
+comparison.
 
 | Observed condition | Required behavior |
 | --- | --- |

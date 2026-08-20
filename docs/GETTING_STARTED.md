@@ -110,10 +110,19 @@ const manager = await createReactNativeBleManager({
 
 ```ts
 const adapter = await manager.adapterState()
-if (adapter.power !== 'on' || adapter.authorization !== 'granted' || adapter.availability !== 'available') {
+if (adapter.power !== 'on' || isAuthorizationBlocking(adapter.authorization) || adapter.availability !== 'available') {
   throw new Error(`Bluetooth is not ready: ${adapter.power} / ${adapter.authorization}`)
 }
 ```
+
+Use the exported `isAuthorizationBlocking` predicate; never gate on a bare
+`authorization !== 'granted'`. Only an explicit refusal — `'denied'`,
+`'restricted'`, `'unavailable'` — blocks. The other values are not refusals:
+`'unknown'` means the platform exposes no per-application Bluetooth
+authorization concept, as BlueZ on Linux does, or that the host did not query
+one; `'not-determined'` means the user has not been asked yet, and since the
+prompt is raised by *using* the radio rather than by reading the state, blocking
+on it would stop the prompt from ever appearing.
 
 Then scan → connect → discover → read or subscribe → `remove` / `release` → `destroy()`. Copy the complete loop from the root [`README.md`](../README.md). More recipes: [`TUTORIALS.md`](TUTORIALS.md) and [`HELPERS.md`](HELPERS.md).
 

@@ -327,7 +327,8 @@ function isAdapterAuthorization(
     value === 'denied' ||
     value === 'restricted' ||
     value === 'not-determined' ||
-    value === 'unavailable'
+    value === 'unavailable' ||
+    value === 'unknown'
   )
 }
 

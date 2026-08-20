@@ -120,6 +120,7 @@ export type {
 } from './backend-contract/connection-controls'
 export type { ConnectionLifecycleCause, ConnectionLifecycleEvent } from './backend-contract/connection-lifecycle'
 export type { BackendIdentity } from './backend-contract/identity'
+export { isAuthorizationBlocking } from './backend-contract/identity'
 export type {
   DiagnosticTraceDocument,
   DiagnosticTraceKind,

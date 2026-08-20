@@ -17,15 +17,47 @@ import type {
 
 export type HostKind = 'browser' | 'native-mobile' | 'node' | 'desktop-native' | 'desktop-webview' | 'test'
 export type AdapterAvailability = 'available' | 'unavailable' | 'unsupported' | 'unknown'
-export type AdapterAuthorization = 'granted' | 'denied' | 'restricted' | 'not-determined' | 'unavailable'
+export type AdapterAuthorization = 'granted' | 'denied' | 'restricted' | 'not-determined' | 'unavailable' | 'unknown'
 export type AdapterPower = 'on' | 'off' | 'resetting' | 'unsupported' | 'unknown'
 export interface AdapterStateSnapshot<Attachment extends string> {
   readonly availability: AdapterAvailability
+  /**
+   * `'unknown'` when the platform exposes no per-application Bluetooth
+   * authorization concept at all, or when this host did not query one. It is
+   * the absence of a measurement and never a denial, which is why the other
+   * five values cannot express it: `'not-determined'` asserts a pending user
+   * decision and `'unavailable'` asserts the platform withheld access, so a
+   * backend that did not measure must report `'unknown'` rather than pick one,
+   * exactly as `availability` and `power` already do. `safeReason` states why.
+   * Readiness decisions go through `isAuthorizationBlocking`, never through a
+   * direct comparison.
+   */
   readonly authorization: AdapterAuthorization
   readonly power: AdapterPower
   readonly backendGeneration: GenerationId<'backend-generation', Attachment>
   readonly updatedAt: MonotonicTimestamp
   readonly safeReason: string | null
+}
+
+/**
+ * The one readiness predicate for `authorization`, shared by every backend so
+ * the semantics cannot drift.
+ *
+ * Only an explicit negative blocks. `'denied'`, `'restricted'` and
+ * `'unavailable'` are decisions the platform has already made against us;
+ * everything else is the absence of a decision and must not be treated as one:
+ *
+ * - `'unknown'` means nothing was measured.
+ * - `'not-determined'` means the user has not been asked yet. Reading the
+ *   authorization state does not prompt on any platform — the prompt is raised
+ *   by *using* the radio. Refusing to use it while the answer is pending would
+ *   make the state self-perpetuating: the prompt could never appear and a fresh
+ *   install would stay unauthorized forever. Attempting the operation lets the
+ *   platform ask, and a genuine refusal then arrives as a real error with the
+ *   `permission.*` reason the backends already produce.
+ */
+export function isAuthorizationBlocking(authorization: AdapterAuthorization): boolean {
+  return authorization === 'denied' || authorization === 'restricted' || authorization === 'unavailable'
 }
 export interface AdapterStateWatch<Attachment extends string> {
   readonly initial: AdapterStateSnapshot<Attachment>

@@ -590,19 +590,23 @@ impl BtleplugDispatcher {
             Ok(btleplug::api::CentralState::PoweredOff) => "off",
             Ok(_) => "unknown",
             Err(error) => {
-                return Err(
-                    DispatchError::new("adapter.unavailable", "adapter", "tauri.adapter-power")
-                        .platform(error.to_string()),
-                );
+                return Err(DispatchError::new(
+                    "adapter.unavailable",
+                    "adapter",
+                    "tauri.adapter-power",
+                )
+                .platform(error.to_string()));
             }
         };
         let heard = match adapter.peripherals().await {
             Ok(peripherals) => i64::try_from(peripherals.len()).unwrap_or(i64::MAX),
             Err(error) => {
-                return Err(
-                    DispatchError::new("adapter.unavailable", "adapter", "tauri.adapter-heard")
-                        .platform(error.to_string()),
-                );
+                return Err(DispatchError::new(
+                    "adapter.unavailable",
+                    "adapter",
+                    "tauri.adapter-heard",
+                )
+                .platform(error.to_string()));
             }
         };
         Ok(adapter_state_payload_live(&attachment, power, heard))
@@ -753,7 +757,8 @@ impl BtleplugDispatcher {
             Ok(Err(error)) => {
                 self.abort_scan_admission(&key).await;
                 return Err(
-                    DispatchError::new("scan.start-failed", "scan", "tauri.scan-start").platform(error),
+                    DispatchError::new("scan.start-failed", "scan", "tauri.scan-start")
+                        .platform(error),
                 );
             }
             Err(_) => {
@@ -1130,7 +1135,12 @@ impl BtleplugDispatcher {
                     continue;
                 }
                 if dispatcher
-                    .emit(&key, &stream_handle, IpcValue::Bytes(notification.value), false)
+                    .emit(
+                        &key,
+                        &stream_handle,
+                        IpcValue::Bytes(notification.value),
+                        false,
+                    )
                     .await
                     .is_err()
                 {
@@ -2154,13 +2164,7 @@ fn adapter_state_snapshot(attachment: &Attachment, sample: AdapterSample<'_>) ->
     }
     object([
         ("availability", availability),
-        (
-            "authorization",
-            match authorization.value {
-                Some(value) => string(value),
-                None => IpcValue::Null,
-            },
-        ),
+        ("authorization", string(authorization.value)),
         ("power", power),
         ("heard", heard),
         (
@@ -2182,15 +2186,22 @@ fn safe_reason(caveats: &[&str]) -> IpcValue {
 
 /// One platform authorization reading.
 ///
-/// `value` is a wire token from the adapter-state vocabulary
-/// (`granted | denied | restricted | not-determined | unavailable`) when the
-/// platform yielded one, and `None` when it did not: an absent authorization is
-/// reported as JSON null rather than guessed. `reason` carries the caveat that
+/// `value` is always a wire token from the adapter-state vocabulary
+/// (`granted | denied | restricted | not-determined | unavailable | unknown`).
+/// `unknown` is reported when this host obtained no reading — because the
+/// platform exposes no per-application authorization concept, or because it was
+/// not queried. It matches how the sibling `availability` and `power`
+/// vocabularies already spell "not determined by this host", and it is never a
+/// denial: readiness must not gate on it. `reason` carries the caveat that
 /// belongs in `safeReason`, and is set only when the reading needs one.
 struct AuthorizationReport {
-    value: Option<&'static str>,
+    value: &'static str,
     reason: Option<&'static str>,
 }
+
+/// The adapter-state token meaning "this host obtained no authorization
+/// reading". Never a denial.
+const AUTHORIZATION_UNKNOWN: &str = "unknown";
 
 /// `CBManagerAuthorization` raw values, macOS 10.15+ / iOS 13+.
 #[cfg(any(target_os = "macos", test))]
@@ -2219,13 +2230,13 @@ fn map_core_bluetooth_authorization(raw: isize) -> AuthorizationReport {
         CORE_BLUETOOTH_AUTHORIZATION_NOT_DETERMINED => "not-determined",
         _ => {
             return AuthorizationReport {
-                value: None,
+                value: AUTHORIZATION_UNKNOWN,
                 reason: Some(CORE_BLUETOOTH_AUTHORIZATION_UNRECOGNIZED_REASON),
             }
         }
     };
     AuthorizationReport {
-        value: Some(value),
+        value,
         reason: None,
     }
 }
@@ -2243,7 +2254,7 @@ fn platform_authorization() -> AuthorizationReport {
 
     let Some(class) = AnyClass::get("CBManager") else {
         return AuthorizationReport {
-            value: None,
+            value: AUTHORIZATION_UNKNOWN,
             reason: Some(
                 "CoreBluetooth is not loaded in this process, so adapter authorization is reported absent.",
             ),
@@ -2251,7 +2262,7 @@ fn platform_authorization() -> AuthorizationReport {
     };
     if !class.metaclass().responds_to(sel!(authorization)) {
         return AuthorizationReport {
-            value: None,
+            value: AUTHORIZATION_UNKNOWN,
             reason: Some(
                 "This macOS version does not expose +[CBManager authorization], so adapter authorization is reported absent.",
             ),
@@ -2268,16 +2279,17 @@ fn platform_authorization() -> AuthorizationReport {
 ///
 /// BlueZ has no per-application Bluetooth authorization state to read: access
 /// is decided by D-Bus policy when a process reaches the adapter, and a refusal
-/// surfaces as a failure to obtain the adapter rather than as a state. This
-/// snapshot exists only for an attachment whose adapter the platform handed to
-/// this process, so `granted` is an observed fact rather than a default, and
-/// the derivation is disclosed in `safeReason`.
+/// surfaces as a failure to obtain the adapter rather than as a state.
+///
+/// Reporting `granted` here would be a derivation rather than a measurement, so
+/// the value is absent. Absence means "this platform exposes no such state", it
+/// is never a denial, and readiness must not gate on it.
 #[cfg(target_os = "linux")]
 fn platform_authorization() -> AuthorizationReport {
     AuthorizationReport {
-        value: Some("granted"),
+        value: AUTHORIZATION_UNKNOWN,
         reason: Some(
-            "BlueZ exposes no per-application Bluetooth authorization state; 'granted' reports that this process was admitted to the adapter over D-Bus when the attachment was created.",
+            "BlueZ exposes no per-application Bluetooth authorization state, so adapter authorization is reported absent; on this platform a refusal surfaces as a failure to obtain the adapter rather than as an authorization value.",
         ),
     }
 }
@@ -2289,7 +2301,7 @@ fn platform_authorization() -> AuthorizationReport {
 #[cfg(target_os = "windows")]
 fn platform_authorization() -> AuthorizationReport {
     AuthorizationReport {
-        value: None,
+        value: AUTHORIZATION_UNKNOWN,
         reason: Some(
             "Windows decides Bluetooth radio access through settings this host does not query, so adapter authorization is reported absent.",
         ),
@@ -2299,7 +2311,7 @@ fn platform_authorization() -> AuthorizationReport {
 #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
 fn platform_authorization() -> AuthorizationReport {
     AuthorizationReport {
-        value: None,
+        value: AUTHORIZATION_UNKNOWN,
         reason: Some(
             "This host does not query a Bluetooth authorization state on this platform, so adapter authorization is reported absent.",
         ),
@@ -2557,7 +2569,9 @@ mod tests {
         let Some(super::IpcValue::Object(state)) = record.get("state") else {
             panic!("adapter.state payload must nest a state object");
         };
-        assert!(matches!(state.get("power"), Some(super::IpcValue::String(value)) if value == "on"));
+        assert!(
+            matches!(state.get("power"), Some(super::IpcValue::String(value)) if value == "on")
+        );
         assert!(
             matches!(state.get("heard"), Some(super::IpcValue::Number(value) ) if value.as_i64() == Some(3))
         );
@@ -2585,12 +2599,13 @@ mod tests {
 
     /// Every token this host may put on the wire is one the TypeScript
     /// `AdapterAuthorization` union already accepts.
-    const WIRE_AUTHORIZATION_TOKENS: [&str; 5] = [
+    const WIRE_AUTHORIZATION_TOKENS: [&str; 6] = [
         "granted",
         "denied",
         "restricted",
         "not-determined",
         "unavailable",
+        super::AUTHORIZATION_UNKNOWN,
     ];
 
     #[test]
@@ -2602,11 +2617,7 @@ mod tests {
             (3, "granted"),
         ] {
             let report = super::map_core_bluetooth_authorization(raw);
-            assert_eq!(
-                report.value,
-                Some(expected),
-                "raw {raw} must map to {expected}"
-            );
+            assert_eq!(report.value, expected, "raw {raw} must map to {expected}");
             assert_eq!(
                 report.reason, None,
                 "a real CoreBluetooth reading carries no caveat"
@@ -2616,37 +2627,43 @@ mod tests {
     }
 
     #[test]
-    fn unrecognized_core_bluetooth_authorization_is_reported_absent() {
+    fn unrecognized_core_bluetooth_authorization_is_reported_unknown() {
         for raw in [-1isize, 4, 99] {
             let report = super::map_core_bluetooth_authorization(raw);
             assert_eq!(
-                report.value, None,
-                "raw {raw} has no known meaning and must not be forced into a token"
+                report.value,
+                super::AUTHORIZATION_UNKNOWN,
+                "raw {raw} has no known meaning and must not be forced into a decision"
             );
-            assert!(report.reason.is_some(), "an absent value must say why");
+            assert!(report.reason.is_some(), "an unknown value must say why");
         }
     }
 
     #[test]
-    fn platform_authorization_is_a_wire_token_or_explicitly_absent() {
+    fn platform_authorization_is_always_a_wire_token() {
         let report = super::platform_authorization();
-        match report.value {
-            Some(value) => assert!(
-                WIRE_AUTHORIZATION_TOKENS.contains(&value),
-                "{value} is not part of the adapter authorization vocabulary"
-            ),
-            None => assert!(
+        assert!(
+            WIRE_AUTHORIZATION_TOKENS.contains(&report.value),
+            "{} is not part of the adapter authorization vocabulary",
+            report.value
+        );
+        if report.value == super::AUTHORIZATION_UNKNOWN {
+            assert!(
                 report.reason.is_some(),
-                "an absent authorization must carry the reason it is absent"
-            ),
+                "an unknown authorization must carry the reason this host has no reading"
+            );
         }
     }
 
+    // Spec change: this arm previously derived `granted` from the fact that
+    // D-Bus handed this process an adapter. That is an inference, not a
+    // measurement, and it made Linux the one platform reporting a value it had
+    // never queried. It now reports `unknown`, with the reason disclosed.
     #[cfg(target_os = "linux")]
     #[test]
-    fn bluez_authorization_is_granted_with_its_derivation_disclosed() {
+    fn bluez_authorization_is_unknown_because_the_platform_exposes_no_such_state() {
         let report = super::platform_authorization();
-        assert_eq!(report.value, Some("granted"));
+        assert_eq!(report.value, super::AUTHORIZATION_UNKNOWN);
         assert!(report
             .reason
             .is_some_and(|reason| reason.contains("BlueZ exposes no per-application")));

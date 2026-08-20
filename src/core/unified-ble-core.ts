@@ -13,7 +13,7 @@ import {
 import { createAttachmentBoundIdFactory } from '../backend-contract/primitives'
 import type { AdvertisementObservation, OwnerScanOptions, ScanOptions } from '../backend-contract/advertisement'
 import type { CleanupFailure, CleanupRecord } from '../backend-contract/errors'
-import type { AdapterStateSnapshot, BackendIdentity } from '../backend-contract/identity'
+import { isAuthorizationBlocking, type AdapterStateSnapshot, type BackendIdentity } from '../backend-contract/identity'
 import type {
   PublicOperationOptions,
   SubscriptionOptions,
@@ -788,7 +788,7 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
 
   private async applyAdapterStateEvent(): Promise<void> {
     const state = await this.backend.adapter.currentState()
-    if (state.availability !== 'available' || state.authorization !== 'granted' || state.power !== 'on') {
+    if (state.availability !== 'available' || isAuthorizationBlocking(state.authorization) || state.power !== 'on') {
       await this.releaseResources('adapter-loss')
     }
   }
