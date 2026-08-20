@@ -1,8 +1,7 @@
 import { type ConfigPlugin, withInfoPlist } from 'expo/config-plugins'
 
 export enum BackgroundMode {
-  Central = 'central',
-  Peripheral = 'peripheral'
+  Central = 'central'
 }
 
 function ensureKey(arr: string[], key: string) {
@@ -13,7 +12,6 @@ function ensureKey(arr: string[], key: string) {
 }
 
 const centralKey = 'bluetooth-central'
-const peripheralKey = 'bluetooth-peripheral'
 
 /**
  * Append `UIBackgroundModes` to the `Info.plist`.
@@ -26,9 +24,6 @@ export const withBLEBackgroundModes: ConfigPlugin<BackgroundMode[]> = (c, modes)
 
     if (modes.includes(BackgroundMode.Central)) {
       config.modResults.UIBackgroundModes = ensureKey(config.modResults.UIBackgroundModes, centralKey)
-    }
-    if (modes.includes(BackgroundMode.Peripheral)) {
-      config.modResults.UIBackgroundModes = ensureKey(config.modResults.UIBackgroundModes, peripheralKey)
     }
 
     // Prevent empty array

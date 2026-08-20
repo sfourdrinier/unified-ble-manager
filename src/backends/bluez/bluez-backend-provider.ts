@@ -13,6 +13,8 @@ import {
 import { BluezBackend } from './bluez-backend'
 import {
   BLUEZ_ADAPTER_INTERFACE,
+  BLUEZ_NO_AUTHORIZATION_CONCEPT_REASON,
+  bluezSafeReason,
   type BluezBusKind,
   type BluezDbusBoundary,
   type BluezDbusBoundaryFactory
@@ -117,11 +119,14 @@ function adapterDescriptors(store: BluezObjectStore, now: () => number): readonl
         displayName: store.optionalStringProperty(path, BLUEZ_ADAPTER_INTERFACE, 'Alias'),
         state: Object.freeze({
           availability: 'available',
-          authorization: 'granted',
+          authorization: 'unknown',
           power: powered === true ? 'on' : powered === false ? 'off' : 'unknown',
           backendGeneration: opaqueId('1', 'backend-generation', 'bluez'),
           updatedAt: monotonicTimestamp(now()),
-          safeReason: powered === false ? 'BlueZ adapter is powered off' : null
+          safeReason: bluezSafeReason([
+            powered === false ? 'BlueZ adapter is powered off' : null,
+            BLUEZ_NO_AUTHORIZATION_CONCEPT_REASON
+          ])
         }),
         adapterGeneration: opaqueId('1', 'adapter-generation', `bluez:${path}`),
         limitations: Object.freeze([

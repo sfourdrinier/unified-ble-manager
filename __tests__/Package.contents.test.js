@@ -1,6 +1,4 @@
-// __tests__/PackageArtifactHonesty.test.js
-
-// __tests__/PackageArtifactHonesty.test.js
+// __tests__/Package.contents.test.js
 
 const fs = require('fs')
 const path = require('path')
@@ -15,7 +13,7 @@ const {
   assertNoForbiddenNobleRuntimeReferences
 } = require('../scripts/ci/forbidden-runtime-dependencies')
 
-describe('package artifact honesty gate', () => {
+describe('published package contains the files and scripts it claims', () => {
   test('build and prepack verify the current published artifact surface', () => {
     expect(packageJson.scripts.build).toBe('pnpm prepack')
     expect(packageJson.scripts.lint).toContain('--max-warnings 0')
@@ -41,6 +39,10 @@ describe('package artifact honesty gate', () => {
     expect(verifierSource).toContain('native-protocol/rn-android-boundary.ts')
     expect(tarballVerifierSource).toContain('internalTypeOnlySourceFiles')
     expect(tarballVerifierSource).toContain('internalRuntimeSourceFiles')
+    expect(verifierSource).toContain('react-native-app-manager.ts')
+    expect(verifierSource).toContain('node-host-manager.ts')
+    expect(tarballVerifierSource).toContain('react-native-app-manager.ts')
+    expect(tarballVerifierSource).toContain('node-host-manager.ts')
     expect(tarballVerifierSource).toContain('expectedCodegenSourceEntries')
     expect(tarballVerifierSource).toContain('Packed React Native Codegen source set differs')
     expect(tarballVerifierSource).toContain('excludedHistoricalDocumentationEntries')

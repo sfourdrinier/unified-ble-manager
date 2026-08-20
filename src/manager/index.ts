@@ -43,10 +43,14 @@ export type {
 export {
   collectNotifications,
   connectAndDiscover,
+  defaultScanDelivery,
   find,
   firstNotification,
+  scanForServices,
   scanUntil,
-  withConnection
+  throwIfCleanupFailed,
+  withConnection,
+  withDiscoveredConnection
 } from './public-helpers'
 export type { CollectNotificationsOptions, ConnectedGattDatabase, ScanUntilOptions } from './public-helpers'
 export { ManagerOwnershipAuthority } from './manager-ownership-authority'

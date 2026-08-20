@@ -24,7 +24,15 @@ export interface WinRtIngressTelemetry {
 
 export interface WinRtAdapterSnapshot {
   readonly availability: 'available' | 'unavailable' | 'unsupported' | 'unknown'
-  readonly authorization: 'granted' | 'denied' | 'restricted' | 'not-determined' | 'unavailable'
+  /**
+   * `'unknown'` when the platform exposes no per-application Bluetooth
+   * authorization concept at all, or when this host did not query one. It is
+   * the absence of a measurement and never a denial: `'not-determined'`
+   * asserts a pending user decision and `'unavailable'` asserts the platform
+   * withheld access, so a host that did not measure reports `'unknown'`,
+   * exactly as `availability` and `power` already do. `safeReason` states why.
+   */
+  readonly authorization: 'granted' | 'denied' | 'restricted' | 'not-determined' | 'unavailable' | 'unknown'
   readonly power: 'on' | 'off' | 'resetting' | 'unsupported' | 'unknown'
   readonly safeReason: string | null
 }
@@ -131,6 +139,7 @@ function isWinRtAdapterAuthorization(value: unknown): value is WinRtAdapterSnaps
     case 'restricted':
     case 'not-determined':
     case 'unavailable':
+    case 'unknown':
       return true
     default:
       return false

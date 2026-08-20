@@ -2,11 +2,6 @@
 
 # Expo plugin option reference
 
-**Status:** current 4.0 alpha option reference; native and live-radio proof
-remain host-specific
-
-**Architecture and sequencing authority:** [`UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md`](UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md)
-
 Configure the published plugin as `unified-ble-manager`. The plugin's supported
 options are exactly the schema implemented in `plugin/src/withBLE.ts`:
 
@@ -19,19 +14,15 @@ pnpm add unified-ble-manager expo@^57.0.0
 `@expo/config-plugins` package directly. Web, bare React Native, and Node
 consumers do not resolve Expo tooling.
 
-The plugin configuration is part of the published Experimental 4.0 alpha.40
-prerelease. The
-release workflow validates Expo SDK 57 CNG prebuild and Android assembly, but no
-current evidence record binds alpha.40 to a physical device, permission,
-background, or restoration scenario. Configuration and compilation therefore do
-not make a live-radio or restoration support claim.
+The plugin writes native project configuration. That is not a live-radio or
+restoration support claim. See [`PLATFORMS.md`](PLATFORMS.md).
 
 | Option | Type | Effect |
 | --- | --- | --- |
-| `debug` | `boolean` | Enables plugin diagnostics; `BLEPLX_PLUGIN_DEBUG=1` also enables them. |
-| `isBackgroundEnabled` | `boolean` | Adds the required Android BLE hardware feature. It does not create a foreground service or change manager lifecycle. |
-| `neverForLocation` | `boolean` | Adds Android's `neverForLocation` scan flag and caps legacy location permissions at API 30. Set it only when the product makes that assertion. |
-| `modes` | `('central' \| 'peripheral')[]` | Adds the matching iOS Bluetooth background mode values. |
+| `debug` | `boolean` | Enables plugin diagnostics; `UNIFIED_BLE_MANAGER_PLUGIN_DEBUG=1` also enables them. `BLEPLX_PLUGIN_DEBUG=1` remains a deprecated alias. |
+| `requiresBluetoothLeHardware` | `boolean` | Adds the required Android BLE hardware feature (`android.hardware.bluetooth_le`). It does not create a foreground service or change manager lifecycle. |
+| `neverForLocation` | `boolean` | Adds Android's `neverForLocation` scan flag and caps legacy location permissions at API 30. Android treats this as a strong assertion and may filter some BLE beacons. Set it only when the product makes that assertion. |
+| `modes` | `('central')[]` | Adds iOS `bluetooth-central` background mode. Peripheral mode is rejected; this library is a BLE central. |
 | `bluetoothAlwaysPermission` | `string \| false` | Sets, or suppresses, `NSBluetoothAlwaysUsageDescription`. |
 | `iosNativeProtocolRestoration` | `{ identifier, namespace, epoch, clientId, hostSessionScope }` | Atomically writes the five non-empty native restoration identity values required by `UnifiedBleProtocolControl`. |
 
@@ -41,7 +32,7 @@ For example:
 [
   "unified-ble-manager",
   {
-    "isBackgroundEnabled": true,
+    "requiresBluetoothLeHardware": true,
     "modes": ["central"],
     "neverForLocation": false,
     "bluetoothAlwaysPermission": "Allow $(PRODUCT_NAME) to connect to Bluetooth devices",
@@ -49,7 +40,7 @@ For example:
       "identifier": "com.example.app.ble",
       "namespace": "com.example.app.ble",
       "epoch": "2026-07-30",
-      "clientId": "signed-in-user-ble-client",
+      "clientId": "com.example.app.ble-client",
       "hostSessionScope": "com.example.app.mobile-ble"
     }
   }
@@ -73,7 +64,7 @@ it only with the explicit manager-owned adoption flow in
 `hostSessionScope` exactly match the app's host-owned manager/adoption values.
 Do not claim restoration support from plugin configuration alone.
 
-The following alpha-era/3.x option names are not accepted by this plugin:
+These `react-native-ble-plx` plugin keys are not accepted:
 
 - `iosEnableRestoration`
 - `iosRestorationIdentifier`

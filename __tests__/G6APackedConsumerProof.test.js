@@ -48,6 +48,7 @@ describe('G6A packed independent-consumer proof fixture', () => {
     )
     expect(source).not.toMatch(/(?:^|['"])(?:\.\.\/|\.\/\.\.\/)/m)
     expect(source).not.toMatch(/(?:\bfile:|noble|base64|placeholder|TODO|skip)/i)
+    expect(source).not.toMatch(/readHeartRateMeasurement|readBloodPressureMeasurement|readTemperatureMeasurement/)
 
     const runner = fs.readFileSync(runnerPath, 'utf8')
     expect(runner).toContain('unified-ble-g6a-packed-proof-v1')

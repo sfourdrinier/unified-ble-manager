@@ -10,6 +10,7 @@ import {
   type WebBluetoothProvider
 } from './web/web-bluetooth-backend'
 import {
+  createDefaultNavigatorWebBluetoothEnvironment,
   NavigatorWebBluetoothBoundary,
   type NavigatorWebBluetoothEnvironment
 } from './web/navigator-web-bluetooth-boundary'
@@ -20,7 +21,10 @@ export {
   WebBluetoothBackend,
   WebBluetoothProvider
 } from './web/web-bluetooth-backend'
-export { NavigatorWebBluetoothBoundary } from './web/navigator-web-bluetooth-boundary'
+export {
+  NavigatorWebBluetoothBoundary,
+  createDefaultNavigatorWebBluetoothEnvironment
+} from './web/navigator-web-bluetooth-boundary'
 export type { NavigatorWebBluetoothEnvironment } from './web/navigator-web-bluetooth-boundary'
 export type { ChooserRequest, ChooserSelection, WebChooser, WebHost } from './backend-contract/host/web'
 export type {
@@ -48,9 +52,9 @@ export interface WebBleManagerOptions {
 }
 
 export interface NavigatorWebBleManagerOptions {
-  readonly environment: NavigatorWebBluetoothEnvironment
   readonly clientId: string
   readonly managerId: string
+  readonly environment?: NavigatorWebBluetoothEnvironment
 }
 
 export interface WebBleManagerSession {
@@ -84,12 +88,13 @@ export function createNavigatorWebBluetoothProvider(environment: NavigatorWebBlu
   return createWebBluetoothProvider(new NavigatorWebBluetoothBoundary(environment))
 }
 
-/** Creates a browser manager session from explicit browser APIs. */
+/** Creates a browser manager session from explicit browser APIs or the default navigator environment. */
 export function createNavigatorWebBleManager(options: NavigatorWebBleManagerOptions): Promise<WebBleManagerSession> {
+  const environment = options.environment ?? createDefaultNavigatorWebBluetoothEnvironment()
   return createWebBleManager({
-    provider: createNavigatorWebBluetoothProvider(options.environment),
+    provider: createNavigatorWebBluetoothProvider(environment),
     clientId: options.clientId,
     managerId: options.managerId,
-    now: options.environment.now
+    now: environment.now
   })
 }

@@ -17,13 +17,17 @@ export {
   createBleManagerFromProvider,
   createManagerOwnershipAuthority,
   DEFAULT_BLE_MANAGER_OPTIONS,
+  defaultScanDelivery,
   DiscoveredGattDatabase,
   find,
   firstNotification,
   ScanSession,
+  scanForServices,
   scanUntil,
   Subscription,
-  withConnection
+  throwIfCleanupFailed,
+  withConnection,
+  withDiscoveredConnection
 } from './manager'
 export type {
   BleConnectionHandle,
@@ -120,6 +124,7 @@ export type {
 } from './backend-contract/connection-controls'
 export type { ConnectionLifecycleCause, ConnectionLifecycleEvent } from './backend-contract/connection-lifecycle'
 export type { BackendIdentity } from './backend-contract/identity'
+export { isAuthorizationBlocking } from './backend-contract/identity'
 export type {
   DiagnosticTraceDocument,
   DiagnosticTraceKind,

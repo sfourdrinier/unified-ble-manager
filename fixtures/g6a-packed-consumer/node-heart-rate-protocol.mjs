@@ -14,7 +14,6 @@ import {
   VirtualPeripheral
 } from 'unified-ble-manager/testing'
 import {
-  readHeartRateMeasurement,
   resetHeartRateEnergyExpended,
   subscribeHeartRateMeasurements
 } from 'unified-ble-manager/profiles/standard-commands'
@@ -49,7 +48,7 @@ export async function runNodeHeartRateProtocol() {
               uuid: HEART_RATE_MEASUREMENT_CHARACTERISTIC,
               occurrence: 0,
               initialValue: measurement,
-              readable: true,
+              readable: false,
               writableWithResponse: false,
               writableWithoutResponse: false,
               notifying: true,
@@ -101,8 +100,38 @@ export async function runNodeHeartRateProtocol() {
 
     connection = await settle(fixture, manager.connect(observation.value.value.device.id, operationOptions), 'connect')
     const database = await settle(fixture, connection.discover(operationOptions), 'discover')
-    const read = await settle(fixture, readHeartRateMeasurement(database, operationOptions), 'read')
-    assert.equal(read.beatsPerMinute, 72, 'packed Node Heart Rate profile decoded the read response')
+    subscription = await settle(
+      fixture,
+      subscribeHeartRateMeasurements(database, {
+        ...operationOptions,
+        delivery: {
+          itemCapacity: capacity(4),
+          byteCapacity: capacity(128),
+          reservedControlCapacity: capacity(1),
+          overflowPolicy: 'drop-oldest'
+        }
+      }),
+      'subscribe'
+    )
+    const measurementPromise = subscription.values[Symbol.asyncIterator]().next()
+    fixture.controller.emitNotification(
+      {
+        serviceUuid: HEART_RATE_SERVICE,
+        serviceOccurrence: 0,
+        characteristicUuid: HEART_RATE_MEASUREMENT_CHARACTERISTIC,
+        characteristicOccurrence: 0
+      },
+      measurement
+    )
+    await flushMicrotasks()
+    const measurementItem = await measurementPromise
+    assert.equal(measurementItem.done, false, 'packed Node Heart Rate subscription remained open')
+    assert.equal(measurementItem.value.kind, 'value', 'packed Node Heart Rate subscription delivered a value')
+    assert.equal(
+      parseHeartRateMeasurement(measurementItem.value.value.value).beatsPerMinute,
+      72,
+      'packed Node Heart Rate profile decoded the notification response'
+    )
 
     const write = await settle(
       fixture,
@@ -117,19 +146,6 @@ export async function runNodeHeartRateProtocol() {
       'packed Node Heart Rate profile emitted the SIG Reset Energy Expended command'
     )
 
-    subscription = await settle(
-      fixture,
-      subscribeHeartRateMeasurements(database, {
-        ...operationOptions,
-        delivery: {
-          itemCapacity: capacity(4),
-          byteCapacity: capacity(128),
-          reservedControlCapacity: capacity(1),
-          overflowPolicy: 'drop-oldest'
-        }
-      }),
-      'subscribe'
-    )
     const notificationPromise = subscription.values[Symbol.asyncIterator]().next()
     fixture.controller.emitNotification(
       {
@@ -150,18 +166,27 @@ export async function runNodeHeartRateProtocol() {
       'packed Node Heart Rate profile decoded the notification response'
     )
 
-    fixture.controller.queueCompletion('read', {
+    fixture.controller.queueCompletion('subscribe', {
       delayMs: 100,
       failure: null,
       cancellable: true,
       deadlineOrder: 'completion-first'
     })
     const abort = new AbortController()
-    const cancelledRead = readHeartRateMeasurement(database, { signal: abort.signal, deadline: null })
+    const cancelledSubscribe = subscribeHeartRateMeasurements(database, {
+      signal: abort.signal,
+      deadline: null,
+      delivery: {
+        itemCapacity: capacity(4),
+        byteCapacity: capacity(128),
+        reservedControlCapacity: capacity(1),
+        overflowPolicy: 'drop-oldest'
+      }
+    })
     await flushMicrotasks()
     fixture.controller.clock.advanceBy(0)
     abort.abort()
-    await assertAborted(fixture, cancelledRead, 'read.cancellation')
+    await assertAborted(fixture, cancelledSubscribe, 'subscribe.cancellation')
     fixture.controller.clock.advanceBy(100)
     await flushMicrotasks()
 

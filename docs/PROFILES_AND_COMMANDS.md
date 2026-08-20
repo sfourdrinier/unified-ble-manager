@@ -2,12 +2,12 @@
 
 # Profiles, codecs, and GATT commands
 
-The 4.0 profile surface is optional, host-neutral, and built only on the public
-`Connection`, `DiscoveredGattDatabase`, and `Subscription` handles. It does not
-select a backend, connect a device, retry, or apply a product policy.
+Optional helpers for SIG services (Heart Rate, Battery, DIS, thermometer, blood
+pressure). They sit on the public `Connection`, `DiscoveredGattDatabase`, and
+`Subscription` handles. They do not pick a backend or reconnect.
 
-Normal BLE operations use `Uint8Array` and structured GATT paths. There is no
-Base64 profile, command, or manager API.
+BLE values stay `Uint8Array`. `unified-ble-manager/codecs` is IEEE-11073 and
+byte views — not Base64.
 
 ## Public subpaths
 
@@ -34,7 +34,7 @@ address. Commands operate on the generation-bound path returned by discovery
 and fail with `gatt.ambiguous-path` when the selector is not specific enough.
 
 ```ts
-import type { PublicOperationOptions } from 'unified-ble-manager'
+import { defaultScanDelivery, firstNotification } from 'unified-ble-manager'
 import { resolveCharacteristicPath } from 'unified-ble-manager/profiles/commands'
 import {
   HEART_RATE_SERVICE,
@@ -58,13 +58,17 @@ const selectedPath = await resolveCharacteristicPath(
   heartRateMeasurementSelector({ serviceOccurrence: String(selectedService.path.serviceOccurrence) })
 )
 
-const options: PublicOperationOptions = { signal: null, deadline: null }
-const bytes = await database.read(selectedPath, options)
+const bytes = await firstNotification(database, selectedPath, {
+  signal: abortController.signal,
+  deadline: journeyDeadline,
+  delivery: defaultScanDelivery()
+})
 ```
 
-Do not construct a GATT path, occurrence, connection generation, or database
-generation yourself. A profile selector only describes the match; the command
-always returns a path copied from the current database snapshot.
+Selector occurrences may be copied from a current snapshot. Full paths, database
+generations, and connection generations must never be constructed manually. A
+profile selector only describes the match; the command always returns a path
+copied from the current database snapshot.
 
 ## Standard profile commands
 
@@ -73,21 +77,21 @@ has completed successfully. It forwards the caller's `AbortSignal`, deadline,
 write mode, and subscription delivery limits without changing them.
 
 ```ts
+import { defaultScanDelivery, firstNotification } from 'unified-ble-manager'
 import {
   readBatteryLevel,
-  readHeartRateMeasurement,
   resetHeartRateEnergyExpended,
   subscribeHeartRateMeasurements
 } from 'unified-ble-manager/profiles/standard-commands'
 
-const operation = { signal: abortController.signal, deadline: null }
+const delivery = defaultScanDelivery()
+const operation = { signal: abortController.signal, deadline: journeyDeadline }
 const batteryPercent = await readBatteryLevel(database, operation)
-const measurement = await readHeartRateMeasurement(database, operation, { serviceOccurrence: '0' })
-
 const subscription = await subscribeHeartRateMeasurements(database, {
   ...operation,
-  delivery: streamDelivery
+  delivery
 }, { serviceOccurrence: '0' })
+const measurement = await firstNotification(database, selectedPath, { ...operation, delivery })
 
 try {
   for await (const item of subscription.values) {

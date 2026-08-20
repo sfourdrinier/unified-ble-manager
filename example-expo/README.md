@@ -21,8 +21,8 @@ On macOS with the required Xcode and CocoaPods environment, use
 the fixture's ignored native project directories; it does not validate a live
 Bluetooth journey.
 
-The fixture demonstrates the v4 React Native entrypoint, plugin configuration,
-stable manager ownership, and cleanup. A successful CNG prebuild or native
+The fixture constructs `createReactNativeBleManager` with `hostSessionScope`,
+configures the Expo plugin, and tears the manager down with `destroy()`. A successful CNG prebuild or native
 assembly is package/compile proof only. Physical-device permissions, background
 behavior, restoration, and radio reliability require separate evidence for the
 specific host and hardware. See the root [README](../README.md),

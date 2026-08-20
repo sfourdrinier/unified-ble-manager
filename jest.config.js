@@ -9,6 +9,7 @@ module.exports = {
   testPathIgnorePatterns: [
     '/node_modules/',
     '/__tests__/helpers/',
+    '/__tests__/docs-recipes/',
     '/__tests__/backend-contract/fixtures/',
     '/__tests__/package-surface/fixtures/'
   ],
@@ -17,6 +18,10 @@ module.exports = {
   moduleNameMapper: {
     // Phase 0+: resolve package identity names to this repo during unit tests
     '^unified-ble-manager/web$': '<rootDir>/src/web.ts',
+    '^unified-ble-manager/react-native$': '<rootDir>/src/react-native.ts',
+    '^unified-ble-manager/node/corebluetooth$': '<rootDir>/src/node-corebluetooth.ts',
+    '^unified-ble-manager/node/bluez$': '<rootDir>/src/node-bluez.ts',
+    '^unified-ble-manager/profiles/(.*)$': '<rootDir>/src/profiles/$1.ts',
     '^unified-ble-manager/backend-sdk$': '<rootDir>/src/backend-sdk.ts',
     '^unified-ble-manager/cli$': '<rootDir>/src/cli.ts',
     '^unified-ble-manager/testing$': '<rootDir>/src/testing.ts',

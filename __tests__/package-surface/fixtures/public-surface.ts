@@ -7,7 +7,11 @@ import {
   createBleManager,
   createManagerOwnershipAuthority,
   DEFAULT_BLE_MANAGER_OPTIONS,
-  deadline
+  deadline,
+  defaultScanDelivery,
+  scanForServices,
+  throwIfCleanupFailed,
+  withDiscoveredConnection
 } from 'unified-ble-manager'
 import type {
   BleConnectionHandle,
@@ -105,6 +109,7 @@ import {
   createReactNativeAndroidBackendProvider,
   createReactNativeAppleBackendProvider,
   createReactNativeBleManager,
+  createReactNativeBleManagerWithEnvironment,
   getNativeUnifiedBleProtocolControl
 } from 'unified-ble-manager/react-native'
 import type {
@@ -241,7 +246,7 @@ interface PeerAttachmentRecord {
     readonly displayName: string | null
     readonly state: {
       readonly availability: 'available' | 'unavailable' | 'unsupported' | 'unknown'
-      readonly authorization: 'granted' | 'denied' | 'restricted' | 'not-determined' | 'unavailable'
+      readonly authorization: 'granted' | 'denied' | 'restricted' | 'not-determined' | 'unavailable' | 'unknown'
       readonly power: 'on' | 'off' | 'resetting' | 'unsupported' | 'unknown'
       readonly backendGeneration: string
       readonly updatedAt: number
@@ -651,6 +656,10 @@ const browserNavigatorManagerOptions: NavigatorWebBleManagerOptions = {
 }
 
 observe(BleManager)
+observe(defaultScanDelivery())
+observe(scanForServices)
+observe(withDiscoveredConnection)
+observe(throwIfCleanupFailed)
 observe(DEFAULT_BLE_MANAGER_OPTIONS)
 observe(createBleManager)
 observe(createManagerOwnershipAuthority)
@@ -717,7 +726,8 @@ observe(electronConnectionEventCleanupReceipt.failureCount)
 observe(electronConnectionLifecycleEvent.connectionGeneration)
 observe(createReactNativeAndroidBackendProvider(nativeAndroidOptions))
 observe(createReactNativeAppleBackendProvider(nativeAppleOptions))
-observe(createReactNativeBleManager(nativeManagerOptions))
+observe(createReactNativeBleManagerWithEnvironment(nativeManagerOptions))
+observe(createReactNativeBleManager({ clientId: 'app-client', managerId: 'app-manager', hostSessionScope: 'app-scope' }))
 observe(getNativeUnifiedBleProtocolControl)
 observe(nativeWinRtOptions)
 observe(webChooser.choose(webChooserRequest, operation))

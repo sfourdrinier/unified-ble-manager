@@ -56,14 +56,14 @@ const managedBluetoothPermissions: readonly ManagedBluetoothPermission[] = Objec
 ])
 
 export const withBLEAndroidManifest: ConfigPlugin<{
-  isBackgroundEnabled: boolean
+  requiresBluetoothLeHardware: boolean
   neverForLocation: boolean
-}> = (config, { isBackgroundEnabled, neverForLocation }) =>
+}> = (config, { requiresBluetoothLeHardware, neverForLocation }) =>
   withAndroidManifest(config, config => {
     config.modResults = reconcileBluetoothPermissions(config.modResults)
     config.modResults = addLocationPermissionToManifest(config.modResults, neverForLocation)
     config.modResults = addScanPermissionToManifest(config.modResults, neverForLocation)
-    if (isBackgroundEnabled) {
+    if (requiresBluetoothLeHardware) {
       config.modResults = addBLEHardwareFeatureToManifest(config.modResults)
     }
     return config

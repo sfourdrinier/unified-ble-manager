@@ -1,6 +1,7 @@
 // src/tck/scenarios.ts
 
 import {
+  IPC_TRANSPORT_TCK_SCENARIO_ID,
   WEB_CHOOSER_TCK_SCENARIO_ID,
   WEB_UNSUPPORTED_CAPABILITIES_TCK_SCENARIO_ID,
   type TckScenarioDefinition,
@@ -217,6 +218,12 @@ export const baseTckScenarios: readonly TckScenarioDefinition[] = [
     execution: 'feature',
     requiredFacts: ['web-chooser-vertical-slice-preserves-selection-and-cleans-up'],
     requiredControllerActions: ['resolve-chooser', 'emit-notification']
+  },
+  {
+    id: IPC_TRANSPORT_TCK_SCENARIO_ID,
+    execution: 'feature',
+    requiredFacts: ['ipc-event-sink-survives-request-response-traffic'],
+    requiredControllerActions: ['emit-ipc-event']
   }
 ]
 

@@ -25,8 +25,10 @@ export {
   REACT_NATIVE_APPLE_PLATFORM_ID
 } from './backends/reactnative/react-native-apple-provider'
 export type { ReactNativeAppleBackendProviderOptions } from './backends/reactnative/react-native-apple-provider'
-export { createReactNativeBleManager } from './react-native-manager'
+export { createReactNativeBleManagerWithEnvironment } from './react-native-manager'
 export type { ReactNativeBleManagerOptions, ReactNativeBlePlatform } from './react-native-manager'
+export { createReactNativeBleManager } from './react-native-app-manager'
+export type { ReactNativeBleManagerAppOptions } from './react-native-app-manager'
 export {
   combineReactNativeFeatureRegistries,
   createReactNativeRestorationFeatureRegistry,

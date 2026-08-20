@@ -40,7 +40,7 @@ export interface ReactNativeBleManagerOptions {
  * UnifiedBleProtocolRestorationNamespace, UnifiedBleProtocolRestorationEpoch,
  * UnifiedBleProtocolRestorationClientId, and UnifiedBleProtocolRestorationHostSessionScope.
  */
-export async function createReactNativeBleManager(
+export async function createReactNativeBleManagerWithEnvironment(
   options: ReactNativeBleManagerOptions
 ): Promise<BleManager<string, NativeBackendIdentity<string>>> {
   if (options.hostSessionScope.length === 0) {

@@ -9,6 +9,19 @@ export const BLUEZ_GATT_SERVICE_INTERFACE = 'org.bluez.GattService1'
 export const BLUEZ_GATT_CHARACTERISTIC_INTERFACE = 'org.bluez.GattCharacteristic1'
 export const BLUEZ_GATT_DESCRIPTOR_INTERFACE = 'org.bluez.GattDescriptor1'
 
+/**
+ * Disclosed whenever a BlueZ adapter state reports `authorization: 'unknown'`.
+ * BlueZ has no per-application Bluetooth authorization concept, so there is
+ * nothing for this backend to measure and nothing it may substitute.
+ */
+export const BLUEZ_NO_AUTHORIZATION_CONCEPT_REASON = 'BlueZ exposes no per-application Bluetooth authorization concept'
+
+/** Joins the disclosed adapter-state reasons into one safe, caller-visible sentence list. */
+export function bluezSafeReason(reasons: readonly (string | null)[]): string | null {
+  const disclosed = reasons.filter((reason): reason is string => reason !== null)
+  return disclosed.length === 0 ? null : disclosed.join('; ')
+}
+
 export function isBluezGattTopologyInterface(interfaceName: string): boolean {
   return (
     interfaceName === BLUEZ_GATT_SERVICE_INTERFACE ||

@@ -1,9 +1,8 @@
-// __tests__/Docs4.0.honesty.test.js
+// __tests__/Docs.consumer.test.js
 
 /**
- * Guards the clean-baseline 4.0 documentation decision.
- * Transitional source facts are allowed only when the document labels them as
- * characterization. Public 4.0 guides must describe the current package surface.
+ * Consumer-facing markdown must describe the current published package.
+ * Maintainer/archive pages can keep older labels; teaching pages cannot.
  */
 const fs = require('fs')
 const path = require('path')
@@ -68,7 +67,7 @@ const deletedTransitionalAdrs = [
   'docs/ADR/2026-07-4.0-owned-core-and-electron-natives.md'
 ]
 
-describe('4.0 documentation honesty', () => {
+describe('consumer documentation matches the published package', () => {
   test('current public documentation follows the package release channel', () => {
     if (stable40 || rcVersionMatch) {
       expect(packageVersion).toMatch(/^4\.0\.0(?:-rc\.\d+)?$/u)
@@ -272,18 +271,22 @@ describe('4.0 documentation honesty', () => {
     expect(roadmap).not.toMatch(/thin install\/import shim/i)
   })
 
-  test('migration documents stable 4.0 without inventing a compatibility path', () => {
+  test('migration documents 4.0 without inventing a compatibility path', () => {
     const migration = read('MIGRATION_4.0.md')
     const release = read('RELEASE.md')
 
-    expect(migration).toContain('stable `unified-ble-manager@4.0.0`')
-    expect(migration).toContain('`hostSessionScope` should be a stable security/ownership scope')
-    expect(migration).toContain('`Uint8Array`')
-    expect(migration).toContain('`AbortSignal`')
-    expect(migration).toContain('Await `manager.destroy()`')
+    expect(migration).toContain(packageVersion)
+    expect(migration).toContain('hostSessionScope')
+    expect(migration).toContain('Uint8Array')
+    expect(migration).toContain('AbortSignal')
+    expect(migration).toContain('manager.destroy()')
     expect(migration).toContain('not a source-compatible rename')
-    expect(migration).toContain('encode/decode explicitly through `unified-ble-manager/codecs`')
-    expect(migration).toContain('`v4.0.0-alpha.40` is the repository-migration checkpoint')
+    expect(migration).toContain('new BleManager')
+    expect(migration).toContain('startDeviceScan')
+    expect(migration).toContain('connectToDevice')
+    expect(migration).toContain('monitorCharacteristicForDevice')
+    expect(migration).toContain('cancelTransaction')
+    expect(migration).not.toContain('encode/decode explicitly through `unified-ble-manager/codecs`')
     expect(migration).not.toMatch(/zero-change (JS )?API/i)
     expect(migration).not.toMatch(/optional bytes codemod/i)
 
@@ -293,21 +296,21 @@ describe('4.0 documentation honesty', () => {
     expect(release).not.toMatch(/publishes the \*\*4\.0 dual identity\*\*/i)
   })
 
-  test('public README provides stable 4.0 construction, plugin guidance, and preserved alpha history', () => {
+  test('public README provides current construction and plugin guidance without frozen slogans', () => {
     const readme = read('README.md')
     const changelog = read('CHANGELOG.md')
     const history = read('CHANGELOG_HISTORY.md')
 
-    expect(readme).toContain('4.0.0 is the first stable release')
+    expect(readme).toContain(packageVersion)
+    expect(readme).not.toContain('4.0.0 is the first stable release')
     expect(readme).toContain('pnpm add unified-ble-manager')
     expect(readme).not.toContain('pnpm add unified-ble-manager@4.0.0')
-    expect(readme).toContain('`v4.0.0-alpha.40` was the migration point')
     expect(changelog).toContain('## [4.0.0-rc.0]')
     expect(history).toContain('## [4.0.0-alpha.40]')
     expect(readme).toContain('createReactNativeBleManager')
-    expect(readme).toContain('`hostSessionScope` is a stable host-owned security scope')
-    expect(readme).toContain('`Uint8Array`')
-    expect(readme).toContain('`AbortSignal`')
+    expect(readme).toContain('hostSessionScope')
+    expect(readme).toContain('Uint8Array')
+    expect(readme).toContain('AbortSignal')
     expect(readme).toContain('iosNativeProtocolRestoration')
     expect(readme).not.toMatch(
       /iosEnableRestoration|iosRestorationIdentifier|iosNativeProtocolRestorationIdentifier|androidEnableForegroundService/
@@ -361,5 +364,132 @@ describe('4.0 documentation honesty', () => {
     expect(discovery).not.toMatch(
       /profiles\/(heartRate|battery(?!-service)|deviceInformation|healthThermometer|bloodPressure)/
     )
+  })
+
+  test('README is a human teaching front door for the current package', () => {
+    const readme = read('README.md')
+    const teachingLead = readme.split('\n').slice(0, 40).join('\n')
+
+    expect(readme).toMatch(/Sponsored by \[Imagi Explain\]\(https:\/\/imagiexplain\.com\)/)
+    expect(readme).toContain('react-native-ble-plx')
+    expect(readme).toMatch(/cross-platform|unified/)
+    expect(readme).toContain('scanUntil')
+    expect(readme).toContain('localName')
+    expect(readme).toContain('capacity(')
+    expect(readme).toContain('deadline(')
+    expect(readme).toContain('destroy()')
+    expect(readme).toContain('BleManager')
+    expect(readme).toContain('ScanSession')
+    expect(readme).toContain('Connection')
+    expect(readme).toContain('DiscoveredGattDatabase')
+    expect(readme).toContain('Subscription')
+    expect(teachingLead).not.toMatch(/alpha\.\d+/i)
+    expect(readme).not.toMatch(/import `unified-ble-manager\/codecs` only when an external protocol requires text encoding/)
+  })
+
+  test('consumer teaching pages match current public types and do not teach stale claims', () => {
+    const consumerGuides = [
+      'README.md',
+      'MIGRATION_4.0.md',
+      'docs/GETTING_STARTED.md',
+      'docs/TUTORIALS.md',
+      'docs/HELPERS.md',
+      'docs/WEB.md',
+      'docs/ELECTRON.md',
+      'docs/NODE.md',
+      'docs/TAURI.md',
+      'docs/EXPO_PLUGIN.md',
+      'docs/CONNECTION_MANAGER.md'
+    ]
+    const tutorials = read('docs/TUTORIALS.md')
+    const helpers = read('docs/HELPERS.md')
+    const gettingStarted = read('docs/GETTING_STARTED.md')
+    const web = read('docs/WEB.md')
+    const node = read('docs/NODE.md')
+    const tauri = read('docs/TAURI.md')
+
+    for (const relativePath of consumerGuides) {
+      const document = read(relativePath)
+      expect(document).not.toMatch(/encode\/decode explicitly through `unified-ble-manager\/codecs`/)
+      expect(document).not.toMatch(/Base64 helpers/)
+      expect(document).not.toMatch(/no prebuilt addon/)
+    }
+
+    expect(tutorials).not.toMatch(/candidate\.device\.name|observation\.device\.name/)
+    expect(tutorials).not.toMatch(/write\(controlPointPath/)
+    expect(tutorials).toContain('localName')
+    expect(tutorials).toContain('deadline(')
+    expect(tutorials).toContain('capacity(')
+    expect(helpers).not.toMatch(/candidate\.device\.name|observation\.device\.name/)
+    expect(helpers).not.toMatch(/write\(controlPointPath/)
+    expect(helpers).toContain('localName')
+    expect(helpers).toContain('deadline(')
+    expect(helpers).toContain('capacity(')
+    expect(gettingStarted).toContain('createReactNativeBleManager')
+    expect(gettingStarted).toContain('hostSessionScope')
+    expect(gettingStarted).toContain(packageVersion)
+    expect(web).not.toMatch(/npm'?s `next` tag/)
+    expect(web).toContain('chooser.choose')
+    expect(node).toContain('createBleManagerFromProvider')
+    expect(tauri).toContain('IpcBleManager')
+    expect(tauri).toMatch(/not the host-neutral `BleManager`|not BleManager\.scan/)
+  })
+
+  test('teaching files that mention 4.0.0-rc. use the current package version', () => {
+    const teaching = [
+      'README.md',
+      'MIGRATION_4.0.md',
+      'docs/GETTING_STARTED.md',
+      'docs/WEB.md',
+      'docs/NODE.md',
+      'docs/ELECTRON.md',
+      'docs/EXPO_PLUGIN.md',
+      'example/README.md'
+    ]
+    for (const relativePath of teaching) {
+      const document = read(relativePath)
+      if (document.includes('4.0.0-rc.')) {
+        expect(document).toContain(packageVersion)
+      }
+    }
+  })
+
+  test('relative markdown links in teaching files exist', () => {
+    const teaching = [
+      'README.md',
+      'MIGRATION_4.0.md',
+      'docs/GETTING_STARTED.md',
+      'docs/TUTORIALS.md',
+      'docs/HELPERS.md',
+      'docs/WEB.md',
+      'docs/NODE.md',
+      'docs/ELECTRON.md',
+      'docs/ELECTRON_SECURITY_MODEL.md',
+      'docs/TAURI.md',
+      'docs/PROFILES_AND_COMMANDS.md',
+      'docs/EXPO_PLUGIN.md'
+    ]
+    const link = /\[[^\]]*\]\(([^)]+)\)/g
+    for (const relativePath of teaching) {
+      const document = read(relativePath)
+      const fromDirectory = path.dirname(path.join(root, relativePath))
+      let match
+      while ((match = link.exec(document)) !== null) {
+        const target = match[1]
+        if (target.startsWith('http:') || target.startsWith('https:') || target.startsWith('mailto:')) {
+          continue
+        }
+        const withoutAnchor = target.split('#')[0]
+        if (withoutAnchor.length === 0) {
+          continue
+        }
+        const resolved = path.resolve(fromDirectory, withoutAnchor)
+        expect({ relativePath, target, exists: fs.existsSync(resolved) }).toEqual({
+          relativePath,
+          target,
+          exists: true
+        })
+      }
+    }
   })
 })

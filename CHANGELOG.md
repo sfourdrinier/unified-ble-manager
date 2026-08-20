@@ -4,6 +4,27 @@ All notable changes to `unified-ble-manager` are documented here.
 
 ## [Unreleased]
 
+## [4.0.0-rc.1] - 2026-08-19
+
+Documentation correctness and pre-stable API fixes on the 4.0 contract. This does not promote backend support labels or claim live-radio evidence.
+
+### Public API
+
+- Removed invalid SIG read helpers `readHeartRateMeasurement`, `readBloodPressureMeasurement`, and `readTemperatureMeasurement`.
+- Profile commands now reject missing characteristic properties with `gatt.property-not-supported` before calling the backend.
+- Renamed Expo plugin option `isBackgroundEnabled` to `requiresBluetoothLeHardware` and rejected iOS `peripheral` background mode.
+- Added `UNIFIED_BLE_MANAGER_PLUGIN_DEBUG` (legacy `BLEPLX_PLUGIN_DEBUG` still enables plugin debug).
+- Added application factories `createReactNativeBleManager({ clientId, managerId, hostSessionScope })`, `createNavigatorWebBleManager` default environment, and `createCoreBluetoothBleManager` / `createWinRtBleManager` / `createBluezBleManager`.
+- Added `BleManager.adapterStates()`, `defaultScanDelivery()`, `scanForServices()`, `withDiscoveredConnection()`, and `throwIfCleanupFailed()`.
+- Renamed the injectable RN factory to `createReactNativeBleManagerWithEnvironment`.
+- Default Web `visibilitychange` handling now reports `page-hidden` only when the document is hidden.
+- `adapterStates({ signal })` re-checks abort after `watchState()` and closes the watch instead of leaking it.
+
+### Documentation and examples
+
+- Finite helper-first README Heart Rate journey, Expo/bare setup paths, and migration fixes for cancellation, coexistence, scan merge policy, and shared deadlines.
+- Example BLE service lifecycle, overflow, path resolution, and stable client identity.
+
 ## [4.0.0-rc.0] - 2026-08-17
 
 First publication from `sfourdrinier/unified-ble-manager`. This is the 4.0 package/API contract as a release candidate on npm `latest`, so `pnpm add unified-ble-manager` installs this build. It does not promote backend support labels.

@@ -89,6 +89,15 @@ describe('4.0 public package surface', () => {
     expect(typeof web.createWebBleManager).toBe('function')
     expect(typeof reactNative.createReactNativeAndroidBackendProvider).toBe('function')
     expect(typeof reactNative.createReactNativeBleManager).toBe('function')
+    expect(typeof reactNative.createReactNativeBleManagerWithEnvironment).toBe('function')
+    expect(typeof publicRoot.defaultScanDelivery).toBe('function')
+    expect(typeof publicRoot.scanForServices).toBe('function')
+    expect(typeof publicRoot.withDiscoveredConnection).toBe('function')
+    expect(typeof publicRoot.throwIfCleanupFailed).toBe('function')
+    const corebluetooth = require('unified-ble-manager/node/corebluetooth')
+    expect(typeof corebluetooth.createCoreBluetoothBleManager).toBe('function')
+    expect(typeof winrt.createWinRtBleManager).toBe('function')
+    expect(typeof bluez.createBluezBleManager).toBe('function')
     expect(typeof reactNative.getNativeUnifiedBleProtocolControl).toBe('function')
     expect(typeof bluez.createDbusNextBluezBackendProvider).toBe('function')
     expect(typeof winrt.createNativeWinRtBackendProvider).toBe('function')
@@ -207,7 +216,12 @@ describe('4.0 public package surface', () => {
   })
 
   test('publishes canonical React Native support only through the intended host entrypoint', () => {
-    const privateRuntimeSources = ['src/react-native-manager.ts', 'src/native-protocol/rn-android-protocol-records.ts']
+    const privateRuntimeSources = [
+      'src/react-native-manager.ts',
+      'src/react-native-app-manager.ts',
+      'src/node-host-manager.ts',
+      'src/native-protocol/rn-android-protocol-records.ts'
+    ]
 
     for (const sourcePath of privateRuntimeSources) {
       expect(fs.existsSync(path.join(rootDirectory, sourcePath))).toBe(true)

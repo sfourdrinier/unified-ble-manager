@@ -1,4 +1,4 @@
-// __tests__/Phase0Identity.test.js
+// __tests__/Package.identity.test.js
 
 const fs = require('fs')
 const path = require('path')
@@ -10,10 +10,10 @@ const buildGradle = fs.readFileSync(path.join(root, 'android/build.gradle'), 'ut
 const appPlugin = fs.readFileSync(path.join(root, 'app.plugin.js'), 'utf8')
 const pluginSrc = fs.readFileSync(path.join(root, 'plugin/src/withBLE.ts'), 'utf8')
 
-describe('Phase 0 product identity (unified-ble-manager)', () => {
+describe('package identity (unified-ble-manager)', () => {
   test('npm package name and stable 4.0.0 identity', () => {
     expect(pkg.name).toBe('unified-ble-manager')
-    expect(pkg.version).toBe('4.0.0-rc.0')
+    expect(pkg.version).toBe('4.0.0-rc.1')
   })
 
   test('strict package exports isolate manager, backend authoring, and deterministic testing', () => {
@@ -99,13 +99,19 @@ describe('Phase 0 product identity (unified-ble-manager)', () => {
 
   test('MIGRATION_4.0.md records the clean-baseline migration boundary', () => {
     const mig = fs.readFileSync(path.join(root, 'MIGRATION_4.0.md'), 'utf8')
-    expect(mig).toContain('stable `unified-ble-manager@4.0.0`')
-    expect(mig).toContain('v4.0.0-alpha.40')
+    expect(mig).toContain(pkg.version)
     expect(mig).toContain('not a source-compatible rename')
     expect(mig).toMatch(/Base64/)
+    expect(mig).toContain('Uint8Array')
+    expect(mig).toContain('AbortSignal')
+    expect(mig).toContain('new BleManager')
+    expect(mig).toContain('startDeviceScan')
+    expect(mig).toContain('connectToDevice')
+    expect(mig).toContain('monitorCharacteristicForDevice')
+    expect(mig).toContain('cancelTransaction')
     expect(mig).toContain('unified-ble-manager')
     expect(mig).toContain('UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md')
-    expect(mig).toContain('encode/decode explicitly through `unified-ble-manager/codecs`')
+    expect(mig).not.toContain('encode/decode explicitly through `unified-ble-manager/codecs`')
     expect(mig).not.toMatch(/zero-change (JS )?API/i)
   })
 })

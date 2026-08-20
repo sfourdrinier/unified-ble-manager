@@ -4,7 +4,6 @@ import assert from 'node:assert/strict'
 import { capacity } from 'unified-ble-manager'
 import { createWebBleManager, createWebBluetoothProvider } from 'unified-ble-manager/web'
 import {
-  readHeartRateMeasurement,
   resetHeartRateEnergyExpended,
   subscribeHeartRateMeasurements
 } from 'unified-ble-manager/profiles/standard-commands'
@@ -42,13 +41,6 @@ export async function runWebHeartRateProtocol() {
     )
     connection = await session.manager.connect(selection.peerId, operationOptions)
     const database = await connection.discover(operationOptions)
-    const read = await readHeartRateMeasurement(database, operationOptions)
-    assert.equal(read.beatsPerMinute, 72, 'packed Web Heart Rate profile decoded the chooser-selected read')
-
-    const write = await resetHeartRateEnergyExpended(database, { ...operationOptions, mode: 'with-response' })
-    assert.equal(write.commitState, 'confirmed', 'packed Web Heart Rate command write committed')
-    assert.deepEqual(controls.writes, [[1]], 'packed Web Heart Rate profile emitted the reset command')
-
     subscription = await subscribeHeartRateMeasurements(database, {
       ...operationOptions,
       delivery: {
@@ -58,6 +50,21 @@ export async function runWebHeartRateProtocol() {
         overflowPolicy: 'drop-oldest'
       }
     })
+    const measurementPromise = subscription.values[Symbol.asyncIterator]().next()
+    controls.emitNotification(new Uint8Array([0x06, 72]))
+    const measurementItem = await measurementPromise
+    assert.equal(measurementItem.done, false, 'packed Web Heart Rate subscription remained open')
+    assert.equal(measurementItem.value.kind, 'value', 'packed Web Heart Rate subscription delivered a value')
+    assert.equal(
+      parseHeartRateMeasurement(measurementItem.value.value.value).beatsPerMinute,
+      72,
+      'packed Web Heart Rate profile decoded the chooser-selected notification'
+    )
+
+    const write = await resetHeartRateEnergyExpended(database, { ...operationOptions, mode: 'with-response' })
+    assert.equal(write.commitState, 'confirmed', 'packed Web Heart Rate command write committed')
+    assert.deepEqual(controls.writes, [[1]], 'packed Web Heart Rate profile emitted the reset command')
+
     const notificationPromise = subscription.values[Symbol.asyncIterator]().next()
     controls.emitNotification(new Uint8Array([0x06, 76]))
     const notification = await notificationPromise
@@ -69,13 +76,22 @@ export async function runWebHeartRateProtocol() {
       'packed Web Heart Rate profile decoded the browser notification'
     )
 
-    controls.holdNextRead()
+    controls.holdNextSubscribe()
     const abort = new AbortController()
-    const cancelledRead = readHeartRateMeasurement(database, { signal: abort.signal, deadline: null })
+    const cancelledSubscribe = subscribeHeartRateMeasurements(database, {
+      signal: abort.signal,
+      deadline: null,
+      delivery: {
+        itemCapacity: capacity(4),
+        byteCapacity: capacity(128),
+        reservedControlCapacity: capacity(1),
+        overflowPolicy: 'drop-oldest'
+      }
+    })
     await flushMicrotasks()
     abort.abort()
-    await assertAborted(cancelledRead, 'read.cancellation')
-    controls.resolvePendingRead()
+    await assertAborted(cancelledSubscribe, 'subscribe.cancellation')
+    controls.resolvePendingSubscribe()
     await flushMicrotasks()
 
     assertCleanup(await subscription.remove(), 'packed Web subscription cleanup')
@@ -143,8 +159,8 @@ function createBoundary() {
   const measurementUuid = String(HEART_RATE_MEASUREMENT_CHARACTERISTIC)
   const controlPointUuid = String(HEART_RATE_CONTROL_POINT_CHARACTERISTIC)
   let measurement = new Uint8Array([0x06, 72])
-  let holdRead = false
-  let pendingReadResolve = null
+  let holdSubscribe = false
+  let pendingSubscribeResolve = null
   let connected = false
   const notificationListeners = new Set()
   const disconnectListeners = new Set()
@@ -152,16 +168,10 @@ function createBoundary() {
 
   const measurementCharacteristic = {
     uuid: measurementUuid,
-    properties: { read: true, write: false, writeWithoutResponse: false, notify: true, indicate: false },
+    properties: { read: false, write: false, writeWithoutResponse: false, notify: true, indicate: false },
     getDescriptors: async () => [],
     readValue: async () => {
-      if (!holdRead) {
-        return new Uint8Array(measurement)
-      }
-      holdRead = false
-      return new Promise(resolve => {
-        pendingReadResolve = resolve
-      })
+      throw new Error('Heart Rate Measurement is not readable')
     },
     writeValueWithResponse: async () => {
       throw new Error('Heart Rate Measurement is not writable')
@@ -169,7 +179,15 @@ function createBoundary() {
     writeValueWithoutResponse: async () => {
       throw new Error('Heart Rate Measurement is not writable')
     },
-    startNotifications: async () => undefined,
+    startNotifications: async () => {
+      if (!holdSubscribe) {
+        return undefined
+      }
+      holdSubscribe = false
+      return new Promise(resolve => {
+        pendingSubscribeResolve = resolve
+      })
+    },
     stopNotifications: async () => undefined,
     addNotificationListener: listener => notificationListeners.add(listener),
     removeNotificationListener: listener => notificationListeners.delete(listener)
@@ -237,16 +255,16 @@ function createBoundary() {
     boundary,
     controls: {
       writes,
-      holdNextRead: () => {
-        holdRead = true
+      holdNextSubscribe: () => {
+        holdSubscribe = true
       },
-      resolvePendingRead: () => {
-        if (pendingReadResolve === null) {
-          throw new Error('packed Web pending read was not created')
+      resolvePendingSubscribe: () => {
+        if (pendingSubscribeResolve === null) {
+          throw new Error('packed Web pending subscribe was not created')
         }
-        const resolve = pendingReadResolve
-        pendingReadResolve = null
-        resolve(new Uint8Array(measurement))
+        const resolve = pendingSubscribeResolve
+        pendingSubscribeResolve = null
+        resolve(undefined)
       },
       emitNotification: value => {
         measurement = new Uint8Array(value)

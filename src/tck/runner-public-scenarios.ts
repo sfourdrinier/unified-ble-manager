@@ -22,6 +22,7 @@ import {
   DEFAULT_BLE_MANAGER_OPTIONS
 } from '../manager/ble-manager'
 import {
+  IPC_TRANSPORT_TCK_SCENARIO_ID,
   WEB_CHOOSER_TCK_SCENARIO_ID,
   WEB_UNSUPPORTED_CAPABILITIES_TCK_SCENARIO_ID,
   type BackendTckFactory,
@@ -45,6 +46,7 @@ import {
   scanOptions,
   subscriptionOptions
 } from './runner-public-scenario-support'
+import { executePublicIpcTransportScenario } from './runner-public-ipc-transport-scenario'
 import { executePublicVerticalSlice } from './runner-public-vertical-scenario'
 import { executeSubscriptionOverflowScenario } from './runner-public-subscription-overflow-scenario'
 import { executeDiagnosticsScenario, executeLifecycleScenario } from './runner-public-lifecycle-diagnostics-scenario'
@@ -72,6 +74,9 @@ export async function executePublicTckScenario<
 ): Promise<readonly TckFact[]> {
   if (definition.id === 'adapter.atomic-snapshot-and-watch') {
     return executeAdapterWatchScenario(fixture, definition)
+  }
+  if (definition.id === IPC_TRANSPORT_TCK_SCENARIO_ID) {
+    return executePublicIpcTransportScenario(fixture, definition)
   }
   const attached = await attachBleBackend(fixture.backend, compatibility())
   const attachment = attached.attachment.attachment

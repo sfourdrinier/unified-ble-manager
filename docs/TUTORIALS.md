@@ -2,20 +2,18 @@
 
 # Public API tutorials
 
-These examples start after a host has explicitly constructed a 4.0 manager.
-See [`GETTING_STARTED.md`](GETTING_STARTED.md) for React Native, Web, Node, and
-Electron factories. All normal GATT values are bytes, all cancellable
-operations carry an `AbortSignal` and monotonic deadline, and all resources have
-explicit cleanup ownership.
+These recipes assume you already constructed a `BleManager` for your host. See [`GETTING_STARTED.md`](GETTING_STARTED.md). Web Bluetooth replaces the scan with `chooser.choose()`. Tauri and the Electron renderer use different client types. On `BleManager`, pass `deadline(...)` into `scan` and `connect`; GATT methods accept that same value. Import `BackendContractError` from `unified-ble-manager` when catching optional-feature absence.
+
+Every cancellable call takes an `AbortSignal`. Scan and connect deadlines on `BleManager` use `deadline()`. GATT helpers on `Connection` / `DiscoveredGattDatabase` accept the same `deadline` value.
 
 ## Scan, connect, and discover
 
 ```ts
-import { capacity, scanUntil } from 'unified-ble-manager'
+import { capacity, deadline, scanUntil } from 'unified-ble-manager'
 import { HEART_RATE_SERVICE } from 'unified-ble-manager/profiles/heart-rate'
 
 const controller = new AbortController()
-const deadline = manager.monotonicNow() + 20_000
+const until = deadline(manager.monotonicNow() + 20_000)
 
 const observation = await scanUntil(manager, {
   scan: {
@@ -24,7 +22,7 @@ const observation = await scanUntil(manager, {
       manufacturerData: [],
       localNamePrefix: null
     },
-    duplicatePolicy: 'first',
+    duplicatePolicy: 'merged',
     timestampPolicy: 'source-then-receipt',
     delivery: {
       itemCapacity: capacity(32),
@@ -32,62 +30,78 @@ const observation = await scanUntil(manager, {
       reservedControlCapacity: capacity(2),
       overflowPolicy: 'drop-oldest'
     },
-    deadline,
+    deadline: until,
     signal: controller.signal,
     sharing: { mode: 'owner', allowSharing: false }
   },
-  matches: candidate => candidate.device.name !== null
+  matches: candidate =>
+    candidate.localName.state === 'present' && candidate.localName.value.includes('Polar')
+    // Polar often puts the full name in the scan response. Use 'merged' so that
+    // packet is not dropped after a nameless first advertisement.
 })
 
 const connection = await manager.connect(observation.device.id, {
   signal: controller.signal,
-  deadline
+  deadline: until
 })
 
 const database = await connection.discover({
   signal: controller.signal,
-  deadline
+  deadline: until
 })
 const snapshot = await database.snapshot()
 ```
 
-Web Bluetooth replaces scanning with the typed chooser from
-`createNavigatorWebBleManager()`. After selection, the connection and GATT
-operations are the same public handles.
+The advertised name is `observation.localName`. `observation.device` is identity only (`id`, address, stability).
 
 ## Read and write
 
-Resolve paths from the current discovery snapshot so repeated services and
-characteristics remain unambiguous:
+Resolve paths from the current snapshot. Do not invent occurrences or generations.
 
 ```ts
 import { resolveCharacteristicPath } from 'unified-ble-manager/profiles/commands'
 import { batteryLevelSelector } from 'unified-ble-manager/profiles/battery-service'
+import { encodeResetEnergyExpended, heartRateControlPointSelector } from 'unified-ble-manager/profiles/heart-rate'
 
 const batteryPath = await resolveCharacteristicPath(snapshot, batteryLevelSelector())
 const bytes = await database.read(batteryPath, {
   signal: controller.signal,
-  deadline
-})
-
-const receipt = await database.write(controlPointPath, new Uint8Array([1]), {
-  signal: controller.signal,
-  deadline,
-  mode: 'with-response'
+  deadline: until
 })
 ```
 
-Never construct occurrences or generations manually. A new connection or
-rediscovery requires a fresh snapshot and fresh paths.
+Battery Level is optional relative to Heart Rate Service. Catch only `gatt.not-found` or `gatt.property-not-supported` if the peripheral may omit it.
+
+Heart Rate Control Point is conditional (Energy Expended). Resolve it separately and write only after it exists:
+
+```ts
+try {
+  const hrsControlPath = await resolveCharacteristicPath(snapshot, heartRateControlPointSelector())
+  const receipt = await database.write(hrsControlPath, encodeResetEnergyExpended(), {
+    signal: controller.signal,
+    deadline: until,
+    mode: 'with-response'
+  })
+} catch (error) {
+  if (!(error instanceof BackendContractError) || (error.normalized.code !== 'gatt.not-found' && error.normalized.code !== 'gatt.property-not-supported')) {
+    throw error
+  }
+}
+```
+
+A new connection or rediscovery needs a fresh snapshot and fresh paths. Stale paths throw `gatt.stale-handle`.
 
 ## Notifications
 
 ```ts
 import { capacity } from 'unified-ble-manager'
+import { resolveCharacteristicPath } from 'unified-ble-manager/profiles/commands'
+import { heartRateMeasurementSelector } from 'unified-ble-manager/profiles/heart-rate'
 
+const measurementPath = await resolveCharacteristicPath(snapshot, heartRateMeasurementSelector())
 const subscription = await database.subscribe(measurementPath, {
   signal: controller.signal,
-  deadline,
+  deadline: until,
   delivery: {
     itemCapacity: capacity(64),
     byteCapacity: capacity(64 * 1024),
@@ -115,8 +129,7 @@ try {
 }
 ```
 
-The stream is bounded. Overflow is observable and never converted into silent
-loss.
+The stream is bounded. Overflow is a real event, not silent loss.
 
 ## Disconnect and destroy
 
@@ -132,16 +145,8 @@ if (managerCleanup.state === 'release-failed') {
 }
 ```
 
-After `destroy()`, the manager admits no new operation. Applications must not
-hide cleanup failures or create a fallback manager/backend.
+After `destroy()`, the manager admits no new operation.
 
-## Diagnostics
+## See also
 
-Portable traces use the redacted trace format from the root diagnostics types.
-The CLI can inspect package/backend capabilities and run deterministic TCK or
-scenario commands; see [`CLI.md`](CLI.md). Platform support still comes from
-retained evidence records, never from a successful mock or compile alone.
-
-See also [`HELPERS.md`](HELPERS.md),
-[`PROFILES_AND_COMMANDS.md`](PROFILES_AND_COMMANDS.md), and
-[`CONNECTION_MANAGER.md`](CONNECTION_MANAGER.md).
+[`HELPERS.md`](HELPERS.md), [`PROFILES_AND_COMMANDS.md`](PROFILES_AND_COMMANDS.md), [`CONNECTION_MANAGER.md`](CONNECTION_MANAGER.md).

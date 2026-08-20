@@ -1,4 +1,5 @@
 import { applyNativeProtocolRestorationInfoPlist, validateBlePluginOptions } from '../withBLE'
+import { isUnifiedBlePluginDebugEnabled } from '../debugLog'
 
 const completeRestoration = {
   identifier: 'com.example.app.ble',
@@ -13,27 +14,38 @@ describe('validateBlePluginOptions', () => {
     expect(
       validateBlePluginOptions({
         debug: true,
-        isBackgroundEnabled: false,
+        requiresBluetoothLeHardware: false,
         neverForLocation: true,
-        modes: ['central', 'peripheral'],
+        modes: ['central'],
         bluetoothAlwaysPermission: false,
         iosNativeProtocolRestoration: completeRestoration
       })
     ).toEqual({
       debug: true,
-      isBackgroundEnabled: false,
+      requiresBluetoothLeHardware: false,
       neverForLocation: true,
-      modes: ['central', 'peripheral'],
+      modes: ['central'],
       bluetoothAlwaysPermission: false,
       iosNativeProtocolRestoration: completeRestoration
     })
+  })
+
+  it('rejects the retired isBackgroundEnabled option name', () => {
+    expect(() => validateBlePluginOptions({ isBackgroundEnabled: true })).toThrow(
+      /unsupported properties: isBackgroundEnabled/
+    )
+  })
+
+  it('rejects iOS peripheral background mode', () => {
+    expect(() => validateBlePluginOptions({ modes: ['peripheral'] })).toThrow(/peripheral/)
+    expect(() => validateBlePluginOptions({ modes: ['central', 'peripheral'] })).toThrow(/peripheral/)
   })
 
   it.each([
     ['a non-object options value', null],
     ['an unknown option', { unexpected: true }],
     ['a string debug option', { debug: 'true' }],
-    ['a string background option', { isBackgroundEnabled: 'true' }],
+    ['a string hardware-required option', { requiresBluetoothLeHardware: 'true' }],
     ['a numeric never-for-location option', { neverForLocation: 1 }],
     ['a scalar background mode', { modes: 'central' }],
     ['an unsupported background mode', { modes: ['observer'] }],
@@ -88,5 +100,35 @@ describe('applyNativeProtocolRestorationInfoPlist', () => {
     applyNativeProtocolRestorationInfoPlist(infoPlist)
 
     expect(infoPlist).toEqual({})
+  })
+})
+
+describe('plugin debug environment', () => {
+  const previousUnified = process.env.UNIFIED_BLE_MANAGER_PLUGIN_DEBUG
+  const previousLegacy = process.env.BLEPLX_PLUGIN_DEBUG
+
+  afterEach(() => {
+    if (previousUnified === undefined) {
+      delete process.env.UNIFIED_BLE_MANAGER_PLUGIN_DEBUG
+    } else {
+      process.env.UNIFIED_BLE_MANAGER_PLUGIN_DEBUG = previousUnified
+    }
+    if (previousLegacy === undefined) {
+      delete process.env.BLEPLX_PLUGIN_DEBUG
+    } else {
+      process.env.BLEPLX_PLUGIN_DEBUG = previousLegacy
+    }
+  })
+
+  it('enables debug from UNIFIED_BLE_MANAGER_PLUGIN_DEBUG', () => {
+    delete process.env.BLEPLX_PLUGIN_DEBUG
+    process.env.UNIFIED_BLE_MANAGER_PLUGIN_DEBUG = '1'
+    expect(isUnifiedBlePluginDebugEnabled()).toBe(true)
+  })
+
+  it('still enables debug from BLEPLX_PLUGIN_DEBUG', () => {
+    delete process.env.UNIFIED_BLE_MANAGER_PLUGIN_DEBUG
+    process.env.BLEPLX_PLUGIN_DEBUG = 'true'
+    expect(isUnifiedBlePluginDebugEnabled()).toBe(true)
   })
 })

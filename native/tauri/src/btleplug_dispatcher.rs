@@ -1,30 +1,55 @@
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     sync::{
-        atomic::{AtomicU64, Ordering},
-        Arc, Mutex as SyncMutex,
+        atomic::{AtomicI64, AtomicU64, Ordering},
+        Arc, Mutex as SyncMutex, OnceLock,
     },
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use btleplug::{
     api::{
-        Central, CharPropFlags, Characteristic, Descriptor, Manager as _, Peripheral as _,
-        ScanFilter, WriteType,
+        Central, CentralEvent, CharPropFlags, Characteristic, Descriptor, Manager as _,
+        Peripheral as _, ScanFilter, WriteType,
     },
     platform::{Adapter, Manager, Peripheral},
 };
 use futures_util::StreamExt;
 use serde_json::Number;
-use tauri::async_runtime::JoinHandle;
+use tauri::async_runtime::JoinHandle as TauriJoinHandle;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
+use crate::ATTACH_REQUEST_KIND;
 use crate::{AuthenticatedCaller, DispatchFuture, IpcDispatcher, IpcEventSink, IpcValue};
 
 const MAX_PENDING_EVENTS: usize = 256;
 const SCAN_POLL_INTERVAL: Duration = Duration::from_millis(250);
+
+fn btleplug_runtime() -> tokio::runtime::Handle {
+    static HANDLE: OnceLock<tokio::runtime::Handle> = OnceLock::new();
+    HANDLE
+        .get_or_init(|| {
+            let (tx, rx) = std::sync::mpsc::channel();
+            std::thread::Builder::new()
+                .name("ubm-btleplug".to_owned())
+                .spawn(move || {
+                    let runtime = tokio::runtime::Builder::new_multi_thread()
+                        .enable_all()
+                        .worker_threads(2)
+                        .thread_name("ubm-btleplug-worker")
+                        .build()
+                        .expect("unified-ble-manager btleplug runtime");
+                    tx.send(runtime.handle().clone())
+                        .expect("unified-ble-manager btleplug handle");
+                    runtime.block_on(std::future::pending::<()>());
+                })
+                .expect("unified-ble-manager btleplug thread");
+            rx.recv().expect("unified-ble-manager btleplug handle")
+        })
+        .clone()
+}
 
 #[derive(Clone, Debug, Default)]
 pub struct BtleplugDispatcherOptions {
@@ -76,7 +101,7 @@ struct CallerState {
 
 struct ScanResource {
     handle: String,
-    task: JoinHandle<()>,
+    task: tokio::task::JoinHandle<()>,
 }
 
 #[derive(Clone)]
@@ -95,7 +120,7 @@ struct SubscriptionResource {
     database_handle: String,
     peripheral: Peripheral,
     characteristic: Characteristic,
-    task: JoinHandle<()>,
+    task: TauriJoinHandle<()>,
 }
 
 #[derive(Debug)]
@@ -187,11 +212,11 @@ impl BtleplugDispatcher {
         &self,
         caller: AuthenticatedCaller,
         request: IpcValue,
-        event_sink: IpcEventSink,
+        event_sink: Option<IpcEventSink>,
     ) -> Result<IpcValue, DispatchError> {
         let request = into_object(request, "tauri.request")?;
         let kind = required_string(&request, "kind", "tauri.request-kind")?;
-        if kind != "bootstrap" && self.is_revoked(&caller_key(&caller)) {
+        if kind != ATTACH_REQUEST_KIND && self.is_revoked(&caller_key(&caller)) {
             return Err(DispatchError::new(
                 "ownership.denied",
                 "ipc",
@@ -199,8 +224,16 @@ impl BtleplugDispatcher {
             ));
         }
         match kind.as_str() {
-            "bootstrap" => self.bootstrap(caller, event_sink).await,
-            "route" => self.route(caller, request, event_sink).await,
+            ATTACH_REQUEST_KIND => {
+                // Attaching is the one request that binds the event sink. A
+                // caller that omits it could never receive events, so refuse
+                // rather than attach a mute lease.
+                let event_sink = event_sink.ok_or_else(|| {
+                    DispatchError::new("protocol.malformed", "ipc", "tauri.bootstrap-event-channel")
+                })?;
+                self.bootstrap(caller, event_sink).await
+            }
+            "route" => self.route(caller, request).await,
             "event.ack" => self.acknowledge(caller, request).await,
             "release" => self.release_request(caller, request).await,
             _ => Err(DispatchError::new(
@@ -219,50 +252,14 @@ impl BtleplugDispatcher {
             }
         }
 
-        let manager = Manager::new().await.map_err(|error| {
-            DispatchError::new("adapter.unavailable", "adapter", "tauri.manager")
-                .platform(error.to_string())
-        })?;
-        let adapters = manager.adapters().await.map_err(|error| {
-            DispatchError::new("adapter.unavailable", "adapter", "tauri.adapters")
-                .platform(error.to_string())
-        })?;
-        if adapters.is_empty() {
-            return Err(DispatchError::new(
-                "adapter.unavailable",
-                "adapter",
-                "tauri.adapters-empty",
-            ));
-        }
-
-        let mut candidates = Vec::with_capacity(adapters.len());
-        for adapter in adapters {
-            let info = adapter.adapter_info().await.map_err(|error| {
-                DispatchError::new("adapter.unavailable", "adapter", "tauri.adapter-info")
+        let requested = self.options.adapter_id.clone();
+        let (manager, adapter, adapter_name) = btleplug_runtime()
+            .spawn(async move { open_btleplug_adapter(requested).await })
+            .await
+            .map_err(|error| {
+                DispatchError::new("adapter.unavailable", "adapter", "tauri.runtime")
                     .platform(error.to_string())
-            })?;
-            candidates.push((info, adapter));
-        }
-        let (adapter_name, adapter) = match &self.options.adapter_id {
-            Some(requested) => candidates
-                .into_iter()
-                .find(|(info, _)| info == requested)
-                .ok_or_else(|| {
-                    DispatchError::new(
-                        "adapter.selection-required",
-                        "adapter",
-                        "tauri.adapter-selection",
-                    )
-                })?,
-            None if candidates.len() == 1 => candidates.remove(0),
-            None => {
-                return Err(DispatchError::new(
-                    "adapter.ambiguous",
-                    "adapter",
-                    "tauri.adapter-selection",
-                ))
-            }
-        };
+            })??;
         let attachment = Attachment {
             attachment_id: self.id("tauri-attachment"),
             backend_instance_id: self.id("tauri-btleplug"),
@@ -351,7 +348,6 @@ impl BtleplugDispatcher {
         &self,
         caller: AuthenticatedCaller,
         request: BTreeMap<String, IpcValue>,
-        event_sink: IpcEventSink,
     ) -> Result<IpcValue, DispatchError> {
         let envelope = into_object(
             required_value(&request, "envelope", "tauri.route-envelope")?.clone(),
@@ -374,8 +370,7 @@ impl BtleplugDispatcher {
                 ))
             }
         };
-        self.validate_envelope(&caller, &envelope, event_sink)
-            .await?;
+        self.validate_envelope(&caller, &envelope).await?;
 
         if command == "operation.cancel" {
             let target = required_string(&payload, "targetCorrelation", "tauri.cancel")?;
@@ -514,7 +509,6 @@ impl BtleplugDispatcher {
         &self,
         caller: &AuthenticatedCaller,
         envelope: &BTreeMap<String, IpcValue>,
-        event_sink: IpcEventSink,
     ) -> Result<(), DispatchError> {
         let lease = into_object(
             required_value(envelope, "rendererLease", "tauri.route-lease")?.clone(),
@@ -545,7 +539,11 @@ impl BtleplugDispatcher {
                 "tauri.route-lease",
             ));
         }
-        caller_state.event_sink = event_sink;
+        // The event sink is deliberately NOT reassigned here. It is bound once
+        // by `bootstrap` and lives for the attachment; replacing it would drop
+        // the previous Tauri Channel, and that drop ends the shared JS callback
+        // which every later event depends on.
+        let _ = caller_state;
         Ok(())
     }
 
@@ -580,11 +578,38 @@ impl BtleplugDispatcher {
     }
 
     async fn adapter_state(&self) -> Result<IpcValue, DispatchError> {
-        let state = self.inner.lock().await;
-        let attachment = state.attachment.as_ref().ok_or_else(|| {
-            DispatchError::new("adapter.unavailable", "adapter", "tauri.adapter-state")
-        })?;
-        Ok(adapter_state(attachment))
+        let attachment = {
+            let state = self.inner.lock().await;
+            state.attachment.clone().ok_or_else(|| {
+                DispatchError::new("adapter.unavailable", "adapter", "tauri.adapter-state")
+            })?
+        };
+        let adapter = self.adapter().await?;
+        let power = match adapter.adapter_state().await {
+            Ok(btleplug::api::CentralState::PoweredOn) => "on",
+            Ok(btleplug::api::CentralState::PoweredOff) => "off",
+            Ok(_) => "unknown",
+            Err(error) => {
+                return Err(DispatchError::new(
+                    "adapter.unavailable",
+                    "adapter",
+                    "tauri.adapter-power",
+                )
+                .platform(error.to_string()));
+            }
+        };
+        let heard = match adapter.peripherals().await {
+            Ok(peripherals) => i64::try_from(peripherals.len()).unwrap_or(i64::MAX),
+            Err(error) => {
+                return Err(DispatchError::new(
+                    "adapter.unavailable",
+                    "adapter",
+                    "tauri.adapter-heard",
+                )
+                .platform(error.to_string()));
+            }
+        };
+        Ok(adapter_state_payload_live(&attachment, power, heard))
     }
 
     async fn start_scan(
@@ -624,99 +649,127 @@ impl BtleplugDispatcher {
             caller_state.scan_admitting = true;
             state.scan_owner = Some(key.clone());
         }
-        if let Err(error) = adapter
-            .start_scan(ScanFilter {
-                services: service_uuids,
-            })
-            .await
-        {
-            let mut state = self.inner.lock().await;
-            if let Some(caller_state) = state.callers.get_mut(&key) {
-                caller_state.scan_admitting = false;
-            }
-            if state.scan_owner.as_deref() == Some(&key) {
-                state.scan_owner = None;
-            }
-            return Err(
-                DispatchError::new("scan.start-failed", "scan", "tauri.scan-start")
-                    .platform(error.to_string()),
-            );
-        }
         let handle = self.id("scan");
         let dispatcher = self.clone();
         let stream_handle = handle.clone();
         let scan_adapter = adapter.clone();
         let stream_owner = key.clone();
-        let task = tauri::async_runtime::spawn(async move {
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel();
+        let task = btleplug_runtime().spawn(async move {
+            let mut events = match scan_adapter.events().await {
+                Ok(events) => events,
+                Err(error) => {
+                    let _ = started_tx.send(Err(format!("tauri.scan-events: {error}")));
+                    return;
+                }
+            };
+            if let Err(error) = scan_adapter
+                .start_scan(ScanFilter {
+                    services: service_uuids,
+                })
+                .await
+            {
+                let _ = started_tx.send(Err(format!("tauri.scan-start: {error}")));
+                return;
+            }
+            if started_tx.send(Ok(())).is_err() {
+                return;
+            }
             let mut interval = tokio::time::interval(SCAN_POLL_INTERVAL);
-            interval.tick().await;
+            let mut events_open = true;
+            let mut polls: u32 = 0;
             loop {
-                interval.tick().await;
-                let peripherals = match scan_adapter.peripherals().await {
-                    Ok(peripherals) => peripherals,
-                    Err(_) => {
-                        dispatcher
-                            .terminal(&stream_owner, &stream_handle, "source-failed")
-                            .await
-                            .ok();
-                        dispatcher
-                            .fail_scan_stream(&stream_owner, &stream_handle)
-                            .await;
-                        return;
-                    }
-                };
-                for peripheral in peripherals {
-                    let properties = match peripheral.properties().await {
-                        Ok(Some(properties)) => properties,
-                        _ => continue,
-                    };
-                    if !requested_services.is_empty()
-                        && !requested_services
-                            .iter()
-                            .all(|uuid| properties.services.contains(uuid))
-                    {
-                        continue;
-                    }
-                    if let Some(prefix) = &local_name_prefix {
-                        if !properties
-                            .local_name
-                            .as_deref()
-                            .is_some_and(|name| name.starts_with(prefix))
-                        {
+                tokio::select! {
+                    _ = interval.tick() => {
+                        let Ok(peripherals) = scan_adapter.peripherals().await else {
                             continue;
+                        };
+                        polls = polls.saturating_add(1);
+                        if polls % 20 == 0 {
+                            eprintln!(
+                                "ubm scan poll peripherals={} events_open={}",
+                                peripherals.len(),
+                                events_open
+                            );
+                        }
+                        for peripheral in peripherals {
+                            if dispatcher
+                                .emit_scan_peripheral(
+                                    &stream_owner,
+                                    &stream_handle,
+                                    &peripheral,
+                                    &requested_services,
+                                    local_name_prefix.as_deref(),
+                                    &manufacturer_filters,
+                                )
+                                .await
+                                .is_err()
+                            {
+                                dispatcher
+                                    .terminal(&stream_owner, &stream_handle, "source-failed")
+                                    .await
+                                    .ok();
+                                dispatcher
+                                    .fail_scan_stream(&stream_owner, &stream_handle)
+                                    .await;
+                                return;
+                            }
                         }
                     }
-                    if !manufacturer_filters.iter().all(|filter| {
-                        properties
-                            .manufacturer_data
-                            .get(&filter.company_id)
-                            .is_some_and(|data| {
-                                filter
-                                    .data_prefix
-                                    .as_ref()
-                                    .map_or(true, |prefix| data.starts_with(prefix))
-                            })
-                    }) {
-                        continue;
-                    }
-                    let observation = peripheral_observation(&peripheral, properties);
-                    if dispatcher
-                        .emit(&stream_owner, &stream_handle, observation)
-                        .await
-                        .is_err()
-                    {
-                        dispatcher
-                            .terminal(&stream_owner, &stream_handle, "source-failed")
+                    event = events.next(), if events_open => {
+                        let Some(event) = event else {
+                            events_open = false;
+                            continue;
+                        };
+                        let Some(peripheral_id) = scan_event_peripheral_id(event) else {
+                            continue;
+                        };
+                        let Ok(peripheral) = scan_adapter.peripheral(&peripheral_id).await else {
+                            continue;
+                        };
+                        if dispatcher
+                            .emit_scan_peripheral(
+                                &stream_owner,
+                                &stream_handle,
+                                &peripheral,
+                                &requested_services,
+                                local_name_prefix.as_deref(),
+                                &manufacturer_filters,
+                            )
                             .await
-                            .ok();
-                        dispatcher
-                            .fail_scan_stream(&stream_owner, &stream_handle)
-                            .await;
-                        return;
+                            .is_err()
+                        {
+                            dispatcher
+                                .terminal(&stream_owner, &stream_handle, "source-failed")
+                                .await
+                                .ok();
+                            dispatcher
+                                .fail_scan_stream(&stream_owner, &stream_handle)
+                                .await;
+                            return;
+                        }
                     }
                 }
             }
         });
+        match started_rx.await {
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                self.abort_scan_admission(&key).await;
+                return Err(
+                    DispatchError::new("scan.start-failed", "scan", "tauri.scan-start")
+                        .platform(error),
+                );
+            }
+            Err(_) => {
+                self.abort_scan_admission(&key).await;
+                return Err(DispatchError::new(
+                    "scan.start-failed",
+                    "scan",
+                    "tauri.scan-runtime",
+                ));
+            }
+        }
         let mut state = self.inner.lock().await;
         let Some(caller_state) = state.callers.get_mut(&key) else {
             task.abort();
@@ -886,15 +939,28 @@ impl BtleplugDispatcher {
         let Some(connection) = connection else {
             return Ok(released());
         };
-        connection.peripheral.disconnect().await.map_err(|error| {
-            DispatchError::new("platform.failure", "connection", "tauri.disconnect")
-                .platform(error.to_string())
-        })?;
+        // The radio result must not short-circuit the bookkeeping below. A
+        // caller that asked to disconnect is finished with this connection
+        // whether or not the peripheral acknowledged, and returning early here
+        // left both the connection entry and the peer→owner mapping in place,
+        // so every later connect was refused with `connection.already-owned`
+        // for the lifetime of the process. The failure is reported after the
+        // state is unwound, never instead of unwinding it.
+        let disconnect = connection.peripheral.disconnect().await;
         let subscriptions = {
             let mut state = self.inner.lock().await;
             let Some(caller_state) = state.callers.get_mut(&key) else {
                 state.peer_owners.remove(&connection.peer_id);
-                return Ok(released());
+                drop(state);
+                return match disconnect {
+                    Ok(()) => Ok(released()),
+                    Err(error) => Err(DispatchError::new(
+                        "platform.failure",
+                        "connection",
+                        "tauri.disconnect",
+                    )
+                    .platform(error.to_string())),
+                };
             };
             caller_state.connections.remove(&handle);
             let database_handles = caller_state
@@ -927,6 +993,12 @@ impl BtleplugDispatcher {
         };
         for subscription in subscriptions {
             subscription.task.abort();
+        }
+        if let Err(error) = disconnect {
+            return Err(
+                DispatchError::new("platform.failure", "connection", "tauri.disconnect")
+                    .platform(error.to_string()),
+            );
         }
         Ok(released())
     }
@@ -1075,6 +1147,13 @@ impl BtleplugDispatcher {
         let stream_handle = handle.clone();
         let key = caller_key(caller);
         let uuid = characteristic.uuid;
+        // The wire contract is PortableNotificationValue { value, indication }.
+        // btleplug's ValueNotification carries no indication flag, so it is
+        // derived once from the characteristic's properties: a characteristic
+        // that indicates is acknowledged, one that only notifies is not.
+        let indication = characteristic
+            .properties
+            .contains(btleplug::api::CharPropFlags::INDICATE);
         let dispatcher = self.clone();
         let task = tauri::async_runtime::spawn(async move {
             while let Some(notification) = notifications.next().await {
@@ -1082,7 +1161,15 @@ impl BtleplugDispatcher {
                     continue;
                 }
                 if dispatcher
-                    .emit(&key, &stream_handle, IpcValue::Bytes(notification.value))
+                    .emit(
+                        &key,
+                        &stream_handle,
+                        object([
+                            ("value", IpcValue::Bytes(notification.value)),
+                            ("indication", IpcValue::Bool(indication)),
+                        ]),
+                        false,
+                    )
                     .await
                     .is_err()
                 {
@@ -1382,11 +1469,22 @@ impl BtleplugDispatcher {
         Ok(object([("kind", string("release")), ("cleanup", cleanup)]))
     }
 
+    async fn abort_scan_admission(&self, key: &str) {
+        let mut state = self.inner.lock().await;
+        if let Some(caller_state) = state.callers.get_mut(key) {
+            caller_state.scan_admitting = false;
+        }
+        if state.scan_owner.as_deref() == Some(key) {
+            state.scan_owner = None;
+        }
+    }
+
     async fn emit(
         &self,
         caller_key: &str,
         stream_id: &str,
         value: IpcValue,
+        drop_if_full: bool,
     ) -> Result<(), DispatchError> {
         let (sink, lease_id, lease_generation, event_id) = {
             let mut state = self.inner.lock().await;
@@ -1394,6 +1492,9 @@ impl BtleplugDispatcher {
                 DispatchError::new("ownership.denied", "stream", "tauri.event-owner")
             })?;
             if caller_state.pending_events.len() >= MAX_PENDING_EVENTS {
+                if drop_if_full {
+                    return Ok(());
+                }
                 return Err(DispatchError::new(
                     "stream.quota",
                     "stream",
@@ -1428,6 +1529,44 @@ impl BtleplugDispatcher {
             DispatchError::new("platform.transport", "stream", "tauri.event-send")
                 .platform(error.to_string())
         })
+    }
+
+    async fn emit_scan_peripheral(
+        &self,
+        stream_owner: &str,
+        stream_handle: &str,
+        peripheral: &Peripheral,
+        requested_services: &[Uuid],
+        local_name_prefix: Option<&str>,
+        manufacturer_filters: &[ManufacturerFilter],
+    ) -> Result<(), DispatchError> {
+        {
+            let state = self.inner.lock().await;
+            if state
+                .callers
+                .get(stream_owner)
+                .is_some_and(|caller| caller.scan_admitting)
+            {
+                return Ok(());
+            }
+        }
+        let properties = peripheral.properties().await.ok().flatten();
+        let observation = match properties {
+            Some(properties) => {
+                if !scan_properties_match(
+                    &properties,
+                    requested_services,
+                    local_name_prefix,
+                    manufacturer_filters,
+                ) {
+                    return Ok(());
+                }
+                peripheral_observation(peripheral, properties)
+            }
+            None => minimal_peripheral_observation(peripheral),
+        };
+        self.emit(stream_owner, stream_handle, observation, true)
+            .await
     }
 
     async fn terminal(
@@ -1618,19 +1757,25 @@ impl BtleplugDispatcher {
             let Some(connection) = caller.connections.get(&handle).cloned() else {
                 continue;
             };
-            match connection.peripheral.disconnect().await {
-                Ok(()) => {
-                    caller.connections.remove(&handle);
-                    caller
-                        .databases
-                        .retain(|_, database| database.connection_handle != handle);
-                    self.clear_peer_owner(&connection.peer_id, key).await;
-                }
-                Err(error) => failures.push(cleanup_failure(
+            let disconnect = connection.peripheral.disconnect().await;
+            // The caller is being torn down either way, so its bookkeeping goes
+            // with it even when the radio disconnect failed. Keeping the peer
+            // marked as owned by a caller that no longer exists makes the
+            // failure permanent: every later connect is refused with
+            // `connection.already-owned` until the process restarts, which is
+            // exactly what a renderer reload or crash would trigger. The
+            // failure is still reported, it just no longer strands the peer.
+            caller.connections.remove(&handle);
+            caller
+                .databases
+                .retain(|_, database| database.connection_handle != handle);
+            self.clear_peer_owner(&connection.peer_id, key).await;
+            if let Err(error) = disconnect {
+                failures.push(cleanup_failure(
                     "connection",
                     "tauri.release.connection",
                     error.to_string(),
-                )),
+                ));
             }
         }
         cleanup_record(failures)
@@ -1642,7 +1787,7 @@ impl IpcDispatcher for BtleplugDispatcher {
         &'a self,
         caller: AuthenticatedCaller,
         request: IpcValue,
-        event_sink: IpcEventSink,
+        event_sink: Option<IpcEventSink>,
     ) -> DispatchFuture<'a> {
         Box::pin(async move {
             self.dispatch_request(caller, request, event_sink)
@@ -1690,12 +1835,118 @@ fn validate_lease(
     Ok(())
 }
 
+async fn open_btleplug_adapter(
+    requested: Option<String>,
+) -> Result<(Manager, Adapter, String), DispatchError> {
+    let manager = Manager::new().await.map_err(|error| {
+        DispatchError::new("adapter.unavailable", "adapter", "tauri.manager")
+            .platform(error.to_string())
+    })?;
+    let adapters = manager.adapters().await.map_err(|error| {
+        DispatchError::new("adapter.unavailable", "adapter", "tauri.adapters")
+            .platform(error.to_string())
+    })?;
+    if adapters.is_empty() {
+        return Err(DispatchError::new(
+            "adapter.unavailable",
+            "adapter",
+            "tauri.adapters-empty",
+        ));
+    }
+    let mut candidates = Vec::with_capacity(adapters.len());
+    for adapter in adapters {
+        let info = adapter.adapter_info().await.map_err(|error| {
+            DispatchError::new("adapter.unavailable", "adapter", "tauri.adapter-info")
+                .platform(error.to_string())
+        })?;
+        candidates.push((info, adapter));
+    }
+    let (adapter_name, adapter) = match requested {
+        Some(requested) => candidates
+            .into_iter()
+            .find(|(info, _)| info == &requested)
+            .ok_or_else(|| {
+                DispatchError::new(
+                    "adapter.selection-required",
+                    "adapter",
+                    "tauri.adapter-selection",
+                )
+            })?,
+        None if candidates.len() == 1 => candidates.remove(0),
+        None => {
+            return Err(DispatchError::new(
+                "adapter.ambiguous",
+                "adapter",
+                "tauri.adapter-selection",
+            ))
+        }
+    };
+    Ok((manager, adapter, adapter_name))
+}
+
 fn caller_key(caller: &AuthenticatedCaller) -> String {
     format!("{}\0{}", caller.app_identifier, caller.window_label)
 }
 
 fn peripheral_id(peripheral: &Peripheral) -> String {
     format!("{:?}", peripheral.id())
+}
+
+fn scan_event_peripheral_id(event: CentralEvent) -> Option<btleplug::platform::PeripheralId> {
+    match event {
+        CentralEvent::DeviceDiscovered(id) | CentralEvent::DeviceUpdated(id) => Some(id),
+        CentralEvent::ManufacturerDataAdvertisement { id, .. }
+        | CentralEvent::ServiceDataAdvertisement { id, .. }
+        | CentralEvent::ServicesAdvertisement { id, .. } => Some(id),
+        _ => None,
+    }
+}
+
+fn scan_properties_match(
+    properties: &btleplug::api::PeripheralProperties,
+    requested_services: &[Uuid],
+    local_name_prefix: Option<&str>,
+    manufacturer_filters: &[ManufacturerFilter],
+) -> bool {
+    if !requested_services.is_empty()
+        && !requested_services
+            .iter()
+            .all(|uuid| properties.services.contains(uuid))
+    {
+        return false;
+    }
+    if let Some(prefix) = local_name_prefix {
+        if !properties
+            .local_name
+            .as_deref()
+            .is_some_and(|name| name.starts_with(prefix))
+        {
+            return false;
+        }
+    }
+    manufacturer_filters.iter().all(|filter| {
+        properties
+            .manufacturer_data
+            .get(&filter.company_id)
+            .is_some_and(|data| {
+                filter
+                    .data_prefix
+                    .as_ref()
+                    .map_or(true, |prefix| data.starts_with(prefix))
+            })
+    })
+}
+
+fn minimal_peripheral_observation(peripheral: &Peripheral) -> IpcValue {
+    object([
+        ("peerId", string(peripheral_id(peripheral))),
+        ("localName", IpcValue::Null),
+        ("rssi", IpcValue::Null),
+        ("txPowerLevel", IpcValue::Null),
+        ("serviceUuids", IpcValue::Array(Vec::new())),
+        ("manufacturerData", IpcValue::Array(Vec::new())),
+        ("serviceData", IpcValue::Array(Vec::new())),
+    ])
 }
 
 fn peripheral_observation(
@@ -1871,29 +2122,289 @@ fn attachment_record(attachment: &Attachment) -> IpcValue {
                     "adapterGeneration",
                     string(attachment.adapter_generation.clone()),
                 ),
-                ("limitations", IpcValue::Array(Vec::new())),
+                ("limitations", adapter_limitations()),
             ]),
         ),
     ])
 }
 
+/// Adapter limitations this host can state as fact.
+///
+/// Both are properties of this dispatcher, verifiable in this file:
+/// `open_btleplug_adapter` selects one adapter when the attachment is created
+/// and nothing re-selects it afterwards, and the only messages this host pushes
+/// through an event sink are stream `value` and `terminal` messages, never an
+/// adapter-state change.
+const ADAPTER_LIMITATIONS: [&str; 2] = [
+    "This host binds one adapter for the lifetime of the attachment; the adapter is selected when the attachment is created and other adapters are not reachable through it.",
+    "This host does not observe adapter-state changes; every adapter.state response is a fresh sample and no adapter-state event is emitted.",
+];
+
+fn adapter_limitations() -> IpcValue {
+    IpcValue::Array(
+        ADAPTER_LIMITATIONS
+            .iter()
+            .map(|limitation| string(*limitation))
+            .collect(),
+    )
+}
+
+/// What an adapter-state snapshot was actually able to observe.
+enum AdapterSample<'a> {
+    /// Attachment identity only: nothing was read from the adapter.
+    Unsampled,
+    /// Values read from the adapter while building this snapshot.
+    Live { power: &'a str, heard: i64 },
+}
+
+const UNSAMPLED_SNAPSHOT_REASON: &str =
+    "This snapshot carries attachment identity only; availability, power, and the heard peer count are not sampled here, so route adapter.state for a live reading.";
+
+/// Snapshot for the attachment record, which reads nothing from the adapter.
 fn adapter_state(attachment: &Attachment) -> IpcValue {
+    adapter_state_snapshot(attachment, AdapterSample::Unsampled)
+}
+
+/// Snapshot for `adapter.state`, built from values just read from the adapter.
+fn live_adapter_state(attachment: &Attachment, power: &str, heard: i64) -> IpcValue {
+    adapter_state_snapshot(attachment, AdapterSample::Live { power, heard })
+}
+
+/// Builds an adapter-state snapshot in which every field is either observed or
+/// explicitly absent.
+///
+/// `availability` and `power` are asserted only from a live read: the caller of
+/// [`live_adapter_state`] reaches it only after `Adapter::adapter_state`
+/// succeeded, which proves the platform still hands this process the adapter.
+/// The unsampled path observes nothing and says so. `authorization` comes from
+/// [`platform_authorization`], `updatedAt` from [`sample_epoch_millis`], and
+/// `safeReason` is the joined set of caveats those readings actually carry, or
+/// null when there are none.
+fn adapter_state_snapshot(attachment: &Attachment, sample: AdapterSample<'_>) -> IpcValue {
+    let clock = sample_epoch_millis();
+    let authorization = platform_authorization();
+    let (availability, power, heard) = match sample {
+        AdapterSample::Live { power, heard } => (string("available"), string(power), number(heard)),
+        AdapterSample::Unsampled => (string("unknown"), string("unknown"), IpcValue::Null),
+    };
+    let mut caveats: Vec<&str> = Vec::new();
+    if matches!(sample, AdapterSample::Unsampled) {
+        caveats.push(UNSAMPLED_SNAPSHOT_REASON);
+    }
+    if let Some(reason) = authorization.reason {
+        caveats.push(reason);
+    }
+    if let Some(reason) = clock.reason {
+        caveats.push(reason);
+    }
     object([
-        ("availability", string("available")),
-        ("authorization", string("not-determined")),
-        ("power", string("unknown")),
+        ("availability", availability),
+        ("authorization", string(authorization.value)),
+        ("power", power),
+        ("heard", heard),
         (
             "backendGeneration",
             string(attachment.backend_generation.clone()),
         ),
-        ("updatedAt", number(0)),
-        (
-            "safeReason",
-            string(
-                "Host APIs do not expose a portable pre-operation power/authorization snapshot.",
-            ),
-        ),
+        ("updatedAt", number(clock.epoch_millis)),
+        ("safeReason", safe_reason(&caveats)),
     ])
+}
+
+fn safe_reason(caveats: &[&str]) -> IpcValue {
+    if caveats.is_empty() {
+        IpcValue::Null
+    } else {
+        string(caveats.join(" "))
+    }
+}
+
+/// One platform authorization reading.
+///
+/// `value` is always a wire token from the adapter-state vocabulary
+/// (`granted | denied | restricted | not-determined | unavailable | unknown`).
+/// `unknown` is reported when this host obtained no reading — because the
+/// platform exposes no per-application authorization concept, or because it was
+/// not queried. It matches how the sibling `availability` and `power`
+/// vocabularies already spell "not determined by this host", and it is never a
+/// denial: readiness must not gate on it. `reason` carries the caveat that
+/// belongs in `safeReason`, and is set only when the reading needs one.
+struct AuthorizationReport {
+    value: &'static str,
+    reason: Option<&'static str>,
+}
+
+/// The adapter-state token meaning "this host obtained no authorization
+/// reading". Never a denial.
+const AUTHORIZATION_UNKNOWN: &str = "unknown";
+
+/// `CBManagerAuthorization` raw values, macOS 10.15+ / iOS 13+.
+#[cfg(any(target_os = "macos", test))]
+const CORE_BLUETOOTH_AUTHORIZATION_NOT_DETERMINED: isize = 0;
+#[cfg(any(target_os = "macos", test))]
+const CORE_BLUETOOTH_AUTHORIZATION_RESTRICTED: isize = 1;
+#[cfg(any(target_os = "macos", test))]
+const CORE_BLUETOOTH_AUTHORIZATION_DENIED: isize = 2;
+#[cfg(any(target_os = "macos", test))]
+const CORE_BLUETOOTH_AUTHORIZATION_ALLOWED_ALWAYS: isize = 3;
+
+#[cfg(any(target_os = "macos", test))]
+const CORE_BLUETOOTH_AUTHORIZATION_UNRECOGNIZED_REASON: &str =
+    "CoreBluetooth reported an authorization value this host does not recognize, so adapter authorization is reported absent.";
+
+/// Maps a raw `CBManagerAuthorization` to the adapter-state wire vocabulary.
+///
+/// Values outside the documented enum are not forced into a token: they are
+/// reported absent, because this host cannot say what such a value means.
+#[cfg(any(target_os = "macos", test))]
+fn map_core_bluetooth_authorization(raw: isize) -> AuthorizationReport {
+    let value = match raw {
+        CORE_BLUETOOTH_AUTHORIZATION_ALLOWED_ALWAYS => "granted",
+        CORE_BLUETOOTH_AUTHORIZATION_DENIED => "denied",
+        CORE_BLUETOOTH_AUTHORIZATION_RESTRICTED => "restricted",
+        CORE_BLUETOOTH_AUTHORIZATION_NOT_DETERMINED => "not-determined",
+        _ => {
+            return AuthorizationReport {
+                value: AUTHORIZATION_UNKNOWN,
+                reason: Some(CORE_BLUETOOTH_AUTHORIZATION_UNRECOGNIZED_REASON),
+            }
+        }
+    };
+    AuthorizationReport {
+        value,
+        reason: None,
+    }
+}
+
+/// Reads the live CoreBluetooth authorization state.
+///
+/// `+[CBManager authorization]` is macOS 10.15+, so both the class and the
+/// class method are checked before the message is sent; on an older system the
+/// value is reported absent instead of crashing on an unrecognized selector.
+/// Reading the property does not prompt the user; only radio use does.
+#[cfg(target_os = "macos")]
+fn platform_authorization() -> AuthorizationReport {
+    use objc2::{runtime::AnyClass, sel};
+    use objc2_core_bluetooth::CBManager;
+
+    let Some(class) = AnyClass::get("CBManager") else {
+        return AuthorizationReport {
+            value: AUTHORIZATION_UNKNOWN,
+            reason: Some(
+                "CoreBluetooth is not loaded in this process, so adapter authorization is reported absent.",
+            ),
+        };
+    };
+    if !class.metaclass().responds_to(sel!(authorization)) {
+        return AuthorizationReport {
+            value: AUTHORIZATION_UNKNOWN,
+            reason: Some(
+                "This macOS version does not expose +[CBManager authorization], so adapter authorization is reported absent.",
+            ),
+        };
+    }
+    // SAFETY: `+[CBManager authorization]` was just verified to exist on the
+    // metaclass. It takes no arguments and returns `CBManagerAuthorization`,
+    // which is an `NSInteger` with the encoding this binding declares.
+    let authorization = unsafe { CBManager::authorization_class() };
+    map_core_bluetooth_authorization(authorization.0)
+}
+
+/// Reports the BlueZ authorization model.
+///
+/// BlueZ has no per-application Bluetooth authorization state to read: access
+/// is decided by D-Bus policy when a process reaches the adapter, and a refusal
+/// surfaces as a failure to obtain the adapter rather than as a state.
+///
+/// Reporting `granted` here would be a derivation rather than a measurement, so
+/// the value is absent. Absence means "this platform exposes no such state", it
+/// is never a denial, and readiness must not gate on it.
+#[cfg(target_os = "linux")]
+fn platform_authorization() -> AuthorizationReport {
+    AuthorizationReport {
+        value: AUTHORIZATION_UNKNOWN,
+        reason: Some(
+            "BlueZ exposes no per-application Bluetooth authorization state, so adapter authorization is reported absent; on this platform a refusal surfaces as a failure to obtain the adapter rather than as an authorization value.",
+        ),
+    }
+}
+
+/// Reports Windows authorization as absent.
+///
+/// Windows does have an authorization concept for radio access, and this host
+/// does not query it, so no value is claimed for it.
+#[cfg(target_os = "windows")]
+fn platform_authorization() -> AuthorizationReport {
+    AuthorizationReport {
+        value: AUTHORIZATION_UNKNOWN,
+        reason: Some(
+            "Windows decides Bluetooth radio access through settings this host does not query, so adapter authorization is reported absent.",
+        ),
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+fn platform_authorization() -> AuthorizationReport {
+    AuthorizationReport {
+        value: AUTHORIZATION_UNKNOWN,
+        reason: Some(
+            "This host does not query a Bluetooth authorization state on this platform, so adapter authorization is reported absent.",
+        ),
+    }
+}
+
+/// Newest wall-clock reading this host has reported, in milliseconds since the
+/// Unix epoch. It makes `updatedAt` non-decreasing across snapshots and across
+/// threads even when the host clock steps backwards.
+static LAST_REPORTED_EPOCH_MILLIS: AtomicI64 = AtomicI64::new(0);
+
+const CLOCK_BEFORE_EPOCH_REASON: &str =
+    "The host wall clock reads before the Unix epoch; updatedAt reports the newest timestamp this host has observed instead.";
+const CLOCK_MOVED_BACKWARDS_REASON: &str =
+    "The host wall clock moved backwards; updatedAt is held at the newest timestamp this host has observed.";
+
+/// A wall-clock reading for one snapshot, with the caveat it carries.
+struct SampleClock {
+    epoch_millis: i64,
+    reason: Option<&'static str>,
+}
+
+/// Stamps a snapshot with the current wall clock in milliseconds since the Unix
+/// epoch, held non-decreasing.
+///
+/// The reading is taken at the moment the snapshot is built. The only deviation
+/// from the raw clock is a backwards step, which is disclosed in `safeReason`
+/// rather than silently smoothed.
+fn sample_epoch_millis() -> SampleClock {
+    let raw = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .map(|elapsed| i64::try_from(elapsed.as_millis()).unwrap_or(i64::MAX));
+    let floor = LAST_REPORTED_EPOCH_MILLIS.fetch_max(raw.unwrap_or(0), Ordering::Relaxed);
+    resolve_sample_clock(raw, floor)
+}
+
+/// Resolves the reported timestamp from the raw reading and the newest value
+/// this host has already reported.
+fn resolve_sample_clock(raw: Option<i64>, floor: i64) -> SampleClock {
+    match raw {
+        None => SampleClock {
+            epoch_millis: floor,
+            reason: Some(CLOCK_BEFORE_EPOCH_REASON),
+        },
+        Some(millis) if millis < floor => SampleClock {
+            epoch_millis: floor,
+            reason: Some(CLOCK_MOVED_BACKWARDS_REASON),
+        },
+        Some(millis) => SampleClock {
+            epoch_millis: millis,
+            reason: None,
+        },
+    }
+}
+
+fn adapter_state_payload_live(attachment: &Attachment, power: &str, heard: i64) -> IpcValue {
+    object([("state", live_adapter_state(attachment, power, heard))])
 }
 
 fn ipc_versions() -> IpcValue {
@@ -2074,6 +2585,213 @@ mod tests {
             characteristic_properties(CharPropFlags::READ | CharPropFlags::NOTIFY),
             super::IpcValue::Array(vec![string("read"), string("notify")])
         );
+    }
+
+    #[test]
+    fn adapter_state_route_payload_nests_state_object() {
+        let attachment = super::Attachment {
+            attachment_id: "a".into(),
+            backend_instance_id: "b".into(),
+            backend_generation: "1".into(),
+            adapter_id: "adapter".into(),
+            adapter_name: "CoreBluetooth".into(),
+            adapter_generation: "1".into(),
+        };
+        let payload = super::adapter_state_payload_live(&attachment, "on", 3);
+        let super::IpcValue::Object(record) = payload else {
+            panic!("adapter.state payload must be an object");
+        };
+        let Some(super::IpcValue::Object(state)) = record.get("state") else {
+            panic!("adapter.state payload must nest a state object");
+        };
+        assert!(
+            matches!(state.get("power"), Some(super::IpcValue::String(value)) if value == "on")
+        );
+        assert!(
+            matches!(state.get("heard"), Some(super::IpcValue::Number(value) ) if value.as_i64() == Some(3))
+        );
+    }
+
+    fn test_attachment() -> super::Attachment {
+        super::Attachment {
+            attachment_id: "a".into(),
+            backend_instance_id: "b".into(),
+            backend_generation: "1".into(),
+            adapter_id: "adapter".into(),
+            adapter_name: "CoreBluetooth".into(),
+            adapter_generation: "1".into(),
+        }
+    }
+
+    fn state_object(
+        snapshot: super::IpcValue,
+    ) -> std::collections::BTreeMap<String, super::IpcValue> {
+        let super::IpcValue::Object(state) = snapshot else {
+            panic!("an adapter state snapshot must be an object");
+        };
+        state
+    }
+
+    /// Every token this host may put on the wire is one the TypeScript
+    /// `AdapterAuthorization` union already accepts.
+    const WIRE_AUTHORIZATION_TOKENS: [&str; 6] = [
+        "granted",
+        "denied",
+        "restricted",
+        "not-determined",
+        "unavailable",
+        super::AUTHORIZATION_UNKNOWN,
+    ];
+
+    #[test]
+    fn core_bluetooth_authorization_maps_to_the_wire_vocabulary() {
+        for (raw, expected) in [
+            (0isize, "not-determined"),
+            (1, "restricted"),
+            (2, "denied"),
+            (3, "granted"),
+        ] {
+            let report = super::map_core_bluetooth_authorization(raw);
+            assert_eq!(report.value, expected, "raw {raw} must map to {expected}");
+            assert_eq!(
+                report.reason, None,
+                "a real CoreBluetooth reading carries no caveat"
+            );
+            assert!(WIRE_AUTHORIZATION_TOKENS.contains(&expected));
+        }
+    }
+
+    #[test]
+    fn unrecognized_core_bluetooth_authorization_is_reported_unknown() {
+        for raw in [-1isize, 4, 99] {
+            let report = super::map_core_bluetooth_authorization(raw);
+            assert_eq!(
+                report.value,
+                super::AUTHORIZATION_UNKNOWN,
+                "raw {raw} has no known meaning and must not be forced into a decision"
+            );
+            assert!(report.reason.is_some(), "an unknown value must say why");
+        }
+    }
+
+    #[test]
+    fn platform_authorization_is_always_a_wire_token() {
+        let report = super::platform_authorization();
+        assert!(
+            WIRE_AUTHORIZATION_TOKENS.contains(&report.value),
+            "{} is not part of the adapter authorization vocabulary",
+            report.value
+        );
+        if report.value == super::AUTHORIZATION_UNKNOWN {
+            assert!(
+                report.reason.is_some(),
+                "an unknown authorization must carry the reason this host has no reading"
+            );
+        }
+    }
+
+    // Spec change: this arm previously derived `granted` from the fact that
+    // D-Bus handed this process an adapter. That is an inference, not a
+    // measurement, and it made Linux the one platform reporting a value it had
+    // never queried. It now reports `unknown`, with the reason disclosed.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn bluez_authorization_is_unknown_because_the_platform_exposes_no_such_state() {
+        let report = super::platform_authorization();
+        assert_eq!(report.value, super::AUTHORIZATION_UNKNOWN);
+        assert!(report
+            .reason
+            .is_some_and(|reason| reason.contains("BlueZ exposes no per-application")));
+    }
+
+    #[test]
+    fn wall_clock_readings_report_the_raw_value_when_it_advances() {
+        let resolved = super::resolve_sample_clock(Some(1_800_000_000_123), 1_800_000_000_000);
+        assert_eq!(resolved.epoch_millis, 1_800_000_000_123);
+        assert_eq!(resolved.reason, None);
+    }
+
+    #[test]
+    fn wall_clock_regressions_hold_the_last_stamp_and_disclose_it() {
+        let backwards = super::resolve_sample_clock(Some(1_700_000_000_000), 1_800_000_000_000);
+        assert_eq!(backwards.epoch_millis, 1_800_000_000_000);
+        assert_eq!(backwards.reason, Some(super::CLOCK_MOVED_BACKWARDS_REASON));
+
+        let before_epoch = super::resolve_sample_clock(None, 1_800_000_000_000);
+        assert_eq!(before_epoch.epoch_millis, 1_800_000_000_000);
+        assert_eq!(before_epoch.reason, Some(super::CLOCK_BEFORE_EPOCH_REASON));
+    }
+
+    #[test]
+    fn sampled_timestamps_are_real_and_non_decreasing() {
+        let first = super::sample_epoch_millis();
+        let second = super::sample_epoch_millis();
+        assert!(
+            first.epoch_millis > 1_700_000_000_000,
+            "updatedAt must be a wall-clock epoch reading, got {}",
+            first.epoch_millis
+        );
+        assert!(second.epoch_millis >= first.epoch_millis);
+    }
+
+    #[test]
+    fn live_adapter_state_reports_only_what_it_observed() {
+        let state = state_object(super::live_adapter_state(&test_attachment(), "on", 3));
+
+        assert_eq!(state.get("availability"), Some(&string("available")));
+        assert_eq!(state.get("power"), Some(&string("on")));
+        assert_eq!(state.get("heard"), Some(&super::number(3)));
+
+        let Some(super::IpcValue::Number(updated_at)) = state.get("updatedAt") else {
+            panic!("updatedAt must be a number");
+        };
+        assert!(
+            updated_at
+                .as_i64()
+                .is_some_and(|value| value > 1_700_000_000_000),
+            "updatedAt must be stamped when the state is sampled"
+        );
+
+        match state.get("authorization") {
+            Some(super::IpcValue::String(value)) => {
+                assert!(WIRE_AUTHORIZATION_TOKENS.contains(&value.as_str()))
+            }
+            Some(super::IpcValue::Null) => {}
+            other => panic!("authorization must be a wire token or null, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unsampled_adapter_state_admits_that_it_sampled_nothing() {
+        let state = state_object(super::adapter_state(&test_attachment()));
+
+        assert_eq!(state.get("availability"), Some(&string("unknown")));
+        assert_eq!(state.get("power"), Some(&string("unknown")));
+        assert_eq!(state.get("heard"), Some(&super::IpcValue::Null));
+        let Some(super::IpcValue::String(safe_reason)) = state.get("safeReason") else {
+            panic!("an unsampled snapshot must disclose that it sampled nothing");
+        };
+        assert!(safe_reason.contains(super::UNSAMPLED_SNAPSHOT_REASON));
+    }
+
+    #[test]
+    fn safe_reason_is_null_when_nothing_needs_disclosing() {
+        assert_eq!(super::safe_reason(&[]), super::IpcValue::Null);
+        assert_eq!(
+            super::safe_reason(&["first.", "second."]),
+            string("first. second.")
+        );
+    }
+
+    #[test]
+    fn adapter_limitations_are_stated_rather_than_left_empty() {
+        let super::IpcValue::Array(limitations) = super::adapter_limitations() else {
+            panic!("limitations must be an array");
+        };
+        assert_eq!(limitations.len(), super::ADAPTER_LIMITATIONS.len());
+        assert!(limitations.iter().all(
+            |limitation| matches!(limitation, super::IpcValue::String(value) if !value.is_empty())
+        ));
     }
 
     #[test]

@@ -47,6 +47,8 @@ import {
   BLUEZ_DEVICE_INTERFACE,
   BLUEZ_GATT_CHARACTERISTIC_INTERFACE,
   BLUEZ_GATT_DESCRIPTOR_INTERFACE,
+  BLUEZ_NO_AUTHORIZATION_CONCEPT_REASON,
+  bluezSafeReason,
   isBluezGattTopologyInterface,
   type BluezBusKind,
   type BluezDbusBoundary,
@@ -479,15 +481,14 @@ export class BluezBackendRuntime implements BluezObjectStoreObserver {
     const powered = present ? this.store.optionalBooleanProperty(adapterPath, BLUEZ_ADAPTER_INTERFACE, 'Powered') : null
     return Object.freeze({
       availability: present ? 'available' : 'unavailable',
-      authorization: present ? 'granted' : 'unavailable',
+      authorization: 'unknown',
       power: powered === true ? 'on' : powered === false ? 'off' : 'unknown',
       backendGeneration: opaqueId(String(this.backendGeneration), 'backend-generation', 'bluez'),
       updatedAt: this.adapterStateUpdatedAt,
-      safeReason: present
-        ? powered === false
-          ? 'BlueZ adapter is powered off'
-          : null
-        : 'BlueZ adapter object unavailable'
+      safeReason: bluezSafeReason([
+        present ? (powered === false ? 'BlueZ adapter is powered off' : null) : 'BlueZ adapter object unavailable',
+        BLUEZ_NO_AUTHORIZATION_CONCEPT_REASON
+      ])
     })
   }
 

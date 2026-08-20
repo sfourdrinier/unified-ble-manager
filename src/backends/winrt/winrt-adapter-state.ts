@@ -1,6 +1,6 @@
 // src/backends/winrt/winrt-adapter-state.ts
 
-import type { AdapterStateSnapshot } from '../../backend-contract/identity'
+import { isAuthorizationBlocking, type AdapterStateSnapshot } from '../../backend-contract/identity'
 import { contractError } from '../../backend-contract/errors'
 import { monotonicTimestamp, opaqueId } from '../../backend-contract/primitives'
 import type { WinRtAdapterSnapshot } from './winrt-boundary'
@@ -21,7 +21,7 @@ export function winRtAdapterState(
 }
 
 export function winRtAdapterIsReady(state: WinRtAdapterSnapshot): boolean {
-  return state.availability === 'available' && state.authorization === 'granted' && state.power === 'on'
+  return state.availability === 'available' && !isAuthorizationBlocking(state.authorization) && state.power === 'on'
 }
 
 export function assertWinRtAdapterReady(state: WinRtAdapterSnapshot, operation: string): void {
@@ -37,7 +37,7 @@ export function assertWinRtAdapterReady(state: WinRtAdapterSnapshot, operation: 
   if (state.authorization === 'unavailable') {
     throw contractError('adapter.unavailable', 'adapter', operation)
   }
-  if (state.authorization !== 'granted') {
+  if (isAuthorizationBlocking(state.authorization)) {
     throw contractError('permission.not-determined', 'adapter', operation)
   }
   if (state.power === 'off') {

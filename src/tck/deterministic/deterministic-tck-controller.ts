@@ -199,7 +199,8 @@ function authorizationField(
     authorization === 'denied' ||
     authorization === 'restricted' ||
     authorization === 'not-determined' ||
-    authorization === 'unavailable'
+    authorization === 'unavailable' ||
+    authorization === 'unknown'
   ) {
     return authorization
   }

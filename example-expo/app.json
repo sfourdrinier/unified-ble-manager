@@ -21,7 +21,7 @@
       [
         "unified-ble-manager",
         {
-          "isBackgroundEnabled": true,
+          "requiresBluetoothLeHardware": true,
           "modes": ["central"]
         }
       ]

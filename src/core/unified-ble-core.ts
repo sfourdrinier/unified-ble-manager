@@ -13,7 +13,12 @@ import {
 import { createAttachmentBoundIdFactory } from '../backend-contract/primitives'
 import type { AdvertisementObservation, OwnerScanOptions, ScanOptions } from '../backend-contract/advertisement'
 import type { CleanupFailure, CleanupRecord } from '../backend-contract/errors'
-import type { AdapterStateSnapshot, BackendIdentity } from '../backend-contract/identity'
+import {
+  isAuthorizationBlocking,
+  type AdapterStateSnapshot,
+  type AdapterStateWatch,
+  type BackendIdentity
+} from '../backend-contract/identity'
 import type {
   PublicOperationOptions,
   SubscriptionOptions,
@@ -120,6 +125,7 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
   private resourceReleaseResult: Promise<CleanupRecord> | null = null
   private backendDestroyResult: Promise<CleanupRecord> | null = null
   private readonly discoveries = new Map<string, Promise<CoreGattDatabase<Attachment, Identity>>>()
+  private readonly adapterStateWatches = new Set<{ stop(): Promise<CleanupRecord> }>()
   private admissionEpoch = 1
   private nextOperation = 1
 
@@ -218,6 +224,39 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
   async adapterState(): Promise<AdapterStateSnapshot<Attachment>> {
     this.assertReady('adapter-state')
     return readCoreAdapterState(this.backend)
+  }
+
+  async adapterStates(options: { readonly signal?: AbortSignal | null } = {}): Promise<{
+    readonly initial: AdapterStateSnapshot<Attachment>
+    readonly values: BoundedAsyncStream<AdapterStateSnapshot<Attachment>>
+    stop(): Promise<CleanupRecord>
+  }> {
+    this.assertReady('adapter-states')
+    if (abortRequested(options.signal)) {
+      throw contractError('operation.aborted', 'adapter', 'adapter-states')
+    }
+    const watch: AdapterStateWatch<Attachment> = await this.backend.adapter.watchState()
+    if (abortRequested(options.signal)) {
+      await closeAdapterStateStream(watch.transitions)
+      throw contractError('operation.aborted', 'adapter', 'adapter-states')
+    }
+    const session = {
+      initial: watch.initial,
+      values: watch.transitions,
+      stop: async (): Promise<CleanupRecord> => {
+        this.adapterStateWatches.delete(session)
+        return closeAdapterStateStream(watch.transitions)
+      }
+    }
+    this.adapterStateWatches.add(session)
+    options.signal?.addEventListener(
+      'abort',
+      () => {
+        this.lifecycleObserver.observeCleanup(session.stop(), 'adapter-states-abort-stop')
+      },
+      { once: true }
+    )
+    return session
   }
 
   async maximumWriteLength(
@@ -788,7 +827,7 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
 
   private async applyAdapterStateEvent(): Promise<void> {
     const state = await this.backend.adapter.currentState()
-    if (state.availability !== 'available' || state.authorization !== 'granted' || state.power !== 'on') {
+    if (state.availability !== 'available' || isAuthorizationBlocking(state.authorization) || state.power !== 'on') {
       await this.releaseResources('adapter-loss')
     }
   }
@@ -853,6 +892,10 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
   private async destroyOwnedResources(cause: ConnectionLifecycleTerminalCause): Promise<CleanupRecord> {
     const failures: CleanupFailure[] = []
     const eventClose = this.closeBackendEventStream()
+    for (const watch of [...this.adapterStateWatches]) {
+      const result = await this.lifecycleObserver.captureCleanup(watch.stop(), 'manager', 'destroy-adapter-states')
+      failures.push(...result.failures)
+    }
     for (const scan of [...this.scans.values()]) {
       const result = await this.lifecycleObserver.captureCleanup(this.stopScan(scan), 'scan', 'destroy-scan')
       failures.push(...result.failures)
@@ -950,4 +993,16 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
     }
     return cleanup
   }
+}
+
+function abortRequested(signal: AbortSignal | null | undefined): boolean {
+  return signal !== null && signal !== undefined && signal.aborted
+}
+
+function closeAdapterStateStream(stream: BoundedAsyncStream<unknown>): Promise<CleanupRecord> {
+  const closable = stream as BoundedAsyncStream<unknown> & { close?: () => Promise<CleanupRecord> }
+  if (typeof closable.close === 'function') {
+    return closable.close()
+  }
+  return Promise.resolve({ state: 'released', failures: [] })
 }

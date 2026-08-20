@@ -1,6 +1,7 @@
 // src/native-protocol/rn-apple-boundary.ts
 
 import { contractError } from '../backend-contract/errors'
+import { isAuthorizationBlocking } from '../backend-contract/identity'
 import type { ConnectionControlCapabilities } from '../backend-contract/connection-controls'
 import type {
   CoreBluetoothAdapterSnapshot,
@@ -53,7 +54,7 @@ export class ReactNativeAppleProtocolBoundary extends ReactNativeAndroidProtocol
     if (snapshot.authorization === 'restricted') {
       throw contractError('permission.restricted', 'adapter', `rn-apple-boundary.${operation}`)
     }
-    if (snapshot.authorization !== 'granted') {
+    if (isAuthorizationBlocking(snapshot.authorization)) {
       throw contractError('permission.not-determined', 'adapter', `rn-apple-boundary.${operation}`)
     }
     if (snapshot.power === 'off') {

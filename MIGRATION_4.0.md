@@ -1,184 +1,276 @@
 <!-- MIGRATION_4.0.md -->
 
-# Migrating to Unified BLE Manager 4.0
+# Migrating from react-native-ble-plx
 
-Unified BLE Manager 4.0 is a new package and public contract. It is not a source-compatible rename of `react-native-ble-plx` 3.x, and it intentionally does not ship a compatibility facade that hides the new ownership, byte, cancellation, or host-selection rules.
+`unified-ble-manager@4.0.0-rc.1` is a new package and a new contract. It is **not a source-compatible rename**. There is no `new BleManager()` facade, no Base64 characteristic values, and no public transaction IDs.
 
-This guide covers migration to stable `unified-ble-manager@4.0.0`.
-The current published package is `4.0.0-rc.0` on npm `latest`.
+This page is for a React Native app that already uses `react-native-ble-plx`. Web, Electron, Node, and Tauri are new hosts — use those pages after you understand the RN rewrite.
 
-## Install the new package
+## What breaks on day one
+
+| You used to write | You write now |
+| --- | --- |
+| `import { BleManager } from 'react-native-ble-plx'` | `import { createReactNativeBleManager } from 'unified-ble-manager/react-native'` |
+| `new BleManager()` | `await createReactNativeBleManager({ clientId, managerId, hostSessionScope })` |
+| `characteristic.value` as Base64 | `Uint8Array` |
+| `cancelTransaction('tx-id')` | `AbortController` + `signal` |
+| Immortal `Device` with methods | Scan observation → `Connection` lease → `snapshot()` paths |
+| `manager.destroy()` fire-and-forget | `await manager.destroy()` and check `CleanupRecord` |
+
+`hostSessionScope` is a stable security/ownership scope for the host session, not a request id.
+
+## Install
 
 ```sh
-pnpm remove react-native-ble-plx
 pnpm add unified-ble-manager
 ```
 
-For Linux/BlueZ consumers, add the optional host dependency explicitly:
+Both packages may be installed temporarily. Only one BLE stack may own the radio/session. Feature-flag the new stack, migrate one owning session, then `pnpm remove react-native-ble-plx`.
 
-```sh
-pnpm add dbus-next@^0.10.2
-```
-
-Do not keep both packages merely to preserve a legacy manager API. Migrate one owning BLE integration at a time and remove the old package once no code path constructs or imports it.
-
-## Choose an explicit host entrypoint
-
-The root package is host-neutral and selects no radio.
-
-| Host | Import |
-| --- | --- |
-| React Native Android / Apple | `unified-ble-manager/react-native` |
-| Browser Web Bluetooth | `unified-ble-manager/web` |
-| Electron main process | `unified-ble-manager/electron/main` |
-| Electron renderer | `unified-ble-manager/electron/renderer` |
-| macOS Node/CoreBluetooth | `unified-ble-manager/node/corebluetooth` |
-| Windows Node/WinRT | `unified-ble-manager/node/winrt` |
-| Linux Node/BlueZ | `unified-ble-manager/node/bluez` |
-| Custom backend authors | `unified-ble-manager/backend-sdk` |
-
-The explicit host boundary is intentional. A failed native backend does not silently turn into Web Bluetooth, Noble, or a simulated radio.
-
-## Replace the legacy manager construction
-
-There is no drop-in `new BleManager()` compatibility constructor in 4.0. Create the manager/provider for the host that actually owns the radio.
-
-React Native example:
+## Construct
 
 ```ts
-import { Platform } from 'react-native'
-import {
-  createReactNativeBleManager,
-  getNativeUnifiedBleProtocolControl
-} from 'unified-ble-manager/react-native'
+// react-native-ble-plx
+const manager = new BleManager()
+
+// unified-ble-manager
+import { createReactNativeBleManager } from 'unified-ble-manager/react-native'
 
 const manager = await createReactNativeBleManager({
-  platform: Platform.OS === 'ios' ? 'apple' : 'android',
-  control: getNativeUnifiedBleProtocolControl(),
-  now: () => performance.now(),
-  clientId: 'signed-in-user-ble-client',
-  managerId: 'main-mobile-ble-manager',
-  hostSessionScope: 'com.example.app.mobile-ble'
+  clientId: 'com.example.app.ble-client',
+  managerId: 'com.example.app.ble-manager',
+  hostSessionScope: 'com.example.app'
 })
 ```
 
-Keep one clearly owned manager per host session. Await `manager.destroy()` before replacing that session or shutting it down.
+Keep one manager for the session. Await `manager.destroy()` before replacing it.
 
-## Base64 values become bytes
-
-The normal 4.0 public BLE contract uses `Uint8Array` / `Readonly<Uint8Array>`.
-
-Before:
+## Adapter state
 
 ```ts
-const base64 = await characteristic.read()
+// react-native-ble-plx
+manager.onStateChange((state) => {
+  if (state === 'PoweredOn') start()
+}, true)
+
+// unified-ble-manager — public API is a snapshot
+const state = await manager.adapterState()
+if (state.power !== 'on' || state.authorization !== 'granted' || state.availability !== 'available') {
+  // request OS permissions / ask the user to enable Bluetooth
+}
 ```
 
-4.0 code should operate on bytes at the BLE boundary. If an external protocol truly requires Base64, encode/decode explicitly through `unified-ble-manager/codecs` rather than treating text as the native BLE value type.
+There is no public `onStateChange`. Use `adapterState()` for a snapshot, or `manager.adapterStates()` for a bounded stream of transitions. Stop the stream.
 
-This makes byte ownership, validation, copying, and cross-host behavior explicit.
-
-## Public transaction IDs become AbortSignal
-
-Applications no longer invent transaction IDs for cancellation.
-
-Use an `AbortController` and pass its signal to cancellable operations:
+## Scan
 
 ```ts
-const controller = new AbortController()
-
-const result = database.read(characteristicPath, {
-  signal: controller.signal,
-  deadline: null
+// react-native-ble-plx
+manager.startDeviceScan(['180d'], { allowDuplicates: false }, (error, device) => {
+  manager.stopDeviceScan()
 })
 
-controller.abort()
-await result
+// unified-ble-manager
+import { capacity, deadline, scanUntil } from 'unified-ble-manager'
+import { HEART_RATE_SERVICE } from 'unified-ble-manager/profiles/heart-rate'
+
+const abort = new AbortController()
+const journeyDeadline = deadline(manager.monotonicNow() + 20_000)
+const observation = await scanUntil(manager, {
+  scan: {
+    filter: { serviceUuids: [HEART_RATE_SERVICE], manufacturerData: [], localNamePrefix: null },
+    duplicatePolicy: 'merged',
+    timestampPolicy: 'source-then-receipt',
+    delivery: {
+      itemCapacity: capacity(32),
+      byteCapacity: capacity(64 * 1024),
+      reservedControlCapacity: capacity(2),
+      overflowPolicy: 'drop-oldest'
+    },
+    deadline: journeyDeadline,
+    signal: abort.signal,
+    sharing: { mode: 'owner', allowSharing: false }
+  },
+  matches: candidate => candidate.localName.state === 'present'
+})
+const peerId = observation.device.id
 ```
 
-The library owns opaque backend correlation and quarantines late completions according to the backend contract.
+`startDeviceScan` / `stopDeviceScan` map to `manager.scan()` + `session.stop()`, or to `scanUntil` / `find`. The advertised name is `localName`, not `device.name`.
 
-## Device objects become explicit connection/database ownership
+Scan options are verbose on purpose: overflow is visible, and a second scan is `scan.already-active` unless you join.
 
-Do not treat an arbitrary device object as an immortal handle to mutable GATT state.
+## Connect and discover
 
-The 4.0 lifecycle is explicit:
+```ts
+// react-native-ble-plx
+const device = await manager.connectToDevice(id, { timeout: 15000 })
+await device.discoverAllServicesAndCharacteristics()
+const services = await device.services()
+const characteristics = await device.characteristicsForService(hrsUuid)
 
-1. scan or choose a peer;
-2. establish an owned connection;
-3. discover an owned GATT database/revision;
-4. read/write/subscribe through that database and its paths;
-5. release subscriptions and connections;
-6. await manager destruction at the owning host boundary.
+// unified-ble-manager
+const connection = await manager.connect(peerId, { signal: abort.signal, deadline: journeyDeadline })
+const database = await connection.discover({ signal: abort.signal, deadline: journeyDeadline })
+const snapshot = await database.snapshot()
+```
 
-A disconnect, Services Changed event, backend generation change, or manager teardown can invalidate previously discovered state. Handle the typed terminal/error instead of reusing a stale object graph.
+There is no `autoConnect`, `refreshGatt`, or connect-time MTU option. After disconnect, create a new connection and a new snapshot. Old `Device` objects would have looked valid; stale 4.x paths throw `gatt.stale-handle`.
 
-## Capability checks are runtime/backend-owned
+`cancelDeviceConnection` maps to `connection.disconnect()` or `connection.release()`.
 
-Do not infer support from a platform name or old static compatibility matrix. Instantiate the selected backend and inspect the capabilities it actually reports.
+## Read and write
 
-Package stability is also not the same thing as a support label. `4.0.0` is stable SemVer for the public package/API contract; Preview/Supported/Reliability labels remain bound to retained platform evidence.
+```ts
+// react-native-ble-plx
+const ch = await device.readCharacteristicForDevice(id, service, char)
+const bytes = Buffer.from(ch.value, 'base64')
+await device.writeCharacteristicWithResponseForDevice(id, service, char, Buffer.from([1]).toString('base64'))
 
-See [`docs/PLATFORMS.md`](docs/PLATFORMS.md).
+// unified-ble-manager
+import { resolveCharacteristicPath } from 'unified-ble-manager/profiles/commands'
+import { batteryLevelSelector } from 'unified-ble-manager/profiles/battery-service'
 
-## React Native and Expo
+const readablePath = await resolveCharacteristicPath(snapshot, batteryLevelSelector())
+const value = await database.read(readablePath, { signal: abort.signal, deadline: journeyDeadline })
+```
 
-React Native 4.0 uses the versioned `UnifiedBleProtocolControl` native boundary and the owned Android/CoreBluetooth implementations.
+```ts
+import { BackendContractError } from 'unified-ble-manager'
+import { encodeResetEnergyExpended, heartRateControlPointSelector } from 'unified-ble-manager/profiles/heart-rate'
 
-Current floors:
+try {
+  const writablePath = await resolveCharacteristicPath(snapshot, heartRateControlPointSelector())
+  await database.write(writablePath, encodeResetEnergyExpended(), {
+    signal: abort.signal,
+    deadline: journeyDeadline,
+    mode: 'with-response'
+  })
+} catch (error) {
+  if (!(error instanceof BackendContractError) || (error.normalized.code !== 'gatt.not-found' && error.normalized.code !== 'gatt.property-not-supported')) {
+    throw error
+  }
+}
+```
 
-- React Native 0.86+
-- Expo SDK 57+ when using Expo
-- Android min SDK 24
-- iOS deployment target 16.4
+`value` is `Uint8Array`. If an HTTP API wants Base64, encode at that boundary yourself. `unified-ble-manager/codecs` is IEEE-11073 and byte views, not a Base64 helper. Battery Level is read-oriented; do not write it. Use a distinct application characteristic (or Heart Rate Control Point only after it exists) for writes.
 
-For Expo, configure the `unified-ble-manager` plugin and regenerate the native projects. The package cannot run in Expo Go.
+Or use `readBatteryLevel` from `unified-ble-manager/profiles/standard-commands`. `journeyDeadline` is one budget for the whole sample, not 20 seconds per call.
 
-See [`docs/EXPO_PLUGIN.md`](docs/EXPO_PLUGIN.md).
+## Notify
 
-## Restoration and host identity
+```ts
+// react-native-ble-plx
+device.monitorCharacteristicForDevice(id, '180d', '2a37', (error, c) => {
+  parseHr(Buffer.from(c.value, 'base64'))
+}, 'hr-monitor')
+manager.cancelTransaction('hr-monitor')
 
-Restoration identity is explicit and host-owned. `clientId`, `managerId`, and `hostSessionScope` are not disposable operation identifiers.
+// unified-ble-manager
+import { subscribeHeartRateMeasurements } from 'unified-ble-manager/profiles/standard-commands'
+import { parseHeartRateMeasurement } from 'unified-ble-manager/profiles/heart-rate'
 
-In particular, `hostSessionScope` should be a stable security/ownership scope for the host session. Do not derive it from a React render, request counter, scan, or connection attempt.
+const sub = await subscribeHeartRateMeasurements(database, {
+  signal: abort.signal,
+  deadline: journeyDeadline,
+  delivery: {
+    itemCapacity: capacity(16),
+    byteCapacity: capacity(32 * 1024),
+    reservedControlCapacity: capacity(2),
+    overflowPolicy: 'drop-oldest'
+  }
+})
+const stop = setTimeout(() => abort.abort(), 5_000)
+try {
+  for await (const item of sub.values) {
+    if (item.kind === 'value') consume(parseHeartRateMeasurement(item.value.value))
+    else if (item.kind === 'overflow') reportLoss(item)
+    else break
+  }
+} finally {
+  clearTimeout(stop)
+  await sub.remove()
+}
+```
 
-Restoration adoption remains manager-owned; configuring a restoration identifier does not create a second central manager or silently reconnect arbitrary peripherals.
+`monitorCharacteristicForDevice` + `cancelTransaction` become `database.subscribe` + `AbortSignal` + `subscription.remove()`.
 
-## Electron
+## RSSI, MTU, long write
 
-Only the trusted Electron main process owns or selects the radio. Renderers use the versioned renderer client and authenticated IPC lease; they do not load a native addon.
+```ts
+const rssi = (await connection.readRssi({ signal: abort.signal, deadline: journeyDeadline })).rssi
+if (manager.supports('connection:request-att-mtu')) {
+  await connection.requestMtu(185, { signal: abort.signal, deadline: journeyDeadline })
+}
+const maxWrite = await database.maximumWriteLength(path, 'without-response')
+await database.writeLong(path, largeBytes, { signal: abort.signal, deadline: journeyDeadline, mode: 'with-response' })
+```
 
-A renderer reload/replacement is an ownership boundary. Do not cache native/backend handles across the renderer lifecycle.
+## Destroy
 
-See [`docs/ELECTRON.md`](docs/ELECTRON.md).
+```ts
+// react-native-ble-plx
+manager.destroy()
 
-## Node desktop hosts
+// unified-ble-manager
+const gone = await manager.destroy()
+if (gone.state === 'release-failed') {
+  throw new Error('Manager cleanup failed.')
+}
+```
 
-The CoreBluetooth and WinRT integrations ship Node-API source, not a universal native binary. Build against the exact Node or Electron ABI and architecture that will load the addon.
+## Method map
 
-BlueZ is isolated behind the `/node/bluez` entrypoint and optional `dbus-next` dependency.
+| react-native-ble-plx | unified-ble-manager |
+| --- | --- |
+| `new BleManager()` | `createReactNativeBleManager(...)` |
+| `state()` / `onStateChange` | `adapterState()` snapshot or `adapterStates()` stream |
+| `startDeviceScan` / `stopDeviceScan` | `manager.scan` + `ScanSession.stop`, or `scanUntil` / `find` |
+| `connectToDevice` | `manager.connect(peerId, { signal, deadline })` |
+| `discoverAllServicesAndCharacteristics` | `connection.discover` |
+| `services` / `characteristicsForService` | `database.snapshot()` |
+| `readCharacteristicForDevice` | `database.read(path, options)` → `Uint8Array` |
+| `writeCharacteristicWithResponseForDevice` | `database.write(..., { mode: 'with-response' })` |
+| `writeCharacteristicWithoutResponseForDevice` | `database.write(..., { mode: 'without-response' })` |
+| `monitorCharacteristicForDevice` | `database.subscribe` + `for await` + `remove()` |
+| `cancelTransaction` | `AbortController.abort()` |
+| `readRSSI` | `connection.readRssi` |
+| `requestMTU` | `connection.requestMtu` if `supports('connection:request-att-mtu')` |
+| `destroy` | `await manager.destroy()` |
 
-## Error handling
+## Gone on purpose
 
-Prefer typed errors and terminal events over string matching. In particular, treat unsupported, unavailable, permission, cancellation, deadline, adapter-loss, and stale-generation conditions as distinct control-flow outcomes where the API exposes them.
+| 3.x | Why it is gone |
+| --- | --- |
+| Immortal `Device` handle | A disconnect made the object a lie. Use a lease + snapshot. |
+| Base64 `.value` | BLE is binary. |
+| Caller `transactionId` | One `AbortSignal` per policy. The library owns correlation. |
+| `createBond` / `removeBond` / `bondedDevices` | OS pairing only. See [`docs/BONDING.md`](docs/BONDING.md). |
+| `enable()` / `disable()` | The library does not toggle the adapter. |
+| `devices()` / `isDeviceConnected` / `connectedDevices()` | Own the `Connection` you created. |
+| `requestConnectionPriority` | No direct 4.0 replacement. Inspect `manager.capabilities()` and apply host-specific policy only where explicitly supported. |
+| `checkBluetoothPermissions` helpers | `adapterState().authorization` + OS APIs. |
+| `setLogLevel` | `manager.traces()` / `traceDocument()` if you need diagnostics. |
+| Android `scanMode` / `callbackType` | `duplicatePolicy`, `filter`, `delivery`. |
+| Expo `iosEnableRestoration` / `iosRestorationIdentifier` | `iosNativeProtocolRestoration` with five fields. |
+| Expo `androidEnableForegroundService` | The app owns any FGS. |
+| Static `supports()` matrix | `manager.supports(id)` after the backend exists. |
 
-Do not add a fallback backend merely to make an error disappear; doing so changes the radio/security boundary.
+Restoration identity (`clientId`, `hostSessionScope`, Expo `iosNativeProtocolRestoration`) does **not** auto-reconnect peripherals. You still connect.
 
-## Suggested migration order
+## Suggested order
 
-1. Install `unified-ble-manager` without changing production behavior yet.
-2. Pick the correct explicit host entrypoint.
-3. Replace legacy manager construction with explicit host ownership.
-4. Convert Base64 BLE values to bytes.
-5. Replace public transaction-ID cancellation with `AbortSignal`.
-6. Move connection/GATT state to explicit connection/database lifetimes.
-7. Update capability and error handling.
-8. Update Expo/native host configuration where applicable.
-9. Run package tests plus real-device validation for the host you ship.
-10. Remove `react-native-ble-plx` and any local compatibility wrapper.
+1. Install `unified-ble-manager` next to the old package if you need a feature-flagged rollback. Only one stack may own the radio.
+2. Create one RN manager with a stable `hostSessionScope`.
+3. Replace scan / connect / discover.
+4. Convert Base64 reads and writes to `Uint8Array`.
+5. Replace `cancelTransaction` with `AbortSignal`.
+6. Move GATT state onto snapshot paths.
+7. Await `destroy()`.
+8. Remove `react-native-ble-plx`.
 
-## Project lineage
+## Next
 
-The 4.0 work began in the `sfourdrinier/react-native-ble-plx` lineage and became the standalone `unified-ble-manager` package. The complete Git ancestry is preserved in the new canonical repository. `v4.0.0-alpha.40` is the repository-migration checkpoint; stable 4.0.0 and later 4.x work live in `sfourdrinier/unified-ble-manager`.
+[`README.md`](README.md) · [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md) · [`docs/TUTORIALS.md`](docs/TUTORIALS.md) · [`docs/EXPO_PLUGIN.md`](docs/EXPO_PLUGIN.md)
 
-For the public architecture and current host documentation, start with [`README.md`](README.md), [`docs/PLATFORMS.md`](docs/PLATFORMS.md), and [`docs/UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md`](docs/UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md).
+Maintainers: [`docs/UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md`](docs/UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md)

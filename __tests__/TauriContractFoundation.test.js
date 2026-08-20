@@ -33,4 +33,14 @@ describe('framework-neutral desktop IPC contract', () => {
     expect(electron).toContain("from './ipc'")
     expect(electron).toContain('IpcArbiterContext as ElectronMainArbiterContext')
   })
+
+  test('Tauri IPC connection and GATT database expose public session handles', () => {
+    const manager = read('src/ipc/manager.ts')
+
+    expect(manager).toContain('get connectionId()')
+    expect(manager).toContain('get connectionGeneration()')
+    expect(manager).toContain('get events()')
+    expect(manager).toContain('async snapshot(')
+    expect(manager).toContain('async subscribe(')
+  })
 })

@@ -32,11 +32,12 @@ import type {
   ScanLease,
   ScannerBackend
 } from '../../backend-contract/backend'
-import type {
-  AdapterStateSnapshot,
-  AdapterStateWatch,
-  AttachmentRecord,
-  HostNeutralBackendIdentity
+import {
+  isAuthorizationBlocking,
+  type AdapterStateSnapshot,
+  type AdapterStateWatch,
+  type AttachmentRecord,
+  type HostNeutralBackendIdentity
 } from '../../backend-contract/identity'
 import {
   createBackendOperationDispatch,
@@ -354,7 +355,7 @@ export abstract class DeterministicBackendBase {
       watcher.push(this.currentAdapterState(), 1, 'adapter-state')
     }
     this.emitEvent('adapter-state')
-    if (availability !== 'available' || authorization !== 'granted' || power !== 'on') {
+    if (availability !== 'available' || isAuthorizationBlocking(authorization) || power !== 'on') {
       this.handleAdapterUnavailable()
       this.stopAllScans('adapter-scan-stop-failed')
     }
@@ -627,7 +628,7 @@ export abstract class DeterministicBackendBase {
     if (this.adapterState.authorization === 'restricted') {
       throw contractError('permission.restricted', 'adapter', operation)
     }
-    if (this.adapterState.authorization !== 'granted') {
+    if (isAuthorizationBlocking(this.adapterState.authorization)) {
       throw contractError('permission.not-determined', 'adapter', operation)
     }
     if (this.adapterState.power !== 'on') {

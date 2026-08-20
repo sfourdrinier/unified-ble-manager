@@ -29,6 +29,7 @@ import {
 import type { CharacteristicPath } from '../../backend-contract/gatt'
 import {
   attachmentRecordsEqual,
+  isAuthorizationBlocking,
   type AdapterStateSnapshot,
   type AdapterStateWatch,
   type AttachmentRecord,
@@ -858,7 +859,8 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
     if (this.destroyed) {
       return
     }
-    const adapterLost = state.availability !== 'available' || state.authorization !== 'granted' || state.power !== 'on'
+    const adapterLost =
+      state.availability !== 'available' || isAuthorizationBlocking(state.authorization) || state.power !== 'on'
     if (adapterLost || this.adapterLossPending) {
       this.startAdapterLossCleanup()
     } else {

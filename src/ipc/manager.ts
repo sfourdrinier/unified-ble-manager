@@ -1,9 +1,29 @@
 import { BackendContractError, contractError, type CleanupRecord } from '../backend-contract/errors'
-import type { BoundedAsyncStream, StreamItem } from '../backend-contract/streams'
-import { byteLimit, capacity, ownBytes, resourceCount, type SerializableRecord } from '../backend-contract/primitives'
+import type { BoundedAsyncStream, OverflowPolicy, StreamTerminalNotice } from '../backend-contract/streams'
+import {
+  byteLimit,
+  capacity,
+  ownBytes,
+  resourceCount,
+  type SerializableRecord,
+  type SerializableValue
+} from '../backend-contract/primitives'
 import { CoreBoundedStream } from '../core/bounded-stream'
+import type {
+  PortableCurrentCharacteristicPath,
+  PortableDatabasePath,
+  PortableGattDatabaseSnapshot,
+  PortableOperationOptions,
+  PortableWritePolicy
+} from '../manager/consumer-handles'
 import { IpcBleClient } from './client'
 import type { IpcClientTransport } from './protocol'
+
+export {
+  advertisementPassesViewFilter,
+  type AdvertisementViewFilter,
+  type AdvertisementViewRecord
+} from './advertisement-view-filter'
 
 const REMOTE_STREAM_LIMITS = Object.freeze({
   itemCapacity: capacity(128),
@@ -26,10 +46,24 @@ export interface IpcWriteOptions extends IpcManagerOperationOptions {
   readonly mode?: 'with-response' | 'without-response'
 }
 
-export interface IpcAdvertisement extends SerializableRecord {
+export interface IpcManufacturerData {
+  readonly companyId: number
+  readonly data: Uint8Array
+}
+
+export interface IpcServiceData {
+  readonly uuid: string
+  readonly data: Uint8Array
+}
+
+export interface IpcAdvertisement {
   readonly peerId: string
   readonly localName: string | null
   readonly rssi: number | null
+  readonly txPowerLevel: number | null
+  readonly serviceUuids: readonly string[]
+  readonly manufacturerData: readonly IpcManufacturerData[]
+  readonly serviceData: readonly IpcServiceData[]
 }
 
 export interface IpcCharacteristicRecord extends SerializableRecord {
@@ -60,6 +94,7 @@ interface RemoteStream<Value> {
  */
 export class IpcBleManager<Attachment extends string = string, Client extends string = string> {
   private readonly streams = new Map<string, RemoteStream<unknown>>()
+  private readonly pendingStreamItems = new Map<string, SerializableRecord[]>()
   private readonly eventPump: Promise<void>
   private lifecycle: 'active' | 'releasing' | 'released' = 'active'
   private releaseResult: Promise<CleanupRecord> | null = null
@@ -133,6 +168,7 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
           this.lifecycle = 'released'
           for (const stream of this.streams.values()) stream.source.closeWithReason('owner-released')
           this.streams.clear()
+          this.pendingStreamItems.clear()
           await this.eventPump
         } else {
           this.lifecycle = 'active'
@@ -193,11 +229,20 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
   registerStream<Value>(handle: string): BoundedAsyncStream<Value> {
     if (this.streams.has(handle)) throw new TypeError(`Duplicate remote stream handle: ${handle}`)
     const source = new CoreBoundedStream<Value>(REMOTE_STREAM_LIMITS, 'drop-oldest')
-    this.streams.set(handle, { source: source as CoreBoundedStream<unknown>, publicStream: source })
+    const remote: RemoteStream<unknown> = { source: source as CoreBoundedStream<unknown>, publicStream: source }
+    this.streams.set(handle, remote)
+    const pending = this.pendingStreamItems.get(handle)
+    this.pendingStreamItems.delete(handle)
+    if (pending !== undefined) {
+      for (const item of pending) {
+        this.deliverToStream(handle, remote, item)
+      }
+    }
     return source
   }
 
   closeStream(handle: string, reason: 'owner-released' | 'source-failed' = 'owner-released'): void {
+    this.pendingStreamItems.delete(handle)
     const stream = this.streams.get(handle)
     if (stream === undefined) return
     this.streams.delete(handle)
@@ -208,23 +253,45 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
     for await (const event of this.client.events) {
       if (event.kind !== 'value') continue
       const streamId = requiredString(event.value, 'streamId', 'ipc-manager.event')
-      const item = requiredRecord(event.value, 'item', 'ipc-manager.event') as unknown as StreamItem<unknown>
+      const item = requiredRecord(event.value, 'item', 'ipc-manager.event')
       const remote = this.streams.get(streamId)
-      if (remote === undefined) continue
-      if (item.kind === 'value') {
-        remote.source.emit(item.value, estimateByteLength(item.value))
-      } else if (item.kind === 'overflow') {
-        remote.source.observeSourceOverflow({
-          kind: 'overflow',
-          policy: item.policy,
-          droppedItems: resourceCount(Number(item.droppedItems)),
-          droppedBytes: resourceCount(Number(item.droppedBytes)),
-          replacedItems: resourceCount(Number(item.replacedItems))
-        })
-      } else if (item.kind === 'terminal') {
-        remote.source.finishWithReason(item.reason)
-        this.streams.delete(streamId)
+      if (remote === undefined) {
+        this.bufferPendingStreamItem(streamId, item)
+        continue
       }
+      this.deliverToStream(streamId, remote, item)
+    }
+  }
+
+  private bufferPendingStreamItem(streamId: string, item: SerializableRecord): void {
+    const pending = this.pendingStreamItems.get(streamId) ?? []
+    const itemCapacity = Number(REMOTE_STREAM_LIMITS.itemCapacity)
+    if (pending.length >= itemCapacity) {
+      pending.shift()
+    }
+    pending.push(item)
+    this.pendingStreamItems.set(streamId, pending)
+  }
+
+  private deliverToStream(streamId: string, remote: RemoteStream<unknown>, item: SerializableRecord): void {
+    if (item.kind === 'value') {
+      remote.source.emit(item.value, estimateByteLength(item.value))
+      return
+    }
+    if (item.kind === 'overflow') {
+      remote.source.observeSourceOverflow({
+        kind: 'overflow',
+        policy: requiredOverflowPolicy(item.policy, 'ipc-manager.event'),
+        droppedItems: resourceCount(Number(item.droppedItems)),
+        droppedBytes: resourceCount(Number(item.droppedBytes)),
+        replacedItems: resourceCount(Number(item.replacedItems))
+      })
+      return
+    }
+    if (item.kind === 'terminal') {
+      remote.source.finishWithReason(requiredTerminalReason(item.reason, 'ipc-manager.event'))
+      this.streams.delete(streamId)
+      this.pendingStreamItems.delete(streamId)
     }
   }
 
@@ -248,11 +315,25 @@ export class IpcScanSession {
 }
 
 export class IpcConnection {
+  private readonly lifecycleEvents = new CoreBoundedStream<SerializableRecord>(REMOTE_STREAM_LIMITS, 'drop-oldest')
+
   constructor(
     private readonly manager: IpcBleManager,
     readonly handle: string,
     readonly peerId: string
   ) {}
+
+  get connectionId(): string {
+    return this.handle
+  }
+
+  get connectionGeneration(): string {
+    return '1'
+  }
+
+  get events(): BoundedAsyncStream<SerializableRecord> {
+    return this.lifecycleEvents
+  }
 
   async discover(options: IpcManagerOperationOptions = {}): Promise<IpcGattDatabase> {
     const payload = await this.manager.route(
@@ -339,6 +420,133 @@ export class IpcGattDatabase {
   closeStream(handle: string): void {
     this.manager.closeStream(handle)
   }
+
+  get path(): PortableDatabasePath {
+    return ipcDatabasePath(this.connection, this.handle)
+  }
+
+  monotonicNow(): number {
+    if (globalThis.performance === undefined) {
+      throw new TypeError('A monotonic performance clock is required')
+    }
+    return globalThis.performance.now()
+  }
+
+  scheduleDeadline(deadline: number, action: () => void): { cancel: () => void } {
+    const delay = Math.max(0, deadline - this.monotonicNow())
+    const timer = globalThis.setTimeout(action, delay)
+    return {
+      cancel: () => {
+        globalThis.clearTimeout(timer)
+      }
+    }
+  }
+
+  async snapshot(): Promise<PortableGattDatabaseSnapshot> {
+    const databasePath = this.path
+    const services = []
+    const seenServices = new Set()
+    for (const characteristic of this.characteristics) {
+      const key = `${characteristic.record.serviceUuid}:${characteristic.record.serviceOccurrence}`
+      if (seenServices.has(key)) continue
+      seenServices.add(key)
+      services.push({
+        path: Object.freeze({
+          ...databasePath,
+          serviceUuid: characteristic.record.serviceUuid,
+          serviceOccurrence: String(characteristic.record.serviceOccurrence)
+        })
+      })
+    }
+
+    return Object.freeze({
+      path: databasePath,
+      services: Object.freeze(services),
+      characteristics: Object.freeze(
+        this.characteristics.map(characteristic =>
+          Object.freeze({
+            path: toCharacteristicPath(databasePath, characteristic.record),
+            properties: Object.freeze({
+              read: characteristic.record.properties.includes('read'),
+              writeWithResponse: characteristic.record.properties.includes('write'),
+              writeWithoutResponse: characteristic.record.properties.includes('write-without-response'),
+              notify:
+                characteristic.record.properties.includes('notify') ||
+                characteristic.record.properties.includes('indicate')
+            })
+          })
+        )
+      ),
+      descriptors: Object.freeze(
+        this.descriptors.map(descriptor =>
+          Object.freeze({
+            path: Object.freeze({
+              ...toCharacteristicPath(
+                databasePath,
+                characteristicRecordForDescriptor(this.characteristics, descriptor.record)
+              ),
+              descriptorUuid: descriptor.record.uuid,
+              descriptorOccurrence: String(descriptor.record.occurrence)
+            })
+          })
+        )
+      )
+    })
+  }
+
+  async read(
+    path: PortableCurrentCharacteristicPath,
+    options: PortableOperationOptions = EMPTY_OPERATION_OPTIONS
+  ): Promise<Uint8Array> {
+    return this.characteristicForPath(path).read(toIpcOptions(options))
+  }
+
+  async write(
+    path: PortableCurrentCharacteristicPath,
+    bytes: Readonly<Uint8Array>,
+    options: PortableWritePolicy
+  ): Promise<{
+    readonly terminal: { readonly correlation: string; readonly outcome: 'succeeded'; readonly cause: null }
+    readonly commitState: 'confirmed'
+  }> {
+    await this.characteristicForPath(path).write(bytes, {
+      ...toIpcOptions(options),
+      mode: options.mode
+    })
+    return Object.freeze({
+      terminal: Object.freeze({ correlation: path.characteristicUuid, outcome: 'succeeded', cause: null }),
+      commitState: 'confirmed'
+    })
+  }
+
+  async subscribe(
+    path: PortableCurrentCharacteristicPath,
+    options: PortableOperationOptions = EMPTY_OPERATION_OPTIONS
+  ): Promise<IpcSubscription> {
+    const subscription = await this.characteristicForPath(path).subscribe(toIpcOptions(options))
+    subscription.path = path
+    return subscription
+  }
+
+  private characteristicForPath(path: PortableCurrentCharacteristicPath): IpcCharacteristic {
+    const matches = this.characteristics.filter(
+      characteristic =>
+        characteristic.record.serviceUuid === path.serviceUuid &&
+        characteristic.record.characteristicUuid === path.characteristicUuid &&
+        String(characteristic.record.serviceOccurrence) === String(path.serviceOccurrence) &&
+        String(characteristic.record.characteristicOccurrence) === String(path.characteristicOccurrence)
+    )
+    if (matches.length !== 1) {
+      throw new TypeError(
+        `Expected exactly one IPC characteristic ${path.characteristicUuid} in ${path.serviceUuid}; found ${matches.length}`
+      )
+    }
+    const match = matches[0]
+    if (match === undefined) {
+      throw new TypeError(`IPC characteristic ${path.characteristicUuid} was missing after match`)
+    }
+    return match
+  }
 }
 
 export class IpcCharacteristic {
@@ -414,11 +622,17 @@ export class IpcDescriptor {
 }
 
 export class IpcSubscription {
+  path: PortableCurrentCharacteristicPath | null = null
+
   constructor(
     private readonly database: IpcGattDatabase,
     readonly handle: string,
     readonly values: BoundedAsyncStream<Uint8Array>
   ) {}
+
+  get subscriptionId(): string {
+    return this.handle
+  }
 
   async remove(): Promise<CleanupRecord> {
     const cleanup = cleanupRecord(
@@ -427,6 +641,76 @@ export class IpcSubscription {
     if (cleanup.state === 'released') this.database.closeStream(this.handle)
     return cleanup
   }
+}
+
+const EMPTY_OPERATION_OPTIONS: PortableOperationOptions = Object.freeze({ signal: null, deadline: null })
+
+function ipcDatabasePath(connection: IpcConnection, databaseId: string): PortableDatabasePath {
+  const attachment = Object.freeze({
+    attachmentId: 'tauri-ble',
+    backendInstanceId: 'tauri-plugin-unified-ble-manager',
+    backendGeneration: '1',
+    adapter: Object.freeze({
+      adapterId: 'tauri',
+      displayName: 'Tauri BLE',
+      state: Object.freeze({
+        availability: 'available',
+        authorization: 'granted',
+        power: 'on',
+        backendGeneration: '1',
+        updatedAt: 0,
+        safeReason: null
+      }),
+      adapterGeneration: '1',
+      limitations: Object.freeze([])
+    })
+  })
+  return Object.freeze({
+    attachment,
+    attachmentId: attachment.attachmentId,
+    peerId: connection.peerId,
+    connectionId: connection.connectionId,
+    ownerLeaseId: connection.handle,
+    connectionGeneration: connection.connectionGeneration,
+    databaseId,
+    databaseGeneration: '1'
+  })
+}
+
+function toIpcOptions(options: PortableOperationOptions): IpcManagerOperationOptions {
+  const timeoutMs =
+    typeof options.deadline === 'number' && globalThis.performance !== undefined
+      ? Math.max(1, options.deadline - globalThis.performance.now())
+      : undefined
+  return {
+    signal: options.signal ?? undefined,
+    timeoutMs
+  }
+}
+
+function toCharacteristicPath(
+  databasePath: PortableDatabasePath,
+  record: IpcCharacteristicRecord
+): PortableCurrentCharacteristicPath {
+  return Object.freeze({
+    ...databasePath,
+    serviceUuid: record.serviceUuid,
+    serviceOccurrence: String(record.serviceOccurrence),
+    characteristicUuid: record.characteristicUuid,
+    characteristicOccurrence: String(record.characteristicOccurrence),
+    validity: 'current'
+  })
+}
+
+function characteristicRecordForDescriptor(
+  characteristics: readonly IpcCharacteristic[],
+  descriptor: IpcDescriptorRecord
+): IpcCharacteristicRecord {
+  const match = characteristics.find(characteristic => characteristic.record.handle === descriptor.characteristicHandle)
+  if (match === undefined) {
+    throw new TypeError(`IPC descriptor ${descriptor.uuid} has no matching characteristic`)
+  }
+  return match.record
 }
 
 function operationDeadline(options: IpcManagerOperationOptions): number | null {
@@ -441,6 +725,31 @@ function cleanupRecord(value: SerializableRecord): CleanupRecord {
     throw new TypeError('Malformed cleanup receipt')
   }
   return value as unknown as CleanupRecord
+}
+
+function requiredOverflowPolicy(value: SerializableValue | undefined, operation: string): OverflowPolicy {
+  if (value === 'latest' || value === 'drop-oldest' || value === 'drop-newest' || value === 'error') {
+    return value
+  }
+  throw new TypeError(`Malformed ${operation} overflow policy`)
+}
+
+function requiredTerminalReason(
+  value: SerializableValue | undefined,
+  operation: string
+): StreamTerminalNotice['reason'] {
+  if (
+    value === 'closed' ||
+    value === 'overflow' ||
+    value === 'source-failed' ||
+    value === 'owner-released' ||
+    value === 'connection-lost' ||
+    value === 'operation-aborted' ||
+    value === 'operation-timed-out'
+  ) {
+    return value
+  }
+  throw new TypeError(`Malformed ${operation} terminal reason`)
 }
 
 function requiredRecord(record: SerializableRecord, key: string, operation: string): SerializableRecord {

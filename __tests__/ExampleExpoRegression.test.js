@@ -49,7 +49,7 @@ describe('Expo example cold-review regressions', () => {
       expect(service).toMatch(/async stopScan[\s\S]*?assertReleased\(await scan\.stop\(\)[\s\S]*?this\.scan = null/)
       expect(service).toMatch(/async stopNotification[\s\S]*?assertReleased\(await subscription\.remove\(\)[\s\S]*?this\.notification = null/)
       expect(service).toMatch(/this\.connection = connection[\s\S]*?await this\.disconnect\(\)/)
-      expect(service).toMatch(/values\[characteristic\.field\] = \{ skipped: true, reason \}/)
+      expect(service).toMatch(/isOptionalFeatureAbsence\(error\)[\s\S]*skipped: true, reason: error\.normalized\.code/)
       expect(service).toContain('advertisement: observation')
     }
   })
