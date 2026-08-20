@@ -10,7 +10,7 @@ const clientExport = 'ElectronRendererBleClient'
 async function runRendererJourney(client) {
   await client.initialize()
   await client.request({
-    command: 'adapter.state',
+    command: 'scan.start',
     payload: Object.freeze({}),
     binaryPayload: null,
     signal: null
