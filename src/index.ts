@@ -169,3 +169,24 @@ export type {
   StreamTerminalNotice,
   StreamValue
 } from './backend-contract/streams'
+
+// PR1 façade — non-generic application surface (additive in phase 1, will become sole root export in phase 2)
+export { BleManagerImpl as ApplicationBleManager, createPublicBleManager } from './public/ble-manager'
+export type {
+  BlePeer,
+  BleConnection as PublicBleConnection,
+  ScanSession as PublicScanSession
+} from './public/ble-manager'
+export type { BleAdapter, BleAdapterState } from './public/ble-adapter'
+export { BleError as PublicBleError } from './public/errors'
+export type { BleRecovery, BleRecoveryDisposition } from './public/errors'
+export type { OperationOptions } from './public/operation-options'
+export { normalizeOperationOptions, composeAbortSignal } from './public/operation-options'
+export type { StreamPreset, StreamBudget } from './public/stream-presets'
+export { resolveStreamPreset, STREAM_PRESET_DEFAULTS } from './public/stream-presets'
+export type { BleManagerCreateOptions, DiagnosticsOptions } from './public/host-identity'
+export {
+  deriveRestorationIdentity,
+  createEphemeralHostIdentity,
+  normalizeBleManagerCreateOptions
+} from './public/host-identity'

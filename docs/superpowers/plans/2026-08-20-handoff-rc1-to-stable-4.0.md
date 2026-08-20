@@ -620,6 +620,12 @@ handoff:        docs/superpowers/plans/2026-08-20-handoff-rc1-to-stable-4.0.md
   - `package.json` exports `+ ./advanced`, `+ ./expo`
   - `scripts/ci/verify-package-artifacts.js` — allow `advanced.ts`, `expo.ts`, `public/**`
   - updated 5 package-surface tests to reflect new exports and 8th ADR
+- phase 2 (façade skeleton, additive):
+  - `src/public/ble-manager.ts` — non-generic `BleManager` façade (`ApplicationBleManager`) wrapping internal `BleManager`, `BlePeer`/`BleConnection`/`ScanSession`/`Gatt*` stubs, `ScanOptions` with `preset`, `createPublicBleManager` factory, `withConnection` helper
+  - `src/public/ble-adapter.ts` — `BleAdapter`/`BleAdapterState`
+  - `src/public/errors.ts` — `PublicBleError`/`BleRecovery` (stub, full catalog PR2)
+  - `src/index.ts` — additive `ApplicationBleManager` + `PublicBle*` + `OperationOptions`/`StreamPreset`/`BleManagerCreateOptions` alongside preserved RC1 exports (phase 2 keeps tests green; final phase will make root application-only and remove aliases)
+  - updated `__tests__/PackageSurface4.test.js` + `__tests__/package-surface/fixtures/public-surface.ts` expectations to stay green with additive surface
 - adversarial round 1: (pending)
 - adversarial round 2: (pending)
 - ready-for-github: (pending)
