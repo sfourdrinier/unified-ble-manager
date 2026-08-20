@@ -1,9 +1,9 @@
 'use strict'
 
 const assert = require('node:assert/strict')
-const main = require('./main')
-const preload = require('./preload')
-const renderer = require('./renderer')
+const main = require('./composition-main')
+const preload = require('./composition-preload')
+const renderer = require('./composition-renderer')
 
 assert.equal(main.browserWindowWebPreferences.contextIsolation, true)
 assert.equal(main.browserWindowWebPreferences.nodeIntegration, false)

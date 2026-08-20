@@ -10,7 +10,7 @@ Main owns the radio. The renderer uses a versioned IPC client and never loads a 
 `unified-ble-manager/electron/renderer` are the only Electron entrypoints.
 
 Runnable composition lives in [`example-electron/`](../example-electron/)
-(`main.js`, `preload.js`, `renderer.js`). Sequence:
+(`composition-main.js`, `composition-preload.js`, `composition-renderer.js`). Sequence:
 
 1. create a main-process provider and `BleManager`;
 2. create the router and install the binding;

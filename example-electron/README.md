@@ -14,7 +14,7 @@ The smoke imports only these public entrypoints:
 - `unified-ble-manager/testing` for the deterministic scenario factory
 - `unified-ble-manager/electron/main` for `ElectronMainBleRouter`
 
-Composition sources (`main.js`, `preload.js`, `renderer.js`) show the ownership
+Composition sources (`composition-main.js`, `composition-preload.js`, `composition-renderer.js`) show the ownership
 sequence: main owns the radio, preload exposes a narrow bridge, the renderer
 uses `ElectronRendererBleClient`. `node example-electron/composition.js` checks
 those files without opening a window. That is not live-radio proof.
