@@ -13,6 +13,7 @@ import type { ChooserRequest, WebChooser } from '../backend-contract/host/web'
 import type { AdapterSelection, BackendIdentity, BackendProvider, HostKind } from '../backend-contract/identity'
 import type { BorrowedBytes, PeerId, SerializableRecord } from '../backend-contract/primitives'
 import type { ManagerRestorationCapability, RestorationAdoptionRequest } from '../backend-contract/restoration'
+import type { IpcClientTransport, IpcRouteRequest } from '../ipc/protocol'
 
 /**
  * A production TCK fixture is an adapter around a backend's public contract.
@@ -101,9 +102,26 @@ export interface TckWebChooserScenarioAdapter<Attachment extends string> {
   readonly expectedInitialNotificationValue: BorrowedBytes
 }
 
+/**
+ * Typed desktop-webview inputs for the runner-owned transport event-sink scenario. The adapter
+ * supplies one already-attached transport plus the host's own valid request/response traffic; the
+ * runner owns every subscribe, invoke, and acknowledge call and derives its fact from public results.
+ */
+export interface TckIpcTransportScenarioAdapter<Attachment extends string> {
+  /** Attached transport whose event sink the host bound once, on the attach request. */
+  readonly transport: IpcClientTransport<Attachment, string>
+  /**
+   * Host-valid request/response traffic the runner replays between event deliveries. Only route
+   * requests belong here: a bootstrap request legitimately rebinds the event sink, and a release
+   * request ends the attachment that owns it, so neither can prove the invariant under test.
+   */
+  readonly routeRequests: readonly IpcRouteRequest<Attachment, string, string>[]
+}
+
 /** Typed deterministic-boundary inputs for feature scenarios that the standard runner observes. */
 export interface TckFeatureScenarioAdapters<Attachment extends string, Identity extends BackendIdentity<Attachment>> {
   readonly connectionControls?: TckConnectionControlsScenarioAdapter
+  readonly ipcTransport?: TckIpcTransportScenarioAdapter<Attachment>
   readonly restoration?: TckRestorationScenarioAdapter<Attachment, Identity>
   readonly webChooser?: TckWebChooserScenarioAdapter<Attachment>
 }
@@ -134,6 +152,7 @@ export type TckControllerAction =
   | 'set-adapter-state'
   | 'reload-renderer'
   | 'seed-restoration-journal'
+  | 'emit-ipc-event'
 
 export type TckProofScope = 'deterministic'
 
@@ -175,6 +194,7 @@ export type TckScenarioId =
   | 'scenario.scan-connect-discover-read-notify-destroy'
   | 'web.unsupported-capabilities-reject-and-remain-honest'
   | 'web.chooser-connect-discover-read-notify-destroy'
+  | 'ipc.event-sink-survives-request-response-traffic'
 
 /** One authority for the runner-owned Web unsupported-capability scenario. */
 export const WEB_UNSUPPORTED_CAPABILITIES_TCK_SCENARIO_ID =
@@ -239,6 +259,7 @@ export type TckFactId =
   | 'vertical-slice-preserves-scan-and-cleans-up'
   | 'web-unsupported-capabilities-reject-and-report-runtime-truth'
   | 'web-chooser-vertical-slice-preserves-selection-and-cleans-up'
+  | 'ipc-event-sink-survives-request-response-traffic'
 
 export interface TckScenarioDefinition {
   readonly id: TckScenarioId
@@ -273,6 +294,18 @@ export const WEB_CHOOSER_TCK_FEATURE_SUITE = Object.freeze({
   scenarioIds: Object.freeze<
     readonly [typeof WEB_CHOOSER_TCK_SCENARIO_ID, typeof WEB_UNSUPPORTED_CAPABILITIES_TCK_SCENARIO_ID]
   >([WEB_CHOOSER_TCK_SCENARIO_ID, WEB_UNSUPPORTED_CAPABILITIES_TCK_SCENARIO_ID])
+}) satisfies TckFeatureSuite
+
+/** One authority for the desktop webview transport scenario consumed by its scenario, registry, and registration. */
+export const IPC_TRANSPORT_TCK_SCENARIO_ID = 'ipc.event-sink-survives-request-response-traffic' satisfies TckScenarioId
+
+/** One authority for the desktop webview transport feature suite consumed by its registry and registration. */
+export const IPC_TRANSPORT_TCK_SUITE_ID = 'ipc-transport-event-sink'
+
+/** Immutable typed desktop webview transport suite authority. */
+export const IPC_TRANSPORT_TCK_FEATURE_SUITE = Object.freeze({
+  suiteId: IPC_TRANSPORT_TCK_SUITE_ID,
+  scenarioIds: Object.freeze<readonly [typeof IPC_TRANSPORT_TCK_SCENARIO_ID]>([IPC_TRANSPORT_TCK_SCENARIO_ID])
 }) satisfies TckFeatureSuite
 
 export type RegisteredFeature = FeatureRegistry['registrations'][number]

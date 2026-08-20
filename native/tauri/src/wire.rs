@@ -88,6 +88,12 @@ impl IpcValue {
     }
 }
 
+/// The one request kind that may bind a caller's event sink.
+///
+/// Held here so the command layer and the dispatcher agree on it without
+/// duplicating a string literal.
+pub const ATTACH_REQUEST_KIND: &str = "bootstrap";
+
 /// Encodes typed IPC events before sending them through a Tauri Channel.
 #[derive(Clone)]
 pub struct IpcEventSink {

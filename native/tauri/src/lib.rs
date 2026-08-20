@@ -11,7 +11,7 @@ use tauri::{
 };
 
 pub use btleplug_dispatcher::{BtleplugDispatcher, BtleplugDispatcherOptions};
-pub use wire::{IpcEventSink, IpcValue};
+pub use wire::{IpcEventSink, IpcValue, ATTACH_REQUEST_KIND};
 
 /// Full frontend command used by `unified-ble-manager/tauri`.
 pub const PLUGIN_COMMAND: &str = "plugin:unified-ble-manager|invoke";
@@ -50,7 +50,9 @@ pub trait IpcDispatcher: Send + Sync + 'static {
         &'a self,
         caller: AuthenticatedCaller,
         request: IpcValue,
-        event_sink: IpcEventSink,
+        // `Some` only for the attach request, which binds the caller's event
+        // sink for the lifetime of the attachment. See `commands::invoke`.
+        event_sink: Option<IpcEventSink>,
     ) -> DispatchFuture<'a>;
 
     /// Revokes all leases and resources owned by this authenticated caller.

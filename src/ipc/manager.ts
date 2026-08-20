@@ -481,7 +481,10 @@ export class IpcGattDatabase {
         this.descriptors.map(descriptor =>
           Object.freeze({
             path: Object.freeze({
-              ...toCharacteristicPath(databasePath, characteristicRecordForDescriptor(this.characteristics, descriptor.record)),
+              ...toCharacteristicPath(
+                databasePath,
+                characteristicRecordForDescriptor(this.characteristics, descriptor.record)
+              ),
               descriptorUuid: descriptor.record.uuid,
               descriptorOccurrence: String(descriptor.record.occurrence)
             })
@@ -502,7 +505,10 @@ export class IpcGattDatabase {
     path: PortableCurrentCharacteristicPath,
     bytes: Readonly<Uint8Array>,
     options: PortableWritePolicy
-  ): Promise<{ readonly terminal: { readonly correlation: string; readonly outcome: 'succeeded'; readonly cause: null }; readonly commitState: 'confirmed' }> {
+  ): Promise<{
+    readonly terminal: { readonly correlation: string; readonly outcome: 'succeeded'; readonly cause: null }
+    readonly commitState: 'confirmed'
+  }> {
     await this.characteristicForPath(path).write(bytes, {
       ...toIpcOptions(options),
       mode: options.mode

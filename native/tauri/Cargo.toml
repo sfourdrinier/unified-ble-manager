@@ -23,5 +23,13 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"
 tokio-util = "0.7"
 uuid = "1"
 
+[target.'cfg(target_os = "macos")'.dependencies]
+# Real CoreBluetooth authorization (`+[CBManager authorization]`) for adapter
+# state. Both crates are already in this crate's dependency graph through
+# btleplug 0.12, which enables the same `CBManager` feature, so declaring them
+# adds no new compiled crate.
+objc2 = "0.5.2"
+objc2-core-bluetooth = { version = "0.2.2", default-features = false, features = ["std", "CBManager"] }
+
 [build-dependencies]
 tauri-plugin = { version = "2", features = ["build"] }

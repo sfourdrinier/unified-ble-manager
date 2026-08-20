@@ -1,10 +1,10 @@
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicI64, AtomicU64, Ordering},
         Arc, Mutex as SyncMutex, OnceLock,
     },
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use btleplug::{
@@ -21,6 +21,7 @@ use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
+use crate::ATTACH_REQUEST_KIND;
 use crate::{AuthenticatedCaller, DispatchFuture, IpcDispatcher, IpcEventSink, IpcValue};
 
 const MAX_PENDING_EVENTS: usize = 256;
@@ -211,11 +212,11 @@ impl BtleplugDispatcher {
         &self,
         caller: AuthenticatedCaller,
         request: IpcValue,
-        event_sink: IpcEventSink,
+        event_sink: Option<IpcEventSink>,
     ) -> Result<IpcValue, DispatchError> {
         let request = into_object(request, "tauri.request")?;
         let kind = required_string(&request, "kind", "tauri.request-kind")?;
-        if kind != "bootstrap" && self.is_revoked(&caller_key(&caller)) {
+        if kind != ATTACH_REQUEST_KIND && self.is_revoked(&caller_key(&caller)) {
             return Err(DispatchError::new(
                 "ownership.denied",
                 "ipc",
@@ -223,8 +224,16 @@ impl BtleplugDispatcher {
             ));
         }
         match kind.as_str() {
-            "bootstrap" => self.bootstrap(caller, event_sink).await,
-            "route" => self.route(caller, request, event_sink).await,
+            ATTACH_REQUEST_KIND => {
+                // Attaching is the one request that binds the event sink. A
+                // caller that omits it could never receive events, so refuse
+                // rather than attach a mute lease.
+                let event_sink = event_sink.ok_or_else(|| {
+                    DispatchError::new("protocol.malformed", "ipc", "tauri.bootstrap-event-channel")
+                })?;
+                self.bootstrap(caller, event_sink).await
+            }
+            "route" => self.route(caller, request).await,
             "event.ack" => self.acknowledge(caller, request).await,
             "release" => self.release_request(caller, request).await,
             _ => Err(DispatchError::new(
@@ -339,7 +348,6 @@ impl BtleplugDispatcher {
         &self,
         caller: AuthenticatedCaller,
         request: BTreeMap<String, IpcValue>,
-        event_sink: IpcEventSink,
     ) -> Result<IpcValue, DispatchError> {
         let envelope = into_object(
             required_value(&request, "envelope", "tauri.route-envelope")?.clone(),
@@ -362,8 +370,7 @@ impl BtleplugDispatcher {
                 ))
             }
         };
-        self.validate_envelope(&caller, &envelope, event_sink)
-            .await?;
+        self.validate_envelope(&caller, &envelope).await?;
 
         if command == "operation.cancel" {
             let target = required_string(&payload, "targetCorrelation", "tauri.cancel")?;
@@ -502,7 +509,6 @@ impl BtleplugDispatcher {
         &self,
         caller: &AuthenticatedCaller,
         envelope: &BTreeMap<String, IpcValue>,
-        event_sink: IpcEventSink,
     ) -> Result<(), DispatchError> {
         let lease = into_object(
             required_value(envelope, "rendererLease", "tauri.route-lease")?.clone(),
@@ -533,7 +539,11 @@ impl BtleplugDispatcher {
                 "tauri.route-lease",
             ));
         }
-        caller_state.event_sink = event_sink;
+        // The event sink is deliberately NOT reassigned here. It is bound once
+        // by `bootstrap` and lives for the attachment; replacing it would drop
+        // the previous Tauri Channel, and that drop ends the shared JS callback
+        // which every later event depends on.
+        let _ = caller_state;
         Ok(())
     }
 
@@ -1732,7 +1742,7 @@ impl IpcDispatcher for BtleplugDispatcher {
         &'a self,
         caller: AuthenticatedCaller,
         request: IpcValue,
-        event_sink: IpcEventSink,
+        event_sink: Option<IpcEventSink>,
     ) -> DispatchFuture<'a> {
         Box::pin(async move {
             self.dispatch_request(caller, request, event_sink)
@@ -2067,34 +2077,283 @@ fn attachment_record(attachment: &Attachment) -> IpcValue {
                     "adapterGeneration",
                     string(attachment.adapter_generation.clone()),
                 ),
-                ("limitations", IpcValue::Array(Vec::new())),
+                ("limitations", adapter_limitations()),
             ]),
         ),
     ])
 }
 
-fn adapter_state(attachment: &Attachment) -> IpcValue {
-    live_adapter_state(attachment, "unknown", 0)
+/// Adapter limitations this host can state as fact.
+///
+/// Both are properties of this dispatcher, verifiable in this file:
+/// `open_btleplug_adapter` selects one adapter when the attachment is created
+/// and nothing re-selects it afterwards, and the only messages this host pushes
+/// through an event sink are stream `value` and `terminal` messages, never an
+/// adapter-state change.
+const ADAPTER_LIMITATIONS: [&str; 2] = [
+    "This host binds one adapter for the lifetime of the attachment; the adapter is selected when the attachment is created and other adapters are not reachable through it.",
+    "This host does not observe adapter-state changes; every adapter.state response is a fresh sample and no adapter-state event is emitted.",
+];
+
+fn adapter_limitations() -> IpcValue {
+    IpcValue::Array(
+        ADAPTER_LIMITATIONS
+            .iter()
+            .map(|limitation| string(*limitation))
+            .collect(),
+    )
 }
 
+/// What an adapter-state snapshot was actually able to observe.
+enum AdapterSample<'a> {
+    /// Attachment identity only: nothing was read from the adapter.
+    Unsampled,
+    /// Values read from the adapter while building this snapshot.
+    Live { power: &'a str, heard: i64 },
+}
+
+const UNSAMPLED_SNAPSHOT_REASON: &str =
+    "This snapshot carries attachment identity only; availability, power, and the heard peer count are not sampled here, so route adapter.state for a live reading.";
+
+/// Snapshot for the attachment record, which reads nothing from the adapter.
+fn adapter_state(attachment: &Attachment) -> IpcValue {
+    adapter_state_snapshot(attachment, AdapterSample::Unsampled)
+}
+
+/// Snapshot for `adapter.state`, built from values just read from the adapter.
 fn live_adapter_state(attachment: &Attachment, power: &str, heard: i64) -> IpcValue {
+    adapter_state_snapshot(attachment, AdapterSample::Live { power, heard })
+}
+
+/// Builds an adapter-state snapshot in which every field is either observed or
+/// explicitly absent.
+///
+/// `availability` and `power` are asserted only from a live read: the caller of
+/// [`live_adapter_state`] reaches it only after `Adapter::adapter_state`
+/// succeeded, which proves the platform still hands this process the adapter.
+/// The unsampled path observes nothing and says so. `authorization` comes from
+/// [`platform_authorization`], `updatedAt` from [`sample_epoch_millis`], and
+/// `safeReason` is the joined set of caveats those readings actually carry, or
+/// null when there are none.
+fn adapter_state_snapshot(attachment: &Attachment, sample: AdapterSample<'_>) -> IpcValue {
+    let clock = sample_epoch_millis();
+    let authorization = platform_authorization();
+    let (availability, power, heard) = match sample {
+        AdapterSample::Live { power, heard } => (string("available"), string(power), number(heard)),
+        AdapterSample::Unsampled => (string("unknown"), string("unknown"), IpcValue::Null),
+    };
+    let mut caveats: Vec<&str> = Vec::new();
+    if matches!(sample, AdapterSample::Unsampled) {
+        caveats.push(UNSAMPLED_SNAPSHOT_REASON);
+    }
+    if let Some(reason) = authorization.reason {
+        caveats.push(reason);
+    }
+    if let Some(reason) = clock.reason {
+        caveats.push(reason);
+    }
     object([
-        ("availability", string("available")),
-        ("authorization", string("not-determined")),
-        ("power", string(power)),
-        ("heard", number(heard)),
+        ("availability", availability),
+        (
+            "authorization",
+            match authorization.value {
+                Some(value) => string(value),
+                None => IpcValue::Null,
+            },
+        ),
+        ("power", power),
+        ("heard", heard),
         (
             "backendGeneration",
             string(attachment.backend_generation.clone()),
         ),
-        ("updatedAt", number(0)),
-        (
-            "safeReason",
-            string(
-                "authorization is not live TCC; power and heard are live from the adapter.",
-            ),
-        ),
+        ("updatedAt", number(clock.epoch_millis)),
+        ("safeReason", safe_reason(&caveats)),
     ])
+}
+
+fn safe_reason(caveats: &[&str]) -> IpcValue {
+    if caveats.is_empty() {
+        IpcValue::Null
+    } else {
+        string(caveats.join(" "))
+    }
+}
+
+/// One platform authorization reading.
+///
+/// `value` is a wire token from the adapter-state vocabulary
+/// (`granted | denied | restricted | not-determined | unavailable`) when the
+/// platform yielded one, and `None` when it did not: an absent authorization is
+/// reported as JSON null rather than guessed. `reason` carries the caveat that
+/// belongs in `safeReason`, and is set only when the reading needs one.
+struct AuthorizationReport {
+    value: Option<&'static str>,
+    reason: Option<&'static str>,
+}
+
+/// `CBManagerAuthorization` raw values, macOS 10.15+ / iOS 13+.
+#[cfg(any(target_os = "macos", test))]
+const CORE_BLUETOOTH_AUTHORIZATION_NOT_DETERMINED: isize = 0;
+#[cfg(any(target_os = "macos", test))]
+const CORE_BLUETOOTH_AUTHORIZATION_RESTRICTED: isize = 1;
+#[cfg(any(target_os = "macos", test))]
+const CORE_BLUETOOTH_AUTHORIZATION_DENIED: isize = 2;
+#[cfg(any(target_os = "macos", test))]
+const CORE_BLUETOOTH_AUTHORIZATION_ALLOWED_ALWAYS: isize = 3;
+
+#[cfg(any(target_os = "macos", test))]
+const CORE_BLUETOOTH_AUTHORIZATION_UNRECOGNIZED_REASON: &str =
+    "CoreBluetooth reported an authorization value this host does not recognize, so adapter authorization is reported absent.";
+
+/// Maps a raw `CBManagerAuthorization` to the adapter-state wire vocabulary.
+///
+/// Values outside the documented enum are not forced into a token: they are
+/// reported absent, because this host cannot say what such a value means.
+#[cfg(any(target_os = "macos", test))]
+fn map_core_bluetooth_authorization(raw: isize) -> AuthorizationReport {
+    let value = match raw {
+        CORE_BLUETOOTH_AUTHORIZATION_ALLOWED_ALWAYS => "granted",
+        CORE_BLUETOOTH_AUTHORIZATION_DENIED => "denied",
+        CORE_BLUETOOTH_AUTHORIZATION_RESTRICTED => "restricted",
+        CORE_BLUETOOTH_AUTHORIZATION_NOT_DETERMINED => "not-determined",
+        _ => {
+            return AuthorizationReport {
+                value: None,
+                reason: Some(CORE_BLUETOOTH_AUTHORIZATION_UNRECOGNIZED_REASON),
+            }
+        }
+    };
+    AuthorizationReport {
+        value: Some(value),
+        reason: None,
+    }
+}
+
+/// Reads the live CoreBluetooth authorization state.
+///
+/// `+[CBManager authorization]` is macOS 10.15+, so both the class and the
+/// class method are checked before the message is sent; on an older system the
+/// value is reported absent instead of crashing on an unrecognized selector.
+/// Reading the property does not prompt the user; only radio use does.
+#[cfg(target_os = "macos")]
+fn platform_authorization() -> AuthorizationReport {
+    use objc2::{runtime::AnyClass, sel};
+    use objc2_core_bluetooth::CBManager;
+
+    let Some(class) = AnyClass::get("CBManager") else {
+        return AuthorizationReport {
+            value: None,
+            reason: Some(
+                "CoreBluetooth is not loaded in this process, so adapter authorization is reported absent.",
+            ),
+        };
+    };
+    if !class.metaclass().responds_to(sel!(authorization)) {
+        return AuthorizationReport {
+            value: None,
+            reason: Some(
+                "This macOS version does not expose +[CBManager authorization], so adapter authorization is reported absent.",
+            ),
+        };
+    }
+    // SAFETY: `+[CBManager authorization]` was just verified to exist on the
+    // metaclass. It takes no arguments and returns `CBManagerAuthorization`,
+    // which is an `NSInteger` with the encoding this binding declares.
+    let authorization = unsafe { CBManager::authorization_class() };
+    map_core_bluetooth_authorization(authorization.0)
+}
+
+/// Reports the BlueZ authorization model.
+///
+/// BlueZ has no per-application Bluetooth authorization state to read: access
+/// is decided by D-Bus policy when a process reaches the adapter, and a refusal
+/// surfaces as a failure to obtain the adapter rather than as a state. This
+/// snapshot exists only for an attachment whose adapter the platform handed to
+/// this process, so `granted` is an observed fact rather than a default, and
+/// the derivation is disclosed in `safeReason`.
+#[cfg(target_os = "linux")]
+fn platform_authorization() -> AuthorizationReport {
+    AuthorizationReport {
+        value: Some("granted"),
+        reason: Some(
+            "BlueZ exposes no per-application Bluetooth authorization state; 'granted' reports that this process was admitted to the adapter over D-Bus when the attachment was created.",
+        ),
+    }
+}
+
+/// Reports Windows authorization as absent.
+///
+/// Windows does have an authorization concept for radio access, and this host
+/// does not query it, so no value is claimed for it.
+#[cfg(target_os = "windows")]
+fn platform_authorization() -> AuthorizationReport {
+    AuthorizationReport {
+        value: None,
+        reason: Some(
+            "Windows decides Bluetooth radio access through settings this host does not query, so adapter authorization is reported absent.",
+        ),
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+fn platform_authorization() -> AuthorizationReport {
+    AuthorizationReport {
+        value: None,
+        reason: Some(
+            "This host does not query a Bluetooth authorization state on this platform, so adapter authorization is reported absent.",
+        ),
+    }
+}
+
+/// Newest wall-clock reading this host has reported, in milliseconds since the
+/// Unix epoch. It makes `updatedAt` non-decreasing across snapshots and across
+/// threads even when the host clock steps backwards.
+static LAST_REPORTED_EPOCH_MILLIS: AtomicI64 = AtomicI64::new(0);
+
+const CLOCK_BEFORE_EPOCH_REASON: &str =
+    "The host wall clock reads before the Unix epoch; updatedAt reports the newest timestamp this host has observed instead.";
+const CLOCK_MOVED_BACKWARDS_REASON: &str =
+    "The host wall clock moved backwards; updatedAt is held at the newest timestamp this host has observed.";
+
+/// A wall-clock reading for one snapshot, with the caveat it carries.
+struct SampleClock {
+    epoch_millis: i64,
+    reason: Option<&'static str>,
+}
+
+/// Stamps a snapshot with the current wall clock in milliseconds since the Unix
+/// epoch, held non-decreasing.
+///
+/// The reading is taken at the moment the snapshot is built. The only deviation
+/// from the raw clock is a backwards step, which is disclosed in `safeReason`
+/// rather than silently smoothed.
+fn sample_epoch_millis() -> SampleClock {
+    let raw = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .map(|elapsed| i64::try_from(elapsed.as_millis()).unwrap_or(i64::MAX));
+    let floor = LAST_REPORTED_EPOCH_MILLIS.fetch_max(raw.unwrap_or(0), Ordering::Relaxed);
+    resolve_sample_clock(raw, floor)
+}
+
+/// Resolves the reported timestamp from the raw reading and the newest value
+/// this host has already reported.
+fn resolve_sample_clock(raw: Option<i64>, floor: i64) -> SampleClock {
+    match raw {
+        None => SampleClock {
+            epoch_millis: floor,
+            reason: Some(CLOCK_BEFORE_EPOCH_REASON),
+        },
+        Some(millis) if millis < floor => SampleClock {
+            epoch_millis: floor,
+            reason: Some(CLOCK_MOVED_BACKWARDS_REASON),
+        },
+        Some(millis) => SampleClock {
+            epoch_millis: millis,
+            reason: None,
+        },
+    }
 }
 
 fn adapter_state_payload_live(attachment: &Attachment, power: &str, heard: i64) -> IpcValue {
@@ -2302,6 +2561,185 @@ mod tests {
         assert!(
             matches!(state.get("heard"), Some(super::IpcValue::Number(value) ) if value.as_i64() == Some(3))
         );
+    }
+
+    fn test_attachment() -> super::Attachment {
+        super::Attachment {
+            attachment_id: "a".into(),
+            backend_instance_id: "b".into(),
+            backend_generation: "1".into(),
+            adapter_id: "adapter".into(),
+            adapter_name: "CoreBluetooth".into(),
+            adapter_generation: "1".into(),
+        }
+    }
+
+    fn state_object(
+        snapshot: super::IpcValue,
+    ) -> std::collections::BTreeMap<String, super::IpcValue> {
+        let super::IpcValue::Object(state) = snapshot else {
+            panic!("an adapter state snapshot must be an object");
+        };
+        state
+    }
+
+    /// Every token this host may put on the wire is one the TypeScript
+    /// `AdapterAuthorization` union already accepts.
+    const WIRE_AUTHORIZATION_TOKENS: [&str; 5] = [
+        "granted",
+        "denied",
+        "restricted",
+        "not-determined",
+        "unavailable",
+    ];
+
+    #[test]
+    fn core_bluetooth_authorization_maps_to_the_wire_vocabulary() {
+        for (raw, expected) in [
+            (0isize, "not-determined"),
+            (1, "restricted"),
+            (2, "denied"),
+            (3, "granted"),
+        ] {
+            let report = super::map_core_bluetooth_authorization(raw);
+            assert_eq!(
+                report.value,
+                Some(expected),
+                "raw {raw} must map to {expected}"
+            );
+            assert_eq!(
+                report.reason, None,
+                "a real CoreBluetooth reading carries no caveat"
+            );
+            assert!(WIRE_AUTHORIZATION_TOKENS.contains(&expected));
+        }
+    }
+
+    #[test]
+    fn unrecognized_core_bluetooth_authorization_is_reported_absent() {
+        for raw in [-1isize, 4, 99] {
+            let report = super::map_core_bluetooth_authorization(raw);
+            assert_eq!(
+                report.value, None,
+                "raw {raw} has no known meaning and must not be forced into a token"
+            );
+            assert!(report.reason.is_some(), "an absent value must say why");
+        }
+    }
+
+    #[test]
+    fn platform_authorization_is_a_wire_token_or_explicitly_absent() {
+        let report = super::platform_authorization();
+        match report.value {
+            Some(value) => assert!(
+                WIRE_AUTHORIZATION_TOKENS.contains(&value),
+                "{value} is not part of the adapter authorization vocabulary"
+            ),
+            None => assert!(
+                report.reason.is_some(),
+                "an absent authorization must carry the reason it is absent"
+            ),
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn bluez_authorization_is_granted_with_its_derivation_disclosed() {
+        let report = super::platform_authorization();
+        assert_eq!(report.value, Some("granted"));
+        assert!(report
+            .reason
+            .is_some_and(|reason| reason.contains("BlueZ exposes no per-application")));
+    }
+
+    #[test]
+    fn wall_clock_readings_report_the_raw_value_when_it_advances() {
+        let resolved = super::resolve_sample_clock(Some(1_800_000_000_123), 1_800_000_000_000);
+        assert_eq!(resolved.epoch_millis, 1_800_000_000_123);
+        assert_eq!(resolved.reason, None);
+    }
+
+    #[test]
+    fn wall_clock_regressions_hold_the_last_stamp_and_disclose_it() {
+        let backwards = super::resolve_sample_clock(Some(1_700_000_000_000), 1_800_000_000_000);
+        assert_eq!(backwards.epoch_millis, 1_800_000_000_000);
+        assert_eq!(backwards.reason, Some(super::CLOCK_MOVED_BACKWARDS_REASON));
+
+        let before_epoch = super::resolve_sample_clock(None, 1_800_000_000_000);
+        assert_eq!(before_epoch.epoch_millis, 1_800_000_000_000);
+        assert_eq!(before_epoch.reason, Some(super::CLOCK_BEFORE_EPOCH_REASON));
+    }
+
+    #[test]
+    fn sampled_timestamps_are_real_and_non_decreasing() {
+        let first = super::sample_epoch_millis();
+        let second = super::sample_epoch_millis();
+        assert!(
+            first.epoch_millis > 1_700_000_000_000,
+            "updatedAt must be a wall-clock epoch reading, got {}",
+            first.epoch_millis
+        );
+        assert!(second.epoch_millis >= first.epoch_millis);
+    }
+
+    #[test]
+    fn live_adapter_state_reports_only_what_it_observed() {
+        let state = state_object(super::live_adapter_state(&test_attachment(), "on", 3));
+
+        assert_eq!(state.get("availability"), Some(&string("available")));
+        assert_eq!(state.get("power"), Some(&string("on")));
+        assert_eq!(state.get("heard"), Some(&super::number(3)));
+
+        let Some(super::IpcValue::Number(updated_at)) = state.get("updatedAt") else {
+            panic!("updatedAt must be a number");
+        };
+        assert!(
+            updated_at
+                .as_i64()
+                .is_some_and(|value| value > 1_700_000_000_000),
+            "updatedAt must be stamped when the state is sampled"
+        );
+
+        match state.get("authorization") {
+            Some(super::IpcValue::String(value)) => {
+                assert!(WIRE_AUTHORIZATION_TOKENS.contains(&value.as_str()))
+            }
+            Some(super::IpcValue::Null) => {}
+            other => panic!("authorization must be a wire token or null, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unsampled_adapter_state_admits_that_it_sampled_nothing() {
+        let state = state_object(super::adapter_state(&test_attachment()));
+
+        assert_eq!(state.get("availability"), Some(&string("unknown")));
+        assert_eq!(state.get("power"), Some(&string("unknown")));
+        assert_eq!(state.get("heard"), Some(&super::IpcValue::Null));
+        let Some(super::IpcValue::String(safe_reason)) = state.get("safeReason") else {
+            panic!("an unsampled snapshot must disclose that it sampled nothing");
+        };
+        assert!(safe_reason.contains(super::UNSAMPLED_SNAPSHOT_REASON));
+    }
+
+    #[test]
+    fn safe_reason_is_null_when_nothing_needs_disclosing() {
+        assert_eq!(super::safe_reason(&[]), super::IpcValue::Null);
+        assert_eq!(
+            super::safe_reason(&["first.", "second."]),
+            string("first. second.")
+        );
+    }
+
+    #[test]
+    fn adapter_limitations_are_stated_rather_than_left_empty() {
+        let super::IpcValue::Array(limitations) = super::adapter_limitations() else {
+            panic!("limitations must be an array");
+        };
+        assert_eq!(limitations.len(), super::ADAPTER_LIMITATIONS.len());
+        assert!(limitations.iter().all(
+            |limitation| matches!(limitation, super::IpcValue::String(value) if !value.is_empty())
+        ));
     }
 
     #[test]

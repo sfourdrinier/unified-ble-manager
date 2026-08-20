@@ -14,6 +14,16 @@ import type {
 export const TAURI_BLE_PLUGIN_COMMAND = 'plugin:unified-ble-manager|invoke'
 const TAURI_BYTES_WIRE_TAG = '$__unifiedBleBytesV1'
 
+/**
+ * The only request that carries the event Channel. Attaching binds the sink
+ * for the attachment's lifetime; see `eventChannelArgument`.
+ */
+export const TAURI_ATTACH_REQUEST_KIND = 'bootstrap'
+
+function isAttachRequest(request: { readonly kind?: unknown }): boolean {
+  return request.kind === TAURI_ATTACH_REQUEST_KIND
+}
+
 /** Structural subset of `@tauri-apps/api/core.invoke` used by this package. */
 export type TauriInvoke = <Response>(command: string, args?: Record<string, unknown>) => Promise<Response>
 
@@ -69,9 +79,30 @@ export class TauriBleIpcTransport<Attachment extends string, Client extends stri
   ): Promise<IpcBleResponse<Attachment, Client>> {
     const response = await this.invokeCore<unknown>(this.command, {
       request: encodeTauriWireValue(request),
-      eventChannel: this.eventChannel
+      ...this.eventChannelArgument(request)
     })
     return decodeTauriWireValue(response) as IpcBleResponse<Attachment, Client>
+  }
+
+  /**
+   * Supplies the event Channel on the attach request only.
+   *
+   * Tauri deserializes every `Channel` command argument into a *new* Rust
+   * `Channel` bound to this one JavaScript callback id, and dropping any of
+   * them evals `{ end: true, index }` for that shared id. The Tauri JS runtime
+   * answers an end message whose index matches its next expected index by
+   * calling `unregisterCallback`, which tears the callback down permanently.
+   *
+   * Passing the Channel on a second request therefore destroys the event
+   * stream established by the first: the request/response path would silently
+   * kill the event path. The event sink is bound once, at attach, and lives
+   * for the attachment, which is the lifetime every other host already gives
+   * it via `subscribe`.
+   */
+  private eventChannelArgument(request: IpcBleRequest<Attachment, Client, string>): {
+    eventChannel?: TauriChannel<unknown>
+  } {
+    return isAttachRequest(request) ? { eventChannel: this.eventChannel } : {}
   }
 
   subscribe(listener: (event: IpcBleEvent) => void): () => void {
@@ -86,8 +117,7 @@ export class TauriBleIpcTransport<Attachment extends string, Client extends stri
     eventId: string
   ): Promise<IpcEventAcknowledgeResponse | IpcFailureResponse> {
     const response = await this.invokeCore<unknown>(this.command, {
-      request: encodeTauriWireValue({ kind: 'event.ack', rendererLease, eventId }),
-      eventChannel: this.eventChannel
+      request: encodeTauriWireValue({ kind: 'event.ack', rendererLease, eventId })
     })
     return decodeTauriWireValue(response) as IpcEventAcknowledgeResponse | IpcFailureResponse
   }

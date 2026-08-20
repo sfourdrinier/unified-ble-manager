@@ -53,7 +53,7 @@ describe('Tauri v2 IPC transport', () => {
     ])
   })
 
-  test('acknowledgements use the same versioned plugin command and channel', async () => {
+  test('acknowledgements use the same versioned plugin command without re-sending the channel', async () => {
     const invoke = jest.fn(async () => ({ kind: 'event.ack' }))
     const { TauriBleIpcTransport } = require('../src/tauri')
     const transport = new TauriBleIpcTransport({ invoke, Channel: FakeChannel })
@@ -61,9 +61,52 @@ describe('Tauri v2 IPC transport', () => {
 
     await expect(transport.acknowledge(lease, 'event-1')).resolves.toEqual({ kind: 'event.ack' })
     expect(invoke).toHaveBeenCalledWith('plugin:unified-ble-manager|invoke', {
-      request: { kind: 'event.ack', rendererLease: lease, eventId: 'event-1' },
-      eventChannel: expect.any(FakeChannel)
+      request: { kind: 'event.ack', rendererLease: lease, eventId: 'event-1' }
     })
+  })
+
+  // Regression: Tauri deserializes every Channel command argument into a new
+  // Rust Channel bound to the same JS callback id. Dropping any of them evals
+  // `{ end: true, index }`, which unregisters the shared callback and kills the
+  // event stream; their independent index counters also desynchronise the JS
+  // side. The sink must therefore be bound exactly once, on the attach request.
+  test('sends the event channel on the attach request only, never on later requests', async () => {
+    const invocations = []
+    const invoke = jest.fn(async (command, args) => {
+      invocations.push(args)
+      return { kind: 'route' }
+    })
+    const { TAURI_ATTACH_REQUEST_KIND, TauriBleIpcTransport } = require('../src/tauri')
+    const transport = new TauriBleIpcTransport({ invoke, Channel: FakeChannel })
+    const lease = { leaseId: 'lease-1', generation: 'generation-1' }
+
+    await transport.invoke({ kind: TAURI_ATTACH_REQUEST_KIND })
+    await transport.invoke({ kind: 'route', envelope: { command: 'adapter.state' } })
+    await transport.invoke({ kind: 'route', envelope: { command: 'scan.start' } })
+    await transport.acknowledge(lease, 'event-1')
+    await transport.invoke({ kind: 'release' })
+
+    const carryingChannel = invocations.filter(args => 'eventChannel' in args)
+    expect(carryingChannel).toHaveLength(1)
+    expect(invocations[0]).toHaveProperty('eventChannel')
+    expect(invocations[0].request.kind).toBe(TAURI_ATTACH_REQUEST_KIND)
+  })
+
+  test('re-attaching after a reload rebinds the sink so the stream can recover', async () => {
+    const invocations = []
+    const invoke = jest.fn(async (command, args) => {
+      invocations.push(args)
+      return { kind: 'bootstrap' }
+    })
+    const { TAURI_ATTACH_REQUEST_KIND, TauriBleIpcTransport } = require('../src/tauri')
+    const transport = new TauriBleIpcTransport({ invoke, Channel: FakeChannel })
+
+    await transport.invoke({ kind: TAURI_ATTACH_REQUEST_KIND })
+    await transport.invoke({ kind: 'route', envelope: { command: 'adapter.state' } })
+    await transport.invoke({ kind: TAURI_ATTACH_REQUEST_KIND })
+
+    expect(invocations.filter(args => 'eventChannel' in args)).toHaveLength(2)
+    expect(invocations[0].eventChannel).toBe(invocations[2].eventChannel)
   })
 
   test('preserves owned bytes through the actual JSON serialization boundary', async () => {
