@@ -1728,19 +1728,25 @@ impl BtleplugDispatcher {
             let Some(connection) = caller.connections.get(&handle).cloned() else {
                 continue;
             };
-            match connection.peripheral.disconnect().await {
-                Ok(()) => {
-                    caller.connections.remove(&handle);
-                    caller
-                        .databases
-                        .retain(|_, database| database.connection_handle != handle);
-                    self.clear_peer_owner(&connection.peer_id, key).await;
-                }
-                Err(error) => failures.push(cleanup_failure(
+            let disconnect = connection.peripheral.disconnect().await;
+            // The caller is being torn down either way, so its bookkeeping goes
+            // with it even when the radio disconnect failed. Keeping the peer
+            // marked as owned by a caller that no longer exists makes the
+            // failure permanent: every later connect is refused with
+            // `connection.already-owned` until the process restarts, which is
+            // exactly what a renderer reload or crash would trigger. The
+            // failure is still reported, it just no longer strands the peer.
+            caller.connections.remove(&handle);
+            caller
+                .databases
+                .retain(|_, database| database.connection_handle != handle);
+            self.clear_peer_owner(&connection.peer_id, key).await;
+            if let Err(error) = disconnect {
+                failures.push(cleanup_failure(
                     "connection",
                     "tauri.release.connection",
                     error.to_string(),
-                )),
+                ));
             }
         }
         cleanup_record(failures)
