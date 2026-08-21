@@ -384,6 +384,10 @@ impl BtleplugDispatcher {
                         "capabilities",
                         capabilities::snapshot(&attachment.backend_generation),
                     ),
+                    (
+                        "discovery",
+                        object([("kind", string("continuous-scan"))]),
+                    ),
                     ("renderer", renderer),
                     (
                         "rendererLease",
@@ -580,8 +584,14 @@ impl BtleplugDispatcher {
                 .execute(caller, cleanup_command, cleanup_payload.clone(), None)
                 .await
             {
-                self.retry_quarantined_cleanup(caller, cleanup_command, cleanup_payload, error)
-                    .await;
+                let dispatcher = self.clone();
+                let caller = caller.clone();
+                let command = cleanup_command.to_owned();
+                btleplug_runtime().spawn(async move {
+                    dispatcher
+                        .retry_quarantined_cleanup(&caller, &command, cleanup_payload, error)
+                        .await;
+                });
             }
         }
     }
@@ -591,20 +601,33 @@ impl BtleplugDispatcher {
         caller: &AuthenticatedCaller,
         command: &str,
         payload: BTreeMap<String, IpcValue>,
-        first_error: DispatchError,
+        _first_error: DispatchError,
     ) {
-        let mut last_error = first_error;
-        for _ in 0..4 {
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        let mut delay = Duration::from_millis(100);
+        let mut attempts = 0_u32;
+        loop {
+            tokio::time::sleep(delay).await;
             match self.execute(caller, command, payload.clone(), None).await {
-                Ok(_) => return,
-                Err(error) => last_error = error,
+                Ok(response) if cleanup_succeeded(&response) => return,
+                Ok(_) => {
+                    attempts = attempts.saturating_add(1);
+                    delay = std::cmp::min(delay.saturating_mul(2), Duration::from_secs(5));
+                }
+                Err(error) => {
+                    if error.code == "ownership.denied" {
+                        return;
+                    }
+                    attempts = attempts.saturating_add(1);
+                    if attempts % 8 == 0 {
+                        eprintln!(
+                            "ubm quarantined cleanup still retrying: {}",
+                            error.operation
+                        );
+                    }
+                    delay = std::cmp::min(delay.saturating_mul(2), Duration::from_secs(5));
+                }
             }
         }
-        eprintln!(
-            "ubm quarantined cleanup remained retryable after bounded attempts: {}",
-            last_error.operation
-        );
     }
 
     async fn validate_envelope(
@@ -2326,22 +2349,34 @@ impl BtleplugDispatcher {
                 false,
             )
             .await;
-        if send_result.is_ok() {
-            self.terminal(
-                caller_key,
-                expected_lease,
-                identity.stream_id,
-                terminal_reason,
-            )
-            .await
-            .ok();
+        // A full event acknowledgement queue cannot silently remove the
+        // lifecycle source. Keep retrying the terminal until it is delivered
+        // or the renderer explicitly revokes the lease and ownership denial
+        // proves that cleanup has taken over.
+        let terminal_reason = if send_result.is_ok() {
+            terminal_reason
         } else {
-            // A full event acknowledgement queue cannot silently remove the
-            // lifecycle source: the renderer must be woken so it can release
-            // the generation and let the supervisor retry cleanup.
-            self.terminal(caller_key, expected_lease, identity.stream_id, "overflow")
+            "overflow"
+        };
+        let mut terminal_delay = Duration::from_millis(100);
+        let terminal_result = loop {
+            match self
+                .terminal(caller_key, expected_lease, identity.stream_id, terminal_reason)
                 .await
-                .ok();
+            {
+                Ok(()) => break Ok(()),
+                Err(error) if error.code == "ownership.denied" => break Err(error),
+                Err(_error) => {
+                    tokio::time::sleep(terminal_delay).await;
+                    terminal_delay = std::cmp::min(
+                        terminal_delay.saturating_mul(2),
+                        Duration::from_secs(5),
+                    );
+                }
+            }
+        };
+        if let Err(error) = terminal_result {
+            return Err(error);
         }
         let mut state = self.inner.lock().await;
         if let Some(caller) = state.callers.get_mut(caller_key) {
@@ -3474,6 +3509,14 @@ fn released() -> IpcValue {
         ("state", string("released")),
         ("failures", IpcValue::Array(Vec::new())),
     ])
+}
+
+fn cleanup_succeeded(value: &IpcValue) -> bool {
+    let IpcValue::Object(record) = value else {
+        return false;
+    };
+    matches!(record.get("state"), Some(IpcValue::String(state)) if state == "released")
+        && matches!(record.get("failures"), Some(IpcValue::Array(failures)) if failures.is_empty())
 }
 
 fn cleanup_record(failures: Vec<IpcValue>) -> IpcValue {

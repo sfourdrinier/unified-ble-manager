@@ -13,7 +13,13 @@ import {
   type RendererLeaseIdentity,
   type TrustedIpcSender
 } from '../backend-contract/electron'
-import type { CharacteristicPath } from '../backend-contract/gatt'
+import type {
+  CharacteristicPath,
+  CharacteristicProperties,
+  DescriptorPath,
+  GattAccessRequirements,
+  GattDescriptorProperties
+} from '../backend-contract/gatt'
 import type { HostNeutralBackendIdentity } from '../backend-contract/identity'
 import {
   byteLimit,
@@ -61,6 +67,8 @@ type MainManager = BleManager<string, HostNeutralBackendIdentity<string>>
 type MainConnection = Connection<string, HostNeutralBackendIdentity<string>>
 type MainDatabase = DiscoveredGattDatabase<string, HostNeutralBackendIdentity<string>>
 type MainCharacteristicPath = CharacteristicPath<string, string, string, string, string, 'current'>
+type MainDescriptorPath = DescriptorPath<string, string, string, string, string, string, 'current'>
+type MainCharacteristicSnapshot = Awaited<ReturnType<MainDatabase['snapshot']>>['characteristics'][number]
 
 const DEFAULT_DELIVERY: SubscriptionOptions['delivery'] = Object.freeze({
   itemCapacity: capacity(128),
@@ -98,6 +106,7 @@ interface ManagedDatabase {
   readonly connectionHandle: string
   readonly database: MainDatabase
   readonly characteristics: Map<string, MainCharacteristicPath>
+  readonly descriptors: Map<string, MainDescriptorPath>
 }
 
 interface ManagedOperation {
@@ -139,6 +148,10 @@ export class ElectronMainBleRouter {
     this.cancellationClock = options.cancellationClock ?? (() => Date.now())
     this.streams = new ElectronRendererStreamRegistry({
       maximumMessageBytes: this.maximumMessageBytes,
+      now: () =>
+        typeof this.manager.monotonicNow === 'function'
+          ? this.manager.monotonicNow()
+          : (globalThis.performance?.now() ?? Date.now()),
       publish: (rendererLeaseId, event) => this.publish(rendererLeaseId, event),
       createEvent: (rendererLease, streamId, item) => this.event(rendererLease, streamId, item)
     })
@@ -276,11 +289,13 @@ export class ElectronMainBleRouter {
     versions: IpcVersionAxes
   ): ElectronRendererBootstrap<string, Renderer> {
     const attachment = this.manager.attachedBackend.attachment.attachment
+    const capabilities = this.manager.capabilities()
     return Object.freeze({
       attachment,
       attachmentId: attachment.attachmentId,
       versions,
-      capabilities: snapshotCapabilityDescriptors(this.manager.capabilities(), String(attachment.backendGeneration)),
+      capabilities: snapshotCapabilityDescriptors(capabilities, String(attachment.backendGeneration)),
+      discovery: discoveryDescriptor(capabilities),
       renderer,
       rendererLease
     })
@@ -326,6 +341,10 @@ export class ElectronMainBleRouter {
         response = await this.stopScan(resources, envelope.payload)
       } else if (envelope.command === 'connection.connect') {
         response = await this.connect(resources, envelope.payload, controller)
+      } else if (envelope.command === 'adapter.state') {
+        response = await this.adapterState()
+      } else if (envelope.command === 'connection.rssi') {
+        response = await this.readRssi(resources, envelope.payload, controller)
       } else if (envelope.command === 'connection.disconnect') {
         response = await this.disconnect(resources, envelope.payload)
       } else if (envelope.command === 'connection.events.subscribe') {
@@ -340,6 +359,10 @@ export class ElectronMainBleRouter {
         response = await this.read(resources, envelope.payload, controller)
       } else if (envelope.command === 'gatt.write') {
         response = await this.write(resources, envelope.payload, envelope.binaryPayload, controller)
+      } else if (envelope.command === 'gatt.descriptor.read') {
+        response = await this.readDescriptor(resources, envelope.payload, controller)
+      } else if (envelope.command === 'gatt.descriptor.write') {
+        response = await this.writeDescriptor(resources, envelope.payload, envelope.binaryPayload, controller)
       } else if (envelope.command === 'gatt.subscribe') {
         response = await this.subscribe(resources, envelope, controller)
       } else if (envelope.command === 'gatt.unsubscribe') {
@@ -393,7 +416,7 @@ export class ElectronMainBleRouter {
       filter: { serviceUuids, manufacturerData, localNamePrefix },
       duplicatePolicy: 'all',
       timestampPolicy: 'receipt-monotonic',
-      delivery: DEFAULT_DELIVERY,
+      delivery: deliveryFromPayload(envelope.payload),
       deadline: deadlineFromPayload(envelope.payload),
       signal: controller.signal,
       sharing: { mode: 'owner', allowSharing: false }
@@ -412,7 +435,41 @@ export class ElectronMainBleRouter {
     const connection = await this.manager.connect(peerId, operationOptions(payload, controller))
     const handle = this.allocateHandle('connection')
     resources.connections.set(handle, connection)
-    return Object.freeze({ handle, peerId: String(connection.peerId) })
+    return Object.freeze({
+      handle,
+      peerId: String(connection.peerId),
+      connectionId: String(connection.connectionId),
+      ownerLeaseId: String(resources.rendererLease.leaseId),
+      connectionGeneration: String(connection.connectionGeneration)
+    })
+  }
+
+  private async adapterState(): Promise<SerializableRecord> {
+    const state = await this.manager.adapterState()
+    return Object.freeze({
+      state: Object.freeze({
+        availability: state.availability,
+        authorization: state.authorization,
+        power: state.power,
+        backendGeneration: String(state.backendGeneration),
+        updatedAt: state.updatedAt,
+        safeReason: state.safeReason
+      })
+    })
+  }
+
+  private async readRssi(
+    resources: RendererResources,
+    payload: SerializableRecord,
+    controller: AbortController
+  ): Promise<SerializableRecord> {
+    const connection = requiredResource(
+      resources.connections,
+      requiredString(payload, 'connectionHandle'),
+      'connection'
+    )
+    const result = await connection.readRssi(operationOptions(payload, controller))
+    return Object.freeze({ rssi: result.rssi })
   }
 
   private async discover(
@@ -428,17 +485,55 @@ export class ElectronMainBleRouter {
     const database = await connection.discover(operationOptions(payload, controller))
     const snapshot = await database.snapshot()
     const characteristics = new Map<string, MainCharacteristicPath>()
+    const descriptors = new Map<string, MainDescriptorPath>()
+    const characteristicHandles = new Map<string, string>()
     const serializedCharacteristics: SerializableValue[] = []
-    for (const characteristic of snapshot.characteristics) {
+    const serializedDescriptors: SerializableValue[] = []
+    const serializedServices: SerializableValue[] = (snapshot.services ?? []).map(service =>
+      Object.freeze({
+        uuid: String(service.path.serviceUuid),
+        occurrence: String(service.path.serviceOccurrence),
+        primary: service.primary,
+        includedServices: service.includedServices.map(included =>
+          Object.freeze({ uuid: String(included.uuid), occurrence: String(included.occurrence) })
+        )
+      })
+    )
+    for (const characteristic of snapshot.characteristics ?? []) {
       const handle = this.allocateHandle('characteristic')
       characteristics.set(handle, characteristic.path)
+      characteristicHandles.set(characteristicKey(characteristic.path), handle)
       serializedCharacteristics.push(
         Object.freeze({
           handle,
           serviceUuid: String(characteristic.path.serviceUuid),
           serviceOccurrence: String(characteristic.path.serviceOccurrence),
           characteristicUuid: String(characteristic.path.characteristicUuid),
-          characteristicOccurrence: String(characteristic.path.characteristicOccurrence)
+          characteristicOccurrence: String(characteristic.path.characteristicOccurrence),
+          properties: characteristicProperties(characteristic),
+          ...(characteristic.properties === undefined
+            ? {}
+            : { propertiesMetadata: serializeCharacteristicProperties(characteristic.properties) }),
+          ...(characteristic.access === undefined ? {} : { access: serializeAccessRequirements(characteristic.access) })
+        })
+      )
+    }
+    for (const descriptor of snapshot.descriptors ?? []) {
+      const characteristicHandle = characteristicHandles.get(characteristicKey(descriptor.path))
+      if (characteristicHandle === undefined) {
+        throw contractError('protocol.violation', 'gatt', 'electron-main-router.descriptor-parent')
+      }
+      const handle = this.allocateHandle('descriptor')
+      descriptors.set(handle, descriptor.path)
+      serializedDescriptors.push(
+        Object.freeze({
+          handle,
+          characteristicHandle,
+          uuid: String(descriptor.path.descriptorUuid),
+          occurrence: String(descriptor.path.descriptorOccurrence),
+          ...(descriptor.properties === undefined
+            ? {}
+            : { properties: serializeDescriptorProperties(descriptor.properties) })
         })
       )
     }
@@ -446,9 +541,18 @@ export class ElectronMainBleRouter {
     resources.databases.set(handle, {
       connectionHandle: requiredString(payload, 'connectionHandle'),
       database,
-      characteristics
+      characteristics,
+      descriptors
     })
-    return Object.freeze({ handle, characteristics: Object.freeze(serializedCharacteristics) })
+    return Object.freeze({
+      schemaVersion: 2,
+      handle,
+      databaseId: String(database.path?.databaseId ?? ''),
+      databaseGeneration: String(database.path?.databaseGeneration ?? ''),
+      services: Object.freeze(serializedServices),
+      characteristics: Object.freeze(serializedCharacteristics),
+      descriptors: Object.freeze(serializedDescriptors)
+    })
   }
 
   private async read(
@@ -478,7 +582,36 @@ export class ElectronMainBleRouter {
       ...operationOptions(payload, controller),
       mode
     })
-    return Object.freeze({ commitState: receipt.commitState, outcome: receipt.terminal.outcome })
+    return serializeWriteReceipt(receipt, mode, binaryPayload.byteLength)
+  }
+
+  private async readDescriptor(
+    resources: RendererResources,
+    payload: SerializableRecord,
+    controller: AbortController
+  ): Promise<SerializableRecord> {
+    const database = this.database(resources, payload)
+    const path = this.descriptor(database, payload)
+    const value = await database.database.readDescriptor(path, operationOptions(payload, controller))
+    return Object.freeze({ value: ownBytes(value, byteLimit(value.byteLength)) })
+  }
+
+  private async writeDescriptor(
+    resources: RendererResources,
+    payload: SerializableRecord,
+    binaryPayload: OwnedBytes | null,
+    controller: AbortController
+  ): Promise<SerializableRecord> {
+    if (binaryPayload === null) {
+      throw contractError('bytes.invalid', 'ipc', 'electron-main-router.descriptor-write-missing-bytes')
+    }
+    const database = this.database(resources, payload)
+    const path = this.descriptor(database, payload)
+    const receipt = await database.database.writeDescriptor(path, new Uint8Array(binaryPayload), {
+      ...operationOptions(payload, controller),
+      mode: 'with-response'
+    })
+    return serializeWriteReceipt(receipt, 'with-response', binaryPayload.byteLength)
   }
 
   private async subscribe<Renderer extends string, Operation extends string>(
@@ -490,7 +623,7 @@ export class ElectronMainBleRouter {
     const path = this.characteristic(database, envelope.payload)
     const subscription = await database.database.subscribe(path, {
       ...operationOptions(envelope.payload, controller),
-      delivery: DEFAULT_DELIVERY
+      delivery: deliveryFromPayload(envelope.payload)
     } satisfies SubscriptionOptions)
     const handle = this.allocateHandle('subscription')
     this.streams.registerSubscription(
@@ -597,6 +730,10 @@ export class ElectronMainBleRouter {
 
   private characteristic(database: ManagedDatabase, payload: SerializableRecord): MainCharacteristicPath {
     return requiredResource(database.characteristics, requiredString(payload, 'characteristicHandle'), 'characteristic')
+  }
+
+  private descriptor(database: ManagedDatabase, payload: SerializableRecord): MainDescriptorPath {
+    return requiredResource(database.descriptors, requiredString(payload, 'descriptorHandle'), 'descriptor')
   }
 
   private async releaseResources(clientId: string): Promise<CleanupRecord> {
@@ -893,7 +1030,9 @@ export class ElectronMainBleRouter {
     return resources
   }
 
-  private allocateHandle(kind: 'scan' | 'connection' | 'characteristic' | 'database' | 'subscription'): string {
+  private allocateHandle(
+    kind: 'scan' | 'connection' | 'characteristic' | 'descriptor' | 'database' | 'subscription'
+  ): string {
     for (;;) {
       const handle = `${kind}-${this.nextHandle++}`
       if (!this.isAllocatedHandle(handle)) {
@@ -1065,7 +1204,7 @@ function requiredManufacturerFilters(
     if (entry === null || typeof entry !== 'object' || Array.isArray(entry) || entry instanceof Uint8Array) {
       throw contractError('protocol.malformed', 'ipc', 'electron-main-router.manufacturerData')
     }
-    const companyIdentifier = entry.companyIdentifier
+    const companyIdentifier = entry.companyId
     const dataPrefix = entry.dataPrefix
     if (
       typeof companyIdentifier !== 'number' ||
@@ -1084,6 +1223,42 @@ function requiredManufacturerFilters(
     )
   }
   return Object.freeze(filters)
+}
+
+function deliveryFromPayload(payload: SerializableRecord): SubscriptionOptions['delivery'] {
+  const itemCapacity = payload.streamItemCapacity
+  const byteCapacity = payload.streamByteCapacity
+  const reservedControlCapacity = payload.streamReservedControlCapacity
+  const overflowPolicy = payload.streamOverflowPolicy
+  if (
+    itemCapacity === undefined &&
+    byteCapacity === undefined &&
+    reservedControlCapacity === undefined &&
+    overflowPolicy === undefined
+  ) {
+    return DEFAULT_DELIVERY
+  }
+  if (
+    typeof itemCapacity !== 'number' ||
+    typeof byteCapacity !== 'number' ||
+    typeof reservedControlCapacity !== 'number' ||
+    (overflowPolicy !== 'latest' &&
+      overflowPolicy !== 'drop-oldest' &&
+      overflowPolicy !== 'drop-newest' &&
+      overflowPolicy !== 'error')
+  ) {
+    throw contractError('protocol.malformed', 'ipc', 'electron-main-router.delivery')
+  }
+  try {
+    return Object.freeze({
+      itemCapacity: capacity(itemCapacity),
+      byteCapacity: capacity(byteCapacity),
+      reservedControlCapacity: capacity(reservedControlCapacity),
+      overflowPolicy
+    })
+  } catch {
+    throw contractError('protocol.malformed', 'ipc', 'electron-main-router.delivery')
+  }
 }
 
 function deadlineFromPayload(payload: SerializableRecord) {
@@ -1142,8 +1317,143 @@ function requiredResource<Value>(resources: Map<string, Value>, handle: string, 
   return resource
 }
 
+function characteristicKey(path: {
+  readonly serviceUuid: unknown
+  readonly serviceOccurrence: unknown
+  readonly characteristicUuid: unknown
+  readonly characteristicOccurrence: unknown
+}): string {
+  return [path.serviceUuid, path.serviceOccurrence, path.characteristicUuid, path.characteristicOccurrence]
+    .map(value => String(value))
+    .join('|')
+}
+
+function characteristicProperties(characteristic: MainCharacteristicSnapshot): readonly string[] {
+  const properties = characteristic.properties ?? {
+    broadcast: false,
+    read: false,
+    writeWithResponse: false,
+    writeWithoutResponse: false,
+    authenticatedSignedWrites: false,
+    notify: false,
+    indicate: false,
+    extendedProperties: false,
+    reliableWrite: false,
+    writableAuxiliaries: false
+  }
+  const entries: readonly (readonly [string, boolean | undefined])[] = [
+    ['broadcast', properties.broadcast],
+    ['read', properties.read],
+    ['write', properties.writeWithResponse],
+    ['write-with-response', properties.writeWithResponse],
+    ['write-without-response', properties.writeWithoutResponse],
+    ['authenticated-signed-writes', properties.authenticatedSignedWrites],
+    ['notify', properties.notify],
+    ['indicate', properties.indicate],
+    ['extended-properties', properties.extendedProperties],
+    ['reliable-write', properties.reliableWrite],
+    ['writable-auxiliaries', properties.writableAuxiliaries]
+  ]
+  return Object.freeze(entries.flatMap(([name, supported]) => (supported ? [name] : [])))
+}
+
+function discoveryDescriptor(capabilities: ReturnType<MainManager['capabilities']>): {
+  readonly kind: 'continuous-scan' | 'system-chooser' | 'hybrid'
+} {
+  const supports = (id: string): boolean => {
+    const descriptor = capabilities.find(candidate => String(candidate.id) === id)
+    return descriptor?.state === 'supported' || descriptor?.state === 'limited'
+  }
+  const continuous = supports('discovery:continuous-scan')
+  const chooser = supports('discovery:system-chooser')
+  if (continuous && chooser) return Object.freeze({ kind: 'hybrid' })
+  if (chooser) return Object.freeze({ kind: 'system-chooser' })
+  return Object.freeze({ kind: 'continuous-scan' })
+}
+
+function serializeAccessRequirements(access: GattAccessRequirements): SerializableRecord {
+  return Object.freeze({ read: access.read, write: access.write })
+}
+
+function serializeCharacteristicProperties(properties: CharacteristicProperties): SerializableRecord {
+  return Object.freeze({
+    broadcast: properties.broadcast,
+    read: properties.read,
+    writeWithResponse: properties.writeWithResponse,
+    writeWithoutResponse: properties.writeWithoutResponse,
+    authenticatedSignedWrites: properties.authenticatedSignedWrites,
+    notify: properties.notify,
+    indicate: properties.indicate,
+    extendedProperties: properties.extendedProperties,
+    reliableWrite: properties.reliableWrite,
+    writableAuxiliaries: properties.writableAuxiliaries,
+    availability: Object.freeze({ ...properties.availability })
+  })
+}
+
+function serializeDescriptorProperties(properties: GattDescriptorProperties): SerializableRecord {
+  return Object.freeze({
+    read: properties.read,
+    write: properties.write,
+    availability: Object.freeze({ ...properties.availability }),
+    access: serializeAccessRequirements(properties.access)
+  })
+}
+
 function cleanupRecord(cleanup: CleanupRecord): SerializableRecord {
-  return Object.freeze({ state: cleanup.state, failureCount: cleanup.failures.length })
+  return Object.freeze({
+    state: cleanup.state,
+    failures: Object.freeze(
+      cleanup.failures.map(failure =>
+        Object.freeze({
+          resourceKind: failure.resourceKind,
+          error: serializeNormalizedError(failure.error)
+        })
+      )
+    )
+  })
+}
+
+function serializeNormalizedError(error: CleanupRecord['failures'][number]['error']): SerializableRecord {
+  return Object.freeze({
+    code: error.code,
+    domain: error.domain,
+    operation: error.operation,
+    retryability: error.retryability,
+    platform:
+      error.platform === null
+        ? null
+        : Object.freeze({
+            domain: error.platform.domain,
+            code: error.platform.code,
+            safeMessage: error.platform.safeMessage,
+            metadata: error.platform.metadata
+          })
+  })
+}
+
+function serializeWriteReceipt(
+  receipt: {
+    readonly terminal: {
+      readonly correlation: string
+      readonly outcome: string
+      readonly cause: string | null
+    }
+    readonly commitState: 'confirmed' | 'unknown'
+  },
+  mode: 'with-response' | 'without-response',
+  bytesSubmitted: number
+): SerializableRecord {
+  return Object.freeze({
+    terminal: Object.freeze({
+      correlation: receipt.terminal.correlation,
+      outcome: receipt.terminal.outcome === 'succeeded' ? 'succeeded' : 'failed',
+      cause: receipt.terminal.cause
+    }),
+    mode,
+    commitState: receipt.commitState,
+    bytesSubmitted
+  })
 }
 
 function normalizedCleanupError(error: unknown) {

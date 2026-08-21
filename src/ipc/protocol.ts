@@ -111,12 +111,18 @@ export interface IpcConnectionEventsSubscribeResponseV2 extends SerializableReco
   readonly eventSchemaVersion: typeof IPC_CONNECTION_LIFECYCLE_EVENT_SCHEMA_VERSION
 }
 
+export interface IpcDiscoveryDescriptor extends SerializableRecord {
+  readonly kind: 'continuous-scan' | 'system-chooser' | 'hybrid'
+}
+
 /** Immutable bootstrap data issued by the host after it authenticates a client. */
 export interface IpcClientBootstrap<Attachment extends string, Client extends string> {
   readonly attachment: AttachmentRecord<Attachment>
   readonly attachmentId: AttachmentId<Attachment>
   readonly versions: IpcVersionAxes
   readonly capabilities: IpcCapabilitySnapshotV2
+  /** Host-issued discovery model. Older native attachments may omit it; the client then derives it from capabilities. */
+  readonly discovery?: IpcDiscoveryDescriptor
   readonly renderer: IpcClientIdentity<Attachment, Client>
   readonly rendererLease: IpcClientLeaseIdentity
 }

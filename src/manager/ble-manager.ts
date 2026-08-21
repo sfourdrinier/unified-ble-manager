@@ -614,6 +614,10 @@ export class Connection<Attachment extends string, Identity extends BackendIdent
     return this.connection.resource.connectionId
   }
 
+  get ownerLeaseId() {
+    return this.connection.lease.leaseId
+  }
+
   get connectionGeneration() {
     return this.connection.resource.connectionGeneration
   }

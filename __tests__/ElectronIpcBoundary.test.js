@@ -2,9 +2,11 @@
 
 const { ElectronMainBleBinding, ElectronMainBleRouter } = require('../src/electron-main')
 const { ElectronRendererBleClient } = require('../src/electron-renderer')
+const { createElectronRendererBleManager } = require('../src/electron-renderer')
 const { BackendContractError } = require('../src/backend-contract/errors')
 const { IPC_CLIENT_COMPATIBILITY_OFFER } = require('../src/ipc/protocol')
 const { monotonicTimestamp, opaqueId, version, versionRange } = require('../src/backend-contract/primitives')
+const { BUILT_IN_FEATURE_CATALOG } = require('../src/backend-contract/capabilities')
 
 function negotiated(axis) {
   const selected = version(axis, axis === 'ipc-protocol' ? 2 : 1)
@@ -69,6 +71,36 @@ function rendererBootstrap(value) {
 
 function emptyCapabilitySnapshot(currentAttachment) {
   return { schemaVersion: 2, backendGeneration: currentAttachment.backendGeneration, descriptors: [] }
+}
+
+function completeCapabilityDescriptors() {
+  const schema = versionRange(version('capability-schema', 1), version('capability-schema', 1))
+  const limitation = {
+    code: 'not-implemented',
+    explanation: 'boundary fixture capability is not implemented',
+    affectedGuarantee: 'support'
+  }
+  return BUILT_IN_FEATURE_CATALOG.map(entry => ({
+    id: entry.id,
+    state: 'unsupported',
+    selectedSchemaRange: schema,
+    implementationOrigin: 'backend-native',
+    tck: {
+      suiteId: entry.requiredTckSuiteId,
+      requiredScenarioIds: ['capability.truth-limits-evidence-and-binding'],
+      contractRange: schema
+    },
+    evidence: {
+      receiptId: `electron-test-${entry.id}`,
+      evidenceLevel: 'blocked',
+      implementationVersion: 'test',
+      sourceDigest: `electron-test-${entry.id}`,
+      scenarioIds: ['capability.truth-limits-evidence-and-binding'],
+      limitations: [limitation]
+    },
+    limitations: [limitation],
+    limits: { availability: { maximum: 1, minimum: null, unit: 'boolean' } }
+  }))
 }
 
 function createSender(client, windowScope, sessionScope) {
@@ -2487,6 +2519,190 @@ describe('Electron v4 IPC boundary', () => {
     await current.binding.destroy()
   })
 
+  test('projects the real authenticated router into the common public manager journey', async () => {
+    const scanStream = createControlledStream()
+    const notificationStream = createControlledStream()
+    const lifecycleStream = createConnectionLifecycleStream()
+    const serviceUuid = '0000180d-0000-1000-8000-00805f9b34fb'
+    const characteristicUuid = '00002a37-0000-1000-8000-00805f9b34fb'
+    const descriptorUuid = '00002901-0000-1000-8000-00805f9b34fb'
+    const characteristic = {
+      path: { ...characteristicPath(), serviceUuid, characteristicUuid },
+      properties: {
+        broadcast: false,
+        read: true,
+        writeWithResponse: true,
+        writeWithoutResponse: false,
+        authenticatedSignedWrites: false,
+        notify: true,
+        indicate: false,
+        extendedProperties: false,
+        reliableWrite: false,
+        writableAuxiliaries: false,
+        availability: {
+          broadcast: 'known',
+          read: 'known',
+          writeWithResponse: 'known',
+          writeWithoutResponse: 'known',
+          authenticatedSignedWrites: 'known',
+          notify: 'known',
+          indicate: 'known',
+          extendedProperties: 'known',
+          reliableWrite: 'known',
+          writableAuxiliaries: 'known'
+        }
+      },
+      access: { read: 'none', write: 'none' }
+    }
+    const descriptor = {
+      path: { ...characteristic.path, descriptorUuid, descriptorOccurrence: 0 },
+      properties: {
+        read: true,
+        write: true,
+        availability: { read: 'known', write: 'known' },
+        access: { read: 'none', write: 'none' }
+      }
+    }
+    const database = {
+      path: { databaseId: 'database-public', databaseGeneration: 'database-generation-public' },
+      snapshot: jest.fn(async () => ({
+        path: { databaseId: 'database-public', databaseGeneration: 'database-generation-public' },
+        services: [{ path: { serviceUuid, serviceOccurrence: 0 }, primary: true, includedServices: [] }],
+        characteristics: [characteristic],
+        descriptors: [descriptor]
+      })),
+      read: jest.fn(async () => new Uint8Array([1, 2, 3])),
+      write: jest.fn(async (_path, bytes) => ({
+        terminal: { correlation: 'write-correlation', outcome: 'succeeded', cause: null },
+        commitState: 'confirmed',
+        bytesSubmitted: bytes.byteLength
+      })),
+      readDescriptor: jest.fn(async () => new Uint8Array([4])),
+      writeDescriptor: jest.fn(async (_path, bytes) => ({
+        terminal: { correlation: 'descriptor-write-correlation', outcome: 'succeeded', cause: null },
+        commitState: 'confirmed',
+        bytesSubmitted: bytes.byteLength
+      })),
+      subscribe: jest.fn(async () => ({
+        subscriptionId: 'subscription-public',
+        values: notificationStream,
+        remove: jest.fn(async () => {
+          notificationStream.close()
+          return released()
+        })
+      }))
+    }
+    const connection = {
+      ...createConnection(
+        'peer-public',
+        database,
+        jest.fn(async () => {
+          lifecycleStream.close()
+          return released()
+        }),
+        lifecycleStream
+      ),
+      readRssi: jest.fn(async () => ({ rssi: -42 })),
+      ownerLeaseId: 'internal-owner-lease'
+    }
+    let current
+    current = createMainFixture({
+      capabilities: () => completeCapabilityDescriptors(),
+      scan: jest.fn(async () => ({
+        observations: scanStream,
+        stop: jest.fn(async () => {
+          scanStream.close()
+          return released()
+        })
+      })),
+      connect: jest.fn(async () => connection),
+      adapterState: jest.fn(async () => ({
+        availability: 'available',
+        authorization: 'granted',
+        power: 'on',
+        backendGeneration: current.currentAttachment.backendGeneration,
+        updatedAt: 1,
+        safeReason: null
+      }))
+    })
+    const sender = createSender('client-public-router', 'window-public-router', 'session-public-router')
+    const listeners = []
+    const originalSend = sender.send
+    sender.send = (channel, event) => {
+      originalSend.call(sender, channel, event)
+      for (const listener of [...listeners]) listener(event)
+    }
+    const rendererTransport = {
+      invoke: request => current.port.handler({ sender }, request),
+      subscribe(listener) {
+        listeners.push(listener)
+        return () => listeners.splice(listeners.indexOf(listener), 1)
+      },
+      acknowledge: (rendererLease, eventId) =>
+        current.port.handler({ sender }, { kind: 'event.ack', rendererLease, eventId })
+    }
+    const manager = await createElectronRendererBleManager({ transport: rendererTransport })
+    await expect(manager.adapter.state()).resolves.toMatchObject({ availability: 'available', power: 'on' })
+
+    const present = (value, provenance = 'observed') => ({ state: 'present', value, provenance })
+    const unavailable = reason => ({ state: 'unavailable', reason, provenance: 'not-provided' })
+    const scan = await manager.scan()
+    const observation = scan.observations[Symbol.asyncIterator]().next()
+    scanStream.push({
+      kind: 'value',
+      value: {
+        device: {
+          id: 'peer-public',
+          backendInstanceId: 'electron-backend',
+          scope: 'backend',
+          stableAcrossRestarts: false,
+          address: { value: 'peer-public', type: 'opaque' }
+        },
+        provenance: 'platform-raw',
+        sourceTimestamp: unavailable('platform-clock-not-provided'),
+        receivedAtMonotonicMs: 1,
+        ingressOrdinal: 1,
+        scanSessionId: 'scan-public',
+        localName: present('Public peer'),
+        rssi: present(-40),
+        txPower: present(-8),
+        connectable: present(true),
+        appearance: present(961),
+        serviceUuids: present([serviceUuid]),
+        solicitedServiceUuids: present(['0000180f-0000-1000-8000-00805f9b34fb']),
+        overflowServiceUuids: unavailable('platform-does-not-report-overflow'),
+        serviceData: present([{ serviceUuid, value: new Uint8Array([1, 2]) }]),
+        manufacturerData: present([{ companyIdentifier: 76, value: new Uint8Array([3, 4]) }]),
+        rawRecord: present(new Uint8Array([5, 6])),
+        scanResponseRecord: unavailable('scan-response-not-observed')
+      }
+    })
+    await expect(observation).resolves.toMatchObject({ done: false, value: { kind: 'value', value: { peer: { id: 'peer-public' } } } })
+    await expect(scan.stop()).resolves.toMatchObject({ state: 'released', failures: [] })
+    await expect(scan.stop()).resolves.toEqual({ state: 'released', failures: [] })
+
+    const publicConnection = await manager.connect('peer-public')
+    await expect(publicConnection.readRssi()).resolves.toBe(-42)
+    const publicDatabase = await publicConnection.discover()
+    const publicCharacteristic = publicDatabase.characteristic('180d', '2a37')
+    await expect(publicCharacteristic.read()).resolves.toEqual(new Uint8Array([1, 2, 3]))
+    await expect(publicCharacteristic.write(new Uint8Array([7]))).resolves.toMatchObject({
+      terminal: { outcome: 'succeeded' },
+      commitState: 'confirmed'
+    })
+    const publicDescriptor = publicCharacteristic.descriptor('2901')
+    await expect(publicDescriptor.read()).resolves.toEqual(new Uint8Array([4]))
+    const subscription = await publicCharacteristic.subscribe()
+    const notification = subscription.values[Symbol.asyncIterator]().next()
+    notificationStream.push({ kind: 'value', value: { value: new Uint8Array([9]), indication: false } })
+    await expect(notification).resolves.toMatchObject({ done: false, value: { kind: 'value', value: { value: new Uint8Array([9]), delivery: 'notification' } } })
+    await expect(subscription.remove()).resolves.toMatchObject({ state: 'released', failures: [] })
+    await expect(subscription.remove()).resolves.toEqual({ state: 'released', failures: [] })
+    await expect(publicConnection.release()).resolves.toMatchObject({ state: 'released', failures: [] })
+    await expect(publicConnection.release()).resolves.toEqual({ state: 'released', failures: [] })
+    await expect(manager.destroy()).resolves.toMatchObject({ state: 'released', failures: [] })
+  })
+
   test('retains a failed lifecycle iterator detach for an explicit unsubscribe retry', async () => {
     const lifecycleStream = createConnectionLifecycleStream()
     const iterator = lifecycleStream[Symbol.asyncIterator]()
@@ -2527,7 +2743,10 @@ describe('Electron v4 IPC boundary', () => {
           connectionEventsHandle: subscribed.payload.handle
         })
       )
-    ).resolves.toMatchObject({ kind: 'route', payload: { state: 'release-failed', failureCount: 1 } })
+    ).resolves.toMatchObject({
+      kind: 'route',
+      payload: { state: 'release-failed', failures: [{ resourceKind: 'connection-events' }] }
+    })
     expect(
       current.router.resources
         .get(String(renderer.rendererLease.leaseId))
@@ -2544,7 +2763,7 @@ describe('Electron v4 IPC boundary', () => {
           connectionEventsHandle: subscribed.payload.handle
         })
       )
-    ).resolves.toMatchObject({ kind: 'route', payload: { state: 'released', failureCount: 0 } })
+    ).resolves.toMatchObject({ kind: 'route', payload: { state: 'released', failures: [] } })
     expect(iterator.return).toHaveBeenCalledTimes(2)
     await current.binding.destroy()
   })
@@ -3358,5 +3577,22 @@ describe('Electron v4 IPC boundary', () => {
     expect(releaseFailure).toMatchObject({ normalized: normalizedOwnershipFailure })
     expectConsoleError('[ElectronRendererBleClient] Release failed; client remains retryable:', releaseFailure)
     await expect(releaseFailureClient.destroy()).resolves.toEqual(released())
+  })
+
+  test('releases a host lease when renderer bootstrap validation fails after allocation', async () => {
+    const invalidBootstrap = rendererBootstrap('malformed-bootstrap-cleanup')
+    invalidBootstrap.versions.ipcProtocol.selected = { axis: 'ipc-protocol', value: 99 }
+    const transport = {
+      invoke: jest.fn(async request => {
+        if (request.kind === 'bootstrap') return { kind: 'bootstrap', bootstrap: invalidBootstrap }
+        if (request.kind === 'release') return { kind: 'release', cleanup: released() }
+        throw new Error(`unexpected request ${request.kind}`)
+      }),
+      acknowledge: async () => ({ kind: 'event.ack' }),
+      subscribe: () => () => undefined
+    }
+    const client = new ElectronRendererBleClient(transport)
+    await expect(client.initialize()).rejects.toMatchObject({ normalized: { code: 'protocol.incompatible' } })
+    expect(transport.invoke.mock.calls.map(([request]) => request.kind)).toEqual(['bootstrap', 'release'])
   })
 })

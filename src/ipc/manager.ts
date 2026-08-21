@@ -14,7 +14,12 @@ import {
   type SerializableValue
 } from '../backend-contract/primitives'
 import { CoreBoundedStream } from '../core/bounded-stream'
-import { createGattCharacteristicProperties } from '../backend-contract/gatt'
+import {
+  createGattCharacteristicProperties,
+  type CharacteristicProperties,
+  type GattAccessRequirements,
+  type GattDescriptorProperties
+} from '../backend-contract/gatt'
 import type { GattDatabaseChangedEvent } from '../backend-contract/gatt'
 import { createPublicBleCapabilities, type BleCapabilities } from '../public/capabilities'
 import type {
@@ -26,6 +31,7 @@ import type {
   PortableSubscriptionOptions,
   PortableWritePolicy
 } from '../manager/consumer-handles'
+import type { AdvertisementObservation } from '../backend-contract/advertisement'
 import type { AttachmentRecord } from '../backend-contract/identity'
 import type { PeerReference } from '../backend-contract/peer-reference'
 import { IpcBleClient } from './client'
@@ -86,6 +92,7 @@ export interface IpcAdvertisement {
   readonly manufacturerData: readonly IpcManufacturerData[]
   readonly serviceData: readonly IpcServiceData[]
 }
+export type IpcScanObservation = IpcAdvertisement | AdvertisementObservation<string>
 
 export interface IpcNotificationValue {
   readonly value: Uint8Array
@@ -210,9 +217,9 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
       options.signal
     )
     const handle = requiredString(payload, 'handle', 'ipc-manager.scan')
-    const observations = this.registerStream<IpcAdvertisement>(
+    const observations = this.registerStream<IpcScanObservation>(
       handle,
-      isIpcAdvertisement,
+      isIpcScanObservation,
       toRemoteStreamLimits(options.stream),
       options.stream?.overflowPolicy
     )
@@ -523,15 +530,32 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
 }
 
 export class IpcScanSession {
+  private stopResult: Promise<CleanupRecord> | null = null
+
   constructor(
     private readonly manager: IpcBleManager,
     readonly handle: string,
-    readonly observations: BoundedAsyncStream<IpcAdvertisement>
+    readonly observations: BoundedAsyncStream<IpcScanObservation>
   ) {}
 
-  async stop(): Promise<CleanupRecord> {
-    const result = cleanupRecord(await this.manager.route('scan.stop', Object.freeze({ scanHandle: this.handle })))
-    if (result.state === 'released') this.manager.closeStream(this.handle)
+  stop(): Promise<CleanupRecord> {
+    if (this.stopResult !== null) return this.stopResult
+    const result = this.manager
+      .route('scan.stop', Object.freeze({ scanHandle: this.handle }))
+      .then(payload => cleanupRecord(payload))
+      .then(cleanup => {
+        if (cleanup.state === 'released') {
+          this.manager.closeStream(this.handle)
+        } else {
+          this.stopResult = null
+        }
+        return cleanup
+      })
+      .catch(error => {
+        this.stopResult = null
+        throw error
+      })
+    this.stopResult = result
     return result
   }
 }
@@ -544,6 +568,7 @@ export class IpcConnection {
   private readonly _connectionId: string
   private readonly _ownerLeaseId: string
   private readonly _connectionGeneration: string
+  private disconnectResult: Promise<CleanupRecord> | null = null
 
   constructor(
     private readonly manager: IpcBleManager,
@@ -630,7 +655,7 @@ export class IpcConnection {
   }
 
   async discover(options: IpcManagerOperationOptions = {}): Promise<IpcGattDatabase> {
-    await this.ensureLifecycleAdmission()
+    await this.awaitLifecycleAdmission(options)
     const payload = await this.manager.route(
       'gatt.discover',
       Object.freeze({ ...this.identityPayload(), deadline: operationDeadline(options) }),
@@ -658,7 +683,17 @@ export class IpcConnection {
     return requiredNumber(payload, 'bytes', 'ipc-manager.maximum-write-length')
   }
 
-  async disconnect(): Promise<CleanupRecord> {
+  disconnect(): Promise<CleanupRecord> {
+    if (this.disconnectResult !== null) return this.disconnectResult
+    const result = this.disconnectInternal().catch(error => {
+      this.disconnectResult = null
+      throw error
+    })
+    this.disconnectResult = result
+    return result
+  }
+
+  private async disconnectInternal(): Promise<CleanupRecord> {
     this.invalidateDatabases()
     if (this.lifecycleAdmission !== null) {
       await this.lifecycleAdmission
@@ -667,7 +702,13 @@ export class IpcConnection {
       await this.lifecycleSubscription.unsubscribe()
       this.lifecycleSubscription = null
     }
-    return cleanupRecord(await this.manager.route('connection.disconnect', Object.freeze(this.identityPayload())))
+    const cleanup = cleanupRecord(
+      await this.manager.route('connection.disconnect', Object.freeze(this.identityPayload()))
+    )
+    if (cleanup.state === 'release-failed') {
+      this.disconnectResult = null
+    }
+    return cleanup
   }
 
   release(): Promise<CleanupRecord> {
@@ -681,6 +722,56 @@ export class IpcConnection {
       connectionId: this.connectionId,
       ownerLeaseId: this.ownerLeaseId,
       connectionGeneration: this.connectionGeneration
+    })
+  }
+
+  private async awaitLifecycleAdmission(options: IpcManagerOperationOptions): Promise<void> {
+    const admission = this.ensureLifecycleAdmission()
+    if (options.signal === undefined && options.timeoutMs === undefined) {
+      return admission
+    }
+    const timeoutMs = options.timeoutMs
+    if (timeoutMs !== undefined && (!Number.isFinite(timeoutMs) || timeoutMs <= 0)) {
+      throw contractError('argument.invalid', 'core', 'ipc-manager.lifecycle-admission.timeoutMs')
+    }
+    return new Promise<void>((resolve, reject) => {
+      let settled = false
+      const timer =
+        timeoutMs === undefined
+          ? null
+          : globalThis.setTimeout(() => {
+              finish(reject, contractError('operation.timed-out', 'ipc', 'ipc-manager.connection-events-admission'))
+            }, timeoutMs)
+      const abort = () => {
+        finish(reject, contractError('operation.aborted', 'ipc', 'ipc-manager.connection-events-admission'))
+      }
+      const finish = (settle: (value: void | PromiseLike<void>) => void, value: void | BackendContractError): void => {
+        if (settled) return
+        settled = true
+        if (timer !== null) globalThis.clearTimeout(timer)
+        options.signal?.removeEventListener('abort', abort)
+        if (value instanceof BackendContractError) {
+          reject(value)
+          return
+        }
+        settle(value)
+      }
+      options.signal?.addEventListener('abort', abort, { once: true })
+      if (options.signal?.aborted === true) {
+        abort()
+        return
+      }
+      admission.then(
+        () => finish(resolve, undefined),
+        error => {
+          if (!settled) {
+            settled = true
+            if (timer !== null) globalThis.clearTimeout(timer)
+            options.signal?.removeEventListener('abort', abort)
+            reject(error)
+          }
+        }
+      )
     })
   }
 }
@@ -851,19 +942,8 @@ export class IpcGattDatabase {
         this.characteristics.map(characteristic =>
           Object.freeze({
             path: toCharacteristicPath(databasePath, characteristic.record),
-            properties: createGattCharacteristicProperties({
-              broadcast: characteristic.record.properties.includes('broadcast'),
-              read: characteristic.record.properties.includes('read'),
-              writeWithResponse: characteristic.record.properties.includes('write'),
-              writeWithoutResponse: characteristic.record.properties.includes('write-without-response'),
-              authenticatedSignedWrites: characteristic.record.properties.includes('authenticated-signed-writes'),
-              notify: characteristic.record.properties.includes('notify'),
-              indicate: characteristic.record.properties.includes('indicate'),
-              extendedProperties: characteristic.record.properties.includes('extended-properties'),
-              reliableWrite: characteristic.record.properties.includes('reliable-write'),
-              writableAuxiliaries: characteristic.record.properties.includes('writable-auxiliaries')
-            }),
-            access: Object.freeze({ read: 'unknown', write: 'unknown' })
+            properties: characteristicPropertiesFromRecord(characteristic.record),
+            access: characteristicAccessFromRecord(characteristic.record)
           })
         )
       ),
@@ -878,12 +958,7 @@ export class IpcGattDatabase {
               descriptorUuid: descriptor.record.uuid,
               descriptorOccurrence: String(descriptor.record.occurrence)
             }),
-            properties: Object.freeze({
-              read: false,
-              write: false,
-              availability: Object.freeze({ read: 'unknown', write: 'unknown' }),
-              access: Object.freeze({ read: 'unknown', write: 'unknown' })
-            })
+            properties: descriptorPropertiesFromRecord(descriptor.record)
           })
         )
       )
@@ -1109,6 +1184,7 @@ export class IpcDescriptor {
 
 export class IpcSubscription {
   path: PortableCurrentCharacteristicPath | null = null
+  private removeResult: Promise<CleanupRecord> | null = null
 
   constructor(
     private readonly database: IpcGattDatabase,
@@ -1120,12 +1196,25 @@ export class IpcSubscription {
     return this.handle
   }
 
-  async remove(): Promise<CleanupRecord> {
-    const cleanup = cleanupRecord(
-      await this.database.route('gatt.unsubscribe', Object.freeze({ subscriptionHandle: this.handle }), null)
-    )
-    if (cleanup.state === 'released') this.database.closeStream(this.handle)
-    return cleanup
+  remove(): Promise<CleanupRecord> {
+    if (this.removeResult !== null) return this.removeResult
+    const result = this.database
+      .route('gatt.unsubscribe', Object.freeze({ subscriptionHandle: this.handle }), null)
+      .then(payload => cleanupRecord(payload))
+      .then(cleanup => {
+        if (cleanup.state === 'released') {
+          this.database.closeStream(this.handle)
+        } else {
+          this.removeResult = null
+        }
+        return cleanup
+      })
+      .catch(error => {
+        this.removeResult = null
+        throw error
+      })
+    this.removeResult = result
+    return result
   }
 }
 
@@ -1528,6 +1617,22 @@ function isIpcAdvertisement(value: unknown): value is IpcAdvertisement {
   return true
 }
 
+function isIpcScanObservation(value: unknown): value is IpcScanObservation {
+  return isIpcAdvertisement(value) || isNativeScanObservation(value)
+}
+
+function isNativeScanObservation(value: unknown): value is AdvertisementObservation<string> {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    !Array.isArray(value) &&
+    'device' in value &&
+    'receivedAtMonotonicMs' in value &&
+    'scanSessionId' in value &&
+    'serviceUuids' in value
+  )
+}
+
 function isIpcCharacteristicRecord(value: unknown): value is IpcCharacteristicRecord {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
   if (
@@ -1546,6 +1651,8 @@ function isIpcCharacteristicRecord(value: unknown): value is IpcCharacteristicRe
   const characteristicUuid: unknown = Reflect.get(value, 'characteristicUuid')
   const characteristicOccurrence: unknown = Reflect.get(value, 'characteristicOccurrence')
   const properties: unknown = Reflect.get(value, 'properties')
+  const propertiesMetadata: unknown = Reflect.get(value, 'propertiesMetadata')
+  const access: unknown = Reflect.get(value, 'access')
   return (
     typeof handle === 'string' &&
     handle.length > 0 &&
@@ -1558,7 +1665,9 @@ function isIpcCharacteristicRecord(value: unknown): value is IpcCharacteristicRe
     typeof characteristicOccurrence === 'string' &&
     characteristicOccurrence.length > 0 &&
     Array.isArray(properties) &&
-    properties.every(entry => typeof entry === 'string')
+    properties.every(entry => typeof entry === 'string') &&
+    (propertiesMetadata === undefined || isCharacteristicProperties(propertiesMetadata)) &&
+    (access === undefined || isGattAccessRequirements(access))
   )
 }
 
@@ -1631,6 +1740,7 @@ function isIpcDescriptorRecord(value: unknown): value is IpcDescriptorRecord {
   const characteristicHandle: unknown = Reflect.get(value, 'characteristicHandle')
   const uuid: unknown = Reflect.get(value, 'uuid')
   const occurrence: unknown = Reflect.get(value, 'occurrence')
+  const properties: unknown = Reflect.get(value, 'properties')
   return (
     typeof handle === 'string' &&
     handle.length > 0 &&
@@ -1639,7 +1749,107 @@ function isIpcDescriptorRecord(value: unknown): value is IpcDescriptorRecord {
     typeof uuid === 'string' &&
     uuid.length > 0 &&
     typeof occurrence === 'string' &&
-    occurrence.length > 0
+    occurrence.length > 0 &&
+    (properties === undefined || isGattDescriptorProperties(properties))
+  )
+}
+
+function isGattAccessRequirements(value: unknown): value is GattAccessRequirements {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
+  return isGattAccessValue(Reflect.get(value, 'read')) && isGattAccessValue(Reflect.get(value, 'write'))
+}
+
+function characteristicPropertiesFromRecord(record: IpcCharacteristicRecord): CharacteristicProperties {
+  const metadata = Reflect.get(record, 'propertiesMetadata')
+  if (isCharacteristicProperties(metadata)) return metadata
+  return createGattCharacteristicProperties({
+    broadcast: record.properties.includes('broadcast'),
+    read: record.properties.includes('read'),
+    writeWithResponse: record.properties.includes('write') || record.properties.includes('write-with-response'),
+    writeWithoutResponse: record.properties.includes('write-without-response'),
+    authenticatedSignedWrites: record.properties.includes('authenticated-signed-writes'),
+    notify: record.properties.includes('notify'),
+    indicate: record.properties.includes('indicate'),
+    extendedProperties: record.properties.includes('extended-properties'),
+    reliableWrite: record.properties.includes('reliable-write'),
+    writableAuxiliaries: record.properties.includes('writable-auxiliaries')
+  })
+}
+
+function characteristicAccessFromRecord(record: IpcCharacteristicRecord): GattAccessRequirements {
+  const access = Reflect.get(record, 'access')
+  if (isGattAccessRequirements(access)) return Object.freeze({ read: access.read, write: access.write })
+  return Object.freeze({ read: 'unknown', write: 'unknown' })
+}
+
+function descriptorPropertiesFromRecord(record: IpcDescriptorRecord): GattDescriptorProperties {
+  const properties = Reflect.get(record, 'properties')
+  if (isGattDescriptorProperties(properties)) return properties
+  return Object.freeze({
+    read: false,
+    write: false,
+    availability: Object.freeze({ read: 'unknown', write: 'unknown' }),
+    access: Object.freeze({ read: 'unknown', write: 'unknown' })
+  })
+}
+
+function isGattAccessValue(value: unknown): value is GattAccessRequirements['read'] {
+  return (
+    value === 'none' ||
+    value === 'encrypted' ||
+    value === 'authenticated' ||
+    value === 'authorized' ||
+    value === 'unknown'
+  )
+}
+
+function isCharacteristicProperties(value: unknown): value is CharacteristicProperties {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
+  const booleanKeys = [
+    'broadcast',
+    'read',
+    'writeWithResponse',
+    'writeWithoutResponse',
+    'authenticatedSignedWrites',
+    'notify',
+    'indicate',
+    'extendedProperties',
+    'reliableWrite',
+    'writableAuxiliaries'
+  ]
+  if (!booleanKeys.every(key => typeof Reflect.get(value, key) === 'boolean')) return false
+  const availability = Reflect.get(value, 'availability')
+  if (typeof availability !== 'object' || availability === null || Array.isArray(availability)) return false
+  const availabilityKeys = [
+    'broadcast',
+    'read',
+    'writeWithResponse',
+    'writeWithoutResponse',
+    'authenticatedSignedWrites',
+    'notify',
+    'indicate',
+    'extendedProperties',
+    'reliableWrite',
+    'writableAuxiliaries'
+  ]
+  return availabilityKeys.every(key => {
+    const state = Reflect.get(availability, key)
+    return state === 'known' || state === 'unknown'
+  })
+}
+
+function isGattDescriptorProperties(value: unknown): value is GattDescriptorProperties {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
+  const availability = Reflect.get(value, 'availability')
+  return (
+    typeof Reflect.get(value, 'read') === 'boolean' &&
+    typeof Reflect.get(value, 'write') === 'boolean' &&
+    typeof availability === 'object' &&
+    availability !== null &&
+    !Array.isArray(availability) &&
+    (Reflect.get(availability, 'read') === 'known' || Reflect.get(availability, 'read') === 'unknown') &&
+    (Reflect.get(availability, 'write') === 'known' || Reflect.get(availability, 'write') === 'unknown') &&
+    isGattAccessRequirements(Reflect.get(value, 'access'))
   )
 }
 

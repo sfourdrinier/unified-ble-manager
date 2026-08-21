@@ -121,6 +121,8 @@ describe('4.0 public package surface', () => {
     expect(typeof electronMain.ElectronMainBleBinding).toBe('function')
     expect(typeof electronMain.ElectronMainBleRouter).toBe('function')
     expect(typeof electronRenderer.ElectronRendererBleClient).toBe('function')
+    expect(typeof electronRenderer.createElectronRendererBleManager).toBe('function')
+    expect(typeof electronRenderer.createElectronRendererBleManagerWithEnvironment).toBe('function')
     expect(typeof electronRenderer.assertElectronAdvertisementObservation).toBe('function')
     expect(typeof electronRenderer.isElectronConnectionEventsStreamHandle).toBe('function')
     expect(electronRenderer.isElectronConnectionEventsStreamHandle('connection-events-public-1')).toBe(true)
@@ -131,6 +133,8 @@ describe('4.0 public package surface', () => {
       'ELECTRON_CONNECTION_LIFECYCLE_EVENT_SCHEMA_VERSION',
       'ElectronRendererBleClient',
       'assertElectronAdvertisementObservation',
+      'createElectronRendererBleManager',
+      'createElectronRendererBleManagerWithEnvironment',
       'isElectronConnectionEventsStreamHandle'
     ])
     expect(packageJson.exports['./web']).toBeDefined()
@@ -254,7 +258,14 @@ describe('4.0 public package surface', () => {
 
     expect(electronRendererSource.match(/^\/\/ src\/electron-renderer\.ts$/gm)).toHaveLength(1)
     expect(electronRendererSource).toBe(
-      "// src/electron-renderer.ts\n\nexport * from './electron/protocol'\nexport { ElectronRendererBleClient } from './electron/renderer'\nexport type { ElectronConnectionEventCleanupReceipt, ElectronConnectionEventSubscription } from './electron/renderer'\nexport { assertAdvertisementObservation as assertElectronAdvertisementObservation } from './electron/advertisement-observation'\n"
+      "// src/electron-renderer.ts\n\nexport * from './electron/protocol'\nexport { ElectronRendererBleClient } from './electron/renderer'\nexport type { ElectronConnectionEventCleanupReceipt, ElectronConnectionEventSubscription } from './electron/renderer'\nexport {\n  createElectronRendererBleManager,\n  createElectronRendererBleManagerWithEnvironment\n} from './electron/public-manager'\nexport type { ElectronRendererBleManagerEnvironment } from './electron/public-manager'\nexport { assertAdvertisementObservation as assertElectronAdvertisementObservation } from './electron/advertisement-observation'\n"
     )
+  })
+
+  test('keeps the reviewed Electron renderer API report aligned with the public façade', () => {
+    const report = fs.readFileSync(path.join(rootDirectory, 'etc', 'api', 'electron-renderer.api.md'), 'utf8')
+    expect(report).toContain('createElectronRendererBleManager')
+    expect(report).toContain('createElectronRendererBleManagerWithEnvironment')
+    expect(report).toContain('ElectronRendererBleManagerEnvironment')
   })
 })

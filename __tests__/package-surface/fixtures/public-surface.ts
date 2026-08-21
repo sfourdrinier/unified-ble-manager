@@ -182,8 +182,11 @@ import type { ElectronMainBleBinding } from 'unified-ble-manager/electron/main'
 import {
   assertElectronAdvertisementObservation,
   ElectronRendererBleClient,
+  createElectronRendererBleManager,
+  createElectronRendererBleManagerWithEnvironment,
   isElectronConnectionEventsStreamHandle
 } from 'unified-ble-manager/electron/renderer'
+import type { ElectronRendererBleManagerEnvironment } from 'unified-ble-manager/electron/renderer'
 import type {
   ElectronConnectionEventCleanupReceipt,
   ElectronConnectionEventSubscription,
@@ -793,6 +796,10 @@ observe(createDbusNextBluezBackendProvider({ busKind: bluezBusKind, now: () => 0
 observe(createNativeWinRtBackendProvider)
 observe(createElectronMainWinRtBackendProvider)
 observe(ElectronRendererBleClient)
+observe(createElectronRendererBleManager)
+observe(createElectronRendererBleManagerWithEnvironment)
+declare const electronRendererManagerEnvironment: ElectronRendererBleManagerEnvironment
+observe(electronRendererManagerEnvironment)
 observe(assertElectronAdvertisementObservation)
 observe(isElectronConnectionEventsStreamHandle(electronConnectionEventStreamHandle))
 observe(electronConnectionEventSubscription.events)

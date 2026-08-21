@@ -316,11 +316,12 @@ function isBootstrap<Attachment extends string, Client extends string>(
   const record = wireRecord(value)
   if (
     record === null ||
-    !exactKeys(record, ['attachment', 'attachmentId', 'versions', 'capabilities', 'renderer', 'rendererLease']) ||
+    !hasBootstrapKeys(record) ||
     !nonEmptyString(record.attachmentId) ||
     !isAttachment(record.attachment) ||
     !isIpcVersionAxes(record.versions) ||
     !isCapabilitySnapshot(record.capabilities, wireRecord(record.attachment)?.backendGeneration) ||
+    (record.discovery !== undefined && !isDiscoveryDescriptor(record.discovery)) ||
     !isRenderer(record.renderer) ||
     !isLease(record.rendererLease)
   ) {
@@ -329,6 +330,25 @@ function isBootstrap<Attachment extends string, Client extends string>(
   const attachment = wireRecord(record.attachment)
   if (attachment === null || attachment.attachmentId !== record.attachmentId) return false
   return true
+}
+
+function hasBootstrapKeys(record: Record<string, unknown>): boolean {
+  const keys = Object.keys(record).sort()
+  const required = ['attachment', 'attachmentId', 'capabilities', 'renderer', 'rendererLease', 'versions']
+  const withDiscovery = [...required, 'discovery'].sort()
+  return (
+    (keys.length === required.length && keys.every((key, index) => key === required.sort()[index])) ||
+    (keys.length === withDiscovery.length && keys.every((key, index) => key === withDiscovery[index]))
+  )
+}
+
+function isDiscoveryDescriptor(value: unknown): boolean {
+  const record = wireRecord(value)
+  return (
+    record !== null &&
+    Object.keys(record).length === 1 &&
+    (record.kind === 'continuous-scan' || record.kind === 'system-chooser' || record.kind === 'hybrid')
+  )
 }
 
 function isCapabilitySnapshot(value: unknown, expectedBackendGeneration: unknown): boolean {

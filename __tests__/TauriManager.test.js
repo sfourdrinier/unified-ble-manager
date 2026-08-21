@@ -664,6 +664,30 @@ describe('Tauri v2 public manager', () => {
     await manager.destroy()
   })
 
+  test('stops an active public scan when its AbortSignal is cancelled after start', async () => {
+    const scanStops = []
+    const invoke = jest.fn(async (_command, args) => {
+      const request = args.request
+      if (request.kind === 'bootstrap') return { kind: 'bootstrap', bootstrap: bootstrap() }
+      if (request.kind === 'event.ack') return { kind: 'event.ack' }
+      if (request.kind === 'release') return { kind: 'release', cleanup: { state: 'released', failures: [] } }
+      if (request.envelope.command === 'scan.start') return { kind: 'route', payload: { handle: 'scan-abort' } }
+      if (request.envelope.command === 'scan.stop') {
+        scanStops.push(request.envelope.payload.scanHandle)
+        return { kind: 'route', payload: { state: 'released', failures: [] } }
+      }
+      return { kind: 'route', payload: { accepted: true } }
+    })
+    const { createTauriBleManagerWithEnvironment } = require('../src/tauri')
+    const manager = await createTauriBleManagerWithEnvironment({ invoke, Channel: FakeChannel })
+    const controller = new AbortController()
+    const scan = await manager.scan({ signal: controller.signal })
+    controller.abort()
+    for (let turn = 0; turn < 4; turn += 1) await Promise.resolve()
+    expect(scanStops).toEqual(['scan-abort'])
+    await manager.destroy()
+  })
+
   test('rejects bootstrap records with contradictory identity or adapter state', async () => {
     const invalidBootstrap = bootstrap()
     invalidBootstrap.attachmentId = 'mismatched-attachment'
@@ -740,5 +764,28 @@ describe('Tauri v2 public manager', () => {
       scanStartCount
     )
     await manager.destroy()
+  })
+
+  test('releases the attached IPC lease when host option admission fails', async () => {
+    const invoke = jest.fn(async (_command, args) => {
+      if (args.request.kind === 'bootstrap') return { kind: 'bootstrap', bootstrap: bootstrap() }
+      if (args.request.kind === 'release') return { kind: 'release', cleanup: { state: 'released', failures: [] } }
+      return { kind: 'route', payload: { accepted: true } }
+    })
+    const { createTauriBleManagerWithEnvironment } = require('../src/tauri')
+
+    await expect(
+      createTauriBleManagerWithEnvironment({ invoke, Channel: FakeChannel }, { adapterId: 'wrong-adapter' })
+    ).rejects.toMatchObject({ normalized: { code: 'adapter.unavailable' } })
+    expect(invoke.mock.calls.map(([, args]) => args.request.kind)).toEqual(['bootstrap', 'release'])
+
+    invoke.mockClear()
+    await expect(
+      createTauriBleManagerWithEnvironment(
+        { invoke, Channel: FakeChannel },
+        { restoration: { applicationId: 'app', restorationId: 'ble' } }
+      )
+    ).rejects.toMatchObject({ normalized: { code: 'capability.unsupported' } })
+    expect(invoke.mock.calls.map(([, args]) => args.request.kind)).toEqual(['bootstrap', 'release'])
   })
 })

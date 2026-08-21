@@ -448,7 +448,7 @@ describe('Electron IPC hardening', () => {
           now = 20
         }
         cleanupResult.resolve(released())
-        await expect(operation).resolves.toMatchObject({ kind: 'route', payload: { state: 'released', failureCount: 0 } })
+        await expect(operation).resolves.toMatchObject({ kind: 'route', payload: { state: 'released', failures: [] } })
         expect(cleanup).toHaveBeenCalledTimes(1)
         now = 0
       }
