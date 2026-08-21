@@ -8,9 +8,47 @@ const CAPABILITY_SCHEMA_VERSION: i64 = 1;
 const IMPLEMENTATION_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Capabilities whose mechanics are implemented by this dispatcher. Every
-/// entry remains `limited` until the corresponding physical-radio evidence is
-/// qualified; unsupported catalog entries are intentionally absent.
-const TAURI_CAPABILITIES: [(&str, &str, &str, &str); 6] = [
+/// implemented entry remains `limited` until the corresponding physical-radio
+/// evidence is qualified; every other catalog entry is explicitly unsupported.
+const TAURI_CAPABILITIES: [&str; 35] = [
+    "discovery:continuous-scan",
+    "discovery:system-chooser",
+    "discovery:advertisement-watch",
+    "peer:resolve-reference",
+    "peer:known",
+    "peer:system-connected",
+    "peer:bonded",
+    "peer:origin-authorized",
+    "peer:restored",
+    "connection:direct",
+    "connection:when-available",
+    "connection:rssi",
+    "connection:effective-mtu",
+    "connection:request-mtu",
+    "connection:priority",
+    "connection:parameters",
+    "connection:phy",
+    "connection:subrate",
+    "security:state",
+    "security:pair",
+    "security:cancel-pairing",
+    "security:unpair",
+    "security:custom-ceremony",
+    "gatt:descriptors",
+    "gatt:indications",
+    "gatt:service-changed",
+    "gatt:maximum-write-length",
+    "gatt:long-write",
+    "gatt:reliable-write",
+    "gatt:write-without-response-readiness",
+    "gatt:high-throughput-acquire",
+    "background:apple-restoration",
+    "background:android-connected-device-service",
+    "background:desktop-maintain-connection",
+    "lifecycle:page-persistence",
+];
+
+const TAURI_LIMITED_CAPABILITIES: [(&str, &str, &str, &str); 6] = [
     (
         "discovery:continuous-scan",
         "scan.owner-join-authority-and-signature",
@@ -56,18 +94,34 @@ pub(crate) fn snapshot(backend_generation: &str) -> IpcValue {
         (
             "descriptors",
             IpcValue::Array(
-                TAURI_CAPABILITIES
-                    .iter()
-                    .map(|(id, scenario, limitation_code, explanation)| {
-                        descriptor(*id, *scenario, *limitation_code, *explanation)
-                    })
+                TAURI_CAPABILITIES.iter().map(|id| {
+                    if let Some((_, scenario, code, explanation)) =
+                        TAURI_LIMITED_CAPABILITIES.iter().find(|entry| entry.0 == *id)
+                    {
+                        descriptor(*id, "limited", *scenario, *code, *explanation)
+                    } else {
+                        descriptor(
+                            *id,
+                            "unsupported",
+                            "capability.truth-limits-evidence-and-binding",
+                            "not-implemented",
+                            "The btleplug dispatcher does not implement this capability in the current host.",
+                        )
+                    }
+                })
                     .collect(),
             ),
         ),
     ])
 }
 
-fn descriptor(id: &str, scenario: &str, limitation_code: &str, explanation: &str) -> IpcValue {
+fn descriptor(
+    id: &str,
+    state: &str,
+    scenario: &str,
+    limitation_code: &str,
+    explanation: &str,
+) -> IpcValue {
     let limitation = object([
         ("code", string(limitation_code)),
         ("explanation", string(explanation)),
@@ -79,7 +133,7 @@ fn descriptor(id: &str, scenario: &str, limitation_code: &str, explanation: &str
     let schema_range = version_range();
     object([
         ("id", string(id)),
-        ("state", string("limited")),
+        ("state", string(state)),
         ("selectedSchemaRange", schema_range.clone()),
         ("implementationOrigin", string("backend-native")),
         (
@@ -100,7 +154,14 @@ fn descriptor(id: &str, scenario: &str, limitation_code: &str, explanation: &str
                     "receiptId",
                     string(format!("tauri-btleplug-capability-{id}-v2")),
                 ),
-                ("evidenceLevel", string("deterministic")),
+                (
+                    "evidenceLevel",
+                    string(if state == "limited" {
+                        "deterministic"
+                    } else {
+                        "blocked"
+                    }),
+                ),
                 ("implementationVersion", string(IMPLEMENTATION_VERSION)),
                 (
                     "sourceDigest",
