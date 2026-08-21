@@ -47,16 +47,18 @@ function connection() {
 }
 
 function manager(connectionValue) {
+  const adapterState = jest.fn(async () => ({
+    availability: 'available',
+    authorization: 'granted',
+    power: 'on',
+    backendGeneration: '1',
+    updatedAt: 1,
+    safeReason: null
+  }))
   return {
     adapter: {
-      state: async () => ({
-        availability: 'available',
-        authorization: 'granted',
-        power: 'on',
-        backendGeneration: '1',
-        updatedAt: 1,
-        safeReason: null
-      })
+      state: adapterState,
+      waitUntilReady: jest.fn(async () => adapterState())
     },
     connect: jest.fn(async () => connectionValue),
     capabilities: { supports: () => false },
@@ -92,8 +94,8 @@ describe('public connection supervisor', () => {
     await new Promise(resolve => setTimeout(resolve, 10))
 
     expect(ble.connect).toHaveBeenCalledTimes(1)
-    expect(supervisor.snapshot().state).toBe('connected')
-    expect(supervisor.snapshot().session).toBe('session-1')
+    expect(supervisor.snapshot.state).toBe('connected')
+    expect(supervisor.snapshot.session).toBe('session-1')
     await supervisor.stop()
     expect(current.release).toHaveBeenCalledTimes(1)
   })
@@ -118,7 +120,7 @@ describe('public connection supervisor', () => {
     supervisor.start()
     await wait()
 
-    expect(supervisor.snapshot().state).toBe('stopped')
+    expect(supervisor.snapshot.state).toBe('stopped')
     expect(() =>
       createConnectionSupervisor(ble, 'peer-1', {
         retry: { initialDelayMs: 0, maximumDelayMs: 0, multiplier: 1, jitter: 0, maximumAttempts: 1 }
@@ -164,5 +166,68 @@ describe('public connection supervisor', () => {
 
     expect(cleanup.state).toBe('release-failed')
     expect(late.release).toHaveBeenCalled()
+  })
+
+  test('does not retry after configure cleanup fails', async () => {
+    const current = connection()
+    current.release.mockResolvedValue({
+      state: 'release-failed',
+      failures: [{ resourceKind: 'connection', error: { code: 'platform.failure' } }]
+    })
+    const ble = manager(current)
+    const supervisor = createConnectionSupervisor(ble, 'peer-1', {
+      retry: { initialDelayMs: 0, maximumDelayMs: 0, multiplier: 1, jitter: 0, maximumAttempts: 3 },
+      configure: async () => {
+        throw new Error('configure failed')
+      }
+    })
+
+    supervisor.start()
+    await wait()
+    expect(ble.connect).toHaveBeenCalledTimes(1)
+    expect(supervisor.snapshot.state).toBe('stopped')
+  })
+
+  test('stop settles while adapter state, gate, or configure is pending', async () => {
+    const statePending = deferred()
+    const stateBle = manager(connection())
+    stateBle.adapter.state.mockReturnValue(statePending.promise)
+    const stateSupervisor = createConnectionSupervisor(stateBle, 'peer-state', {
+      retry: { initialDelayMs: 1, maximumDelayMs: 1, multiplier: 1, jitter: 0 }
+    })
+    stateSupervisor.start()
+    await wait(1)
+    await expect(stateSupervisor.stop()).resolves.toMatchObject({ state: 'released' })
+    statePending.resolve({
+      availability: 'available',
+      authorization: 'granted',
+      power: 'on',
+      backendGeneration: '1',
+      updatedAt: 1,
+      safeReason: null
+    })
+
+    const gatePending = deferred()
+    const gateBle = manager(connection())
+    const gateSupervisor = createConnectionSupervisor(gateBle, 'peer-gate', {
+      retry: { initialDelayMs: 1, maximumDelayMs: 1, multiplier: 1, jitter: 0 },
+      gate: () => gatePending.promise
+    })
+    gateSupervisor.start()
+    await wait(1)
+    await expect(gateSupervisor.stop()).resolves.toMatchObject({ state: 'released' })
+    gatePending.resolve('allow')
+
+    const configurePending = deferred()
+    const configureConnection = connection()
+    const configureBle = manager(configureConnection)
+    const configureSupervisor = createConnectionSupervisor(configureBle, 'peer-configure', {
+      retry: { initialDelayMs: 1, maximumDelayMs: 1, multiplier: 1, jitter: 0 },
+      configure: () => configurePending.promise
+    })
+    configureSupervisor.start()
+    await wait(5)
+    await expect(configureSupervisor.stop()).resolves.toMatchObject({ state: 'released' })
+    configurePending.resolve('late-session')
   })
 })

@@ -48,6 +48,12 @@ describe('PR1 public contract reset (TDD)', () => {
       reservedControlCapacity: 1,
       overflowPolicy: 'error'
     })
+    expect(() =>
+      require('../lib/commonjs/public/stream-presets').resolveStreamPolicy({
+        preset: 'custom',
+        budget: { itemCapacity: 1, byteCapacity: 1 }
+      })
+    ).toThrow()
   })
 
   test('Restoration identity is deterministic and matches golden vectors', () => {

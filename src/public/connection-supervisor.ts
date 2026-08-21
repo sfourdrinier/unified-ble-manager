@@ -80,7 +80,7 @@ export interface ConnectionSupervisorOptions<Session> {
 
 export interface ConnectionSupervisor<Session = undefined> {
   readonly events: BoundedAsyncStream<ConnectionSupervisorEvent<Session>>
-  snapshot(): ConnectionSupervisorSnapshot<Session>
+  readonly snapshot: ConnectionSupervisorSnapshot<Session>
   start(): void
   pause(reason?: string): Promise<void>
   resume(): void
@@ -168,7 +168,7 @@ class ConnectionSupervisorImpl<Session> implements ConnectionSupervisor<Session>
     this.events = this.eventStream
   }
 
-  snapshot(): ConnectionSupervisorSnapshot<Session> {
+  get snapshot(): ConnectionSupervisorSnapshot<Session> {
     return Object.freeze({
       supervisorId: this.supervisorId,
       state: this.state,
@@ -252,7 +252,14 @@ class ConnectionSupervisorImpl<Session> implements ConnectionSupervisor<Session>
             this.stopRequested = true
             break
           }
-          if (this.paused) await this.cleanupCurrentConnection()
+          if (this.paused) {
+            const cleanup = await this.cleanupCurrentConnection()
+            if (cleanup.state === 'release-failed') {
+              this.lastError = toBleError(cleanup.failures[0]?.error)
+              this.stopRequested = true
+              break
+            }
+          }
         }
         if (this.stopRequested) break
         if (this.waitForAdapter || this.paused) continue
@@ -277,7 +284,9 @@ class ConnectionSupervisorImpl<Session> implements ConnectionSupervisor<Session>
       }
       let adapter: BleAdapterState
       try {
-        adapter = await this.manager.adapter.state()
+        const state = await this.awaitControl(this.manager.adapter.state())
+        if (state.kind === 'control') return 'stop'
+        adapter = state.value
       } catch (error) {
         this.lastError = toBleError(error)
         await this.waitForWake()
@@ -285,7 +294,10 @@ class ConnectionSupervisorImpl<Session> implements ConnectionSupervisor<Session>
       }
       if (this.waitForAdapter) {
         try {
-          await this.manager.adapter.waitUntilReady({ signal: this.supervisorAbort.signal, operation: 'connect' })
+          const readiness = await this.awaitControl(
+            this.manager.adapter.waitUntilReady({ signal: this.supervisorAbort.signal, operation: 'connect' })
+          )
+          if (readiness.kind === 'control') return 'stop'
           this.waitForAdapter = false
           this.lastError = null
         } catch (error) {
@@ -295,15 +307,24 @@ class ConnectionSupervisorImpl<Session> implements ConnectionSupervisor<Session>
           continue
         }
       }
-      const decision =
+      const decisionResult =
         this.options.gate === undefined
-          ? 'allow'
-          : await this.options.gate({
-              attempt: this.attempt,
-              adapter,
-              lastError: this.lastError,
-              lastDisconnect: this.lastDisconnect
+          ? ({ kind: 'value' as const, value: 'allow' as const } satisfies {
+              kind: 'value'
+              value: ConnectionGateDecision
             })
+          : await this.awaitControl(
+              Promise.resolve(
+                this.options.gate({
+                  attempt: this.attempt,
+                  adapter,
+                  lastError: this.lastError,
+                  lastDisconnect: this.lastDisconnect
+                })
+              )
+            )
+      if (decisionResult.kind === 'control') return 'stop'
+      const decision = decisionResult.value
       if (decision === 'stop') return 'stop'
       this.transition('waiting-for-gate', decision, null, null)
       if (decision === 'pause') {
@@ -370,10 +391,30 @@ class ConnectionSupervisorImpl<Session> implements ConnectionSupervisor<Session>
     this.transition('configuring', null, null, null)
     if (this.options.configure !== undefined) {
       try {
-        this.session = await this.options.configure(outcome.connection)
+        const configurePromise = Promise.resolve(this.options.configure(outcome.connection))
+        const configured = await this.awaitControl(configurePromise)
+        if (configured.kind === 'control') {
+          configurePromise.then(
+            session => this.disposeLateSession(session),
+            error => {
+              this.lastError = toBleError(error)
+            }
+          )
+          const cleanup = await this.cleanupCurrentConnection()
+          if (cleanup.state === 'release-failed') {
+            this.lastError = toBleError(cleanup.failures[0]?.error)
+            return 'cleanup-failed'
+          }
+          return 'interrupted'
+        }
+        this.session = configured.value
       } catch (error) {
         this.lastError = toBleError(error)
-        await this.cleanupCurrentConnection()
+        const cleanup = await this.cleanupCurrentConnection()
+        if (cleanup.state === 'release-failed') {
+          this.lastError = toBleError(cleanup.failures[0]?.error)
+          return 'cleanup-failed'
+        }
         return 'interrupted'
       }
     }
@@ -473,6 +514,15 @@ class ConnectionSupervisorImpl<Session> implements ConnectionSupervisor<Session>
     return cleanup
   }
 
+  private async disposeLateSession(session: Session): Promise<void> {
+    if (this.options.disposeSession === undefined) return
+    try {
+      await this.options.disposeSession(session)
+    } catch (error) {
+      this.lastError = toBleError(error)
+    }
+  }
+
   private finalize(cleanup: CleanupRecord): void {
     if (cleanup.state === 'released') {
       if (this.ownershipReleased) return
@@ -558,6 +608,18 @@ class ConnectionSupervisorImpl<Session> implements ConnectionSupervisor<Session>
         if (resolveWaiter !== null) this.wakeWaiters.delete(resolveWaiter)
       }
     }
+  }
+
+  private async awaitControl<Value>(
+    pending: Promise<Value>
+  ): Promise<{ kind: 'value'; value: Value } | { kind: 'control' }> {
+    const control = this.controlWaiter()
+    const result = await Promise.race([
+      pending.then(value => ({ kind: 'value' as const, value })),
+      control.promise.then(() => ({ kind: 'control' as const }))
+    ])
+    control.cancel()
+    return result
   }
 
   private waitForWake(): Promise<void> {

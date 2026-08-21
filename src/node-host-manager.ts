@@ -2,7 +2,7 @@
 
 import { contractError } from './backend-contract/errors'
 import type { AdapterDescriptor, BackendProvider, HostNeutralBackendIdentity } from './backend-contract/identity'
-import { opaqueId, type BackendCompatibilityOffer } from './backend-contract/primitives'
+import { byteLimit, opaqueId, type BackendCompatibilityOffer } from './backend-contract/primitives'
 import { createEphemeralHostIdentity, normalizeBleManagerCreateOptions } from './public/host-identity'
 import type { BleManagerCreateOptions } from './public/host-identity'
 import { createBleManagerFromProvider, DEFAULT_BLE_MANAGER_OPTIONS, type BleManager } from './manager/ble-manager'
@@ -18,6 +18,9 @@ export async function createNodeBleManagerFromProvider(
 ): Promise<BleManager<string, HostNeutralBackendIdentity<string>>> {
   const { now = () => performance.now(), ...createOptions } = options
   normalizeBleManagerCreateOptions(createOptions)
+  if (createOptions.restoration !== undefined) {
+    throw contractError('capability.unsupported', 'restoration', 'node-manager.restoration')
+  }
   const adapters = await provider.listAdapters()
   const selected = selectNodeAdapter(adapters, options.adapterId)
   const ephemeral = createEphemeralHostIdentity()
@@ -33,7 +36,17 @@ export async function createNodeBleManagerFromProvider(
         ownerMode: 'owning'
       }
     },
-    { ...DEFAULT_BLE_MANAGER_OPTIONS, now }
+    {
+      ...DEFAULT_BLE_MANAGER_OPTIONS,
+      now,
+      maximumValueBytes:
+        createOptions.diagnostics?.maximumValueBytes === undefined
+          ? DEFAULT_BLE_MANAGER_OPTIONS.maximumValueBytes
+          : byteLimit(createOptions.diagnostics.maximumValueBytes),
+      traceMaximumRecords:
+        createOptions.diagnostics?.traceMaximumRecords ?? DEFAULT_BLE_MANAGER_OPTIONS.traceMaximumRecords,
+      traceMaximumBytes: createOptions.diagnostics?.traceMaximumBytes ?? DEFAULT_BLE_MANAGER_OPTIONS.traceMaximumBytes
+    }
   )
 }
 

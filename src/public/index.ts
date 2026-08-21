@@ -41,6 +41,7 @@ export type {
 } from './gatt'
 export type {
   BleConnectionEvent,
+  PublicScanObservation,
   ConnectionIntent,
   BlePhy,
   ConnectOptions,

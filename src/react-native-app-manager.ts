@@ -39,7 +39,9 @@ export async function createReactNativeBleManager(options: BleManagerCreateOptio
     now: () => performance.now(),
     clientId,
     managerId,
-    hostSessionScope
+    hostSessionScope,
+    adapterId: normalized.adapterId,
+    diagnostics: normalized.diagnostics
   })
   return createPublicBleManager(internal, () => performance.now())
 }

@@ -84,14 +84,15 @@ export function resolveStreamPolicy(policy: StreamPolicy = 'balanced'): StreamBu
     throw contractError('argument.invalid', 'stream', 'public-stream-policy.preset')
   }
   const budget = policy.budget
+  const reservedControlCapacity = budget.reservedControlCapacity ?? 2
   if (
     !Number.isSafeInteger(budget.itemCapacity) ||
     budget.itemCapacity <= 0 ||
     !Number.isSafeInteger(budget.byteCapacity) ||
     budget.byteCapacity <= 0 ||
-    (budget.reservedControlCapacity !== undefined &&
-      (!Number.isSafeInteger(budget.reservedControlCapacity) || budget.reservedControlCapacity <= 0)) ||
-    (budget.reservedControlCapacity !== undefined && budget.byteCapacity <= budget.reservedControlCapacity) ||
+    !Number.isSafeInteger(reservedControlCapacity) ||
+    reservedControlCapacity <= 0 ||
+    budget.byteCapacity <= reservedControlCapacity ||
     (budget.overflowPolicy !== undefined &&
       budget.overflowPolicy !== 'latest' &&
       budget.overflowPolicy !== 'drop-oldest' &&
@@ -105,8 +106,7 @@ export function resolveStreamPolicy(policy: StreamPolicy = 'balanced'): StreamBu
     custom: {
       itemCapacity: capacity(budget.itemCapacity),
       byteCapacity: capacity(budget.byteCapacity),
-      reservedControlCapacity:
-        budget.reservedControlCapacity === undefined ? undefined : capacity(budget.reservedControlCapacity),
+      reservedControlCapacity: capacity(reservedControlCapacity),
       overflowPolicy: budget.overflowPolicy
     }
   })

@@ -5,7 +5,7 @@ import type { ScanOptions as InternalScanOptions } from '../backend-contract/adv
 import type { ConnectionLifecycleCause, ConnectionLifecycleEvent } from '../backend-contract/connection-lifecycle'
 import { contractError, type CleanupRecord } from '../backend-contract/errors'
 import type { BackendIdentity } from '../backend-contract/identity'
-import { capacity, opaqueId } from '../backend-contract/primitives'
+import { capacity, canonicalUuid, opaqueId } from '../backend-contract/primitives'
 import type { BleManager as InternalBleManager } from '../manager/ble-manager'
 import type { BleManagerOptions } from '../manager/ble-manager'
 import type { BoundedAsyncStream } from '../backend-contract/streams'
@@ -686,8 +686,10 @@ class PublicConnectionEventBroadcast implements AsyncIterable<BleConnectionEvent
   }
 }
 
-export function peerFromPublicObservation(observation: PublicScanObservation): BlePeer {
-  return observation.peer
+export function peerFromPublicObservation(
+  observation: PublicScanObservation | AdvertisementObservation<string> | IpcAdvertisement
+): BlePeer {
+  return 'peer' in observation ? observation.peer : projectPublicScanObservation(observation).peer
 }
 
 function projectPublicScanObservation(
@@ -780,11 +782,61 @@ export function assertPublicChooseOptions(options: ChooseOptions): void {
   if (options.filters !== undefined && !Array.isArray(options.filters)) {
     throw contractError('argument.invalid', 'chooser', 'public-ble-manager.choose.filters')
   }
+  if (options.filters !== undefined) {
+    for (const filter of options.filters) {
+      if (typeof filter !== 'object' || filter === null || Array.isArray(filter)) {
+        throw contractError('argument.invalid', 'chooser', 'public-ble-manager.choose.filter')
+      }
+      const allowedFilterKeys = new Set(['serviceUuids', 'manufacturerData', 'localNamePrefix'])
+      if (Object.keys(filter).some(key => !allowedFilterKeys.has(key))) {
+        throw contractError('argument.invalid', 'chooser', 'public-ble-manager.choose.filter.options')
+      }
+      if (filter.serviceUuids !== undefined) {
+        if (!Array.isArray(filter.serviceUuids)) {
+          throw contractError('argument.invalid', 'chooser', 'public-ble-manager.choose.filter.services')
+        }
+        for (const uuid of filter.serviceUuids) assertChooseUuid(uuid)
+      }
+      if (filter.localNamePrefix !== undefined && typeof filter.localNamePrefix !== 'string') {
+        throw contractError('argument.invalid', 'chooser', 'public-ble-manager.choose.filter.name-prefix')
+      }
+      if (filter.manufacturerData !== undefined) {
+        if (!Array.isArray(filter.manufacturerData)) {
+          throw contractError('argument.invalid', 'chooser', 'public-ble-manager.choose.filter.manufacturer-data')
+        }
+        for (const manufacturer of filter.manufacturerData) {
+          if (
+            typeof manufacturer !== 'object' ||
+            manufacturer === null ||
+            !Number.isSafeInteger(manufacturer.companyIdentifier) ||
+            manufacturer.companyIdentifier < 0 ||
+            (manufacturer.dataPrefix !== undefined && !(manufacturer.dataPrefix instanceof Uint8Array))
+          ) {
+            throw contractError('argument.invalid', 'chooser', 'public-ble-manager.choose.filter.manufacturer-entry')
+          }
+        }
+      }
+    }
+  }
   if (options.optionalServices !== undefined && !Array.isArray(options.optionalServices)) {
     throw contractError('argument.invalid', 'chooser', 'public-ble-manager.choose.optional-services')
   }
+  if (options.optionalServices !== undefined) {
+    for (const uuid of options.optionalServices) assertChooseUuid(uuid)
+  }
   if (options.acceptAllDevices !== undefined && typeof options.acceptAllDevices !== 'boolean') {
     throw contractError('argument.invalid', 'chooser', 'public-ble-manager.choose.accept-all-devices')
+  }
+}
+
+function assertChooseUuid(value: unknown): void {
+  if (!(typeof value === 'string' || typeof value === 'number')) {
+    throw contractError('argument.invalid', 'chooser', 'public-ble-manager.choose.uuid')
+  }
+  try {
+    canonicalUuid(typeof value === 'number' ? value.toString(16) : value)
+  } catch {
+    throw contractError('argument.invalid', 'chooser', 'public-ble-manager.choose.uuid')
   }
 }
 

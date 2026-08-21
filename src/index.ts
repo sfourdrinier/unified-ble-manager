@@ -11,6 +11,7 @@ export type {
   BlePeer,
   BleConnection,
   BleConnectionEvent,
+  PublicScanObservation,
   ConnectionIntent,
   BlePhy,
   ConnectOptions,

@@ -8,7 +8,14 @@ import {
   snapshotBlePeer,
   assertPublicConnectOptions
 } from './public/ble-manager'
-import type { BleConnectionEvent, BleManager, BlePeer, FindOptions, ScanOptions } from './public/ble-manager'
+import type {
+  BleConnectionEvent,
+  BleManager,
+  BlePeer,
+  ConnectOptions,
+  FindOptions,
+  ScanOptions
+} from './public/ble-manager'
 import type { BleAdapter, BleAdapterState, AdapterReadinessOptions } from './public/ble-adapter'
 import { diagnosticsUnavailable, type BleDiagnostics } from './public/diagnostics'
 import type { BleConnection } from './public/ble-manager'
@@ -96,7 +103,9 @@ class TauriScanSessionWrapper implements ScanSession {
     this.scanState.emit({ state: 'stopping' })
     try {
       const cleanup = await rehydratePublicPromise(this.inner.stop())
-      this.scanState.emit({ state: 'stopped' })
+      this.scanState.emit(
+        cleanup.state === 'released' ? { state: 'stopped' } : { state: 'failed', reason: 'scan-stop-failed' }
+      )
       this.scanState.close()
       return cleanup
     } catch (error) {
@@ -494,7 +503,7 @@ class TauriBleManagerAdapter implements BleManager {
     }
   }
 
-  find(options: FindOptions = {}): Promise<BlePeer> {
+  async find(options: FindOptions = {}): Promise<BlePeer> {
     const { select, ...scanOptions } = options
     const operation = normalizeOperationOptions(options, () => globalThis.performance.now())
     return this.scan({
@@ -514,9 +523,18 @@ class TauriBleManagerAdapter implements BleManager {
     return Promise.reject(rehydratePublicError(contractError('capability.unsupported', 'chooser', 'tauri.choose')))
   }
 
-  async connect(peer: BlePeer | string | PeerReference, options: OperationOptions = {}): Promise<BleConnection> {
+  async connect(peer: BlePeer | string | PeerReference, options: ConnectOptions = {}): Promise<BleConnection> {
     try {
       assertPublicConnectOptions(options)
+      if (options.intent === 'when-available' && !this.capabilities.supports('connection:when-available')) {
+        throw contractError('capability.unsupported', 'connection', 'tauri.connect.when-available')
+      }
+      if (options.preferredPhy !== undefined && !this.capabilities.supports('connection:phy')) {
+        throw contractError('capability.unsupported', 'connection', 'tauri.connect.preferred-phy')
+      }
+      if (options.transport !== undefined) {
+        throw contractError('capability.unsupported', 'connection', 'tauri.connect.transport')
+      }
       const peerId = resolvePeerId(peer)
       const base = await this.ipc.connect(peerId, options)
       return new TauriBleConnectionWrapper(base, peer, peerId)
