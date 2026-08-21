@@ -12,7 +12,7 @@ This document is the canonical release procedure for `unified-ble-manager`.
 - GitHub Actions workflow: `.github/workflows/publish.yml`
 - GitHub Environment used by the publish job: `npm`
 - Stable npm dist-tag: `latest`
-- Prerelease npm dist-tag: `next`
+- General prerelease npm dist-tag: `next`; active `4.0.0-rc.*` release-train candidates publish to `latest` until stable 4.0.0.
 
 Releases are tag-driven and published by GitHub Actions through npm trusted publishing/OIDC. Do not use a long-lived `NPM_TOKEN` or publish a normal release from a developer laptop.
 
@@ -74,9 +74,9 @@ npm pack --dry-run
 
 CI additionally owns the platform-specific native compilation and ABI lanes.
 
-## Releasing 4.0.0-rc.0
+## Releasing 4.0.0-rc.*
 
-`4.0.0-rc.*` is the first publication from this repository. Those versions publish to npm `latest` so a bare `pnpm add unified-ble-manager` installs the current 4.0 line. The GitHub Release is marked prerelease. The workflow still requires the tag to identify the exact current `main` commit before initial publication.
+Active `4.0.0-rc.*` release-train candidates publish to npm `latest` so a bare `pnpm add unified-ble-manager` installs the current 4.0 line. The GitHub Release is marked prerelease. Each candidate is cut from the exact current `main` merge commit; the workflow verifies tag/package version equality.
 
 On release day:
 
@@ -86,12 +86,12 @@ git checkout main
 git pull --ff-only origin main
 
 test "$(git branch --show-current)" = "main"
-test "$(node -p "require('./package.json').version")" = "4.0.0-rc.0"
+test "$(node -p "require('./package.json').version")" = "4.0.0-rc.2"
 git diff --exit-code
 git diff --cached --exit-code
 
-git tag -a v4.0.0-rc.0 -m "v4.0.0-rc.0"
-git push origin v4.0.0-rc.0
+git tag -a v4.0.0-rc.2 -m "v4.0.0-rc.2"
+git push origin v4.0.0-rc.2
 ```
 
 Do not push another commit to `main` between the final verification and the tag push.
@@ -137,24 +137,24 @@ For a valid version tag, `.github/workflows/publish.yml`:
 13. on a post-publish recovery rerun, replaces any newly built local tarball with the immutable npm registry tarball;
 14. creates the GitHub Release only after npm publication and provenance verification succeed.
 
-Stable versions publish to `latest`. Hyphenated SemVer prereleases publish to `next` and create GitHub prereleases.
+Stable versions publish to `latest`. Active `4.0.0-rc.*` candidates also publish to `latest`; other hyphenated SemVer prereleases publish to `next` and create GitHub prereleases.
 
 ## Post-release verification
 
 After the workflow succeeds:
 
 ```sh
-npm view unified-ble-manager@4.0.0-rc.0 version
+npm view unified-ble-manager@4.0.0-rc.2 version
 npm view unified-ble-manager dist-tags --json
-npm view unified-ble-manager@4.0.0-rc.0 repository --json
-npm view unified-ble-manager@4.0.0-rc.0 license
+npm view unified-ble-manager@4.0.0-rc.2 repository --json
+npm view unified-ble-manager@4.0.0-rc.2 license
 ```
 
 Then verify:
 
-- npm `latest` resolves to `4.0.0-rc.0`;
+- npm `latest` resolves to `4.0.0-rc.2`;
 - the npm package page shows provenance for the published artifact;
-- the GitHub Release exists at `v4.0.0-rc.0` and is marked prerelease;
+- the GitHub Release exists at `v4.0.0-rc.2` and is marked prerelease;
 - its attached tarball/SBOM/license artifacts correspond to the release workflow output;
 - a clean consumer can install `unified-ble-manager` (no version pin) and import the documented host entrypoints.
 
