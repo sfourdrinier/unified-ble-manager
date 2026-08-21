@@ -14,7 +14,8 @@ import {
   type BackendInstanceId,
   type LeaseId,
   type PeerId,
-  type ScanSessionId
+  type ScanSessionId,
+  type Uuid
 } from '../../backend-contract/primitives'
 import {
   BLUEZ_DEVICE_INTERFACE,
@@ -176,11 +177,21 @@ export function createGattSnapshot(
   devicePath: string
 ): BluezGattSnapshotRecord {
   const services: BluezGattServiceRecord[] = []
+  const serviceUuidsByPath = new Map<string, Uuid>()
   for (const object of objects) {
     const service = findInterface(object.interfaces, BLUEZ_GATT_SERVICE_INTERFACE)
-    if (service === null || stringVariant(service, 'Device') !== devicePath) {
+    if (service !== null && stringVariant(service, 'Device') === devicePath) {
+      serviceUuidsByPath.set(object.path, canonicalUuid(stringVariant(service, 'UUID')))
+    }
+  }
+  for (const object of objects) {
+    const service = findInterface(object.interfaces, BLUEZ_GATT_SERVICE_INTERFACE)
+    const serviceUuid = serviceUuidsByPath.get(object.path)
+    if (service === null || serviceUuid === undefined) {
       continue
     }
+    const primary = booleanVariant(service, 'Primary')
+    const includedObjectPaths = stringArrayVariant(service, 'Includes')
     const characteristics: BluezGattCharacteristicRecord[] = []
     for (const characteristicObject of objects) {
       const characteristic = findInterface(characteristicObject.interfaces, BLUEZ_GATT_CHARACTERISTIC_INTERFACE)
@@ -209,7 +220,17 @@ export function createGattSnapshot(
     services.push(
       Object.freeze({
         objectPath: object.path,
-        uuid: canonicalUuid(stringVariant(service, 'UUID')),
+        uuid: serviceUuid,
+        primary,
+        includedServices: Object.freeze(
+          includedObjectPaths.map(objectPath => {
+            const uuid = serviceUuidsByPath.get(objectPath)
+            if (uuid === undefined) {
+              throw contractError('protocol.malformed', 'gatt', 'bluez.object-manager.GattService1.Includes')
+            }
+            return { objectPath, uuid }
+          })
+        ),
         characteristics: Object.freeze(
           characteristics.sort((left, right) => left.objectPath.localeCompare(right.objectPath))
         )
@@ -275,4 +296,21 @@ function stringsVariant(entry: BluezManagedInterface, property: string): readonl
     throw contractError('protocol.malformed', 'gatt', `bluez.object-manager.${entry.name}.${property}`)
   }
   return [...variant.value]
+}
+
+function stringArrayVariant(entry: BluezManagedInterface, property: string): readonly string[] {
+  const variant = entry.properties[property]
+  if (variant === undefined) return Object.freeze([])
+  if (variant.signature !== 'as' && variant.signature !== 'ao') {
+    throw contractError('protocol.malformed', 'gatt', `bluez.object-manager.${entry.name}.${property}`)
+  }
+  return [...variant.value]
+}
+
+function booleanVariant(entry: BluezManagedInterface, property: string): boolean {
+  const variant = entry.properties[property]
+  if (variant === undefined || variant.signature !== 'b') {
+    throw contractError('protocol.malformed', 'gatt', `bluez.object-manager.${entry.name}.${property}`)
+  }
+  return variant.value
 }
