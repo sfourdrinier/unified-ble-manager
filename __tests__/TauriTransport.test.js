@@ -29,7 +29,7 @@ describe('Tauri v2 IPC transport', () => {
         channels.push(this)
       }
     }
-    const { TAURI_BLE_PLUGIN_COMMAND, TauriBleIpcTransport } = require('../src/tauri')
+    const { TAURI_BLE_PLUGIN_COMMAND, TauriBleIpcTransport } = require('../src/tauri/transport')
     const transport = new TauriBleIpcTransport({ invoke, Channel: CapturedChannel })
     const received = []
     const unsubscribe = transport.subscribe(event => received.push(event))
@@ -70,7 +70,7 @@ describe('Tauri v2 IPC transport', () => {
 
   test('acknowledgements use the same versioned plugin command without re-sending the channel', async () => {
     const invoke = jest.fn(async () => ({ kind: 'event.ack' }))
-    const { TauriBleIpcTransport } = require('../src/tauri')
+    const { TauriBleIpcTransport } = require('../src/tauri/transport')
     const transport = new TauriBleIpcTransport({ invoke, Channel: FakeChannel })
     const lease = { leaseId: 'lease-1', generation: 'generation-1' }
 
@@ -92,7 +92,7 @@ describe('Tauri v2 IPC transport', () => {
       if (args.request.kind === 'event.ack') return { kind: 'event.ack' }
       return { kind: 'route', payload: {} }
     })
-    const { TAURI_ATTACH_REQUEST_KIND, TauriBleIpcTransport } = require('../src/tauri')
+    const { TAURI_ATTACH_REQUEST_KIND, TauriBleIpcTransport } = require('../src/tauri/transport')
     const transport = new TauriBleIpcTransport({ invoke, Channel: FakeChannel })
     const lease = { leaseId: 'lease-1', generation: 'generation-1' }
 
@@ -114,7 +114,7 @@ describe('Tauri v2 IPC transport', () => {
       invocations.push(args)
       return { kind: 'route', payload: {} }
     })
-    const { TAURI_ATTACH_REQUEST_KIND, TauriBleIpcTransport } = require('../src/tauri')
+    const { TAURI_ATTACH_REQUEST_KIND, TauriBleIpcTransport } = require('../src/tauri/transport')
     const transport = new TauriBleIpcTransport({ invoke, Channel: FakeChannel })
 
     await transport.invoke({ kind: TAURI_ATTACH_REQUEST_KIND })
@@ -144,7 +144,7 @@ describe('Tauri v2 IPC transport', () => {
         })
       )
     })
-    const { TauriBleIpcTransport } = require('../src/tauri')
+    const { TauriBleIpcTransport } = require('../src/tauri/transport')
     const transport = new TauriBleIpcTransport({ invoke, Channel: CapturedChannel })
     const received = []
     transport.subscribe(event => received.push(event))
@@ -178,7 +178,7 @@ describe('Tauri v2 IPC transport', () => {
   })
 
   test('does not reinterpret an already-decoded Uint8Array as a wire record', () => {
-    const { decodeTauriWireValue } = require('../src/tauri')
+    const { decodeTauriWireValue } = require('../src/tauri/transport')
     const bytes = new Uint8Array([5, 6])
     const decoded = decodeTauriWireValue(bytes)
 
@@ -196,7 +196,7 @@ describe('Tauri v2 IPC transport', () => {
         channels.push(this)
       }
     }
-    const { TauriBleIpcTransport } = require('../src/tauri')
+    const { TauriBleIpcTransport } = require('../src/tauri/transport')
     const transport = new TauriBleIpcTransport({ invoke: jest.fn(), Channel: CapturedChannel })
     transport.subscribe(() => {
       throw new Error('listener must not receive malformed events')
@@ -206,7 +206,7 @@ describe('Tauri v2 IPC transport', () => {
   })
 
   test('rejects malformed invoke responses instead of returning an unchecked protocol cast', async () => {
-    const { TauriBleIpcTransport } = require('../src/tauri')
+    const { TauriBleIpcTransport } = require('../src/tauri/transport')
     const transport = new TauriBleIpcTransport({
       invoke: jest.fn(async () => ({ kind: 'malformed' })),
       Channel: FakeChannel
@@ -218,7 +218,7 @@ describe('Tauri v2 IPC transport', () => {
   })
 
   test('rejects unknown error codes and contradictory cleanup receipts', async () => {
-    const { TauriBleIpcTransport } = require('../src/tauri')
+    const { TauriBleIpcTransport } = require('../src/tauri/transport')
     const malformedErrorTransport = new TauriBleIpcTransport({
       invoke: jest.fn(async () => ({
         kind: 'failure',
@@ -280,7 +280,7 @@ describe('Tauri v2 IPC transport', () => {
   })
 
   test('rejects non-serializable outbound values before JSON conversion', () => {
-    const { encodeTauriWireValue } = require('../src/tauri')
+    const { encodeTauriWireValue } = require('../src/tauri/transport')
 
     expect(() => encodeTauriWireValue(new Date())).toThrow('protocol.malformed')
     expect(() => encodeTauriWireValue(1n)).toThrow('protocol.malformed')

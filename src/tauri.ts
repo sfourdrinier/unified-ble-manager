@@ -1,19 +1,4 @@
-// src/tauri.ts — zero-plumbing Tauri factory (PR1 final, no compatibility aliases)
-
-export * from './ipc/protocol'
-export * from './ipc/client'
-export * from './ipc/manager'
-export * from './tauri/transport'
-export { IpcBleClient as TauriBleClient } from './ipc/client'
-export {
-  IpcBleManager as TauriBleManager,
-  IpcScanSession as TauriScanSession,
-  IpcConnection as TauriConnection,
-  IpcGattDatabase as TauriGattDatabase,
-  IpcCharacteristic as TauriCharacteristic,
-  IpcDescriptor as TauriDescriptor,
-  IpcSubscription as TauriSubscription
-} from './ipc/manager'
+// src/tauri.ts — zero-plumbing Tauri application factory
 
 import { snapshotBlePeer } from './public/ble-manager'
 import type { BleManager, BlePeer, ScanOptions } from './public/ble-manager'

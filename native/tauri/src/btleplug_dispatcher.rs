@@ -2441,10 +2441,20 @@ fn ipc_versions() -> IpcValue {
 }
 
 fn negotiated(axis: &str) -> IpcValue {
-    let range = object([("minimum", number(1)), ("maximum", number(1))]);
+    let value = if axis == "ipc-protocol" || axis == "event-schema" {
+        2
+    } else {
+        1
+    };
+    let selected = object([("axis", string(axis)), ("value", number(value))]);
+    let range = object([
+        ("axis", string(axis)),
+        ("minimum", selected.clone()),
+        ("maximum", selected.clone()),
+    ]);
     object([
         ("axis", string(axis)),
-        ("selected", number(1)),
+        ("selected", selected),
         ("localRange", range.clone()),
         ("remoteRange", range),
     ])
@@ -2824,14 +2834,52 @@ mod tests {
             negotiated("ipc-protocol"),
             object([
                 ("axis", string("ipc-protocol")),
-                ("selected", super::number(1)),
+                (
+                    "selected",
+                    object([
+                        ("axis", string("ipc-protocol")),
+                        ("value", super::number(2))
+                    ])
+                ),
                 (
                     "localRange",
-                    object([("minimum", super::number(1)), ("maximum", super::number(1))])
+                    object([
+                        ("axis", string("ipc-protocol")),
+                        (
+                            "minimum",
+                            object([
+                                ("axis", string("ipc-protocol")),
+                                ("value", super::number(2))
+                            ])
+                        ),
+                        (
+                            "maximum",
+                            object([
+                                ("axis", string("ipc-protocol")),
+                                ("value", super::number(2))
+                            ])
+                        )
+                    ])
                 ),
                 (
                     "remoteRange",
-                    object([("minimum", super::number(1)), ("maximum", super::number(1))])
+                    object([
+                        ("axis", string("ipc-protocol")),
+                        (
+                            "minimum",
+                            object([
+                                ("axis", string("ipc-protocol")),
+                                ("value", super::number(2))
+                            ])
+                        ),
+                        (
+                            "maximum",
+                            object([
+                                ("axis", string("ipc-protocol")),
+                                ("value", super::number(2))
+                            ])
+                        )
+                    ])
                 )
             ])
         );
