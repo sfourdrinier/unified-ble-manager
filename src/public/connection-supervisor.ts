@@ -101,14 +101,7 @@ export function createConnectionSupervisor<Session = undefined>(
   validateStableConnectionReset(options.resetBackoffAfterConnectedMs)
   const managerSupervisors = supervisors.get(manager)
   const keys = managerSupervisors ?? new Set<string>()
-  const peerKey =
-    typeof peer === 'string'
-      ? peer
-      : 'version' in peer
-        ? encodePeerReference(peer)
-        : peer.reference === null
-          ? peer.id
-          : encodePeerReference(peer.reference)
+  const peerKey = typeof peer === 'string' ? peer : 'version' in peer ? encodePeerReference(peer) : peer.id
   if (keys.has(peerKey)) {
     throw rehydratePublicError(contractError('connection.already-owned', 'connection', 'connection-supervisor.create'))
   }
@@ -143,6 +136,10 @@ class ConnectionSupervisorImpl<Session> implements ConnectionSupervisor<Session>
   private ownershipReleased = false
   private readonly supervisorAbort = new AbortController()
   private readonly wakeWaiters = new Set<() => void>()
+  private controlBarrier: Promise<void> | null = null
+  private lateConfigureBarrier: Promise<CleanupRecord> | null = null
+  private lateSessionRetry: (() => Promise<CleanupRecord>) | null = null
+  private pauseCleanupRequired = false
   private readonly now: () => number
   private readonly random: () => number
   private readonly setTimer: (callback: () => void, delayMs: number) => unknown
@@ -191,6 +188,9 @@ class ConnectionSupervisorImpl<Session> implements ConnectionSupervisor<Session>
 
   async pause(_reason?: string): Promise<void> {
     if (this.state === 'stopped') return
+    if (this.activeAbort !== null || this.activeConnection !== null || this.session !== null) {
+      this.pauseCleanupRequired = true
+    }
     this.paused = true
     this.activeAbort?.abort()
     this.wake()
@@ -210,6 +210,15 @@ class ConnectionSupervisorImpl<Session> implements ConnectionSupervisor<Session>
 
   async stop(): Promise<CleanupRecord> {
     if (this.stopPromise !== null) return this.stopPromise
+    if (this.lateSessionRetry !== null) {
+      const retry = this.lateSessionRetry()
+      this.stopPromise = retry.then(cleanup => {
+        if (cleanup.state === 'released') this.finalize(cleanup)
+        else this.stopPromise = null
+        return cleanup
+      })
+      return this.stopPromise
+    }
     this.stopRequested = true
     this.supervisorAbort.abort()
     this.activeAbort?.abort()
@@ -238,6 +247,7 @@ class ConnectionSupervisorImpl<Session> implements ConnectionSupervisor<Session>
   private async run(): Promise<void> {
     try {
       while (!this.stopRequested) {
+        if (!(await this.awaitLateConfigureCleanup())) break
         const gate = await this.awaitGate()
         if (gate === 'stop' || this.stopRequested) break
         if (gate === 'pause') continue
@@ -253,7 +263,7 @@ class ConnectionSupervisorImpl<Session> implements ConnectionSupervisor<Session>
             this.stopRequested = true
             break
           }
-          if (this.paused) {
+          if (this.pauseCleanupRequired || this.paused) {
             const cleanup = await this.cleanupCurrentConnection()
             if (cleanup.state === 'release-failed') {
               this.lastError = toBleError(cleanup.failures[0]?.error)
@@ -263,6 +273,7 @@ class ConnectionSupervisorImpl<Session> implements ConnectionSupervisor<Session>
           }
         }
         if (this.stopRequested) break
+        if (!(await this.awaitLateConfigureCleanup())) break
         if (this.waitForAdapter || this.paused) continue
         if (this.attemptLimitReached()) break
         const delayMs = this.nextDelay()
@@ -278,6 +289,12 @@ class ConnectionSupervisorImpl<Session> implements ConnectionSupervisor<Session>
 
   private async awaitGate(): Promise<ConnectionGateDecision> {
     while (!this.stopRequested) {
+      if (this.controlBarrier !== null) {
+        const barrier = this.controlBarrier
+        this.controlBarrier = null
+        await barrier
+        if (this.stopRequested) return 'stop'
+      }
       if (this.paused) {
         this.transition('waiting-for-gate', 'pause', null, null)
         await this.waitForWake()
@@ -286,7 +303,10 @@ class ConnectionSupervisorImpl<Session> implements ConnectionSupervisor<Session>
       let adapter: BleAdapterState
       try {
         const state = await this.awaitControl(this.manager.adapter.state())
-        if (state.kind === 'control') return state.reason === 'stop' ? 'stop' : 'pause'
+        if (state.kind === 'control') {
+          this.deferControl(state.pending)
+          return state.reason === 'stop' ? 'stop' : 'pause'
+        }
         adapter = state.value
       } catch (error) {
         this.lastError = toBleError(error)
@@ -298,7 +318,10 @@ class ConnectionSupervisorImpl<Session> implements ConnectionSupervisor<Session>
           const readiness = await this.awaitControl(
             this.manager.adapter.waitUntilReady({ signal: this.supervisorAbort.signal, operation: 'connect' })
           )
-          if (readiness.kind === 'control') return readiness.reason === 'stop' ? 'stop' : 'pause'
+          if (readiness.kind === 'control') {
+            this.deferControl(readiness.pending)
+            return readiness.reason === 'stop' ? 'stop' : 'pause'
+          }
           this.waitForAdapter = false
           this.lastError = null
         } catch (error) {
@@ -324,7 +347,10 @@ class ConnectionSupervisorImpl<Session> implements ConnectionSupervisor<Session>
                 })
               )
             )
-      if (decisionResult.kind === 'control') return decisionResult.reason === 'stop' ? 'stop' : 'pause'
+      if (decisionResult.kind === 'control') {
+        this.deferControl(decisionResult.pending)
+        return decisionResult.reason === 'stop' ? 'stop' : 'pause'
+      }
       const decision = decisionResult.value
       if (decision === 'stop') return 'stop'
       this.transition('waiting-for-gate', decision, null, null)
@@ -378,7 +404,7 @@ class ConnectionSupervisorImpl<Session> implements ConnectionSupervisor<Session>
       }
       return 'interrupted'
     }
-    if (this.stopRequested || this.paused || token !== this.attempt) {
+    if (this.stopRequested || this.paused || this.pauseCleanupRequired || token !== this.attempt) {
       this.activeConnection = outcome.connection
       this.connectionGeneration = extractGeneration(outcome.connection)
       const cleanup = await this.cleanupCurrentConnection()
@@ -397,12 +423,27 @@ class ConnectionSupervisorImpl<Session> implements ConnectionSupervisor<Session>
         const configurePromise = Promise.resolve(this.options.configure(outcome.connection))
         const configured = await this.awaitControl(configurePromise)
         if (configured.kind === 'control') {
-          configurePromise.then(
-            session => this.disposeLateSession(session),
-            error => {
-              this.lastError = toBleError(error)
+          const lateBarrier = configurePromise
+            .then(
+              session => this.disposeLateSession(session),
+              error => {
+                this.lastError = toBleError(error)
+                return { state: 'released', failures: [] } satisfies CleanupRecord
+              }
+            )
+            .finally(() => {
+              if (this.lateConfigureBarrier === lateBarrier) this.lateConfigureBarrier = null
+            })
+          this.lateConfigureBarrier = lateBarrier
+          void lateBarrier.then(cleanup => {
+            if (!this.stopRequested || this.activeConnection !== null) return
+            if (cleanup.state === 'release-failed') {
+              this.stopPromise = null
+              this.transition('cleanup-failed', null, null, cleanup)
+              return
             }
-          )
+            this.finalize(cleanup)
+          })
           const cleanup = await this.cleanupCurrentConnection()
           if (cleanup.state === 'release-failed') {
             this.lastError = toBleError(cleanup.failures[0]?.error)
@@ -514,13 +555,15 @@ class ConnectionSupervisorImpl<Session> implements ConnectionSupervisor<Session>
     this.cleanupPromise = cleanupPromise
     const cleanup = await cleanupPromise
     this.lastCleanup = cleanup
+    if (cleanup.state === 'released') this.pauseCleanupRequired = false
     return cleanup
   }
 
-  private async disposeLateSession(session: Session): Promise<void> {
-    if (this.options.disposeSession === undefined) return
+  private async disposeLateSession(session: Session): Promise<CleanupRecord> {
+    if (this.options.disposeSession === undefined) return { state: 'released', failures: [] }
     try {
       await this.options.disposeSession(session)
+      return { state: 'released', failures: [] }
     } catch (error) {
       this.lastError = toBleError(error)
       const cleanup: CleanupRecord = {
@@ -528,11 +571,32 @@ class ConnectionSupervisorImpl<Session> implements ConnectionSupervisor<Session>
         failures: cleanupFailure('session', error, 'connection-supervisor.late-session-dispose')
       }
       this.lastCleanup = cleanup
-      this.transition('cleanup-failed', null, null, cleanup)
+      this.lateSessionRetry = async () => {
+        try {
+          await this.options.disposeSession?.(session)
+          this.lateSessionRetry = null
+          this.lastCleanup = { state: 'released', failures: [] }
+          return this.lastCleanup
+        } catch (retryError) {
+          this.lastError = toBleError(retryError)
+          const retryCleanup: CleanupRecord = {
+            state: 'release-failed',
+            failures: cleanupFailure('session', retryError, 'connection-supervisor.late-session-dispose-retry')
+          }
+          this.lastCleanup = retryCleanup
+          return retryCleanup
+        }
+      }
+      if (this.stopRequested && this.activeConnection === null) this.transition('cleanup-failed', null, null, cleanup)
+      return cleanup
     }
   }
 
   private finalize(cleanup: CleanupRecord): void {
+    if (cleanup.state === 'released' && (this.lateConfigureBarrier !== null || this.lateSessionRetry !== null)) {
+      this.transition('stopped', null, null, cleanup)
+      return
+    }
     if (cleanup.state === 'released') {
       if (this.ownershipReleased) return
       this.ownershipReleased = true
@@ -621,17 +685,37 @@ class ConnectionSupervisorImpl<Session> implements ConnectionSupervisor<Session>
 
   private async awaitControl<Value>(
     pending: Promise<Value>
-  ): Promise<{ kind: 'value'; value: Value } | { kind: 'control'; reason: 'stop' | 'wake' }> {
+  ): Promise<{ kind: 'value'; value: Value } | { kind: 'control'; reason: 'stop' | 'wake'; pending: Promise<void> }> {
     const control = this.controlWaiter()
+    const pendingBarrier = pending.then(
+      () => undefined,
+      () => undefined
+    )
     const result = await Promise.race([
       pending.then(value => ({ kind: 'value' as const, value })),
       control.promise.then(() => ({
         kind: 'control' as const,
-        reason: this.stopRequested ? ('stop' as const) : ('wake' as const)
+        reason: this.stopRequested ? ('stop' as const) : ('wake' as const),
+        pending: pendingBarrier
       }))
     ])
     control.cancel()
     return result
+  }
+
+  private deferControl(pending: Promise<void>): void {
+    this.controlBarrier = pending
+  }
+
+  private async awaitLateConfigureCleanup(): Promise<boolean> {
+    if (this.lateConfigureBarrier === null) return true
+    const cleanup = await this.lateConfigureBarrier
+    if (cleanup.state === 'release-failed') {
+      this.lastError = toBleError(cleanup.failures[0]?.error)
+      this.stopRequested = true
+      return false
+    }
+    return true
   }
 
   private waitForWake(): Promise<void> {

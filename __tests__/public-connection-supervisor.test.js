@@ -189,6 +189,77 @@ describe('public connection supervisor', () => {
     expect(supervisor.snapshot.state).toBe('cleanup-failed')
   })
 
+  test('releases a connected generation before reconnecting after immediate pause and resume', async () => {
+    const first = connection()
+    const second = connection()
+    const ble = manager(first)
+    ble.connect.mockResolvedValueOnce(first).mockResolvedValueOnce(second)
+    const supervisor = createConnectionSupervisor(ble, 'peer-pause-resume', {
+      retry: { initialDelayMs: 0, maximumDelayMs: 0, multiplier: 1, jitter: 0 }
+    })
+
+    supervisor.start()
+    await wait(5)
+    await supervisor.pause('handoff')
+    supervisor.resume()
+    await wait(5)
+
+    expect(ble.connect).toHaveBeenCalledTimes(2)
+    expect(first.release).toHaveBeenCalledTimes(1)
+    expect(first.release.mock.invocationCallOrder[0]).toBeLessThan(ble.connect.mock.invocationCallOrder[1])
+    await supervisor.stop()
+  })
+
+  test('arbitrates a string peer and equivalent referenced peer as one supervisor', () => {
+    const ble = manager(connection())
+    createConnectionSupervisor(ble, 'peer-equivalent', {
+      retry: { initialDelayMs: 1, maximumDelayMs: 1, multiplier: 1, jitter: 0 }
+    })
+    expect(() =>
+      createConnectionSupervisor(
+        ble,
+        {
+          id: 'peer-equivalent',
+          name: null,
+          rssi: null,
+          reference: { version: 1, backendId: 'test', scope: 'system', opaqueId: 'peer-equivalent' },
+          sources: [],
+          lastAdvertisement: null
+        },
+        { retry: { initialDelayMs: 1, maximumDelayMs: 1, multiplier: 1, jitter: 0 } }
+      )
+    ).toThrow('connection.already-owned')
+  })
+
+  test('waits for a paused configure cleanup before starting a successor generation', async () => {
+    const first = connection()
+    const second = connection()
+    const configurePending = deferred()
+    let configureCalls = 0
+    const ble = manager(first)
+    ble.connect.mockResolvedValueOnce(first).mockResolvedValueOnce(second)
+    const supervisor = createConnectionSupervisor(ble, 'peer-configure-generation', {
+      retry: { initialDelayMs: 0, maximumDelayMs: 0, multiplier: 1, jitter: 0 },
+      configure: () => {
+        configureCalls += 1
+        return configureCalls === 1 ? configurePending.promise : Promise.resolve('successor-session')
+      },
+      disposeSession: jest.fn(async () => undefined)
+    })
+
+    supervisor.start()
+    await wait(1)
+    await supervisor.pause('configure-handoff')
+    supervisor.resume()
+    await wait(5)
+    expect(ble.connect).toHaveBeenCalledTimes(1)
+
+    configurePending.resolve('late-session')
+    await wait(5)
+    expect(ble.connect).toHaveBeenCalledTimes(2)
+    await supervisor.stop()
+  })
+
   test('stop settles while adapter state, gate, or configure is pending', async () => {
     const statePending = deferred()
     const stateBle = manager(connection())
@@ -272,11 +343,13 @@ describe('public connection supervisor', () => {
   test('retains a late configure-session disposal failure after stop finalized', async () => {
     const configurePending = deferred()
     const connectionValue = connection()
+    let disposalAttempts = 0
     const supervisor = createConnectionSupervisor(manager(connectionValue), 'peer-late-session', {
       retry: { initialDelayMs: 1, maximumDelayMs: 1, multiplier: 1, jitter: 0 },
       configure: () => configurePending.promise,
       disposeSession: async () => {
-        throw new Error('late session disposal failed')
+        disposalAttempts += 1
+        if (disposalAttempts === 1) throw new Error('late session disposal failed')
       }
     })
     supervisor.start()
@@ -287,5 +360,7 @@ describe('public connection supervisor', () => {
     expect(supervisor.snapshot.state).toBe('cleanup-failed')
     expect(supervisor.snapshot.lastError).toMatchObject({ code: 'connection.failed' })
     expect(connectionValue.release).toHaveBeenCalled()
+    await expect(supervisor.stop()).resolves.toMatchObject({ state: 'released' })
+    expect(disposalAttempts).toBe(2)
   })
 })
