@@ -1,8 +1,8 @@
 <!-- docs/HELPERS.md -->
 
-# Public manager helpers
+# Advanced manager helpers
 
-Helpers sit on the host-neutral `BleManager`, `Connection`, `DiscoveredGattDatabase`, and `Subscription` handles. They do not pick a backend, retry connections, or hide cancellation.
+These helpers are the typed advanced contract over the low-level generic manager handles. The application-facing `BleManager` façade has its own `find`, `withConnection`, `withScan`, and `withDiscoveredConnection` methods; use this page only when implementing a custom host or backend integration. They do not pick a backend, retry connections, or hide cancellation.
 
 ```ts
 import {
@@ -16,7 +16,7 @@ import {
   throwIfCleanupFailed,
   withConnection,
   withDiscoveredConnection
-} from 'unified-ble-manager'
+} from 'unified-ble-manager/advanced'
 ```
 
 ## Scan and connect
