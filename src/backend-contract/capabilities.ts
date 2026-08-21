@@ -5,8 +5,46 @@ import type { SerializableRecord, VersionRange } from './primitives'
 
 /** Canonical built-in capability identifiers. Third-party identifiers remain open namespaced strings. */
 export const BUILT_IN_FEATURE_IDS = Object.freeze({
+  // discovery / peers (PR2/PR5)
+  discoveryContinuousScan: 'discovery:continuous-scan',
+  discoverySystemChooser: 'discovery:system-chooser',
+  discoveryAdvertisementWatch: 'discovery:advertisement-watch',
+  peerResolveReference: 'peer:resolve-reference',
+  peerKnown: 'peer:known',
+  peerSystemConnected: 'peer:system-connected',
+  peerBonded: 'peer:bonded',
+  peerOriginAuthorized: 'peer:origin-authorized',
+  peerRestored: 'peer:restored',
+  // connections
+  connectionDirect: 'connection:direct',
+  connectionWhenAvailable: 'connection:when-available',
+  connectionRssi: 'connection:rssi',
+  connectionEffectiveMtu: 'connection:effective-mtu',
+  connectionRequestMtu: 'connection:request-mtu',
+  connectionPriority: 'connection:priority',
+  connectionParameters: 'connection:parameters',
+  connectionPhy: 'connection:phy',
+  connectionSubrate: 'connection:subrate',
+  // security
+  securityState: 'security:state',
+  securityPair: 'security:pair',
+  securityCancelPairing: 'security:cancel-pairing',
+  securityUnpair: 'security:unpair',
+  securityCustomCeremony: 'security:custom-ceremony',
+  // GATT
+  gattDescriptors: 'gatt:descriptors',
+  gattIndications: 'gatt:indications',
+  gattServiceChanged: 'gatt:service-changed',
   maximumWriteLength: 'gatt:maximum-write-length',
-  longWrite: 'gatt:long-write'
+  longWrite: 'gatt:long-write',
+  reliableWrite: 'gatt:reliable-write',
+  writeWithoutResponseReadiness: 'gatt:write-without-response-readiness',
+  highThroughputAcquire: 'gatt:high-throughput-acquire',
+  // lifecycle / background
+  backgroundAppleRestoration: 'background:apple-restoration',
+  backgroundAndroidConnectedDeviceService: 'background:android-connected-device-service',
+  backgroundDesktopMaintainConnection: 'background:desktop-maintain-connection',
+  lifecyclePagePersistence: 'lifecycle:page-persistence'
 })
 export type BuiltInFeatureId = (typeof BUILT_IN_FEATURE_IDS)[keyof typeof BUILT_IN_FEATURE_IDS]
 
