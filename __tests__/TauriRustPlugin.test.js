@@ -72,6 +72,8 @@ describe('Tauri v2 Rust plugin boundary', () => {
     expect(dispatcher).toContain('drop_if_full')
     expect(dispatcher).toContain('SCAN_POLL_INTERVAL')
     expect(dispatcher).toContain('peripherals()')
+    expect(dispatcher).toContain('for service in peripheral.services()')
+    expect(dispatcher).toContain('("schemaVersion", number(2))')
     expect(dispatcher).toContain('ubm-btleplug')
     expect(dispatcher).toContain('new_multi_thread')
     expect(dispatcher).toContain('btleplug_runtime().spawn')

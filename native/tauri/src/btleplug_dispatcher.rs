@@ -1500,13 +1500,24 @@ impl BtleplugDispatcher {
         let mut characteristic_records = Vec::new();
         let mut descriptor_records = Vec::new();
         let mut occurrences: HashMap<(Uuid, Uuid), usize> = HashMap::new();
+        for service in peripheral.services() {
+            let service_uuid = service.uuid.to_string();
+            if service_uuids.insert(service_uuid.clone()) {
+                service_records.push(object([
+                    ("uuid", string(service_uuid)),
+                    ("occurrence", string("0")),
+                    ("primary", IpcValue::Bool(service.primary)),
+                    ("includedServices", IpcValue::Array(Vec::new())),
+                ]));
+            }
+        }
         for characteristic in peripheral.characteristics() {
             let service_uuid = characteristic.service_uuid.to_string();
             if service_uuids.insert(service_uuid.clone()) {
                 service_records.push(object([
                     ("uuid", string(service_uuid.clone())),
                     ("occurrence", string("0")),
-                    ("primary", IpcValue::Bool(true)),
+                    ("primary", IpcValue::Bool(false)),
                     ("includedServices", IpcValue::Array(Vec::new())),
                 ]));
             }
