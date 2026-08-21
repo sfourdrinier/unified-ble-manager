@@ -14,7 +14,10 @@ This file tracks platform code, CI, package, lab, and live-radio evidence. It do
 
 The clean-baseline contract, unified core, public manager, deterministic backend, TCK, native protocol, first-party backend implementations, host-isolated package exports, SDK/CLI, and legacy-absence gates exist in the 4.0 source. Passing deterministic, compile, ABI, or package tests are implementation proof; they do not become physical-radio support evidence unless a retained record proves the corresponding live scenario.
 
-`unified-ble-manager@4.0.0` is the first stable package/API release. Stable SemVer does not rewrite the evidence inventory: a backend remains at the support level justified by its records. The alpha train, including `v4.0.0-alpha.40`, remains historical implementation/release evidence and must not be used to claim a higher current support label than it actually proved.
+`unified-ble-manager@4.0.0-rc.2` is the current release-candidate package/API. Stable `4.0.0` is reserved for the
+post-PR12 release gate. The RC2 package does not rewrite the evidence inventory: a backend remains at the support level
+justified by its records. The alpha train, including `v4.0.0-alpha.40`, remains historical implementation/release
+evidence and must not be used to claim a higher current support label than it actually proved.
 
 ## Proof levels
 

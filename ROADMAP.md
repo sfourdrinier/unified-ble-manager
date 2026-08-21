@@ -42,7 +42,7 @@ Make `@sfourdrinier/react-native-ble-plx` the default BLE stack for serious Reac
 - Optional iOS BLE state restoration subspec
 - Apple TV / tvOS central support
 - Intentional API cleanup (no programmatic Android BT toggle; legacy queue modules removed)
-- Platform floors: Android min 24 / target 36, iOS/tvOS 16.4, Node 20.19.4+
+- Platform floors: Android min 24 / target 36, iOS/tvOS 16.4, Node 22.13.0+
 
 ### Gaps (why this roadmap exists)
 
