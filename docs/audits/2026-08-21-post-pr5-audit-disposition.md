@@ -69,4 +69,15 @@ No P1 from this ledger may remain silently deferred. P2 findings may remain defe
 
 ## Release-process requirement
 
-Every deferred finding must become a linked blocking issue with one target PR, one acceptance test, and one owner. Each RC checkpoint must re-audit the deferred ledger against current source; stale or unsupported findings must be explicitly closed rather than silently disappearing.
+Every deferred finding must become a linked blocking issue with one target PR, one acceptance test, and one owner. The current deferred register is:
+
+| Finding | Issue | Owner | Target |
+| --- | --- | --- | --- |
+| F-005, D-011 | [#33](https://github.com/sfourdrinier/unified-ble-manager/issues/33) | `sfourdrinier` | PR6B |
+| F-019 | [#34](https://github.com/sfourdrinier/unified-ble-manager/issues/34) | `sfourdrinier` | PR6B/PR10 |
+| D-004, D-014 | [#35](https://github.com/sfourdrinier/unified-ble-manager/issues/35) | `sfourdrinier` | PR10 |
+| F-014 | [#36](https://github.com/sfourdrinier/unified-ble-manager/issues/36) | `sfourdrinier` | PR7 |
+| F-016 | [#37](https://github.com/sfourdrinier/unified-ble-manager/issues/37) | `sfourdrinier` | PR9 |
+| D-013 | [#38](https://github.com/sfourdrinier/unified-ble-manager/issues/38) | `sfourdrinier` | PR11 |
+
+Each RC checkpoint must re-audit this register against current source; stale or unsupported findings must be explicitly closed rather than silently disappearing.
