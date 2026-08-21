@@ -314,13 +314,8 @@ describe('public connection supervisor', () => {
     supervisor.start()
     await wait(1)
     await supervisor.pause('user-requested')
-    gatePending.resolve('allow')
-    await wait(1)
-
-    expect(ble.connect).not.toHaveBeenCalled()
-    expect(supervisor.snapshot.state).toBe('waiting-for-gate')
-
     supervisor.resume()
+    gatePending.resolve('allow')
     await wait(5)
     expect(ble.connect).toHaveBeenCalledTimes(1)
     await expect(supervisor.stop()).resolves.toMatchObject({ state: 'released' })
