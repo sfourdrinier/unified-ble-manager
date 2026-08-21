@@ -22,7 +22,10 @@
       "unified-ble-manager/node/corebluetooth": ["./src/node-corebluetooth"],
       "unified-ble-manager/node/winrt": ["./src/node-winrt"],
       "unified-ble-manager/electron/main": ["./src/electron-main"],
-      "unified-ble-manager/electron/renderer": ["./src/electron-renderer"]
+      "unified-ble-manager/electron/renderer": ["./src/electron-renderer"],
+      "unified-ble-manager/advanced": ["./src/advanced"],
+      "unified-ble-manager/expo": ["./src/expo"],
+      "unified-ble-manager/tauri": ["./src/tauri"]
     },
     "allowUnreachableCode": false,
     "allowUnusedLabels": false,

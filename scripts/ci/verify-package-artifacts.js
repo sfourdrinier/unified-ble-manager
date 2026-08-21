@@ -159,14 +159,16 @@ function isPublishedSourceFile(sourceFile) {
     sourceRelative === 'node-winrt.ts' ||
     sourceRelative === 'electron-main.ts' ||
     sourceRelative === 'electron-renderer.ts' ||
-    sourceRelative === 'tauri.ts'
+    sourceRelative === 'tauri.ts' ||
+    sourceRelative === 'advanced.ts' ||
+    sourceRelative === 'expo.ts'
   ) {
     return true
   }
   if (publicProfileSourceFiles.includes(sourceRelative)) {
     return true
   }
-  return /^(backend-contract|backends\/(?:bluez|corebluetooth|reactnative|winrt)|core|diagnostics|electron|ipc|manager|tauri|tck|testing|web)\/.+\.(?:ts|tsx)$/.test(
+  return /^(backend-contract|backends\/(?:bluez|corebluetooth|reactnative|winrt)|core|diagnostics|electron|ipc|manager|public|tauri|tck|testing|web)\/.+\.(?:ts|tsx)$/.test(
     sourceRelative
   )
 }

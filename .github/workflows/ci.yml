@@ -88,7 +88,7 @@ jobs:
   # Always run JS/package tests — including labeled events — so required checks
   # never get replaced by a skipped success from an unrelated label.
   # Multi-OS matrix: pure TS / Jest port+host tests run on Ubuntu, Windows, macOS.
-  # Linux matrices Node 20.19.4 (engines floor), Node 22 (engines mid), Node 24 (publish line).
+  # Linux matrices Node 22 (engines mid), Node 24 (publish line). Node 20 removed — package engines floor is 22+.
   # Job name is honest: lint/prepack/multi-host smoke run only on Linux (R2-F096).
   package:
     name: JS tests (${{ matrix.os }}, Node ${{ matrix.node }})
@@ -97,21 +97,11 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            node: '20.19.4'
-          - os: ubuntu-latest
             node: '22'
           - os: ubuntu-latest
             node: '24'
           - os: windows-latest
-            node: '20.19.4'
-          # Keep Windows package coverage at the engines floor. Native Node-API
-          # compilation runs under Node 22 for the maintained native-toolchain gate.
-          - os: windows-latest
             node: '22'
-          - os: macos-latest
-            node: '20.19.4'
-          # Keep the engines-floor suite on Node 20 and run native node-gyp gates
-          # on Node 22 for the maintained native-toolchain gate.
           - os: macos-latest
             node: '22'
     runs-on: ${{ matrix.os }}
@@ -119,8 +109,6 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7.0.0
 
-      # Node 20 keeps macOS and Windows package coverage. Native build gates run
-      # on Node 22 for the maintained native-toolchain gate.
       - name: Setup Python for native Node22 builds
         if: (runner.os == 'macOS' || runner.os == 'Windows') && matrix.node == '22'
         uses: actions/setup-python@v6.0.0

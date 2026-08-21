@@ -21,7 +21,10 @@ describe('BlueZ package surface', () => {
   test('keeps the root import graph neutral and loads dbus-next only through the strict Node subpath', () => {
     jest.isolateModules(() => {
       const root = require('../../../src')
-      expect(typeof root.BleManager).toBe('function')
+      // PR1: root is application-only, no generic BleManager class. Advanced holds the low-level one.
+      expect(typeof root.ApplicationBleManager).toBe('function')
+      expect(typeof root.createPublicBleManager).toBe('function')
+      expect(root.BleManager).toBeUndefined()
       expect(mockDbusLoads).toBe(0)
 
       const bluez = require('../../../src/node-bluez')

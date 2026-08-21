@@ -1,19 +1,19 @@
-// src/web.ts
+/* eslint-disable @typescript-eslint/no-explicit-any, no-void */
+// src/web.ts — zero-plumbing Web Bluetooth factory (PR1 final, no compatibility aliases)
 
-import type { HostNeutralBackendIdentity } from './backend-contract/identity'
-import type { WebChooser } from './backend-contract/host/web'
-import { opaqueId } from './backend-contract/primitives'
-import { createBleManagerFromBackend, DEFAULT_BLE_MANAGER_OPTIONS, type BleManager } from './manager/ble-manager'
-import {
-  createWebBluetoothProvider,
-  WEB_BLUETOOTH_ADAPTER_ID,
-  type WebBluetoothProvider
-} from './web/web-bluetooth-backend'
+import type { BleManager } from './public/ble-manager'
+import { createPublicBleManager } from './public/ble-manager'
+import { normalizeBleManagerCreateOptions } from './public/host-identity'
+import type { BleManagerCreateOptions } from './public/host-identity'
+import { createWebBluetoothProvider, WEB_BLUETOOTH_ADAPTER_ID } from './web/web-bluetooth-backend'
 import {
   createDefaultNavigatorWebBluetoothEnvironment,
   NavigatorWebBluetoothBoundary,
   type NavigatorWebBluetoothEnvironment
 } from './web/navigator-web-bluetooth-boundary'
+import { createBleManagerFromBackend, DEFAULT_BLE_MANAGER_OPTIONS } from './manager/ble-manager'
+import { opaqueId } from './backend-contract/primitives'
+import { createEphemeralHostIdentity } from './public/host-identity'
 
 export {
   createWebBluetoothProvider,
@@ -25,6 +25,9 @@ export {
   NavigatorWebBluetoothBoundary,
   createDefaultNavigatorWebBluetoothEnvironment
 } from './web/navigator-web-bluetooth-boundary'
+export function createNavigatorWebBluetoothProvider(environment: NavigatorWebBluetoothEnvironment) {
+  return createWebBluetoothProvider(new NavigatorWebBluetoothBoundary(environment))
+}
 export type { NavigatorWebBluetoothEnvironment } from './web/navigator-web-bluetooth-boundary'
 export type { ChooserRequest, ChooserSelection, WebChooser, WebHost } from './backend-contract/host/web'
 export type {
@@ -44,57 +47,48 @@ export type {
   WebBluetoothServiceBoundary,
   WebBluetoothTimerHandle
 } from './web/web-bluetooth-boundary'
-export interface WebBleManagerOptions {
-  readonly provider: WebBluetoothProvider
-  readonly clientId: string
-  readonly managerId: string
-  readonly now: () => number
-}
 
-export interface NavigatorWebBleManagerOptions {
-  readonly clientId: string
-  readonly managerId: string
-  readonly environment?: NavigatorWebBluetoothEnvironment
-}
-
-export interface WebBleManagerSession {
-  readonly chooser: WebChooser<string>
-  readonly manager: BleManager<string, HostNeutralBackendIdentity<string>>
-}
-
-/**
- * Creates one browser-owned manager and its matching chooser capability.
- * `chooser.choose()` must run from a transient user activation.
- */
-export async function createWebBleManager(options: WebBleManagerOptions): Promise<WebBleManagerSession> {
-  const backend = await options.provider.create({ selectedAdapterId: WEB_BLUETOOTH_ADAPTER_ID })
-  const manager = await createBleManagerFromBackend(
-    backend,
+// Zero-plumbing Web factory — returns one BleManager. No provider/clientId tuple.
+export async function createWebBleManager(options: BleManagerCreateOptions = {}): Promise<BleManager> {
+  const normalized = normalizeBleManagerCreateOptions(options)
+  const env = createDefaultNavigatorWebBluetoothEnvironment()
+  const provider = createWebBluetoothProvider(new NavigatorWebBluetoothBoundary(env))
+  const ephemeral = createEphemeralHostIdentity()
+  const clientId = opaqueId(`web-${ephemeral.managerNonce.slice(0, 8)}`, 'client', 'web-bluetooth:browser')
+  const managerId = opaqueId(`web-${ephemeral.attachmentNonce.slice(0, 8)}`, 'manager', 'web-bluetooth:browser')
+  const internal = await createBleManagerFromBackend(
+    await provider.create({ selectedAdapterId: WEB_BLUETOOTH_ADAPTER_ID }),
     {
-      coreCompatibility: options.provider.descriptor.compatibility,
-      manager: {
-        clientId: opaqueId(options.clientId, 'client', 'web-bluetooth:browser'),
-        managerId: opaqueId(options.managerId, 'manager', 'web-bluetooth:browser'),
-        ownerMode: 'owning'
-      }
+      coreCompatibility: provider.descriptor.compatibility,
+      manager: { clientId, managerId, ownerMode: 'owning' }
     },
-    { ...DEFAULT_BLE_MANAGER_OPTIONS, now: options.now }
+    { ...DEFAULT_BLE_MANAGER_OPTIONS, now: env.now }
   )
-  return { chooser: backend, manager }
+  void normalized
+  return createPublicBleManager(internal as any, env.now)
 }
 
-/** Explicit production provider construction over caller-supplied browser APIs. */
-export function createNavigatorWebBluetoothProvider(environment: NavigatorWebBluetoothEnvironment) {
-  return createWebBluetoothProvider(new NavigatorWebBluetoothBoundary(environment))
+// Explicit provider injection for tests and unusual hosts.
+export interface WebBleManagerWithEnvironmentOptions {
+  readonly environment: NavigatorWebBluetoothEnvironment
+  readonly createOptions?: BleManagerCreateOptions
 }
 
-/** Creates a browser manager session from explicit browser APIs or the default navigator environment. */
-export function createNavigatorWebBleManager(options: NavigatorWebBleManagerOptions): Promise<WebBleManagerSession> {
-  const environment = options.environment ?? createDefaultNavigatorWebBluetoothEnvironment()
-  return createWebBleManager({
-    provider: createNavigatorWebBluetoothProvider(environment),
-    clientId: options.clientId,
-    managerId: options.managerId,
-    now: environment.now
-  })
+export async function createWebBleManagerWithEnvironment(
+  options: WebBleManagerWithEnvironmentOptions
+): Promise<BleManager> {
+  const env = options.environment
+  const provider = createWebBluetoothProvider(new NavigatorWebBluetoothBoundary(env))
+  const ephemeral = createEphemeralHostIdentity()
+  const clientId = opaqueId(`web-${ephemeral.managerNonce.slice(0, 8)}`, 'client', 'web-bluetooth:browser')
+  const managerId = opaqueId(`web-${ephemeral.attachmentNonce.slice(0, 8)}`, 'manager', 'web-bluetooth:browser')
+  const internal = await createBleManagerFromBackend(
+    await provider.create({ selectedAdapterId: WEB_BLUETOOTH_ADAPTER_ID }),
+    {
+      coreCompatibility: provider.descriptor.compatibility,
+      manager: { clientId, managerId, ownerMode: 'owning' }
+    },
+    { ...DEFAULT_BLE_MANAGER_OPTIONS, now: env.now }
+  )
+  return createPublicBleManager(internal as any, env.now)
 }

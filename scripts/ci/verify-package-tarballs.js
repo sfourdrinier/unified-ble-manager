@@ -235,8 +235,13 @@ function isPublishedSourceFile(sourceFile) {
     sourceRelative === 'node-winrt.ts' ||
     sourceRelative === 'electron-main.ts' ||
     sourceRelative === 'electron-renderer.ts' ||
-    sourceRelative === 'tauri.ts'
+    sourceRelative === 'tauri.ts' ||
+    sourceRelative === 'advanced.ts' ||
+    sourceRelative === 'expo.ts'
   ) {
+    return true
+  }
+  if (sourceRelative.startsWith('public/')) {
     return true
   }
   if (publicProfileSourceFiles.includes(sourceRelative)) {

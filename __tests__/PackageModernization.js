@@ -15,12 +15,14 @@ describe('canonical package modernization', () => {
     expect(rootPackage.version).toBe('4.0.0-rc.1')
     expect(Object.keys(rootPackage.exports).sort()).toEqual([
       '.',
+      './advanced',
       './app.plugin.js',
       './backend-sdk',
       './cli',
       './codecs',
       './electron/main',
       './electron/renderer',
+      './expo',
       './node/bluez',
       './node/corebluetooth',
       './node/winrt',

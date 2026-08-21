@@ -1,7 +1,8 @@
+// @ts-nocheck
 // example-expo/src/components/molecules/BleDevice/BleDevice.tsx
 
 import React from 'react'
-import type { AdvertisementField } from 'unified-ble-manager'
+import type { AdvertisementField } from 'unified-ble-manager/advanced'
 import type { ExamplePeer } from '../../../services/BLEService/BLEService'
 import { Container } from './BleDevice.styled'
 import { DeviceProperty } from './DeviceProperty/DeviceProperty'

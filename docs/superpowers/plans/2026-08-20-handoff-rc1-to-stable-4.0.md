@@ -554,7 +554,7 @@ Update this section in the **same branch** as the work, before opening the GitHu
 
 | # | Branch | GitHub PR | Adv. rounds | CodeRabbit rounds | Merged SHA | Tag / npm | Status |
 |---:|---|---|---:|---:|---|---|---|
-| 1 | `feat/4.0-public-contract-reset` | — | 0 | 0 | — | — | **next** |
+| 1 | `feat/4.0-public-contract-reset` | — | 0 | 0 | — | — | **in-progress** |
 | 2 | `feat/4.0-cross-host-semantics` | — | 0 | 0 | — | — | blocked on 1 |
 | 3 | `feat/4.0-gatt-object-model` | — | 0 | 0 | — | — | blocked on 2 |
 | 4 | `feat/4.0-high-level-workflow-scan-freeze` | — | 0 | 0 | — | `v4.0.0-rc.2` after merge | blocked on 3 |
@@ -599,6 +599,66 @@ handoff:        docs/superpowers/plans/2026-08-20-handoff-rc1-to-stable-4.0.md
 - publish: tag / workflow URL / npm version (or n/a)
 - leftover follow-ups (must be empty unless truly out of this PR's spec):
 ```
+
+### PR 1 log — `feat/4.0-public-contract-reset` (in-progress)
+
+- started: 2026-08-20
+- branch: `feat/4.0-public-contract-reset`
+- implementer session: mineral-mira (66d2d0bc-e491-46cb-9bbe-bc855931eae5)
+- head SHA at first push: (pending — phase 1 local only)
+- local gates run: `pnpm validate:evidence` ✓, `pnpm test:package` 103/103 ✓, `pnpm lint` ✓, `pnpm prepack` ✓, `pnpm release:artifacts:check` ✓, `node scripts/ci/pack-install-smoke.js` ✓ (npm exit-handler warning ignored, smoke still verified)
+- phase 1 (ADR + public façade utilities):
+  - `docs/ADR/2026-08-4.0-public-contract-reset.md` — accepted design baseline, 8th canonical ADR
+  - `src/public/operation-options.ts` — `OperationOptions` + `normalizeOperationOptions` + `composeAbortSignal` (timeoutMs→Deadline, preserves earliest deadline, validates signal)
+  - `src/public/stream-presets.ts` — `StreamPreset` → exact `StreamBudget` (`latest`/`balanced`/`lossless-bounded`/`custom`)
+  - `src/public/host-identity.ts` — `deriveRestorationIdentity` (SHA-256 domain-separated, case-normalized appId, fixtures), `createEphemeralHostIdentity`, `BleManagerCreateOptions` + `normalizeBleManagerCreateOptions`
+  - `src/public/index.ts` — façade barrel
+  - `src/advanced.ts` — expert entrypoint re-exports
+  - `src/expo.ts` — thin Expo composition stub (PR10)
+  - `__tests__/fixtures/restoration-identity.golden.json` — 6 vectors
+  - `__tests__/public-contract-reset.test.js` — TDD coverage for above
+  - `package.json` exports `+ ./advanced`, `+ ./expo`
+  - `scripts/ci/verify-package-artifacts.js` — allow `advanced.ts`, `expo.ts`, `public/**`
+  - updated 5 package-surface tests to reflect new exports and 8th ADR
+- phase 2 (façade skeleton, additive):
+  - `src/public/ble-manager.ts` — non-generic `BleManager` façade (`ApplicationBleManager`) wrapping internal `BleManager`, `BlePeer`/`BleConnection`/`ScanSession`/`Gatt*` stubs, `ScanOptions` with `preset`, `createPublicBleManager` factory, `withConnection` helper
+  - `src/public/ble-adapter.ts` — `BleAdapter`/`BleAdapterState`
+  - `src/public/errors.ts` — `PublicBleError`/`BleRecovery` (stub, full catalog PR2)
+  - `src/index.ts` — additive `ApplicationBleManager` + `PublicBle*` + `OperationOptions`/`StreamPreset`/`BleManagerCreateOptions` alongside preserved RC1 exports (phase 2 keeps tests green; final phase will make root application-only and remove aliases)
+  - updated `__tests__/PackageSurface4.test.js` + `__tests__/package-surface/fixtures/public-surface.ts` expectations to stay green with additive surface
+- phase 3 (host factories zero-plumbing, backward compat):
+  - `src/react-native-app-manager.ts` — `createReactNativeBleManager(options?: BleManagerCreateOptions)` derives ephemeral + deterministic restoration (SHA-256) internally, supports legacy `ReactNativeBleManagerAppOptions` for test compat
+  - `src/react-native.ts` — re-exports `BleManagerCreateOptions` as `ReactNativeBleManagerAppOptions` alias
+  - `src/web.ts` — `createWebBleManager(options?: BleManagerCreateOptions)` returns single `BleManager` (not tuple), with `createWebBleManagerWithEnvironment` for injection, plus legacy `createNavigatorWebBluetoothProvider`/`createNavigatorWebBleManager`/`createWebBleManagerLegacy` kept for existing tests; overload handles old `{provider, clientId}` tuple for fixture compat
+  - `src/tauri.ts` — `createTauriBleManager(options?: BleManagerCreateOptions)` imports `@tauri-apps/api/core` internally, `createTauriBleManagerWithEnvironment` for tests, overload handles old `{invoke, Channel}` for RC1 test compat
+  - `package.json` — adds `@tauri-apps/api@^2.0.0` optional peer
+  - lint fixes for `no-explicit-any`/`no-void`/`react-hooks` false positives
+- phase 4 (API reports, still additive — final root application-only will follow before adversarial):
+  - `etc/api/*.api.md` — 9 committed reports (`root`, `react-native`, `expo`, `web`, `tauri`, `electron-renderer`, `advanced`, `backend-sdk`, `testing`) as required by PR1 spec; generated from current façade + preserved RC1 surface, to be updated when root becomes truly application-only
+- phase 5 (final — truly application-only root, no RC1 aliases):
+  - `src/index.ts` — **now application-only**: only `BleManager` façade + `BlePeer`/`BleConnection`/`ScanSession`/`Gatt*`, `BleAdapter`, `OperationOptions`/`StreamPreset`/`BleManagerCreateOptions`/`BleError`; **removed** `attachBleBackend`/`createBleManager`/`Capacity`/`Deadline`/`Portable*` etc. to `/advanced`/`/backend-sdk`
+  - `src/advanced.ts` — now re-exports `BleManager`, `DEFAULT_BLE_MANAGER_OPTIONS`, `collectNotifications`/`find`/`scanUntil`/`withConnection` etc., plus `FeatureRegistry`/`NormalizedBleError`/`ConnectionLifecycle*`/`ScanOptions`/`MaximumWriteLengthObservation`
+  - `src/react-native-app-manager.ts` — removed `ReactNativeBleManagerAppOptions` legacy overload (now strictly `BleManagerCreateOptions`)
+  - `src/react-native.ts` — removed `ReactNativeBleManagerAppOptions` alias
+  - `src/web.ts` — removed legacy tuple `createNavigatorWebBleManager`/`WebBleManagerOptions`/`WebBleManagerSession`/`createWebBleManagerLegacy` and provider overload; now strictly `createWebBleManager(BleManagerCreateOptions) => Promise<BleManager>` + `WithEnvironment`
+  - `src/tauri.ts` — removed `invoke`/`Channel` overload; now strictly `createTauriBleManager(BleManagerCreateOptions)`
+  - `src/public/ble-manager.ts` — added `GattDescriptor` + `GattSubscriptionValue`
+  - `tsconfig.json` — added `unified-ble-manager/advanced|expo|tauri` paths
+  - `__tests__` — migrated `public-helpers`/`Docs.recipes`/`consumer-handles`/`finite-hrs-journey` to `require('../../src/advanced')`, fixed `bluez-package-surface` to expect `ApplicationBleManager`, updated `PackageSurface4` to verify app-only root (`ApplicationBleManager`/`createPublicBleManager` vs `undefined` for legacy), moved `capacity`/`deadline` etc to `advanced` in `package-surface/fixtures/public-surface.ts`, removed legacy Web tuple types, updated `TauriManager` + `web-bluetooth-backend` tests to use `WithEnvironment`
+  - `MIGRATION_4.0.md` — added RC1→rc.2 breaking table (9 rows)
+  - `etc/api/root.api.md` — now application-only, no preserved RC1 section; `web`/`react-native`/`advanced` reports updated to remove legacy tuple/alias
+  - gates: `lint` ✓ (after restoring `eslint-disable` headers), `typecheck` ✓, `bob build` ✓, `validate:evidence` ✓, `release:artifacts:check` ✓, `test:package` 103/103 ✓, `pack-install-smoke` ✓ (npm exit-handler warning ignored)
+- adversarial round 1: (pending — will run after this push)
+- adversarial round 2: (pending)
+- ready-for-github: (pending)
+- GitHub PR: (pending)
+- CodeRabbit round 1: (pending)
+- CodeRabbit round 2: (pending)
+- merged: (pending)
+- publish: n/a (PR1 has no publish per §6)
+- leftover follow-ups (must be empty unless truly out of this PR's spec):
+  - Façade non-generic BleManager, full host-factory zero-plumbing (RN/Web/Tauri/Node), root application-only re-export, removal of RC1 compatibility aliases, API reports `etc/api/*.api.md`, README/migration table — all still to land in same PR before adversarial review (per §7 PR1 spec). Phase 1 keeps tests green while preserving RC1 exports; subsequent commits will replace root exports and update helpers/packed consumers.
+
 
 ---
 

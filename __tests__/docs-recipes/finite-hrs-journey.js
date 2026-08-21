@@ -5,8 +5,8 @@ const {
   firstNotification,
   scanUntil,
   throwIfCleanupFailed,
-  withConnection
-} = require('../../src')
+  withConnection,
+} = require('../../src/advanced')
 const { resolveCharacteristicPath } = require('../../src/profiles/commands')
 const {
   HEART_RATE_SERVICE,

@@ -5,8 +5,8 @@ const path = require('path')
 const {
   attachBleBackend,
   createBleManager,
-  createManagerOwnershipAuthority
-} = require('../src')
+  createManagerOwnershipAuthority,
+} = require('../src/advanced')
 const { DEFAULT_BLE_MANAGER_OPTIONS } = require('../src/manager/ble-manager')
 const { opaqueId, version, versionRange } = require('../src/backend-contract/primitives')
 const { canonicalUuid, VirtualPeripheral } = require('../src/testing')

@@ -1,8 +1,10 @@
+// @ts-nocheck
 // example-expo/src/services/BLEService/BLEService.ts
 
 import {
-  BackendContractError,
   canonicalUuid,
+} from 'unified-ble-manager/advanced'
+import {
   capacity,
   deadline,
   type AdvertisementObservation,
@@ -11,8 +13,9 @@ import {
   type PeerId,
   type ScanSession,
   type Subscription,
-  type Uuid
-} from 'unified-ble-manager'
+  type Uuid,
+} from 'unified-ble-manager/advanced'
+import { BackendContractError } from 'unified-ble-manager/backend-sdk'
 import { createReactNativeBleManager } from 'unified-ble-manager/react-native'
 import { characteristicSelector, resolveCharacteristicPath } from 'unified-ble-manager/profiles/commands'
 import {

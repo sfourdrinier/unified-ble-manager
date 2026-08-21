@@ -1,7 +1,7 @@
 // example-web/app.js
 
-import { capacity } from 'unified-ble-manager'
-import { createNavigatorWebBleManager } from 'unified-ble-manager/web'
+import { ApplicationBleManager } from 'unified-ble-manager'
+import { createWebBleManager } from 'unified-ble-manager/web'
 import { BATTERY_SERVICE } from 'unified-ble-manager/profiles/battery-service'
 import {
   HEART_RATE_SERVICE,
@@ -12,15 +12,10 @@ import {
   subscribeHeartRateMeasurements
 } from 'unified-ble-manager/profiles/standard-commands'
 
-const operationOptions = Object.freeze({ signal: null, deadline: null })
+const operationOptions = Object.freeze({})
 const notificationOptions = Object.freeze({
   ...operationOptions,
-  delivery: Object.freeze({
-    itemCapacity: capacity(16),
-    byteCapacity: capacity(4096),
-    reservedControlCapacity: capacity(2),
-    overflowPolicy: 'drop-oldest'
-  })
+  preset: 'balanced'
 })
 
 const controls = Object.freeze({
@@ -209,11 +204,8 @@ async function destroyManager() {
 async function ensureSession() {
   if (session !== null) return session
   nextManagerNumber += 1
-  session = await createNavigatorWebBleManager({
-    environment: createNavigatorEnvironment(),
-    clientId: 'unified-ble-web-example',
-    managerId: `unified-ble-web-example-${String(nextManagerNumber)}`
-  })
+  const manager = await createWebBleManager()
+  session = { manager, chooser: manager }
   appendEvent('bootstrap', 'Web Bluetooth backend attached')
   return session
 }

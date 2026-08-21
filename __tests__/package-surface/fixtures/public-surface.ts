@@ -1,18 +1,34 @@
 // __tests__/package-surface/fixtures/public-surface.ts
 
 import type { WebContents } from 'electron'
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- fixture verifies these are importable from application root
+import type {
+  BlePeer,
+  BleConnection,
+  ScanSession,
+  GattDatabase,
+  GattService,
+  GattCharacteristic,
+  OperationOptions,
+  BleManagerCreateOptions,
+  StreamPreset,
+} from 'unified-ble-manager'
+// Ensure root types are considered used for TS noUnusedLocals
+type _RootImportCheck = BlePeer & BleConnection & ScanSession & GattDatabase & GattService & GattCharacteristic & OperationOptions & BleManagerCreateOptions & StreamPreset
+declare const _rootCheck: _RootImportCheck
+void _rootCheck
 import {
   BleManager,
   capacity,
   createBleManager,
   createManagerOwnershipAuthority,
-  DEFAULT_BLE_MANAGER_OPTIONS,
   deadline,
   defaultScanDelivery,
   scanForServices,
   throwIfCleanupFailed,
-  withDiscoveredConnection
-} from 'unified-ble-manager'
+  withDiscoveredConnection,
+  DEFAULT_BLE_MANAGER_OPTIONS,
+} from 'unified-ble-manager/advanced'
 import type {
   BleConnectionHandle,
   BleManagerLifetime,
@@ -35,7 +51,7 @@ import type {
   PublicOperationOptions,
   ScanOptions,
   SubscriptionHandle
-} from 'unified-ble-manager'
+} from 'unified-ble-manager/advanced'
 import { createFeatureRegistry, runBackendTck } from 'unified-ble-manager/backend-sdk'
 import type {
   BackendAuthoringDefinition,
@@ -81,12 +97,9 @@ import type {
   WebBluetoothFirstPartyTckRegistrationOptions,
   WinRtFirstPartyTckRegistrationOptions
 } from 'unified-ble-manager/testing'
-import { createNavigatorWebBleManager, createWebBleManager } from 'unified-ble-manager/web'
+import { createWebBleManager, createWebBleManagerWithEnvironment } from 'unified-ble-manager/web'
 import type {
-  ChooserRequest,
-  NavigatorWebBleManagerOptions,
-  WebBleManagerOptions,
-  WebChooser,
+  NavigatorWebBluetoothEnvironment,
   WebBluetoothTimerHandle
 } from 'unified-ble-manager/web'
 import { createDbusNextBluezBackendProvider } from 'unified-ble-manager/node/bluez'
@@ -154,10 +167,7 @@ declare const nativeWinRtOptions: NativeWinRtProviderOptions
 declare const nativeAndroidOptions: ReactNativeAndroidBackendProviderOptions
 declare const nativeAppleOptions: ReactNativeAppleBackendProviderOptions
 declare const nativeManagerOptions: ReactNativeBleManagerOptions
-declare const webChooser: WebChooser<string>
-declare const webChooserRequest: ChooserRequest
-declare const navigatorWebManagerOptions: NavigatorWebBleManagerOptions
-declare const webManagerOptions: WebBleManagerOptions
+declare const browserWebManagerOptions: NavigatorWebBluetoothEnvironment
 declare const browserTimer: WebBluetoothTimerHandle
 declare const electronConnectionEventSubscription: ElectronConnectionEventSubscription
 declare const electronConnectionEventStreamHandle: string
@@ -639,20 +649,16 @@ declare function consumeSubscription(subscription: SubscriptionHandle): void
 const scopedLongWriteTerminal: OperationTerminalRecord<'package-surface-attachment', 'package-surface-write'> =
   scopedLongWriteReceipt.terminal
 
-const browserNavigatorManagerOptions: NavigatorWebBleManagerOptions = {
-  environment: {
-    implementationVersion: '4.0.0-rc.0',
-    browserEngine: 'test',
-    bluetooth: navigator.bluetooth,
-    isSecureContext: () => true,
-    hasTransientUserActivation: () => true,
-    now: () => 0,
-    setTimer: () => browserTimer,
-    clearTimer: () => undefined,
-    addPageLifecycleListener: () => () => undefined
-  },
-  clientId: 'browser-client',
-  managerId: 'browser-manager'
+const browserNavigatorEnvironment: NavigatorWebBluetoothEnvironment = {
+  implementationVersion: '4.0.0-rc.0',
+  browserEngine: 'test',
+  bluetooth: navigator.bluetooth,
+  isSecureContext: () => true,
+  hasTransientUserActivation: () => true,
+  now: () => 0,
+  setTimer: () => browserTimer,
+  clearTimer: () => undefined,
+  addPageLifecycleListener: () => () => undefined
 }
 
 observe(BleManager)
@@ -727,13 +733,12 @@ observe(electronConnectionLifecycleEvent.connectionGeneration)
 observe(createReactNativeAndroidBackendProvider(nativeAndroidOptions))
 observe(createReactNativeAppleBackendProvider(nativeAppleOptions))
 observe(createReactNativeBleManagerWithEnvironment(nativeManagerOptions))
-observe(createReactNativeBleManager({ clientId: 'app-client', managerId: 'app-manager', hostSessionScope: 'app-scope' }))
+observe(createReactNativeBleManager({ instanceId: 'app-instance' }))
 observe(getNativeUnifiedBleProtocolControl)
 observe(nativeWinRtOptions)
-observe(webChooser.choose(webChooserRequest, operation))
-observe(createNavigatorWebBleManager(navigatorWebManagerOptions))
-observe(createNavigatorWebBleManager(browserNavigatorManagerOptions))
-observe(createWebBleManager(webManagerOptions))
+observe(createWebBleManager())
+observe(createWebBleManagerWithEnvironment({ environment: browserWebManagerOptions }))
+observe(createWebBleManagerWithEnvironment({ environment: browserNavigatorEnvironment }))
 consumeManagerLifetime(peerOneManager)
 consumeManagerLifetime(peerTwoManager)
 consumeConnection(peerOneConnection)
