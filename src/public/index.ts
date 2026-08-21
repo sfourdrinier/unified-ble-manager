@@ -52,5 +52,7 @@ export type {
 } from './ble-manager'
 export type { BleDiagnostics, BleDiagnosticsSnapshot, BleResourceCounters } from './diagnostics'
 export type { BlePeerDirectory, BlePeerState, KnownPeerQuery, PeerSource } from './peer-directory'
+export type { PeerDirectoryRecord } from './peer-directory'
+export { mergePeerDirectoryRecords } from './peer-directory'
 export type { PeerReference } from './peer-reference'
 export { encodePeerReference, decodePeerReference } from './peer-reference'

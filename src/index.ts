@@ -53,6 +53,8 @@ export { BUILT_IN_FEATURE_CATALOG, BUILT_IN_FEATURE_IDS } from './backend-contra
 export type { BleCapabilities, BuiltInFeatureId, CapabilityDescriptor, FeatureId } from './public/capabilities'
 export type { BleAdapter, BleAdapterState, AdapterReadinessOptions } from './public/ble-adapter'
 export type { BleDiagnostics, BleDiagnosticsSnapshot, BleResourceCounters } from './public/diagnostics'
+export type { PeerDirectoryRecord } from './public/peer-directory'
+export { mergePeerDirectoryRecords } from './public/peer-directory'
 export { encodePeerReference, decodePeerReference } from './public/peer-reference'
 
 // --- Operation options & stream presets (public types only) ---

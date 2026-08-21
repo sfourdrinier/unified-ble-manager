@@ -1,4 +1,5 @@
 const { encodePeerReference, decodePeerReference } = require('../src/public/peer-reference')
+const { mergePeerDirectoryRecords } = require('../src/public/peer-directory')
 const {
   normalizeScanQuery,
   normalizeScanObservation,
@@ -35,5 +36,33 @@ describe('scoped PeerReference v1', () => {
     })
     expect(observationMatchesScanQuery(query, observation)).toBe(true)
     expect(() => normalizeScanQuery({ anyOf: [{ unknownFutureField: true }] })).toThrow()
+  })
+
+  test('merges duplicate scoped records conservatively and orders stronger sources first', () => {
+    const peer = { id: 'peer-1', name: null, rssi: -60 }
+    const merged = mergePeerDirectoryRecords([
+      {
+        reference,
+        peer,
+        source: 'backend-cache',
+        state: { reachability: 'unknown', connection: 'disconnected', bond: 'unknown', lastSeenAtMonotonicMs: 4 },
+        clockScope: 'backend-1'
+      },
+      {
+        reference,
+        peer: { ...peer, name: 'Known peer', rssi: -40 },
+        source: 'system-connected',
+        state: { reachability: 'reachable', connection: 'connected', bond: 'bonded', lastSeenAtMonotonicMs: 8 },
+        clockScope: 'backend-1'
+      }
+    ])
+    expect(merged).toHaveLength(1)
+    expect(merged[0]).toMatchObject({ name: 'Known peer', rssi: -40, sources: ['system-connected', 'backend-cache'] })
+    expect(merged[0].state).toMatchObject({
+      reachability: 'reachable',
+      connection: 'connected',
+      bond: 'bonded',
+      lastSeenAtMonotonicMs: 8
+    })
   })
 })

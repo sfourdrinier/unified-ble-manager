@@ -153,6 +153,8 @@ export type {
 } from './public/scan-query'
 export { normalizeScanObservation, normalizeScanQuery, observationMatchesScanQuery } from './public/scan-query'
 export type { BlePeerDirectory, BlePeerState, KnownPeerQuery, PeerSource } from './public/peer-directory'
+export type { PeerDirectoryRecord } from './public/peer-directory'
+export { mergePeerDirectoryRecords } from './public/peer-directory'
 export type { PeerReference, PeerReferenceScope } from './public/peer-reference'
 export { encodePeerReference, decodePeerReference } from './public/peer-reference'
 
