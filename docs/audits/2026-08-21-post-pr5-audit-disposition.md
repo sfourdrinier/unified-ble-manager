@@ -31,7 +31,7 @@ The existing PR6 implementation WIP is preserved in `stash@{0}` and is applied t
 | F-025                                                                                     | Confirmed / closure | PR6C native lease-safe cancellation plus PR6E supervisor arbitration; four late-cancel/shared-peer race tests are required |
 | F-009                                                                                     | Confirmed / closure | PR6A custom stream input validation and end-to-end stream-budget test                                                      |
 | F-013                                                                                     | Confirmed / closure | PR6D public adapter/chooser/GATT/peer error-rehydration matrix                                                             |
-| F-014                                                                                     | Confirmed / defer   | Later diagnostics slice; acceptance test must include backend-owned chooser resources                                      |
+| F-014                                                                                     | Confirmed / defer   | PR7 diagnostics slice; acceptance test must include backend-owned chooser resources                                      |
 | F-016                                                                                     | Confirmed / defer   | PR9 — provider discovery-kind descriptor matrix; Electron/Tauri bootstrap descriptors are covered in PR6C                 |
 | F-036                                                                                     | Confirmed / closure | PR6C permutation-invariant normalized query digest tests                                                                   |
 | F-038                                                                                     | Confirmed / closure | PR6C normalized public observation delivery tests                                                                          |
@@ -93,9 +93,9 @@ This branch has now verified the following PR6 slices against current source:
 - Electron renderer documentation, composition examples, package-surface fixtures, and the reviewed renderer API report describe the public factory;
 - Tauri late-cancellation cleanup and lifecycle terminal delivery retain retry ownership rather than abandoning failed cleanup.
 
-The remaining PR6 gates are packed public-manager smoke on a clean supported
-Node toolchain, the full PR6D documentation/recipe sweep, and the preserved
-PR6E supervisor implementation/review. Native-authoritative React Native/Expo
+The local PR6D documentation/API/recipe checks are green; the remaining
+external PR6 gates are packed public-manager smoke on a clean supported Node
+toolchain and the preserved PR6E supervisor review. Native-authoritative React Native/Expo
 restoration is an explicit PR10 deferral tracked by [#34](https://github.com/sfourdrinier/unified-ble-manager/issues/34);
 PR6 must not claim it is implemented. The local Node22/npm packed smoke is
 environment-blocked at `npm pack` (`Exit handler never called`) before consumer
