@@ -174,7 +174,10 @@ export class ElectronRendererBleClient<Attachment extends string, Renderer exten
     }
   }
 
-  async subscribeConnectionEvents(connectionHandle: string): Promise<ElectronConnectionEventSubscription> {
+  async subscribeConnectionEvents(
+    connectionHandle: string,
+    identity: SerializableRecord = Object.freeze({})
+  ): Promise<ElectronConnectionEventSubscription> {
     this.assertActive('connection-events-subscribe')
     if (connectionHandle.length === 0) {
       throw contractError('argument.invalid', 'ipc', 'electron-renderer.connection-events-handle')
@@ -192,7 +195,12 @@ export class ElectronRendererBleClient<Attachment extends string, Renderer exten
     try {
       const receipt = await this.request({
         command: 'connection.events.subscribe',
-        payload: Object.freeze({ connectionHandle, connectionEventsHandle: handle, deadline: null }),
+        payload: Object.freeze({
+          ...identity,
+          connectionHandle,
+          connectionEventsHandle: handle,
+          deadline: null
+        }),
         binaryPayload: null,
         signal: null
       })

@@ -86,6 +86,11 @@ export interface IpcWriteReceipt {
   readonly bytesSubmitted: number
 }
 
+interface IpcConnectionEventSubscription {
+  readonly events: BoundedAsyncStream<SerializableRecord>
+  unsubscribe(): Promise<CleanupRecord>
+}
+
 export interface IpcCharacteristicRecord extends SerializableRecord {
   readonly handle: string
   readonly serviceUuid: string
@@ -116,6 +121,7 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
   private readonly streams = new Map<string, StreamSink>()
   private readonly pendingStreamItems = new Map<string, SerializableRecord[]>()
   private readonly eventPump: Promise<void>
+  private nextConnectionEventHandle = 1
   private lifecycle: 'active' | 'releasing' | 'released' = 'active'
   private releaseResult: Promise<CleanupRecord> | null = null
 
@@ -301,6 +307,65 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
     return source
   }
 
+  subscribeConnectionEvents(
+    connectionHandle: string,
+    identity: SerializableRecord
+  ): Promise<IpcConnectionEventSubscription> {
+    return this.admitConnectionEvents(connectionHandle, identity)
+  }
+
+  private async admitConnectionEvents(
+    connectionHandle: string,
+    identity: SerializableRecord
+  ): Promise<IpcConnectionEventSubscription> {
+    const handle = `connection-events-ipc-${this.nextConnectionEventHandle++}`
+    const payload = Object.freeze({
+      ...identity,
+      connectionHandle,
+      connectionEventsHandle: handle,
+      deadline: null
+    })
+    const response = await this.route('connection.events.subscribe', payload)
+    const returnedConnectionId = requiredString(response, 'connectionId', 'ipc-manager.connection-events-subscribe')
+    const returnedConnectionGeneration = requiredString(
+      response,
+      'connectionGeneration',
+      'ipc-manager.connection-events-subscribe'
+    )
+    if (
+      requiredString(response, 'handle', 'ipc-manager.connection-events-subscribe') !== handle ||
+      returnedConnectionId !== requiredString(identity, 'connectionId', 'ipc-manager.connection-events-identity') ||
+      returnedConnectionGeneration !==
+        requiredString(identity, 'connectionGeneration', 'ipc-manager.connection-events-identity') ||
+      response.eventSchemaVersion !== 2
+    ) {
+      throw contractError('protocol.incompatible', 'ipc', 'ipc-manager.connection-events-schema')
+    }
+    const events = this.registerStream(handle, isIpcConnectionLifecycleEvent)
+    try {
+      const ready = await this.route('connection.events.ready', Object.freeze({ connectionEventsHandle: handle }))
+      if (ready.state !== 'ready') {
+        throw contractError('protocol.malformed', 'ipc', 'ipc-manager.connection-events-ready')
+      }
+    } catch (error) {
+      this.closeStream(handle, 'source-failed')
+      await this.route('connection.events.unsubscribe', Object.freeze({ connectionEventsHandle: handle })).catch(
+        () => undefined
+      )
+      throw error
+    }
+    return {
+      events,
+      unsubscribe: async () => {
+        const cleanup = cleanupRecord(
+          await this.route('connection.events.unsubscribe', Object.freeze({ connectionEventsHandle: handle }))
+        )
+        if (cleanup.state === 'released') this.closeStream(handle)
+        return cleanup
+      }
+    }
+  }
+
   closeStream(handle: string, reason: 'owner-released' | 'source-failed' = 'owner-released'): void {
     this.pendingStreamItems.delete(handle)
     const sink = this.streams.get(handle)
@@ -354,6 +419,8 @@ export class IpcScanSession {
 
 export class IpcConnection {
   private readonly lifecycleEvents = new CoreBoundedStream<SerializableRecord>(REMOTE_STREAM_LIMITS, 'drop-oldest')
+  private lifecycleAdmission: Promise<void> | null = null
+  private lifecycleSubscription: IpcConnectionEventSubscription | null = null
   private readonly _connectionId: string
   private readonly _ownerLeaseId: string
   private readonly _connectionGeneration: string
@@ -384,7 +451,29 @@ export class IpcConnection {
   }
 
   get events(): BoundedAsyncStream<SerializableRecord> {
+    this.ensureLifecycleAdmission()
     return this.lifecycleEvents
+  }
+
+  private ensureLifecycleAdmission(): void {
+    if (this.lifecycleAdmission !== null) return
+    this.lifecycleAdmission = this.manager
+      .subscribeConnectionEvents(this.handle, this.identityPayload())
+      .then(subscription => {
+        this.lifecycleSubscription = subscription
+        return this.pumpLifecycleEvents(subscription)
+      })
+      .catch(() => {
+        this.lifecycleEvents.closeWithReason('source-failed')
+      })
+  }
+
+  private async pumpLifecycleEvents(subscription: IpcConnectionEventSubscription): Promise<void> {
+    for await (const event of subscription.events) {
+      const value = lifecycleEventValue(event)
+      this.lifecycleEvents.emit(value, estimateByteLength(value))
+    }
+    this.lifecycleEvents.closeWithReason('source-failed')
   }
 
   async discover(options: IpcManagerOperationOptions = {}): Promise<IpcGattDatabase> {
@@ -416,6 +505,10 @@ export class IpcConnection {
   }
 
   async disconnect(): Promise<CleanupRecord> {
+    if (this.lifecycleSubscription !== null) {
+      await this.lifecycleSubscription.unsubscribe()
+      this.lifecycleSubscription = null
+    }
     return cleanupRecord(await this.manager.route('connection.disconnect', Object.freeze(this.identityPayload())))
   }
 
@@ -965,6 +1058,16 @@ function estimateByteLength(value: unknown): number {
   return new TextEncoder().encode(JSON.stringify(value)).byteLength
 }
 
+function lifecycleEventValue(value: unknown): SerializableRecord {
+  if (isSerializableRecord(value) && value.kind === 'value') {
+    return requiredRecord(value, 'value', 'ipc-manager.connection-lifecycle-value')
+  }
+  if (!isSerializableRecord(value)) {
+    throw contractError('protocol.malformed', 'ipc', 'ipc-manager.connection-lifecycle')
+  }
+  return value
+}
+
 function isIpcNotificationValue(value: unknown): value is IpcNotificationValue {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
   if (!('value' in value) || !('delivery' in value) || !('observedAtMonotonicMs' in value) || !('sequence' in value)) {
@@ -983,6 +1086,31 @@ function isIpcNotificationValue(value: unknown): value is IpcNotificationValue {
     typeof sequence === 'number' &&
     Number.isSafeInteger(sequence) &&
     sequence > 0
+  )
+}
+
+function isIpcConnectionLifecycleEvent(value: unknown): value is SerializableRecord {
+  if (!isSerializableRecord(value)) return false
+  const record = value
+  return (
+    record.kind === 'connection-lifecycle' &&
+    record.schemaVersion === 2 &&
+    typeof record.attachmentId === 'string' &&
+    record.attachmentId.length > 0 &&
+    typeof record.peerId === 'string' &&
+    record.peerId.length > 0 &&
+    typeof record.connectionId === 'string' &&
+    record.connectionId.length > 0 &&
+    typeof record.connectionGeneration === 'string' &&
+    record.connectionGeneration.length > 0 &&
+    typeof record.ownerLeaseId === 'string' &&
+    record.ownerLeaseId.length > 0 &&
+    typeof record.sequence === 'number' &&
+    Number.isSafeInteger(record.sequence) &&
+    record.sequence > 0 &&
+    typeof record.previous === 'string' &&
+    typeof record.current === 'string' &&
+    typeof record.cause === 'string'
   )
 }
 

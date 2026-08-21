@@ -98,6 +98,7 @@ struct CallerState {
     connections: HashMap<String, ConnectionResource>,
     databases: HashMap<String, DatabaseResource>,
     subscriptions: HashMap<String, SubscriptionResource>,
+    connection_events: HashMap<String, ConnectionEventResource>,
     operations: HashMap<String, CancellationToken>,
     pending_events: HashSet<String>,
 }
@@ -129,6 +130,17 @@ struct SubscriptionResource {
     peripheral: Peripheral,
     characteristic: Characteristic,
     task: TauriJoinHandle<()>,
+}
+
+struct ConnectionEventResource {
+    connection_handle: String,
+    stream_handle: String,
+    peer_id: String,
+    connection_id: String,
+    connection_generation: String,
+    active: bool,
+    sequence: u64,
+    task: Option<TauriJoinHandle<()>>,
 }
 
 #[derive(Debug)]
@@ -325,6 +337,7 @@ impl BtleplugDispatcher {
                 connections: HashMap::new(),
                 databases: HashMap::new(),
                 subscriptions: HashMap::new(),
+                connection_events: HashMap::new(),
                 operations: HashMap::new(),
                 pending_events: HashSet::new(),
             },
@@ -609,6 +622,13 @@ impl BtleplugDispatcher {
             "scan.stop" => self.stop_scan(caller, payload).await,
             "connection.connect" => self.connect(caller, payload).await,
             "connection.disconnect" => self.disconnect(caller, payload).await,
+            "connection.events.subscribe" => {
+                self.subscribe_connection_events(caller, payload).await
+            }
+            "connection.events.ready" => self.ready_connection_events(caller, payload).await,
+            "connection.events.unsubscribe" => {
+                self.unsubscribe_connection_events(caller, payload).await
+            }
             "connection.rssi" => self.read_rssi(caller, payload).await,
             "connection.maximum-write-length" => self.maximum_write_length(caller, payload).await,
             "gatt.discover" => self.discover(caller, payload).await,
@@ -1039,11 +1059,239 @@ impl BtleplugDispatcher {
             caller_state
                 .databases
                 .retain(|database_handle, _| !database_handles.contains(database_handle));
+            let event_handles = caller_state
+                .connection_events
+                .iter()
+                .filter_map(|(event_handle, event)| {
+                    (event.connection_handle == handle).then_some(event_handle.clone())
+                })
+                .collect::<Vec<_>>();
+            let event_tasks = event_handles
+                .into_iter()
+                .filter_map(|event_handle| caller_state.connection_events.remove(&event_handle))
+                .filter_map(|event| event.task)
+                .collect::<Vec<_>>();
             state.peer_owners.remove(&connection.peer_id);
-            subscriptions
+            (subscriptions, event_tasks)
         };
-        for subscription in subscriptions {
+        for subscription in subscriptions.0 {
             subscription.task.abort();
+        }
+        for task in subscriptions.1 {
+            task.abort();
+        }
+        Ok(released())
+    }
+
+    async fn subscribe_connection_events(
+        &self,
+        caller: &AuthenticatedCaller,
+        payload: BTreeMap<String, IpcValue>,
+    ) -> Result<IpcValue, DispatchError> {
+        let stream_handle = required_string(
+            &payload,
+            "connectionEventsHandle",
+            "tauri.connection-events-handle",
+        )?;
+        let connection = self
+            .connection(caller, &payload, "tauri.connection-events-connection")
+            .await?;
+        let key = caller_key(caller);
+        let mut state = self.inner.lock().await;
+        let caller_state = state.callers.get_mut(&key).ok_or_else(|| {
+            DispatchError::new(
+                "ownership.denied",
+                "connection",
+                "tauri.connection-events-owner",
+            )
+        })?;
+        if caller_state.connection_events.contains_key(&stream_handle) {
+            return Err(DispatchError::new(
+                "protocol.violation",
+                "connection",
+                "tauri.connection-events-duplicate",
+            ));
+        }
+        caller_state.connection_events.insert(
+            stream_handle.clone(),
+            ConnectionEventResource {
+                connection_handle: required_string(
+                    &payload,
+                    "connectionHandle",
+                    "tauri.connection-events-connection",
+                )?,
+                stream_handle: stream_handle.clone(),
+                peer_id: connection.peer_id,
+                connection_id: connection.connection_id.clone(),
+                connection_generation: connection.connection_generation.clone(),
+                active: false,
+                sequence: 0,
+                task: None,
+            },
+        );
+        Ok(object([
+            ("handle", string(stream_handle)),
+            ("connectionId", string(connection.connection_id)),
+            (
+                "connectionGeneration",
+                string(connection.connection_generation),
+            ),
+            ("eventSchemaVersion", number(2)),
+        ]))
+    }
+
+    async fn ready_connection_events(
+        &self,
+        caller: &AuthenticatedCaller,
+        payload: BTreeMap<String, IpcValue>,
+    ) -> Result<IpcValue, DispatchError> {
+        let stream_handle = required_string(
+            &payload,
+            "connectionEventsHandle",
+            "tauri.connection-events-ready-handle",
+        )?;
+        let key = caller_key(caller);
+        let event = {
+            let mut state = self.inner.lock().await;
+            let attachment = state.attachment.clone().ok_or_else(|| {
+                DispatchError::new(
+                    "lifecycle.invalid-state",
+                    "connection",
+                    "tauri.connection-events-attachment",
+                )
+            })?;
+            let caller_state = state.callers.get_mut(&key).ok_or_else(|| {
+                DispatchError::new(
+                    "ownership.denied",
+                    "connection",
+                    "tauri.connection-events-ready-owner",
+                )
+            })?;
+            let resource = caller_state
+                .connection_events
+                .get_mut(&stream_handle)
+                .ok_or_else(|| {
+                    DispatchError::new(
+                        "gatt.stale-handle",
+                        "connection",
+                        "tauri.connection-events-ready-handle",
+                    )
+                })?;
+            if resource.active {
+                return Err(DispatchError::new(
+                    "lifecycle.invalid-state",
+                    "connection",
+                    "tauri.connection-events-ready-state",
+                ));
+            }
+            resource.active = true;
+            resource.sequence = 1;
+            let peripheral = caller_state
+                .connections
+                .get(&resource.connection_handle)
+                .map(|connection| connection.peripheral.clone())
+                .ok_or_else(|| {
+                    DispatchError::new(
+                        "connection.stale",
+                        "connection",
+                        "tauri.connection-events-connection",
+                    )
+                })?;
+            (
+                resource.stream_handle.clone(),
+                resource.peer_id.clone(),
+                resource.connection_id.clone(),
+                resource.connection_generation.clone(),
+                caller_state.lease_id.clone(),
+                resource.sequence,
+                attachment,
+                peripheral,
+            )
+        };
+        self.emit(
+            &key,
+            &event.0,
+            object([
+                ("kind", string("connection-lifecycle")),
+                ("schemaVersion", number(2)),
+                ("attachment", attachment_record(&event.6)),
+                ("attachmentId", string(event.6.attachment_id.clone())),
+                ("peerId", string(event.1.clone())),
+                ("connectionId", string(event.2.clone())),
+                ("connectionGeneration", string(event.3.clone())),
+                ("ownerLeaseId", string(event.4.clone())),
+                ("sequence", number(event.5 as i64)),
+                ("backendIngressOrdinal", IpcValue::Null),
+                ("previous", string("connecting")),
+                ("current", string("connected")),
+                ("cause", string("connected")),
+            ]),
+            false,
+        )
+        .await?;
+        let dispatcher = self.clone();
+        let stream_owner = key.clone();
+        let stream_id = event.0.clone();
+        let peer_id = event.1.clone();
+        let connection_id = event.2.clone();
+        let connection_generation = event.3.clone();
+        let stream_id_for_task = stream_id.clone();
+        let task = tauri::async_runtime::spawn(async move {
+            loop {
+                tokio::time::sleep(SCAN_POLL_INTERVAL).await;
+                match event.7.is_connected().await {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        let _ = dispatcher
+                            .emit_connection_lost(
+                                &stream_owner,
+                                &stream_id_for_task,
+                                &peer_id,
+                                &connection_id,
+                                &connection_generation,
+                            )
+                            .await;
+                        break;
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+        let mut state = self.inner.lock().await;
+        if let Some(caller_state) = state.callers.get_mut(&key) {
+            if let Some(resource) = caller_state.connection_events.get_mut(&stream_id) {
+                resource.task = Some(task);
+            } else {
+                task.abort();
+            }
+        } else {
+            task.abort();
+        }
+        Ok(object([("state", string("ready"))]))
+    }
+
+    async fn unsubscribe_connection_events(
+        &self,
+        caller: &AuthenticatedCaller,
+        payload: BTreeMap<String, IpcValue>,
+    ) -> Result<IpcValue, DispatchError> {
+        let stream_handle = required_string(
+            &payload,
+            "connectionEventsHandle",
+            "tauri.connection-events-unsubscribe-handle",
+        )?;
+        let mut state = self.inner.lock().await;
+        let caller_state = state.callers.get_mut(&caller_key(caller)).ok_or_else(|| {
+            DispatchError::new(
+                "ownership.denied",
+                "connection",
+                "tauri.connection-events-unsubscribe-owner",
+            )
+        })?;
+        if let Some(resource) = caller_state.connection_events.remove(&stream_handle) {
+            if let Some(task) = resource.task {
+                task.abort();
+            }
         }
         Ok(released())
     }
@@ -1637,6 +1885,72 @@ impl BtleplugDispatcher {
         })
     }
 
+    async fn emit_connection_lost(
+        &self,
+        caller_key: &str,
+        stream_id: &str,
+        peer_id: &str,
+        connection_id: &str,
+        connection_generation: &str,
+    ) -> Result<(), DispatchError> {
+        let event = {
+            let mut state = self.inner.lock().await;
+            let attachment = state.attachment.clone().ok_or_else(|| {
+                DispatchError::new(
+                    "lifecycle.invalid-state",
+                    "connection",
+                    "tauri.connection-events-attachment",
+                )
+            })?;
+            let caller = state.callers.get_mut(caller_key).ok_or_else(|| {
+                DispatchError::new(
+                    "ownership.denied",
+                    "connection",
+                    "tauri.connection-events-owner",
+                )
+            })?;
+            let resource = caller.connection_events.get_mut(stream_id).ok_or_else(|| {
+                DispatchError::new(
+                    "gatt.stale-handle",
+                    "connection",
+                    "tauri.connection-events-stream",
+                )
+            })?;
+            if !resource.active {
+                return Ok(());
+            }
+            resource.sequence = resource.sequence.saturating_add(1);
+            object([
+                ("kind", string("connection-lifecycle")),
+                ("schemaVersion", number(2)),
+                ("attachment", attachment_record(&attachment)),
+                ("attachmentId", string(attachment.attachment_id)),
+                ("peerId", string(peer_id)),
+                ("connectionId", string(connection_id)),
+                ("connectionGeneration", string(connection_generation)),
+                ("ownerLeaseId", string(caller.lease_id.clone())),
+                ("sequence", number(resource.sequence as i64)),
+                ("backendIngressOrdinal", IpcValue::Null),
+                ("previous", string("connected")),
+                ("current", string("lost")),
+                ("cause", string("peer-link-loss")),
+            ])
+        };
+        self.emit(caller_key, stream_id, event, false).await?;
+        self.terminal(caller_key, stream_id, "connection-lost")
+            .await
+            .ok();
+        let mut state = self.inner.lock().await;
+        if let Some(caller) = state.callers.get_mut(caller_key) {
+            if let Some(resource) = caller.connection_events.remove(stream_id) {
+                if let Some(task) = resource.task {
+                    task.abort();
+                }
+            }
+        }
+        Ok(())
+    }
+
     async fn emit_scan_peripheral(
         &self,
         stream_owner: &str,
@@ -1818,6 +2132,12 @@ impl BtleplugDispatcher {
             cancellation.cancel();
         }
         caller.operations.clear();
+        for resource in caller.connection_events.values_mut() {
+            if let Some(task) = resource.task.take() {
+                task.abort();
+            }
+        }
+        caller.connection_events.clear();
         if let Some(scan) = caller.scan.as_ref() {
             scan.task.abort();
             match self.adapter().await {

@@ -136,6 +136,24 @@ describe('Tauri v2 public manager', () => {
 
       const { command, payload } = request.envelope
       commands.push(command)
+      if (command === 'connection.events.ready') {
+        streamValue('connection-events-ipc-1', {
+          kind: 'connection-lifecycle',
+          schemaVersion: 2,
+          attachment: bootstrap().attachment,
+          attachmentId: 'tauri-attachment-1',
+          peerId: 'polar-h10',
+          connectionId: 'connection-id-1',
+          connectionGeneration: 'generation-1',
+          ownerLeaseId: 'tauri-lease-1',
+          sequence: 1,
+          backendIngressOrdinal: null,
+          previous: 'connecting',
+          current: 'connected',
+          cause: 'connected'
+        })
+        return { kind: 'route', payload: { state: 'ready' } }
+      }
       const responses = {
         'adapter.state': { state: bootstrap().attachment.adapter.state },
         'scan.start': { handle: 'scan-1' },
@@ -147,6 +165,14 @@ describe('Tauri v2 public manager', () => {
           peerId: 'polar-h10',
           connectionGeneration: 'generation-1'
         },
+        'connection.events.subscribe': {
+          handle: 'connection-events-ipc-1',
+          connectionId: 'connection-id-1',
+          connectionGeneration: 'generation-1',
+          eventSchemaVersion: 2
+        },
+        'connection.events.ready': { state: 'ready' },
+        'connection.events.unsubscribe': { state: 'released', failures: [] },
         'gatt.discover': {
           handle: 'database-1',
           databaseGeneration: 'database-generation-1',
@@ -198,6 +224,17 @@ describe('Tauri v2 public manager', () => {
 
     const connection = await manager.connect('polar-h10')
     expect(connection.connectionId).toBe('connection-id-1')
+    const lifecycle = connection.events[Symbol.asyncIterator]().next()
+    await expect(lifecycle).resolves.toMatchObject({
+      value: {
+        kind: 'value',
+        value: {
+          kind: 'connection-lifecycle',
+          current: 'connected',
+          connectionId: 'connection-id-1'
+        }
+      }
+    })
     const database = await connection.discover()
     expect(database.path.databaseGeneration).toBe('database-generation-1')
     expect(database.path.attachment.attachmentId).toBe('tauri-attachment-1')
@@ -266,6 +303,8 @@ describe('Tauri v2 public manager', () => {
       'scan.start',
       'scan.stop',
       'connection.connect',
+      'connection.events.subscribe',
+      'connection.events.ready',
       'gatt.discover',
       'gatt.read',
       'gatt.write',
@@ -273,6 +312,7 @@ describe('Tauri v2 public manager', () => {
       'gatt.descriptor.write',
       'gatt.subscribe',
       'gatt.unsubscribe',
+      'connection.events.unsubscribe',
       'connection.disconnect'
     ])
   })
