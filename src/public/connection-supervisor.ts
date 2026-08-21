@@ -521,6 +521,12 @@ class ConnectionSupervisorImpl<Session> implements ConnectionSupervisor<Session>
       await this.options.disposeSession(session)
     } catch (error) {
       this.lastError = toBleError(error)
+      const cleanup: CleanupRecord = {
+        state: 'release-failed',
+        failures: cleanupFailure('session', error, 'connection-supervisor.late-session-dispose')
+      }
+      this.lastCleanup = cleanup
+      this.transition('cleanup-failed', null, null, cleanup)
     }
   }
 

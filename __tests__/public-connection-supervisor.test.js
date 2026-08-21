@@ -230,4 +230,24 @@ describe('public connection supervisor', () => {
     await expect(configureSupervisor.stop()).resolves.toMatchObject({ state: 'released' })
     configurePending.resolve('late-session')
   })
+
+  test('retains a late configure-session disposal failure after stop finalized', async () => {
+    const configurePending = deferred()
+    const connectionValue = connection()
+    const supervisor = createConnectionSupervisor(manager(connectionValue), 'peer-late-session', {
+      retry: { initialDelayMs: 1, maximumDelayMs: 1, multiplier: 1, jitter: 0 },
+      configure: () => configurePending.promise,
+      disposeSession: async () => {
+        throw new Error('late session disposal failed')
+      }
+    })
+    supervisor.start()
+    await wait(5)
+    await expect(supervisor.stop()).resolves.toMatchObject({ state: 'released' })
+    configurePending.resolve('late-session')
+    await wait(5)
+    expect(supervisor.snapshot.state).toBe('cleanup-failed')
+    expect(supervisor.snapshot.lastError).toMatchObject({ code: 'connection.failed' })
+    expect(connectionValue.release).toHaveBeenCalled()
+  })
 })
