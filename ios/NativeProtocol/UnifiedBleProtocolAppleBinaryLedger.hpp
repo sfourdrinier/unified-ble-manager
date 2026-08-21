@@ -2,7 +2,7 @@
 
 #pragma once
 
-#include "../../native/protocol/generated/NativeProtocolV1Schema.hpp"
+#include "../../native/protocol/generated/NativeProtocolV2Schema.hpp"
 #include "../../native/protocol/include/OwnedBinaryPayloadStore.hpp"
 
 #include <cmath>
@@ -17,7 +17,7 @@
 
 namespace unified_ble::apple_protocol {
 
-using AppleBinaryReference = native_protocol::v1::OwnedBinaryReference;
+using AppleBinaryReference = native_protocol::v2::OwnedBinaryReference;
 using AppleBinaryReferenceList = std::vector<AppleBinaryReference>;
 
 inline constexpr double kMaximumJavaScriptSafeInteger = 9007199254740991.0;
@@ -27,15 +27,15 @@ inline std::optional<std::size_t> checkedAppleBinarySize(double value) {
     return std::nullopt;
   }
   const auto integer = static_cast<std::uint64_t>(value);
-  if (integer > native_protocol::v1::kMaximumBinaryPayloadBytes || integer > std::numeric_limits<std::size_t>::max()) {
+  if (integer > native_protocol::v2::kMaximumBinaryPayloadBytes || integer > std::numeric_limits<std::size_t>::max()) {
     return std::nullopt;
   }
   return static_cast<std::size_t>(integer);
 }
 
 inline bool checkedAppleBinaryRange(std::size_t offset, std::size_t length) {
-  return offset <= native_protocol::v1::kMaximumBinaryPayloadBytes &&
-      length <= native_protocol::v1::kMaximumBinaryPayloadBytes - offset;
+  return offset <= native_protocol::v2::kMaximumBinaryPayloadBytes &&
+      length <= native_protocol::v2::kMaximumBinaryPayloadBytes - offset;
 }
 
 inline bool appendAppleBinaryReference(AppleBinaryReferenceList& references, const AppleBinaryReference& reference) {
@@ -48,7 +48,7 @@ inline bool appendAppleBinaryReference(AppleBinaryReferenceList& references, con
 
 class AppleBinaryCleanupLedger final {
  public:
-  static constexpr std::size_t kMaximumReferences = 2U * native_protocol::v1::kMaximumControlRecordBytes;
+  static constexpr std::size_t kMaximumReferences = 2U * native_protocol::v2::kMaximumControlRecordBytes;
 
   bool append(const AppleBinaryReference& reference) {
     for (const auto& existing : references_) {

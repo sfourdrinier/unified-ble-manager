@@ -1,4 +1,4 @@
-import { BackendContractError, contractError, type CleanupRecord } from '../backend-contract/errors'
+import { BackendContractError, BLE_ERROR_CODES, contractError, type CleanupRecord } from '../backend-contract/errors'
 import type { BoundedAsyncStream, OverflowPolicy, StreamTerminalNotice } from '../backend-contract/streams'
 import {
   byteLimit,
@@ -169,12 +169,17 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
       null,
       options.signal
     )
+    const returnedPeerId = requiredString(payload, 'peerId', 'ipc-manager.connect')
+    const returnedOwnerLeaseId = requiredString(payload, 'ownerLeaseId', 'ipc-manager.connect')
+    if (returnedPeerId !== peerId || returnedOwnerLeaseId !== String(this.bootstrap.rendererLease.leaseId)) {
+      throw contractError('protocol.violation', 'ipc', 'ipc-manager.connect-identity')
+    }
     return new IpcConnection(
       this,
       requiredString(payload, 'handle', 'ipc-manager.connect'),
-      requiredString(payload, 'peerId', 'ipc-manager.connect'),
+      returnedPeerId,
       requiredString(payload, 'connectionId', 'ipc-manager.connect'),
-      requiredString(payload, 'ownerLeaseId', 'ipc-manager.connect'),
+      returnedOwnerLeaseId,
       requiredString(payload, 'connectionGeneration', 'ipc-manager.connect')
     )
   }
@@ -378,7 +383,7 @@ export class IpcConnection {
   async discover(options: IpcManagerOperationOptions = {}): Promise<IpcGattDatabase> {
     const payload = await this.manager.route(
       'gatt.discover',
-      Object.freeze({ connectionHandle: this.handle, deadline: operationDeadline(options) }),
+      Object.freeze({ ...this.identityPayload(), deadline: operationDeadline(options) }),
       null,
       options.signal
     )
@@ -388,7 +393,7 @@ export class IpcConnection {
   async readRssi(options: IpcManagerOperationOptions = {}): Promise<number> {
     const payload = await this.manager.route(
       'connection.rssi',
-      Object.freeze({ connectionHandle: this.handle, deadline: operationDeadline(options) }),
+      Object.freeze({ ...this.identityPayload(), deadline: operationDeadline(options) }),
       null,
       options.signal
     )
@@ -398,19 +403,27 @@ export class IpcConnection {
   async maximumWriteLength(mode: 'with-response' | 'without-response' = 'with-response'): Promise<number> {
     const payload = await this.manager.route(
       'connection.maximum-write-length',
-      Object.freeze({ connectionHandle: this.handle, mode })
+      Object.freeze({ ...this.identityPayload(), mode })
     )
     return requiredNumber(payload, 'bytes', 'ipc-manager.maximum-write-length')
   }
 
   async disconnect(): Promise<CleanupRecord> {
-    return cleanupRecord(
-      await this.manager.route('connection.disconnect', Object.freeze({ connectionHandle: this.handle }))
-    )
+    return cleanupRecord(await this.manager.route('connection.disconnect', Object.freeze(this.identityPayload())))
   }
 
   release(): Promise<CleanupRecord> {
     return this.disconnect()
+  }
+
+  private identityPayload(): SerializableRecord {
+    return Object.freeze({
+      connectionHandle: this.handle,
+      peerId: this.peerId,
+      connectionId: this.connectionId,
+      ownerLeaseId: this.ownerLeaseId,
+      connectionGeneration: this.connectionGeneration
+    })
   }
 }
 
@@ -455,7 +468,13 @@ export class IpcGattDatabase {
   ): Promise<SerializableRecord> {
     return this.manager.route(
       command,
-      Object.freeze({ databaseHandle: this.handle, ...payload }),
+      Object.freeze({
+        ...payload,
+        databaseHandle: this.handle,
+        databaseId: this.handle,
+        databaseGeneration: this.databaseGeneration,
+        ...this.connectionIdentityPayload()
+      }),
       binaryPayload,
       signal
     )
@@ -467,6 +486,17 @@ export class IpcGattDatabase {
 
   closeStream(handle: string): void {
     this.manager.closeStream(handle)
+  }
+
+  private connectionIdentityPayload(): SerializableRecord {
+    return Object.freeze({
+      connectionHandle: this.connection.handle,
+      peerId: this.connection.peerId,
+      connectionId: this.connection.connectionId,
+      ownerLeaseId: this.connection.ownerLeaseId,
+      connectionGeneration: this.connection.connectionGeneration,
+      attachmentId: this.path.attachmentId
+    })
   }
 
   get path(): PortableDatabasePath {
@@ -572,6 +602,9 @@ export class IpcGattDatabase {
   }
 
   private characteristicForPath(path: PortableCurrentCharacteristicPath): IpcCharacteristic {
+    if (!databasePathMatches(path, this.path)) {
+      throw contractError('gatt.stale-handle', 'gatt', 'ipc-manager.gatt-path-identity')
+    }
     const matches = this.characteristics.filter(
       characteristic =>
         characteristic.record.serviceUuid === path.serviceUuid &&
@@ -590,6 +623,24 @@ export class IpcGattDatabase {
     }
     return match
   }
+}
+
+function databasePathMatches(path: PortableCurrentCharacteristicPath, expected: PortableDatabasePath): boolean {
+  return (
+    path.validity === 'current' &&
+    path.attachmentId === expected.attachmentId &&
+    path.peerId === expected.peerId &&
+    path.connectionId === expected.connectionId &&
+    path.ownerLeaseId === expected.ownerLeaseId &&
+    path.connectionGeneration === expected.connectionGeneration &&
+    path.databaseId === expected.databaseId &&
+    path.databaseGeneration === expected.databaseGeneration &&
+    path.attachment.attachmentId === expected.attachment.attachmentId &&
+    path.attachment.backendInstanceId === expected.attachment.backendInstanceId &&
+    path.attachment.backendGeneration === expected.attachment.backendGeneration &&
+    path.attachment.adapter.adapterId === expected.attachment.adapter.adapterId &&
+    path.attachment.adapter.adapterGeneration === expected.attachment.adapter.adapterGeneration
+  )
 }
 
 export class IpcCharacteristic {
@@ -658,13 +709,19 @@ export class IpcDescriptor {
     return requiredBytes(payload, 'value', 'ipc-manager.descriptor-read')
   }
 
-  write(bytes: Readonly<Uint8Array>, options: IpcWriteOptions = {}): Promise<SerializableRecord> {
-    return this.database.route(
+  async write(bytes: Readonly<Uint8Array>, options: IpcWriteOptions = {}): Promise<IpcWriteReceipt> {
+    const mode = options.mode ?? 'with-response'
+    if (mode !== 'with-response') {
+      throw contractError('argument.invalid', 'gatt', 'ipc-manager.gatt-descriptor-write-mode')
+    }
+    const owned = ownBytes(bytes, byteLimit(bytes.byteLength))
+    const payload = await this.database.route(
       'gatt.descriptor.write',
-      Object.freeze({ descriptorHandle: this.record.handle, deadline: operationDeadline(options) }),
-      ownBytes(bytes, byteLimit(bytes.byteLength)),
+      Object.freeze({ descriptorHandle: this.record.handle, mode, deadline: operationDeadline(options) }),
+      owned,
       options.signal
     )
+    return requiredWriteReceipt(payload, mode, owned.byteLength)
   }
 }
 
@@ -868,9 +925,14 @@ function requiredWriteReceipt(
   const correlation = requiredString(terminal, 'correlation', 'ipc-manager.gatt-write-terminal')
   const outcome = terminal.outcome
   const cause = terminal.cause
+  const successful = outcome === 'succeeded'
+  const expectedCommitState = mode === 'with-response' ? 'confirmed' : 'accepted'
+  const knownCause = cause === null || (typeof cause === 'string' && BLE_ERROR_CODES.some(code => code === cause))
   if (
-    (outcome !== 'succeeded' && outcome !== 'failed') ||
-    (cause !== null && typeof cause !== 'string') ||
+    (!successful && outcome !== 'failed') ||
+    !knownCause ||
+    (successful ? cause !== null || commitState !== expectedCommitState : cause === null) ||
+    (!successful && commitState !== 'unknown' && commitState !== 'not-started') ||
     (mode !== 'with-response' && mode !== 'without-response') ||
     (commitState !== 'confirmed' &&
       commitState !== 'accepted' &&

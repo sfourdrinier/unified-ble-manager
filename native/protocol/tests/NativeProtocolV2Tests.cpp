@@ -1,9 +1,9 @@
-// native/protocol/tests/NativeProtocolV1Tests.cpp
+// native/protocol/tests/NativeProtocolV2Tests.cpp
 
-#include "../include/NativeProtocolV1Codec.hpp"
+#include "../include/NativeProtocolV2Codec.hpp"
 #include "../include/NativeProtocolControlRuntime.hpp"
 #include "../include/NativeRestorationConfiguration.hpp"
-#include "../include/NativeProtocolV1Registry.hpp"
+#include "../include/NativeProtocolV2Registry.hpp"
 #include "../include/OwnedBinaryPayloadStore.hpp"
 #include "../include/BoundedNativeEventBuffer.hpp"
 #include "../include/AndroidJsiEventIngressLedger.hpp"
@@ -17,9 +17,17 @@
 #include <utility>
 #include <vector>
 
-namespace protocol = unified_ble::native_protocol::v1;
+namespace protocol = unified_ble::native_protocol::v2;
 
 namespace {
+
+protocol::VersionRange nativeProtocolRange() {
+  return {.minimum = protocol::kProtocolVersion, .maximum = protocol::kProtocolVersion};
+}
+
+protocol::VersionRange abiVersionRange() {
+  return {.minimum = protocol::kAbiVersion, .maximum = protocol::kAbiVersion};
+}
 
 protocol::ProtocolField field(std::uint16_t id, protocol::ProtocolFieldValue value) {
   return {.id = id, .value = std::move(value)};
@@ -134,7 +142,7 @@ void appendInteger(std::vector<std::uint8_t>& bytes, Integer value) {
 
 std::vector<std::uint8_t> wrapNestedRecord(const std::vector<std::uint8_t>& nested) {
   std::vector<std::uint8_t> bytes{0x55U, 0x42U, 0x4EU, 0x31U};
-  appendInteger(bytes, std::uint32_t{1U});
+  appendInteger(bytes, std::uint32_t{protocol::kProtocolVersion});
   appendInteger(bytes, std::uint16_t{1U});
   appendInteger(bytes, std::uint16_t{1U});
   appendInteger(bytes, std::uint16_t{1U});
@@ -148,7 +156,7 @@ protocol::ProtocolRecord restorationRecord() {
   return {
       .kind = protocol::RecordKind::restorationRecord,
       .fields = {
-          field(1U, std::uint64_t{1U}),
+          field(1U, std::uint64_t{protocol::kProtocolVersion}),
           field(2U, std::string("approved.restoration")),
           field(3U, attachment()),
           field(4U, std::uint64_t{1U}),
@@ -172,12 +180,12 @@ void expectFailure(protocol::ProtocolFailure expected, const std::function<void(
 }
 
 void testVersionNegotiation() {
-  const auto versions = protocol::NativeProtocolV1Codec::negotiate(
-      {1U, 1U}, {1U, 1U}, {1U, 1U}, {1U, 1U}, {1U, 1U}, {1U, 1U});
-  assert(versions.nativeProtocol == 1U);
+  const auto versions = protocol::NativeProtocolV2Codec::negotiate(
+      nativeProtocolRange(), abiVersionRange(), {1U, 1U}, {1U, 1U}, {1U, 1U}, {1U, 1U});
+  assert(versions.nativeProtocol == protocol::kProtocolVersion);
   expectFailure(protocol::ProtocolFailure::incompatibleVersion, [] {
-    static_cast<void>(protocol::NativeProtocolV1Codec::negotiate(
-        {2U, 3U}, {1U, 1U}, {1U, 1U}, {1U, 1U}, {1U, 1U}, {1U, 1U}));
+    static_cast<void>(protocol::NativeProtocolV2Codec::negotiate(
+        {3U, 4U}, abiVersionRange(), {1U, 1U}, {1U, 1U}, {1U, 1U}, {1U, 1U}));
   });
 }
 
@@ -310,11 +318,11 @@ void testAndroidJsiTerminalSettlementWaitsForSinkAcceptance() {
 }
 
 void testRoundTripAndAdversarialRecords() {
-  protocol::NativeProtocolV1Codec codec;
+  protocol::NativeProtocolV2Codec codec;
   const protocol::ProtocolRecord command{
       .kind = protocol::RecordKind::command,
       .fields = {
-          field(1U, std::uint64_t{1U}),
+          field(1U, std::uint64_t{protocol::kProtocolVersion}),
           field(2U, correlation(1U)),
           field(3U, std::string("write")),
           field(4U, characteristic("characteristic-occurrence-1")),
@@ -338,7 +346,7 @@ void testRoundTripAndAdversarialRecords() {
       },
   };
   const std::vector<std::uint8_t> goldenBytes{
-      0x55U, 0x42U, 0x4EU, 0x31U, 0x01U, 0x00U, 0x00U, 0x00U, 0x01U, 0x00U, 0x05U, 0x00U,
+      0x55U, 0x42U, 0x4EU, 0x31U, 0x02U, 0x00U, 0x00U, 0x00U, 0x01U, 0x00U, 0x05U, 0x00U,
       0x01U, 0x00U, 0x04U, 0x05U, 0x00U, 0x00U, 0x00U, 0x01U, 0x00U, 0x00U, 0x00U, 0x61U,
       0x02U, 0x00U, 0x04U, 0x05U, 0x00U, 0x00U, 0x00U, 0x01U, 0x00U, 0x00U, 0x00U, 0x62U,
       0x03U, 0x00U, 0x04U, 0x05U, 0x00U, 0x00U, 0x00U, 0x01U, 0x00U, 0x00U, 0x00U, 0x63U,
@@ -353,7 +361,7 @@ void testRoundTripAndAdversarialRecords() {
     static_cast<void>(codec.decode(truncated));
   });
   auto wrongVersion = encoded;
-  wrongVersion[4] = 2U;
+  wrongVersion[4] = 1U;
   expectFailure(protocol::ProtocolFailure::incompatibleVersion, [&] {
     static_cast<void>(codec.decode(wrongVersion));
   });
@@ -367,13 +375,13 @@ void testRoundTripAndAdversarialRecords() {
   invalidEnum.fields[2U] = field(3U, std::string("legacyNumericHandleRead"));
   expectFailure(protocol::ProtocolFailure::invalidEnumValue, [&] { codec.validate(invalidEnum); });
   auto incompatiblePayloadVersion = command;
-  incompatiblePayloadVersion.fields[0U] = field(1U, std::uint64_t{2U});
+  incompatiblePayloadVersion.fields[0U] = field(1U, std::uint64_t{1U});
   expectFailure(protocol::ProtocolFailure::incompatibleVersion, [&] {
     codec.validate(incompatiblePayloadVersion);
   });
 
   std::vector<std::uint8_t> nested{
-      0x55U, 0x42U, 0x4EU, 0x31U, 0x01U, 0x00U, 0x00U, 0x00U, 0x01U, 0x00U, 0x00U, 0x00U,
+      0x55U, 0x42U, 0x4EU, 0x31U, 0x02U, 0x00U, 0x00U, 0x00U, 0x01U, 0x00U, 0x00U, 0x00U,
   };
   for (std::size_t depth = 0U; depth < 18U; depth += 1U) {
     nested = wrapNestedRecord(nested);
@@ -385,7 +393,7 @@ void testRoundTripAndAdversarialRecords() {
   const protocol::ProtocolRecord staleCommand{
       .kind = protocol::RecordKind::command,
       .fields = {
-          field(1U, std::uint64_t{1U}),
+          field(1U, std::uint64_t{protocol::kProtocolVersion}),
           field(2U, correlation(2U)),
           field(3U, std::string("read")),
           field(
@@ -406,7 +414,7 @@ void testRoundTripAndAdversarialRecords() {
 }
 
 void testTerminalAndRichAdvertisementParity() {
-  protocol::NativeProtocolV1Codec codec;
+  protocol::NativeProtocolV2Codec codec;
   const auto serviceData = std::make_shared<protocol::ProtocolRecord>(protocol::ProtocolRecord{
       .kind = protocol::RecordKind::serviceDataEntry,
       .fields = {
@@ -449,7 +457,7 @@ void testTerminalAndRichAdvertisementParity() {
   const protocol::ProtocolRecord readResult{
       .kind = protocol::RecordKind::result,
       .fields = {
-          field(1U, std::uint64_t{1U}),
+          field(1U, std::uint64_t{protocol::kProtocolVersion}),
           field(2U, std::string("read")),
           field(3U, std::make_shared<protocol::ProtocolRecord>(terminal(4U, "succeeded"))),
           field(5U, characteristic("read-result-occurrence")),
@@ -459,7 +467,7 @@ void testTerminalAndRichAdvertisementParity() {
   const protocol::ProtocolRecord unsubscribeResult{
       .kind = protocol::RecordKind::result,
       .fields = {
-          field(1U, std::uint64_t{1U}),
+          field(1U, std::uint64_t{protocol::kProtocolVersion}),
           field(2U, std::string("unsubscribed")),
           field(3U, std::make_shared<protocol::ProtocolRecord>(terminal(5U, "succeeded"))),
           field(5U, characteristic("unsubscribe-result-occurrence")),
@@ -534,7 +542,7 @@ void testBinaryOwnership() {
 }
 
 void testTypedAdapterStateEvent() {
-  protocol::NativeProtocolV1Codec codec;
+  protocol::NativeProtocolV2Codec codec;
   const auto adapterState = std::make_shared<protocol::ProtocolRecord>(protocol::ProtocolRecord{
       .kind = protocol::RecordKind::adapterStateSnapshot,
       .fields = {
@@ -546,7 +554,7 @@ void testTypedAdapterStateEvent() {
   const protocol::ProtocolRecord event{
       .kind = protocol::RecordKind::event,
       .fields = {
-          field(1U, std::uint64_t{1U}),
+          field(1U, std::uint64_t{protocol::kProtocolVersion}),
           field(2U, std::string("adapter-state-event-1")),
           field(3U, std::string("adapterState")),
           field(4U, attachment()),
@@ -606,8 +614,8 @@ void testCancellationAndRestorationExactlyOnce() {
       .attachmentId = "attachment-1",
       .expectedBackendInstanceId = "backend-1",
       .expectedEpoch = "restoration-epoch-1",
-      .nativeProtocolMinimum = 1U,
-      .nativeProtocolMaximum = 1U,
+      .nativeProtocolMinimum = protocol::kProtocolVersion,
+      .nativeProtocolMaximum = protocol::kProtocolVersion,
       .clientId = "client-1",
       .hostSessionScope = "host-session-1",
   };
@@ -694,15 +702,14 @@ void testRestorationBootstrapRollbackSupportsHandshakeRetry() {
       .adoptionEpoch = "restoration-epoch-rollback",
       .authorizedClientId = "client-rollback",
       .authorizedHostSessionScope = "host-session-rollback",
-      .nativeProtocol = {.minimum = 1U, .maximum = 1U},
+      .nativeProtocol = nativeProtocolRange(),
   };
   protocol::NativeProtocolControlRuntime runtime;
   const auto handshake = [&] {
     static_cast<void>(runtime.handshake(
         identity,
         "owner-rollback",
-        {1U, 1U},
-        {1U, 1U},
+        nativeProtocolRange(), abiVersionRange(),
         {1U, 1U},
         {1U, 1U},
         {1U, 1U},
@@ -744,8 +751,8 @@ void testRestorationBootstrapRollbackSupportsHandshakeRetry() {
       .attachmentId = identity.attachmentId,
       .expectedBackendInstanceId = identity.backendInstanceId,
       .expectedEpoch = authority.adoptionEpoch,
-      .nativeProtocolMinimum = 1U,
-      .nativeProtocolMaximum = 1U,
+      .nativeProtocolMinimum = protocol::kProtocolVersion,
+      .nativeProtocolMaximum = protocol::kProtocolVersion,
       .clientId = authority.authorizedClientId,
       .hostSessionScope = authority.authorizedHostSessionScope,
   });
@@ -769,8 +776,7 @@ void testOperationCapacityRejectsBeforeCommandBinaryCopyAndCallerRelease() {
   static_cast<void>(runtime.handshake(
       identity,
       "owner-1",
-      {1U, 1U},
-      {1U, 1U},
+      nativeProtocolRange(), abiVersionRange(),
       {1U, 1U},
       {1U, 1U},
       {1U, 1U},
@@ -780,7 +786,7 @@ void testOperationCapacityRejectsBeforeCommandBinaryCopyAndCallerRelease() {
     runtime.registerCommand(
         {.kind = protocol::RecordKind::command,
          .fields = {
-             field(1U, std::uint64_t{1U}),
+             field(1U, std::uint64_t{protocol::kProtocolVersion}),
              field(2U, correlation(epoch)),
              field(3U, std::string("read")),
              field(4U, characteristic("characteristic-occurrence-1")),
@@ -793,7 +799,7 @@ void testOperationCapacityRejectsBeforeCommandBinaryCopyAndCallerRelease() {
     runtime.registerCommand(
         {.kind = protocol::RecordKind::command,
          .fields = {
-             field(1U, std::uint64_t{1U}),
+             field(1U, std::uint64_t{protocol::kProtocolVersion}),
              field(2U, correlation(1025U)),
              field(3U, std::string("write")),
              field(4U, characteristic("characteristic-occurrence-1")),
@@ -822,8 +828,7 @@ void testRejectedAndroidDispatchReleasesRegisteredCommandBinary() {
   static_cast<void>(runtime.handshake(
       identity,
       "owner-1",
-      {1U, 1U},
-      {1U, 1U},
+      nativeProtocolRange(), abiVersionRange(),
       {1U, 1U},
       {1U, 1U},
       {1U, 1U},
@@ -832,7 +837,7 @@ void testRejectedAndroidDispatchReleasesRegisteredCommandBinary() {
   const protocol::ProtocolRecord command{
       .kind = protocol::RecordKind::command,
       .fields = {
-          field(1U, std::uint64_t{1U}),
+          field(1U, std::uint64_t{protocol::kProtocolVersion}),
           field(2U, correlation(1U)),
           field(3U, std::string("write")),
           field(4U, characteristic("characteristic-occurrence-1")),
@@ -852,7 +857,7 @@ void testRejectedAndroidDispatchReleasesRegisteredCommandBinary() {
   const protocol::ProtocolRecord scanCommand{
       .kind = protocol::RecordKind::command,
       .fields = {
-          field(1U, std::uint64_t{1U}),
+          field(1U, std::uint64_t{protocol::kProtocolVersion}),
           field(2U, correlation(2U)),
           field(3U, std::string("scanStart")),
           field(12U, std::make_shared<protocol::ProtocolRecord>(protocol::ProtocolRecord{
@@ -892,10 +897,10 @@ void testActiveScanOwnerReleasesOnlyAfterPhysicalTeardown() {
   };
   protocol::NativeProtocolControlRuntime runtime;
   static_cast<void>(runtime.handshake(
-      identity, "owner-1", {1U, 1U}, {1U, 1U}, {1U, 1U}, {1U, 1U}, {1U, 1U}, {1U, 1U}));
+      identity, "owner-1", nativeProtocolRange(), abiVersionRange(), {1U, 1U}, {1U, 1U}, {1U, 1U}, {1U, 1U}));
   const auto scanCommand = [](std::uint64_t epoch, const std::string& kind) {
     std::vector<protocol::ProtocolField> fields{
-        field(1U, std::uint64_t{1U}),
+        field(1U, std::uint64_t{protocol::kProtocolVersion}),
         field(2U, correlation(epoch)),
         field(3U, kind),
     };
@@ -918,7 +923,7 @@ void testActiveScanOwnerReleasesOnlyAfterPhysicalTeardown() {
   };
   const auto result = [](std::uint64_t epoch, const std::string& kind, const std::string& outcome) {
     std::vector<protocol::ProtocolField> fields{
-        field(1U, std::uint64_t{1U}),
+        field(1U, std::uint64_t{protocol::kProtocolVersion}),
         field(2U, kind),
         field(3U, std::make_shared<protocol::ProtocolRecord>(terminal(epoch, outcome, outcome == "failed" ? "cancelled" : ""))),
     };
@@ -987,11 +992,11 @@ void testPendingSubscriptionRoutingAndLateOutputRelease() {
   };
   protocol::NativeProtocolControlRuntime runtime;
   static_cast<void>(runtime.handshake(
-      identity, "owner-1", {1U, 1U}, {1U, 1U}, {1U, 1U}, {1U, 1U}, {1U, 1U}, {1U, 1U}));
+      identity, "owner-1", nativeProtocolRange(), abiVersionRange(), {1U, 1U}, {1U, 1U}, {1U, 1U}, {1U, 1U}));
   const protocol::ProtocolRecord command{
       .kind = protocol::RecordKind::command,
       .fields = {
-          field(1U, std::uint64_t{1U}), field(2U, correlation(1U)), field(3U, std::string("subscribe")),
+          field(1U, std::uint64_t{protocol::kProtocolVersion}), field(2U, correlation(1U)), field(3U, std::string("subscribe")),
           field(4U, characteristic("pending-subscription")), field(7U, std::string("subscription-pending")),
       },
   };
@@ -1003,7 +1008,7 @@ void testPendingSubscriptionRoutingAndLateOutputRelease() {
   const protocol::ProtocolRecord result{
       .kind = protocol::RecordKind::result,
       .fields = {
-          field(1U, std::uint64_t{1U}), field(2U, std::string("subscribed")),
+          field(1U, std::uint64_t{protocol::kProtocolVersion}), field(2U, std::string("subscribed")),
           field(3U, std::make_shared<protocol::ProtocolRecord>(terminal(1U, "succeeded"))), field(5U, characteristic("pending-subscription")),
           field(7U, std::string("subscription-pending")),
       },
@@ -1029,8 +1034,7 @@ void testRuntimeRestorationAuthorityAppendAndAdoption() {
   static_cast<void>(runtime.handshake(
       identity,
       "owner-1",
-      {1U, 1U},
-      {1U, 1U},
+      nativeProtocolRange(), abiVersionRange(),
       {1U, 1U},
       {1U, 1U},
       {1U, 1U},
@@ -1042,7 +1046,7 @@ void testRuntimeRestorationAuthorityAppendAndAdoption() {
       .adoptionEpoch = "restoration-epoch-1",
       .authorizedClientId = "client-1",
       .authorizedHostSessionScope = "host-session-1",
-      .nativeProtocol = {.minimum = 1U, .maximum = 1U},
+      .nativeProtocol = nativeProtocolRange(),
   };
   runtime.appendRestorationRecord(authority, restorationRecord());
 
@@ -1062,8 +1066,8 @@ void testRuntimeRestorationAuthorityAppendAndAdoption() {
       .attachmentId = "attachment-1",
       .expectedBackendInstanceId = "backend-1",
       .expectedEpoch = "restoration-epoch-1",
-      .nativeProtocolMinimum = 1U,
-      .nativeProtocolMaximum = 1U,
+      .nativeProtocolMinimum = protocol::kProtocolVersion,
+      .nativeProtocolMaximum = protocol::kProtocolVersion,
       .clientId = "client-1",
       .hostSessionScope = "host-session-1",
   };

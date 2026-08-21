@@ -12,7 +12,7 @@ class FakeChannel {
 }
 
 function negotiated(axis) {
-  const selected = { axis, value: 1 }
+  const selected = { axis, value: axis === 'ipc-protocol' ? 2 : 1 }
   const range = { axis, minimum: selected, maximum: selected }
   return { axis, selected, localRange: range, remoteRange: range }
 }
@@ -113,7 +113,9 @@ describe('Tauri v2 public manager', () => {
               properties: ['notify', 'read']
             }
           ],
-          descriptors: []
+          descriptors: [
+            { handle: 'descriptor-1', characteristicHandle: 'characteristic-1', uuid: '2902', occurrence: '0' }
+          ]
         },
         'gatt.read': { value: { $__unifiedBleBytesV2: [1, 2, 3] } },
         'gatt.write': {
@@ -121,6 +123,12 @@ describe('Tauri v2 public manager', () => {
           mode: 'with-response',
           commitState: 'confirmed',
           bytesSubmitted: 2
+        },
+        'gatt.descriptor.write': {
+          terminal: { correlation: 'descriptor-write-operation-1', outcome: 'succeeded', cause: null },
+          mode: 'with-response',
+          commitState: 'confirmed',
+          bytesSubmitted: 1
         },
         'gatt.subscribe': { handle: 'subscription-1' },
         'gatt.unsubscribe': { state: 'released', failures: [] },
@@ -156,6 +164,14 @@ describe('Tauri v2 public manager', () => {
       bytesSubmitted: 2
     })
     const snapshot = await database.snapshot()
+    const foreignPath = { ...snapshot.characteristics[0].path, databaseId: 'database-from-another-connection' }
+    await expect(database.write(foreignPath, new Uint8Array([4, 5]), { mode: 'with-response' })).rejects.toMatchObject({
+      normalized: { code: 'gatt.stale-handle' }
+    })
+    const stalePath = { ...snapshot.characteristics[0].path, validity: 'stale' }
+    await expect(database.write(stalePath, new Uint8Array([4, 5]), { mode: 'with-response' })).rejects.toMatchObject({
+      normalized: { code: 'gatt.stale-handle' }
+    })
     await expect(
       database.write(snapshot.characteristics[0].path, new Uint8Array([4, 5]), { mode: 'with-response' })
     ).resolves.toMatchObject({
@@ -163,6 +179,21 @@ describe('Tauri v2 public manager', () => {
       mode: 'with-response',
       commitState: 'confirmed',
       bytesSubmitted: 2
+    })
+    const gattWriteRequest = invoke.mock.calls.find(([, args]) => args.request.envelope?.command === 'gatt.write')
+    expect(gattWriteRequest?.[1].request.envelope.payload).toMatchObject({
+      databaseId: 'database-1',
+      databaseGeneration: 'database-generation-1',
+      connectionId: 'connection-id-1',
+      ownerLeaseId: 'tauri-lease-1',
+      connectionGeneration: 'generation-1',
+      peerId: 'polar-h10'
+    })
+    await expect(database.descriptors[0].write(new Uint8Array([1]))).resolves.toMatchObject({
+      terminal: { correlation: 'descriptor-write-operation-1', outcome: 'succeeded', cause: null },
+      mode: 'with-response',
+      commitState: 'confirmed',
+      bytesSubmitted: 1
     })
 
     const subscription = await characteristic.subscribe()
@@ -192,6 +223,7 @@ describe('Tauri v2 public manager', () => {
       'gatt.read',
       'gatt.write',
       'gatt.write',
+      'gatt.descriptor.write',
       'gatt.subscribe',
       'gatt.unsubscribe',
       'connection.disconnect'
@@ -225,6 +257,93 @@ describe('Tauri v2 public manager', () => {
       operation: 'tauri.connect',
       recovery: { actions: [{ kind: 'reconnect' }] }
     })
+    await manager.destroy()
+  })
+
+  test('rejects contradictory write receipt outcomes before exposing them', async () => {
+    const invoke = jest.fn(async (_command, args) => {
+      const request = args.request
+      if (request.kind === 'bootstrap') return { kind: 'bootstrap', bootstrap: bootstrap() }
+      if (request.kind === 'event.ack') return { kind: 'event.ack' }
+      if (request.kind === 'release') return { kind: 'release', cleanup: { state: 'released', failures: [] } }
+      const { command } = request.envelope
+      if (command === 'connection.connect') {
+        return {
+          kind: 'route',
+          payload: {
+            handle: 'connection-receipt',
+            connectionId: 'connection-id-receipt',
+            ownerLeaseId: 'tauri-lease-1',
+            peerId: 'polar-h10',
+            connectionGeneration: 'generation-receipt'
+          }
+        }
+      }
+      if (command === 'gatt.discover') {
+        return {
+          kind: 'route',
+          payload: {
+            handle: 'database-receipt',
+            databaseGeneration: 'database-generation-receipt',
+            characteristics: [
+              {
+                handle: 'characteristic-receipt',
+                serviceUuid: '180d',
+                serviceOccurrence: '0',
+                characteristicUuid: '2a37',
+                characteristicOccurrence: '0',
+                properties: ['write']
+              }
+            ],
+            descriptors: []
+          }
+        }
+      }
+      if (command === 'gatt.write') {
+        return {
+          kind: 'route',
+          payload: {
+            terminal: { correlation: 'write-operation-contradictory', outcome: 'succeeded', cause: 'gatt.write-failed' },
+            mode: 'with-response',
+            commitState: 'confirmed',
+            bytesSubmitted: 1
+          }
+        }
+      }
+      return { kind: 'route', payload: { state: 'released', failures: [] } }
+    })
+    const { createTauriBleManagerWithEnvironment } = require('../src/tauri')
+    const manager = await createTauriBleManagerWithEnvironment({ invoke, Channel: FakeChannel })
+    const database = await (await manager.connect('polar-h10')).discover()
+    const snapshot = await database.snapshot()
+
+    await expect(
+      database.write(snapshot.characteristics[0].path, new Uint8Array([1]), { mode: 'with-response' })
+    ).rejects.toMatchObject({ normalized: { code: 'protocol.malformed' } })
+    await manager.destroy()
+  })
+
+  test('rejects connect identities that do not match the request or renderer lease', async () => {
+    const invoke = jest.fn(async (_command, args) => {
+      const request = args.request
+      if (request.kind === 'bootstrap') return { kind: 'bootstrap', bootstrap: bootstrap() }
+      if (request.kind === 'event.ack') return { kind: 'event.ack' }
+      if (request.kind === 'release') return { kind: 'release', cleanup: { state: 'released', failures: [] } }
+      return {
+        kind: 'route',
+        payload: {
+          handle: 'connection-identity',
+          connectionId: 'connection-id-identity',
+          ownerLeaseId: 'foreign-lease',
+          peerId: 'different-peer',
+          connectionGeneration: 'generation-identity'
+        }
+      }
+    })
+    const { createTauriBleManagerWithEnvironment } = require('../src/tauri')
+    const manager = await createTauriBleManagerWithEnvironment({ invoke, Channel: FakeChannel })
+
+    await expect(manager.connect('polar-h10')).rejects.toMatchObject({ code: 'protocol.violation' })
     await manager.destroy()
   })
 
@@ -438,7 +557,7 @@ describe('Tauri v2 public manager', () => {
     ).rejects.toMatchObject({ normalized: { code: 'protocol.malformed' } })
 
     const outOfRangeVersionBootstrap = bootstrap()
-    outOfRangeVersionBootstrap.versions.ipcProtocol.selected = { axis: 'ipc-protocol', value: 2 }
+    outOfRangeVersionBootstrap.versions.ipcProtocol.selected = { axis: 'ipc-protocol', value: 3 }
     const outOfRangeVersionInvoke = jest.fn(async () => ({ kind: 'bootstrap', bootstrap: outOfRangeVersionBootstrap }))
     await expect(
       createTauriBleManagerWithEnvironment({ invoke: outOfRangeVersionInvoke, Channel: FakeChannel })

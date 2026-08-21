@@ -485,7 +485,7 @@ limit is declared. Output larger than an advertised limit is a backend protocol
 failure and invalidates the affected attachment.
 
 For React Native, a negotiated metadata-only control module installs the one
-`__unifiedBleNativeProtocolV1` JSI owner. Its retain operation copies the exact
+`__unifiedBleNativeProtocolV2` JSI owner. Its retain operation copies the exact
 `Uint8Array` view before asynchronous use; copy returns an independent
 `Uint8Array`; release is explicit; and attachment close invalidates the owner.
 The installer, its control result, and normal event metadata never carry byte

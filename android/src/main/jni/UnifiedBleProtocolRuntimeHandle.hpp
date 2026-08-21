@@ -8,5 +8,5 @@
 
 #include <memory>
 
-std::weak_ptr<unified_ble::native_protocol::v1::NativeProtocolControlRuntime>
+std::weak_ptr<unified_ble::native_protocol::v2::NativeProtocolControlRuntime>
 unifiedBleProtocolRuntimeLease(jlong handle);

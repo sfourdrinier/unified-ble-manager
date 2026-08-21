@@ -21,10 +21,12 @@ import {
   capacity,
   deadline,
   negotiateVersion,
+  negotiateCoreVersions,
   opaqueId,
   ownBytes,
   version,
   versionRange,
+  type IpcCompatibilityOffer,
   type IpcVersionAxes,
   type OwnedBytes,
   type SerializableRecord,
@@ -145,7 +147,7 @@ export class ElectronMainBleRouter {
       createEvent: (rendererLease, streamId, item) => this.event(rendererLease, streamId, item)
     })
     const attachment = this.manager.attachedBackend.attachment.attachment
-    const versions = createElectronIpcVersionAxes(this.manager.identity.versions)
+    const versions = createElectronHostIpcVersionAxes(this.manager.identity.versions)
     this.arbiter = new ElectronMainArbiterContext(
       {
         attachment,
@@ -169,11 +171,12 @@ export class ElectronMainBleRouter {
   ): Promise<ElectronBleIpcSuccessResponse<string, Renderer>> {
     if (request.kind === 'bootstrap') {
       const renderer = rendererIdentity(sender)
-      const rendererLease = this.arbiter.registerRenderer(renderer)
+      const versions = createElectronIpcVersionAxes(this.manager.identity.versions, request.offer)
+      const rendererLease = this.arbiter.registerRenderer(renderer, versions)
       this.resourcesFor(rendererLease)
       return {
         kind: 'bootstrap',
-        bootstrap: this.bootstrap(renderer, rendererLease)
+        bootstrap: this.bootstrap(renderer, rendererLease, versions)
       }
     }
     if (request.kind === 'route') {
@@ -268,13 +271,14 @@ export class ElectronMainBleRouter {
 
   private bootstrap<Renderer extends string>(
     renderer: RendererIdentity<string, Renderer>,
-    rendererLease: RendererLeaseIdentity
+    rendererLease: RendererLeaseIdentity,
+    versions: IpcVersionAxes
   ): ElectronRendererBootstrap<string, Renderer> {
     const attachment = this.manager.attachedBackend.attachment.attachment
     return Object.freeze({
       attachment,
       attachmentId: attachment.attachmentId,
-      versions: createElectronIpcVersionAxes(this.manager.identity.versions),
+      versions,
       renderer,
       rendererLease
     })
@@ -938,15 +942,47 @@ export class ElectronMainBleRouter {
   }
 }
 
-export function createElectronIpcVersionAxes(core: HostNeutralBackendIdentity<string>['versions']): IpcVersionAxes {
+function createElectronHostIpcVersionAxes(core: HostNeutralBackendIdentity<string>['versions']): IpcVersionAxes {
+  const coreOffer = coreCompatibilityOffer(core)
   const ipcOffer = versionRange(version('ipc-protocol', 2), version('ipc-protocol', 2))
   return Object.freeze({
-    backendContract: core.backendContract,
-    capabilitySchema: core.capabilitySchema,
-    eventSchema: core.eventSchema,
-    traceFormat: core.traceFormat,
+    ...negotiateCoreVersions(coreOffer, coreOffer),
     ipcProtocol: negotiateVersion(ipcOffer, ipcOffer)
   })
+}
+
+export function createElectronIpcVersionAxes(
+  core: HostNeutralBackendIdentity<string>['versions'],
+  remoteOffer: IpcCompatibilityOffer
+): IpcVersionAxes {
+  const coreOffer = coreCompatibilityOffer(core)
+  const ipcOffer = versionRange(version('ipc-protocol', 2), version('ipc-protocol', 2))
+  return Object.freeze({
+    ...negotiateCoreVersions(coreOffer, remoteOffer),
+    ipcProtocol: negotiateVersion(ipcOffer, remoteOffer.ipcProtocol)
+  })
+}
+
+function coreCompatibilityOffer(core: HostNeutralBackendIdentity<string>['versions']): IpcCompatibilityOffer {
+  return {
+    backendContract: versionRange(
+      version('backend-contract', core.backendContract.selected.value),
+      version('backend-contract', core.backendContract.selected.value)
+    ),
+    capabilitySchema: versionRange(
+      version('capability-schema', core.capabilitySchema.selected.value),
+      version('capability-schema', core.capabilitySchema.selected.value)
+    ),
+    eventSchema: versionRange(
+      version('event-schema', core.eventSchema.selected.value),
+      version('event-schema', core.eventSchema.selected.value)
+    ),
+    traceFormat: versionRange(
+      version('trace-format', core.traceFormat.selected.value),
+      version('trace-format', core.traceFormat.selected.value)
+    ),
+    ipcProtocol: versionRange(version('ipc-protocol', 2), version('ipc-protocol', 2))
+  }
 }
 
 function rendererIdentity<Renderer extends string>(

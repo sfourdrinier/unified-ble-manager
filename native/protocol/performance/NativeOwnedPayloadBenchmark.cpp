@@ -13,8 +13,8 @@
 
 namespace {
 
-using unified_ble::native_protocol::v1::BorrowedByteView;
-using unified_ble::native_protocol::v1::OwnedBinaryPayloadStore;
+using unified_ble::native_protocol::v2::BorrowedByteView;
+using unified_ble::native_protocol::v2::OwnedBinaryPayloadStore;
 
 constexpr std::size_t kSampleCount = 9U;
 constexpr std::size_t kTargetBytesPerSample = 4U * 1024U * 1024U;

@@ -22,7 +22,7 @@ const internalTypeOnlySourceFiles = Object.freeze([])
 /** Exact private runtime modules required by the public React Native host entrypoint. */
 const internalRuntimeSourceFiles = Object.freeze([
   'NativeUnifiedBleProtocolControl.ts',
-  'native-protocol/generated/native-protocol-v1-schema.ts',
+  'native-protocol/generated/native-protocol-v2-schema.ts',
   'native-protocol/rn-apple-boundary.ts',
   'native-protocol/rn-android-boundary.ts',
   'native-protocol/rn-android-protocol-records.ts',
@@ -30,7 +30,7 @@ const internalRuntimeSourceFiles = Object.freeze([
   'react-native-manager.ts',
   'react-native-app-manager.ts',
   'node-host-manager.ts',
-  'native-protocol/v1-codec.ts'
+  'native-protocol/v2-codec.ts'
 ])
 
 const publicProfileSourceFiles = Object.freeze([
@@ -515,19 +515,19 @@ function verifyRootTarball(tarballPath) {
   }
   const requiredNativeInputs = [
     'package/native/protocol/CMakeLists.txt',
-    'package/native/protocol/generated/NativeProtocolV1Schema.hpp',
-    'package/native/protocol/include/NativeProtocolV1Codec.hpp',
-    'package/native/protocol/include/NativeProtocolV1Registry.hpp',
+    'package/native/protocol/generated/NativeProtocolV2Schema.hpp',
+    'package/native/protocol/include/NativeProtocolV2Codec.hpp',
+    'package/native/protocol/include/NativeProtocolV2Registry.hpp',
     'package/native/protocol/include/OwnedBinaryPayloadStore.hpp',
     'package/native/protocol/include/OwnedJsiBinaryTransport.hpp',
-    'package/native/protocol/schema/native-protocol-v1.json',
-    'package/native/protocol/src/NativeProtocolV1Codec.cpp',
-    'package/native/protocol/src/NativeProtocolV1Registry.cpp',
+    'package/native/protocol/schema/native-protocol-v2.json',
+    'package/native/protocol/src/NativeProtocolV2Codec.cpp',
+    'package/native/protocol/src/NativeProtocolV2Registry.cpp',
     'package/native/protocol/src/OwnedBinaryPayloadStore.cpp',
     'package/native/protocol/src/OwnedJsiBinaryTransport.cpp',
     'package/android/src/main/jni/CMakeLists.txt',
-    'package/android/src/main/java/com/sfourdrinier/unifiedblemanager/protocol/generated/NativeProtocolV1Schema.kt',
-    'package/ios/Generated/NativeProtocolV1Schema.swift'
+    'package/android/src/main/java/com/sfourdrinier/unifiedblemanager/protocol/generated/NativeProtocolV2Schema.kt',
+    'package/ios/Generated/NativeProtocolV2Schema.swift'
   ]
   for (const requiredInput of requiredNativeInputs) {
     if (!files.has(requiredInput)) {

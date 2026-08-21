@@ -22,7 +22,7 @@ const internalTypeOnlySourceFiles = Object.freeze([])
 /** Exact private runtime modules needed by the public React Native host entrypoint. */
 const internalRuntimeSourceFiles = Object.freeze([
   'NativeUnifiedBleProtocolControl.ts',
-  'native-protocol/generated/native-protocol-v1-schema.ts',
+  'native-protocol/generated/native-protocol-v2-schema.ts',
   'native-protocol/rn-apple-boundary.ts',
   'native-protocol/rn-android-boundary.ts',
   'native-protocol/rn-android-protocol-records.ts',
@@ -30,7 +30,7 @@ const internalRuntimeSourceFiles = Object.freeze([
   'react-native-manager.ts',
   'react-native-app-manager.ts',
   'node-host-manager.ts',
-  'native-protocol/v1-codec.ts'
+  'native-protocol/v2-codec.ts'
 ])
 
 const publicProfileSourceFiles = Object.freeze([

@@ -1,13 +1,13 @@
-// native/protocol/src/NativeProtocolV1Registry.cpp
+// native/protocol/src/NativeProtocolV2Registry.cpp
 
-#include "../include/NativeProtocolV1Registry.hpp"
+#include "../include/NativeProtocolV2Registry.hpp"
 
 #include <algorithm>
 #include <atomic>
 #include <limits>
 #include <utility>
 
-namespace unified_ble::native_protocol::v1 {
+namespace unified_ble::native_protocol::v2 {
 
 namespace {
 
@@ -314,7 +314,7 @@ RestorationAdoptionReceipt NativeRestorationJournal::adopt(
         .records = {},
     };
   }
-  static_cast<void>(NativeProtocolV1Codec::negotiate(
+  static_cast<void>(NativeProtocolV2Codec::negotiate(
       {request.nativeProtocolMinimum, request.nativeProtocolMaximum},
       {kAbiVersion, kAbiVersion},
       {1U, 1U},
@@ -354,4 +354,4 @@ std::size_t NativeRestorationJournal::size() const {
   return records_.size();
 }
 
-} // namespace unified_ble::native_protocol::v1
+} // namespace unified_ble::native_protocol::v2

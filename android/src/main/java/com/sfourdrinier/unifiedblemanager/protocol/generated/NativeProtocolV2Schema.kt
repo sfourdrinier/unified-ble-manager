@@ -1,9 +1,9 @@
-// android/src/main/java/com/sfourdrinier/unifiedblemanager/protocol/generated/NativeProtocolV1Schema.kt
+// android/src/main/java/com/sfourdrinier/unifiedblemanager/protocol/generated/NativeProtocolV2Schema.kt
 
 package com.sfourdrinier.unifiedblemanager.protocol.generated
 
-const val NATIVE_PROTOCOL_VERSION: Int = 1
-const val NATIVE_PROTOCOL_ABI_VERSION: Int = 1
+const val NATIVE_PROTOCOL_VERSION: Int = 2
+const val NATIVE_PROTOCOL_ABI_VERSION: Int = 2
 const val MAXIMUM_CONTROL_RECORD_BYTES: Int = 262144
 const val MAXIMUM_BINARY_PAYLOAD_BYTES: Int = 524288
 

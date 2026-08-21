@@ -14,7 +14,7 @@ const { CoreTraceRecorder } = require(path.join(root, 'lib/commonjs/core/trace-r
 const {
   decodeNativeProtocolRecord,
   encodeNativeProtocolRecord
-} = require(path.join(root, 'lib/commonjs/native-protocol/v1-codec.js'))
+} = require(path.join(root, 'lib/commonjs/native-protocol/v2-codec.js'))
 
 const maximumIterations = 65_536
 const minimumSamples = 3

@@ -8,8 +8,11 @@ import type {
   AttachmentId,
   IpcOperationCorrelation,
   IpcVersionAxes,
+  IpcCompatibilityOffer,
+  ProtocolAxis,
   SerializableRecord
 } from '../backend-contract/primitives'
+import { version, versionRange } from '../backend-contract/primitives'
 import type { AttachmentRecord } from '../backend-contract/identity'
 
 /** The one versioned request channel exposed by a host application's narrow preload bridge. */
@@ -20,6 +23,20 @@ export const IPC_CONNECTION_LIFECYCLE_EVENT_SCHEMA_VERSION = 2
 
 /** Client-originated lifecycle stream identifiers occupy a reserved namespace. */
 export const IPC_CONNECTION_EVENTS_STREAM_HANDLE_PREFIX = 'connection-events-'
+
+function singletonVersionRange<Axis extends ProtocolAxis>(axis: Axis, value: number) {
+  const selected = Object.freeze(version(axis, value))
+  return Object.freeze(versionRange(selected, selected))
+}
+
+/** The IPC versions implemented by this package's desktop webview client. */
+export const IPC_CLIENT_COMPATIBILITY_OFFER: IpcCompatibilityOffer = Object.freeze({
+  backendContract: singletonVersionRange('backend-contract', 1),
+  capabilitySchema: singletonVersionRange('capability-schema', 1),
+  eventSchema: singletonVersionRange('event-schema', 1),
+  traceFormat: singletonVersionRange('trace-format', 1),
+  ipcProtocol: singletonVersionRange('ipc-protocol', 2)
+})
 
 /** Validates the public client-originated lifecycle stream identifier format. */
 export function isIpcConnectionEventsStreamHandle(value: string): boolean {
@@ -109,6 +126,11 @@ export interface IpcBleEvent {
 
 export interface IpcBootstrapRequest {
   readonly kind: 'bootstrap'
+  readonly offer: IpcCompatibilityOffer
+}
+
+export function createIpcBootstrapRequest(): IpcBootstrapRequest {
+  return Object.freeze({ kind: 'bootstrap', offer: IPC_CLIENT_COMPATIBILITY_OFFER })
 }
 
 export interface IpcRouteRequest<Attachment extends string, Client extends string, Operation extends string> {

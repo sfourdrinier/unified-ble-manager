@@ -1,4 +1,4 @@
-// __tests__/native-protocol/AppleNativeProtocolV1.test.js
+// __tests__/native-protocol/AppleNativeProtocolV2.test.js
 
 const childProcess = require('child_process')
 const fs = require('fs')
@@ -17,7 +17,7 @@ function readAppleRadio() {
   ].join('\n')
 }
 
-describe('Apple Native Protocol v1 radio boundary', () => {
+describe('Apple Native Protocol v2 radio boundary', () => {
   test('owns direct CoreBluetooth bytes, duplicate-aware paths, and direct restoration', () => {
     const radio = readAppleRadio()
     const control = read('ios/UnifiedBleProtocolControl.mm')
@@ -43,7 +43,7 @@ describe('Apple Native Protocol v1 radio boundary', () => {
     expect(control).toContain('UnifiedBleProtocolRestoreIdentifier')
     expect(control).toContain('appendRestorationRecords')
     expect(control).not.toContain('Android-only slice')
-    expect(execution).toContain('__unifiedBleNativeProtocolV1')
+    expect(execution).toContain('__unifiedBleNativeProtocolV2')
     expect(execution).toContain('retainUint8Array')
     expect(execution).toContain('consumeCommandBinary')
     expect(execution).toContain('receiveAdvertisement')

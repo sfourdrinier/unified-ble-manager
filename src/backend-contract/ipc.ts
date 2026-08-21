@@ -105,7 +105,10 @@ export interface ElectronMainArbiterHandlers<Attachment extends string> {
 }
 
 export interface ElectronMainArbiter<Attachment extends string> {
-  registerRenderer<Renderer extends string>(identity: RendererIdentity<Attachment, Renderer>): RendererLeaseIdentity
+  registerRenderer<Renderer extends string>(
+    identity: RendererIdentity<Attachment, Renderer>,
+    versions?: IpcVersionAxes
+  ): RendererLeaseIdentity
   route<Renderer extends string, Operation extends string>(
     sender: TrustedIpcSender<Attachment, Renderer>,
     envelope: IpcEnvelope<Attachment, Renderer, Operation>
@@ -119,6 +122,7 @@ export interface ElectronMainArbiter<Attachment extends string> {
 interface RendererAccounting<Attachment extends string> {
   readonly identity: RendererIdentity<Attachment, string>
   readonly lease: RendererLeaseIdentity
+  readonly versions: IpcVersionAxes
   /**
    * Bounded terminal replay ledger. In-flight entries are never evicted, while
    * settled entries remain long enough to reject a replay before LRU eviction.
@@ -158,7 +162,10 @@ export class IpcArbiterContext<Attachment extends string> implements ElectronMai
     this.handlers = handlers
   }
 
-  registerRenderer<Renderer extends string>(identity: RendererIdentity<Attachment, Renderer>): RendererLeaseIdentity {
+  registerRenderer<Renderer extends string>(
+    identity: RendererIdentity<Attachment, Renderer>,
+    versions: IpcVersionAxes = this.authority.versions
+  ): RendererLeaseIdentity {
     let matchingLeaseCount = 0
     for (const accounting of this.renderers.values()) {
       if (rendererIdentitiesEqual(accounting.identity, identity)) {
@@ -178,6 +185,7 @@ export class IpcArbiterContext<Attachment extends string> implements ElectronMai
     this.renderers.set(String(lease.leaseId), {
       identity: snapshotRendererIdentity(identity),
       lease,
+      versions: snapshotIpcVersionAxes(versions),
       replayLedger: new Map<string, ReplayLedgerEntry>(),
       lifecycle: 'active',
       outstandingOperations: 0,
@@ -198,8 +206,8 @@ export class IpcArbiterContext<Attachment extends string> implements ElectronMai
     this.assertRegisteredRenderer(accounting, envelope.renderer, envelope.rendererLease)
     this.assertRendererActive(accounting)
     this.assertAttachment(envelope)
-    this.assertVersions(envelope)
-    const prepared = this.prepareEnvelope(envelope)
+    this.assertVersions(accounting.versions, envelope)
+    const prepared = this.prepareEnvelope(envelope, accounting.versions)
     // A cancellation must remain admissible when normal work has filled the
     // operation quota; it still receives full replay and byte accounting.
     const reservesOperationSlot = prepared.envelope.command !== 'operation.cancel'
@@ -308,15 +316,17 @@ export class IpcArbiterContext<Attachment extends string> implements ElectronMai
   }
 
   private assertVersions<Renderer extends string, Operation extends string>(
+    versions: IpcVersionAxes,
     envelope: IpcEnvelope<Attachment, Renderer, Operation>
   ): void {
-    if (!ipcVersionsEqual(envelope.versions, this.authority.versions)) {
+    if (!ipcVersionsEqual(envelope.versions, versions)) {
       throw contractError('protocol.incompatible', 'ipc', 'electron-main-arbiter.versions')
     }
   }
 
   private prepareEnvelope<Renderer extends string, Operation extends string>(
-    envelope: IpcEnvelope<Attachment, Renderer, Operation>
+    envelope: IpcEnvelope<Attachment, Renderer, Operation>,
+    versions: IpcVersionAxes
   ): PreparedEnvelope<Attachment, Renderer, Operation> {
     const payload = snapshotSerializableRecord(envelope.payload)
     const binaryPayload =
@@ -332,7 +342,7 @@ export class IpcArbiterContext<Attachment extends string> implements ElectronMai
       envelope: Object.freeze({
         ...envelope,
         attachment: this.authority.attachment,
-        versions: this.authority.versions,
+        versions,
         renderer: snapshotRendererIdentity(envelope.renderer),
         rendererLease: snapshotRendererLease(envelope.rendererLease),
         payload: payload.value,

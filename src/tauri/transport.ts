@@ -87,6 +87,9 @@ export class TauriBleIpcTransport<Attachment extends string, Client extends stri
   async invoke<Operation extends string>(
     request: IpcBleRequest<Attachment, Client, Operation>
   ): Promise<IpcBleResponse<Attachment, Client>> {
+    if (request.kind === TAURI_ATTACH_REQUEST_KIND && !isIpcBootstrapRequest(request)) {
+      throw contractError('protocol.malformed', 'ipc', 'tauri.transport.bootstrap-request')
+    }
     const response = await this.invokeCore<unknown>(this.command, {
       request: encodeTauriWireValue(request),
       ...this.eventChannelArgument(request)
@@ -241,6 +244,48 @@ function isIpcBleEvent(value: unknown): value is IpcBleEvent {
     nonEmptyString(record.eventId) &&
     nonEmptyString(record.streamId) &&
     serializableRecord(record.item)
+  )
+}
+
+function isIpcBootstrapRequest(value: unknown): boolean {
+  const record = wireRecord(value)
+  return (
+    record !== null &&
+    exactKeys(record, ['kind', 'offer']) &&
+    record.kind === TAURI_ATTACH_REQUEST_KIND &&
+    isIpcCompatibilityOffer(record.offer)
+  )
+}
+
+function isIpcCompatibilityOffer(value: unknown): boolean {
+  const record = wireRecord(value)
+  return (
+    record !== null &&
+    exactKeys(record, ['backendContract', 'capabilitySchema', 'eventSchema', 'traceFormat', 'ipcProtocol']) &&
+    isVersionRange(record.backendContract, 'backend-contract') &&
+    isVersionRange(record.capabilitySchema, 'capability-schema') &&
+    isVersionRange(record.eventSchema, 'event-schema') &&
+    isVersionRange(record.traceFormat, 'trace-format') &&
+    isVersionRange(record.ipcProtocol, 'ipc-protocol')
+  )
+}
+
+function isVersionRange(value: unknown, axis: string): boolean {
+  const record = wireRecord(value)
+  if (record === null || !exactKeys(record, ['axis', 'minimum', 'maximum']) || record.axis !== axis) return false
+  const minimum = wireRecord(record.minimum)
+  const maximum = wireRecord(record.maximum)
+  return (
+    minimum !== null &&
+    maximum !== null &&
+    exactKeys(minimum, ['axis', 'value']) &&
+    exactKeys(maximum, ['axis', 'value']) &&
+    minimum.axis === axis &&
+    maximum.axis === axis &&
+    safeInteger(minimum.value) &&
+    safeInteger(maximum.value) &&
+    minimum.value >= 0 &&
+    maximum.value >= minimum.value
   )
 }
 

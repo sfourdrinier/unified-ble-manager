@@ -1,8 +1,8 @@
-// native/protocol/include/NativeProtocolV1Registry.hpp
+// native/protocol/include/NativeProtocolV2Registry.hpp
 
 #pragma once
 
-#include "NativeProtocolV1Codec.hpp"
+#include "NativeProtocolV2Codec.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -12,7 +12,7 @@
 #include <unordered_map>
 #include <vector>
 
-namespace unified_ble::native_protocol::v1 {
+namespace unified_ble::native_protocol::v2 {
 
 struct NativeAttachmentIdentity {
   std::string attachmentId;
@@ -143,7 +143,7 @@ class NativeRestorationJournal final {
   const std::string authorizedHostSessionScope_;
   const std::size_t recordCapacity_;
   const std::size_t byteCapacity_;
-  NativeProtocolV1Codec codec_;
+  NativeProtocolV2Codec codec_;
   mutable std::mutex mutex_;
   std::vector<RestorationJournalEntry> records_;
   std::size_t retainedBytes_ = 0U;
@@ -151,4 +151,4 @@ class NativeRestorationJournal final {
   bool consumed_ = false;
 };
 
-} // namespace unified_ble::native_protocol::v1
+} // namespace unified_ble::native_protocol::v2

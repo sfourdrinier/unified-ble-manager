@@ -21,7 +21,7 @@
 
 namespace {
 
-constexpr double kProtocolVersion = 1.0;
+constexpr double kProtocolVersion = static_cast<double>(unified_ble::native_protocol::v2::kProtocolVersion);
 constexpr double kMaximumSafeInteger = 9007199254740991.0;
 
 bool validString(NSString *value) {
@@ -82,7 +82,7 @@ bool hasCompleteRestorationConfiguration(
     NSString *epoch,
     NSString *clientId,
     NSString *hostSessionScope) {
-  return unified_ble::native_protocol::v1::hasCompleteNativeRestorationConfiguration(
+  return unified_ble::native_protocol::v2::hasCompleteNativeRestorationConfiguration(
       nativeString(restoreIdentifier),
       nativeString(namespaceValue),
       nativeString(epoch),
@@ -90,7 +90,7 @@ bool hasCompleteRestorationConfiguration(
       nativeString(hostSessionScope));
 }
 
-unified_ble::native_protocol::v1::NativeAttachmentIdentity nativeAttachment(
+unified_ble::native_protocol::v2::NativeAttachmentIdentity nativeAttachment(
     NSString *attachmentId,
     NSString *backendInstanceId,
     NSString *backendGeneration,
@@ -110,8 +110,8 @@ void rejectControl(RCTPromiseRejectBlock reject, NSString *code, NSString *messa
   reject(code, message, nil);
 }
 
-const unified_ble::native_protocol::v1::ProtocolField* restorationField(
-    const unified_ble::native_protocol::v1::ProtocolRecord& record,
+const unified_ble::native_protocol::v2::ProtocolField* restorationField(
+    const unified_ble::native_protocol::v2::ProtocolRecord& record,
     std::uint16_t id) {
   for (const auto& candidate : record.fields) {
     if (candidate.id == id) return &candidate;
@@ -120,7 +120,7 @@ const unified_ble::native_protocol::v1::ProtocolField* restorationField(
 }
 
 const std::string& requiredRestorationString(
-    const unified_ble::native_protocol::v1::ProtocolRecord& record,
+    const unified_ble::native_protocol::v2::ProtocolRecord& record,
     std::uint16_t id,
     const char* name) {
   const auto* candidate = restorationField(record, id);
@@ -128,15 +128,15 @@ const std::string& requiredRestorationString(
       ? nullptr
       : std::get_if<std::string>(&candidate->value);
   if (value == nullptr || value->empty()) {
-    throw unified_ble::native_protocol::v1::ProtocolException(
-        unified_ble::native_protocol::v1::ProtocolFailure::malformedRecord,
+    throw unified_ble::native_protocol::v2::ProtocolException(
+        unified_ble::native_protocol::v2::ProtocolFailure::malformedRecord,
         std::string("Apple restoration record is missing ") + name);
   }
   return *value;
 }
 
 std::uint64_t requiredRestorationUnsigned(
-    const unified_ble::native_protocol::v1::ProtocolRecord& record,
+    const unified_ble::native_protocol::v2::ProtocolRecord& record,
     std::uint16_t id,
     const char* name) {
   const auto* candidate = restorationField(record, id);
@@ -144,24 +144,24 @@ std::uint64_t requiredRestorationUnsigned(
       ? nullptr
       : std::get_if<std::uint64_t>(&candidate->value);
   if (value == nullptr || *value == 0U) {
-    throw unified_ble::native_protocol::v1::ProtocolException(
-        unified_ble::native_protocol::v1::ProtocolFailure::malformedRecord,
+    throw unified_ble::native_protocol::v2::ProtocolException(
+        unified_ble::native_protocol::v2::ProtocolFailure::malformedRecord,
         std::string("Apple restoration record is missing ") + name);
   }
   return *value;
 }
 
-const unified_ble::native_protocol::v1::ProtocolRecord& requiredRestorationRecord(
-    const unified_ble::native_protocol::v1::ProtocolRecord& record,
+const unified_ble::native_protocol::v2::ProtocolRecord& requiredRestorationRecord(
+    const unified_ble::native_protocol::v2::ProtocolRecord& record,
     std::uint16_t id,
     const char* name) {
   const auto* candidate = restorationField(record, id);
   const auto* value = candidate == nullptr
       ? nullptr
-      : std::get_if<unified_ble::native_protocol::v1::ProtocolRecordReference>(&candidate->value);
+      : std::get_if<unified_ble::native_protocol::v2::ProtocolRecordReference>(&candidate->value);
   if (value == nullptr || !*value) {
-    throw unified_ble::native_protocol::v1::ProtocolException(
-        unified_ble::native_protocol::v1::ProtocolFailure::malformedRecord,
+    throw unified_ble::native_protocol::v2::ProtocolException(
+        unified_ble::native_protocol::v2::ProtocolFailure::malformedRecord,
         std::string("Apple restoration record is missing ") + name);
   }
   return **value;
@@ -172,7 +172,7 @@ NSString* restorationNSString(const std::string& value) {
 }
 
 NSDictionary* structuredRestorationReplayRecord(
-    const unified_ble::native_protocol::v1::ProtocolRecord& record) {
+    const unified_ble::native_protocol::v2::ProtocolRecord& record) {
   const auto recordVersion = requiredRestorationUnsigned(record, 1U, "recordVersion");
   const auto& namespaceValue = requiredRestorationString(record, 2U, "namespace");
   const auto& attachment = requiredRestorationRecord(record, 3U, "attachment");
@@ -190,8 +190,8 @@ NSDictionary* structuredRestorationReplayRecord(
     ownerLeaseId = restorationNSString(requiredRestorationString(path, 4U, "ownerLeaseId"));
     connectionGeneration = restorationNSString(requiredRestorationString(path, 5U, "connectionGeneration"));
   } else if (kind != "adapter") {
-    throw unified_ble::native_protocol::v1::ProtocolException(
-        unified_ble::native_protocol::v1::ProtocolFailure::malformedRecord,
+    throw unified_ble::native_protocol::v2::ProtocolException(
+        unified_ble::native_protocol::v2::ProtocolFailure::malformedRecord,
         "Apple restoration transport supports adapter and connection records only");
   }
   return @{
@@ -224,7 +224,7 @@ NSDictionary* structuredRestorationReplayRecord(
 @end
 
 @implementation UnifiedBleProtocolControl {
-  std::shared_ptr<unified_ble::native_protocol::v1::NativeProtocolControlRuntime> _runtime;
+  std::shared_ptr<unified_ble::native_protocol::v2::NativeProtocolControlRuntime> _runtime;
   std::shared_ptr<unified_ble::apple_protocol::AppleNativeProtocolExecution> _execution;
   NSDictionary *_attachment;
   NSString *_restorationRestoreIdentifier;
@@ -242,7 +242,7 @@ RCT_EXPORT_MODULE(UnifiedBleProtocolControl)
 - (instancetype)init {
   self = [super init];
   if (self != nil) {
-    _runtime = std::make_shared<unified_ble::native_protocol::v1::NativeProtocolControlRuntime>();
+    _runtime = std::make_shared<unified_ble::native_protocol::v2::NativeProtocolControlRuntime>();
     _restorationRestoreIdentifier = configuredInfoString(@"UnifiedBleProtocolRestoreIdentifier");
     _restorationNamespace = configuredInfoString(@"UnifiedBleProtocolRestorationNamespace");
     _restorationEpoch = configuredInfoString(@"UnifiedBleProtocolRestorationEpoch");
@@ -312,7 +312,7 @@ RCT_EXPORT_MODULE(UnifiedBleProtocolControl)
       request.adapterId(),
       request.adapterGeneration());
   const auto range = [](JS::NativeUnifiedBleProtocolControl::NativeProtocolVersionRange value) {
-    return unified_ble::native_protocol::v1::VersionRange{
+    return unified_ble::native_protocol::v2::VersionRange{
       .minimum = static_cast<std::uint32_t>(value.minimum()),
       .maximum = static_cast<std::uint32_t>(value.maximum()),
     };
@@ -345,7 +345,10 @@ RCT_EXPORT_MODULE(UnifiedBleProtocolControl)
           .adoptionEpoch = nativeString(_restorationEpoch),
           .authorizedClientId = nativeString(_restorationClientId),
           .authorizedHostSessionScope = nativeString(_restorationHostSessionScope),
-          .nativeProtocol = {.minimum = 1U, .maximum = 1U},
+          .nativeProtocol = {
+              .minimum = unified_ble::native_protocol::v2::kProtocolVersion,
+              .maximum = unified_ble::native_protocol::v2::kProtocolVersion,
+          },
       });
     } catch (const std::exception& error) {
       _execution->rollbackRestorationBootstrap();
@@ -401,7 +404,7 @@ RCT_EXPORT_MODULE(UnifiedBleProtocolControl)
     return;
   }
   try {
-    const auto operation = unified_ble::native_protocol::v1::NativeOperationIdentity{
+    const auto operation = unified_ble::native_protocol::v2::NativeOperationIdentity{
       .attachment = nativeAttachment(
           attachment.attachmentId(),
           attachment.backendInstanceId(),
@@ -412,11 +415,11 @@ RCT_EXPORT_MODULE(UnifiedBleProtocolControl)
       .nonce = nativeString(correlation.nonce()),
     };
     const auto state = _runtime->cancel(operation);
-    if (state == unified_ble::native_protocol::v1::NativeCancellationState::cancellationRequested) {
+    if (state == unified_ble::native_protocol::v2::NativeCancellationState::cancellationRequested) {
       _execution->cancel(operation);
     }
     resolve(@{@"state": [NSString stringWithUTF8String:
-        unified_ble::native_protocol::v1::cancellationStateName(state)]});
+        unified_ble::native_protocol::v2::cancellationStateName(state)]});
   } catch (const std::exception& error) {
     rejectControl(reject, @"invalidCorrelation", [NSString stringWithUTF8String:error.what()]);
   }
@@ -451,7 +454,7 @@ RCT_EXPORT_MODULE(UnifiedBleProtocolControl)
       .clientId = nativeString(request.clientId()),
       .hostSessionScope = nativeString(request.hostSessionScope()),
     });
-    if (receipt.outcome == unified_ble::native_protocol::v1::NativeRestorationOutcome::adopted) {
+    if (receipt.outcome == unified_ble::native_protocol::v2::NativeRestorationOutcome::adopted) {
       [_radio consumeRestorationPeerIdentifiers];
     }
     NSMutableArray<NSDictionary*>* replayRecords =
@@ -462,7 +465,7 @@ RCT_EXPORT_MODULE(UnifiedBleProtocolControl)
     resolve(@{
       @"receiptId": [NSString stringWithUTF8String:receipt.receiptId.c_str()],
       @"outcome": [NSString stringWithUTF8String:
-          unified_ble::native_protocol::v1::restorationOutcomeName(receipt.outcome)],
+          unified_ble::native_protocol::v2::restorationOutcomeName(receipt.outcome)],
       @"boundClientId": [NSString stringWithUTF8String:receipt.boundClientId.c_str()],
       @"adoptionEpoch": [NSString stringWithUTF8String:receipt.adoptionEpoch.c_str()],
       @"replayRecordCount": @(receipt.records.size()),

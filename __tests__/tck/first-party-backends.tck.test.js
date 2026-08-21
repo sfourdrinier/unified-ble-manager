@@ -9,7 +9,7 @@ const {
   createReactNativeAndroidFirstPartyTckRegistration,
   createReactNativeAppleFirstPartyTckRegistration
 } = require('../../src/testing')
-const { decodeNativeProtocolRecord, encodeNativeProtocolRecord } = require('../../src/native-protocol/v1-codec')
+const { decodeNativeProtocolRecord, encodeNativeProtocolRecord } = require('../../src/native-protocol/v2-codec')
 const { InMemoryCoreBluetoothBoundary } = require('../../test-support/corebluetooth/in-memory-corebluetooth-boundary')
 const { InMemoryWebBluetoothTckBoundary } = require('../../test-support/web/in-memory-web-bluetooth-tck-boundary')
 const {
@@ -33,15 +33,15 @@ describe('first-party deterministic backend TCK registry', () => {
   let previousRuntime
 
   beforeEach(() => {
-    previousRuntime = global.__unifiedBleNativeProtocolV1
+    previousRuntime = global.__unifiedBleNativeProtocolV2
   })
 
   afterEach(() => {
     if (previousRuntime === undefined) {
-      delete global.__unifiedBleNativeProtocolV1
+      delete global.__unifiedBleNativeProtocolV2
       return
     }
-    global.__unifiedBleNativeProtocolV1 = previousRuntime
+    global.__unifiedBleNativeProtocolV2 = previousRuntime
   })
 
   test('registers and executes every first-party deterministic backend while retaining explicit exclusions', async () => {
@@ -124,14 +124,14 @@ describe('first-party deterministic backend TCK registry', () => {
       {
         backendId: 'unified-ble:react-native-android',
         prepare: () => {
-          global.__unifiedBleNativeProtocolV1 = androidRuntime
+          global.__unifiedBleNativeProtocolV2 = androidRuntime
         },
         exclusions: ['state:restoration-adoption']
       },
       {
         backendId: 'unified-ble:react-native-apple',
         prepare: () => {
-          global.__unifiedBleNativeProtocolV1 = appleRuntime
+          global.__unifiedBleNativeProtocolV2 = appleRuntime
         },
         exclusions: ['connection:request-att-mtu']
       }

@@ -9,7 +9,7 @@
 #include <utility>
 #include <vector>
 
-namespace unified_ble::native_protocol::v1 {
+namespace unified_ble::native_protocol::v2 {
 
 /** Retains pre-JavaScript records under an explicit fail-closed capacity. */
 class BoundedNativeEventBuffer final {
@@ -82,4 +82,4 @@ class BoundedNativeEventBuffer final {
   std::vector<std::vector<std::uint8_t>> records_;
 };
 
-} // namespace unified_ble::native_protocol::v1
+} // namespace unified_ble::native_protocol::v2

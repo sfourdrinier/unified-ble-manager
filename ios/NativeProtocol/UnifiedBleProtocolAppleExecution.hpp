@@ -21,7 +21,7 @@ class AppleNativeProtocolExecution final {
   class State;
 
   AppleNativeProtocolExecution(
-      std::shared_ptr<native_protocol::v1::NativeProtocolControlRuntime> runtime,
+      std::shared_ptr<native_protocol::v2::NativeProtocolControlRuntime> runtime,
       void* radio);
   ~AppleNativeProtocolExecution();
 
@@ -32,8 +32,8 @@ class AppleNativeProtocolExecution final {
       facebook::jsi::Runtime& runtime,
       const std::shared_ptr<facebook::react::CallInvoker>& callInvoker);
   void beginAttachment();
-  void cancel(const native_protocol::v1::NativeOperationIdentity& operation);
-  void appendRestorationRecords(const native_protocol::v1::NativeRestorationJournalAuthority& authority);
+  void cancel(const native_protocol::v2::NativeOperationIdentity& operation);
+  void appendRestorationRecords(const native_protocol::v2::NativeRestorationJournalAuthority& authority);
   void rollbackRestorationBootstrap() noexcept;
   void detachAttachment();
   void receiveAdapterState(void* snapshot);

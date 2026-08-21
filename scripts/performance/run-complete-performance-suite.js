@@ -58,7 +58,7 @@ function assertBuiltArtifacts() {
     'lib/commonjs/backend-contract/serializable.js',
     'lib/commonjs/core/bounded-stream.js',
     'lib/commonjs/core/trace-recorder.js',
-    'lib/commonjs/native-protocol/v1-codec.js'
+    'lib/commonjs/native-protocol/v2-codec.js'
   ]
   for (const relativePath of required) {
     if (!fs.existsSync(path.join(root, relativePath))) {

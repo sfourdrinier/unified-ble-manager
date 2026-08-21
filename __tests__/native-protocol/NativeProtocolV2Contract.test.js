@@ -1,6 +1,6 @@
-// __tests__/native-protocol/NativeProtocolV1.test.js
+// __tests__/native-protocol/NativeProtocolV2.test.js
 
-// __tests__/native-protocol/NativeProtocolV1.test.js
+// __tests__/native-protocol/NativeProtocolV2.test.js
 
 const childProcess = require('child_process')
 const fs = require('fs')
@@ -8,13 +8,13 @@ const os = require('os')
 const path = require('path')
 
 const root = path.resolve(__dirname, '../..')
-const schemaPath = path.join(root, 'native/protocol/schema/native-protocol-v1.json')
+const schemaPath = path.join(root, 'native/protocol/schema/native-protocol-v2.json')
 
 function read(relativePath) {
   return fs.readFileSync(path.join(root, relativePath), 'utf8')
 }
 
-describe('Native Protocol v1 schema authority', () => {
+describe('Native Protocol v2 schema authority', () => {
   test('locks every record, enum, and field to an explicit immutable v1 ABI wire ID', () => {
     const schema = JSON.parse(fs.readFileSync(schemaPath, 'utf8'))
     const manifest = JSON.parse(fs.readFileSync(path.join(path.dirname(schemaPath), schema.abiManifest), 'utf8'))
@@ -38,12 +38,12 @@ describe('Native Protocol v1 schema authority', () => {
       stdio: 'pipe'
     })
     const schema = JSON.parse(fs.readFileSync(schemaPath, 'utf8'))
-    const cpp = read('native/protocol/generated/NativeProtocolV1Schema.hpp')
+    const cpp = read('native/protocol/generated/NativeProtocolV2Schema.hpp')
     const kotlin = read(
-      'android/src/main/java/com/sfourdrinier/unifiedblemanager/protocol/generated/NativeProtocolV1Schema.kt'
+      'android/src/main/java/com/sfourdrinier/unifiedblemanager/protocol/generated/NativeProtocolV2Schema.kt'
     )
-    const swift = read('ios/Generated/NativeProtocolV1Schema.swift')
-    const typescript = read('src/native-protocol/generated/native-protocol-v1-schema.ts')
+    const swift = read('ios/Generated/NativeProtocolV2Schema.swift')
+    const typescript = read('src/native-protocol/generated/native-protocol-v2-schema.ts')
     for (const kind of schema.recordKinds) {
       expect(cpp).toContain(`${kind} =`)
       expect(kotlin).toContain(kind.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toUpperCase())
@@ -140,7 +140,7 @@ describe('Native Protocol v1 schema authority', () => {
     expect(nativeBinding).toContain('retainUint8Array')
     expect(nativeBinding).toContain('submit')
     expect(nativeBinding).toContain('dispatchCommandToAndroid')
-    expect(nativeBinding).toContain('__unifiedBleNativeProtocolV1')
+    expect(nativeBinding).toContain('__unifiedBleNativeProtocolV2')
     expect(runtime).toContain('retainUint8Array')
     expect(runtime).toContain('copyBinary')
     expect(runtime).toContain('releaseBinary')

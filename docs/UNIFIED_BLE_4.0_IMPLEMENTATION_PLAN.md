@@ -189,7 +189,7 @@ not by document count.
 The 2026-07-31 platform-hardening milestone closed three contradictions found by
 real consumer and backend integration. The Web environment now accepts the
 standard DOM `navigator.bluetooth` object directly without a consumer cast or
-adapter. Apple Native Protocol v1 now bounds its pre-JavaScript event buffer at
+adapter. Apple Native Protocol v2 now bounds its pre-JavaScript event buffer at
 64 records and 256 KiB, discards the entire retained prefix on overflow, and
 reports one counter-bearing `stream.overflow` terminal before closing ingress,
 so JavaScript cannot claim a partial restoration replay. Attachment generations

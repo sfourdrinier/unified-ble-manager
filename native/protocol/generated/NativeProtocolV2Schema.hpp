@@ -1,4 +1,4 @@
-// native/protocol/generated/NativeProtocolV1Schema.hpp
+// native/protocol/generated/NativeProtocolV2Schema.hpp
 
 #pragma once
 
@@ -7,10 +7,10 @@
 #include <cstdint>
 #include <string_view>
 
-namespace unified_ble::native_protocol::v1 {
+namespace unified_ble::native_protocol::v2 {
 
-inline constexpr std::uint32_t kProtocolVersion = 1U;
-inline constexpr std::uint32_t kAbiVersion = 1U;
+inline constexpr std::uint32_t kProtocolVersion = 2U;
+inline constexpr std::uint32_t kAbiVersion = 2U;
 inline constexpr std::size_t kMaximumControlRecordBytes = 262144U;
 inline constexpr std::size_t kMaximumBinaryPayloadBytes = 524288U;
 
@@ -425,4 +425,4 @@ inline constexpr std::array<EnumValueDescriptor, 73> kEnumValueDescriptors{{
   EnumValueDescriptor{"restorationOutcomes", "epochMismatch"}
 }};
 
-} // namespace unified_ble::native_protocol::v1
+} // namespace unified_ble::native_protocol::v2

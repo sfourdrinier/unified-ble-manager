@@ -128,7 +128,7 @@ class ReactNativeAndroidBackend implements BleCentralBackend<string, NativeBacke
         implementationVersion: REACT_NATIVE_ANDROID_IMPLEMENTATION_VERSION,
         diagnostics: Object.freeze({
           boundary: 'react-native-android-jsi-v1',
-          transport: 'native-protocol-v1'
+          transport: 'native-protocol-v2'
         })
       })
     })

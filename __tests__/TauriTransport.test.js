@@ -4,6 +4,7 @@ const fs = require('fs')
 const path = require('path')
 
 const root = path.resolve(__dirname, '..')
+const { createIpcBootstrapRequest } = require('../src/ipc/protocol')
 
 class FakeChannel {
   constructor() {
@@ -34,7 +35,7 @@ describe('Tauri v2 IPC transport', () => {
     const received = []
     const unsubscribe = transport.subscribe(event => received.push(event))
 
-    const response = await transport.invoke({ kind: 'bootstrap' })
+    const response = await transport.invoke(createIpcBootstrapRequest())
     channels[0].emit({
       eventId: 'event-1',
       streamId: 'adapter',
@@ -55,7 +56,7 @@ describe('Tauri v2 IPC transport', () => {
     expect(invocations).toEqual([
       {
         command: TAURI_BLE_PLUGIN_COMMAND,
-        args: { request: { kind: 'bootstrap' }, eventChannel: channels[0] }
+        args: { request: createIpcBootstrapRequest(), eventChannel: channels[0] }
       }
     ])
     expect(received).toEqual([
@@ -96,7 +97,7 @@ describe('Tauri v2 IPC transport', () => {
     const transport = new TauriBleIpcTransport({ invoke, Channel: FakeChannel })
     const lease = { leaseId: 'lease-1', generation: 'generation-1' }
 
-    await transport.invoke({ kind: TAURI_ATTACH_REQUEST_KIND })
+    await transport.invoke(createIpcBootstrapRequest())
     await transport.invoke({ kind: 'route', envelope: { command: 'adapter.state' } })
     await transport.invoke({ kind: 'route', envelope: { command: 'scan.start' } })
     await transport.acknowledge(lease, 'event-1')
@@ -117,9 +118,9 @@ describe('Tauri v2 IPC transport', () => {
     const { TAURI_ATTACH_REQUEST_KIND, TauriBleIpcTransport } = require('../src/tauri/transport')
     const transport = new TauriBleIpcTransport({ invoke, Channel: FakeChannel })
 
-    await transport.invoke({ kind: TAURI_ATTACH_REQUEST_KIND })
+    await transport.invoke(createIpcBootstrapRequest())
     await transport.invoke({ kind: 'route', envelope: { command: 'adapter.state' } })
-    await transport.invoke({ kind: TAURI_ATTACH_REQUEST_KIND })
+    await transport.invoke(createIpcBootstrapRequest())
 
     expect(invocations.filter(args => 'eventChannel' in args)).toHaveLength(2)
     expect(invocations[0].eventChannel).toBe(invocations[2].eventChannel)
@@ -212,7 +213,7 @@ describe('Tauri v2 IPC transport', () => {
       Channel: FakeChannel
     })
 
-    await expect(transport.invoke({ kind: 'bootstrap' })).rejects.toMatchObject({
+    await expect(transport.invoke(createIpcBootstrapRequest())).rejects.toMatchObject({
       normalized: { code: 'protocol.malformed' }
     })
   })
@@ -232,7 +233,7 @@ describe('Tauri v2 IPC transport', () => {
       })),
       Channel: FakeChannel
     })
-    await expect(malformedErrorTransport.invoke({ kind: 'bootstrap' })).rejects.toMatchObject({
+    await expect(malformedErrorTransport.invoke(createIpcBootstrapRequest())).rejects.toMatchObject({
       normalized: { code: 'protocol.malformed' }
     })
 
@@ -249,7 +250,7 @@ describe('Tauri v2 IPC transport', () => {
       })),
       Channel: FakeChannel
     })
-    await expect(contradictoryErrorTransport.invoke({ kind: 'bootstrap' })).rejects.toMatchObject({
+    await expect(contradictoryErrorTransport.invoke(createIpcBootstrapRequest())).rejects.toMatchObject({
       normalized: { code: 'protocol.malformed' }
     })
 

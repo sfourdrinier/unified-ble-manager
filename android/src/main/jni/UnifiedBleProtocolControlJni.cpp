@@ -11,7 +11,7 @@
 #include <string>
 #include <vector>
 
-namespace protocol = unified_ble::native_protocol::v1;
+namespace protocol = unified_ble::native_protocol::v2;
 
 namespace {
 

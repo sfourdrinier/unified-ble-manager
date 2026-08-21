@@ -15,7 +15,7 @@
 #include <utility>
 #include <vector>
 
-namespace unified_ble::native_protocol::v1 {
+namespace unified_ble::native_protocol::v2 {
 
 class AndroidIngressOrdinalAllocator final {
  public:
@@ -207,4 +207,4 @@ class AndroidJsiBinaryCleanupLedger final {
   std::vector<OwnedBinaryReference> fatalReferences_;
 };
 
-} // namespace unified_ble::native_protocol::v1
+} // namespace unified_ble::native_protocol::v2

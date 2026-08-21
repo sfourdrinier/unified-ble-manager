@@ -1,4 +1,4 @@
-// src/native-protocol/v1-codec.ts
+// src/native-protocol/v2-codec.ts
 
 import {
   MAXIMUM_CONTROL_RECORD_BYTES,
@@ -8,7 +8,7 @@ import {
   nativeProtocolRecordWireIds,
   recordKinds,
   type RecordKind
-} from './generated/native-protocol-v1-schema'
+} from './generated/native-protocol-v2-schema'
 
 const WIRE_MAGIC = Object.freeze([0x55, 0x42, 0x4e, 0x31])
 const WIRE_HEADER_BYTES = 12

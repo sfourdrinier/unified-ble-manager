@@ -31,11 +31,11 @@
 #include <vector>
 
 namespace jsi = facebook::jsi;
-namespace protocol = unified_ble::native_protocol::v1;
+namespace protocol = unified_ble::native_protocol::v2;
 
 namespace {
 
-constexpr const char* kRuntimeName = "__unifiedBleNativeProtocolV1";
+constexpr const char* kRuntimeName = "__unifiedBleNativeProtocolV2";
 
 protocol::ProtocolField field(std::uint16_t id, protocol::ProtocolFieldValue value) {
   return {.id = id, .value = std::move(value)};
@@ -567,7 +567,7 @@ NativeResultDeliveryStatus deliverResult(
   const std::shared_ptr<AppleNativeProtocolExecution::State>& state,
   const protocol::ProtocolRecord& result,
   const protocol::ProtocolRecord* connectionCommand = nullptr) {
-  const auto bytes = protocol::NativeProtocolV1Codec{}.encode(result);
+  const auto bytes = protocol::NativeProtocolV2Codec{}.encode(result);
   std::uint64_t attachmentGeneration = 0U;
   bool ingressAvailable = false;
   {
@@ -612,7 +612,7 @@ bool deliverEvent(
     }
   }
   state->runtime->validateEvent(event);
-  return scheduleRecord(state, protocol::NativeProtocolV1Codec{}.encode(event), attachmentGeneration);
+  return scheduleRecord(state, protocol::NativeProtocolV2Codec{}.encode(event), attachmentGeneration);
 }
 
 protocol::ProtocolRecord eventBufferOverflow(
@@ -628,7 +628,7 @@ protocol::ProtocolRecord eventBufferOverflow(
   }
   const auto ordinal = reservation->ordinal;
   const auto safeMessage =
-      std::string("Native Protocol v1 ") + description + " event buffer overflowed after retaining " +
+      std::string("Native Protocol v2 ") + description + " event buffer overflowed after retaining " +
       std::to_string(counters.retainedRecordCount) + " records and " +
       std::to_string(counters.retainedByteCount) + " bytes";
   const auto error = protocol::ProtocolRecord{
@@ -651,7 +651,7 @@ protocol::ProtocolRecord eventBufferOverflow(
   return {
       .kind = protocol::RecordKind::event,
       .fields = {
-          field(1U, std::uint64_t{1U}),
+          field(1U, std::uint64_t{protocol::kProtocolVersion}),
           field(2U, std::string(eventPrefix) + ":" + std::to_string(ordinal)),
           field(3U, std::string("diagnostic")),
           field(4U, reference(attachmentRecord(state->runtime->attachmentIdentity()))),
@@ -822,7 +822,7 @@ bool scheduleJavaScriptEventDrain(
           if (!deliverEncodedRecordToJavaScript(
                   state,
                   runtime,
-                  protocol::NativeProtocolV1Codec{}.encode(*overflowRecord),
+                  protocol::NativeProtocolV2Codec{}.encode(*overflowRecord),
                   attachmentGeneration,
                   true)) {
             failAttachmentAfterTerminalAdmissionFailure(
@@ -986,7 +986,7 @@ protocol::ProtocolRecord failureResult(
   return {
       .kind = protocol::RecordKind::result,
       .fields = {
-          field(1U, std::uint64_t{1U}),
+          field(1U, std::uint64_t{protocol::kProtocolVersion}),
           field(2U, resultKindFor(requiredString(command, 3U))),
           field(3U, reference(terminal(command, "failed", code))),
           field(10U, reference(failure)),
@@ -1025,7 +1025,7 @@ bool success(
     const protocol::ProtocolRecord& command,
     const std::vector<protocol::ProtocolField>& additions = {}) {
   std::vector<protocol::ProtocolField> fields{
-      field(1U, std::uint64_t{1U}),
+      field(1U, std::uint64_t{protocol::kProtocolVersion}),
       field(2U, resultKindFor(requiredString(command, 3U))),
       field(3U, reference(terminal(command, "succeeded"))),
   };
@@ -1311,54 +1311,54 @@ class BinaryRuntime final : public jsi::HostObject {
 
   std::shared_ptr<protocol::NativeProtocolControlRuntime> runtimeFor(jsi::Runtime& runtime) const {
     if (state_->closed.load(std::memory_order_acquire) || !state_->runtime->open()) {
-      throw jsi::JSError(runtime, "Apple Native Protocol v1 runtime is closed");
+      throw jsi::JSError(runtime, "Apple Native Protocol v2 runtime is closed");
     }
     return state_->runtime;
   }
 
   static std::string stringProperty(jsi::Runtime& runtime, const jsi::Object& object, const char* name) {
     const auto value = object.getProperty(runtime, name);
-    if (!value.isString()) throw jsi::JSError(runtime, std::string("Native Protocol v1 requires ") + name);
+    if (!value.isString()) throw jsi::JSError(runtime, std::string("Native Protocol v2 requires ") + name);
     const auto result = value.asString(runtime).utf8(runtime);
-    if (result.empty()) throw jsi::JSError(runtime, std::string("Native Protocol v1 rejects empty ") + name);
+    if (result.empty()) throw jsi::JSError(runtime, std::string("Native Protocol v2 rejects empty ") + name);
     return result;
   }
 
   static std::size_t sizeProperty(jsi::Runtime& runtime, const jsi::Object& object, const char* name) {
     const auto value = object.getProperty(runtime, name);
     if (!value.isNumber() || !std::isfinite(value.asNumber())) {
-      throw jsi::JSError(runtime, std::string("Native Protocol v1 requires valid ") + name);
+      throw jsi::JSError(runtime, std::string("Native Protocol v2 requires valid ") + name);
     }
     const auto checked = checkedAppleBinarySize(value.asNumber());
     if (!checked.has_value()) {
-      throw jsi::JSError(runtime, std::string("Native Protocol v1 requires bounded safe integer ") + name);
+      throw jsi::JSError(runtime, std::string("Native Protocol v2 requires bounded safe integer ") + name);
     }
     return *checked;
   }
 
   static protocol::OwnedBinaryReference binaryReference(jsi::Runtime& runtime, const jsi::Value& value) {
-    if (!value.isObject() || value.asObject(runtime).isArray(runtime)) throw jsi::JSError(runtime, "Native Protocol v1 requires a binary reference");
+    if (!value.isObject() || value.asObject(runtime).isArray(runtime)) throw jsi::JSError(runtime, "Native Protocol v2 requires a binary reference");
     const auto object = value.asObject(runtime);
     const auto offset = sizeProperty(runtime, object, "byteOffset");
     const auto length = sizeProperty(runtime, object, "byteLength");
     if (!checkedAppleBinaryRange(offset, length)) {
-      throw jsi::JSError(runtime, "Native Protocol v1 binary reference range is invalid");
+      throw jsi::JSError(runtime, "Native Protocol v2 binary reference range is invalid");
     }
     return {.ownerToken = stringProperty(runtime, object, "ownerToken"), .operationCorrelation = stringProperty(runtime, object, "operationCorrelation"), .byteOffset = offset, .byteLength = length, .ownership = stringProperty(runtime, object, "ownership")};
   }
 
   static std::vector<std::uint8_t> commandBytes(jsi::Runtime& runtime, const jsi::Value& value) {
-    if (!value.isObject() || !value.asObject(runtime).isUint8Array(runtime)) throw jsi::JSError(runtime, "Native Protocol v1 submit requires Uint8Array");
+    if (!value.isObject() || !value.asObject(runtime).isUint8Array(runtime)) throw jsi::JSError(runtime, "Native Protocol v2 submit requires Uint8Array");
     auto array = value.asObject(runtime).asUint8Array(runtime);
     const auto buffer = array.buffer(runtime);
-    if (buffer.detached(runtime)) throw jsi::JSError(runtime, "Native Protocol v1 rejects detached command bytes");
+    if (buffer.detached(runtime)) throw jsi::JSError(runtime, "Native Protocol v2 rejects detached command bytes");
     const auto offset = array.byteOffset(runtime);
     const auto length = array.byteLength(runtime);
     if (offset > buffer.size(runtime) || length > buffer.size(runtime) - offset || length > protocol::kMaximumControlRecordBytes) {
-      throw jsi::JSError(runtime, "Native Protocol v1 command range is invalid");
+      throw jsi::JSError(runtime, "Native Protocol v2 command range is invalid");
     }
     const auto* source = buffer.data(runtime);
-    if (length != 0U && source == nullptr) throw jsi::JSError(runtime, "Native Protocol v1 command storage is unavailable");
+    if (length != 0U && source == nullptr) throw jsi::JSError(runtime, "Native Protocol v2 command storage is unavailable");
     return length == 0U ? std::vector<std::uint8_t>{} : std::vector<std::uint8_t>{source + offset, source + offset + length};
   }
 
@@ -1374,8 +1374,8 @@ class BinaryRuntime final : public jsi::HostObject {
 
   jsi::Value retainFunction(jsi::Runtime& runtime, const jsi::PropNameID& name) {
     return jsi::Function::createFromHostFunction(runtime, name, 2U, [self = state_](jsi::Runtime& inner, const jsi::Value&, const jsi::Value* arguments, std::size_t count) {
-      if (count != 2U || !arguments[0].isString()) throw jsi::JSError(inner, "Native Protocol v1 retain requires correlation and Uint8Array");
-      if (self->closed.load(std::memory_order_acquire)) throw jsi::JSError(inner, "Native Protocol v1 runtime is closed");
+      if (count != 2U || !arguments[0].isString()) throw jsi::JSError(inner, "Native Protocol v2 retain requires correlation and Uint8Array");
+      if (self->closed.load(std::memory_order_acquire)) throw jsi::JSError(inner, "Native Protocol v2 runtime is closed");
       const auto retained = self->runtime->retainUint8Array(inner, arguments[0].asString(inner).utf8(inner), arguments[1]);
       return jsi::Value(inner, referenceObject(inner, retained));
     });
@@ -1383,30 +1383,30 @@ class BinaryRuntime final : public jsi::HostObject {
 
   jsi::Value copyFunction(jsi::Runtime& runtime, const jsi::PropNameID& name) {
     return jsi::Function::createFromHostFunction(runtime, name, 1U, [self = state_](jsi::Runtime& inner, const jsi::Value&, const jsi::Value* arguments, std::size_t count) {
-      if (count != 1U) throw jsi::JSError(inner, "Native Protocol v1 copy requires a binary reference");
-      if (self->closed.load(std::memory_order_acquire)) throw jsi::JSError(inner, "Native Protocol v1 runtime is closed");
+      if (count != 1U) throw jsi::JSError(inner, "Native Protocol v2 copy requires a binary reference");
+      if (self->closed.load(std::memory_order_acquire)) throw jsi::JSError(inner, "Native Protocol v2 runtime is closed");
       return self->runtime->copyBinary(inner, binaryReference(inner, arguments[0]));
     });
   }
 
   jsi::Value releaseFunction(jsi::Runtime& runtime, const jsi::PropNameID& name) {
     return jsi::Function::createFromHostFunction(runtime, name, 1U, [self = state_](jsi::Runtime& inner, const jsi::Value&, const jsi::Value* arguments, std::size_t count) {
-      if (count != 1U) throw jsi::JSError(inner, "Native Protocol v1 release requires a binary reference");
-      if (self->closed.load(std::memory_order_acquire)) throw jsi::JSError(inner, "Native Protocol v1 runtime is closed");
+      if (count != 1U) throw jsi::JSError(inner, "Native Protocol v2 release requires a binary reference");
+      if (self->closed.load(std::memory_order_acquire)) throw jsi::JSError(inner, "Native Protocol v2 runtime is closed");
       return jsi::Value(self->runtime->releaseBinary(binaryReference(inner, arguments[0])));
     });
   }
 
   jsi::Value submitFunction(jsi::Runtime& runtime, const jsi::PropNameID& name) {
     return jsi::Function::createFromHostFunction(runtime, name, 1U, [self = state_](jsi::Runtime& inner, const jsi::Value&, const jsi::Value* arguments, std::size_t count) {
-      if (count != 1U || self->closed.load(std::memory_order_acquire)) throw jsi::JSError(inner, "Native Protocol v1 submit is unavailable");
+      if (count != 1U || self->closed.load(std::memory_order_acquire)) throw jsi::JSError(inner, "Native Protocol v2 submit is unavailable");
       {
         std::scoped_lock lock(self->mutex);
         if (!self->attachmentActive || self->attachmentFatal || self->ingressClosed || !self->eventSink || !self->callInvoker) {
-          throw jsi::JSError(inner, "Native Protocol v1 cannot dispatch a command before terminal delivery is admitted");
+          throw jsi::JSError(inner, "Native Protocol v2 cannot dispatch a command before terminal delivery is admitted");
         }
       }
-      const auto command = protocol::NativeProtocolV1Codec{}.decode(commandBytes(inner, arguments[0]));
+      const auto command = protocol::NativeProtocolV2Codec{}.decode(commandBytes(inner, arguments[0]));
       self->runtime->registerCommand(command, true);
       try {
         dispatchCommand(self, command);
@@ -1420,15 +1420,15 @@ class BinaryRuntime final : public jsi::HostObject {
 
   jsi::Value sinkFunction(jsi::Runtime& runtime, const jsi::PropNameID& name) {
     return jsi::Function::createFromHostFunction(runtime, name, 1U, [self = state_](jsi::Runtime& inner, const jsi::Value&, const jsi::Value* arguments, std::size_t count) {
-      if (count != 1U || !arguments[0].isObject() || !arguments[0].asObject(inner).isFunction(inner)) throw jsi::JSError(inner, "Native Protocol v1 setEventSink requires a function");
-      if (self->closed.load(std::memory_order_acquire)) throw jsi::JSError(inner, "Native Protocol v1 runtime is closed");
+      if (count != 1U || !arguments[0].isObject() || !arguments[0].asObject(inner).isFunction(inner)) throw jsi::JSError(inner, "Native Protocol v2 setEventSink requires a function");
+      if (self->closed.load(std::memory_order_acquire)) throw jsi::JSError(inner, "Native Protocol v2 runtime is closed");
       std::vector<std::shared_ptr<jsi::Function>> retiredSinks;
       std::vector<std::vector<std::uint8_t>> buffered;
       std::vector<BinaryReferenceList> bufferedBinaryReferences;
       try {
         std::scoped_lock lock(self->mutex);
         if (self->closed.load(std::memory_order_acquire) || self->attachmentFatal || !self->attachmentActive) {
-          throw jsi::JSError(inner, "Native Protocol v1 runtime closed while installing its event sink");
+          throw jsi::JSError(inner, "Native Protocol v2 runtime closed while installing its event sink");
         }
         if (self->eventSink) {
           self->sinksAwaitingJavaScriptRelease.push_back(std::move(self->eventSink));
@@ -1438,11 +1438,11 @@ class BinaryRuntime final : public jsi::HostObject {
         if (self->recordsAwaitingSink.overflowed()) {
           const auto& overflowSnapshot = self->recordsAwaitingSink.overflowSnapshot();
           if (!overflowSnapshot.has_value()) {
-            throw jsi::JSError(inner, "Native Protocol v1 overflow accounting is unavailable");
+            throw jsi::JSError(inner, "Native Protocol v2 overflow accounting is unavailable");
           }
           const auto overflow = preJavaScriptEventBufferOverflow(self, *overflowSnapshot);
           self->runtime->validateEvent(overflow);
-          buffered.push_back(protocol::NativeProtocolV1Codec{}.encode(overflow));
+          buffered.push_back(protocol::NativeProtocolV2Codec{}.encode(overflow));
           bufferedBinaryReferences.emplace_back();
           self->ingressClosed = true;
           releaseQueuedBinaryReferences(
@@ -1547,11 +1547,11 @@ class BinaryRuntime final : public jsi::HostObject {
   jsi::Value fatalSinkFunction(jsi::Runtime& runtime, const jsi::PropNameID& name) {
     return jsi::Function::createFromHostFunction(runtime, name, 1U, [self = state_](jsi::Runtime& inner, const jsi::Value&, const jsi::Value* arguments, std::size_t count) {
       if (count != 1U || !arguments[0].isObject() || !arguments[0].asObject(inner).isFunction(inner)) {
-        throw jsi::JSError(inner, "Native Protocol v1 setFatalSink requires a function");
+        throw jsi::JSError(inner, "Native Protocol v2 setFatalSink requires a function");
       }
       std::scoped_lock lock(self->mutex);
       if (self->closed.load(std::memory_order_acquire) || self->attachmentFatal || !self->attachmentActive) {
-        throw jsi::JSError(inner, "Native Protocol v1 attachment cannot install a fatal sink");
+        throw jsi::JSError(inner, "Native Protocol v2 attachment cannot install a fatal sink");
       }
       if (self->fatalSink) {
         self->sinksAwaitingJavaScriptRelease.push_back(std::move(self->fatalSink));
@@ -1563,7 +1563,7 @@ class BinaryRuntime final : public jsi::HostObject {
 
   jsi::Value countFunction(jsi::Runtime& runtime, const jsi::PropNameID& name, bool bytes) {
     return jsi::Function::createFromHostFunction(runtime, name, 0U, [self = state_, bytes](jsi::Runtime& inner, const jsi::Value&, const jsi::Value*, std::size_t count) {
-      if (count != 0U || self->closed.load(std::memory_order_acquire)) throw jsi::JSError(inner, "Native Protocol v1 retained counter is unavailable");
+      if (count != 0U || self->closed.load(std::memory_order_acquire)) throw jsi::JSError(inner, "Native Protocol v2 retained counter is unavailable");
       return jsi::Value(static_cast<double>(bytes ? self->runtime->retainedBinaryBytes() : self->runtime->retainedBinaryPayloads()));
     });
   }
@@ -1627,10 +1627,10 @@ void AppleNativeProtocolExecution::install(
     jsi::Runtime& runtime,
     const std::shared_ptr<facebook::react::CallInvoker>& callInvoker) {
   if (!callInvoker || state_->closed.load(std::memory_order_acquire)) {
-    throw std::invalid_argument("Apple Native Protocol v1 cannot install without an active CallInvoker");
+    throw std::invalid_argument("Apple Native Protocol v2 cannot install without an active CallInvoker");
   }
   if (!runtime.global().getProperty(runtime, kRuntimeName).isUndefined()) {
-    throw jsi::JSError(runtime, "A Native Protocol v1 runtime is already installed");
+    throw jsi::JSError(runtime, "A Native Protocol v2 runtime is already installed");
   }
   state_->callInvoker = callInvoker;
   runtime.global().setProperty(runtime, kRuntimeName, jsi::Object::createFromHostObject(runtime, std::make_shared<BinaryRuntime>(state_)));
@@ -1639,11 +1639,11 @@ void AppleNativeProtocolExecution::install(
 void AppleNativeProtocolExecution::beginAttachment() {
   std::scoped_lock lock(state_->mutex);
   if (state_->closed.load(std::memory_order_acquire) || state_->attachmentActive) {
-    throw std::logic_error("Apple Native Protocol v1 attachment admission is unavailable");
+    throw std::logic_error("Apple Native Protocol v2 attachment admission is unavailable");
   }
   if (state_->attachmentGeneration == std::numeric_limits<std::uint64_t>::max()) {
     state_->ingressClosed = true;
-    throw std::overflow_error("Apple Native Protocol v1 attachment generation exhausted");
+    throw std::overflow_error("Apple Native Protocol v2 attachment generation exhausted");
   }
   state_->attachmentGeneration += 1U;
   state_->attachmentActive = true;
@@ -1699,7 +1699,7 @@ void AppleNativeProtocolExecution::appendRestorationRecords(const protocol::Nati
   if (state_->restorationAppended) return;
   NSArray<NSString*>* peers = [radioFor(state_) restorationPeerIdentifiers];
   const auto adapterRecord = protocol::ProtocolRecord{.kind = protocol::RecordKind::restorationRecord, .fields = {
-      field(1U, std::uint64_t{1U}), field(2U, authority.namespaceValue), field(3U, reference(attachmentRecord(authority.attachment))),
+      field(1U, std::uint64_t{protocol::kProtocolVersion}), field(2U, authority.namespaceValue), field(3U, reference(attachmentRecord(authority.attachment))),
       field(4U, std::uint64_t{1U}), field(5U, authority.adoptionEpoch), field(6U, std::string("adapter"))}};
   state_->runtime->appendRestorationRecord(authority, adapterRecord);
   std::uint64_t ordinal = 2U;
@@ -1716,7 +1716,7 @@ void AppleNativeProtocolExecution::appendRestorationRecords(const protocol::Nati
         },
     };
     const auto record = protocol::ProtocolRecord{.kind = protocol::RecordKind::restorationRecord, .fields = {
-        field(1U, std::uint64_t{1U}), field(2U, authority.namespaceValue), field(3U, reference(attachmentRecord(authority.attachment))),
+        field(1U, std::uint64_t{protocol::kProtocolVersion}), field(2U, authority.namespaceValue), field(3U, reference(attachmentRecord(authority.attachment))),
         field(4U, ordinal), field(5U, authority.adoptionEpoch), field(6U, std::string("connection")), field(7U, peerId),
         field(8U, reference(connectionPath))}};
     state_->runtime->appendRestorationRecord(authority, record);
@@ -1807,7 +1807,7 @@ void AppleNativeProtocolExecution::receiveAdapterState(void* snapshot) {
       const auto event = protocol::ProtocolRecord{
           .kind = protocol::RecordKind::event,
           .fields = {
-              field(1U, std::uint64_t{1U}),
+              field(1U, std::uint64_t{protocol::kProtocolVersion}),
               field(2U, std::string("apple-adapter-state:") + std::to_string(ordinal)),
               field(3U, std::string("adapterState")),
               field(4U, reference(attachmentRecord(state_->runtime->attachmentIdentity()))),
@@ -1846,7 +1846,7 @@ void AppleNativeProtocolExecution::receiveDisconnect(void* peerIdentifier, void*
     if (!ingress.has_value()) return;
     const auto ordinal = ingress->ordinal;
     std::vector<protocol::ProtocolField> fields{
-        field(1U, std::uint64_t{1U}), field(2U, std::string("apple-connection-lost:") + std::to_string(ordinal)),
+        field(1U, std::uint64_t{protocol::kProtocolVersion}), field(2U, std::string("apple-connection-lost:") + std::to_string(ordinal)),
         field(3U, std::string("connectionLost")), field(4U, reference(attachmentRecord(state_->runtime->attachmentIdentity()))),
         field(5U, ordinal), field(6U, monotonicMilliseconds()), field(7U, reference(*connection))};
     if (nativeError != nil) {
@@ -1882,7 +1882,7 @@ void AppleNativeProtocolExecution::receiveNotification(void* subscriptionIdentif
     output = state_->runtime->retainNativeBytes(
         "apple-notification:" + subscriptionValue + ":" + std::to_string(ordinal), bytesFromData(bytes));
     const auto event = protocol::ProtocolRecord{.kind = protocol::RecordKind::event, .fields = {
-        field(1U, std::uint64_t{1U}), field(2U, std::string("apple-notification:") + std::to_string(ordinal)),
+        field(1U, std::uint64_t{protocol::kProtocolVersion}), field(2U, std::string("apple-notification:") + std::to_string(ordinal)),
         field(3U, std::string("notification")), field(4U, reference(attachmentRecord(state_->runtime->attachmentIdentity()))),
         field(5U, ordinal), field(6U, monotonicMilliseconds()), field(9U, reference(requiredRecord(*command, 4U))),
         field(10U, reference(requiredRecord(*command, 2U))), field(11U, subscriptionValue),

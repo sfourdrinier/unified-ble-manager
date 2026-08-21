@@ -7,13 +7,15 @@ import {
   capacity,
   createIpcOperationIdFactory,
   ownBytes,
-  resourceCount
+  resourceCount,
+  assertIpcVersionsAccepted
 } from '../backend-contract/primitives'
 import type { CleanupRecord } from '../backend-contract/errors'
 import type { IpcEnvelope } from '../backend-contract/electron'
 import type { IpcOperationCorrelation, OwnedBytes, SerializableRecord } from '../backend-contract/primitives'
 import { snapshotSerializableRecord } from '../backend-contract/serializable'
 import type { BoundedAsyncStream } from '../backend-contract/streams'
+import { createIpcBootstrapRequest, IPC_CLIENT_COMPATIBILITY_OFFER } from '../ipc/protocol'
 import {
   decodeConnectionEventCleanupReceipt,
   decodeConnectionEventsSubscribeResponse,
@@ -60,7 +62,7 @@ interface RendererConnectionEventSubscription {
 }
 
 /**
- * Renderer-side v1 IPC client. It can only use a preload-supplied transport;
+ * Renderer-side v2 IPC client. It can only use a preload-supplied transport;
  * selecting a radio or an Electron main resource is impossible from this API.
  */
 export class ElectronRendererBleClient<Attachment extends string, Renderer extends string> {
@@ -113,13 +115,14 @@ export class ElectronRendererBleClient<Attachment extends string, Renderer exten
   }
 
   private async invokeBootstrap(): Promise<ElectronRendererBootstrap<Attachment, Renderer>> {
-    const response = await this.transport.invoke({ kind: 'bootstrap' })
+    const response = await this.transport.invoke(createIpcBootstrapRequest())
     if (response.kind === 'failure') {
       throw new BackendContractError(response.error)
     }
     if (response.kind !== 'bootstrap') {
       throw contractError('protocol.malformed', 'ipc', 'electron-renderer.bootstrap-response')
     }
+    assertIpcVersionsAccepted(response.bootstrap.versions, IPC_CLIENT_COMPATIBILITY_OFFER)
     this.bootstrapValue = response.bootstrap
     return response.bootstrap
   }

@@ -48,7 +48,15 @@ using facebook::jsi::Value;
 using facebook::react::CallFunc;
 using facebook::react::CallInvoker;
 using unified_ble::apple_protocol::AppleNativeProtocolExecution;
-namespace protocol = unified_ble::native_protocol::v1;
+namespace protocol = unified_ble::native_protocol::v2;
+
+protocol::VersionRange nativeProtocolRange() {
+  return {.minimum = protocol::kProtocolVersion, .maximum = protocol::kProtocolVersion};
+}
+
+protocol::VersionRange abiVersionRange() {
+  return {.minimum = protocol::kAbiVersion, .maximum = protocol::kAbiVersion};
+}
 
 class ControllableInvoker final : public CallInvoker {
  public:
@@ -106,7 +114,7 @@ protocol::ProtocolRecord command(std::uint64_t epoch) {
   return {
       .kind = protocol::RecordKind::command,
       .fields = {
-          harnessField(1U, std::uint64_t{1U}),
+          harnessField(1U, std::uint64_t{protocol::kProtocolVersion}),
           harnessField(2U, std::make_shared<protocol::ProtocolRecord>(protocol::ProtocolRecord{
               .kind = protocol::RecordKind::operationCorrelation,
               .fields = {
@@ -131,8 +139,7 @@ std::shared_ptr<protocol::NativeProtocolControlRuntime> openedRuntime() {
           .adapterGeneration = "apple-execution-adapter-generation",
       },
       "apple-execution-owner",
-      {1U, 1U},
-      {1U, 1U},
+      nativeProtocolRange(), abiVersionRange(),
       {1U, 1U},
       {1U, 1U},
       {1U, 1U},

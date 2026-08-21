@@ -4,7 +4,7 @@
 
 #include <string_view>
 
-namespace unified_ble::native_protocol::v1 {
+namespace unified_ble::native_protocol::v2 {
 
 /** Returns whether an Apple native restoration identity contains every required stable value. */
 [[nodiscard]] inline bool hasCompleteNativeRestorationConfiguration(
@@ -20,4 +20,4 @@ namespace unified_ble::native_protocol::v1 {
       !hostSessionScope.empty();
 }
 
-} // namespace unified_ble::native_protocol::v1
+} // namespace unified_ble::native_protocol::v2
