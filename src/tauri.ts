@@ -140,6 +140,9 @@ class TauriScanSessionWrapper implements ScanSession {
 function createTauriGattSource(database: IpcGattDatabase): PublicGattDatabaseSource {
   return {
     path: database.path,
+    deliverySelection: 'unknown',
+    changed: database.changed,
+    assertCurrent: () => database.assertCurrent(),
     monotonicNow: () => database.monotonicNow(),
     scheduleDeadline: (deadline, action) => database.scheduleDeadline(deadline, action),
     snapshot: () => database.snapshot(),
@@ -214,7 +217,10 @@ function toPortableNotificationStream(
                 kind: 'value',
                 value: {
                   value: new Uint8Array(result.value.value.value),
-                  indication: result.value.value.delivery === 'indication'
+                  indication: result.value.value.delivery === 'indication',
+                  delivery: result.value.value.delivery,
+                  observedAtMonotonicMs: result.value.value.observedAtMonotonicMs,
+                  sequence: result.value.value.sequence
                 }
               }
             }

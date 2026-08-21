@@ -153,6 +153,7 @@ export interface GattSubscription {
 export interface PublicGattDatabaseSource extends DiscoveredGattDatabaseHandle {
   readonly changed?: AsyncIterable<StreamItem<GattDatabaseChangedEvent>>
   assertCurrent?(): void
+  readonly deliverySelection?: 'controllable' | 'unknown'
 }
 
 export async function createPublicGattDatabase(source: PublicGattDatabaseSource): Promise<GattDatabase> {
@@ -171,6 +172,7 @@ class PublicGattDatabase implements GattDatabase {
     private readonly source: PublicGattDatabaseSource,
     snapshot: PortableGattDatabaseSnapshot
   ) {
+    validateTopology(snapshot)
     this.generation = snapshot.path.databaseGeneration
     const serviceRecords = recordsWithOccurrence(snapshot.services, record => record.path.serviceUuid)
     const characteristicRecords = recordsWithOccurrence(
@@ -331,12 +333,22 @@ class PublicGattCharacteristic implements GattCharacteristic {
 
   async subscribe(options: GattSubscribeOptions = {}): Promise<GattSubscription> {
     return this.run(async () => {
-      const effectiveDelivery = resolveDelivery(this.properties, options.delivery)
+      const selectedDelivery = resolveDelivery(this.properties, options.delivery)
+      if (this.source.deliverySelection === 'unknown' && options.delivery?.startsWith('require-')) {
+        throw contractError('capability.limited', 'gatt', 'public-gatt.subscribe.delivery-selection')
+      }
+      const effectiveDelivery = this.source.deliverySelection === 'unknown' ? 'unknown' : selectedDelivery
       const budget = resolveStreamPreset({ preset: options.stream ?? 'balanced' })
       const subscription = await this.source.subscribe(this.indexedRecord.record.path, {
         ...normalizeOperationOptions(options, () => this.source.monotonicNow()),
         delivery: budget,
-        deliveryMode: options.delivery
+        deliveryMode:
+          options.delivery ??
+          (effectiveDelivery === 'notification'
+            ? 'prefer-notification'
+            : effectiveDelivery === 'indication'
+              ? 'prefer-indication'
+              : undefined)
       })
       return Object.freeze({
         requestedDelivery: options.delivery,
@@ -379,14 +391,18 @@ class PublicGattDescriptor implements GattDescriptor {
     this.characteristic = characteristic
     this.uuid = normalizeUuid(indexedRecord.record.path.descriptorUuid)
     this.occurrence = indexedRecord.occurrence
-    this.properties = Object.freeze(
-      indexedRecord.record.properties ?? {
-        read: false,
-        write: false,
-        availability: { read: 'unknown', write: 'unknown' },
-        access: { read: 'unknown', write: 'unknown' }
-      }
-    )
+    const properties: GattDescriptorProperties = indexedRecord.record.properties ?? {
+      read: false,
+      write: false,
+      availability: { read: 'unknown', write: 'unknown' },
+      access: { read: 'unknown', write: 'unknown' }
+    }
+    this.properties = Object.freeze({
+      read: properties.read,
+      write: properties.write,
+      availability: Object.freeze({ ...properties.availability }),
+      access: Object.freeze({ ...properties.access })
+    })
     Object.freeze(this)
   }
 
@@ -461,7 +477,8 @@ function recordsWithOccurrence<
 ): readonly OccurrenceRecord<RecordValue>[] {
   const counts = new Map<string, number>()
   return records.map(record => {
-    const value = key(record) ?? ''
+    const rawValue = key(record)
+    const value = rawValue === undefined ? '' : normalizeUuid(rawValue)
     const count = counts.get(value) ?? 0
     counts.set(value, count + 1)
     return Object.freeze({ record, occurrence: count })
@@ -504,7 +521,8 @@ function sameService(
   service: PortableGattDatabaseSnapshot['services'][number]['path']
 ): boolean {
   return (
-    characteristic.serviceUuid === service.serviceUuid && characteristic.serviceOccurrence === service.serviceOccurrence
+    normalizeUuid(characteristic.serviceUuid) === normalizeUuid(service.serviceUuid) &&
+    characteristic.serviceOccurrence === service.serviceOccurrence
   )
 }
 
@@ -514,9 +532,74 @@ function sameCharacteristic(
 ): boolean {
   return (
     sameService(descriptor, characteristic) &&
-    descriptor.characteristicUuid === characteristic.characteristicUuid &&
+    normalizeUuid(descriptor.characteristicUuid) === normalizeUuid(characteristic.characteristicUuid) &&
     descriptor.characteristicOccurrence === characteristic.characteristicOccurrence
   )
+}
+
+function validateTopology(snapshot: PortableGattDatabaseSnapshot): void {
+  const serviceKeys = new Set<string>()
+  for (const service of snapshot.services) {
+    assertDatabasePath(service.path, snapshot.path, 'public-gatt.service-path')
+    const key = `${normalizeUuid(service.path.serviceUuid)}|${service.path.serviceOccurrence}`
+    if (serviceKeys.has(key)) {
+      throw rehydratePublicError(contractError('protocol.violation', 'gatt', 'public-gatt.duplicate-service-path'))
+    }
+    serviceKeys.add(key)
+  }
+  const characteristicKeys = new Set<string>()
+  for (const characteristic of snapshot.characteristics) {
+    assertDatabasePath(characteristic.path, snapshot.path, 'public-gatt.characteristic-path')
+    const parents = snapshot.services.filter(service => sameService(characteristic.path, service.path))
+    if (parents.length !== 1) {
+      throw rehydratePublicError(contractError('protocol.violation', 'gatt', 'public-gatt.characteristic-parent'))
+    }
+    const key = `${normalizeUuid(characteristic.path.serviceUuid)}|${characteristic.path.serviceOccurrence}|${normalizeUuid(
+      characteristic.path.characteristicUuid
+    )}|${characteristic.path.characteristicOccurrence}`
+    if (characteristicKeys.has(key)) {
+      throw rehydratePublicError(
+        contractError('protocol.violation', 'gatt', 'public-gatt.duplicate-characteristic-path')
+      )
+    }
+    characteristicKeys.add(key)
+  }
+  const descriptorKeys = new Set<string>()
+  for (const descriptor of snapshot.descriptors) {
+    assertDatabasePath(descriptor.path, snapshot.path, 'public-gatt.descriptor-path')
+    const parents = snapshot.characteristics.filter(characteristic =>
+      sameCharacteristic(descriptor.path, characteristic.path)
+    )
+    if (parents.length !== 1) {
+      throw rehydratePublicError(contractError('protocol.violation', 'gatt', 'public-gatt.descriptor-parent'))
+    }
+    const key = `${normalizeUuid(descriptor.path.serviceUuid)}|${descriptor.path.serviceOccurrence}|${normalizeUuid(descriptor.path.characteristicUuid)}|${descriptor.path.characteristicOccurrence}|${normalizeUuid(descriptor.path.descriptorUuid)}|${descriptor.path.descriptorOccurrence}`
+    if (descriptorKeys.has(key)) {
+      throw rehydratePublicError(contractError('protocol.violation', 'gatt', 'public-gatt.duplicate-descriptor-path'))
+    }
+    descriptorKeys.add(key)
+  }
+}
+
+function assertDatabasePath(
+  path:
+    | PortableCurrentCharacteristicPath
+    | PortableCurrentDescriptorPath
+    | PortableGattDatabaseSnapshot['services'][number]['path'],
+  database: PortableGattDatabaseSnapshot['path'],
+  operation: string
+): void {
+  if (
+    path.attachmentId !== database.attachmentId ||
+    path.peerId !== database.peerId ||
+    path.connectionId !== database.connectionId ||
+    path.ownerLeaseId !== database.ownerLeaseId ||
+    path.connectionGeneration !== database.connectionGeneration ||
+    path.databaseId !== database.databaseId ||
+    path.databaseGeneration !== database.databaseGeneration
+  ) {
+    throw rehydratePublicError(contractError('protocol.violation', 'gatt', operation))
+  }
 }
 
 function normalizeCharacteristicProperties(
@@ -663,9 +746,9 @@ function mapStreamItem(
       kind: 'value',
       value: Object.freeze({
         value: new Uint8Array(value.value),
-        delivery: value.indication ? 'indication' : 'notification',
-        observedAtMonotonicMs: now(),
-        sequence: nextSequence()
+        delivery: value.delivery ?? (value.indication ? 'indication' : 'notification'),
+        observedAtMonotonicMs: value.observedAtMonotonicMs ?? now(),
+        sequence: value.sequence ?? nextSequence()
       })
     }
   }

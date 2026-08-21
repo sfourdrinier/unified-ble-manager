@@ -225,12 +225,10 @@ describe('long write public vertical slice', () => {
   })
 
   test('returns an unplanned receipt when the maximum-write-length observation rejects before planning', async () => {
-    const { fixture, manager, database, path } = await createFixture(
-      2,
-      backend =>
-        replaceMaximumWriteLengthImplementation(backend, async () => {
-          throw new Error('maximum write length observation rejected')
-        })
+    const { fixture, manager, database, path } = await createFixture(2, backend =>
+      replaceMaximumWriteLengthImplementation(backend, async () => {
+        throw new Error('maximum write length observation rejected')
+      })
     )
 
     const receipt = await settle(
@@ -244,16 +242,14 @@ describe('long write public vertical slice', () => {
 
   test('returns an unplanned receipt while a slow maximum-write-length observation is cancelled', async () => {
     let rejectMaximumWriteLength = null
-    const { fixture, manager, database, path } = await createFixture(
-      2,
-      backend =>
-        replaceMaximumWriteLengthImplementation(
-          backend,
-          () =>
-            new Promise((resolve, reject) => {
-              rejectMaximumWriteLength = reject
-            })
-        )
+    const { fixture, manager, database, path } = await createFixture(2, backend =>
+      replaceMaximumWriteLengthImplementation(
+        backend,
+        () =>
+          new Promise((resolve, reject) => {
+            rejectMaximumWriteLength = reject
+          })
+      )
     )
     const abort = new AbortController()
     const write = database.writeLong(path, new Uint8Array([1, 2, 3, 4]), {
@@ -309,6 +305,39 @@ describe('long write public vertical slice', () => {
       [4, 1, 'confirmed']
     ])
     expect(fixture.controller.peripheral.recordedWrites().map(write => [...write.value])).toEqual([[1, 2], [3, 4], [5]])
+    await settle(fixture.controller, manager.destroy())
+  })
+
+  test('honors a caller chunk-size cap without exceeding the observed write limit', async () => {
+    const { fixture, manager, database, path } = await createFixture(3)
+    const receipt = await settle(
+      fixture.controller,
+      database.writeLong(path, new Uint8Array([1, 2, 3, 4, 5]), {
+        ...operation(),
+        mode: 'with-response',
+        chunkSize: 2
+      })
+    )
+    expect(receipt).toMatchObject({ chunkSize: 2, totalChunks: 3, completedChunks: 3, commitState: 'confirmed' })
+    expect(fixture.controller.peripheral.recordedWrites().map(write => [...write.value])).toEqual([[1, 2], [3, 4], [5]])
+    await settle(fixture.controller, manager.destroy())
+  })
+
+  test('rejects a chunk-size cap larger than the observed write limit', async () => {
+    const { fixture, manager, database, path } = await createFixture(2)
+    const receipt = await settle(
+      fixture.controller,
+      database.writeLong(path, new Uint8Array([1, 2]), {
+        ...operation(),
+        mode: 'with-response',
+        chunkSize: 3
+      })
+    )
+    expect(receipt).toMatchObject({
+      terminal: { outcome: 'failed', cause: 'argument.invalid' },
+      planState: 'not-planned'
+    })
+    expect(fixture.controller.peripheral.recordedWrites()).toEqual([])
     await settle(fixture.controller, manager.destroy())
   })
 

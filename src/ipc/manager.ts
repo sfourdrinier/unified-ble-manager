@@ -1,5 +1,10 @@
 import { BackendContractError, BLE_ERROR_CODES, contractError, type CleanupRecord } from '../backend-contract/errors'
-import type { BoundedAsyncStream, OverflowPolicy, StreamTerminalNotice } from '../backend-contract/streams'
+import type {
+  BoundedAsyncStream,
+  OverflowPolicy,
+  StreamLimits,
+  StreamTerminalNotice
+} from '../backend-contract/streams'
 import {
   byteLimit,
   capacity,
@@ -9,6 +14,8 @@ import {
   type SerializableValue
 } from '../backend-contract/primitives'
 import { CoreBoundedStream } from '../core/bounded-stream'
+import { createGattCharacteristicProperties } from '../backend-contract/gatt'
+import type { GattDatabaseChangedEvent } from '../backend-contract/gatt'
 import { createPublicBleCapabilities, type BleCapabilities } from '../public/capabilities'
 import type {
   PortableCurrentCharacteristicPath,
@@ -16,6 +23,7 @@ import type {
   PortableDatabasePath,
   PortableGattDatabaseSnapshot,
   PortableOperationOptions,
+  PortableSubscriptionOptions,
   PortableWritePolicy
 } from '../manager/consumer-handles'
 import type { AttachmentRecord } from '../backend-contract/identity'
@@ -37,6 +45,13 @@ const REMOTE_STREAM_LIMITS = Object.freeze({
 export interface IpcManagerOperationOptions {
   readonly signal?: AbortSignal
   readonly timeoutMs?: number
+  readonly deliveryMode?: 'prefer-notification' | 'prefer-indication' | 'require-notification' | 'require-indication'
+  readonly stream?: {
+    readonly itemCapacity: number
+    readonly byteCapacity: number
+    readonly reservedControlCapacity: number
+    readonly overflowPolicy: OverflowPolicy
+  }
 }
 
 export interface IpcScanOptions extends IpcManagerOperationOptions {
@@ -278,9 +293,15 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
     }
   }
 
-  registerStream<Value>(handle: string, isValue: (value: unknown) => value is Value): BoundedAsyncStream<Value> {
+  registerStream<Value>(
+    handle: string,
+    isValue: (value: unknown) => value is Value,
+    limits: StreamLimits = REMOTE_STREAM_LIMITS,
+    overflowPolicy: OverflowPolicy = 'drop-oldest',
+    onTerminal?: (reason: StreamTerminalNotice['reason']) => void
+  ): BoundedAsyncStream<Value> {
     if (this.streams.has(handle)) throw new TypeError(`Duplicate remote stream handle: ${handle}`)
-    const source = new CoreBoundedStream<Value>(REMOTE_STREAM_LIMITS, 'drop-oldest')
+    const source = new CoreBoundedStream<Value>(limits, overflowPolicy)
     const deliver = (streamId: string, item: SerializableRecord): void => {
       if (item.kind === 'value') {
         const rawValue: unknown = item.value
@@ -299,7 +320,9 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
         return
       }
       if (item.kind === 'terminal') {
-        source.finishWithReason(requiredTerminalReason(item.reason, 'ipc-manager.event'))
+        const reason = requiredTerminalReason(item.reason, 'ipc-manager.event')
+        source.finishWithReason(reason)
+        onTerminal?.(reason)
         this.streams.delete(streamId)
         this.pendingStreamItems.delete(streamId)
       }
@@ -440,6 +463,7 @@ export class IpcConnection {
   private readonly lifecycleEvents = new CoreBoundedStream<SerializableRecord>(REMOTE_STREAM_LIMITS, 'drop-oldest')
   private lifecycleAdmission: Promise<void> | null = null
   private lifecycleSubscription: IpcConnectionEventSubscription | null = null
+  private readonly databases = new Set<IpcGattDatabase>()
   private readonly _connectionId: string
   private readonly _ownerLeaseId: string
   private readonly _connectionGeneration: string
@@ -486,12 +510,14 @@ export class IpcConnection {
       })
       .catch(() => {
         this.lifecycleEvents.closeWithReason('source-failed')
+        this.invalidateDatabases()
       })
   }
 
   private async pumpLifecycleEvents(subscription: IpcConnectionEventSubscription): Promise<void> {
     for await (const event of subscription.events) {
       if (event.kind === 'terminal') {
+        this.invalidateDatabases()
         this.lifecycleEvents.finishWithReason(requiredTerminalReason(event.reason, 'ipc-manager.connection-lifecycle'))
         return
       }
@@ -509,6 +535,15 @@ export class IpcConnection {
       this.lifecycleEvents.emit(value, estimateByteLength(value))
     }
     this.lifecycleEvents.closeWithReason('source-failed')
+    this.invalidateDatabases()
+  }
+
+  registerDatabase(database: IpcGattDatabase): void {
+    this.databases.add(database)
+  }
+
+  private invalidateDatabases(): void {
+    for (const database of this.databases) database.invalidate()
   }
 
   async discover(options: IpcManagerOperationOptions = {}): Promise<IpcGattDatabase> {
@@ -568,6 +603,8 @@ export class IpcConnection {
 export class IpcGattDatabase {
   readonly characteristics: readonly IpcCharacteristic[]
   readonly descriptors: readonly IpcDescriptor[]
+  private valid = true
+  private readonly changedStream = new CoreBoundedStream<GattDatabaseChangedEvent>(REMOTE_STREAM_LIMITS, 'drop-oldest')
 
   private constructor(
     private readonly manager: IpcBleManager,
@@ -591,7 +628,7 @@ export class IpcGattDatabase {
       requiredRecordArray(payload, 'descriptors', 'ipc-manager.gatt-database')
     )
     const services = requiredServiceRecords(requiredRecordArray(payload, 'services', 'ipc-manager.gatt-database'))
-    return new IpcGattDatabase(
+    const database = new IpcGattDatabase(
       manager,
       connection,
       requiredString(payload, 'handle', 'ipc-manager.gatt-database'),
@@ -601,6 +638,8 @@ export class IpcGattDatabase {
       characteristics,
       descriptors
     )
+    connection.registerDatabase(database)
+    return database
   }
 
   route(
@@ -609,22 +648,62 @@ export class IpcGattDatabase {
     binaryPayload: Uint8Array | null,
     signal?: AbortSignal
   ): Promise<SerializableRecord> {
-    return this.manager.route(
-      command,
-      Object.freeze({
-        ...payload,
-        databaseHandle: this.handle,
-        databaseId: this.databaseId,
-        databaseGeneration: this.databaseGeneration,
-        ...this.connectionIdentityPayload()
-      }),
-      binaryPayload,
-      signal
-    )
+    this.assertCurrent()
+    return this.manager
+      .route(
+        command,
+        Object.freeze({
+          ...payload,
+          databaseHandle: this.handle,
+          databaseId: this.databaseId,
+          databaseGeneration: this.databaseGeneration,
+          ...this.connectionIdentityPayload()
+        }),
+        binaryPayload,
+        signal
+      )
+      .catch(error => {
+        if (error instanceof BackendContractError && error.normalized.code === 'gatt.stale-handle') {
+          this.invalidate('service-changed')
+        }
+        throw error
+      })
   }
 
-  registerStream<Value>(handle: string, isValue: (value: unknown) => value is Value): BoundedAsyncStream<Value> {
-    return this.manager.registerStream<Value>(handle, isValue)
+  assertCurrent(): void {
+    if (!this.valid) throw contractError('gatt.stale-handle', 'gatt', 'ipc-manager.gatt-database-current')
+  }
+
+  get changed(): BoundedAsyncStream<GattDatabaseChangedEvent> {
+    return this.changedStream
+  }
+
+  invalidate(reason: 'service-changed' | null = null): void {
+    if (!this.valid) return
+    this.valid = false
+    if (reason === 'service-changed') {
+      this.changedStream.emit(
+        Object.freeze({
+          previousGeneration: this.databaseGeneration,
+          reason,
+          affectedHandleRange: null
+        }),
+        128
+      )
+      this.changedStream.finishWithReason('closed')
+      return
+    }
+    this.changedStream.closeWithReason('connection-lost')
+  }
+
+  registerStream<Value>(
+    handle: string,
+    isValue: (value: unknown) => value is Value,
+    limits?: StreamLimits,
+    overflowPolicy?: OverflowPolicy,
+    onTerminal?: (reason: StreamTerminalNotice['reason']) => void
+  ): BoundedAsyncStream<Value> {
+    return this.manager.registerStream<Value>(handle, isValue, limits, overflowPolicy, onTerminal)
   }
 
   closeStream(handle: string): void {
@@ -682,14 +761,19 @@ export class IpcGattDatabase {
         this.characteristics.map(characteristic =>
           Object.freeze({
             path: toCharacteristicPath(databasePath, characteristic.record),
-            properties: Object.freeze({
+            properties: createGattCharacteristicProperties({
+              broadcast: characteristic.record.properties.includes('broadcast'),
               read: characteristic.record.properties.includes('read'),
               writeWithResponse: characteristic.record.properties.includes('write'),
               writeWithoutResponse: characteristic.record.properties.includes('write-without-response'),
-              notify:
-                characteristic.record.properties.includes('notify') ||
-                characteristic.record.properties.includes('indicate')
-            })
+              authenticatedSignedWrites: characteristic.record.properties.includes('authenticated-signed-writes'),
+              notify: characteristic.record.properties.includes('notify'),
+              indicate: characteristic.record.properties.includes('indicate'),
+              extendedProperties: characteristic.record.properties.includes('extended-properties'),
+              reliableWrite: characteristic.record.properties.includes('reliable-write'),
+              writableAuxiliaries: characteristic.record.properties.includes('writable-auxiliaries')
+            }),
+            access: Object.freeze({ read: 'unknown', write: 'unknown' })
           })
         )
       ),
@@ -738,7 +822,7 @@ export class IpcGattDatabase {
 
   async subscribe(
     path: PortableCurrentCharacteristicPath,
-    options: PortableOperationOptions = EMPTY_OPERATION_OPTIONS
+    options: PortableSubscriptionOptions = EMPTY_SUBSCRIPTION_OPTIONS
   ): Promise<IpcSubscription> {
     const subscription = await this.characteristicForPath(path).subscribe(toIpcOptions(options))
     subscription.path = path
@@ -868,7 +952,19 @@ export class IpcCharacteristic {
   async subscribe(options: IpcManagerOperationOptions = {}): Promise<IpcSubscription> {
     const payload = await this.database.route(
       'gatt.subscribe',
-      Object.freeze({ characteristicHandle: this.handle, deadline: operationDeadline(options) }),
+      Object.freeze({
+        characteristicHandle: this.handle,
+        deadline: operationDeadline(options),
+        ...(options.deliveryMode === undefined ? {} : { deliveryMode: options.deliveryMode }),
+        ...(options.stream === undefined
+          ? {}
+          : {
+              streamItemCapacity: options.stream.itemCapacity,
+              streamByteCapacity: options.stream.byteCapacity,
+              streamReservedControlCapacity: options.stream.reservedControlCapacity,
+              streamOverflowPolicy: options.stream.overflowPolicy
+            })
+      }),
       null,
       options.signal
     )
@@ -876,7 +972,15 @@ export class IpcCharacteristic {
     return new IpcSubscription(
       this.database,
       handle,
-      this.database.registerStream<IpcNotificationValue>(handle, isIpcNotificationValue)
+      this.database.registerStream<IpcNotificationValue>(
+        handle,
+        isIpcNotificationValue,
+        toRemoteStreamLimits(options.stream),
+        options.stream?.overflowPolicy,
+        reason => {
+          if (reason === 'service-changed') this.database.invalidate('service-changed')
+        }
+      )
     )
   }
 }
@@ -936,6 +1040,15 @@ export class IpcSubscription {
 }
 
 const EMPTY_OPERATION_OPTIONS: PortableOperationOptions = Object.freeze({ signal: null, deadline: null })
+const EMPTY_SUBSCRIPTION_OPTIONS: PortableSubscriptionOptions = Object.freeze({
+  ...EMPTY_OPERATION_OPTIONS,
+  delivery: {
+    itemCapacity: capacity(128),
+    byteCapacity: capacity(512 * 1024),
+    reservedControlCapacity: capacity(1),
+    overflowPolicy: 'drop-oldest' as const
+  }
+})
 
 function ipcDatabasePath(
   attachment: AttachmentRecord<string>,
@@ -955,14 +1068,41 @@ function ipcDatabasePath(
   })
 }
 
-function toIpcOptions(options: PortableOperationOptions): IpcManagerOperationOptions {
+function toIpcOptions(options: PortableOperationOptions | PortableSubscriptionOptions): IpcManagerOperationOptions {
   const timeoutMs =
     typeof options.deadline === 'number' && globalThis.performance !== undefined
       ? Math.max(1, options.deadline - globalThis.performance.now())
       : undefined
+  const subscriptionOptions = isPortableSubscriptionOptions(options) ? options : null
+  const delivery = subscriptionOptions?.delivery
   return {
     signal: options.signal ?? undefined,
-    timeoutMs
+    timeoutMs,
+    deliveryMode: subscriptionOptions?.deliveryMode,
+    stream:
+      delivery === undefined
+        ? undefined
+        : {
+            itemCapacity: Number(delivery.itemCapacity),
+            byteCapacity: Number(delivery.byteCapacity),
+            reservedControlCapacity: Number(delivery.reservedControlCapacity),
+            overflowPolicy: delivery.overflowPolicy
+          }
+  }
+}
+
+function isPortableSubscriptionOptions(
+  options: PortableOperationOptions | PortableSubscriptionOptions
+): options is PortableSubscriptionOptions {
+  return 'delivery' in options && options.delivery !== null && typeof options.delivery === 'object'
+}
+
+function toRemoteStreamLimits(stream: IpcManagerOperationOptions['stream']): StreamLimits {
+  if (stream === undefined) return REMOTE_STREAM_LIMITS
+  return {
+    itemCapacity: capacity(stream.itemCapacity),
+    byteCapacity: capacity(stream.byteCapacity),
+    reservedControlCapacity: capacity(stream.reservedControlCapacity)
   }
 }
 

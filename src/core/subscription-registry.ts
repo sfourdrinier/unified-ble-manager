@@ -775,7 +775,13 @@ function physicalSubscriptionKey<Attachment extends string>(
   path: CurrentCharacteristicPath<Attachment>,
   deliveryMode: SubscriptionOptions['deliveryMode']
 ): string {
-  return `${exactPathKey(path)}|${deliveryMode ?? 'automatic'}`
+  const physicalMode =
+    deliveryMode === 'prefer-notification' || deliveryMode === 'require-notification'
+      ? 'notification'
+      : deliveryMode === 'prefer-indication' || deliveryMode === 'require-indication'
+        ? 'indication'
+        : 'automatic'
+  return `${exactPathKey(path)}|${physicalMode}`
 }
 
 function matchesDatabasePath<Attachment extends string>(

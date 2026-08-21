@@ -122,6 +122,7 @@ struct DatabaseResource {
     connection_handle: String,
     database_id: String,
     database_generation: String,
+    valid: bool,
     characteristics: HashMap<String, Characteristic>,
     descriptors: HashMap<String, Descriptor>,
 }
@@ -1555,12 +1556,18 @@ impl BtleplugDispatcher {
                 "tauri.discover-stale-lease",
             ));
         }
+        for database in caller_state.databases.values_mut() {
+            if database.connection_handle == connection_handle {
+                database.valid = false;
+            }
+        }
         caller_state.databases.insert(
             database_handle.clone(),
             DatabaseResource {
                 connection_handle,
                 database_id: database_id.clone(),
                 database_generation: database_generation.clone(),
+                valid: true,
                 characteristics: characteristic_map,
                 descriptors: descriptor_map,
             },
@@ -1645,6 +1652,34 @@ impl BtleplugDispatcher {
         let database_handle =
             required_string(&payload, "databaseHandle", "tauri.subscribe-database")?;
         let (peripheral, characteristic) = self.characteristic(caller, &payload).await?;
+        if let Some(delivery_mode) = payload.get("deliveryMode").and_then(as_string) {
+            match delivery_mode {
+                "require-notification"
+                    if !characteristic.properties.contains(CharPropFlags::NOTIFY) =>
+                {
+                    return Err(DispatchError::new(
+                        "gatt.property-not-supported",
+                        "gatt",
+                        "tauri.subscribe.notification",
+                    ));
+                }
+                "require-indication" => {
+                    return Err(DispatchError::new(
+                        "capability.limited",
+                        "gatt",
+                        "tauri.subscribe.indication-selection",
+                    ));
+                }
+                "prefer-notification" | "prefer-indication" | "require-notification" => {}
+                _ => {
+                    return Err(DispatchError::new(
+                        "argument.invalid",
+                        "gatt",
+                        "tauri.subscribe.delivery-mode",
+                    ));
+                }
+            }
+        }
         let mut notifications = peripheral.notifications().await.map_err(|error| {
             DispatchError::new("gatt.subscribe-failed", "gatt", "tauri.notifications")
                 .platform(error.to_string())
@@ -1950,6 +1985,13 @@ impl BtleplugDispatcher {
             .ok_or_else(|| {
                 DispatchError::new("gatt.stale-handle", "gatt", "tauri.characteristic-database")
             })?;
+        if !database.valid {
+            return Err(DispatchError::new(
+                "gatt.stale-handle",
+                "gatt",
+                "tauri.characteristic-database-generation",
+            ));
+        }
         validate_database_identity(payload, database, "tauri.characteristic-database")?;
         let characteristic = database
             .characteristics
@@ -1996,6 +2038,13 @@ impl BtleplugDispatcher {
             .ok_or_else(|| {
                 DispatchError::new("gatt.stale-handle", "gatt", "tauri.descriptor-database")
             })?;
+        if !database.valid {
+            return Err(DispatchError::new(
+                "gatt.stale-handle",
+                "gatt",
+                "tauri.descriptor-database-generation",
+            ));
+        }
         validate_database_identity(payload, database, "tauri.descriptor-database")?;
         let descriptor = database
             .descriptors

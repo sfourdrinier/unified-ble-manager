@@ -235,6 +235,9 @@ export interface PortableNotificationValue {
   /** The receiver owns an independent mutable byte copy. */
   readonly value: Uint8Array
   readonly indication: boolean
+  readonly delivery?: 'notification' | 'indication' | 'unknown'
+  readonly observedAtMonotonicMs?: number
+  readonly sequence?: number
 }
 
 export interface PortableStreamLimits {

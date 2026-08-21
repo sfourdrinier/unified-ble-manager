@@ -291,17 +291,18 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
         database.assertPath(path)
         const observation = await observeMaximumWriteLength(this.features, path, options.mode)
         database.assertPath(path)
+        const maximumWriteLength = resolveLongWriteChunkSize(observation.maximumWriteLength, options.chunkSize)
         const plan = await planLongWrite(
           this.features,
           String(path.connectionId),
           String(path.connectionGeneration),
           options.mode,
           bytes.byteLength,
-          observation.maximumWriteLength
+          maximumWriteLength
         )
         database.assertPath(path)
         return Object.freeze({
-          maximumWriteLength: observation.maximumWriteLength,
+          maximumWriteLength,
           totalChunks: plan.totalChunks
         })
       }
@@ -995,6 +996,14 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
     }
     return cleanup
   }
+}
+
+function resolveLongWriteChunkSize(observedMaximum: number, requestedChunkSize: number | undefined): number {
+  if (requestedChunkSize === undefined) return observedMaximum
+  if (!Number.isSafeInteger(requestedChunkSize) || requestedChunkSize < 1 || requestedChunkSize > observedMaximum) {
+    throw contractError('argument.invalid', 'gatt', 'unified-core.write-long.chunk-size')
+  }
+  return requestedChunkSize
 }
 
 function abortRequested(signal: AbortSignal | null | undefined): boolean {

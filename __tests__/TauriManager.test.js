@@ -285,7 +285,7 @@ describe('Tauri v2 public manager', () => {
     await expect(notification).resolves.toMatchObject({
       value: {
         kind: 'value',
-        value: { value: new Uint8Array([6, 7]), delivery: 'notification', sequence: 1 }
+        value: { value: new Uint8Array([6, 7]), delivery: 'unknown', observedAtMonotonicMs: 1, sequence: 1 }
       }
     })
     await expect(subscription.remove()).resolves.toMatchObject({ state: 'released' })
