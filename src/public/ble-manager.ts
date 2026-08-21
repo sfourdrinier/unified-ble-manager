@@ -12,6 +12,7 @@ import { normalizeOperationOptions } from './operation-options'
 import type { OperationOptions } from './operation-options'
 import { resolveStreamPreset } from './stream-presets'
 import type { StreamPreset } from './stream-presets'
+import type { IpcAdvertisement } from '../ipc/manager'
 
 // Public peer — opaque backend-scoped identifier, no generic.
 export interface BlePeer {
@@ -28,9 +29,13 @@ export interface BleConnection {
 }
 
 // Public scan session — bounded stream, no generic.
+// Union embraces both native AdvertisementObservation and Tauri IpcAdvertisement
+// until PR4 scan semantics unify; covariance lets each backend stream satisfy the union without casts.
+export type PublicScanObservation = AdvertisementObservation<string> | IpcAdvertisement
+
 export interface ScanSession {
   readonly stop: () => Promise<CleanupRecord>
-  readonly observations: BoundedAsyncStream<AdvertisementObservation<string>>
+  readonly observations: BoundedAsyncStream<PublicScanObservation>
 }
 
 // Public GATT placeholders — full object model lands in PR3, but façade exists now.

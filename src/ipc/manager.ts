@@ -720,11 +720,27 @@ function operationDeadline(options: IpcManagerOperationOptions): number | null {
   return globalThis.performance.now() + options.timeoutMs
 }
 
+function isCleanupRecord(value: unknown): value is CleanupRecord {
+  if (typeof value !== 'object' || value === null) return false
+  if (!('state' in value) || !('failures' in value)) return false
+  const state = Reflect.get(value, 'state')
+  const failures = Reflect.get(value, 'failures')
+  if (state !== 'released' && state !== 'release-failed') return false
+  if (!Array.isArray(failures)) return false
+  return failures.every(entry => {
+    if (typeof entry !== 'object' || entry === null) return false
+    if (!('resourceKind' in entry) || !('error' in entry)) return false
+    const resourceKind = Reflect.get(entry, 'resourceKind')
+    const error = Reflect.get(entry, 'error')
+    return typeof resourceKind === 'string' && typeof error === 'object' && error !== null
+  })
+}
+
 function cleanupRecord(value: SerializableRecord): CleanupRecord {
-  if ((value.state !== 'released' && value.state !== 'release-failed') || !Array.isArray(value.failures)) {
+  if (!isCleanupRecord(value)) {
     throw new TypeError('Malformed cleanup receipt')
   }
-  return value as unknown as CleanupRecord
+  return value
 }
 
 function requiredOverflowPolicy(value: SerializableValue | undefined, operation: string): OverflowPolicy {

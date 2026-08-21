@@ -1,4 +1,3 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
 // src/public/errors.ts — public BleError (PR1 stub, full recovery catalog in PR2)
 
 import { BackendContractError } from '../backend-contract/errors'
@@ -37,7 +36,12 @@ export class BleError extends BackendContractError {
 
   static fromContractError(error: BackendContractError): BleError {
     const ble = new BleError(error.normalized.code, error.normalized.domain, error.normalized.operation)
-    ;(ble as any).normalized = error.normalized
+    Object.defineProperty(ble, 'normalized', {
+      value: error.normalized,
+      enumerable: true,
+      configurable: false,
+      writable: false
+    })
     return ble
   }
 }

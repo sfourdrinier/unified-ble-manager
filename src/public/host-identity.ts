@@ -2,6 +2,8 @@
 
 import { contractError } from '../backend-contract/errors'
 
+declare const require: ((id: string) => unknown) | undefined
+
 function getRandomValues(length: number): Uint8Array {
   const out = new Uint8Array(length)
   if (globalThis.crypto?.getRandomValues) {
@@ -19,7 +21,30 @@ function bytesToHex(bytes: Uint8Array): string {
 }
 
 function sha256Sync(message: string): string {
+  const nodeResult = tryNodeSha256Sync(message)
+  if (nodeResult !== null) return nodeResult
   return jsSha256(message)
+}
+
+function tryNodeSha256Sync(message: string): string | null {
+  try {
+    if (typeof require !== 'function') return null
+    const crypto = Reflect.apply(require, undefined, ['crypto'])
+    if (typeof crypto !== 'object' || crypto === null) return null
+    const createHash = Reflect.get(crypto, 'createHash')
+    if (typeof createHash !== 'function') return null
+    const hash = Reflect.apply(createHash, crypto, ['sha256'])
+    if (typeof hash !== 'object' || hash === null) return null
+    const update = Reflect.get(hash, 'update')
+    const digest = Reflect.get(hash, 'digest')
+    if (typeof update !== 'function' || typeof digest !== 'function') return null
+    Reflect.apply(update, hash, [message, 'utf8'])
+    const result: unknown = Reflect.apply(digest, hash, ['hex'])
+    if (typeof result !== 'string') return null
+    return result
+  } catch {
+    return null
+  }
 }
 
 function jsSha256(ascii: string): string {
