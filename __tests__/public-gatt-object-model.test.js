@@ -141,7 +141,6 @@ describe('stable public GATT object model (PR3 TDD)', () => {
       value: { kind: 'value', value: { delivery: 'indication', value: new Uint8Array([9]) } }
     })
     await settle(fixture, preferred.remove())
-
     fixture.controller.triggerServicesChanged('deterministic-peer')
     await settle(fixture, Promise.resolve())
     await expect(changedIterator.next()).resolves.toMatchObject({

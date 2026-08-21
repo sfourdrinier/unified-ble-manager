@@ -584,6 +584,8 @@ function resolveDelivery(
   if (requested === 'require-indication' && !properties.indicate) {
     throw rehydratePublicError(contractError('gatt.property-not-supported', 'gatt', 'public-gatt.subscribe.indication'))
   }
+  if (requested === 'require-notification') return 'notification'
+  if (requested === 'require-indication') return 'indication'
   if (requested === 'prefer-indication' && properties.indicate) return 'indication'
   if (properties.notify) return 'notification'
   if (properties.indicate) return 'indication'
