@@ -48,7 +48,7 @@ const TAURI_CAPABILITIES: [&str; 35] = [
     "lifecycle:page-persistence",
 ];
 
-const TAURI_LIMITED_CAPABILITIES: [(&str, &str, &str, &str); 6] = [
+const TAURI_LIMITED_CAPABILITIES: [(&str, &str, &str, &str); 5] = [
     (
         "discovery:continuous-scan",
         "scan.owner-join-authority-and-signature",
@@ -78,12 +78,6 @@ const TAURI_LIMITED_CAPABILITIES: [(&str, &str, &str, &str); 6] = [
         "gatt.reads-descriptors-write-policy-and-dispatched-cancellation",
         "delivery-kind-unknown",
         "The btleplug notification stream does not distinguish indications from notifications, so delivery is reported as unknown.",
-    ),
-    (
-        "gatt:maximum-write-length",
-        "gatt.maximum-write-length-boundaries",
-        "derived-from-mtu",
-        "The reported maximum is derived from the observed ATT MTU minus protocol overhead and is not an independently qualified physical-radio receipt.",
     ),
 ];
 

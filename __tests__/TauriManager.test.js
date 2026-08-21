@@ -58,8 +58,7 @@ function capabilitySnapshot(backendGeneration) {
     ['connection:direct', 'connection.lease-joins-borrowing-transfer-and-revocation'],
     ['connection:rssi', 'connection.rssi-and-att-mtu-capability-contract'],
     ['gatt:descriptors', 'gatt.descriptor-discovery-read-write'],
-    ['gatt:indications', 'gatt.reads-descriptors-write-policy-and-dispatched-cancellation'],
-    ['gatt:maximum-write-length', 'gatt.maximum-write-length-boundaries']
+    ['gatt:indications', 'gatt.reads-descriptors-write-policy-and-dispatched-cancellation']
   ]
   const metadata = new Map(entries)
   return {
@@ -168,6 +167,8 @@ describe('Tauri v2 public manager', () => {
     const { createTauriBleManagerWithEnvironment } = require('../src/tauri')
     const manager = await createTauriBleManagerWithEnvironment({ invoke, Channel: FakeChannel })
 
+    expect(manager.capabilities.supports('gatt:maximum-write-length')).toBe(false)
+    expect(manager.capabilities.supports('gatt:long-write')).toBe(false)
     await expect(manager.connect('peer-1', { intent: 'when-available' })).rejects.toMatchObject({
       code: 'capability.unsupported'
     })
@@ -178,6 +179,45 @@ describe('Tauri v2 public manager', () => {
       code: 'capability.unsupported'
     })
     expect(invoke.mock.calls.some(([, args]) => args.request.envelope?.command === 'connection.connect')).toBe(false)
+    await manager.destroy()
+  })
+
+  test('does not discover GATT when lifecycle admission fails', async () => {
+    const commands = []
+    const invoke = jest.fn(async (_command, args) => {
+      const request = args.request
+      if (request.kind === 'bootstrap') return { kind: 'bootstrap', bootstrap: bootstrap() }
+      if (request.kind === 'event.ack') return { kind: 'event.ack' }
+      if (request.kind === 'release') return { kind: 'release', cleanup: { state: 'released', failures: [] } }
+      const { command } = request.envelope
+      commands.push(command)
+      if (command === 'connection.connect') {
+        return {
+          kind: 'route',
+          payload: {
+            handle: 'connection-lifecycle-admission-failure',
+            connectionId: 'connection-id-admission-failure',
+            ownerLeaseId: 'tauri-lease-1',
+            peerId: 'peer-admission-failure',
+            connectionGeneration: 'generation-admission-failure'
+          }
+        }
+      }
+      if (command === 'connection.events.subscribe') {
+        throw new Error('lifecycle admission rejected')
+      }
+      if (command === 'gatt.discover') {
+        throw new Error('discovery must not be routed after lifecycle admission failure')
+      }
+      throw new Error(`unexpected route ${command}`)
+    })
+    const { createTauriBleManagerWithEnvironment } = require('../src/tauri')
+    const manager = await createTauriBleManagerWithEnvironment({ invoke, Channel: FakeChannel })
+
+    const connection = await manager.connect('peer-admission-failure')
+    await expect(connection.discover()).rejects.toBeDefined()
+    expect(commands).toContain('connection.events.subscribe')
+    expect(commands).not.toContain('gatt.discover')
     await manager.destroy()
   })
 
@@ -406,6 +446,21 @@ describe('Tauri v2 public manager', () => {
             connectionGeneration: 'generation-receipt'
           }
         }
+      }
+      if (command === 'connection.events.subscribe') {
+        return {
+          kind: 'route',
+          payload: {
+            handle: 'connection-events-ipc-1',
+            connectionId: 'connection-id-receipt',
+            connectionGeneration: 'generation-receipt',
+            eventSchemaVersion: 2
+          }
+        }
+      }
+      if (command === 'connection.events.ready') return { kind: 'route', payload: { state: 'ready' } }
+      if (command === 'connection.events.unsubscribe') {
+        return { kind: 'route', payload: { state: 'released', failures: [] } }
       }
       if (command === 'gatt.discover') {
         return {

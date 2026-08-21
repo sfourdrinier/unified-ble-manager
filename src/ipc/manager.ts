@@ -617,9 +617,10 @@ export class IpcConnection {
           this.lifecycleEvents.closeWithReason('source-failed')
         })
       })
-      .catch(() => {
+      .catch(error => {
         this.lifecycleEvents.closeWithReason('source-failed')
         this.invalidateDatabases()
+        throw error
       })
     this.lifecycleAdmission = admission
     return admission
@@ -699,7 +700,7 @@ export class IpcConnection {
   private async disconnectInternal(): Promise<CleanupRecord> {
     this.invalidateDatabases()
     if (this.lifecycleAdmission !== null) {
-      await this.lifecycleAdmission
+      await this.lifecycleAdmission.catch(() => undefined)
     }
     if (this.lifecycleSubscription !== null) {
       await this.lifecycleSubscription.unsubscribe()
