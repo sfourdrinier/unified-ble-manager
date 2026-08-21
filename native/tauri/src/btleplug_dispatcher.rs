@@ -4,7 +4,7 @@ use std::{
         atomic::{AtomicI64, AtomicU64, Ordering},
         Arc, Mutex as SyncMutex, OnceLock,
     },
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use btleplug::{
@@ -63,6 +63,7 @@ pub struct BtleplugDispatcher {
     inner: Arc<Mutex<DispatcherState>>,
     next_id: Arc<AtomicU64>,
     next_revocation: Arc<AtomicU64>,
+    started_at: Arc<Instant>,
     revoked_callers: Arc<SyncMutex<HashMap<String, u64>>>,
     options: BtleplugDispatcherOptions,
 }
@@ -108,14 +109,12 @@ struct ScanResource {
 struct ConnectionResource {
     peer_id: String,
     peripheral: Peripheral,
-    generation: String,
 }
 
 struct DatabaseResource {
     connection_handle: String,
     characteristics: HashMap<String, Characteristic>,
     descriptors: HashMap<String, Descriptor>,
-    generation: String,
 }
 
 struct SubscriptionResource {
@@ -201,6 +200,7 @@ impl BtleplugDispatcher {
             })),
             next_id: Arc::new(AtomicU64::new(1)),
             next_revocation: Arc::new(AtomicU64::new(1)),
+            started_at: Arc::new(Instant::now()),
             revoked_callers: Arc::new(SyncMutex::new(HashMap::new())),
             options,
         }
@@ -900,6 +900,7 @@ impl BtleplugDispatcher {
             );
         }
         let handle = self.id("connection");
+        let connection_id = self.id("connection-id");
         let connection_generation = self.id("connection-generation");
         let mut state = self.inner.lock().await;
         let Some(caller_state) = state.callers.get_mut(&key) else {
@@ -917,11 +918,12 @@ impl BtleplugDispatcher {
             ConnectionResource {
                 peer_id: peer_id.clone(),
                 peripheral,
-                generation: connection_generation.clone(),
             },
         );
         Ok(object([
             ("handle", string(handle)),
+            ("connectionId", string(connection_id)),
+            ("ownerLeaseId", string(caller_state.lease_id.clone())),
             ("peerId", string(peer_id)),
             ("connectionGeneration", string(connection_generation)),
         ]))
@@ -1074,7 +1076,6 @@ impl BtleplugDispatcher {
                 connection_handle,
                 characteristics: characteristic_map,
                 descriptors: descriptor_map,
-                generation: database_generation.clone(),
             },
         );
         Ok(object([
@@ -1126,9 +1127,24 @@ impl BtleplugDispatcher {
                 DispatchError::new("gatt.write-failed", "gatt", "tauri.gatt-write")
                     .platform(error.to_string())
             })?;
+        let write_correlation = self.id("write-operation");
+        let commit_state = if mode == "with-response" {
+            "confirmed"
+        } else {
+            "accepted"
+        };
         Ok(object([
-            ("commitState", string("committed")),
-            ("outcome", string("succeeded")),
+            (
+                "terminal",
+                object([
+                    ("correlation", string(write_correlation)),
+                    ("outcome", string("succeeded")),
+                    ("cause", IpcValue::Null),
+                ]),
+            ),
+            ("mode", string(mode)),
+            ("commitState", string(commit_state)),
+            ("bytesSubmitted", number(bytes.len() as i64)),
         ]))
     }
 
@@ -1155,26 +1171,25 @@ impl BtleplugDispatcher {
         let stream_handle = handle.clone();
         let key = caller_key(caller);
         let uuid = characteristic.uuid;
-        // The wire contract is PortableNotificationValue { value, indication }.
-        // btleplug's ValueNotification carries no indication flag, so it is
-        // derived once from the characteristic's properties: a characteristic
-        // that indicates is acknowledged, one that only notifies is not.
-        let indication = characteristic
-            .properties
-            .contains(btleplug::api::CharPropFlags::INDICATE);
         let dispatcher = self.clone();
         let task = tauri::async_runtime::spawn(async move {
+            let mut sequence = 0_u64;
             while let Some(notification) = notifications.next().await {
                 if notification.uuid != uuid {
                     continue;
                 }
+                sequence = sequence.saturating_add(1);
+                let observed_at_monotonic_ms =
+                    i64::try_from(dispatcher.started_at.elapsed().as_millis()).unwrap_or(i64::MAX);
                 if dispatcher
                     .emit(
                         &key,
                         &stream_handle,
                         object([
                             ("value", IpcValue::Bytes(notification.value)),
-                            ("indication", IpcValue::Bool(indication)),
+                            ("delivery", string("unknown")),
+                            ("observedAtMonotonicMs", number(observed_at_monotonic_ms)),
+                            ("sequence", number(sequence as i64)),
                         ]),
                         false,
                     )

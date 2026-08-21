@@ -302,6 +302,8 @@ function isAttachment(value: unknown): boolean {
   ) {
     return false
   }
+  const state = wireRecord(adapter.state)
+  if (state === null || state.backendGeneration !== record.backendGeneration) return false
   return (
     nonEmptyString(record.attachmentId) &&
     nonEmptyString(record.backendInstanceId) &&
@@ -379,12 +381,12 @@ function isIpcVersionAxes(value: unknown): boolean {
 function negotiatedVersion(value: unknown, axis: string): boolean {
   const record = wireRecord(value)
   const selected = versionNumberValue(record?.selected, axis)
-  const localRange = wireRecord(record?.localRange)
-  const remoteRange = wireRecord(record?.remoteRange)
-  const localMinimum = versionNumberValue(localRange?.minimum, axis)
-  const localMaximum = versionNumberValue(localRange?.maximum, axis)
-  const remoteMinimum = versionNumberValue(remoteRange?.minimum, axis)
-  const remoteMaximum = versionNumberValue(remoteRange?.maximum, axis)
+  const localRange = versionRangeValue(record?.localRange, axis)
+  const remoteRange = versionRangeValue(record?.remoteRange, axis)
+  const localMinimum = localRange?.minimum ?? null
+  const localMaximum = localRange?.maximum ?? null
+  const remoteMinimum = remoteRange?.minimum ?? null
+  const remoteMaximum = remoteRange?.maximum ?? null
   return (
     record !== null &&
     exactKeys(record, ['axis', 'selected', 'localRange', 'remoteRange']) &&
@@ -407,6 +409,18 @@ function versionNumberValue(value: unknown, axis: string): number | null {
     return null
   }
   return record.value
+}
+
+function versionRangeValue(
+  value: unknown,
+  axis: string
+): { readonly minimum: number; readonly maximum: number } | null {
+  const record = wireRecord(value)
+  if (record === null || !exactKeys(record, ['axis', 'minimum', 'maximum']) || record.axis !== axis) return null
+  const minimum = versionNumberValue(record.minimum, axis)
+  const maximum = versionNumberValue(record.maximum, axis)
+  if (minimum === null || maximum === null || minimum > maximum) return null
+  return { minimum, maximum }
 }
 
 function isCleanupRecord(value: unknown): value is CleanupRecord {
@@ -435,6 +449,8 @@ function isCleanupFailure(value: unknown): boolean {
 
 function isNormalizedBleError(value: unknown): value is NormalizedBleError {
   const record = wireRecord(value)
+  const retryability =
+    record?.code === 'operation.aborted' || record?.code === 'operation.timed-out' ? 'caller-decides' : 'never'
   return (
     record !== null &&
     exactKeys(record, ['code', 'domain', 'operation', 'platform', 'retryability']) &&
@@ -442,7 +458,7 @@ function isNormalizedBleError(value: unknown): value is NormalizedBleError {
     isBleErrorDomain(record.domain) &&
     nonEmptyString(record.domain) &&
     nonEmptyString(record.operation) &&
-    (record.retryability === 'never' || record.retryability === 'caller-decides') &&
+    record.retryability === retryability &&
     isPlatformErrorDetail(record.platform)
   )
 }

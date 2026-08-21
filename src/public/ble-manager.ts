@@ -106,25 +106,25 @@ class PublicBleManager implements BleManager {
   }
 
   async scan(options: ScanOptions = {}): Promise<ScanSession> {
-    const { signal, deadline } = normalizeOperationOptions(options, this.now)
-    const preset = options.preset ?? 'balanced'
-    const delivery = resolveStreamPreset({ preset })
-    const filter = options.filter ?? { serviceUuids: [], manufacturerData: [], localNamePrefix: null }
-    const internalOptions: InternalScanOptions<string, string> = {
-      filter,
-      duplicatePolicy: 'merged',
-      timestampPolicy: 'source-then-receipt',
-      delivery: {
-        itemCapacity: delivery.itemCapacity,
-        byteCapacity: delivery.byteCapacity,
-        reservedControlCapacity: delivery.reservedControlCapacity,
-        overflowPolicy: delivery.overflowPolicy
-      },
-      deadline,
-      signal,
-      sharing: { mode: 'owner', allowSharing: false }
-    }
     try {
+      const { signal, deadline } = normalizeOperationOptions(options, this.now)
+      const preset = options.preset ?? 'balanced'
+      const delivery = resolveStreamPreset({ preset })
+      const filter = options.filter ?? { serviceUuids: [], manufacturerData: [], localNamePrefix: null }
+      const internalOptions: InternalScanOptions<string, string> = {
+        filter,
+        duplicatePolicy: 'merged',
+        timestampPolicy: 'source-then-receipt',
+        delivery: {
+          itemCapacity: delivery.itemCapacity,
+          byteCapacity: delivery.byteCapacity,
+          reservedControlCapacity: delivery.reservedControlCapacity,
+          overflowPolicy: delivery.overflowPolicy
+        },
+        deadline,
+        signal,
+        sharing: { mode: 'owner', allowSharing: false }
+      }
       const session = await this.internal.scan(internalOptions)
       return {
         stop: () => rehydratePublicPromise(session.stop()),
@@ -136,10 +136,10 @@ class PublicBleManager implements BleManager {
   }
 
   async connect(peer: BlePeer | string, options: OperationOptions = {}): Promise<BleConnection> {
-    const { signal, deadline } = normalizeOperationOptions(options, this.now)
-    const peerIdString = typeof peer === 'string' ? peer : peer.id
-    const peerId = opaqueId<'peer', string>(peerIdString, 'peer', 'public-ble-manager')
     try {
+      const { signal, deadline } = normalizeOperationOptions(options, this.now)
+      const peerIdString = typeof peer === 'string' ? peer : peer.id
+      const peerId = opaqueId<'peer', string>(peerIdString, 'peer', 'public-ble-manager')
       const internalConnection = await this.internal.connect(peerId, {
         signal,
         deadline

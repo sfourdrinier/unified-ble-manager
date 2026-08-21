@@ -236,6 +236,23 @@ describe('Tauri v2 IPC transport', () => {
       normalized: { code: 'protocol.malformed' }
     })
 
+    const contradictoryErrorTransport = new TauriBleIpcTransport({
+      invoke: jest.fn(async () => ({
+        kind: 'failure',
+        error: {
+          code: 'connection.failed',
+          domain: 'connection',
+          operation: 'tauri.test',
+          platform: null,
+          retryability: 'caller-decides'
+        }
+      })),
+      Channel: FakeChannel
+    })
+    await expect(contradictoryErrorTransport.invoke({ kind: 'bootstrap' })).rejects.toMatchObject({
+      normalized: { code: 'protocol.malformed' }
+    })
+
     const contradictoryCleanupTransport = new TauriBleIpcTransport({
       invoke: jest.fn(async () => ({
         kind: 'release',

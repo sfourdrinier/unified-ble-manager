@@ -45,7 +45,9 @@ type PublicFilterShape = {
 
 function getFilter(options: ScanOptions): PublicFilterShape | undefined {
   const value = Reflect.get(options, 'filter')
-  if (typeof value !== 'object' || value === null) return undefined
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined
+  const prototype = Object.getPrototypeOf(value)
+  if (prototype !== Object.prototype && prototype !== null) return undefined
   if (
     Object.keys(value).some(key => key !== 'serviceUuids' && key !== 'manufacturerData' && key !== 'localNamePrefix')
   ) {

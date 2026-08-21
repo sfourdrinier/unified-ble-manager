@@ -32,8 +32,9 @@ export async function runWithCleanup<Value>(
   }
   let cleanupOutcome: { readonly kind: 'ok' } | { readonly kind: 'error'; readonly error: unknown }
   try {
-    await cleanup()
-    cleanupOutcome = { kind: 'ok' }
+    const cleanupResult = await cleanup()
+    const cleanupFailure = resolvedCleanupFailure(cleanupResult)
+    cleanupOutcome = cleanupFailure === null ? { kind: 'ok' } : { kind: 'error', error: cleanupFailure }
   } catch (error) {
     cleanupOutcome = { kind: 'error', error }
   }
@@ -47,4 +48,13 @@ export async function runWithCleanup<Value>(
     throw outcome.error
   }
   return outcome.value
+}
+
+function resolvedCleanupFailure(value: unknown): Error | null {
+  if (typeof value !== 'object' || value === null || !('state' in value) || value.state !== 'release-failed') {
+    return null
+  }
+  const error = new Error('BLE cleanup failed')
+  Object.defineProperty(error, 'cleanup', { value, enumerable: true })
+  return error
 }

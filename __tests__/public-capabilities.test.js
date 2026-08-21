@@ -61,5 +61,26 @@ describe('public BleCapabilities', () => {
       constructor: AggregateError,
       errors: [new Error('action-failed'), new Error('release-failed')]
     })
+
+    internal.connect.mockResolvedValue({
+      disconnect: async () => ({ state: 'released', failures: [] }),
+      release: async () => ({
+        state: 'release-failed',
+        failures: [
+          {
+            resourceKind: 'connection',
+            error: {
+              code: 'connection.lost',
+              domain: 'connection',
+              operation: 'public-capabilities.cleanup',
+              platform: null,
+              retryability: 'never'
+            }
+          }
+        ]
+      })
+    })
+    await expect(manager.withConnection('peer-3', {}, async () => 'ok')).rejects.toThrow('BLE cleanup failed')
+    await expect(manager.connect('peer-4', { timeoutMs: 0 })).rejects.toMatchObject({ code: 'argument.invalid' })
   })
 })

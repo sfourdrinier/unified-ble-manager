@@ -93,7 +93,13 @@ describe('Tauri v2 public manager', () => {
         'adapter.state': { state: bootstrap().attachment.adapter.state },
         'scan.start': { handle: 'scan-1' },
         'scan.stop': { state: 'released', failures: [] },
-        'connection.connect': { handle: 'connection-1', peerId: 'polar-h10', connectionGeneration: 'generation-1' },
+        'connection.connect': {
+          handle: 'connection-1',
+          connectionId: 'connection-id-1',
+          ownerLeaseId: 'tauri-lease-1',
+          peerId: 'polar-h10',
+          connectionGeneration: 'generation-1'
+        },
         'gatt.discover': {
           handle: 'database-1',
           databaseGeneration: 'database-generation-1',
@@ -110,7 +116,12 @@ describe('Tauri v2 public manager', () => {
           descriptors: []
         },
         'gatt.read': { value: { $__unifiedBleBytesV2: [1, 2, 3] } },
-        'gatt.write': { commitState: 'committed', outcome: 'succeeded' },
+        'gatt.write': {
+          terminal: { correlation: 'write-operation-1', outcome: 'succeeded', cause: null },
+          mode: 'with-response',
+          commitState: 'confirmed',
+          bytesSubmitted: 2
+        },
         'gatt.subscribe': { handle: 'subscription-1' },
         'gatt.unsubscribe': { state: 'released', failures: [] },
         'connection.disconnect': { state: 'released', failures: [] }
@@ -131,17 +142,43 @@ describe('Tauri v2 public manager', () => {
     await expect(scan.stop()).resolves.toMatchObject({ state: 'released' })
 
     const connection = await manager.connect('polar-h10')
+    expect(connection.connectionId).toBe('connection-id-1')
     const database = await connection.discover()
+    expect(database.path.databaseGeneration).toBe('database-generation-1')
+    expect(database.path.attachment.attachmentId).toBe('tauri-attachment-1')
+    expect(database.path.attachment.adapter.adapterId).toBe('tauri-adapter-1')
     const characteristic = database.characteristics[0]
     await expect(characteristic.read()).resolves.toEqual(new Uint8Array([1, 2, 3]))
     await expect(characteristic.write(new Uint8Array([4, 5]), { mode: 'with-response' })).resolves.toMatchObject({
-      commitState: 'committed'
+      terminal: { correlation: 'write-operation-1', outcome: 'succeeded', cause: null },
+      mode: 'with-response',
+      commitState: 'confirmed',
+      bytesSubmitted: 2
+    })
+    const snapshot = await database.snapshot()
+    await expect(
+      database.write(snapshot.characteristics[0].path, new Uint8Array([4, 5]), { mode: 'with-response' })
+    ).resolves.toMatchObject({
+      terminal: { correlation: 'write-operation-1', outcome: 'succeeded', cause: null },
+      mode: 'with-response',
+      commitState: 'confirmed',
+      bytesSubmitted: 2
     })
 
     const subscription = await characteristic.subscribe()
     const notification = subscription.values[Symbol.asyncIterator]().next()
-    streamValue('subscription-1', new Uint8Array([6, 7]))
-    await expect(notification).resolves.toMatchObject({ value: { kind: 'value', value: new Uint8Array([6, 7]) } })
+    streamValue('subscription-1', {
+      value: new Uint8Array([6, 7]),
+      delivery: 'unknown',
+      observedAtMonotonicMs: 1,
+      sequence: 1
+    })
+    await expect(notification).resolves.toMatchObject({
+      value: {
+        kind: 'value',
+        value: { value: new Uint8Array([6, 7]), delivery: 'unknown', observedAtMonotonicMs: 1, sequence: 1 }
+      }
+    })
     await expect(subscription.remove()).resolves.toMatchObject({ state: 'released' })
     await expect(connection.disconnect()).resolves.toMatchObject({ state: 'released' })
     await expect(manager.destroy()).resolves.toMatchObject({ state: 'released' })
@@ -153,6 +190,7 @@ describe('Tauri v2 public manager', () => {
       'connection.connect',
       'gatt.discover',
       'gatt.read',
+      'gatt.write',
       'gatt.write',
       'gatt.subscribe',
       'gatt.unsubscribe',
@@ -199,7 +237,13 @@ describe('Tauri v2 public manager', () => {
       if (request.envelope.command === 'connection.connect') {
         return {
           kind: 'route',
-          payload: { handle: 'connection-cleanup', peerId: 'polar-h10', connectionGeneration: 'generation-cleanup' }
+          payload: {
+            handle: 'connection-cleanup',
+            connectionId: 'connection-id-cleanup',
+            ownerLeaseId: 'tauri-lease-1',
+            peerId: 'polar-h10',
+            connectionGeneration: 'generation-cleanup'
+          }
         }
       }
       if (request.envelope.command === 'connection.disconnect') {
@@ -382,6 +426,23 @@ describe('Tauri v2 public manager', () => {
     await expect(
       createTauriBleManagerWithEnvironment({ invoke: invalidStateInvoke, Channel: FakeChannel })
     ).rejects.toMatchObject({ normalized: { code: 'protocol.malformed' } })
+
+    const mismatchedGenerationBootstrap = bootstrap()
+    mismatchedGenerationBootstrap.attachment.adapter.state.backendGeneration = 'other-generation'
+    const mismatchedGenerationInvoke = jest.fn(async () => ({
+      kind: 'bootstrap',
+      bootstrap: mismatchedGenerationBootstrap
+    }))
+    await expect(
+      createTauriBleManagerWithEnvironment({ invoke: mismatchedGenerationInvoke, Channel: FakeChannel })
+    ).rejects.toMatchObject({ normalized: { code: 'protocol.malformed' } })
+
+    const outOfRangeVersionBootstrap = bootstrap()
+    outOfRangeVersionBootstrap.versions.ipcProtocol.selected = { axis: 'ipc-protocol', value: 2 }
+    const outOfRangeVersionInvoke = jest.fn(async () => ({ kind: 'bootstrap', bootstrap: outOfRangeVersionBootstrap }))
+    await expect(
+      createTauriBleManagerWithEnvironment({ invoke: outOfRangeVersionInvoke, Channel: FakeChannel })
+    ).rejects.toMatchObject({ normalized: { code: 'protocol.malformed' } })
   })
 
   test('rejects malformed public filters instead of silently scanning without them', async () => {
@@ -394,9 +455,9 @@ describe('Tauri v2 public manager', () => {
     const { createTauriBleManagerWithEnvironment } = require('../src/tauri')
     const manager = await createTauriBleManagerWithEnvironment({ invoke, Channel: FakeChannel })
 
-    await expect(manager.scan({ filter: { serviceUuids: 'not-an-array' } })).rejects.toMatchObject({
-      code: 'argument.invalid'
-    })
+    for (const filter of [{ serviceUuids: 'not-an-array' }, [], new Date()]) {
+      await expect(manager.scan({ filter })).rejects.toMatchObject({ code: 'argument.invalid' })
+    }
     expect(invoke.mock.calls.some(([, args]) => args.request.envelope?.command === 'scan.start')).toBe(false)
     await manager.destroy()
   })

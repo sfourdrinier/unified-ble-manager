@@ -16,6 +16,7 @@ import type {
   PortableOperationOptions,
   PortableWritePolicy
 } from '../manager/consumer-handles'
+import type { AttachmentRecord } from '../backend-contract/identity'
 import { IpcBleClient } from './client'
 import type { IpcClientTransport } from './protocol'
 
@@ -64,6 +65,24 @@ export interface IpcAdvertisement {
   readonly serviceUuids: readonly string[]
   readonly manufacturerData: readonly IpcManufacturerData[]
   readonly serviceData: readonly IpcServiceData[]
+}
+
+export interface IpcNotificationValue {
+  readonly value: Uint8Array
+  readonly delivery: 'notification' | 'indication' | 'unknown'
+  readonly observedAtMonotonicMs: number
+  readonly sequence: number
+}
+
+export interface IpcWriteReceipt {
+  readonly terminal: {
+    readonly correlation: string
+    readonly outcome: 'succeeded' | 'failed'
+    readonly cause: string | null
+  }
+  readonly mode: 'with-response' | 'without-response'
+  readonly commitState: 'confirmed' | 'accepted' | 'unknown' | 'not-started'
+  readonly bytesSubmitted: number
 }
 
 export interface IpcCharacteristicRecord extends SerializableRecord {
@@ -154,6 +173,8 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
       this,
       requiredString(payload, 'handle', 'ipc-manager.connect'),
       requiredString(payload, 'peerId', 'ipc-manager.connect'),
+      requiredString(payload, 'connectionId', 'ipc-manager.connect'),
+      requiredString(payload, 'ownerLeaseId', 'ipc-manager.connect'),
       requiredString(payload, 'connectionGeneration', 'ipc-manager.connect')
     )
   }
@@ -321,19 +342,29 @@ export class IpcScanSession {
 
 export class IpcConnection {
   private readonly lifecycleEvents = new CoreBoundedStream<SerializableRecord>(REMOTE_STREAM_LIMITS, 'drop-oldest')
+  private readonly _connectionId: string
+  private readonly _ownerLeaseId: string
   private readonly _connectionGeneration: string
 
   constructor(
     private readonly manager: IpcBleManager,
     readonly handle: string,
     readonly peerId: string,
+    connectionId: string,
+    ownerLeaseId: string,
     connectionGeneration: string
   ) {
+    this._connectionId = connectionId
+    this._ownerLeaseId = ownerLeaseId
     this._connectionGeneration = connectionGeneration
   }
 
   get connectionId(): string {
-    return this.handle
+    return this._connectionId
+  }
+
+  get ownerLeaseId(): string {
+    return this._ownerLeaseId
   }
 
   get connectionGeneration(): string {
@@ -391,6 +422,7 @@ export class IpcGattDatabase {
     private readonly manager: IpcBleManager,
     readonly connection: IpcConnection,
     readonly handle: string,
+    readonly databaseGeneration: string,
     characteristicRecords: readonly IpcCharacteristicRecord[],
     descriptorRecords: readonly IpcDescriptorRecord[]
   ) {
@@ -409,6 +441,7 @@ export class IpcGattDatabase {
       manager,
       connection,
       requiredString(payload, 'handle', 'ipc-manager.gatt-database'),
+      requiredString(payload, 'databaseGeneration', 'ipc-manager.gatt-database'),
       characteristics,
       descriptors
     )
@@ -437,7 +470,7 @@ export class IpcGattDatabase {
   }
 
   get path(): PortableDatabasePath {
-    return ipcDatabasePath(this.connection, this.handle)
+    return ipcDatabasePath(this.manager.bootstrap.attachment, this.connection, this.handle, this.databaseGeneration)
   }
 
   monotonicNow(): number {
@@ -520,18 +553,13 @@ export class IpcGattDatabase {
     path: PortableCurrentCharacteristicPath,
     bytes: Readonly<Uint8Array>,
     options: PortableWritePolicy
-  ): Promise<{
-    readonly terminal: { readonly correlation: string; readonly outcome: 'succeeded'; readonly cause: null }
-    readonly commitState: 'confirmed'
-  }> {
-    await this.characteristicForPath(path).write(bytes, {
+  ): Promise<IpcWriteReceipt> {
+    const mode = options.mode
+    const payload = await this.characteristicForPath(path).write(bytes, {
       ...toIpcOptions(options),
-      mode: options.mode
+      mode
     })
-    return Object.freeze({
-      terminal: Object.freeze({ correlation: path.characteristicUuid, outcome: 'succeeded', cause: null }),
-      commitState: 'confirmed'
-    })
+    return requiredWriteReceipt(payload, mode, bytes.byteLength)
   }
 
   async subscribe(
@@ -606,7 +634,11 @@ export class IpcCharacteristic {
       options.signal
     )
     const handle = requiredString(payload, 'handle', 'ipc-manager.gatt-subscribe')
-    return new IpcSubscription(this.database, handle, this.database.registerStream<Uint8Array>(handle, isUint8Array))
+    return new IpcSubscription(
+      this.database,
+      handle,
+      this.database.registerStream<IpcNotificationValue>(handle, isIpcNotificationValue)
+    )
   }
 }
 
@@ -642,7 +674,7 @@ export class IpcSubscription {
   constructor(
     private readonly database: IpcGattDatabase,
     readonly handle: string,
-    readonly values: BoundedAsyncStream<Uint8Array>
+    readonly values: BoundedAsyncStream<IpcNotificationValue>
   ) {}
 
   get subscriptionId(): string {
@@ -660,35 +692,21 @@ export class IpcSubscription {
 
 const EMPTY_OPERATION_OPTIONS: PortableOperationOptions = Object.freeze({ signal: null, deadline: null })
 
-function ipcDatabasePath(connection: IpcConnection, databaseId: string): PortableDatabasePath {
-  const attachment = Object.freeze({
-    attachmentId: 'tauri-ble',
-    backendInstanceId: 'tauri-plugin-unified-ble-manager',
-    backendGeneration: '1',
-    adapter: Object.freeze({
-      adapterId: 'tauri',
-      displayName: 'Tauri BLE',
-      state: Object.freeze({
-        availability: 'available',
-        authorization: 'granted',
-        power: 'on',
-        backendGeneration: '1',
-        updatedAt: 0,
-        safeReason: null
-      }),
-      adapterGeneration: '1',
-      limitations: Object.freeze([])
-    })
-  })
+function ipcDatabasePath(
+  attachment: AttachmentRecord<string>,
+  connection: IpcConnection,
+  databaseId: string,
+  databaseGeneration: string
+): PortableDatabasePath {
   return Object.freeze({
     attachment,
     attachmentId: attachment.attachmentId,
     peerId: connection.peerId,
     connectionId: connection.connectionId,
-    ownerLeaseId: connection.handle,
+    ownerLeaseId: connection.ownerLeaseId,
     connectionGeneration: connection.connectionGeneration,
     databaseId,
-    databaseGeneration: '1'
+    databaseGeneration
   })
 }
 
@@ -838,13 +856,65 @@ function requiredBytes(record: SerializableRecord, key: string, operation: strin
   return new Uint8Array(value)
 }
 
+function requiredWriteReceipt(
+  record: SerializableRecord,
+  requestedMode: 'with-response' | 'without-response' | undefined,
+  bytesSubmitted: number
+): IpcWriteReceipt {
+  const terminal = requiredRecord(record, 'terminal', 'ipc-manager.gatt-write')
+  const mode = requiredString(record, 'mode', 'ipc-manager.gatt-write')
+  const commitState = requiredString(record, 'commitState', 'ipc-manager.gatt-write')
+  const submitted = requiredNumber(record, 'bytesSubmitted', 'ipc-manager.gatt-write')
+  const correlation = requiredString(terminal, 'correlation', 'ipc-manager.gatt-write-terminal')
+  const outcome = terminal.outcome
+  const cause = terminal.cause
+  if (
+    (outcome !== 'succeeded' && outcome !== 'failed') ||
+    (cause !== null && typeof cause !== 'string') ||
+    (mode !== 'with-response' && mode !== 'without-response') ||
+    (commitState !== 'confirmed' &&
+      commitState !== 'accepted' &&
+      commitState !== 'unknown' &&
+      commitState !== 'not-started') ||
+    (requestedMode !== undefined && mode !== requestedMode) ||
+    !Number.isSafeInteger(submitted) ||
+    submitted < 0 ||
+    submitted !== bytesSubmitted
+  ) {
+    throw contractError('protocol.malformed', 'ipc', 'ipc-manager.gatt-write-receipt')
+  }
+  return Object.freeze({
+    terminal: Object.freeze({ correlation, outcome, cause }),
+    mode,
+    commitState,
+    bytesSubmitted: submitted
+  })
+}
+
 function estimateByteLength(value: unknown): number {
   if (value instanceof Uint8Array) return value.byteLength
   return new TextEncoder().encode(JSON.stringify(value)).byteLength
 }
 
-function isUint8Array(value: unknown): value is Uint8Array {
-  return value instanceof Uint8Array
+function isIpcNotificationValue(value: unknown): value is IpcNotificationValue {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
+  if (!('value' in value) || !('delivery' in value) || !('observedAtMonotonicMs' in value) || !('sequence' in value)) {
+    return false
+  }
+  const rawValue: unknown = Reflect.get(value, 'value')
+  const delivery: unknown = Reflect.get(value, 'delivery')
+  const observedAtMonotonicMs: unknown = Reflect.get(value, 'observedAtMonotonicMs')
+  const sequence: unknown = Reflect.get(value, 'sequence')
+  return (
+    rawValue instanceof Uint8Array &&
+    (delivery === 'notification' || delivery === 'indication' || delivery === 'unknown') &&
+    typeof observedAtMonotonicMs === 'number' &&
+    Number.isFinite(observedAtMonotonicMs) &&
+    observedAtMonotonicMs >= 0 &&
+    typeof sequence === 'number' &&
+    Number.isSafeInteger(sequence) &&
+    sequence > 0
+  )
 }
 
 function isIpcManufacturerData(value: unknown): value is IpcManufacturerData {
