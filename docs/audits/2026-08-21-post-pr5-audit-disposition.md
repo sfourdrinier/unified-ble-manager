@@ -6,7 +6,7 @@ Current release source: `main` / `ab331517083c5a580894adb3d79d075f299c9db5` / `v
 
 ## Release decision
 
-RC2 is an immutable, quarantined prerelease tag. It was allowed to reach the tag workflow because no confirmed P0 requires cancelling the already-running release operation, and the tag/package/CI/provenance gates are independent of the unresolved application defects. At this ledger revision, tag creation and post-merge CI are complete but publication is still pending; npm and GitHub Release verification remain required. RC2 must not be treated as the finished RC2 closure, stable-ready, or evidence that the normal user journey is production-safe.
+RC2 is an immutable, quarantined prerelease. It reached the tag workflow because no confirmed P0 required cancelling the already-running release operation, and the tag/package/CI/provenance gates are independent of the unresolved application defects. Publication recovery completed on workflow attempt 2 after npm registry attestation propagation; the GitHub Release, npm `latest` dist-tag, exact tag commit, tarball, and provenance source binding were independently read back successfully. RC2 remains quarantined: it must not be treated as the finished RC2 closure, stable-ready, or evidence that the normal user journey is production-safe.
 
 The existing PR6 implementation WIP is preserved in `stash@{0}` and is applied to the PR6 closure branch without popping the stash. No audit correction is added to the immutable RC2 tag.
 
