@@ -226,12 +226,12 @@ Copy paths from `snapshot()` or `resolveCharacteristicPath`. Hand-built generati
 
 | Factory | Returns |
 | --- | --- |
-| `createReactNativeBleManager` | App factory: `{ clientId, managerId, hostSessionScope }` |
+| `createReactNativeBleManager` | Zero-plumbing public React Native manager |
 | `createReactNativeBleManagerWithEnvironment` | Injectable RN factory for tests |
-| `createNavigatorWebBleManager` | `{ chooser, manager }`; default navigator environment |
+| `createWebBleManager` | Zero-plumbing public Web manager; use `ble.choose()` from a user gesture |
 | `createCoreBluetoothBleManager` / `createWinRtBleManager` / `createBluezBleManager` | One-call Node managers |
 | `createElectronMainCoreBluetoothBackendProvider` / `WinRt` | Main-process provider; you still build a `BleManager` |
-| `ElectronRendererBleClient` | IPC client, not `BleManager` |
+| `ElectronRendererBleClient` | Trusted IPC client; the renderer never loads a radio backend |
 | `createTauriBleManager` | Zero-plumbing Tauri `BleManager`; tests use `createTauriBleManagerWithEnvironment` |
 | `createBleManagerFromProvider` | Advanced provider construction |
 
