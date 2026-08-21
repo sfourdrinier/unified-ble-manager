@@ -1,14 +1,21 @@
 // src/tauri.ts — zero-plumbing Tauri application factory
 
-import { assertPublicScanOptions, filterScanObservations, findPeerInScan, snapshotBlePeer } from './public/ble-manager'
-import type { BleManager, BlePeer, FindOptions, ScanOptions } from './public/ble-manager'
+import {
+  assertPublicScanOptions,
+  broadcastConnectionEvents,
+  filterScanObservations,
+  findPeerInScan,
+  snapshotBlePeer,
+  assertPublicConnectOptions
+} from './public/ble-manager'
+import type { BleConnectionEvent, BleManager, BlePeer, FindOptions, ScanOptions } from './public/ble-manager'
 import type { BleAdapter, BleAdapterState, AdapterReadinessOptions } from './public/ble-adapter'
 import { diagnosticsUnavailable, type BleDiagnostics } from './public/diagnostics'
 import type { BleConnection } from './public/ble-manager'
 import type { ScanSession } from './public/ble-manager'
 import type { OperationOptions } from './public/operation-options'
 import { normalizeOperationOptions } from './public/operation-options'
-import { resolveStreamPreset } from './public/stream-presets'
+import { resolveStreamPolicy } from './public/stream-presets'
 import { normalizeBleManagerCreateOptions } from './public/host-identity'
 import type { BleManagerCreateOptions } from './public/host-identity'
 import { rehydratePublicError, rehydratePublicPromise, runWithCleanup } from './public/error-bridge'
@@ -20,6 +27,7 @@ import type { BlePeerDirectory } from './public/peer-directory'
 import { unsupportedPeerDirectory } from './public/peer-directory'
 import { isPeerReference } from './public/peer-reference'
 import type { PeerReference } from './public/peer-reference'
+import type { ConnectionLifecycleCause } from './backend-contract/connection-lifecycle'
 import type {
   PortableCurrentCharacteristicPath,
   PortableCurrentDescriptorPath,
@@ -31,6 +39,7 @@ import type {
   SubscriptionHandle
 } from './manager/consumer-handles'
 import { contractError, BLE_ERROR_CODES } from './backend-contract/errors'
+import type { SerializableRecord } from './backend-contract/primitives'
 
 import { IpcBleManager } from './ipc/manager'
 import type { IpcScanOptions } from './ipc/manager'
@@ -41,7 +50,7 @@ import { TauriBleIpcTransport } from './tauri/transport'
 import type { TauriChannel, TauriInvoke } from './tauri/transport'
 
 function toIpcScanOptions(options: ScanOptions): IpcScanOptions {
-  const delivery = resolveStreamPreset({ preset: options.delivery ?? 'balanced' })
+  const delivery = resolveStreamPolicy(options.delivery ?? 'balanced')
   return {
     serviceUuids: undefined,
     manufacturerData: undefined,
@@ -287,6 +296,8 @@ class TauriBleConnectionWrapper implements BleConnection {
   readonly peerId: string
   readonly handle: string
   readonly connectionId: string
+  readonly connectionGeneration: string
+  private readonly publicLifecycleEvents: AsyncIterable<BleConnectionEvent>
 
   constructor(
     private readonly base: IpcConnection,
@@ -297,10 +308,24 @@ class TauriBleConnectionWrapper implements BleConnection {
     this.peerId = peerId
     this.handle = base.handle
     this.connectionId = base.connectionId
+    this.connectionGeneration = base.connectionGeneration
+    this.publicLifecycleEvents = broadcastConnectionEvents(
+      mapTauriConnectionEvents(this.base.events, {
+        attachmentId: this.base.attachmentId,
+        peerId: this.base.peerId,
+        connectionId: this.base.connectionId,
+        ownerLeaseId: this.base.ownerLeaseId,
+        connectionGeneration: this.base.connectionGeneration
+      })
+    )
   }
 
   get events(): IpcConnection['events'] {
     return this.base.events
+  }
+
+  get lifecycleEvents(): AsyncIterable<BleConnectionEvent> {
+    return this.publicLifecycleEvents
   }
 
   async discover(options: OperationOptions = {}): Promise<import('./public/gatt').GattDatabase> {
@@ -332,6 +357,106 @@ class TauriBleConnectionWrapper implements BleConnection {
   release(): Promise<CleanupRecord> {
     return rehydratePublicPromise(this.base.release())
   }
+}
+
+function mapTauriConnectionEvents(
+  source: IpcConnection['events'],
+  expected: {
+    readonly attachmentId: string
+    readonly peerId: string
+    readonly connectionId: string
+    readonly ownerLeaseId: string
+    readonly connectionGeneration: string
+  }
+): AsyncIterable<BleConnectionEvent> {
+  let lastSequence = 0
+  return {
+    [Symbol.asyncIterator]() {
+      const iterator = source[Symbol.asyncIterator]()
+      return {
+        async next(): Promise<IteratorResult<BleConnectionEvent, undefined>> {
+          while (true) {
+            const item = await iterator.next()
+            if (item.done) return { done: true, value: undefined }
+            if (item.value.kind !== 'value') {
+              if (item.value.kind === 'terminal') return { done: true, value: undefined }
+              throw contractError('stream.overflow', 'connection', 'tauri.connection.events')
+            }
+            const value = item.value.value
+            const attachmentId = Reflect.get(value, 'attachmentId')
+            const peerId = Reflect.get(value, 'peerId')
+            const connectionId = Reflect.get(value, 'connectionId')
+            const ownerLeaseId = Reflect.get(value, 'ownerLeaseId')
+            const previous = parseConnectionState(Reflect.get(value, 'previous'))
+            const current = parseConnectionState(Reflect.get(value, 'current'))
+            const cause = parseConnectionLifecycleCause(Reflect.get(value, 'cause'))
+            const generation = Reflect.get(value, 'connectionGeneration')
+            const sequence = Reflect.get(value, 'sequence')
+            if (
+              previous === null ||
+              current === null ||
+              cause === null ||
+              attachmentId !== expected.attachmentId ||
+              peerId !== expected.peerId ||
+              connectionId !== expected.connectionId ||
+              ownerLeaseId !== expected.ownerLeaseId ||
+              typeof generation !== 'string' ||
+              generation !== expected.connectionGeneration ||
+              typeof sequence !== 'number' ||
+              !Number.isSafeInteger(sequence) ||
+              sequence < 1 ||
+              sequence <= lastSequence
+            ) {
+              throw contractError('protocol.malformed', 'ipc', 'tauri.connection.events')
+            }
+            lastSequence = sequence
+            return {
+              done: false,
+              value: Object.freeze({
+                kind: 'connection-lifecycle',
+                previous,
+                current,
+                cause,
+                connectionGeneration: generation,
+                sequence
+              })
+            }
+          }
+        },
+        return: async () => {
+          await iterator.return()
+          return { done: true, value: undefined }
+        },
+        [Symbol.asyncIterator]() {
+          return this
+        }
+      }
+    }
+  }
+}
+
+function parseConnectionState(value: unknown): BleConnectionEvent['current'] | null {
+  return value === 'connecting' ||
+    value === 'connected' ||
+    value === 'disconnecting' ||
+    value === 'disconnected' ||
+    value === 'lost'
+    ? value
+    : null
+}
+
+function parseConnectionLifecycleCause(value: unknown): ConnectionLifecycleCause | null {
+  return value === 'connected' ||
+    value === 'backend-transition' ||
+    value === 'requested-disconnect' ||
+    value === 'peer-link-loss' ||
+    value === 'adapter-loss' ||
+    value === 'backend-restart' ||
+    value === 'released' ||
+    value === 'manager-destroyed' ||
+    value === 'backend-failure'
+    ? value
+    : null
 }
 
 // Public Tauri manager adapter — wraps the IPC manager so the declared
@@ -370,14 +495,16 @@ class TauriBleManagerAdapter implements BleManager {
   }
 
   find(options: FindOptions = {}): Promise<BlePeer> {
+    const { select, ...scanOptions } = options
+    const operation = normalizeOperationOptions(options, () => globalThis.performance.now())
     return this.scan({
-      ...options,
+      ...scanOptions,
       duplicates: 'coalesced',
       delivery: 'latest',
       timeoutMs: options.timeoutMs ?? 10_000
     }).then(scan =>
       runWithCleanup(
-        () => findPeerInScan(scan, options.select),
+        () => findPeerInScan(scan, select, { ...operation, now: () => globalThis.performance.now() }),
         () => scan.stop()
       )
     )
@@ -389,6 +516,7 @@ class TauriBleManagerAdapter implements BleManager {
 
   async connect(peer: BlePeer | string | PeerReference, options: OperationOptions = {}): Promise<BleConnection> {
     try {
+      assertPublicConnectOptions(options)
       const peerId = resolvePeerId(peer)
       const base = await this.ipc.connect(peerId, options)
       return new TauriBleConnectionWrapper(base, peer, peerId)
@@ -439,7 +567,7 @@ class TauriBleManagerAdapter implements BleManager {
 
   // Ipc-specific surface retained for existing TCK — not part of the public
   // `BleManager` interface but present on the runtime object for compatibility.
-  adapterState(): Promise<unknown> {
+  adapterState(): Promise<SerializableRecord> {
     return rehydratePublicPromise(this.ipc.adapterState())
   }
 }
@@ -539,6 +667,7 @@ export async function createTauriBleManager(options: BleManagerCreateOptions = {
     Channel: tauriCore.Channel
   })
   const ipcManager = await IpcBleManager.create(transport)
+  assertTauriCreateOptions(options, ipcManager)
   return new TauriBleManagerAdapter(ipcManager)
 }
 
@@ -555,7 +684,17 @@ export async function createTauriBleManagerWithEnvironment(
   normalizeBleManagerCreateOptions(options)
   const transport = new TauriBleIpcTransport(environment)
   const ipcManager = await IpcBleManager.create(transport)
+  assertTauriCreateOptions(options, ipcManager)
   return new TauriBleManagerAdapter(ipcManager)
+}
+
+function assertTauriCreateOptions(options: BleManagerCreateOptions, ipc: IpcBleManager): void {
+  if (options.adapterId !== undefined && options.adapterId !== String(ipc.bootstrap.attachment.adapter.adapterId)) {
+    throw contractError('adapter.unavailable', 'adapter', 'tauri-manager.adapter')
+  }
+  if (options.restoration !== undefined) {
+    throw contractError('capability.unsupported', 'restoration', 'tauri-manager.restoration')
+  }
 }
 
 export interface TauriBleProvider {

@@ -182,7 +182,8 @@ function normalizeClauseList(
 ): readonly NormalizedScanClause[] | null {
   if (clauses === undefined) return omittedIsNull ? null : null
   if (!Array.isArray(clauses) || clauses.length === 0) throw invalid(operation)
-  return Object.freeze(clauses.map((clause, index) => normalizeClause(clause, `${operation}[${index}]`)))
+  const normalized = clauses.map((clause, index) => normalizeClause(clause, `${operation}[${index}]`))
+  return Object.freeze(normalized.sort((left, right) => canonicalJson(left).localeCompare(canonicalJson(right))))
 }
 
 function normalizeClause(clause: ScanClause, operation: string): NormalizedScanClause {
@@ -491,16 +492,20 @@ function matchesBytes(
 }
 
 function digestFor(value: Omit<NormalizedScanQuery, 'digest'>): string {
-  const encoded = JSON.stringify(value, (key, entry: unknown) => {
-    if (key === 'peers' && entry === null) return undefined
-    return entry instanceof Uint8Array ? bytesToHex(entry) : entry
-  })
+  const encoded = canonicalJson(value)
   let hash = 0xcbf29ce484222325n
   for (let index = 0; index < encoded.length; index += 1) {
     hash ^= BigInt(encoded.charCodeAt(index))
     hash = BigInt.asUintN(64, hash * 0x100000001b3n)
   }
   return `scan-query-v1:${hash.toString(16).padStart(16, '0')}`
+}
+
+function canonicalJson(value: unknown): string {
+  return JSON.stringify(value, (key, entry: unknown) => {
+    if (key === 'peers' && entry === null) return undefined
+    return entry instanceof Uint8Array ? bytesToHex(entry) : entry
+  })
 }
 
 function fieldValue<Value>(

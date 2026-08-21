@@ -145,6 +145,8 @@ interface StreamSink {
 export class IpcBleManager<Attachment extends string = string, Client extends string = string> {
   private readonly streams = new Map<string, StreamSink>()
   private readonly pendingStreamItems = new Map<string, SerializableRecord[]>()
+  private readonly pendingStreamBytes = new Map<string, number>()
+  private readonly pendingStreamOverflows = new Map<string, { droppedItems: number; droppedBytes: number }>()
   private readonly eventPump: Promise<void>
   private nextConnectionEventHandle = 1
   private lifecycle: 'active' | 'releasing' | 'released' = 'active'
@@ -251,6 +253,8 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
           for (const sink of this.streams.values()) sink.closeWithReason('owner-released')
           this.streams.clear()
           this.pendingStreamItems.clear()
+          this.pendingStreamBytes.clear()
+          this.pendingStreamOverflows.clear()
           await this.eventPump
         } else {
           this.lifecycle = 'active'
@@ -340,6 +344,8 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
         onTerminal?.(reason)
         this.streams.delete(streamId)
         this.pendingStreamItems.delete(streamId)
+        this.pendingStreamBytes.delete(streamId)
+        this.pendingStreamOverflows.delete(streamId)
       }
     }
     const sink: StreamSink = {
@@ -348,7 +354,19 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
     }
     this.streams.set(handle, sink)
     const pending = this.pendingStreamItems.get(handle)
+    const pendingOverflow = this.pendingStreamOverflows.get(handle)
     this.pendingStreamItems.delete(handle)
+    this.pendingStreamBytes.delete(handle)
+    this.pendingStreamOverflows.delete(handle)
+    if (pendingOverflow !== undefined) {
+      deliver(handle, {
+        kind: 'overflow',
+        policy: 'drop-oldest',
+        droppedItems: pendingOverflow.droppedItems,
+        droppedBytes: pendingOverflow.droppedBytes,
+        replacedItems: 0
+      })
+    }
     if (pending !== undefined) {
       for (const item of pending) {
         deliver(handle, item)
@@ -410,6 +428,8 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
 
   closeStream(handle: string, reason: 'owner-released' | 'source-failed' = 'owner-released'): void {
     this.pendingStreamItems.delete(handle)
+    this.pendingStreamBytes.delete(handle)
+    this.pendingStreamOverflows.delete(handle)
     const sink = this.streams.get(handle)
     if (sink === undefined) return
     this.streams.delete(handle)
@@ -440,6 +460,8 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
           affected.closeWithReason('source-failed')
           this.streams.delete(streamId)
           this.pendingStreamItems.delete(streamId)
+          this.pendingStreamBytes.delete(streamId)
+          this.pendingStreamOverflows.delete(streamId)
         }
       }
     }
@@ -447,12 +469,35 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
 
   private bufferPendingStreamItem(streamId: string, item: SerializableRecord): void {
     const pending = this.pendingStreamItems.get(streamId) ?? []
+    let pendingBytes = this.pendingStreamBytes.get(streamId) ?? 0
+    if (item.kind === 'terminal') {
+      pending.length = 0
+      pendingBytes = 0
+    }
     const itemCapacity = Number(REMOTE_STREAM_LIMITS.itemCapacity)
-    if (pending.length >= itemCapacity) {
-      pending.shift()
+    const byteCapacity = Number(REMOTE_STREAM_LIMITS.byteCapacity)
+    const itemBytes = estimateByteLength(item)
+    let droppedItems = 0
+    let droppedBytes = 0
+    while (pending.length >= itemCapacity || (pending.length > 0 && pendingBytes + itemBytes > byteCapacity)) {
+      const removed = pending.shift()
+      if (removed === undefined) break
+      const removedBytes = estimateByteLength(removed)
+      pendingBytes -= removedBytes
+      droppedItems += 1
+      droppedBytes += removedBytes
     }
     pending.push(item)
+    pendingBytes += itemBytes
     this.pendingStreamItems.set(streamId, pending)
+    this.pendingStreamBytes.set(streamId, pendingBytes)
+    if (droppedItems > 0) {
+      const previous = this.pendingStreamOverflows.get(streamId)
+      this.pendingStreamOverflows.set(streamId, {
+        droppedItems: (previous?.droppedItems ?? 0) + droppedItems,
+        droppedBytes: (previous?.droppedBytes ?? 0) + droppedBytes
+      })
+    }
   }
 
   private assertActive(): void {
@@ -508,14 +553,18 @@ export class IpcConnection {
     return this._connectionGeneration
   }
 
+  get attachmentId(): string {
+    return String(this.manager.bootstrap.attachment.attachmentId)
+  }
+
   get events(): BoundedAsyncStream<SerializableRecord> {
     this.ensureLifecycleAdmission()
     return this.lifecycleEvents
   }
 
-  private ensureLifecycleAdmission(): void {
-    if (this.lifecycleAdmission !== null) return
-    this.lifecycleAdmission = this.manager
+  private ensureLifecycleAdmission(): Promise<void> {
+    if (this.lifecycleAdmission !== null) return this.lifecycleAdmission
+    const admission = this.manager
       .subscribeConnectionEvents(this.handle, this.identityPayload())
       .then(subscription => {
         this.lifecycleSubscription = subscription
@@ -527,6 +576,8 @@ export class IpcConnection {
         this.lifecycleEvents.closeWithReason('source-failed')
         this.invalidateDatabases()
       })
+    this.lifecycleAdmission = admission
+    return admission
   }
 
   private async pumpLifecycleEvents(subscription: IpcConnectionEventSubscription): Promise<void> {
@@ -562,6 +613,7 @@ export class IpcConnection {
   }
 
   async discover(options: IpcManagerOperationOptions = {}): Promise<IpcGattDatabase> {
+    await this.ensureLifecycleAdmission()
     const payload = await this.manager.route(
       'gatt.discover',
       Object.freeze({ ...this.identityPayload(), deadline: operationDeadline(options) }),
@@ -804,9 +856,9 @@ export class IpcGattDatabase {
               descriptorOccurrence: String(descriptor.record.occurrence)
             }),
             properties: Object.freeze({
-              read: true,
-              write: true,
-              availability: Object.freeze({ read: 'known', write: 'known' }),
+              read: false,
+              write: false,
+              availability: Object.freeze({ read: 'unknown', write: 'unknown' }),
               access: Object.freeze({ read: 'unknown', write: 'unknown' })
             })
           })
@@ -1375,9 +1427,33 @@ function isIpcConnectionLifecycleEvent(value: unknown): value is SerializableRec
     typeof record.sequence === 'number' &&
     Number.isSafeInteger(record.sequence) &&
     record.sequence > 0 &&
-    typeof record.previous === 'string' &&
-    typeof record.current === 'string' &&
-    typeof record.cause === 'string'
+    isConnectionLifecycleState(record.previous) &&
+    isConnectionLifecycleState(record.current) &&
+    isConnectionLifecycleCause(record.cause)
+  )
+}
+
+function isConnectionLifecycleState(value: unknown): boolean {
+  return (
+    value === 'connecting' ||
+    value === 'connected' ||
+    value === 'disconnecting' ||
+    value === 'disconnected' ||
+    value === 'lost'
+  )
+}
+
+function isConnectionLifecycleCause(value: unknown): boolean {
+  return (
+    value === 'connected' ||
+    value === 'backend-transition' ||
+    value === 'requested-disconnect' ||
+    value === 'peer-link-loss' ||
+    value === 'adapter-loss' ||
+    value === 'backend-restart' ||
+    value === 'released' ||
+    value === 'manager-destroyed' ||
+    value === 'backend-failure'
   )
 }
 

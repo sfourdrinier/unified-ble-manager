@@ -3,13 +3,12 @@
 import { contractError } from './backend-contract/errors'
 import type { AdapterDescriptor, BackendProvider, HostNeutralBackendIdentity } from './backend-contract/identity'
 import { opaqueId, type BackendCompatibilityOffer } from './backend-contract/primitives'
+import { createEphemeralHostIdentity, normalizeBleManagerCreateOptions } from './public/host-identity'
+import type { BleManagerCreateOptions } from './public/host-identity'
 import { createBleManagerFromProvider, DEFAULT_BLE_MANAGER_OPTIONS, type BleManager } from './manager/ble-manager'
 
-export interface NodeBleManagerAppOptions {
-  readonly clientId: string
-  readonly managerId: string
+export interface NodeBleManagerAppOptions extends BleManagerCreateOptions {
   readonly now?: () => number
-  readonly selectedAdapterId?: string
 }
 
 export async function createNodeBleManagerFromProvider(
@@ -17,17 +16,20 @@ export async function createNodeBleManagerFromProvider(
   compatibility: BackendCompatibilityOffer,
   options: NodeBleManagerAppOptions
 ): Promise<BleManager<string, HostNeutralBackendIdentity<string>>> {
-  const now = options.now ?? (() => performance.now())
+  const { now = () => performance.now(), ...createOptions } = options
+  normalizeBleManagerCreateOptions(createOptions)
   const adapters = await provider.listAdapters()
-  const selected = selectNodeAdapter(adapters, options.selectedAdapterId)
+  const selected = selectNodeAdapter(adapters, options.adapterId)
+  const ephemeral = createEphemeralHostIdentity()
+  const instanceSuffix = options.instanceId === undefined ? '' : `-${options.instanceId}`
   return createBleManagerFromProvider(
     {
       provider,
       selection: { selectedAdapterId: selected.adapterId },
       coreCompatibility: compatibility,
       manager: {
-        clientId: opaqueId(options.clientId, 'client', 'node:host'),
-        managerId: opaqueId(options.managerId, 'manager', 'node:host'),
+        clientId: opaqueId(`node-${ephemeral.managerNonce}${instanceSuffix}`, 'client', 'node:host'),
+        managerId: opaqueId(`node-${ephemeral.attachmentNonce}${instanceSuffix}`, 'manager', 'node:host'),
         ownerMode: 'owning'
       }
     },

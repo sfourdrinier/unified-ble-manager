@@ -10,6 +10,10 @@ export type {
   BleManager,
   BlePeer,
   BleConnection,
+  BleConnectionEvent,
+  ConnectionIntent,
+  BlePhy,
+  ConnectOptions,
   ScanSession,
   GattDatabase,
   GattService,
@@ -37,6 +41,7 @@ export type {
   ScanStateEvent,
   FindOptions,
   ChooseOptions,
+  ChooseFilter,
   BleDiscoveryInfo,
   BlePeerDirectory,
   BlePeerState,
@@ -56,10 +61,22 @@ export type { BleDiagnostics, BleDiagnosticsSnapshot, BleResourceCounters } from
 export type { PeerDirectoryRecord } from './public/peer-directory'
 export { mergePeerDirectoryRecords } from './public/peer-directory'
 export { encodePeerReference, decodePeerReference } from './public/peer-reference'
+export { createConnectionSupervisor } from './public/connection-supervisor'
+export type {
+  ConnectionGate,
+  ConnectionGateContext,
+  ConnectionGateDecision,
+  ConnectionSupervisor,
+  ConnectionSupervisorEvent,
+  ConnectionSupervisorOptions,
+  ConnectionSupervisorSnapshot,
+  ConnectionSupervisorState,
+  RetryPolicy
+} from './public/connection-supervisor'
 
 // --- Operation options & stream presets (public types only) ---
 export type { OperationOptions } from './public/operation-options'
-export type { StreamPreset } from './public/stream-presets'
+export type { StreamPreset, StreamPolicy, CustomStreamBudget } from './public/stream-presets'
 
 // --- Host identity (ephemeral vs restoration) ---
 export type { BleManagerCreateOptions, DiagnosticsOptions } from './public/host-identity'

@@ -250,7 +250,9 @@ describe('Tauri v2 public manager', () => {
     const scan = await manager.scan({})
     const observation = scan.observations[Symbol.asyncIterator]().next()
     streamValue('scan-1', advertisement('polar-h10', 'Polar H10', -47))
-    await expect(observation).resolves.toMatchObject({ value: { kind: 'value', value: { peerId: 'polar-h10' } } })
+    await expect(observation).resolves.toMatchObject({
+      value: { kind: 'value', value: { peer: { id: 'polar-h10' }, localName: 'Polar H10', rssi: -47 } }
+    })
     await expect(scan.stop()).resolves.toMatchObject({ state: 'released' })
 
     const connection = await manager.connect('polar-h10')
@@ -275,6 +277,11 @@ describe('Tauri v2 public manager', () => {
       commitState: 'confirmed'
     })
     expect(database.snapshot().characteristics).toHaveLength(1)
+    expect(database.snapshot().descriptors[0].properties).toMatchObject({
+      read: false,
+      write: false,
+      availability: { read: 'unknown', write: 'unknown' }
+    })
     const gattWriteRequest = invoke.mock.calls.find(([, args]) => args.request.envelope?.command === 'gatt.write')
     expect(gattWriteRequest?.[1].request.envelope.payload).toMatchObject({
       databaseId: 'database-id-1',
@@ -626,7 +633,7 @@ describe('Tauri v2 public manager', () => {
     const scan = await manager.scan()
     const first = await scan.observations[Symbol.asyncIterator]().next()
     expect(first.done).toBe(false)
-    expect(first.value).toMatchObject({ kind: 'value', value: { peerId: 'early-peer' } })
+    expect(first.value).toMatchObject({ kind: 'value', value: { peer: { id: 'early-peer' }, localName: 'Early' } })
     await scan.stop()
     await manager.destroy()
   })

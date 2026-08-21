@@ -6,6 +6,7 @@ import {
   type BackendAttachment,
   type BackendEvent,
   type BleCentralBackend,
+  type ConnectionOptions,
   type ConnectionLease,
   type ManagerConstruction,
   type ScanLease
@@ -381,10 +382,7 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
     return tracked
   }
 
-  async connect(
-    peerId: PeerId<Attachment>,
-    options: PublicOperationOptions
-  ): Promise<CoreConnection<Attachment, Identity>> {
+  async connect(peerId: PeerId<Attachment>, options: ConnectionOptions): Promise<CoreConnection<Attachment, Identity>> {
     this.assertReady('connect')
     this.assertOperationAdmission(options, 'connect')
     const admissionEpoch = this.admissionEpoch

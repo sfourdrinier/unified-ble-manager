@@ -124,7 +124,7 @@ describe('React Native Android canonical protocol vertical slice', () => {
       DEFAULT_BLE_MANAGER_OPTIONS
     )
 
-    expect(manager.identity.versions.nativeProtocol.selected.value).toBe(1)
+    expect(manager.identity.versions.nativeProtocol.selected.value).toBe(2)
     expect(manager.features.registrations).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -1190,8 +1190,8 @@ class DeterministicAndroidControl {
   handshake(request) {
     this.handshakes.push(request)
     return Promise.resolve({
-      nativeProtocol: 1,
-      abi: 1,
+      nativeProtocol: 2,
+      abi: 2,
       backendContract: 1,
       capabilitySchema: 1,
       eventSchema: 1,

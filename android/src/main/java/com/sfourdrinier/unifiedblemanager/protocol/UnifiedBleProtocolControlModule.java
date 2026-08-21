@@ -19,7 +19,9 @@ import com.sfourdrinier.unifiedblemanager.NativeUnifiedBleProtocolControlSpec;
 public final class UnifiedBleProtocolControlModule extends NativeUnifiedBleProtocolControlSpec {
   public static final String NAME = "UnifiedBleProtocolControl";
   private static final String TAG = "UnifiedBleProtocol";
-  private static final int PROTOCOL_VERSION = 1;
+  private static final int NATIVE_PROTOCOL_VERSION = 2;
+  private static final int ABI_VERSION = 2;
+  private static final int CONTRACT_VERSION = 1;
   private static final int MAXIMUM_CONTROL_RECORD_BYTES = 262144;
   private static final int MAXIMUM_BINARY_PAYLOAD_BYTES = 524288;
   private static final double MAXIMUM_SAFE_INTEGER = 9007199254740991.0;
@@ -47,12 +49,12 @@ public final class UnifiedBleProtocolControlModule extends NativeUnifiedBleProto
   @Override
   public synchronized void handshake(ReadableMap request, Promise promise) {
     try {
-      requireVersionRange(request.getMap("nativeProtocol"), "nativeProtocol");
-      requireVersionRange(request.getMap("abi"), "abi");
-      requireVersionRange(request.getMap("backendContract"), "backendContract");
-      requireVersionRange(request.getMap("capabilitySchema"), "capabilitySchema");
-      requireVersionRange(request.getMap("eventSchema"), "eventSchema");
-      requireVersionRange(request.getMap("traceFormat"), "traceFormat");
+      requireVersionRange(request.getMap("nativeProtocol"), "nativeProtocol", NATIVE_PROTOCOL_VERSION);
+      requireVersionRange(request.getMap("abi"), "abi", ABI_VERSION);
+      requireVersionRange(request.getMap("backendContract"), "backendContract", CONTRACT_VERSION);
+      requireVersionRange(request.getMap("capabilitySchema"), "capabilitySchema", CONTRACT_VERSION);
+      requireVersionRange(request.getMap("eventSchema"), "eventSchema", CONTRACT_VERSION);
+      requireVersionRange(request.getMap("traceFormat"), "traceFormat", CONTRACT_VERSION);
       final AttachmentIdentity requestedAttachment = attachmentFrom(request);
       final String requestedOwner = requiredString(request, "ownerId");
       if (attachment != null &&
@@ -71,12 +73,12 @@ public final class UnifiedBleProtocolControlModule extends NativeUnifiedBleProto
       attachment = requestedAttachment;
       ownerId = requestedOwner;
       final WritableMap result = Arguments.createMap();
-      result.putInt("nativeProtocol", PROTOCOL_VERSION);
-      result.putInt("abi", PROTOCOL_VERSION);
-      result.putInt("backendContract", PROTOCOL_VERSION);
-      result.putInt("capabilitySchema", PROTOCOL_VERSION);
-      result.putInt("eventSchema", PROTOCOL_VERSION);
-      result.putInt("traceFormat", PROTOCOL_VERSION);
+      result.putInt("nativeProtocol", NATIVE_PROTOCOL_VERSION);
+      result.putInt("abi", ABI_VERSION);
+      result.putInt("backendContract", CONTRACT_VERSION);
+      result.putInt("capabilitySchema", CONTRACT_VERSION);
+      result.putInt("eventSchema", CONTRACT_VERSION);
+      result.putInt("traceFormat", CONTRACT_VERSION);
       result.putInt("maximumControlRecordBytes", MAXIMUM_CONTROL_RECORD_BYTES);
       result.putInt("maximumBinaryPayloadBytes", MAXIMUM_BINARY_PAYLOAD_BYTES);
       promise.resolve(result);
@@ -249,18 +251,19 @@ public final class UnifiedBleProtocolControlModule extends NativeUnifiedBleProto
     return (long) value;
   }
 
-  private static void requireVersionRange(ReadableMap range, String axis) {
+  private static void requireVersionRange(ReadableMap range, String axis, int selectedVersion) {
     if (range == null) {
       throw new IllegalArgumentException("Native protocol version range is missing: " + axis);
     }
     requireVersionRangeValues(
         requiredPositiveInteger(range, "minimum"),
         requiredPositiveInteger(range, "maximum"),
-        axis);
+        axis,
+        selectedVersion);
   }
 
-  private static void requireVersionRangeValues(long minimum, long maximum, String axis) {
-    if (minimum > maximum || minimum > PROTOCOL_VERSION || maximum < PROTOCOL_VERSION) {
+  private static void requireVersionRangeValues(long minimum, long maximum, String axis, int selectedVersion) {
+    if (minimum > maximum || minimum > selectedVersion || maximum < selectedVersion) {
       throw new IllegalArgumentException("Native protocol version range is incompatible: " + axis);
     }
   }

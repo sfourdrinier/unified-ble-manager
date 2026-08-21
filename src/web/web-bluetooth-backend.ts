@@ -289,7 +289,14 @@ export class WebBluetoothBackend
     if (getAuthorizedDevices === undefined) {
       throw contractError('capability.unsupported', 'connection', 'web-peer-directory.authorized')
     }
-    const devices = await getAuthorizedDevices()
+    const devices = await this.runAbortable(
+      null,
+      options,
+      getAuthorizedDevices,
+      'connection.failed',
+      'connection',
+      'web-peer-directory.authorized'
+    )
     this.assertAbortableAdmission(options, 'connection', 'web-peer-directory.authorized')
     return devices.map(device => {
       const selected = this.rememberSelection({ device, grantedServices: [] })
@@ -670,10 +677,13 @@ export class WebBluetoothBackend
       this.nextPeer += 1
       this.peerByBrowserDeviceId.set(selection.device.id, peerId)
     }
+    const previous = this.selectedDevices.get(String(peerId))
+    const grantedServices = new Set(previous?.grantedServices ?? [])
+    for (const service of selection.grantedServices) grantedServices.add(String(service))
     const selected: WebSelectedDevice = {
       peerId,
       device: selection.device,
-      grantedServices: new Set(selection.grantedServices.map(String))
+      grantedServices
     }
     this.selectedDevices.set(String(peerId), selected)
     return selected

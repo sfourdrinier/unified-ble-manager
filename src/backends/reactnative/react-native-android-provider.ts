@@ -46,7 +46,7 @@ export const REACT_NATIVE_ANDROID_DEFAULT_ADAPTER_NATIVE_ID = 'android-default-a
 
 export const reactNativeAndroidCompatibility: NativeCompatibilityOffer = Object.freeze({
   ...coreBluetoothCompatibility,
-  nativeProtocol: versionRange(version('native-protocol', 1), version('native-protocol', 1))
+  nativeProtocol: versionRange(version('native-protocol', 2), version('native-protocol', 2))
 })
 
 let nextBoundaryOwner = 1

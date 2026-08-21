@@ -361,8 +361,8 @@ RCT_EXPORT_MODULE(UnifiedBleProtocolControl)
   _radio.delegate = _radioDelegate;
   _execution->receiveAdapterState((__bridge void *)[_radio adapterSnapshot]);
   resolve(@{
-    @"nativeProtocol": @1,
-    @"abi": @1,
+    @"nativeProtocol": @2,
+    @"abi": @2,
     @"backendContract": @1,
     @"capabilitySchema": @1,
     @"eventSchema": @1,

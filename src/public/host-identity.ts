@@ -10,8 +10,23 @@ function getRandomValues(length: number): Uint8Array {
     globalThis.crypto.getRandomValues(out)
     return out
   }
-  for (let i = 0; i < length; i++) out[i] = Math.floor(Math.random() * 256)
-  return out
+  const nodeBytes = tryNodeRandomBytes(length)
+  if (nodeBytes !== null) return nodeBytes
+  throw contractError('capability.unsupported', 'core', 'host-identity.secure-randomness')
+}
+
+function tryNodeRandomBytes(length: number): Uint8Array | null {
+  try {
+    if (typeof require !== 'function') return null
+    const crypto = Reflect.apply(require, undefined, ['crypto'])
+    if (typeof crypto !== 'object' || crypto === null) return null
+    const randomBytes = Reflect.get(crypto, 'randomBytes')
+    if (typeof randomBytes !== 'function') return null
+    const result: unknown = Reflect.apply(randomBytes, crypto, [length])
+    return result instanceof Uint8Array && result.byteLength === length ? new Uint8Array(result) : null
+  } catch {
+    return null
+  }
 }
 
 function bytesToHex(bytes: Uint8Array): string {
@@ -288,6 +303,10 @@ export function normalizeBleManagerCreateOptions(
 ): BleManagerCreateOptions {
   if (options === undefined) {
     return Object.freeze({})
+  }
+  const allowedKeys = new Set(['instanceId', 'adapterId', 'diagnostics', 'restoration'])
+  if (Object.keys(options).some(key => !allowedKeys.has(key))) {
+    throw contractError('argument.invalid', 'core', 'options.unknown-key')
   }
   if (options.instanceId !== undefined) {
     assertNonEmptyString(options.instanceId, 'options.instanceId')

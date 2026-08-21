@@ -224,8 +224,8 @@ class DescriptorControl {
 
   handshake() {
     return Promise.resolve({
-      nativeProtocol: 1,
-      abi: 1,
+      nativeProtocol: 2,
+      abi: 2,
       backendContract: 1,
       capabilitySchema: 1,
       eventSchema: 1,

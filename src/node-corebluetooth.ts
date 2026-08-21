@@ -13,6 +13,8 @@ import {
   type CoreBluetoothBackendProviderOptions
 } from './backends/corebluetooth/corebluetooth-provider'
 import { createNodeBleManagerFromProvider, type NodeBleManagerAppOptions } from './node-host-manager'
+import { createPublicBleManager } from './public/ble-manager'
+import type { BleManager } from './public/ble-manager'
 
 interface CoreBluetoothNativeModule {
   createContractBoundary(): CoreBluetoothBoundary
@@ -131,13 +133,14 @@ export function createNativeCoreBluetoothBoundary(): CoreBluetoothBoundary {
 export type { NodeBleManagerAppOptions }
 
 /** One-call Node CoreBluetooth manager. Does not fall back to another backend. */
-export async function createCoreBluetoothBleManager(options: NodeBleManagerAppOptions) {
+export async function createCoreBluetoothBleManager(options: NodeBleManagerAppOptions = {}): Promise<BleManager> {
   const now = options.now ?? (() => performance.now())
-  return createNodeBleManagerFromProvider(
+  const internal = await createNodeBleManagerFromProvider(
     createNativeCoreBluetoothBackendProvider({ now }),
     coreBluetoothCompatibility,
     options
   )
+  return createPublicBleManager(internal, now)
 }
 
 /** Creates the production Node CoreBluetooth provider for the selected default central adapter. */

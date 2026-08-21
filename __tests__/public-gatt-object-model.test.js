@@ -4,9 +4,11 @@ const {
   createManagerOwnershipAuthority,
   DEFAULT_BLE_MANAGER_OPTIONS
 } = require('../src/manager/ble-manager')
-const { createPublicBleManager } = require('../src/public/ble-manager')
+const { createPublicBleManager, publicConnectionEvents } = require('../src/public/ble-manager')
 const { createDeterministicTestBackend } = require('../src/testing/deterministic/deterministic-test-backend')
 const { opaqueId, version, versionRange } = require('../src/backend-contract/primitives')
+const { capacity } = require('../src/backend-contract/primitives')
+const { CoreBoundedStream } = require('../src/core/bounded-stream')
 
 function compatibility() {
   return {
@@ -59,6 +61,135 @@ async function connectAndDiscover(fixture, manager) {
 }
 
 describe('stable public GATT object model (PR3 TDD)', () => {
+  test('broadcasts public lifecycle events to independent consumers', async () => {
+    const source = new CoreBoundedStream(
+      { itemCapacity: capacity(2), byteCapacity: capacity(64), reservedControlCapacity: capacity(1) },
+      'drop-oldest'
+    )
+    const events = publicConnectionEvents(source)
+    const first = events[Symbol.asyncIterator]()
+    const second = events[Symbol.asyncIterator]()
+    const firstNext = first.next()
+    const secondNext = second.next()
+    source.emit(
+      {
+        kind: 'connection-lifecycle',
+        attachment: {},
+        attachmentId: 'attachment-1',
+        peerId: 'peer-1',
+        connectionId: 'connection-1',
+        connectionGeneration: 'generation-1',
+        ownerLeaseId: 'lease-1',
+        sequence: 1,
+        backendIngressOrdinal: null,
+        previous: 'connecting',
+        current: 'connected',
+        cause: 'connected'
+      },
+      1
+    )
+
+    await expect(firstNext).resolves.toMatchObject({ value: { current: 'connected' } })
+    await expect(secondNext).resolves.toMatchObject({ value: { current: 'connected' } })
+    await first.return()
+    await second.return()
+  })
+
+  test('reports failed scan cleanup instead of a false stopped state', async () => {
+    const source = new CoreBoundedStream(
+      { itemCapacity: capacity(2), byteCapacity: capacity(64), reservedControlCapacity: capacity(1) },
+      'drop-oldest'
+    )
+    const internal = {
+      identity: null,
+      attachedBackend: undefined,
+      supports: () => true,
+      scan: jest.fn(async () => ({
+        observations: source,
+        stop: async () => ({
+          state: 'release-failed',
+          failures: [{ resourceKind: 'scan', error: { code: 'platform.failure' } }]
+        })
+      })),
+      connect: jest.fn(),
+      destroy: jest.fn(async () => ({ state: 'released', failures: [] }))
+    }
+    const manager = await createPublicBleManager(internal, () => 0)
+    const scan = await manager.scan()
+    const stateIterator = scan.state[Symbol.asyncIterator]()
+
+    await expect(scan.stop()).resolves.toMatchObject({ state: 'release-failed' })
+    const states = []
+    for (;;) {
+      const next = await stateIterator.next()
+      if (next.done) break
+      states.push(next.value.state)
+    }
+    expect(states).toEqual(['active', 'stopping', 'failed'])
+  })
+
+  test('preserves find abort and timeout causes when scan teardown closes the stream', async () => {
+    const source = new CoreBoundedStream(
+      { itemCapacity: capacity(2), byteCapacity: capacity(64), reservedControlCapacity: capacity(1) },
+      'drop-oldest'
+    )
+    let now = 0
+    const internal = {
+      identity: null,
+      attachedBackend: undefined,
+      supports: () => true,
+      scan: jest.fn(async () => ({ observations: source, stop: async () => ({ state: 'released', failures: [] }) })),
+      connect: jest.fn(),
+      destroy: jest.fn(async () => ({ state: 'released', failures: [] }))
+    }
+    const manager = await createPublicBleManager(internal, () => now)
+    const abortController = new AbortController()
+    const aborted = manager.find({ signal: abortController.signal })
+    await Promise.resolve()
+    abortController.abort()
+    source.closeWithReason('owner-released')
+    await expect(aborted).rejects.toMatchObject({ code: 'operation.aborted' })
+
+    const timedOut = manager.find({ timeoutMs: 5 })
+    await Promise.resolve()
+    now = 5
+    source.closeWithReason('owner-released')
+    await expect(timedOut).rejects.toMatchObject({ code: 'operation.timed-out' })
+  })
+
+  test('find keeps selection local and does not forward it as a scan option', async () => {
+    const source = new CoreBoundedStream(
+      { itemCapacity: capacity(2), byteCapacity: capacity(64), reservedControlCapacity: capacity(1) },
+      'drop-oldest'
+    )
+    const stop = jest.fn(async () => ({ state: 'released', failures: [] }))
+    const internal = {
+      identity: null,
+      attachedBackend: undefined,
+      supports: () => true,
+      scan: jest.fn(async () => ({ observations: source, stop })),
+      connect: jest.fn(),
+      destroy: jest.fn(async () => ({ state: 'released', failures: [] }))
+    }
+    const manager = await createPublicBleManager(internal, () => 0)
+    const found = manager.find({ select: 'first' })
+    source.emit(
+      {
+        peerId: 'peer-1',
+        localName: 'Sensor',
+        rssi: -42,
+        serviceUuids: [],
+        manufacturerData: [],
+        serviceData: []
+      },
+      1
+    )
+
+    await expect(found).resolves.toMatchObject({ id: 'peer-1', name: 'Sensor', rssi: -42 })
+    expect(internal.scan).toHaveBeenCalledWith(expect.not.objectContaining({ select: 'first' }))
+    expect(stop).toHaveBeenCalledTimes(1)
+  })
+
   test('exposes an immutable generation-bound object graph and explicit duplicate selection', async () => {
     const publicFixture = await createPublicFixture()
     const { fixture, manager } = publicFixture

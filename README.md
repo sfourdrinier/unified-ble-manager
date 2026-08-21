@@ -138,7 +138,7 @@ try {
 
 `journeyDeadline` is one budget for the whole sample, not 20 seconds per call. Battery Level and Heart Rate Control Point are optional or conditional; see [`docs/TUTORIALS.md`](docs/TUTORIALS.md). Persistent subscriptions also live there.
 
-Web Bluetooth replaces the scan with `session.chooser.choose(...)` from a user gesture. Tauri and the Electron renderer use different client types — see those host pages.
+Web Bluetooth replaces the scan with `ble.choose(...)` from a user gesture. Tauri and the Electron renderer use different host entrypoints — see those host pages.
 
 ## Why the API looks like this
 

@@ -105,6 +105,10 @@ describe('canonical public ScanQuery v1', () => {
       '0000180f-0000-1000-8000-00805f9b34fb'
     ])
     expect(first.digest).toMatch(/^scan-query-v1:[0-9a-f]{16}$/)
+    const clauses = [{ names: { prefixes: ['Target'] } }, { rssi: { minimum: -60 } }]
+    expect(normalizeScanQuery({ anyOf: clauses }).digest).toBe(
+      normalizeScanQuery({ anyOf: [...clauses].reverse() }).digest
+    )
   })
 
   test('uses the same normalized query for the public residual stream and find helper', async () => {
@@ -142,7 +146,7 @@ describe('canonical public ScanQuery v1', () => {
       },
       32
     )
-    await expect(pending).resolves.toMatchObject({ value: { kind: 'value', value: { peerId: 'target' } } })
+    await expect(pending).resolves.toMatchObject({ value: { kind: 'value', value: { peer: { id: 'target' } } } })
     await filtered.close()
 
     const scan = {

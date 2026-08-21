@@ -375,7 +375,7 @@ jobs:
           fi
 
           PROVENANCE_VERIFIED=false
-          for ATTEMPT in $(seq 1 12); do
+          for ATTEMPT in $(seq 1 36); do
             if npm view "unified-ble-manager@${VER}" dist.attestations --json 2>/dev/null | node -e "
               let body = '';
               process.stdin.setEncoding('utf8');
@@ -393,7 +393,7 @@ jobs:
               PROVENANCE_VERIFIED=true
               break
             fi
-            echo "npm provenance metadata is not visible yet (attempt ${ATTEMPT}/12)"
+            echo "npm provenance metadata is not visible yet (attempt ${ATTEMPT}/36)"
             sleep 5
           done
           if [ "${PROVENANCE_VERIFIED}" != true ]; then
@@ -414,7 +414,7 @@ jobs:
           ATTESTATIONS_FILE="$(mktemp)"
           trap 'rm -f "${ATTESTATIONS_FILE}"' EXIT
           ATTESTATIONS_READY=false
-          for ATTEMPT in $(seq 1 12); do
+          for ATTEMPT in $(seq 1 36); do
             if ATTESTATIONS_URL="$(npm view "unified-ble-manager@${VER}" dist.attestations.url --json 2>/dev/null | node -e "let body = ''; process.stdin.setEncoding('utf8'); process.stdin.on('data', chunk => { body += chunk }); process.stdin.on('end', () => { const value = JSON.parse(body); if (typeof value !== 'string' || !value.startsWith('https://registry.npmjs.org/')) throw new Error('npm attestation URL must use the npm registry HTTPS origin'); process.stdout.write(value) })")" && \
               curl --fail --location --silent --show-error --proto '=https' \
                 --output "${ATTESTATIONS_FILE}" \
@@ -423,7 +423,7 @@ jobs:
               ATTESTATIONS_READY=true
               break
             fi
-            echo "npm provenance attestations are not visible yet (attempt ${ATTEMPT}/12)"
+            echo "npm provenance attestations are not visible yet (attempt ${ATTEMPT}/36)"
             sleep 5
           done
           if [ "${ATTESTATIONS_READY}" != true ]; then

@@ -23,7 +23,12 @@ import type {
 } from '../backend-contract/operations'
 import type { AttachmentId, BackendCompatibilityOffer, PeerId } from '../backend-contract/primitives'
 import { capacity, deadline } from '../backend-contract/primitives'
-import type { AttachedBackend, BleCentralBackend, OwningManagerConstruction } from '../backend-contract/backend'
+import type {
+  AttachedBackend,
+  BleCentralBackend,
+  ConnectionOptions,
+  OwningManagerConstruction
+} from '../backend-contract/backend'
 import type { BoundedAsyncStream } from '../backend-contract/streams'
 import type { RestorationAdoptionRequest, RestorationAdoptionResult } from '../backend-contract/restoration'
 import type { DiagnosticTraceDocument } from '../diagnostics/trace-format'
@@ -225,10 +230,7 @@ export class BleManager<Attachment extends string, Identity extends BackendIdent
     return new ScanSession(await this.core.scan(options))
   }
 
-  async connect(
-    peerId: PeerId<Attachment>,
-    options: PublicOperationOptions
-  ): Promise<Connection<Attachment, Identity>> {
+  async connect(peerId: PeerId<Attachment>, options: ConnectionOptions): Promise<Connection<Attachment, Identity>> {
     return new Connection(await this.core.connect(peerId, options))
   }
 

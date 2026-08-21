@@ -9,6 +9,8 @@ import {
   type WinRtBackendProviderOptions
 } from './backends/winrt/winrt-provider'
 import { createNodeBleManagerFromProvider, type NodeBleManagerAppOptions } from './node-host-manager'
+import { createPublicBleManager } from './public/ble-manager'
+import type { BleManager } from './public/ble-manager'
 
 interface WinRtNativeModule {
   readonly boundaryVersion: 2
@@ -145,9 +147,14 @@ export function createNativeWinRtBoundary(): WinRtBoundary {
 export type { NodeBleManagerAppOptions }
 
 /** One-call Node WinRT manager. Does not fall back to another backend. */
-export async function createWinRtBleManager(options: NodeBleManagerAppOptions) {
+export async function createWinRtBleManager(options: NodeBleManagerAppOptions = {}): Promise<BleManager> {
   const now = options.now ?? (() => performance.now())
-  return createNodeBleManagerFromProvider(createNativeWinRtBackendProvider({ now }), winRtCompatibility, options)
+  const internal = await createNodeBleManagerFromProvider(
+    createNativeWinRtBackendProvider({ now }),
+    winRtCompatibility,
+    options
+  )
+  return createPublicBleManager(internal, now)
 }
 
 /** Creates a strict Node provider for one explicitly selected Windows BLE adapter. */
