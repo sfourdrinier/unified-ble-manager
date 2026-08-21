@@ -2,7 +2,7 @@
 
 import { contractError } from '../backend-contract/errors'
 import type { IpcEnvelope } from '../backend-contract/electron'
-import type { IpcVersionAxes, SerializableRecord } from '../backend-contract/primitives'
+import type { IpcVersionAxes, SerializableRecord, VersionRange } from '../backend-contract/primitives'
 import { snapshotSerializableRecord } from '../backend-contract/serializable'
 import type { ElectronBleIpcRequest } from './protocol'
 
@@ -19,7 +19,16 @@ function controlRequestRecord<Renderer extends string, Operation extends string>
   request: ElectronBleIpcRequest<string, Renderer, Operation>
 ): SerializableRecord {
   if (request.kind === 'bootstrap') {
-    return Object.freeze({ kind: request.kind })
+    return Object.freeze({
+      kind: request.kind,
+      offer: Object.freeze({
+        backendContract: serializeVersionRange(request.offer.backendContract),
+        capabilitySchema: serializeVersionRange(request.offer.capabilitySchema),
+        eventSchema: serializeVersionRange(request.offer.eventSchema),
+        traceFormat: serializeVersionRange(request.offer.traceFormat),
+        ipcProtocol: serializeVersionRange(request.offer.ipcProtocol)
+      })
+    })
   }
   if (request.kind === 'event.ack') {
     return Object.freeze({
@@ -32,6 +41,14 @@ function controlRequestRecord<Renderer extends string, Operation extends string>
     return Object.freeze({ kind: request.kind, rendererLease: snapshotRendererLease(request.rendererLease) })
   }
   throw contractError('lifecycle.invariant-violation', 'ipc', 'electron-ipc-message-sizing.route-control')
+}
+
+function serializeVersionRange(range: VersionRange<string>): SerializableRecord {
+  return Object.freeze({
+    axis: range.axis,
+    minimum: Object.freeze({ axis: range.minimum.axis, value: range.minimum.value }),
+    maximum: Object.freeze({ axis: range.maximum.axis, value: range.maximum.value })
+  })
 }
 
 function ipcEnvelopeByteLength<Renderer extends string, Operation extends string>(

@@ -122,7 +122,7 @@ class ReactNativeAppleBackend implements BleCentralBackend<string, NativeBackend
         implementationVersion: REACT_NATIVE_APPLE_IMPLEMENTATION_VERSION,
         diagnostics: Object.freeze({
           boundary: 'react-native-apple-jsi-v1',
-          transport: 'native-protocol-v1'
+          transport: 'native-protocol-v2'
         })
       })
     })

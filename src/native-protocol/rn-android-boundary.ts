@@ -29,7 +29,7 @@ import {
   encodeNativeProtocolRecord,
   type NativeProtocolField,
   type NativeProtocolRecord
-} from './v1-codec'
+} from './v2-codec'
 import {
   adapterStateFromRecord,
   addressKey,

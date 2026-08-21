@@ -301,7 +301,7 @@ describe('ci-release canonical package (4.0)', () => {
     const publish = read('.github/workflows/publish.yml')
     const checker = read('scripts/ci/check-host-exports.js')
     expect(publish).toContain('scripts/ci/check-host-exports.js')
-    expect(checker).toContain("typeof publicRoot.ApplicationBleManager, 'function'")
+    expect(checker).toContain('publicRoot.ApplicationBleManager')
     expect(checker).toContain("typeof backendSdk.runBackendTck, 'function'")
     expect(checker).toMatch(/typeof\s+testing\.createDeterministicTestBackend,\s*'function'/)
     expect(checker).toContain('host export must remain unavailable')

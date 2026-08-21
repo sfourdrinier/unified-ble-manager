@@ -17,7 +17,7 @@ namespace {
 using unified_ble::apple_protocol::AppleNativeIngressOrdinalAllocator;
 using unified_ble::apple_protocol::AppleBinaryCleanupLedger;
 using unified_ble::apple_protocol::checkedAppleBinaryRange;
-using unified_ble::native_protocol::v1::OwnedBinaryReference;
+using unified_ble::native_protocol::v2::OwnedBinaryReference;
 
 bool require(bool condition, const char* message) {
   if (condition) return true;
@@ -114,7 +114,7 @@ int main() {
       attachmentGeneration);
   if (!require(reset.has_value() && reset->ordinal == 1U, "ordinal reset did not start at one")) return 1;
 
-  const auto maximum = unified_ble::native_protocol::v1::kMaximumBinaryPayloadBytes;
+  const auto maximum = unified_ble::native_protocol::v2::kMaximumBinaryPayloadBytes;
   if (!require(checkedAppleBinaryRange(0U, maximum), "maximum binary range was rejected")) return 1;
   if (!require(!checkedAppleBinaryRange(maximum, 1U), "binary range overflow was admitted")) return 1;
   if (!require(!checkedAppleBinaryRange(std::numeric_limits<std::size_t>::max(), 1U), "size overflow was admitted")) return 1;

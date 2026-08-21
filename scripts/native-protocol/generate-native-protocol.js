@@ -6,7 +6,7 @@ const fs = require('fs')
 const path = require('path')
 
 const root = path.resolve(__dirname, '../..')
-const schemaPath = path.join(root, 'native/protocol/schema/native-protocol-v1.json')
+const schemaPath = path.join(root, 'native/protocol/schema/native-protocol-v2.json')
 const schema = JSON.parse(fs.readFileSync(schemaPath, 'utf8'))
 const abiManifestPath = path.join(path.dirname(schemaPath), schema.abiManifest)
 const abiManifest = JSON.parse(fs.readFileSync(abiManifestPath, 'utf8'))
@@ -112,7 +112,7 @@ function cppOutput() {
       )
     )
     .join(',\n')
-  return `// native/protocol/generated/NativeProtocolV1Schema.hpp
+  return `// native/protocol/generated/NativeProtocolV2Schema.hpp
 
 #pragma once
 
@@ -121,7 +121,7 @@ function cppOutput() {
 #include <cstdint>
 #include <string_view>
 
-namespace unified_ble::native_protocol::v1 {
+namespace unified_ble::native_protocol::v2 {
 
 inline constexpr std::uint32_t kProtocolVersion = ${String(schema.version)}U;
 inline constexpr std::uint32_t kAbiVersion = ${String(schema.abiVersion)}U;
@@ -166,7 +166,7 @@ inline constexpr std::array<EnumValueDescriptor, ${String(
 ${enumValues}
 }};
 
-} // namespace unified_ble::native_protocol::v1
+} // namespace unified_ble::native_protocol::v2
 `
 }
 
@@ -186,7 +186,7 @@ function kotlinOutput() {
       )
     )
     .join(',\n')
-  return `// android/src/main/java/com/sfourdrinier/unifiedblemanager/protocol/generated/NativeProtocolV1Schema.kt
+  return `// android/src/main/java/com/sfourdrinier/unifiedblemanager/protocol/generated/NativeProtocolV2Schema.kt
 
 package com.sfourdrinier.unifiedblemanager.protocol.generated
 
@@ -229,7 +229,7 @@ function swiftOutput() {
       )
     )
     .join(',\n')
-  return `// ios/Generated/NativeProtocolV1Schema.swift
+  return `// ios/Generated/NativeProtocolV2Schema.swift
 
 import Foundation
 
@@ -265,7 +265,7 @@ function typescriptSchemaOutput() {
         )} = (typeof ${name})[number]`
     )
     .join('\n\n')
-  return `// src/native-protocol/generated/native-protocol-v1-schema.ts
+  return `// src/native-protocol/generated/native-protocol-v2-schema.ts
 
 export const NATIVE_PROTOCOL_VERSION = ${String(schema.version)}
 export const NATIVE_PROTOCOL_ABI_VERSION = ${String(schema.abiVersion)}
@@ -438,13 +438,13 @@ async function main() {
   validateAbiManifest()
   const prettier = await import('prettier')
   const outputs = new Map([
-    ['native/protocol/generated/NativeProtocolV1Schema.hpp', cppOutput()],
+    ['native/protocol/generated/NativeProtocolV2Schema.hpp', cppOutput()],
     [
-      'android/src/main/java/com/sfourdrinier/unifiedblemanager/protocol/generated/NativeProtocolV1Schema.kt',
+      'android/src/main/java/com/sfourdrinier/unifiedblemanager/protocol/generated/NativeProtocolV2Schema.kt',
       kotlinOutput()
     ],
-    ['ios/Generated/NativeProtocolV1Schema.swift', swiftOutput()],
-    ['src/native-protocol/generated/native-protocol-v1-schema.ts', typescriptSchemaOutput()],
+    ['ios/Generated/NativeProtocolV2Schema.swift', swiftOutput()],
+    ['src/native-protocol/generated/native-protocol-v2-schema.ts', typescriptSchemaOutput()],
     ['src/NativeUnifiedBleProtocolControl.ts', codegenOutput()]
   ])
 

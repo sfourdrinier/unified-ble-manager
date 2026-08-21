@@ -294,7 +294,7 @@ export class ElectronMainBleBinding<Sender extends ElectronMainIpcSender> {
     const trusted = snapshotTrustedSender(this.options.authenticate(event))
     this.options.router.validateRequest(request)
     if (request.kind === 'bootstrap') {
-      return this.withBootstrapAdmission(event, trusted)
+      return this.withBootstrapAdmission(event, trusted, request)
     }
     const rendererLease = rendererLeaseForRequest(request)
     const rendererLeaseId = String(rendererLease.leaseId)
@@ -340,7 +340,8 @@ export class ElectronMainBleBinding<Sender extends ElectronMainIpcSender> {
 
   private async withBootstrapAdmission(
     event: ElectronMainIpcEvent<Sender>,
-    trusted: TrustedIpcSender<string, string>
+    trusted: TrustedIpcSender<string, string>,
+    request: Extract<ElectronBleIpcRequest<string, string, string>, { readonly kind: 'bootstrap' }>
   ): Promise<ElectronBleIpcSuccessResponse<string, string>> {
     const predecessor = this.bootstrapAdmissionTails.get(event.sender)
     const completion = {
@@ -356,7 +357,7 @@ export class ElectronMainBleBinding<Sender extends ElectronMainIpcSender> {
       await predecessor
     }
     try {
-      return await this.bootstrap(event, trusted)
+      return await this.bootstrap(event, trusted, request)
     } finally {
       completion.release()
       if (this.bootstrapAdmissionTails.get(event.sender) === turn) {
@@ -367,7 +368,8 @@ export class ElectronMainBleBinding<Sender extends ElectronMainIpcSender> {
 
   private async bootstrap(
     event: ElectronMainIpcEvent<Sender>,
-    trusted: TrustedIpcSender<string, string>
+    trusted: TrustedIpcSender<string, string>,
+    request: Extract<ElectronBleIpcRequest<string, string, string>, { readonly kind: 'bootstrap' }>
   ): Promise<ElectronBleIpcSuccessResponse<string, string>> {
     await this.releaseRetiredSenderRenderers(event)
     this.assertActiveLifecycle()
@@ -382,7 +384,7 @@ export class ElectronMainBleBinding<Sender extends ElectronMainIpcSender> {
       navigationState.sourceFrame.routingId === event.frameId
     const admittedByPendingReplacementDocument =
       navigationState.pendingReplacement && navigationState.lastStartDetails?.url === event.senderFrame?.url
-    const response = await this.options.router.dispatch(trusted, { kind: 'bootstrap' })
+    const response = await this.options.router.dispatch(trusted, request)
     if (response.kind !== 'bootstrap') {
       throw contractError('lifecycle.invariant-violation', 'ipc', 'electron-main-binding.bootstrap-response')
     }

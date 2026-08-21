@@ -75,7 +75,7 @@ export function normalizeOperationOptions(
 
   // Never extend an existing deadline.
   if (existingDeadline !== null && deadlineValue !== null) {
-    deadlineValue = (existingDeadline as number) < (deadlineValue as number) ? existingDeadline : deadlineValue
+    deadlineValue = existingDeadline < deadlineValue ? existingDeadline : deadlineValue
   } else if (existingDeadline !== null) {
     deadlineValue = existingDeadline
   }
@@ -92,27 +92,26 @@ export function composeAbortSignal(outer: AbortSignal | null, inner: AbortSignal
   if (outer === inner) return outer
   // AnySignal-like composition without introducing a dependency.
   const controller = new AbortController()
-  const onAbort = () => {
-    // Reason preservation is best-effort for older lib targets.
-    const outerReason = (outer as unknown as { reason?: unknown }).reason
-    const innerReason = (inner as unknown as { reason?: unknown }).reason
-    const reason = outerReason ?? innerReason
-    try {
-      // Modern AbortController supports reason.
-      ;(controller as unknown as { abort: (r?: unknown) => void }).abort(reason)
-    } catch {
-      controller.abort()
+  const getReason = (signal: AbortSignal): unknown => Reflect.get(signal, 'reason')
+  const abortWithReason = (target: AbortController, reason: unknown): void => {
+    const maybeAbort = Reflect.get(target, 'abort')
+    if (typeof maybeAbort === 'function') {
+      try {
+        Reflect.apply(maybeAbort, target, [reason])
+        return
+      } catch {
+        // fall through to no-arg abort
+      }
     }
+    target.abort()
+  }
+  const onAbort = () => {
+    const reason = getReason(outer) ?? getReason(inner)
+    abortWithReason(controller, reason)
   }
   if (outer.aborted || inner.aborted) {
-    const outerReason = (outer as unknown as { reason?: unknown }).reason
-    const innerReason = (inner as unknown as { reason?: unknown }).reason
-    const reason = outer.aborted ? outerReason : innerReason
-    try {
-      ;(controller as unknown as { abort: (r?: unknown) => void }).abort(reason)
-    } catch {
-      controller.abort()
-    }
+    const reason = outer.aborted ? getReason(outer) : getReason(inner)
+    abortWithReason(controller, reason)
     return controller.signal
   }
   outer.addEventListener('abort', onAbort, { once: true })

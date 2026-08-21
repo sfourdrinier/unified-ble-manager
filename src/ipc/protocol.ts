@@ -8,18 +8,36 @@ import type {
   AttachmentId,
   IpcOperationCorrelation,
   IpcVersionAxes,
+  IpcCompatibilityOffer,
+  ProtocolAxis,
   SerializableRecord
 } from '../backend-contract/primitives'
+import { version, versionRange } from '../backend-contract/primitives'
 import type { AttachmentRecord } from '../backend-contract/identity'
+import type { CapabilitySnapshot } from '../backend-contract/capabilities'
 
 /** The one versioned request channel exposed by a host application's narrow preload bridge. */
-export const IPC_BLE_PROTOCOL_CHANNEL = 'unified-ble-manager:v1'
+export const IPC_BLE_PROTOCOL_CHANNEL = 'unified-ble-manager:v2'
 
-/** The version of the lifecycle value carried by the desktop webview v1 IPC stream. */
-export const IPC_CONNECTION_LIFECYCLE_EVENT_SCHEMA_VERSION = 1
+/** The version of the lifecycle value carried by the desktop webview v2 IPC stream. */
+export const IPC_CONNECTION_LIFECYCLE_EVENT_SCHEMA_VERSION = 2
 
 /** Client-originated lifecycle stream identifiers occupy a reserved namespace. */
 export const IPC_CONNECTION_EVENTS_STREAM_HANDLE_PREFIX = 'connection-events-'
+
+function singletonVersionRange<Axis extends ProtocolAxis>(axis: Axis, value: number) {
+  const selected = Object.freeze(version(axis, value))
+  return Object.freeze(versionRange(selected, selected))
+}
+
+/** The IPC versions implemented by this package's desktop webview client. */
+export const IPC_CLIENT_COMPATIBILITY_OFFER: IpcCompatibilityOffer = Object.freeze({
+  backendContract: singletonVersionRange('backend-contract', 1),
+  capabilitySchema: singletonVersionRange('capability-schema', 1),
+  eventSchema: singletonVersionRange('event-schema', 1),
+  traceFormat: singletonVersionRange('trace-format', 1),
+  ipcProtocol: singletonVersionRange('ipc-protocol', 2)
+})
 
 /** Validates the public client-originated lifecycle stream identifier format. */
 export function isIpcConnectionEventsStreamHandle(value: string): boolean {
@@ -27,22 +45,22 @@ export function isIpcConnectionEventsStreamHandle(value: string): boolean {
 }
 
 /** Serializable attachment identity carried with a connection lifecycle event. */
-export interface IpcAttachmentRecordV1 extends SerializableRecord {
+export interface IpcAttachmentRecordV2 extends SerializableRecord {
   readonly attachmentId: string
   readonly backendInstanceId: string
   readonly backendGeneration: string
-  readonly adapter: IpcAdapterRecordV1
+  readonly adapter: IpcAdapterRecordV2
 }
 
-export interface IpcAdapterRecordV1 extends SerializableRecord {
+export interface IpcAdapterRecordV2 extends SerializableRecord {
   readonly adapterId: string
   readonly displayName: string | null
-  readonly state: IpcAdapterStateV1
+  readonly state: IpcAdapterStateV2
   readonly adapterGeneration: string
   readonly limitations: readonly string[]
 }
 
-export interface IpcAdapterStateV1 extends SerializableRecord {
+export interface IpcAdapterStateV2 extends SerializableRecord {
   readonly availability: 'available' | 'unavailable' | 'unsupported' | 'unknown'
   /**
    * `'unknown'` when the platform exposes no per-application Bluetooth
@@ -59,11 +77,13 @@ export interface IpcAdapterStateV1 extends SerializableRecord {
   readonly safeReason: string | null
 }
 
+export type IpcCapabilitySnapshotV2 = CapabilitySnapshot
+
 /** Versioned, data-only projection of one public ConnectionLifecycleEvent. */
-export interface IpcConnectionLifecycleEventV1 extends SerializableRecord {
+export interface IpcConnectionLifecycleEventV2 extends SerializableRecord {
   readonly kind: 'connection-lifecycle'
   readonly schemaVersion: typeof IPC_CONNECTION_LIFECYCLE_EVENT_SCHEMA_VERSION
-  readonly attachment: IpcAttachmentRecordV1
+  readonly attachment: IpcAttachmentRecordV2
   readonly attachmentId: string
   readonly peerId: string
   readonly connectionId: string
@@ -81,7 +101,7 @@ export interface IpcConnectionLifecycleEventV1 extends SerializableRecord {
  * client-generated opaque handle confirmed by the host; the host begins
  * forwarding only after the matching readiness command.
  */
-export interface IpcConnectionEventsSubscribeResponseV1 extends SerializableRecord {
+export interface IpcConnectionEventsSubscribeResponseV2 extends SerializableRecord {
   readonly handle: string
   readonly connectionId: string
   readonly connectionGeneration: string
@@ -93,6 +113,7 @@ export interface IpcClientBootstrap<Attachment extends string, Client extends st
   readonly attachment: AttachmentRecord<Attachment>
   readonly attachmentId: AttachmentId<Attachment>
   readonly versions: IpcVersionAxes
+  readonly capabilities: IpcCapabilitySnapshotV2
   readonly renderer: IpcClientIdentity<Attachment, Client>
   readonly rendererLease: IpcClientLeaseIdentity
 }
@@ -109,6 +130,11 @@ export interface IpcBleEvent {
 
 export interface IpcBootstrapRequest {
   readonly kind: 'bootstrap'
+  readonly offer: IpcCompatibilityOffer
+}
+
+export function createIpcBootstrapRequest(): IpcBootstrapRequest {
+  return Object.freeze({ kind: 'bootstrap', offer: IPC_CLIENT_COMPATIBILITY_OFFER })
 }
 
 export interface IpcRouteRequest<Attachment extends string, Client extends string, Operation extends string> {

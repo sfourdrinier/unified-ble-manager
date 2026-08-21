@@ -1,4 +1,3 @@
-/* eslint-disable @typescript-eslint/no-explicit-any, no-void */
 // src/web.ts — zero-plumbing Web Bluetooth factory (PR1 final, no compatibility aliases)
 
 import type { BleManager } from './public/ble-manager'
@@ -50,7 +49,7 @@ export type {
 
 // Zero-plumbing Web factory — returns one BleManager. No provider/clientId tuple.
 export async function createWebBleManager(options: BleManagerCreateOptions = {}): Promise<BleManager> {
-  const normalized = normalizeBleManagerCreateOptions(options)
+  normalizeBleManagerCreateOptions(options)
   const env = createDefaultNavigatorWebBluetoothEnvironment()
   const provider = createWebBluetoothProvider(new NavigatorWebBluetoothBoundary(env))
   const ephemeral = createEphemeralHostIdentity()
@@ -64,8 +63,7 @@ export async function createWebBleManager(options: BleManagerCreateOptions = {})
     },
     { ...DEFAULT_BLE_MANAGER_OPTIONS, now: env.now }
   )
-  void normalized
-  return createPublicBleManager(internal as any, env.now)
+  return createPublicBleManager(internal, env.now)
 }
 
 // Explicit provider injection for tests and unusual hosts.
@@ -90,5 +88,5 @@ export async function createWebBleManagerWithEnvironment(
     },
     { ...DEFAULT_BLE_MANAGER_OPTIONS, now: env.now }
   )
-  return createPublicBleManager(internal as any, env.now)
+  return createPublicBleManager(internal, env.now)
 }

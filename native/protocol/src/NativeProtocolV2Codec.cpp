@@ -1,6 +1,6 @@
-// native/protocol/src/NativeProtocolV1Codec.cpp
+// native/protocol/src/NativeProtocolV2Codec.cpp
 
-#include "../include/NativeProtocolV1Codec.hpp"
+#include "../include/NativeProtocolV2Codec.hpp"
 
 #include <algorithm>
 #include <array>
@@ -9,7 +9,7 @@
 #include <set>
 #include <string_view>
 
-namespace unified_ble::native_protocol::v1 {
+namespace unified_ble::native_protocol::v2 {
 
 namespace {
 
@@ -544,22 +544,22 @@ ProtocolFailure ProtocolException::failure() const noexcept {
   return failure_;
 }
 
-std::vector<std::uint8_t> NativeProtocolV1Codec::encode(const ProtocolRecord& record) const {
+std::vector<std::uint8_t> NativeProtocolV2Codec::encode(const ProtocolRecord& record) const {
   validate(record);
   return encodeRecord(record);
 }
 
-ProtocolRecord NativeProtocolV1Codec::decode(const std::vector<std::uint8_t>& bytes) const {
+ProtocolRecord NativeProtocolV2Codec::decode(const std::vector<std::uint8_t>& bytes) const {
   auto record = decodeRecord(bytes, 0U);
   validate(record);
   return record;
 }
 
-void NativeProtocolV1Codec::validate(const ProtocolRecord& record) const {
+void NativeProtocolV2Codec::validate(const ProtocolRecord& record) const {
   validateRecord(record, 0U);
 }
 
-void NativeProtocolV1Codec::validateRecord(const ProtocolRecord& record, std::size_t depth) const {
+void NativeProtocolV2Codec::validateRecord(const ProtocolRecord& record, std::size_t depth) const {
   if (depth > kMaximumRecordDepth) {
     throw ProtocolException(ProtocolFailure::malformedRecord, "Native protocol record nesting exceeds its limit");
   }
@@ -748,7 +748,7 @@ void NativeProtocolV1Codec::validateRecord(const ProtocolRecord& record, std::si
   }
 }
 
-NegotiatedVersions NativeProtocolV1Codec::negotiate(
+NegotiatedVersions NativeProtocolV2Codec::negotiate(
     VersionRange nativeProtocol,
     VersionRange abi,
     VersionRange backendContract,
@@ -765,4 +765,4 @@ NegotiatedVersions NativeProtocolV1Codec::negotiate(
   };
 }
 
-} // namespace unified_ble::native_protocol::v1
+} // namespace unified_ble::native_protocol::v2

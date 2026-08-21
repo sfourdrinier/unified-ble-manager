@@ -7,7 +7,7 @@
 #include <stdexcept>
 #include <utility>
 
-namespace protocol = unified_ble::native_protocol::v1;
+namespace protocol = unified_ble::native_protocol::v2;
 
 namespace {
 
@@ -102,7 +102,7 @@ NSData* dataFromBytes(const std::vector<std::uint8_t>& value) {
 }
 
 BinaryReferenceList binaryReferencesFromEncodedRecord(const std::vector<std::uint8_t>& bytes) {
-  const auto record = protocol::NativeProtocolV1Codec{}.decode(bytes);
+  const auto record = protocol::NativeProtocolV2Codec{}.decode(bytes);
   BinaryReferenceList references;
   appendBinaryReferences(record, references);
   return references;

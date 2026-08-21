@@ -8,7 +8,7 @@
 #include <sstream>
 #include <utility>
 
-namespace unified_ble::native_protocol::v1 {
+namespace unified_ble::native_protocol::v2 {
 
 namespace {
 
@@ -137,4 +137,4 @@ const OwnedBinaryPayloadStore::RetainedPayload& OwnedBinaryPayloadStore::require
   return found->second;
 }
 
-} // namespace unified_ble::native_protocol::v1
+} // namespace unified_ble::native_protocol::v2

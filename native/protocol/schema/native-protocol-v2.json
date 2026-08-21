@@ -1,8 +1,8 @@
 {
   "schema": "unified-ble-native-protocol",
-  "version": 1,
-  "abiVersion": 1,
-  "abiManifest": "native-protocol-v1-abi.json",
+  "version": 2,
+  "abiVersion": 2,
+  "abiManifest": "native-protocol-v2-abi.json",
   "maximumControlRecordBytes": 262144,
   "maximumBinaryPayloadBytes": 524288,
   "recordKinds": [

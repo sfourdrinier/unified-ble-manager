@@ -1,0 +1,20 @@
+describe('application root boundary', () => {
+  test('does not expose internal façade constructors or host identity machinery', () => {
+    const root = require('../src/index')
+
+    expect(root.ApplicationBleManager).toBeUndefined()
+    expect(root.createPublicBleManager).toBeUndefined()
+    expect(root.deriveRestorationIdentity).toBeUndefined()
+    expect(root.createEphemeralHostIdentity).toBeUndefined()
+    expect(root.normalizeBleManagerCreateOptions).toBeUndefined()
+    expect(root.normalizeOperationOptions).toBeUndefined()
+    expect(root.composeAbortSignal).toBeUndefined()
+    expect(root.resolveStreamPreset).toBeUndefined()
+    expect(root.STREAM_PRESET_DEFAULTS).toBeUndefined()
+    const tauri = require('../src/tauri')
+    expect(tauri.IpcBleManager).toBeUndefined()
+    expect(tauri.TauriBleManager).toBeUndefined()
+    expect(tauri.IpcConnection).toBeUndefined()
+    expect(tauri.TauriConnection).toBeUndefined()
+  })
+})

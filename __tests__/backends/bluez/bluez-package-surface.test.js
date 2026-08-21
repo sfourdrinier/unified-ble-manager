@@ -22,8 +22,8 @@ describe('BlueZ package surface', () => {
     jest.isolateModules(() => {
       const root = require('../../../src')
       // PR1: root is application-only, no generic BleManager class. Advanced holds the low-level one.
-      expect(typeof root.ApplicationBleManager).toBe('function')
-      expect(typeof root.createPublicBleManager).toBe('function')
+      expect(root.ApplicationBleManager).toBeUndefined()
+      expect(root.createPublicBleManager).toBeUndefined()
       expect(root.BleManager).toBeUndefined()
       expect(mockDbusLoads).toBe(0)
 

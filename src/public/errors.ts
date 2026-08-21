@@ -1,45 +1,87 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
-// src/public/errors.ts — public BleError (PR1 stub, full recovery catalog in PR2)
+// src/public/errors.ts — public BleError with PR2 recovery catalog
 
-import { BackendContractError } from '../backend-contract/errors'
-import type { BleErrorCode, BleErrorDomain } from '../backend-contract/errors'
+import { BLE_ERROR_CODES, BLE_ERROR_DOMAINS } from '../backend-contract/errors'
+import type { BleErrorCode, BleErrorDomain, PlatformErrorDetail } from '../backend-contract/errors'
+import type { Limitation } from '../backend-contract/capabilities'
+import { byteLimit, ownBytes } from '../backend-contract/primitives'
+import type { SerializableRecord, SerializableValue } from '../backend-contract/primitives'
+import { recoveryForCode } from '../backend-contract/recovery'
+import type { BleRecovery } from '../backend-contract/recovery'
 
-export type BleRecoveryDisposition =
-  | 'none'
-  | 'retry-immediately'
-  | 'retry-with-backoff'
-  | 'after-state-change'
-  | 'after-user-action'
-  | 'caller-policy'
+function freezeSerializableValue(value: SerializableValue): SerializableValue {
+  if (value instanceof Uint8Array) return ownBytes(value, byteLimit(value.byteLength))
+  if (Array.isArray(value)) return Object.freeze(value.map(entry => freezeSerializableValue(entry)))
+  if (isSerializableRecordValue(value)) return freezeSerializableRecord(value)
+  return value
+}
 
-export interface BleRecovery {
-  readonly disposition: BleRecoveryDisposition
-  readonly actions: readonly string[]
+function isSerializableRecordValue(value: SerializableValue): value is SerializableRecord {
+  return typeof value === 'object' && value !== null && !Array.isArray(value) && !(value instanceof Uint8Array)
+}
+
+function freezeSerializableRecord(record: SerializableRecord): SerializableRecord {
+  const copy: Record<string, SerializableValue> = {}
+  for (const [key, value] of Object.entries(record)) {
+    copy[key] = freezeSerializableValue(value)
+  }
+  return Object.freeze(copy)
+}
+
+function freezePlatformDetail(platform: PlatformErrorDetail | null): PlatformErrorDetail | null {
+  if (platform === null) return null
+  return Object.freeze({
+    domain: platform.domain,
+    code: platform.code,
+    safeMessage: platform.safeMessage,
+    metadata: freezeSerializableRecord(platform.metadata)
+  })
 }
 
 /**
  * Public application error. All façade and IPC errors rehydrate to BleError.
- * Full recovery catalog (permission, settings, reconnect, etc.) lands in PR2.
+ * Recovery catalog is deterministic per code; platform detail is preserved separately.
  */
-export class BleError extends BackendContractError {
+export class BleError extends Error {
+  readonly code: BleErrorCode
+  readonly domain: BleErrorDomain
+  readonly operation: string
+  readonly platform: PlatformErrorDetail | null
+  readonly limitations: readonly Limitation[]
   readonly recovery: BleRecovery
 
   constructor(
     code: BleErrorCode,
     domain: BleErrorDomain,
     operation: string,
-    recovery: BleRecovery = { disposition: 'none', actions: [] }
+    options: {
+      readonly platform?: PlatformErrorDetail | null
+      readonly limitations?: readonly Limitation[]
+    } = {}
   ) {
-    super({ code, domain, operation, platform: null, retryability: 'never' })
+    if (!BLE_ERROR_CODES.some(candidate => candidate === code)) {
+      throw new TypeError(`unknown BleError code: ${String(code)}`)
+    }
+    if (!BLE_ERROR_DOMAINS.some(candidate => candidate === domain)) {
+      throw new TypeError(`unknown BleError domain: ${String(domain)}`)
+    }
+    if (typeof operation !== 'string' || operation.length === 0) {
+      throw new TypeError('operation must be non-empty')
+    }
+    const recovery = recoveryForCode(code, operation)
+    const platform = freezePlatformDetail(options.platform ?? null)
+    super(`${code}: ${operation}`)
     this.name = 'BleError'
-    this.recovery = Object.freeze(recovery)
-  }
-
-  static fromContractError(error: BackendContractError): BleError {
-    const ble = new BleError(error.normalized.code, error.normalized.domain, error.normalized.operation)
-    ;(ble as any).normalized = error.normalized
-    return ble
+    this.code = code
+    this.domain = domain
+    this.operation = operation
+    this.platform = platform
+    this.limitations = Object.freeze((options.limitations ?? []).map(limitation => Object.freeze({ ...limitation })))
+    this.recovery = Object.freeze({
+      disposition: recovery.disposition,
+      actions: Object.freeze(recovery.actions.map(action => Object.freeze(action)))
+    })
   }
 }
 
 export type { BleErrorCode, BleErrorDomain } from '../backend-contract/errors'
+export type { BleRecovery, BleRecoveryDisposition, RecoveryAction } from '../backend-contract/recovery'

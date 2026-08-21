@@ -123,6 +123,6 @@ The helper always releases the lease. It never reconnects.
 
 ## Host boundaries
 
-Capabilities come from the instantiated backend. Web Bluetooth uses `createNavigatorWebBleManager()` and rejects `manager.scan()`. Electron renderers use `ElectronRendererBleClient`. Tauri uses `IpcBleManager`.
+Capabilities come from the instantiated backend. Web Bluetooth uses its explicit host entrypoint and chooser capability. Electron renderers use `ElectronRendererBleClient`. Tauri uses the zero-plumbing `createTauriBleManager()` factory; tests use `createTauriBleManagerWithEnvironment()`.
 
 See [`PROFILES_AND_COMMANDS.md`](PROFILES_AND_COMMANDS.md), [`WEB.md`](WEB.md), [`ELECTRON.md`](ELECTRON.md), and [`PLATFORMS.md`](PLATFORMS.md).

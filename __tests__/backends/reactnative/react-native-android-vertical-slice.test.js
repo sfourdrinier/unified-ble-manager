@@ -8,7 +8,7 @@ const {
   createReactNativeAppleBackendProvider,
   createReactNativeBleManagerWithEnvironment
 } = require('../../../src/react-native')
-const { decodeNativeProtocolRecord, encodeNativeProtocolRecord } = require('../../../src/native-protocol/v1-codec')
+const { decodeNativeProtocolRecord, encodeNativeProtocolRecord } = require('../../../src/native-protocol/v2-codec')
 const { ReactNativeAndroidProtocolBoundary } = require('../../../src/native-protocol/rn-android-boundary')
 const { ReactNativeAppleProtocolBoundary } = require('../../../src/native-protocol/rn-apple-boundary')
 const { CoreBluetoothBackend } = require('../../../src/backends/corebluetooth/corebluetooth-backend')
@@ -81,21 +81,21 @@ describe('React Native Android canonical protocol vertical slice', () => {
   let previousRuntime
 
   beforeEach(() => {
-    previousRuntime = global.__unifiedBleNativeProtocolV1
+    previousRuntime = global.__unifiedBleNativeProtocolV2
   })
 
   afterEach(() => {
     if (previousRuntime === undefined) {
-      delete global.__unifiedBleNativeProtocolV1
+      delete global.__unifiedBleNativeProtocolV2
     } else {
-      global.__unifiedBleNativeProtocolV1 = previousRuntime
+      global.__unifiedBleNativeProtocolV2 = previousRuntime
     }
   })
 
   test('opens the public provider with native-reported state and runs scan, connect, discovery, bytes, notify, and cleanup', async () => {
     const control = new DeterministicAndroidControl()
     const runtime = new DeterministicAndroidProtocolRuntime(control)
-    global.__unifiedBleNativeProtocolV1 = runtime
+    global.__unifiedBleNativeProtocolV2 = runtime
     const provider = createReactNativeAndroidBackendProvider({
       control,
       now: () => 20,
@@ -214,7 +214,7 @@ describe('React Native Android canonical protocol vertical slice', () => {
   test('constructs the canonical public manager with explicit React Native ownership and exposes adapter authorization', async () => {
     const control = new DeterministicAndroidControl()
     const runtime = new DeterministicAndroidProtocolRuntime(control)
-    global.__unifiedBleNativeProtocolV1 = runtime
+    global.__unifiedBleNativeProtocolV2 = runtime
     const manager = await createReactNativeBleManagerWithEnvironment({
       platform: 'android',
       control,
@@ -258,7 +258,7 @@ describe('React Native Android canonical protocol vertical slice', () => {
   ])('$name provider preserves every native-protocol advertisement field as detached public bytes', async fixture => {
     const control = new DeterministicAndroidControl()
     const runtime = new DeterministicAndroidProtocolRuntime(control)
-    global.__unifiedBleNativeProtocolV1 = runtime
+    global.__unifiedBleNativeProtocolV2 = runtime
     const provider = fixture.createProvider({
       control,
       now: () => 20,
@@ -353,7 +353,7 @@ describe('React Native Android canonical protocol vertical slice', () => {
   test('Android protocol fixture preserves every Android-reported advertisement field and leaves unavailable fields absent', async () => {
     const control = new DeterministicAndroidControl()
     const runtime = new DeterministicAndroidProtocolRuntime(control)
-    global.__unifiedBleNativeProtocolV1 = runtime
+    global.__unifiedBleNativeProtocolV2 = runtime
     const provider = createReactNativeAndroidBackendProvider({
       control,
       now: () => 20,
@@ -436,7 +436,7 @@ describe('React Native Android canonical protocol vertical slice', () => {
     async fixture => {
       const control = new DeterministicAndroidControl()
       const runtime = new DeterministicAndroidProtocolRuntime(control)
-      global.__unifiedBleNativeProtocolV1 = runtime
+      global.__unifiedBleNativeProtocolV2 = runtime
       const provider = fixture.createProvider({
         control,
         now: () => 20,
@@ -488,7 +488,7 @@ describe('React Native Android canonical protocol vertical slice', () => {
     }
     const control = new DeterministicAndroidControl(null, 0, unavailableState)
     const runtime = new DeterministicAndroidProtocolRuntime(control)
-    global.__unifiedBleNativeProtocolV1 = runtime
+    global.__unifiedBleNativeProtocolV2 = runtime
     const provider = fixture.createProvider({
       control,
       now: () => 20,
@@ -509,7 +509,7 @@ describe('React Native Android canonical protocol vertical slice', () => {
   test('releases raw scan bytes, terminalizes a failed scan, and permits reconnect after Android link loss', async () => {
     const control = new DeterministicAndroidControl()
     const runtime = new DeterministicAndroidProtocolRuntime(control)
-    global.__unifiedBleNativeProtocolV1 = runtime
+    global.__unifiedBleNativeProtocolV2 = runtime
     const provider = createReactNativeAndroidBackendProvider({
       control,
       now: () => 20,
@@ -600,7 +600,7 @@ describe('React Native Android canonical protocol vertical slice', () => {
   test('closes a handshake-open attachment when runtime installation or event-sink setup fails', async () => {
     const installControl = new DeterministicAndroidControl(new Error('runtime installation failed'))
     const installRuntime = new DeterministicAndroidProtocolRuntime(installControl)
-    global.__unifiedBleNativeProtocolV1 = installRuntime
+    global.__unifiedBleNativeProtocolV2 = installRuntime
     const installProvider = createReactNativeAndroidBackendProvider({
       control: installControl,
       now: () => 20,
@@ -611,7 +611,7 @@ describe('React Native Android canonical protocol vertical slice', () => {
 
     const sinkControl = new DeterministicAndroidControl()
     const sinkRuntime = new DeterministicAndroidProtocolRuntime(sinkControl, new Error('event sink setup failed'))
-    global.__unifiedBleNativeProtocolV1 = sinkRuntime
+    global.__unifiedBleNativeProtocolV2 = sinkRuntime
     const sinkProvider = createReactNativeAndroidBackendProvider({
       control: sinkControl,
       now: () => 20,
@@ -630,7 +630,7 @@ describe('React Native Android canonical protocol vertical slice', () => {
       installSink(listener)
       runtime.emitDiagnostic('stream.overflow', nativeOverflowMessage, 'pre-js-event-buffer')
     })
-    global.__unifiedBleNativeProtocolV1 = runtime
+    global.__unifiedBleNativeProtocolV2 = runtime
     const boundary = new ReactNativeAppleProtocolBoundary(control, 'deterministic-apple-pre-js-overflow-owner')
     const attachment = deterministicAttachment()
     boundary.bindAttachment(attachment)
@@ -672,7 +672,7 @@ describe('React Native Android canonical protocol vertical slice', () => {
   test('Android boundary fails closed and rejects pending work after runtime event ingress overflow', async () => {
     const control = new DeterministicAndroidControl()
     const runtime = new DeterministicAndroidProtocolRuntime(control)
-    global.__unifiedBleNativeProtocolV1 = runtime
+    global.__unifiedBleNativeProtocolV2 = runtime
     const boundary = new ReactNativeAndroidProtocolBoundary(control, 'deterministic-android-runtime-overflow-owner')
     const attachment = deterministicAttachment()
     boundary.bindAttachment(attachment)
@@ -706,7 +706,7 @@ describe('React Native Android canonical protocol vertical slice', () => {
     const control = new DeterministicAndroidControl()
     const runtime = new DeterministicAndroidProtocolRuntime(control)
     runtime.destroyFailuresRemaining = 1
-    global.__unifiedBleNativeProtocolV1 = runtime
+    global.__unifiedBleNativeProtocolV2 = runtime
     const provider = createProvider({ control, now: () => 20, createOwnerId: () => ownerId })
 
     const failure = await rejectedError(() => provider.listAdapters())
@@ -734,7 +734,7 @@ describe('React Native Android canonical protocol vertical slice', () => {
   ])('%s provider retries a released cleanup record that still reports failures', async (_name, createProvider, ownerId) => {
     const control = new DeterministicAndroidControl()
     const runtime = new DeterministicAndroidProtocolRuntime(control)
-    global.__unifiedBleNativeProtocolV1 = runtime
+    global.__unifiedBleNativeProtocolV2 = runtime
     const malformedCleanup = {
       state: 'released',
       failures: [
@@ -778,7 +778,7 @@ describe('React Native Android canonical protocol vertical slice', () => {
     const control = new DeterministicAndroidControl()
     const runtime = new DeterministicAndroidProtocolRuntime(control)
     const cleanupRejection = new Error('deterministic provider probe cleanup rejected')
-    global.__unifiedBleNativeProtocolV1 = runtime
+    global.__unifiedBleNativeProtocolV2 = runtime
     const destroySpy = jest
       .spyOn(CoreBluetoothBackend.prototype, 'destroy')
       .mockImplementationOnce(() => Promise.reject(cleanupRejection))
@@ -814,7 +814,7 @@ describe('React Native Android canonical protocol vertical slice', () => {
     const initializationFailure = new Error('deterministic provider initialization failed')
     const control = new DeterministicAndroidControl(initializationFailure, 2)
     const runtime = new DeterministicAndroidProtocolRuntime(control)
-    global.__unifiedBleNativeProtocolV1 = runtime
+    global.__unifiedBleNativeProtocolV2 = runtime
     const provider = createProvider({ control, now: () => 20, createOwnerId: () => ownerId })
 
     const failure = await rejectedError(() => provider.listAdapters())
@@ -855,7 +855,7 @@ describe('React Native Android canonical protocol vertical slice', () => {
     const cleanupRejection = new Error('deterministic provider setup cleanup rejected')
     const control = new DeterministicAndroidControl()
     const runtime = new DeterministicAndroidProtocolRuntime(control)
-    global.__unifiedBleNativeProtocolV1 = runtime
+    global.__unifiedBleNativeProtocolV2 = runtime
     const refreshSpy = jest
       .spyOn(CoreBluetoothBackend.prototype, 'refreshAttachmentState')
       .mockImplementationOnce(() => {
@@ -896,7 +896,7 @@ describe('React Native Android canonical protocol vertical slice', () => {
     const control = new DeterministicAndroidControl(null, 1)
     const runtime = new DeterministicAndroidProtocolRuntime(control)
     runtime.destroyFailuresRemaining = 1
-    global.__unifiedBleNativeProtocolV1 = runtime
+    global.__unifiedBleNativeProtocolV2 = runtime
     const boundary = new Boundary(control, 'deterministic-destroy-retry-owner')
     boundary.bindAttachment(deterministicAttachment())
     await boundary.open()
@@ -930,7 +930,7 @@ describe('React Native Android canonical protocol vertical slice', () => {
   ])('%s boundary retains a failed setup-close attachment for destroy retry', async (_name, Boundary) => {
     const control = new DeterministicAndroidControl(new Error('runtime installation failed'), 1)
     const runtime = new DeterministicAndroidProtocolRuntime(control)
-    global.__unifiedBleNativeProtocolV1 = runtime
+    global.__unifiedBleNativeProtocolV2 = runtime
     const boundary = new Boundary(control, 'deterministic-setup-close-retry-owner')
     boundary.bindAttachment(deterministicAttachment())
 
@@ -955,7 +955,7 @@ describe('React Native Android canonical protocol vertical slice', () => {
   test('routes the public Apple provider through the same canonical manager-to-JSI boundary', async () => {
     const control = new DeterministicAndroidControl()
     const runtime = new DeterministicAndroidProtocolRuntime(control)
-    global.__unifiedBleNativeProtocolV1 = runtime
+    global.__unifiedBleNativeProtocolV2 = runtime
     const provider = createReactNativeAppleBackendProvider({
       control,
       now: () => 20,
@@ -1060,21 +1060,21 @@ describe('React Native first-party standard TCK registrations', () => {
   let previousRuntime
 
   beforeEach(() => {
-    previousRuntime = global.__unifiedBleNativeProtocolV1
+    previousRuntime = global.__unifiedBleNativeProtocolV2
   })
 
   afterEach(() => {
     if (previousRuntime === undefined) {
-      delete global.__unifiedBleNativeProtocolV1
+      delete global.__unifiedBleNativeProtocolV2
     } else {
-      global.__unifiedBleNativeProtocolV1 = previousRuntime
+      global.__unifiedBleNativeProtocolV2 = previousRuntime
     }
   })
 
   test('Android executes its deterministic provider, RSSI, and ATT-MTU suites without claiming restoration', async () => {
     const control = new DeterministicAndroidControl()
     const runtime = new DeterministicAndroidProtocolRuntime(control, null, false)
-    global.__unifiedBleNativeProtocolV1 = runtime
+    global.__unifiedBleNativeProtocolV2 = runtime
     let owner = 0
     const registration = createReactNativeAndroidFirstPartyTckRegistration({
       control,
@@ -1107,7 +1107,7 @@ describe('React Native first-party standard TCK registrations', () => {
   test('Apple executes its deterministic provider, RSSI, restoration, and descriptor suites while excluding only MTU', async () => {
     const control = new DeterministicAndroidControl()
     const runtime = new DeterministicAndroidProtocolRuntime(control, null, false)
-    global.__unifiedBleNativeProtocolV1 = runtime
+    global.__unifiedBleNativeProtocolV2 = runtime
     let owner = 0
     const registration = createReactNativeAppleFirstPartyTckRegistration({
       control,

@@ -1,4 +1,3 @@
-/* eslint-disable @typescript-eslint/no-explicit-any */
 // src/react-native-app-manager.ts — zero-plumbing factory (PR1 final, no compatibility aliases)
 
 import { contractError } from './backend-contract/errors'
@@ -42,7 +41,7 @@ export async function createReactNativeBleManager(options: BleManagerCreateOptio
     managerId,
     hostSessionScope
   })
-  return createPublicBleManager(internal as any, () => performance.now())
+  return createPublicBleManager(internal, () => performance.now())
 }
 
 function inferReactNativeBlePlatform(): 'android' | 'apple' {

@@ -432,8 +432,8 @@ describe('consumer documentation matches the published package', () => {
     expect(web).not.toMatch(/npm'?s `next` tag/)
     expect(web).toContain('chooser.choose')
     expect(node).toContain('createBleManagerFromProvider')
-    expect(tauri).toContain('IpcBleManager')
-    expect(tauri).toMatch(/not the host-neutral `BleManager`|not BleManager\.scan/)
+    expect(tauri).toContain('createTauriBleManager()')
+    expect(tauri).toContain('returns the public `BleManager`')
   })
 
   test('teaching files that mention 4.0.0-rc. use the current package version', () => {

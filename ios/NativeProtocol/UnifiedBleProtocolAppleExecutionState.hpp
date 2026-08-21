@@ -30,26 +30,26 @@ class AppleNativeProtocolExecution::State final : public std::enable_shared_from
   static constexpr std::size_t kMaximumJavaScriptRecords = 64U;
   static constexpr std::size_t kMaximumJavaScriptBytes = 256U * 1024U;
 
-  State(std::shared_ptr<native_protocol::v1::NativeProtocolControlRuntime> runtimeValue, void* radioValue);
+  State(std::shared_ptr<native_protocol::v2::NativeProtocolControlRuntime> runtimeValue, void* radioValue);
   ~State();
 
-  std::shared_ptr<native_protocol::v1::NativeProtocolControlRuntime> runtime;
+  std::shared_ptr<native_protocol::v2::NativeProtocolControlRuntime> runtime;
   void* radio;
   std::shared_ptr<facebook::react::CallInvoker> callInvoker;
   std::shared_ptr<facebook::jsi::Function> eventSink;
   std::shared_ptr<facebook::jsi::Function> fatalSink;
   std::vector<std::shared_ptr<facebook::jsi::Function>> sinksAwaitingJavaScriptRelease;
-  native_protocol::v1::BoundedNativeEventBuffer recordsAwaitingSink{
+  native_protocol::v2::BoundedNativeEventBuffer recordsAwaitingSink{
       kMaximumPreJavaScriptRecords, kMaximumPreJavaScriptBytes};
   std::vector<BinaryReferenceList> binaryReferencesAwaitingSink;
   AppleBinaryCleanupLedger binaryCleanupLedger;
-  native_protocol::v1::BoundedNativeEventBuffer recordsAwaitingJavaScript{
+  native_protocol::v2::BoundedNativeEventBuffer recordsAwaitingJavaScript{
       kMaximumJavaScriptRecords, kMaximumJavaScriptBytes};
   std::vector<BinaryReferenceList> binaryReferencesAwaitingJavaScript;
   /// Kept index-aligned with JavaScript records: terminal settlement is valid
   /// only after the corresponding sink call has succeeded.
-  std::vector<std::optional<native_protocol::v1::ProtocolRecord>> terminalResultsAwaitingJavaScript;
-  std::vector<std::optional<native_protocol::v1::ProtocolRecord>> terminalConnectionCommandsAwaitingJavaScript;
+  std::vector<std::optional<native_protocol::v2::ProtocolRecord>> terminalResultsAwaitingJavaScript;
+  std::vector<std::optional<native_protocol::v2::ProtocolRecord>> terminalConnectionCommandsAwaitingJavaScript;
   bool drainScheduled = false;
   std::atomic<bool> closed{false};
   AppleNativeIngressOrdinalAllocator ingressOrdinalAllocator;
@@ -61,7 +61,7 @@ class AppleNativeProtocolExecution::State final : public std::enable_shared_from
   /// may outlive this state: the attachment is torn down as one fatal unit.
   bool attachmentFatal = false;
   bool restorationAppended = false;
-  std::unordered_map<std::string, native_protocol::v1::ProtocolRecord> connections;
+  std::unordered_map<std::string, native_protocol::v2::ProtocolRecord> connections;
 };
 
 } // namespace unified_ble::apple_protocol

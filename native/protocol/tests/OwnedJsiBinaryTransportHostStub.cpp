@@ -2,7 +2,7 @@
 
 #include "../include/OwnedJsiBinaryTransport.hpp"
 
-namespace unified_ble::native_protocol::v1 {
+namespace unified_ble::native_protocol::v2 {
 
 OwnedJsiBinaryTransport::OwnedJsiBinaryTransport(std::size_t maximumRetainedBytes)
     : store_(maximumRetainedBytes) {}
@@ -67,4 +67,4 @@ std::size_t OwnedJsiBinaryTransport::retainedPayloads() const {
   return store_.retainedPayloads();
 }
 
-} // namespace unified_ble::native_protocol::v1
+} // namespace unified_ble::native_protocol::v2

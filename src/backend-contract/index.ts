@@ -65,6 +65,7 @@ export type {
   EvidenceLevel,
   EvidenceReceipt,
   CapabilityDescriptor,
+  CapabilitySnapshot,
   CapabilityLimit,
   CapabilityLimits,
   FeatureId,
@@ -75,7 +76,16 @@ export type {
   Limitation,
   TckBinding
 } from './capabilities'
-export { createFeatureRegistry, describeFeatureRegistry, validateFeatureRegistration } from './capabilities'
+export { BUILT_IN_FEATURE_CATALOG, BUILT_IN_FEATURE_IDS } from './capabilities'
+export {
+  createFeatureRegistry,
+  describeFeatureRegistry,
+  snapshotCapabilityDescriptor,
+  snapshotCapabilityDescriptors,
+  validateCapabilityDescriptor,
+  validateCapabilitySnapshot,
+  validateFeatureRegistration
+} from './capabilities'
 export type {
   ConnectionLifecycleCause,
   ConnectionLifecycleEvent,
@@ -89,7 +99,7 @@ export type {
   NormalizedBleError,
   PlatformErrorDetail
 } from './errors'
-export { BackendContractError, contractError } from './errors'
+export { BackendContractError, BLE_ERROR_CODES, BLE_ERROR_DOMAINS, contractError } from './errors'
 export type {
   Characteristic,
   CharacteristicProperties,
@@ -255,3 +265,5 @@ export type {
   StreamTerminalNotice,
   StreamValue
 } from './streams'
+export type { BleRecovery, BleRecoveryDisposition, RecoveryAction } from './recovery'
+export { recoveryForCode } from './recovery'

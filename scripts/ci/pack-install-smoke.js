@@ -150,7 +150,6 @@ function writeExternalTypeScriptFixture(consumer, module, moduleResolution) {
   fs.writeFileSync(
     path.join(fixtureDirectory, 'backend-author.ts'),
     [
-      "import { ApplicationBleManager } from 'unified-ble-manager';",
       "import { BleManager as AdvancedBleManager } from 'unified-ble-manager/advanced';",
       "import { createFeatureRegistry, type BackendAuthoringDefinition, type BleCentralBackend, type HostNeutralBackendIdentity } from 'unified-ble-manager/backend-sdk';",
       "import { runUnifiedBleCli } from 'unified-ble-manager/cli';",
@@ -181,7 +180,7 @@ function writeExternalTypeScriptFixture(consumer, module, moduleResolution) {
       '  const winRtOptions: NativeWinRtProviderOptions = { now: () => 0 };',
       '  const report = await runBackendTck(factory, []);',
       '  await fixture.backend.destroy();',
-      '  return { ApplicationBleManager, provider: factory.provider, backend: fixture.backend, featureRegistry, report, bluezProvider, createNativeWinRtBackendProvider, winRtOptions, createNavigatorWebBluetoothProvider, runUnifiedBleCli };',
+      '  return { provider: factory.provider, backend: fixture.backend, featureRegistry, report, bluezProvider, createNativeWinRtBackendProvider, winRtOptions, createNavigatorWebBluetoothProvider, runUnifiedBleCli };',
       '}',
       ''
     ].join('\n')
@@ -382,7 +381,7 @@ function createPackedBrowserBundleConsumer(tmp, rootTgz, npmEnvironment) {
       '// L2 package/build proof only: this exports documented public surfaces without selecting a browser radio.',
       'export const browserRootPublicSurface = unifiedBleManager',
       'export const browserWebPublicSurface = webBluetooth',
-      'export const BrowserBleManager = unifiedBleManager.ApplicationBleManager',
+      'export const BrowserBleManager = webBluetooth.createWebBleManager',
       '',
       'export function createBrowserWebBluetoothProvider(environment) {',
       '  return webBluetooth.createNavigatorWebBluetoothProvider(environment)',
@@ -651,13 +650,12 @@ function buildAndLoadInstalledCoreBluetoothAddon(consumer) {
 function runInstalledElectronL1Scenario(consumer) {
   const scenarioScript = [
     "const assert = require('assert');",
-    "const { ApplicationBleManager } = require('unified-ble-manager');",
     "const { attachBleBackend, BleManager, createManagerOwnershipAuthority, DEFAULT_BLE_MANAGER_OPTIONS } = require('unified-ble-manager/advanced');",
     "const { byteLimit, monotonicTimestamp, opaqueId, ownBytes, version, versionRange } = require('unified-ble-manager/backend-sdk');",
     "const { createDeterministicTestBackend } = require('unified-ble-manager/testing');",
     "const { ElectronMainBleBinding, ElectronMainBleRouter } = require('unified-ble-manager/electron/main');",
     "const { ElectronRendererBleClient } = require('unified-ble-manager/electron/renderer');",
-    "for (const [name, value] of Object.entries({ ApplicationBleManager, attachBleBackend, BleManager, createManagerOwnershipAuthority, createDeterministicTestBackend, ElectronMainBleBinding, ElectronMainBleRouter, ElectronRendererBleClient })) { assert.strictEqual(typeof value, 'function', `packed Electron L1 public entrypoint ${name}`); }",
+    "for (const [name, value] of Object.entries({ attachBleBackend, BleManager, createManagerOwnershipAuthority, createDeterministicTestBackend, ElectronMainBleBinding, ElectronMainBleRouter, ElectronRendererBleClient })) { assert.strictEqual(typeof value, 'function', `packed Electron L1 public entrypoint ${name}`); }",
     'const fixture = createDeterministicTestBackend();',
     'const compatibility = Object.freeze({',
     "  backendContract: versionRange(version('backend-contract', 1), version('backend-contract', 1)),",
@@ -710,14 +708,14 @@ function runInstalledElectronL1Scenario(consumer) {
     '    on: (event, listener) => { assert.ok(["did-start-navigation", "did-redirect-navigation", "did-navigate", "did-fail-load", "did-fail-provisional-load", "render-process-gone"].includes(event), "packed Electron L1 renderer lifetime event"); void listener; },',
     '    removeListener: (event, listener) => { assert.ok(["destroyed", "did-start-navigation", "did-redirect-navigation", "did-navigate", "did-fail-load", "did-fail-provisional-load", "render-process-gone"].includes(event), "packed Electron L1 removes renderer lifetime event"); void listener; },',
     '    send: (channel, event) => {',
-    "      assert.strictEqual(channel, 'unified-ble-manager:v1', 'packed Electron L1 event channel');",
+    "      assert.strictEqual(channel, 'unified-ble-manager:v2', 'packed Electron L1 event channel');",
     '      for (const listener of listeners) { listener(event); }',
     '    }',
     '  };',
     '  const port = {',
     '    handler: null,',
-    '    handle(channel, handler) { assert.strictEqual(channel, "unified-ble-manager:v1", "packed Electron L1 request channel"); this.handler = handler; },',
-    '    removeHandler(channel) { assert.strictEqual(channel, "unified-ble-manager:v1", "packed Electron L1 removes its request channel"); this.handler = null; }',
+    '    handle(channel, handler) { assert.strictEqual(channel, "unified-ble-manager:v2", "packed Electron L1 request channel"); this.handler = handler; },',
+    '    removeHandler(channel) { assert.strictEqual(channel, "unified-ble-manager:v2", "packed Electron L1 removes its request channel"); this.handler = null; }',
     '  };',
     '  let authenticatedDispatches = 0;',
     '  let routedEnvelopeCount = 0;',
@@ -909,7 +907,7 @@ function main(options = {}) {
         [
           "const assert = require('assert');",
           "const canonical = require('unified-ble-manager');",
-          "assert.strictEqual(typeof canonical.ApplicationBleManager, 'function', 'root import is neutral with declared optional dependencies installed');"
+          "assert.strictEqual(canonical.ApplicationBleManager, undefined, 'root import does not expose internal façade constructors');"
         ].join('\n')
       ],
       { cwd: consumer }
@@ -933,8 +931,8 @@ function main(options = {}) {
       "const expo = require('expo/package.json');",
       "assert.strictEqual(expo.name, 'expo', 'packed Expo config-plugin runtime resolves through the Expo host peer');",
       "const canonical = require('unified-ble-manager');",
-      "assert.strictEqual(typeof canonical.ApplicationBleManager, 'function', 'canonical ApplicationBleManager');",
-      "for (const privateSpecifier of ['unified-ble-manager/NativeUnifiedBleProtocolControl', 'unified-ble-manager/native-protocol/v1-codec', 'unified-ble-manager/native-protocol/rn-apple-boundary', 'unified-ble-manager/native-protocol/rn-jsi-binary-runtime', 'unified-ble-manager/profiles/heartRate']) {",
+      "assert.strictEqual(canonical.ApplicationBleManager, undefined, 'canonical root omits internal façade constructors');",
+      "for (const privateSpecifier of ['unified-ble-manager/NativeUnifiedBleProtocolControl', 'unified-ble-manager/native-protocol/v2-codec', 'unified-ble-manager/native-protocol/rn-apple-boundary', 'unified-ble-manager/native-protocol/rn-jsi-binary-runtime', 'unified-ble-manager/profiles/heartRate']) {",
       "  assert.throws(() => require(privateSpecifier), error => error && error.code === 'ERR_PACKAGE_PATH_NOT_EXPORTED', `internal declaration-only path remains non-public: ${privateSpecifier}`);",
       '}',
       "const canonicalPlugin = require('unified-ble-manager/app.plugin.js');",
@@ -988,8 +986,8 @@ function main(options = {}) {
     const esmAssertScript = [
       "import assert from 'node:assert/strict';",
       "const canonical = await import('unified-ble-manager');",
-      "assert.equal(typeof canonical.ApplicationBleManager, 'function', 'canonical ESM ApplicationBleManager');",
-      "for (const privateSpecifier of ['unified-ble-manager/NativeUnifiedBleProtocolControl', 'unified-ble-manager/native-protocol/v1-codec', 'unified-ble-manager/native-protocol/rn-apple-boundary', 'unified-ble-manager/native-protocol/rn-jsi-binary-runtime', 'unified-ble-manager/profiles/heartRate']) {",
+      "assert.equal(canonical.ApplicationBleManager, undefined, 'canonical ESM root omits internal façade constructors');",
+      "for (const privateSpecifier of ['unified-ble-manager/NativeUnifiedBleProtocolControl', 'unified-ble-manager/native-protocol/v2-codec', 'unified-ble-manager/native-protocol/rn-apple-boundary', 'unified-ble-manager/native-protocol/rn-jsi-binary-runtime', 'unified-ble-manager/profiles/heartRate']) {",
       "  await assert.rejects(import(privateSpecifier), { code: 'ERR_PACKAGE_PATH_NOT_EXPORTED' }, `internal declaration-only path remains non-public: ${privateSpecifier}`);",
       '}',
       "const backendSdk = await import('unified-ble-manager/backend-sdk');",

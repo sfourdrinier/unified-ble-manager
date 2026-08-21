@@ -11,7 +11,7 @@ function read(relativePath) {
 
 describe('Android native protocol descriptor contract', () => {
   test('carries descriptor paths and owned bytes through the generated schema and Android dispatch boundary', () => {
-    const schema = JSON.parse(read('native/protocol/schema/native-protocol-v1.json'))
+    const schema = JSON.parse(read('native/protocol/schema/native-protocol-v2.json'))
     const records = new Map(schema.records.map(record => [record.name, record.fields.map(field => field[0])]))
     const androidBoundary = read('src/native-protocol/rn-android-boundary.ts')
     const androidDispatcher = read(

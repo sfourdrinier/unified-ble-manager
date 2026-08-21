@@ -41,18 +41,29 @@ function assertNotExported(specifier) {
   )
 }
 
+function negotiated(axis, value) {
+  const selected = Object.freeze({ axis, value })
+  const range = Object.freeze({ axis, minimum: selected, maximum: selected })
+  return Object.freeze({ axis, selected, localRange: range, remoteRange: range })
+}
+
 function createBootstrapResponse() {
   return {
     kind: 'bootstrap',
     bootstrap: {
-      attachment: Object.freeze({ attachmentId: 'packed-attachment' }),
+      attachment: Object.freeze({ attachmentId: 'packed-attachment', backendGeneration: 'packed-backend-generation' }),
       attachmentId: 'packed-attachment',
       versions: Object.freeze({
-        backendContract: Object.freeze({ selected: Object.freeze({ value: 1 }) }),
-        capabilitySchema: Object.freeze({ selected: Object.freeze({ value: 1 }) }),
-        eventSchema: Object.freeze({ selected: Object.freeze({ value: 1 }) }),
-        traceFormat: Object.freeze({ selected: Object.freeze({ value: 1 }) }),
-        ipcProtocol: Object.freeze({ selected: Object.freeze({ value: 1 }) })
+        backendContract: negotiated('backend-contract', 1),
+        capabilitySchema: negotiated('capability-schema', 1),
+        eventSchema: negotiated('event-schema', 1),
+        traceFormat: negotiated('trace-format', 1),
+        ipcProtocol: negotiated('ipc-protocol', 2)
+      }),
+      capabilities: Object.freeze({
+        schemaVersion: 2,
+        backendGeneration: 'packed-backend-generation',
+        descriptors: []
       }),
       renderer: Object.freeze({ clientId: 'packed-renderer', windowScope: 'window', sessionScope: 'session' }),
       rendererLease: Object.freeze({ leaseId: 'packed-lease', generation: 'packed-generation' })
@@ -134,7 +145,7 @@ function assertDataOnlyPreloadSurfaceMembrane() {
   )
   const proof = JSON.parse(serializedProof)
   assert.deepEqual(proof.requestKinds, ['bootstrap', 'release'], 'data-only renderer proxy limits requests to bootstrap and release')
-  assert.equal(proof.ipcProtocolVersion, 1, 'data-only renderer proxy preserves the versioned IPC handshake')
+  assert.equal(proof.ipcProtocolVersion, 2, 'data-only renderer proxy preserves the versioned IPC handshake')
   assert.equal(proof.cleanupState, 'released', 'data-only renderer proxy preserves release cleanup')
   assert.equal(proof.processType, 'undefined', 'data-only VM membrane does not expose process')
   assert.equal(proof.requireType, 'undefined', 'data-only VM membrane does not expose require')
@@ -198,7 +209,7 @@ async function main() {
   }
   const client = new electronRenderer.ElectronRendererBleClient(rendererTransport)
   const bootstrap = await client.initialize()
-  assert.equal(bootstrap.versions.ipcProtocol.selected.value, 1, 'renderer receives the versioned IPC handshake')
+  assert.equal(bootstrap.versions.ipcProtocol.selected.value, 2, 'renderer receives the versioned IPC handshake')
   assert.deepEqual(requests.map(request => request.kind), ['bootstrap'], 'renderer proxy makes only its bootstrap IPC request')
   await client.destroy()
   assert.deepEqual(

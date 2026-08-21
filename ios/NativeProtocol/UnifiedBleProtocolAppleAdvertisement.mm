@@ -11,7 +11,7 @@
 #include <string>
 #include <vector>
 
-namespace protocol = unified_ble::native_protocol::v1;
+namespace protocol = unified_ble::native_protocol::v2;
 
 namespace unified_ble::apple_protocol {
 
@@ -91,7 +91,7 @@ void AppleNativeProtocolExecution::receiveAdvertisement(void* advertisement) {
     const auto advertisementRecord = protocol::ProtocolRecord{
         .kind = protocol::RecordKind::advertisement, .fields = std::move(advertisementFields)};
     const auto event = protocol::ProtocolRecord{.kind = protocol::RecordKind::event, .fields = {
-        nativeProtocolField(1U, std::uint64_t{1U}), nativeProtocolField(2U, std::string("apple-advertisement:") + std::to_string(ordinal)),
+        nativeProtocolField(1U, std::uint64_t{protocol::kProtocolVersion}), nativeProtocolField(2U, std::string("apple-advertisement:") + std::to_string(ordinal)),
         nativeProtocolField(3U, std::string("advertisement")), nativeProtocolField(4U, nativeProtocolReference(nativeAttachmentRecord(state_->runtime->attachmentIdentity()))),
         nativeProtocolField(5U, ordinal), nativeProtocolField(6U, nativeMonotonicMilliseconds()), nativeProtocolField(12U, nativeProtocolReference(advertisementRecord))}};
     if (!deliverNativeEvent(state_, event, ingress->attachmentGeneration)) {

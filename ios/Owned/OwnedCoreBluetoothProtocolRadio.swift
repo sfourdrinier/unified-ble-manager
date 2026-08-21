@@ -11,7 +11,7 @@ import Foundation
 }
 
 /**
- * Direct CoreBluetooth radio façade for Native Protocol v1.
+ * Direct CoreBluetooth radio façade for Native Protocol v2.
  *
  * Control records cross the JSI boundary in C++, while this class receives and produces native
  * Data only. Every mutable CoreBluetooth object stays confined to its serial radio queue.
@@ -142,7 +142,7 @@ public final class OwnedCoreBluetoothProtocolRadio: NSObject, CBPeripheralDelega
   @objc public func releaseProtocolClient(completion: @escaping (NSError?) -> Void) {
     queue.async {
       guard !self.destroyed else {
-        completion(self.error(code: 1021, message: "The Native Protocol v1 CoreBluetooth radio was destroyed"))
+        completion(self.error(code: 1021, message: "The Native Protocol v2 CoreBluetooth radio was destroyed"))
         return
       }
       self.central.stopScan()
@@ -173,7 +173,7 @@ public final class OwnedCoreBluetoothProtocolRadio: NSObject, CBPeripheralDelega
     queue.async {
       guard self.requireUsable(completion) else { return }
       guard self.activeScanOperationIdentifier == nil else {
-        completion(self.error(code: 1001, message: "A Native Protocol v1 scan is already active"))
+        completion(self.error(code: 1001, message: "A Native Protocol v2 scan is already active"))
         return
       }
       guard let serviceFilter = OwnedCoreBluetoothProtocolRadioSupport.parseUUIDs(serviceUUIDs) else {
@@ -197,7 +197,7 @@ public final class OwnedCoreBluetoothProtocolRadio: NSObject, CBPeripheralDelega
     queue.async {
       guard self.requireUsable(completion) else { return }
       guard self.activeScanOperationIdentifier != nil else {
-        completion(self.error(code: 1004, message: "No Native Protocol v1 scan is active"))
+        completion(self.error(code: 1004, message: "No Native Protocol v2 scan is active"))
         return
       }
       self.central.stopScan()
@@ -838,7 +838,7 @@ public final class OwnedCoreBluetoothProtocolRadio: NSObject, CBPeripheralDelega
 
   func requireUsable(_ completion: (NSError?) -> Void) -> Bool {
     guard !destroyed else {
-      completion(error(code: 1021, message: "The Native Protocol v1 CoreBluetooth radio was destroyed"))
+      completion(error(code: 1021, message: "The Native Protocol v2 CoreBluetooth radio was destroyed"))
       return false
     }
     return true

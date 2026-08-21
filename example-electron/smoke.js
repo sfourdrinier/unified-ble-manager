@@ -25,7 +25,6 @@ function requirePublishedEntrypoint(specifier) {
   return require(specifier)
 }
 
-const { ApplicationBleManager, createPublicBleManager } = requirePublishedEntrypoint('unified-ble-manager')
 const {
   createDeterministicManagerScenarioFactory,
   managerScenarioDefinitions
@@ -64,8 +63,6 @@ function assertNoResourceLeaks(counters) {
 }
 
 async function main() {
-  requireFunction(ApplicationBleManager, 'ApplicationBleManager')
-  requireFunction(createPublicBleManager, 'createPublicBleManager')
   requireFunction(ElectronMainBleRouter, 'ElectronMainBleRouter')
   requireFunction(createDeterministicManagerScenarioFactory, 'createDeterministicManagerScenarioFactory')
 

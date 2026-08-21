@@ -2,7 +2,7 @@
 
 #pragma once
 
-#include "NativeProtocolV1Registry.hpp"
+#include "NativeProtocolV2Registry.hpp"
 #include "OwnedJsiBinaryTransport.hpp"
 
 #include <memory>
@@ -12,7 +12,7 @@
 #include <unordered_map>
 #include <vector>
 
-namespace unified_ble::native_protocol::v1 {
+namespace unified_ble::native_protocol::v2 {
 
 class NativeProtocolControlRuntime final {
  public:
@@ -81,4 +81,4 @@ class NativeProtocolControlRuntime final {
 const char* cancellationStateName(NativeCancellationState state);
 const char* restorationOutcomeName(NativeRestorationOutcome outcome);
 
-} // namespace unified_ble::native_protocol::v1
+} // namespace unified_ble::native_protocol::v2

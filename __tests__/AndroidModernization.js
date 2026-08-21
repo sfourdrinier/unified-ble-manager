@@ -85,7 +85,7 @@ describe('Android RN 0.86 unified protocol boundary', () => {
       'protocol/UnifiedBleProtocolAndroidDispatcher.kt',
       'protocol/UnifiedBleProtocolControlModule.java',
       'protocol/UnifiedBleProtocolJsiBinding.java',
-      'protocol/generated/NativeProtocolV1Schema.kt',
+      'protocol/generated/NativeProtocolV2Schema.kt',
       'radio/GattOccurrenceResolver.kt',
       'radio/OwnedAndroidLog.kt',
       'radio/OwnedAndroidGattRadio.kt'

@@ -49,7 +49,7 @@ The root import selects no radio. Import the host you actually run.
 | `unified-ble-manager/web` | Web Bluetooth chooser + matched manager |
 | `unified-ble-manager/electron/main` | Trusted Electron-main radio + IPC router |
 | `unified-ble-manager/electron/renderer` | Versioned renderer IPC client — never a radio |
-| `unified-ble-manager/tauri` | Tauri v2 webview client (`IpcBleManager`, not `BleManager`) |
+| `unified-ble-manager/tauri` | Tauri v2 zero-plumbing `BleManager` factory |
 | `unified-ble-manager/node/corebluetooth` | macOS CoreBluetooth Node provider |
 | `unified-ble-manager/node/winrt` | Windows WinRT Node provider |
 | `unified-ble-manager/node/bluez` | Linux BlueZ D-Bus provider |
@@ -263,7 +263,7 @@ Copy paths from `snapshot()` or `resolveCharacteristicPath`. Hand-built generati
 | `createCoreBluetoothBleManager` / `createWinRtBleManager` / `createBluezBleManager` | One-call Node managers |
 | `createElectronMainCoreBluetoothBackendProvider` / `WinRt` | Main-process provider; you still build a `BleManager` |
 | `ElectronRendererBleClient` | IPC client, not `BleManager` |
-| `createTauriBleManager` | `IpcBleManager` — simpler options, not `BleManager.scan` |
+| `createTauriBleManager` | Zero-plumbing Tauri `BleManager`; tests use `createTauriBleManagerWithEnvironment` |
 | `createBleManagerFromProvider` | Advanced provider construction |
 
 ## Other hosts
@@ -271,7 +271,7 @@ Copy paths from `snapshot()` or `resolveCharacteristicPath`. Hand-built generati
 - **Web:** user-gesture `chooser.choose()`, then the same `connect` / GATT handles. No continuous scan. [`docs/WEB.md`](docs/WEB.md)
 - **Electron:** main owns the radio; the renderer uses the IPC client. [`docs/ELECTRON.md`](docs/ELECTRON.md)
 - **Node:** `createCoreBluetoothBleManager` / `createWinRtBleManager` / `createBluezBleManager`, or list adapters and `createBleManagerFromProvider`. Published releases ship Node-API v8 prebuilds for macOS and Windows `arm64`/`x64`. [`docs/NODE.md`](docs/NODE.md)
-- **Tauri:** `createTauriBleManager({ invoke, Channel })` returns `IpcBleManager`. [`docs/TAURI.md`](docs/TAURI.md)
+- **Tauri:** `createTauriBleManager()` returns the public `BleManager`; test transports use `createTauriBleManagerWithEnvironment`. [`docs/TAURI.md`](docs/TAURI.md)
 
 `4.0.0-rc.*` versions publish to npm `latest` so a bare install gets the current 4.0 line. After the first stable `4.0.0`, later prereleases publish to `next`. Publication uses npm trusted publishing/OIDC with provenance.
 
@@ -287,7 +287,7 @@ Read [`MIGRATION_4.0.md`](MIGRATION_4.0.md) before changing a shipping app.
 - [`example-expo/`](example-expo/) — Expo SDK 57 CNG fixture; requires a native prebuild.
 - [`example-electron/`](example-electron/) — deterministic package/IPC smoke, not a live-radio claim.
 - [`example-web/`](example-web/) — Chrome + physical Heart Rate Service harness.
-- [`example-tauri/`](example-tauri/) — Tauri v2 `IpcBleManager` proof.
+- [`example-tauri/`](example-tauri/) — Tauri v2 public-manager proof.
 
 ## Development
 

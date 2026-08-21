@@ -3,10 +3,11 @@
 const { ElectronMainBleBinding, ElectronMainBleRouter } = require('../src/electron-main')
 const { ElectronRendererBleClient } = require('../src/electron-renderer')
 const { BackendContractError } = require('../src/backend-contract/errors')
+const { IPC_CLIENT_COMPATIBILITY_OFFER } = require('../src/ipc/protocol')
 const { monotonicTimestamp, opaqueId, version, versionRange } = require('../src/backend-contract/primitives')
 
 function negotiated(axis) {
-  const selected = version(axis, 1)
+  const selected = version(axis, axis === 'ipc-protocol' ? 2 : 1)
   const range = versionRange(selected, selected)
   return { axis, selected, localRange: range, remoteRange: range }
 }
@@ -56,6 +57,7 @@ function rendererBootstrap(value) {
     attachment: currentAttachment,
     attachmentId: currentAttachment.attachmentId,
     versions: { ...versions(), ipcProtocol: negotiated('ipc-protocol') },
+    capabilities: emptyCapabilitySnapshot(currentAttachment),
     renderer: {
       clientId: opaqueId(`renderer-client-${value}`, 'client', `electron:${value}`),
       windowScope: `renderer-window-${value}`,
@@ -63,6 +65,10 @@ function rendererBootstrap(value) {
     },
     rendererLease: rendererLease(value)
   }
+}
+
+function emptyCapabilitySnapshot(currentAttachment) {
+  return { schemaVersion: 2, backendGeneration: currentAttachment.backendGeneration, descriptors: [] }
 }
 
 function createSender(client, windowScope, sessionScope) {
@@ -380,6 +386,7 @@ function createMainFixture(managerOverrides = {}) {
   const manager = {
     attachedBackend: { attachment: { attachment: currentAttachment } },
     identity: { versions: versions() },
+    capabilities: () => [],
     destroy: jest.fn(async () => ({ state: 'released', failures: [] })),
     ...managerOverrides
   }
@@ -394,7 +401,7 @@ function createMainFixture(managerOverrides = {}) {
     handler: null,
     rawHandler: null,
     handle(channel, handler) {
-      expect(channel).toBe('unified-ble-manager:v1')
+      expect(channel).toBe('unified-ble-manager:v2')
       this.rawHandler = handler
       this.handler = (event, request) =>
         handler(
@@ -452,7 +459,7 @@ function commandRequest(current, renderer, ordinal, command, payload, binaryPayl
 }
 
 async function bootstrap(current, sender) {
-  const response = await current.port.handler({ sender }, { kind: 'bootstrap' })
+  const response = await current.port.handler({ sender }, { kind: 'bootstrap', offer: IPC_CLIENT_COMPATIBILITY_OFFER })
   if (response.kind === 'failure') {
     throw new BackendContractError(response.error)
   }
@@ -524,7 +531,7 @@ describe('Electron v4 IPC boundary', () => {
     const validateRequest = jest.spyOn(current.router, 'validateRequest')
     const dispatch = jest.spyOn(current.router, 'dispatch')
 
-    await expectIpcFailure(current.port.rawHandler({ sender }, { kind: 'bootstrap' }), {
+    await expectIpcFailure(current.port.rawHandler({ sender }, { kind: 'bootstrap', offer: IPC_CLIENT_COMPATIBILITY_OFFER }), {
       code: 'protocol.malformed',
       operation: 'electron-main-binding.frame-identity'
     })
@@ -543,7 +550,7 @@ describe('Electron v4 IPC boundary', () => {
     const validateRequest = jest.spyOn(current.router, 'validateRequest')
     const dispatch = jest.spyOn(current.router, 'dispatch')
 
-    await expectIpcFailure(current.port.rawHandler({ sender, frameId: 20, processId: 10 }, { kind: 'bootstrap' }), {
+    await expectIpcFailure(current.port.rawHandler({ sender, frameId: 20, processId: 10 }, { kind: 'bootstrap', offer: IPC_CLIENT_COMPATIBILITY_OFFER }), {
       code: 'protocol.malformed',
       operation: 'electron-main-binding.frame-identity'
     })
@@ -584,7 +591,7 @@ describe('Electron v4 IPC boundary', () => {
     const dispatch = jest.spyOn(current.router, 'dispatch')
     const childEvent = { sender, frameId: sender.mainFrame.routingId + 1, processId: sender.mainFrame.processId }
 
-    await expectIpcFailure(current.port.handler(childEvent, { kind: 'bootstrap' }), {
+    await expectIpcFailure(current.port.handler(childEvent, { kind: 'bootstrap', offer: IPC_CLIENT_COMPATIBILITY_OFFER }), {
       code: 'ownership.denied',
       operation: 'electron-main-binding.main-frame'
     })
@@ -611,8 +618,8 @@ describe('Electron v4 IPC boundary', () => {
     const current = createMainFixture()
     const senderA = createSender('client-a', 'window-a', 'session-a')
     const senderB = createSender('client-b', 'window-b', 'session-b')
-    const bootstrapA = await current.port.handler({ sender: senderA }, { kind: 'bootstrap' })
-    const bootstrapB = await current.port.handler({ sender: senderB }, { kind: 'bootstrap' })
+    const bootstrapA = await current.port.handler({ sender: senderA }, { kind: 'bootstrap', offer: IPC_CLIENT_COMPATIBILITY_OFFER })
+    const bootstrapB = await current.port.handler({ sender: senderB }, { kind: 'bootstrap', offer: IPC_CLIENT_COMPATIBILITY_OFFER })
 
     expect(bootstrapA.kind).toBe('bootstrap')
     expect(bootstrapB.kind).toBe('bootstrap')
@@ -795,7 +802,7 @@ describe('Electron v4 IPC boundary', () => {
     sender.startNavigation({ url: 'app://bundle/replacement' })
     const replacementResponse = await current.port.handler(
       { sender, senderFrame: { url: 'app://bundle/replacement' } },
-      { kind: 'bootstrap' }
+      { kind: 'bootstrap', offer: IPC_CLIENT_COMPATIBILITY_OFFER }
     )
     expect(replacementResponse.kind).toBe('bootstrap')
     const replacement = replacementResponse.bootstrap
@@ -929,7 +936,7 @@ describe('Electron v4 IPC boundary', () => {
       return response
     })
 
-    const pendingBootstrap = current.port.handler({ sender }, { kind: 'bootstrap' })
+    const pendingBootstrap = current.port.handler({ sender }, { kind: 'bootstrap', offer: IPC_CLIENT_COMPATIBILITY_OFFER })
     await dispatchReached.promise
     sender.destroy()
     dispatchResult.resolve()
@@ -957,7 +964,7 @@ describe('Electron v4 IPC boundary', () => {
       return response
     })
 
-    const pendingBootstrap = current.port.handler({ sender }, { kind: 'bootstrap' })
+    const pendingBootstrap = current.port.handler({ sender }, { kind: 'bootstrap', offer: IPC_CLIENT_COMPATIBILITY_OFFER })
     await dispatchReached.promise
     let destructionSettled = false
     const destruction = current.binding.destroy().finally(() => {
@@ -994,7 +1001,7 @@ describe('Electron v4 IPC boundary', () => {
       return response
     })
 
-    const oldBootstrap = current.port.handler({ sender }, { kind: 'bootstrap' })
+    const oldBootstrap = current.port.handler({ sender }, { kind: 'bootstrap', offer: IPC_CLIENT_COMPATIBILITY_OFFER })
     await firstDispatchReached.promise
     sender.mainFrame = Object.freeze({ processId: 11, routingId: 21 })
     sender.trusted = {
@@ -1002,7 +1009,7 @@ describe('Electron v4 IPC boundary', () => {
       authenticatedWindowScope: 'window-bootstrap-shared',
       authenticatedSessionScope: 'session-bootstrap-new'
     }
-    const newBootstrap = current.port.handler({ sender }, { kind: 'bootstrap' })
+    const newBootstrap = current.port.handler({ sender }, { kind: 'bootstrap', offer: IPC_CLIENT_COMPATIBILITY_OFFER })
     firstDispatchResult.resolve()
 
     await expectIpcFailure(oldBootstrap, { code: 'ownership.denied' })
@@ -1372,6 +1379,7 @@ describe('Electron v4 IPC boundary', () => {
         ...versions(),
         ipcProtocol: negotiated('ipc-protocol')
       },
+      capabilities: emptyCapabilitySnapshot(attachment()),
       renderer: {
         clientId: opaqueId('renderer-client', 'client', 'renderer:client'),
         windowScope: 'renderer-window',
@@ -1624,7 +1632,7 @@ describe('Electron v4 IPC boundary', () => {
       kind: 'value',
       value: {
         kind: 'connection-lifecycle',
-        schemaVersion: 1,
+        schemaVersion: 2,
         connectionId: connection.connectionId,
         connectionGeneration: connection.connectionGeneration,
         cause,
@@ -2073,6 +2081,7 @@ describe('Electron v4 IPC boundary', () => {
       attachment: currentAttachment,
       attachmentId: currentAttachment.attachmentId,
       versions: { ...versions(), ipcProtocol: negotiated('ipc-protocol') },
+      capabilities: emptyCapabilitySnapshot(currentAttachment),
       renderer: {
         clientId: opaqueId('renderer-lifecycle-client', 'client', 'renderer:lifecycle'),
         windowScope: 'renderer-lifecycle-window',
@@ -2096,7 +2105,7 @@ describe('Electron v4 IPC boundary', () => {
               connectionId: 'connection-renderer',
               connectionGeneration: 'generation-renderer',
               ownerLeaseId: 'owner-renderer',
-              eventSchemaVersion: 1
+              eventSchemaVersion: 2
             }
           }
         }
@@ -2121,7 +2130,7 @@ describe('Electron v4 IPC boundary', () => {
         kind: 'value',
         value: {
           kind: 'connection-lifecycle',
-          schemaVersion: 1,
+          schemaVersion: 2,
           attachment: currentAttachment,
           attachmentId: currentAttachment.attachmentId,
           peerId: 'peer-renderer',
@@ -2144,7 +2153,7 @@ describe('Electron v4 IPC boundary', () => {
         kind: 'value',
         value: {
           kind: 'connection-lifecycle',
-          schemaVersion: 1,
+          schemaVersion: 2,
           attachment: currentAttachment,
           attachmentId: currentAttachment.attachmentId,
           peerId: 'peer-renderer',
@@ -2202,7 +2211,7 @@ describe('Electron v4 IPC boundary', () => {
               handle: streamHandle,
               connectionId: 'connection-terminal-first',
               connectionGeneration: 'generation-terminal-first',
-              eventSchemaVersion: 1
+              eventSchemaVersion: 2
             }
           }
         }
@@ -2259,7 +2268,7 @@ describe('Electron v4 IPC boundary', () => {
               handle: request.envelope.payload.connectionEventsHandle,
               connectionId: 'connection-synthetic-terminal',
               connectionGeneration: 'generation-synthetic-terminal',
-              eventSchemaVersion: 1
+              eventSchemaVersion: 2
             }
           }
         }
@@ -2325,13 +2334,13 @@ describe('Electron v4 IPC boundary', () => {
                       handle: request.envelope.payload.connectionEventsHandle,
                       connectionId: 'connection-admission-retry',
                       connectionGeneration: 'generation-admission-retry',
-                      eventSchemaVersion: 2
+                      eventSchemaVersion: 1
                     }
                   : {
                       handle: request.envelope.payload.connectionEventsHandle,
                       connectionId: 'connection-admission-retry',
                       connectionGeneration: 'generation-admission-retry',
-                      eventSchemaVersion: 1
+                      eventSchemaVersion: 2
                     }
             }
           }
@@ -2950,6 +2959,7 @@ describe('Electron v4 IPC boundary', () => {
       attachment: attachment(),
       attachmentId: opaqueId('retry-attachment', 'attachment', 'renderer'),
       versions: { ...versions(), ipcProtocol: negotiated('ipc-protocol') },
+      capabilities: emptyCapabilitySnapshot(attachment()),
       renderer: {
         clientId: opaqueId('retry-client', 'client', 'renderer:retry'),
         windowScope: 'retry-window',
@@ -2986,6 +2996,7 @@ describe('Electron v4 IPC boundary', () => {
       attachment: attachment(),
       attachmentId: opaqueId('racing-attachment', 'attachment', 'renderer'),
       versions: { ...versions(), ipcProtocol: negotiated('ipc-protocol') },
+      capabilities: emptyCapabilitySnapshot(attachment()),
       renderer: {
         clientId: opaqueId('racing-client', 'client', 'renderer:racing'),
         windowScope: 'racing-window',
@@ -3029,6 +3040,7 @@ describe('Electron v4 IPC boundary', () => {
       attachment: attachment(),
       attachmentId: opaqueId('event-race-attachment', 'attachment', 'renderer'),
       versions: { ...versions(), ipcProtocol: negotiated('ipc-protocol') },
+      capabilities: emptyCapabilitySnapshot(attachment()),
       renderer: {
         clientId: opaqueId('event-race-client', 'client', 'renderer:event-race'),
         windowScope: 'event-race-window',
@@ -3191,6 +3203,7 @@ describe('Electron v4 IPC boundary', () => {
       attachment: attachment(),
       attachmentId: opaqueId('released-event-attachment', 'attachment', 'renderer'),
       versions: { ...versions(), ipcProtocol: negotiated('ipc-protocol') },
+      capabilities: emptyCapabilitySnapshot(attachment()),
       renderer: {
         clientId: opaqueId('released-event-client', 'client', 'renderer:released-event'),
         windowScope: 'released-event-window',
@@ -3260,7 +3273,7 @@ describe('Electron v4 IPC boundary', () => {
       throw unexpected
     })
 
-    await expect(current.port.handler({ sender }, { kind: 'bootstrap' })).resolves.toEqual({
+    await expect(current.port.handler({ sender }, { kind: 'bootstrap', offer: IPC_CLIENT_COMPATIBILITY_OFFER })).resolves.toEqual({
       kind: 'failure',
       error: {
         code: 'platform.failure',
@@ -3302,7 +3315,7 @@ describe('Electron v4 IPC boundary', () => {
     const bootstrapFailure = await bootstrapFailureClient.initialize().catch(error => error)
     expect(bootstrapFailure).toBeInstanceOf(BackendContractError)
     expect(bootstrapFailure).toMatchObject({ normalized: normalizedOwnershipFailure })
-    expect(bootstrapFailureTransport.invoke).toHaveBeenCalledWith({ kind: 'bootstrap' })
+    expect(bootstrapFailureTransport.invoke).toHaveBeenCalledWith({ kind: 'bootstrap', offer: IPC_CLIENT_COMPATIBILITY_OFFER })
 
     const routeBootstrap = rendererBootstrap('typed-route-failure')
     const routeFailureTransport = {

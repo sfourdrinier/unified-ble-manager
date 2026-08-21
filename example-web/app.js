@@ -1,6 +1,5 @@
 // example-web/app.js
 
-import { ApplicationBleManager } from 'unified-ble-manager'
 import { createWebBleManager } from 'unified-ble-manager/web'
 import { BATTERY_SERVICE } from 'unified-ble-manager/profiles/battery-service'
 import {

@@ -2,7 +2,7 @@
 
 #pragma once
 
-#include "NativeProtocolV1Codec.hpp"
+#include "NativeProtocolV2Codec.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -11,7 +11,7 @@
 #include <unordered_map>
 #include <vector>
 
-namespace unified_ble::native_protocol::v1 {
+namespace unified_ble::native_protocol::v2 {
 
 struct BorrowedByteView {
   const std::uint8_t* data;
@@ -53,4 +53,4 @@ class OwnedBinaryPayloadStore final {
   bool admissionOpen_ = true;
 };
 
-} // namespace unified_ble::native_protocol::v1
+} // namespace unified_ble::native_protocol::v2

@@ -1,8 +1,8 @@
-// native/protocol/include/NativeProtocolV1Codec.hpp
+// native/protocol/include/NativeProtocolV2Codec.hpp
 
 #pragma once
 
-#include "../generated/NativeProtocolV1Schema.hpp"
+#include "../generated/NativeProtocolV2Schema.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -12,7 +12,7 @@
 #include <variant>
 #include <vector>
 
-namespace unified_ble::native_protocol::v1 {
+namespace unified_ble::native_protocol::v2 {
 
 enum class ProtocolFailure {
   incompatibleVersion,
@@ -78,7 +78,7 @@ struct NegotiatedVersions {
   std::uint32_t traceFormat;
 };
 
-class NativeProtocolV1Codec final {
+class NativeProtocolV2Codec final {
  public:
   std::vector<std::uint8_t> encode(const ProtocolRecord& record) const;
   ProtocolRecord decode(const std::vector<std::uint8_t>& bytes) const;
@@ -96,4 +96,4 @@ class NativeProtocolV1Codec final {
   void validateRecord(const ProtocolRecord& record, std::size_t depth) const;
 };
 
-} // namespace unified_ble::native_protocol::v1
+} // namespace unified_ble::native_protocol::v2

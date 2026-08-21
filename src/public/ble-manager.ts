@@ -1,23 +1,31 @@
-/* eslint-disable @typescript-eslint/no-explicit-any, react-hooks/rules-of-hooks */
 // src/public/ble-manager.ts — non-generic application façade (PR1 skeleton)
 
 import type { AdvertisementObservation } from '../backend-contract/advertisement'
 import type { ScanOptions as InternalScanOptions } from '../backend-contract/advertisement'
 import type { CleanupRecord } from '../backend-contract/errors'
-import type { PeerId } from '../backend-contract/primitives'
+import type { BackendIdentity } from '../backend-contract/identity'
 import { opaqueId } from '../backend-contract/primitives'
 import type { BleManager as InternalBleManager } from '../manager/ble-manager'
 import type { BleManagerOptions } from '../manager/ble-manager'
+import type { BoundedAsyncStream } from '../backend-contract/streams'
 import { normalizeOperationOptions } from './operation-options'
 import type { OperationOptions } from './operation-options'
 import { resolveStreamPreset } from './stream-presets'
 import type { StreamPreset } from './stream-presets'
+import type { IpcAdvertisement } from '../ipc/manager'
+import { rehydratePublicError, rehydratePublicPromise, runWithCleanup } from './error-bridge'
+import { PublicBleCapabilities } from './capabilities'
+import type { BleCapabilities } from './capabilities'
 
 // Public peer — opaque backend-scoped identifier, no generic.
 export interface BlePeer {
   readonly id: string
   readonly name: string | null
   readonly rssi: number | null
+}
+
+export function snapshotBlePeer(peer: BlePeer): BlePeer {
+  return Object.freeze({ id: peer.id, name: peer.name, rssi: peer.rssi })
 }
 
 // Public connection — generation-bound lease, no generic.
@@ -28,9 +36,13 @@ export interface BleConnection {
 }
 
 // Public scan session — bounded stream, no generic.
+// Union embraces both native AdvertisementObservation and Tauri IpcAdvertisement
+// until PR4 scan semantics unify; covariance lets each backend stream satisfy the union without casts.
+export type PublicScanObservation = AdvertisementObservation<string> | IpcAdvertisement
+
 export interface ScanSession {
   readonly stop: () => Promise<CleanupRecord>
-  readonly observations: AsyncIterable<AdvertisementObservation<string>>
+  readonly observations: BoundedAsyncStream<PublicScanObservation>
 }
 
 // Public GATT placeholders — full object model lands in PR3, but façade exists now.
@@ -57,14 +69,14 @@ export type GattSubscriptionValue = {
 
 // Non-generic public manager. Lifecycle/ownership/generations stay in core.
 export interface BleManager {
+  readonly capabilities: BleCapabilities
   readonly destroy: () => Promise<CleanupRecord>
   scan(options?: ScanOptions): Promise<ScanSession>
   connect(peer: BlePeer | string, options?: OperationOptions): Promise<BleConnection>
-  // Helpers that preserve deadline/preset normalization
   withConnection<T>(
     peer: BlePeer | string,
     options: OperationOptions,
-    use: (connection: BleConnection) => Promise<T>
+    action: (connection: BleConnection) => Promise<T>
   ): Promise<T>
 }
 
@@ -77,78 +89,89 @@ export interface ScanOptions extends OperationOptions {
 
 // Internal factory used by host entrypoints. Hosts derive identity and call this.
 export async function createPublicBleManager(
-  internal: InternalBleManager<string, any>,
+  internal: InternalBleManager<string, BackendIdentity<string>>,
   now: () => number
 ): Promise<BleManager> {
   return new PublicBleManager(internal, now)
 }
 
 class PublicBleManager implements BleManager {
+  readonly capabilities: BleCapabilities
+
   constructor(
-    private readonly internal: InternalBleManager<string, any>,
+    private readonly internal: InternalBleManager<string, BackendIdentity<string>>,
     private readonly now: () => number
-  ) {}
+  ) {
+    this.capabilities = new PublicBleCapabilities(internal)
+  }
 
   async scan(options: ScanOptions = {}): Promise<ScanSession> {
-    const { signal, deadline } = normalizeOperationOptions(options, this.now)
-    const preset = options.preset ?? 'balanced'
-    const delivery = resolveStreamPreset({ preset })
-    const filter = options.filter ?? { serviceUuids: [], manufacturerData: [], localNamePrefix: null }
-    // Delegate to internal manager's scan with normalized deadline/signal/delivery.
-    // Internal ScanOptions requires full delivery and deadline/signal; we adapt.
-    const internalOptions: InternalScanOptions<string, string> = {
-      filter,
-      duplicatePolicy: 'merged',
-      timestampPolicy: 'source-then-receipt',
-      delivery: {
-        itemCapacity: delivery.itemCapacity as any,
-        byteCapacity: delivery.byteCapacity as any,
-        reservedControlCapacity: delivery.reservedControlCapacity as any,
-        overflowPolicy: delivery.overflowPolicy
-      },
-      deadline: deadline as any,
-      signal: signal as any,
-      sharing: { mode: 'owner', allowSharing: false }
-    }
-    const session = await (this.internal as any).scan(internalOptions)
-    return {
-      stop: () => session.stop(),
-      observations: session.observations as any
+    try {
+      const { signal, deadline } = normalizeOperationOptions(options, this.now)
+      const preset = options.preset ?? 'balanced'
+      const delivery = resolveStreamPreset({ preset })
+      const filter = options.filter ?? { serviceUuids: [], manufacturerData: [], localNamePrefix: null }
+      const internalOptions: InternalScanOptions<string, string> = {
+        filter,
+        duplicatePolicy: 'merged',
+        timestampPolicy: 'source-then-receipt',
+        delivery: {
+          itemCapacity: delivery.itemCapacity,
+          byteCapacity: delivery.byteCapacity,
+          reservedControlCapacity: delivery.reservedControlCapacity,
+          overflowPolicy: delivery.overflowPolicy
+        },
+        deadline,
+        signal,
+        sharing: { mode: 'owner', allowSharing: false }
+      }
+      const session = await this.internal.scan(internalOptions)
+      return {
+        stop: () => rehydratePublicPromise(session.stop()),
+        observations: session.observations
+      }
+    } catch (error) {
+      throw rehydratePublicError(error)
     }
   }
 
   async connect(peer: BlePeer | string, options: OperationOptions = {}): Promise<BleConnection> {
-    const { signal, deadline } = normalizeOperationOptions(options, this.now)
-    const peerIdString = typeof peer === 'string' ? peer : peer.id
-    // Convert plain string to branded PeerId for internal dispatch.
-    const peerId = opaqueId(peerIdString, 'peer', 'public-ble-manager') as PeerId<string>
-    const internalConnection = await (this.internal as any).connect(peerId, {
-      signal,
-      deadline
-    })
-    const publicPeer: BlePeer = typeof peer === 'string' ? { id: peerIdString, name: null, rssi: null } : peer
-    return {
-      peer: publicPeer,
-      disconnect: () => internalConnection.disconnect(),
-      release: () => internalConnection.release()
+    try {
+      const { signal, deadline } = normalizeOperationOptions(options, this.now)
+      const peerIdString = typeof peer === 'string' ? peer : peer.id
+      const peerId = opaqueId<'peer', string>(peerIdString, 'peer', 'public-ble-manager')
+      const internalConnection = await this.internal.connect(peerId, {
+        signal,
+        deadline
+      })
+      const publicPeer =
+        typeof peer === 'string' ? snapshotBlePeer({ id: peerIdString, name: null, rssi: null }) : snapshotBlePeer(peer)
+      return {
+        peer: publicPeer,
+        disconnect: () => rehydratePublicPromise(internalConnection.disconnect()),
+        release: () => rehydratePublicPromise(internalConnection.release())
+      }
+    } catch (error) {
+      throw rehydratePublicError(error)
     }
   }
 
   async withConnection<T>(
     peer: BlePeer | string,
     options: OperationOptions,
-    use: (connection: BleConnection) => Promise<T>
+    action: (connection: BleConnection) => Promise<T>
   ): Promise<T> {
     const connection = await this.connect(peer, options)
-    try {
-      return await use(connection)
-    } finally {
-      await connection.release()
-    }
+    return runWithCleanup(
+      () => action(connection),
+      () => connection.release()
+    )
   }
 
   destroy(): Promise<CleanupRecord> {
-    return this.internal.destroy()
+    return this.internal.destroy().catch(error => {
+      throw rehydratePublicError(error)
+    })
   }
 }
 

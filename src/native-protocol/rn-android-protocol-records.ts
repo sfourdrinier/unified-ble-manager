@@ -12,7 +12,7 @@ import type {
   CoreBluetoothServiceDataEntry
 } from '../backends/corebluetooth/corebluetooth-boundary'
 import type { NativeBinaryReference } from './rn-jsi-binary-runtime'
-import type { NativeProtocolField, NativeProtocolFieldValue, NativeProtocolRecord } from './v1-codec'
+import type { NativeProtocolField, NativeProtocolFieldValue, NativeProtocolRecord } from './v2-codec'
 
 export function field(id: number, value: NativeProtocolFieldValue): NativeProtocolField {
   return { id, value }

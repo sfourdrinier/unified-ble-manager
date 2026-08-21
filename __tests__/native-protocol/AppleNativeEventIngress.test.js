@@ -9,7 +9,7 @@ function read(relativePath) {
   return fs.readFileSync(path.join(root, relativePath), 'utf8')
 }
 
-describe('Apple Native Protocol v1 bounded JSI ingress', () => {
+describe('Apple Native Protocol v2 bounded JSI ingress', () => {
   test('keeps post-sink delivery bounded and releases binary records on every terminal discard path', () => {
     const state = read('ios/NativeProtocol/UnifiedBleProtocolAppleExecutionState.hpp')
     const execution = read('ios/NativeProtocol/UnifiedBleProtocolAppleExecution.mm')

@@ -3,13 +3,18 @@
 const { ElectronMainBleBinding, ElectronMainBleRouter } = require('../src/electron-main')
 const { ElectronRendererStreamRegistry } = require('../src/electron/renderer-stream-registry')
 const { ElectronRendererBleClient } = require('../src/electron-renderer')
+const { IPC_CLIENT_COMPATIBILITY_OFFER } = require('../src/ipc/protocol')
 const { monotonicTimestamp, opaqueId, version, versionRange } = require('../src/backend-contract/primitives')
 const { snapshotSerializableRecord } = require('../src/backend-contract/serializable')
 
 function negotiated(axis) {
-  const selected = version(axis, 1)
+  const selected = version(axis, axis === 'ipc-protocol' ? 2 : 1)
   const range = versionRange(selected, selected)
   return { axis, selected, localRange: range, remoteRange: range }
+}
+
+function emptyCapabilitySnapshot(backendGeneration) {
+  return { schemaVersion: 2, backendGeneration, descriptors: [] }
 }
 
 function electronSender(fields) {
@@ -103,6 +108,7 @@ function createRouter(
   const manager = {
     attachedBackend: { attachment: { attachment: authority.attachment } },
     identity: { versions: authority.versions },
+    capabilities: () => [],
     destroy: jest.fn(async () => ({ state: 'released', failures: [] })),
     ...managerOverrides
   }
@@ -137,7 +143,7 @@ function rendererLease(value) {
 }
 
 async function bootstrap(current, sender) {
-  const response = await current.router.dispatch(sender, { kind: 'bootstrap' })
+  const response = await current.router.dispatch(sender, { kind: 'bootstrap', offer: IPC_CLIENT_COMPATIBILITY_OFFER })
   return response.bootstrap
 }
 
@@ -534,7 +540,7 @@ describe('Electron IPC hardening', () => {
     const port = { handle(_channel, handler) { this.handler = handler }, removeHandler: jest.fn() }
     const binding = new ElectronMainBleBinding({ router, port, authenticate: event => event.sender.trusted })
     binding.install()
-    await port.handler(mainFrameEvent(sender), { kind: 'bootstrap' })
+    await port.handler(mainFrameEvent(sender), { kind: 'bootstrap', offer: IPC_CLIENT_COMPATIBILITY_OFFER })
 
     const eventBase = {
       rendererLease: lease,
@@ -897,7 +903,7 @@ describe('Electron IPC hardening', () => {
     })
     const binding = new ElectronMainBleBinding({ router, port, authenticate: event => event.sender.trusted })
     binding.install()
-    await port.handler(mainFrameEvent(senderA), { kind: 'bootstrap' })
+    await port.handler(mainFrameEvent(senderA), { kind: 'bootstrap', offer: IPC_CLIENT_COMPATIBILITY_OFFER })
     await publish(String(lease.leaseId), {
       rendererLease: lease,
       eventId: 'event-bound',
@@ -907,7 +913,7 @@ describe('Electron IPC hardening', () => {
     await expect(
       port.handler(mainFrameEvent(senderB), { kind: 'event.ack', rendererLease: lease, eventId: 'event-bound' })
     ).resolves.toMatchObject({ kind: 'failure', error: { code: 'ownership.denied' } })
-    await expect(port.handler(mainFrameEvent(senderB), { kind: 'bootstrap' })).resolves.toMatchObject({
+    await expect(port.handler(mainFrameEvent(senderB), { kind: 'bootstrap', offer: IPC_CLIENT_COMPATIBILITY_OFFER })).resolves.toMatchObject({
       kind: 'failure',
       error: { code: 'ownership.denied' }
     })
@@ -963,6 +969,7 @@ describe('Electron IPC hardening', () => {
         attachment: createAuthority().attachment,
         attachmentId: createAuthority().attachment.attachmentId,
         versions: { ...createAuthority().versions, ipcProtocol: negotiated('ipc-protocol') },
+        capabilities: emptyCapabilitySnapshot(createAuthority().attachment.backendGeneration),
         renderer: {
           clientId: opaqueId('ack-retry-client', 'client', 'hardening:ack-retry'),
           windowScope: 'ack-retry-window',
@@ -1018,6 +1025,7 @@ describe('Electron IPC hardening', () => {
         attachment: createAuthority().attachment,
         attachmentId: createAuthority().attachment.attachmentId,
         versions: { ...createAuthority().versions, ipcProtocol: negotiated('ipc-protocol') },
+        capabilities: emptyCapabilitySnapshot(createAuthority().attachment.backendGeneration),
         renderer: {
           clientId: opaqueId('ack-lease-lost-client', 'client', 'hardening:ack-lease-lost'),
           windowScope: 'ack-lease-lost-window',
@@ -1081,6 +1089,7 @@ describe('Electron IPC hardening', () => {
       attachment: createAuthority().attachment,
       attachmentId: createAuthority().attachment.attachmentId,
       versions: { ...createAuthority().versions, ipcProtocol: negotiated('ipc-protocol') },
+      capabilities: emptyCapabilitySnapshot(createAuthority().attachment.backendGeneration),
       renderer: {
         clientId: opaqueId('ack-permanent-failure-client', 'client', 'hardening:ack-permanent-failure'),
         windowScope: 'ack-permanent-failure-window',
@@ -1183,7 +1192,7 @@ describe('Electron IPC hardening', () => {
       const port = { handle(_channel, handler) { this.handler = handler }, removeHandler: jest.fn() }
       const binding = new ElectronMainBleBinding({ router, port, authenticate: event => event.sender.trusted })
       binding.install()
-      await port.handler(mainFrameEvent(sender), { kind: 'bootstrap' })
+      await port.handler(mainFrameEvent(sender), { kind: 'bootstrap', offer: IPC_CLIENT_COMPATIBILITY_OFFER })
       destroyedListener()
       await flushAsyncWork()
       expect(router.releaseRenderer).toHaveBeenCalledTimes(1)

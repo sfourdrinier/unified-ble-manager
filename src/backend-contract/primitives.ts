@@ -368,6 +368,11 @@ export function assertCoreVersionsAccepted(versions: CoreVersionAxes, offer: Bac
   assertVersionAccepted(versions.traceFormat, offer.traceFormat)
 }
 
+export function assertIpcVersionsAccepted(versions: IpcVersionAxes, offer: IpcCompatibilityOffer): void {
+  assertCoreVersionsAccepted(versions, offer)
+  assertVersionAccepted(versions.ipcProtocol, offer.ipcProtocol)
+}
+
 export function applicableVersionAxesEqual(left: ApplicableVersionAxes, right: ApplicableVersionAxes): boolean {
   if (
     !negotiatedVersionEqual(left.backendContract, right.backendContract) ||

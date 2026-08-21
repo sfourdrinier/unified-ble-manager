@@ -34,7 +34,7 @@ function outputPath(argumentsValue) {
 }
 
 function executablePath(buildDirectory) {
-  const executable = process.platform === 'win32' ? 'unified_ble_native_protocol_v1_benchmark.exe' : 'unified_ble_native_protocol_v1_benchmark'
+  const executable = process.platform === 'win32' ? 'unified_ble_native_protocol_v2_benchmark.exe' : 'unified_ble_native_protocol_v2_benchmark'
   const candidates = [path.join(buildDirectory, executable), path.join(buildDirectory, 'Release', executable)]
   const found = candidates.find(candidate => fs.existsSync(candidate))
   if (found === undefined) throw new Error('native-host benchmark executable was not produced')
@@ -79,7 +79,7 @@ function main() {
       '-DUNIFIED_BLE_NATIVE_PROTOCOL_BUILD_TESTS=OFF',
       '-DUNIFIED_BLE_NATIVE_PROTOCOL_BUILD_BENCHMARKS=ON'
     ])
-    run('cmake', ['--build', buildDirectory, '--config', 'Release', '--target', 'unified_ble_native_protocol_v1_benchmark', '--parallel'])
+    run('cmake', ['--build', buildDirectory, '--config', 'Release', '--target', 'unified_ble_native_protocol_v2_benchmark', '--parallel'])
     const serialized = run(executablePath(buildDirectory), [], { capture: true })
     validate(JSON.parse(serialized))
     if (destination === null) {

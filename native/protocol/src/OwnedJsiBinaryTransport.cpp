@@ -3,7 +3,7 @@
 #include "../include/OwnedJsiBinaryTransport.hpp"
 
 #include <cstring>
-namespace unified_ble::native_protocol::v1 {
+namespace unified_ble::native_protocol::v2 {
 
 OwnedJsiBinaryTransport::OwnedJsiBinaryTransport(std::size_t maximumRetainedBytes)
     : store_(maximumRetainedBytes) {}
@@ -19,22 +19,22 @@ OwnedBinaryReference OwnedJsiBinaryTransport::retainUint8Array(
     const std::string& operationCorrelation,
     const facebook::jsi::Value& value) {
   if (!value.isObject() || !value.asObject(runtime).isUint8Array(runtime)) {
-    throw facebook::jsi::JSError(runtime, "Native Protocol v1 requires a Uint8Array payload");
+    throw facebook::jsi::JSError(runtime, "Native Protocol v2 requires a Uint8Array payload");
   }
   auto array = value.asObject(runtime).asUint8Array(runtime);
   auto buffer = array.buffer(runtime);
   if (buffer.detached(runtime)) {
-    throw facebook::jsi::JSError(runtime, "Native Protocol v1 rejects a detached Uint8Array");
+    throw facebook::jsi::JSError(runtime, "Native Protocol v2 rejects a detached Uint8Array");
   }
   const auto offset = array.byteOffset(runtime);
   const auto length = array.byteLength(runtime);
   const auto bufferSize = buffer.size(runtime);
   if (offset > bufferSize || length > bufferSize - offset) {
-    throw facebook::jsi::JSError(runtime, "Native Protocol v1 Uint8Array range exceeds its ArrayBuffer");
+    throw facebook::jsi::JSError(runtime, "Native Protocol v2 Uint8Array range exceeds its ArrayBuffer");
   }
   const auto* data = buffer.data(runtime);
   if (length > 0U && data == nullptr) {
-    throw facebook::jsi::JSError(runtime, "Native Protocol v1 Uint8Array has no accessible storage");
+    throw facebook::jsi::JSError(runtime, "Native Protocol v2 Uint8Array has no accessible storage");
   }
   return store_.retainCopy(
       operationCorrelation,
@@ -48,19 +48,19 @@ OwnedBinaryReference OwnedJsiBinaryTransport::retainArrayBufferSlice(
     std::size_t byteOffset,
     std::size_t byteLength) {
   if (!value.isObject() || !value.asObject(runtime).isArrayBuffer(runtime)) {
-    throw facebook::jsi::JSError(runtime, "Native Protocol v1 requires an ArrayBuffer payload");
+    throw facebook::jsi::JSError(runtime, "Native Protocol v2 requires an ArrayBuffer payload");
   }
   const auto buffer = value.asObject(runtime).getArrayBuffer(runtime);
   if (buffer.detached(runtime)) {
-    throw facebook::jsi::JSError(runtime, "Native Protocol v1 rejects a detached ArrayBuffer");
+    throw facebook::jsi::JSError(runtime, "Native Protocol v2 rejects a detached ArrayBuffer");
   }
   const auto bufferSize = buffer.size(runtime);
   if (byteOffset > bufferSize || byteLength > bufferSize - byteOffset) {
-    throw facebook::jsi::JSError(runtime, "Native Protocol v1 ArrayBuffer slice is out of range");
+    throw facebook::jsi::JSError(runtime, "Native Protocol v2 ArrayBuffer slice is out of range");
   }
   const auto* data = buffer.data(runtime);
   if (byteLength > 0U && data == nullptr) {
-    throw facebook::jsi::JSError(runtime, "Native Protocol v1 ArrayBuffer has no accessible storage");
+    throw facebook::jsi::JSError(runtime, "Native Protocol v2 ArrayBuffer has no accessible storage");
   }
   return store_.retainCopy(
       operationCorrelation,
@@ -75,7 +75,7 @@ facebook::jsi::Value OwnedJsiBinaryTransport::deliverUint8ArrayCopy(
   auto buffer = output.buffer(runtime);
   auto* data = buffer.data(runtime);
   if (!bytes.empty() && data == nullptr) {
-    throw facebook::jsi::JSError(runtime, "Native Protocol v1 could not allocate Uint8Array output");
+    throw facebook::jsi::JSError(runtime, "Native Protocol v2 could not allocate Uint8Array output");
   }
   if (!bytes.empty()) {
     std::memcpy(data, bytes.data(), bytes.size());
@@ -109,4 +109,4 @@ std::size_t OwnedJsiBinaryTransport::retainedPayloads() const {
   return store_.retainedPayloads();
 }
 
-} // namespace unified_ble::native_protocol::v1
+} // namespace unified_ble::native_protocol::v2

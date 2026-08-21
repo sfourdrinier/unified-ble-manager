@@ -7,7 +7,7 @@ import {
 } from '../../backend-contract/capabilities'
 import { contractError } from '../../backend-contract/errors'
 import { version, versionRange, type SerializableRecord } from '../../backend-contract/primitives'
-import { MAXIMUM_BINARY_PAYLOAD_BYTES } from '../../native-protocol/generated/native-protocol-v1-schema'
+import { MAXIMUM_BINARY_PAYLOAD_BYTES } from '../../native-protocol/generated/native-protocol-v2-schema'
 
 const descriptorOperationsScenarioId = 'gatt.descriptor-discovery-read-write'
 
@@ -22,7 +22,7 @@ export function createReactNativeDescriptorFeatureRegistry(
     Object.freeze({
       code: 'live-radio-qualification-pending',
       explanation:
-        'Descriptor discovery, reads, and writes have deterministic Native Protocol v1 conformance coverage but no reliability-qualified live-radio receipt.',
+        'Descriptor discovery, reads, and writes have deterministic Native Protocol v2 conformance coverage but no reliability-qualified live-radio receipt.',
       affectedGuarantee: 'reliability-qualified physical-radio descriptor interoperability'
     })
   ])

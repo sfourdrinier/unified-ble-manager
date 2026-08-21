@@ -1,7 +1,7 @@
 // __tests__/native-protocol/AndroidDescriptorProtocolBoundary.test.js
 
 const { ReactNativeAndroidProtocolBoundary } = require('../../src/native-protocol/rn-android-boundary')
-const { decodeNativeProtocolRecord, encodeNativeProtocolRecord } = require('../../src/native-protocol/v1-codec')
+const { decodeNativeProtocolRecord, encodeNativeProtocolRecord } = require('../../src/native-protocol/v2-codec')
 
 const peerId = 'C0FFEE000001'
 const serviceUuid = '0000180d-0000-1000-8000-00805f9b34fb'
@@ -12,21 +12,21 @@ describe('React Native Android descriptor protocol boundary', () => {
   let priorRuntime
 
   beforeEach(() => {
-    priorRuntime = global.__unifiedBleNativeProtocolV1
+    priorRuntime = global.__unifiedBleNativeProtocolV2
   })
 
   afterEach(() => {
     if (priorRuntime === undefined) {
-      delete global.__unifiedBleNativeProtocolV1
+      delete global.__unifiedBleNativeProtocolV2
       return
     }
-    global.__unifiedBleNativeProtocolV1 = priorRuntime
+    global.__unifiedBleNativeProtocolV2 = priorRuntime
   })
 
   test('preserves descriptor generation, command bytes, and input/output ownership through read and write', async () => {
     const control = new DescriptorControl()
     const runtime = new DescriptorRuntime()
-    global.__unifiedBleNativeProtocolV1 = runtime
+    global.__unifiedBleNativeProtocolV2 = runtime
     const boundary = new ReactNativeAndroidProtocolBoundary(control, 'descriptor-protocol-owner')
     boundary.bindAttachment({
       attachmentId: 'descriptor-attachment',
@@ -77,7 +77,7 @@ describe('React Native Android descriptor protocol boundary', () => {
   test('isolates throwing consumer listeners without rejecting unrelated scan, notification, disconnect, or adapter delivery', async () => {
     const control = new DescriptorControl()
     const runtime = new DescriptorRuntime()
-    global.__unifiedBleNativeProtocolV1 = runtime
+    global.__unifiedBleNativeProtocolV2 = runtime
     const boundary = new ReactNativeAndroidProtocolBoundary(control, 'listener-isolation-owner')
     boundary.bindAttachment({
       attachmentId: 'listener-attachment',
@@ -161,7 +161,7 @@ describe('React Native Android descriptor protocol boundary', () => {
   test('retries failed input and output binary releases before attachment teardown', async () => {
     const control = new DescriptorControl()
     const runtime = new DescriptorRuntime()
-    global.__unifiedBleNativeProtocolV1 = runtime
+    global.__unifiedBleNativeProtocolV2 = runtime
     const boundary = new ReactNativeAndroidProtocolBoundary(control, 'release-retry-owner')
     boundary.bindAttachment({
       attachmentId: 'release-retry-attachment',

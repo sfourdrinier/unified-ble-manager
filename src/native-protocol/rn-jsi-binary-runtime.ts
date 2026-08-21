@@ -23,12 +23,12 @@ export interface NativeProtocolBinaryRuntime {
 }
 
 declare global {
-  var __unifiedBleNativeProtocolV1: NativeProtocolBinaryRuntime | undefined
+  var __unifiedBleNativeProtocolV2: NativeProtocolBinaryRuntime | undefined
 }
 
 /** Returns the installed Android JSI binary transport and rejects every absent/stale boundary. */
 export function requireNativeProtocolBinaryRuntime(): NativeProtocolBinaryRuntime {
-  const runtime = globalThis.__unifiedBleNativeProtocolV1
+  const runtime = globalThis.__unifiedBleNativeProtocolV2
   if (runtime === undefined) {
     throw contractError('capability.unavailable', 'boundary', 'rn-jsi-binary-runtime.require')
   }

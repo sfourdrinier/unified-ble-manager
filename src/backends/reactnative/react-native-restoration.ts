@@ -27,7 +27,7 @@ import type {
 import {
   MAXIMUM_CONTROL_RECORD_BYTES,
   type RestorationOutcomes
-} from '../../native-protocol/generated/native-protocol-v1-schema'
+} from '../../native-protocol/generated/native-protocol-v2-schema'
 import type {
   NativeRestorationAdoptionControlResult,
   NativeRestorationReplayRecord,

@@ -12,7 +12,7 @@ Unified BLE 4.0 carries BLE values as bytes end to end. Base64 exists only in th
 
 `pnpm performance:check` runs the complete bounded host gate against freshly built production artifacts. It compiles and executes the C++ native payload-ownership benchmark, then measures:
 
-- Native Protocol v1 binary control-record encode/decode;
+- Native Protocol v2 binary control-record encode/decode;
 - JavaScript byte-ownership copies;
 - bounded core stream ingress;
 - Electron/IPC serializable-record copying and size accounting;

@@ -36,7 +36,7 @@ describe('Tauri v2 Rust plugin boundary', () => {
 
     expect(wire).toContain('pub enum IpcValue')
     expect(wire).toContain('Bytes(Vec<u8>)')
-    expect(wire).toContain('$__unifiedBleBytesV1')
+    expect(wire).toContain('$__unifiedBleBytesV2')
     expect(wire).toContain('pub struct IpcEventSink')
     expect(plugin).toContain('request: IpcValue')
     expect(plugin).toContain('event_sink: Option<IpcEventSink>')

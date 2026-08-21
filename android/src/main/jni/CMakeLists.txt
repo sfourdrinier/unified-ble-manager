@@ -17,9 +17,9 @@ find_package(fbjni REQUIRED CONFIG)
 add_library(
   ${CMAKE_PROJECT_NAME}
   SHARED
-  ../../../../native/protocol/src/NativeProtocolV1Codec.cpp
+  ../../../../native/protocol/src/NativeProtocolV2Codec.cpp
   ../../../../native/protocol/src/NativeProtocolControlRuntime.cpp
-  ../../../../native/protocol/src/NativeProtocolV1Registry.cpp
+  ../../../../native/protocol/src/NativeProtocolV2Registry.cpp
   ../../../../native/protocol/src/OwnedBinaryPayloadStore.cpp
   ../../../../native/protocol/src/OwnedJsiBinaryTransport.cpp
   UnifiedBleProtocolControlJni.cpp

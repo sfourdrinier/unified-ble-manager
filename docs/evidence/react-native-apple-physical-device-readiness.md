@@ -2,13 +2,13 @@
 
 # React Native Apple physical-device readiness
 
-Status on 2026-07-28: the React Native Apple backend has deterministic Native Protocol v1 coverage and an iPhone/iPad-targeted example. It does not yet have a live-radio receipt. The absence of a receipt is intentional: no simulator, mock, compilation, or deterministic test is labelled as proof of Bluetooth hardware behavior.
+Status on 2026-07-28: the React Native Apple backend has deterministic Native Protocol v2 coverage and an iPhone/iPad-targeted example. It does not yet have a live-radio receipt. The absence of a receipt is intentional: no simulator, mock, compilation, or deterministic test is labelled as proof of Bluetooth hardware behavior.
 
 ## What this validates before hardware
 
 - `pnpm native-protocol:check` proves the checked-in Apple protocol projection matches the v1 schema.
 - `pnpm test:native-protocol` builds and runs the portable native-protocol runtime tests.
-- `pnpm exec jest --config jest.config.js __tests__/native-protocol/AppleNativeProtocolV1.test.js __tests__/backends/reactnative/react-native-android-vertical-slice.test.js --runInBand` proves deterministic command routing and source-level protocol contracts: the Apple route calls `CBPeripheral.readRSSI()`, declares caller-directed ATT-MTU unsupported, preserves CoreBluetooth error metadata, and waits for a CoreBluetooth disconnect callback before reporting release. It does not prove a physical RSSI callback.
+- `pnpm exec jest --config jest.config.js __tests__/native-protocol/AppleNativeProtocolV2.test.js __tests__/backends/reactnative/react-native-android-vertical-slice.test.js --runInBand` proves deterministic command routing and source-level protocol contracts: the Apple route calls `CBPeripheral.readRSSI()`, declares caller-directed ATT-MTU unsupported, preserves CoreBluetooth error metadata, and waits for a CoreBluetooth disconnect callback before reporting release. It does not prove a physical RSSI callback.
 - An iOS simulator build, installation, and launch prove that the example's New-Architecture native module is linkable and can be started. They do not prove BLE or a foreground JavaScript screen: CoreBluetooth central radio work requires an iPhone or iPad, and a Debug React Native screen also needs a reachable Metro server.
 
 ## Physical iPhone or iPad procedure

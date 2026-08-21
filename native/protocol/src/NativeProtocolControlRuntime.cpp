@@ -7,7 +7,7 @@
 #include <limits>
 #include <utility>
 
-namespace unified_ble::native_protocol::v1 {
+namespace unified_ble::native_protocol::v2 {
 
 namespace {
 
@@ -46,7 +46,7 @@ void validateRestorationAuthority(
       authority.authorizedHostSessionScope.empty()) {
     throw ProtocolException(ProtocolFailure::malformedRecord, "Native restoration authority is incomplete");
   }
-  static_cast<void>(NativeProtocolV1Codec::negotiate(
+  static_cast<void>(NativeProtocolV2Codec::negotiate(
       authority.nativeProtocol,
       {kAbiVersion, kAbiVersion},
       {1U, 1U},
@@ -190,7 +190,7 @@ NegotiatedVersions NativeProtocolControlRuntime::handshake(
   if (ownerId.empty()) {
     throw ProtocolException(ProtocolFailure::invalidPath, "Native protocol owner is empty");
   }
-  const auto versions = NativeProtocolV1Codec::negotiate(
+  const auto versions = NativeProtocolV2Codec::negotiate(
       nativeProtocol,
       abi,
       backendContract,
@@ -254,7 +254,7 @@ void NativeProtocolControlRuntime::appendRestorationRecord(
     throw ProtocolException(ProtocolFailure::alreadyTerminal, "Native protocol attachment is closed");
   }
   validateRestorationAuthority(authority, attachment_);
-  NativeProtocolV1Codec{}.validate(record);
+  NativeProtocolV2Codec{}.validate(record);
   if (!restoration_) {
     restoration_ = std::make_unique<NativeRestorationJournal>(
         authority.namespaceValue,
@@ -279,7 +279,7 @@ void NativeProtocolControlRuntime::registerCommand(const ProtocolRecord& command
   if (!operations_) {
     throw ProtocolException(ProtocolFailure::alreadyTerminal, "Native protocol attachment is closed");
   }
-  NativeProtocolV1Codec{}.validate(command);
+  NativeProtocolV2Codec{}.validate(command);
   if (command.kind != RecordKind::command) {
     throw ProtocolException(ProtocolFailure::invalidFieldType, "Native protocol dispatch requires a command record");
   }
@@ -358,7 +358,7 @@ bool NativeProtocolControlRuntime::settleResult(const ProtocolRecord& result) {
   if (!operations_) {
     return false;
   }
-  NativeProtocolV1Codec{}.validate(result);
+  NativeProtocolV2Codec{}.validate(result);
   if (result.kind != RecordKind::result) {
     throw ProtocolException(ProtocolFailure::invalidFieldType, "Native protocol settlement requires a result record");
   }
@@ -495,7 +495,7 @@ void NativeProtocolControlRuntime::validateEvent(const ProtocolRecord& event) co
   if (!operations_) {
     throw ProtocolException(ProtocolFailure::alreadyTerminal, "Native protocol attachment is closed");
   }
-  NativeProtocolV1Codec{}.validate(event);
+  NativeProtocolV2Codec{}.validate(event);
   if (event.kind != RecordKind::event) {
     throw ProtocolException(ProtocolFailure::invalidFieldType, "Native protocol delivery requires an event record");
   }
@@ -605,4 +605,4 @@ const char* restorationOutcomeName(NativeRestorationOutcome outcome) {
   throw ProtocolException(ProtocolFailure::malformedRecord, "Native restoration outcome is unknown");
 }
 
-} // namespace unified_ble::native_protocol::v1
+} // namespace unified_ble::native_protocol::v2

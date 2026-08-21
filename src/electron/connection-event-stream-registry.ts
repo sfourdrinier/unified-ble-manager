@@ -11,7 +11,7 @@ import type { AttachmentRecord } from '../backend-contract/identity'
 import type { RendererLeaseIdentity } from '../backend-contract/electron'
 import { snapshotSerializableRecord } from '../backend-contract/serializable'
 import type { BoundedAsyncStream, BoundedAsyncStreamIterator, StreamItem } from '../backend-contract/streams'
-import type { ElectronConnectionEventsSubscribeResponseV1, ElectronConnectionLifecycleEventV1 } from './protocol'
+import type { ElectronConnectionEventsSubscribeResponseV2, ElectronConnectionLifecycleEventV2 } from './protocol'
 import { ELECTRON_CONNECTION_LIFECYCLE_EVENT_SCHEMA_VERSION, isElectronConnectionEventsStreamHandle } from './protocol'
 import type { ElectronBleIpcEvent } from './protocol'
 import type { ElectronEventDelivery } from './renderer-stream-registry'
@@ -69,7 +69,7 @@ export class ElectronConnectionEventStreamRegistry {
     connectionHandle: string,
     connection: ConnectionLifecycleSource,
     attachment: AttachmentRecord<string>
-  ): ElectronConnectionEventsSubscribeResponseV1 {
+  ): ElectronConnectionEventsSubscribeResponseV2 {
     if (!isElectronConnectionEventsStreamHandle(handle)) {
       throw contractError('argument.invalid', 'ipc', 'electron-connection-events.register-handle-format')
     }
@@ -390,7 +390,7 @@ function lifecycleStreamItemRecord(
   })
 }
 
-function snapshotConnectionLifecycleEvent(event: ConnectionLifecycleEvent<string>): ElectronConnectionLifecycleEventV1 {
+function snapshotConnectionLifecycleEvent(event: ConnectionLifecycleEvent<string>): ElectronConnectionLifecycleEventV2 {
   assertConnectionLifecycleEvent(event)
   return Object.freeze({
     kind: 'connection-lifecycle',
@@ -428,7 +428,7 @@ function snapshotConnectionLifecycleEvent(event: ConnectionLifecycleEvent<string
 }
 
 function connectionLifecycleEventMatches(
-  event: ElectronConnectionLifecycleEventV1,
+  event: ElectronConnectionLifecycleEventV2,
   connection: ConnectionLifecycleSource,
   attachment: AttachmentRecord<string>
 ): boolean {

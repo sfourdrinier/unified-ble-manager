@@ -77,7 +77,7 @@ describe('published package contains the files and scripts it claims', () => {
     expect(packInstallSmokeSource).toContain("require('unified-ble-manager/app.plugin.js')")
     expect(packInstallSmokeSource).toContain("require('unified-ble-manager/web')")
     expect(packInstallSmokeSource).toContain('ERR_PACKAGE_PATH_NOT_EXPORTED')
-    expect(packInstallSmokeSource).toContain('unified-ble-manager/native-protocol/v1-codec')
+    expect(packInstallSmokeSource).toContain('unified-ble-manager/native-protocol/v2-codec')
     expect(packInstallSmokeSource).toContain('unified-ble-manager/native-protocol/rn-apple-boundary')
     expect(packInstallSmokeSource).toContain("await import('unified-ble-manager/web')")
     expect(packInstallSmokeSource).toContain(

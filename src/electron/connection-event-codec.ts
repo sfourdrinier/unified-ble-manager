@@ -3,10 +3,10 @@
 import { contractError } from '../backend-contract/errors'
 import type { SerializableRecord, SerializableValue } from '../backend-contract/primitives'
 import type {
-  ElectronAdapterStateV1,
-  ElectronAttachmentRecordV1,
-  ElectronConnectionEventsSubscribeResponseV1,
-  ElectronConnectionLifecycleEventV1
+  ElectronAdapterStateV2,
+  ElectronAttachmentRecordV2,
+  ElectronConnectionEventsSubscribeResponseV2,
+  ElectronConnectionLifecycleEventV2
 } from './protocol'
 import { ELECTRON_CONNECTION_LIFECYCLE_EVENT_SCHEMA_VERSION } from './protocol'
 
@@ -16,7 +16,7 @@ export interface ElectronConnectionEventCleanupReceipt {
 }
 
 export type DecodedConnectionEventStreamItem =
-  | { readonly kind: 'value'; readonly value: ElectronConnectionLifecycleEventV1 }
+  | { readonly kind: 'value'; readonly value: ElectronConnectionLifecycleEventV2 }
   | {
       readonly kind: 'overflow'
       readonly policy: 'latest' | 'drop-oldest' | 'drop-newest' | 'error'
@@ -41,7 +41,7 @@ export type DecodedConnectionEventStreamItem =
 
 export function decodeConnectionEventsSubscribeResponse(
   payload: SerializableRecord
-): ElectronConnectionEventsSubscribeResponseV1 {
+): ElectronConnectionEventsSubscribeResponseV2 {
   const handle = requiredRendererString(payload, 'handle', 'electron-renderer.connection-events-subscribe')
   const connectionId = requiredRendererString(payload, 'connectionId', 'electron-renderer.connection-events-subscribe')
   const connectionGeneration = requiredRendererString(
@@ -113,7 +113,7 @@ export function decodeConnectionEventStreamItem(item: SerializableRecord): Decod
   throw contractError('protocol.malformed', 'ipc', 'electron-renderer.connection-events-item')
 }
 
-function decodeConnectionLifecycleEvent(value: SerializableValue | undefined): ElectronConnectionLifecycleEventV1 {
+function decodeConnectionLifecycleEvent(value: SerializableValue | undefined): ElectronConnectionLifecycleEventV2 {
   const event = serializableRecord(value)
   if (
     event === null ||
@@ -154,7 +154,7 @@ function decodeConnectionLifecycleEvent(value: SerializableValue | undefined): E
   })
 }
 
-function decodeElectronAttachment(value: SerializableValue | undefined): ElectronAttachmentRecordV1 {
+function decodeElectronAttachment(value: SerializableValue | undefined): ElectronAttachmentRecordV2 {
   const attachment = serializableRecord(value)
   if (attachment === null) {
     throw contractError('protocol.malformed', 'ipc', 'electron-renderer.connection-lifecycle-attachment')
@@ -269,7 +269,7 @@ function isNullableString(value: SerializableValue | undefined): value is string
 
 function isConnectionState(
   value: SerializableValue | undefined
-): value is ElectronConnectionLifecycleEventV1['current'] {
+): value is ElectronConnectionLifecycleEventV2['current'] {
   return (
     value === 'connecting' ||
     value === 'connected' ||
@@ -281,7 +281,7 @@ function isConnectionState(
 
 function isConnectionLifecycleCause(
   value: SerializableValue | undefined
-): value is ElectronConnectionLifecycleEventV1['cause'] {
+): value is ElectronConnectionLifecycleEventV2['cause'] {
   return (
     value === 'connected' ||
     value === 'backend-transition' ||
@@ -315,13 +315,13 @@ function isStreamTerminalReason(
   )
 }
 
-function isAdapterAvailability(value: SerializableValue | undefined): value is ElectronAdapterStateV1['availability'] {
+function isAdapterAvailability(value: SerializableValue | undefined): value is ElectronAdapterStateV2['availability'] {
   return value === 'available' || value === 'unavailable' || value === 'unsupported' || value === 'unknown'
 }
 
 function isAdapterAuthorization(
   value: SerializableValue | undefined
-): value is ElectronAdapterStateV1['authorization'] {
+): value is ElectronAdapterStateV2['authorization'] {
   return (
     value === 'granted' ||
     value === 'denied' ||
@@ -332,6 +332,6 @@ function isAdapterAuthorization(
   )
 }
 
-function isAdapterPower(value: SerializableValue | undefined): value is ElectronAdapterStateV1['power'] {
+function isAdapterPower(value: SerializableValue | undefined): value is ElectronAdapterStateV2['power'] {
   return value === 'on' || value === 'off' || value === 'resetting' || value === 'unsupported' || value === 'unknown'
 }

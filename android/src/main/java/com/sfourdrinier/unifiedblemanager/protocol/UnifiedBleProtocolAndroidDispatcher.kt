@@ -14,7 +14,7 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 
-/** Owns protocol-v1 Android radio work and sends bytes only through the native protocol. */
+/** Owns protocol-v2 Android radio work and sends bytes only through the native protocol. */
 class UnifiedBleProtocolAndroidDispatcher(
   context: Context,
   private val nativeHandle: Long
@@ -174,7 +174,7 @@ class UnifiedBleProtocolAndroidDispatcher(
         "unsubscribe" -> subscribe(command, false)
         "cancel" -> cancel(command)
         "destroy" -> destroy(command)
-        else -> emitFailure(command, "unsupportedCommand", "Command is not implemented by Android protocol-v1")
+        else -> emitFailure(command, "unsupportedCommand", "Command is not implemented by Android protocol-v2")
       }
     } catch (error: IllegalArgumentException) {
       emitFailure(command, "invalidCommand", error.message ?: "Android command is invalid")

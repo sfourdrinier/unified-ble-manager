@@ -30,7 +30,7 @@ try {
   run('cmake', ['--build', build, '--parallel'])
   run('ctest', ['--test-dir', build, '--output-on-failure'])
 } catch (error) {
-  console.error('[test-native-protocol] Native Protocol v1 host compile or tests failed:', error)
+  console.error('[test-native-protocol] Native Protocol v2 host compile or tests failed:', error)
   process.exitCode = 1
 } finally {
   fs.rmSync(build, { recursive: true, force: true })

@@ -15,9 +15,9 @@ export {
 } from '../ipc/protocol'
 
 export type {
-  IpcAdapterRecordV1 as ElectronAdapterRecordV1,
-  IpcAdapterStateV1 as ElectronAdapterStateV1,
-  IpcAttachmentRecordV1 as ElectronAttachmentRecordV1,
+  IpcAdapterRecordV2 as ElectronAdapterRecordV2,
+  IpcAdapterStateV2 as ElectronAdapterStateV2,
+  IpcAttachmentRecordV2 as ElectronAttachmentRecordV2,
   IpcBleEvent as ElectronBleIpcEvent,
   IpcBleRequest as ElectronBleIpcRequest,
   IpcBleResponse as ElectronBleIpcResponse,
@@ -26,8 +26,8 @@ export type {
   IpcBootstrapResponse as ElectronBootstrapResponse,
   IpcClientBootstrap as ElectronRendererBootstrap,
   IpcClientTransport as ElectronRendererIpcTransport,
-  IpcConnectionEventsSubscribeResponseV1 as ElectronConnectionEventsSubscribeResponseV1,
-  IpcConnectionLifecycleEventV1 as ElectronConnectionLifecycleEventV1,
+  IpcConnectionEventsSubscribeResponseV2 as ElectronConnectionEventsSubscribeResponseV2,
+  IpcConnectionLifecycleEventV2 as ElectronConnectionLifecycleEventV2,
   IpcEventAcknowledgeRequest as ElectronEventAcknowledgeRequest,
   IpcEventAcknowledgeResponse as ElectronEventAcknowledgeResponse,
   IpcFailureResponse as ElectronFailureResponse,

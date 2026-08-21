@@ -28,11 +28,11 @@
 
 namespace jni = facebook::jni;
 namespace jsi = facebook::jsi;
-namespace protocol = unified_ble::native_protocol::v1;
+namespace protocol = unified_ble::native_protocol::v2;
 
 namespace {
 
-constexpr const char* kRuntimeName = "__unifiedBleNativeProtocolV1";
+constexpr const char* kRuntimeName = "__unifiedBleNativeProtocolV2";
 
 using RuntimeSchedule = std::function<void(std::function<void(jsi::Runtime&)>)>;
 
@@ -180,7 +180,7 @@ std::shared_ptr<protocol::NativeProtocolControlRuntime> requireRuntime(
     const std::weak_ptr<protocol::NativeProtocolControlRuntime>& runtimeLease) {
   const auto activeRuntime = runtimeLease.lock();
   if (!activeRuntime) {
-    throw jsi::JSError(runtime, "Native Protocol v1 runtime is unavailable");
+    throw jsi::JSError(runtime, "Native Protocol v2 runtime is unavailable");
   }
   return activeRuntime;
 }
@@ -207,7 +207,7 @@ const protocol::ProtocolRecord& requiredProtocolRecord(
   if (value == nullptr || !*value) {
     throw protocol::ProtocolException(
         protocol::ProtocolFailure::malformedRecord,
-        "Native Protocol v1 record reference is missing");
+        "Native Protocol v2 record reference is missing");
   }
   return **value;
 }
@@ -218,7 +218,7 @@ const std::string& requiredProtocolString(const protocol::ProtocolRecord& record
   if (value == nullptr || value->empty()) {
     throw protocol::ProtocolException(
         protocol::ProtocolFailure::invalidCorrelation,
-        "Native Protocol v1 string is missing");
+        "Native Protocol v2 string is missing");
   }
   return *value;
 }
@@ -229,7 +229,7 @@ std::uint64_t requiredProtocolUnsigned(const protocol::ProtocolRecord& record, s
   if (value == nullptr) {
     throw protocol::ProtocolException(
         protocol::ProtocolFailure::invalidCorrelation,
-        "Native Protocol v1 unsigned value is missing");
+        "Native Protocol v2 unsigned value is missing");
   }
   return *value;
 }
@@ -239,7 +239,7 @@ std::size_t requiredProtocolSize(const protocol::ProtocolRecord& record, std::ui
   if (value > std::numeric_limits<std::size_t>::max()) {
     throw protocol::ProtocolException(
         protocol::ProtocolFailure::invalidCorrelation,
-        "Native Protocol v1 size exceeds the Android addressable range");
+        "Native Protocol v2 size exceeds the Android addressable range");
   }
   return static_cast<std::size_t>(value);
 }
@@ -278,7 +278,7 @@ protocol::OwnedBinaryReference binaryReferenceFromRecord(const protocol::Protoco
   if (record.kind != protocol::RecordKind::binaryReference) {
     throw protocol::ProtocolException(
         protocol::ProtocolFailure::invalidFieldType,
-        "Native Protocol v1 binary reference record has an invalid kind");
+        "Native Protocol v2 binary reference record has an invalid kind");
   }
   const auto byteOffset = requiredProtocolSize(record, 2U);
   const auto byteLength = requiredProtocolSize(record, 3U);
@@ -286,7 +286,7 @@ protocol::OwnedBinaryReference binaryReferenceFromRecord(const protocol::Protoco
       byteLength > protocol::kMaximumBinaryPayloadBytes - byteOffset) {
     throw protocol::ProtocolException(
         protocol::ProtocolFailure::payloadTooLarge,
-        "Native Protocol v1 binary reference range exceeds the payload limit");
+        "Native Protocol v2 binary reference range exceeds the payload limit");
   }
   return {
       .ownerToken = requiredProtocolString(record, 1U),
@@ -353,7 +353,7 @@ protocol::ProtocolRecord androidEventBufferOverflow(
     throw std::overflow_error("Android native event-buffer ordinal exhausted");
   }
   const auto safeMessage =
-      std::string("Native Protocol v1 Android event buffer overflowed after retaining ") +
+      std::string("Native Protocol v2 Android event buffer overflowed after retaining ") +
       std::to_string(counters.retainedRecordCount) + " records and " +
       std::to_string(counters.retainedByteCount) + " bytes";
   const auto error = protocol::ProtocolRecord{
@@ -376,7 +376,7 @@ protocol::ProtocolRecord androidEventBufferOverflow(
   return {
       .kind = protocol::RecordKind::event,
       .fields = {
-          protocolField(1U, std::uint64_t{1U}),
+          protocolField(1U, std::uint64_t{protocol::kProtocolVersion}),
           protocolField(2U, std::string("android-jsi-event-buffer-overflow:") + std::to_string(ordinal)),
           protocolField(3U, std::string("diagnostic")),
           protocolField(4U, protocolRecordReference(attachmentRecord(runtime->attachmentIdentity()))),
@@ -398,7 +398,7 @@ void deliverRecordToJavaScript(
     std::scoped_lock lock(state->mutex);
     if (!state->runtimeLease.lock() || state->generation != expectedGeneration ||
         (!allowClosedIngress && state->ingressClosed) || !state->eventSink) {
-      throw jsi::JSError(runtime, "Native Protocol v1 Android event sink is unavailable");
+      throw jsi::JSError(runtime, "Native Protocol v2 Android event sink is unavailable");
     }
     eventSink = state->eventSink;
   }
@@ -406,7 +406,7 @@ void deliverRecordToJavaScript(
   auto buffer = output.buffer(runtime);
   auto* data = buffer.data(runtime);
   if (!bytes.empty() && data == nullptr) {
-    throw jsi::JSError(runtime, "Native Protocol v1 could not allocate event Uint8Array");
+    throw jsi::JSError(runtime, "Native Protocol v2 could not allocate event Uint8Array");
   }
   if (!bytes.empty()) {
     std::memcpy(data, bytes.data(), bytes.size());
@@ -415,7 +415,7 @@ void deliverRecordToJavaScript(
     std::scoped_lock lock(state->mutex);
     if (!state->runtimeLease.lock() || state->generation != expectedGeneration ||
         (!allowClosedIngress && state->ingressClosed) || state->eventSink != eventSink) {
-      throw jsi::JSError(runtime, "Native Protocol v1 Android event sink was invalidated during delivery");
+      throw jsi::JSError(runtime, "Native Protocol v2 Android event sink was invalidated during delivery");
     }
   }
   eventSink->call(runtime, output);
@@ -480,7 +480,7 @@ void scheduleEventDrain(const std::shared_ptr<JsiEventSinkState>& state) {
           deliverRecordToJavaScript(
               state,
               runtime,
-              protocol::NativeProtocolV1Codec{}.encode(overflowRecord),
+              protocol::NativeProtocolV2Codec{}.encode(overflowRecord),
               scheduledGeneration,
               true);
         } else if (hasRecord) {
@@ -762,13 +762,13 @@ std::vector<std::uint8_t> bytesFromJava(JNIEnv* environment, jbyteArray bytes) {
   if (bytes == nullptr) {
     throw protocol::ProtocolException(
         protocol::ProtocolFailure::detachedPayload,
-        "Native Protocol v1 Android bytes are unavailable");
+        "Native Protocol v2 Android bytes are unavailable");
   }
   const auto length = environment->GetArrayLength(bytes);
   if (length < 0 || static_cast<std::size_t>(length) > protocol::kMaximumBinaryPayloadBytes) {
     throw protocol::ProtocolException(
         protocol::ProtocolFailure::payloadTooLarge,
-        "Native Protocol v1 Android bytes exceed the binary payload limit");
+        "Native Protocol v2 Android bytes exceed the binary payload limit");
   }
   std::vector<std::uint8_t> copy(static_cast<std::size_t>(length));
   if (length > 0) {
@@ -781,20 +781,20 @@ std::string stringFromJava(JNIEnv* environment, jstring value, const char* name)
   if (value == nullptr) {
     throw protocol::ProtocolException(
         protocol::ProtocolFailure::invalidCorrelation,
-        std::string("Native Protocol v1 ") + name + " is missing");
+        std::string("Native Protocol v2 ") + name + " is missing");
   }
   const auto* chars = environment->GetStringUTFChars(value, nullptr);
   if (chars == nullptr) {
     throw protocol::ProtocolException(
         protocol::ProtocolFailure::detachedPayload,
-        std::string("Native Protocol v1 ") + name + " is unavailable");
+        std::string("Native Protocol v2 ") + name + " is unavailable");
   }
   const std::string copy(chars);
   environment->ReleaseStringUTFChars(value, chars);
   if (copy.empty()) {
     throw protocol::ProtocolException(
         protocol::ProtocolFailure::invalidCorrelation,
-        std::string("Native Protocol v1 ") + name + " is empty");
+        std::string("Native Protocol v2 ") + name + " is empty");
   }
   return copy;
 }
@@ -807,7 +807,7 @@ std::optional<std::string> optionalStringFromJava(JNIEnv* environment, jstring v
   if (chars == nullptr) {
     throw protocol::ProtocolException(
         protocol::ProtocolFailure::detachedPayload,
-        "Native Protocol v1 optional Android string is unavailable");
+        "Native Protocol v2 optional Android string is unavailable");
   }
   const std::string copy(chars);
   environment->ReleaseStringUTFChars(value, chars);
@@ -821,13 +821,13 @@ protocol::ProtocolStringList stringListFromJava(
   if (values == nullptr) {
     throw protocol::ProtocolException(
         protocol::ProtocolFailure::invalidFieldType,
-        std::string("Native Protocol v1 ") + name + " is missing");
+        std::string("Native Protocol v2 ") + name + " is missing");
   }
   const auto length = environment->GetArrayLength(values);
   if (length < 0 || static_cast<std::size_t>(length) > 256U) {
     throw protocol::ProtocolException(
         protocol::ProtocolFailure::payloadTooLarge,
-        std::string("Native Protocol v1 ") + name + " exceeds its entry limit");
+        std::string("Native Protocol v2 ") + name + " exceeds its entry limit");
   }
   protocol::ProtocolStringList output;
   output.reserve(static_cast<std::size_t>(length));
@@ -867,7 +867,7 @@ std::optional<std::vector<std::vector<std::uint8_t>>> optionalByteArrayListFromJ
   if (length < 0 || static_cast<std::size_t>(length) > 256U) {
     throw protocol::ProtocolException(
         protocol::ProtocolFailure::payloadTooLarge,
-        std::string("Native Protocol v1 ") + name + " exceeds its entry limit");
+        std::string("Native Protocol v2 ") + name + " exceeds its entry limit");
   }
   std::vector<std::vector<std::uint8_t>> output;
   output.reserve(static_cast<std::size_t>(length));
@@ -897,7 +897,7 @@ std::optional<std::vector<jint>> optionalIntListFromJava(
   if (length < 0 || static_cast<std::size_t>(length) > 256U) {
     throw protocol::ProtocolException(
         protocol::ProtocolFailure::payloadTooLarge,
-        std::string("Native Protocol v1 ") + name + " exceeds its entry limit");
+        std::string("Native Protocol v2 ") + name + " exceeds its entry limit");
   }
   std::vector<jint> output(static_cast<std::size_t>(length));
   if (length > 0) {
@@ -917,7 +917,7 @@ void requirePairedAdvertisementFields(
   if (!left || !right || left->size() != right->size()) {
     throw protocol::ProtocolException(
         protocol::ProtocolFailure::invalidFieldType,
-        std::string("Native Protocol v1 ") + name + " keys and values must have matching presence and length");
+        std::string("Native Protocol v2 ") + name + " keys and values must have matching presence and length");
   }
 }
 
@@ -926,7 +926,7 @@ jbyteArray javaByteArray(JNIEnv* environment, const std::vector<std::uint8_t>& b
   if (result == nullptr) {
     throw protocol::ProtocolException(
         protocol::ProtocolFailure::payloadTooLarge,
-        "Native Protocol v1 could not allocate Android bytes");
+        "Native Protocol v2 could not allocate Android bytes");
   }
   if (!bytes.empty()) {
     environment->SetByteArrayRegion(
@@ -953,11 +953,11 @@ std::string requiredStringProperty(
     const char* propertyName) {
   const auto value = record.getProperty(runtime, propertyName);
   if (!value.isString()) {
-    throw jsi::JSError(runtime, std::string("Native Protocol v1 requires string field: ") + propertyName);
+    throw jsi::JSError(runtime, std::string("Native Protocol v2 requires string field: ") + propertyName);
   }
   const auto stringValue = value.asString(runtime).utf8(runtime);
   if (stringValue.empty()) {
-    throw jsi::JSError(runtime, std::string("Native Protocol v1 rejects empty field: ") + propertyName);
+    throw jsi::JSError(runtime, std::string("Native Protocol v2 rejects empty field: ") + propertyName);
   }
   return stringValue;
 }
@@ -968,28 +968,28 @@ std::size_t requiredSizeProperty(
     const char* propertyName) {
   const auto value = record.getProperty(runtime, propertyName);
   if (!value.isNumber()) {
-    throw jsi::JSError(runtime, std::string("Native Protocol v1 requires numeric field: ") + propertyName);
+    throw jsi::JSError(runtime, std::string("Native Protocol v2 requires numeric field: ") + propertyName);
   }
   const auto number = value.asNumber();
   constexpr double maximumSafeInteger = 9007199254740991.0;
   if (!std::isfinite(number) || number < 0.0 || number > maximumSafeInteger ||
       number > static_cast<double>(protocol::kMaximumBinaryPayloadBytes) ||
       number != std::trunc(number)) {
-    throw jsi::JSError(runtime, std::string("Native Protocol v1 rejects numeric field: ") + propertyName);
+    throw jsi::JSError(runtime, std::string("Native Protocol v2 rejects numeric field: ") + propertyName);
   }
   return static_cast<std::size_t>(number);
 }
 
 protocol::OwnedBinaryReference binaryReferenceFromObject(jsi::Runtime& runtime, const jsi::Value& value) {
   if (!value.isObject() || value.asObject(runtime).isArray(runtime)) {
-    throw jsi::JSError(runtime, "Native Protocol v1 requires a binary reference object");
+    throw jsi::JSError(runtime, "Native Protocol v2 requires a binary reference object");
   }
   const auto record = value.asObject(runtime);
   const auto byteOffset = requiredSizeProperty(runtime, record, "byteOffset");
   const auto byteLength = requiredSizeProperty(runtime, record, "byteLength");
   if (byteOffset > protocol::kMaximumBinaryPayloadBytes ||
       byteLength > protocol::kMaximumBinaryPayloadBytes - byteOffset) {
-    throw jsi::JSError(runtime, "Native Protocol v1 binary reference range is invalid");
+    throw jsi::JSError(runtime, "Native Protocol v2 binary reference range is invalid");
   }
   return {
       .ownerToken = requiredStringProperty(runtime, record, "ownerToken"),
@@ -1002,22 +1002,22 @@ protocol::OwnedBinaryReference binaryReferenceFromObject(jsi::Runtime& runtime, 
 
 std::vector<std::uint8_t> commandBytesFromUint8Array(jsi::Runtime& runtime, const jsi::Value& value) {
   if (!value.isObject() || !value.asObject(runtime).isUint8Array(runtime)) {
-    throw jsi::JSError(runtime, "Native Protocol v1 submit requires a Uint8Array command");
+    throw jsi::JSError(runtime, "Native Protocol v2 submit requires a Uint8Array command");
   }
   auto array = value.asObject(runtime).asUint8Array(runtime);
   const auto buffer = array.buffer(runtime);
   if (buffer.detached(runtime)) {
-    throw jsi::JSError(runtime, "Native Protocol v1 rejects a detached command Uint8Array");
+    throw jsi::JSError(runtime, "Native Protocol v2 rejects a detached command Uint8Array");
   }
   const auto offset = array.byteOffset(runtime);
   const auto length = array.byteLength(runtime);
   if (offset > buffer.size(runtime) || length > buffer.size(runtime) - offset ||
       length > protocol::kMaximumControlRecordBytes) {
-    throw jsi::JSError(runtime, "Native Protocol v1 command range is invalid");
+    throw jsi::JSError(runtime, "Native Protocol v2 command range is invalid");
   }
   const auto* data = buffer.data(runtime);
   if (length > 0U && data == nullptr) {
-    throw jsi::JSError(runtime, "Native Protocol v1 command has no accessible storage");
+    throw jsi::JSError(runtime, "Native Protocol v2 command has no accessible storage");
   }
   if (length == 0U) {
     return {};
@@ -1029,17 +1029,17 @@ void dispatchCommandToAndroid(jsi::Runtime& runtime, jlong nativeHandle, const s
   auto* environment = jni::Environment::current();
   const auto binding = environment->FindClass("com/sfourdrinier/unifiedblemanager/protocol/UnifiedBleProtocolJsiBinding");
   if (binding == nullptr) {
-    throw jsi::JSError(runtime, "Native Protocol v1 Android dispatcher class is unavailable");
+    throw jsi::JSError(runtime, "Native Protocol v2 Android dispatcher class is unavailable");
   }
   const auto dispatch = environment->GetStaticMethodID(binding, "dispatchNative", "(J[B)V");
   if (dispatch == nullptr) {
     environment->DeleteLocalRef(binding);
-    throw jsi::JSError(runtime, "Native Protocol v1 Android dispatcher method is unavailable");
+    throw jsi::JSError(runtime, "Native Protocol v2 Android dispatcher method is unavailable");
   }
   const auto payload = environment->NewByteArray(static_cast<jsize>(bytes.size()));
   if (payload == nullptr) {
     environment->DeleteLocalRef(binding);
-    throw jsi::JSError(runtime, "Native Protocol v1 could not allocate Android command bytes");
+    throw jsi::JSError(runtime, "Native Protocol v2 could not allocate Android command bytes");
   }
   if (!bytes.empty()) {
     environment->SetByteArrayRegion(payload, 0, static_cast<jsize>(bytes.size()), reinterpret_cast<const jbyte*>(bytes.data()));
@@ -1049,7 +1049,7 @@ void dispatchCommandToAndroid(jsi::Runtime& runtime, jlong nativeHandle, const s
   environment->DeleteLocalRef(binding);
   if (environment->ExceptionCheck()) {
     environment->ExceptionClear();
-    throw jsi::JSError(runtime, "Native Protocol v1 Android dispatcher rejected the command");
+    throw jsi::JSError(runtime, "Native Protocol v2 Android dispatcher rejected the command");
   }
 }
 
@@ -1057,18 +1057,18 @@ void requestCurrentAdapterStateFromAndroid(jsi::Runtime& runtime, jlong nativeHa
   auto* environment = jni::Environment::current();
   const auto binding = environment->FindClass("com/sfourdrinier/unifiedblemanager/protocol/UnifiedBleProtocolJsiBinding");
   if (binding == nullptr) {
-    throw jsi::JSError(runtime, "Native Protocol v1 Android dispatcher class is unavailable");
+    throw jsi::JSError(runtime, "Native Protocol v2 Android dispatcher class is unavailable");
   }
   const auto request = environment->GetStaticMethodID(binding, "emitCurrentAdapterState", "(J)V");
   if (request == nullptr) {
     environment->DeleteLocalRef(binding);
-    throw jsi::JSError(runtime, "Native Protocol v1 Android adapter-state method is unavailable");
+    throw jsi::JSError(runtime, "Native Protocol v2 Android adapter-state method is unavailable");
   }
   environment->CallStaticVoidMethod(binding, request, nativeHandle);
   environment->DeleteLocalRef(binding);
   if (environment->ExceptionCheck()) {
     environment->ExceptionClear();
-    throw jsi::JSError(runtime, "Native Protocol v1 Android adapter-state request failed");
+    throw jsi::JSError(runtime, "Native Protocol v2 Android adapter-state request failed");
   }
 }
 
@@ -1106,7 +1106,7 @@ class NativeProtocolBinaryRuntime final : public jsi::HostObject {
               const jsi::Value* arguments,
               std::size_t count) {
             if (count != 2U || !arguments[0].isString()) {
-              throw jsi::JSError(innerRuntime, "Native Protocol v1 retain requires correlation and Uint8Array");
+              throw jsi::JSError(innerRuntime, "Native Protocol v2 retain requires correlation and Uint8Array");
             }
             const auto correlation = arguments[0].asString(innerRuntime).utf8(innerRuntime);
             const auto activeRuntime = requireRuntime(innerRuntime, runtimeLease);
@@ -1128,10 +1128,10 @@ class NativeProtocolBinaryRuntime final : public jsi::HostObject {
               const jsi::Value* arguments,
               std::size_t count) {
             if (count != 1U) {
-              throw jsi::JSError(innerRuntime, "Native Protocol v1 submit takes one Uint8Array command");
+              throw jsi::JSError(innerRuntime, "Native Protocol v2 submit takes one Uint8Array command");
             }
             const auto bytes = commandBytesFromUint8Array(innerRuntime, arguments[0]);
-            const auto command = protocol::NativeProtocolV1Codec{}.decode(bytes);
+            const auto command = protocol::NativeProtocolV2Codec{}.decode(bytes);
             const auto activeRuntime = requireRuntime(innerRuntime, runtimeLease);
             activeRuntime->registerCommand(command, true);
             try {
@@ -1154,7 +1154,7 @@ class NativeProtocolBinaryRuntime final : public jsi::HostObject {
               const jsi::Value* arguments,
               std::size_t count) {
             if (count != 1U || !arguments[0].isObject() || !arguments[0].asObject(innerRuntime).isFunction(innerRuntime)) {
-              throw jsi::JSError(innerRuntime, "Native Protocol v1 setEventSink requires one function");
+              throw jsi::JSError(innerRuntime, "Native Protocol v2 setEventSink requires one function");
             }
             static_cast<void>(requireRuntime(innerRuntime, runtimeLease));
             std::optional<protocol::AndroidJsiEventIngressLedger::OverflowSnapshot> preSinkOverflow;
@@ -1181,7 +1181,7 @@ class NativeProtocolBinaryRuntime final : public jsi::HostObject {
                 deliverRecordToJavaScript(
                     eventSinkState,
                     innerRuntime,
-                    protocol::NativeProtocolV1Codec{}.encode(overflowRecord),
+                    protocol::NativeProtocolV2Codec{}.encode(overflowRecord),
                     sinkGeneration,
                     true);
               } catch (...) {
@@ -1207,12 +1207,12 @@ class NativeProtocolBinaryRuntime final : public jsi::HostObject {
               std::size_t count) {
             if (count != 1U || !arguments[0].isObject() ||
                 !arguments[0].asObject(innerRuntime).isFunction(innerRuntime)) {
-              throw jsi::JSError(innerRuntime, "Native Protocol v1 setFatalSink requires one function");
+              throw jsi::JSError(innerRuntime, "Native Protocol v2 setFatalSink requires one function");
             }
             static_cast<void>(requireRuntime(innerRuntime, runtimeLease));
             std::scoped_lock lock(eventSinkState->mutex);
             if (eventSinkState->fatalRequested) {
-              throw jsi::JSError(innerRuntime, "Native Protocol v1 attachment is already fatally closed");
+              throw jsi::JSError(innerRuntime, "Native Protocol v2 attachment is already fatally closed");
             }
             eventSinkState->fatalSink = std::make_shared<jsi::Function>(
                 arguments[0].asObject(innerRuntime).asFunction(innerRuntime));
@@ -1230,7 +1230,7 @@ class NativeProtocolBinaryRuntime final : public jsi::HostObject {
               const jsi::Value* arguments,
               std::size_t count) {
             if (count != 1U) {
-              throw jsi::JSError(innerRuntime, "Native Protocol v1 copy requires one binary reference");
+              throw jsi::JSError(innerRuntime, "Native Protocol v2 copy requires one binary reference");
             }
             const auto activeRuntime = requireRuntime(innerRuntime, runtimeLease);
             return activeRuntime->copyBinary(innerRuntime, binaryReferenceFromObject(innerRuntime, arguments[0]));
@@ -1247,7 +1247,7 @@ class NativeProtocolBinaryRuntime final : public jsi::HostObject {
               const jsi::Value* arguments,
               std::size_t count) {
             if (count != 1U) {
-              throw jsi::JSError(innerRuntime, "Native Protocol v1 release requires one binary reference");
+              throw jsi::JSError(innerRuntime, "Native Protocol v2 release requires one binary reference");
             }
             const auto activeRuntime = requireRuntime(innerRuntime, runtimeLease);
             return jsi::Value(
@@ -1265,7 +1265,7 @@ class NativeProtocolBinaryRuntime final : public jsi::HostObject {
               const jsi::Value*,
               std::size_t count) {
             if (count != 0U) {
-              throw jsi::JSError(innerRuntime, "Native Protocol v1 retainedByteCount takes no arguments");
+              throw jsi::JSError(innerRuntime, "Native Protocol v2 retainedByteCount takes no arguments");
             }
             return jsi::Value(static_cast<double>(requireRuntime(innerRuntime, runtimeLease)->retainedBinaryBytes()));
           });
@@ -1281,7 +1281,7 @@ class NativeProtocolBinaryRuntime final : public jsi::HostObject {
               const jsi::Value*,
               std::size_t count) {
             if (count != 0U) {
-              throw jsi::JSError(innerRuntime, "Native Protocol v1 retainedPayloadCount takes no arguments");
+              throw jsi::JSError(innerRuntime, "Native Protocol v2 retainedPayloadCount takes no arguments");
             }
             return jsi::Value(static_cast<double>(requireRuntime(innerRuntime, runtimeLease)->retainedBinaryPayloads()));
           });
@@ -1306,7 +1306,7 @@ class UnifiedBleProtocolJsiBinding final : public jni::JavaClass<UnifiedBleProto
       jlong nativeHandle) {
     const auto runtimeLease = unifiedBleProtocolRuntimeLease(nativeHandle);
     if (runtimeLease.expired()) {
-      throw std::invalid_argument("Native Protocol v1 runtime is unavailable");
+      throw std::invalid_argument("Native Protocol v2 runtime is unavailable");
     }
     auto executor = runtimeExecutor->cthis()->get();
     auto state = std::make_shared<JsiEventSinkState>(
@@ -1361,7 +1361,7 @@ bool emitRecordFromJava(JNIEnv* environment, jlong nativeHandle, jbyteArray enco
   }
   std::optional<protocol::ProtocolRecord> decodedRecord;
   try {
-    auto record = protocol::NativeProtocolV1Codec{}.decode(bytes);
+    auto record = protocol::NativeProtocolV2Codec{}.decode(bytes);
     decodedRecord = record;
     if (record.kind == protocol::RecordKind::result) {
       const auto delivered = deliverNativeResult(state, activeRuntime, record);
@@ -1387,7 +1387,7 @@ bool emitRecordFromJava(JNIEnv* environment, jlong nativeHandle, jbyteArray enco
     }
     std::vector<protocol::OwnedBinaryReference> binaryReferences;
     collectBinaryReferences(record, binaryReferences);
-    bytes = protocol::NativeProtocolV1Codec{}.encode(record);
+    bytes = protocol::NativeProtocolV2Codec{}.encode(record);
     const auto delivered = deliverEncodedRecord(state, std::move(bytes), std::move(binaryReferences));
     if (!delivered) {
       __android_log_print(
@@ -1416,7 +1416,7 @@ bool deliverNativeResult(
     const std::shared_ptr<JsiEventSinkState>& state,
     const std::shared_ptr<protocol::NativeProtocolControlRuntime>& activeRuntime,
     const protocol::ProtocolRecord& result) {
-  const auto encoded = protocol::NativeProtocolV1Codec{}.encode(result);
+  const auto encoded = protocol::NativeProtocolV2Codec{}.encode(result);
   std::vector<protocol::OwnedBinaryReference> binaryReferences;
   collectBinaryReferences(result, binaryReferences);
   return deliverEncodedRecord(
@@ -1443,7 +1443,7 @@ bool deliverNativeEvent(
   collectBinaryReferences(event, binaryReferences);
   return deliverEncodedRecord(
       state,
-      protocol::NativeProtocolV1Codec{}.encode(event),
+      protocol::NativeProtocolV2Codec{}.encode(event),
       std::move(binaryReferences));
 }
 
@@ -1472,17 +1472,17 @@ void emitAdapterStateFromJava(
           static_cast<long long>(nativeHandle));
       return;
     }
-    const auto adapterState = protocol::NativeProtocolV1Codec{}.decode(bytesFromJava(environment, encodedAdapterState));
+    const auto adapterState = protocol::NativeProtocolV2Codec{}.decode(bytesFromJava(environment, encodedAdapterState));
     if (adapterState.kind != protocol::RecordKind::adapterStateSnapshot) {
       throw protocol::ProtocolException(
           protocol::ProtocolFailure::invalidFieldType,
-          "Native Protocol v1 Android adapter state has an invalid record kind");
+          "Native Protocol v2 Android adapter state has an invalid record kind");
     }
     const auto ordinal = nextIngressOrdinal(state);
     const auto event = protocol::ProtocolRecord{
         .kind = protocol::RecordKind::event,
         .fields = {
-            protocolField(1U, std::uint64_t{1U}),
+            protocolField(1U, std::uint64_t{protocol::kProtocolVersion}),
             protocolField(
                 2U,
                 std::string("native-adapter-state-") + std::to_string(nativeHandle) + ":" + std::to_string(ordinal)),
@@ -1529,7 +1529,7 @@ protocol::ProtocolRecord nativeFailureResult(
   return {
       .kind = protocol::RecordKind::result,
       .fields = {
-          protocolField(1U, std::uint64_t{1U}),
+          protocolField(1U, std::uint64_t{protocol::kProtocolVersion}),
           protocolField(2U, resultKind),
           protocolField(3U, protocolRecordReference(terminalRecord(correlation, "failed", &code))),
           protocolField(10U, protocolRecordReference(error)),
@@ -1572,7 +1572,7 @@ std::uint64_t monotonicTimestampMilliseconds() {
   if (milliseconds < 0) {
     throw protocol::ProtocolException(
         protocol::ProtocolFailure::malformedRecord,
-        "Native Protocol v1 monotonic clock is negative");
+        "Native Protocol v2 monotonic clock is negative");
   }
   return static_cast<std::uint64_t>(milliseconds);
 }
@@ -1597,7 +1597,7 @@ protocol::ProtocolRecord diagnosticEvent(
   return {
       .kind = protocol::RecordKind::event,
       .fields = {
-          protocolField(1U, std::uint64_t{1U}),
+          protocolField(1U, std::uint64_t{protocol::kProtocolVersion}),
           protocolField(
               2U,
               std::string("native-diagnostic-") + std::to_string(nativeHandle) + ":" + std::to_string(ordinal)),
@@ -1695,13 +1695,13 @@ void emitReadFromJava(
     if (dispatchEpoch < 0) {
       throw protocol::ProtocolException(
           protocol::ProtocolFailure::invalidCorrelation,
-          "Native Protocol v1 byte-read dispatch epoch is negative");
+          "Native Protocol v2 byte-read dispatch epoch is negative");
     }
     command = activeRuntime->commandFor(static_cast<std::uint64_t>(dispatchEpoch), nativeNonce);
     if (!command || requiredProtocolString(*command, 3U) != commandKind) {
       throw protocol::ProtocolException(
           protocol::ProtocolFailure::alreadyTerminal,
-          "Native Protocol v1 byte-read result has no pending command");
+          "Native Protocol v2 byte-read result has no pending command");
     }
     const auto bytes = bytesFromJava(environment, value);
     outputReference = activeRuntime->retainNativeBytes(
@@ -1712,7 +1712,7 @@ void emitReadFromJava(
     const auto result = protocol::ProtocolRecord{
         .kind = protocol::RecordKind::result,
         .fields = {
-            protocolField(1U, std::uint64_t{1U}),
+            protocolField(1U, std::uint64_t{protocol::kProtocolVersion}),
             protocolField(2U, std::string(resultKind)),
             protocolField(3U, protocolRecordReference(terminalRecord(correlation, "succeeded"))),
             protocolField(resultPathField, protocolRecordReference(path)),
@@ -1819,7 +1819,7 @@ void emitNotificationFromJava(
     const auto event = protocol::ProtocolRecord{
         .kind = protocol::RecordKind::event,
         .fields = {
-            protocolField(1U, std::uint64_t{1U}),
+            protocolField(1U, std::uint64_t{protocol::kProtocolVersion}),
             protocolField(
                 2U,
                 std::string("native-notification-") + std::to_string(nativeHandle) + ":" + std::to_string(ordinal)),
@@ -1948,19 +1948,19 @@ void emitAdvertisementFromJava(
     if (connectableState != -1 && connectableState != 0 && connectableState != 1) {
       throw protocol::ProtocolException(
           protocol::ProtocolFailure::invalidFieldType,
-          "Native Protocol v1 advertisement connectable state is invalid");
+          "Native Protocol v2 advertisement connectable state is invalid");
     }
     if (hasAppearance == JNI_TRUE && (appearance < 0 || appearance > 0xFFFF)) {
       throw protocol::ProtocolException(
           protocol::ProtocolFailure::invalidFieldType,
-          "Native Protocol v1 advertisement appearance is outside the Bluetooth assigned-number range");
+          "Native Protocol v2 advertisement appearance is outside the Bluetooth assigned-number range");
     }
     if (manufacturerIdentifiers) {
       for (const auto companyIdentifier : *manufacturerIdentifiers) {
         if (companyIdentifier < 0 || companyIdentifier > 0xFFFF) {
           throw protocol::ProtocolException(
               protocol::ProtocolFailure::invalidFieldType,
-              "Native Protocol v1 advertisement manufacturer company identifier is invalid");
+              "Native Protocol v2 advertisement manufacturer company identifier is invalid");
         }
       }
     }
@@ -2061,7 +2061,7 @@ void emitAdvertisementFromJava(
     const auto event = protocol::ProtocolRecord{
         .kind = protocol::RecordKind::event,
         .fields = {
-            protocolField(1U, std::uint64_t{1U}),
+            protocolField(1U, std::uint64_t{protocol::kProtocolVersion}),
             protocolField(
                 2U,
                 std::string("native-advertisement-") + std::to_string(nativeHandle) + ":" + std::to_string(ordinal)),
@@ -2113,19 +2113,19 @@ jbyteArray copyCommandBinaryToJava(
     if (dispatchEpoch < 0) {
       throw protocol::ProtocolException(
           protocol::ProtocolFailure::invalidCorrelation,
-          "Native Protocol v1 write dispatch epoch is negative");
+          "Native Protocol v2 write dispatch epoch is negative");
     }
     const auto state = eventSinkState(nativeHandle);
     if (!state) {
       throw protocol::ProtocolException(
           protocol::ProtocolFailure::alreadyTerminal,
-          "Native Protocol v1 Android dispatcher is closed");
+          "Native Protocol v2 Android dispatcher is closed");
     }
     const auto activeRuntime = state->runtimeLease.lock();
     if (!activeRuntime) {
       throw protocol::ProtocolException(
           protocol::ProtocolFailure::alreadyTerminal,
-          "Native Protocol v1 runtime is closed");
+          "Native Protocol v2 runtime is closed");
     }
     const auto nativeNonce = stringFromJava(environment, nonce, "write nonce");
     const auto command = activeRuntime->commandFor(static_cast<std::uint64_t>(dispatchEpoch), nativeNonce);
@@ -2134,7 +2134,7 @@ jbyteArray copyCommandBinaryToJava(
          requiredProtocolString(*command, 3U) != "writeDescriptor")) {
       throw protocol::ProtocolException(
           protocol::ProtocolFailure::alreadyTerminal,
-          "Native Protocol v1 binary-write command is no longer pending");
+          "Native Protocol v2 binary-write command is no longer pending");
     }
     return javaByteArray(environment, activeRuntime->consumeCommandBinary(*command));
   } catch (const std::exception& error) {
@@ -2158,26 +2158,26 @@ jstring requestCancellationFromJava(
     if (dispatchEpoch < 0) {
       throw protocol::ProtocolException(
           protocol::ProtocolFailure::invalidCorrelation,
-          "Native Protocol v1 cancellation dispatch epoch is negative");
+          "Native Protocol v2 cancellation dispatch epoch is negative");
     }
     const auto state = eventSinkState(nativeHandle);
     if (!state) {
       throw protocol::ProtocolException(
           protocol::ProtocolFailure::alreadyTerminal,
-          "Native Protocol v1 Android dispatcher is closed");
+          "Native Protocol v2 Android dispatcher is closed");
     }
     const auto activeRuntime = state->runtimeLease.lock();
     if (!activeRuntime) {
       throw protocol::ProtocolException(
           protocol::ProtocolFailure::alreadyTerminal,
-          "Native Protocol v1 runtime is closed");
+          "Native Protocol v2 runtime is closed");
     }
     const auto nativeNonce = stringFromJava(environment, nonce, "cancellation nonce");
     const auto command = activeRuntime->commandFor(static_cast<std::uint64_t>(dispatchEpoch), nativeNonce);
     if (!command) {
       throw protocol::ProtocolException(
           protocol::ProtocolFailure::alreadyTerminal,
-          "Native Protocol v1 cancellation command is no longer pending");
+          "Native Protocol v2 cancellation command is no longer pending");
     }
     const auto& correlation = requiredProtocolRecord(*command, 2U);
     const auto operation = protocol::NativeOperationIdentity{
@@ -2189,7 +2189,7 @@ jstring requestCancellationFromJava(
     if (result == nullptr) {
       throw protocol::ProtocolException(
           protocol::ProtocolFailure::detachedPayload,
-          "Native Protocol v1 could not allocate cancellation state");
+          "Native Protocol v2 could not allocate cancellation state");
     }
     return result;
   } catch (const std::exception& error) {

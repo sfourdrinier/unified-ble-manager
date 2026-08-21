@@ -7,13 +7,16 @@ import {
   capacity,
   createIpcOperationIdFactory,
   ownBytes,
-  resourceCount
+  resourceCount,
+  assertIpcVersionsAccepted
 } from '../backend-contract/primitives'
 import type { CleanupRecord } from '../backend-contract/errors'
 import type { IpcEnvelope } from '../backend-contract/electron'
 import type { IpcOperationCorrelation, OwnedBytes, SerializableRecord } from '../backend-contract/primitives'
 import { snapshotSerializableRecord } from '../backend-contract/serializable'
+import { validateCapabilitySnapshot } from '../backend-contract/capabilities'
 import type { BoundedAsyncStream } from '../backend-contract/streams'
+import { createIpcBootstrapRequest, IPC_CLIENT_COMPATIBILITY_OFFER } from '../ipc/protocol'
 import {
   decodeConnectionEventCleanupReceipt,
   decodeConnectionEventsSubscribeResponse,
@@ -22,8 +25,8 @@ import {
 import type { ElectronConnectionEventCleanupReceipt } from './connection-event-codec'
 import type {
   ElectronBleIpcEvent,
-  ElectronConnectionEventsSubscribeResponseV1,
-  ElectronConnectionLifecycleEventV1,
+  ElectronConnectionEventsSubscribeResponseV2,
+  ElectronConnectionLifecycleEventV2,
   ElectronIpcOperationReceipt,
   ElectronIpcOperationRequest,
   ElectronRendererBootstrap,
@@ -44,7 +47,7 @@ const releasedConnectionEventCleanup: ElectronConnectionEventCleanupReceipt = Ob
 
 export interface ElectronConnectionEventSubscription {
   readonly handle: string
-  readonly events: BoundedAsyncStream<ElectronConnectionLifecycleEventV1>
+  readonly events: BoundedAsyncStream<ElectronConnectionLifecycleEventV2>
   unsubscribe(): Promise<ElectronConnectionEventCleanupReceipt>
 }
 
@@ -52,15 +55,15 @@ export type { ElectronConnectionEventCleanupReceipt } from './connection-event-c
 
 interface RendererConnectionEventSubscription {
   readonly handle: string
-  expected: ElectronConnectionEventsSubscribeResponseV1 | null
-  readonly stream: CoreBoundedStream<ElectronConnectionLifecycleEventV1>
+  expected: ElectronConnectionEventsSubscribeResponseV2 | null
+  readonly stream: CoreBoundedStream<ElectronConnectionLifecycleEventV2>
   lifecycle: 'admitting' | 'active' | 'releasing' | 'released' | 'terminal'
   releaseResult: Promise<ElectronConnectionEventCleanupReceipt> | null
   retryHandle: ReturnType<typeof setTimeout> | null
 }
 
 /**
- * Renderer-side v1 IPC client. It can only use a preload-supplied transport;
+ * Renderer-side v2 IPC client. It can only use a preload-supplied transport;
  * selecting a radio or an Electron main resource is impossible from this API.
  */
 export class ElectronRendererBleClient<Attachment extends string, Renderer extends string> {
@@ -113,13 +116,15 @@ export class ElectronRendererBleClient<Attachment extends string, Renderer exten
   }
 
   private async invokeBootstrap(): Promise<ElectronRendererBootstrap<Attachment, Renderer>> {
-    const response = await this.transport.invoke({ kind: 'bootstrap' })
+    const response = await this.transport.invoke(createIpcBootstrapRequest())
     if (response.kind === 'failure') {
       throw new BackendContractError(response.error)
     }
     if (response.kind !== 'bootstrap') {
       throw contractError('protocol.malformed', 'ipc', 'electron-renderer.bootstrap-response')
     }
+    assertIpcVersionsAccepted(response.bootstrap.versions, IPC_CLIENT_COMPATIBILITY_OFFER)
+    validateCapabilitySnapshot(response.bootstrap.capabilities, String(response.bootstrap.attachment.backendGeneration))
     this.bootstrapValue = response.bootstrap
     return response.bootstrap
   }
@@ -169,7 +174,10 @@ export class ElectronRendererBleClient<Attachment extends string, Renderer exten
     }
   }
 
-  async subscribeConnectionEvents(connectionHandle: string): Promise<ElectronConnectionEventSubscription> {
+  async subscribeConnectionEvents(
+    connectionHandle: string,
+    identity: SerializableRecord = Object.freeze({})
+  ): Promise<ElectronConnectionEventSubscription> {
     this.assertActive('connection-events-subscribe')
     if (connectionHandle.length === 0) {
       throw contractError('argument.invalid', 'ipc', 'electron-renderer.connection-events-handle')
@@ -178,7 +186,7 @@ export class ElectronRendererBleClient<Attachment extends string, Renderer exten
     const subscription: RendererConnectionEventSubscription = {
       handle,
       expected: null,
-      stream: new CoreBoundedStream<ElectronConnectionLifecycleEventV1>(rendererEventLimits, 'drop-oldest'),
+      stream: new CoreBoundedStream<ElectronConnectionLifecycleEventV2>(rendererEventLimits, 'drop-oldest'),
       lifecycle: 'admitting',
       releaseResult: null,
       retryHandle: null
@@ -187,7 +195,12 @@ export class ElectronRendererBleClient<Attachment extends string, Renderer exten
     try {
       const receipt = await this.request({
         command: 'connection.events.subscribe',
-        payload: Object.freeze({ connectionHandle, connectionEventsHandle: handle, deadline: null }),
+        payload: Object.freeze({
+          ...identity,
+          connectionHandle,
+          connectionEventsHandle: handle,
+          deadline: null
+        }),
         binaryPayload: null,
         signal: null
       })
@@ -654,8 +667,8 @@ function serializedByteLength(record: SerializableRecord): number {
 }
 
 function connectionEventMatchesSubscription(
-  event: ElectronConnectionLifecycleEventV1,
-  expected: ElectronConnectionEventsSubscribeResponseV1,
+  event: ElectronConnectionLifecycleEventV2,
+  expected: ElectronConnectionEventsSubscribeResponseV2,
   bootstrap: ElectronRendererBootstrap<string, string>
 ): boolean {
   return (

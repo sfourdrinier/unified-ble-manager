@@ -11,7 +11,7 @@
 #include <string>
 #include <vector>
 
-namespace unified_ble::native_protocol::v1 {
+namespace unified_ble::native_protocol::v2 {
 
 class OwnedJsiBinaryTransport final {
  public:
@@ -42,4 +42,4 @@ class OwnedJsiBinaryTransport final {
   OwnedBinaryPayloadStore store_;
 };
 
-} // namespace unified_ble::native_protocol::v1
+} // namespace unified_ble::native_protocol::v2
