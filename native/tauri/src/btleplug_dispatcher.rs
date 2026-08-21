@@ -115,6 +115,7 @@ struct DatabaseResource {
     connection_handle: String,
     characteristics: HashMap<String, Characteristic>,
     descriptors: HashMap<String, Descriptor>,
+    generation: String,
 }
 
 struct SubscriptionResource {
@@ -1022,6 +1023,7 @@ impl BtleplugDispatcher {
                 .platform(error.to_string())
         })?;
         let database_handle = self.id("database");
+        let database_generation = self.id("database-generation");
         let mut characteristic_map = HashMap::new();
         let mut descriptor_map = HashMap::new();
         let mut characteristic_records = Vec::new();
@@ -1072,10 +1074,12 @@ impl BtleplugDispatcher {
                 connection_handle,
                 characteristics: characteristic_map,
                 descriptors: descriptor_map,
+                generation: database_generation.clone(),
             },
         );
         Ok(object([
             ("handle", string(database_handle)),
+            ("databaseGeneration", string(database_generation)),
             ("characteristics", IpcValue::Array(characteristic_records)),
             ("descriptors", IpcValue::Array(descriptor_records)),
         ]))

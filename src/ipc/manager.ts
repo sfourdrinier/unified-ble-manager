@@ -82,9 +82,9 @@ export interface IpcDescriptorRecord extends SerializableRecord {
   readonly occurrence: string
 }
 
-interface RemoteStream<Value> {
-  readonly source: CoreBoundedStream<Value>
-  readonly publicStream: BoundedAsyncStream<Value>
+interface StreamSink {
+  readonly closeWithReason: (reason: 'owner-released' | 'source-failed') => void
+  readonly deliver: (streamId: string, item: SerializableRecord) => void
 }
 
 /**
@@ -93,7 +93,7 @@ interface RemoteStream<Value> {
  * cancellation, bounded stream projections, and deterministic release.
  */
 export class IpcBleManager<Attachment extends string = string, Client extends string = string> {
-  private readonly streams = new Map<string, RemoteStream<unknown>>()
+  private readonly streams = new Map<string, StreamSink>()
   private readonly pendingStreamItems = new Map<string, SerializableRecord[]>()
   private readonly eventPump: Promise<void>
   private lifecycle: 'active' | 'releasing' | 'released' = 'active'
@@ -138,7 +138,7 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
       options.signal
     )
     const handle = requiredString(payload, 'handle', 'ipc-manager.scan')
-    const observations = this.registerStream<IpcAdvertisement>(handle)
+    const observations = this.registerStream<IpcAdvertisement>(handle, isIpcAdvertisement)
     return new IpcScanSession(this, handle, observations)
   }
 
@@ -167,7 +167,7 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
       .then(async cleanup => {
         if (cleanup.state === 'released') {
           this.lifecycle = 'released'
-          for (const stream of this.streams.values()) stream.source.closeWithReason('owner-released')
+          for (const sink of this.streams.values()) sink.closeWithReason('owner-released')
           this.streams.clear()
           this.pendingStreamItems.clear()
           await this.eventPump
@@ -227,16 +227,42 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
     }
   }
 
-  registerStream<Value>(handle: string): BoundedAsyncStream<Value> {
+  registerStream<Value>(handle: string, isValue: (value: unknown) => value is Value): BoundedAsyncStream<Value> {
     if (this.streams.has(handle)) throw new TypeError(`Duplicate remote stream handle: ${handle}`)
     const source = new CoreBoundedStream<Value>(REMOTE_STREAM_LIMITS, 'drop-oldest')
-    const remote: RemoteStream<unknown> = { source: source as CoreBoundedStream<unknown>, publicStream: source }
-    this.streams.set(handle, remote)
+    const deliver = (streamId: string, item: SerializableRecord): void => {
+      if (item.kind === 'value') {
+        const rawValue: unknown = item.value
+        if (!isValue(rawValue)) throw new TypeError('Malformed IPC stream value')
+        source.emit(rawValue, estimateByteLength(rawValue))
+        return
+      }
+      if (item.kind === 'overflow') {
+        source.observeSourceOverflow({
+          kind: 'overflow',
+          policy: requiredOverflowPolicy(item.policy, 'ipc-manager.event'),
+          droppedItems: resourceCount(Number(item.droppedItems)),
+          droppedBytes: resourceCount(Number(item.droppedBytes)),
+          replacedItems: resourceCount(Number(item.replacedItems))
+        })
+        return
+      }
+      if (item.kind === 'terminal') {
+        source.finishWithReason(requiredTerminalReason(item.reason, 'ipc-manager.event'))
+        this.streams.delete(streamId)
+        this.pendingStreamItems.delete(streamId)
+      }
+    }
+    const sink: StreamSink = {
+      closeWithReason: reason => source.closeWithReason(reason),
+      deliver
+    }
+    this.streams.set(handle, sink)
     const pending = this.pendingStreamItems.get(handle)
     this.pendingStreamItems.delete(handle)
     if (pending !== undefined) {
       for (const item of pending) {
-        this.deliverToStream(handle, remote, item)
+        deliver(handle, item)
       }
     }
     return source
@@ -244,10 +270,10 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
 
   closeStream(handle: string, reason: 'owner-released' | 'source-failed' = 'owner-released'): void {
     this.pendingStreamItems.delete(handle)
-    const stream = this.streams.get(handle)
-    if (stream === undefined) return
+    const sink = this.streams.get(handle)
+    if (sink === undefined) return
     this.streams.delete(handle)
-    stream.source.closeWithReason(reason)
+    sink.closeWithReason(reason)
   }
 
   private async pumpEvents(): Promise<void> {
@@ -255,12 +281,12 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
       if (event.kind !== 'value') continue
       const streamId = requiredString(event.value, 'streamId', 'ipc-manager.event')
       const item = requiredRecord(event.value, 'item', 'ipc-manager.event')
-      const remote = this.streams.get(streamId)
-      if (remote === undefined) {
+      const sink = this.streams.get(streamId)
+      if (sink === undefined) {
         this.bufferPendingStreamItem(streamId, item)
         continue
       }
-      this.deliverToStream(streamId, remote, item)
+      sink.deliver(streamId, item)
     }
   }
 
@@ -272,28 +298,6 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
     }
     pending.push(item)
     this.pendingStreamItems.set(streamId, pending)
-  }
-
-  private deliverToStream(streamId: string, remote: RemoteStream<unknown>, item: SerializableRecord): void {
-    if (item.kind === 'value') {
-      remote.source.emit(item.value, estimateByteLength(item.value))
-      return
-    }
-    if (item.kind === 'overflow') {
-      remote.source.observeSourceOverflow({
-        kind: 'overflow',
-        policy: requiredOverflowPolicy(item.policy, 'ipc-manager.event'),
-        droppedItems: resourceCount(Number(item.droppedItems)),
-        droppedBytes: resourceCount(Number(item.droppedBytes)),
-        replacedItems: resourceCount(Number(item.replacedItems))
-      })
-      return
-    }
-    if (item.kind === 'terminal') {
-      remote.source.finishWithReason(requiredTerminalReason(item.reason, 'ipc-manager.event'))
-      this.streams.delete(streamId)
-      this.pendingStreamItems.delete(streamId)
-    }
   }
 
   private assertActive(): void {
@@ -395,12 +399,18 @@ export class IpcGattDatabase {
   }
 
   static fromPayload(manager: IpcBleManager, connection: IpcConnection, payload: SerializableRecord): IpcGattDatabase {
+    const characteristics = requiredCharacteristicRecords(
+      requiredRecordArray(payload, 'characteristics', 'ipc-manager.gatt-database')
+    )
+    const descriptors = requiredDescriptorRecords(
+      requiredRecordArray(payload, 'descriptors', 'ipc-manager.gatt-database')
+    )
     return new IpcGattDatabase(
       manager,
       connection,
       requiredString(payload, 'handle', 'ipc-manager.gatt-database'),
-      requiredRecordArray(payload, 'characteristics', 'ipc-manager.gatt-database') as IpcCharacteristicRecord[],
-      requiredRecordArray(payload, 'descriptors', 'ipc-manager.gatt-database') as IpcDescriptorRecord[]
+      characteristics,
+      descriptors
     )
   }
 
@@ -418,8 +428,8 @@ export class IpcGattDatabase {
     )
   }
 
-  registerStream<Value>(handle: string): BoundedAsyncStream<Value> {
-    return this.manager.registerStream<Value>(handle)
+  registerStream<Value>(handle: string, isValue: (value: unknown) => value is Value): BoundedAsyncStream<Value> {
+    return this.manager.registerStream<Value>(handle, isValue)
   }
 
   closeStream(handle: string): void {
@@ -596,7 +606,7 @@ export class IpcCharacteristic {
       options.signal
     )
     const handle = requiredString(payload, 'handle', 'ipc-manager.gatt-subscribe')
-    return new IpcSubscription(this.database, handle, this.database.registerStream<Uint8Array>(handle))
+    return new IpcSubscription(this.database, handle, this.database.registerStream<Uint8Array>(handle, isUint8Array))
   }
 }
 
@@ -773,20 +783,37 @@ function requiredTerminalReason(
   throw new TypeError(`Malformed ${operation} terminal reason`)
 }
 
-function requiredRecord(record: SerializableRecord, key: string, operation: string): SerializableRecord {
-  const value = record[key]
-  if (typeof value !== 'object' || value === null || Array.isArray(value) || value instanceof Uint8Array) {
-    throw new TypeError(`Malformed ${operation} record`)
-  }
-  return value as SerializableRecord
+function isSerializableRecord(value: unknown): value is SerializableRecord {
+  return typeof value === 'object' && value !== null && !Array.isArray(value) && !(value instanceof Uint8Array)
 }
 
-function requiredRecordArray(record: SerializableRecord, key: string, operation: string): SerializableRecord[] {
-  const value = record[key]
-  if (!Array.isArray(value) || value.some(item => typeof item !== 'object' || item === null || Array.isArray(item))) {
+function requiredRecord(record: SerializableRecord, key: string, operation: string): SerializableRecord {
+  const value: unknown = record[key]
+  if (!isSerializableRecord(value)) {
+    throw new TypeError(`Malformed ${operation} record`)
+  }
+  return value
+}
+
+function isSerializableRecordArray(value: unknown): value is readonly SerializableRecord[] {
+  return (
+    Array.isArray(value) &&
+    value.every(
+      item => typeof item === 'object' && item !== null && !Array.isArray(item) && !(item instanceof Uint8Array)
+    )
+  )
+}
+
+function requiredRecordArray(
+  record: SerializableRecord,
+  key: string,
+  operation: string
+): readonly SerializableRecord[] {
+  const value: unknown = record[key]
+  if (!isSerializableRecordArray(value)) {
     throw new TypeError(`Malformed ${operation} array`)
   }
-  return value as SerializableRecord[]
+  return value
 }
 
 function requiredString(record: SerializableRecord, key: string, operation: string): string {
@@ -810,4 +837,130 @@ function requiredBytes(record: SerializableRecord, key: string, operation: strin
 function estimateByteLength(value: unknown): number {
   if (value instanceof Uint8Array) return value.byteLength
   return new TextEncoder().encode(JSON.stringify(value)).byteLength
+}
+
+function isUint8Array(value: unknown): value is Uint8Array {
+  return value instanceof Uint8Array
+}
+
+function isIpcManufacturerData(value: unknown): value is IpcManufacturerData {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
+  if (!('companyId' in value) || !('data' in value)) return false
+  const companyId: unknown = Reflect.get(value, 'companyId')
+  const data: unknown = Reflect.get(value, 'data')
+  return typeof companyId === 'number' && Number.isInteger(companyId) && data instanceof Uint8Array
+}
+
+function isIpcServiceData(value: unknown): value is IpcServiceData {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
+  if (!('uuid' in value) || !('data' in value)) return false
+  const uuid: unknown = Reflect.get(value, 'uuid')
+  const data: unknown = Reflect.get(value, 'data')
+  return typeof uuid === 'string' && uuid.length > 0 && data instanceof Uint8Array
+}
+
+function isIpcAdvertisement(value: unknown): value is IpcAdvertisement {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
+  if (
+    !('peerId' in value) ||
+    !('localName' in value) ||
+    !('rssi' in value) ||
+    !('txPowerLevel' in value) ||
+    !('serviceUuids' in value) ||
+    !('manufacturerData' in value) ||
+    !('serviceData' in value)
+  ) {
+    return false
+  }
+  const peerId: unknown = Reflect.get(value, 'peerId')
+  const localName: unknown = Reflect.get(value, 'localName')
+  const rssi: unknown = Reflect.get(value, 'rssi')
+  const txPowerLevel: unknown = Reflect.get(value, 'txPowerLevel')
+  const serviceUuids: unknown = Reflect.get(value, 'serviceUuids')
+  const manufacturerData: unknown = Reflect.get(value, 'manufacturerData')
+  const serviceData: unknown = Reflect.get(value, 'serviceData')
+  if (typeof peerId !== 'string' || peerId.length === 0) return false
+  if (!(typeof localName === 'string' || localName === null)) return false
+  if (!(typeof rssi === 'number' || rssi === null)) return false
+  if (!(typeof txPowerLevel === 'number' || txPowerLevel === null)) return false
+  if (!Array.isArray(serviceUuids) || !serviceUuids.every(entry => typeof entry === 'string')) return false
+  if (!Array.isArray(manufacturerData) || !manufacturerData.every(entry => isIpcManufacturerData(entry))) {
+    return false
+  }
+  if (!Array.isArray(serviceData) || !serviceData.every(entry => isIpcServiceData(entry))) return false
+  return true
+}
+
+function isIpcCharacteristicRecord(value: unknown): value is IpcCharacteristicRecord {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
+  if (
+    !('handle' in value) ||
+    !('serviceUuid' in value) ||
+    !('serviceOccurrence' in value) ||
+    !('characteristicUuid' in value) ||
+    !('characteristicOccurrence' in value) ||
+    !('properties' in value)
+  ) {
+    return false
+  }
+  const handle: unknown = Reflect.get(value, 'handle')
+  const serviceUuid: unknown = Reflect.get(value, 'serviceUuid')
+  const serviceOccurrence: unknown = Reflect.get(value, 'serviceOccurrence')
+  const characteristicUuid: unknown = Reflect.get(value, 'characteristicUuid')
+  const characteristicOccurrence: unknown = Reflect.get(value, 'characteristicOccurrence')
+  const properties: unknown = Reflect.get(value, 'properties')
+  return (
+    typeof handle === 'string' &&
+    handle.length > 0 &&
+    typeof serviceUuid === 'string' &&
+    serviceUuid.length > 0 &&
+    typeof serviceOccurrence === 'string' &&
+    serviceOccurrence.length > 0 &&
+    typeof characteristicUuid === 'string' &&
+    characteristicUuid.length > 0 &&
+    typeof characteristicOccurrence === 'string' &&
+    characteristicOccurrence.length > 0 &&
+    Array.isArray(properties) &&
+    properties.every(entry => typeof entry === 'string')
+  )
+}
+
+function isIpcDescriptorRecord(value: unknown): value is IpcDescriptorRecord {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
+  if (!('handle' in value) || !('characteristicHandle' in value) || !('uuid' in value) || !('occurrence' in value)) {
+    return false
+  }
+  const handle: unknown = Reflect.get(value, 'handle')
+  const characteristicHandle: unknown = Reflect.get(value, 'characteristicHandle')
+  const uuid: unknown = Reflect.get(value, 'uuid')
+  const occurrence: unknown = Reflect.get(value, 'occurrence')
+  return (
+    typeof handle === 'string' &&
+    handle.length > 0 &&
+    typeof characteristicHandle === 'string' &&
+    characteristicHandle.length > 0 &&
+    typeof uuid === 'string' &&
+    uuid.length > 0 &&
+    typeof occurrence === 'string' &&
+    occurrence.length > 0
+  )
+}
+
+function requiredCharacteristicRecords(records: readonly SerializableRecord[]): readonly IpcCharacteristicRecord[] {
+  const validated: IpcCharacteristicRecord[] = []
+  for (const record of records) {
+    if (!isIpcCharacteristicRecord(record))
+      throw new TypeError('Malformed ipc-manager.gatt-database characteristic record')
+    validated.push(record)
+  }
+  return Object.freeze(validated)
+}
+
+function requiredDescriptorRecords(records: readonly SerializableRecord[]): readonly IpcDescriptorRecord[] {
+  const validated: IpcDescriptorRecord[] = []
+  for (const record of records) {
+    if (!isIpcDescriptorRecord(record)) throw new TypeError('Malformed ipc-manager.gatt-database descriptor record')
+    validated.push(record)
+  }
+  return Object.freeze(validated)
 }

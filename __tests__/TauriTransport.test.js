@@ -35,9 +35,19 @@ describe('Tauri v2 IPC transport', () => {
     const unsubscribe = transport.subscribe(event => received.push(event))
 
     const response = await transport.invoke({ kind: 'bootstrap' })
-    channels[0].emit({ eventId: 'event-1', streamId: 'adapter', rendererLease: {}, item: { state: 'on' } })
+    channels[0].emit({
+      eventId: 'event-1',
+      streamId: 'adapter',
+      rendererLease: { leaseId: 'lease-1', generation: 'generation-1' },
+      item: { state: 'on' }
+    })
     unsubscribe()
-    channels[0].emit({ eventId: 'event-2', streamId: 'adapter', rendererLease: {}, item: { state: 'off' } })
+    channels[0].emit({
+      eventId: 'event-2',
+      streamId: 'adapter',
+      rendererLease: { leaseId: 'lease-1', generation: 'generation-1' },
+      item: { state: 'off' }
+    })
 
     expect(TAURI_BLE_PLUGIN_COMMAND).toBe('plugin:unified-ble-manager|invoke')
     expect(response).toEqual({ kind: 'event.ack' })
@@ -49,7 +59,12 @@ describe('Tauri v2 IPC transport', () => {
       }
     ])
     expect(received).toEqual([
-      { eventId: 'event-1', streamId: 'adapter', rendererLease: {}, item: { state: 'on' } }
+      {
+        eventId: 'event-1',
+        streamId: 'adapter',
+        rendererLease: { leaseId: 'lease-1', generation: 'generation-1' },
+        item: { state: 'on' }
+      }
     ])
   })
 
@@ -74,7 +89,8 @@ describe('Tauri v2 IPC transport', () => {
     const invocations = []
     const invoke = jest.fn(async (command, args) => {
       invocations.push(args)
-      return { kind: 'route' }
+      if (args.request.kind === 'event.ack') return { kind: 'event.ack' }
+      return { kind: 'route', payload: {} }
     })
     const { TAURI_ATTACH_REQUEST_KIND, TauriBleIpcTransport } = require('../src/tauri')
     const transport = new TauriBleIpcTransport({ invoke, Channel: FakeChannel })
@@ -96,7 +112,7 @@ describe('Tauri v2 IPC transport', () => {
     const invocations = []
     const invoke = jest.fn(async (command, args) => {
       invocations.push(args)
-      return { kind: 'bootstrap' }
+      return { kind: 'route', payload: {} }
     })
     const { TAURI_ATTACH_REQUEST_KIND, TauriBleIpcTransport } = require('../src/tauri')
     const transport = new TauriBleIpcTransport({ invoke, Channel: FakeChannel })
@@ -145,7 +161,7 @@ describe('Tauri v2 IPC transport', () => {
         JSON.stringify({
           eventId: 'event-bytes',
           streamId: 'subscription-1',
-          rendererLease: {},
+          rendererLease: { leaseId: 'lease-1', generation: 'generation-1' },
           item: { kind: 'value', value: { value: { $__unifiedBleBytesV1: [5, 6] } } }
         })
       )
@@ -159,6 +175,46 @@ describe('Tauri v2 IPC transport', () => {
     })
     expect(response.payload.value).toEqual(new Uint8Array([9, 8, 7]))
     expect(received[0].item.value.value).toEqual(new Uint8Array([5, 6]))
+  })
+
+  test('does not reinterpret an already-decoded Uint8Array as a wire record', () => {
+    const { decodeTauriWireValue } = require('../src/tauri')
+    const bytes = new Uint8Array([5, 6])
+    const decoded = decodeTauriWireValue(bytes)
+
+    expect(decoded).toEqual(bytes)
+    expect(decoded).not.toBe(bytes)
+    bytes[0] = 99
+    expect(decoded[0]).toBe(5)
+  })
+
+  test('rejects malformed channel events before notifying listeners', () => {
+    const channels = []
+    class CapturedChannel extends FakeChannel {
+      constructor() {
+        super()
+        channels.push(this)
+      }
+    }
+    const { TauriBleIpcTransport } = require('../src/tauri')
+    const transport = new TauriBleIpcTransport({ invoke: jest.fn(), Channel: CapturedChannel })
+    transport.subscribe(() => {
+      throw new Error('listener must not receive malformed events')
+    })
+
+    expect(() => channels[0].emit({ kind: 'malformed' })).toThrow('protocol.malformed')
+  })
+
+  test('rejects malformed invoke responses instead of returning an unchecked protocol cast', async () => {
+    const { TauriBleIpcTransport } = require('../src/tauri')
+    const transport = new TauriBleIpcTransport({
+      invoke: jest.fn(async () => ({ kind: 'malformed' })),
+      Channel: FakeChannel
+    })
+
+    await expect(transport.invoke({ kind: 'bootstrap' })).rejects.toMatchObject({
+      normalized: { code: 'protocol.malformed' }
+    })
   })
 
   test('publishes an explicit Tauri entrypoint without importing a radio backend', () => {

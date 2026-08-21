@@ -12,8 +12,8 @@ class FakeChannel {
 }
 
 function negotiated(axis) {
-  const selected = 1
-  const range = { minimum: selected, maximum: selected }
+  const selected = { axis, value: 1 }
+  const range = { axis, minimum: selected, maximum: selected }
   return { axis, selected, localRange: range, remoteRange: range }
 }
 
@@ -66,6 +66,18 @@ function streamValue(streamId, value, eventId = `${streamId}-event`) {
   })
 }
 
+function advertisement(peerId, localName, rssi) {
+  return {
+    peerId,
+    localName,
+    rssi,
+    txPowerLevel: null,
+    serviceUuids: [],
+    manufacturerData: [],
+    serviceData: []
+  }
+}
+
 describe('Tauri v2 public manager', () => {
   test('runs scan, connect, GATT, notifications, and deterministic cleanup through one manager surface', async () => {
     const commands = []
@@ -84,6 +96,7 @@ describe('Tauri v2 public manager', () => {
         'connection.connect': { handle: 'connection-1', peerId: 'polar-h10', connectionGeneration: 'generation-1' },
         'gatt.discover': {
           handle: 'database-1',
+          databaseGeneration: 'database-generation-1',
           characteristics: [
             {
               handle: 'characteristic-1',
@@ -111,7 +124,7 @@ describe('Tauri v2 public manager', () => {
     await expect(manager.adapterState()).resolves.toMatchObject({ power: 'on' })
     const scan = await manager.scan({ serviceUuids: ['180d'] })
     const observation = scan.observations[Symbol.asyncIterator]().next()
-    streamValue('scan-1', { peerId: 'polar-h10', localName: 'Polar H10', rssi: -47 })
+    streamValue('scan-1', advertisement('polar-h10', 'Polar H10', -47))
     await expect(observation).resolves.toMatchObject({ value: { kind: 'value', value: { peerId: 'polar-h10' } } })
     await expect(scan.stop()).resolves.toMatchObject({ state: 'released' })
 
@@ -143,6 +156,70 @@ describe('Tauri v2 public manager', () => {
       'gatt.unsubscribe',
       'connection.disconnect'
     ])
+  })
+
+  test('rehydrates host failures as public BleError values', async () => {
+    const invoke = jest.fn(async (_command, args) => {
+      const request = args.request
+      if (request.kind === 'bootstrap') return { kind: 'bootstrap', bootstrap: bootstrap() }
+      if (request.kind === 'event.ack') return { kind: 'event.ack' }
+      if (request.kind === 'release') return { kind: 'release', cleanup: { state: 'released', failures: [] } }
+      return {
+        kind: 'failure',
+        error: {
+          code: 'connection.failed',
+          domain: 'connection',
+          operation: 'tauri.connect',
+          platform: null,
+          retryability: 'never'
+        }
+      }
+    })
+    const { BleError } = require('../src')
+    const { createTauriBleManagerWithEnvironment } = require('../src/tauri')
+    const manager = await createTauriBleManagerWithEnvironment({ invoke, Channel: FakeChannel })
+
+    await expect(manager.connect('polar-h10')).rejects.toMatchObject({
+      constructor: BleError,
+      code: 'connection.failed',
+      operation: 'tauri.connect',
+      recovery: { actions: [{ kind: 'reconnect' }] }
+    })
+    await manager.destroy()
+  })
+
+  test('rehydrates cleanup failures from public connection resources', async () => {
+    const invoke = jest.fn(async (_command, args) => {
+      const request = args.request
+      if (request.kind === 'bootstrap') return { kind: 'bootstrap', bootstrap: bootstrap() }
+      if (request.kind === 'event.ack') return { kind: 'event.ack' }
+      if (request.kind === 'release') return { kind: 'release', cleanup: { state: 'released', failures: [] } }
+      if (request.envelope.command === 'connection.connect') {
+        return {
+          kind: 'route',
+          payload: { handle: 'connection-cleanup', peerId: 'polar-h10', connectionGeneration: 'generation-cleanup' }
+        }
+      }
+      if (request.envelope.command === 'connection.disconnect') {
+        return {
+          kind: 'failure',
+          error: {
+            code: 'connection.lost',
+            domain: 'connection',
+            operation: 'tauri.disconnect',
+            platform: null,
+            retryability: 'never'
+          }
+        }
+      }
+      return { kind: 'route', payload: {} }
+    })
+    const { createTauriBleManagerWithEnvironment } = require('../src/tauri')
+    const manager = await createTauriBleManagerWithEnvironment({ invoke, Channel: FakeChannel })
+    const connection = await manager.connect('polar-h10')
+
+    await expect(connection.release()).rejects.toMatchObject({ code: 'connection.lost' })
+    await manager.destroy()
   })
 
   test('propagates AbortSignal cancellation through the shared IPC client', async () => {
@@ -178,7 +255,7 @@ describe('Tauri v2 public manager', () => {
     await Promise.resolve()
     controller.abort()
 
-    await expect(connecting).rejects.toMatchObject({ normalized: { code: 'operation.aborted' } })
+    await expect(connecting).rejects.toMatchObject({ code: 'operation.aborted' })
     expect(invoke.mock.calls.some(([, args]) => args.request.envelope?.command === 'operation.cancel')).toBe(true)
     await manager.destroy()
   })
@@ -210,9 +287,7 @@ describe('Tauri v2 public manager', () => {
     const { createTauriBleManagerWithEnvironment } = require('../src/tauri')
     const manager = await createTauriBleManagerWithEnvironment({ invoke, Channel: FakeChannel })
 
-    await expect(manager.connect('polar-h10', { timeoutMs: 1 })).rejects.toMatchObject({
-      normalized: { code: 'operation.timed-out' }
-    })
+    await expect(manager.connect('polar-h10', { timeoutMs: 1 })).rejects.toMatchObject({ code: 'operation.timed-out' })
     expect(invoke.mock.calls.some(([, args]) => args.request.envelope?.command === 'operation.cancel')).toBe(true)
     await manager.destroy()
   })
@@ -246,7 +321,7 @@ describe('Tauri v2 public manager', () => {
       if (request.kind === 'event.ack') return { kind: 'event.ack' }
       if (request.kind === 'release') return { kind: 'release', cleanup: { state: 'released', failures: [] } }
       if (request.envelope.command === 'scan.start') {
-        streamValue('scan-1', { peerId: 'early-peer', localName: 'Early', rssi: -40 })
+        streamValue('scan-1', advertisement('early-peer', 'Early', -40))
         return { kind: 'route', payload: { handle: 'scan-1' } }
       }
       if (request.envelope.command === 'scan.stop') {

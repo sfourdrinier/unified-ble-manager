@@ -1,6 +1,10 @@
 // src/tauri/transport.ts
 
+import { contractError } from '../backend-contract/errors'
+import type { CleanupRecord, NormalizedBleError, PlatformErrorDetail } from '../backend-contract/errors'
 import type { IpcClientLeaseIdentity } from '../backend-contract/ipc'
+import type { IpcClientBootstrap } from '../ipc/protocol'
+import type { SerializableRecord, SerializableValue } from '../backend-contract/primitives'
 import type {
   IpcBleEvent,
   IpcBleRequest,
@@ -67,7 +71,7 @@ export class TauriBleIpcTransport<Attachment extends string, Client extends stri
     }
     this.eventChannel = new options.Channel<unknown>()
     this.eventChannel.onmessage = wireEvent => {
-      const event = decodeTauriWireValue(wireEvent) as IpcBleEvent
+      const event = decodeIpcBleEvent(wireEvent)
       for (const listener of [...this.listeners]) {
         listener(event)
       }
@@ -81,7 +85,7 @@ export class TauriBleIpcTransport<Attachment extends string, Client extends stri
       request: encodeTauriWireValue(request),
       ...this.eventChannelArgument(request)
     })
-    return decodeTauriWireValue(response) as IpcBleResponse<Attachment, Client>
+    return decodeIpcBleResponse<Attachment, Client>(response)
   }
 
   /**
@@ -119,7 +123,9 @@ export class TauriBleIpcTransport<Attachment extends string, Client extends stri
     const response = await this.invokeCore<unknown>(this.command, {
       request: encodeTauriWireValue({ kind: 'event.ack', rendererLease, eventId })
     })
-    return decodeTauriWireValue(response) as IpcEventAcknowledgeResponse | IpcFailureResponse
+    const decoded = decodeIpcBleResponse<Attachment, Client>(response)
+    if (decoded.kind === 'event.ack' || decoded.kind === 'failure') return decoded
+    throw contractError('protocol.malformed', 'ipc', 'tauri.transport.acknowledge-response')
   }
 }
 
@@ -143,6 +149,9 @@ export function encodeTauriWireValue(value: unknown): unknown {
 
 /** Reconstructs independently owned bytes from Rust responses and Channel messages. */
 export function decodeTauriWireValue(value: unknown): unknown {
+  if (value instanceof Uint8Array) {
+    return new Uint8Array(value)
+  }
   if (Array.isArray(value)) {
     return value.map(item => decodeTauriWireValue(item))
   }
@@ -170,4 +179,260 @@ function isWireRecord(value: unknown): value is Record<string, unknown> {
 
 function isByte(value: unknown): value is number {
   return typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= 255
+}
+
+function decodeIpcBleEvent(value: unknown): IpcBleEvent {
+  const decoded = decodeTauriWireValue(value)
+  if (!isIpcBleEvent(decoded)) throw contractError('protocol.malformed', 'ipc', 'tauri.transport.event')
+  return decoded
+}
+
+function decodeIpcBleResponse<Attachment extends string, Client extends string>(
+  value: unknown
+): IpcBleResponse<Attachment, Client> {
+  const decoded = decodeTauriWireValue(value)
+  if (!isIpcBleResponse<Attachment, Client>(decoded)) {
+    throw contractError('protocol.malformed', 'ipc', 'tauri.transport.response')
+  }
+  return decoded
+}
+
+function isIpcBleEvent(value: unknown): value is IpcBleEvent {
+  const record = wireRecord(value)
+  return (
+    record !== null &&
+    exactKeys(record, ['rendererLease', 'eventId', 'streamId', 'item']) &&
+    isLease(record.rendererLease) &&
+    nonEmptyString(record.eventId) &&
+    nonEmptyString(record.streamId) &&
+    serializableRecord(record.item)
+  )
+}
+
+function isIpcBleResponse<Attachment extends string, Client extends string>(
+  value: unknown
+): value is IpcBleResponse<Attachment, Client> {
+  const record = wireRecord(value)
+  if (record === null || typeof record.kind !== 'string') return false
+  switch (record.kind) {
+    case 'bootstrap':
+      return exactKeys(record, ['kind', 'bootstrap']) && isBootstrap(record.bootstrap)
+    case 'route':
+      return exactKeys(record, ['kind', 'payload']) && serializableRecord(record.payload)
+    case 'release':
+      return exactKeys(record, ['kind', 'cleanup']) && isCleanupRecord(record.cleanup)
+    case 'event.ack':
+      return exactKeys(record, ['kind'])
+    case 'failure':
+      return exactKeys(record, ['kind', 'error']) && isNormalizedBleError(record.error)
+    default:
+      return false
+  }
+}
+
+function isBootstrap<Attachment extends string, Client extends string>(
+  value: unknown
+): value is IpcClientBootstrap<Attachment, Client> {
+  const record = wireRecord(value)
+  if (
+    record === null ||
+    !exactKeys(record, ['attachment', 'attachmentId', 'versions', 'renderer', 'rendererLease']) ||
+    !nonEmptyString(record.attachmentId) ||
+    !isAttachment(record.attachment) ||
+    !isIpcVersionAxes(record.versions) ||
+    !isRenderer(record.renderer) ||
+    !isLease(record.rendererLease)
+  ) {
+    return false
+  }
+  return true
+}
+
+function isAttachment(value: unknown): boolean {
+  const record = wireRecord(value)
+  if (record === null || !exactKeys(record, ['attachmentId', 'backendInstanceId', 'backendGeneration', 'adapter'])) {
+    return false
+  }
+  const adapter = wireRecord(record.adapter)
+  if (
+    adapter === null ||
+    !exactKeys(adapter, ['adapterId', 'displayName', 'state', 'adapterGeneration', 'limitations']) ||
+    !nonEmptyString(adapter.adapterId) ||
+    !(adapter.displayName === null || typeof adapter.displayName === 'string') ||
+    !isAdapterState(adapter.state) ||
+    !nonEmptyString(adapter.adapterGeneration) ||
+    !stringArray(adapter.limitations)
+  ) {
+    return false
+  }
+  return (
+    nonEmptyString(record.attachmentId) &&
+    nonEmptyString(record.backendInstanceId) &&
+    nonEmptyString(record.backendGeneration)
+  )
+}
+
+function isAdapterState(value: unknown): boolean {
+  const record = wireRecord(value)
+  return (
+    record !== null &&
+    exactKeys(record, ['availability', 'authorization', 'power', 'backendGeneration', 'updatedAt', 'safeReason']) &&
+    typeof record.availability === 'string' &&
+    typeof record.authorization === 'string' &&
+    typeof record.power === 'string' &&
+    nonEmptyString(record.backendGeneration) &&
+    finiteNumber(record.updatedAt) &&
+    (record.safeReason === null || typeof record.safeReason === 'string')
+  )
+}
+
+function isRenderer(value: unknown): boolean {
+  const record = wireRecord(value)
+  return (
+    record !== null &&
+    exactKeys(record, ['clientId', 'windowScope', 'sessionScope']) &&
+    nonEmptyString(record.clientId) &&
+    nonEmptyString(record.windowScope) &&
+    nonEmptyString(record.sessionScope)
+  )
+}
+
+function isLease(value: unknown): value is IpcClientLeaseIdentity {
+  const record = wireRecord(value)
+  return (
+    record !== null &&
+    exactKeys(record, ['leaseId', 'generation']) &&
+    nonEmptyString(record.leaseId) &&
+    nonEmptyString(record.generation)
+  )
+}
+
+function isIpcVersionAxes(value: unknown): boolean {
+  const record = wireRecord(value)
+  return (
+    record !== null &&
+    exactKeys(record, ['backendContract', 'capabilitySchema', 'eventSchema', 'traceFormat', 'ipcProtocol']) &&
+    negotiatedVersion(record.backendContract) &&
+    negotiatedVersion(record.capabilitySchema) &&
+    negotiatedVersion(record.eventSchema) &&
+    negotiatedVersion(record.traceFormat) &&
+    negotiatedVersion(record.ipcProtocol)
+  )
+}
+
+function negotiatedVersion(value: unknown): boolean {
+  const record = wireRecord(value)
+  return (
+    record !== null &&
+    exactKeys(record, ['axis', 'selected', 'localRange', 'remoteRange']) &&
+    nonEmptyString(record.axis) &&
+    versionNumber(record.selected) &&
+    versionRange(record.localRange) &&
+    versionRange(record.remoteRange)
+  )
+}
+
+function versionNumber(value: unknown): boolean {
+  const record = wireRecord(value)
+  return (
+    record !== null && exactKeys(record, ['axis', 'value']) && nonEmptyString(record.axis) && safeInteger(record.value)
+  )
+}
+
+function versionRange(value: unknown): boolean {
+  const record = wireRecord(value)
+  return (
+    record !== null &&
+    exactKeys(record, ['axis', 'minimum', 'maximum']) &&
+    nonEmptyString(record.axis) &&
+    versionNumber(record.minimum) &&
+    versionNumber(record.maximum)
+  )
+}
+
+function isCleanupRecord(value: unknown): value is CleanupRecord {
+  const record = wireRecord(value)
+  if (
+    record === null ||
+    !exactKeys(record, ['state', 'failures']) ||
+    (record.state !== 'released' && record.state !== 'release-failed')
+  ) {
+    return false
+  }
+  return Array.isArray(record.failures) && record.failures.every(isCleanupFailure)
+}
+
+function isCleanupFailure(value: unknown): boolean {
+  const record = wireRecord(value)
+  return (
+    record !== null &&
+    exactKeys(record, ['resourceKind', 'error']) &&
+    nonEmptyString(record.resourceKind) &&
+    isNormalizedBleError(record.error)
+  )
+}
+
+function isNormalizedBleError(value: unknown): value is NormalizedBleError {
+  const record = wireRecord(value)
+  return (
+    record !== null &&
+    exactKeys(record, ['code', 'domain', 'operation', 'platform', 'retryability']) &&
+    nonEmptyString(record.code) &&
+    nonEmptyString(record.domain) &&
+    nonEmptyString(record.operation) &&
+    (record.retryability === 'never' || record.retryability === 'caller-decides') &&
+    isPlatformErrorDetail(record.platform)
+  )
+}
+
+function isPlatformErrorDetail(value: unknown): value is PlatformErrorDetail | null {
+  if (value === null) return true
+  const record = wireRecord(value)
+  return (
+    record !== null &&
+    exactKeys(record, ['domain', 'code', 'safeMessage', 'metadata']) &&
+    nonEmptyString(record.domain) &&
+    nonEmptyString(record.code) &&
+    typeof record.safeMessage === 'string' &&
+    serializableRecord(record.metadata)
+  )
+}
+
+function serializableRecord(value: unknown): value is SerializableRecord {
+  const record = wireRecord(value)
+  return record !== null && Object.values(record).every(serializableValue)
+}
+
+function serializableValue(value: unknown): value is SerializableValue {
+  if (value === null || typeof value === 'boolean' || typeof value === 'string') return true
+  if (typeof value === 'number') return Number.isFinite(value)
+  if (value instanceof Uint8Array) return true
+  if (Array.isArray(value)) return value.every(serializableValue)
+  return serializableRecord(value)
+}
+
+function wireRecord(value: unknown): Record<string, unknown> | null {
+  if (typeof value !== 'object' || value === null || Array.isArray(value) || value instanceof Uint8Array) return null
+  return Object.fromEntries(Object.entries(value))
+}
+
+function exactKeys(record: Record<string, unknown>, keys: readonly string[]): boolean {
+  const actual = Object.keys(record).sort()
+  return actual.length === keys.length && actual.every((key, index) => key === [...keys].sort()[index])
+}
+
+function nonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0
+}
+
+function stringArray(value: unknown): value is readonly string[] {
+  return Array.isArray(value) && value.every(item => typeof item === 'string')
+}
+
+function safeInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
+}
+
+function finiteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value)
 }

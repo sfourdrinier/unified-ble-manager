@@ -21,6 +21,8 @@ import type { ScanSession } from './public/ble-manager'
 import type { OperationOptions } from './public/operation-options'
 import { normalizeBleManagerCreateOptions } from './public/host-identity'
 import type { BleManagerCreateOptions } from './public/host-identity'
+import { rehydratePublicError, rehydratePublicPromise } from './public/error-bridge'
+import { UnavailableBleCapabilities } from './public/capabilities'
 
 import { IpcBleManager } from './ipc/manager'
 import type { IpcScanOptions } from './ipc/manager'
@@ -153,7 +155,7 @@ class TauriScanSessionWrapper implements ScanSession {
   constructor(private readonly inner: import('./ipc/manager').IpcScanSession) {}
 
   stop(): Promise<CleanupRecord> {
-    return this.inner.stop()
+    return rehydratePublicPromise(this.inner.stop())
   }
 
   get observations(): ScanSession['observations'] {
@@ -183,23 +185,23 @@ class TauriBleConnectionWrapper implements BleConnection {
   }
 
   discover(options?: import('./ipc/manager').IpcManagerOperationOptions): Promise<IpcGattDatabase> {
-    return this.base.discover(options)
+    return rehydratePublicPromise(this.base.discover(options))
   }
 
   readRssi(options?: import('./ipc/manager').IpcManagerOperationOptions): Promise<number> {
-    return this.base.readRssi(options)
+    return rehydratePublicPromise(this.base.readRssi(options))
   }
 
   maximumWriteLength(mode?: 'with-response' | 'without-response'): Promise<number> {
-    return this.base.maximumWriteLength(mode)
+    return rehydratePublicPromise(this.base.maximumWriteLength(mode))
   }
 
   disconnect(): Promise<CleanupRecord> {
-    return this.base.disconnect()
+    return rehydratePublicPromise(this.base.disconnect())
   }
 
   release(): Promise<CleanupRecord> {
-    return this.base.release()
+    return rehydratePublicPromise(this.base.release())
   }
 }
 
@@ -210,18 +212,28 @@ class TauriBleConnectionWrapper implements BleConnection {
 // augments the IPC connection with a `peer` field for the public façade while
 // preserving Ipc-specific members (adapterState, GATT) for test compatibility.
 class TauriBleManagerAdapter implements BleManager {
+  readonly capabilities = new UnavailableBleCapabilities()
+
   constructor(private readonly ipc: IpcBleManager) {}
 
   async scan(options: ScanOptions = {}): Promise<ScanSession> {
-    const ipcOptions = toIpcScanOptions(options)
-    const session = await this.ipc.scan(ipcOptions)
-    return new TauriScanSessionWrapper(session)
+    try {
+      const ipcOptions = toIpcScanOptions(options)
+      const session = await this.ipc.scan(ipcOptions)
+      return new TauriScanSessionWrapper(session)
+    } catch (error) {
+      throw rehydratePublicError(error)
+    }
   }
 
   async connect(peer: BlePeer | string, options: OperationOptions = {}): Promise<BleConnection> {
-    const peerId = resolvePeerId(peer)
-    const base = await this.ipc.connect(peerId, options)
-    return new TauriBleConnectionWrapper(base, peer, peerId)
+    try {
+      const peerId = resolvePeerId(peer)
+      const base = await this.ipc.connect(peerId, options)
+      return new TauriBleConnectionWrapper(base, peer, peerId)
+    } catch (error) {
+      throw rehydratePublicError(error)
+    }
   }
 
   withConnection<T>(
@@ -239,7 +251,9 @@ class TauriBleManagerAdapter implements BleManager {
   }
 
   destroy(): Promise<CleanupRecord> {
-    return this.ipc.destroy()
+    return this.ipc.destroy().catch(error => {
+      throw rehydratePublicError(error)
+    })
   }
 
   // Ipc-specific surface retained for existing TCK — not part of the public

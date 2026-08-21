@@ -687,9 +687,7 @@ describe('WebBluetoothBackend', () => {
     const provider = createWebBluetoothProvider(mock.boundary)
     const manager = await createWebBleManagerWithEnvironment({ environment })
 
-    await expect(manager.scan(scanOptions(null))).rejects.toMatchObject({
-      normalized: { code: 'capability.unsupported' },
-    })
+    await expect(manager.scan(scanOptions(null))).rejects.toMatchObject({ code: 'capability.unsupported' })
     // Verify WithEnvironment manager can be destroyed cleanly
     await expect(manager.destroy()).resolves.toEqual({ state: 'released', failures: [] })
     void provider

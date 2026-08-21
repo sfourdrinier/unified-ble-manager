@@ -89,7 +89,7 @@ export type {
   NormalizedBleError,
   PlatformErrorDetail
 } from './errors'
-export { BackendContractError, contractError } from './errors'
+export { BackendContractError, BLE_ERROR_CODES, contractError } from './errors'
 export type {
   Characteristic,
   CharacteristicProperties,
@@ -255,3 +255,5 @@ export type {
   StreamTerminalNotice,
   StreamValue
 } from './streams'
+export type { BleRecovery, BleRecoveryDisposition, RecoveryAction } from './recovery'
+export { recoveryForCode } from './recovery'

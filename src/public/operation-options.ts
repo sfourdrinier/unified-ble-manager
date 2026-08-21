@@ -75,7 +75,7 @@ export function normalizeOperationOptions(
 
   // Never extend an existing deadline.
   if (existingDeadline !== null && deadlineValue !== null) {
-    deadlineValue = (existingDeadline as number) < (deadlineValue as number) ? existingDeadline : deadlineValue
+    deadlineValue = existingDeadline < deadlineValue ? existingDeadline : deadlineValue
   } else if (existingDeadline !== null) {
     deadlineValue = existingDeadline
   }

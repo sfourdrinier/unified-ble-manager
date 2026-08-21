@@ -13,6 +13,9 @@ import type { OperationOptions } from './operation-options'
 import { resolveStreamPreset } from './stream-presets'
 import type { StreamPreset } from './stream-presets'
 import type { IpcAdvertisement } from '../ipc/manager'
+import { rehydratePublicError, rehydratePublicPromise } from './error-bridge'
+import { PublicBleCapabilities } from './capabilities'
+import type { BleCapabilities } from './capabilities'
 
 // Public peer — opaque backend-scoped identifier, no generic.
 export interface BlePeer {
@@ -62,6 +65,7 @@ export type GattSubscriptionValue = {
 
 // Non-generic public manager. Lifecycle/ownership/generations stay in core.
 export interface BleManager {
+  readonly capabilities: BleCapabilities
   readonly destroy: () => Promise<CleanupRecord>
   scan(options?: ScanOptions): Promise<ScanSession>
   connect(peer: BlePeer | string, options?: OperationOptions): Promise<BleConnection>
@@ -88,10 +92,14 @@ export async function createPublicBleManager(
 }
 
 class PublicBleManager implements BleManager {
+  readonly capabilities: BleCapabilities
+
   constructor(
     private readonly internal: InternalBleManager<string, BackendIdentity<string>>,
     private readonly now: () => number
-  ) {}
+  ) {
+    this.capabilities = new PublicBleCapabilities(internal)
+  }
 
   async scan(options: ScanOptions = {}): Promise<ScanSession> {
     const { signal, deadline } = normalizeOperationOptions(options, this.now)
@@ -112,10 +120,14 @@ class PublicBleManager implements BleManager {
       signal,
       sharing: { mode: 'owner', allowSharing: false }
     }
-    const session = await this.internal.scan(internalOptions)
-    return {
-      stop: () => session.stop(),
-      observations: session.observations
+    try {
+      const session = await this.internal.scan(internalOptions)
+      return {
+        stop: () => rehydratePublicPromise(session.stop()),
+        observations: session.observations
+      }
+    } catch (error) {
+      throw rehydratePublicError(error)
     }
   }
 
@@ -123,15 +135,19 @@ class PublicBleManager implements BleManager {
     const { signal, deadline } = normalizeOperationOptions(options, this.now)
     const peerIdString = typeof peer === 'string' ? peer : peer.id
     const peerId = opaqueId<'peer', string>(peerIdString, 'peer', 'public-ble-manager')
-    const internalConnection = await this.internal.connect(peerId, {
-      signal,
-      deadline
-    })
-    const publicPeer: BlePeer = typeof peer === 'string' ? { id: peerIdString, name: null, rssi: null } : peer
-    return {
-      peer: publicPeer,
-      disconnect: () => internalConnection.disconnect(),
-      release: () => internalConnection.release()
+    try {
+      const internalConnection = await this.internal.connect(peerId, {
+        signal,
+        deadline
+      })
+      const publicPeer: BlePeer = typeof peer === 'string' ? { id: peerIdString, name: null, rssi: null } : peer
+      return {
+        peer: publicPeer,
+        disconnect: () => rehydratePublicPromise(internalConnection.disconnect()),
+        release: () => rehydratePublicPromise(internalConnection.release())
+      }
+    } catch (error) {
+      throw rehydratePublicError(error)
     }
   }
 
@@ -149,7 +165,9 @@ class PublicBleManager implements BleManager {
   }
 
   destroy(): Promise<CleanupRecord> {
-    return this.internal.destroy()
+    return this.internal.destroy().catch(error => {
+      throw rehydratePublicError(error)
+    })
   }
 }
 
