@@ -4,17 +4,19 @@ import type { AdvertisementObservation } from '../../backend-contract/advertisem
 import { contractError, type BleErrorCode, type CleanupRecord } from '../../backend-contract/errors'
 import type { BackendConnection, ConnectionLease, ScanLease } from '../../backend-contract/backend'
 import type { AttachmentRecord } from '../../backend-contract/identity'
-import type {
-  Characteristic,
-  CharacteristicPath,
-  DatabasePath,
-  Descriptor,
-  DescriptorPath,
-  GattDatabase,
-  GattDatabaseSnapshot,
-  NotificationValue,
-  Service,
-  Subscription
+import {
+  createGattCharacteristicProperties,
+  createGattDescriptorProperties,
+  type Characteristic,
+  type CharacteristicPath,
+  type DatabasePath,
+  type Descriptor,
+  type DescriptorPath,
+  type GattDatabase,
+  type GattDatabaseSnapshot,
+  type NotificationValue,
+  type Service,
+  type Subscription
 } from '../../backend-contract/gatt'
 import type {
   OperationTerminalRecord,
@@ -224,7 +226,7 @@ export class DeterministicGattDatabase implements GattDatabase<string, string, s
           `${String(this.path.connectionId)}:${String(this.path.databaseId)}:${service.occurrence}`
         )
       }
-      services.push({ path: servicePath })
+      services.push({ path: servicePath, primary: service.primary, includedServices: Object.freeze([]) })
       for (const characteristic of service.characteristics) {
         const characteristicPath: CharacteristicPath<string, string, string, string, string, 'current'> = {
           ...servicePath,
@@ -238,12 +240,14 @@ export class DeterministicGattDatabase implements GattDatabase<string, string, s
         }
         characteristics.push({
           path: characteristicPath,
-          properties: {
+          properties: createGattCharacteristicProperties({
             read: characteristic.readable,
             writeWithResponse: characteristic.writableWithResponse,
             writeWithoutResponse: characteristic.writableWithoutResponse,
-            notify: characteristic.notifying || characteristic.indicating
-          }
+            notify: characteristic.notifying,
+            indicate: characteristic.indicating
+          }),
+          access: Object.freeze({ read: 'none', write: 'none' })
         })
         for (const descriptor of characteristic.descriptors) {
           descriptors.push({
@@ -255,7 +259,13 @@ export class DeterministicGattDatabase implements GattDatabase<string, string, s
                 'descriptor-occurrence',
                 `${String(this.path.connectionId)}:${String(this.path.databaseId)}:${service.occurrence}:${characteristic.occurrence}:${descriptor.occurrence}`
               )
-            }
+            },
+            properties: createGattDescriptorProperties(
+              descriptor.readable,
+              descriptor.writable,
+              { read: 'known', write: 'known' },
+              { read: 'none', write: 'none' }
+            )
           })
         }
       }

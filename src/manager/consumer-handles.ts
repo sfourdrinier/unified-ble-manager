@@ -5,6 +5,11 @@ import type { ConnectionLifecycleCause } from '../backend-contract/connection-li
 import type { OverflowPolicy } from '../backend-contract/streams'
 import type { WriteMode } from '../backend-contract/operations'
 import type { DiagnosticTraceDocument } from '../diagnostics/trace-format'
+import type {
+  GattAccessRequirements,
+  GattCharacteristicPropertyAvailability,
+  GattDescriptorProperties
+} from '../backend-contract/gatt'
 
 /** A cleanup result that can cross a boundary between independently installed package copies. */
 export interface PortableCleanupRecord {
@@ -58,6 +63,7 @@ export interface PortableOperationOptions {
 
 export interface PortableWritePolicy extends PortableOperationOptions {
   readonly mode: WriteMode
+  readonly chunkSize?: number
 }
 
 export interface PortableSubscriptionOptions extends PortableOperationOptions {
@@ -67,6 +73,7 @@ export interface PortableSubscriptionOptions extends PortableOperationOptions {
     readonly reservedControlCapacity: number
     readonly overflowPolicy: OverflowPolicy
   }
+  readonly deliveryMode?: 'prefer-notification' | 'prefer-indication' | 'require-notification' | 'require-indication'
 }
 
 export interface PortableAttachmentState {
@@ -134,7 +141,11 @@ export interface PortableCurrentDescriptorPath extends PortableCurrentCharacteri
 
 export interface PortableGattDatabaseSnapshot {
   readonly path: PortableDatabasePath
-  readonly services: readonly { readonly path: PortableServicePath }[]
+  readonly services: readonly {
+    readonly path: PortableServicePath
+    readonly primary?: boolean
+    readonly includedServices?: readonly { readonly uuid: string; readonly occurrence: string }[]
+  }[]
   readonly characteristics: readonly {
     readonly path: PortableCurrentCharacteristicPath
     readonly properties: {
@@ -142,9 +153,20 @@ export interface PortableGattDatabaseSnapshot {
       readonly writeWithResponse: boolean
       readonly writeWithoutResponse: boolean
       readonly notify: boolean
+      readonly broadcast?: boolean
+      readonly authenticatedSignedWrites?: boolean
+      readonly indicate?: boolean
+      readonly extendedProperties?: boolean
+      readonly reliableWrite?: boolean
+      readonly writableAuxiliaries?: boolean
+      readonly availability?: GattCharacteristicPropertyAvailability
     }
+    readonly access?: GattAccessRequirements
   }[]
-  readonly descriptors: readonly { readonly path: PortableCurrentDescriptorPath }[]
+  readonly descriptors: readonly {
+    readonly path: PortableCurrentDescriptorPath
+    readonly properties?: GattDescriptorProperties
+  }[]
 }
 
 export interface PortableOperationTerminalRecord {
@@ -213,6 +235,9 @@ export interface PortableNotificationValue {
   /** The receiver owns an independent mutable byte copy. */
   readonly value: Uint8Array
   readonly indication: boolean
+  readonly delivery?: 'notification' | 'indication' | 'unknown'
+  readonly observedAtMonotonicMs?: number
+  readonly sequence?: number
 }
 
 export interface PortableStreamLimits {
@@ -237,6 +262,7 @@ export interface PortableStreamTerminalNotice {
     | 'source-failed'
     | 'owner-released'
     | 'connection-lost'
+    | 'service-changed'
     | 'operation-aborted'
     | 'operation-timed-out'
   readonly droppedItems: number

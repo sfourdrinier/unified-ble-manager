@@ -194,8 +194,8 @@ describe('WebBluetoothBackend', () => {
     const snapshot = await database.snapshot()
     expect(snapshot.services).toHaveLength(1)
     expect(snapshot.characteristics).toHaveLength(1)
-    expect(String(snapshot.services[0].path.serviceOccurrence)).toBe('1')
-    expect(String(snapshot.characteristics[0].path.characteristicOccurrence)).toBe('1')
+    expect(String(snapshot.services[0].path.serviceOccurrence)).toBe('0')
+    expect(String(snapshot.characteristics[0].path.characteristicOccurrence)).toBe('0')
 
     const value = await database.read(snapshot.characteristics[0].path, { signal: null, deadline: null })
     mock.readBuffer[1] = 99
@@ -251,9 +251,9 @@ describe('WebBluetoothBackend', () => {
     await expect(subscription.remove()).resolves.toEqual({ state: 'released', failures: [] })
     boundary.emitNotification({
       serviceUuid: HEART_RATE_SERVICE,
-      serviceOccurrence: 1,
+      serviceOccurrence: 0,
       characteristicUuid: HEART_RATE_MEASUREMENT,
-      characteristicOccurrence: 1,
+      characteristicOccurrence: 0,
       value: new Uint8Array([0, 74])
     })
     await boundary.flush()
@@ -682,7 +682,7 @@ describe('WebBluetoothBackend', () => {
       now: () => 10,
       setTimer: (cb, ms) => setTimeout(cb, ms),
       clearTimer: id => clearTimeout(id),
-      addPageLifecycleListener: () => () => undefined,
+      addPageLifecycleListener: () => () => undefined
     }
     const provider = createWebBluetoothProvider(mock.boundary)
     const manager = await createWebBleManagerWithEnvironment({ environment })

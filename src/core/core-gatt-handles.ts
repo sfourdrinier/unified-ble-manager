@@ -13,6 +13,7 @@ import type {
   ConnectionPath,
   DatabasePath,
   DescriptorPath,
+  GattDatabaseChangedEvent,
   GattDatabase,
   GattDatabaseSnapshot
 } from '../backend-contract/gatt'
@@ -352,6 +353,14 @@ function lifecycleTerminalReason(current: 'disconnected' | 'lost'): StreamTermin
 /** A discovered database epoch; any invalidation requires a fresh discovery. */
 export class CoreGattDatabase<Attachment extends string, Identity extends BackendIdentity<Attachment>> {
   private valid = true
+  private readonly changedStream = new CoreBoundedStream<GattDatabaseChangedEvent>(
+    {
+      itemCapacity: capacity(4),
+      byteCapacity: capacity(4096),
+      reservedControlCapacity: capacity(1)
+    },
+    'drop-oldest'
+  )
 
   constructor(
     private readonly core: UnifiedBleCore<Attachment, Identity>,
@@ -361,6 +370,10 @@ export class CoreGattDatabase<Attachment extends string, Identity extends Backen
 
   get path(): DatabasePath<Attachment, string, string> {
     return this.backendDatabase.path
+  }
+
+  get changed(): BoundedAsyncStream<GattDatabaseChangedEvent> {
+    return this.changedStream
   }
 
   monotonicNow(): number {
@@ -458,8 +471,20 @@ export class CoreGattDatabase<Attachment extends string, Identity extends Backen
     return databasePathsEqual(this.path, path)
   }
 
-  markInvalid(): void {
+  markInvalid(reason: GattDatabaseChangedEvent['reason'] | null = null): void {
+    if (!this.valid) return
     this.valid = false
+    if (reason !== null) {
+      this.changedStream.emit(
+        Object.freeze({
+          previousGeneration: String(this.path.databaseGeneration),
+          reason,
+          affectedHandleRange: null
+        }),
+        128
+      )
+    }
+    this.changedStream.finishWithReason('closed')
   }
 
   private assertSnapshot(snapshot: GattDatabaseSnapshot<Attachment, string, string>): void {

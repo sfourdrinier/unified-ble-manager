@@ -723,7 +723,8 @@ public final class OwnedCoreBluetoothProtocolRadio: NSObject, CBPeripheralDelega
           "readable": characteristic.properties.contains(.read),
           "writableWithResponse": characteristic.properties.contains(.write),
           "writableWithoutResponse": characteristic.properties.contains(.writeWithoutResponse),
-          "notifiable": characteristic.properties.contains(.notify) || characteristic.properties.contains(.indicate),
+          "notifiable": characteristic.properties.contains(.notify),
+          "indicatable": characteristic.properties.contains(.indicate),
           "descriptors": descriptors
         ] as NSDictionary)
       }

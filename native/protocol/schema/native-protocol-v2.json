@@ -202,7 +202,8 @@
         ["readable", "boolean", true],
         ["writableWithResponse", "boolean", true],
         ["writableWithoutResponse", "boolean", true],
-        ["notifiable", "boolean", true]
+        ["notifiable", "boolean", true],
+        ["indicatable", "boolean", false]
       ]
     },
     {

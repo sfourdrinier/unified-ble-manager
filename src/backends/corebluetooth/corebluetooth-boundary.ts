@@ -55,6 +55,7 @@ export interface CoreBluetoothCharacteristicRecord {
   readonly writableWithResponse: boolean
   readonly writableWithoutResponse: boolean
   readonly notifiable: boolean
+  readonly indicatable?: boolean
   readonly descriptors: readonly CoreBluetoothDescriptorRecord[]
 }
 

@@ -85,7 +85,7 @@ export class CoreSubscription<Attachment extends string, Identity extends Backen
     }
   }
 
-  invalidate(reason: 'connection-lost' | 'owner-released' | 'source-failed'): void {
+  invalidate(reason: 'connection-lost' | 'owner-released' | 'source-failed' | 'service-changed'): void {
     if (!this.isActive()) {
       return
     }
@@ -119,7 +119,8 @@ export class CoreSubscription<Attachment extends string, Identity extends Backen
 }
 
 /**
- * Owns the one physical CCCD enablement for each exact current path. Each
+ * Owns one physical CCCD enablement for each exact current path and requested
+ * delivery mode. Each
  * consumer gets its own bounded stream; removing one never disables another.
  */
 export class SubscriptionRegistry<Attachment extends string, Identity extends BackendIdentity<Attachment>> {
@@ -146,7 +147,7 @@ export class SubscriptionRegistry<Attachment extends string, Identity extends Ba
     )
     this.nextSubscription += 1
     this.runtime.resourceLedger.increment('subscriptionConsumers')
-    const key = exactPathKey(path)
+    const key = physicalSubscriptionKey(path, options.deliveryMode)
     const existing = this.physicalByPath.get(key)
     if (existing !== undefined) {
       if (existing.closed) {
@@ -217,7 +218,7 @@ export class SubscriptionRegistry<Attachment extends string, Identity extends Ba
   }
 
   async remove(subscription: CoreSubscription<Attachment, Identity>): Promise<CleanupRecord> {
-    const physical = this.physicalByPath.get(exactPathKey(subscription.path))
+    const physical = [...this.physicalByPath.values()].find(candidate => candidate.consumers.has(subscription))
     this.closeConsumer(subscription, 'owner-released')
     if (physical === undefined) {
       return { state: 'released', failures: [] }
@@ -231,22 +232,25 @@ export class SubscriptionRegistry<Attachment extends string, Identity extends Ba
 
   async invalidatePath(
     path: CurrentCharacteristicPath<Attachment>,
-    reason: 'connection-lost' | 'owner-released' | 'source-failed'
+    reason: 'connection-lost' | 'owner-released' | 'source-failed' | 'service-changed'
   ): Promise<CleanupRecord> {
-    const physical = this.physicalByPath.get(exactPathKey(path))
-    if (physical === undefined) {
+    const physicals = [...this.physicalByPath.values()].filter(candidate =>
+      characteristicPathsEqual(candidate.path, path)
+    )
+    if (physicals.length === 0) {
       return { state: 'released', failures: [] }
     }
-    for (const subscription of [...physical.consumers]) {
-      this.closeConsumer(subscription, reason)
-      physical.consumers.delete(subscription)
+    const failures: CleanupFailure[] = []
+    for (const physical of physicals) {
+      const cleanup = await this.invalidatePhysical(physical, reason)
+      failures.push(...cleanup.failures)
     }
-    return this.disable(physical, reason === 'connection-lost')
+    return failures.length === 0 ? { state: 'released', failures: [] } : { state: 'release-failed', failures }
   }
 
   async invalidateDatabase(
     database: DatabasePath<Attachment, string, string>,
-    reason: 'connection-lost' | 'owner-released' | 'source-failed'
+    reason: 'connection-lost' | 'owner-released' | 'source-failed' | 'service-changed'
   ): Promise<CleanupRecord> {
     const failures: CleanupFailure[] = []
     for (const physical of [...this.physicalByPath.values()]) {
@@ -257,7 +261,7 @@ export class SubscriptionRegistry<Attachment extends string, Identity extends Ba
         this.closeConsumer(subscription, reason)
         physical.consumers.delete(subscription)
       }
-      const result = await this.disable(physical, reason === 'connection-lost')
+      const result = await this.disable(physical, reason === 'connection-lost' || reason === 'service-changed')
       failures.push(...result.failures)
     }
     return failures.length === 0 ? { state: 'released', failures: [] } : { state: 'release-failed', failures }
@@ -598,7 +602,7 @@ export class SubscriptionRegistry<Attachment extends string, Identity extends Ba
           return
         }
       }
-      await this.invalidatePath(physical.path, 'source-failed')
+      await this.invalidatePhysical(physical, 'source-failed')
     } catch (error) {
       const normalized =
         error instanceof BackendContractError
@@ -614,7 +618,7 @@ export class SubscriptionRegistry<Attachment extends string, Identity extends Ba
         dispatchedOperations: 0,
         quarantinedOperations: 0
       })
-      await this.invalidatePath(physical.path, 'source-failed')
+      await this.invalidatePhysical(physical, 'source-failed')
     }
   }
 
@@ -640,10 +644,16 @@ export class SubscriptionRegistry<Attachment extends string, Identity extends Ba
         const reason =
           item.reason === 'connection-lost'
             ? 'connection-lost'
-            : item.reason === 'owner-released'
-              ? 'owner-released'
-              : 'source-failed'
-        await this.invalidatePath(physical.path, reason)
+            : item.reason === 'service-changed'
+              ? 'service-changed'
+              : item.reason === 'owner-released'
+                ? 'owner-released'
+                : 'source-failed'
+        if (reason === 'connection-lost' || reason === 'service-changed') {
+          await this.invalidatePath(physical.path, reason)
+        } else {
+          await this.invalidatePhysical(physical, reason)
+        }
         return true
       }
       return false
@@ -681,7 +691,7 @@ export class SubscriptionRegistry<Attachment extends string, Identity extends Ba
 
   private closeConsumer(
     subscription: CoreSubscription<Attachment, Identity>,
-    reason: 'connection-lost' | 'owner-released' | 'source-failed'
+    reason: 'connection-lost' | 'owner-released' | 'source-failed' | 'service-changed'
   ): void {
     if (!subscription.isActive()) {
       return
@@ -692,6 +702,17 @@ export class SubscriptionRegistry<Attachment extends string, Identity extends Ba
     if (subscription.values instanceof CoreBoundedStream) {
       this.runtime.aggregateQuota.unregister(subscription.values)
     }
+  }
+
+  private async invalidatePhysical(
+    physical: PhysicalSubscription<Attachment, Identity>,
+    reason: 'connection-lost' | 'owner-released' | 'source-failed' | 'service-changed'
+  ): Promise<CleanupRecord> {
+    for (const subscription of [...physical.consumers]) {
+      this.closeConsumer(subscription, reason)
+      physical.consumers.delete(subscription)
+    }
+    return this.disable(physical, reason === 'connection-lost' || reason === 'service-changed')
   }
 
   private failEnableConsumers(physical: PhysicalSubscription<Attachment, Identity>): void {
@@ -748,6 +769,19 @@ export class SubscriptionRegistry<Attachment extends string, Identity extends Ba
 
 function exactPathKey<Attachment extends string>(path: CurrentCharacteristicPath<Attachment>): string {
   return characteristicPathKey(path)
+}
+
+function physicalSubscriptionKey<Attachment extends string>(
+  path: CurrentCharacteristicPath<Attachment>,
+  deliveryMode: SubscriptionOptions['deliveryMode']
+): string {
+  const physicalMode =
+    deliveryMode === 'prefer-notification' || deliveryMode === 'require-notification'
+      ? 'notification'
+      : deliveryMode === 'prefer-indication' || deliveryMode === 'require-indication'
+        ? 'indication'
+        : 'automatic'
+  return `${exactPathKey(path)}|${physicalMode}`
 }
 
 function matchesDatabasePath<Attachment extends string>(

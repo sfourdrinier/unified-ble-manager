@@ -1078,6 +1078,7 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
           'writableWithResponse',
           'writableWithoutResponse',
           'notifiable',
+          'indicatable',
           'descriptors'
         ])
         const characteristicUuid = requireCoreBluetoothGattUuid(
@@ -1118,6 +1119,10 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
           requireCoreBluetoothGattProperty(characteristic, 'notifiable', 'characteristic-notifiable'),
           'characteristic-notifiable'
         )
+        const indicatable = Reflect.get(characteristic, 'indicatable')
+        if (indicatable !== undefined) {
+          requireCoreBluetoothGattBoolean(indicatable, 'characteristic-indicatable')
+        }
         const descriptors = requireCoreBluetoothGattArray(
           requireCoreBluetoothGattProperty(characteristic, 'descriptors', 'descriptors'),
           'descriptors'

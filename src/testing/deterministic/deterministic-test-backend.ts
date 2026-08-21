@@ -700,7 +700,17 @@ export class DeterministicTestBackend
     if (!notificationsAvailable && !indicationsAvailable) {
       throw contractError('gatt.property-not-supported', 'gatt', 'gatt.subscribe')
     }
-    const indication = !notificationsAvailable && indicationsAvailable
+    const requestedDelivery = optionsValue.deliveryMode
+    if (requestedDelivery === 'require-notification' && !notificationsAvailable) {
+      throw contractError('gatt.property-not-supported', 'gatt', 'gatt.subscribe.notification')
+    }
+    if (requestedDelivery === 'require-indication' && !indicationsAvailable) {
+      throw contractError('gatt.property-not-supported', 'gatt', 'gatt.subscribe.indication')
+    }
+    const indication =
+      requestedDelivery === 'prefer-indication' && indicationsAvailable
+        ? true
+        : !notificationsAvailable && indicationsAvailable
     const stream = this.createStream<NotificationValue>(optionsValue.delivery, optionsValue.delivery.overflowPolicy)
     this.assertAggregateAdmission(stream)
     const key = subscriptionKey(database, address, indication)

@@ -8,16 +8,18 @@ import {
   type CleanupFailure,
   type CleanupRecord
 } from '../../backend-contract/errors'
-import type {
-  Characteristic,
-  CharacteristicPath,
-  DatabasePath,
-  Descriptor,
-  DescriptorPath,
-  GattDatabase,
-  GattDatabaseSnapshot,
-  NotificationValue,
-  Service
+import {
+  createGattCharacteristicProperties,
+  createGattDescriptorProperties,
+  type Characteristic,
+  type CharacteristicPath,
+  type DatabasePath,
+  type Descriptor,
+  type DescriptorPath,
+  type GattDatabase,
+  type GattDatabaseSnapshot,
+  type NotificationValue,
+  type Service
 } from '../../backend-contract/gatt'
 import { attachmentRecordsEqual, type AttachmentRecord } from '../../backend-contract/identity'
 import type {
@@ -208,7 +210,7 @@ export class WinRtGattDatabase implements GattDatabase<string, string, string> {
         serviceUuid: canonicalUuid(service.uuid),
         serviceOccurrence: opaqueId(String(service.occurrence), 'service-occurrence', String(this.path.databaseId))
       })
-      services.push(Object.freeze({ path: servicePath }))
+      services.push(Object.freeze({ path: servicePath, primary: true, includedServices: Object.freeze([]) }))
       for (const characteristic of service.characteristics) {
         const characteristicPath: CharacteristicPath<string, string, string, string, string, 'current'> = Object.freeze(
           {
@@ -225,12 +227,14 @@ export class WinRtGattDatabase implements GattDatabase<string, string, string> {
         characteristics.push(
           Object.freeze({
             path: characteristicPath,
-            properties: Object.freeze({
+            properties: createGattCharacteristicProperties({
               read: characteristic.readable,
               writeWithResponse: characteristic.writableWithResponse,
               writeWithoutResponse: characteristic.writableWithoutResponse,
-              notify: characteristic.notifiable || characteristic.indicatable
-            })
+              notify: characteristic.notifiable,
+              indicate: characteristic.indicatable
+            }),
+            access: Object.freeze({ read: 'unknown', write: 'unknown' })
           })
         )
         for (const descriptor of characteristic.descriptors) {
@@ -244,7 +248,17 @@ export class WinRtGattDatabase implements GattDatabase<string, string, string> {
                 String(characteristicPath.characteristicOccurrence)
               )
             })
-          descriptors.push(Object.freeze({ path: descriptorPath }))
+          descriptors.push(
+            Object.freeze({
+              path: descriptorPath,
+              properties: createGattDescriptorProperties(
+                false,
+                false,
+                { read: 'unknown', write: 'unknown' },
+                { read: 'unknown', write: 'unknown' }
+              )
+            })
+          )
         }
       }
     }

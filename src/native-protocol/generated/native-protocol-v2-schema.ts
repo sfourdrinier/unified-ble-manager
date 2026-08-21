@@ -274,6 +274,7 @@ export const nativeProtocolFields: readonly NativeProtocolFieldDescriptor[] = Ob
   nativeProtocolField('characteristicSnapshot', 3, 'writableWithResponse', 'boolean', true),
   nativeProtocolField('characteristicSnapshot', 4, 'writableWithoutResponse', 'boolean', true),
   nativeProtocolField('characteristicSnapshot', 5, 'notifiable', 'boolean', true),
+  nativeProtocolField('characteristicSnapshot', 6, 'indicatable', 'boolean', false),
   nativeProtocolField('databaseSnapshot', 1, 'databasePath', 'record:databasePath', true),
   nativeProtocolField('databaseSnapshot', 2, 'services', 'records:servicePath', true),
   nativeProtocolField('databaseSnapshot', 3, 'characteristics', 'records:characteristicSnapshot', true),

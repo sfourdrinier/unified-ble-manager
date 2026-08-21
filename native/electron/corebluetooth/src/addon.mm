@@ -869,8 +869,8 @@ characteristicUUID:(NSString *)characteristicUUID
         @"isReadable" : @((props & CBCharacteristicPropertyRead) != 0),
         @"isWritableWithResponse" : @((props & CBCharacteristicPropertyWrite) != 0),
         @"isWritableWithoutResponse" : @((props & CBCharacteristicPropertyWriteWithoutResponse) != 0),
-        @"isNotifiable" : @((props & CBCharacteristicPropertyNotify) != 0 ||
-                            (props & CBCharacteristicPropertyIndicate) != 0),
+        @"isNotifiable" : @((props & CBCharacteristicPropertyNotify) != 0),
+        @"isIndicatable" : @((props & CBCharacteristicPropertyIndicate) != 0),
         @"descriptors" : [self descriptorRecordsForCharacteristic:ch]
       }];
     }
@@ -976,8 +976,8 @@ characteristicUUID:(NSString *)characteristicUUID
         @"isReadable" : @((properties & CBCharacteristicPropertyRead) != 0),
         @"isWritableWithResponse" : @((properties & CBCharacteristicPropertyWrite) != 0),
         @"isWritableWithoutResponse" : @((properties & CBCharacteristicPropertyWriteWithoutResponse) != 0),
-        @"isNotifiable" : @((properties & CBCharacteristicPropertyNotify) != 0 ||
-                             (properties & CBCharacteristicPropertyIndicate) != 0),
+        @"isNotifiable" : @((properties & CBCharacteristicPropertyNotify) != 0),
+        @"isIndicatable" : @((properties & CBCharacteristicPropertyIndicate) != 0),
         @"descriptors" : [self descriptorRecordsForCharacteristic:characteristic]
       }];
     }
@@ -1602,6 +1602,7 @@ struct JsCharacteristicMetadata {
   bool isWritableWithResponse = false;
   bool isWritableWithoutResponse = false;
   bool isNotifiable = false;
+  bool isIndicatable = false;
   std::vector<std::string> descriptorUuids;
 };
 
@@ -1652,6 +1653,7 @@ static JsCharacteristicMetadata CharacteristicMetadataFromDictionary(NSDictionar
   metadata.isWritableWithResponse = [value[@"isWritableWithResponse"] boolValue];
   metadata.isWritableWithoutResponse = [value[@"isWritableWithoutResponse"] boolValue];
   metadata.isNotifiable = [value[@"isNotifiable"] boolValue];
+  metadata.isIndicatable = [value[@"isIndicatable"] boolValue];
   for (NSDictionary *descriptor in value[@"descriptors"] ?: @[]) {
     metadata.descriptorUuids.push_back([descriptor[@"uuid"] UTF8String]);
   }
@@ -1745,6 +1747,7 @@ static void CallJs(Napi::Env env, Napi::Function jsCallback, JsCallbackData *dat
         o.Set("isWritableWithResponse", metadata.isWritableWithResponse);
         o.Set("isWritableWithoutResponse", metadata.isWritableWithoutResponse);
         o.Set("isNotifiable", metadata.isNotifiable);
+        o.Set("isIndicatable", metadata.isIndicatable);
         Napi::Array descriptors = Napi::Array::New(env, metadata.descriptorUuids.size());
         for (size_t descriptorIndex = 0; descriptorIndex < metadata.descriptorUuids.size(); descriptorIndex++) {
           Napi::Object descriptor = Napi::Object::New(env);

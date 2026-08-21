@@ -103,6 +103,11 @@ export { BackendContractError, BLE_ERROR_CODES, BLE_ERROR_DOMAINS, contractError
 export type {
   Characteristic,
   CharacteristicProperties,
+  GattAccessRequirements,
+  GattCharacteristicPropertyAvailability,
+  GattDatabaseChangedEvent,
+  GattDescriptorProperties,
+  GattServiceReference,
   CharacteristicPath,
   ConnectionPath,
   DatabasePath,
@@ -118,7 +123,12 @@ export type {
   ServicePath,
   Subscription
 } from './gatt'
-export { assertCurrentPath, assertPathMatchesAttachment } from './gatt'
+export {
+  assertCurrentPath,
+  assertPathMatchesAttachment,
+  createGattCharacteristicProperties,
+  createGattDescriptorProperties
+} from './gatt'
 export type {
   AdapterAuthorization,
   AdapterAvailability,

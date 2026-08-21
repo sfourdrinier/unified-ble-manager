@@ -1157,7 +1157,8 @@ void dispatchCommand(
                 field(1U, reference(characteristicPath)), field(2U, [characteristic[@"readable"] boolValue]),
                 field(3U, [characteristic[@"writableWithResponse"] boolValue]),
                 field(4U, [characteristic[@"writableWithoutResponse"] boolValue]),
-                field(5U, [characteristic[@"notifiable"] boolValue])}};
+                field(5U, [characteristic[@"notifiable"] boolValue]),
+                field(6U, [characteristic[@"indicatable"] boolValue])}};
             characteristics.push_back(reference(characteristicSnapshot));
             for (NSDictionary* descriptor in characteristic[@"descriptors"]) {
               const auto descriptorPath = protocol::ProtocolRecord{.kind = protocol::RecordKind::descriptorPath, .fields = {

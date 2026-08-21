@@ -16,6 +16,33 @@ import type { IpcAdvertisement } from '../ipc/manager'
 import { rehydratePublicError, rehydratePublicPromise, runWithCleanup } from './error-bridge'
 import { PublicBleCapabilities } from './capabilities'
 import type { BleCapabilities } from './capabilities'
+import { createPublicGattDatabase } from './gatt'
+import type { GattDatabase, GattValueEvent } from './gatt'
+
+export type GattSubscriptionValue = GattValueEvent
+export type {
+  GattDatabase,
+  GattDatabaseSnapshot,
+  GattService,
+  GattCharacteristic,
+  GattDescriptor,
+  GattSubscription,
+  GattValueEvent,
+  GattValueStream,
+  GattDatabaseChangedEvent,
+  GattWriteReceipt,
+  GattLongWriteReceipt,
+  GattCharacteristicProperties,
+  GattAccessRequirements,
+  GattServiceReference,
+  GattWriteOptions,
+  LongWriteOptions,
+  DescriptorWriteOptions,
+  GattSubscribeOptions,
+  OccurrenceSelector,
+  GattPathSelector,
+  UuidInput
+} from './gatt'
 
 // Public peer — opaque backend-scoped identifier, no generic.
 export interface BlePeer {
@@ -31,6 +58,7 @@ export function snapshotBlePeer(peer: BlePeer): BlePeer {
 // Public connection — generation-bound lease, no generic.
 export interface BleConnection {
   readonly peer: BlePeer
+  readonly discover: (options?: OperationOptions) => Promise<GattDatabase>
   readonly disconnect: () => Promise<CleanupRecord>
   readonly release: () => Promise<CleanupRecord>
 }
@@ -43,28 +71,6 @@ export type PublicScanObservation = AdvertisementObservation<string> | IpcAdvert
 export interface ScanSession {
   readonly stop: () => Promise<CleanupRecord>
   readonly observations: BoundedAsyncStream<PublicScanObservation>
-}
-
-// Public GATT placeholders — full object model lands in PR3, but façade exists now.
-export interface GattDatabase {
-  readonly peer: BlePeer
-}
-export interface GattService {
-  readonly uuid: string
-}
-export interface GattCharacteristic {
-  readonly uuid: string
-  read(options?: OperationOptions): Promise<Uint8Array>
-  write(value: Uint8Array, options?: OperationOptions): Promise<void>
-}
-export interface GattDescriptor {
-  readonly uuid: string
-  read(options?: OperationOptions): Promise<Uint8Array>
-  write(value: Uint8Array, options?: OperationOptions): Promise<void>
-}
-export type GattSubscriptionValue = {
-  readonly value: Uint8Array
-  readonly delivery: 'notification' | 'indication'
 }
 
 // Non-generic public manager. Lifecycle/ownership/generations stay in core.
@@ -148,6 +154,18 @@ class PublicBleManager implements BleManager {
         typeof peer === 'string' ? snapshotBlePeer({ id: peerIdString, name: null, rssi: null }) : snapshotBlePeer(peer)
       return {
         peer: publicPeer,
+        discover: async (discoverOptions: OperationOptions = {}) => {
+          try {
+            const normalized = normalizeOperationOptions(discoverOptions, this.now)
+            const source = await internalConnection.discover({
+              signal: normalized.signal,
+              deadline: normalized.deadline
+            })
+            return createPublicGattDatabase(source)
+          } catch (error) {
+            throw rehydratePublicError(error)
+          }
+        },
         disconnect: () => rehydratePublicPromise(internalConnection.disconnect()),
         release: () => rehydratePublicPromise(internalConnection.release())
       }

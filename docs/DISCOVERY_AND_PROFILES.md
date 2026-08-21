@@ -8,15 +8,16 @@
 > [`UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md`](UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md).
 
 The supported 4.0 profile surface is the package subpath map below. These
-modules are optional, host-neutral helpers over public discovery snapshots,
-GATT paths, connections, and subscriptions. They never select a backend,
-connect a peripheral, or decide retry policy.
+modules are optional, host-neutral profile codecs and advanced path helpers.
+The normal application API uses generation-bound GATT objects from the root
+package; advanced helpers remain available for backend authors and profile
+adapters. They never select a backend or decide retry policy.
 
 ## Supported profile subpaths
 
 | Subpath | Contents |
 | --- | --- |
-| `unified-ble-manager/profiles/commands` | Generic discovery and duplicate-safe GATT path commands |
+| `unified-ble-manager/profiles/commands` | Advanced generic discovery and duplicate-safe GATT path commands |
 | `unified-ble-manager/profiles/standard-commands` | Read, control-point, and subscription commands for shipped SIG profiles |
 | `unified-ble-manager/profiles/heart-rate` | Heart Rate service, selectors, measurement, and body-location codecs |
 | `unified-ble-manager/profiles/battery-service` | Battery Service selector and level codec |
@@ -41,30 +42,29 @@ operation.
 
 Applications may use Bluetooth SIG service UUIDs to form scan or chooser
 filters, but a UUID alone is not an attribute address. A connected peripheral
-can repeat both services and characteristics. Profile selectors describe a
-match; `resolveCharacteristicPath()` returns a generation-bound public path
-from the current database snapshot and rejects an ambiguous selection.
+can repeat both services and characteristics. The stable object API preserves
+that distinction and rejects an ambiguous lookup unless the caller selects an
+occurrence. Raw path resolution remains an advanced boundary.
 
 ```ts
-import { resolveCharacteristicPath } from 'unified-ble-manager/profiles/commands'
 import {
   HEART_RATE_SERVICE,
-  heartRateMeasurementSelector,
   parseHeartRateMeasurement
 } from 'unified-ble-manager/profiles/heart-rate'
 
-const snapshot = await database.snapshot()
-const path = await resolveCharacteristicPath(snapshot, heartRateMeasurementSelector())
-const bytes = await database.read(path, { signal: null, deadline: null })
+const characteristic = database.characteristic(HEART_RATE_SERVICE, '2A37', {
+  serviceOccurrence: 0,
+  characteristicOccurrence: 0
+})
+const bytes = await characteristic.read()
 const measurement = parseHeartRateMeasurement(bytes)
 
 console.log(HEART_RATE_SERVICE, measurement.beatsPerMinute)
 ```
 
-When a snapshot has repeated Heart Rate services, select the intended
-`serviceOccurrence` from that same snapshot before resolving the
-characteristic path. Do not construct a path, attachment, or database
-generation yourself.
+When a peer has repeated Heart Rate services, select the intended
+`serviceOccurrence` on the object lookup. Do not construct a path, attachment,
+or database generation yourself.
 
 ## Shipped SIG profiles
 

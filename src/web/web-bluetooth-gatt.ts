@@ -4,14 +4,16 @@ import type { BackendConnection, BackendSubscription, GattBackend } from '../bac
 import { contractError } from '../backend-contract/errors'
 import type { CleanupFailure, CleanupRecord } from '../backend-contract/errors'
 import type { AttachmentRecord } from '../backend-contract/identity'
-import type {
-  Characteristic,
-  CharacteristicPath,
-  Descriptor,
-  DescriptorPath,
-  GattDatabase,
-  NotificationValue,
-  Service
+import {
+  createGattCharacteristicProperties,
+  createGattDescriptorProperties,
+  type Characteristic,
+  type CharacteristicPath,
+  type Descriptor,
+  type DescriptorPath,
+  type GattDatabase,
+  type NotificationValue,
+  type Service
 } from '../backend-contract/gatt'
 import { createBackendOperationDispatch, createOperationSettlementCoordinator } from '../backend-contract/operations'
 import type {
@@ -246,22 +248,25 @@ export class WebBluetoothGattRuntime {
     const descriptors: Descriptor<string, string, string, string, string, string>[] = []
     const characteristicBoundaries = new Map<string, WebBluetoothCharacteristicBoundary>()
     const descriptorBoundaries = new Map<string, WebBluetoothDescriptorBoundary>()
+    const serviceOccurrences = new Map<string, number>()
     for (let serviceIndex = 0; serviceIndex < nativeServices.length; serviceIndex += 1) {
       const nativeService = nativeServices[serviceIndex]
       if (nativeService === undefined) {
         throw contractError('protocol.malformed', 'gatt', 'web-gatt.discovery-service')
       }
       const serviceUuid = canonicalUuid(nativeService.uuid)
+      const serviceOccurrence = serviceOccurrences.get(String(serviceUuid)) ?? 0
+      serviceOccurrences.set(String(serviceUuid), serviceOccurrence + 1)
       const servicePath = {
         ...databasePath,
         serviceUuid,
         serviceOccurrence: opaqueId(
-          String(serviceIndex + 1),
+          String(serviceOccurrence),
           'service-occurrence',
           `${String(databasePath.databaseId)}:${String(serviceUuid)}`
         )
       }
-      services.push({ path: servicePath })
+      services.push({ path: servicePath, primary: true, includedServices: Object.freeze([]) })
       const nativeCharacteristics = await this.host.runAbortable(
         record,
         options,
@@ -270,17 +275,20 @@ export class WebBluetoothGattRuntime {
         'gatt',
         'web-gatt.discover-characteristics'
       )
+      const characteristicOccurrences = new Map<string, number>()
       for (let characteristicIndex = 0; characteristicIndex < nativeCharacteristics.length; characteristicIndex += 1) {
         const nativeCharacteristic = nativeCharacteristics[characteristicIndex]
         if (nativeCharacteristic === undefined) {
           throw contractError('protocol.malformed', 'gatt', 'web-gatt.discovery-characteristic')
         }
         const characteristicUuid = canonicalUuid(nativeCharacteristic.uuid)
+        const characteristicOccurrence = characteristicOccurrences.get(String(characteristicUuid)) ?? 0
+        characteristicOccurrences.set(String(characteristicUuid), characteristicOccurrence + 1)
         const path: CharacteristicPath<string, string, string, string, string, 'current'> = {
           ...servicePath,
           characteristicUuid,
           characteristicOccurrence: opaqueId(
-            String(characteristicIndex + 1),
+            String(characteristicOccurrence),
             'characteristic-occurrence',
             `${String(servicePath.serviceOccurrence)}:${String(characteristicUuid)}`
           ),
@@ -289,12 +297,14 @@ export class WebBluetoothGattRuntime {
         characteristics.push(
           Object.freeze({
             path: Object.freeze(path),
-            properties: Object.freeze({
+            properties: createGattCharacteristicProperties({
               read: nativeCharacteristic.properties.read,
               writeWithResponse: nativeCharacteristic.properties.write,
               writeWithoutResponse: nativeCharacteristic.properties.writeWithoutResponse,
-              notify: nativeCharacteristic.properties.notify || nativeCharacteristic.properties.indicate
-            })
+              notify: nativeCharacteristic.properties.notify,
+              indicate: nativeCharacteristic.properties.indicate
+            }),
+            access: Object.freeze({ read: 'unknown', write: 'unknown' })
           })
         )
         characteristicBoundaries.set(characteristicKey(path), nativeCharacteristic)
@@ -306,22 +316,33 @@ export class WebBluetoothGattRuntime {
           'gatt',
           'web-gatt.discover-descriptors'
         )
+        const descriptorOccurrences = new Map<string, number>()
         for (let descriptorIndex = 0; descriptorIndex < nativeDescriptors.length; descriptorIndex += 1) {
           const nativeDescriptor = nativeDescriptors[descriptorIndex]
           if (nativeDescriptor === undefined) {
             throw contractError('protocol.malformed', 'gatt', 'web-gatt.discovery-descriptor')
           }
           const descriptorUuid = canonicalUuid(nativeDescriptor.uuid)
+          const descriptorOccurrence = descriptorOccurrences.get(String(descriptorUuid)) ?? 0
+          descriptorOccurrences.set(String(descriptorUuid), descriptorOccurrence + 1)
           const descriptorPath = {
             ...path,
             descriptorUuid,
             descriptorOccurrence: opaqueId(
-              String(descriptorIndex + 1),
+              String(descriptorOccurrence),
               'descriptor-occurrence',
               `${String(path.characteristicOccurrence)}:${String(descriptorUuid)}`
             )
           }
-          descriptors.push({ path: descriptorPath })
+          descriptors.push({
+            path: descriptorPath,
+            properties: createGattDescriptorProperties(
+              true,
+              true,
+              { read: 'known', write: 'known' },
+              { read: 'unknown', write: 'unknown' }
+            )
+          })
           descriptorBoundaries.set(descriptorKey(descriptorPath), nativeDescriptor)
         }
       }

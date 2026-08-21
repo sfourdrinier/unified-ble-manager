@@ -291,17 +291,18 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
         database.assertPath(path)
         const observation = await observeMaximumWriteLength(this.features, path, options.mode)
         database.assertPath(path)
+        const maximumWriteLength = resolveLongWriteChunkSize(observation.maximumWriteLength, options.chunkSize)
         const plan = await planLongWrite(
           this.features,
           String(path.connectionId),
           String(path.connectionGeneration),
           options.mode,
           bytes.byteLength,
-          observation.maximumWriteLength
+          maximumWriteLength
         )
         database.assertPath(path)
         return Object.freeze({
-          maximumWriteLength: observation.maximumWriteLength,
+          maximumWriteLength,
           totalChunks: plan.totalChunks
         })
       }
@@ -640,19 +641,21 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
 
   async invalidateDatabase(
     database: CoreGattDatabase<Attachment, Identity>,
-    reason: 'connection-lost' | 'owner-released'
+    reason: 'connection-lost' | 'owner-released',
+    changeReason: import('../backend-contract/gatt').GattDatabaseChangedEvent['reason'] | null = null
   ): Promise<CleanupRecord> {
     const alreadyPending = database.connection.isPendingDatabaseCleanup(database)
     if (!database.isAttached() && !alreadyPending) {
       return { state: 'released', failures: [] }
     }
     if (!alreadyPending) {
-      database.markInvalid()
+      database.markInvalid(changeReason)
       if (database.connection.retainPendingDatabaseCleanup(database)) {
         this.resourceLedger.decrement('databaseSnapshots')
       }
     }
-    const cleanup = await this.subscriptions.invalidateDatabase(database.path, reason)
+    const subscriptionReason = changeReason === 'service-changed' ? 'service-changed' : reason
+    const cleanup = await this.subscriptions.invalidateDatabase(database.path, subscriptionReason)
     if (cleanup.state === 'released') {
       database.connection.completeDatabaseCleanup(database)
     }
@@ -767,7 +770,7 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
         const database = connection.database
         if (database !== null && database.matchesDatabasePath(event.database)) {
           this.lifecycleObserver.observeCleanup(
-            this.invalidateDatabase(database, 'connection-lost'),
+            this.invalidateDatabase(database, 'connection-lost', 'service-changed'),
             'database-changed-cleanup'
           )
         }
@@ -993,6 +996,14 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
     }
     return cleanup
   }
+}
+
+function resolveLongWriteChunkSize(observedMaximum: number, requestedChunkSize: number | undefined): number {
+  if (requestedChunkSize === undefined) return observedMaximum
+  if (!Number.isSafeInteger(requestedChunkSize) || requestedChunkSize < 1 || requestedChunkSize > observedMaximum) {
+    throw contractError('argument.invalid', 'gatt', 'unified-core.write-long.chunk-size')
+  }
+  return requestedChunkSize
 }
 
 function abortRequested(signal: AbortSignal | null | undefined): boolean {

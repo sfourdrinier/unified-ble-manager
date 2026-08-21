@@ -193,7 +193,7 @@ inline constexpr std::array<RecordKindDescriptor, 23> kRecordKindDescriptors{{
   RecordKindDescriptor{RecordKind::restorationAdoptionResult, "restorationAdoptionResult"}
 }};
 
-inline constexpr std::array<FieldDescriptor, 153> kFieldDescriptors{{
+inline constexpr std::array<FieldDescriptor, 154> kFieldDescriptors{{
   FieldDescriptor{RecordKind::attachment, 1U, "attachmentId", "string", true},
   FieldDescriptor{RecordKind::attachment, 2U, "backendInstanceId", "string", true},
   FieldDescriptor{RecordKind::attachment, 3U, "backendGeneration", "string", true},
@@ -242,6 +242,7 @@ inline constexpr std::array<FieldDescriptor, 153> kFieldDescriptors{{
   FieldDescriptor{RecordKind::characteristicSnapshot, 3U, "writableWithResponse", "boolean", true},
   FieldDescriptor{RecordKind::characteristicSnapshot, 4U, "writableWithoutResponse", "boolean", true},
   FieldDescriptor{RecordKind::characteristicSnapshot, 5U, "notifiable", "boolean", true},
+  FieldDescriptor{RecordKind::characteristicSnapshot, 6U, "indicatable", "boolean", false},
   FieldDescriptor{RecordKind::databaseSnapshot, 1U, "databasePath", "record:databasePath", true},
   FieldDescriptor{RecordKind::databaseSnapshot, 2U, "services", "records:servicePath", true},
   FieldDescriptor{RecordKind::databaseSnapshot, 3U, "characteristics", "records:characteristicSnapshot", true},

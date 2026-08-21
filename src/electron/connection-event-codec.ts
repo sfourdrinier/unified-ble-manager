@@ -32,6 +32,7 @@ export type DecodedConnectionEventStreamItem =
         | 'source-failed'
         | 'owner-released'
         | 'connection-lost'
+        | 'service-changed'
         | 'operation-aborted'
         | 'operation-timed-out'
       readonly droppedItems: number
@@ -310,6 +311,7 @@ function isStreamTerminalReason(
     value === 'source-failed' ||
     value === 'owner-released' ||
     value === 'connection-lost' ||
+    value === 'service-changed' ||
     value === 'operation-aborted' ||
     value === 'operation-timed-out'
   )

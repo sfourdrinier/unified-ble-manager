@@ -7,16 +7,49 @@ import type {
   BleConnection,
   ScanSession,
   GattDatabase,
+  GattDatabaseSnapshot,
   GattService,
   GattCharacteristic,
+  GattDescriptor,
+  GattSubscription,
+  GattPathSelector,
+  GattWriteOptions,
+  GattSubscribeOptions,
   OperationOptions,
   BleManagerCreateOptions,
-  StreamPreset,
+  StreamPreset
 } from 'unified-ble-manager'
 // Ensure root types are considered used for TS noUnusedLocals
-type _RootImportCheck = BlePeer & BleConnection & ScanSession & GattDatabase & GattService & GattCharacteristic & OperationOptions & BleManagerCreateOptions & StreamPreset
+type _RootImportCheck = BlePeer &
+  BleConnection &
+  ScanSession &
+  GattDatabase &
+  GattService &
+  GattCharacteristic &
+  OperationOptions &
+  BleManagerCreateOptions &
+  StreamPreset
 declare const _rootCheck: _RootImportCheck
 void _rootCheck
+declare const publicDatabase: GattDatabase
+declare const publicService: GattService
+declare const publicCharacteristic: GattCharacteristic
+declare const publicDescriptor: GattDescriptor
+declare const publicSubscription: GattSubscription
+declare const gattSnapshot: GattDatabaseSnapshot
+declare const gattPathSelector: GattPathSelector
+declare const gattWriteOptions: GattWriteOptions
+declare const gattSubscribeOptions: GattSubscribeOptions
+void publicDatabase.service('180f', { occurrence: 0 })
+void publicDatabase.characteristic('180f', '2a19', gattPathSelector)
+void publicService.characteristic('2a19', { occurrence: 0 })
+void publicCharacteristic.descriptor('2901', { occurrence: 0 })
+void publicCharacteristic.read()
+void publicCharacteristic.write(new Uint8Array([1]), gattWriteOptions)
+void publicCharacteristic.subscribe(gattSubscribeOptions)
+void publicDescriptor.read()
+void publicSubscription.values
+void gattSnapshot.services
 import {
   BleManager,
   capacity,
@@ -27,7 +60,7 @@ import {
   scanForServices,
   throwIfCleanupFailed,
   withDiscoveredConnection,
-  DEFAULT_BLE_MANAGER_OPTIONS,
+  DEFAULT_BLE_MANAGER_OPTIONS
 } from 'unified-ble-manager/advanced'
 import type {
   BleConnectionHandle,
@@ -98,10 +131,7 @@ import type {
   WinRtFirstPartyTckRegistrationOptions
 } from 'unified-ble-manager/testing'
 import { createWebBleManager, createWebBleManagerWithEnvironment } from 'unified-ble-manager/web'
-import type {
-  NavigatorWebBluetoothEnvironment,
-  WebBluetoothTimerHandle
-} from 'unified-ble-manager/web'
+import type { NavigatorWebBluetoothEnvironment, WebBluetoothTimerHandle } from 'unified-ble-manager/web'
 import { createDbusNextBluezBackendProvider } from 'unified-ble-manager/node/bluez'
 import type { BluezBusKind } from 'unified-ble-manager/node/bluez'
 import { createNativeWinRtBackendProvider } from 'unified-ble-manager/node/winrt'
@@ -485,9 +515,7 @@ interface PeerConnectionDeclaration {
   discover(options: PeerOperationOptions): Promise<PeerDatabaseDeclaration>
   release(): Promise<PeerCleanupRecord>
   disconnect(): Promise<PeerCleanupRecord>
-  readRssi(
-    options: PeerOperationOptions
-  ): Promise<{
+  readRssi(options: PeerOperationOptions): Promise<{
     readonly rssi: number
     readonly terminal: {
       readonly correlation: string
