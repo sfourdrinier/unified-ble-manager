@@ -124,62 +124,28 @@ one; `'not-determined'` means the user has not been asked yet, and since the
 prompt is raised by *using* the radio rather than by reading the state, blocking
 on it would stop the prompt from ever appearing.
 
-Then run the finite helper journey (`scanUntil` → `withConnection` → `firstNotification` → `destroy`) from the root [`README.md`](../README.md):
+Then run the finite public journey (`find` → `withDiscoveredConnection` → GATT read → `destroy`) from the root [`README.md`](../README.md):
 
 ```ts
-import {
-  deadline,
-  defaultScanDelivery,
-  firstNotification,
-  scanUntil,
-  throwIfCleanupFailed,
-  withConnection
-} from 'unified-ble-manager'
-import { resolveCharacteristicPath } from 'unified-ble-manager/profiles/commands'
-import {
-  HEART_RATE_SERVICE,
-  heartRateMeasurementSelector,
-  parseHeartRateMeasurement
-} from 'unified-ble-manager/profiles/heart-rate'
-
-const abort = new AbortController()
-const journeyDeadline = deadline(manager.monotonicNow() + 20_000)
-const op = { signal: abort.signal, deadline: journeyDeadline }
+import { HEART_RATE_SERVICE, parseHeartRateMeasurement } from 'unified-ble-manager/profiles/heart-rate'
 
 try {
-  const observation = await scanUntil(manager, {
-    scan: {
-      filter: {
-        serviceUuids: [HEART_RATE_SERVICE],
-        manufacturerData: [],
-        localNamePrefix: null
-      },
-      duplicatePolicy: 'merged',
-      timestampPolicy: 'source-then-receipt',
-      delivery: defaultScanDelivery(),
-      deadline: journeyDeadline,
-      signal: abort.signal,
-      sharing: { mode: 'owner', allowSharing: false }
-    },
-    matches: candidate => candidate.localName.state === 'present'
+  const peer = await manager.find({
+    query: { anyOf: [{ services: { any: [HEART_RATE_SERVICE] } }] },
+    timeoutMs: 20_000,
+    select: 'first'
   })
 
-  await withConnection(manager, observation.device.id, op, async connection => {
-    const database = await connection.discover(op)
-    const snapshot = await database.snapshot()
-    const measurementPath = await resolveCharacteristicPath(snapshot, heartRateMeasurementSelector())
-    const bytes = await firstNotification(database, measurementPath, {
-      ...op,
-      delivery: defaultScanDelivery()
-    })
+  await manager.withDiscoveredConnection(peer, { timeoutMs: 15_000 }, async ({ gatt }) => {
+    const bytes = await gatt.characteristic(HEART_RATE_SERVICE, '2A37').read({ timeoutMs: 10_000 })
     consume(parseHeartRateMeasurement(bytes))
   })
 } finally {
-  throwIfCleanupFailed(await manager.destroy(), 'manager.destroy')
+  await manager.destroy()
 }
 ```
 
-`journeyDeadline` is one budget for the whole sample. More recipes: [`TUTORIALS.md`](TUTORIALS.md) and [`HELPERS.md`](HELPERS.md). You can also watch adapter transitions with `manager.adapterStates()` instead of polling.
+Each `timeoutMs` is scoped to its public operation. More recipes: [`TUTORIALS.md`](TUTORIALS.md) and [`HELPERS.md`](HELPERS.md). Use `manager.adapter.waitUntilReady()` when an operation should wait for readiness.
 
 ### What will hurt you
 
