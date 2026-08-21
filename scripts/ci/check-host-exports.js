@@ -63,7 +63,8 @@ function main() {
   const electronMain = require(path.join(root, 'lib/commonjs/electron-main'))
   const electronRenderer = require(path.join(root, 'lib/commonjs/electron-renderer'))
 
-  assert.strictEqual(typeof publicRoot.BleManager, 'function', 'root BleManager must be a function')
+  assert.strictEqual(typeof publicRoot.ApplicationBleManager, 'function', 'root ApplicationBleManager must be a function')
+  assert.strictEqual(typeof publicRoot.createPublicBleManager, 'function', 'root createPublicBleManager must be a function')
   assert.strictEqual(typeof backendSdk.runBackendTck, 'function', 'backend-sdk.runBackendTck must be a function')
   assert.strictEqual(
     typeof testing.createDeterministicTestBackend,
