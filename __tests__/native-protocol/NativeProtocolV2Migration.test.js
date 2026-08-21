@@ -26,7 +26,8 @@ describe('native protocol v2 migration', () => {
     const v1References = []
     for (const productionRoot of productionRoots) {
       for (const relative of filesUnder(productionRoot)) {
-        if (relative === '__tests__/native-protocol/NativeProtocolV2Migration.test.js') continue
+        const normalizedRelative = relative.split(path.sep).join('/')
+        if (normalizedRelative === '__tests__/native-protocol/NativeProtocolV2Migration.test.js') continue
         if (!/\.(?:cpp|hpp|h|kt|swift|mm|ts|js|json)$/.test(relative)) continue
         const content = read(relative)
         if (/NativeProtocolV1|native-protocol-v1|__unifiedBleNativeProtocolV1|native_protocol::v1|native_protocol\/v1/.test(content)) {
