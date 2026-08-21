@@ -5,6 +5,11 @@ Audit snapshot: `bc4a347c496e994e97cec9da06e2c0a6223a72f8`
 RC2 release snapshot: `main` / `ab331517083c5a580894adb3d79d075f299c9db5` / `v4.0.0-rc.2`
 Current PR6 audit source: `feat/4.0-pr6-audit-closure` / `01e50ae69b9315c7915234df141568f10aebee77`
 
+Execution authority for this continuation is the revised session instruction,
+`docs/superpowers/plans/2026-08-20-next-12-prs.md`, this disposition ledger,
+and `AGENTS.md`. The separate RC1-to-stable handoff is historical context and
+is superseded where it conflicts with those authorities.
+
 ## Release decision
 
 RC2 is an immutable, quarantined prerelease. It reached the tag workflow because no confirmed P0 required cancelling the already-running release operation, and the tag/package/CI/provenance gates are independent of the unresolved application defects. Publication recovery completed on workflow attempt 2 after npm registry attestation propagation; the GitHub Release, npm `latest` dist-tag, exact tag commit, tarball, and provenance source binding were independently read back successfully. RC2 remains quarantined: it must not be treated as the finished RC2 closure, stable-ready, or evidence that the normal user journey is production-safe.
