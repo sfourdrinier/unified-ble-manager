@@ -38,6 +38,12 @@ export type {
   FindOptions,
   ChooseOptions,
   BleDiscoveryInfo,
+  BlePeerDirectory,
+  BlePeerState,
+  KnownPeerQuery,
+  PeerSource,
+  PeerReference,
+  PeerReferenceScope,
   ScanQuery,
   ScanClause,
   ManufacturerDataPattern,
@@ -47,6 +53,7 @@ export { BUILT_IN_FEATURE_CATALOG, BUILT_IN_FEATURE_IDS } from './backend-contra
 export type { BleCapabilities, BuiltInFeatureId, CapabilityDescriptor, FeatureId } from './public/capabilities'
 export type { BleAdapter, BleAdapterState, AdapterReadinessOptions } from './public/ble-adapter'
 export type { BleDiagnostics, BleDiagnosticsSnapshot, BleResourceCounters } from './public/diagnostics'
+export { encodePeerReference, decodePeerReference } from './public/peer-reference'
 
 // --- Operation options & stream presets (public types only) ---
 export type { OperationOptions } from './public/operation-options'

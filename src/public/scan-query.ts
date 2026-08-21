@@ -1,6 +1,8 @@
 import { canonicalUuid } from '../backend-contract/primitives'
 import { contractError } from '../backend-contract/errors'
 import type { AdvertisementObservation } from '../backend-contract/advertisement'
+import { assertPeerReference } from './peer-reference'
+import type { PeerReference } from './peer-reference'
 
 export interface ManufacturerDataPattern {
   readonly companyId: number
@@ -20,6 +22,7 @@ export interface ScanQuery {
 }
 
 export interface ScanClause {
+  readonly peers?: readonly PeerReference[]
   readonly services?: {
     readonly any?: readonly (string | number)[]
     readonly all?: readonly (string | number)[]
@@ -56,6 +59,7 @@ export interface NormalizedServiceDataPattern {
 }
 
 export interface NormalizedScanClause {
+  readonly peers: readonly PeerReference[] | null
   readonly services: {
     readonly any: readonly string[]
     readonly all: readonly string[]
@@ -83,6 +87,7 @@ export interface NormalizedScanQuery {
 }
 
 export interface NormalizedScanObservation {
+  readonly peerReference?: PeerReference
   readonly localName: string | null
   readonly rssi: number | null
   readonly connectable: boolean | null
@@ -171,7 +176,12 @@ function normalizeClauseList(
 
 function normalizeClause(clause: ScanClause, operation: string): NormalizedScanClause {
   assertObject(clause, operation)
-  assertKeys(clause, ['services', 'names', 'manufacturerData', 'serviceData', 'rssi', 'connectable'], operation)
+  assertKeys(
+    clause,
+    ['peers', 'services', 'names', 'manufacturerData', 'serviceData', 'rssi', 'connectable'],
+    operation
+  )
+  const peers = normalizePeerList(clause.peers, operation)
   const services = normalizeUuidField(clause.services, operation, 'services')
   const names = normalizeNames(clause.names, operation)
   const manufacturerData = normalizeManufacturerField(clause.manufacturerData, operation)
@@ -180,6 +190,7 @@ function normalizeClause(clause: ScanClause, operation: string): NormalizedScanC
   if (clause.connectable !== undefined && typeof clause.connectable !== 'boolean')
     throw invalid(`${operation}.connectable`)
   if (
+    peers === null &&
     services === null &&
     names === null &&
     manufacturerData === null &&
@@ -189,7 +200,31 @@ function normalizeClause(clause: ScanClause, operation: string): NormalizedScanC
   ) {
     throw invalid(`${operation}.empty`)
   }
-  return Object.freeze({ services, names, manufacturerData, serviceData, rssi, connectable: clause.connectable })
+  return Object.freeze({ peers, services, names, manufacturerData, serviceData, rssi, connectable: clause.connectable })
+}
+
+function normalizePeerList(
+  values: readonly PeerReference[] | undefined,
+  operation: string
+): readonly PeerReference[] | null {
+  if (values === undefined) return null
+  if (!Array.isArray(values) || values.length === 0) throw invalid(`${operation}.peers`)
+  const references = values.map((value, index) => {
+    try {
+      assertPeerReference(value, `${operation}.peers[${index}]`)
+      return Object.freeze({ ...value })
+    } catch {
+      throw invalid(`${operation}.peers[${index}]`)
+    }
+  })
+  const uniqueReferences = new Map(references.map(reference => [peerReferenceKey(reference), reference]))
+  return Object.freeze(
+    [...uniqueReferences.entries()].sort(([left], [right]) => left.localeCompare(right)).map(([, value]) => value)
+  )
+}
+
+function peerReferenceKey(reference: PeerReference): string {
+  return `${reference.version}|${reference.backendId}|${reference.scope}|${reference.opaqueId}`
 }
 
 function normalizeUuidField(
@@ -352,6 +387,12 @@ function normalizeByteFields(
 }
 
 function clauseMatches(clause: NormalizedScanClause, observation: NormalizedScanObservation): boolean {
+  const peerReference = observation.peerReference
+  if (
+    clause.peers !== null &&
+    (peerReference === undefined || !clause.peers.some(peer => peerReferenceEqual(peer, peerReference)))
+  )
+    return false
   if (clause.services !== null && !matchesUuidField(clause.services.any, clause.services.all, observation.serviceUuids))
     return false
   if (clause.names !== null) {
@@ -394,6 +435,15 @@ function clauseMatches(clause: NormalizedScanClause, observation: NormalizedScan
   return clause.connectable === undefined || observation.connectable === clause.connectable
 }
 
+function peerReferenceEqual(left: PeerReference, right: PeerReference): boolean {
+  return (
+    left.version === right.version &&
+    left.backendId === right.backendId &&
+    left.scope === right.scope &&
+    left.opaqueId === right.opaqueId
+  )
+}
+
 function matchesUuidField(any: readonly string[], all: readonly string[], observed: readonly string[] | null): boolean {
   if (observed === null) return any.length === 0 && all.length === 0
   return (
@@ -429,9 +479,10 @@ function matchesBytes(
 }
 
 function digestFor(value: Omit<NormalizedScanQuery, 'digest'>): string {
-  const encoded = JSON.stringify(value, (_key, entry: unknown) =>
-    entry instanceof Uint8Array ? bytesToHex(entry) : entry
-  )
+  const encoded = JSON.stringify(value, (key, entry: unknown) => {
+    if (key === 'peers' && entry === null) return undefined
+    return entry instanceof Uint8Array ? bytesToHex(entry) : entry
+  })
   let hash = 0xcbf29ce484222325n
   for (let index = 0; index < encoded.length; index += 1) {
     hash ^= BigInt(encoded.charCodeAt(index))

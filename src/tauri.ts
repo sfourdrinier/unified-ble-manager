@@ -16,6 +16,8 @@ import type { BleCapabilities } from './public/capabilities'
 import { createPublicGattDatabase, type PublicGattDatabaseSource } from './public/gatt'
 import { normalizeScanQuery } from './public/scan-query'
 import { createScanState, type ScanStateController } from './public/scan-state'
+import type { BlePeerDirectory } from './public/peer-directory'
+import { unsupportedPeerDirectory } from './public/peer-directory'
 import type {
   PortableCurrentCharacteristicPath,
   PortableCurrentDescriptorPath,
@@ -331,12 +333,14 @@ class TauriBleManagerAdapter implements BleManager {
   readonly capabilities: BleCapabilities
   readonly adapter: BleAdapter
   readonly diagnostics: BleDiagnostics
+  readonly peers: BlePeerDirectory
   readonly discovery: BleManager['discovery'] = Object.freeze({ kind: 'continuous-scan' })
 
   constructor(private readonly ipc: IpcBleManager) {
     this.capabilities = ipc.capabilities
     this.adapter = createTauriAdapter(ipc)
     this.diagnostics = diagnosticsUnavailable()
+    this.peers = unsupportedPeerDirectory()
   }
 
   async scan(options: ScanOptions = {}): Promise<ScanSession> {

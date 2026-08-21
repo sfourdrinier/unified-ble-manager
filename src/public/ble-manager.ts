@@ -25,6 +25,9 @@ import type { GattDatabase, GattValueEvent } from './gatt'
 import { normalizeScanObservation, normalizeScanQuery, observationMatchesScanQuery, type ScanQuery } from './scan-query'
 import type { BoundedAsyncStreamIterator } from '../backend-contract/streams'
 import { createScanState } from './scan-state'
+import type { BlePeerDirectory, BlePeerState, PeerSource } from './peer-directory'
+import { unsupportedPeerDirectory } from './peer-directory'
+import type { PeerReference } from './peer-reference'
 
 export type GattSubscriptionValue = GattValueEvent
 export type {
@@ -61,12 +64,17 @@ export type {
   ScanQuery,
   ServiceDataPattern
 } from './scan-query'
+export type { BlePeerDirectory, BlePeerState, KnownPeerQuery, PeerSource } from './peer-directory'
+export type { PeerReference, PeerReferenceScope } from './peer-reference'
 
 // Public peer — opaque backend-scoped identifier, no generic.
 export interface BlePeer {
   readonly id: string
   readonly name: string | null
   readonly rssi: number | null
+  readonly reference?: PeerReference
+  readonly sources?: readonly PeerSource[]
+  readonly state?: BlePeerState
 }
 
 export function snapshotBlePeer(peer: BlePeer): BlePeer {
@@ -102,6 +110,7 @@ export interface BleManager {
   readonly capabilities: BleCapabilities
   readonly adapter: BleAdapter
   readonly diagnostics: BleDiagnostics
+  readonly peers: BlePeerDirectory
   readonly discovery: BleDiscoveryInfo
   readonly destroy: () => Promise<CleanupRecord>
   scan(options?: ScanOptions): Promise<ScanSession>
@@ -161,6 +170,7 @@ class PublicBleManager implements BleManager {
   readonly capabilities: BleCapabilities
   readonly adapter: BleAdapter
   readonly diagnostics: BleDiagnostics
+  readonly peers: BlePeerDirectory
 
   constructor(
     private readonly internal: InternalBleManager<string, BackendIdentity<string>>,
@@ -180,6 +190,7 @@ class PublicBleManager implements BleManager {
         ),
       startTrace: () => ({ stop: async () => internal.traceDocument() })
     }
+    this.peers = unsupportedPeerDirectory()
     const supportsContinuous = typeof internal.supports === 'function' && internal.supports('discovery:continuous-scan')
     this.discovery = Object.freeze({
       kind: hostOptions.discoveryKind ?? (supportsContinuous ? 'continuous-scan' : 'system-chooser')

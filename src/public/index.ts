@@ -51,3 +51,6 @@ export type {
   NormalizedScanObservation
 } from './ble-manager'
 export type { BleDiagnostics, BleDiagnosticsSnapshot, BleResourceCounters } from './diagnostics'
+export type { BlePeerDirectory, BlePeerState, KnownPeerQuery, PeerSource } from './peer-directory'
+export type { PeerReference } from './peer-reference'
+export { encodePeerReference, decodePeerReference } from './peer-reference'

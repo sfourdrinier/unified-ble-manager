@@ -152,6 +152,9 @@ export type {
   ServiceDataPattern
 } from './public/scan-query'
 export { normalizeScanObservation, normalizeScanQuery, observationMatchesScanQuery } from './public/scan-query'
+export type { BlePeerDirectory, BlePeerState, KnownPeerQuery, PeerSource } from './public/peer-directory'
+export type { PeerReference, PeerReferenceScope } from './public/peer-reference'
+export { encodePeerReference, decodePeerReference } from './public/peer-reference'
 
 // Re-export façade utilities for expert callers that need exact control.
 export { normalizeOperationOptions } from './public/operation-options'
