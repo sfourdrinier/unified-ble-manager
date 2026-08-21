@@ -550,8 +550,10 @@ function snapshotPublicAdapterState(state: AdapterStateSnapshot<string>): BleAda
 
 export function filterScanObservations(
   source: BoundedAsyncStream<AdvertisementObservation<string> | IpcAdvertisement>,
-  query: ReturnType<typeof normalizeScanQuery>
+  query: ReturnType<typeof normalizeScanQuery>,
+  duplicates: 'coalesced' | 'all' = 'all'
 ): BoundedAsyncStream<PublicScanObservation> {
+  const seenPeers = new Set<string>()
   return {
     limits: source.limits,
     overflowPolicy: source.overflowPolicy,
@@ -566,8 +568,11 @@ export function filterScanObservations(
               return { done: false, value: item.value }
             }
             const observation = projectPublicScanObservation(item.value.value)
-            if (observationMatchesScanQuery(query, observation))
+            if (observationMatchesScanQuery(query, observation)) {
+              if (duplicates === 'coalesced' && seenPeers.has(observation.peer.id)) continue
+              seenPeers.add(observation.peer.id)
               return { done: false, value: { kind: 'value', value: observation } }
+            }
           }
         },
         return: async () => {

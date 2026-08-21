@@ -495,7 +495,7 @@ class TauriBleManagerAdapter implements BleManager {
       const session = await this.ipc.scan(ipcOptions)
       return new TauriScanSessionWrapper(
         session,
-        filterScanObservations(session.observations, normalizeScanQuery(options.query)),
+        filterScanObservations(session.observations, normalizeScanQuery(options.query), options.duplicates ?? 'coalesced'),
         createScanState()
       )
     } catch (error) {
