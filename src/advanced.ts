@@ -88,7 +88,7 @@ export type {
   AdapterStateSnapshot
 } from './backend-contract/identity'
 export type { ConnectionLifecycleCause, ConnectionLifecycleEvent } from './backend-contract/connection-lifecycle'
-export type { ScanOptions } from './backend-contract/advertisement'
+export type { ScanOptions, AdvertisementField, AdvertisementObservation } from './backend-contract/advertisement'
 export type { ManagerConstruction, AttachedBackend } from './backend-contract/backend'
 export type { CapabilityDescriptor, FeatureId, FeatureRegistry } from './backend-contract/capabilities'
 export type { CleanupRecord, CleanupFailure, NormalizedBleError } from './backend-contract/errors'
