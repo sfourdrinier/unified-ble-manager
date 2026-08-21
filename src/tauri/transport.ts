@@ -1,7 +1,13 @@
 // src/tauri/transport.ts
 
-import { contractError } from '../backend-contract/errors'
-import type { CleanupRecord, NormalizedBleError, PlatformErrorDetail } from '../backend-contract/errors'
+import { BLE_ERROR_CODES, BLE_ERROR_DOMAINS, contractError } from '../backend-contract/errors'
+import type {
+  BleErrorCode,
+  BleErrorDomain,
+  CleanupRecord,
+  NormalizedBleError,
+  PlatformErrorDetail
+} from '../backend-contract/errors'
 import type { IpcClientLeaseIdentity } from '../backend-contract/ipc'
 import type { IpcClientBootstrap } from '../ipc/protocol'
 import type { SerializableRecord, SerializableValue } from '../backend-contract/primitives'
@@ -131,6 +137,7 @@ export class TauriBleIpcTransport<Attachment extends string, Client extends stri
 
 /** Encodes bytes explicitly before Tauri serializes nested command arguments as JSON. */
 export function encodeTauriWireValue(value: unknown): unknown {
+  assertEncodableTauriValue(value)
   if (value instanceof Uint8Array) {
     return { [TAURI_BYTES_WIRE_TAG]: Array.from(value) }
   }
@@ -144,6 +151,9 @@ export function encodeTauriWireValue(value: unknown): unknown {
     }
     return encoded
   }
+  if (value !== null && typeof value === 'object') {
+    throw contractError('protocol.malformed', 'ipc', 'tauri.transport.encode-object')
+  }
   return value
 }
 
@@ -156,6 +166,9 @@ export function decodeTauriWireValue(value: unknown): unknown {
     return value.map(item => decodeTauriWireValue(item))
   }
   if (!isWireRecord(value)) {
+    if (value !== null && typeof value === 'object') {
+      throw contractError('protocol.malformed', 'ipc', 'tauri.transport.decode-object')
+    }
     return value
   }
   if (Object.prototype.hasOwnProperty.call(value, TAURI_BYTES_WIRE_TAG)) {
@@ -174,7 +187,29 @@ export function decodeTauriWireValue(value: unknown): unknown {
 }
 
 function isWireRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
+  if (typeof value !== 'object' || value === null || Array.isArray(value) || value instanceof Uint8Array) return false
+  try {
+    const prototype = Object.getPrototypeOf(value)
+    return prototype === Object.prototype || prototype === null
+  } catch {
+    return false
+  }
+}
+
+function assertEncodableTauriValue(value: unknown): void {
+  if (
+    value === undefined ||
+    typeof value === 'bigint' ||
+    typeof value === 'function' ||
+    typeof value === 'symbol' ||
+    value instanceof Date ||
+    value instanceof Map ||
+    value instanceof Set ||
+    value instanceof ArrayBuffer ||
+    (ArrayBuffer.isView(value) && !(value instanceof Uint8Array))
+  ) {
+    throw contractError('protocol.malformed', 'ipc', 'tauri.transport.encode-value')
+  }
 }
 
 function isByte(value: unknown): value is number {
@@ -245,6 +280,8 @@ function isBootstrap<Attachment extends string, Client extends string>(
   ) {
     return false
   }
+  const attachment = wireRecord(record.attachment)
+  if (attachment === null || attachment.attachmentId !== record.attachmentId) return false
   return true
 }
 
@@ -277,13 +314,32 @@ function isAdapterState(value: unknown): boolean {
   return (
     record !== null &&
     exactKeys(record, ['availability', 'authorization', 'power', 'backendGeneration', 'updatedAt', 'safeReason']) &&
-    typeof record.availability === 'string' &&
-    typeof record.authorization === 'string' &&
-    typeof record.power === 'string' &&
+    isAdapterAvailability(record.availability) &&
+    isAdapterAuthorization(record.authorization) &&
+    isAdapterPower(record.power) &&
     nonEmptyString(record.backendGeneration) &&
     finiteNumber(record.updatedAt) &&
     (record.safeReason === null || typeof record.safeReason === 'string')
   )
+}
+
+function isAdapterAvailability(value: unknown): boolean {
+  return value === 'available' || value === 'unavailable' || value === 'unsupported' || value === 'unknown'
+}
+
+function isAdapterAuthorization(value: unknown): boolean {
+  return (
+    value === 'granted' ||
+    value === 'denied' ||
+    value === 'restricted' ||
+    value === 'not-determined' ||
+    value === 'unavailable' ||
+    value === 'unknown'
+  )
+}
+
+function isAdapterPower(value: unknown): boolean {
+  return value === 'on' || value === 'off' || value === 'resetting' || value === 'unsupported' || value === 'unknown'
 }
 
 function isRenderer(value: unknown): boolean {
@@ -312,42 +368,45 @@ function isIpcVersionAxes(value: unknown): boolean {
   return (
     record !== null &&
     exactKeys(record, ['backendContract', 'capabilitySchema', 'eventSchema', 'traceFormat', 'ipcProtocol']) &&
-    negotiatedVersion(record.backendContract) &&
-    negotiatedVersion(record.capabilitySchema) &&
-    negotiatedVersion(record.eventSchema) &&
-    negotiatedVersion(record.traceFormat) &&
-    negotiatedVersion(record.ipcProtocol)
+    negotiatedVersion(record.backendContract, 'backend-contract') &&
+    negotiatedVersion(record.capabilitySchema, 'capability-schema') &&
+    negotiatedVersion(record.eventSchema, 'event-schema') &&
+    negotiatedVersion(record.traceFormat, 'trace-format') &&
+    negotiatedVersion(record.ipcProtocol, 'ipc-protocol')
   )
 }
 
-function negotiatedVersion(value: unknown): boolean {
+function negotiatedVersion(value: unknown, axis: string): boolean {
   const record = wireRecord(value)
+  const selected = versionNumberValue(record?.selected, axis)
+  const localRange = wireRecord(record?.localRange)
+  const remoteRange = wireRecord(record?.remoteRange)
+  const localMinimum = versionNumberValue(localRange?.minimum, axis)
+  const localMaximum = versionNumberValue(localRange?.maximum, axis)
+  const remoteMinimum = versionNumberValue(remoteRange?.minimum, axis)
+  const remoteMaximum = versionNumberValue(remoteRange?.maximum, axis)
   return (
     record !== null &&
     exactKeys(record, ['axis', 'selected', 'localRange', 'remoteRange']) &&
-    nonEmptyString(record.axis) &&
-    versionNumber(record.selected) &&
-    versionRange(record.localRange) &&
-    versionRange(record.remoteRange)
+    record.axis === axis &&
+    selected !== null &&
+    localMinimum !== null &&
+    localMaximum !== null &&
+    remoteMinimum !== null &&
+    remoteMaximum !== null &&
+    localMinimum <= selected &&
+    selected <= localMaximum &&
+    remoteMinimum <= selected &&
+    selected <= remoteMaximum
   )
 }
 
-function versionNumber(value: unknown): boolean {
+function versionNumberValue(value: unknown, axis: string): number | null {
   const record = wireRecord(value)
-  return (
-    record !== null && exactKeys(record, ['axis', 'value']) && nonEmptyString(record.axis) && safeInteger(record.value)
-  )
-}
-
-function versionRange(value: unknown): boolean {
-  const record = wireRecord(value)
-  return (
-    record !== null &&
-    exactKeys(record, ['axis', 'minimum', 'maximum']) &&
-    nonEmptyString(record.axis) &&
-    versionNumber(record.minimum) &&
-    versionNumber(record.maximum)
-  )
+  if (record === null || !exactKeys(record, ['axis', 'value']) || record.axis !== axis || !safeInteger(record.value)) {
+    return null
+  }
+  return record.value
 }
 
 function isCleanupRecord(value: unknown): value is CleanupRecord {
@@ -359,7 +418,9 @@ function isCleanupRecord(value: unknown): value is CleanupRecord {
   ) {
     return false
   }
-  return Array.isArray(record.failures) && record.failures.every(isCleanupFailure)
+  const failures = Array.isArray(record.failures) ? record.failures : null
+  if (failures === null || !failures.every(isCleanupFailure)) return false
+  return (record.state === 'released') === (failures.length === 0)
 }
 
 function isCleanupFailure(value: unknown): boolean {
@@ -377,12 +438,21 @@ function isNormalizedBleError(value: unknown): value is NormalizedBleError {
   return (
     record !== null &&
     exactKeys(record, ['code', 'domain', 'operation', 'platform', 'retryability']) &&
-    nonEmptyString(record.code) &&
+    isBleErrorCode(record.code) &&
+    isBleErrorDomain(record.domain) &&
     nonEmptyString(record.domain) &&
     nonEmptyString(record.operation) &&
     (record.retryability === 'never' || record.retryability === 'caller-decides') &&
     isPlatformErrorDetail(record.platform)
   )
+}
+
+function isBleErrorCode(value: unknown): value is BleErrorCode {
+  return typeof value === 'string' && BLE_ERROR_CODES.some(code => code === value)
+}
+
+function isBleErrorDomain(value: unknown): value is BleErrorDomain {
+  return typeof value === 'string' && BLE_ERROR_DOMAINS.some(domain => domain === value)
 }
 
 function isPlatformErrorDetail(value: unknown): value is PlatformErrorDetail | null {

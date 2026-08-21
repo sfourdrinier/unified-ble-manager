@@ -24,6 +24,10 @@ export interface BlePeer {
   readonly rssi: number | null
 }
 
+export function snapshotBlePeer(peer: BlePeer): BlePeer {
+  return Object.freeze({ id: peer.id, name: peer.name, rssi: peer.rssi })
+}
+
 // Public connection — generation-bound lease, no generic.
 export interface BleConnection {
   readonly peer: BlePeer
@@ -140,7 +144,8 @@ class PublicBleManager implements BleManager {
         signal,
         deadline
       })
-      const publicPeer: BlePeer = typeof peer === 'string' ? { id: peerIdString, name: null, rssi: null } : peer
+      const publicPeer =
+        typeof peer === 'string' ? snapshotBlePeer({ id: peerIdString, name: null, rssi: null }) : snapshotBlePeer(peer)
       return {
         peer: publicPeer,
         disconnect: () => rehydratePublicPromise(internalConnection.disconnect()),

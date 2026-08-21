@@ -68,20 +68,22 @@ export const BLE_ERROR_CODES = Object.freeze([
   'platform.transport'
 ] as const)
 export type BleErrorCode = (typeof BLE_ERROR_CODES)[number]
-export type BleErrorDomain =
-  | 'core'
-  | 'adapter'
-  | 'scan'
-  | 'chooser'
-  | 'connection'
-  | 'gatt'
-  | 'stream'
-  | 'capability'
-  | 'boundary'
-  | 'cleanup'
-  | 'restoration'
-  | 'ipc'
-  | 'platform'
+export const BLE_ERROR_DOMAINS = Object.freeze([
+  'core',
+  'adapter',
+  'scan',
+  'chooser',
+  'connection',
+  'gatt',
+  'stream',
+  'capability',
+  'boundary',
+  'cleanup',
+  'restoration',
+  'ipc',
+  'platform'
+] as const)
+export type BleErrorDomain = (typeof BLE_ERROR_DOMAINS)[number]
 export interface PlatformErrorDetail {
   readonly domain: string
   readonly code: string

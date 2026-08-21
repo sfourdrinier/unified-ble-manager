@@ -62,8 +62,8 @@ describe('4.0 public package surface', () => {
     const electronRenderer = require('unified-ble-manager/electron/renderer')
 
     // PR1: root is application-only, non-generic façade. Generic implementation lives in advanced/backend-sdk.
-    expect(typeof publicRoot.ApplicationBleManager).toBe('function')
-    expect(typeof publicRoot.createPublicBleManager).toBe('function')
+    expect(publicRoot.ApplicationBleManager).toBeUndefined()
+    expect(publicRoot.createPublicBleManager).toBeUndefined()
     expect(publicRoot.BleManager).toBeUndefined()
     expect(publicRoot.createBleManager).toBeUndefined()
     expect(publicRoot.attachBleBackend).toBeUndefined()
@@ -105,7 +105,7 @@ describe('4.0 public package surface', () => {
     // PR1: low-level helpers moved to advanced; root is application-only
     expect(typeof publicRoot.normalizeOperationOptions).toBe('function')
     expect(typeof publicRoot.resolveStreamPreset).toBe('function')
-    expect(typeof publicRoot.deriveRestorationIdentity).toBe('function')
+    expect(publicRoot.deriveRestorationIdentity).toBeUndefined()
     expect(typeof advanced.defaultScanDelivery).toBe('function')
     expect(typeof advanced.scanForServices).toBe('function')
     expect(typeof advanced.withDiscoveredConnection).toBe('function')

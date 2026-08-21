@@ -89,7 +89,7 @@ export type {
   NormalizedBleError,
   PlatformErrorDetail
 } from './errors'
-export { BackendContractError, BLE_ERROR_CODES, contractError } from './errors'
+export { BackendContractError, BLE_ERROR_CODES, BLE_ERROR_DOMAINS, contractError } from './errors'
 export type {
   Characteristic,
   CharacteristicProperties,

@@ -6,7 +6,6 @@
 // /advanced and backend authoring in /backend-sdk.
 
 // --- Non-generic application façade ---
-export { BleManagerImpl as ApplicationBleManager, createPublicBleManager } from './public/ble-manager'
 export type {
   BleManager,
   BlePeer,
@@ -30,17 +29,7 @@ export type { StreamPreset, StreamBudget, StreamPresetInput } from './public/str
 export { resolveStreamPreset, STREAM_PRESET_DEFAULTS } from './public/stream-presets'
 
 // --- Host identity (ephemeral vs restoration) ---
-export type {
-  BleManagerCreateOptions,
-  DiagnosticsOptions,
-  EphemeralHostIdentity,
-  RestorationHostIdentity
-} from './public/host-identity'
-export {
-  deriveRestorationIdentity,
-  createEphemeralHostIdentity,
-  normalizeBleManagerCreateOptions
-} from './public/host-identity'
+export type { BleManagerCreateOptions, DiagnosticsOptions } from './public/host-identity'
 
 // --- Errors & recovery (public) ---
 export { BleError } from './public/errors'

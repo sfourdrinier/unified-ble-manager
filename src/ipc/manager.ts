@@ -742,13 +742,17 @@ function isCleanupRecord(value: unknown): value is CleanupRecord {
   const failures = Reflect.get(value, 'failures')
   if (state !== 'released' && state !== 'release-failed') return false
   if (!Array.isArray(failures)) return false
-  return failures.every(entry => {
-    if (typeof entry !== 'object' || entry === null) return false
-    if (!('resourceKind' in entry) || !('error' in entry)) return false
-    const resourceKind = Reflect.get(entry, 'resourceKind')
-    const error = Reflect.get(entry, 'error')
-    return typeof resourceKind === 'string' && typeof error === 'object' && error !== null
-  })
+  if (
+    !failures.every(entry => {
+      if (typeof entry !== 'object' || entry === null) return false
+      if (!('resourceKind' in entry) || !('error' in entry)) return false
+      const resourceKind = Reflect.get(entry, 'resourceKind')
+      const error = Reflect.get(entry, 'error')
+      return typeof resourceKind === 'string' && typeof error === 'object' && error !== null
+    })
+  )
+    return false
+  return (state === 'released') === (failures.length === 0)
 }
 
 function cleanupRecord(value: SerializableRecord): CleanupRecord {

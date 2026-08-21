@@ -35,5 +35,16 @@ describe('public BleCapabilities', () => {
       })
     }
     expect(() => manager.capabilities.require('feature:missing')).toThrow('capability.unsupported')
+
+    internal.connect.mockResolvedValue({
+      disconnect: async () => ({ state: 'released', failures: [] }),
+      release: async () => ({ state: 'released', failures: [] })
+    })
+    const peer = { id: 'peer-1', name: 'Original', rssi: -40 }
+    const connection = await manager.connect(peer)
+    peer.name = 'Mutated'
+    expect(connection.peer).toEqual({ id: 'peer-1', name: 'Original', rssi: -40 })
+    expect(Object.isFrozen(connection.peer)).toBe(true)
+    await connection.release()
   })
 })

@@ -217,6 +217,59 @@ describe('Tauri v2 IPC transport', () => {
     })
   })
 
+  test('rejects unknown error codes and contradictory cleanup receipts', async () => {
+    const { TauriBleIpcTransport } = require('../src/tauri')
+    const malformedErrorTransport = new TauriBleIpcTransport({
+      invoke: jest.fn(async () => ({
+        kind: 'failure',
+        error: {
+          code: 'made-up',
+          domain: 'connection',
+          operation: 'tauri.test',
+          platform: null,
+          retryability: 'never'
+        }
+      })),
+      Channel: FakeChannel
+    })
+    await expect(malformedErrorTransport.invoke({ kind: 'bootstrap' })).rejects.toMatchObject({
+      normalized: { code: 'protocol.malformed' }
+    })
+
+    const contradictoryCleanupTransport = new TauriBleIpcTransport({
+      invoke: jest.fn(async () => ({
+        kind: 'release',
+        cleanup: {
+          state: 'released',
+          failures: [
+            {
+              resourceKind: 'connection',
+              error: {
+                code: 'connection.lost',
+                domain: 'connection',
+                operation: 'tauri.test',
+                platform: null,
+                retryability: 'never'
+              }
+            }
+          ]
+        }
+      })),
+      Channel: FakeChannel
+    })
+    await expect(contradictoryCleanupTransport.invoke({ kind: 'release' })).rejects.toMatchObject({
+      normalized: { code: 'protocol.malformed' }
+    })
+  })
+
+  test('rejects non-serializable outbound values before JSON conversion', () => {
+    const { encodeTauriWireValue } = require('../src/tauri')
+
+    expect(() => encodeTauriWireValue(new Date())).toThrow('protocol.malformed')
+    expect(() => encodeTauriWireValue(1n)).toThrow('protocol.malformed')
+    expect(() => encodeTauriWireValue(new Map())).toThrow('protocol.malformed')
+  })
+
   test('publishes an explicit Tauri entrypoint without importing a radio backend', () => {
     const packageJson = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'))
     const entrypoint = fs.readFileSync(path.join(root, 'src', 'tauri.ts'), 'utf8')

@@ -15,6 +15,7 @@ export {
   IpcSubscription as TauriSubscription
 } from './ipc/manager'
 
+import { snapshotBlePeer } from './public/ble-manager'
 import type { BleManager, BlePeer, ScanOptions } from './public/ble-manager'
 import type { BleConnection } from './public/ble-manager'
 import type { ScanSession } from './public/ble-manager'
@@ -148,7 +149,7 @@ function resolvePeerId(peer: BlePeer | string): string {
 }
 
 function resolveBlePeer(peer: BlePeer | string, peerId: string): BlePeer {
-  return typeof peer === 'string' ? { id: peerId, name: null, rssi: null } : peer
+  return typeof peer === 'string' ? snapshotBlePeer({ id: peerId, name: null, rssi: null }) : snapshotBlePeer(peer)
 }
 
 class TauriScanSessionWrapper implements ScanSession {
@@ -259,7 +260,7 @@ class TauriBleManagerAdapter implements BleManager {
   // Ipc-specific surface retained for existing TCK — not part of the public
   // `BleManager` interface but present on the runtime object for compatibility.
   adapterState(): Promise<unknown> {
-    return this.ipc.adapterState()
+    return rehydratePublicPromise(this.ipc.adapterState())
   }
 }
 

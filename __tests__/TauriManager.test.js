@@ -314,6 +314,30 @@ describe('Tauri v2 public manager', () => {
     await expect(manager.destroy()).resolves.toMatchObject({ state: 'released' })
   })
 
+  test('rehydrates compatibility adapter-state failures as public errors', async () => {
+    const invoke = jest.fn(async (_command, args) => {
+      const request = args.request
+      if (request.kind === 'bootstrap') return { kind: 'bootstrap', bootstrap: bootstrap() }
+      if (request.kind === 'event.ack') return { kind: 'event.ack' }
+      if (request.kind === 'release') return { kind: 'release', cleanup: { state: 'released', failures: [] } }
+      return {
+        kind: 'failure',
+        error: {
+          code: 'adapter.unavailable',
+          domain: 'adapter',
+          operation: 'tauri.adapter-state',
+          platform: null,
+          retryability: 'never'
+        }
+      }
+    })
+    const { createTauriBleManagerWithEnvironment } = require('../src/tauri')
+    const manager = await createTauriBleManagerWithEnvironment({ invoke, Channel: FakeChannel })
+
+    await expect(manager.adapterState()).rejects.toMatchObject({ code: 'adapter.unavailable' })
+    await manager.destroy()
+  })
+
   test('delivers scan advertisements that arrived before the renderer registered the stream', async () => {
     const invoke = jest.fn(async (_command, args) => {
       const request = args.request
@@ -337,5 +361,24 @@ describe('Tauri v2 public manager', () => {
     expect(first.value).toMatchObject({ kind: 'value', value: { peerId: 'early-peer' } })
     await scan.stop()
     await manager.destroy()
+  })
+
+  test('rejects bootstrap records with contradictory identity or adapter state', async () => {
+    const invalidBootstrap = bootstrap()
+    invalidBootstrap.attachmentId = 'mismatched-attachment'
+    const invoke = jest.fn(async () => ({ kind: 'bootstrap', bootstrap: invalidBootstrap }))
+    const { createTauriBleManagerWithEnvironment } = require('../src/tauri')
+
+    await expect(createTauriBleManagerWithEnvironment({ invoke, Channel: FakeChannel })).rejects.toMatchObject({
+      normalized: { code: 'protocol.malformed' }
+    })
+
+    const invalidStateBootstrap = bootstrap()
+    invalidStateBootstrap.attachment.adapter.state.power = 'not-a-power-state'
+    const invalidStateInvoke = jest.fn(async () => ({ kind: 'bootstrap', bootstrap: invalidStateBootstrap }))
+
+    await expect(
+      createTauriBleManagerWithEnvironment({ invoke: invalidStateInvoke, Channel: FakeChannel })
+    ).rejects.toMatchObject({ normalized: { code: 'protocol.malformed' } })
   })
 })

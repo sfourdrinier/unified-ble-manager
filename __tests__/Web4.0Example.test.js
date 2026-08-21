@@ -14,7 +14,7 @@ function read(relativePath) {
 describe('4.0 Web Bluetooth public example', () => {
   test('uses only packed clean-baseline public entrypoints', () => {
     const app = read('example-web/app.js')
-    expect(app).toContain("from 'unified-ble-manager'")
+    expect(app).not.toContain("from 'unified-ble-manager'")
     expect(app).toContain("from 'unified-ble-manager/web'")
     expect(app).toContain("from 'unified-ble-manager/profiles/standard-commands'")
     expect(app).not.toContain('react-native-ble-plx')

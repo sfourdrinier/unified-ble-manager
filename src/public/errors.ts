@@ -1,5 +1,6 @@
 // src/public/errors.ts — public BleError with PR2 recovery catalog
 
+import { BLE_ERROR_CODES, BLE_ERROR_DOMAINS } from '../backend-contract/errors'
 import type { BleErrorCode, BleErrorDomain, PlatformErrorDetail } from '../backend-contract/errors'
 import type { Limitation } from '../backend-contract/capabilities'
 import { byteLimit, ownBytes } from '../backend-contract/primitives'
@@ -57,6 +58,12 @@ export class BleError extends Error {
       readonly limitations?: readonly Limitation[]
     } = {}
   ) {
+    if (!BLE_ERROR_CODES.some(candidate => candidate === code)) {
+      throw new TypeError(`unknown BleError code: ${String(code)}`)
+    }
+    if (!BLE_ERROR_DOMAINS.some(candidate => candidate === domain)) {
+      throw new TypeError(`unknown BleError domain: ${String(domain)}`)
+    }
     const recovery = recoveryForCode(code, operation)
     const platform = freezePlatformDetail(options.platform ?? null)
     super(`${code}: ${operation}`)
