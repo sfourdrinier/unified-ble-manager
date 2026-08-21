@@ -1498,20 +1498,28 @@ impl BtleplugDispatcher {
         let database_generation = self.id("database-generation");
         let mut characteristic_map = HashMap::new();
         let mut descriptor_map = HashMap::new();
+        let mut service_uuids = HashSet::new();
+        let mut service_records = Vec::new();
         let mut characteristic_records = Vec::new();
         let mut descriptor_records = Vec::new();
         let mut occurrences: HashMap<(Uuid, Uuid), usize> = HashMap::new();
         for characteristic in peripheral.characteristics() {
+            let service_uuid = characteristic.service_uuid.to_string();
+            if service_uuids.insert(service_uuid.clone()) {
+                service_records.push(object([
+                    ("uuid", string(service_uuid.clone())),
+                    ("occurrence", string("0")),
+                    ("primary", IpcValue::Bool(true)),
+                    ("includedServices", IpcValue::Array(Vec::new())),
+                ]));
+            }
             let occurrence = occurrences
                 .entry((characteristic.service_uuid, characteristic.uuid))
                 .or_default();
             let handle = self.id("characteristic");
             characteristic_records.push(object([
                 ("handle", string(handle.clone())),
-                (
-                    "serviceUuid",
-                    string(characteristic.service_uuid.to_string()),
-                ),
+                ("serviceUuid", string(service_uuid)),
                 ("serviceOccurrence", string("0")),
                 (
                     "characteristicUuid",
@@ -1561,6 +1569,7 @@ impl BtleplugDispatcher {
             ("handle", string(database_handle)),
             ("databaseId", string(database_id)),
             ("databaseGeneration", string(database_generation)),
+            ("services", IpcValue::Array(service_records)),
             ("characteristics", IpcValue::Array(characteristic_records)),
             ("descriptors", IpcValue::Array(descriptor_records)),
         ]))

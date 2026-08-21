@@ -92,7 +92,9 @@ export interface WriteReceipt<Attachment extends string, _Operation extends stri
 }
 
 /** Policy for the portable core-emulated sequential chunked write operation. */
-export type LongWritePolicy = WritePolicy
+export interface LongWritePolicy extends WritePolicy {
+  readonly chunkSize?: number
+}
 
 /** One chunk state in an immutable long-write receipt. */
 export interface LongWriteChunkProgress {
@@ -148,6 +150,7 @@ export interface SubscriptionOptions extends PublicOperationOptions {
     readonly reservedControlCapacity: Capacity
     readonly overflowPolicy: OverflowPolicy
   }
+  readonly deliveryMode?: 'prefer-notification' | 'prefer-indication' | 'require-notification' | 'require-indication'
 }
 export interface SubscribeRequest<Attachment extends string, Operation extends string> {
   readonly operation: OperationOptions<Attachment, Operation>

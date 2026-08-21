@@ -190,6 +190,7 @@ describe('Tauri v2 public manager', () => {
           handle: 'database-1',
           databaseId: 'database-id-1',
           databaseGeneration: 'database-generation-1',
+          services: [{ uuid: '180d', occurrence: '0', primary: true, includedServices: [] }],
           characteristics: [
             {
               handle: 'characteristic-1',
@@ -197,11 +198,11 @@ describe('Tauri v2 public manager', () => {
               serviceOccurrence: '0',
               characteristicUuid: '2a37',
               characteristicOccurrence: '0',
-              properties: ['notify', 'read']
+              properties: ['notify', 'read', 'write']
             }
           ],
           descriptors: [
-            { handle: 'descriptor-1', characteristicHandle: 'characteristic-1', uuid: '2902', occurrence: '0' }
+            { handle: 'descriptor-1', characteristicHandle: 'characteristic-1', uuid: '2901', occurrence: '0' }
           ]
         },
         'gatt.read': { value: { $__unifiedBleBytesV2: [1, 2, 3] } },
@@ -250,36 +251,14 @@ describe('Tauri v2 public manager', () => {
       }
     })
     const database = await connection.discover()
-    expect(database.path.databaseId).toBe('database-id-1')
-    expect(database.path.databaseId).not.toBe(database.handle)
-    expect(database.path.databaseGeneration).toBe('database-generation-1')
-    expect(database.path.attachment.attachmentId).toBe('tauri-attachment-1')
-    expect(database.path.attachment.adapter.adapterId).toBe('tauri-adapter-1')
-    const characteristic = database.characteristics[0]
+    expect(database.generation).toBe('database-generation-1')
+    const characteristic = database.service('180d').characteristic('2a37')
     await expect(characteristic.read()).resolves.toEqual(new Uint8Array([1, 2, 3]))
-    await expect(characteristic.write(new Uint8Array([4, 5]), { mode: 'with-response' })).resolves.toMatchObject({
+    await expect(characteristic.write(new Uint8Array([4, 5]), { response: 'required' })).resolves.toMatchObject({
       terminal: { correlation: 'write-operation-1', outcome: 'succeeded', cause: null },
-      mode: 'with-response',
-      commitState: 'confirmed',
-      bytesSubmitted: 2
+      commitState: 'confirmed'
     })
-    const snapshot = await database.snapshot()
-    const foreignPath = { ...snapshot.characteristics[0].path, databaseId: 'database-from-another-connection' }
-    await expect(database.write(foreignPath, new Uint8Array([4, 5]), { mode: 'with-response' })).rejects.toMatchObject({
-      normalized: { code: 'gatt.stale-handle' }
-    })
-    const stalePath = { ...snapshot.characteristics[0].path, validity: 'stale' }
-    await expect(database.write(stalePath, new Uint8Array([4, 5]), { mode: 'with-response' })).rejects.toMatchObject({
-      normalized: { code: 'gatt.stale-handle' }
-    })
-    await expect(
-      database.write(snapshot.characteristics[0].path, new Uint8Array([4, 5]), { mode: 'with-response' })
-    ).resolves.toMatchObject({
-      terminal: { correlation: 'write-operation-1', outcome: 'succeeded', cause: null },
-      mode: 'with-response',
-      commitState: 'confirmed',
-      bytesSubmitted: 2
-    })
+    expect(database.snapshot().characteristics).toHaveLength(1)
     const gattWriteRequest = invoke.mock.calls.find(([, args]) => args.request.envelope?.command === 'gatt.write')
     expect(gattWriteRequest?.[1].request.envelope.payload).toMatchObject({
       databaseId: 'database-id-1',
@@ -289,11 +268,10 @@ describe('Tauri v2 public manager', () => {
       connectionGeneration: 'generation-1',
       peerId: 'polar-h10'
     })
-    await expect(database.descriptors[0].write(new Uint8Array([1]))).resolves.toMatchObject({
+    const descriptor = characteristic.descriptor('2901')
+    await expect(descriptor.write(new Uint8Array([1]), { response: 'required' })).resolves.toMatchObject({
       terminal: { correlation: 'descriptor-write-operation-1', outcome: 'succeeded', cause: null },
-      mode: 'with-response',
-      commitState: 'confirmed',
-      bytesSubmitted: 1
+      commitState: 'confirmed'
     })
 
     const subscription = await characteristic.subscribe()
@@ -307,7 +285,7 @@ describe('Tauri v2 public manager', () => {
     await expect(notification).resolves.toMatchObject({
       value: {
         kind: 'value',
-        value: { value: new Uint8Array([6, 7]), delivery: 'unknown', observedAtMonotonicMs: 1, sequence: 1 }
+        value: { value: new Uint8Array([6, 7]), delivery: 'notification', sequence: 1 }
       }
     })
     await expect(subscription.remove()).resolves.toMatchObject({ state: 'released' })
@@ -323,7 +301,6 @@ describe('Tauri v2 public manager', () => {
       'connection.events.ready',
       'gatt.discover',
       'gatt.read',
-      'gatt.write',
       'gatt.write',
       'gatt.descriptor.write',
       'gatt.subscribe',
@@ -389,6 +366,7 @@ describe('Tauri v2 public manager', () => {
             handle: 'database-receipt',
             databaseId: 'database-id-receipt',
             databaseGeneration: 'database-generation-receipt',
+            services: [{ uuid: '180d', occurrence: '0', primary: true, includedServices: [] }],
             characteristics: [
               {
                 handle: 'characteristic-receipt',
@@ -425,9 +403,10 @@ describe('Tauri v2 public manager', () => {
     const database = await (await manager.connect('polar-h10')).discover()
     const snapshot = await database.snapshot()
 
-    await expect(
-      database.write(snapshot.characteristics[0].path, new Uint8Array([1]), { mode: 'with-response' })
-    ).rejects.toMatchObject({ normalized: { code: 'protocol.malformed' } })
+    const characteristic = database.service('180d').characteristic('2a37')
+    await expect(characteristic.write(new Uint8Array([1]), { response: 'required' })).rejects.toMatchObject({
+      code: 'protocol.malformed'
+    })
     await manager.destroy()
   })
 

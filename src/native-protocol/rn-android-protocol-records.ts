@@ -251,6 +251,7 @@ export function snapshotFromRecord(snapshot: NativeProtocolRecord): CoreBluetoot
         'rn-android-boundary.database-snapshot.writable-without-response'
       ),
       notifiable: requiredBoolean(characteristic, 5, 'rn-android-boundary.database-snapshot.notifiable'),
+      indicatable: optionalBoolean(characteristic, 6, 'rn-android-boundary.database-snapshot.indicatable') ?? undefined,
       descriptors: Object.freeze(descriptors ?? [])
     })
     services.set(key, service)

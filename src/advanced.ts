@@ -70,6 +70,12 @@ export type {
 
 export type {
   CharacteristicPath,
+  CharacteristicProperties,
+  GattAccessRequirements,
+  GattCharacteristicPropertyAvailability,
+  GattDatabaseChangedEvent,
+  GattDescriptorProperties,
+  GattServiceReference,
   DescriptorPath,
   ServicePath,
   DatabasePath,

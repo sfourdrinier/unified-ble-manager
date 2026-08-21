@@ -15,3 +15,27 @@ export {
   createEphemeralHostIdentity,
   normalizeBleManagerCreateOptions
 } from './host-identity'
+
+export type {
+  GattDatabase,
+  GattDatabaseSnapshot,
+  GattService,
+  GattCharacteristic,
+  GattDescriptor,
+  GattSubscription,
+  GattValueEvent,
+  GattValueStream,
+  GattDatabaseChangedEvent,
+  GattWriteReceipt,
+  GattLongWriteReceipt,
+  GattWriteOptions,
+  LongWriteOptions,
+  DescriptorWriteOptions,
+  GattSubscribeOptions,
+  GattCharacteristicProperties,
+  GattAccessRequirements,
+  GattServiceReference,
+  OccurrenceSelector,
+  GattPathSelector,
+  UuidInput
+} from './gatt'

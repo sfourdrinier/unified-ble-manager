@@ -12,6 +12,7 @@ import { CoreBoundedStream } from '../core/bounded-stream'
 import { createPublicBleCapabilities, type BleCapabilities } from '../public/capabilities'
 import type {
   PortableCurrentCharacteristicPath,
+  PortableCurrentDescriptorPath,
   PortableDatabasePath,
   PortableGattDatabaseSnapshot,
   PortableOperationOptions,
@@ -98,6 +99,13 @@ export interface IpcCharacteristicRecord extends SerializableRecord {
   readonly characteristicUuid: string
   readonly characteristicOccurrence: string
   readonly properties: readonly string[]
+}
+
+export interface IpcServiceRecord extends SerializableRecord {
+  readonly uuid: string
+  readonly occurrence: string
+  readonly primary: boolean
+  readonly includedServices: readonly { readonly uuid: string; readonly occurrence: string }[]
 }
 
 export interface IpcDescriptorRecord extends SerializableRecord {
@@ -567,6 +575,7 @@ export class IpcGattDatabase {
     readonly handle: string,
     readonly databaseId: string,
     readonly databaseGeneration: string,
+    readonly serviceRecords: readonly IpcServiceRecord[],
     characteristicRecords: readonly IpcCharacteristicRecord[],
     descriptorRecords: readonly IpcDescriptorRecord[]
   ) {
@@ -581,12 +590,14 @@ export class IpcGattDatabase {
     const descriptors = requiredDescriptorRecords(
       requiredRecordArray(payload, 'descriptors', 'ipc-manager.gatt-database')
     )
+    const services = requiredServiceRecords(requiredRecordArray(payload, 'services', 'ipc-manager.gatt-database'))
     return new IpcGattDatabase(
       manager,
       connection,
       requiredString(payload, 'handle', 'ipc-manager.gatt-database'),
       requiredString(payload, 'databaseId', 'ipc-manager.gatt-database'),
       requiredString(payload, 'databaseGeneration', 'ipc-manager.gatt-database'),
+      services,
       characteristics,
       descriptors
     )
@@ -654,20 +665,15 @@ export class IpcGattDatabase {
 
   async snapshot(): Promise<PortableGattDatabaseSnapshot> {
     const databasePath = this.path
-    const services = []
-    const seenServices = new Set()
-    for (const characteristic of this.characteristics) {
-      const key = `${characteristic.record.serviceUuid}:${characteristic.record.serviceOccurrence}`
-      if (seenServices.has(key)) continue
-      seenServices.add(key)
-      services.push({
-        path: Object.freeze({
-          ...databasePath,
-          serviceUuid: characteristic.record.serviceUuid,
-          serviceOccurrence: String(characteristic.record.serviceOccurrence)
-        })
-      })
-    }
+    const services = this.serviceRecords.map(service => ({
+      path: Object.freeze({
+        ...databasePath,
+        serviceUuid: service.uuid,
+        serviceOccurrence: service.occurrence
+      }),
+      primary: service.primary,
+      includedServices: Object.freeze(service.includedServices.map(reference => Object.freeze({ ...reference })))
+    }))
 
     return Object.freeze({
       path: databasePath,
@@ -697,6 +703,12 @@ export class IpcGattDatabase {
               ),
               descriptorUuid: descriptor.record.uuid,
               descriptorOccurrence: String(descriptor.record.occurrence)
+            }),
+            properties: Object.freeze({
+              read: true,
+              write: true,
+              availability: Object.freeze({ read: 'known', write: 'known' }),
+              access: Object.freeze({ read: 'unknown', write: 'unknown' })
             })
           })
         )
@@ -733,6 +745,24 @@ export class IpcGattDatabase {
     return subscription
   }
 
+  async readDescriptor(
+    path: PortableCurrentDescriptorPath,
+    options: PortableOperationOptions = EMPTY_OPERATION_OPTIONS
+  ): Promise<Uint8Array> {
+    return this.descriptorForPath(path).read(toIpcOptions(options))
+  }
+
+  async writeDescriptor(
+    path: PortableCurrentDescriptorPath,
+    bytes: Readonly<Uint8Array>,
+    options: PortableWritePolicy
+  ): Promise<IpcWriteReceipt> {
+    return this.descriptorForPath(path).write(bytes, {
+      ...toIpcOptions(options),
+      mode: options.mode
+    })
+  }
+
   private characteristicForPath(path: PortableCurrentCharacteristicPath): IpcCharacteristic {
     if (!databasePathMatches(path, this.path)) {
       throw contractError('gatt.stale-handle', 'gatt', 'ipc-manager.gatt-path-identity')
@@ -754,6 +784,32 @@ export class IpcGattDatabase {
       throw new TypeError(`IPC characteristic ${path.characteristicUuid} was missing after match`)
     }
     return match
+  }
+
+  private descriptorForPath(path: PortableCurrentDescriptorPath): IpcDescriptor {
+    if (!databasePathMatches(path, this.path)) {
+      throw contractError('gatt.stale-handle', 'gatt', 'ipc-manager.gatt-descriptor-path-identity')
+    }
+    const characteristic = this.characteristics.find(
+      candidate =>
+        candidate.record.serviceUuid === path.serviceUuid &&
+        String(candidate.record.serviceOccurrence) === String(path.serviceOccurrence) &&
+        candidate.record.characteristicUuid === path.characteristicUuid &&
+        String(candidate.record.characteristicOccurrence) === String(path.characteristicOccurrence)
+    )
+    if (characteristic === undefined) {
+      throw contractError('gatt.not-found', 'gatt', 'ipc-manager.gatt-descriptor-characteristic')
+    }
+    const descriptor = this.descriptors.find(
+      candidate =>
+        candidate.record.characteristicHandle === characteristic.handle &&
+        candidate.record.uuid === path.descriptorUuid &&
+        String(candidate.record.occurrence) === String(path.descriptorOccurrence)
+    )
+    if (descriptor === undefined) {
+      throw contractError('gatt.not-found', 'gatt', 'ipc-manager.gatt-descriptor')
+    }
+    return descriptor
   }
 }
 
@@ -986,6 +1042,7 @@ function requiredTerminalReason(
     value === 'source-failed' ||
     value === 'owner-released' ||
     value === 'connection-lost' ||
+    value === 'service-changed' ||
     value === 'operation-aborted' ||
     value === 'operation-timed-out'
   ) {
@@ -1249,6 +1306,66 @@ function isIpcCharacteristicRecord(value: unknown): value is IpcCharacteristicRe
     Array.isArray(properties) &&
     properties.every(entry => typeof entry === 'string')
   )
+}
+
+function isIpcServiceRecord(value: unknown): value is IpcServiceRecord {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
+  const uuid: unknown = Reflect.get(value, 'uuid')
+  const occurrence: unknown = Reflect.get(value, 'occurrence')
+  const primary: unknown = Reflect.get(value, 'primary')
+  const includedServices: unknown = Reflect.get(value, 'includedServices')
+  return (
+    typeof uuid === 'string' &&
+    uuid.length > 0 &&
+    typeof occurrence === 'string' &&
+    occurrence.length > 0 &&
+    typeof primary === 'boolean' &&
+    Array.isArray(includedServices) &&
+    includedServices.every(reference => {
+      if (typeof reference !== 'object' || reference === null || Array.isArray(reference)) return false
+      const referenceUuid: unknown = Reflect.get(reference, 'uuid')
+      const referenceOccurrence: unknown = Reflect.get(reference, 'occurrence')
+      return (
+        typeof referenceUuid === 'string' &&
+        referenceUuid.length > 0 &&
+        typeof referenceOccurrence === 'string' &&
+        referenceOccurrence.length > 0
+      )
+    })
+  )
+}
+
+function requiredServiceRecords(records: readonly SerializableRecord[]): readonly IpcServiceRecord[] {
+  const services: IpcServiceRecord[] = []
+  for (const record of records) {
+    if (!isIpcServiceRecord(record)) {
+      throw contractError('protocol.malformed', 'ipc', 'ipc-manager.gatt-service-record')
+    }
+    const includedServicesValue = Reflect.get(record, 'includedServices')
+    if (!Array.isArray(includedServicesValue)) {
+      throw contractError('protocol.malformed', 'ipc', 'ipc-manager.gatt-service-included-services')
+    }
+    const includedServices = includedServicesValue.map(reference => {
+      if (typeof reference !== 'object' || reference === null || Array.isArray(reference)) {
+        throw contractError('protocol.malformed', 'ipc', 'ipc-manager.gatt-service-reference')
+      }
+      const uuid = Reflect.get(reference, 'uuid')
+      const occurrence = Reflect.get(reference, 'occurrence')
+      if (typeof uuid !== 'string' || typeof occurrence !== 'string') {
+        throw contractError('protocol.malformed', 'ipc', 'ipc-manager.gatt-service-reference')
+      }
+      return Object.freeze({ uuid, occurrence })
+    })
+    services.push(
+      Object.freeze({
+        uuid: record.uuid,
+        occurrence: record.occurrence,
+        primary: record.primary,
+        includedServices: Object.freeze(includedServices)
+      })
+    )
+  }
+  return Object.freeze(services)
 }
 
 function isIpcDescriptorRecord(value: unknown): value is IpcDescriptorRecord {

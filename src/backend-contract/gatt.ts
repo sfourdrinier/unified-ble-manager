@@ -19,6 +19,11 @@ import type { PublicOperationOptions, SubscriptionOptions, WriteMode, WritePolic
 import type { BoundedAsyncStream } from './streams'
 
 export type PathValidity = 'current' | 'stale'
+export interface GattDatabaseChangedEvent {
+  readonly previousGeneration: string
+  readonly reason: 'service-changed' | 'reconnect' | 'backend-reset' | 'manual-rediscovery'
+  readonly affectedHandleRange: { readonly start: number; readonly end: number } | null
+}
 export interface DevicePath<Attachment extends string> {
   readonly attachment: AttachmentRecord<Attachment>
   readonly attachmentId: AttachmentId<Attachment>
@@ -74,6 +79,8 @@ export interface Service<
   Occurrence extends string
 > {
   readonly path: ServicePath<Attachment, Connection, Database, Occurrence>
+  readonly primary: boolean
+  readonly includedServices: readonly GattServiceReference[]
 }
 export interface Characteristic<
   Attachment extends string,
@@ -84,13 +91,110 @@ export interface Characteristic<
 > {
   readonly path: CharacteristicPath<Attachment, Connection, Database, ServiceOccurrence, Occurrence>
   readonly properties: CharacteristicProperties
+  readonly access: GattAccessRequirements
 }
 /** Complete normalized operation metadata captured at GATT discovery time. */
 export interface CharacteristicProperties {
+  readonly broadcast: boolean
+  readonly read: boolean
+  readonly writeWithResponse: boolean
+  readonly writeWithoutResponse: boolean
+  readonly authenticatedSignedWrites: boolean
+  readonly notify: boolean
+  readonly indicate: boolean
+  readonly extendedProperties: boolean
+  readonly reliableWrite: boolean
+  readonly writableAuxiliaries: boolean
+  readonly availability: GattCharacteristicPropertyAvailability
+}
+export interface GattCharacteristicPropertyAvailability {
+  readonly broadcast: 'known' | 'unknown'
+  readonly read: 'known' | 'unknown'
+  readonly writeWithResponse: 'known' | 'unknown'
+  readonly writeWithoutResponse: 'known' | 'unknown'
+  readonly authenticatedSignedWrites: 'known' | 'unknown'
+  readonly notify: 'known' | 'unknown'
+  readonly indicate: 'known' | 'unknown'
+  readonly extendedProperties: 'known' | 'unknown'
+  readonly reliableWrite: 'known' | 'unknown'
+  readonly writableAuxiliaries: 'known' | 'unknown'
+}
+export interface GattAccessRequirements {
+  readonly read: 'none' | 'encrypted' | 'authenticated' | 'authorized' | 'unknown'
+  readonly write: 'none' | 'encrypted' | 'authenticated' | 'authorized' | 'unknown'
+}
+export interface GattDescriptorProperties {
+  readonly read: boolean
+  readonly write: boolean
+  readonly availability: {
+    readonly read: 'known' | 'unknown'
+    readonly write: 'known' | 'unknown'
+  }
+  readonly access: GattAccessRequirements
+}
+export interface GattServiceReference {
+  readonly uuid: Uuid
+  readonly occurrence: string
+}
+
+export interface GattCharacteristicPropertyInput {
   readonly read: boolean
   readonly writeWithResponse: boolean
   readonly writeWithoutResponse: boolean
   readonly notify: boolean
+  readonly indicate?: boolean
+  readonly broadcast?: boolean
+  readonly authenticatedSignedWrites?: boolean
+  readonly extendedProperties?: boolean
+  readonly reliableWrite?: boolean
+  readonly writableAuxiliaries?: boolean
+  readonly availability?: Partial<GattCharacteristicPropertyAvailability>
+}
+
+export function createGattCharacteristicProperties(input: GattCharacteristicPropertyInput): CharacteristicProperties {
+  const optionalAvailability = input.availability ?? {}
+  return Object.freeze({
+    broadcast: input.broadcast ?? false,
+    read: input.read,
+    writeWithResponse: input.writeWithResponse,
+    writeWithoutResponse: input.writeWithoutResponse,
+    authenticatedSignedWrites: input.authenticatedSignedWrites ?? false,
+    notify: input.notify,
+    indicate: input.indicate ?? false,
+    extendedProperties: input.extendedProperties ?? false,
+    reliableWrite: input.reliableWrite ?? false,
+    writableAuxiliaries: input.writableAuxiliaries ?? false,
+    availability: Object.freeze({
+      broadcast: optionalAvailability.broadcast ?? (input.broadcast === undefined ? 'unknown' : 'known'),
+      read: optionalAvailability.read ?? 'known',
+      writeWithResponse: optionalAvailability.writeWithResponse ?? 'known',
+      writeWithoutResponse: optionalAvailability.writeWithoutResponse ?? 'known',
+      authenticatedSignedWrites:
+        optionalAvailability.authenticatedSignedWrites ??
+        (input.authenticatedSignedWrites === undefined ? 'unknown' : 'known'),
+      notify: optionalAvailability.notify ?? 'known',
+      indicate: optionalAvailability.indicate ?? (input.indicate === undefined ? 'unknown' : 'known'),
+      extendedProperties:
+        optionalAvailability.extendedProperties ?? (input.extendedProperties === undefined ? 'unknown' : 'known'),
+      reliableWrite: optionalAvailability.reliableWrite ?? (input.reliableWrite === undefined ? 'unknown' : 'known'),
+      writableAuxiliaries:
+        optionalAvailability.writableAuxiliaries ?? (input.writableAuxiliaries === undefined ? 'unknown' : 'known')
+    })
+  })
+}
+
+export function createGattDescriptorProperties(
+  read: boolean,
+  write: boolean,
+  availability: GattDescriptorProperties['availability'],
+  access: GattAccessRequirements
+): GattDescriptorProperties {
+  return Object.freeze({
+    read,
+    write,
+    availability: Object.freeze({ ...availability }),
+    access: Object.freeze({ ...access })
+  })
 }
 export interface Descriptor<
   Attachment extends string,
@@ -108,6 +212,7 @@ export interface Descriptor<
     CharacteristicOccurrence,
     Occurrence
   >
+  readonly properties: GattDescriptorProperties
 }
 export interface GattDatabaseSnapshot<Attachment extends string, Connection extends string, Database extends string> {
   readonly path: DatabasePath<Attachment, Connection, Database>

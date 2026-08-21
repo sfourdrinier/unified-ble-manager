@@ -3,17 +3,19 @@
 import type { BackendConnection, BackendSubscription, ConnectionLease, ScanLease } from '../../backend-contract/backend'
 import type { AdvertisementObservation } from '../../backend-contract/advertisement'
 import type { CleanupRecord } from '../../backend-contract/errors'
-import type {
-  Characteristic,
-  CharacteristicPath,
-  DatabasePath,
-  Descriptor,
-  DescriptorPath,
-  GattDatabase,
-  GattDatabaseSnapshot,
-  NotificationValue,
-  Service,
-  Subscription
+import {
+  createGattCharacteristicProperties,
+  createGattDescriptorProperties,
+  type Characteristic,
+  type CharacteristicPath,
+  type DatabasePath,
+  type Descriptor,
+  type DescriptorPath,
+  type GattDatabase,
+  type GattDatabaseSnapshot,
+  type NotificationValue,
+  type Service,
+  type Subscription
 } from '../../backend-contract/gatt'
 import { attachmentRecordsEqual, type AttachmentRecord } from '../../backend-contract/identity'
 import type {
@@ -44,6 +46,17 @@ import type {
   BluezSubscriptionRecord
 } from './bluez-runtime-types'
 import { BLUEZ_GATT_CHARACTERISTIC_INTERFACE, BLUEZ_GATT_DESCRIPTOR_INTERFACE } from './bluez-dbus-contract'
+
+function bluezAccessRequirement(
+  flags: readonly string[],
+  operation: 'read' | 'write'
+): 'none' | 'encrypted' | 'authenticated' | 'authorized' | 'unknown' {
+  if (flags.includes(`secure-${operation}`) || flags.includes(`encrypt-${operation}`)) return 'encrypted'
+  if (flags.includes(`encrypt-authenticated-${operation}`)) return 'authenticated'
+  if (flags.includes(`authorize-${operation}`)) return 'authorized'
+  if (flags.includes(operation) || flags.includes(`${operation}-without-response`)) return 'none'
+  return 'unknown'
+}
 
 export const releasedBluezCleanup: CleanupRecord = Object.freeze({ state: 'released', failures: Object.freeze([]) })
 
@@ -150,7 +163,13 @@ export class BluezGattDatabase implements GattDatabase<string, string, string> {
         serviceUuid: service.uuid,
         serviceOccurrence: opaqueId(service.objectPath, 'service-occurrence', String(this.path.databaseId))
       }
-      services.push(Object.freeze({ path: Object.freeze(servicePath) }))
+      services.push(
+        Object.freeze({
+          path: Object.freeze(servicePath),
+          primary: true,
+          includedServices: Object.freeze([])
+        })
+      )
       for (const characteristic of service.characteristics) {
         const characteristicPath: CharacteristicPath<string, string, string, string, string, 'current'> = {
           ...servicePath,
@@ -165,11 +184,21 @@ export class BluezGattDatabase implements GattDatabase<string, string, string> {
         characteristics.push(
           Object.freeze({
             path: Object.freeze(characteristicPath),
-            properties: Object.freeze({
+            properties: createGattCharacteristicProperties({
+              broadcast: characteristic.flags.includes('broadcast'),
               read: characteristic.flags.includes('read'),
               writeWithResponse: characteristic.flags.includes('write'),
               writeWithoutResponse: characteristic.flags.includes('write-without-response'),
-              notify: characteristic.flags.includes('notify') || characteristic.flags.includes('indicate')
+              authenticatedSignedWrites: characteristic.flags.includes('authenticated-signed-writes'),
+              notify: characteristic.flags.includes('notify'),
+              indicate: characteristic.flags.includes('indicate'),
+              extendedProperties: characteristic.flags.includes('extended-properties'),
+              reliableWrite: characteristic.flags.includes('reliable-write'),
+              writableAuxiliaries: characteristic.flags.includes('writable-auxiliaries')
+            }),
+            access: Object.freeze({
+              read: bluezAccessRequirement(characteristic.flags, 'read'),
+              write: bluezAccessRequirement(characteristic.flags, 'write')
             })
           })
         )
@@ -183,7 +212,17 @@ export class BluezGattDatabase implements GattDatabase<string, string, string> {
               String(characteristicPath.characteristicOccurrence)
             )
           }
-          descriptors.push(Object.freeze({ path: Object.freeze(descriptorPath) }))
+          descriptors.push(
+            Object.freeze({
+              path: Object.freeze(descriptorPath),
+              properties: createGattDescriptorProperties(
+                false,
+                false,
+                { read: 'unknown', write: 'unknown' },
+                { read: 'unknown', write: 'unknown' }
+              )
+            })
+          )
         }
       }
     }

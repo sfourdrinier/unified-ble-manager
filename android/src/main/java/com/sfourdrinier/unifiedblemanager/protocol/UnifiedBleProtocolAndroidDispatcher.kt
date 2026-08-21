@@ -737,9 +737,10 @@ class UnifiedBleProtocolAndroidDispatcher(
                 (characteristic.properties and BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE) != 0
               ),
               5 to ProtocolWireValue.BooleanValue(
-                (characteristic.properties and (
-                  BluetoothGattCharacteristic.PROPERTY_NOTIFY or BluetoothGattCharacteristic.PROPERTY_INDICATE
-                )) != 0
+                (characteristic.properties and BluetoothGattCharacteristic.PROPERTY_NOTIFY) != 0
+              ),
+              6 to ProtocolWireValue.BooleanValue(
+                (characteristic.properties and BluetoothGattCharacteristic.PROPERTY_INDICATE) != 0
               )
             )
           )

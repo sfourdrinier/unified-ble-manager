@@ -314,9 +314,9 @@ class InMemoryWebBluetoothTckBoundary {
     }
     if (
       input.serviceUuid !== this.serviceUuid ||
-      input.serviceOccurrence !== 1 ||
+      input.serviceOccurrence !== 0 ||
       input.characteristicUuid !== this.characteristicUuid ||
-      input.characteristicOccurrence !== 1
+      input.characteristicOccurrence !== 0
     ) {
       throw new Error('In-memory Web Bluetooth notification input does not address the deterministic characteristic')
     }

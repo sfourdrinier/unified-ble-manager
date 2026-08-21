@@ -16,6 +16,7 @@ import type { AdapterSelection } from '../backend-contract/identity'
 import type { CapabilityDescriptor, FeatureId } from '../backend-contract/capabilities'
 import type {
   PublicOperationOptions,
+  LongWritePolicy,
   SubscriptionOptions,
   WriteMode,
   WritePolicy
@@ -480,6 +481,10 @@ function toPublicWritePolicy(options: PortableWritePolicy): WritePolicy {
   return { ...toPublicOperationOptions(options), mode: options.mode }
 }
 
+function toPublicLongWritePolicy(options: PortableWritePolicy): LongWritePolicy {
+  return { ...toPublicWritePolicy(options), chunkSize: options.chunkSize }
+}
+
 function toPublicSubscriptionOptions(options: PortableSubscriptionOptions): SubscriptionOptions {
   return {
     ...toPublicOperationOptions(options),
@@ -488,7 +493,8 @@ function toPublicSubscriptionOptions(options: PortableSubscriptionOptions): Subs
       byteCapacity: capacity(options.delivery.byteCapacity),
       reservedControlCapacity: capacity(options.delivery.reservedControlCapacity),
       overflowPolicy: options.delivery.overflowPolicy
-    }
+    },
+    deliveryMode: options.deliveryMode
   }
 }
 
@@ -652,6 +658,14 @@ export class DiscoveredGattDatabase<Attachment extends string, Identity extends 
     return this.database.monotonicNow()
   }
 
+  assertCurrent(): void {
+    this.database.assertCurrent()
+  }
+
+  get changed() {
+    return this.database.changed
+  }
+
   scheduleDeadline(deadlineAt: number, action: () => void): DeadlineHandle {
     return this.database.scheduleDeadline(deadlineAt, action)
   }
@@ -673,7 +687,7 @@ export class DiscoveredGattDatabase<Attachment extends string, Identity extends 
   }
 
   async writeLong(path: PortableCurrentCharacteristicPath, bytes: Readonly<Uint8Array>, options: PortableWritePolicy) {
-    return this.database.writeLong(this.resolveCharacteristicPath(path), bytes, toPublicWritePolicy(options))
+    return this.database.writeLong(this.resolveCharacteristicPath(path), bytes, toPublicLongWritePolicy(options))
   }
 
   async readDescriptor(path: PortableCurrentDescriptorPath, options: PortableOperationOptions) {

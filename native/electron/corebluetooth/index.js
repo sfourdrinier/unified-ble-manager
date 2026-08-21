@@ -232,6 +232,7 @@ async function discoverGattDatabase(radio, nativePeerId) {
         writableWithResponse: characteristic.isWritableWithResponse === true,
         writableWithoutResponse: characteristic.isWritableWithoutResponse === true,
         notifiable: characteristic.isNotifiable === true,
+        indicatable: characteristic.isIndicatable === true,
         descriptors
       })
     }

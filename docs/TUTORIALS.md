@@ -56,18 +56,17 @@ The advertised name is `observation.localName`. `observation.device` is identity
 
 ## Read and write
 
-Resolve paths from the current snapshot. Do not invent occurrences or generations.
+Use generation-bound objects from the current discovery. Do not invent
+occurrences or generations.
 
 ```ts
-import { resolveCharacteristicPath } from 'unified-ble-manager/profiles/commands'
-import { batteryLevelSelector } from 'unified-ble-manager/profiles/battery-service'
-import { encodeResetEnergyExpended, heartRateControlPointSelector } from 'unified-ble-manager/profiles/heart-rate'
+import { encodeResetEnergyExpended } from 'unified-ble-manager/profiles/heart-rate'
 
-const batteryPath = await resolveCharacteristicPath(snapshot, batteryLevelSelector())
-const bytes = await database.read(batteryPath, {
-  signal: controller.signal,
-  deadline: until
+const battery = database.characteristic('180F', '2A19', {
+  serviceOccurrence: 0,
+  characteristicOccurrence: 0
 })
+const bytes = await battery.read({ signal: controller.signal, timeoutMs: 5000 })
 ```
 
 Battery Level is optional relative to Heart Rate Service. Catch only `gatt.not-found` or `gatt.property-not-supported` if the peripheral may omit it.
@@ -76,11 +75,14 @@ Heart Rate Control Point is conditional (Energy Expended). Resolve it separately
 
 ```ts
 try {
-  const hrsControlPath = await resolveCharacteristicPath(snapshot, heartRateControlPointSelector())
-  const receipt = await database.write(hrsControlPath, encodeResetEnergyExpended(), {
+  const hrsControl = database.characteristic('180D', '2A39', {
+    serviceOccurrence: 0,
+    characteristicOccurrence: 0
+  })
+  const receipt = await hrsControl.write(encodeResetEnergyExpended(), {
     signal: controller.signal,
-    deadline: until,
-    mode: 'with-response'
+    timeoutMs: 5000,
+    response: 'required'
   })
 } catch (error) {
   if (!(error instanceof BackendContractError) || (error.normalized.code !== 'gatt.not-found' && error.normalized.code !== 'gatt.property-not-supported')) {

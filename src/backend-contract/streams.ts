@@ -28,6 +28,7 @@ export interface StreamTerminalNotice {
     | 'source-failed'
     | 'owner-released'
     | 'connection-lost'
+    | 'service-changed'
     | 'operation-aborted'
     | 'operation-timed-out'
   readonly droppedItems: ResourceCount

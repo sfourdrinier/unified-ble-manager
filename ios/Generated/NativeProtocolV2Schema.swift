@@ -199,6 +199,7 @@ public let nativeProtocolFields: [FieldDescriptor] = [
     FieldDescriptor(record: .characteristicSnapshot, fieldID: 3, name: "writableWithResponse", type: "boolean", required: true),
     FieldDescriptor(record: .characteristicSnapshot, fieldID: 4, name: "writableWithoutResponse", type: "boolean", required: true),
     FieldDescriptor(record: .characteristicSnapshot, fieldID: 5, name: "notifiable", type: "boolean", required: true),
+    FieldDescriptor(record: .characteristicSnapshot, fieldID: 6, name: "indicatable", type: "boolean", required: false),
     FieldDescriptor(record: .databaseSnapshot, fieldID: 1, name: "databasePath", type: "record:databasePath", required: true),
     FieldDescriptor(record: .databaseSnapshot, fieldID: 2, name: "services", type: "records:servicePath", required: true),
     FieldDescriptor(record: .databaseSnapshot, fieldID: 3, name: "characteristics", type: "records:characteristicSnapshot", required: true),

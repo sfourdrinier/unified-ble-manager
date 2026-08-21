@@ -640,19 +640,21 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
 
   async invalidateDatabase(
     database: CoreGattDatabase<Attachment, Identity>,
-    reason: 'connection-lost' | 'owner-released'
+    reason: 'connection-lost' | 'owner-released',
+    changeReason: import('../backend-contract/gatt').GattDatabaseChangedEvent['reason'] | null = null
   ): Promise<CleanupRecord> {
     const alreadyPending = database.connection.isPendingDatabaseCleanup(database)
     if (!database.isAttached() && !alreadyPending) {
       return { state: 'released', failures: [] }
     }
     if (!alreadyPending) {
-      database.markInvalid()
+      database.markInvalid(changeReason)
       if (database.connection.retainPendingDatabaseCleanup(database)) {
         this.resourceLedger.decrement('databaseSnapshots')
       }
     }
-    const cleanup = await this.subscriptions.invalidateDatabase(database.path, reason)
+    const subscriptionReason = changeReason === 'service-changed' ? 'service-changed' : reason
+    const cleanup = await this.subscriptions.invalidateDatabase(database.path, subscriptionReason)
     if (cleanup.state === 'released') {
       database.connection.completeDatabaseCleanup(database)
     }
@@ -767,7 +769,7 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
         const database = connection.database
         if (database !== null && database.matchesDatabasePath(event.database)) {
           this.lifecycleObserver.observeCleanup(
-            this.invalidateDatabase(database, 'connection-lost'),
+            this.invalidateDatabase(database, 'connection-lost', 'service-changed'),
             'database-changed-cleanup'
           )
         }

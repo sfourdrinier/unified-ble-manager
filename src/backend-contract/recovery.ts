@@ -18,6 +18,7 @@ export type RecoveryAction =
   | { readonly kind: 'reselect-peer' }
   | { readonly kind: 'reconnect' }
   | { readonly kind: 'rediscover-gatt' }
+  | { readonly kind: 'select-gatt-occurrence' }
   | { readonly kind: 'repair' }
   | { readonly kind: 'reduce-payload'; readonly maximumBytes: number | null }
   | { readonly kind: 'wait-for-write-ready' }
@@ -101,6 +102,7 @@ export function recoveryForCode(code: BleErrorCode, operation: string): BleRecov
     case 'gatt.cache-unknown':
       return { disposition: 'retry-immediately', actions: [{ kind: 'rediscover-gatt' }] }
     case 'gatt.ambiguous-path':
+      return { disposition: 'caller-policy', actions: [{ kind: 'select-gatt-occurrence' }] }
     case 'gatt.not-found':
     case 'gatt.property-not-supported':
     case 'gatt.read-failed':

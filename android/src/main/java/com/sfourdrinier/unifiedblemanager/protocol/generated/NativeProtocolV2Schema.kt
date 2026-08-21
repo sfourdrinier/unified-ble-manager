@@ -199,6 +199,7 @@ val NATIVE_PROTOCOL_FIELDS: List<FieldDescriptor> = listOf(
     FieldDescriptor(RecordKind.CHARACTERISTIC_SNAPSHOT, 3, "writableWithResponse", "boolean", true),
     FieldDescriptor(RecordKind.CHARACTERISTIC_SNAPSHOT, 4, "writableWithoutResponse", "boolean", true),
     FieldDescriptor(RecordKind.CHARACTERISTIC_SNAPSHOT, 5, "notifiable", "boolean", true),
+    FieldDescriptor(RecordKind.CHARACTERISTIC_SNAPSHOT, 6, "indicatable", "boolean", false),
     FieldDescriptor(RecordKind.DATABASE_SNAPSHOT, 1, "databasePath", "record:databasePath", true),
     FieldDescriptor(RecordKind.DATABASE_SNAPSHOT, 2, "services", "records:servicePath", true),
     FieldDescriptor(RecordKind.DATABASE_SNAPSHOT, 3, "characteristics", "records:characteristicSnapshot", true),
