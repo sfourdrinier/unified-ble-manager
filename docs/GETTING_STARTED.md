@@ -101,19 +101,15 @@ async function ensureAndroidBluetoothPermission(): Promise<void> {
 ```ts
 import { createReactNativeBleManager } from 'unified-ble-manager/react-native'
 
-const manager = await createReactNativeBleManager({
-  clientId: 'com.example.app.ble-client',
-  managerId: 'com.example.app.ble-manager',
-  hostSessionScope: 'com.example.app'
-})
+const manager = await createReactNativeBleManager()
 ```
 
-`hostSessionScope` is the security scope for this app session. Use a stable string, not a React render id.
+The host factory owns ephemeral identity generation. Restoration-bound identity comes from the trusted native host and native configuration; application code does not pass client, manager, or host-session IDs.
 
 ### 4. Check the adapter, then run the loop
 
 ```ts
-const adapter = await manager.adapterState()
+const adapter = await manager.adapter.state()
 if (adapter.power !== 'on' || isAuthorizationBlocking(adapter.authorization) || adapter.availability !== 'available') {
   throw new Error(`Bluetooth is not ready: ${adapter.power} / ${adapter.authorization}`)
 }
