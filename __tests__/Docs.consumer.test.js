@@ -320,7 +320,7 @@ describe('consumer documentation matches the published package', () => {
     expect(readme).not.toMatch(/new\s+BleManager\s*\(/)
   })
 
-  test('stable 4.0 documentation preserves release, evidence, and deferral boundaries', () => {
+  test('RC2 documentation preserves release, evidence, and deferral boundaries', () => {
     const readme = read('README.md')
     const release = read('RELEASE.md')
     const platforms = read('docs/PLATFORMS.md')
@@ -331,7 +331,7 @@ describe('consumer documentation matches the published package', () => {
     expect(release).toContain('git tag -a v4.0.0')
     expect(release).toContain('npm trusted publishing/OIDC')
     expect(release).toContain('publishes with provenance')
-    expect(platforms).toContain('`unified-ble-manager@4.0.0` is the first **stable package/API release**')
+    expect(platforms).toContain('`unified-ble-manager@4.0.0-rc.2` is the current **release-candidate package/API**')
     expect(platforms).toContain(
       'WinRT compilation or ABI loading, for example, is not by itself a Windows live-radio claim'
     )
