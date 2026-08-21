@@ -751,6 +751,9 @@ impl BtleplugDispatcher {
         let manufacturer_filters = manufacturer_filters(&payload)?;
         let adapter = self.adapter().await?;
         let key = caller_key(caller);
+        let expected_lease_id = required_string(&payload, "__expectedLeaseId", "tauri.scan-lease")?;
+        let expected_lease_generation =
+            required_string(&payload, "__expectedLeaseGeneration", "tauri.scan-lease")?;
         let requested_services = service_uuids.clone();
         {
             let mut state = self.inner.lock().await;
@@ -779,6 +782,8 @@ impl BtleplugDispatcher {
         let stream_handle = handle.clone();
         let scan_adapter = adapter.clone();
         let stream_owner = key.clone();
+        let stream_lease_id = expected_lease_id.clone();
+        let stream_lease_generation = expected_lease_generation.clone();
         let (started_tx, started_rx) = tokio::sync::oneshot::channel();
         let task = btleplug_runtime().spawn(async move {
             let mut events = match scan_adapter.events().await {
@@ -821,6 +826,7 @@ impl BtleplugDispatcher {
                             if dispatcher
                                 .emit_scan_peripheral(
                                     &stream_owner,
+                                    (&stream_lease_id, &stream_lease_generation),
                                     &stream_handle,
                                     &peripheral,
                                     &requested_services,
@@ -831,11 +837,20 @@ impl BtleplugDispatcher {
                                 .is_err()
                             {
                                 dispatcher
-                                    .terminal(&stream_owner, &stream_handle, "source-failed")
+                                    .terminal(
+                                        &stream_owner,
+                                        (&stream_lease_id, &stream_lease_generation),
+                                        &stream_handle,
+                                        "source-failed",
+                                    )
                                     .await
                                     .ok();
                                 dispatcher
-                                    .fail_scan_stream(&stream_owner, &stream_handle)
+                                    .fail_scan_stream(
+                                        &stream_owner,
+                                        (&stream_lease_id, &stream_lease_generation),
+                                        &stream_handle,
+                                    )
                                     .await;
                                 return;
                             }
@@ -855,6 +870,7 @@ impl BtleplugDispatcher {
                         if dispatcher
                             .emit_scan_peripheral(
                                 &stream_owner,
+                                (&stream_lease_id, &stream_lease_generation),
                                 &stream_handle,
                                 &peripheral,
                                 &requested_services,
@@ -865,11 +881,20 @@ impl BtleplugDispatcher {
                             .is_err()
                         {
                             dispatcher
-                                .terminal(&stream_owner, &stream_handle, "source-failed")
+                                .terminal(
+                                    &stream_owner,
+                                    (&stream_lease_id, &stream_lease_generation),
+                                    &stream_handle,
+                                    "source-failed",
+                                )
                                 .await
                                 .ok();
                             dispatcher
-                                .fail_scan_stream(&stream_owner, &stream_handle)
+                                .fail_scan_stream(
+                                    &stream_owner,
+                                    (&stream_lease_id, &stream_lease_generation),
+                                    &stream_handle,
+                                )
                                 .await;
                             return;
                         }
@@ -880,14 +905,16 @@ impl BtleplugDispatcher {
         match started_rx.await {
             Ok(Ok(())) => {}
             Ok(Err(error)) => {
-                self.abort_scan_admission(&key).await;
+                self.abort_scan_admission(&key, (&expected_lease_id, &expected_lease_generation))
+                    .await;
                 return Err(
                     DispatchError::new("scan.start-failed", "scan", "tauri.scan-start")
                         .platform(error),
                 );
             }
             Err(_) => {
-                self.abort_scan_admission(&key).await;
+                self.abort_scan_admission(&key, (&expected_lease_id, &expected_lease_generation))
+                    .await;
                 return Err(DispatchError::new(
                     "scan.start-failed",
                     "scan",
@@ -1299,10 +1326,12 @@ impl BtleplugDispatcher {
                 resource.sequence,
                 attachment,
                 peripheral,
+                caller_state.lease_generation.clone(),
             )
         };
         self.emit(
             &key,
+            Some((&event.4, &event.8)),
             &event.0,
             object([
                 ("kind", string("connection-lifecycle")),
@@ -1328,6 +1357,8 @@ impl BtleplugDispatcher {
         let peer_id = event.1.clone();
         let connection_id = event.2.clone();
         let connection_generation = event.3.clone();
+        let expected_lease_id = event.4.clone();
+        let expected_lease_generation = event.8.clone();
         let stream_id_for_task = stream_id.clone();
         let task = tauri::async_runtime::spawn(async move {
             loop {
@@ -1338,6 +1369,7 @@ impl BtleplugDispatcher {
                         let _ = dispatcher
                             .emit_connection_lost(
                                 &stream_owner,
+                                (&expected_lease_id, &expected_lease_generation),
                                 &stream_id_for_task,
                                 &peer_id,
                                 &connection_id,
@@ -1350,6 +1382,7 @@ impl BtleplugDispatcher {
                         let _ = dispatcher
                             .emit_connection_failure(
                                 &stream_owner,
+                                (&expected_lease_id, &expected_lease_generation),
                                 &stream_id_for_task,
                                 &peer_id,
                                 &connection_id,
@@ -1365,10 +1398,17 @@ impl BtleplugDispatcher {
         });
         let mut state = self.inner.lock().await;
         if let Some(caller_state) = state.callers.get_mut(&key) {
-            if let Some(resource) = caller_state.connection_events.get_mut(&stream_id) {
-                resource.task = Some(task);
-            } else {
-                task.abort();
+            let resource = caller_state.connection_events.get_mut(&stream_id);
+            match resource {
+                Some(resource)
+                    if caller_state.lease_id == event.4
+                        && caller_state.lease_generation == event.8
+                        && resource.connection_id == event.2
+                        && resource.connection_generation == event.3 =>
+                {
+                    resource.task = Some(task);
+                }
+                _ => task.abort(),
             }
         } else {
             task.abort();
@@ -1573,6 +1613,15 @@ impl BtleplugDispatcher {
         let handle = self.id("subscription");
         let stream_handle = handle.clone();
         let key = caller_key(caller);
+        let expected_lease_id =
+            required_string(&payload, "__expectedLeaseId", "tauri.subscribe-lease")?;
+        let expected_lease_generation = required_string(
+            &payload,
+            "__expectedLeaseGeneration",
+            "tauri.subscribe-lease",
+        )?;
+        let subscription_lease_id = expected_lease_id.clone();
+        let subscription_lease_generation = expected_lease_generation.clone();
         let uuid = characteristic.uuid;
         let dispatcher = self.clone();
         let task = tauri::async_runtime::spawn(async move {
@@ -1587,6 +1636,7 @@ impl BtleplugDispatcher {
                 if dispatcher
                     .emit(
                         &key,
+                        Some((&subscription_lease_id, &subscription_lease_generation)),
                         &stream_handle,
                         object([
                             ("value", IpcValue::Bytes(notification.value)),
@@ -1600,21 +1650,39 @@ impl BtleplugDispatcher {
                     .is_err()
                 {
                     dispatcher
-                        .terminal(&key, &stream_handle, "source-failed")
+                        .terminal(
+                            &key,
+                            (&subscription_lease_id, &subscription_lease_generation),
+                            &stream_handle,
+                            "source-failed",
+                        )
                         .await
                         .ok();
                     dispatcher
-                        .fail_subscription_stream(&key, &stream_handle)
+                        .fail_subscription_stream(
+                            &key,
+                            (&subscription_lease_id, &subscription_lease_generation),
+                            &stream_handle,
+                        )
                         .await;
                     return;
                 }
             }
             dispatcher
-                .terminal(&key, &stream_handle, "source-failed")
+                .terminal(
+                    &key,
+                    (&subscription_lease_id, &subscription_lease_generation),
+                    &stream_handle,
+                    "source-failed",
+                )
                 .await
                 .ok();
             dispatcher
-                .fail_subscription_stream(&key, &stream_handle)
+                .fail_subscription_stream(
+                    &key,
+                    (&subscription_lease_id, &subscription_lease_generation),
+                    &stream_handle,
+                )
                 .await;
         });
         let mut state = self.inner.lock().await;
@@ -1949,9 +2017,14 @@ impl BtleplugDispatcher {
         Ok(object([("kind", string("release")), ("cleanup", cleanup)]))
     }
 
-    async fn abort_scan_admission(&self, key: &str) {
+    async fn abort_scan_admission(&self, key: &str, expected_lease: (&str, &str)) {
         let mut state = self.inner.lock().await;
         if let Some(caller_state) = state.callers.get_mut(key) {
+            if caller_state.lease_id != expected_lease.0
+                || caller_state.lease_generation != expected_lease.1
+            {
+                return;
+            }
             caller_state.scan_admitting = false;
         }
         if state.scan_owner.as_deref() == Some(key) {
@@ -1962,6 +2035,7 @@ impl BtleplugDispatcher {
     async fn emit(
         &self,
         caller_key: &str,
+        expected_lease: Option<(&str, &str)>,
         stream_id: &str,
         value: IpcValue,
         drop_if_full: bool,
@@ -1971,6 +2045,15 @@ impl BtleplugDispatcher {
             let caller_state = state.callers.get_mut(caller_key).ok_or_else(|| {
                 DispatchError::new("ownership.denied", "stream", "tauri.event-owner")
             })?;
+            if expected_lease.is_some_and(|lease| {
+                caller_state.lease_id != lease.0 || caller_state.lease_generation != lease.1
+            }) {
+                return Err(DispatchError::new(
+                    "ownership.denied",
+                    "stream",
+                    "tauri.event-stale-lease",
+                ));
+            }
             if caller_state.pending_events.len() >= MAX_PENDING_EVENTS {
                 if drop_if_full {
                     return Ok(());
@@ -2014,6 +2097,7 @@ impl BtleplugDispatcher {
     async fn emit_connection_lost(
         &self,
         caller_key: &str,
+        expected_lease: (&str, &str),
         stream_id: &str,
         peer_id: &str,
         connection_id: &str,
@@ -2021,6 +2105,7 @@ impl BtleplugDispatcher {
     ) -> Result<(), DispatchError> {
         self.emit_connection_failure(
             caller_key,
+            expected_lease,
             stream_id,
             peer_id,
             connection_id,
@@ -2034,6 +2119,7 @@ impl BtleplugDispatcher {
     async fn emit_connection_failure(
         &self,
         caller_key: &str,
+        expected_lease: (&str, &str),
         stream_id: &str,
         peer_id: &str,
         connection_id: &str,
@@ -2057,6 +2143,13 @@ impl BtleplugDispatcher {
                     "tauri.connection-events-owner",
                 )
             })?;
+            if caller.lease_id != expected_lease.0 || caller.lease_generation != expected_lease.1 {
+                return Err(DispatchError::new(
+                    "ownership.denied",
+                    "connection",
+                    "tauri.connection-events-stale-lease",
+                ));
+            }
             let resource = caller.connection_events.get_mut(stream_id).ok_or_else(|| {
                 DispatchError::new(
                     "gatt.stale-handle",
@@ -2084,9 +2177,11 @@ impl BtleplugDispatcher {
                 ("cause", string(cause)),
             ])
         };
-        let send_result = self.emit(caller_key, stream_id, event, false).await;
+        let send_result = self
+            .emit(caller_key, Some(expected_lease), stream_id, event, false)
+            .await;
         if send_result.is_ok() {
-            self.terminal(caller_key, stream_id, terminal_reason)
+            self.terminal(caller_key, expected_lease, stream_id, terminal_reason)
                 .await
                 .ok();
         }
@@ -2104,6 +2199,7 @@ impl BtleplugDispatcher {
     async fn emit_scan_peripheral(
         &self,
         stream_owner: &str,
+        expected_lease: (&str, &str),
         stream_handle: &str,
         peripheral: &Peripheral,
         requested_services: &[Uuid],
@@ -2112,11 +2208,17 @@ impl BtleplugDispatcher {
     ) -> Result<(), DispatchError> {
         {
             let state = self.inner.lock().await;
-            if state
-                .callers
-                .get(stream_owner)
-                .is_some_and(|caller| caller.scan_admitting)
-            {
+            let caller = state.callers.get(stream_owner).ok_or_else(|| {
+                DispatchError::new("ownership.denied", "stream", "tauri.scan-event-owner")
+            })?;
+            if caller.lease_id != expected_lease.0 || caller.lease_generation != expected_lease.1 {
+                return Err(DispatchError::new(
+                    "ownership.denied",
+                    "stream",
+                    "tauri.scan-event-stale-lease",
+                ));
+            }
+            if caller.scan_admitting {
                 return Ok(());
             }
         }
@@ -2133,13 +2235,20 @@ impl BtleplugDispatcher {
             return Ok(());
         };
         let observation = peripheral_observation(peripheral, properties);
-        self.emit(stream_owner, stream_handle, observation, true)
-            .await
+        self.emit(
+            stream_owner,
+            Some(expected_lease),
+            stream_handle,
+            observation,
+            true,
+        )
+        .await
     }
 
     async fn terminal(
         &self,
         caller_key: &str,
+        expected_lease: (&str, &str),
         stream_id: &str,
         reason: &str,
     ) -> Result<(), DispatchError> {
@@ -2148,6 +2257,15 @@ impl BtleplugDispatcher {
             let caller_state = state.callers.get_mut(caller_key).ok_or_else(|| {
                 DispatchError::new("ownership.denied", "stream", "tauri.terminal-owner")
             })?;
+            if caller_state.lease_id != expected_lease.0
+                || caller_state.lease_generation != expected_lease.1
+            {
+                return Err(DispatchError::new(
+                    "ownership.denied",
+                    "stream",
+                    "tauri.terminal-stale-lease",
+                ));
+            }
             let event_id = self.id("event-terminal");
             caller_state.pending_events.insert(event_id.clone());
             (
@@ -2178,9 +2296,20 @@ impl BtleplugDispatcher {
         })
     }
 
-    async fn fail_scan_stream(&self, caller_key: &str, stream_id: &str) {
+    async fn fail_scan_stream(
+        &self,
+        caller_key: &str,
+        expected_lease: (&str, &str),
+        stream_id: &str,
+    ) {
         let should_stop = {
             let mut state = self.inner.lock().await;
+            let lease_matches = state.callers.get(caller_key).is_some_and(|caller| {
+                caller.lease_id == expected_lease.0 && caller.lease_generation == expected_lease.1
+            });
+            if !lease_matches {
+                return;
+            }
             let scan = state
                 .callers
                 .get_mut(caller_key)
@@ -2207,14 +2336,22 @@ impl BtleplugDispatcher {
         }
     }
 
-    async fn fail_subscription_stream(&self, caller_key: &str, stream_id: &str) {
-        let subscription = self
-            .inner
-            .lock()
-            .await
-            .callers
-            .get_mut(caller_key)
-            .and_then(|caller| caller.subscriptions.remove(stream_id));
+    async fn fail_subscription_stream(
+        &self,
+        caller_key: &str,
+        expected_lease: (&str, &str),
+        stream_id: &str,
+    ) {
+        let subscription = {
+            let mut state = self.inner.lock().await;
+            let Some(caller) = state.callers.get_mut(caller_key) else {
+                return;
+            };
+            if caller.lease_id != expected_lease.0 || caller.lease_generation != expected_lease.1 {
+                return;
+            }
+            caller.subscriptions.remove(stream_id)
+        };
         if let Some(subscription) = subscription {
             subscription.task.abort();
             if subscription
@@ -2254,6 +2391,7 @@ impl BtleplugDispatcher {
     }
 
     async fn release_revoked(&self, key: String, revocation: u64) {
+        let _admission = self.bootstrap_admission.lock().await;
         if self
             .revoked_callers
             .lock()
@@ -2282,6 +2420,13 @@ impl BtleplugDispatcher {
             cancellation.cancel();
         }
         caller.operations.clear();
+        if caller.scan_admitting {
+            caller.scan_admitting = false;
+            let mut state = self.inner.lock().await;
+            if state.scan_owner.as_deref() == Some(key) {
+                state.scan_owner = None;
+            }
+        }
         for resource in caller.connection_events.values_mut() {
             if let Some(task) = resource.task.take() {
                 task.abort();

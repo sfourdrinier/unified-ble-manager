@@ -294,7 +294,7 @@ export function snapshotCapabilityDescriptors(
 export function validateCapabilitySnapshot(
   snapshot: CapabilitySnapshot,
   expectedBackendGeneration: string,
-  requireCatalogComplete: boolean = false
+  requireCatalogComplete = false
 ): CapabilitySnapshot {
   if (snapshot.schemaVersion !== 2 || snapshot.backendGeneration !== expectedBackendGeneration) {
     throw contractError('protocol.violation', 'capability', 'validateCapabilitySnapshot.authority')
