@@ -41,6 +41,12 @@ function assertNotExported(specifier) {
   )
 }
 
+function negotiated(axis, value) {
+  const selected = Object.freeze({ axis, value })
+  const range = Object.freeze({ axis, minimum: selected, maximum: selected })
+  return Object.freeze({ axis, selected, localRange: range, remoteRange: range })
+}
+
 function createBootstrapResponse() {
   return {
     kind: 'bootstrap',
@@ -48,11 +54,11 @@ function createBootstrapResponse() {
       attachment: Object.freeze({ attachmentId: 'packed-attachment', backendGeneration: 'packed-backend-generation' }),
       attachmentId: 'packed-attachment',
       versions: Object.freeze({
-        backendContract: Object.freeze({ selected: Object.freeze({ value: 1 }) }),
-        capabilitySchema: Object.freeze({ selected: Object.freeze({ value: 1 }) }),
-        eventSchema: Object.freeze({ selected: Object.freeze({ value: 1 }) }),
-        traceFormat: Object.freeze({ selected: Object.freeze({ value: 1 }) }),
-        ipcProtocol: Object.freeze({ selected: Object.freeze({ value: 2 }) })
+        backendContract: negotiated('backend-contract', 1),
+        capabilitySchema: negotiated('capability-schema', 1),
+        eventSchema: negotiated('event-schema', 1),
+        traceFormat: negotiated('trace-format', 1),
+        ipcProtocol: negotiated('ipc-protocol', 2)
       }),
       capabilities: Object.freeze({
         schemaVersion: 2,
