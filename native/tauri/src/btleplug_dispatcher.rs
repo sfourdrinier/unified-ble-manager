@@ -2160,7 +2160,11 @@ impl BtleplugDispatcher {
             }
             if caller_state.pending_events.len() >= MAX_PENDING_EVENTS {
                 if drop_if_full {
-                    return Ok(());
+                    return Err(DispatchError::new(
+                        "stream.quota",
+                        "stream",
+                        "tauri.event-retention",
+                    ));
                 }
                 return Err(DispatchError::new(
                     "stream.quota",
