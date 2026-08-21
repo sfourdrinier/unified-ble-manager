@@ -389,11 +389,7 @@ function createPackedBrowserBundleConsumer(tmp, rootTgz, npmEnvironment) {
       '}',
       '',
       'export function createBrowserBleManager(environment) {',
-      '  return webBluetooth.createWebBleManagerWithEnvironment({ environment: environment as any }); // was createNavigatorWebBleManager',
-      '    environment,',
-      "    clientId: 'packed-browser-bundle-client',",
-      "    managerId: 'packed-browser-bundle-manager'",
-      '  })',
+      '  return webBluetooth.createWebBleManagerWithEnvironment({ environment })',
       '}',
       ''
     ].join('\n')

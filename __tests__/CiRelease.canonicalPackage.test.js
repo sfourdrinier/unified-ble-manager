@@ -160,26 +160,26 @@ describe('ci-release canonical package (4.0)', () => {
     expect(pkg.scripts['example:electron:ui:live']).toBeUndefined()
   })
 
-  // R2-F036: Linux package matrix includes Node 24 (publish line) and 20.19.4 floor
-  test('R2-F036 setup-js-package accepts node-version; Linux package matrices 20.19.4 and 24', () => {
+  // R2-F036: Linux package matrix includes Node 24 (publish line) and 22 floor (20 removed)
+  test('R2-F036 setup-js-package accepts node-version; Linux package matrices 22 and 24', () => {
     const action = read('.github/actions/setup-js-package/action.yml')
     expect(action).toContain('node-version:')
-    expect(action).toContain("default: '20.19.4'")
+    expect(action).toContain("default: '22'")
     expect(action).toContain('${{ inputs.node-version }}')
     const ci = read('.github/workflows/ci.yml')
-    expect(ci).toContain("node: '20.19.4'")
+    expect(ci).toContain("node: '22'")
     expect(ci).toContain("node: '24'")
+    expect(ci).not.toContain("node: '20.19.4'")
     expect(ci).toContain('node-version: ${{ matrix.node }}')
     const publish = read('.github/workflows/publish.yml')
     expect(publish).toContain('node-version: 24')
   })
 
-  test('keeps macOS and Windows package coverage on Node 20 while routing native host gates to Node 22', () => {
+  test('keeps macOS and Windows package coverage on Node 22', () => {
     const ci = read('.github/workflows/ci.yml')
-    expect(ci).toMatch(/- os: macos-latest\n\s+node: '20\.19\.4'/)
     expect(ci).toMatch(/- os: macos-latest\n\s+node: '22'/)
-    expect(ci).toMatch(/- os: windows-latest\n\s+node: '20\.19\.4'/)
     expect(ci).toMatch(/- os: windows-latest\n\s+node: '22'/)
+    expect(ci).not.toContain("node: '20.19.4'")
     expect(ci).toContain(
       "if: (runner.os == 'macOS' && matrix.node == '22') || (runner.os == 'Windows' && matrix.node == '22')"
     )

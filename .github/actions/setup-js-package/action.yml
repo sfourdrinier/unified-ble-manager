@@ -7,10 +7,10 @@ inputs:
     default: 'true'
   node-version:
     description: >
-      Node version for install/test (default 20.19.4 engines floor).
+      Node version for install/test (default 22 engines floor).
       Publish uses Node 24; Linux package matrix also runs 24 (R2-F036).
     required: false
-    default: '20.19.4'
+    default: '22'
 runs:
   using: composite
   steps:
