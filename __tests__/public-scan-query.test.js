@@ -155,4 +155,33 @@ describe('canonical public ScanQuery v1', () => {
     }
     await expect(findPeerInScan(scan, 'first')).rejects.toMatchObject({ code: 'stream.closed' })
   })
+
+  test('coalesces duplicate Tauri-style observations only when requested', async () => {
+    const source = new CoreBoundedStream(
+      { itemCapacity: capacity(8), byteCapacity: capacity(4096), reservedControlCapacity: capacity(1) },
+      'drop-oldest'
+    )
+    const filtered = filterScanObservations(source, normalizeScanQuery(), 'coalesced')
+    const first = filtered[Symbol.asyncIterator]()
+    const firstValue = first.next()
+    const observation = {
+      peerId: 'duplicate-peer',
+      localName: 'Duplicate',
+      rssi: -40,
+      txPowerLevel: null,
+      serviceUuids: [],
+      manufacturerData: [],
+      serviceData: []
+    }
+    source.emit(observation, 32)
+    source.emit(observation, 32)
+    await expect(firstValue).resolves.toMatchObject({
+      value: { kind: 'value', value: { peer: { id: 'duplicate-peer' } } }
+    })
+    const second = first.next()
+    source.closeWithReason('closed')
+    await expect(second).resolves.toMatchObject({ value: { kind: 'terminal', reason: 'closed' } })
+    await expect(first.next()).resolves.toMatchObject({ done: true })
+    await first.return()
+  })
 })
