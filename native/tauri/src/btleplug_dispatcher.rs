@@ -384,10 +384,7 @@ impl BtleplugDispatcher {
                         "capabilities",
                         capabilities::snapshot(&attachment.backend_generation),
                     ),
-                    (
-                        "discovery",
-                        object([("kind", string("continuous-scan"))]),
-                    ),
+                    ("discovery", object([("kind", string("continuous-scan"))])),
                     ("renderer", renderer),
                     (
                         "rendererLease",
@@ -1543,62 +1540,61 @@ impl BtleplugDispatcher {
         let database_generation = self.id("database-generation");
         let mut characteristic_map = HashMap::new();
         let mut descriptor_map = HashMap::new();
-        let mut service_uuids = HashSet::new();
         let mut service_records = Vec::new();
         let mut characteristic_records = Vec::new();
         let mut descriptor_records = Vec::new();
-        let mut occurrences: HashMap<(Uuid, Uuid), usize> = HashMap::new();
+        let mut service_occurrences: HashMap<Uuid, usize> = HashMap::new();
+        let mut characteristic_occurrences: HashMap<(Uuid, usize, Uuid), usize> = HashMap::new();
         for service in peripheral.services() {
+            let service_occurrence = service_occurrences.entry(service.uuid).or_default();
             let service_uuid = service.uuid.to_string();
-            if service_uuids.insert(service_uuid.clone()) {
-                service_records.push(object([
-                    ("uuid", string(service_uuid)),
-                    ("occurrence", string("0")),
-                    ("primary", IpcValue::Bool(service.primary)),
-                    ("includedServices", IpcValue::Array(Vec::new())),
-                ]));
-            }
-        }
-        for characteristic in peripheral.characteristics() {
-            let service_uuid = characteristic.service_uuid.to_string();
-            if service_uuids.insert(service_uuid.clone()) {
-                service_records.push(object([
-                    ("uuid", string(service_uuid.clone())),
-                    ("occurrence", string("0")),
-                    ("primary", IpcValue::Bool(false)),
-                    ("includedServices", IpcValue::Array(Vec::new())),
-                ]));
-            }
-            let occurrence = occurrences
-                .entry((characteristic.service_uuid, characteristic.uuid))
-                .or_default();
-            let handle = self.id("characteristic");
-            characteristic_records.push(object([
-                ("handle", string(handle.clone())),
-                ("serviceUuid", string(service_uuid)),
-                ("serviceOccurrence", string("0")),
-                (
-                    "characteristicUuid",
-                    string(characteristic.uuid.to_string()),
-                ),
-                ("characteristicOccurrence", string(occurrence.to_string())),
-                (
-                    "properties",
-                    characteristic_properties(characteristic.properties),
-                ),
+            let current_service_occurrence = *service_occurrence;
+            service_records.push(object([
+                ("uuid", string(service_uuid.clone())),
+                ("occurrence", string(current_service_occurrence.to_string())),
+                ("primary", IpcValue::Bool(service.primary)),
+                ("includedServices", IpcValue::Array(Vec::new())),
             ]));
-            *occurrence += 1;
-            for (index, descriptor) in characteristic.descriptors.iter().enumerate() {
-                let descriptor_handle = self.id("descriptor");
-                descriptor_records.push(object([
-                    ("handle", string(descriptor_handle.clone())),
-                    ("characteristicHandle", string(handle.clone())),
-                    ("uuid", string(descriptor.uuid.to_string())),
-                    ("occurrence", string(index.to_string())),
+            *service_occurrence += 1;
+            for characteristic in &service.characteristics {
+                let occurrence = characteristic_occurrences
+                    .entry((
+                        service.uuid,
+                        current_service_occurrence,
+                        characteristic.uuid,
+                    ))
+                    .or_default();
+                let handle = self.id("characteristic");
+                characteristic_records.push(object([
+                    ("handle", string(handle.clone())),
+                    ("serviceUuid", string(service_uuid.clone())),
+                    (
+                        "serviceOccurrence",
+                        string(current_service_occurrence.to_string()),
+                    ),
+                    (
+                        "characteristicUuid",
+                        string(characteristic.uuid.to_string()),
+                    ),
+                    ("characteristicOccurrence", string(occurrence.to_string())),
+                    (
+                        "properties",
+                        characteristic_properties(characteristic.properties),
+                    ),
                 ]));
-                descriptor_map.insert(descriptor_handle, descriptor.clone());
+                *occurrence += 1;
+                for (index, descriptor) in characteristic.descriptors.iter().enumerate() {
+                    let descriptor_handle = self.id("descriptor");
+                    descriptor_records.push(object([
+                        ("handle", string(descriptor_handle.clone())),
+                        ("characteristicHandle", string(handle.clone())),
+                        ("uuid", string(descriptor.uuid.to_string())),
+                        ("occurrence", string(index.to_string())),
+                    ]));
+                    descriptor_map.insert(descriptor_handle, descriptor.clone());
+                }
+                characteristic_map.insert(handle, characteristic.clone());
             }
-            characteristic_map.insert(handle, characteristic);
         }
         let mut state = self.inner.lock().await;
         let caller_state = state.callers.get_mut(&caller_key(caller)).ok_or_else(|| {
@@ -2361,17 +2357,20 @@ impl BtleplugDispatcher {
         let mut terminal_delay = Duration::from_millis(100);
         let terminal_result = loop {
             match self
-                .terminal(caller_key, expected_lease, identity.stream_id, terminal_reason)
+                .terminal(
+                    caller_key,
+                    expected_lease,
+                    identity.stream_id,
+                    terminal_reason,
+                )
                 .await
             {
                 Ok(()) => break Ok(()),
                 Err(error) if error.code == "ownership.denied" => break Err(error),
                 Err(_error) => {
                     tokio::time::sleep(terminal_delay).await;
-                    terminal_delay = std::cmp::min(
-                        terminal_delay.saturating_mul(2),
-                        Duration::from_secs(5),
-                    );
+                    terminal_delay =
+                        std::cmp::min(terminal_delay.saturating_mul(2), Duration::from_secs(5));
                 }
             }
         };
