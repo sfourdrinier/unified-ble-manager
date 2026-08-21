@@ -16,7 +16,7 @@ import { resolveStreamPolicy } from './stream-presets'
 import type { StreamPolicy } from './stream-presets'
 import type { IpcAdvertisement } from '../ipc/manager'
 import { rehydratePublicError, rehydratePublicPromise, runWithCleanup } from './error-bridge'
-import { PublicBleCapabilities } from './capabilities'
+import { assertDirectConnectionCapability, PublicBleCapabilities } from './capabilities'
 import type { BleCapabilities } from './capabilities'
 import type { BleAdapter, BleAdapterState, AdapterReadinessOptions } from './ble-adapter'
 import type { BleDiagnostics } from './diagnostics'
@@ -341,10 +341,10 @@ class PublicBleManager implements BleManager {
       assertPublicConnectOptions(options)
       const { signal, deadline } = normalizeOperationOptions(options, this.now)
       const intent = options.intent ?? 'direct'
-      const directCapability = this.internal.capability('connection:direct')
-      if (directCapability?.state === 'unsupported' || directCapability?.state === 'unavailable') {
-        throw contractError('capability.unsupported', 'connection', 'public-ble-manager.connect.direct')
-      }
+      assertDirectConnectionCapability(
+        this.internal.capability('connection:direct'),
+        'public-ble-manager.connect.direct'
+      )
       if (intent === 'when-available' && !this.internal.supports('connection:when-available')) {
         throw contractError('capability.unsupported', 'connection', 'public-ble-manager.connect.when-available')
       }

@@ -2,7 +2,10 @@
 
 import type { BackendAttachment, BackendAttachmentRequest, BleCentralBackend } from '../../backend-contract/backend'
 import { contractError, type CleanupRecord } from '../../backend-contract/errors'
-import { createFeatureRegistry } from '../../backend-contract/capabilities'
+import {
+  createBackendOperationCapabilityRegistration,
+  createFeatureRegistry
+} from '../../backend-contract/capabilities'
 import type { AdapterDescriptor, HostNeutralBackendIdentity } from '../../backend-contract/identity'
 import { negotiateCoreVersions, opaqueId, type BackendInstanceId } from '../../backend-contract/primitives'
 import type { BluezBusKind, BluezDbusBoundary } from './bluez-dbus-contract'
@@ -33,7 +36,14 @@ function allocateBluezBackendInstance(): number {
 
 /** Contract-v1 BlueZ backend bound to one explicitly selected D-Bus adapter. */
 export class BluezBackend implements BleCentralBackend<string, HostNeutralBackendIdentity<string>> {
-  readonly features = createFeatureRegistry([])
+  readonly features = createFeatureRegistry([
+    createBackendOperationCapabilityRegistration({
+      implementationVersion: BLUEZ_IMPLEMENTATION_VERSION,
+      sourceDigest: 'bluez-direct-connection-v1',
+      tckSuiteId: 'capability.catalog-v2',
+      requiredScenarioIds: ['scenario.scan-connect-discover-read-notify-destroy']
+    })
+  ])
   readonly adapter
   readonly scanner
   readonly connections

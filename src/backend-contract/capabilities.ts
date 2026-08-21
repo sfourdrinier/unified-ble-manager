@@ -183,6 +183,61 @@ export interface FeatureRegistry {
   readonly descriptors: readonly CapabilityDescriptor[]
 }
 
+export interface BackendOperationCapabilityOptions {
+  readonly implementationVersion: string
+  readonly sourceDigest: string
+  readonly tckSuiteId: string
+  readonly requiredScenarioIds: readonly string[]
+  readonly limitations?: readonly Limitation[]
+}
+
+/** Creates a truthful marker for an operation implemented by a concrete backend seam. */
+export function createBackendOperationCapabilityRegistration(
+  options: BackendOperationCapabilityOptions
+): FeatureRegistry['registrations'][number] {
+  const limitations = Object.freeze(
+    options.limitations === undefined
+      ? [
+          Object.freeze({
+            code: 'live-radio-qualification-pending',
+            explanation:
+              'The backend operation has deterministic contract coverage; physical-radio qualification remains separate.',
+            affectedGuarantee: 'reliability-qualified physical-radio interoperability'
+          })
+        ]
+      : options.limitations.map(limitation => Object.freeze({ ...limitation }))
+  )
+  const selectedSchemaRange = versionRange(version('capability-schema', 1), version('capability-schema', 1))
+  const scenarioIds = Object.freeze([...options.requiredScenarioIds])
+  const implementation: FeatureImplementation<SerializableRecord, SerializableRecord> = Object.freeze({
+    async invoke(): Promise<SerializableRecord> {
+      throw contractError('lifecycle.invalid-state', 'capability', 'connection:direct.invoke-without-connection')
+    }
+  })
+  return Object.freeze({
+    id: BUILT_IN_FEATURE_IDS.connectionDirect,
+    state: 'limited' as const,
+    selectedSchemaRange,
+    implementationOrigin: 'backend-native' as const,
+    implementation,
+    tck: Object.freeze({
+      suiteId: options.tckSuiteId,
+      requiredScenarioIds: scenarioIds,
+      contractRange: selectedSchemaRange
+    }),
+    evidence: Object.freeze({
+      receiptId: `${options.sourceDigest}:deterministic`,
+      evidenceLevel: 'deterministic' as const,
+      implementationVersion: options.implementationVersion,
+      sourceDigest: options.sourceDigest,
+      scenarioIds,
+      limitations
+    }),
+    limitations,
+    limits: Object.freeze({ availability: Object.freeze({ maximum: 1, minimum: null, unit: 'boolean' }) })
+  })
+}
+
 /** Validates the data-only capability projection used by every host boundary. */
 export function validateCapabilityDescriptor(descriptor: CapabilityDescriptor): CapabilityDescriptor {
   const operation = 'validateCapabilityDescriptor'

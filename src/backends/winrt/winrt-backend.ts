@@ -19,7 +19,10 @@ import {
   type AdvertisementObservation,
   type OwnerScanOptions
 } from '../../backend-contract/advertisement'
-import { createFeatureRegistry } from '../../backend-contract/capabilities'
+import {
+  createBackendOperationCapabilityRegistration,
+  createFeatureRegistry
+} from '../../backend-contract/capabilities'
 import {
   BackendContractError,
   contractError,
@@ -351,7 +354,14 @@ function allocateBackendInstance(): number {
  * late native completion has been quarantined.
  */
 export class WinRtBackend implements BleCentralBackend<string, HostNeutralBackendIdentity<string>> {
-  readonly features = createFeatureRegistry([])
+  readonly features = createFeatureRegistry([
+    createBackendOperationCapabilityRegistration({
+      implementationVersion: WINRT_IMPLEMENTATION_VERSION,
+      sourceDigest: 'winrt-direct-connection-v1',
+      tckSuiteId: 'capability.catalog-v2',
+      requiredScenarioIds: ['scenario.scan-connect-discover-read-notify-destroy']
+    })
+  ])
   readonly adapter: AdapterBackend<string>
   readonly scanner: ScannerBackend<string>
   readonly connections: ConnectionBackend<string>

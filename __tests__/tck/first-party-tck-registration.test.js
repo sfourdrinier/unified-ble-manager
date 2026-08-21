@@ -60,6 +60,12 @@ describe('first-party backend standard TCK registrations', () => {
     expect(report.standard.featureSuiteIds).toEqual(['web-chooser-discovery'])
     expect(report.standard.featureBindings).toEqual([
       expect.objectContaining({
+        featureId: 'connection:direct',
+        suiteId: 'web-chooser-discovery',
+        requiredScenarioIds: ['web.chooser-connect-discover-read-notify-destroy'],
+        evidenceScenarioIds: ['web.chooser-connect-discover-read-notify-destroy']
+      }),
+      expect.objectContaining({
         featureId: 'web:chooser-discovery',
         suiteId: 'web-chooser-discovery',
         requiredScenarioIds: [
@@ -248,6 +254,7 @@ describe('first-party backend standard TCK registrations', () => {
       'tck.feature.gatt.maximum-write-length'
     ])
     expect(report.standard.featureBindings.map(binding => binding.featureId)).toEqual([
+      'connection:direct',
       'connection:rssi-measurement',
       'gatt:maximum-write-length'
     ])

@@ -164,6 +164,10 @@ async function runRegisteredFeatureSuites<
     }
     const suite = suitesById.get(binding.suiteId)
     if (suite === undefined) {
+      if (binding.suiteId === 'capability.catalog-v2') {
+        assertCapabilityCatalogBinding(binding, receipts)
+        continue
+      }
       throw new TckAssertionError(
         'capability.truth-limits-evidence-and-binding',
         `feature ${binding.featureId} requires unavailable TCK suite ${binding.suiteId}`
@@ -184,6 +188,19 @@ async function runRegisteredFeatureSuites<
   return {
     suiteIds: Object.freeze([...selectedSuiteIds]),
     bindings: Object.freeze(bindings.filter(binding => requiresFeatureSuite(binding.state)))
+  }
+}
+
+function assertCapabilityCatalogBinding(binding: TckFeatureBinding, receipts: readonly TckScenarioReceipt[]): void {
+  const missing = binding.requiredScenarioIds.filter(scenarioId => {
+    const receipt = receipts.find(candidate => candidate.scenarioId === scenarioId)
+    return receipt === undefined || receipt.error !== null || receipt.facts.some(fact => !fact.holds)
+  })
+  if (missing.length > 0) {
+    throw new TckAssertionError(
+      'capability.truth-limits-evidence-and-binding',
+      `feature ${binding.featureId} requires passing catalog scenarios: ${missing.join(', ')}`
+    )
   }
 }
 

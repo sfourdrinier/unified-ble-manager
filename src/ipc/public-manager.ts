@@ -31,6 +31,7 @@ import {
   snapshotBlePeer
 } from '../public/ble-manager'
 import type { BleAdapter, BleAdapterState, AdapterReadinessOptions } from '../public/ble-adapter'
+import { assertDirectConnectionCapability } from '../public/capabilities'
 import type { BleCapabilities } from '../public/capabilities'
 import { createPublicGattDatabase, type PublicGattDatabaseSource } from '../public/gatt'
 import type { GattDatabase } from '../public/gatt'
@@ -143,10 +144,7 @@ export class IpcPublicManagerAdapter implements BleManager {
       assertPublicConnectOptions(options)
       const normalized = normalizeOperationOptions(options, () => globalThis.performance.now())
       assertIpcConnectionOptions(options)
-      const directCapability = this.capabilities.get('connection:direct')
-      if (directCapability?.state === 'unsupported' || directCapability?.state === 'unavailable') {
-        throw contractError('capability.unsupported', 'connection', 'ipc-public-manager.connect.direct')
-      }
+      assertDirectConnectionCapability(this.capabilities.get('connection:direct'), 'ipc-public-manager.connect.direct')
       if (isPeerReference(peer)) {
         throw contractError('capability.unsupported', 'connection', 'ipc-public-manager.peer-reference')
       }

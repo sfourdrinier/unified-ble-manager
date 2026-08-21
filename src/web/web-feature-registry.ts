@@ -2,6 +2,7 @@
 
 import {
   BUILT_IN_FEATURE_IDS,
+  createBackendOperationCapabilityRegistration,
   createFeatureRegistry,
   type CapabilityLimits,
   type FeatureId,
@@ -13,6 +14,7 @@ import { contractError } from '../backend-contract/errors'
 import { version, versionRange, type SerializableRecord } from '../backend-contract/primitives'
 import {
   WEB_CHOOSER_TCK_FEATURE_SUITE,
+  WEB_CHOOSER_TCK_SCENARIO_ID,
   WEB_CHOOSER_TCK_SUITE_ID,
   WEB_UNSUPPORTED_CAPABILITIES_TCK_SCENARIO_ID
 } from '../tck/contracts'
@@ -190,6 +192,12 @@ export function createWebBluetoothFeatureRegistry(
   authorizedPeerSupport = false
 ): FeatureRegistry {
   return createFeatureRegistry([
+    createBackendOperationCapabilityRegistration({
+      implementationVersion,
+      sourceDigest: 'web-direct-connection-v1',
+      tckSuiteId: WEB_CHOOSER_TCK_SUITE_ID,
+      requiredScenarioIds: [WEB_CHOOSER_TCK_SCENARIO_ID]
+    }),
     chooserDiscoveryRegistration(implementationVersion),
     originAuthorizedPeerRegistration(implementationVersion, authorizedPeerSupport),
     unsupportedRegistration('web:background-operation', backgroundLimitation, implementationVersion, {
