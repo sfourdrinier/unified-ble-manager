@@ -24,6 +24,7 @@ import { createPublicGattDatabase } from './gatt'
 import type { GattDatabase, GattValueEvent } from './gatt'
 import { normalizeScanObservation, normalizeScanQuery, observationMatchesScanQuery, type ScanQuery } from './scan-query'
 import type { BoundedAsyncStreamIterator } from '../backend-contract/streams'
+import { createScanState } from './scan-state'
 
 export type GattSubscriptionValue = GattValueEvent
 export type {
@@ -129,6 +130,7 @@ export interface ScanOptions extends OperationOptions {
 }
 
 export interface FindOptions extends OperationOptions {
+  /** Defaults to 10 seconds when omitted. */
   readonly query?: ScanQuery
   readonly select?: 'first' | ((peer: BlePeer) => boolean)
 }
@@ -178,9 +180,7 @@ class PublicBleManager implements BleManager {
         ),
       startTrace: () => ({ stop: async () => internal.traceDocument() })
     }
-    const supports = Reflect.get(internal, 'supports')
-    const supportsContinuous =
-      typeof supports === 'function' && Reflect.apply(supports, internal, ['discovery:continuous-scan']) === true
+    const supportsContinuous = typeof internal.supports === 'function' && internal.supports('discovery:continuous-scan')
     this.discovery = Object.freeze({
       kind: hostOptions.discoveryKind ?? (supportsContinuous ? 'continuous-scan' : 'system-chooser')
     })
@@ -212,10 +212,24 @@ class PublicBleManager implements BleManager {
         sharing: { mode: 'owner', allowSharing: false }
       }
       const session = await this.internal.scan(internalOptions)
+      const scanState = createScanState()
+      scanState.emit({ state: 'active' })
       return {
-        stop: () => rehydratePublicPromise(session.stop()),
+        stop: async () => {
+          scanState.emit({ state: 'stopping' })
+          try {
+            const cleanup = await rehydratePublicPromise(session.stop())
+            scanState.emit({ state: 'stopped' })
+            scanState.close()
+            return cleanup
+          } catch (error) {
+            scanState.emit({ state: 'failed', reason: 'scan-stop-failed' })
+            scanState.close()
+            throw error
+          }
+        },
         observations: filterScanObservations(session.observations, normalizedQuery),
-        state: emptyScanState()
+        state: scanState.stream
       }
     } catch (error) {
       throw rehydratePublicError(error)
@@ -323,10 +337,8 @@ function createPublicAdapter(
   internal: InternalBleManager<string, BackendIdentity<string>>,
   now: () => number
 ): BleAdapter {
-  const identity = Reflect.get(internal, 'identity')
-  const attachment = typeof identity === 'object' && identity !== null ? Reflect.get(identity, 'attachment') : null
-  const adapter = typeof attachment === 'object' && attachment !== null ? Reflect.get(attachment, 'adapter') : null
-  const adapterId = typeof adapter === 'object' && adapter !== null ? Reflect.get(adapter, 'adapterId') : null
+  const identity = internal.identity
+  const adapterId = identity?.attachment?.adapter?.adapterId
   return {
     id: typeof adapterId === 'string' ? adapterId : null,
     state: async () => snapshotPublicAdapterState(await internal.adapterState()),
@@ -491,20 +503,5 @@ export async function findPeerInScan(scan: ScanSession, select: FindOptions['sel
     }
     const peer = peerFromPublicObservation(item.value.value)
     if (select === undefined || select === 'first' || select(peer)) return peer
-  }
-}
-
-export function emptyScanState(): AsyncIterable<ScanStateEvent> {
-  return {
-    [Symbol.asyncIterator]() {
-      return {
-        async next() {
-          return { done: true, value: undefined }
-        },
-        [Symbol.asyncIterator]() {
-          return this
-        }
-      }
-    }
   }
 }

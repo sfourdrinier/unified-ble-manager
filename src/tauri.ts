@@ -1,12 +1,6 @@
 // src/tauri.ts — zero-plumbing Tauri application factory
 
-import {
-  assertPublicScanOptions,
-  emptyScanState,
-  filterScanObservations,
-  findPeerInScan,
-  snapshotBlePeer
-} from './public/ble-manager'
+import { assertPublicScanOptions, filterScanObservations, findPeerInScan, snapshotBlePeer } from './public/ble-manager'
 import type { BleManager, BlePeer, FindOptions, ScanOptions } from './public/ble-manager'
 import type { BleAdapter, BleAdapterState, AdapterReadinessOptions } from './public/ble-adapter'
 import { diagnosticsUnavailable, type BleDiagnostics } from './public/diagnostics'
@@ -21,6 +15,7 @@ import { rehydratePublicError, rehydratePublicPromise, runWithCleanup } from './
 import type { BleCapabilities } from './public/capabilities'
 import { createPublicGattDatabase, type PublicGattDatabaseSource } from './public/gatt'
 import { normalizeScanQuery } from './public/scan-query'
+import { createScanState, type ScanStateController } from './public/scan-state'
 import type {
   PortableCurrentCharacteristicPath,
   PortableCurrentDescriptorPath,
@@ -69,11 +64,24 @@ function resolveBlePeer(peer: BlePeer | string, peerId: string): BlePeer {
 class TauriScanSessionWrapper implements ScanSession {
   constructor(
     private readonly inner: import('./ipc/manager').IpcScanSession,
-    private readonly filteredObservations: ScanSession['observations']
-  ) {}
+    private readonly filteredObservations: ScanSession['observations'],
+    private readonly scanState: ScanStateController
+  ) {
+    scanState.emit({ state: 'active' })
+  }
 
-  stop(): Promise<CleanupRecord> {
-    return rehydratePublicPromise(this.inner.stop())
+  async stop(): Promise<CleanupRecord> {
+    this.scanState.emit({ state: 'stopping' })
+    try {
+      const cleanup = await rehydratePublicPromise(this.inner.stop())
+      this.scanState.emit({ state: 'stopped' })
+      this.scanState.close()
+      return cleanup
+    } catch (error) {
+      this.scanState.emit({ state: 'failed', reason: 'scan-stop-failed' })
+      this.scanState.close()
+      throw error
+    }
   }
 
   get observations(): ScanSession['observations'] {
@@ -81,7 +89,7 @@ class TauriScanSessionWrapper implements ScanSession {
   }
 
   get state(): ScanSession['state'] {
-    return emptyScanState()
+    return this.scanState.stream
   }
 }
 
@@ -338,7 +346,8 @@ class TauriBleManagerAdapter implements BleManager {
       const session = await this.ipc.scan(ipcOptions)
       return new TauriScanSessionWrapper(
         session,
-        filterScanObservations(session.observations, normalizeScanQuery(options.query))
+        filterScanObservations(session.observations, normalizeScanQuery(options.query)),
+        createScanState()
       )
     } catch (error) {
       throw rehydratePublicError(error)
