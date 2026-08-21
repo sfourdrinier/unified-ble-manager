@@ -150,7 +150,7 @@ function writeExternalTypeScriptFixture(consumer, module, moduleResolution) {
   fs.writeFileSync(
     path.join(fixtureDirectory, 'backend-author.ts'),
     [
-      "import type { BleManager } from 'unified-ble-manager';",
+      "import { ApplicationBleManager } from 'unified-ble-manager';",
       "import { BleManager as AdvancedBleManager } from 'unified-ble-manager/advanced';",
       "import { createFeatureRegistry, type BackendAuthoringDefinition, type BleCentralBackend, type HostNeutralBackendIdentity } from 'unified-ble-manager/backend-sdk';",
       "import { runUnifiedBleCli } from 'unified-ble-manager/cli';",
@@ -181,7 +181,7 @@ function writeExternalTypeScriptFixture(consumer, module, moduleResolution) {
       '  const winRtOptions: NativeWinRtProviderOptions = { now: () => 0 };',
       '  const report = await runBackendTck(factory, []);',
       '  await fixture.backend.destroy();',
-      '  return { BleManager, provider: factory.provider, backend: fixture.backend, featureRegistry, report, bluezProvider, createNativeWinRtBackendProvider, winRtOptions, createNavigatorWebBluetoothProvider, runUnifiedBleCli };',
+      '  return { ApplicationBleManager, provider: factory.provider, backend: fixture.backend, featureRegistry, report, bluezProvider, createNativeWinRtBackendProvider, winRtOptions, createNavigatorWebBluetoothProvider, runUnifiedBleCli };',
       '}',
       ''
     ].join('\n')
