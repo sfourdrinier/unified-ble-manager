@@ -435,15 +435,21 @@ class ConnectionSupervisorImpl<Session> implements ConnectionSupervisor<Session>
               if (this.lateConfigureBarrier === lateBarrier) this.lateConfigureBarrier = null
             })
           this.lateConfigureBarrier = lateBarrier
-          void lateBarrier.then(cleanup => {
-            if (!this.stopRequested || this.activeConnection !== null) return
-            if (cleanup.state === 'release-failed') {
-              this.stopPromise = null
-              this.transition('cleanup-failed', null, null, cleanup)
-              return
-            }
-            this.finalize(cleanup)
-          })
+          lateBarrier
+            .then(cleanup => {
+              if (!this.stopRequested || this.activeConnection !== null) return
+              if (cleanup.state === 'release-failed') {
+                this.stopPromise = null
+                this.transition('cleanup-failed', null, null, cleanup)
+                return
+              }
+              this.finalize(cleanup)
+            })
+            .catch(error => {
+              this.lastError = toBleError(error)
+              this.stopRequested = true
+              this.wake()
+            })
           const cleanup = await this.cleanupCurrentConnection()
           if (cleanup.state === 'release-failed') {
             this.lastError = toBleError(cleanup.failures[0]?.error)
