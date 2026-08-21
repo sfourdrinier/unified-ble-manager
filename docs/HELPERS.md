@@ -51,12 +51,12 @@ const characteristic = gatt.service(HEART_RATE_SERVICE).characteristic('2a37')
 const subscription = await characteristic.subscribe({
   signal: abort.signal,
   timeoutMs: 10_000,
-  delivery: 'balanced'
+  stream: 'balanced'
 })
 
 try {
   for await (const event of subscription.values) {
-    consume(event.value)
+    if (event.kind === 'value') consume(event.value.value)
     break
   }
 } finally {

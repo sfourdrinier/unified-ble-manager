@@ -51,10 +51,11 @@ export interface BluezBleManagerAppOptions extends NodeBleManagerAppOptions {
 /** One-call Node BlueZ manager. Does not fall back to another backend. */
 export async function createBluezBleManager(options: BluezBleManagerAppOptions = {}): Promise<BleManager> {
   const now = options.now ?? (() => performance.now())
+  const { busKind = 'system', ...managerOptions } = options
   const internal = await createNodeBleManagerFromProvider(
-    createDbusNextBluezBackendProvider({ busKind: options.busKind ?? 'system', now }),
+    createDbusNextBluezBackendProvider({ busKind, now }),
     bluezCompatibility,
-    options
+    managerOptions
   )
   return createPublicBleManager(internal, now)
 }

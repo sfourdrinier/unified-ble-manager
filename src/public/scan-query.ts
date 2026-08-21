@@ -183,7 +183,7 @@ function normalizeClauseList(
   if (clauses === undefined) return omittedIsNull ? null : null
   if (!Array.isArray(clauses) || clauses.length === 0) throw invalid(operation)
   const normalized = clauses.map((clause, index) => normalizeClause(clause, `${operation}[${index}]`))
-  return Object.freeze(normalized.sort((left, right) => canonicalJson(left).localeCompare(canonicalJson(right))))
+  return Object.freeze(normalized.sort((left, right) => compareCanonical(canonicalJson(left), canonicalJson(right))))
 }
 
 function normalizeClause(clause: ScanClause, operation: string): NormalizedScanClause {
@@ -232,7 +232,7 @@ function normalizePeerList(
   })
   const uniqueReferences = new Map(references.map(reference => [peerReferenceKey(reference), reference]))
   return Object.freeze(
-    [...uniqueReferences.entries()].sort(([left], [right]) => left.localeCompare(right)).map(([, value]) => value)
+    [...uniqueReferences.entries()].sort(([left], [right]) => compareCanonical(left, right)).map(([, value]) => value)
   )
 }
 
@@ -340,7 +340,7 @@ function normalizeManufacturerList(
   return Object.freeze(
     values
       .map((value, index) => normalizeBytesPattern(value, `${operation}[${index}]`, 'companyId'))
-      .sort((left, right) => patternKey(left).localeCompare(patternKey(right)))
+      .sort((left, right) => compareCanonical(patternKey(left), patternKey(right)))
   )
 }
 
@@ -363,7 +363,7 @@ function normalizeServiceDataList(
           ...pattern
         })
       })
-      .sort((left, right) => patternKey(left).localeCompare(patternKey(right)))
+      .sort((left, right) => compareCanonical(patternKey(left), patternKey(right)))
   )
 }
 
@@ -506,6 +506,10 @@ function canonicalJson(value: unknown): string {
     if (key === 'peers' && entry === null) return undefined
     return entry instanceof Uint8Array ? bytesToHex(entry) : entry
   })
+}
+
+function compareCanonical(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0
 }
 
 function fieldValue<Value>(

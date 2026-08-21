@@ -111,6 +111,18 @@ describe('canonical public ScanQuery v1', () => {
     )
   })
 
+  test('canonical ordering does not depend on locale collation', () => {
+    const originalLocaleCompare = String.prototype.localeCompare
+    String.prototype.localeCompare = () => {
+      throw new Error('locale-sensitive ordering is forbidden for semantic digests')
+    }
+    try {
+      expect(() => normalizeScanQuery({ anyOf: [{ names: { exact: ['ä', 'z'] } }] })).not.toThrow()
+    } finally {
+      String.prototype.localeCompare = originalLocaleCompare
+    }
+  })
+
   test('uses the same normalized query for the public residual stream and find helper', async () => {
     const source = new CoreBoundedStream(
       { itemCapacity: capacity(8), byteCapacity: capacity(4096), reservedControlCapacity: capacity(1) },

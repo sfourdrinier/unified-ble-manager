@@ -792,6 +792,8 @@ describe('WebBluetoothBackend', () => {
       }
     })
 
+    await expect(manager.choose({ filters: [{}] })).rejects.toMatchObject({ code: 'scan.filter-invalid' })
+    expect(requestDevice).not.toHaveBeenCalled()
     await manager.choose({
       filters: [{ serviceUuids: [HEART_RATE_SERVICE], localNamePrefix: 'Heart' }],
       optionalServices: ['180f'],

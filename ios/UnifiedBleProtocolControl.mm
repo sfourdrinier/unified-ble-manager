@@ -47,16 +47,16 @@ bool validInteger(double value) {
   return std::isfinite(value) && value >= 1.0 && value <= kMaximumSafeInteger && std::trunc(value) == value;
 }
 
-bool compatibleRange(double minimum, double maximum) {
-  return compatibleRangeFor(minimum, maximum, kProtocolVersion);
-}
-
 bool compatibleRangeFor(double minimum, double maximum, double selectedVersion) {
   return validInteger(minimum) &&
       validInteger(maximum) &&
       minimum <= maximum &&
       minimum <= selectedVersion &&
       maximum >= selectedVersion;
+}
+
+bool compatibleRange(double minimum, double maximum) {
+  return compatibleRangeFor(minimum, maximum, kProtocolVersion);
 }
 
 NSDictionary *attachmentDictionary(

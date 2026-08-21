@@ -191,7 +191,7 @@ export function createGattSnapshot(
       continue
     }
     const primary = booleanVariant(service, 'Primary')
-    const includedObjectPaths = stringArrayVariant(service, 'Includes')
+    const includedObjectPaths = objectPathArrayVariant(service, 'Includes')
     const characteristics: BluezGattCharacteristicRecord[] = []
     for (const characteristicObject of objects) {
       const characteristic = findInterface(characteristicObject.interfaces, BLUEZ_GATT_CHARACTERISTIC_INTERFACE)
@@ -298,10 +298,10 @@ function stringsVariant(entry: BluezManagedInterface, property: string): readonl
   return [...variant.value]
 }
 
-function stringArrayVariant(entry: BluezManagedInterface, property: string): readonly string[] {
+function objectPathArrayVariant(entry: BluezManagedInterface, property: string): readonly string[] {
   const variant = entry.properties[property]
   if (variant === undefined) return Object.freeze([])
-  if (variant.signature !== 'as' && variant.signature !== 'ao') {
+  if (variant.signature !== 'ao') {
     throw contractError('protocol.malformed', 'gatt', `bluez.object-manager.${entry.name}.${property}`)
   }
   return [...variant.value]

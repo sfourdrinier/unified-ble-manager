@@ -868,6 +868,12 @@ export function assertPublicChooseOptions(options: ChooseOptions): void {
           }
         }
       }
+      const hasServiceCriterion = filter.serviceUuids !== undefined && filter.serviceUuids.length > 0
+      const hasManufacturerCriterion = filter.manufacturerData !== undefined && filter.manufacturerData.length > 0
+      const hasNameCriterion = filter.localNamePrefix !== undefined && filter.localNamePrefix.length > 0
+      if (!hasServiceCriterion && !hasManufacturerCriterion && !hasNameCriterion) {
+        throw contractError('scan.filter-invalid', 'chooser', 'public-ble-manager.choose.filter-empty')
+      }
     }
   }
   if (options.optionalServices !== undefined && !Array.isArray(options.optionalServices)) {

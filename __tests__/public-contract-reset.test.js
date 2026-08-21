@@ -130,4 +130,11 @@ describe('PR1 public contract reset (TDD)', () => {
     expect(typeof expo.createExpoBleManager).toBe('function')
     expect(typeof expo.createExpoBleManagerWithEnvironment).toBe('function')
   })
+
+  test('Expo restoration remains fail-closed until the PR10 native contract lands', async () => {
+    const expo = require('../src/expo')
+    await expect(
+      expo.createExpoBleManager({ restoration: { applicationId: 'com.example.app', restorationId: 'ble' } })
+    ).rejects.toMatchObject({ code: 'capability.unsupported' })
+  })
 })

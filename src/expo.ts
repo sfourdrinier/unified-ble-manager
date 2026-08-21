@@ -1,5 +1,8 @@
 // src/expo.ts — thin Expo-aware composition over the React Native factory
 
+import { contractError } from './backend-contract/errors'
+import { rehydratePublicError } from './public/error-bridge'
+
 /**
  * Expo is a thin composition over the React Native host provider.
  * It does not reimplement BLE policy; it only validates that the
@@ -22,8 +25,15 @@ import type { ReactNativeBleManagerOptions } from './react-native-manager'
  * React Native factory. Not a second BLE manager implementation.
  */
 export async function createExpoBleManager(options: BleManagerCreateOptions = {}): Promise<BleManager> {
-  normalizeBleManagerCreateOptions(options)
-  return createReactNativeBleManager(options)
+  try {
+    const normalized = normalizeBleManagerCreateOptions(options)
+    if (normalized.restoration !== undefined) {
+      throw contractError('capability.unsupported', 'restoration', 'expo-manager.restoration')
+    }
+    return createReactNativeBleManager(options)
+  } catch (error) {
+    throw rehydratePublicError(error)
+  }
 }
 
 export async function createExpoBleManagerWithEnvironment(
