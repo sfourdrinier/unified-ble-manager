@@ -557,12 +557,8 @@ impl BtleplugDispatcher {
                     object([("scanHandle", string(handle.to_owned()))]),
                 )
             }),
-            "connection.connect" => payload.get("handle").and_then(as_string).map(|handle| {
-                (
-                    "connection.disconnect",
-                    object([("connectionHandle", string(handle.to_owned()))]),
-                )
-            }),
+            "connection.connect" => connection_cleanup_payload(payload)
+                .map(|cleanup_payload| ("connection.disconnect", cleanup_payload)),
             "gatt.subscribe" => payload.get("handle").and_then(as_string).map(|handle| {
                 (
                     "gatt.unsubscribe",
@@ -2625,6 +2621,24 @@ impl BtleplugDispatcher {
         }
         cleanup_record(failures)
     }
+}
+
+fn connection_cleanup_payload(payload: &BTreeMap<String, IpcValue>) -> Option<IpcValue> {
+    let handle = payload.get("handle").and_then(as_string)?.to_owned();
+    let peer_id = payload.get("peerId").and_then(as_string)?.to_owned();
+    let connection_id = payload.get("connectionId").and_then(as_string)?.to_owned();
+    let owner_lease_id = payload.get("ownerLeaseId").and_then(as_string)?.to_owned();
+    let connection_generation = payload
+        .get("connectionGeneration")
+        .and_then(as_string)?
+        .to_owned();
+    Some(object([
+        ("connectionHandle", string(handle)),
+        ("peerId", string(peer_id)),
+        ("connectionId", string(connection_id)),
+        ("ownerLeaseId", string(owner_lease_id)),
+        ("connectionGeneration", string(connection_generation)),
+    ]))
 }
 
 impl IpcDispatcher for BtleplugDispatcher {
