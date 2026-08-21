@@ -1208,61 +1208,69 @@ impl BtleplugDispatcher {
             DispatchError::new("platform.failure", "connection", "tauri.disconnect")
                 .platform(error.to_string())
         })?;
-        let subscriptions = {
-            let mut state = self.inner.lock().await;
-            let Some(caller_state) = state.callers.get_mut(&key) else {
-                state.peer_owners.remove(&connection.peer_id);
-                drop(state);
-                return Ok(released());
-            };
-            caller_state.connections.remove(&handle);
-            let database_handles = caller_state
-                .databases
-                .iter()
-                .filter_map(|(database_handle, database)| {
-                    (database.connection_handle == handle).then_some(database_handle.clone())
-                })
-                .collect::<HashSet<_>>();
-            let subscription_handles = caller_state
-                .subscriptions
-                .iter()
-                .filter_map(|(subscription_handle, subscription)| {
-                    database_handles
-                        .contains(&subscription.database_handle)
-                        .then_some(subscription_handle.clone())
-                })
-                .collect::<Vec<_>>();
-            let subscriptions = subscription_handles
-                .into_iter()
-                .filter_map(|subscription_handle| {
-                    caller_state.subscriptions.remove(&subscription_handle)
-                })
-                .collect::<Vec<_>>();
-            caller_state
-                .databases
-                .retain(|database_handle, _| !database_handles.contains(database_handle));
-            let event_handles = caller_state
-                .connection_events
-                .iter()
-                .filter_map(|(event_handle, event)| {
-                    (event.connection_handle == handle).then_some(event_handle.clone())
-                })
-                .collect::<Vec<_>>();
-            let event_tasks = event_handles
-                .into_iter()
-                .filter_map(|event_handle| caller_state.connection_events.remove(&event_handle))
-                .filter_map(|event| event.task)
-                .collect::<Vec<_>>();
-            state.peer_owners.remove(&connection.peer_id);
-            (subscriptions, event_tasks)
-        };
-        for subscription in subscriptions.0 {
+        let resources = self
+            .remove_connection_resources(&key, &handle, &connection.peer_id)
+            .await;
+        for subscription in resources.0 {
             subscription.task.abort();
         }
-        for task in subscriptions.1 {
+        for task in resources.1 {
             task.abort();
         }
         Ok(released())
+    }
+
+    async fn remove_connection_resources(
+        &self,
+        caller_key: &str,
+        connection_handle: &str,
+        peer_id: &str,
+    ) -> (Vec<SubscriptionResource>, Vec<TauriJoinHandle<()>>) {
+        let mut state = self.inner.lock().await;
+        let Some(caller_state) = state.callers.get_mut(caller_key) else {
+            state.peer_owners.remove(peer_id);
+            return (Vec::new(), Vec::new());
+        };
+        caller_state.connections.remove(connection_handle);
+        let database_handles = caller_state
+            .databases
+            .iter()
+            .filter_map(|(database_handle, database)| {
+                (database.connection_handle == connection_handle).then_some(database_handle.clone())
+            })
+            .collect::<HashSet<_>>();
+        let subscription_handles = caller_state
+            .subscriptions
+            .iter()
+            .filter_map(|(subscription_handle, subscription)| {
+                database_handles
+                    .contains(&subscription.database_handle)
+                    .then_some(subscription_handle.clone())
+            })
+            .collect::<Vec<_>>();
+        let subscriptions = subscription_handles
+            .into_iter()
+            .filter_map(|subscription_handle| {
+                caller_state.subscriptions.remove(&subscription_handle)
+            })
+            .collect::<Vec<_>>();
+        caller_state
+            .databases
+            .retain(|database_handle, _| !database_handles.contains(database_handle));
+        let event_handles = caller_state
+            .connection_events
+            .iter()
+            .filter_map(|(event_handle, event)| {
+                (event.connection_handle == connection_handle).then_some(event_handle.clone())
+            })
+            .collect::<Vec<_>>();
+        let event_tasks = event_handles
+            .into_iter()
+            .filter_map(|event_handle| caller_state.connection_events.remove(&event_handle))
+            .filter_map(|event| event.task)
+            .collect::<Vec<_>>();
+        state.peer_owners.remove(peer_id);
+        (subscriptions, event_tasks)
     }
 
     async fn subscribe_connection_events(
@@ -1389,6 +1397,7 @@ impl BtleplugDispatcher {
                 attachment,
                 peripheral,
                 caller_state.lease_generation.clone(),
+                resource.connection_handle.clone(),
             )
         };
         let initial_event = object([
@@ -1434,6 +1443,7 @@ impl BtleplugDispatcher {
         let connection_generation = event.3.clone();
         let expected_lease_id = event.4.clone();
         let expected_lease_generation = event.8.clone();
+        let connection_handle = event.9.clone();
         let stream_id_for_task = stream_id.clone();
         let task = tauri::async_runtime::spawn(async move {
             loop {
@@ -1453,6 +1463,19 @@ impl BtleplugDispatcher {
                                 },
                             )
                             .await;
+                        let resources = dispatcher
+                            .remove_connection_resources(
+                                &stream_owner,
+                                &connection_handle,
+                                &peer_id,
+                            )
+                            .await;
+                        for subscription in resources.0 {
+                            subscription.task.abort();
+                        }
+                        for task in resources.1 {
+                            task.abort();
+                        }
                         break;
                     }
                     Err(_) => {

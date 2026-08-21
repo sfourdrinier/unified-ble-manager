@@ -141,7 +141,7 @@ export interface IpcDescriptorRecord extends SerializableRecord {
 }
 
 interface StreamSink {
-  readonly closeWithReason: (reason: 'owner-released' | 'source-failed') => void
+  readonly closeWithReason: (reason: 'owner-released' | 'source-failed' | 'connection-lost' | 'service-changed') => void
   readonly deliver: (streamId: string, item: SerializableRecord) => void
 }
 
@@ -434,7 +434,10 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
     }
   }
 
-  closeStream(handle: string, reason: 'owner-released' | 'source-failed' = 'owner-released'): void {
+  closeStream(
+    handle: string,
+    reason: 'owner-released' | 'source-failed' | 'connection-lost' | 'service-changed' = 'owner-released'
+  ): void {
     this.pendingStreamItems.delete(handle)
     this.pendingStreamBytes.delete(handle)
     this.pendingStreamOverflows.delete(handle)
@@ -781,6 +784,7 @@ export class IpcGattDatabase {
   readonly descriptors: readonly IpcDescriptor[]
   private valid = true
   private readonly changedStream = new CoreBoundedStream<GattDatabaseChangedEvent>(REMOTE_STREAM_LIMITS, 'drop-oldest')
+  private readonly subscriptions = new Set<IpcSubscription>()
 
   private constructor(
     private readonly manager: IpcBleManager,
@@ -862,6 +866,10 @@ export class IpcGattDatabase {
   invalidate(reason: 'service-changed' | null = null): void {
     if (!this.valid) return
     this.valid = false
+    for (const subscription of this.subscriptions) {
+      subscription.closeFromDatabase(reason === 'service-changed' ? 'service-changed' : 'connection-lost')
+    }
+    this.subscriptions.clear()
     if (reason === 'service-changed') {
       this.changedStream.emit(
         Object.freeze({
@@ -887,8 +895,19 @@ export class IpcGattDatabase {
     return this.manager.registerStream<Value>(handle, isValue, limits, overflowPolicy, onTerminal)
   }
 
-  closeStream(handle: string): void {
-    this.manager.closeStream(handle)
+  closeStream(
+    handle: string,
+    reason: 'owner-released' | 'source-failed' | 'connection-lost' | 'service-changed' = 'owner-released'
+  ): void {
+    this.manager.closeStream(handle, reason)
+  }
+
+  registerSubscription(subscription: IpcSubscription): void {
+    this.subscriptions.add(subscription)
+  }
+
+  forgetSubscription(subscription: IpcSubscription): void {
+    this.subscriptions.delete(subscription)
   }
 
   private connectionIdentityPayload(): SerializableRecord {
@@ -1134,7 +1153,7 @@ export class IpcCharacteristic {
       options.signal
     )
     const handle = requiredString(payload, 'handle', 'ipc-manager.gatt-subscribe')
-    return new IpcSubscription(
+    const subscription = new IpcSubscription(
       this.database,
       handle,
       this.database.registerStream<IpcNotificationValue>(
@@ -1147,6 +1166,8 @@ export class IpcCharacteristic {
         }
       )
     )
+    this.database.registerSubscription(subscription)
+    return subscription
   }
 }
 
@@ -1204,6 +1225,7 @@ export class IpcSubscription {
       .then(cleanup => {
         if (cleanup.state === 'released') {
           this.database.closeStream(this.handle)
+          this.database.forgetSubscription(this)
         } else {
           this.removeResult = null
         }
@@ -1215,6 +1237,11 @@ export class IpcSubscription {
       })
     this.removeResult = result
     return result
+  }
+
+  closeFromDatabase(reason: 'connection-lost' | 'service-changed'): void {
+    this.database.closeStream(this.handle, reason)
+    this.removeResult = Promise.resolve({ state: 'released', failures: [] })
   }
 }
 
@@ -1622,15 +1649,27 @@ function isIpcScanObservation(value: unknown): value is IpcScanObservation {
 }
 
 function isNativeScanObservation(value: unknown): value is AdvertisementObservation<string> {
-  return (
-    typeof value === 'object' &&
-    value !== null &&
-    !Array.isArray(value) &&
-    'device' in value &&
-    'receivedAtMonotonicMs' in value &&
-    'scanSessionId' in value &&
-    'serviceUuids' in value
-  )
+  const requiredKeys = [
+    'device',
+    'provenance',
+    'sourceTimestamp',
+    'receivedAtMonotonicMs',
+    'ingressOrdinal',
+    'scanSessionId',
+    'localName',
+    'rssi',
+    'txPower',
+    'connectable',
+    'appearance',
+    'serviceUuids',
+    'solicitedServiceUuids',
+    'overflowServiceUuids',
+    'serviceData',
+    'manufacturerData',
+    'rawRecord',
+    'scanResponseRecord'
+  ]
+  return typeof value === 'object' && value !== null && !Array.isArray(value) && requiredKeys.every(key => key in value)
 }
 
 function isIpcCharacteristicRecord(value: unknown): value is IpcCharacteristicRecord {

@@ -2587,7 +2587,13 @@ describe('Electron v4 IPC boundary', () => {
         subscriptionId: 'subscription-public',
         values: notificationStream,
         remove: jest.fn(async () => {
-          notificationStream.close()
+          notificationStream.push({
+            kind: 'terminal',
+            reason: 'owner-released',
+            droppedItems: 0,
+            droppedBytes: 0,
+            replacedItems: 0
+          })
           return released()
         })
       }))
@@ -2698,8 +2704,12 @@ describe('Electron v4 IPC boundary', () => {
     await expect(notification).resolves.toMatchObject({ done: false, value: { kind: 'value', value: { value: new Uint8Array([9]), delivery: 'notification' } } })
     await expect(subscription.remove()).resolves.toMatchObject({ state: 'released', failures: [] })
     await expect(subscription.remove()).resolves.toEqual({ state: 'released', failures: [] })
+    const disconnectSubscription = await publicCharacteristic.subscribe()
+    const pendingNotification = disconnectSubscription.values[Symbol.asyncIterator]().next()
     await expect(publicConnection.release()).resolves.toMatchObject({ state: 'released', failures: [] })
     await expect(publicConnection.release()).resolves.toEqual({ state: 'released', failures: [] })
+    await expect(pendingNotification).resolves.toMatchObject({ done: false, value: { kind: 'terminal' } })
+    await expect(disconnectSubscription.remove()).resolves.toEqual({ state: 'released', failures: [] })
     await expect(manager.destroy()).resolves.toMatchObject({ state: 'released', failures: [] })
   })
 
