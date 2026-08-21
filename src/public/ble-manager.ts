@@ -1,13 +1,13 @@
-/* eslint-disable @typescript-eslint/no-explicit-any, react-hooks/rules-of-hooks */
 // src/public/ble-manager.ts — non-generic application façade (PR1 skeleton)
 
 import type { AdvertisementObservation } from '../backend-contract/advertisement'
 import type { ScanOptions as InternalScanOptions } from '../backend-contract/advertisement'
 import type { CleanupRecord } from '../backend-contract/errors'
-import type { PeerId } from '../backend-contract/primitives'
+import type { BackendIdentity } from '../backend-contract/identity'
 import { opaqueId } from '../backend-contract/primitives'
 import type { BleManager as InternalBleManager } from '../manager/ble-manager'
 import type { BleManagerOptions } from '../manager/ble-manager'
+import type { BoundedAsyncStream } from '../backend-contract/streams'
 import { normalizeOperationOptions } from './operation-options'
 import type { OperationOptions } from './operation-options'
 import { resolveStreamPreset } from './stream-presets'
@@ -30,7 +30,7 @@ export interface BleConnection {
 // Public scan session — bounded stream, no generic.
 export interface ScanSession {
   readonly stop: () => Promise<CleanupRecord>
-  readonly observations: AsyncIterable<AdvertisementObservation<string>>
+  readonly observations: BoundedAsyncStream<AdvertisementObservation<string>>
 }
 
 // Public GATT placeholders — full object model lands in PR3, but façade exists now.
@@ -60,11 +60,10 @@ export interface BleManager {
   readonly destroy: () => Promise<CleanupRecord>
   scan(options?: ScanOptions): Promise<ScanSession>
   connect(peer: BlePeer | string, options?: OperationOptions): Promise<BleConnection>
-  // Helpers that preserve deadline/preset normalization
   withConnection<T>(
     peer: BlePeer | string,
     options: OperationOptions,
-    use: (connection: BleConnection) => Promise<T>
+    action: (connection: BleConnection) => Promise<T>
   ): Promise<T>
 }
 
@@ -77,7 +76,7 @@ export interface ScanOptions extends OperationOptions {
 
 // Internal factory used by host entrypoints. Hosts derive identity and call this.
 export async function createPublicBleManager(
-  internal: InternalBleManager<string, any>,
+  internal: InternalBleManager<string, BackendIdentity<string>>,
   now: () => number
 ): Promise<BleManager> {
   return new PublicBleManager(internal, now)
@@ -85,7 +84,7 @@ export async function createPublicBleManager(
 
 class PublicBleManager implements BleManager {
   constructor(
-    private readonly internal: InternalBleManager<string, any>,
+    private readonly internal: InternalBleManager<string, BackendIdentity<string>>,
     private readonly now: () => number
   ) {}
 
@@ -94,35 +93,32 @@ class PublicBleManager implements BleManager {
     const preset = options.preset ?? 'balanced'
     const delivery = resolveStreamPreset({ preset })
     const filter = options.filter ?? { serviceUuids: [], manufacturerData: [], localNamePrefix: null }
-    // Delegate to internal manager's scan with normalized deadline/signal/delivery.
-    // Internal ScanOptions requires full delivery and deadline/signal; we adapt.
     const internalOptions: InternalScanOptions<string, string> = {
       filter,
       duplicatePolicy: 'merged',
       timestampPolicy: 'source-then-receipt',
       delivery: {
-        itemCapacity: delivery.itemCapacity as any,
-        byteCapacity: delivery.byteCapacity as any,
-        reservedControlCapacity: delivery.reservedControlCapacity as any,
+        itemCapacity: delivery.itemCapacity,
+        byteCapacity: delivery.byteCapacity,
+        reservedControlCapacity: delivery.reservedControlCapacity,
         overflowPolicy: delivery.overflowPolicy
       },
-      deadline: deadline as any,
-      signal: signal as any,
+      deadline,
+      signal,
       sharing: { mode: 'owner', allowSharing: false }
     }
-    const session = await (this.internal as any).scan(internalOptions)
+    const session = await this.internal.scan(internalOptions)
     return {
       stop: () => session.stop(),
-      observations: session.observations as any
+      observations: session.observations
     }
   }
 
   async connect(peer: BlePeer | string, options: OperationOptions = {}): Promise<BleConnection> {
     const { signal, deadline } = normalizeOperationOptions(options, this.now)
     const peerIdString = typeof peer === 'string' ? peer : peer.id
-    // Convert plain string to branded PeerId for internal dispatch.
-    const peerId = opaqueId(peerIdString, 'peer', 'public-ble-manager') as PeerId<string>
-    const internalConnection = await (this.internal as any).connect(peerId, {
+    const peerId = opaqueId<'peer', string>(peerIdString, 'peer', 'public-ble-manager')
+    const internalConnection = await this.internal.connect(peerId, {
       signal,
       deadline
     })
@@ -137,11 +133,11 @@ class PublicBleManager implements BleManager {
   async withConnection<T>(
     peer: BlePeer | string,
     options: OperationOptions,
-    use: (connection: BleConnection) => Promise<T>
+    action: (connection: BleConnection) => Promise<T>
   ): Promise<T> {
     const connection = await this.connect(peer, options)
     try {
-      return await use(connection)
+      return await action(connection)
     } finally {
       await connection.release()
     }
