@@ -29,7 +29,7 @@ On `SIGINT`/`SIGTERM`, await `manager.destroy()`. Then scan/connect/GATT with th
 ## Advanced: providers and adapter listing (macOS)
 
 ```ts
-import { createBleManagerFromProvider, DEFAULT_BLE_MANAGER_OPTIONS } from 'unified-ble-manager'
+import { createBleManagerFromProvider, DEFAULT_BLE_MANAGER_OPTIONS } from 'unified-ble-manager/advanced'
 import {
   coreBluetoothCompatibility,
   createNativeCoreBluetoothBackendProvider

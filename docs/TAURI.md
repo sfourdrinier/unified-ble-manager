@@ -12,10 +12,10 @@ The Rust plugin owns the radio (btleplug: CoreBluetooth, WinRT, or BlueZ). The w
 pnpm add unified-ble-manager @tauri-apps/api
 ```
 
-```toml
-[dependencies]
-tauri-plugin-unified-ble-manager = { path = "../node_modules/unified-ble-manager/native/tauri" }
-```
+The paired npm/Cargo registry distribution is a PR11 gate. Until that release
+slice lands, repository consumers may use the checked-out plugin path only as
+an explicitly interim development setup; do not present it as the published
+installation recipe or as independent Cargo distribution proof.
 
 ## Frontend
 
@@ -39,7 +39,7 @@ Remote streams preserve bounded delivery and overflow notices. GATT objects are 
 
 Filter in the webview with `advertisementPassesViewFilter` (name or peer id, min/max RSSI, service UUID, manufacturer company id, named-only). Observations include `serviceUuids`, `manufacturerData`, `txPowerLevel`, and `serviceData` in addition to `peerId` / `localName` / `rssi`.
 
-## Rust plugin
+## Rust plugin (interim checkout setup)
 
 ```rust
 tauri::Builder::default()

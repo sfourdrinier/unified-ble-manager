@@ -1,25 +1,21 @@
 'use strict'
 
 /**
- * Renderer composition. Uses ElectronRendererBleClient and never selects a radio.
+ * Renderer composition. Uses the public BleManager façade and never selects a radio.
  */
 
 const rendererEntrypoint = 'unified-ble-manager/electron/renderer'
-const clientExport = 'ElectronRendererBleClient'
+const managerExport = 'createElectronRendererBleManager'
 
-async function runRendererJourney(client) {
-  await client.initialize()
-  await client.request({
-    command: 'scan.start',
-    payload: Object.freeze({}),
-    binaryPayload: null,
-    signal: null
-  })
-  await client.destroy()
+async function runRendererJourney(createManager, transport) {
+  const manager = await createManager({ transport })
+  const scan = await manager.scan()
+  await scan.stop()
+  await manager.destroy()
 }
 
 module.exports = {
   rendererEntrypoint,
-  clientExport,
+  managerExport,
   runRendererJourney
 }

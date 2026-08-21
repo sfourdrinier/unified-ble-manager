@@ -53,7 +53,7 @@ function hrsPeripheral() {
 async function createRecipeFixture() {
   const fixture = createDeterministicTestBackend({ peripheral: hrsPeripheral() })
   const attached = await attachBleBackend(fixture.backend, compatibility())
-  const manager = await createBleManager(
+  const internal = await createBleManager(
     {
       attachedBackend: attached,
       clientId: opaqueId('recipe-client', 'client', 'deterministic:recipe'),
@@ -69,7 +69,7 @@ async function createRecipeFixture() {
       }
     }
   )
-  return { fixture, manager }
+  return { fixture, manager: internal }
 }
 
 async function settle(fixture, promise) {
@@ -97,9 +97,9 @@ describe('finite HRS documentation recipe', () => {
   test('README marks the helper-first journey', () => {
     const readme = fs.readFileSync(path.join(__dirname, '..', 'README.md'), 'utf8')
     expect(readme).toContain('// @ubm-recipe finite-hrs')
-    expect(readme).toContain('scanUntil')
+    expect(readme).toContain('find')
     expect(readme).toContain('withConnection')
-    expect(readme).toContain('firstNotification')
+    expect(readme).toContain('withDiscoveredConnection')
     expect(readme).not.toContain('batteryLevelSelector()')
   })
 

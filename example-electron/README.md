@@ -15,8 +15,10 @@ The smoke imports only these public entrypoints:
 - `unified-ble-manager/electron/main` for `ElectronMainBleRouter`
 
 Composition sources (`composition-main.js`, `composition-preload.js`, `composition-renderer.js`) show the ownership
-sequence: main owns the radio, preload exposes a narrow bridge, the renderer
-uses `ElectronRendererBleClient`. `node example-electron/composition.js` checks
+sequence: main owns the radio, preload exposes a narrow transport, the renderer
+uses `createElectronRendererBleManager`. The low-level
+`ElectronRendererBleClient` is internal to that factory and remains available
+only for boundary-level tests. `node example-electron/composition.js` checks
 those files without opening a window. That is not live-radio proof.
 
 Run the L1 packed smoke from the repository root after producing the package artifacts:

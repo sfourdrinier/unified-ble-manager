@@ -1,38 +1,61 @@
 # API Report — unified-ble-manager (root)
 
-> Do not edit directly. Generated via `pnpm exec tsc --project tsconfig.build.json`.
-> Review changes to this file as you would review public API changes.
-
-## Application façade (PR1 final — application-only)
+> Reviewed against the current `src/public` façade. Host construction lives in
+> explicit host entrypoints; advanced/backend authoring types are not root API.
 
 ```ts
-// Host-neutral, non-generic — no backend construction, no branded Deadline/Capacity, no Portable* paths
-export interface BleManager { readonly capabilities: BleCapabilities; readonly destroy(): Promise<CleanupRecord>; scan(options?: ScanOptions): Promise<ScanSession>; connect(peer: BlePeer | string, options?: OperationOptions): Promise<BleConnection>; withConnection<T>(peer: BlePeer | string, options: OperationOptions, action: (c: BleConnection) => Promise<T>): Promise<T> }
-export interface BlePeer { readonly id: string; readonly name: string | null; readonly rssi: number | null }
-export interface BleConnection { readonly peer: BlePeer; disconnect(): Promise<CleanupRecord>; release(): Promise<CleanupRecord> }
-export interface ScanSession { readonly stop(): Promise<CleanupRecord>; readonly observations: BoundedAsyncStream<PublicScanObservation> }
-export interface GattDatabase { readonly peer: BlePeer }
-export interface GattService { readonly uuid: string }
-export interface GattCharacteristic { readonly uuid: string; read(options?: OperationOptions): Promise<Uint8Array>; write(value: Uint8Array, options?: OperationOptions): Promise<void> }
-export interface GattDescriptor { readonly uuid: string; read(options?: OperationOptions): Promise<Uint8Array>; write(value: Uint8Array, options?: OperationOptions): Promise<void> }
-export interface BleAdapter { readonly id: string | null; readonly state: BleAdapterState }
-export interface BleAdapterState { readonly available: boolean; readonly poweredOn: boolean }
-export class BleError extends Error { readonly code: BleErrorCode; readonly domain: BleErrorDomain; readonly operation: string; readonly platform: PlatformErrorDetail | null; readonly limitations: readonly Limitation[]; readonly recovery: BleRecovery }
-export interface BleRecovery { readonly disposition: BleRecoveryDisposition; readonly actions: readonly RecoveryAction[] }
-export interface BleCapabilities { supports(id: BuiltInFeatureId): boolean; get(id: FeatureId): CapabilityDescriptor | undefined; require(id: BuiltInFeatureId): CapabilityDescriptor; list(): readonly CapabilityDescriptor[] }
-export type BleRecoveryDisposition = 'none' | 'retry-immediately' | 'retry-with-backoff' | 'after-state-change' | 'after-user-action' | 'caller-policy'
+export interface BleManager {
+  readonly capabilities: BleCapabilities
+  readonly adapter: BleAdapter
+  readonly diagnostics: BleDiagnostics
+  readonly peers: BlePeerDirectory
+  readonly discovery: BleDiscoveryInfo
+  destroy(): Promise<CleanupRecord>
+  scan(options?: ScanOptions): Promise<ScanSession>
+  find(options?: FindOptions): Promise<BlePeer>
+  choose(options?: ChooseOptions): Promise<BlePeer>
+  connect(peer: BlePeer | string | PeerReference, options?: ConnectOptions): Promise<BleConnection>
+  withConnection<T>(peer: BlePeer | string | PeerReference, options: ConnectOptions, action: (connection: BleConnection) => Promise<T>): Promise<T>
+  withScan<T>(options: ScanOptions, action: (scan: ScanSession) => Promise<T>): Promise<T>
+  withDiscoveredConnection<T>(peer: BlePeer | string | PeerReference, options: ConnectOptions, action: (scope: { connection: BleConnection; gatt: GattDatabase }) => Promise<T>): Promise<T>
+}
+
+export interface BlePeer {
+  readonly id: string
+  readonly name: string | null
+  readonly rssi: number | null
+  readonly reference: PeerReference | null
+  readonly sources: readonly PeerSource[]
+  readonly lastAdvertisement: NormalizedScanObservation | null
+}
+export interface BleConnection {
+  readonly peer: BlePeer
+  readonly connectionGeneration: string
+  readonly lifecycleEvents: AsyncIterable<BleConnectionEvent>
+  discover(options?: OperationOptions): Promise<GattDatabase>
+  readRssi(options?: OperationOptions): Promise<number>
+  requestMtu(requestedMtu: number, options?: OperationOptions): Promise<number>
+  disconnect(): Promise<CleanupRecord>
+  release(): Promise<CleanupRecord>
+}
+export interface ScanSession {
+  readonly observations: BoundedAsyncStream<PublicScanObservation>
+  readonly state: AsyncIterable<ScanStateEvent>
+  stop(): Promise<CleanupRecord>
+}
+export interface BleAdapter { readonly id: string | null; state(): Promise<BleAdapterState>; waitUntilReady(options?: AdapterReadinessOptions): Promise<BleAdapterState> }
+export interface BleDiscoveryInfo { readonly kind: 'continuous-scan' | 'system-chooser' | 'hybrid' }
 export interface OperationOptions { readonly signal?: AbortSignal; readonly timeoutMs?: number }
-export type StreamPreset = 'latest' | 'balanced' | 'lossless-bounded' | 'custom'
-export interface StreamBudget { readonly itemCapacity: Capacity; readonly byteCapacity: Capacity; readonly reservedControlCapacity: Capacity; readonly overflowPolicy: OverflowPolicy }
-export interface BleManagerCreateOptions { readonly instanceId?: string; readonly adapterId?: string; readonly diagnostics?: DiagnosticsOptions; readonly restoration?: { readonly applicationId: string; readonly restorationId: string; readonly generation?: string } }
-export function normalizeOperationOptions(options: OperationOptions | undefined, now: () => number, existingDeadline?: Deadline | null): NormalizedOperationOptions
-export function composeAbortSignal(outer: AbortSignal | null, inner: AbortSignal | null): AbortSignal | null
-export function resolveStreamPreset(input: StreamPresetInput): StreamBudget
-export const STREAM_PRESET_DEFAULTS: Record<StreamPreset, StreamBudget>
+export interface ScanOptions extends OperationOptions { readonly query?: ScanQuery; readonly duplicates?: 'coalesced' | 'all'; readonly delivery?: StreamPolicy }
+export interface FindOptions extends OperationOptions { readonly query?: ScanQuery; readonly select?: 'first' | ((peer: BlePeer) => boolean) }
+export interface ChooseOptions extends OperationOptions { readonly filters?: readonly ChooseFilter[]; readonly optionalServices?: readonly (string | number)[]; readonly acceptAllDevices?: boolean }
+export type { GattDatabase, GattService, GattCharacteristic, GattDescriptor, GattSubscription, GattValueEvent, GattWriteReceipt, GattSubscribeOptions } from './gatt'
+export type { BleCapabilities, CapabilityDescriptor, FeatureId } from './capabilities'
+export type { BleDiagnostics, BleDiagnosticsSnapshot } from './diagnostics'
+export type { BlePeerDirectory, PeerReference, PeerReferenceScope, PeerSource } from './peer-directory'
+export class BleError extends Error { readonly code: BleErrorCode; readonly domain: BleErrorDomain; readonly operation: string; readonly platform: PlatformErrorDetail | null; readonly recovery: BleRecovery }
 ```
 
-## Notes
-
-- Root is host-neutral. No provider, no radio selection on import. No `attachBleBackend`, no `Capacity`/`Deadline` branded types, no `Portable*` paths — those live in `/advanced` and `/backend-sdk`.
-- All host factories (`/react-native`, `/expo`, `/web`, `/tauri`, `/node/*`) return the same `BleManager` type. Capability differences come from trusted-host bootstrap.
-- Low-level helpers (`find`, `scanUntil`, `withConnection`, `defaultScanDelivery`, etc.) and branded primitives now live in `/advanced`.
+All BLE payloads are bytes. Application operations use `AbortSignal` and
+`timeoutMs`; cleanup is awaited and remains retryable when it reports
+`release-failed`. The root package selects no radio backend.
