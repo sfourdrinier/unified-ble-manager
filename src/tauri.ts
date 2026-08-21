@@ -355,6 +355,12 @@ class TauriBleConnectionWrapper implements BleConnection {
     return rehydratePublicPromise(this.base.readRssi(options))
   }
 
+  requestMtu(): Promise<number> {
+    return Promise.reject(
+      rehydratePublicError(contractError('capability.unsupported', 'connection', 'tauri.connection.mtu'))
+    )
+  }
+
   maximumWriteLength(mode?: 'with-response' | 'without-response'): Promise<number> {
     return rehydratePublicPromise(this.base.maximumWriteLength(mode))
   }
@@ -495,7 +501,11 @@ class TauriBleManagerAdapter implements BleManager {
       const session = await this.ipc.scan(ipcOptions)
       return new TauriScanSessionWrapper(
         session,
-        filterScanObservations(session.observations, normalizeScanQuery(options.query), options.duplicates ?? 'coalesced'),
+        filterScanObservations(
+          session.observations,
+          normalizeScanQuery(options.query),
+          options.duplicates ?? 'coalesced'
+        ),
         createScanState()
       )
     } catch (error) {

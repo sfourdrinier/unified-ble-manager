@@ -129,6 +129,8 @@ export interface BleConnection {
   readonly connectionGeneration: string
   readonly lifecycleEvents: AsyncIterable<BleConnectionEvent>
   readonly discover: (options?: OperationOptions) => Promise<GattDatabase>
+  readonly readRssi: (options?: OperationOptions) => Promise<number>
+  readonly requestMtu: (requestedMtu: number, options?: OperationOptions) => Promise<number>
   readonly disconnect: () => Promise<CleanupRecord>
   readonly release: () => Promise<CleanupRecord>
 }
@@ -370,6 +372,30 @@ class PublicBleManager implements BleManager {
         peer: publicPeer,
         connectionGeneration: String(internalConnection.connectionGeneration),
         lifecycleEvents: publicConnectionEvents(internalConnection.events),
+        readRssi: async (rssiOptions: OperationOptions = {}) => {
+          try {
+            const normalized = normalizeOperationOptions(rssiOptions, this.now)
+            const result = await internalConnection.readRssi({
+              signal: normalized.signal,
+              deadline: normalized.deadline
+            })
+            return Number(result.rssi)
+          } catch (error) {
+            throw rehydratePublicError(error)
+          }
+        },
+        requestMtu: async (requestedMtu: number, mtuOptions: OperationOptions = {}) => {
+          try {
+            const normalized = normalizeOperationOptions(mtuOptions, this.now)
+            const result = await internalConnection.requestMtu(requestedMtu, {
+              signal: normalized.signal,
+              deadline: normalized.deadline
+            })
+            return Number(result.negotiatedMtu)
+          } catch (error) {
+            throw rehydratePublicError(error)
+          }
+        },
         discover: async (discoverOptions: OperationOptions = {}) => {
           try {
             const normalized = normalizeOperationOptions(discoverOptions, this.now)
