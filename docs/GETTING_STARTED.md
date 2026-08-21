@@ -110,13 +110,16 @@ The host factory owns ephemeral identity generation. Restoration-bound identity 
 
 ```ts
 const adapter = await manager.adapter.state()
-if (adapter.power !== 'on' || isAuthorizationBlocking(adapter.authorization) || adapter.availability !== 'available') {
+if (
+  adapter.power !== 'on' ||
+  adapter.availability !== 'available' ||
+  ['denied', 'restricted', 'unavailable'].includes(adapter.authorization)
+) {
   throw new Error(`Bluetooth is not ready: ${adapter.power} / ${adapter.authorization}`)
 }
 ```
 
-Use the exported `isAuthorizationBlocking` predicate; never gate on a bare
-`authorization !== 'granted'`. Only an explicit refusal — `'denied'`,
+Never gate on a bare `authorization !== 'granted'`. Only an explicit refusal — `'denied'`,
 `'restricted'`, `'unavailable'` — blocks. The other values are not refusals:
 `'unknown'` means the platform exposes no per-application Bluetooth
 authorization concept, as BlueZ on Linux does, or that the host did not query

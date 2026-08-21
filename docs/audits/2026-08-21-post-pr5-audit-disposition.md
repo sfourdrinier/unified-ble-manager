@@ -76,7 +76,6 @@ Every deferred finding must become a linked blocking issue with one target PR, o
 | Finding | Issue | Owner | Target |
 | --- | --- | --- | --- |
 | F-019 | [#34](https://github.com/sfourdrinier/unified-ble-manager/issues/34) | `sfourdrinier` | PR10 |
-| F-005, D-011 | [#33](https://github.com/sfourdrinier/unified-ble-manager/issues/33) | `sfourdrinier` | PR6B |
 | D-004, D-014 | [#35](https://github.com/sfourdrinier/unified-ble-manager/issues/35) | `sfourdrinier` | PR10 |
 | F-014 | [#36](https://github.com/sfourdrinier/unified-ble-manager/issues/36) | `sfourdrinier` | PR7 |
 | F-016 | [#37](https://github.com/sfourdrinier/unified-ble-manager/issues/37) | `sfourdrinier` | PR9 |

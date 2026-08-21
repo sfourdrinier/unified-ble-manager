@@ -6,6 +6,11 @@
 
 This page is for a React Native app that already uses `react-native-ble-plx`. Web, Electron, Node, and Tauri are new hosts — use those pages after you understand the RN rewrite.
 
+> This is a migration record, not the canonical 4.0 teaching page. The old
+> API names and left-hand snippets are intentionally shown for comparison;
+> copy current application recipes only from [`README.md`](README.md) and
+> [`docs/HELPERS.md`](docs/HELPERS.md).
+
 ## What breaks on day one
 
 | You used to write | You write now |

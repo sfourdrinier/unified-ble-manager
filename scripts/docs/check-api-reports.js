@@ -5,7 +5,15 @@ const path = require('node:path')
 
 const root = path.join(__dirname, '..', '..')
 const required = {
-  'etc/api/root.api.md': ['find(options', 'choose(options', 'withScan', 'PeerReference', 'createConnectionSupervisor'],
+  'etc/api/root.api.md': [
+    'find(options',
+    'choose(options',
+    'withScan',
+    'PeerReference',
+    'createConnectionSupervisor',
+    'ConnectionGateContext',
+    'ConnectionSupervisorState'
+  ],
   'etc/api/react-native.api.md': ['createReactNativeBleManager(options?', 'application factory and does not accept'],
   'etc/api/electron-renderer.api.md': [
     'createElectronRendererBleManager',

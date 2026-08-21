@@ -55,7 +55,17 @@ export type { BleDiagnostics, BleDiagnosticsSnapshot } from './diagnostics'
 export type { BlePeerDirectory, PeerReference, PeerReferenceScope, PeerSource } from './peer-directory'
 export class BleError extends Error { readonly code: BleErrorCode; readonly domain: BleErrorDomain; readonly operation: string; readonly platform: PlatformErrorDetail | null; readonly recovery: BleRecovery }
 export function createConnectionSupervisor<Session = undefined>(manager: BleManager, peer: BlePeer | string | PeerReference, options: ConnectionSupervisorOptions<Session>): ConnectionSupervisor<Session>
-export type { ConnectionSupervisor, ConnectionSupervisorOptions, ConnectionSupervisorEvent, RetryPolicy }
+export type {
+  ConnectionGate,
+  ConnectionGateContext,
+  ConnectionGateDecision,
+  ConnectionSupervisor,
+  ConnectionSupervisorEvent,
+  ConnectionSupervisorOptions,
+  ConnectionSupervisorSnapshot,
+  ConnectionSupervisorState,
+  RetryPolicy
+}
 ```
 
 All BLE payloads are bytes. Application operations use `AbortSignal` and
