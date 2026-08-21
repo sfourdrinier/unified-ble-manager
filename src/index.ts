@@ -33,11 +33,20 @@ export type {
   GattPathSelector,
   UuidInput,
   GattSubscriptionValue,
-  ScanOptions
+  ScanOptions,
+  ScanStateEvent,
+  FindOptions,
+  ChooseOptions,
+  BleDiscoveryInfo,
+  ScanQuery,
+  ScanClause,
+  ManufacturerDataPattern,
+  ServiceDataPattern
 } from './public/ble-manager'
 export { BUILT_IN_FEATURE_CATALOG, BUILT_IN_FEATURE_IDS } from './backend-contract/capabilities'
 export type { BleCapabilities, BuiltInFeatureId, CapabilityDescriptor, FeatureId } from './public/capabilities'
-export type { BleAdapter, BleAdapterState } from './public/ble-adapter'
+export type { BleAdapter, BleAdapterState, AdapterReadinessOptions } from './public/ble-adapter'
+export type { BleDiagnostics, BleDiagnosticsSnapshot, BleResourceCounters } from './public/diagnostics'
 
 // --- Operation options & stream presets (public types only) ---
 export type { OperationOptions } from './public/operation-options'

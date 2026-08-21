@@ -1,6 +1,7 @@
 // src/web.ts — zero-plumbing Web Bluetooth factory (PR1 final, no compatibility aliases)
 
-import type { BleManager } from './public/ble-manager'
+import { snapshotBlePeer } from './public/ble-manager'
+import type { BleManager, ChooseOptions } from './public/ble-manager'
 import { createPublicBleManager } from './public/ble-manager'
 import { normalizeBleManagerCreateOptions } from './public/host-identity'
 import type { BleManagerCreateOptions } from './public/host-identity'
@@ -13,6 +14,8 @@ import {
 import { createBleManagerFromBackend, DEFAULT_BLE_MANAGER_OPTIONS } from './manager/ble-manager'
 import { opaqueId } from './backend-contract/primitives'
 import { createEphemeralHostIdentity } from './public/host-identity'
+import { canonicalUuid } from './backend-contract/primitives'
+import { normalizeOperationOptions } from './public/operation-options'
 
 export {
   createWebBluetoothProvider,
@@ -55,15 +58,19 @@ export async function createWebBleManager(options: BleManagerCreateOptions = {})
   const ephemeral = createEphemeralHostIdentity()
   const clientId = opaqueId(`web-${ephemeral.managerNonce.slice(0, 8)}`, 'client', 'web-bluetooth:browser')
   const managerId = opaqueId(`web-${ephemeral.attachmentNonce.slice(0, 8)}`, 'manager', 'web-bluetooth:browser')
+  const backend = await provider.create({ selectedAdapterId: WEB_BLUETOOTH_ADAPTER_ID })
   const internal = await createBleManagerFromBackend(
-    await provider.create({ selectedAdapterId: WEB_BLUETOOTH_ADAPTER_ID }),
+    backend,
     {
       coreCompatibility: provider.descriptor.compatibility,
       manager: { clientId, managerId, ownerMode: 'owning' }
     },
     { ...DEFAULT_BLE_MANAGER_OPTIONS, now: env.now }
   )
-  return createPublicBleManager(internal, env.now)
+  return createPublicBleManager(internal, env.now, {
+    discoveryKind: 'system-chooser',
+    choose: optionsValue => chooseWebPeer(backend, optionsValue, env.now)
+  })
 }
 
 // Explicit provider injection for tests and unusual hosts.
@@ -80,13 +87,36 @@ export async function createWebBleManagerWithEnvironment(
   const ephemeral = createEphemeralHostIdentity()
   const clientId = opaqueId(`web-${ephemeral.managerNonce.slice(0, 8)}`, 'client', 'web-bluetooth:browser')
   const managerId = opaqueId(`web-${ephemeral.attachmentNonce.slice(0, 8)}`, 'manager', 'web-bluetooth:browser')
+  const backend = await provider.create({ selectedAdapterId: WEB_BLUETOOTH_ADAPTER_ID })
   const internal = await createBleManagerFromBackend(
-    await provider.create({ selectedAdapterId: WEB_BLUETOOTH_ADAPTER_ID }),
+    backend,
     {
       coreCompatibility: provider.descriptor.compatibility,
       manager: { clientId, managerId, ownerMode: 'owning' }
     },
     { ...DEFAULT_BLE_MANAGER_OPTIONS, now: env.now }
   )
-  return createPublicBleManager(internal, env.now)
+  return createPublicBleManager(internal, env.now, {
+    discoveryKind: 'system-chooser',
+    choose: optionsValue => chooseWebPeer(backend, optionsValue, env.now)
+  })
+}
+
+async function chooseWebPeer(
+  backend: import('./web/web-bluetooth-backend').WebBluetoothBackend,
+  options: ChooseOptions,
+  now: () => number
+) {
+  const normalized = normalizeOperationOptions(options, now)
+  const services =
+    options.services?.map(value => canonicalUuid(typeof value === 'number' ? value.toString(16) : value)) ?? []
+  const selection = await backend.choose(
+    {
+      filters: services.length === 0 ? [] : [{ serviceUuids: services, manufacturerData: [], localNamePrefix: null }],
+      acceptAllDevices: services.length === 0,
+      optionalServices: services
+    },
+    normalized
+  )
+  return snapshotBlePeer({ id: String(selection.peerId), name: null, rssi: null })
 }

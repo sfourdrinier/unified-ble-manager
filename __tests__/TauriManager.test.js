@@ -229,9 +229,7 @@ describe('Tauri v2 public manager', () => {
     const manager = await createTauriBleManagerWithEnvironment({ invoke, Channel: FakeChannel })
 
     await expect(manager.adapterState()).resolves.toMatchObject({ power: 'on' })
-    const scan = await manager.scan({
-      filter: { serviceUuids: ['180d'], manufacturerData: [], localNamePrefix: null }
-    })
+    const scan = await manager.scan({})
     const observation = scan.observations[Symbol.asyncIterator]().next()
     streamValue('scan-1', advertisement('polar-h10', 'Polar H10', -47))
     await expect(observation).resolves.toMatchObject({ value: { kind: 'value', value: { peerId: 'polar-h10' } } })

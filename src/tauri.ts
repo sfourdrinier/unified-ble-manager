@@ -1,7 +1,15 @@
 // src/tauri.ts — zero-plumbing Tauri application factory
 
-import { snapshotBlePeer } from './public/ble-manager'
-import type { BleManager, BlePeer, ScanOptions } from './public/ble-manager'
+import {
+  assertPublicScanOptions,
+  emptyScanState,
+  filterScanObservations,
+  findPeerInScan,
+  snapshotBlePeer
+} from './public/ble-manager'
+import type { BleManager, BlePeer, FindOptions, ScanOptions } from './public/ble-manager'
+import type { BleAdapter, BleAdapterState, AdapterReadinessOptions } from './public/ble-adapter'
+import { diagnosticsUnavailable, type BleDiagnostics } from './public/diagnostics'
 import type { BleConnection } from './public/ble-manager'
 import type { ScanSession } from './public/ble-manager'
 import type { OperationOptions } from './public/operation-options'
@@ -11,6 +19,7 @@ import type { BleManagerCreateOptions } from './public/host-identity'
 import { rehydratePublicError, rehydratePublicPromise, runWithCleanup } from './public/error-bridge'
 import type { BleCapabilities } from './public/capabilities'
 import { createPublicGattDatabase, type PublicGattDatabaseSource } from './public/gatt'
+import { normalizeScanQuery } from './public/scan-query'
 import type {
   PortableCurrentCharacteristicPath,
   PortableCurrentDescriptorPath,
@@ -31,83 +40,7 @@ import type { CleanupRecord } from './backend-contract/errors'
 import { TauriBleIpcTransport } from './tauri/transport'
 import type { TauriChannel, TauriInvoke } from './tauri/transport'
 
-type PublicFilterShape = {
-  readonly serviceUuids?: readonly string[]
-  readonly manufacturerData?: readonly {
-    readonly companyIdentifier: number
-    readonly dataPrefix?: Readonly<Uint8Array> | null
-  }[]
-  readonly localNamePrefix?: string | null
-}
-
-function getFilter(options: ScanOptions): PublicFilterShape | undefined {
-  const value = Reflect.get(options, 'filter')
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined
-  const prototype = Object.getPrototypeOf(value)
-  if (prototype !== Object.prototype && prototype !== null) return undefined
-  if (
-    Object.keys(value).some(key => key !== 'serviceUuids' && key !== 'manufacturerData' && key !== 'localNamePrefix')
-  ) {
-    return undefined
-  }
-  const serviceUuids = Reflect.get(value, 'serviceUuids')
-  const manufacturerData = Reflect.get(value, 'manufacturerData')
-  const localNamePrefix = Reflect.get(value, 'localNamePrefix')
-  const result: PublicFilterShape = {}
-  if (serviceUuids !== undefined) {
-    if (isStringArray(serviceUuids)) {
-      Object.defineProperty(result, 'serviceUuids', { value: serviceUuids, enumerable: true })
-    } else {
-      return undefined
-    }
-  }
-  if (manufacturerData !== undefined) {
-    if (!Array.isArray(manufacturerData)) return undefined
-    const validated: { readonly companyIdentifier: number; readonly dataPrefix?: Readonly<Uint8Array> | null }[] = []
-    for (const entry of manufacturerData) {
-      if (typeof entry !== 'object' || entry === null) return undefined
-      const cid = Reflect.get(entry, 'companyIdentifier')
-      if (typeof cid !== 'number' || !Number.isSafeInteger(cid) || cid < 0 || cid > 0xffff) return undefined
-      const dp = Reflect.get(entry, 'dataPrefix')
-      if (dp !== undefined && dp !== null && !(dp instanceof Uint8Array)) return undefined
-      let dataPrefixValue: Readonly<Uint8Array> | null | undefined
-      if (dp instanceof Uint8Array) dataPrefixValue = dp
-      else if (dp === null) dataPrefixValue = null
-      else dataPrefixValue = undefined
-      validated.push({ companyIdentifier: cid, dataPrefix: dataPrefixValue })
-    }
-    Object.defineProperty(result, 'manufacturerData', { value: validated, enumerable: true })
-  }
-  if (localNamePrefix !== undefined) {
-    if (typeof localNamePrefix !== 'string' && localNamePrefix !== null) return undefined
-    Object.defineProperty(result, 'localNamePrefix', { value: localNamePrefix, enumerable: true })
-  }
-  return result
-}
-
-function isStringArray(value: unknown): value is readonly string[] {
-  return Array.isArray(value) && value.every(item => typeof item === 'string')
-}
-
 function toIpcScanOptions(options: ScanOptions): IpcScanOptions {
-  if (Reflect.has(options, 'filter')) {
-    const filter = getFilter(options)
-    if (filter === undefined) throw contractError('argument.invalid', 'scan', 'tauri.scan.filter')
-    const manufacturerData =
-      filter.manufacturerData === undefined
-        ? undefined
-        : filter.manufacturerData.map(entry => ({
-            companyId: entry.companyIdentifier,
-            dataPrefix: entry.dataPrefix ?? undefined
-          }))
-    return {
-      serviceUuids: filter.serviceUuids,
-      manufacturerData,
-      localNamePrefix: filter.localNamePrefix ?? null,
-      signal: options.signal,
-      timeoutMs: options.timeoutMs
-    }
-  }
   return {
     serviceUuids: undefined,
     manufacturerData: undefined,
@@ -126,14 +59,21 @@ function resolveBlePeer(peer: BlePeer | string, peerId: string): BlePeer {
 }
 
 class TauriScanSessionWrapper implements ScanSession {
-  constructor(private readonly inner: import('./ipc/manager').IpcScanSession) {}
+  constructor(
+    private readonly inner: import('./ipc/manager').IpcScanSession,
+    private readonly filteredObservations: ScanSession['observations']
+  ) {}
 
   stop(): Promise<CleanupRecord> {
     return rehydratePublicPromise(this.inner.stop())
   }
 
   get observations(): ScanSession['observations'] {
-    return this.inner.observations
+    return this.filteredObservations
+  }
+
+  get state(): ScanSession['state'] {
+    return emptyScanState()
   }
 }
 
@@ -373,19 +313,46 @@ class TauriBleConnectionWrapper implements BleConnection {
 // preserving Ipc-specific members (adapterState, GATT) for test compatibility.
 class TauriBleManagerAdapter implements BleManager {
   readonly capabilities: BleCapabilities
+  readonly adapter: BleAdapter
+  readonly diagnostics: BleDiagnostics
+  readonly discovery: BleManager['discovery'] = Object.freeze({ kind: 'continuous-scan' })
 
   constructor(private readonly ipc: IpcBleManager) {
     this.capabilities = ipc.capabilities
+    this.adapter = createTauriAdapter(ipc)
+    this.diagnostics = diagnosticsUnavailable()
   }
 
   async scan(options: ScanOptions = {}): Promise<ScanSession> {
     try {
+      assertPublicScanOptions(options)
       const ipcOptions = toIpcScanOptions(options)
       const session = await this.ipc.scan(ipcOptions)
-      return new TauriScanSessionWrapper(session)
+      return new TauriScanSessionWrapper(
+        session,
+        filterScanObservations(session.observations, normalizeScanQuery(options.query))
+      )
     } catch (error) {
       throw rehydratePublicError(error)
     }
+  }
+
+  find(options: FindOptions = {}): Promise<BlePeer> {
+    return this.scan({
+      ...options,
+      duplicates: 'coalesced',
+      delivery: 'latest',
+      timeoutMs: options.timeoutMs ?? 10_000
+    }).then(scan =>
+      runWithCleanup(
+        () => findPeerInScan(scan, options.select),
+        () => scan.stop()
+      )
+    )
+  }
+
+  choose(): Promise<BlePeer> {
+    return Promise.reject(rehydratePublicError(contractError('capability.unsupported', 'chooser', 'tauri.choose')))
   }
 
   async connect(peer: BlePeer | string, options: OperationOptions = {}): Promise<BleConnection> {
@@ -410,6 +377,28 @@ class TauriBleManagerAdapter implements BleManager {
     )
   }
 
+  async withScan<T>(options: ScanOptions, action: (scan: ScanSession) => Promise<T>): Promise<T> {
+    const scan = await this.scan(options)
+    return runWithCleanup(
+      () => action(scan),
+      () => scan.stop()
+    )
+  }
+
+  async withDiscoveredConnection<T>(
+    peer: BlePeer | string,
+    options: OperationOptions,
+    action: (scope: {
+      readonly connection: BleConnection
+      readonly gatt: import('./public/gatt').GattDatabase
+    }) => Promise<T>
+  ): Promise<T> {
+    return this.withConnection(peer, options, async connection => {
+      const gatt = await connection.discover(options)
+      return action(Object.freeze({ connection, gatt }))
+    })
+  }
+
   destroy(): Promise<CleanupRecord> {
     return this.ipc.destroy().catch(error => {
       throw rehydratePublicError(error)
@@ -421,6 +410,80 @@ class TauriBleManagerAdapter implements BleManager {
   adapterState(): Promise<unknown> {
     return rehydratePublicPromise(this.ipc.adapterState())
   }
+}
+
+function createTauriAdapter(ipc: IpcBleManager): BleAdapter {
+  const state = async (): Promise<BleAdapterState> => {
+    const value = await ipc.adapterState()
+    if (typeof value !== 'object' || value === null) {
+      throw contractError('protocol.malformed', 'adapter', 'tauri.adapter.state')
+    }
+    const availability = Reflect.get(value, 'availability')
+    const authorization = Reflect.get(value, 'authorization')
+    const power = Reflect.get(value, 'power')
+    const updatedAt = Reflect.get(value, 'updatedAt')
+    const safeReason = Reflect.get(value, 'safeReason')
+    if (typeof availability !== 'string' || typeof authorization !== 'string' || typeof power !== 'string') {
+      throw contractError('protocol.malformed', 'adapter', 'tauri.adapter.state')
+    }
+    if (!isAdapterAvailability(availability) || !isAdapterAuthorization(authorization) || !isAdapterPower(power)) {
+      throw contractError('protocol.malformed', 'adapter', 'tauri.adapter.state')
+    }
+    return Object.freeze({
+      availability,
+      authorization,
+      power,
+      backendGeneration: String(ipc.bootstrap.attachment.backendGeneration),
+      updatedAt: typeof updatedAt === 'number' ? updatedAt : 0,
+      safeReason: typeof safeReason === 'string' ? safeReason : null
+    })
+  }
+  return {
+    id: String(ipc.bootstrap.attachment.adapter.adapterId),
+    state,
+    waitUntilReady: async (options: AdapterReadinessOptions = {}) => {
+      const normalized = normalizeOperationOptions(options, () => globalThis.performance.now())
+      const deadline = normalized.deadline ?? globalThis.performance.now() + 10_000
+      while (true) {
+        const current = await state()
+        if (current.availability === 'unsupported' || current.power === 'unsupported') {
+          throw rehydratePublicError(contractError('capability.unsupported', 'adapter', 'tauri.adapter.ready'))
+        }
+        if (current.authorization === 'denied' || current.authorization === 'restricted') {
+          throw rehydratePublicError(contractError('permission.denied', 'adapter', 'tauri.adapter.ready'))
+        }
+        if (current.availability === 'available' && current.power === 'on') return current
+        if (normalized.signal?.aborted === true) {
+          throw rehydratePublicError(contractError('operation.aborted', 'adapter', 'tauri.adapter.ready'))
+        }
+        if (globalThis.performance.now() >= deadline) {
+          throw rehydratePublicError(contractError('operation.timed-out', 'adapter', 'tauri.adapter.ready'))
+        }
+        await new Promise(resolve =>
+          setTimeout(resolve, Math.min(50, Math.max(1, deadline - globalThis.performance.now())))
+        )
+      }
+    }
+  }
+}
+
+function isAdapterAvailability(value: string): value is BleAdapterState['availability'] {
+  return value === 'available' || value === 'unavailable' || value === 'unsupported' || value === 'unknown'
+}
+
+function isAdapterAuthorization(value: string): value is BleAdapterState['authorization'] {
+  return (
+    value === 'granted' ||
+    value === 'denied' ||
+    value === 'restricted' ||
+    value === 'not-determined' ||
+    value === 'unavailable' ||
+    value === 'unknown'
+  )
+}
+
+function isAdapterPower(value: string): value is BleAdapterState['power'] {
+  return value === 'on' || value === 'off' || value === 'resetting' || value === 'unsupported' || value === 'unknown'
 }
 
 // Normal Tauri factory — imports invoke/Channel from @tauri-apps/api/core internally.

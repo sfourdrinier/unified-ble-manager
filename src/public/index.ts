@@ -39,3 +39,15 @@ export type {
   GattPathSelector,
   UuidInput
 } from './gatt'
+export type {
+  FindOptions,
+  ChooseOptions,
+  BleDiscoveryInfo,
+  ScanQuery,
+  ScanClause,
+  ManufacturerDataPattern,
+  ServiceDataPattern,
+  NormalizedScanQuery,
+  NormalizedScanObservation
+} from './ble-manager'
+export type { BleDiagnostics, BleDiagnosticsSnapshot, BleResourceCounters } from './diagnostics'

@@ -140,6 +140,18 @@ export {
   withDiscoveredConnection
 } from './manager/public-helpers'
 export type { ScanUntilOptions, ConnectedGattDatabase, CollectNotificationsOptions } from './manager/public-helpers'
+export type {
+  ManufacturerDataPattern,
+  NormalizedManufacturerDataPattern,
+  NormalizedScanClause,
+  NormalizedScanObservation,
+  NormalizedScanQuery,
+  NormalizedServiceDataPattern,
+  ScanClause,
+  ScanQuery,
+  ServiceDataPattern
+} from './public/scan-query'
+export { normalizeScanObservation, normalizeScanQuery, observationMatchesScanQuery } from './public/scan-query'
 
 // Re-export façade utilities for expert callers that need exact control.
 export { normalizeOperationOptions } from './public/operation-options'
