@@ -150,7 +150,7 @@
     "@react-navigation/native-stack": "^7.0.0",
     "@release-it/conventional-changelog": "^11.0.1",
     "@types/jest": "^29.5.5",
-    "@types/node": "^24.10.0",
+    "@types/node": "^26.2.0",
     "@types/react": "^19.2.2",
     "@types/web-bluetooth": "0.0.21",
     "@typescript-eslint/eslint-plugin": "^8.47.0",
