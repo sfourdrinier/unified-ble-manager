@@ -341,6 +341,10 @@ class PublicBleManager implements BleManager {
       assertPublicConnectOptions(options)
       const { signal, deadline } = normalizeOperationOptions(options, this.now)
       const intent = options.intent ?? 'direct'
+      const directCapability = this.internal.capability('connection:direct')
+      if (directCapability?.state === 'unsupported' || directCapability?.state === 'unavailable') {
+        throw contractError('capability.unsupported', 'connection', 'public-ble-manager.connect.direct')
+      }
       if (intent === 'when-available' && !this.internal.supports('connection:when-available')) {
         throw contractError('capability.unsupported', 'connection', 'public-ble-manager.connect.when-available')
       }

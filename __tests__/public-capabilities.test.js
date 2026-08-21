@@ -1,6 +1,22 @@
 const { createPublicBleManager } = require('../src/public/ble-manager')
 
 describe('public BleCapabilities', () => {
+  test('rejects direct connections when the backend explicitly marks them unsupported', async () => {
+    const connect = jest.fn()
+    const internal = {
+      supports: () => false,
+      capability: id => (id === 'connection:direct' ? { id, state: 'unsupported' } : null),
+      capabilities: () => [{ id: 'connection:direct', state: 'unsupported' }],
+      destroy: jest.fn(),
+      scan: jest.fn(),
+      connect
+    }
+    const manager = await createPublicBleManager(internal, () => 0)
+
+    await expect(manager.connect('peer-direct')).rejects.toMatchObject({ code: 'capability.unsupported' })
+    expect(connect).not.toHaveBeenCalled()
+  })
+
   test('projects negotiated capabilities without exposing backend manager methods', async () => {
     const supported = { id: 'gatt:descriptors', state: 'supported' }
     const limited = {

@@ -1,4 +1,5 @@
 const { createConnectionSupervisor } = require('../src/public/connection-supervisor')
+const { BleError } = require('../src/public/errors')
 
 function lifecycleEvents() {
   let closed = false
@@ -229,6 +230,43 @@ describe('public connection supervisor', () => {
     await wait(5)
     await expect(configureSupervisor.stop()).resolves.toMatchObject({ state: 'released' })
     configurePending.resolve('late-session')
+  })
+
+  test('pausing a pending gate keeps the supervisor resumable after the gate settles', async () => {
+    const gatePending = deferred()
+    const ble = manager(connection())
+    const supervisor = createConnectionSupervisor(ble, 'peer-paused-gate', {
+      retry: { initialDelayMs: 1, maximumDelayMs: 1, multiplier: 1, jitter: 0 },
+      gate: () => gatePending.promise
+    })
+
+    supervisor.start()
+    await wait(1)
+    await supervisor.pause('user-requested')
+    gatePending.resolve('allow')
+    await wait(1)
+
+    expect(ble.connect).not.toHaveBeenCalled()
+    expect(supervisor.snapshot.state).toBe('waiting-for-gate')
+
+    supervisor.resume()
+    await wait(5)
+    expect(ble.connect).toHaveBeenCalledTimes(1)
+    await expect(supervisor.stop()).resolves.toMatchObject({ state: 'released' })
+  })
+
+  test('stops after a non-retryable connection error without another attempt', async () => {
+    const ble = manager(null)
+    ble.connect.mockRejectedValue(new BleError('permission.denied', 'connection', 'test.denied'))
+    const supervisor = createConnectionSupervisor(ble, 'peer-denied', {
+      retry: { initialDelayMs: 0, maximumDelayMs: 0, multiplier: 1, jitter: 0, maximumAttempts: 3 }
+    })
+
+    supervisor.start()
+    await wait()
+
+    expect(ble.connect).toHaveBeenCalledTimes(1)
+    expect(supervisor.snapshot.state).toBe('stopped')
   })
 
   test('retains a late configure-session disposal failure after stop finalized', async () => {

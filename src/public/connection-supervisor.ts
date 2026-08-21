@@ -286,7 +286,7 @@ class ConnectionSupervisorImpl<Session> implements ConnectionSupervisor<Session>
       let adapter: BleAdapterState
       try {
         const state = await this.awaitControl(this.manager.adapter.state())
-        if (state.kind === 'control') return 'stop'
+        if (state.kind === 'control') return state.reason === 'stop' ? 'stop' : 'pause'
         adapter = state.value
       } catch (error) {
         this.lastError = toBleError(error)
@@ -298,7 +298,7 @@ class ConnectionSupervisorImpl<Session> implements ConnectionSupervisor<Session>
           const readiness = await this.awaitControl(
             this.manager.adapter.waitUntilReady({ signal: this.supervisorAbort.signal, operation: 'connect' })
           )
-          if (readiness.kind === 'control') return 'stop'
+          if (readiness.kind === 'control') return readiness.reason === 'stop' ? 'stop' : 'pause'
           this.waitForAdapter = false
           this.lastError = null
         } catch (error) {
@@ -324,7 +324,7 @@ class ConnectionSupervisorImpl<Session> implements ConnectionSupervisor<Session>
                 })
               )
             )
-      if (decisionResult.kind === 'control') return 'stop'
+      if (decisionResult.kind === 'control') return decisionResult.reason === 'stop' ? 'stop' : 'pause'
       const decision = decisionResult.value
       if (decision === 'stop') return 'stop'
       this.transition('waiting-for-gate', decision, null, null)
@@ -373,6 +373,8 @@ class ConnectionSupervisorImpl<Session> implements ConnectionSupervisor<Session>
       } else if (this.lastError.code === 'permission.not-determined') {
         this.attempt -= 1
         this.paused = true
+      } else if (!isRetryableConnectionError(this.lastError)) {
+        this.stopRequested = true
       }
       return 'interrupted'
     }
@@ -619,11 +621,14 @@ class ConnectionSupervisorImpl<Session> implements ConnectionSupervisor<Session>
 
   private async awaitControl<Value>(
     pending: Promise<Value>
-  ): Promise<{ kind: 'value'; value: Value } | { kind: 'control' }> {
+  ): Promise<{ kind: 'value'; value: Value } | { kind: 'control'; reason: 'stop' | 'wake' }> {
     const control = this.controlWaiter()
     const result = await Promise.race([
       pending.then(value => ({ kind: 'value' as const, value })),
-      control.promise.then(() => ({ kind: 'control' as const }))
+      control.promise.then(() => ({
+        kind: 'control' as const,
+        reason: this.stopRequested ? ('stop' as const) : ('wake' as const)
+      }))
     ])
     control.cancel()
     return result
@@ -697,6 +702,18 @@ function cleanupFailure(resourceKind: string, error: unknown, operation: string)
 function isAdapterWaitError(error: BleError): boolean {
   return (
     error.code === 'adapter.unavailable' || error.code === 'adapter.powered-off' || error.code === 'adapter.resetting'
+  )
+}
+
+function isRetryableConnectionError(error: BleError): boolean {
+  return (
+    error.code === 'backend.reset' ||
+    error.code === 'connection.failed' ||
+    error.code === 'connection.lost' ||
+    error.code === 'connection.stale' ||
+    error.code === 'operation.timed-out' ||
+    error.code === 'platform.failure' ||
+    error.code === 'platform.transport'
   )
 }
 

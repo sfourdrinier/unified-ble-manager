@@ -143,6 +143,10 @@ export class IpcPublicManagerAdapter implements BleManager {
       assertPublicConnectOptions(options)
       const normalized = normalizeOperationOptions(options, () => globalThis.performance.now())
       assertIpcConnectionOptions(options)
+      const directCapability = this.capabilities.get('connection:direct')
+      if (directCapability?.state === 'unsupported' || directCapability?.state === 'unavailable') {
+        throw contractError('capability.unsupported', 'connection', 'ipc-public-manager.connect.direct')
+      }
       if (isPeerReference(peer)) {
         throw contractError('capability.unsupported', 'connection', 'ipc-public-manager.peer-reference')
       }

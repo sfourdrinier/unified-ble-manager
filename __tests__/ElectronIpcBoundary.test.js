@@ -82,7 +82,7 @@ function completeCapabilityDescriptors() {
   }
   return BUILT_IN_FEATURE_CATALOG.map(entry => ({
     id: entry.id,
-    state: 'unsupported',
+    state: entry.id === 'connection:direct' ? 'limited' : 'unsupported',
     selectedSchemaRange: schema,
     implementationOrigin: 'backend-native',
     tck: {
@@ -92,7 +92,7 @@ function completeCapabilityDescriptors() {
     },
     evidence: {
       receiptId: `electron-test-${entry.id}`,
-      evidenceLevel: 'blocked',
+      evidenceLevel: entry.id === 'connection:direct' ? 'deterministic' : 'blocked',
       implementationVersion: 'test',
       sourceDigest: `electron-test-${entry.id}`,
       scenarioIds: ['capability.truth-limits-evidence-and-binding'],
