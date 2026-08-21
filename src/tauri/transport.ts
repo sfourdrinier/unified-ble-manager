@@ -90,8 +90,9 @@ export class TauriBleIpcTransport<Attachment extends string, Client extends stri
     if (request.kind === TAURI_ATTACH_REQUEST_KIND && !isIpcBootstrapRequest(request)) {
       throw contractError('protocol.malformed', 'ipc', 'tauri.transport.bootstrap-request')
     }
+    const wireRequest = request.kind === 'route' ? { kind: request.kind, envelope: request.envelope } : request
     const response = await this.invokeCore<unknown>(this.command, {
-      request: encodeTauriWireValue(request),
+      request: encodeTauriWireValue(wireRequest),
       ...this.eventChannelArgument(request)
     })
     return decodeIpcBleResponse<Attachment, Client>(response)
