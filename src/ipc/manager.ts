@@ -153,7 +153,8 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
     return new IpcConnection(
       this,
       requiredString(payload, 'handle', 'ipc-manager.connect'),
-      requiredString(payload, 'peerId', 'ipc-manager.connect')
+      requiredString(payload, 'peerId', 'ipc-manager.connect'),
+      requiredString(payload, 'connectionGeneration', 'ipc-manager.connect')
     )
   }
 
@@ -316,19 +317,23 @@ export class IpcScanSession {
 
 export class IpcConnection {
   private readonly lifecycleEvents = new CoreBoundedStream<SerializableRecord>(REMOTE_STREAM_LIMITS, 'drop-oldest')
+  private readonly _connectionGeneration: string
 
   constructor(
     private readonly manager: IpcBleManager,
     readonly handle: string,
-    readonly peerId: string
-  ) {}
+    readonly peerId: string,
+    connectionGeneration: string
+  ) {
+    this._connectionGeneration = connectionGeneration
+  }
 
   get connectionId(): string {
     return this.handle
   }
 
   get connectionGeneration(): string {
-    return '1'
+    return this._connectionGeneration
   }
 
   get events(): BoundedAsyncStream<SerializableRecord> {

@@ -81,7 +81,7 @@ describe('Tauri v2 public manager', () => {
         'adapter.state': { state: bootstrap().attachment.adapter.state },
         'scan.start': { handle: 'scan-1' },
         'scan.stop': { state: 'released', failures: [] },
-        'connection.connect': { handle: 'connection-1', peerId: 'polar-h10' },
+        'connection.connect': { handle: 'connection-1', peerId: 'polar-h10', connectionGeneration: 'generation-1' },
         'gatt.discover': {
           handle: 'database-1',
           characteristics: [

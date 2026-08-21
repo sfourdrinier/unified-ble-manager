@@ -108,6 +108,7 @@ struct ScanResource {
 struct ConnectionResource {
     peer_id: String,
     peripheral: Peripheral,
+    generation: String,
 }
 
 struct DatabaseResource {
@@ -898,6 +899,7 @@ impl BtleplugDispatcher {
             );
         }
         let handle = self.id("connection");
+        let connection_generation = self.id("connection-generation");
         let mut state = self.inner.lock().await;
         let Some(caller_state) = state.callers.get_mut(&key) else {
             state.peer_owners.remove(&peer_id);
@@ -914,11 +916,13 @@ impl BtleplugDispatcher {
             ConnectionResource {
                 peer_id: peer_id.clone(),
                 peripheral,
+                generation: connection_generation.clone(),
             },
         );
         Ok(object([
             ("handle", string(handle)),
             ("peerId", string(peer_id)),
+            ("connectionGeneration", string(connection_generation)),
         ]))
     }
 
