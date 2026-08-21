@@ -188,7 +188,7 @@ export class ElectronRendererBleClient<Attachment extends string, Renderer exten
     }
     request.signal?.addEventListener('abort', abort, { once: true })
     try {
-      const response = await this.transport.invoke({ kind: 'route', envelope })
+      const response = await this.transport.invoke({ kind: 'route', envelope, signal: request.signal })
       if (response.kind === 'failure') {
         throw new BackendContractError(response.error)
       }

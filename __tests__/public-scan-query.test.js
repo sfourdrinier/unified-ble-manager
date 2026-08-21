@@ -184,4 +184,35 @@ describe('canonical public ScanQuery v1', () => {
     await expect(first.next()).resolves.toMatchObject({ done: true })
     await first.return()
   })
+
+  test('coalesced scans deliver changed current-view observations', async () => {
+    const source = new CoreBoundedStream(
+      { itemCapacity: capacity(8), byteCapacity: capacity(4096), reservedControlCapacity: capacity(1) },
+      'drop-oldest'
+    )
+    const filtered = filterScanObservations(source, normalizeScanQuery(), 'coalesced')
+    const iterator = filtered[Symbol.asyncIterator]()
+    const firstValue = iterator.next()
+    const firstObservation = {
+      peerId: 'current-view-peer',
+      localName: 'Current view',
+      rssi: -40,
+      txPowerLevel: null,
+      serviceUuids: [],
+      manufacturerData: [],
+      serviceData: []
+    }
+    source.emit(firstObservation, 32)
+    await expect(firstValue).resolves.toMatchObject({ value: { kind: 'value', value: { rssi: -40 } } })
+
+    const changedValue = iterator.next()
+    source.emit({ ...firstObservation, rssi: -39 }, 32)
+    await expect(changedValue).resolves.toMatchObject({ value: { kind: 'value', value: { rssi: -39 } } })
+
+    const unchangedValue = iterator.next()
+    source.emit({ ...firstObservation, rssi: -39 }, 32)
+    source.closeWithReason('closed')
+    await expect(unchangedValue).resolves.toMatchObject({ value: { kind: 'terminal', reason: 'closed' } })
+    await iterator.return()
+  })
 })

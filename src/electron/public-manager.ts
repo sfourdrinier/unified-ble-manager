@@ -42,7 +42,7 @@ class ElectronClientTransport implements IpcClientTransport<string, string> {
         command: request.envelope.command,
         payload: request.envelope.payload,
         binaryPayload: request.envelope.binaryPayload,
-        signal: null
+        signal: request.signal ?? null
       })
       return { kind: 'route', payload: receipt.payload }
     }

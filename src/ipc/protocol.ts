@@ -149,6 +149,8 @@ export function createIpcBootstrapRequest(): IpcBootstrapRequest {
 export interface IpcRouteRequest<Attachment extends string, Client extends string, Operation extends string> {
   readonly kind: 'route'
   readonly envelope: IpcEnvelope<Attachment, Client, Operation>
+  /** Local cancellation signal carried across nested host transports; never serialized on the wire. */
+  readonly signal?: AbortSignal | null
 }
 
 export interface IpcReleaseRequest {

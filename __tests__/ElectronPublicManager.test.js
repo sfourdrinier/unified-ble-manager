@@ -203,4 +203,52 @@ describe('Electron public manager façade', () => {
     )
     expect(listeners.size).toBeGreaterThanOrEqual(0)
   })
+
+  test('forwards the public operation signal through the nested Electron transport', async () => {
+    let observedSignal
+    const invoke = jest.fn(async request => {
+      if (request.kind === 'bootstrap') return { kind: 'bootstrap', bootstrap: bootstrap() }
+      if (request.kind === 'event.ack') return { kind: 'event.ack' }
+      if (request.kind === 'release') return { kind: 'release', cleanup: { state: 'released', failures: [] } }
+      if (request.envelope.command === 'connection.connect') {
+        observedSignal = request.signal
+        return {
+          kind: 'route',
+          payload: {
+            handle: 'connection-signal',
+            peerId: 'peer-signal',
+            connectionId: 'connection-id-signal',
+            ownerLeaseId: 'renderer-lease-1',
+            connectionGeneration: 'connection-generation-signal'
+          }
+        }
+      }
+      if (request.envelope.command === 'connection.events.subscribe') {
+        return {
+          kind: 'route',
+          payload: {
+            handle: request.envelope.payload.connectionEventsHandle,
+            connectionId: 'connection-id-signal',
+            connectionGeneration: 'connection-generation-signal',
+            eventSchemaVersion: 2
+          }
+        }
+      }
+      if (request.envelope.command === 'connection.events.ready') return { kind: 'route', payload: { state: 'ready' } }
+      if (request.envelope.command === 'connection.events.unsubscribe') {
+        return { kind: 'route', payload: { state: 'released', failures: [] } }
+      }
+      throw new Error(`unexpected command ${request.envelope.command}`)
+    })
+    const transport = {
+      invoke,
+      subscribe: () => () => undefined,
+      acknowledge: async () => ({ kind: 'event.ack' })
+    }
+    const manager = await createElectronRendererBleManager({ transport })
+    const signal = new AbortController().signal
+
+    await manager.connect('peer-signal', { signal })
+    expect(observedSignal).toBe(signal)
+  })
 })

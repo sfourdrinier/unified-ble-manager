@@ -35,7 +35,7 @@ import type { BoundedAsyncStreamIterator } from '../backend-contract/streams'
 import { createScanState } from './scan-state'
 import type { BlePeerDirectory, BlePeerState, PeerSource } from './peer-directory'
 import { createPublicPeerDirectory } from './peer-directory'
-import { isPeerReference, snapshotPeerReference } from './peer-reference'
+import { encodePeerReference, isPeerReference, snapshotPeerReference } from './peer-reference'
 import type { PeerReference } from './peer-reference'
 
 export type GattSubscriptionValue = GattValueEvent
@@ -583,7 +583,7 @@ export function filterScanObservations(
   query: ReturnType<typeof normalizeScanQuery>,
   duplicates: 'coalesced' | 'all' = 'all'
 ): BoundedAsyncStream<PublicScanObservation> {
-  const seenPeers = new Set<string>()
+  const lastObservations = new Map<string, string>()
   return {
     limits: source.limits,
     overflowPolicy: source.overflowPolicy,
@@ -599,8 +599,11 @@ export function filterScanObservations(
             }
             const observation = projectPublicScanObservation(item.value.value)
             if (observationMatchesScanQuery(query, observation)) {
-              if (duplicates === 'coalesced' && seenPeers.has(observation.peer.id)) continue
-              seenPeers.add(observation.peer.id)
+              if (duplicates === 'coalesced') {
+                const fingerprint = publicObservationFingerprint(observation)
+                if (lastObservations.get(observation.peer.id) === fingerprint) continue
+                lastObservations.set(observation.peer.id, fingerprint)
+              }
               return { done: false, value: { kind: 'value', value: observation } }
             }
           }
@@ -616,6 +619,20 @@ export function filterScanObservations(
     },
     close: () => source.close()
   }
+}
+
+function publicObservationFingerprint(observation: PublicScanObservation): string {
+  const bytes = (value: Readonly<Uint8Array>): readonly number[] => [...value]
+  return JSON.stringify({
+    peerReference: observation.peerReference === undefined ? null : encodePeerReference(observation.peerReference),
+    localName: observation.localName,
+    rssi: observation.rssi,
+    connectable: observation.connectable,
+    serviceUuids: observation.serviceUuids,
+    manufacturerData:
+      observation.manufacturerData?.map(entry => ({ companyId: entry.companyId, data: bytes(entry.data) })) ?? null,
+    serviceData: observation.serviceData?.map(entry => ({ service: entry.service, data: bytes(entry.data) })) ?? null
+  })
 }
 
 export function publicConnectionEvents(
