@@ -22,9 +22,11 @@ Permissions Policy. Then connect and use the generation-bound GATT objects.
 Inject `environment` only for tests or unusual hosts:
 
 ```ts
+import { createWebBleManagerWithEnvironment } from 'unified-ble-manager/web'
+
 const timers = new Map<object, ReturnType<typeof window.setTimeout>>()
 
-const ble = await createWebBleManager({
+const ble = await createWebBleManagerWithEnvironment({
   environment: {
     implementationVersion: '1',
     browserEngine: navigator.userAgent,
@@ -67,8 +69,7 @@ const ble = await createWebBleManager({
         window.removeEventListener('pagehide', onPageHide)
       }
     }
-  },
-  instanceId: 'test'
+  }
 })
 ```
 
