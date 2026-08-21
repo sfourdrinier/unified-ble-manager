@@ -10,6 +10,7 @@ const artifactNames = ['SBOM.cdx.json', 'THIRD_PARTY_LICENSES.json']
 const allowedLicenses = new Set([
   '(AFL-2.1 OR BSD-3-Clause)',
   '(Apache-2.0 OR MIT)',
+  'Apache-2.0 OR MIT',
   'Apache-2.0',
   'BSD-2-Clause',
   'BSD-3-Clause',

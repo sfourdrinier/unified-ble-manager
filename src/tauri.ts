@@ -29,7 +29,6 @@ export async function createTauriBleManager(options: BleManagerCreateOptions = {
   normalizeBleManagerCreateOptions(options)
   let tauriCore: { invoke: any; Channel: any }
   try {
-    // @ts-expect-error — optional peer, may not be installed in CI
     tauriCore = await import('@tauri-apps/api/core')
   } catch {
     throw new Error(

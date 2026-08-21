@@ -9,7 +9,7 @@
   "source": {
     "method": "pnpm-lock production graph with installed-manifest license audit",
     "lockfile": "pnpm-lock.yaml",
-    "lockfileSha256": "d4b3150e4c89e1606c43f8c69d4806ce369ba4b95bdd4542eca054551f0ba9e5"
+    "lockfileSha256": "95b40628ee5be6e80662325b6f7c09547541957e885f4bb714fe1aca28f4153f"
   },
   "reviewedOverrides": [
     {
@@ -33,6 +33,13 @@
       "license": "ISC",
       "licenseSource": "package-metadata",
       "purl": "pkg:npm/%40isaacs/fs-minipass@4.0.1"
+    },
+    {
+      "name": "@tauri-apps/api",
+      "version": "2.11.1",
+      "license": "Apache-2.0 OR MIT",
+      "licenseSource": "package-metadata",
+      "purl": "pkg:npm/%40tauri-apps/api@2.11.1"
     },
     {
       "name": "abbrev",
