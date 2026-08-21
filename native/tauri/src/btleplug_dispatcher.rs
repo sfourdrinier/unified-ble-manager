@@ -144,6 +144,22 @@ struct ConnectionEventResource {
     task: Option<TauriJoinHandle<()>>,
 }
 
+struct ConnectionEventIdentity<'a> {
+    stream_id: &'a str,
+    peer_id: &'a str,
+    connection_id: &'a str,
+    connection_generation: &'a str,
+}
+
+struct ScanObservation<'a> {
+    owner: &'a str,
+    expected_lease: (&'a str, &'a str),
+    stream_handle: &'a str,
+    requested_services: &'a [Uuid],
+    local_name_prefix: Option<&'a str>,
+    manufacturer_filters: &'a [ManufacturerFilter],
+}
+
 #[derive(Debug)]
 struct DispatchError {
     code: &'static str,
@@ -825,13 +841,15 @@ impl BtleplugDispatcher {
                         for peripheral in peripherals {
                             if dispatcher
                                 .emit_scan_peripheral(
-                                    &stream_owner,
-                                    (&stream_lease_id, &stream_lease_generation),
-                                    &stream_handle,
                                     &peripheral,
-                                    &requested_services,
-                                    local_name_prefix.as_deref(),
-                                    &manufacturer_filters,
+                                    ScanObservation {
+                                        owner: &stream_owner,
+                                        expected_lease: (&stream_lease_id, &stream_lease_generation),
+                                        stream_handle: &stream_handle,
+                                        requested_services: &requested_services,
+                                        local_name_prefix: local_name_prefix.as_deref(),
+                                        manufacturer_filters: &manufacturer_filters,
+                                    },
                                 )
                                 .await
                                 .is_err()
@@ -869,13 +887,15 @@ impl BtleplugDispatcher {
                         };
                         if dispatcher
                             .emit_scan_peripheral(
-                                &stream_owner,
-                                (&stream_lease_id, &stream_lease_generation),
-                                &stream_handle,
                                 &peripheral,
-                                &requested_services,
-                                local_name_prefix.as_deref(),
-                                &manufacturer_filters,
+                                ScanObservation {
+                                    owner: &stream_owner,
+                                    expected_lease: (&stream_lease_id, &stream_lease_generation),
+                                    stream_handle: &stream_handle,
+                                    requested_services: &requested_services,
+                                    local_name_prefix: local_name_prefix.as_deref(),
+                                    manufacturer_filters: &manufacturer_filters,
+                                },
                             )
                             .await
                             .is_err()
@@ -1383,10 +1403,12 @@ impl BtleplugDispatcher {
                             .emit_connection_lost(
                                 &stream_owner,
                                 (&expected_lease_id, &expected_lease_generation),
-                                &stream_id_for_task,
-                                &peer_id,
-                                &connection_id,
-                                &connection_generation,
+                                ConnectionEventIdentity {
+                                    stream_id: &stream_id_for_task,
+                                    peer_id: &peer_id,
+                                    connection_id: &connection_id,
+                                    connection_generation: &connection_generation,
+                                },
                             )
                             .await;
                         break;
@@ -1396,10 +1418,12 @@ impl BtleplugDispatcher {
                             .emit_connection_failure(
                                 &stream_owner,
                                 (&expected_lease_id, &expected_lease_generation),
-                                &stream_id_for_task,
-                                &peer_id,
-                                &connection_id,
-                                &connection_generation,
+                                ConnectionEventIdentity {
+                                    stream_id: &stream_id_for_task,
+                                    peer_id: &peer_id,
+                                    connection_id: &connection_id,
+                                    connection_generation: &connection_generation,
+                                },
                                 "backend-failure",
                                 "source-failed",
                             )
@@ -2087,22 +2111,32 @@ impl BtleplugDispatcher {
                 event_id,
             )
         };
-        sink.send(object([
+        let send_result = sink.send(object([
             (
                 "rendererLease",
                 object([
-                    ("leaseId", string(lease_id)),
-                    ("generation", string(lease_generation)),
+                    ("leaseId", string(lease_id.clone())),
+                    ("generation", string(lease_generation.clone())),
                 ]),
             ),
-            ("eventId", string(event_id)),
+            ("eventId", string(event_id.clone())),
             ("streamId", string(stream_id)),
             (
                 "item",
                 object([("kind", string("value")), ("value", value)]),
             ),
-        ]))
-        .map_err(|error| {
+        ]));
+        if send_result.is_err() {
+            let mut state = self.inner.lock().await;
+            if let Some(caller_state) = state.callers.get_mut(caller_key) {
+                if caller_state.lease_id == lease_id
+                    && caller_state.lease_generation == lease_generation
+                {
+                    caller_state.pending_events.remove(&event_id);
+                }
+            }
+        }
+        send_result.map_err(|error| {
             DispatchError::new("platform.transport", "stream", "tauri.event-send")
                 .platform(error.to_string())
         })
@@ -2112,18 +2146,12 @@ impl BtleplugDispatcher {
         &self,
         caller_key: &str,
         expected_lease: (&str, &str),
-        stream_id: &str,
-        peer_id: &str,
-        connection_id: &str,
-        connection_generation: &str,
+        identity: ConnectionEventIdentity<'_>,
     ) -> Result<(), DispatchError> {
         self.emit_connection_failure(
             caller_key,
             expected_lease,
-            stream_id,
-            peer_id,
-            connection_id,
-            connection_generation,
+            identity,
             "peer-link-loss",
             "connection-lost",
         )
@@ -2134,10 +2162,7 @@ impl BtleplugDispatcher {
         &self,
         caller_key: &str,
         expected_lease: (&str, &str),
-        stream_id: &str,
-        peer_id: &str,
-        connection_id: &str,
-        connection_generation: &str,
+        identity: ConnectionEventIdentity<'_>,
         cause: &str,
         terminal_reason: &str,
     ) -> Result<(), DispatchError> {
@@ -2164,13 +2189,16 @@ impl BtleplugDispatcher {
                     "tauri.connection-events-stale-lease",
                 ));
             }
-            let resource = caller.connection_events.get_mut(stream_id).ok_or_else(|| {
-                DispatchError::new(
-                    "gatt.stale-handle",
-                    "connection",
-                    "tauri.connection-events-stream",
-                )
-            })?;
+            let resource = caller
+                .connection_events
+                .get_mut(identity.stream_id)
+                .ok_or_else(|| {
+                    DispatchError::new(
+                        "gatt.stale-handle",
+                        "connection",
+                        "tauri.connection-events-stream",
+                    )
+                })?;
             if !resource.active {
                 return Ok(());
             }
@@ -2180,9 +2208,12 @@ impl BtleplugDispatcher {
                 ("schemaVersion", number(2)),
                 ("attachment", attachment_record(&attachment)),
                 ("attachmentId", string(attachment.attachment_id)),
-                ("peerId", string(peer_id)),
-                ("connectionId", string(connection_id)),
-                ("connectionGeneration", string(connection_generation)),
+                ("peerId", string(identity.peer_id)),
+                ("connectionId", string(identity.connection_id)),
+                (
+                    "connectionGeneration",
+                    string(identity.connection_generation),
+                ),
                 ("ownerLeaseId", string(caller.lease_id.clone())),
                 ("sequence", number(resource.sequence as i64)),
                 ("backendIngressOrdinal", IpcValue::Null),
@@ -2192,18 +2223,31 @@ impl BtleplugDispatcher {
             ])
         };
         let send_result = self
-            .emit(caller_key, Some(expected_lease), stream_id, event, false)
+            .emit(
+                caller_key,
+                Some(expected_lease),
+                identity.stream_id,
+                event,
+                false,
+            )
             .await;
         if send_result.is_ok() {
-            self.terminal(caller_key, expected_lease, stream_id, terminal_reason)
-                .await
-                .ok();
+            self.terminal(
+                caller_key,
+                expected_lease,
+                identity.stream_id,
+                terminal_reason,
+            )
+            .await
+            .ok();
         }
         let mut state = self.inner.lock().await;
         if let Some(caller) = state.callers.get_mut(caller_key) {
-            if let Some(resource) = caller.connection_events.remove(stream_id) {
-                if let Some(task) = resource.task {
-                    task.abort();
+            if caller.lease_id == expected_lease.0 && caller.lease_generation == expected_lease.1 {
+                if let Some(resource) = caller.connection_events.remove(identity.stream_id) {
+                    if let Some(task) = resource.task {
+                        task.abort();
+                    }
                 }
             }
         }
@@ -2212,20 +2256,17 @@ impl BtleplugDispatcher {
 
     async fn emit_scan_peripheral(
         &self,
-        stream_owner: &str,
-        expected_lease: (&str, &str),
-        stream_handle: &str,
         peripheral: &Peripheral,
-        requested_services: &[Uuid],
-        local_name_prefix: Option<&str>,
-        manufacturer_filters: &[ManufacturerFilter],
+        request: ScanObservation<'_>,
     ) -> Result<(), DispatchError> {
         {
             let state = self.inner.lock().await;
-            let caller = state.callers.get(stream_owner).ok_or_else(|| {
+            let caller = state.callers.get(request.owner).ok_or_else(|| {
                 DispatchError::new("ownership.denied", "stream", "tauri.scan-event-owner")
             })?;
-            if caller.lease_id != expected_lease.0 || caller.lease_generation != expected_lease.1 {
+            if caller.lease_id != request.expected_lease.0
+                || caller.lease_generation != request.expected_lease.1
+            {
                 return Err(DispatchError::new(
                     "ownership.denied",
                     "stream",
@@ -2239,9 +2280,9 @@ impl BtleplugDispatcher {
         let properties = peripheral.properties().await.ok().flatten();
         if !scan_properties_match_optional(
             properties.as_ref(),
-            requested_services,
-            local_name_prefix,
-            manufacturer_filters,
+            request.requested_services,
+            request.local_name_prefix,
+            request.manufacturer_filters,
         ) {
             return Ok(());
         }
@@ -2250,9 +2291,9 @@ impl BtleplugDispatcher {
         };
         let observation = peripheral_observation(peripheral, properties);
         self.emit(
-            stream_owner,
-            Some(expected_lease),
-            stream_handle,
+            request.owner,
+            Some(request.expected_lease),
+            request.stream_handle,
             observation,
             true,
         )
@@ -2289,22 +2330,32 @@ impl BtleplugDispatcher {
                 event_id,
             )
         };
-        sink.send(object([
+        let send_result = sink.send(object([
             (
                 "rendererLease",
                 object([
-                    ("leaseId", string(lease_id)),
-                    ("generation", string(lease_generation)),
+                    ("leaseId", string(lease_id.clone())),
+                    ("generation", string(lease_generation.clone())),
                 ]),
             ),
-            ("eventId", string(event_id)),
+            ("eventId", string(event_id.clone())),
             ("streamId", string(stream_id)),
             (
                 "item",
                 object([("kind", string("terminal")), ("reason", string(reason))]),
             ),
-        ]))
-        .map_err(|error| {
+        ]));
+        if send_result.is_err() {
+            let mut state = self.inner.lock().await;
+            if let Some(caller_state) = state.callers.get_mut(caller_key) {
+                if caller_state.lease_id == lease_id
+                    && caller_state.lease_generation == lease_generation
+                {
+                    caller_state.pending_events.remove(&event_id);
+                }
+            }
+        }
+        send_result.map_err(|error| {
             DispatchError::new("platform.transport", "stream", "tauri.terminal-send")
                 .platform(error.to_string())
         })

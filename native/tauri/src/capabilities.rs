@@ -98,10 +98,10 @@ pub(crate) fn snapshot(backend_generation: &str) -> IpcValue {
                     if let Some((_, scenario, code, explanation)) =
                         TAURI_LIMITED_CAPABILITIES.iter().find(|entry| entry.0 == *id)
                     {
-                        descriptor(*id, "limited", *scenario, *code, *explanation)
+                        descriptor(id, "limited", scenario, code, explanation)
                     } else {
                         descriptor(
-                            *id,
+                            id,
                             "unsupported",
                             "capability.truth-limits-evidence-and-binding",
                             "not-implemented",
