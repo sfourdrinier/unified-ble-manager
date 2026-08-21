@@ -233,7 +233,7 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
     const deliver = (streamId: string, item: SerializableRecord): void => {
       if (item.kind === 'value') {
         const rawValue: unknown = item.value
-        if (!isValue(rawValue)) throw new TypeError('Malformed IPC stream value')
+        if (!isValue(rawValue)) throw contractError('protocol.malformed', 'ipc', 'ipc-manager.stream-value')
         source.emit(rawValue, estimateByteLength(rawValue))
         return
       }
@@ -757,7 +757,7 @@ function isCleanupRecord(value: unknown): value is CleanupRecord {
 
 function cleanupRecord(value: SerializableRecord): CleanupRecord {
   if (!isCleanupRecord(value)) {
-    throw new TypeError('Malformed cleanup receipt')
+    throw contractError('protocol.malformed', 'ipc', 'ipc-manager.cleanup-record')
   }
   return value
 }
@@ -766,7 +766,7 @@ function requiredOverflowPolicy(value: SerializableValue | undefined, operation:
   if (value === 'latest' || value === 'drop-oldest' || value === 'drop-newest' || value === 'error') {
     return value
   }
-  throw new TypeError(`Malformed ${operation} overflow policy`)
+  throw contractError('protocol.malformed', 'ipc', operation)
 }
 
 function requiredTerminalReason(
@@ -784,7 +784,7 @@ function requiredTerminalReason(
   ) {
     return value
   }
-  throw new TypeError(`Malformed ${operation} terminal reason`)
+  throw contractError('protocol.malformed', 'ipc', operation)
 }
 
 function isSerializableRecord(value: unknown): value is SerializableRecord {
@@ -794,7 +794,7 @@ function isSerializableRecord(value: unknown): value is SerializableRecord {
 function requiredRecord(record: SerializableRecord, key: string, operation: string): SerializableRecord {
   const value: unknown = record[key]
   if (!isSerializableRecord(value)) {
-    throw new TypeError(`Malformed ${operation} record`)
+    throw contractError('protocol.malformed', 'ipc', operation)
   }
   return value
 }
@@ -815,26 +815,26 @@ function requiredRecordArray(
 ): readonly SerializableRecord[] {
   const value: unknown = record[key]
   if (!isSerializableRecordArray(value)) {
-    throw new TypeError(`Malformed ${operation} array`)
+    throw contractError('protocol.malformed', 'ipc', operation)
   }
   return value
 }
 
 function requiredString(record: SerializableRecord, key: string, operation: string): string {
   const value = record[key]
-  if (typeof value !== 'string' || value.length === 0) throw new TypeError(`Malformed ${operation} string`)
+  if (typeof value !== 'string' || value.length === 0) throw contractError('protocol.malformed', 'ipc', operation)
   return value
 }
 
 function requiredNumber(record: SerializableRecord, key: string, operation: string): number {
   const value = record[key]
-  if (typeof value !== 'number' || !Number.isFinite(value)) throw new TypeError(`Malformed ${operation} number`)
+  if (typeof value !== 'number' || !Number.isFinite(value)) throw contractError('protocol.malformed', 'ipc', operation)
   return value
 }
 
 function requiredBytes(record: SerializableRecord, key: string, operation: string): Uint8Array {
   const value = record[key]
-  if (!(value instanceof Uint8Array)) throw new TypeError(`Malformed ${operation} bytes`)
+  if (!(value instanceof Uint8Array)) throw contractError('protocol.malformed', 'ipc', operation)
   return new Uint8Array(value)
 }
 
@@ -954,7 +954,7 @@ function requiredCharacteristicRecords(records: readonly SerializableRecord[]): 
   const validated: IpcCharacteristicRecord[] = []
   for (const record of records) {
     if (!isIpcCharacteristicRecord(record))
-      throw new TypeError('Malformed ipc-manager.gatt-database characteristic record')
+      throw contractError('protocol.malformed', 'ipc', 'ipc-manager.gatt-database.characteristic-record')
     validated.push(record)
   }
   return Object.freeze(validated)
@@ -963,7 +963,9 @@ function requiredCharacteristicRecords(records: readonly SerializableRecord[]): 
 function requiredDescriptorRecords(records: readonly SerializableRecord[]): readonly IpcDescriptorRecord[] {
   const validated: IpcDescriptorRecord[] = []
   for (const record of records) {
-    if (!isIpcDescriptorRecord(record)) throw new TypeError('Malformed ipc-manager.gatt-database descriptor record')
+    if (!isIpcDescriptorRecord(record)) {
+      throw contractError('protocol.malformed', 'ipc', 'ipc-manager.gatt-database.descriptor-record')
+    }
     validated.push(record)
   }
   return Object.freeze(validated)

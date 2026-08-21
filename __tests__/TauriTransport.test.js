@@ -140,7 +140,7 @@ describe('Tauri v2 IPC transport', () => {
       return JSON.parse(
         JSON.stringify({
           kind: 'route',
-          payload: { value: { $__unifiedBleBytesV1: [9, 8, 7] } }
+          payload: { value: { $__unifiedBleBytesV2: [9, 8, 7] } }
         })
       )
     })
@@ -162,16 +162,16 @@ describe('Tauri v2 IPC transport', () => {
           eventId: 'event-bytes',
           streamId: 'subscription-1',
           rendererLease: { leaseId: 'lease-1', generation: 'generation-1' },
-          item: { kind: 'value', value: { value: { $__unifiedBleBytesV1: [5, 6] } } }
+          item: { kind: 'value', value: { value: { $__unifiedBleBytesV2: [5, 6] } } }
         })
       )
     )
 
     expect(invocations[0].request.envelope.binaryPayload).toEqual({
-      $__unifiedBleBytesV1: [0, 127, 255]
+      $__unifiedBleBytesV2: [0, 127, 255]
     })
     expect(invocations[0].request.envelope.payload.nested).toEqual({
-      $__unifiedBleBytesV1: [3, 4]
+      $__unifiedBleBytesV2: [3, 4]
     })
     expect(response.payload.value).toEqual(new Uint8Array([9, 8, 7]))
     expect(received[0].item.value.value).toEqual(new Uint8Array([5, 6]))

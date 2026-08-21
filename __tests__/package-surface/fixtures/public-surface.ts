@@ -116,7 +116,7 @@ import {
 import type {
   ElectronConnectionEventCleanupReceipt,
   ElectronConnectionEventSubscription,
-  ElectronConnectionLifecycleEventV1
+  ElectronConnectionLifecycleEventV2
 } from 'unified-ble-manager/electron/renderer'
 import {
   createReactNativeAndroidBackendProvider,
@@ -172,7 +172,7 @@ declare const browserTimer: WebBluetoothTimerHandle
 declare const electronConnectionEventSubscription: ElectronConnectionEventSubscription
 declare const electronConnectionEventStreamHandle: string
 declare const electronConnectionEventCleanupReceipt: ElectronConnectionEventCleanupReceipt
-declare const electronConnectionLifecycleEvent: ElectronConnectionLifecycleEventV1
+declare const electronConnectionLifecycleEvent: ElectronConnectionLifecycleEventV2
 declare const connectionOneDatabasePath: DatabasePath<'scope-test', 'connection-one', 'database-one'>
 declare const connectionTwoDatabasePath: DatabasePath<'scope-test', 'connection-two', 'database-one'>
 declare const differentDatabasePath: DatabasePath<'scope-test', 'connection-one', 'database-two'>

@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use serde_json::{Map, Number, Value};
 use tauri::ipc::Channel;
 
-const BYTES_WIRE_TAG: &str = "$__unifiedBleBytesV1";
+const BYTES_WIRE_TAG: &str = "$__unifiedBleBytesV2";
 
 /// Owned IPC data with byte arrays kept distinct from ordinary JSON arrays.
 #[derive(Clone, Debug, PartialEq)]

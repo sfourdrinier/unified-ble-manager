@@ -69,9 +69,12 @@ function jsSha256(ascii: string): string {
   bytes.push(0x80)
   while (bytes.length % 64 !== 56) bytes.push(0)
   for (let i = 7; i >= 0; i--) bytes.push((bitLen >>> (i * 8)) & 0xff)
+  const byteValues = Uint8Array.from(bytes)
   // Initial hash values
-  const H = [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19]
-  const K = [
+  const H = new Int32Array([
+    0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19
+  ])
+  const K = new Int32Array([
     0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5, 0xd807aa98,
     0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786,
     0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da, 0x983e5152, 0xa831c66d, 0xb00327c8,
@@ -80,30 +83,39 @@ function jsSha256(ascii: string): string {
     0xd6990624, 0xf40e3585, 0x106aa070, 0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a,
     0x5b9cca4f, 0x682e6ff3, 0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7,
     0xc67178f2
-  ]
+  ])
   const rightRotate = (v: number, n: number) => (v >>> n) | (v << (32 - n))
-  for (let i = 0; i < bytes.length; i += 64) {
-    const W = new Array(64)
+  for (let i = 0; i < byteValues.length; i += 64) {
+    const W = new Int32Array(64)
     for (let t = 0; t < 16; t++)
       W[t] =
-        (bytes[i + t * 4]! << 24) | (bytes[i + t * 4 + 1]! << 16) | (bytes[i + t * 4 + 2]! << 8) | bytes[i + t * 4 + 3]!
+        (indexedValue(byteValues, i + t * 4) << 24) |
+        (indexedValue(byteValues, i + t * 4 + 1) << 16) |
+        (indexedValue(byteValues, i + t * 4 + 2) << 8) |
+        indexedValue(byteValues, i + t * 4 + 3)
     for (let t = 16; t < 64; t++) {
-      const s0 = rightRotate(W[t - 15]!, 7) ^ rightRotate(W[t - 15]!, 18) ^ (W[t - 15]! >>> 3)
-      const s1 = rightRotate(W[t - 2]!, 17) ^ rightRotate(W[t - 2]!, 19) ^ (W[t - 2]! >>> 10)
-      W[t] = (W[t - 16]! + s0 + W[t - 7]! + s1) | 0
+      const s0 =
+        rightRotate(indexedValue(W, t - 15), 7) ^
+        rightRotate(indexedValue(W, t - 15), 18) ^
+        (indexedValue(W, t - 15) >>> 3)
+      const s1 =
+        rightRotate(indexedValue(W, t - 2), 17) ^
+        rightRotate(indexedValue(W, t - 2), 19) ^
+        (indexedValue(W, t - 2) >>> 10)
+      W[t] = (indexedValue(W, t - 16) + s0 + indexedValue(W, t - 7) + s1) | 0
     }
-    let a = H[0]!,
-      b = H[1]!,
-      c = H[2]!,
-      d = H[3]!,
-      e = H[4]!,
-      f = H[5]!,
-      g = H[6]!,
-      h = H[7]!
+    let a = indexedValue(H, 0),
+      b = indexedValue(H, 1),
+      c = indexedValue(H, 2),
+      d = indexedValue(H, 3),
+      e = indexedValue(H, 4),
+      f = indexedValue(H, 5),
+      g = indexedValue(H, 6),
+      h = indexedValue(H, 7)
     for (let t = 0; t < 64; t++) {
       const S1 = rightRotate(e, 6) ^ rightRotate(e, 11) ^ rightRotate(e, 25)
       const ch = (e & f) ^ (~e & g)
-      const temp1 = (h + S1 + ch + K[t]! + W[t]!) | 0
+      const temp1 = (h + S1 + ch + indexedValue(K, t) + indexedValue(W, t)) | 0
       const S0 = rightRotate(a, 2) ^ rightRotate(a, 13) ^ rightRotate(a, 22)
       const maj = (a & b) ^ (a & c) ^ (b & c)
       const temp2 = (S0 + maj) | 0
@@ -116,21 +128,27 @@ function jsSha256(ascii: string): string {
       b = a
       a = (temp1 + temp2) | 0
     }
-    H[0] = (H[0]! + a) | 0
-    H[1] = (H[1]! + b) | 0
-    H[2] = (H[2]! + c) | 0
-    H[3] = (H[3]! + d) | 0
-    H[4] = (H[4]! + e) | 0
-    H[5] = (H[5]! + f) | 0
-    H[6] = (H[6]! + g) | 0
-    H[7] = (H[7]! + h) | 0
+    H[0] = (indexedValue(H, 0) + a) | 0
+    H[1] = (indexedValue(H, 1) + b) | 0
+    H[2] = (indexedValue(H, 2) + c) | 0
+    H[3] = (indexedValue(H, 3) + d) | 0
+    H[4] = (indexedValue(H, 4) + e) | 0
+    H[5] = (indexedValue(H, 5) + f) | 0
+    H[6] = (indexedValue(H, 6) + g) | 0
+    H[7] = (indexedValue(H, 7) + h) | 0
   }
   let hex = ''
   for (let i = 0; i < H.length; i++) {
-    const v = H[i]! >>> 0
+    const v = indexedValue(H, i) >>> 0
     hex += ('00000000' + v.toString(16)).slice(-8)
   }
   return hex
+}
+
+function indexedValue(values: ArrayLike<number>, index: number): number {
+  const value = values[index]
+  if (value === undefined) throw new Error('SHA-256 word index out of bounds')
+  return value
 }
 
 /**

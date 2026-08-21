@@ -1,4 +1,3 @@
-import { Channel, invoke } from '@tauri-apps/api/core'
 import { createTauriBleManager } from 'unified-ble-manager/tauri'
 
 const output = document.querySelector<HTMLPreElement>('#output')!
@@ -10,7 +9,7 @@ function log(value: unknown): void {
 
 button.addEventListener('click', async () => {
   button.disabled = true
-  const manager = await createTauriBleManager({ invoke, Channel })
+  const manager = await createTauriBleManager()
   let scan: Awaited<ReturnType<typeof manager.scan>> | null = null
   let connection: Awaited<ReturnType<typeof manager.connect>> | null = null
   try {

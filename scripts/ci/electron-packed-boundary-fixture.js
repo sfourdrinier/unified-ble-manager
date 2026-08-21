@@ -52,7 +52,7 @@ function createBootstrapResponse() {
         capabilitySchema: Object.freeze({ selected: Object.freeze({ value: 1 }) }),
         eventSchema: Object.freeze({ selected: Object.freeze({ value: 1 }) }),
         traceFormat: Object.freeze({ selected: Object.freeze({ value: 1 }) }),
-        ipcProtocol: Object.freeze({ selected: Object.freeze({ value: 1 }) })
+        ipcProtocol: Object.freeze({ selected: Object.freeze({ value: 2 }) })
       }),
       renderer: Object.freeze({ clientId: 'packed-renderer', windowScope: 'window', sessionScope: 'session' }),
       rendererLease: Object.freeze({ leaseId: 'packed-lease', generation: 'packed-generation' })
@@ -134,7 +134,7 @@ function assertDataOnlyPreloadSurfaceMembrane() {
   )
   const proof = JSON.parse(serializedProof)
   assert.deepEqual(proof.requestKinds, ['bootstrap', 'release'], 'data-only renderer proxy limits requests to bootstrap and release')
-  assert.equal(proof.ipcProtocolVersion, 1, 'data-only renderer proxy preserves the versioned IPC handshake')
+  assert.equal(proof.ipcProtocolVersion, 2, 'data-only renderer proxy preserves the versioned IPC handshake')
   assert.equal(proof.cleanupState, 'released', 'data-only renderer proxy preserves release cleanup')
   assert.equal(proof.processType, 'undefined', 'data-only VM membrane does not expose process')
   assert.equal(proof.requireType, 'undefined', 'data-only VM membrane does not expose require')
@@ -198,7 +198,7 @@ async function main() {
   }
   const client = new electronRenderer.ElectronRendererBleClient(rendererTransport)
   const bootstrap = await client.initialize()
-  assert.equal(bootstrap.versions.ipcProtocol.selected.value, 1, 'renderer receives the versioned IPC handshake')
+  assert.equal(bootstrap.versions.ipcProtocol.selected.value, 2, 'renderer receives the versioned IPC handshake')
   assert.deepEqual(requests.map(request => request.kind), ['bootstrap'], 'renderer proxy makes only its bootstrap IPC request')
   await client.destroy()
   assert.deepEqual(

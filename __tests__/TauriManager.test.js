@@ -109,7 +109,7 @@ describe('Tauri v2 public manager', () => {
           ],
           descriptors: []
         },
-        'gatt.read': { value: { $__unifiedBleBytesV1: [1, 2, 3] } },
+        'gatt.read': { value: { $__unifiedBleBytesV2: [1, 2, 3] } },
         'gatt.write': { commitState: 'committed', outcome: 'succeeded' },
         'gatt.subscribe': { handle: 'subscription-1' },
         'gatt.unsubscribe': { state: 'released', failures: [] },
@@ -122,7 +122,9 @@ describe('Tauri v2 public manager', () => {
     const manager = await createTauriBleManagerWithEnvironment({ invoke, Channel: FakeChannel })
 
     await expect(manager.adapterState()).resolves.toMatchObject({ power: 'on' })
-    const scan = await manager.scan({ serviceUuids: ['180d'] })
+    const scan = await manager.scan({
+      filter: { serviceUuids: ['180d'], manufacturerData: [], localNamePrefix: null }
+    })
     const observation = scan.observations[Symbol.asyncIterator]().next()
     streamValue('scan-1', advertisement('polar-h10', 'Polar H10', -47))
     await expect(observation).resolves.toMatchObject({ value: { kind: 'value', value: { peerId: 'polar-h10' } } })
@@ -380,5 +382,22 @@ describe('Tauri v2 public manager', () => {
     await expect(
       createTauriBleManagerWithEnvironment({ invoke: invalidStateInvoke, Channel: FakeChannel })
     ).rejects.toMatchObject({ normalized: { code: 'protocol.malformed' } })
+  })
+
+  test('rejects malformed public filters instead of silently scanning without them', async () => {
+    const invoke = jest.fn(async (_command, args) => {
+      if (args.request.kind === 'bootstrap') return { kind: 'bootstrap', bootstrap: bootstrap() }
+      if (args.request.kind === 'event.ack') return { kind: 'event.ack' }
+      if (args.request.kind === 'release') return { kind: 'release', cleanup: { state: 'released', failures: [] } }
+      return { kind: 'route', payload: { handle: 'scan-should-not-start' } }
+    })
+    const { createTauriBleManagerWithEnvironment } = require('../src/tauri')
+    const manager = await createTauriBleManagerWithEnvironment({ invoke, Channel: FakeChannel })
+
+    await expect(manager.scan({ filter: { serviceUuids: 'not-an-array' } })).rejects.toMatchObject({
+      code: 'argument.invalid'
+    })
+    expect(invoke.mock.calls.some(([, args]) => args.request.envelope?.command === 'scan.start')).toBe(false)
+    await manager.destroy()
   })
 })

@@ -22,11 +22,9 @@ export { BUILT_IN_FEATURE_IDS } from './backend-contract/capabilities'
 export type { BleCapabilities, BuiltInFeatureId, CapabilityDescriptor, FeatureId } from './public/capabilities'
 export type { BleAdapter, BleAdapterState } from './public/ble-adapter'
 
-// --- Operation options & stream presets (public) ---
+// --- Operation options & stream presets (public types only) ---
 export type { OperationOptions } from './public/operation-options'
-export { normalizeOperationOptions, composeAbortSignal } from './public/operation-options'
-export type { StreamPreset, StreamBudget, StreamPresetInput } from './public/stream-presets'
-export { resolveStreamPreset, STREAM_PRESET_DEFAULTS } from './public/stream-presets'
+export type { StreamPreset } from './public/stream-presets'
 
 // --- Host identity (ephemeral vs restoration) ---
 export type { BleManagerCreateOptions, DiagnosticsOptions } from './public/host-identity'

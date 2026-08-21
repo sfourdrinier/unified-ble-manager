@@ -46,5 +46,20 @@ describe('public BleCapabilities', () => {
     expect(connection.peer).toEqual({ id: 'peer-1', name: 'Original', rssi: -40 })
     expect(Object.isFrozen(connection.peer)).toBe(true)
     await connection.release()
+
+    internal.connect.mockResolvedValue({
+      disconnect: async () => ({ state: 'released', failures: [] }),
+      release: async () => {
+        throw new Error('release-failed')
+      }
+    })
+    await expect(
+      manager.withConnection('peer-2', {}, async () => {
+        throw new Error('action-failed')
+      })
+    ).rejects.toMatchObject({
+      constructor: AggregateError,
+      errors: [new Error('action-failed'), new Error('release-failed')]
+    })
   })
 })

@@ -49,5 +49,6 @@ describe('public BleError', () => {
   test('rejects unknown code and domain values before recovery lookup', () => {
     expect(() => new BleError('made-up', 'connection', 'public-errors.test')).toThrow('unknown BleError code')
     expect(() => new BleError('connection.failed', 'made-up', 'public-errors.test')).toThrow('unknown BleError domain')
+    expect(() => new BleError('connection.failed', 'connection', '')).toThrow('operation must be non-empty')
   })
 })

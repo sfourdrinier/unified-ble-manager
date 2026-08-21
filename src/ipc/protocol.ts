@@ -13,10 +13,10 @@ import type {
 import type { AttachmentRecord } from '../backend-contract/identity'
 
 /** The one versioned request channel exposed by a host application's narrow preload bridge. */
-export const IPC_BLE_PROTOCOL_CHANNEL = 'unified-ble-manager:v1'
+export const IPC_BLE_PROTOCOL_CHANNEL = 'unified-ble-manager:v2'
 
-/** The version of the lifecycle value carried by the desktop webview v1 IPC stream. */
-export const IPC_CONNECTION_LIFECYCLE_EVENT_SCHEMA_VERSION = 1
+/** The version of the lifecycle value carried by the desktop webview v2 IPC stream. */
+export const IPC_CONNECTION_LIFECYCLE_EVENT_SCHEMA_VERSION = 2
 
 /** Client-originated lifecycle stream identifiers occupy a reserved namespace. */
 export const IPC_CONNECTION_EVENTS_STREAM_HANDLE_PREFIX = 'connection-events-'
@@ -27,22 +27,22 @@ export function isIpcConnectionEventsStreamHandle(value: string): boolean {
 }
 
 /** Serializable attachment identity carried with a connection lifecycle event. */
-export interface IpcAttachmentRecordV1 extends SerializableRecord {
+export interface IpcAttachmentRecordV2 extends SerializableRecord {
   readonly attachmentId: string
   readonly backendInstanceId: string
   readonly backendGeneration: string
-  readonly adapter: IpcAdapterRecordV1
+  readonly adapter: IpcAdapterRecordV2
 }
 
-export interface IpcAdapterRecordV1 extends SerializableRecord {
+export interface IpcAdapterRecordV2 extends SerializableRecord {
   readonly adapterId: string
   readonly displayName: string | null
-  readonly state: IpcAdapterStateV1
+  readonly state: IpcAdapterStateV2
   readonly adapterGeneration: string
   readonly limitations: readonly string[]
 }
 
-export interface IpcAdapterStateV1 extends SerializableRecord {
+export interface IpcAdapterStateV2 extends SerializableRecord {
   readonly availability: 'available' | 'unavailable' | 'unsupported' | 'unknown'
   /**
    * `'unknown'` when the platform exposes no per-application Bluetooth
@@ -60,10 +60,10 @@ export interface IpcAdapterStateV1 extends SerializableRecord {
 }
 
 /** Versioned, data-only projection of one public ConnectionLifecycleEvent. */
-export interface IpcConnectionLifecycleEventV1 extends SerializableRecord {
+export interface IpcConnectionLifecycleEventV2 extends SerializableRecord {
   readonly kind: 'connection-lifecycle'
   readonly schemaVersion: typeof IPC_CONNECTION_LIFECYCLE_EVENT_SCHEMA_VERSION
-  readonly attachment: IpcAttachmentRecordV1
+  readonly attachment: IpcAttachmentRecordV2
   readonly attachmentId: string
   readonly peerId: string
   readonly connectionId: string
@@ -81,7 +81,7 @@ export interface IpcConnectionLifecycleEventV1 extends SerializableRecord {
  * client-generated opaque handle confirmed by the host; the host begins
  * forwarding only after the matching readiness command.
  */
-export interface IpcConnectionEventsSubscribeResponseV1 extends SerializableRecord {
+export interface IpcConnectionEventsSubscribeResponseV2 extends SerializableRecord {
   readonly handle: string
   readonly connectionId: string
   readonly connectionGeneration: string

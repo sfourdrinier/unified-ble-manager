@@ -6,7 +6,7 @@ const { BackendContractError } = require('../src/backend-contract/errors')
 const { monotonicTimestamp, opaqueId, version, versionRange } = require('../src/backend-contract/primitives')
 
 function negotiated(axis) {
-  const selected = version(axis, 1)
+  const selected = version(axis, axis === 'ipc-protocol' ? 2 : 1)
   const range = versionRange(selected, selected)
   return { axis, selected, localRange: range, remoteRange: range }
 }
@@ -394,7 +394,7 @@ function createMainFixture(managerOverrides = {}) {
     handler: null,
     rawHandler: null,
     handle(channel, handler) {
-      expect(channel).toBe('unified-ble-manager:v1')
+      expect(channel).toBe('unified-ble-manager:v2')
       this.rawHandler = handler
       this.handler = (event, request) =>
         handler(
@@ -1624,7 +1624,7 @@ describe('Electron v4 IPC boundary', () => {
       kind: 'value',
       value: {
         kind: 'connection-lifecycle',
-        schemaVersion: 1,
+        schemaVersion: 2,
         connectionId: connection.connectionId,
         connectionGeneration: connection.connectionGeneration,
         cause,
@@ -2096,7 +2096,7 @@ describe('Electron v4 IPC boundary', () => {
               connectionId: 'connection-renderer',
               connectionGeneration: 'generation-renderer',
               ownerLeaseId: 'owner-renderer',
-              eventSchemaVersion: 1
+              eventSchemaVersion: 2
             }
           }
         }
@@ -2121,7 +2121,7 @@ describe('Electron v4 IPC boundary', () => {
         kind: 'value',
         value: {
           kind: 'connection-lifecycle',
-          schemaVersion: 1,
+          schemaVersion: 2,
           attachment: currentAttachment,
           attachmentId: currentAttachment.attachmentId,
           peerId: 'peer-renderer',
@@ -2144,7 +2144,7 @@ describe('Electron v4 IPC boundary', () => {
         kind: 'value',
         value: {
           kind: 'connection-lifecycle',
-          schemaVersion: 1,
+          schemaVersion: 2,
           attachment: currentAttachment,
           attachmentId: currentAttachment.attachmentId,
           peerId: 'peer-renderer',
@@ -2202,7 +2202,7 @@ describe('Electron v4 IPC boundary', () => {
               handle: streamHandle,
               connectionId: 'connection-terminal-first',
               connectionGeneration: 'generation-terminal-first',
-              eventSchemaVersion: 1
+              eventSchemaVersion: 2
             }
           }
         }
@@ -2259,7 +2259,7 @@ describe('Electron v4 IPC boundary', () => {
               handle: request.envelope.payload.connectionEventsHandle,
               connectionId: 'connection-synthetic-terminal',
               connectionGeneration: 'generation-synthetic-terminal',
-              eventSchemaVersion: 1
+              eventSchemaVersion: 2
             }
           }
         }
@@ -2325,13 +2325,13 @@ describe('Electron v4 IPC boundary', () => {
                       handle: request.envelope.payload.connectionEventsHandle,
                       connectionId: 'connection-admission-retry',
                       connectionGeneration: 'generation-admission-retry',
-                      eventSchemaVersion: 2
+                      eventSchemaVersion: 1
                     }
                   : {
                       handle: request.envelope.payload.connectionEventsHandle,
                       connectionId: 'connection-admission-retry',
                       connectionGeneration: 'generation-admission-retry',
-                      eventSchemaVersion: 1
+                      eventSchemaVersion: 2
                     }
             }
           }

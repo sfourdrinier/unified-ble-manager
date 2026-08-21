@@ -13,7 +13,7 @@ import type { OperationOptions } from './operation-options'
 import { resolveStreamPreset } from './stream-presets'
 import type { StreamPreset } from './stream-presets'
 import type { IpcAdvertisement } from '../ipc/manager'
-import { rehydratePublicError, rehydratePublicPromise } from './error-bridge'
+import { rehydratePublicError, rehydratePublicPromise, runWithCleanup } from './error-bridge'
 import { PublicBleCapabilities } from './capabilities'
 import type { BleCapabilities } from './capabilities'
 
@@ -162,11 +162,10 @@ class PublicBleManager implements BleManager {
     action: (connection: BleConnection) => Promise<T>
   ): Promise<T> {
     const connection = await this.connect(peer, options)
-    try {
-      return await action(connection)
-    } finally {
-      await connection.release()
-    }
+    return runWithCleanup(
+      () => action(connection),
+      () => connection.release()
+    )
   }
 
   destroy(): Promise<CleanupRecord> {

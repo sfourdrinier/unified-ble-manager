@@ -19,3 +19,32 @@ export function rehydratePublicPromise<Value>(operation: Promise<Value>): Promis
     throw rehydratePublicError(error)
   })
 }
+
+export async function runWithCleanup<Value>(
+  operation: () => Promise<Value>,
+  cleanup: () => Promise<unknown>
+): Promise<Value> {
+  let outcome: { readonly kind: 'value'; readonly value: Value } | { readonly kind: 'error'; readonly error: unknown }
+  try {
+    outcome = { kind: 'value', value: await operation() }
+  } catch (error) {
+    outcome = { kind: 'error', error }
+  }
+  let cleanupOutcome: { readonly kind: 'ok' } | { readonly kind: 'error'; readonly error: unknown }
+  try {
+    await cleanup()
+    cleanupOutcome = { kind: 'ok' }
+  } catch (error) {
+    cleanupOutcome = { kind: 'error', error }
+  }
+  if (cleanupOutcome.kind === 'error') {
+    if (outcome.kind === 'error') {
+      throw new AggregateError([outcome.error, cleanupOutcome.error], 'BLE operation and cleanup both failed')
+    }
+    throw cleanupOutcome.error
+  }
+  if (outcome.kind === 'error') {
+    throw outcome.error
+  }
+  return outcome.value
+}

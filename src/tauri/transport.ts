@@ -22,7 +22,7 @@ import type {
 
 /** Tauri v2 plugin command registered by the Rust crate. */
 export const TAURI_BLE_PLUGIN_COMMAND = 'plugin:unified-ble-manager|invoke'
-const TAURI_BYTES_WIRE_TAG = '$__unifiedBleBytesV1'
+const TAURI_BYTES_WIRE_TAG = '$__unifiedBleBytesV2'
 
 /**
  * The only request that carries the event Channel. Attaching binds the sink

@@ -103,8 +103,8 @@ describe('4.0 public package surface', () => {
     expect(typeof reactNative.createReactNativeBleManager).toBe('function')
     expect(typeof reactNative.createReactNativeBleManagerWithEnvironment).toBe('function')
     // PR1: low-level helpers moved to advanced; root is application-only
-    expect(typeof publicRoot.normalizeOperationOptions).toBe('function')
-    expect(typeof publicRoot.resolveStreamPreset).toBe('function')
+    expect(publicRoot.normalizeOperationOptions).toBeUndefined()
+    expect(publicRoot.resolveStreamPreset).toBeUndefined()
     expect(publicRoot.deriveRestorationIdentity).toBeUndefined()
     expect(typeof advanced.defaultScanDelivery).toBe('function')
     expect(typeof advanced.scanForServices).toBe('function')

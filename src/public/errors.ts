@@ -64,6 +64,9 @@ export class BleError extends Error {
     if (!BLE_ERROR_DOMAINS.some(candidate => candidate === domain)) {
       throw new TypeError(`unknown BleError domain: ${String(domain)}`)
     }
+    if (typeof operation !== 'string' || operation.length === 0) {
+      throw new TypeError('operation must be non-empty')
+    }
     const recovery = recoveryForCode(code, operation)
     const platform = freezePlatformDetail(options.platform ?? null)
     super(`${code}: ${operation}`)

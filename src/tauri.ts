@@ -22,7 +22,7 @@ import type { ScanSession } from './public/ble-manager'
 import type { OperationOptions } from './public/operation-options'
 import { normalizeBleManagerCreateOptions } from './public/host-identity'
 import type { BleManagerCreateOptions } from './public/host-identity'
-import { rehydratePublicError, rehydratePublicPromise } from './public/error-bridge'
+import { rehydratePublicError, rehydratePublicPromise, runWithCleanup } from './public/error-bridge'
 import { UnavailableBleCapabilities } from './public/capabilities'
 
 import { IpcBleManager } from './ipc/manager'
@@ -30,6 +30,7 @@ import type { IpcScanOptions } from './ipc/manager'
 import type { IpcConnection } from './ipc/manager'
 import type { IpcGattDatabase } from './ipc/manager'
 import type { CleanupRecord } from './backend-contract/errors'
+import { contractError } from './backend-contract/errors'
 import { TauriBleIpcTransport } from './tauri/transport'
 import type { TauriChannel, TauriInvoke } from './tauri/transport'
 
@@ -42,13 +43,14 @@ type PublicFilterShape = {
   readonly localNamePrefix?: string | null
 }
 
-function hasFilter(options: ScanOptions): boolean {
-  return Reflect.has(options, 'filter') && Reflect.get(options, 'filter') !== undefined
-}
-
 function getFilter(options: ScanOptions): PublicFilterShape | undefined {
   const value = Reflect.get(options, 'filter')
   if (typeof value !== 'object' || value === null) return undefined
+  if (
+    Object.keys(value).some(key => key !== 'serviceUuids' && key !== 'manufacturerData' && key !== 'localNamePrefix')
+  ) {
+    return undefined
+  }
   const serviceUuids = Reflect.get(value, 'serviceUuids')
   const manufacturerData = Reflect.get(value, 'manufacturerData')
   const localNamePrefix = Reflect.get(value, 'localNamePrefix')
@@ -66,7 +68,7 @@ function getFilter(options: ScanOptions): PublicFilterShape | undefined {
     for (const entry of manufacturerData) {
       if (typeof entry !== 'object' || entry === null) return undefined
       const cid = Reflect.get(entry, 'companyIdentifier')
-      if (typeof cid !== 'number') return undefined
+      if (typeof cid !== 'number' || !Number.isSafeInteger(cid) || cid < 0 || cid > 0xffff) return undefined
       const dp = Reflect.get(entry, 'dataPrefix')
       if (dp !== undefined && dp !== null && !(dp instanceof Uint8Array)) return undefined
       let dataPrefixValue: Readonly<Uint8Array> | null | undefined
@@ -84,35 +86,14 @@ function getFilter(options: ScanOptions): PublicFilterShape | undefined {
   return result
 }
 
-function getLegacyField(options: ScanOptions, key: string): unknown {
-  return Reflect.get(options, key)
-}
-
 function isStringArray(value: unknown): value is readonly string[] {
   return Array.isArray(value) && value.every(item => typeof item === 'string')
 }
 
-function isIpcManufacturerDataArray(
-  value: unknown
-): value is readonly { readonly companyId: number; readonly dataPrefix?: Readonly<Uint8Array> }[] {
-  if (!Array.isArray(value)) return false
-  return value.every(item => {
-    if (typeof item !== 'object' || item === null) return false
-    if (!('companyId' in item)) return false
-    const companyId = Reflect.get(item, 'companyId')
-    if (typeof companyId !== 'number') return false
-    if (!('dataPrefix' in item)) return true
-    const prefix = Reflect.get(item, 'dataPrefix')
-    return prefix === undefined || prefix === null || prefix instanceof Uint8Array
-  })
-}
-
 function toIpcScanOptions(options: ScanOptions): IpcScanOptions {
-  if (hasFilter(options)) {
+  if (Reflect.has(options, 'filter')) {
     const filter = getFilter(options)
-    if (filter === undefined) {
-      return { signal: options.signal, timeoutMs: options.timeoutMs, localNamePrefix: null }
-    }
+    if (filter === undefined) throw contractError('argument.invalid', 'scan', 'tauri.scan.filter')
     const manufacturerData =
       filter.manufacturerData === undefined
         ? undefined
@@ -128,17 +109,10 @@ function toIpcScanOptions(options: ScanOptions): IpcScanOptions {
       timeoutMs: options.timeoutMs
     }
   }
-  const serviceUuidsRaw = getLegacyField(options, 'serviceUuids')
-  const manufacturerDataRaw = getLegacyField(options, 'manufacturerData')
-  const localNamePrefixRaw = getLegacyField(options, 'localNamePrefix')
-  const serviceUuids = isStringArray(serviceUuidsRaw) ? serviceUuidsRaw : undefined
-  const manufacturerData = isIpcManufacturerDataArray(manufacturerDataRaw) ? manufacturerDataRaw : undefined
-  const localNamePrefix =
-    typeof localNamePrefixRaw === 'string' || localNamePrefixRaw === null ? localNamePrefixRaw : null
   return {
-    serviceUuids,
-    manufacturerData,
-    localNamePrefix,
+    serviceUuids: undefined,
+    manufacturerData: undefined,
+    localNamePrefix: null,
     signal: options.signal,
     timeoutMs: options.timeoutMs
   }
@@ -237,18 +211,16 @@ class TauriBleManagerAdapter implements BleManager {
     }
   }
 
-  withConnection<T>(
+  async withConnection<T>(
     peer: BlePeer | string,
     options: OperationOptions,
     useConnection: (connection: BleConnection) => Promise<T>
   ): Promise<T> {
-    return this.connect(peer, options).then(async connection => {
-      try {
-        return await useConnection(connection)
-      } finally {
-        await connection.release()
-      }
-    })
+    const connection = await this.connect(peer, options)
+    return runWithCleanup(
+      () => useConnection(connection),
+      () => connection.release()
+    )
   }
 
   destroy(): Promise<CleanupRecord> {

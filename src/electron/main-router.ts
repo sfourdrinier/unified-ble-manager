@@ -49,7 +49,7 @@ import {
   ElectronConnectionEventStreamRegistry,
   type ManagedConnectionEventSubscription
 } from './connection-event-stream-registry'
-import { isElectronConnectionEventsStreamHandle, type ElectronConnectionEventsSubscribeResponseV1 } from './protocol'
+import { isElectronConnectionEventsStreamHandle, type ElectronConnectionEventsSubscribeResponseV2 } from './protocol'
 import { electronRequestByteLength } from './ipc-message-sizing'
 
 export type { ElectronEventDelivery } from './renderer-stream-registry'
@@ -525,7 +525,7 @@ export class ElectronMainBleRouter {
   private subscribeConnectionEvents(
     resources: RendererResources,
     payload: SerializableRecord
-  ): ElectronConnectionEventsSubscribeResponseV1 {
+  ): ElectronConnectionEventsSubscribeResponseV2 {
     const connectionHandle = requiredString(payload, 'connectionHandle')
     const connection = requiredResource(resources.connections, connectionHandle, 'connection')
     const handle = requiredString(payload, 'connectionEventsHandle')
@@ -939,7 +939,7 @@ export class ElectronMainBleRouter {
 }
 
 export function createElectronIpcVersionAxes(core: HostNeutralBackendIdentity<string>['versions']): IpcVersionAxes {
-  const ipcOffer = versionRange(version('ipc-protocol', 1), version('ipc-protocol', 1))
+  const ipcOffer = versionRange(version('ipc-protocol', 2), version('ipc-protocol', 2))
   return Object.freeze({
     backendContract: core.backendContract,
     capabilitySchema: core.capabilitySchema,

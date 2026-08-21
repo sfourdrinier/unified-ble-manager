@@ -357,14 +357,14 @@ describe('backend contract invariants', () => {
       },
       ipcProtocol: {
         axis: 'ipc-protocol',
-        selected: primitives.version('ipc-protocol', 1),
+        selected: primitives.version('ipc-protocol', 2),
         localRange: primitives.versionRange(
-          primitives.version('ipc-protocol', 1),
-          primitives.version('ipc-protocol', 1)
+          primitives.version('ipc-protocol', 2),
+          primitives.version('ipc-protocol', 2)
         ),
         remoteRange: primitives.versionRange(
-          primitives.version('ipc-protocol', 1),
-          primitives.version('ipc-protocol', 1)
+          primitives.version('ipc-protocol', 2),
+          primitives.version('ipc-protocol', 2)
         )
       }
     }
@@ -415,7 +415,7 @@ describe('backend contract invariants', () => {
         ...envelope,
         versions: {
           ...versions,
-          ipcProtocol: { ...versions.ipcProtocol, selected: primitives.version('ipc-protocol', 2) }
+          ipcProtocol: { ...versions.ipcProtocol, selected: primitives.version('ipc-protocol', 1) }
         }
       })
     ).rejects.toMatchObject({

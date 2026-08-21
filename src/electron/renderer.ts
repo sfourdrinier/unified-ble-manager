@@ -22,8 +22,8 @@ import {
 import type { ElectronConnectionEventCleanupReceipt } from './connection-event-codec'
 import type {
   ElectronBleIpcEvent,
-  ElectronConnectionEventsSubscribeResponseV1,
-  ElectronConnectionLifecycleEventV1,
+  ElectronConnectionEventsSubscribeResponseV2,
+  ElectronConnectionLifecycleEventV2,
   ElectronIpcOperationReceipt,
   ElectronIpcOperationRequest,
   ElectronRendererBootstrap,
@@ -44,7 +44,7 @@ const releasedConnectionEventCleanup: ElectronConnectionEventCleanupReceipt = Ob
 
 export interface ElectronConnectionEventSubscription {
   readonly handle: string
-  readonly events: BoundedAsyncStream<ElectronConnectionLifecycleEventV1>
+  readonly events: BoundedAsyncStream<ElectronConnectionLifecycleEventV2>
   unsubscribe(): Promise<ElectronConnectionEventCleanupReceipt>
 }
 
@@ -52,8 +52,8 @@ export type { ElectronConnectionEventCleanupReceipt } from './connection-event-c
 
 interface RendererConnectionEventSubscription {
   readonly handle: string
-  expected: ElectronConnectionEventsSubscribeResponseV1 | null
-  readonly stream: CoreBoundedStream<ElectronConnectionLifecycleEventV1>
+  expected: ElectronConnectionEventsSubscribeResponseV2 | null
+  readonly stream: CoreBoundedStream<ElectronConnectionLifecycleEventV2>
   lifecycle: 'admitting' | 'active' | 'releasing' | 'released' | 'terminal'
   releaseResult: Promise<ElectronConnectionEventCleanupReceipt> | null
   retryHandle: ReturnType<typeof setTimeout> | null
@@ -178,7 +178,7 @@ export class ElectronRendererBleClient<Attachment extends string, Renderer exten
     const subscription: RendererConnectionEventSubscription = {
       handle,
       expected: null,
-      stream: new CoreBoundedStream<ElectronConnectionLifecycleEventV1>(rendererEventLimits, 'drop-oldest'),
+      stream: new CoreBoundedStream<ElectronConnectionLifecycleEventV2>(rendererEventLimits, 'drop-oldest'),
       lifecycle: 'admitting',
       releaseResult: null,
       retryHandle: null
@@ -654,8 +654,8 @@ function serializedByteLength(record: SerializableRecord): number {
 }
 
 function connectionEventMatchesSubscription(
-  event: ElectronConnectionLifecycleEventV1,
-  expected: ElectronConnectionEventsSubscribeResponseV1,
+  event: ElectronConnectionLifecycleEventV2,
+  expected: ElectronConnectionEventsSubscribeResponseV2,
   bootstrap: ElectronRendererBootstrap<string, string>
 ): boolean {
   return (
