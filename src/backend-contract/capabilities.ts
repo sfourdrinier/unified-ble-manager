@@ -50,7 +50,7 @@ export type BuiltInFeatureId = (typeof BUILT_IN_FEATURE_IDS)[keyof typeof BUILT_
 
 export interface BuiltInFeatureCatalogEntry {
   readonly id: BuiltInFeatureId
-  readonly schemaVersion: 2
+  readonly catalogVersion: 2
   readonly requiredTckSuiteId: 'capability.catalog-v2'
   readonly documentationAnchor: string
 }
@@ -60,7 +60,7 @@ export const BUILT_IN_FEATURE_CATALOG: readonly BuiltInFeatureCatalogEntry[] = O
   Object.values(BUILT_IN_FEATURE_IDS).map(id =>
     Object.freeze({
       id,
-      schemaVersion: 2 as const,
+      catalogVersion: 2 as const,
       requiredTckSuiteId: 'capability.catalog-v2' as const,
       documentationAnchor: `capabilities.${id.replace(':', '.')}`
     })

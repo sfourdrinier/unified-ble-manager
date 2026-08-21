@@ -1329,28 +1329,41 @@ impl BtleplugDispatcher {
                 caller_state.lease_generation.clone(),
             )
         };
-        self.emit(
-            &key,
-            Some((&event.4, &event.8)),
-            &event.0,
-            object([
-                ("kind", string("connection-lifecycle")),
-                ("schemaVersion", number(2)),
-                ("attachment", attachment_record(&event.6)),
-                ("attachmentId", string(event.6.attachment_id.clone())),
-                ("peerId", string(event.1.clone())),
-                ("connectionId", string(event.2.clone())),
-                ("connectionGeneration", string(event.3.clone())),
-                ("ownerLeaseId", string(event.4.clone())),
-                ("sequence", number(event.5 as i64)),
-                ("backendIngressOrdinal", IpcValue::Null),
-                ("previous", string("connecting")),
-                ("current", string("connected")),
-                ("cause", string("connected")),
-            ]),
-            false,
-        )
-        .await?;
+        let initial_event = object([
+            ("kind", string("connection-lifecycle")),
+            ("schemaVersion", number(2)),
+            ("attachment", attachment_record(&event.6)),
+            ("attachmentId", string(event.6.attachment_id.clone())),
+            ("peerId", string(event.1.clone())),
+            ("connectionId", string(event.2.clone())),
+            ("connectionGeneration", string(event.3.clone())),
+            ("ownerLeaseId", string(event.4.clone())),
+            ("sequence", number(event.5 as i64)),
+            ("backendIngressOrdinal", IpcValue::Null),
+            ("previous", string("connecting")),
+            ("current", string("connected")),
+            ("cause", string("connected")),
+        ]);
+        if let Err(error) = self
+            .emit(
+                &key,
+                Some((&event.4, &event.8)),
+                &event.0,
+                initial_event,
+                false,
+            )
+            .await
+        {
+            let mut state = self.inner.lock().await;
+            if let Some(caller) = state.callers.get_mut(&key) {
+                if let Some(resource) = caller.connection_events.remove(&event.0) {
+                    if let Some(task) = resource.task {
+                        task.abort();
+                    }
+                }
+            }
+            return Err(error);
+        }
         let dispatcher = self.clone();
         let stream_owner = key.clone();
         let stream_id = event.0.clone();
@@ -2006,6 +2019,7 @@ impl BtleplugDispatcher {
     ) -> Result<IpcValue, DispatchError> {
         let lease = required_lease(&request, "tauri.release-lease")?;
         let key = caller_key(&caller);
+        let _admission = self.bootstrap_admission.lock().await;
         {
             let state = self.inner.lock().await;
             let caller_state = state.callers.get(&key).ok_or_else(|| {

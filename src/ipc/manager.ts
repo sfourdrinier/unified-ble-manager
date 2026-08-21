@@ -330,20 +330,12 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
       deadline: null
     })
     const response = await this.route('connection.events.subscribe', payload)
-    const returnedConnectionId = requiredString(response, 'connectionId', 'ipc-manager.connection-events-subscribe')
-    const returnedConnectionGeneration = requiredString(
-      response,
-      'connectionGeneration',
-      'ipc-manager.connection-events-subscribe'
-    )
-    if (
-      requiredString(response, 'handle', 'ipc-manager.connection-events-subscribe') !== handle ||
-      returnedConnectionId !== requiredString(identity, 'connectionId', 'ipc-manager.connection-events-identity') ||
-      returnedConnectionGeneration !==
-        requiredString(identity, 'connectionGeneration', 'ipc-manager.connection-events-identity') ||
-      response.eventSchemaVersion !== 2
-    ) {
-      throw contractError('protocol.incompatible', 'ipc', 'ipc-manager.connection-events-schema')
+    const validation = validateConnectionEventResponse(response, handle, identity)
+    if (validation !== null) {
+      await this.route('connection.events.unsubscribe', Object.freeze({ connectionEventsHandle: handle })).catch(
+        () => undefined
+      )
+      throw validation
     }
     const events = this.registerStream(handle, isIpcConnectionLifecycleEvent)
     try {
@@ -381,8 +373,12 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
   private async pumpEvents(): Promise<void> {
     for await (const event of this.client.events) {
       if (event.kind !== 'value') continue
-      const streamId = requiredString(event.value, 'streamId', 'ipc-manager.event')
-      const item = requiredRecord(event.value, 'item', 'ipc-manager.event')
+      const eventValue = event.value
+      // ElectronRendererBleClient validates the attachment lease before it
+      // projects an event into this host-neutral stream; Tauri uses that same
+      // client implementation over its Channel transport.
+      const streamId = requiredString(eventValue, 'streamId', 'ipc-manager.event')
+      const item = requiredRecord(eventValue, 'item', 'ipc-manager.event')
       const sink = this.streams.get(streamId)
       if (sink === undefined) {
         this.bufferPendingStreamItem(streamId, item)
@@ -1091,6 +1087,29 @@ function lifecycleEventValue(value: unknown): SerializableRecord {
     throw contractError('protocol.malformed', 'ipc', 'ipc-manager.connection-lifecycle')
   }
   return value
+}
+
+function validateConnectionEventResponse(
+  response: SerializableRecord,
+  handle: string,
+  identity: SerializableRecord
+): BackendContractError | null {
+  try {
+    if (
+      requiredString(response, 'handle', 'ipc-manager.connection-events-subscribe') !== handle ||
+      requiredString(response, 'connectionId', 'ipc-manager.connection-events-subscribe') !==
+        requiredString(identity, 'connectionId', 'ipc-manager.connection-events-identity') ||
+      requiredString(response, 'connectionGeneration', 'ipc-manager.connection-events-subscribe') !==
+        requiredString(identity, 'connectionGeneration', 'ipc-manager.connection-events-identity') ||
+      response.eventSchemaVersion !== 2
+    ) {
+      return contractError('protocol.incompatible', 'ipc', 'ipc-manager.connection-events-schema')
+    }
+    return null
+  } catch (error) {
+    if (error instanceof BackendContractError) return error
+    return contractError('protocol.malformed', 'ipc', 'ipc-manager.connection-events-response')
+  }
 }
 
 function isIpcNotificationValue(value: unknown): value is IpcNotificationValue {
