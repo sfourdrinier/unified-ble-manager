@@ -66,6 +66,14 @@ export type {
   ScannerBackend
 } from './backend'
 export { assertAttachedBackend, assertBackendEvent, attachBackend } from './backend'
+export type { PeerReference, PeerReferenceScope } from './peer-reference'
+export {
+  assertPeerReference,
+  decodePeerReference,
+  encodePeerReference,
+  isPeerReference,
+  snapshotPeerReference
+} from './peer-reference'
 export type {
   EvidenceLevel,
   EvidenceReceipt,
