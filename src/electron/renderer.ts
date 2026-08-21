@@ -14,6 +14,7 @@ import type { CleanupRecord } from '../backend-contract/errors'
 import type { IpcEnvelope } from '../backend-contract/electron'
 import type { IpcOperationCorrelation, OwnedBytes, SerializableRecord } from '../backend-contract/primitives'
 import { snapshotSerializableRecord } from '../backend-contract/serializable'
+import { validateCapabilitySnapshot } from '../backend-contract/capabilities'
 import type { BoundedAsyncStream } from '../backend-contract/streams'
 import { createIpcBootstrapRequest, IPC_CLIENT_COMPATIBILITY_OFFER } from '../ipc/protocol'
 import {
@@ -123,6 +124,7 @@ export class ElectronRendererBleClient<Attachment extends string, Renderer exten
       throw contractError('protocol.malformed', 'ipc', 'electron-renderer.bootstrap-response')
     }
     assertIpcVersionsAccepted(response.bootstrap.versions, IPC_CLIENT_COMPATIBILITY_OFFER)
+    validateCapabilitySnapshot(response.bootstrap.capabilities, String(response.bootstrap.attachment.backendGeneration))
     this.bootstrapValue = response.bootstrap
     return response.bootstrap
   }

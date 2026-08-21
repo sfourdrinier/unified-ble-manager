@@ -57,6 +57,7 @@ function rendererBootstrap(value) {
     attachment: currentAttachment,
     attachmentId: currentAttachment.attachmentId,
     versions: { ...versions(), ipcProtocol: negotiated('ipc-protocol') },
+    capabilities: emptyCapabilitySnapshot(currentAttachment),
     renderer: {
       clientId: opaqueId(`renderer-client-${value}`, 'client', `electron:${value}`),
       windowScope: `renderer-window-${value}`,
@@ -64,6 +65,10 @@ function rendererBootstrap(value) {
     },
     rendererLease: rendererLease(value)
   }
+}
+
+function emptyCapabilitySnapshot(currentAttachment) {
+  return { schemaVersion: 2, backendGeneration: currentAttachment.backendGeneration, descriptors: [] }
 }
 
 function createSender(client, windowScope, sessionScope) {
@@ -381,6 +386,7 @@ function createMainFixture(managerOverrides = {}) {
   const manager = {
     attachedBackend: { attachment: { attachment: currentAttachment } },
     identity: { versions: versions() },
+    capabilities: () => [],
     destroy: jest.fn(async () => ({ state: 'released', failures: [] })),
     ...managerOverrides
   }
@@ -1373,6 +1379,7 @@ describe('Electron v4 IPC boundary', () => {
         ...versions(),
         ipcProtocol: negotiated('ipc-protocol')
       },
+      capabilities: emptyCapabilitySnapshot(attachment()),
       renderer: {
         clientId: opaqueId('renderer-client', 'client', 'renderer:client'),
         windowScope: 'renderer-window',
@@ -2074,6 +2081,7 @@ describe('Electron v4 IPC boundary', () => {
       attachment: currentAttachment,
       attachmentId: currentAttachment.attachmentId,
       versions: { ...versions(), ipcProtocol: negotiated('ipc-protocol') },
+      capabilities: emptyCapabilitySnapshot(currentAttachment),
       renderer: {
         clientId: opaqueId('renderer-lifecycle-client', 'client', 'renderer:lifecycle'),
         windowScope: 'renderer-lifecycle-window',
@@ -2951,6 +2959,7 @@ describe('Electron v4 IPC boundary', () => {
       attachment: attachment(),
       attachmentId: opaqueId('retry-attachment', 'attachment', 'renderer'),
       versions: { ...versions(), ipcProtocol: negotiated('ipc-protocol') },
+      capabilities: emptyCapabilitySnapshot(attachment()),
       renderer: {
         clientId: opaqueId('retry-client', 'client', 'renderer:retry'),
         windowScope: 'retry-window',
@@ -2987,6 +2996,7 @@ describe('Electron v4 IPC boundary', () => {
       attachment: attachment(),
       attachmentId: opaqueId('racing-attachment', 'attachment', 'renderer'),
       versions: { ...versions(), ipcProtocol: negotiated('ipc-protocol') },
+      capabilities: emptyCapabilitySnapshot(attachment()),
       renderer: {
         clientId: opaqueId('racing-client', 'client', 'renderer:racing'),
         windowScope: 'racing-window',
@@ -3030,6 +3040,7 @@ describe('Electron v4 IPC boundary', () => {
       attachment: attachment(),
       attachmentId: opaqueId('event-race-attachment', 'attachment', 'renderer'),
       versions: { ...versions(), ipcProtocol: negotiated('ipc-protocol') },
+      capabilities: emptyCapabilitySnapshot(attachment()),
       renderer: {
         clientId: opaqueId('event-race-client', 'client', 'renderer:event-race'),
         windowScope: 'event-race-window',
@@ -3192,6 +3203,7 @@ describe('Electron v4 IPC boundary', () => {
       attachment: attachment(),
       attachmentId: opaqueId('released-event-attachment', 'attachment', 'renderer'),
       versions: { ...versions(), ipcProtocol: negotiated('ipc-protocol') },
+      capabilities: emptyCapabilitySnapshot(attachment()),
       renderer: {
         clientId: opaqueId('released-event-client', 'client', 'renderer:released-event'),
         windowScope: 'released-event-window',

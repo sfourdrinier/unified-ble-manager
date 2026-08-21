@@ -1,4 +1,5 @@
 mod btleplug_dispatcher;
+mod capabilities;
 mod commands;
 mod wire;
 

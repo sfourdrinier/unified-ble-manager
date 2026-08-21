@@ -65,6 +65,7 @@ export type {
   EvidenceLevel,
   EvidenceReceipt,
   CapabilityDescriptor,
+  CapabilitySnapshot,
   CapabilityLimit,
   CapabilityLimits,
   FeatureId,
@@ -76,7 +77,15 @@ export type {
   TckBinding
 } from './capabilities'
 export { BUILT_IN_FEATURE_CATALOG, BUILT_IN_FEATURE_IDS } from './capabilities'
-export { createFeatureRegistry, describeFeatureRegistry, validateFeatureRegistration } from './capabilities'
+export {
+  createFeatureRegistry,
+  describeFeatureRegistry,
+  snapshotCapabilityDescriptor,
+  snapshotCapabilityDescriptors,
+  validateCapabilityDescriptor,
+  validateCapabilitySnapshot,
+  validateFeatureRegistration
+} from './capabilities'
 export type {
   ConnectionLifecycleCause,
   ConnectionLifecycleEvent,

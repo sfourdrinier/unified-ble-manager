@@ -9,6 +9,7 @@ import {
   type SerializableValue
 } from '../backend-contract/primitives'
 import { CoreBoundedStream } from '../core/bounded-stream'
+import { createPublicBleCapabilities, type BleCapabilities } from '../public/capabilities'
 import type {
   PortableCurrentCharacteristicPath,
   PortableDatabasePath,
@@ -118,7 +119,10 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
   private lifecycle: 'active' | 'releasing' | 'released' = 'active'
   private releaseResult: Promise<CleanupRecord> | null = null
 
-  private constructor(private readonly client: IpcBleClient<Attachment, Client>) {
+  private constructor(
+    private readonly client: IpcBleClient<Attachment, Client>,
+    readonly capabilities: BleCapabilities
+  ) {
     this.eventPump = this.pumpEvents()
   }
 
@@ -127,7 +131,10 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
   ): Promise<IpcBleManager<Attachment, Client>> {
     const client = new IpcBleClient(transport)
     await client.initialize()
-    return new IpcBleManager(client)
+    return new IpcBleManager(
+      client,
+      createPublicBleCapabilities(client.bootstrap.capabilities, String(client.bootstrap.attachment.backendGeneration))
+    )
   }
 
   get bootstrap() {

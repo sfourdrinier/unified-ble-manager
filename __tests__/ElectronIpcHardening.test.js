@@ -13,6 +13,10 @@ function negotiated(axis) {
   return { axis, selected, localRange: range, remoteRange: range }
 }
 
+function emptyCapabilitySnapshot(backendGeneration) {
+  return { schemaVersion: 2, backendGeneration, descriptors: [] }
+}
+
 function electronSender(fields) {
   return {
     ...fields,
@@ -104,6 +108,7 @@ function createRouter(
   const manager = {
     attachedBackend: { attachment: { attachment: authority.attachment } },
     identity: { versions: authority.versions },
+    capabilities: () => [],
     destroy: jest.fn(async () => ({ state: 'released', failures: [] })),
     ...managerOverrides
   }
@@ -964,6 +969,7 @@ describe('Electron IPC hardening', () => {
         attachment: createAuthority().attachment,
         attachmentId: createAuthority().attachment.attachmentId,
         versions: { ...createAuthority().versions, ipcProtocol: negotiated('ipc-protocol') },
+        capabilities: emptyCapabilitySnapshot(createAuthority().attachment.backendGeneration),
         renderer: {
           clientId: opaqueId('ack-retry-client', 'client', 'hardening:ack-retry'),
           windowScope: 'ack-retry-window',
@@ -1019,6 +1025,7 @@ describe('Electron IPC hardening', () => {
         attachment: createAuthority().attachment,
         attachmentId: createAuthority().attachment.attachmentId,
         versions: { ...createAuthority().versions, ipcProtocol: negotiated('ipc-protocol') },
+        capabilities: emptyCapabilitySnapshot(createAuthority().attachment.backendGeneration),
         renderer: {
           clientId: opaqueId('ack-lease-lost-client', 'client', 'hardening:ack-lease-lost'),
           windowScope: 'ack-lease-lost-window',
@@ -1082,6 +1089,7 @@ describe('Electron IPC hardening', () => {
       attachment: createAuthority().attachment,
       attachmentId: createAuthority().attachment.attachmentId,
       versions: { ...createAuthority().versions, ipcProtocol: negotiated('ipc-protocol') },
+      capabilities: emptyCapabilitySnapshot(createAuthority().attachment.backendGeneration),
       renderer: {
         clientId: opaqueId('ack-permanent-failure-client', 'client', 'hardening:ack-permanent-failure'),
         windowScope: 'ack-permanent-failure-window',

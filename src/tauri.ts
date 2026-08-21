@@ -8,7 +8,7 @@ import type { OperationOptions } from './public/operation-options'
 import { normalizeBleManagerCreateOptions } from './public/host-identity'
 import type { BleManagerCreateOptions } from './public/host-identity'
 import { rehydratePublicError, rehydratePublicPromise, runWithCleanup } from './public/error-bridge'
-import { UnavailableBleCapabilities } from './public/capabilities'
+import type { BleCapabilities } from './public/capabilities'
 
 import { IpcBleManager } from './ipc/manager'
 import type { IpcScanOptions } from './ipc/manager'
@@ -174,9 +174,11 @@ class TauriBleConnectionWrapper implements BleConnection {
 // augments the IPC connection with a `peer` field for the public façade while
 // preserving Ipc-specific members (adapterState, GATT) for test compatibility.
 class TauriBleManagerAdapter implements BleManager {
-  readonly capabilities = new UnavailableBleCapabilities()
+  readonly capabilities: BleCapabilities
 
-  constructor(private readonly ipc: IpcBleManager) {}
+  constructor(private readonly ipc: IpcBleManager) {
+    this.capabilities = ipc.capabilities
+  }
 
   async scan(options: ScanOptions = {}): Promise<ScanSession> {
     try {

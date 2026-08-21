@@ -14,6 +14,7 @@ import type {
 } from '../backend-contract/primitives'
 import { version, versionRange } from '../backend-contract/primitives'
 import type { AttachmentRecord } from '../backend-contract/identity'
+import type { CapabilitySnapshot } from '../backend-contract/capabilities'
 
 /** The one versioned request channel exposed by a host application's narrow preload bridge. */
 export const IPC_BLE_PROTOCOL_CHANNEL = 'unified-ble-manager:v2'
@@ -76,6 +77,8 @@ export interface IpcAdapterStateV2 extends SerializableRecord {
   readonly safeReason: string | null
 }
 
+export type IpcCapabilitySnapshotV2 = CapabilitySnapshot
+
 /** Versioned, data-only projection of one public ConnectionLifecycleEvent. */
 export interface IpcConnectionLifecycleEventV2 extends SerializableRecord {
   readonly kind: 'connection-lifecycle'
@@ -110,6 +113,7 @@ export interface IpcClientBootstrap<Attachment extends string, Client extends st
   readonly attachment: AttachmentRecord<Attachment>
   readonly attachmentId: AttachmentId<Attachment>
   readonly versions: IpcVersionAxes
+  readonly capabilities: IpcCapabilitySnapshotV2
   readonly renderer: IpcClientIdentity<Attachment, Client>
   readonly rendererLease: IpcClientLeaseIdentity
 }

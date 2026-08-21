@@ -45,7 +45,7 @@ function createBootstrapResponse() {
   return {
     kind: 'bootstrap',
     bootstrap: {
-      attachment: Object.freeze({ attachmentId: 'packed-attachment' }),
+      attachment: Object.freeze({ attachmentId: 'packed-attachment', backendGeneration: 'packed-backend-generation' }),
       attachmentId: 'packed-attachment',
       versions: Object.freeze({
         backendContract: Object.freeze({ selected: Object.freeze({ value: 1 }) }),
@@ -53,6 +53,11 @@ function createBootstrapResponse() {
         eventSchema: Object.freeze({ selected: Object.freeze({ value: 1 }) }),
         traceFormat: Object.freeze({ selected: Object.freeze({ value: 1 }) }),
         ipcProtocol: Object.freeze({ selected: Object.freeze({ value: 2 }) })
+      }),
+      capabilities: Object.freeze({
+        schemaVersion: 2,
+        backendGeneration: 'packed-backend-generation',
+        descriptors: []
       }),
       renderer: Object.freeze({ clientId: 'packed-renderer', windowScope: 'window', sessionScope: 'session' }),
       rendererLease: Object.freeze({ leaseId: 'packed-lease', generation: 'packed-generation' })

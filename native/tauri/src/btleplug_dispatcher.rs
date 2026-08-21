@@ -21,6 +21,7 @@ use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
+use crate::capabilities;
 use crate::ATTACH_REQUEST_KIND;
 use crate::{AuthenticatedCaller, DispatchFuture, IpcDispatcher, IpcEventSink, IpcValue};
 
@@ -346,6 +347,10 @@ impl BtleplugDispatcher {
                     ("attachment", attachment_record),
                     ("attachmentId", string(attachment.attachment_id)),
                     ("versions", versions),
+                    (
+                        "capabilities",
+                        capabilities::snapshot(&attachment.backend_generation),
+                    ),
                     ("renderer", renderer),
                     (
                         "rendererLease",

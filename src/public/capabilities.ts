@@ -1,7 +1,14 @@
 // src/public/capabilities.ts — application capability projection
 
 import { BleError } from './errors'
-import type { BuiltInFeatureId, CapabilityDescriptor, FeatureId } from '../backend-contract/capabilities'
+import {
+  snapshotCapabilityDescriptor,
+  validateCapabilitySnapshot,
+  type BuiltInFeatureId,
+  type CapabilityDescriptor,
+  type FeatureId
+} from '../backend-contract/capabilities'
+import type { IpcCapabilitySnapshotV2 } from '../ipc/protocol'
 
 interface CapabilitySource {
   capability(id: FeatureId): CapabilityDescriptor | null
@@ -55,23 +62,21 @@ export class PublicBleCapabilities implements BleCapabilities {
   }
 }
 
-/** Explicit fail-closed projection used until a host supplies its capability snapshot. */
-export class UnavailableBleCapabilities implements BleCapabilities {
-  supports(_id: BuiltInFeatureId): boolean {
-    return false
+/** Projects a complete trusted-host snapshot without reconstructing evidence or TCK data. */
+export function createPublicBleCapabilities(
+  snapshot: IpcCapabilitySnapshotV2,
+  expectedBackendGeneration: string
+): PublicBleCapabilities {
+  validateCapabilitySnapshot(snapshot, expectedBackendGeneration)
+  const descriptors = new Map<string, CapabilityDescriptor>()
+  for (const descriptor of snapshot.descriptors) {
+    descriptors.set(descriptor.id, snapshotCapabilityDescriptor(descriptor))
   }
-
-  get(_id: FeatureId): CapabilityDescriptor | undefined {
-    return undefined
-  }
-
-  require(id: BuiltInFeatureId): CapabilityDescriptor {
-    throw new BleError('capability.unavailable', 'capability', `ble-capabilities.require.${id}`)
-  }
-
-  list(): readonly CapabilityDescriptor[] {
-    return []
-  }
+  const values = Object.freeze([...descriptors.values()])
+  return new PublicBleCapabilities({
+    capability: id => values.find(descriptor => descriptor.id === id) ?? null,
+    capabilities: () => values
+  })
 }
 
 export type { BuiltInFeatureId, CapabilityDescriptor, FeatureId } from '../backend-contract/capabilities'

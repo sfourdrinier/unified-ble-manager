@@ -316,10 +316,11 @@ function isBootstrap<Attachment extends string, Client extends string>(
   const record = wireRecord(value)
   if (
     record === null ||
-    !exactKeys(record, ['attachment', 'attachmentId', 'versions', 'renderer', 'rendererLease']) ||
+    !exactKeys(record, ['attachment', 'attachmentId', 'versions', 'capabilities', 'renderer', 'rendererLease']) ||
     !nonEmptyString(record.attachmentId) ||
     !isAttachment(record.attachment) ||
     !isIpcVersionAxes(record.versions) ||
+    !isCapabilitySnapshot(record.capabilities, wireRecord(record.attachment)?.backendGeneration) ||
     !isRenderer(record.renderer) ||
     !isLease(record.rendererLease)
   ) {
@@ -328,6 +329,191 @@ function isBootstrap<Attachment extends string, Client extends string>(
   const attachment = wireRecord(record.attachment)
   if (attachment === null || attachment.attachmentId !== record.attachmentId) return false
   return true
+}
+
+function isCapabilitySnapshot(value: unknown, expectedBackendGeneration: unknown): boolean {
+  const record = wireRecord(value)
+  return (
+    record !== null &&
+    exactKeys(record, ['schemaVersion', 'backendGeneration', 'descriptors']) &&
+    record.schemaVersion === 2 &&
+    nonEmptyString(record.backendGeneration) &&
+    record.backendGeneration === expectedBackendGeneration &&
+    Array.isArray(record.descriptors) &&
+    record.descriptors.every(isCapabilityDescriptor)
+  )
+}
+
+function isCapabilityState(value: unknown): boolean {
+  return value === 'supported' || value === 'limited' || value === 'unsupported' || value === 'unavailable'
+}
+
+function isCapabilityDescriptor(value: unknown): boolean {
+  const record = wireRecord(value)
+  if (
+    record === null ||
+    !exactKeys(record, [
+      'id',
+      'state',
+      'selectedSchemaRange',
+      'implementationOrigin',
+      'tck',
+      'evidence',
+      'limitations',
+      'limits'
+    ]) ||
+    !nonEmptyString(record.id) ||
+    !isCapabilityState(record.state) ||
+    (record.implementationOrigin !== 'backend-native' && record.implementationOrigin !== 'core-emulated') ||
+    !isCapabilitySchemaRange(record.selectedSchemaRange) ||
+    !isCapabilityTck(record.tck) ||
+    !isCapabilityEvidence(record.evidence) ||
+    !isLimitations(record.limitations) ||
+    !isLimitations(record.evidence && wireRecord(record.evidence)?.limitations) ||
+    !isCapabilityLimits(record.limits)
+  ) {
+    return false
+  }
+  const evidence = wireRecord(record.evidence)
+  const tck = wireRecord(record.tck)
+  const limitations = record.limitations
+  const evidenceLimitations = evidence?.limitations
+  const requiredScenarios = tck?.requiredScenarioIds
+  const evidenceScenarios = evidence?.scenarioIds
+  if (
+    !Array.isArray(limitations) ||
+    !Array.isArray(evidenceLimitations) ||
+    !Array.isArray(requiredScenarios) ||
+    !Array.isArray(evidenceScenarios)
+  ) {
+    return false
+  }
+  return (
+    limitationsEqual(limitations, evidenceLimitations) &&
+    requiredScenarios.every(scenario => typeof scenario === 'string' && evidenceScenarios.includes(scenario)) &&
+    ((record.state === 'supported' && evidence?.evidenceLevel !== 'blocked') || record.state !== 'supported')
+  )
+}
+
+function isCapabilitySchemaRange(value: unknown): boolean {
+  const record = wireRecord(value)
+  return (
+    record !== null &&
+    exactKeys(record, ['axis', 'minimum', 'maximum']) &&
+    record.axis === 'capability-schema' &&
+    isVersionNumber(record.minimum, 'capability-schema') &&
+    isVersionNumber(record.maximum, 'capability-schema') &&
+    versionNumber(record.minimum) <= versionNumber(record.maximum)
+  )
+}
+
+function isCapabilityTck(value: unknown): boolean {
+  const record = wireRecord(value)
+  return (
+    record !== null &&
+    exactKeys(record, ['suiteId', 'requiredScenarioIds', 'contractRange']) &&
+    nonEmptyString(record.suiteId) &&
+    stringArray(record.requiredScenarioIds) &&
+    record.requiredScenarioIds.length > 0 &&
+    isCapabilitySchemaRange(record.contractRange)
+  )
+}
+
+function isCapabilityEvidence(value: unknown): boolean {
+  const record = wireRecord(value)
+  return (
+    record !== null &&
+    exactKeys(record, [
+      'receiptId',
+      'evidenceLevel',
+      'implementationVersion',
+      'sourceDigest',
+      'scenarioIds',
+      'limitations'
+    ]) &&
+    nonEmptyString(record.receiptId) &&
+    (record.evidenceLevel === 'blocked' ||
+      record.evidenceLevel === 'deterministic' ||
+      record.evidenceLevel === 'live-preview' ||
+      record.evidenceLevel === 'supported' ||
+      record.evidenceLevel === 'reliability-qualified') &&
+    nonEmptyString(record.implementationVersion) &&
+    nonEmptyString(record.sourceDigest) &&
+    stringArray(record.scenarioIds) &&
+    isLimitations(record.limitations)
+  )
+}
+
+function isLimitations(value: unknown): value is readonly Record<string, unknown>[] {
+  return (
+    Array.isArray(value) &&
+    value.every(item => {
+      const record = wireRecord(item)
+      return (
+        record !== null &&
+        exactKeys(record, ['code', 'explanation', 'affectedGuarantee']) &&
+        nonEmptyString(record.code) &&
+        nonEmptyString(record.explanation) &&
+        nonEmptyString(record.affectedGuarantee)
+      )
+    })
+  )
+}
+
+function limitationsEqual(
+  left: readonly Record<string, unknown>[],
+  right: readonly Record<string, unknown>[]
+): boolean {
+  return (
+    left.length === right.length &&
+    left.every((limitation, index) => {
+      const other = right[index]
+      return (
+        other !== undefined &&
+        limitation.code === other.code &&
+        limitation.explanation === other.explanation &&
+        limitation.affectedGuarantee === other.affectedGuarantee
+      )
+    })
+  )
+}
+
+function isCapabilityLimits(value: unknown): boolean {
+  const record = wireRecord(value)
+  return (
+    record !== null &&
+    Object.keys(record).length > 0 &&
+    Object.values(record).every(item => {
+      const limit = wireRecord(item)
+      if (limit === null || !exactKeys(limit, ['maximum', 'minimum', 'unit'])) return false
+      return (
+        finiteNumber(limit.maximum) &&
+        limit.maximum >= 0 &&
+        (limit.minimum === null || (finiteNumber(limit.minimum) && limit.minimum >= 0)) &&
+        typeof limit.unit === 'string' &&
+        limit.unit.length > 0
+      )
+    })
+  )
+}
+
+function isVersionNumber(value: unknown, axis: string): boolean {
+  const record = wireRecord(value)
+  return (
+    record !== null &&
+    exactKeys(record, ['axis', 'value']) &&
+    record.axis === axis &&
+    safeInteger(record.value) &&
+    record.value >= 0
+  )
+}
+
+function versionNumber(value: unknown): number {
+  const record = wireRecord(value)
+  if (record === null || typeof record.value !== 'number') {
+    throw new TypeError('Malformed capability schema version')
+  }
+  return record.value
 }
 
 function isAttachment(value: unknown): boolean {

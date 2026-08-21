@@ -33,6 +33,7 @@ import {
   type SerializableValue
 } from '../backend-contract/primitives'
 import type { SubscriptionOptions } from '../backend-contract/operations'
+import { snapshotCapabilityDescriptors } from '../backend-contract/capabilities'
 import { snapshotSerializableRecord } from '../backend-contract/serializable'
 import { BleManager, Connection, DiscoveredGattDatabase } from '../manager/ble-manager'
 import type {
@@ -279,6 +280,7 @@ export class ElectronMainBleRouter {
       attachment,
       attachmentId: attachment.attachmentId,
       versions,
+      capabilities: snapshotCapabilityDescriptors(this.manager.capabilities(), String(attachment.backendGeneration)),
       renderer,
       rendererLease
     })

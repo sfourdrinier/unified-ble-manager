@@ -17,6 +17,52 @@ function negotiated(axis) {
   return { axis, selected, localRange: range, remoteRange: range }
 }
 
+function capabilityDescriptor(id, scenario) {
+  const limitation = {
+    code: 'deterministic-only',
+    explanation: 'The fixture exposes deterministic host evidence only.',
+    affectedGuarantee: 'Physical-radio qualification is not claimed.'
+  }
+  const schemaRange = {
+    axis: 'capability-schema',
+    minimum: { axis: 'capability-schema', value: 1 },
+    maximum: { axis: 'capability-schema', value: 1 }
+  }
+  return {
+    id,
+    state: 'limited',
+    selectedSchemaRange: schemaRange,
+    implementationOrigin: 'backend-native',
+    tck: { suiteId: 'capability.catalog-v2', requiredScenarioIds: [scenario], contractRange: schemaRange },
+    evidence: {
+      receiptId: `fixture-${id}`,
+      evidenceLevel: 'deterministic',
+      implementationVersion: 'fixture-v2',
+      sourceDigest: `fixture-${id}`,
+      scenarioIds: [scenario],
+      limitations: [limitation]
+    },
+    limitations: [limitation],
+    limits: { availability: { maximum: 1, minimum: null, unit: 'boolean' } }
+  }
+}
+
+function capabilitySnapshot(backendGeneration) {
+  const entries = [
+    ['discovery:continuous-scan', 'scan.owner-join-authority-and-signature'],
+    ['connection:direct', 'connection.lease-joins-borrowing-transfer-and-revocation'],
+    ['connection:rssi', 'connection.rssi-and-att-mtu-capability-contract'],
+    ['gatt:descriptors', 'gatt.descriptor-discovery-read-write'],
+    ['gatt:indications', 'gatt.reads-descriptors-write-policy-and-dispatched-cancellation'],
+    ['gatt:maximum-write-length', 'gatt.maximum-write-length-boundaries']
+  ]
+  return {
+    schemaVersion: 2,
+    backendGeneration,
+    descriptors: entries.map(([id, scenario]) => capabilityDescriptor(id, scenario))
+  }
+}
+
 function bootstrap() {
   const backendGeneration = 'backend-generation-1'
   const attachment = {
@@ -48,6 +94,7 @@ function bootstrap() {
       traceFormat: negotiated('trace-format'),
       ipcProtocol: negotiated('ipc-protocol')
     },
+    capabilities: capabilitySnapshot(backendGeneration),
     renderer: {
       clientId: 'tauri-client-1',
       windowScope: 'main',
@@ -303,7 +350,11 @@ describe('Tauri v2 public manager', () => {
         return {
           kind: 'route',
           payload: {
-            terminal: { correlation: 'write-operation-contradictory', outcome: 'succeeded', cause: 'gatt.write-failed' },
+            terminal: {
+              correlation: 'write-operation-contradictory',
+              outcome: 'succeeded',
+              cause: 'gatt.write-failed'
+            },
             mode: 'with-response',
             commitState: 'confirmed',
             bytesSubmitted: 1
@@ -544,6 +595,16 @@ describe('Tauri v2 public manager', () => {
 
     await expect(
       createTauriBleManagerWithEnvironment({ invoke: invalidStateInvoke, Channel: FakeChannel })
+    ).rejects.toMatchObject({ normalized: { code: 'protocol.malformed' } })
+
+    const invalidCapabilityBootstrap = bootstrap()
+    invalidCapabilityBootstrap.capabilities.descriptors[0].evidence.sourceDigest = ''
+    const invalidCapabilityInvoke = jest.fn(async () => ({
+      kind: 'bootstrap',
+      bootstrap: invalidCapabilityBootstrap
+    }))
+    await expect(
+      createTauriBleManagerWithEnvironment({ invoke: invalidCapabilityInvoke, Channel: FakeChannel })
     ).rejects.toMatchObject({ normalized: { code: 'protocol.malformed' } })
 
     const mismatchedGenerationBootstrap = bootstrap()

@@ -168,6 +168,11 @@ export interface CapabilityDescriptor {
   readonly limitations: readonly Limitation[]
   readonly limits: CapabilityLimits
 }
+export interface CapabilitySnapshot {
+  readonly schemaVersion: 2
+  readonly backendGeneration: string
+  readonly descriptors: readonly CapabilityDescriptor[]
+}
 export interface FeatureRegistry {
   readonly registrations: readonly FeatureRegistration<
     FeatureId,
@@ -176,6 +181,132 @@ export interface FeatureRegistry {
     FeatureImplementation<SerializableRecord, SerializableRecord>
   >[]
   readonly descriptors: readonly CapabilityDescriptor[]
+}
+
+/** Validates the data-only capability projection used by every host boundary. */
+export function validateCapabilityDescriptor(descriptor: CapabilityDescriptor): CapabilityDescriptor {
+  const operation = 'validateCapabilityDescriptor'
+  if (!descriptor.id.includes(':') || descriptor.id.startsWith(':') || descriptor.id.endsWith(':')) {
+    throw contractError('protocol.malformed', 'capability', operation)
+  }
+  assertCapabilitySchemaRange(descriptor.selectedSchemaRange, `${operation}.selected-schema-range`)
+  if (
+    descriptor.tck.suiteId.length === 0 ||
+    descriptor.tck.requiredScenarioIds.length === 0 ||
+    descriptor.evidence.receiptId.length === 0 ||
+    descriptor.evidence.sourceDigest.length === 0 ||
+    descriptor.evidence.scenarioIds.length === 0
+  ) {
+    throw contractError('protocol.malformed', 'capability', operation)
+  }
+  assertCapabilitySchemaRange(descriptor.tck.contractRange, `${operation}.contract-range`)
+  if (Object.keys(descriptor.limits).length === 0) {
+    throw contractError('protocol.malformed', 'capability', operation)
+  }
+  assertCapabilityLimits(descriptor.limits)
+  if (descriptor.state === 'limited' && descriptor.limitations.length === 0) {
+    throw contractError('capability.limited', 'capability', operation)
+  }
+  if (
+    (descriptor.state === 'unsupported' || descriptor.state === 'unavailable') &&
+    descriptor.limitations.length === 0
+  ) {
+    throw contractError(
+      descriptor.state === 'unsupported' ? 'capability.unsupported' : 'capability.unavailable',
+      'capability',
+      operation
+    )
+  }
+  for (const limitation of [...descriptor.limitations, ...descriptor.evidence.limitations]) {
+    if (
+      limitation.code.length === 0 ||
+      limitation.explanation.length === 0 ||
+      limitation.affectedGuarantee.length === 0
+    ) {
+      throw contractError('protocol.malformed', 'capability', `${operation}.limitations`)
+    }
+  }
+  if (!limitationsEqual(descriptor.limitations, descriptor.evidence.limitations)) {
+    throw contractError('protocol.violation', 'capability', `${operation}.evidence-limitations`)
+  }
+  if (descriptor.tck.requiredScenarioIds.some(scenarioId => !descriptor.evidence.scenarioIds.includes(scenarioId))) {
+    throw contractError('protocol.violation', 'capability', `${operation}.evidence-scenarios`)
+  }
+  const qualifiedEvidence =
+    descriptor.evidence.evidenceLevel === 'supported' || descriptor.evidence.evidenceLevel === 'reliability-qualified'
+  if (descriptor.state === 'supported' && (!qualifiedEvidence || descriptor.limitations.length !== 0)) {
+    throw contractError('protocol.violation', 'capability', `${operation}.supported-evidence`)
+  }
+  if (descriptor.state === 'limited' && descriptor.evidence.evidenceLevel === 'blocked') {
+    throw contractError('protocol.violation', 'capability', `${operation}.limited-evidence`)
+  }
+  if (
+    (descriptor.state === 'unsupported' || descriptor.state === 'unavailable') &&
+    descriptor.evidence.evidenceLevel !== 'blocked'
+  ) {
+    throw contractError('protocol.violation', 'capability', `${operation}.blocked-evidence`)
+  }
+  return descriptor
+}
+
+/** Deep-copies a validated descriptor while excluding no data-only fields. */
+export function snapshotCapabilityDescriptor(descriptor: CapabilityDescriptor): CapabilityDescriptor {
+  validateCapabilityDescriptor(descriptor)
+  return Object.freeze({
+    id: descriptor.id,
+    state: descriptor.state,
+    selectedSchemaRange: snapshotCapabilitySchemaRange(descriptor.selectedSchemaRange),
+    implementationOrigin: descriptor.implementationOrigin,
+    tck: Object.freeze({
+      suiteId: descriptor.tck.suiteId,
+      requiredScenarioIds: Object.freeze([...descriptor.tck.requiredScenarioIds]),
+      contractRange: snapshotCapabilitySchemaRange(descriptor.tck.contractRange)
+    }),
+    evidence: Object.freeze({
+      receiptId: descriptor.evidence.receiptId,
+      evidenceLevel: descriptor.evidence.evidenceLevel,
+      implementationVersion: descriptor.evidence.implementationVersion,
+      sourceDigest: descriptor.evidence.sourceDigest,
+      scenarioIds: Object.freeze([...descriptor.evidence.scenarioIds]),
+      limitations: snapshotLimitations(descriptor.evidence.limitations)
+    }),
+    limitations: snapshotLimitations(descriptor.limitations),
+    limits: snapshotCapabilityLimits(descriptor.limits)
+  })
+}
+
+export function snapshotCapabilityDescriptors(
+  descriptors: readonly CapabilityDescriptor[],
+  backendGeneration: string
+): CapabilitySnapshot {
+  const snapshots = descriptors.map(snapshotCapabilityDescriptor)
+  const ids = new Set(snapshots.map(descriptor => descriptor.id))
+  if (ids.size !== snapshots.length || backendGeneration.length === 0) {
+    throw contractError('protocol.violation', 'capability', 'snapshotCapabilityDescriptors')
+  }
+  return Object.freeze({
+    schemaVersion: 2,
+    backendGeneration,
+    descriptors: Object.freeze(snapshots)
+  })
+}
+
+export function validateCapabilitySnapshot(
+  snapshot: CapabilitySnapshot,
+  expectedBackendGeneration: string
+): CapabilitySnapshot {
+  if (snapshot.schemaVersion !== 2 || snapshot.backendGeneration !== expectedBackendGeneration) {
+    throw contractError('protocol.violation', 'capability', 'validateCapabilitySnapshot.authority')
+  }
+  const ids = new Set<string>()
+  for (const descriptor of snapshot.descriptors) {
+    validateCapabilityDescriptor(descriptor)
+    if (ids.has(descriptor.id)) {
+      throw contractError('protocol.violation', 'capability', 'validateCapabilitySnapshot.duplicate')
+    }
+    ids.add(descriptor.id)
+  }
+  return snapshot
 }
 export function validateFeatureRegistration<
   Id extends FeatureId,
