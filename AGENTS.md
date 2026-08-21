@@ -50,3 +50,7 @@ Follow `RELEASE.md`. Stable releases are tag-driven from the exact current `main
 ## Historical names
 
 Old names such as `BlePlxExample` may remain in inherited native fixtures where renaming them adds build/ABI risk without changing the public package. Do not perform cosmetic native-symbol renames unless the compatibility/build impact is understood and fully validated.
+
+## GOD rule — typing
+
+No `as unknown`, `as any`, or `as T` to silence the checker. Infer by default; annotate only exported boundaries; use mappers/guards and fix the types.
