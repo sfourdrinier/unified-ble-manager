@@ -101,7 +101,14 @@ export function createConnectionSupervisor<Session = undefined>(
   validateStableConnectionReset(options.resetBackoffAfterConnectedMs)
   const managerSupervisors = supervisors.get(manager)
   const keys = managerSupervisors ?? new Set<string>()
-  const peerKey = typeof peer === 'string' ? peer : 'version' in peer ? encodePeerReference(peer) : peer.id
+  const peerKey =
+    typeof peer === 'string'
+      ? peer
+      : 'version' in peer
+        ? encodePeerReference(peer)
+        : peer.reference === null
+          ? peer.id
+          : encodePeerReference(peer.reference)
   if (keys.has(peerKey)) {
     throw rehydratePublicError(contractError('connection.already-owned', 'connection', 'connection-supervisor.create'))
   }
@@ -292,8 +299,7 @@ class ConnectionSupervisorImpl<Session> implements ConnectionSupervisor<Session>
       if (this.controlBarrier !== null) {
         const barrier = this.controlBarrier
         this.controlBarrier = null
-        await barrier
-        if (this.stopRequested) return 'stop'
+        if (!(await this.awaitBarrierOrStop(barrier))) return 'stop'
       }
       if (this.paused) {
         this.transition('waiting-for-gate', 'pause', null, null)
@@ -465,8 +471,17 @@ class ConnectionSupervisorImpl<Session> implements ConnectionSupervisor<Session>
           this.lastError = toBleError(cleanup.failures[0]?.error)
           return 'cleanup-failed'
         }
+        this.stopRequested = true
         return 'interrupted'
       }
+    }
+    if (this.stopRequested || this.paused || this.pauseCleanupRequired) {
+      const cleanup = await this.cleanupCurrentConnection()
+      if (cleanup.state === 'release-failed') {
+        this.lastError = toBleError(cleanup.failures[0]?.error)
+        return 'cleanup-failed'
+      }
+      return 'interrupted'
     }
     this.lastError = null
     this.startStableResetTimer()
@@ -477,6 +492,8 @@ class ConnectionSupervisorImpl<Session> implements ConnectionSupervisor<Session>
   private async monitorConnection(): Promise<'retry' | 'stopped' | 'terminal'> {
     const connection = this.activeConnection
     if (connection === null) return 'terminal'
+    if (this.stopRequested) return 'stopped'
+    if (this.paused || this.pauseCleanupRequired) return 'retry'
     const iterator = connection.lifecycleEvents[Symbol.asyncIterator]()
     this.activeIterator = iterator
     while (!this.stopRequested) {
@@ -715,13 +732,34 @@ class ConnectionSupervisorImpl<Session> implements ConnectionSupervisor<Session>
 
   private async awaitLateConfigureCleanup(): Promise<boolean> {
     if (this.lateConfigureBarrier === null) return true
-    const cleanup = await this.lateConfigureBarrier
+    const cleanupBarrier = this.lateConfigureBarrier
+    if (!(await this.awaitBarrierOrStop(cleanupBarrier))) return false
+    const cleanup = await cleanupBarrier
     if (cleanup.state === 'release-failed') {
       this.lastError = toBleError(cleanup.failures[0]?.error)
       this.stopRequested = true
       return false
     }
     return true
+  }
+
+  private async awaitBarrierOrStop<Value>(barrier: Promise<Value>): Promise<boolean> {
+    if (this.supervisorAbort.signal.aborted) return false
+    return new Promise(resolve => {
+      let settled = false
+      const finish = (completed: boolean): void => {
+        if (settled) return
+        settled = true
+        this.supervisorAbort.signal.removeEventListener('abort', onAbort)
+        resolve(completed)
+      }
+      const onAbort = (): void => finish(false)
+      this.supervisorAbort.signal.addEventListener('abort', onAbort, { once: true })
+      barrier.then(
+        () => finish(true),
+        () => finish(true)
+      )
+    })
   }
 
   private waitForWake(): Promise<void> {
@@ -800,7 +838,6 @@ function isRetryableConnectionError(error: BleError): boolean {
     error.code === 'backend.reset' ||
     error.code === 'connection.failed' ||
     error.code === 'connection.lost' ||
-    error.code === 'connection.stale' ||
     error.code === 'operation.timed-out' ||
     error.code === 'platform.failure' ||
     error.code === 'platform.transport'

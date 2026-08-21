@@ -222,7 +222,27 @@ describe('public connection supervisor', () => {
           id: 'peer-equivalent',
           name: null,
           rssi: null,
-          reference: { version: 1, backendId: 'test', scope: 'system', opaqueId: 'peer-equivalent' },
+          reference: null,
+          sources: [],
+          lastAdvertisement: null
+        },
+        { retry: { initialDelayMs: 1, maximumDelayMs: 1, multiplier: 1, jitter: 0 } }
+      )
+    ).toThrow('connection.already-owned')
+
+    const bleReference = manager(connection())
+    const reference = { version: 1, backendId: 'test', scope: 'system', opaqueId: 'canonical-peer' }
+    createConnectionSupervisor(bleReference, reference, {
+      retry: { initialDelayMs: 1, maximumDelayMs: 1, multiplier: 1, jitter: 0 }
+    })
+    expect(() =>
+      createConnectionSupervisor(
+        bleReference,
+        {
+          id: 'display-name',
+          name: 'Display name',
+          rssi: null,
+          reference,
           sources: [],
           lastAdvertisement: null
         },
@@ -321,6 +341,20 @@ describe('public connection supervisor', () => {
     await expect(supervisor.stop()).resolves.toMatchObject({ state: 'released' })
   })
 
+  test('stop settles when pause has deferred a still-pending gate', async () => {
+    const gatePending = deferred()
+    const ble = manager(connection())
+    const supervisor = createConnectionSupervisor(ble, 'peer-paused-stop', {
+      retry: { initialDelayMs: 1, maximumDelayMs: 1, multiplier: 1, jitter: 0 },
+      gate: () => gatePending.promise
+    })
+
+    supervisor.start()
+    await wait(1)
+    await supervisor.pause('stop-requested')
+    await expect(supervisor.stop()).resolves.toMatchObject({ state: 'released' })
+  })
+
   test('stops after a non-retryable connection error without another attempt', async () => {
     const ble = manager(null)
     ble.connect.mockRejectedValue(new BleError('permission.denied', 'connection', 'test.denied'))
@@ -333,6 +367,38 @@ describe('public connection supervisor', () => {
 
     expect(ble.connect).toHaveBeenCalledTimes(1)
     expect(supervisor.snapshot.state).toBe('stopped')
+  })
+
+  test('does not reconnect after a stale connection error', async () => {
+    const ble = manager(null)
+    ble.connect.mockRejectedValue(new BleError('connection.stale', 'connection', 'test.stale'))
+    const supervisor = createConnectionSupervisor(ble, 'peer-stale', {
+      retry: { initialDelayMs: 0, maximumDelayMs: 0, multiplier: 1, jitter: 0, maximumAttempts: 3 }
+    })
+
+    supervisor.start()
+    await wait()
+
+    expect(ble.connect).toHaveBeenCalledTimes(1)
+    expect(supervisor.snapshot.state).toBe('stopped')
+  })
+
+  test('does not reconnect after configure fails with a released connection', async () => {
+    const current = connection()
+    const ble = manager(current)
+    const supervisor = createConnectionSupervisor(ble, 'peer-configure-failure', {
+      retry: { initialDelayMs: 0, maximumDelayMs: 0, multiplier: 1, jitter: 0, maximumAttempts: 3 },
+      configure: async () => {
+        throw new Error('configuration failed')
+      }
+    })
+
+    supervisor.start()
+    await wait()
+
+    expect(ble.connect).toHaveBeenCalledTimes(1)
+    expect(supervisor.snapshot.state).toBe('stopped')
+    await expect(supervisor.stop()).resolves.toMatchObject({ state: 'released' })
   })
 
   test('retains a late configure-session disposal failure after stop finalized', async () => {
