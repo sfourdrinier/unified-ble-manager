@@ -1,6 +1,7 @@
 // __tests__/package-surface/fixtures/public-surface.ts
 
 import type { WebContents } from 'electron'
+import type { PeerDirectoryBackend, PeerReference as BackendPeerReference } from 'unified-ble-manager/backend-sdk'
 // eslint-disable-next-line @typescript-eslint/no-unused-vars -- fixture verifies these are importable from application root
 import type {
   BlePeer,
@@ -43,6 +44,10 @@ declare const publicPeer: BlePeer
 void publicPeer.reference
 void publicPeer.sources
 void publicPeer.lastAdvertisement
+declare const backendReference: BackendPeerReference
+declare const backendPeers: PeerDirectoryBackend<string>
+void backendReference
+void backendPeers
 declare const publicDatabase: GattDatabase
 declare const publicService: GattService
 declare const publicCharacteristic: GattCharacteristic
