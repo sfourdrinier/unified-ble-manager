@@ -461,7 +461,9 @@ export class IpcConnection {
       .subscribeConnectionEvents(this.handle, this.identityPayload())
       .then(subscription => {
         this.lifecycleSubscription = subscription
-        return this.pumpLifecycleEvents(subscription)
+        this.pumpLifecycleEvents(subscription).catch(() => {
+          this.lifecycleEvents.closeWithReason('source-failed')
+        })
       })
       .catch(() => {
         this.lifecycleEvents.closeWithReason('source-failed')
@@ -519,6 +521,9 @@ export class IpcConnection {
   }
 
   async disconnect(): Promise<CleanupRecord> {
+    if (this.lifecycleAdmission !== null) {
+      await this.lifecycleAdmission
+    }
     if (this.lifecycleSubscription !== null) {
       await this.lifecycleSubscription.unsubscribe()
       this.lifecycleSubscription = null
@@ -549,6 +554,7 @@ export class IpcGattDatabase {
     private readonly manager: IpcBleManager,
     readonly connection: IpcConnection,
     readonly handle: string,
+    readonly databaseId: string,
     readonly databaseGeneration: string,
     characteristicRecords: readonly IpcCharacteristicRecord[],
     descriptorRecords: readonly IpcDescriptorRecord[]
@@ -568,6 +574,7 @@ export class IpcGattDatabase {
       manager,
       connection,
       requiredString(payload, 'handle', 'ipc-manager.gatt-database'),
+      requiredString(payload, 'databaseId', 'ipc-manager.gatt-database'),
       requiredString(payload, 'databaseGeneration', 'ipc-manager.gatt-database'),
       characteristics,
       descriptors
@@ -585,7 +592,7 @@ export class IpcGattDatabase {
       Object.freeze({
         ...payload,
         databaseHandle: this.handle,
-        databaseId: this.handle,
+        databaseId: this.databaseId,
         databaseGeneration: this.databaseGeneration,
         ...this.connectionIdentityPayload()
       }),
@@ -614,7 +621,7 @@ export class IpcGattDatabase {
   }
 
   get path(): PortableDatabasePath {
-    return ipcDatabasePath(this.manager.bootstrap.attachment, this.connection, this.handle, this.databaseGeneration)
+    return ipcDatabasePath(this.manager.bootstrap.attachment, this.connection, this.databaseId, this.databaseGeneration)
   }
 
   monotonicNow(): number {

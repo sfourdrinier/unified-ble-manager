@@ -388,10 +388,19 @@ impl BtleplugDispatcher {
         )?;
         let command = required_string(&envelope, "command", "tauri.route-command")?;
         let correlation = required_string(&envelope, "correlation", "tauri.route-correlation")?;
-        let payload = into_object(
+        let mut payload = into_object(
             required_value(&envelope, "payload", "tauri.route-payload")?.clone(),
             "tauri.route-payload",
         )?;
+        let expected_lease = required_lease(&envelope, "tauri.route-lease")?;
+        payload.insert(
+            "__expectedLeaseId".to_owned(),
+            string(expected_lease.0.clone()),
+        );
+        payload.insert(
+            "__expectedLeaseGeneration".to_owned(),
+            string(expected_lease.1.clone()),
+        );
         let binary_payload = match envelope.get("binaryPayload") {
             Some(IpcValue::Bytes(bytes)) => Some(bytes.clone()),
             Some(IpcValue::Null) | None => None,
@@ -446,6 +455,7 @@ impl BtleplugDispatcher {
         let operation_dispatcher = self.clone();
         let operation_caller = caller.clone();
         let operation_command = command.clone();
+        let quarantine_lease = expected_lease.clone();
         let mut operation = tauri::async_runtime::spawn(async move {
             operation_dispatcher
                 .execute(
@@ -472,6 +482,7 @@ impl BtleplugDispatcher {
                                 &quarantine_caller,
                                 &quarantine_command,
                                 &late_payload,
+                                &quarantine_lease,
                             )
                             .await;
                     }
@@ -485,6 +496,10 @@ impl BtleplugDispatcher {
             .await
             .callers
             .get_mut(&caller_key(&caller))
+            .filter(|caller_state| {
+                caller_state.lease_id == expected_lease.0
+                    && caller_state.lease_generation == expected_lease.1
+            })
         {
             caller_state.operations.remove(&correlation);
         }
@@ -496,6 +511,7 @@ impl BtleplugDispatcher {
         caller: &AuthenticatedCaller,
         command: &str,
         payload: &IpcValue,
+        expected_lease: &(String, String),
     ) {
         let IpcValue::Object(payload) = payload else {
             return;
@@ -505,7 +521,11 @@ impl BtleplugDispatcher {
                 if let Some(caller_state) =
                     self.inner.lock().await.callers.get_mut(&caller_key(caller))
                 {
-                    caller_state.databases.remove(handle);
+                    if caller_state.lease_id == expected_lease.0
+                        && caller_state.lease_generation == expected_lease.1
+                    {
+                        caller_state.databases.remove(handle);
+                    }
                 }
             }
             return;
@@ -531,7 +551,15 @@ impl BtleplugDispatcher {
             }),
             _ => None,
         };
-        if let Some((cleanup_command, IpcValue::Object(cleanup_payload))) = cleanup {
+        if let Some((cleanup_command, IpcValue::Object(mut cleanup_payload))) = cleanup {
+            cleanup_payload.insert(
+                "__expectedLeaseId".to_owned(),
+                string(expected_lease.0.clone()),
+            );
+            cleanup_payload.insert(
+                "__expectedLeaseGeneration".to_owned(),
+                string(expected_lease.1.clone()),
+            );
             self.execute(caller, cleanup_command, cleanup_payload, None)
                 .await
                 .ok();
@@ -609,6 +637,30 @@ impl BtleplugDispatcher {
         Ok(())
     }
 
+    async fn validate_expected_lease(
+        &self,
+        caller: &AuthenticatedCaller,
+        payload: &BTreeMap<String, IpcValue>,
+    ) -> Result<(), DispatchError> {
+        let expected_id = required_string(payload, "__expectedLeaseId", "tauri.execute-lease")?;
+        let expected_generation =
+            required_string(payload, "__expectedLeaseGeneration", "tauri.execute-lease")?;
+        let state = self.inner.lock().await;
+        let caller_state = state.callers.get(&caller_key(caller)).ok_or_else(|| {
+            DispatchError::new("ownership.denied", "ipc", "tauri.execute-lease-owner")
+        })?;
+        if caller_state.lease_id != expected_id
+            || caller_state.lease_generation != expected_generation
+        {
+            return Err(DispatchError::new(
+                "ownership.denied",
+                "ipc",
+                "tauri.execute-lease-stale",
+            ));
+        }
+        Ok(())
+    }
+
     async fn execute(
         &self,
         caller: &AuthenticatedCaller,
@@ -616,6 +668,7 @@ impl BtleplugDispatcher {
         payload: BTreeMap<String, IpcValue>,
         binary_payload: Option<Vec<u8>>,
     ) -> Result<IpcValue, DispatchError> {
+        self.validate_expected_lease(caller, &payload).await?;
         match command {
             "adapter.state" => self.adapter_state().await,
             "scan.start" => self.start_scan(caller, payload).await,
@@ -840,6 +893,26 @@ impl BtleplugDispatcher {
             }
         }
         let mut state = self.inner.lock().await;
+        let scan_owner_matches = state.scan_owner.as_deref() == Some(&key);
+        let stale_lease = state
+            .callers
+            .get(&key)
+            .is_some_and(|caller_state| !expected_lease_matches(caller_state, &payload));
+        if stale_lease {
+            task.abort();
+            if scan_owner_matches {
+                state.scan_owner = None;
+            }
+            drop(state);
+            if scan_owner_matches {
+                adapter.stop_scan().await.ok();
+            }
+            return Err(DispatchError::new(
+                "ownership.denied",
+                "scan",
+                "tauri.scan-stale-lease",
+            ));
+        }
         let Some(caller_state) = state.callers.get_mut(&key) else {
             task.abort();
             if state.scan_owner.as_deref() == Some(&key) {
@@ -970,6 +1043,10 @@ impl BtleplugDispatcher {
         let connection_id = self.id("connection-id");
         let connection_generation = self.id("connection-generation");
         let mut state = self.inner.lock().await;
+        let peer_owner_matches = state
+            .peer_owners
+            .get(&peer_id)
+            .is_some_and(|owner| owner == &key);
         let Some(caller_state) = state.callers.get_mut(&key) else {
             state.peer_owners.remove(&peer_id);
             drop(state);
@@ -980,6 +1057,19 @@ impl BtleplugDispatcher {
                 "tauri.connect-owner",
             ));
         };
+        if !expected_lease_matches(caller_state, &payload) {
+            let _ = caller_state;
+            if peer_owner_matches {
+                state.peer_owners.remove(&peer_id);
+            }
+            drop(state);
+            peripheral.disconnect().await.ok();
+            return Err(DispatchError::new(
+                "ownership.denied",
+                "connection",
+                "tauri.connect-stale-lease",
+            ));
+        }
         caller_state.connections.insert(
             handle.clone(),
             ConnectionResource {
@@ -1311,6 +1401,7 @@ impl BtleplugDispatcher {
                 .platform(error.to_string())
         })?;
         let database_handle = self.id("database");
+        let database_id = self.id("database-id");
         let database_generation = self.id("database-generation");
         let mut characteristic_map = HashMap::new();
         let mut descriptor_map = HashMap::new();
@@ -1356,11 +1447,18 @@ impl BtleplugDispatcher {
         let caller_state = state.callers.get_mut(&caller_key(caller)).ok_or_else(|| {
             DispatchError::new("ownership.denied", "gatt", "tauri.discover-owner")
         })?;
+        if !expected_lease_matches(caller_state, &payload) {
+            return Err(DispatchError::new(
+                "ownership.denied",
+                "gatt",
+                "tauri.discover-stale-lease",
+            ));
+        }
         caller_state.databases.insert(
             database_handle.clone(),
             DatabaseResource {
                 connection_handle,
-                database_id: database_handle.clone(),
+                database_id: database_id.clone(),
                 database_generation: database_generation.clone(),
                 characteristics: characteristic_map,
                 descriptors: descriptor_map,
@@ -1368,6 +1466,7 @@ impl BtleplugDispatcher {
         );
         Ok(object([
             ("handle", string(database_handle)),
+            ("databaseId", string(database_id)),
             ("databaseGeneration", string(database_generation)),
             ("characteristics", IpcValue::Array(characteristic_records)),
             ("descriptors", IpcValue::Array(descriptor_records)),
@@ -1513,6 +1612,17 @@ impl BtleplugDispatcher {
                 "tauri.subscribe-owner",
             ));
         };
+        if !expected_lease_matches(caller_state, &payload) {
+            task.abort();
+            let _ = caller_state;
+            drop(state);
+            peripheral.unsubscribe(&characteristic).await.ok();
+            return Err(DispatchError::new(
+                "ownership.denied",
+                "gatt",
+                "tauri.subscribe-stale-lease",
+            ));
+        }
         caller_state.subscriptions.insert(
             handle.clone(),
             SubscriptionResource {
@@ -2260,6 +2370,17 @@ fn validate_lease(
         return Err(DispatchError::new("ownership.denied", "ipc", operation));
     }
     Ok(())
+}
+
+fn expected_lease_matches(caller: &CallerState, payload: &BTreeMap<String, IpcValue>) -> bool {
+    payload
+        .get("__expectedLeaseId")
+        .and_then(as_string)
+        .is_some_and(|lease_id| lease_id == caller.lease_id)
+        && payload
+            .get("__expectedLeaseGeneration")
+            .and_then(as_string)
+            .is_some_and(|generation| generation == caller.lease_generation)
 }
 
 async fn open_btleplug_adapter(

@@ -175,6 +175,7 @@ describe('Tauri v2 public manager', () => {
         'connection.events.unsubscribe': { state: 'released', failures: [] },
         'gatt.discover': {
           handle: 'database-1',
+          databaseId: 'database-id-1',
           databaseGeneration: 'database-generation-1',
           characteristics: [
             {
@@ -236,6 +237,8 @@ describe('Tauri v2 public manager', () => {
       }
     })
     const database = await connection.discover()
+    expect(database.path.databaseId).toBe('database-id-1')
+    expect(database.path.databaseId).not.toBe(database.handle)
     expect(database.path.databaseGeneration).toBe('database-generation-1')
     expect(database.path.attachment.attachmentId).toBe('tauri-attachment-1')
     expect(database.path.attachment.adapter.adapterId).toBe('tauri-adapter-1')
@@ -266,7 +269,7 @@ describe('Tauri v2 public manager', () => {
     })
     const gattWriteRequest = invoke.mock.calls.find(([, args]) => args.request.envelope?.command === 'gatt.write')
     expect(gattWriteRequest?.[1].request.envelope.payload).toMatchObject({
-      databaseId: 'database-1',
+      databaseId: 'database-id-1',
       databaseGeneration: 'database-generation-1',
       connectionId: 'connection-id-1',
       ownerLeaseId: 'tauri-lease-1',
@@ -371,6 +374,7 @@ describe('Tauri v2 public manager', () => {
           kind: 'route',
           payload: {
             handle: 'database-receipt',
+            databaseId: 'database-id-receipt',
             databaseGeneration: 'database-generation-receipt',
             characteristics: [
               {
