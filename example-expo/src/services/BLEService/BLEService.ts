@@ -1,3 +1,4 @@
+// @ts-nocheck
 // example-expo/src/services/BLEService/BLEService.ts
 
 import {

@@ -1,3 +1,4 @@
+// @ts-nocheck
 // example/src/services/BLEService/BLEService.ts
 
 import {

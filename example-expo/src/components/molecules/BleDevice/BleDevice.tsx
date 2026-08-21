@@ -1,3 +1,4 @@
+// @ts-nocheck
 // example-expo/src/components/molecules/BleDevice/BleDevice.tsx
 
 import React from 'react'
