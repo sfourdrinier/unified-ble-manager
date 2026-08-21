@@ -229,9 +229,7 @@ describe('Tauri v2 public manager', () => {
     const manager = await createTauriBleManagerWithEnvironment({ invoke, Channel: FakeChannel })
 
     await expect(manager.adapterState()).resolves.toMatchObject({ power: 'on' })
-    const scan = await manager.scan({
-      filter: { serviceUuids: ['180d'], manufacturerData: [], localNamePrefix: null }
-    })
+    const scan = await manager.scan({})
     const observation = scan.observations[Symbol.asyncIterator]().next()
     streamValue('scan-1', advertisement('polar-h10', 'Polar H10', -47))
     await expect(observation).resolves.toMatchObject({ value: { kind: 'value', value: { peerId: 'polar-h10' } } })
@@ -666,15 +664,30 @@ describe('Tauri v2 public manager', () => {
       if (args.request.kind === 'bootstrap') return { kind: 'bootstrap', bootstrap: bootstrap() }
       if (args.request.kind === 'event.ack') return { kind: 'event.ack' }
       if (args.request.kind === 'release') return { kind: 'release', cleanup: { state: 'released', failures: [] } }
+      if (args.request.envelope?.command === 'scan.stop')
+        return { kind: 'route', payload: { state: 'released', failures: [] } }
       return { kind: 'route', payload: { handle: 'scan-should-not-start' } }
     })
     const { createTauriBleManagerWithEnvironment } = require('../src/tauri')
     const manager = await createTauriBleManagerWithEnvironment({ invoke, Channel: FakeChannel })
 
+    const latest = await manager.scan({ delivery: 'latest' })
+    const scanStart = invoke.mock.calls.find(([, args]) => args.request.envelope?.command === 'scan.start')
+    expect(scanStart?.[1].request.envelope.payload).toMatchObject({
+      streamItemCapacity: 1,
+      streamOverflowPolicy: 'drop-oldest'
+    })
+    await latest.stop()
+    const scanStartCount = invoke.mock.calls.filter(
+      ([, args]) => args.request.envelope?.command === 'scan.start'
+    ).length
+
     for (const filter of [{ serviceUuids: 'not-an-array' }, [], new Date()]) {
       await expect(manager.scan({ filter })).rejects.toMatchObject({ code: 'argument.invalid' })
     }
-    expect(invoke.mock.calls.some(([, args]) => args.request.envelope?.command === 'scan.start')).toBe(false)
+    expect(invoke.mock.calls.filter(([, args]) => args.request.envelope?.command === 'scan.start')).toHaveLength(
+      scanStartCount
+    )
     await manager.destroy()
   })
 })

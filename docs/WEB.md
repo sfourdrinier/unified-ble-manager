@@ -6,29 +6,27 @@ Use `unified-ble-manager/web` in a secure context (HTTPS or localhost) from a us
 
 **Current package:** `4.0.0-rc.1`. The backend is Experimental until artifact-bound physical-hardware validation says otherwise. See [`PLATFORMS.md`](PLATFORMS.md).
 
-## Create a matched chooser and manager
+## Create the manager
 
 ```ts
-import { createNavigatorWebBleManager } from 'unified-ble-manager/web'
+import { createWebBleManager } from 'unified-ble-manager/web'
 
-const session = await createNavigatorWebBleManager({
-  clientId: 'web-app-ble-client',
-  managerId: 'web-app-ble-manager'
-})
+const ble = await createWebBleManager()
 ```
 
-Call `session.chooser.choose()` from a click handler. Chromium's
+Call `ble.choose()` from a click handler. Chromium's
 `navigator.bluetooth.getDevices()` can return previously granted devices; this
 package does not wrap that browser API. Iframes need the `bluetooth`
-Permissions Policy. Then run a finite `read` or `firstNotification` and
-`throwIfCleanupFailed(await session.manager.destroy(), 'manager.destroy')`.
+Permissions Policy. Then connect and use the generation-bound GATT objects.
 
 Inject `environment` only for tests or unusual hosts:
 
 ```ts
+import { createWebBleManagerWithEnvironment } from 'unified-ble-manager/web'
+
 const timers = new Map<object, ReturnType<typeof window.setTimeout>>()
 
-const session = await createNavigatorWebBleManager({
+const ble = await createWebBleManagerWithEnvironment({
   environment: {
     implementationVersion: '1',
     browserEngine: navigator.userAgent,
@@ -71,45 +69,37 @@ const session = await createNavigatorWebBleManager({
         window.removeEventListener('pagehide', onPageHide)
       }
     }
-  },
-  clientId: 'web-app-ble-client',
-  managerId: 'web-app-ble-manager'
+  }
 })
 ```
 
-`session.manager` is the same host-neutral `BleManager` as other hosts. `session.chooser` is the browser picker.
+`ble` is the same host-neutral `BleManager` as other hosts. `ble.choose()` is the browser picker.
 
 ## Choose a device, then connect
 
-Call `chooser.choose()` from a click or other transient user activation. Then use the normal GATT loop.
+Call `ble.choose()` from a click or other transient user activation. Then use the normal GATT loop.
 
 ```ts
 import { HEART_RATE_SERVICE } from 'unified-ble-manager/profiles/heart-rate'
 import { BATTERY_SERVICE } from 'unified-ble-manager/profiles/battery-service'
-import { deadline } from 'unified-ble-manager'
+import { createWebBleManager } from 'unified-ble-manager/web'
 
-const until = deadline(session.manager.monotonicNow() + 20_000)
-const op = { signal: new AbortController().signal, deadline: until }
+const ble = await createWebBleManager()
 
-const selection = await session.chooser.choose(
-  {
-    filters: [{ serviceUuids: [HEART_RATE_SERVICE], manufacturerData: [], localNamePrefix: null }],
-    acceptAllDevices: false,
-    optionalServices: [HEART_RATE_SERVICE, BATTERY_SERVICE]
-  },
-  op
-)
+const peer = await ble.choose({ services: [HEART_RATE_SERVICE, BATTERY_SERVICE], timeoutMs: 20_000 })
 
-const connection = await session.manager.connect(selection.peerId, op)
-const database = await connection.discover(op)
+const connection = await ble.connect(peer, { timeoutMs: 15_000 })
+const database = await connection.discover({ timeoutMs: 15_000 })
+const battery = database.characteristic(BATTERY_SERVICE, '2A19')
+const bytes = await battery.read({ timeoutMs: 10_000 })
 ```
 
-`session.manager.scan()` fails with `capability.unsupported`. Keep a real chooser button.
+`ble.scan()` fails with `capability.unsupported`. Keep a real chooser button.
 
 When the page session ends:
 
 ```ts
-await session.manager.destroy()
+await ble.destroy()
 ```
 
 A working Chrome harness lives in [`example-web/`](../example-web/). It is a live check, not a support claim.

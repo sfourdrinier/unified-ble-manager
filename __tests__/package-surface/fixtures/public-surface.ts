@@ -17,7 +17,15 @@ import type {
   GattSubscribeOptions,
   OperationOptions,
   BleManagerCreateOptions,
-  StreamPreset
+  StreamPreset,
+  ScanQuery,
+  ScanClause,
+  FindOptions,
+  ChooseOptions,
+  BleDiscoveryInfo,
+  BleAdapter,
+  AdapterReadinessOptions,
+  BleDiagnostics
 } from 'unified-ble-manager'
 // Ensure root types are considered used for TS noUnusedLocals
 type _RootImportCheck = BlePeer &
@@ -40,6 +48,14 @@ declare const gattSnapshot: GattDatabaseSnapshot
 declare const gattPathSelector: GattPathSelector
 declare const gattWriteOptions: GattWriteOptions
 declare const gattSubscribeOptions: GattSubscribeOptions
+declare const scanQuery: ScanQuery
+declare const scanClause: ScanClause
+declare const findOptions: FindOptions
+declare const chooseOptions: ChooseOptions
+declare const discoveryInfo: BleDiscoveryInfo
+declare const adapter: BleAdapter
+declare const readinessOptions: AdapterReadinessOptions
+declare const diagnostics: BleDiagnostics
 void publicDatabase.service('180f', { occurrence: 0 })
 void publicDatabase.characteristic('180f', '2a19', gattPathSelector)
 void publicService.characteristic('2a19', { occurrence: 0 })
@@ -50,6 +66,13 @@ void publicCharacteristic.subscribe(gattSubscribeOptions)
 void publicDescriptor.read()
 void publicSubscription.values
 void gattSnapshot.services
+void scanQuery
+void scanClause
+void findOptions
+void chooseOptions
+void discoveryInfo
+void adapter.waitUntilReady(readinessOptions)
+void diagnostics.snapshot()
 import {
   BleManager,
   capacity,

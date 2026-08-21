@@ -24,16 +24,18 @@ import { createTauriBleManager } from 'unified-ble-manager/tauri'
 
 const manager = await createTauriBleManager()
 const scan = await manager.scan({
-  filter: { serviceUuids: ['180d'], manufacturerData: [], localNamePrefix: null }
+  query: { anyOf: [{ services: { any: ['180d'] } }] },
+  duplicates: 'coalesced',
+  delivery: 'balanced'
 })
 // consume scan.observations (value / overflow / terminal), then:
 await scan.stop()
 await manager.destroy()
 ```
 
-`BleManager.scan` accepts the canonical filter shape plus `signal`, `timeoutMs`, and a stream preset. Native filters are AND predicates: a `localNamePrefix` drops ads that omit a local name, which is common on CoreBluetooth.
+`BleManager.scan` accepts the frozen `ScanQuery` Boolean algebra plus `signal`, `timeoutMs`, duplicate policy, and a stream preset. Query matching is performed by the shared portable matcher; native projections are only safe broad prefilters.
 
-Remote streams use a drop-oldest policy with item capacity 128 and a 512 KiB byte bound. Overflow is a stream item, not a silent loss. GATT object parity and host-issued capability snapshots remain part of the in-progress PR2 migration.
+Remote streams preserve bounded delivery and overflow notices. GATT objects are immutable, generation-bound views; btleplug reports notification delivery as unknown when it cannot select notification versus indication.
 
 Filter in the webview with `advertisementPassesViewFilter` (name or peer id, min/max RSSI, service UUID, manufacturer company id, named-only). Observations include `serviceUuids`, `manufacturerData`, `txPowerLevel`, and `serviceData` in addition to `peerId` / `localName` / `rssi`.
 

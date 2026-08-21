@@ -14,7 +14,7 @@ import type {
 } from '../manager/consumer-handles'
 import { normalizeOperationOptions, type OperationOptions } from './operation-options'
 import { resolveStreamPreset, type StreamPreset } from './stream-presets'
-import { rehydratePublicError } from './error-bridge'
+import { rehydratePublicError, runWithCleanup } from './error-bridge'
 
 export type { GattAccessRequirements, GattCharacteristicPropertyAvailability } from '../backend-contract/gatt'
 
@@ -128,6 +128,7 @@ export interface GattCharacteristic {
   write(value: Uint8Array, options?: GattWriteOptions): Promise<GattWriteReceipt>
   writeLong(value: Uint8Array, options?: LongWriteOptions): Promise<GattLongWriteReceipt>
   subscribe(options?: GattSubscribeOptions): Promise<GattSubscription>
+  withSubscription<T>(options: GattSubscribeOptions, action: (subscription: GattSubscription) => Promise<T>): Promise<T>
   descriptor(uuid: UuidInput, selector?: OccurrenceSelector): GattDescriptor
 }
 
@@ -357,6 +358,17 @@ class PublicGattCharacteristic implements GattCharacteristic {
         remove: () => rehydrateCleanup(subscription.remove())
       })
     })
+  }
+
+  async withSubscription<T>(
+    options: GattSubscribeOptions,
+    action: (subscription: GattSubscription) => Promise<T>
+  ): Promise<T> {
+    const subscription = await this.subscribe(options)
+    return runWithCleanup(
+      () => action(subscription),
+      () => subscription.remove()
+    )
   }
 
   descriptor(uuid: UuidInput, selector: OccurrenceSelector = {}): GattDescriptor {

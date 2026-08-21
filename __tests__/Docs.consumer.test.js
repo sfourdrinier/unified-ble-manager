@@ -331,8 +331,12 @@ describe('consumer documentation matches the published package', () => {
     expect(release).toContain('npm trusted publishing/OIDC')
     expect(release).toContain('publishes with provenance')
     expect(platforms).toContain('`unified-ble-manager@4.0.0` is the first **stable package/API release**')
-    expect(platforms).toContain('WinRT compilation or ABI loading, for example, is not by itself a Windows live-radio claim')
-    expect(platforms).toContain('Meta Quest and the controllable nRF52840 fault-injection controller remain deferred to 4.1')
+    expect(platforms).toContain(
+      'WinRT compilation or ABI loading, for example, is not by itself a Windows live-radio claim'
+    )
+    expect(platforms).toContain(
+      'Meta Quest and the controllable nRF52840 fault-injection controller remain deferred to 4.1'
+    )
   })
 
   test('platform pages make instantiated backend evidence, not static source behavior, authoritative', () => {
@@ -385,7 +389,9 @@ describe('consumer documentation matches the published package', () => {
     expect(readme).toContain('DiscoveredGattDatabase')
     expect(readme).toContain('Subscription')
     expect(teachingLead).not.toMatch(/alpha\.\d+/i)
-    expect(readme).not.toMatch(/import `unified-ble-manager\/codecs` only when an external protocol requires text encoding/)
+    expect(readme).not.toMatch(
+      /import `unified-ble-manager\/codecs` only when an external protocol requires text encoding/
+    )
   })
 
   test('consumer teaching pages match current public types and do not teach stale claims', () => {
@@ -430,7 +436,7 @@ describe('consumer documentation matches the published package', () => {
     expect(gettingStarted).toContain('hostSessionScope')
     expect(gettingStarted).toContain(packageVersion)
     expect(web).not.toMatch(/npm'?s `next` tag/)
-    expect(web).toContain('chooser.choose')
+    expect(web).toContain('ble.choose')
     expect(node).toContain('createBleManagerFromProvider')
     expect(tauri).toContain('createTauriBleManager()')
     expect(tauri).toContain('returns the public `BleManager`')

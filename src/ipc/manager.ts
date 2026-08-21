@@ -191,13 +191,26 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
         serviceUuids: Object.freeze([...(options.serviceUuids ?? [])]),
         manufacturerData: Object.freeze(manufacturerData),
         localNamePrefix: options.localNamePrefix ?? null,
-        deadline: operationDeadline(options)
+        deadline: operationDeadline(options),
+        ...(options.stream === undefined
+          ? {}
+          : {
+              streamItemCapacity: options.stream.itemCapacity,
+              streamByteCapacity: options.stream.byteCapacity,
+              streamReservedControlCapacity: options.stream.reservedControlCapacity,
+              streamOverflowPolicy: options.stream.overflowPolicy
+            })
       }),
       null,
       options.signal
     )
     const handle = requiredString(payload, 'handle', 'ipc-manager.scan')
-    const observations = this.registerStream<IpcAdvertisement>(handle, isIpcAdvertisement)
+    const observations = this.registerStream<IpcAdvertisement>(
+      handle,
+      isIpcAdvertisement,
+      toRemoteStreamLimits(options.stream),
+      options.stream?.overflowPolicy
+    )
     return new IpcScanSession(this, handle, observations)
   }
 
