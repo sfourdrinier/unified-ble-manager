@@ -1,7 +1,7 @@
 // src/backend-contract/capabilities.ts
 
 import { contractError } from './errors'
-import type { SerializableRecord, VersionRange } from './primitives'
+import { version, versionRange, type SerializableRecord, type VersionRange } from './primitives'
 
 /** Canonical built-in capability identifiers. Third-party identifiers remain open namespaced strings. */
 export const BUILT_IN_FEATURE_IDS = Object.freeze({
@@ -284,10 +284,46 @@ export function snapshotCapabilityDescriptors(
   if (ids.size !== snapshots.length || backendGeneration.length === 0) {
     throw contractError('protocol.violation', 'capability', 'snapshotCapabilityDescriptors')
   }
+  const complete = [...snapshots]
+  for (const entry of BUILT_IN_FEATURE_CATALOG) {
+    if (ids.has(entry.id)) continue
+    complete.push(unsupportedBuiltInDescriptor(entry.id, entry.requiredTckSuiteId))
+  }
   return Object.freeze({
     schemaVersion: 2,
     backendGeneration,
-    descriptors: Object.freeze(snapshots)
+    descriptors: Object.freeze(complete)
+  })
+}
+
+function unsupportedBuiltInDescriptor(id: BuiltInFeatureId, suiteId: string): CapabilityDescriptor {
+  const schemaRange = versionRange(version('capability-schema', 1), version('capability-schema', 1))
+  const scenarioId = 'capability.truth-limits-evidence-and-binding'
+  const limitation = Object.freeze({
+    code: 'not-implemented',
+    explanation: 'The instantiated host did not register this capability.',
+    affectedGuarantee: 'support'
+  })
+  return Object.freeze({
+    id,
+    state: 'unsupported',
+    selectedSchemaRange: schemaRange,
+    implementationOrigin: 'backend-native',
+    tck: Object.freeze({
+      suiteId,
+      requiredScenarioIds: Object.freeze([scenarioId]),
+      contractRange: schemaRange
+    }),
+    evidence: Object.freeze({
+      receiptId: `capability-missing-${id}`,
+      evidenceLevel: 'blocked',
+      implementationVersion: 'unknown',
+      sourceDigest: 'capability-catalog-completion-v2',
+      scenarioIds: Object.freeze([scenarioId]),
+      limitations: Object.freeze([limitation])
+    }),
+    limitations: Object.freeze([limitation]),
+    limits: Object.freeze({ availability: Object.freeze({ maximum: 1, minimum: null, unit: 'boolean' }) })
   })
 }
 
