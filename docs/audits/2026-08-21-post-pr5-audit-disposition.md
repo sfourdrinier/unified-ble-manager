@@ -2,7 +2,8 @@
 
 Source audit: `~/Downloads/unified-ble-manager-post-pr5-audit.md`
 Audit snapshot: `bc4a347c496e994e97cec9da06e2c0a6223a72f8`
-Current release source: `main` / `ab331517083c5a580894adb3d79d075f299c9db5` / `v4.0.0-rc.2`
+RC2 release snapshot: `main` / `ab331517083c5a580894adb3d79d075f299c9db5` / `v4.0.0-rc.2`
+Current PR6 audit source: `feat/4.0-pr6-audit-closure` / `01e50ae69b9315c7915234df141568f10aebee77`
 
 ## Release decision
 
@@ -73,13 +74,13 @@ No P1 from this ledger may remain silently deferred. P2 findings may remain defe
 
 Every deferred finding must become a linked blocking issue with one target PR, one acceptance test, and one owner. The current deferred register is:
 
-| Finding | Issue | Owner | Target |
-| --- | --- | --- | --- |
-| F-019 | [#34](https://github.com/sfourdrinier/unified-ble-manager/issues/34) | `sfourdrinier` | PR10 |
-| D-004, D-014 | [#35](https://github.com/sfourdrinier/unified-ble-manager/issues/35) | `sfourdrinier` | PR10 |
-| F-014 | [#36](https://github.com/sfourdrinier/unified-ble-manager/issues/36) | `sfourdrinier` | PR7 |
-| F-016 | [#37](https://github.com/sfourdrinier/unified-ble-manager/issues/37) | `sfourdrinier` | PR9 |
-| D-013 | [#38](https://github.com/sfourdrinier/unified-ble-manager/issues/38) | `sfourdrinier` | PR11 |
+| Finding | Issue | Owner | Target | Acceptance test / evidence |
+| --- | --- | --- | --- | --- |
+| F-019 | [#34](https://github.com/sfourdrinier/unified-ble-manager/issues/34) | `sfourdrinier` | PR10 | Native-authoritative restoration identity plus cross-language derivation fixtures and RN/Expo adoption regression |
+| D-004, D-014 | [#35](https://github.com/sfourdrinier/unified-ble-manager/issues/35) | `sfourdrinier` | PR10 | Expo schema-v2 validator, generated config fixture, and clean `example-expo` prebuild/config inspection |
+| F-014 | [#36](https://github.com/sfourdrinier/unified-ble-manager/issues/36) | `sfourdrinier` | PR7 | Backend-owned diagnostics snapshot/trace test proving counters and chooser resources come from the instantiated backend |
+| F-016 | [#37](https://github.com/sfourdrinier/unified-ble-manager/issues/37) | `sfourdrinier` | PR9 | Provider discovery-kind descriptor matrix and per-provider runtime capability regression |
+| D-013 | [#38](https://github.com/sfourdrinier/unified-ble-manager/issues/38) | `sfourdrinier` | PR11 | Independent Tauri consumer installs paired npm/crate artifacts and builds without a `node_modules` Cargo path |
 
 Each RC checkpoint must re-audit this register against current source; stale or unsupported findings must be explicitly closed rather than silently disappearing.
 
@@ -93,11 +94,11 @@ This branch has now verified the following PR6 slices against current source:
 - Electron renderer documentation, composition examples, package-surface fixtures, and the reviewed renderer API report describe the public factory;
 - Tauri late-cancellation cleanup and lifecycle terminal delivery retain retry ownership rather than abandoning failed cleanup.
 
-The local PR6D documentation/API/recipe checks are green; the remaining
-external PR6 gates are packed public-manager smoke on a clean supported Node
-toolchain and the preserved PR6E supervisor review. Native-authoritative React Native/Expo
-restoration is an explicit PR10 deferral tracked by [#34](https://github.com/sfourdrinier/unified-ble-manager/issues/34);
+The current local PR6 package, plugin, native, lint/typecheck, evidence,
+documentation/API, artifact, smell, and diff gates are green. The exact
+current-source Node24 packed-consumer refresh and the final PR6E adversarial
+review remain release-process gates before opening the PR. Native-authoritative
+React Native/Expo restoration is an explicit PR10 deferral tracked by [#34](https://github.com/sfourdrinier/unified-ble-manager/issues/34);
 PR6 must not claim it is implemented. The local Node22/npm packed smoke is
-environment-blocked at `npm pack` (`Exit handler never called`) before consumer
-assertions; hosted Node24 evidence must be refreshed for this branch before
-RC3.
+environment-blocked before consumer assertions; it is not counted as packed
+evidence.
