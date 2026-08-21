@@ -88,6 +88,7 @@ export interface WebBluetoothBoundary {
   hasTransientUserActivation(): boolean
   bluetoothAvailable(): Promise<boolean>
   requestDevice(options: WebBluetoothRequestDeviceOptions): Promise<WebBluetoothDeviceSelection>
+  readonly getAuthorizedDevices?: () => Promise<readonly WebBluetoothDeviceBoundary[]>
   now(): number
   setTimer(callback: () => void, delayMilliseconds: number): WebBluetoothTimerHandle
   clearTimer(handle: WebBluetoothTimerHandle): void

@@ -1,7 +1,14 @@
 // src/web/web-feature-registry.ts
 
-import { createFeatureRegistry, type FeatureImplementation } from '../backend-contract/capabilities'
-import type { CapabilityLimits, FeatureRegistry, Limitation } from '../backend-contract/capabilities'
+import {
+  BUILT_IN_FEATURE_IDS,
+  createFeatureRegistry,
+  type CapabilityLimits,
+  type FeatureId,
+  type FeatureImplementation,
+  type FeatureRegistry,
+  type Limitation
+} from '../backend-contract/capabilities'
 import { contractError } from '../backend-contract/errors'
 import { version, versionRange, type SerializableRecord } from '../backend-contract/primitives'
 import {
@@ -62,7 +69,7 @@ const continuousScanLimitation: Limitation = {
 }
 
 function unsupportedRegistration(
-  id: 'web:background-operation' | 'web:continuous-scan' | 'web:state-restoration',
+  id: FeatureId,
   limitation: Limitation,
   implementationVersion: string,
   limits: CapabilityLimits
@@ -92,6 +99,53 @@ function unsupportedRegistration(
     },
     limitations: [limitation],
     limits
+  }
+}
+
+function originAuthorizedPeerRegistration(
+  implementationVersion: string,
+  available: boolean
+): FeatureRegistry['registrations'][number] {
+  if (!available) {
+    return unsupportedRegistration(
+      BUILT_IN_FEATURE_IDS.peerOriginAuthorized,
+      {
+        code: 'web-get-devices-unavailable',
+        explanation: 'This browser does not expose navigator.bluetooth.getDevices().',
+        affectedGuarantee: 'origin-authorized peer enumeration'
+      },
+      implementationVersion,
+      {
+        authorizedPeers: { maximum: 0, minimum: null, unit: 'items' }
+      }
+    )
+  }
+  const limitation: Limitation = {
+    code: 'web-origin-scoped-authorized-devices',
+    explanation: 'Authorized peers are scoped to the current browser origin and may be out of range or disconnected.',
+    affectedGuarantee: 'cross-origin or globally stable peer identity'
+  }
+  return {
+    id: BUILT_IN_FEATURE_IDS.peerOriginAuthorized,
+    state: 'limited',
+    selectedSchemaRange: capabilityRange,
+    implementationOrigin: 'backend-native',
+    implementation: { invoke: async () => ({ supported: true }) },
+    tck: {
+      suiteId: 'web.peer-origin-authorized',
+      requiredScenarioIds: ['web.peer-origin-authorized'],
+      contractRange: capabilityRange
+    },
+    evidence: {
+      receiptId: `web-peer-origin-authorized-v1:${implementationVersion}:deterministic`,
+      evidenceLevel: 'deterministic',
+      implementationVersion,
+      sourceDigest: 'web-bluetooth-authorized-devices-v1',
+      scenarioIds: ['web.peer-origin-authorized'],
+      limitations: [limitation]
+    },
+    limitations: [limitation],
+    limits: { authorizedPeers: { maximum: 128, minimum: 0, unit: 'items' } }
   }
 }
 
@@ -131,9 +185,13 @@ function chooserDiscoveryImplementation(): FeatureImplementation<SerializableRec
   }
 }
 
-export function createWebBluetoothFeatureRegistry(implementationVersion: string): FeatureRegistry {
+export function createWebBluetoothFeatureRegistry(
+  implementationVersion: string,
+  authorizedPeerSupport = false
+): FeatureRegistry {
   return createFeatureRegistry([
     chooserDiscoveryRegistration(implementationVersion),
+    originAuthorizedPeerRegistration(implementationVersion, authorizedPeerSupport),
     unsupportedRegistration('web:background-operation', backgroundLimitation, implementationVersion, {
       backgroundDuration: { maximum: 0, minimum: null, unit: 'milliseconds' }
     }),

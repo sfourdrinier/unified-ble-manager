@@ -5,7 +5,11 @@ import type { BleManager, ChooseOptions } from './public/ble-manager'
 import { createPublicBleManager } from './public/ble-manager'
 import { normalizeBleManagerCreateOptions } from './public/host-identity'
 import type { BleManagerCreateOptions } from './public/host-identity'
-import { createWebBluetoothProvider, WEB_BLUETOOTH_ADAPTER_ID } from './web/web-bluetooth-backend'
+import {
+  createWebBluetoothProvider,
+  WEB_BLUETOOTH_ADAPTER_ID,
+  type WebBluetoothBackend
+} from './web/web-bluetooth-backend'
 import {
   createDefaultNavigatorWebBluetoothEnvironment,
   NavigatorWebBluetoothBoundary,
@@ -16,6 +20,7 @@ import { opaqueId } from './backend-contract/primitives'
 import { createEphemeralHostIdentity } from './public/host-identity'
 import { canonicalUuid } from './backend-contract/primitives'
 import { normalizeOperationOptions } from './public/operation-options'
+import { contractError } from './backend-contract/errors'
 
 export {
   createWebBluetoothProvider,
@@ -102,11 +107,7 @@ export async function createWebBleManagerWithEnvironment(
   })
 }
 
-async function chooseWebPeer(
-  backend: import('./web/web-bluetooth-backend').WebBluetoothBackend,
-  options: ChooseOptions,
-  now: () => number
-) {
+async function chooseWebPeer(backend: WebBluetoothBackend, options: ChooseOptions, now: () => number) {
   const normalized = normalizeOperationOptions(options, now)
   const services =
     options.services?.map(value => canonicalUuid(typeof value === 'number' ? value.toString(16) : value)) ?? []
@@ -118,5 +119,20 @@ async function chooseWebPeer(
     },
     normalized
   )
-  return snapshotBlePeer({ id: String(selection.peerId), name: null, rssi: null })
+  const selected = backend.peerReferenceFor(String(selection.peerId))
+  if (selected === null) throw contractError('protocol.violation', 'connection', 'web.choose.peer-reference')
+  return snapshotBlePeer({
+    id: String(selection.peerId),
+    name: null,
+    rssi: null,
+    reference: { version: 1, backendId: selected.backendId, scope: 'origin', opaqueId: selected.browserDeviceId },
+    sources: ['origin-authorized'],
+    lastAdvertisement: null,
+    state: {
+      reachability: 'unknown',
+      connection: 'disconnected',
+      bond: 'unsupported',
+      lastSeenAtMonotonicMs: null
+    }
+  })
 }

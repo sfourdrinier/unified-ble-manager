@@ -99,6 +99,7 @@ type BrowserBluetoothRequestOptions =
 
 interface BrowserBluetooth {
   getAvailability?(): Promise<boolean>
+  getDevices?(): Promise<readonly BrowserBluetoothDevice[]>
   requestDevice(options?: BrowserBluetoothRequestOptions): Promise<BrowserBluetoothDevice>
 }
 
@@ -167,10 +168,18 @@ export interface NavigatorWebBluetoothEnvironment {
 export class NavigatorWebBluetoothBoundary implements WebBluetoothBoundary {
   readonly implementationVersion: string
   readonly browserEngine: string
+  readonly getAuthorizedDevices: (() => Promise<readonly WebBluetoothDeviceBoundary[]>) | undefined
 
   constructor(private readonly environment: NavigatorWebBluetoothEnvironment) {
     this.implementationVersion = environment.implementationVersion
     this.browserEngine = environment.browserEngine
+    this.getAuthorizedDevices =
+      environment.bluetooth?.getDevices === undefined
+        ? undefined
+        : async () => {
+            const devices = await environment.bluetooth!.getDevices!()
+            return devices.map(device => new NavigatorDeviceBoundary(device))
+          }
   }
 
   isSecureContext(): boolean {

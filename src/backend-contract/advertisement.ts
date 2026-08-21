@@ -14,6 +14,7 @@ import type {
   ScanShareToken,
   Uuid
 } from './primitives'
+import type { PeerReference } from './peer-reference'
 
 /** How the backend obtained this observation, independent of individual field provenance. */
 export type ObservationSource = 'platform-raw' | 'platform-derived' | 'core-merged'
@@ -76,6 +77,8 @@ export interface ManufacturerData {
 }
 export interface AdvertisementObservation<Attachment extends string> {
   readonly device: DeviceIdentity<Attachment>
+  /** Present only when the instantiated backend can issue a truthful scoped reference. */
+  readonly peerReference?: PeerReference
   readonly provenance: ObservationSource
   readonly sourceTimestamp: AdvertisementField<SourceTimestamp>
   readonly receivedAtMonotonicMs: MonotonicTimestamp

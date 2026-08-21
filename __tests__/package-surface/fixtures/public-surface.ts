@@ -39,6 +39,10 @@ type _RootImportCheck = BlePeer &
   StreamPreset
 declare const _rootCheck: _RootImportCheck
 void _rootCheck
+declare const publicPeer: BlePeer
+void publicPeer.reference
+void publicPeer.sources
+void publicPeer.lastAdvertisement
 declare const publicDatabase: GattDatabase
 declare const publicService: GattService
 declare const publicCharacteristic: GattCharacteristic

@@ -22,11 +22,18 @@ import { snapshotResourceCounters } from './diagnostics'
 import { isAuthorizationBlocking, type AdapterStateSnapshot } from '../backend-contract/identity'
 import { createPublicGattDatabase } from './gatt'
 import type { GattDatabase, GattValueEvent } from './gatt'
-import { normalizeScanObservation, normalizeScanQuery, observationMatchesScanQuery, type ScanQuery } from './scan-query'
+import {
+  normalizeScanObservation,
+  normalizeScanQuery,
+  observationMatchesScanQuery,
+  type NormalizedScanObservation,
+  type ScanQuery
+} from './scan-query'
 import type { BoundedAsyncStreamIterator } from '../backend-contract/streams'
 import { createScanState } from './scan-state'
 import type { BlePeerDirectory, BlePeerState, PeerSource } from './peer-directory'
-import { unsupportedPeerDirectory } from './peer-directory'
+import { createPublicPeerDirectory } from './peer-directory'
+import { isPeerReference, snapshotPeerReference } from './peer-reference'
 import type { PeerReference } from './peer-reference'
 
 export type GattSubscriptionValue = GattValueEvent
@@ -72,18 +79,29 @@ export interface BlePeer {
   readonly id: string
   readonly name: string | null
   readonly rssi: number | null
-  readonly reference?: PeerReference
-  readonly sources?: readonly PeerSource[]
+  readonly reference: PeerReference | null
+  readonly sources: readonly PeerSource[]
+  readonly lastAdvertisement: NormalizedScanObservation | null
   readonly state?: BlePeerState
 }
 
-export function snapshotBlePeer(peer: BlePeer): BlePeer {
+type BlePeerInput = Pick<BlePeer, 'id' | 'name' | 'rssi'> &
+  Partial<Pick<BlePeer, 'reference' | 'sources' | 'lastAdvertisement' | 'state'>>
+
+export function snapshotBlePeer(peer: BlePeerInput): BlePeer {
   return Object.freeze({
     id: peer.id,
     name: peer.name,
     rssi: peer.rssi,
-    ...(peer.reference === undefined ? {} : { reference: Object.freeze({ ...peer.reference }) }),
-    ...(peer.sources === undefined ? {} : { sources: Object.freeze([...peer.sources]) }),
+    reference:
+      peer.reference === undefined || peer.reference === null
+        ? null
+        : snapshotPeerReference(peer.reference, 'peer.snapshot'),
+    sources: Object.freeze([...(peer.sources ?? [])]),
+    lastAdvertisement:
+      peer.lastAdvertisement === undefined || peer.lastAdvertisement === null
+        ? null
+        : normalizeScanObservation(peer.lastAdvertisement),
     ...(peer.state === undefined ? {} : { state: Object.freeze({ ...peer.state }) })
   })
 }
@@ -162,6 +180,7 @@ export interface BleDiscoveryInfo {
 export interface PublicBleManagerHostOptions {
   readonly discoveryKind?: BleDiscoveryInfo['kind']
   readonly choose?: (options: ChooseOptions) => Promise<BlePeer>
+  readonly peers?: BlePeerDirectory
 }
 
 // Internal factory used by host entrypoints. Hosts derive identity and call this.
@@ -197,7 +216,7 @@ class PublicBleManager implements BleManager {
         ),
       startTrace: () => ({ stop: async () => internal.traceDocument() })
     }
-    this.peers = unsupportedPeerDirectory()
+    this.peers = hostOptions.peers ?? createPublicPeerDirectory(internal.attachedBackend?.backend?.peers, now)
     const supportsContinuous = typeof internal.supports === 'function' && internal.supports('discovery:continuous-scan')
     this.discovery = Object.freeze({
       kind: hostOptions.discoveryKind ?? (supportsContinuous ? 'continuous-scan' : 'system-chooser')
@@ -280,6 +299,9 @@ class PublicBleManager implements BleManager {
   async connect(peer: BlePeer | string | PeerReference, options: OperationOptions = {}): Promise<BleConnection> {
     try {
       const { signal, deadline } = normalizeOperationOptions(options, this.now)
+      if (isReferenceLike(peer) && !isPeerReference(peer)) {
+        throw contractError('peer.reference-invalid', 'connection', 'public-ble-manager.connect-reference')
+      }
       const resolvedPeer = isPeerReference(peer) ? await this.peers.resolve(peer, options) : peer
       if (resolvedPeer === null)
         throw rehydratePublicError(
@@ -480,12 +502,24 @@ export function filterScanObservations(
 
 export function peerFromPublicObservation(observation: PublicScanObservation): BlePeer {
   if (isCompactObservation(observation)) {
-    return snapshotBlePeer({ id: observation.peerId, name: observation.localName, rssi: observation.rssi })
+    const normalized = normalizeScanObservation(observation)
+    return snapshotBlePeer({
+      id: observation.peerId,
+      name: observation.localName,
+      rssi: observation.rssi,
+      reference: normalized.peerReference ?? null,
+      sources: ['scan-observed'],
+      lastAdvertisement: normalized
+    })
   }
+  const normalized = normalizeScanObservation(observation)
   return snapshotBlePeer({
     id: String(observation.device.id),
     name: observation.localName.state === 'present' ? observation.localName.value : null,
-    rssi: observation.rssi.state === 'present' ? observation.rssi.value : null
+    rssi: observation.rssi.state === 'present' ? observation.rssi.value : null,
+    reference: normalized.peerReference ?? null,
+    sources: ['scan-observed'],
+    lastAdvertisement: normalized
   })
 }
 
@@ -493,8 +527,12 @@ function isCompactObservation(observation: PublicScanObservation): observation i
   return 'peerId' in observation
 }
 
-function isPeerReference(value: BlePeer | string | PeerReference): value is PeerReference {
-  return typeof value === 'object' && value !== null && 'version' in value && 'backendId' in value && 'scope' in value
+function isReferenceLike(value: unknown): value is object {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    ('version' in value || 'backendId' in value || 'scope' in value || 'opaqueId' in value)
+  )
 }
 
 export function assertPublicScanOptions(options: ScanOptions): void {

@@ -43,7 +43,14 @@ describe('public BleCapabilities', () => {
     const peer = { id: 'peer-1', name: 'Original', rssi: -40 }
     const connection = await manager.connect(peer)
     peer.name = 'Mutated'
-    expect(connection.peer).toEqual({ id: 'peer-1', name: 'Original', rssi: -40 })
+    expect(connection.peer).toEqual({
+      id: 'peer-1',
+      name: 'Original',
+      rssi: -40,
+      reference: null,
+      sources: [],
+      lastAdvertisement: null
+    })
     expect(Object.isFrozen(connection.peer)).toBe(true)
     await connection.release()
 

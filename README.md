@@ -20,6 +20,7 @@ It is an evolution of `react-native-ble-plx`, rewritten as a **cross-platform un
 | [`docs/HELPERS.md`](docs/HELPERS.md) | `scanUntil`, `connectAndDiscover`, `withConnection`, notification helpers |
 | [`MIGRATION_4.0.md`](MIGRATION_4.0.md) | Side-by-side map from `react-native-ble-plx` |
 | [`docs/WEB.md`](docs/WEB.md) · [`docs/ELECTRON.md`](docs/ELECTRON.md) · [`docs/NODE.md`](docs/NODE.md) · [`docs/TAURI.md`](docs/TAURI.md) · [`docs/EXPO_PLUGIN.md`](docs/EXPO_PLUGIN.md) | Host construction |
+| [`docs/PEERS.md`](docs/PEERS.md) | Scoped peer directories, persistence, and reconnect-by-reference |
 | [`docs/PROFILES_AND_COMMANDS.md`](docs/PROFILES_AND_COMMANDS.md) | Heart Rate, Battery, DIS, and path helpers |
 
 ## Install

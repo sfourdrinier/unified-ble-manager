@@ -18,6 +18,8 @@ import { normalizeScanQuery } from './public/scan-query'
 import { createScanState, type ScanStateController } from './public/scan-state'
 import type { BlePeerDirectory } from './public/peer-directory'
 import { unsupportedPeerDirectory } from './public/peer-directory'
+import { isPeerReference } from './public/peer-reference'
+import type { PeerReference } from './public/peer-reference'
 import type {
   PortableCurrentCharacteristicPath,
   PortableCurrentDescriptorPath,
@@ -55,11 +57,20 @@ function toIpcScanOptions(options: ScanOptions): IpcScanOptions {
   }
 }
 
-function resolvePeerId(peer: BlePeer | string): string {
+function resolvePeerId(peer: BlePeer | string | PeerReference): string {
+  if (isPeerReference(peer)) {
+    throw contractError('capability.unsupported', 'connection', 'tauri.peer-reference')
+  }
+  if (typeof peer === 'object' && peer !== null && ('version' in peer || 'backendId' in peer || 'opaqueId' in peer)) {
+    throw contractError('peer.reference-invalid', 'connection', 'tauri.peer-reference')
+  }
   return typeof peer === 'string' ? peer : peer.id
 }
 
-function resolveBlePeer(peer: BlePeer | string, peerId: string): BlePeer {
+function resolveBlePeer(peer: BlePeer | string | PeerReference, peerId: string): BlePeer {
+  if (isPeerReference(peer)) {
+    throw contractError('capability.unsupported', 'connection', 'tauri.peer-reference')
+  }
   return typeof peer === 'string' ? snapshotBlePeer({ id: peerId, name: null, rssi: null }) : snapshotBlePeer(peer)
 }
 
@@ -279,7 +290,7 @@ class TauriBleConnectionWrapper implements BleConnection {
 
   constructor(
     private readonly base: IpcConnection,
-    peer: BlePeer | string,
+    peer: BlePeer | string | PeerReference,
     peerId: string
   ) {
     this.peer = resolveBlePeer(peer, peerId)
@@ -376,7 +387,7 @@ class TauriBleManagerAdapter implements BleManager {
     return Promise.reject(rehydratePublicError(contractError('capability.unsupported', 'chooser', 'tauri.choose')))
   }
 
-  async connect(peer: BlePeer | string, options: OperationOptions = {}): Promise<BleConnection> {
+  async connect(peer: BlePeer | string | PeerReference, options: OperationOptions = {}): Promise<BleConnection> {
     try {
       const peerId = resolvePeerId(peer)
       const base = await this.ipc.connect(peerId, options)
@@ -387,7 +398,7 @@ class TauriBleManagerAdapter implements BleManager {
   }
 
   async withConnection<T>(
-    peer: BlePeer | string,
+    peer: BlePeer | string | PeerReference,
     options: OperationOptions,
     useConnection: (connection: BleConnection) => Promise<T>
   ): Promise<T> {
@@ -407,7 +418,7 @@ class TauriBleManagerAdapter implements BleManager {
   }
 
   async withDiscoveredConnection<T>(
-    peer: BlePeer | string,
+    peer: BlePeer | string | PeerReference,
     options: OperationOptions,
     action: (scope: {
       readonly connection: BleConnection

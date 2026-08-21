@@ -139,6 +139,24 @@ function advertisement(peerId, localName, rssi) {
 }
 
 describe('Tauri v2 public manager', () => {
+  test('rejects reference connections explicitly when the Tauri directory is unsupported', async () => {
+    const invoke = jest.fn(async (_command, args) => {
+      const request = args.request
+      if (request.kind === 'bootstrap') return { kind: 'bootstrap', bootstrap: bootstrap() }
+      if (request.kind === 'event.ack') return { kind: 'event.ack' }
+      if (request.kind === 'release') return { kind: 'release', cleanup: { state: 'released', failures: [] } }
+      throw new Error(`unexpected route ${request.envelope.command}`)
+    })
+    const { createTauriBleManagerWithEnvironment } = require('../src/tauri')
+    const manager = await createTauriBleManagerWithEnvironment({ invoke, Channel: FakeChannel })
+
+    await expect(
+      manager.connect({ version: 1, backendId: 'unified-ble:tauri', scope: 'system', opaqueId: 'peer-1' })
+    ).rejects.toMatchObject({ code: 'capability.unsupported' })
+    expect(invoke.mock.calls.some(([, args]) => args.request.envelope?.command === 'connection.connect')).toBe(false)
+    await manager.destroy()
+  })
+
   test('runs scan, connect, GATT, notifications, and deterministic cleanup through one manager surface', async () => {
     const commands = []
     const invoke = jest.fn(async (_command, args) => {

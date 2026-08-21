@@ -1,7 +1,7 @@
 import { canonicalUuid } from '../backend-contract/primitives'
 import { contractError } from '../backend-contract/errors'
 import type { AdvertisementObservation } from '../backend-contract/advertisement'
-import { assertPeerReference } from './peer-reference'
+import { assertPeerReference, encodePeerReference, snapshotPeerReference } from './peer-reference'
 import type { PeerReference } from './peer-reference'
 
 export interface ManufacturerDataPattern {
@@ -98,6 +98,7 @@ export interface NormalizedScanObservation {
 
 interface CompactScanAdvertisement {
   readonly peerId: string
+  readonly peerReference?: PeerReference
   readonly localName: string | null
   readonly rssi: number | null
   readonly serviceUuids: readonly string[]
@@ -122,7 +123,12 @@ export function normalizeScanQuery(query: ScanQuery | undefined = {}): Normalize
 export function normalizeScanObservation(observation: ScanObservation): NormalizedScanObservation {
   if (isNormalizedObservation(observation)) return cloneNormalizedObservation(observation)
   if (isIpcAdvertisement(observation)) {
+    const peerReference =
+      observation.peerReference === undefined
+        ? undefined
+        : snapshotPeerReference(observation.peerReference, 'scan.observation.peer-reference')
     return Object.freeze({
+      ...(peerReference === undefined ? {} : { peerReference }),
       localName: observation.localName,
       rssi: observation.rssi,
       connectable: null,
@@ -139,7 +145,12 @@ export function normalizeScanObservation(observation: ScanObservation): Normaliz
       )
     })
   }
+  const peerReference =
+    observation.peerReference === undefined
+      ? undefined
+      : snapshotPeerReference(observation.peerReference, 'scan.observation.peer-reference')
   return Object.freeze({
+    ...(peerReference === undefined ? {} : { peerReference }),
     localName: fieldValue(observation.localName),
     rssi: fieldValue(observation.rssi),
     connectable: fieldValue(observation.connectable),
@@ -225,7 +236,7 @@ function normalizePeerList(
 }
 
 function peerReferenceKey(reference: PeerReference): string {
-  return `${reference.version}|${reference.backendId}|${reference.scope}|${reference.opaqueId}`
+  return encodePeerReference(reference)
 }
 
 function normalizeUuidField(
@@ -527,11 +538,15 @@ function isIpcAdvertisement(value: ScanObservation): value is CompactScanAdverti
 function isNormalizedObservation(value: ScanObservation): value is NormalizedScanObservation {
   if (typeof value !== 'object' || value === null || 'device' in value) return false
   const localName = Reflect.get(value, 'localName')
+  const rssi = Reflect.get(value, 'rssi')
+  const connectable = Reflect.get(value, 'connectable')
   const serviceUuids = Reflect.get(value, 'serviceUuids')
   const manufacturerData = Reflect.get(value, 'manufacturerData')
   const serviceData = Reflect.get(value, 'serviceData')
   return (
     (typeof localName === 'string' || localName === null) &&
+    (typeof rssi === 'number' || rssi === null) &&
+    (typeof connectable === 'boolean' || connectable === null) &&
     (serviceUuids === null || Array.isArray(serviceUuids)) &&
     (manufacturerData === null || Array.isArray(manufacturerData)) &&
     (serviceData === null || Array.isArray(serviceData)) &&
@@ -545,8 +560,13 @@ function isNormalizedObservation(value: ScanObservation): value is NormalizedSca
 }
 
 function cloneNormalizedObservation(value: NormalizedScanObservation): NormalizedScanObservation {
+  const peerReference =
+    value.peerReference === undefined
+      ? undefined
+      : snapshotPeerReference(value.peerReference, 'scan.observation.peer-reference')
   return Object.freeze({
     ...value,
+    ...(peerReference === undefined ? {} : { peerReference }),
     serviceUuids: value.serviceUuids === null ? null : Object.freeze([...value.serviceUuids]),
     manufacturerData:
       value.manufacturerData === null
