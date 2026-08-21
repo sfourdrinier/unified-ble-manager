@@ -1009,9 +1009,5 @@ function abortRequested(signal: AbortSignal | null | undefined): boolean {
 }
 
 function closeAdapterStateStream(stream: BoundedAsyncStream<unknown>): Promise<CleanupRecord> {
-  const closable = stream as BoundedAsyncStream<unknown> & { close?: () => Promise<CleanupRecord> }
-  if (typeof closable.close === 'function') {
-    return closable.close()
-  }
-  return Promise.resolve({ state: 'released', failures: [] })
+  return stream.close()
 }
