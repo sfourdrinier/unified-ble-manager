@@ -2397,9 +2397,7 @@ impl BtleplugDispatcher {
                 }
             }
         };
-        if let Err(error) = terminal_result {
-            return Err(error);
-        }
+        terminal_result?;
         let mut state = self.inner.lock().await;
         if let Some(caller) = state.callers.get_mut(caller_key) {
             if caller.lease_id == expected_lease.0 && caller.lease_generation == expected_lease.1 {
