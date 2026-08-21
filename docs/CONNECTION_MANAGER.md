@@ -7,8 +7,9 @@ handles. The shared core owns connection admission, cancellation, timeouts,
 late-completion quarantine, disconnect invalidation, and deterministic cleanup.
 Applications own product retry and reconnect policy.
 
-There is no separate package reconnect manager, hidden retry engine, or global
-radio singleton.
+There is no hidden retry engine or global radio singleton. The optional
+`createConnectionSupervisor()` API is an explicit PR6E application-owned
+supervisor with visible retry/gate state; it never runs implicitly.
 
 ## One connection lease
 

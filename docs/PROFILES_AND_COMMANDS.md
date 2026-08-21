@@ -2,6 +2,12 @@
 
 # Profiles, codecs, and GATT commands
 
+> Status: this page retains advanced/path-oriented authoring reference material.
+> Application code should follow the object-based `GattDatabase` and
+> `GattCharacteristic` recipes in [`HELPERS.md`](HELPERS.md). The older
+> `deadline()`/`capacity()`/`firstNotification()` snippets below are not the
+> application façade and are not a current root-import recipe.
+
 Optional helpers for SIG services (Heart Rate, Battery, DIS, thermometer, blood
 pressure). They sit on the public `Connection`, `DiscoveredGattDatabase`, and
 `Subscription` handles. They do not pick a backend or reconnect.
