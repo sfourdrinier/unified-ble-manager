@@ -47,8 +47,17 @@ export interface PeerDirectoryRecord {
 }
 
 export function mergePeerDirectoryRecords(records: readonly PeerDirectoryRecord[]): readonly BlePeer[] {
-  const merged = new Map<string, { peer: BlePeer; sources: Set<PeerSource>; state: BlePeerState }>()
-  for (const record of records) {
+  const merged = new Map<
+    string,
+    { peer: BlePeer; sources: Set<PeerSource>; state: BlePeerState; clockScope: string | null }
+  >()
+  const orderedRecords = [...records].sort(
+    (left, right) =>
+      referenceKey(left.reference).localeCompare(referenceKey(right.reference)) ||
+      sourcePriority(left.source) - sourcePriority(right.source) ||
+      left.source.localeCompare(right.source)
+  )
+  for (const record of orderedRecords) {
     assertPeerReference(record.reference, 'peer-directory.merge.reference')
     if (record.clockScope === undefined && record.state.lastSeenAtMonotonicMs !== null) {
       throw contractError('peer.reference-invalid', 'connection', 'peer-directory.clock-scope')
@@ -64,16 +73,24 @@ export function mergePeerDirectoryRecords(records: readonly PeerDirectoryRecord[
           state: record.state
         }),
         sources: new Set([record.source]),
-        state: record.state
+        state: record.state,
+        clockScope: record.clockScope ?? null
       })
       continue
     }
     current.sources.add(record.source)
-    current.state = mergePeerState(current.state, record.state)
+    const previousLastSeen = current.state.lastSeenAtMonotonicMs
+    const sameClock = current.clockScope !== null && current.clockScope === (record.clockScope ?? null)
+    if (!sameClock) current.clockScope = null
+    current.state = mergePeerState(current.state, record.state, sameClock)
+    const rightIsFresher =
+      sameClock &&
+      record.state.lastSeenAtMonotonicMs !== null &&
+      (previousLastSeen === null || record.state.lastSeenAtMonotonicMs > previousLastSeen)
     current.peer = Object.freeze({
       ...current.peer,
       name: current.peer.name ?? record.peer.name,
-      rssi: record.peer.rssi ?? current.peer.rssi,
+      rssi: rightIsFresher ? (record.peer.rssi ?? current.peer.rssi) : current.peer.rssi,
       sources: sourceOrder([...current.sources]),
       state: current.state
     })
@@ -85,19 +102,23 @@ export function mergePeerDirectoryRecords(records: readonly PeerDirectoryRecord[
   )
 }
 
-function mergePeerState(left: BlePeerState, right: BlePeerState): BlePeerState {
+function mergePeerState(left: BlePeerState, right: BlePeerState, sameClock: boolean): BlePeerState {
   return Object.freeze({
-    reachability:
-      left.reachability === 'reachable' || right.reachability === 'reachable' ? 'reachable' : left.reachability,
-    connection: left.connection === 'connected' || right.connection === 'connected' ? 'connected' : left.connection,
-    bond: left.bond === 'bonded' || right.bond === 'bonded' ? 'bonded' : left.bond,
-    lastSeenAtMonotonicMs:
-      left.lastSeenAtMonotonicMs === null
+    reachability: strongest(left.reachability, right.reachability, ['unreachable', 'unknown', 'reachable']),
+    connection: strongest(left.connection, right.connection, ['disconnected', 'unknown', 'connected']),
+    bond: strongest(left.bond, right.bond, ['not-bonded', 'unknown', 'unsupported', 'bonded']),
+    lastSeenAtMonotonicMs: sameClock
+      ? left.lastSeenAtMonotonicMs === null
         ? right.lastSeenAtMonotonicMs
         : right.lastSeenAtMonotonicMs === null
           ? left.lastSeenAtMonotonicMs
           : Math.max(left.lastSeenAtMonotonicMs, right.lastSeenAtMonotonicMs)
+      : null
   })
+}
+
+function strongest<Value extends string>(left: Value, right: Value, order: readonly Value[]): Value {
+  return order.indexOf(left) >= order.indexOf(right) ? left : right
 }
 
 function referenceKey(reference: PeerReference): string {
@@ -105,6 +126,12 @@ function referenceKey(reference: PeerReference): string {
 }
 
 function sourceOrder(sources: readonly PeerSource[]): readonly PeerSource[] {
+  return Object.freeze(
+    [...sources].sort((left, right) => sourcePriority(left) - sourcePriority(right) || left.localeCompare(right))
+  )
+}
+
+function sourcePriority(source: PeerSource): number {
   const rank: Record<PeerSource, number> = {
     'system-connected': 0,
     restored: 1,
@@ -114,7 +141,7 @@ function sourceOrder(sources: readonly PeerSource[]): readonly PeerSource[] {
     'scan-observed': 4,
     'backend-cache': 5
   }
-  return Object.freeze([...sources].sort((left, right) => rank[left] - rank[right] || left.localeCompare(right)))
+  return rank[source]
 }
 
 function peerSortKey(sources: ReadonlySet<PeerSource>, peer: BlePeer): string {
@@ -127,50 +154,13 @@ export function unsupportedPeerDirectory(): BlePeerDirectory {
     throw rehydratePublicError(contractError('capability.unsupported', 'connection', 'peer-directory'))
   }
   return {
-    resolve: async reference => {
-      try {
-        assertPeerReference(reference, 'peer-directory.resolve')
-      } catch (error) {
-        throw rehydratePublicError(error)
-      }
-      return null
+    resolve: async () => {
+      throw rehydratePublicError(contractError('capability.unsupported', 'connection', 'peer-directory.resolve'))
     },
     known: unsupported,
     connected: unsupported,
     bonded: unsupported,
     authorized: unsupported,
     restored: unsupported
-  }
-}
-
-export function createPeerDirectory(backendId: string | null): BlePeerDirectory {
-  const unsupported = unsupportedPeerDirectory()
-  return {
-    ...unsupported,
-    resolve: async reference => {
-      try {
-        assertPeerReference(reference, 'peer-directory.resolve')
-        if (backendId === null || reference.backendId !== backendId) {
-          throw contractError('peer.scope-mismatch', 'connection', 'peer-directory.resolve-backend')
-        }
-        const source: PeerSource = 'app-reference'
-        const state: BlePeerState = {
-          reachability: 'unknown',
-          connection: 'unknown',
-          bond: 'unknown',
-          lastSeenAtMonotonicMs: null
-        }
-        return Object.freeze({
-          id: reference.opaqueId,
-          name: null,
-          rssi: null,
-          reference: Object.freeze({ ...reference }),
-          sources: Object.freeze([source]),
-          state: Object.freeze(state)
-        })
-      } catch (error) {
-        throw rehydratePublicError(error)
-      }
-    }
   }
 }

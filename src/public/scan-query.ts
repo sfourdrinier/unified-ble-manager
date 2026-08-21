@@ -211,7 +211,12 @@ function normalizePeerList(
   if (!Array.isArray(values) || values.length === 0) throw invalid(`${operation}.peers`)
   const references = values.map((value, index) => {
     assertPeerReference(value, `${operation}.peers[${index}]`)
-    return Object.freeze({ ...value })
+    return Object.freeze({
+      version: 1,
+      backendId: value.backendId,
+      scope: value.scope,
+      opaqueId: value.opaqueId
+    })
   })
   const uniqueReferences = new Map(references.map(reference => [peerReferenceKey(reference), reference]))
   return Object.freeze(

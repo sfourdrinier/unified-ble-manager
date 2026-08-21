@@ -26,7 +26,7 @@ import { normalizeScanObservation, normalizeScanQuery, observationMatchesScanQue
 import type { BoundedAsyncStreamIterator } from '../backend-contract/streams'
 import { createScanState } from './scan-state'
 import type { BlePeerDirectory, BlePeerState, PeerSource } from './peer-directory'
-import { createPeerDirectory } from './peer-directory'
+import { unsupportedPeerDirectory } from './peer-directory'
 import type { PeerReference } from './peer-reference'
 
 export type GattSubscriptionValue = GattValueEvent
@@ -197,9 +197,7 @@ class PublicBleManager implements BleManager {
         ),
       startTrace: () => ({ stop: async () => internal.traceDocument() })
     }
-    this.peers = createPeerDirectory(
-      internal.identity?.registeredBackendId ? String(internal.identity.registeredBackendId) : null
-    )
+    this.peers = unsupportedPeerDirectory()
     const supportsContinuous = typeof internal.supports === 'function' && internal.supports('discovery:continuous-scan')
     this.discovery = Object.freeze({
       kind: hostOptions.discoveryKind ?? (supportsContinuous ? 'continuous-scan' : 'system-chooser')
