@@ -70,9 +70,7 @@ Requirements: React Native 0.86+, Expo SDK 57+ when using Expo, Android min SDK 
 import { createReactNativeBleManager } from 'unified-ble-manager/react-native'
 
 const manager = await createReactNativeBleManager({
-  clientId: 'com.example.app.ble-client',
-  managerId: 'com.example.app.ble-manager',
-  hostSessionScope: 'com.example.app'
+  instanceId: 'main'
 })
 ```
 
@@ -115,55 +113,25 @@ Values are `Uint8Array`. Cancellable work takes `AbortSignal`. Scan and connect 
 
 ```ts
 // @ubm-recipe finite-hrs
-import {
-  deadline,
-  defaultScanDelivery,
-  firstNotification,
-  scanUntil,
-  throwIfCleanupFailed,
-  withConnection
-} from 'unified-ble-manager'
-import { resolveCharacteristicPath } from 'unified-ble-manager/profiles/commands'
-import {
-  HEART_RATE_SERVICE,
-  heartRateMeasurementSelector,
-  parseHeartRateMeasurement
-} from 'unified-ble-manager/profiles/heart-rate'
+import { createReactNativeBleManager } from 'unified-ble-manager/react-native'
+import { HEART_RATE_SERVICE } from 'unified-ble-manager/profiles/heart-rate'
+import { BATTERY_LEVEL_CHARACTERISTIC, parseBatteryLevel } from 'unified-ble-manager/profiles/battery-service'
 
-const abort = new AbortController()
-const journeyDeadline = deadline(manager.monotonicNow() + 20_000)
-const op = { signal: abort.signal, deadline: journeyDeadline }
+const manager = await createReactNativeBleManager()
 
 try {
-  const observation = await scanUntil(manager, {
-    scan: {
-      filter: {
-        serviceUuids: [HEART_RATE_SERVICE],
-        manufacturerData: [],
-        localNamePrefix: null
-      },
-      duplicatePolicy: 'merged',
-      timestampPolicy: 'source-then-receipt',
-      delivery: defaultScanDelivery(),
-      deadline: journeyDeadline,
-      signal: abort.signal,
-      sharing: { mode: 'owner', allowSharing: false }
-    },
-    matches: candidate => candidate.localName.state === 'present'
+  const peer = await manager.find({
+    query: { anyOf: [{ services: { any: [HEART_RATE_SERVICE] } }] },
+    timeoutMs: 10_000,
+    select: 'first'
   })
-
-  await withConnection(manager, observation.device.id, op, async connection => {
-    const database = await connection.discover(op)
-    const snapshot = await database.snapshot()
-    const measurementPath = await resolveCharacteristicPath(snapshot, heartRateMeasurementSelector())
-    const bytes = await firstNotification(database, measurementPath, {
-      ...op,
-      delivery: defaultScanDelivery()
-    })
-    consume(parseHeartRateMeasurement(bytes))
+  await manager.withDiscoveredConnection(peer, { timeoutMs: 15_000 }, async ({ gatt }) => {
+    const battery = gatt.characteristic('180F', BATTERY_LEVEL_CHARACTERISTIC, { serviceOccurrence: 0, characteristicOccurrence: 0 })
+    const bytes = await battery.read({ timeoutMs: 10_000 })
+    consume(parseBatteryLevel(bytes))
   })
 } finally {
-  throwIfCleanupFailed(await manager.destroy(), 'manager.destroy')
+  await manager.destroy()
 }
 ```
 

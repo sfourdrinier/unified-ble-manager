@@ -178,10 +178,11 @@ class PublicBleManager implements BleManager {
         ),
       startTrace: () => ({ stop: async () => internal.traceDocument() })
     }
+    const supports = Reflect.get(internal, 'supports')
+    const supportsContinuous =
+      typeof supports === 'function' && Reflect.apply(supports, internal, ['discovery:continuous-scan']) === true
     this.discovery = Object.freeze({
-      kind:
-        hostOptions.discoveryKind ??
-        (internal.supports('discovery:continuous-scan') ? 'continuous-scan' : 'system-chooser')
+      kind: hostOptions.discoveryKind ?? (supportsContinuous ? 'continuous-scan' : 'system-chooser')
     })
     this.chooseImpl = hostOptions.choose
   }
@@ -322,9 +323,12 @@ function createPublicAdapter(
   internal: InternalBleManager<string, BackendIdentity<string>>,
   now: () => number
 ): BleAdapter {
-  const adapterId = String(internal.identity.attachment.adapter.adapterId)
+  const identity = Reflect.get(internal, 'identity')
+  const attachment = typeof identity === 'object' && identity !== null ? Reflect.get(identity, 'attachment') : null
+  const adapter = typeof attachment === 'object' && attachment !== null ? Reflect.get(attachment, 'adapter') : null
+  const adapterId = typeof adapter === 'object' && adapter !== null ? Reflect.get(adapter, 'adapterId') : null
   return {
-    id: adapterId,
+    id: typeof adapterId === 'string' ? adapterId : null,
     state: async () => snapshotPublicAdapterState(await internal.adapterState()),
     waitUntilReady: options => waitForPublicAdapter(internal, now, options)
   }

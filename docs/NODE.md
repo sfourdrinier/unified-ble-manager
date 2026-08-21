@@ -19,10 +19,7 @@ import { createCoreBluetoothBleManager } from 'unified-ble-manager/node/coreblue
 import { createWinRtBleManager } from 'unified-ble-manager/node/winrt'
 import { createBluezBleManager } from 'unified-ble-manager/node/bluez'
 
-const manager = await createCoreBluetoothBleManager({
-  clientId: 'node-corebluetooth-client',
-  managerId: 'node-corebluetooth-manager'
-})
+const manager = await createCoreBluetoothBleManager()
 ```
 
 If there is no adapter, the factory throws `adapter.unavailable`. If more than one adapter exists and you omit `selectedAdapterId`, it throws `adapter.ambiguous`. Missing native artifacts throw `capability.unavailable` — there is no fallback to Noble, Web Bluetooth, or a simulator. Expected Node engines are those in `package.json`.
