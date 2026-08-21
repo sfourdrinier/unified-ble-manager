@@ -48,6 +48,25 @@ export const BUILT_IN_FEATURE_IDS = Object.freeze({
 })
 export type BuiltInFeatureId = (typeof BUILT_IN_FEATURE_IDS)[keyof typeof BUILT_IN_FEATURE_IDS]
 
+export interface BuiltInFeatureCatalogEntry {
+  readonly id: BuiltInFeatureId
+  readonly schemaVersion: 2
+  readonly requiredTckSuiteId: 'capability.catalog-v2'
+  readonly documentationAnchor: string
+}
+
+/** One metadata authority for built-in capability documentation and TCK binding. */
+export const BUILT_IN_FEATURE_CATALOG: readonly BuiltInFeatureCatalogEntry[] = Object.freeze(
+  Object.values(BUILT_IN_FEATURE_IDS).map(id =>
+    Object.freeze({
+      id,
+      schemaVersion: 2 as const,
+      requiredTckSuiteId: 'capability.catalog-v2' as const,
+      documentationAnchor: `capabilities.${id.replace(':', '.')}`
+    })
+  )
+)
+
 /** The backend-observed per-connection limit used to plan a chunked write. */
 export interface MaximumWriteLengthFeatureInput extends SerializableRecord {
   readonly connectionId: string

@@ -75,6 +75,7 @@ export type {
   Limitation,
   TckBinding
 } from './capabilities'
+export { BUILT_IN_FEATURE_CATALOG, BUILT_IN_FEATURE_IDS } from './capabilities'
 export { createFeatureRegistry, describeFeatureRegistry, validateFeatureRegistration } from './capabilities'
 export type {
   ConnectionLifecycleCause,

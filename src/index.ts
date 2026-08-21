@@ -18,7 +18,7 @@ export type {
   GattSubscriptionValue,
   ScanOptions
 } from './public/ble-manager'
-export { BUILT_IN_FEATURE_IDS } from './backend-contract/capabilities'
+export { BUILT_IN_FEATURE_CATALOG, BUILT_IN_FEATURE_IDS } from './backend-contract/capabilities'
 export type { BleCapabilities, BuiltInFeatureId, CapabilityDescriptor, FeatureId } from './public/capabilities'
 export type { BleAdapter, BleAdapterState } from './public/ble-adapter'
 
