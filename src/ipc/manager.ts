@@ -384,7 +384,18 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
         this.bufferPendingStreamItem(streamId, item)
         continue
       }
-      sink.deliver(streamId, item)
+      try {
+        sink.deliver(streamId, item)
+      } catch {
+        // A malformed stream item must not terminate the global pump. Close
+        // only the affected stream so all other subscriptions keep running.
+        const affected = this.streams.get(streamId)
+        if (affected !== undefined) {
+          affected.closeWithReason('source-failed')
+          this.streams.delete(streamId)
+          this.pendingStreamItems.delete(streamId)
+        }
+      }
     }
   }
 

@@ -369,7 +369,6 @@ function isCapabilityDescriptor(value: unknown): boolean {
     !isCapabilityTck(record.tck) ||
     !isCapabilityEvidence(record.evidence) ||
     !isLimitations(record.limitations) ||
-    !isLimitations(record.evidence && wireRecord(record.evidence)?.limitations) ||
     !isCapabilityLimits(record.limits)
   ) {
     return false
