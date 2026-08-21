@@ -17,6 +17,7 @@ export type ConnectionSupervisorState =
   | 'connected'
   | 'disconnecting'
   | 'backoff'
+  | 'cleanup-failed'
   | 'stopped'
 
 export interface RetryPolicy {
@@ -181,7 +182,7 @@ class ConnectionSupervisorImpl<Session> implements ConnectionSupervisor<Session>
   }
 
   start(): void {
-    if (this.state === 'stopped')
+    if (this.state === 'stopped' || this.state === 'cleanup-failed')
       throw rehydratePublicError(contractError('lifecycle.invalid-state', 'connection', 'connection-supervisor.start'))
     if (this.runPromise !== null) return
     this.startedAt = this.now()
@@ -533,7 +534,7 @@ class ConnectionSupervisorImpl<Session> implements ConnectionSupervisor<Session>
       return
     }
     this.lastError = toBleError(cleanup.failures[0]?.error)
-    this.transition('stopped', null, null, cleanup)
+    this.transition('cleanup-failed', null, null, cleanup)
   }
 
   private waitForDelay(delayMs: number): Promise<'elapsed' | 'stop'> {

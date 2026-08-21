@@ -185,7 +185,7 @@ describe('public connection supervisor', () => {
     supervisor.start()
     await wait()
     expect(ble.connect).toHaveBeenCalledTimes(1)
-    expect(supervisor.snapshot.state).toBe('stopped')
+    expect(supervisor.snapshot.state).toBe('cleanup-failed')
   })
 
   test('stop settles while adapter state, gate, or configure is pending', async () => {

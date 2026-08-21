@@ -643,6 +643,7 @@ export class IpcConnection {
   }
 
   async disconnect(): Promise<CleanupRecord> {
+    this.invalidateDatabases()
     if (this.lifecycleAdmission !== null) {
       await this.lifecycleAdmission
     }

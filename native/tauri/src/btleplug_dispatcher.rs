@@ -576,10 +576,35 @@ impl BtleplugDispatcher {
                 "__expectedLeaseGeneration".to_owned(),
                 string(expected_lease.1.clone()),
             );
-            self.execute(caller, cleanup_command, cleanup_payload, None)
+            if let Err(error) = self
+                .execute(caller, cleanup_command, cleanup_payload.clone(), None)
                 .await
-                .ok();
+            {
+                self.retry_quarantined_cleanup(caller, cleanup_command, cleanup_payload, error)
+                    .await;
+            }
         }
+    }
+
+    async fn retry_quarantined_cleanup(
+        &self,
+        caller: &AuthenticatedCaller,
+        command: &str,
+        payload: BTreeMap<String, IpcValue>,
+        first_error: DispatchError,
+    ) {
+        let mut last_error = first_error;
+        for _ in 0..4 {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            match self.execute(caller, command, payload.clone(), None).await {
+                Ok(_) => return,
+                Err(error) => last_error = error,
+            }
+        }
+        eprintln!(
+            "ubm quarantined cleanup remained retryable after bounded attempts: {}",
+            last_error.operation
+        );
     }
 
     async fn validate_envelope(
@@ -2310,6 +2335,13 @@ impl BtleplugDispatcher {
             )
             .await
             .ok();
+        } else {
+            // A full event acknowledgement queue cannot silently remove the
+            // lifecycle source: the renderer must be woken so it can release
+            // the generation and let the supervisor retry cleanup.
+            self.terminal(caller_key, expected_lease, identity.stream_id, "overflow")
+                .await
+                .ok();
         }
         let mut state = self.inner.lock().await;
         if let Some(caller) = state.callers.get_mut(caller_key) {
