@@ -464,6 +464,15 @@ export function assertPublicScanOptions(options: ScanOptions): void {
   if (options.duplicates !== undefined && options.duplicates !== 'coalesced' && options.duplicates !== 'all') {
     throw contractError('argument.invalid', 'scan', 'public-ble-manager.scan.duplicates')
   }
+  if (
+    options.delivery !== undefined &&
+    options.delivery !== 'latest' &&
+    options.delivery !== 'balanced' &&
+    options.delivery !== 'lossless-bounded' &&
+    options.delivery !== 'custom'
+  ) {
+    throw contractError('argument.invalid', 'scan', 'public-ble-manager.scan.delivery')
+  }
 }
 
 export async function findPeerInScan(scan: ScanSession, select: FindOptions['select']): Promise<BlePeer> {

@@ -14,6 +14,7 @@ import type { BleConnection } from './public/ble-manager'
 import type { ScanSession } from './public/ble-manager'
 import type { OperationOptions } from './public/operation-options'
 import { normalizeOperationOptions } from './public/operation-options'
+import { resolveStreamPreset } from './public/stream-presets'
 import { normalizeBleManagerCreateOptions } from './public/host-identity'
 import type { BleManagerCreateOptions } from './public/host-identity'
 import { rehydratePublicError, rehydratePublicPromise, runWithCleanup } from './public/error-bridge'
@@ -41,12 +42,19 @@ import { TauriBleIpcTransport } from './tauri/transport'
 import type { TauriChannel, TauriInvoke } from './tauri/transport'
 
 function toIpcScanOptions(options: ScanOptions): IpcScanOptions {
+  const delivery = resolveStreamPreset({ preset: options.delivery ?? 'balanced' })
   return {
     serviceUuids: undefined,
     manufacturerData: undefined,
     localNamePrefix: null,
     signal: options.signal,
-    timeoutMs: options.timeoutMs
+    timeoutMs: options.timeoutMs,
+    stream: {
+      itemCapacity: Number(delivery.itemCapacity),
+      byteCapacity: Number(delivery.byteCapacity),
+      reservedControlCapacity: Number(delivery.reservedControlCapacity),
+      overflowPolicy: delivery.overflowPolicy
+    }
   }
 }
 
