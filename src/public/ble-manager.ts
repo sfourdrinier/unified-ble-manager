@@ -78,7 +78,14 @@ export interface BlePeer {
 }
 
 export function snapshotBlePeer(peer: BlePeer): BlePeer {
-  return Object.freeze({ id: peer.id, name: peer.name, rssi: peer.rssi })
+  return Object.freeze({
+    id: peer.id,
+    name: peer.name,
+    rssi: peer.rssi,
+    ...(peer.reference === undefined ? {} : { reference: Object.freeze({ ...peer.reference }) }),
+    ...(peer.sources === undefined ? {} : { sources: Object.freeze([...peer.sources]) }),
+    ...(peer.state === undefined ? {} : { state: Object.freeze({ ...peer.state }) })
+  })
 }
 
 // Public connection — generation-bound lease, no generic.
@@ -116,9 +123,9 @@ export interface BleManager {
   scan(options?: ScanOptions): Promise<ScanSession>
   find(options?: FindOptions): Promise<BlePeer>
   choose(options?: ChooseOptions): Promise<BlePeer>
-  connect(peer: BlePeer | string, options?: OperationOptions): Promise<BleConnection>
+  connect(peer: BlePeer | string | PeerReference, options?: OperationOptions): Promise<BleConnection>
   withConnection<T>(
-    peer: BlePeer | string,
+    peer: BlePeer | string | PeerReference,
     options: OperationOptions,
     action: (connection: BleConnection) => Promise<T>
   ): Promise<T>
@@ -272,17 +279,24 @@ class PublicBleManager implements BleManager {
     return this.chooseImpl(options)
   }
 
-  async connect(peer: BlePeer | string, options: OperationOptions = {}): Promise<BleConnection> {
+  async connect(peer: BlePeer | string | PeerReference, options: OperationOptions = {}): Promise<BleConnection> {
     try {
       const { signal, deadline } = normalizeOperationOptions(options, this.now)
-      const peerIdString = typeof peer === 'string' ? peer : peer.id
+      const resolvedPeer = isPeerReference(peer) ? await this.peers.resolve(peer, options) : peer
+      if (resolvedPeer === null)
+        throw rehydratePublicError(
+          contractError('peer.not-found', 'connection', 'public-ble-manager.connect-reference')
+        )
+      const peerIdString = typeof resolvedPeer === 'string' ? resolvedPeer : resolvedPeer.id
       const peerId = opaqueId<'peer', string>(peerIdString, 'peer', 'public-ble-manager')
       const internalConnection = await this.internal.connect(peerId, {
         signal,
         deadline
       })
       const publicPeer =
-        typeof peer === 'string' ? snapshotBlePeer({ id: peerIdString, name: null, rssi: null }) : snapshotBlePeer(peer)
+        typeof resolvedPeer === 'string'
+          ? snapshotBlePeer({ id: peerIdString, name: null, rssi: null })
+          : snapshotBlePeer(resolvedPeer)
       return {
         peer: publicPeer,
         discover: async (discoverOptions: OperationOptions = {}) => {
@@ -306,7 +320,7 @@ class PublicBleManager implements BleManager {
   }
 
   async withConnection<T>(
-    peer: BlePeer | string,
+    peer: BlePeer | string | PeerReference,
     options: OperationOptions,
     action: (connection: BleConnection) => Promise<T>
   ): Promise<T> {
@@ -479,6 +493,10 @@ export function peerFromPublicObservation(observation: PublicScanObservation): B
 
 function isCompactObservation(observation: PublicScanObservation): observation is IpcAdvertisement {
   return 'peerId' in observation
+}
+
+function isPeerReference(value: BlePeer | string | PeerReference): value is PeerReference {
+  return typeof value === 'object' && value !== null && 'version' in value && 'backendId' in value && 'scope' in value
 }
 
 export function assertPublicScanOptions(options: ScanOptions): void {
