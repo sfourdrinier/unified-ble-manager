@@ -36,50 +36,10 @@ export function createCoreFeatureRegistry(backendFeatures: FeatureRegistry): Fea
   const registrationsWithoutLongWrite = backendFeatures.registrations.filter(
     registration => registration.id !== BUILT_IN_FEATURE_IDS.longWrite
   )
-  const registrationsWithDirectConnection = registrationsWithoutLongWrite.some(
-    registration => registration.id === BUILT_IN_FEATURE_IDS.connectionDirect
-  )
-    ? registrationsWithoutLongWrite
-    : [...registrationsWithoutLongWrite, createDirectConnectionRegistration()]
   if (!hasExecutableMaximumWriteLength(backendFeatures)) {
-    return createFeatureRegistry(Object.freeze(registrationsWithDirectConnection))
+    return createFeatureRegistry(Object.freeze(registrationsWithoutLongWrite))
   }
-  return createFeatureRegistry(Object.freeze([...registrationsWithDirectConnection, createLongWriteRegistration()]))
-}
-
-function createDirectConnectionRegistration() {
-  const limitation = Object.freeze({
-    code: 'physical-qualification-required',
-    explanation:
-      'Direct connection is implemented by the instantiated backend; physical qualification remains separate.',
-    affectedGuarantee: 'physical-radio-support'
-  })
-  return {
-    id: BUILT_IN_FEATURE_IDS.connectionDirect,
-    state: 'limited' as const,
-    selectedSchemaRange: capabilitySchemaRange,
-    implementationOrigin: 'backend-native' as const,
-    implementation: Object.freeze({
-      async invoke(): Promise<SerializableRecord> {
-        throw contractError('capability.unsupported', 'connection', 'core-capabilities.direct.invoke-without-manager')
-      }
-    }),
-    tck: Object.freeze({
-      suiteId: 'capability.catalog-v2',
-      requiredScenarioIds: Object.freeze(['capability.truth-limits-evidence-and-binding']),
-      contractRange: capabilitySchemaRange
-    }),
-    evidence: Object.freeze({
-      receiptId: 'deterministic-core-direct-connection-v1',
-      evidenceLevel: 'deterministic' as const,
-      implementationVersion: UNIFIED_BLE_IMPLEMENTATION_VERSION,
-      sourceDigest: 'core-direct-connection-capability-v1',
-      scenarioIds: Object.freeze(['capability.truth-limits-evidence-and-binding']),
-      limitations: Object.freeze([limitation])
-    }),
-    limitations: Object.freeze([limitation]),
-    limits: Object.freeze({ availability: Object.freeze({ maximum: 1, minimum: null, unit: 'boolean' }) })
-  }
+  return createFeatureRegistry(Object.freeze([...registrationsWithoutLongWrite, createLongWriteRegistration()]))
 }
 
 /** Reads the current backend-owned limit through the canonical registered implementation. */

@@ -18,7 +18,7 @@ function capabilitySnapshot(backendGeneration) {
     backendGeneration,
     descriptors: Object.values(BUILT_IN_FEATURE_IDS).map(id => ({
       id,
-      state: 'unsupported',
+      state: id === 'connection:direct' ? 'limited' : 'unsupported',
       selectedSchemaRange: schema,
       implementationOrigin: 'backend-native',
       tck: {
@@ -28,7 +28,7 @@ function capabilitySnapshot(backendGeneration) {
       },
       evidence: {
         receiptId: `test-${id}`,
-        evidenceLevel: 'blocked',
+        evidenceLevel: id === 'connection:direct' ? 'deterministic' : 'blocked',
         implementationVersion: 'test',
         sourceDigest: `test-${id}`,
         scenarioIds: ['capability.truth-limits-evidence-and-binding'],
