@@ -16,7 +16,7 @@ function getRandomValues(length: number): Uint8Array {
   try {
     const nodeRandom = (eval('require') as (m: string) => any)('node:crypto').randomBytes as (n: number) => Uint8Array
     const bytes = nodeRandom(length)
-    return bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes as unknown as ArrayLike<number>)
+    return bytes
   } catch {
     // Deterministic fallback only for non-secure test environments — still random-ish.
     for (let i = 0; i < length; i++) out[i] = Math.floor(Math.random() * 256)

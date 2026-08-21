@@ -24,7 +24,7 @@ import type { BleManagerCreateOptions } from './public/host-identity'
 import { IpcBleManager } from './ipc/manager'
 import type { IpcScanOptions } from './ipc/manager'
 import { TauriBleIpcTransport } from './tauri/transport'
-import type { TauriChannel } from './tauri/transport'
+import type { TauriChannel, TauriInvoke } from './tauri/transport'
 
 // Public Tauri manager adapter — wraps the IPC manager so the declared
 // `BleManager` contract is backed by a real translation, not a type cast.
@@ -122,7 +122,7 @@ export async function createTauriBleManager(options: BleManagerCreateOptions = {
 
 // Test/custom-host injection — retains explicit transport for deterministic tests.
 export interface TauriBleManagerEnvironment {
-  readonly invoke: (cmd: string, args?: unknown) => Promise<unknown>
+  readonly invoke: TauriInvoke
   readonly Channel: new <T>() => TauriChannel<T>
 }
 
@@ -131,7 +131,7 @@ export async function createTauriBleManagerWithEnvironment(
   options: BleManagerCreateOptions = {}
 ): Promise<BleManager> {
   normalizeBleManagerCreateOptions(options)
-  const transport = new TauriBleIpcTransport(environment as unknown as any)
+  const transport = new TauriBleIpcTransport(environment)
   const ipcManager = await IpcBleManager.create(transport)
   return new TauriBleManagerAdapter(ipcManager)
 }
