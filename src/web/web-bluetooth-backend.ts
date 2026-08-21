@@ -4,9 +4,12 @@ import type {
   BackendAttachment,
   BackendConnection,
   BackendEvent,
+  BackendPeerRecord,
+  BackendPeerQuery,
   BleCentralBackend,
   ConnectionLease,
   GattBackend,
+  PeerDirectoryBackend,
   ResourceCounters
 } from '../backend-contract/backend'
 import { BackendContractError, contractError } from '../backend-contract/errors'
@@ -52,6 +55,8 @@ import type {
 import type { BoundedAsyncStream, StreamLimits } from '../backend-contract/streams'
 import type { ScanFilter } from '../backend-contract/advertisement'
 import type { ChooserRequest, ChooserSelection, WebChooser } from '../backend-contract/host/web'
+import { assertPeerReference, encodePeerReference } from '../backend-contract/peer-reference'
+import type { PeerReference } from '../backend-contract/peer-reference'
 import { CoreBoundedStream } from '../core/bounded-stream'
 import type {
   WebBluetoothBoundary,
@@ -122,6 +127,12 @@ export class WebBluetoothProvider implements BackendProvider<string, HostNeutral
 export function createWebBluetoothProvider(boundary: WebBluetoothBoundary): WebBluetoothProvider {
   return new WebBluetoothProvider({ boundary })
 }
+
+export interface WebAuthorizedPeer {
+  readonly peerId: PeerId<string>
+  readonly browserDeviceId: string
+  readonly connected: boolean
+}
 /** Contract-v1 Web Bluetooth backend with chooser-limited discovery semantics. */
 export class WebBluetoothBackend
   implements BleCentralBackend<string, HostNeutralBackendIdentity<string>>, WebChooser<string>
@@ -131,6 +142,19 @@ export class WebBluetoothBackend
   readonly scanner: BleCentralBackend<string, HostNeutralBackendIdentity<string>>['scanner']
   readonly connections: BleCentralBackend<string, HostNeutralBackendIdentity<string>>['connections']
   readonly gatt: GattBackend<string>
+  readonly peers: PeerDirectoryBackend<string> = {
+    resolve: (reference, options) => this.resolveAuthorizedPeer(reference, options),
+    known: options => this.peerRecords(options),
+    connected: async options =>
+      (await this.peerRecords(options)).filter(record => record.state.connection === 'connected'),
+    bonded: async () => {
+      throw contractError('capability.unsupported', 'connection', 'web-peer-directory.bonded')
+    },
+    authorized: options => this.peerRecords(options),
+    restored: async () => {
+      throw contractError('capability.unsupported', 'connection', 'web-peer-directory.restored')
+    }
+  }
 
   private readonly backendInstance: number
   private attachmentRecord: AttachmentRecord<string>
@@ -162,7 +186,10 @@ export class WebBluetoothBackend
     nextBackendInstance += 1
     this.attachmentRecord = this.createAttachmentRecord(initialAvailability)
     this.negotiatedVersions = negotiateCoreVersions(LOCAL_COMPATIBILITY, LOCAL_COMPATIBILITY)
-    this.features = createWebBluetoothFeatureRegistry(boundary.implementationVersion)
+    this.features = createWebBluetoothFeatureRegistry(
+      boundary.implementationVersion,
+      boundary.getAuthorizedDevices !== undefined
+    )
     this.adapter = {
       currentState: async () => this.currentAdapterState(),
       watchState: async () => this.watchAdapterState()
@@ -248,6 +275,90 @@ export class WebBluetoothBackend
   async choose(request: ChooserRequest, options: PublicOperationOptions): Promise<ChooserSelection<string>> {
     const selection = await this.chooseDevice(request, options)
     return { peerId: selection.peerId, grantedServices: [...selection.grantedServices].map(canonicalUuid) }
+  }
+
+  async authorizedPeers(
+    options: PublicOperationOptions = { signal: null, deadline: null }
+  ): Promise<readonly WebAuthorizedPeer[]> {
+    this.assertAttached('web-peer-directory.authorized')
+    this.assertAbortableAdmission(options, 'connection', 'web-peer-directory.authorized')
+    if (options.deadline !== null && this.boundary.now() >= options.deadline) {
+      throw contractError('operation.timed-out', 'connection', 'web-peer-directory.authorized')
+    }
+    const getAuthorizedDevices = this.boundary.getAuthorizedDevices
+    if (getAuthorizedDevices === undefined) {
+      throw contractError('capability.unsupported', 'connection', 'web-peer-directory.authorized')
+    }
+    const devices = await getAuthorizedDevices()
+    this.assertAbortableAdmission(options, 'connection', 'web-peer-directory.authorized')
+    return devices.map(device => {
+      const selected = this.rememberSelection({ device, grantedServices: [] })
+      return Object.freeze({
+        peerId: selected.peerId,
+        browserDeviceId: device.id,
+        connected: device.gatt.connected
+      })
+    })
+  }
+
+  private async peerRecords(options: BackendPeerQuery): Promise<readonly BackendPeerRecord<string>[]> {
+    if (options.services !== undefined && options.services.length > 0) {
+      throw contractError('capability.unsupported', 'connection', 'web-peer-directory.services')
+    }
+    if (options.sources !== undefined && !options.sources.includes('origin-authorized')) return Object.freeze([])
+    const records = await this.authorizedPeers(options)
+    const references = options.references?.map((reference, index) => {
+      assertPeerReference(reference, `web-peer-directory.references[${index}]`)
+      if (reference.backendId !== this.identity.registeredBackendId || reference.scope !== 'origin') {
+        throw contractError('peer.scope-mismatch', 'connection', 'web-peer-directory.reference')
+      }
+      return encodePeerReference(reference)
+    })
+    return Object.freeze(
+      records
+        .map(record => this.toBackendPeerRecord(record))
+        .filter(record => references === undefined || references.includes(encodePeerReference(record.reference)))
+    )
+  }
+
+  private async resolveAuthorizedPeer(
+    reference: PeerReference,
+    options: BackendPeerQuery
+  ): Promise<BackendPeerRecord<string> | null> {
+    assertPeerReference(reference, 'web-peer-directory.resolve')
+    if (reference.backendId !== this.identity.registeredBackendId || reference.scope !== 'origin') {
+      throw contractError('peer.scope-mismatch', 'connection', 'web-peer-directory.resolve')
+    }
+    const records = await this.peerRecords(options)
+    return records.find(record => encodePeerReference(record.reference) === encodePeerReference(reference)) ?? null
+  }
+
+  private toBackendPeerRecord(record: WebAuthorizedPeer): BackendPeerRecord<string> {
+    return Object.freeze({
+      reference: Object.freeze({
+        version: 1,
+        backendId: this.identity.registeredBackendId,
+        scope: 'origin',
+        opaqueId: record.browserDeviceId
+      }),
+      peerId: record.peerId,
+      name: null,
+      rssi: null,
+      source: 'origin-authorized',
+      state: Object.freeze({
+        reachability: record.connected ? 'reachable' : 'unknown',
+        connection: record.connected ? 'connected' : 'disconnected',
+        bond: 'unsupported',
+        lastSeenAtMonotonicMs: null
+      })
+    })
+  }
+
+  peerReferenceFor(peerId: string): { readonly backendId: string; readonly browserDeviceId: string } | null {
+    const selected = this.selectedDevices.get(peerId)
+    return selected === undefined
+      ? null
+      : Object.freeze({ backendId: this.identity.registeredBackendId, browserDeviceId: selected.device.id })
   }
 
   events(): BoundedAsyncStream<BackendEvent<string>> {

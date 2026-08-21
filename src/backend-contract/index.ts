@@ -38,6 +38,8 @@ export type {
   BackendGenericEvent,
   BackendMtuChangedEvent,
   BackendNotificationOverflowEvent,
+  BackendPeerRecord,
+  BackendPeerQuery,
   BackendPermissionStateChangedEvent,
   BackendPhyChangedEvent,
   BackendRestorationEvent,
@@ -50,17 +52,28 @@ export type {
   ConnectionBackend,
   ConnectionLease,
   ConnectionState,
+  BlePeerState,
   GattBackend,
   ManagerConstruction,
   ManagerConstructionBase,
   ManagerState,
   OwnerMode,
   OwningManagerConstruction,
+  PeerDirectoryBackend,
+  PeerSource,
   ResourceCounters,
   ScanLease,
   ScannerBackend
 } from './backend'
 export { assertAttachedBackend, assertBackendEvent, attachBackend } from './backend'
+export type { PeerReference, PeerReferenceScope } from './peer-reference'
+export {
+  assertPeerReference,
+  decodePeerReference,
+  encodePeerReference,
+  isPeerReference,
+  snapshotPeerReference
+} from './peer-reference'
 export type {
   EvidenceLevel,
   EvidenceReceipt,

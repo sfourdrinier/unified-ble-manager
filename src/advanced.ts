@@ -95,7 +95,13 @@ export type {
 } from './backend-contract/identity'
 export type { ConnectionLifecycleCause, ConnectionLifecycleEvent } from './backend-contract/connection-lifecycle'
 export type { ScanOptions, AdvertisementField, AdvertisementObservation } from './backend-contract/advertisement'
-export type { ManagerConstruction, AttachedBackend } from './backend-contract/backend'
+export type {
+  AttachedBackend,
+  BackendPeerRecord,
+  BackendPeerQuery,
+  ManagerConstruction,
+  PeerDirectoryBackend
+} from './backend-contract/backend'
 export type { CapabilityDescriptor, FeatureId, FeatureRegistry } from './backend-contract/capabilities'
 export type { CleanupRecord, CleanupFailure, NormalizedBleError } from './backend-contract/errors'
 
@@ -152,6 +158,11 @@ export type {
   ServiceDataPattern
 } from './public/scan-query'
 export { normalizeScanObservation, normalizeScanQuery, observationMatchesScanQuery } from './public/scan-query'
+export type { BlePeerDirectory, BlePeerState, KnownPeerQuery, PeerSource } from './public/peer-directory'
+export type { PeerDirectoryRecord } from './public/peer-directory'
+export { mergePeerDirectoryRecords } from './public/peer-directory'
+export type { PeerReference, PeerReferenceScope } from './public/peer-reference'
+export { encodePeerReference, decodePeerReference } from './public/peer-reference'
 
 // Re-export façade utilities for expert callers that need exact control.
 export { normalizeOperationOptions } from './public/operation-options'

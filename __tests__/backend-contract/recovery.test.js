@@ -21,7 +21,7 @@ describe('backend recovery catalog', () => {
   })
 
   test('has a recovery entry for every canonical error code', () => {
-    expect(BLE_ERROR_CODES).toHaveLength(63)
+    expect(BLE_ERROR_CODES).toHaveLength(67)
     for (const code of BLE_ERROR_CODES) {
       const recovery = recoveryForCode(code, 'recovery.test')
       expect(recovery).toHaveProperty('disposition')

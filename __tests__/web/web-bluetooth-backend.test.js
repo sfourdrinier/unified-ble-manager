@@ -109,6 +109,9 @@ function createBoundary(options = {}) {
       hasTransientUserActivation: () => options.userActivation !== false,
       bluetoothAvailable: async () => options.bluetoothAvailable ?? true,
       requestDevice,
+      ...(options.authorizedDevices === undefined
+        ? {}
+        : { getAuthorizedDevices: async () => options.authorizedDevices }),
       now: () => 10,
       setTimer: callback => {
         const handle = { callback }
@@ -127,6 +130,28 @@ function createBoundary(options = {}) {
 }
 
 describe('WebBluetoothBackend', () => {
+  test('exposes origin-authorized devices through the backend peer directory contract', async () => {
+    const mock = createBoundary({ authorizedDevices: [] })
+    mock.boundary.getAuthorizedDevices = async () => [mock.device]
+    const provider = createWebBluetoothProvider(mock.boundary)
+    const [adapter] = await provider.listAdapters()
+    const backend = await provider.create({ selectedAdapterId: adapter.adapterId })
+    await backend.attach({ coreCompatibility: provider.descriptor.compatibility })
+
+    const records = await backend.peers.authorized({ signal: null, deadline: null })
+    expect(records).toHaveLength(1)
+    expect(records[0]).toMatchObject({
+      source: 'origin-authorized',
+      reference: { scope: 'origin', opaqueId: mock.device.id },
+      state: { connection: 'disconnected', bond: 'unsupported' }
+    })
+    await expect(backend.peers.resolve(records[0].reference, { signal: null, deadline: null })).resolves.toMatchObject({
+      peerId: records[0].peerId
+    })
+
+    await backend.destroy()
+  })
+
   test('keeps continuous scanning unavailable and exposes device selection only through the chooser', async () => {
     const mock = createBoundary()
     const provider = createWebBluetoothProvider(mock.boundary)

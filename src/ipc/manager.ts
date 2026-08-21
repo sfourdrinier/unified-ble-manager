@@ -27,6 +27,7 @@ import type {
   PortableWritePolicy
 } from '../manager/consumer-handles'
 import type { AttachmentRecord } from '../backend-contract/identity'
+import type { PeerReference } from '../backend-contract/peer-reference'
 import { IpcBleClient } from './client'
 import type { IpcClientTransport } from './protocol'
 
@@ -76,6 +77,7 @@ export interface IpcServiceData {
 
 export interface IpcAdvertisement {
   readonly peerId: string
+  readonly peerReference?: PeerReference
   readonly localName: string | null
   readonly rssi: number | null
   readonly txPowerLevel: number | null

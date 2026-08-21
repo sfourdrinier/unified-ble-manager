@@ -46,6 +46,7 @@ import { applicableVersionAxesEqual, assertCoreVersionsAccepted, snapshotApplica
 import { serializableRecordsEqual, snapshotSerializableRecord } from './serializable'
 import type { BoundedAsyncStream } from './streams'
 import type { ManagerRestorationCapability } from './restoration'
+import type { PeerReference } from './peer-reference'
 
 export type OwnerMode = 'owning' | 'borrowing'
 export type ManagerState = 'new' | 'ready' | 'destroying' | 'destroyed' | 'failed'
@@ -68,6 +69,48 @@ export interface ResourceCounters {
 export interface AdapterBackend<Attachment extends string> {
   currentState(): Promise<AdapterStateSnapshot<Attachment>>
   watchState(): Promise<AdapterStateWatch<Attachment>>
+}
+
+export type PeerSource =
+  | 'scan-observed'
+  | 'app-reference'
+  | 'system-connected'
+  | 'system-bonded'
+  | 'origin-authorized'
+  | 'restored'
+  | 'backend-cache'
+
+export interface BlePeerState {
+  readonly reachability: 'reachable' | 'unreachable' | 'unknown'
+  readonly connection: 'connected' | 'disconnected' | 'unknown'
+  readonly bond: 'bonded' | 'not-bonded' | 'unknown' | 'unsupported'
+  readonly lastSeenAtMonotonicMs: number | null
+}
+
+export interface BackendPeerQuery extends PublicOperationOptions {
+  readonly sources?: readonly PeerSource[]
+  readonly services?: readonly string[]
+  readonly references?: readonly PeerReference[]
+  readonly includeUnavailable?: boolean
+}
+
+export interface BackendPeerRecord<Attachment extends string> {
+  readonly reference: PeerReference
+  readonly peerId: PeerId<Attachment>
+  readonly name: string | null
+  readonly rssi: number | null
+  readonly source: PeerSource
+  readonly state: BlePeerState
+  readonly clockScope?: string
+}
+
+export interface PeerDirectoryBackend<Attachment extends string> {
+  resolve(reference: PeerReference, options: BackendPeerQuery): Promise<BackendPeerRecord<Attachment> | null>
+  known(options: BackendPeerQuery): Promise<readonly BackendPeerRecord<Attachment>[]>
+  connected(options: BackendPeerQuery): Promise<readonly BackendPeerRecord<Attachment>[]>
+  bonded(options: BackendPeerQuery): Promise<readonly BackendPeerRecord<Attachment>[]>
+  authorized(options: BackendPeerQuery): Promise<readonly BackendPeerRecord<Attachment>[]>
+  restored(options: BackendPeerQuery): Promise<readonly BackendPeerRecord<Attachment>[]>
 }
 export interface ScanLease<Attachment extends string, _Lease extends string> {
   readonly scanSessionId: ScanSessionId<Attachment, string>
@@ -365,6 +408,7 @@ export interface BleCentralBackend<Attachment extends string, Identity extends B
   readonly scanner: ScannerBackend<Attachment>
   readonly connections: ConnectionBackend<Attachment>
   readonly gatt: GattBackend<Attachment>
+  readonly peers?: PeerDirectoryBackend<Attachment>
   readonly features: FeatureRegistry
   attach(request: BackendAttachmentRequest): Promise<BackendAttachment<Attachment, Identity>>
   events(): BoundedAsyncStream<BackendEvent<Attachment>>

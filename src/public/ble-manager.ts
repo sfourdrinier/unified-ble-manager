@@ -22,9 +22,19 @@ import { snapshotResourceCounters } from './diagnostics'
 import { isAuthorizationBlocking, type AdapterStateSnapshot } from '../backend-contract/identity'
 import { createPublicGattDatabase } from './gatt'
 import type { GattDatabase, GattValueEvent } from './gatt'
-import { normalizeScanObservation, normalizeScanQuery, observationMatchesScanQuery, type ScanQuery } from './scan-query'
+import {
+  normalizeScanObservation,
+  normalizeScanQuery,
+  observationMatchesScanQuery,
+  type NormalizedScanObservation,
+  type ScanQuery
+} from './scan-query'
 import type { BoundedAsyncStreamIterator } from '../backend-contract/streams'
 import { createScanState } from './scan-state'
+import type { BlePeerDirectory, BlePeerState, PeerSource } from './peer-directory'
+import { createPublicPeerDirectory } from './peer-directory'
+import { isPeerReference, snapshotPeerReference } from './peer-reference'
+import type { PeerReference } from './peer-reference'
 
 export type GattSubscriptionValue = GattValueEvent
 export type {
@@ -61,16 +71,39 @@ export type {
   ScanQuery,
   ServiceDataPattern
 } from './scan-query'
+export type { BlePeerDirectory, BlePeerState, KnownPeerQuery, PeerSource } from './peer-directory'
+export type { PeerReference, PeerReferenceScope } from './peer-reference'
 
 // Public peer — opaque backend-scoped identifier, no generic.
 export interface BlePeer {
   readonly id: string
   readonly name: string | null
   readonly rssi: number | null
+  readonly reference: PeerReference | null
+  readonly sources: readonly PeerSource[]
+  readonly lastAdvertisement: NormalizedScanObservation | null
+  readonly state?: BlePeerState
 }
 
-export function snapshotBlePeer(peer: BlePeer): BlePeer {
-  return Object.freeze({ id: peer.id, name: peer.name, rssi: peer.rssi })
+type BlePeerInput = Pick<BlePeer, 'id' | 'name' | 'rssi'> &
+  Partial<Pick<BlePeer, 'reference' | 'sources' | 'lastAdvertisement' | 'state'>>
+
+export function snapshotBlePeer(peer: BlePeerInput): BlePeer {
+  return Object.freeze({
+    id: peer.id,
+    name: peer.name,
+    rssi: peer.rssi,
+    reference:
+      peer.reference === undefined || peer.reference === null
+        ? null
+        : snapshotPeerReference(peer.reference, 'peer.snapshot'),
+    sources: Object.freeze([...(peer.sources ?? [])]),
+    lastAdvertisement:
+      peer.lastAdvertisement === undefined || peer.lastAdvertisement === null
+        ? null
+        : normalizeScanObservation(peer.lastAdvertisement),
+    ...(peer.state === undefined ? {} : { state: Object.freeze({ ...peer.state }) })
+  })
 }
 
 // Public connection — generation-bound lease, no generic.
@@ -102,14 +135,15 @@ export interface BleManager {
   readonly capabilities: BleCapabilities
   readonly adapter: BleAdapter
   readonly diagnostics: BleDiagnostics
+  readonly peers: BlePeerDirectory
   readonly discovery: BleDiscoveryInfo
   readonly destroy: () => Promise<CleanupRecord>
   scan(options?: ScanOptions): Promise<ScanSession>
   find(options?: FindOptions): Promise<BlePeer>
   choose(options?: ChooseOptions): Promise<BlePeer>
-  connect(peer: BlePeer | string, options?: OperationOptions): Promise<BleConnection>
+  connect(peer: BlePeer | string | PeerReference, options?: OperationOptions): Promise<BleConnection>
   withConnection<T>(
-    peer: BlePeer | string,
+    peer: BlePeer | string | PeerReference,
     options: OperationOptions,
     action: (connection: BleConnection) => Promise<T>
   ): Promise<T>
@@ -146,6 +180,7 @@ export interface BleDiscoveryInfo {
 export interface PublicBleManagerHostOptions {
   readonly discoveryKind?: BleDiscoveryInfo['kind']
   readonly choose?: (options: ChooseOptions) => Promise<BlePeer>
+  readonly peers?: BlePeerDirectory
 }
 
 // Internal factory used by host entrypoints. Hosts derive identity and call this.
@@ -161,6 +196,7 @@ class PublicBleManager implements BleManager {
   readonly capabilities: BleCapabilities
   readonly adapter: BleAdapter
   readonly diagnostics: BleDiagnostics
+  readonly peers: BlePeerDirectory
 
   constructor(
     private readonly internal: InternalBleManager<string, BackendIdentity<string>>,
@@ -180,6 +216,7 @@ class PublicBleManager implements BleManager {
         ),
       startTrace: () => ({ stop: async () => internal.traceDocument() })
     }
+    this.peers = hostOptions.peers ?? createPublicPeerDirectory(internal.attachedBackend?.backend?.peers, now)
     const supportsContinuous = typeof internal.supports === 'function' && internal.supports('discovery:continuous-scan')
     this.discovery = Object.freeze({
       kind: hostOptions.discoveryKind ?? (supportsContinuous ? 'continuous-scan' : 'system-chooser')
@@ -259,17 +296,27 @@ class PublicBleManager implements BleManager {
     return this.chooseImpl(options)
   }
 
-  async connect(peer: BlePeer | string, options: OperationOptions = {}): Promise<BleConnection> {
+  async connect(peer: BlePeer | string | PeerReference, options: OperationOptions = {}): Promise<BleConnection> {
     try {
       const { signal, deadline } = normalizeOperationOptions(options, this.now)
-      const peerIdString = typeof peer === 'string' ? peer : peer.id
+      if (isReferenceLike(peer) && !isPeerReference(peer)) {
+        throw contractError('peer.reference-invalid', 'connection', 'public-ble-manager.connect-reference')
+      }
+      const resolvedPeer = isPeerReference(peer) ? await this.peers.resolve(peer, options) : peer
+      if (resolvedPeer === null)
+        throw rehydratePublicError(
+          contractError('peer.not-found', 'connection', 'public-ble-manager.connect-reference')
+        )
+      const peerIdString = typeof resolvedPeer === 'string' ? resolvedPeer : resolvedPeer.id
       const peerId = opaqueId<'peer', string>(peerIdString, 'peer', 'public-ble-manager')
       const internalConnection = await this.internal.connect(peerId, {
         signal,
         deadline
       })
       const publicPeer =
-        typeof peer === 'string' ? snapshotBlePeer({ id: peerIdString, name: null, rssi: null }) : snapshotBlePeer(peer)
+        typeof resolvedPeer === 'string'
+          ? snapshotBlePeer({ id: peerIdString, name: null, rssi: null })
+          : snapshotBlePeer(resolvedPeer)
       return {
         peer: publicPeer,
         discover: async (discoverOptions: OperationOptions = {}) => {
@@ -293,7 +340,7 @@ class PublicBleManager implements BleManager {
   }
 
   async withConnection<T>(
-    peer: BlePeer | string,
+    peer: BlePeer | string | PeerReference,
     options: OperationOptions,
     action: (connection: BleConnection) => Promise<T>
   ): Promise<T> {
@@ -455,17 +502,37 @@ export function filterScanObservations(
 
 export function peerFromPublicObservation(observation: PublicScanObservation): BlePeer {
   if (isCompactObservation(observation)) {
-    return snapshotBlePeer({ id: observation.peerId, name: observation.localName, rssi: observation.rssi })
+    const normalized = normalizeScanObservation(observation)
+    return snapshotBlePeer({
+      id: observation.peerId,
+      name: observation.localName,
+      rssi: observation.rssi,
+      reference: normalized.peerReference ?? null,
+      sources: ['scan-observed'],
+      lastAdvertisement: normalized
+    })
   }
+  const normalized = normalizeScanObservation(observation)
   return snapshotBlePeer({
     id: String(observation.device.id),
     name: observation.localName.state === 'present' ? observation.localName.value : null,
-    rssi: observation.rssi.state === 'present' ? observation.rssi.value : null
+    rssi: observation.rssi.state === 'present' ? observation.rssi.value : null,
+    reference: normalized.peerReference ?? null,
+    sources: ['scan-observed'],
+    lastAdvertisement: normalized
   })
 }
 
 function isCompactObservation(observation: PublicScanObservation): observation is IpcAdvertisement {
   return 'peerId' in observation
+}
+
+function isReferenceLike(value: unknown): value is object {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    ('version' in value || 'backendId' in value || 'scope' in value || 'opaqueId' in value)
+  )
 }
 
 export function assertPublicScanOptions(options: ScanOptions): void {

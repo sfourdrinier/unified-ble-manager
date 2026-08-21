@@ -97,6 +97,12 @@ export function recoveryForCode(code: BleErrorCode, operation: string): BleRecov
     case 'operation.disconnected':
     case 'operation.reset':
       return { disposition: 'retry-with-backoff', actions: [{ kind: 'reconnect' }] }
+    case 'peer.reference-invalid':
+    case 'peer.reference-version-unsupported':
+    case 'peer.scope-mismatch':
+      return { disposition: 'none', actions: [] }
+    case 'peer.not-found':
+      return { disposition: 'caller-policy', actions: [{ kind: 'rescan' }] }
     case 'gatt.discovery-required':
     case 'gatt.stale-handle':
     case 'gatt.cache-unknown':
