@@ -2,70 +2,72 @@
 
 import type { SerializableRecord } from './primitives'
 
-export type BleErrorCode =
-  | 'protocol.incompatible'
-  | 'protocol.malformed'
-  | 'protocol.violation'
-  | 'lifecycle.destroyed'
-  | 'lifecycle.invalid-state'
-  | 'lifecycle.invariant-violation'
-  | 'backend.reset'
-  | 'adapter.unavailable'
-  | 'adapter.powered-off'
-  | 'adapter.resetting'
-  | 'adapter.selection-required'
-  | 'adapter.ambiguous'
-  | 'permission.denied'
-  | 'permission.restricted'
-  | 'permission.not-determined'
-  | 'ownership.denied'
-  | 'connection.already-owned'
-  | 'scan.already-active'
-  | 'chooser.busy'
-  | 'argument.invalid'
-  | 'bytes.invalid'
-  | 'bytes.too-large'
-  | 'scan.start-failed'
-  | 'scan.stop-failed'
-  | 'scan.filter-invalid'
-  | 'chooser.cancelled'
-  | 'chooser.closed'
-  | 'chooser.user-activation-required'
-  | 'chooser.insecure-context'
-  | 'chooser.api-unavailable'
-  | 'chooser.optional-service-not-granted'
-  | 'chooser.permitted-device-unavailable'
-  | 'connection.not-found'
-  | 'connection.failed'
-  | 'connection.stale'
-  | 'connection.lost'
-  | 'operation.aborted'
-  | 'operation.timed-out'
-  | 'operation.disconnected'
-  | 'operation.cancelled-by-destroy'
-  | 'operation.reset'
-  | 'operation.adapter-unavailable'
-  | 'gatt.discovery-required'
-  | 'gatt.ambiguous-path'
-  | 'gatt.stale-handle'
-  | 'gatt.cache-unknown'
-  | 'gatt.not-found'
-  | 'gatt.property-not-supported'
-  | 'gatt.read-failed'
-  | 'gatt.write-failed'
-  | 'gatt.subscribe-failed'
-  | 'gatt.cccd-managed'
-  | 'stream.overflow'
-  | 'stream.closed'
-  | 'stream.quota'
-  | 'stream.rate-limited'
-  | 'capability.unsupported'
-  | 'capability.unavailable'
-  | 'capability.limited'
-  | 'background.terminated'
-  | 'platform.failure'
-  | 'platform.security'
-  | 'platform.transport'
+export const BLE_ERROR_CODES = Object.freeze([
+  'protocol.incompatible',
+  'protocol.malformed',
+  'protocol.violation',
+  'lifecycle.destroyed',
+  'lifecycle.invalid-state',
+  'lifecycle.invariant-violation',
+  'backend.reset',
+  'adapter.unavailable',
+  'adapter.powered-off',
+  'adapter.resetting',
+  'adapter.selection-required',
+  'adapter.ambiguous',
+  'permission.denied',
+  'permission.restricted',
+  'permission.not-determined',
+  'ownership.denied',
+  'connection.already-owned',
+  'scan.already-active',
+  'chooser.busy',
+  'argument.invalid',
+  'bytes.invalid',
+  'bytes.too-large',
+  'scan.start-failed',
+  'scan.stop-failed',
+  'scan.filter-invalid',
+  'chooser.cancelled',
+  'chooser.closed',
+  'chooser.user-activation-required',
+  'chooser.insecure-context',
+  'chooser.api-unavailable',
+  'chooser.optional-service-not-granted',
+  'chooser.permitted-device-unavailable',
+  'connection.not-found',
+  'connection.failed',
+  'connection.stale',
+  'connection.lost',
+  'operation.aborted',
+  'operation.timed-out',
+  'operation.disconnected',
+  'operation.cancelled-by-destroy',
+  'operation.reset',
+  'operation.adapter-unavailable',
+  'gatt.discovery-required',
+  'gatt.ambiguous-path',
+  'gatt.stale-handle',
+  'gatt.cache-unknown',
+  'gatt.not-found',
+  'gatt.property-not-supported',
+  'gatt.read-failed',
+  'gatt.write-failed',
+  'gatt.subscribe-failed',
+  'gatt.cccd-managed',
+  'stream.overflow',
+  'stream.closed',
+  'stream.quota',
+  'stream.rate-limited',
+  'capability.unsupported',
+  'capability.unavailable',
+  'capability.limited',
+  'background.terminated',
+  'platform.failure',
+  'platform.security',
+  'platform.transport'
+] as const)
+export type BleErrorCode = (typeof BLE_ERROR_CODES)[number]
 export type BleErrorDomain =
   | 'core'
   | 'adapter'
