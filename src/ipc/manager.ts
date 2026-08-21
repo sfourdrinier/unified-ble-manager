@@ -470,6 +470,20 @@ export class IpcConnection {
 
   private async pumpLifecycleEvents(subscription: IpcConnectionEventSubscription): Promise<void> {
     for await (const event of subscription.events) {
+      if (event.kind === 'terminal') {
+        this.lifecycleEvents.finishWithReason(requiredTerminalReason(event.reason, 'ipc-manager.connection-lifecycle'))
+        return
+      }
+      if (event.kind === 'overflow') {
+        this.lifecycleEvents.observeSourceOverflow({
+          kind: 'overflow',
+          policy: requiredOverflowPolicy(event.policy, 'ipc-manager.connection-lifecycle'),
+          droppedItems: resourceCount(Number(event.droppedItems)),
+          droppedBytes: resourceCount(Number(event.droppedBytes)),
+          replacedItems: resourceCount(Number(event.replacedItems))
+        })
+        continue
+      }
       const value = lifecycleEventValue(event)
       this.lifecycleEvents.emit(value, estimateByteLength(value))
     }
