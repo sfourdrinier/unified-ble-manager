@@ -480,6 +480,22 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
     const itemBytes = estimateByteLength(item)
     let droppedItems = 0
     let droppedBytes = 0
+    if (itemBytes > byteCapacity && item.kind !== 'terminal') {
+      pending.length = 0
+      pendingBytes = 0
+      droppedItems = 1
+      droppedBytes = itemBytes
+      pending.push({ kind: 'terminal', reason: 'overflow' })
+      pendingBytes = estimateByteLength(pending[0])
+      this.pendingStreamItems.set(streamId, pending)
+      this.pendingStreamBytes.set(streamId, pendingBytes)
+      const previous = this.pendingStreamOverflows.get(streamId)
+      this.pendingStreamOverflows.set(streamId, {
+        droppedItems: (previous?.droppedItems ?? 0) + droppedItems,
+        droppedBytes: (previous?.droppedBytes ?? 0) + droppedBytes
+      })
+      return
+    }
     while (pending.length >= itemCapacity || (pending.length > 0 && pendingBytes + itemBytes > byteCapacity)) {
       const removed = pending.shift()
       if (removed === undefined) break

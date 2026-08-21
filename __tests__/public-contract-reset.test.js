@@ -33,6 +33,7 @@ describe('PR1 public contract reset (TDD)', () => {
     expect(balanced.itemCapacity).toBe(32)
     expect(lossless.overflowPolicy).toBe('error')
     expect(() => resolveStreamPreset({ preset: 'custom' })).toThrow()
+    expect(() => resolveStreamPreset({ preset: 'custom', custom: { itemCapacity: 1, byteCapacity: 1 } })).toThrow()
     const custom = resolveStreamPreset({
       preset: 'custom',
       custom: { itemCapacity: 10, byteCapacity: 1024 }

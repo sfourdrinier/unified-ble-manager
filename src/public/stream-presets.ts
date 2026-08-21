@@ -66,10 +66,14 @@ export function resolveStreamPreset(input: StreamPresetInput = {}): StreamBudget
       if (custom === undefined || custom.itemCapacity === undefined || custom.byteCapacity === undefined) {
         throw new Error('custom stream preset requires itemCapacity and byteCapacity')
       }
+      const reservedControlCapacity = custom.reservedControlCapacity ?? capacity(2)
+      if (Number(custom.byteCapacity) <= Number(reservedControlCapacity)) {
+        throw contractError('argument.invalid', 'stream', 'stream-preset.custom-byte-capacity')
+      }
       return Object.freeze({
         itemCapacity: custom.itemCapacity,
         byteCapacity: custom.byteCapacity,
-        reservedControlCapacity: custom.reservedControlCapacity ?? capacity(2),
+        reservedControlCapacity,
         overflowPolicy: custom.overflowPolicy ?? 'drop-oldest'
       })
     }
