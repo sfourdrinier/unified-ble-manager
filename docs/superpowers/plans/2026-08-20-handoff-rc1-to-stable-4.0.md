@@ -635,7 +635,20 @@ handoff:        docs/superpowers/plans/2026-08-20-handoff-rc1-to-stable-4.0.md
   - lint fixes for `no-explicit-any`/`no-void`/`react-hooks` false positives
 - phase 4 (API reports, still additive — final root application-only will follow before adversarial):
   - `etc/api/*.api.md` — 9 committed reports (`root`, `react-native`, `expo`, `web`, `tauri`, `electron-renderer`, `advanced`, `backend-sdk`, `testing`) as required by PR1 spec; generated from current façade + preserved RC1 surface, to be updated when root becomes truly application-only
-- adversarial round 1: (pending)
+- phase 5 (final — truly application-only root, no RC1 aliases):
+  - `src/index.ts` — **now application-only**: only `BleManager` façade + `BlePeer`/`BleConnection`/`ScanSession`/`Gatt*`, `BleAdapter`, `OperationOptions`/`StreamPreset`/`BleManagerCreateOptions`/`BleError`; **removed** `attachBleBackend`/`createBleManager`/`Capacity`/`Deadline`/`Portable*` etc. to `/advanced`/`/backend-sdk`
+  - `src/advanced.ts` — now re-exports `BleManager`, `DEFAULT_BLE_MANAGER_OPTIONS`, `collectNotifications`/`find`/`scanUntil`/`withConnection` etc., plus `FeatureRegistry`/`NormalizedBleError`/`ConnectionLifecycle*`/`ScanOptions`/`MaximumWriteLengthObservation`
+  - `src/react-native-app-manager.ts` — removed `ReactNativeBleManagerAppOptions` legacy overload (now strictly `BleManagerCreateOptions`)
+  - `src/react-native.ts` — removed `ReactNativeBleManagerAppOptions` alias
+  - `src/web.ts` — removed legacy tuple `createNavigatorWebBleManager`/`WebBleManagerOptions`/`WebBleManagerSession`/`createWebBleManagerLegacy` and provider overload; now strictly `createWebBleManager(BleManagerCreateOptions) => Promise<BleManager>` + `WithEnvironment`
+  - `src/tauri.ts` — removed `invoke`/`Channel` overload; now strictly `createTauriBleManager(BleManagerCreateOptions)`
+  - `src/public/ble-manager.ts` — added `GattDescriptor` + `GattSubscriptionValue`
+  - `tsconfig.json` — added `unified-ble-manager/advanced|expo|tauri` paths
+  - `__tests__` — migrated `public-helpers`/`Docs.recipes`/`consumer-handles`/`finite-hrs-journey` to `require('../../src/advanced')`, fixed `bluez-package-surface` to expect `ApplicationBleManager`, updated `PackageSurface4` to verify app-only root (`ApplicationBleManager`/`createPublicBleManager` vs `undefined` for legacy), moved `capacity`/`deadline` etc to `advanced` in `package-surface/fixtures/public-surface.ts`, removed legacy Web tuple types, updated `TauriManager` + `web-bluetooth-backend` tests to use `WithEnvironment`
+  - `MIGRATION_4.0.md` — added RC1→rc.2 breaking table (9 rows)
+  - `etc/api/root.api.md` — now application-only, no preserved RC1 section; `web`/`react-native`/`advanced` reports updated to remove legacy tuple/alias
+  - gates: `lint` ✓ (after restoring `eslint-disable` headers), `typecheck` ✓, `bob build` ✓, `validate:evidence` ✓, `release:artifacts:check` ✓, `test:package` 103/103 ✓, `pack-install-smoke` ✓ (npm exit-handler warning ignored)
+- adversarial round 1: (pending — will run after this push)
 - adversarial round 2: (pending)
 - ready-for-github: (pending)
 - GitHub PR: (pending)

@@ -105,8 +105,8 @@ describe('Tauri v2 public manager', () => {
       return { kind: 'route', payload: responses[command] ?? { accepted: true, payload } }
     })
 
-    const { createTauriBleManager } = require('../src/tauri')
-    const manager = await createTauriBleManager({ invoke, Channel: FakeChannel })
+    const { createTauriBleManagerWithEnvironment } = require('../src/tauri')
+    const manager = await createTauriBleManagerWithEnvironment({ invoke, Channel: FakeChannel })
 
     await expect(manager.adapterState()).resolves.toMatchObject({ power: 'on' })
     const scan = await manager.scan({ serviceUuids: ['180d'] })
@@ -169,8 +169,8 @@ describe('Tauri v2 public manager', () => {
         resolveConnect = resolve
       })
     })
-    const { createTauriBleManager } = require('../src/tauri')
-    const manager = await createTauriBleManager({ invoke, Channel: FakeChannel })
+    const { createTauriBleManagerWithEnvironment } = require('../src/tauri')
+    const manager = await createTauriBleManagerWithEnvironment({ invoke, Channel: FakeChannel })
     const controller = new AbortController()
     const connecting = manager.connect('polar-h10', { signal: controller.signal })
 
@@ -207,8 +207,8 @@ describe('Tauri v2 public manager', () => {
         resolveConnect = resolve
       })
     })
-    const { createTauriBleProvider } = require('../src/tauri')
-    const manager = await createTauriBleProvider({ invoke, Channel: FakeChannel }).createManager()
+    const { createTauriBleManagerWithEnvironment } = require('../src/tauri')
+    const manager = await createTauriBleManagerWithEnvironment({ invoke, Channel: FakeChannel })
 
     await expect(manager.connect('polar-h10', { timeoutMs: 1 })).rejects.toMatchObject({
       normalized: { code: 'operation.timed-out' }
@@ -230,8 +230,8 @@ describe('Tauri v2 public manager', () => {
       if (args.request.kind === 'event.ack') return { kind: 'event.ack' }
       return { kind: 'route', payload: { state: bootstrap().attachment.adapter.state } }
     })
-    const { createTauriBleManager } = require('../src/tauri')
-    const manager = await createTauriBleManager({ invoke, Channel: FakeChannel })
+    const { createTauriBleManagerWithEnvironment } = require('../src/tauri')
+    const manager = await createTauriBleManagerWithEnvironment({ invoke, Channel: FakeChannel })
 
     await expect(manager.destroy()).rejects.toThrow('transport unavailable')
     expectConsoleError('[ElectronRendererBleClient] Release failed; client remains retryable:', releaseError)
@@ -254,8 +254,8 @@ describe('Tauri v2 public manager', () => {
       }
       return { kind: 'route', payload: { accepted: true } }
     })
-    const { createTauriBleManager } = require('../src/tauri')
-    const manager = await createTauriBleManager({ invoke, Channel: FakeChannel })
+    const { createTauriBleManagerWithEnvironment } = require('../src/tauri')
+    const manager = await createTauriBleManagerWithEnvironment({ invoke, Channel: FakeChannel })
     const scan = await manager.scan()
     const first = await scan.observations[Symbol.asyncIterator]().next()
     expect(first.done).toBe(false)

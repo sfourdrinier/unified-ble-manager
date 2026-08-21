@@ -2,19 +2,21 @@
 
 const {
   attachBleBackend,
-  collectNotifications,
-  connectAndDiscover,
   createBleManager,
   createManagerOwnershipAuthority,
-  deadline,
+} = require('../../src/advanced')
+const { deadline } = require('../../src/backend-contract/primitives')
+const {
+  collectNotifications,
+  connectAndDiscover,
   defaultScanDelivery,
   find,
   firstNotification,
   scanForServices,
   throwIfCleanupFailed,
   withConnection,
-  withDiscoveredConnection
-} = require('../../src')
+  withDiscoveredConnection,
+} = require('../../src/advanced')
 const { DEFAULT_BLE_MANAGER_OPTIONS } = require('../../src/manager/ble-manager')
 const { capacity, opaqueId, version, versionRange } = require('../../src/backend-contract/primitives')
 const { createDeterministicTestBackend } = require('../../src/testing/deterministic/deterministic-test-backend')

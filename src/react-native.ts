@@ -28,7 +28,7 @@ export type { ReactNativeAppleBackendProviderOptions } from './backends/reactnat
 export { createReactNativeBleManagerWithEnvironment } from './react-native-manager'
 export type { ReactNativeBleManagerOptions, ReactNativeBlePlatform } from './react-native-manager'
 export { createReactNativeBleManager } from './react-native-app-manager'
-export type { BleManagerCreateOptions as ReactNativeBleManagerAppOptions } from './public/host-identity'
+export type { BleManagerCreateOptions } from './public/host-identity'
 export {
   combineReactNativeFeatureRegistries,
   createReactNativeRestorationFeatureRegistry,

@@ -45,6 +45,15 @@ export interface GattCharacteristic {
   read(options?: OperationOptions): Promise<Uint8Array>
   write(value: Uint8Array, options?: OperationOptions): Promise<void>
 }
+export interface GattDescriptor {
+  readonly uuid: string
+  read(options?: OperationOptions): Promise<Uint8Array>
+  write(value: Uint8Array, options?: OperationOptions): Promise<void>
+}
+export type GattSubscriptionValue = {
+  readonly value: Uint8Array
+  readonly delivery: 'notification' | 'indication'
+}
 
 // Non-generic public manager. Lifecycle/ownership/generations stay in core.
 export interface BleManager {

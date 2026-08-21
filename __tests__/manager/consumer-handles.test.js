@@ -3,8 +3,8 @@
 const {
   attachBleBackend,
   createBleManager,
-  createManagerOwnershipAuthority
-} = require('../../src')
+  createManagerOwnershipAuthority,
+} = require('../../src/advanced')
 const { DEFAULT_BLE_MANAGER_OPTIONS } = require('../../src/manager/ble-manager')
 const { capacity, opaqueId, version, versionRange } = require('../../src/backend-contract/primitives')
 const { createDeterministicTestBackend } = require('../../src/testing/deterministic/deterministic-test-backend')

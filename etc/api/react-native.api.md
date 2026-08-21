@@ -5,4 +5,5 @@ export function createReactNativeBleManager(options?: BleManagerCreateOptions): 
 export function createReactNativeBleManagerWithEnvironment(options: ReactNativeBleManagerOptions): Promise<BleManager>
 export type ReactNativeBleManagerOptions = { platform: 'android' | 'apple', control: NativeUnifiedBleProtocolControl, now: () => number, clientId: string, managerId: string, hostSessionScope: string }
 export type BleManagerCreateOptions = { instanceId?: string, adapterId?: string, diagnostics?: DiagnosticsOptions, restoration?: { applicationId: string, restorationId: string, generation?: string } }
+// No ReactNativeBleManagerAppOptions alias — use BleManagerCreateOptions directly
 ```

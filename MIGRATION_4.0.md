@@ -269,6 +269,24 @@ Restoration identity (`clientId`, `hostSessionScope`, Expo `iosNativeProtocolRes
 7. Await `destroy()`.
 8. Remove `react-native-ble-plx`.
 
+## RC1 → 4.0.0-rc.2 (PR1 — public contract reset)
+
+`4.0.0-rc.2` is the pre-stable breaking window. There are **no compatibility aliases** — old names are removed, not deprecated.
+
+| RC1 | RC2 |
+|---|---|
+| `import { BleManager, createBleManager, attachBleBackend, capacity, deadline } from 'unified-ble-manager'` | `import type { BleManager, BlePeer, BleConnection, OperationOptions } from 'unified-ble-manager'`  +  `import { createBleManager, attachBleBackend, capacity, deadline } from 'unified-ble-manager/advanced'` |
+| `new BleManager(...generic)` / `BleManager<Attachment, Identity>` | `BleManager` is non-generic interface; `ApplicationBleManager` façade over internal generic core |
+| `manager.scan({ deadline, signal, delivery: { itemCapacity, ... } })` | `manager.scan({ timeoutMs, signal, preset: 'balanced' })` — `timeoutMs` normalizes once to `Deadline`; presets map to exact capacities |
+| `createReactNativeBleManager({ clientId, managerId, hostSessionScope })` | `createReactNativeBleManager({ instanceId?, restoration?: { applicationId, restorationId, generation? } })` — identity derived internally, ephemeral vs deterministic restoration split |
+| `createWebBleManager({ provider, clientId, managerId }) => { chooser, manager }` | `createWebBleManager(options?: BleManagerCreateOptions): Promise<BleManager>` — single manager; chooser is capability. Tests use `createWebBleManagerWithEnvironment` |
+| `createTauriBleManager({ invoke, Channel })` | `createTauriBleManager(options?: BleManagerCreateOptions)` — imports `@tauri-apps/api/core` internally. Tests use `createTauriBleManagerWithEnvironment` |
+| `Portable*` paths, `AttachmentId`, `ManagerId`, `Deadline`, `Capacity` from root | Moved to `unified-ble-manager/advanced` |
+| `find`, `scanUntil`, `withConnection`, `defaultScanDelivery`, `throwIfCleanupFailed` from root | Moved to `unified-ble-manager/advanced` — application code should use façade `OperationOptions`/`StreamPreset` |
+| `ReactNativeBleManagerAppOptions` type alias | Removed — use `BleManagerCreateOptions` directly |
+
+Restoration identity is now deterministic via `deriveRestorationIdentity({ applicationId, restorationId, generation })` with domain `unified-ble-manager:restoration:v1` and golden fixtures at `__tests__/fixtures/restoration-identity.golden.json`. `instanceId` never affects restoration.
+
 ## Next
 
 [`README.md`](README.md) · [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md) · [`docs/TUTORIALS.md`](docs/TUTORIALS.md) · [`docs/EXPO_PLUGIN.md`](docs/EXPO_PLUGIN.md)

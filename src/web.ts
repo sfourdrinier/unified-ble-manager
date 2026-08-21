@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-explicit-any, no-void */
-// src/web.ts — zero-plumbing Web Bluetooth factory (PR1)
+// src/web.ts — zero-plumbing Web Bluetooth factory (PR1 final, no compatibility aliases)
 
 import type { BleManager } from './public/ble-manager'
 import { createPublicBleManager } from './public/ble-manager'
@@ -48,18 +48,9 @@ export type {
   WebBluetoothTimerHandle
 } from './web/web-bluetooth-boundary'
 
-// New zero-plumbing Web factory — returns one BleManager, not a tuple.
-// Chooser is a capability on the manager, not a separate return value.
-// Overloaded to keep RC1 test compatibility: if called with { provider, clientId } it delegates to legacy tuple.
-export async function createWebBleManager(
-  options: BleManagerCreateOptions & { provider?: any; clientId?: string; managerId?: string; now?: () => number } = {}
-): Promise<BleManager | WebBleManagerSession> {
-  // Backward compat: RC1 tests call createWebBleManager({ provider, clientId, managerId, now })
-  if ((options as any).provider !== undefined) {
-    const legacy = options as unknown as WebBleManagerOptions
-    return createWebBleManagerLegacy(legacy) as unknown as BleManager
-  }
-  const normalized = normalizeBleManagerCreateOptions(options as BleManagerCreateOptions)
+// Zero-plumbing Web factory — returns one BleManager. No provider/clientId tuple.
+export async function createWebBleManager(options: BleManagerCreateOptions = {}): Promise<BleManager> {
+  const normalized = normalizeBleManagerCreateOptions(options)
   const env = createDefaultNavigatorWebBluetoothEnvironment()
   const provider = createWebBluetoothProvider(new NavigatorWebBluetoothBoundary(env))
   const ephemeral = createEphemeralHostIdentity()
@@ -73,63 +64,8 @@ export async function createWebBleManager(
     },
     { ...DEFAULT_BLE_MANAGER_OPTIONS, now: env.now }
   )
-  // Normalized instanceId does not affect Web; adapterId ignored (single adapter)
   void normalized
   return createPublicBleManager(internal as any, env.now)
-}
-
-// Legacy Web factory that returns { chooser, manager } tuple — kept for existing tests.
-// New code should use createWebBleManager() which returns a single BleManager.
-export interface WebBleManagerOptions {
-  readonly provider: import('./web/web-bluetooth-backend').WebBluetoothProvider
-  readonly clientId: string
-  readonly managerId: string
-  readonly now: () => number
-}
-export interface NavigatorWebBleManagerOptions {
-  readonly clientId: string
-  readonly managerId: string
-  readonly environment?: NavigatorWebBluetoothEnvironment
-}
-export interface WebBleManagerSession {
-  readonly chooser: import('./backend-contract/host/web').WebChooser<string>
-  readonly manager: import('./manager/ble-manager').BleManager<string, any>
-}
-export async function createNavigatorWebBleManager(
-  options: NavigatorWebBleManagerOptions
-): Promise<WebBleManagerSession> {
-  const environment = options.environment ?? createDefaultNavigatorWebBluetoothEnvironment()
-  const provider = createNavigatorWebBluetoothProvider(environment)
-  const backend = await provider.create({ selectedAdapterId: WEB_BLUETOOTH_ADAPTER_ID })
-  const manager = await createBleManagerFromBackend(
-    backend,
-    {
-      coreCompatibility: provider.descriptor.compatibility,
-      manager: {
-        clientId: opaqueId(options.clientId, 'client', 'web-bluetooth:browser'),
-        managerId: opaqueId(options.managerId, 'manager', 'web-bluetooth:browser'),
-        ownerMode: 'owning'
-      }
-    },
-    { ...DEFAULT_BLE_MANAGER_OPTIONS, now: environment.now }
-  )
-  return { chooser: backend, manager }
-}
-export async function createWebBleManagerLegacy(options: WebBleManagerOptions): Promise<WebBleManagerSession> {
-  const backend = await options.provider.create({ selectedAdapterId: WEB_BLUETOOTH_ADAPTER_ID })
-  const manager = await createBleManagerFromBackend(
-    backend,
-    {
-      coreCompatibility: options.provider.descriptor.compatibility,
-      manager: {
-        clientId: opaqueId(options.clientId, 'client', 'web-bluetooth:browser'),
-        managerId: opaqueId(options.managerId, 'manager', 'web-bluetooth:browser'),
-        ownerMode: 'owning'
-      }
-    },
-    { ...DEFAULT_BLE_MANAGER_OPTIONS, now: options.now }
-  )
-  return { chooser: backend, manager }
 }
 
 // Explicit provider injection for tests and unusual hosts.

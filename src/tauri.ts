@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
-// src/tauri.ts — zero-plumbing Tauri factory (PR1)
+// src/tauri.ts — zero-plumbing Tauri factory (PR1 final, no compatibility aliases)
 
 export * from './ipc/protocol'
 export * from './ipc/client'
@@ -25,16 +25,8 @@ import { TauriBleIpcTransport } from './tauri/transport'
 
 // Normal Tauri factory — imports invoke/Channel from @tauri-apps/api/core internally.
 // No transport plumbing from application code.
-// Overloaded to keep RC1 test compatibility: if called with { invoke, Channel } it delegates to WithEnvironment.
-export async function createTauriBleManager(
-  options: BleManagerCreateOptions & { invoke?: any; Channel?: any } = {}
-): Promise<BleManager> {
-  // Backward compat: RC1 tests call createTauriBleManager({ invoke, Channel })
-  if ((options as any).invoke !== undefined && (options as any).Channel !== undefined) {
-    return createTauriBleManagerWithEnvironment(options as any, {})
-  }
-  normalizeBleManagerCreateOptions(options as BleManagerCreateOptions)
-  // Dynamically import Tauri API to keep host-neutral root free of Tauri peer.
+export async function createTauriBleManager(options: BleManagerCreateOptions = {}): Promise<BleManager> {
+  normalizeBleManagerCreateOptions(options)
   let tauriCore: { invoke: any; Channel: any }
   try {
     // @ts-expect-error — optional peer, may not be installed in CI
@@ -50,9 +42,6 @@ export async function createTauriBleManager(
     Channel: tauriCore.Channel
   })
   const ipcManager = await IpcBleManager.create(transport)
-  // Wrap IpcBleManager in public façade — for PR1 we return the IPC manager directly
-  // cast to BleManager (same vocabulary, different capability document from trusted host).
-  // Full PR2 wrapping will project IPC receipts/capabilities to public types.
   return ipcManager as unknown as BleManager
 }
 
