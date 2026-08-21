@@ -90,7 +90,7 @@ describe('ci-release canonical package (4.0)', () => {
     expect(doc).toContain('sfourdrinier/unified-ble-manager')
     expect(doc).toContain('Release branch: `main`')
     expect(doc).toContain('Stable SemVer and platform support qualification are independent')
-    expect(doc).toContain('git tag -a v4.0.0-rc.0')
+    expect(doc).toContain('git tag -a v4.0.0-rc.2')
     expect(doc).toContain('git tag -a v4.0.0')
     expect(doc).toContain('4.0.0-rc.*')
     expect(doc).toContain('npm trusted publisher')
