@@ -1,50 +1,24 @@
-/* eslint-disable @typescript-eslint/no-explicit-any, no-eval */
 // src/public/host-identity.ts
 
 import { contractError } from '../backend-contract/errors'
 
-// Host-neutral crypto: avoid static `node:crypto` import so Metro/Web bundles do not
-// pull Node built-ins. Use Web Crypto when available, Node crypto via eval-hide when
-// running in Node, and a vendored sync SHA-256 fallback for the remaining case.
 function getRandomValues(length: number): Uint8Array {
   const out = new Uint8Array(length)
-  const g: any = globalThis as any
-  if (g.crypto?.getRandomValues) {
-    g.crypto.getRandomValues(out)
+  if (globalThis.crypto?.getRandomValues) {
+    globalThis.crypto.getRandomValues(out)
     return out
   }
-  try {
-    const nodeRandom = (eval('require') as (m: string) => any)('node:crypto').randomBytes as (n: number) => Uint8Array
-    const bytes = nodeRandom(length)
-    return bytes
-  } catch {
-    // Deterministic fallback only for non-secure test environments — still random-ish.
-    for (let i = 0; i < length; i++) out[i] = Math.floor(Math.random() * 256)
-    return out
-  }
+  for (let i = 0; i < length; i++) out[i] = Math.floor(Math.random() * 256)
+  return out
 }
 
 function bytesToHex(bytes: Uint8Array): string {
   let hex = ''
-  for (let i = 0; i < bytes.length; i++) hex += (bytes[i] as number).toString(16).padStart(2, '0')
+  for (const byte of bytes) hex += byte.toString(16).padStart(2, '0')
   return hex
 }
 
-// Pure-JS SHA-256 (public domain, derived from https://github.com/emn178/js-sha256)
-// — kept synchronous so deriveRestorationIdentity stays sync in both Node and browser.
-// Only the fallback path uses this; Node will use the faster native crypto when available.
 function sha256Sync(message: string): string {
-  // Try native first via eval-hide
-  try {
-    const nodeCreateHash = (eval('require') as (m: string) => any)('node:crypto').createHash as (a: string) => {
-      update(d: string, e: string): any
-      digest(enc: string): string
-    }
-    return nodeCreateHash('sha256').update(message, 'utf8').digest('hex')
-  } catch {
-    // fall through to JS implementation
-  }
-  // Web Crypto subtle is async, so for sync fallback we use the vendored JS impl below.
   return jsSha256(message)
 }
 
