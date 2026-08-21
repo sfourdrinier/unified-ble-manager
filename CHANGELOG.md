@@ -4,6 +4,21 @@ All notable changes to `unified-ble-manager` are documented here.
 
 ## [Unreleased]
 
+## [4.0.0-rc.2] - 2026-08-21
+
+Catch-up release candidate for the frozen 4.0 portable runtime contract. This candidate is cut from the exact post-PR5 `main` commit because the planned RC2 publication was delayed; it includes the PR1–PR5 contract and peer-directory work. Backend support labels remain evidence-derived and are not promoted by this release.
+
+### Public API and semantics
+
+- Completed the application-only manager, capability/recovery, GATT object, canonical scan-query, and scoped peer-reference surfaces.
+- Added truthful backend peer-directory capability wiring, origin-authorized Web Bluetooth resolution, and fail-closed unsupported behavior for hosts without a proven directory boundary.
+- Preserved bytes-first payloads, `AbortSignal` cancellation, generation-bound resources, and explicit ownership/cleanup semantics.
+
+### Release integrity
+
+- Intended for publication as a prerelease candidate on the `latest` channel through the tag-driven trusted-publishing workflow.
+- This is a release-train catch-up point; RC3 remains the post-PR8 checkpoint for the advanced central feature set.
+
 ## [4.0.0-rc.1] - 2026-08-19
 
 Documentation correctness and pre-stable API fixes on the 4.0 contract. This does not promote backend support labels or claim live-radio evidence.

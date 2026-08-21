@@ -2,7 +2,7 @@
 
 # Getting started
 
-**Current package:** `4.0.0-rc.1` on npm `latest`.
+**Current package:** `4.0.0-rc.2` on npm `latest`.
 
 This page gets you to a first scan, connect, read, notify, and teardown on React Native. Other hosts are linked at the bottom. The root import does not turn Bluetooth on.
 
