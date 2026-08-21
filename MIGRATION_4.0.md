@@ -2,7 +2,7 @@
 
 # Migrating from react-native-ble-plx
 
-`unified-ble-manager@4.0.0-rc.1` is a new package and a new contract. It is **not a source-compatible rename**. There is no `new BleManager()` facade, no Base64 characteristic values, and no public transaction IDs.
+`unified-ble-manager@4.0.0-rc.2` is a new package and a new contract. It is **not a source-compatible rename**. There is no `new BleManager()` facade, no Base64 characteristic values, and no public transaction IDs.
 
 This page is for a React Native app that already uses `react-native-ble-plx`. Web, Electron, Node, and Tauri are new hosts — use those pages after you understand the RN rewrite.
 
@@ -11,13 +11,13 @@ This page is for a React Native app that already uses `react-native-ble-plx`. We
 | You used to write | You write now |
 | --- | --- |
 | `import { BleManager } from 'react-native-ble-plx'` | `import { createReactNativeBleManager } from 'unified-ble-manager/react-native'` |
-| `new BleManager()` | `await createReactNativeBleManager({ clientId, managerId, hostSessionScope })` |
+| `new BleManager()` | `await createReactNativeBleManager({ instanceId: 'main' })` |
 | `characteristic.value` as Base64 | `Uint8Array` |
 | `cancelTransaction('tx-id')` | `AbortController` + `signal` |
 | Immortal `Device` with methods | Scan observation → `Connection` lease → `snapshot()` paths |
 | `manager.destroy()` fire-and-forget | `await manager.destroy()` and check `CleanupRecord` |
 
-`hostSessionScope` is a stable security/ownership scope for the host session, not a request id.
+`instanceId` is an optional app-owned name for a distinct manager instance. For native restoration, pass `restoration: { applicationId, restorationId, generation? }`; the factory derives the trusted client, manager, and host-session identities internally. Do not pass `clientId`, `managerId`, or `hostSessionScope` to the RC2 factory.
 
 ## Install
 
@@ -37,9 +37,11 @@ const manager = new BleManager()
 import { createReactNativeBleManager } from 'unified-ble-manager/react-native'
 
 const manager = await createReactNativeBleManager({
-  clientId: 'com.example.app.ble-client',
-  managerId: 'com.example.app.ble-manager',
-  hostSessionScope: 'com.example.app'
+  instanceId: 'main',
+  restoration: {
+    applicationId: 'com.example.app',
+    restorationId: 'ble'
+  }
 })
 ```
 

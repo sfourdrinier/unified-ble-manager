@@ -13,7 +13,7 @@ const pluginSrc = fs.readFileSync(path.join(root, 'plugin/src/withBLE.ts'), 'utf
 describe('package identity (unified-ble-manager)', () => {
   test('npm package name and stable 4.0.0 identity', () => {
     expect(pkg.name).toBe('unified-ble-manager')
-    expect(pkg.version).toBe('4.0.0-rc.1')
+    expect(pkg.version).toBe('4.0.0-rc.2')
   })
 
   test('strict package exports isolate manager, backend authoring, and deterministic testing', () => {
