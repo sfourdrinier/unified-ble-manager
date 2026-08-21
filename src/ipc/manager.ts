@@ -29,6 +29,7 @@ import type {
 import type { AttachmentRecord } from '../backend-contract/identity'
 import type { PeerReference } from '../backend-contract/peer-reference'
 import { IpcBleClient } from './client'
+import { IPC_GATT_DATABASE_SCHEMA_VERSION } from './protocol'
 import type { IpcClientTransport } from './protocol'
 
 export {
@@ -688,6 +689,11 @@ export class IpcGattDatabase {
   }
 
   static fromPayload(manager: IpcBleManager, connection: IpcConnection, payload: SerializableRecord): IpcGattDatabase {
+    if (
+      requiredNumber(payload, 'schemaVersion', 'ipc-manager.gatt-database-schema') !== IPC_GATT_DATABASE_SCHEMA_VERSION
+    ) {
+      throw contractError('protocol.incompatible', 'ipc', 'ipc-manager.gatt-database-schema')
+    }
     const characteristics = requiredCharacteristicRecords(
       requiredRecordArray(payload, 'characteristics', 'ipc-manager.gatt-database')
     )

@@ -22,6 +22,9 @@ export const IPC_BLE_PROTOCOL_CHANNEL = 'unified-ble-manager:v2'
 /** The version of the lifecycle value carried by the desktop webview v2 IPC stream. */
 export const IPC_CONNECTION_LIFECYCLE_EVENT_SCHEMA_VERSION = 2
 
+/** GATT database payload schema negotiated by the IPC protocol bootstrap. */
+export const IPC_GATT_DATABASE_SCHEMA_VERSION = 2
+
 /** Client-originated lifecycle stream identifiers occupy a reserved namespace. */
 export const IPC_CONNECTION_EVENTS_STREAM_HANDLE_PREFIX = 'connection-events-'
 

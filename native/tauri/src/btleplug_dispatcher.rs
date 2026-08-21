@@ -1569,6 +1569,7 @@ impl BtleplugDispatcher {
             },
         );
         Ok(object([
+            ("schemaVersion", number(2)),
             ("handle", string(database_handle)),
             ("databaseId", string(database_id)),
             ("databaseGeneration", string(database_generation)),

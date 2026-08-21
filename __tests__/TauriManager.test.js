@@ -229,6 +229,7 @@ describe('Tauri v2 public manager', () => {
         'connection.events.ready': { state: 'ready' },
         'connection.events.unsubscribe': { state: 'released', failures: [] },
         'gatt.discover': {
+          schemaVersion: 2,
           handle: 'database-1',
           databaseId: 'database-id-1',
           databaseGeneration: 'database-generation-1',
@@ -410,6 +411,7 @@ describe('Tauri v2 public manager', () => {
         return {
           kind: 'route',
           payload: {
+            schemaVersion: 2,
             handle: 'database-receipt',
             databaseId: 'database-id-receipt',
             databaseGeneration: 'database-generation-receipt',
