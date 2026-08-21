@@ -1,5 +1,7 @@
 'use strict'
 
+const { BUILT_IN_FEATURE_IDS } = require('../src/backend-contract/capabilities')
+
 class FakeChannel {
   constructor() {
     this.onmessage = null
@@ -17,11 +19,14 @@ function negotiated(axis) {
   return { axis, selected, localRange: range, remoteRange: range }
 }
 
-function capabilityDescriptor(id, scenario) {
+function capabilityDescriptor(id, scenario, state = 'limited') {
   const limitation = {
-    code: 'deterministic-only',
-    explanation: 'The fixture exposes deterministic host evidence only.',
-    affectedGuarantee: 'Physical-radio qualification is not claimed.'
+    code: state === 'limited' ? 'deterministic-only' : 'not-implemented',
+    explanation:
+      state === 'limited'
+        ? 'The fixture exposes deterministic host evidence only.'
+        : 'The fixture does not implement this capability.',
+    affectedGuarantee: state === 'limited' ? 'Physical-radio qualification is not claimed.' : 'support'
   }
   const schemaRange = {
     axis: 'capability-schema',
@@ -30,13 +35,13 @@ function capabilityDescriptor(id, scenario) {
   }
   return {
     id,
-    state: 'limited',
+    state,
     selectedSchemaRange: schemaRange,
     implementationOrigin: 'backend-native',
     tck: { suiteId: 'capability.catalog-v2', requiredScenarioIds: [scenario], contractRange: schemaRange },
     evidence: {
       receiptId: `fixture-${id}`,
-      evidenceLevel: 'deterministic',
+      evidenceLevel: state === 'limited' ? 'deterministic' : 'blocked',
       implementationVersion: 'fixture-v2',
       sourceDigest: `fixture-${id}`,
       scenarioIds: [scenario],
@@ -56,10 +61,18 @@ function capabilitySnapshot(backendGeneration) {
     ['gatt:indications', 'gatt.reads-descriptors-write-policy-and-dispatched-cancellation'],
     ['gatt:maximum-write-length', 'gatt.maximum-write-length-boundaries']
   ]
+  const metadata = new Map(entries)
   return {
     schemaVersion: 2,
     backendGeneration,
-    descriptors: entries.map(([id, scenario]) => capabilityDescriptor(id, scenario))
+    descriptors: Object.values(BUILT_IN_FEATURE_IDS).map(id => {
+      const scenario = metadata.get(id)
+      return capabilityDescriptor(
+        id,
+        scenario ?? 'capability.truth-limits-evidence-and-binding',
+        scenario === undefined ? 'unsupported' : 'limited'
+      )
+    })
   }
 }
 

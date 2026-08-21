@@ -62,6 +62,7 @@ pub struct BtleplugDispatcherOptions {
 #[derive(Clone)]
 pub struct BtleplugDispatcher {
     inner: Arc<Mutex<DispatcherState>>,
+    bootstrap_admission: Arc<Mutex<()>>,
     next_id: Arc<AtomicU64>,
     next_revocation: Arc<AtomicU64>,
     started_at: Arc<Instant>,
@@ -217,6 +218,7 @@ impl BtleplugDispatcher {
                 scan_owner: None,
                 peer_owners: HashMap::new(),
             })),
+            bootstrap_admission: Arc::new(Mutex::new(())),
             next_id: Arc::new(AtomicU64::new(1)),
             next_revocation: Arc::new(AtomicU64::new(1)),
             started_at: Arc::new(Instant::now()),
@@ -308,6 +310,7 @@ impl BtleplugDispatcher {
         event_sink: IpcEventSink,
         offer: BTreeMap<String, IpcValue>,
     ) -> Result<IpcValue, DispatchError> {
+        let _admission = self.bootstrap_admission.lock().await;
         let versions = negotiate_ipc_versions(&offer)?;
         let attachment = self.ensure_adapter().await?;
         let key = caller_key(&caller);
@@ -1343,7 +1346,20 @@ impl BtleplugDispatcher {
                             .await;
                         break;
                     }
-                    Err(_) => break,
+                    Err(_) => {
+                        let _ = dispatcher
+                            .emit_connection_failure(
+                                &stream_owner,
+                                &stream_id_for_task,
+                                &peer_id,
+                                &connection_id,
+                                &connection_generation,
+                                "backend-failure",
+                                "source-failed",
+                            )
+                            .await;
+                        break;
+                    }
                 }
             }
         });
@@ -2003,6 +2019,28 @@ impl BtleplugDispatcher {
         connection_id: &str,
         connection_generation: &str,
     ) -> Result<(), DispatchError> {
+        self.emit_connection_failure(
+            caller_key,
+            stream_id,
+            peer_id,
+            connection_id,
+            connection_generation,
+            "peer-link-loss",
+            "connection-lost",
+        )
+        .await
+    }
+
+    async fn emit_connection_failure(
+        &self,
+        caller_key: &str,
+        stream_id: &str,
+        peer_id: &str,
+        connection_id: &str,
+        connection_generation: &str,
+        cause: &str,
+        terminal_reason: &str,
+    ) -> Result<(), DispatchError> {
         let event = {
             let mut state = self.inner.lock().await;
             let attachment = state.attachment.clone().ok_or_else(|| {
@@ -2043,13 +2081,15 @@ impl BtleplugDispatcher {
                 ("backendIngressOrdinal", IpcValue::Null),
                 ("previous", string("connected")),
                 ("current", string("lost")),
-                ("cause", string("peer-link-loss")),
+                ("cause", string(cause)),
             ])
         };
-        self.emit(caller_key, stream_id, event, false).await?;
-        self.terminal(caller_key, stream_id, "connection-lost")
-            .await
-            .ok();
+        let send_result = self.emit(caller_key, stream_id, event, false).await;
+        if send_result.is_ok() {
+            self.terminal(caller_key, stream_id, terminal_reason)
+                .await
+                .ok();
+        }
         let mut state = self.inner.lock().await;
         if let Some(caller) = state.callers.get_mut(caller_key) {
             if let Some(resource) = caller.connection_events.remove(stream_id) {
@@ -2058,7 +2098,7 @@ impl BtleplugDispatcher {
                 }
             }
         }
-        Ok(())
+        send_result
     }
 
     async fn emit_scan_peripheral(

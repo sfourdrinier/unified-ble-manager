@@ -65,9 +65,10 @@ export class PublicBleCapabilities implements BleCapabilities {
 /** Projects a complete trusted-host snapshot without reconstructing evidence or TCK data. */
 export function createPublicBleCapabilities(
   snapshot: IpcCapabilitySnapshotV2,
-  expectedBackendGeneration: string
+  expectedBackendGeneration: string,
+  requireCatalogComplete = false
 ): PublicBleCapabilities {
-  validateCapabilitySnapshot(snapshot, expectedBackendGeneration)
+  validateCapabilitySnapshot(snapshot, expectedBackendGeneration, requireCatalogComplete)
   const descriptors = new Map<string, CapabilityDescriptor>()
   for (const descriptor of snapshot.descriptors) {
     descriptors.set(descriptor.id, snapshotCapabilityDescriptor(descriptor))

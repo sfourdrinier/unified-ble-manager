@@ -29,5 +29,7 @@ describe('Tauri caller lifecycle cleanup', () => {
     expect(dispatcher).toContain('tauri.scan-stale-lease')
     expect(dispatcher).toContain('tauri.subscribe-stale-lease')
     expect(dispatcher).toContain('quarantine_lease')
+    expect(dispatcher).toContain('bootstrap_admission')
+    expect(dispatcher).toContain('emit_connection_failure')
   })
 })

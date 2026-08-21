@@ -293,7 +293,8 @@ export function snapshotCapabilityDescriptors(
 
 export function validateCapabilitySnapshot(
   snapshot: CapabilitySnapshot,
-  expectedBackendGeneration: string
+  expectedBackendGeneration: string,
+  requireCatalogComplete: boolean = false
 ): CapabilitySnapshot {
   if (snapshot.schemaVersion !== 2 || snapshot.backendGeneration !== expectedBackendGeneration) {
     throw contractError('protocol.violation', 'capability', 'validateCapabilitySnapshot.authority')
@@ -305,6 +306,9 @@ export function validateCapabilitySnapshot(
       throw contractError('protocol.violation', 'capability', 'validateCapabilitySnapshot.duplicate')
     }
     ids.add(descriptor.id)
+  }
+  if (requireCatalogComplete && BUILT_IN_FEATURE_CATALOG.some(entry => !ids.has(entry.id))) {
+    throw contractError('protocol.violation', 'capability', 'validateCapabilitySnapshot.catalog-completeness')
   }
   return snapshot
 }

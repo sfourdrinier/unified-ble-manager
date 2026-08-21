@@ -139,7 +139,11 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
     await client.initialize()
     return new IpcBleManager(
       client,
-      createPublicBleCapabilities(client.bootstrap.capabilities, String(client.bootstrap.attachment.backendGeneration))
+      createPublicBleCapabilities(
+        client.bootstrap.capabilities,
+        String(client.bootstrap.attachment.backendGeneration),
+        true
+      )
     )
   }
 
