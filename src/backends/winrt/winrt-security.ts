@@ -82,7 +82,9 @@ export class WinRtSecurityBackend implements SecurityBackend {
 
   async state(peerId: string, options: PublicOperationOptions): Promise<PeerSecurityState> {
     this.assertActive('winrt.security.state')
-    const operation = this.dispatcher.dispatch(options, 'winrt.security.state', () => this.boundary.securityState(peerId))
+    const operation = this.dispatcher.dispatch(options, 'winrt.security.state', () =>
+      this.boundary.securityState(peerId)
+    )
     return this.snapshotState(await operation.completion)
   }
 
@@ -115,15 +117,20 @@ export class WinRtSecurityBackend implements SecurityBackend {
         this.activePairings.delete(peerId)
       }
     }
-    operation.completion.then(() => settle(), () => undefined).catch(() => undefined)
+    operation.completion
+      .then(
+        () => settle(),
+        () => undefined
+      )
+      .catch(() => undefined)
     operation.physicalCompletion.then(settle, settle).catch(() => undefined)
     const result = operation.completion
       .then(async value => {
-        const result = this.snapshotPairResult(value)
+        const snapshot = this.snapshotPairResult(value)
         if (value.outcome === 'cancelled') {
           await operation.physicalCompletion
         }
-        return result
+        return snapshot
       })
       .catch(error => {
         if (error instanceof BackendContractError && error.normalized.code === 'operation.aborted') {
@@ -145,11 +152,7 @@ export class WinRtSecurityBackend implements SecurityBackend {
 
   async unpair(peerId: string, _options: PublicOperationOptions): Promise<SecurityUnpairResult> {
     this.assertActive('winrt.security.unpair')
-    const operation = this.dispatcher.dispatch(
-      _options,
-      'winrt.security.unpair',
-      () => this.boundary.unpair(peerId)
-    )
+    const operation = this.dispatcher.dispatch(_options, 'winrt.security.unpair', () => this.boundary.unpair(peerId))
     return { outcome: await operation.completion }
   }
 

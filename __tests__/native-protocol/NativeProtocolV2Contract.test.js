@@ -171,7 +171,6 @@ describe('Native Protocol v2 schema authority', () => {
 
   test('carries every public Android ScanRecord advertisement field through the generated protocol records', () => {
     const radio = read('android/src/main/java/com/sfourdrinier/unifiedblemanager/radio/OwnedAndroidGattRadio.kt')
-    const boundary = read('src/native-protocol/rn-android-boundary.ts')
     const dispatcher = read(
       'android/src/main/java/com/sfourdrinier/unifiedblemanager/protocol/UnifiedBleProtocolAndroidDispatcher.kt'
     )
@@ -213,6 +212,7 @@ describe('Native Protocol v2 schema authority', () => {
       'android/src/main/java/com/sfourdrinier/unifiedblemanager/protocol/UnifiedBleProtocolAndroidDispatcher.kt'
     )
     const radio = read('android/src/main/java/com/sfourdrinier/unifiedblemanager/radio/OwnedAndroidGattRadio.kt')
+    const boundary = read('src/native-protocol/rn-android-boundary.ts')
     expect(dispatcher).toContain('securityEventsEnabled')
     expect(dispatcher).toContain('if (securityEventsEnabled.get()) emitSecurityStateChanged')
     expect(dispatcher).toContain('securityEventsEnabled.set(true)')

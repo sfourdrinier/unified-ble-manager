@@ -199,7 +199,10 @@ export class BluezSecurityBackend implements SecurityBackend {
   peerRemoved(path: string): void {
     const peerId = this.runtime.peerIdForPathIfKnown(path)
     if (peerId === null) return
-    this.activePairings.get(peerId)?.dispatch.requestCancellation().catch(() => undefined)
+    this.activePairings
+      .get(peerId)
+      ?.dispatch.requestCancellation()
+      .catch(() => undefined)
     const streams = this.streams.get(peerId)
     for (const stream of streams ?? []) stream.closeWithReason('operation-aborted')
     this.streams.delete(peerId)
