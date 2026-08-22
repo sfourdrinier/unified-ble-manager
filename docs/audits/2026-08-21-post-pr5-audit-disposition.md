@@ -230,6 +230,7 @@ physical-radio evidence remain open; no RC3 or merge claim is made.
 | TypeScript/API/docs/generated support | Proven | `pnpm docs:check`; 23 API entrypoints; Tauri permission schema/reference and Electron/Tauri security docs are committed. |
 | Package/prepack/deterministic packed consumer | Proven locally | `pnpm test:package` passed 123 suites / 1,148 tests, including prepack and G6A packed-consumer coverage. |
 | Native protocol and Tauri native scope | Proven locally | `pnpm native-protocol:check`, `pnpm test:native-protocol`, `cargo test --manifest-path native/tauri/Cargo.toml` (20 tests), and clippy `-D warnings` passed. |
+| Desktop IPC security capability truth | Proven locally | Electron/Tauri scope tests and `ElectronPublicManager` regression ensure unsupported native security is not promoted through IPC bootstrap. |
 | Raw npm pack-install smoke | Blocked locally | `node scripts/ci/pack-install-smoke.js` reaches local npm packing but hangs/encounters the npm exit-handler failure; hosted supported-Node proof is required. |
 | Android Gradle/JVM and physical Android | Blocked/open | Local lane is blocked before compilation by missing `example/node_modules/@react-native/gradle-plugin`; hosted Android compile/JVM and physical-radio evidence remain required. |
 | WinRT native ABI/runtime and physical desktop | Blocked/open | macOS cannot qualify the Windows native artifact; hosted Windows compile/ABI/runtime and physical evidence remain required. |
