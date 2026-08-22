@@ -201,7 +201,7 @@ class OwnedAndroidGattRadio(private val context: Context) {
    * apps should re-run discoverServices (Android docs).
    */
   var onServicesChanged: ((deviceId: String) -> Unit)? = null
-  var onSecurityState: ((deviceId: String, state: OwnedAndroidSecurityState) -> Unit)? = null
+  internal var onSecurityState: ((deviceId: String, state: OwnedAndroidSecurityState) -> Unit)? = null
   /** Runtime scan failures (permissions, internal errors) — not start exceptions. */
   var onScanFailed: ((errorCode: Int) -> Unit)? = null
   internal var onCleanupFailure: ((OwnedRadioTeardownFailure) -> Unit)? = null
