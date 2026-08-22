@@ -17,6 +17,7 @@ describe('BluezOperationDispatcher', () => {
     )
 
     expect(dispatcher.activeCount()).toBe(1)
+    await new Promise(resolve => setImmediate(resolve))
     abortController.abort()
     await expect(dispatch.completion).rejects.toMatchObject({ normalized: { code: 'operation.aborted' } })
     expect(dispatcher.activeCount()).toBe(1)
@@ -62,5 +63,21 @@ describe('BluezOperationDispatcher', () => {
     releaseCancellation()
     await idle
     expect(dispatcher.activeCount()).toBe(0)
+  })
+
+  test('does not start a queued operation after immediate cancellation', async () => {
+    const dispatcher = new BluezOperationDispatcher(() => 10)
+    const abortController = new AbortController()
+    const operation = jest.fn(async () => undefined)
+    const dispatch = dispatcher.dispatch(
+      { signal: abortController.signal, deadline: null },
+      'bluez.test.queued-cancellation',
+      operation
+    )
+
+    abortController.abort()
+    await expect(dispatch.completion).rejects.toMatchObject({ normalized: { code: 'operation.aborted' } })
+    await dispatch.physicalSettled
+    expect(operation).not.toHaveBeenCalled()
   })
 })

@@ -96,7 +96,10 @@ export class WinRtSecurityBackend implements SecurityBackend {
     this.streams.set(peerId, peerStreams)
     this.state(peerId, { signal: null, deadline: null }).then(
       state => this.emit(peerId, state),
-      () => stream.closeWithReason('source-failed')
+      () => {
+        stream.closeWithReason('source-failed')
+        this.removeStream(peerId, stream)
+      }
     )
     return stream
   }
@@ -117,19 +120,11 @@ export class WinRtSecurityBackend implements SecurityBackend {
         this.activePairings.delete(peerId)
       }
     }
-    operation.completion
-      .then(
-        () => settle(),
-        () => undefined
-      )
-      .catch(() => undefined)
     operation.physicalCompletion.then(settle, settle).catch(() => undefined)
     const result = operation.completion
       .then(async value => {
         const snapshot = this.snapshotPairResult(value)
-        if (value.outcome === 'cancelled') {
-          await operation.physicalCompletion
-        }
+        await operation.physicalCompletion
         return snapshot
       })
       .catch(error => {
@@ -213,6 +208,13 @@ export class WinRtSecurityBackend implements SecurityBackend {
     for (const stream of [...streams]) {
       if (stream.emit(event, 1).terminated) streams.delete(stream)
     }
+    if (streams.size === 0) this.streams.delete(peerId)
+  }
+
+  private removeStream(peerId: string, stream: CoreBoundedStream<PeerSecurityEvent>): void {
+    const streams = this.streams.get(peerId)
+    if (streams === undefined) return
+    streams.delete(stream)
     if (streams.size === 0) this.streams.delete(peerId)
   }
 

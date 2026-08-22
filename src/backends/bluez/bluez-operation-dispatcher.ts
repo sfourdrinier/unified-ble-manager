@@ -122,7 +122,12 @@ export class BluezOperationDispatcher {
         )
       }
       Promise.resolve()
-        .then(operation)
+        .then(() => {
+          if (callerTerminal) {
+            throw contractError('operation.aborted', 'core', operationName)
+          }
+          return operation()
+        })
         .then(
           result => {
             settlePhysical()

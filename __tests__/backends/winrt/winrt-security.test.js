@@ -159,4 +159,21 @@ describe('WinRT security backend adapter', () => {
     await recovered.close()
     security.close()
   })
+
+  test('releases failed security watches from backend ownership', async () => {
+    const boundary = createBoundary()
+    const failure = new Error('state failed')
+    boundary.securityState = jest.fn(() => ({
+      completion: Promise.reject(failure),
+      cancel: jest.fn(async () => 'already-terminal')
+    }))
+    const security = new WinRtSecurityBackend(boundary, () => 50)
+    const stream = security.watch('peer-1')
+    await new Promise(resolve => setImmediate(resolve))
+    expect(security.streams.size).toBe(0)
+    await expect(stream[Symbol.asyncIterator]().next()).resolves.toMatchObject({
+      value: { kind: 'terminal', reason: 'source-failed' }
+    })
+    security.close()
+  })
 })

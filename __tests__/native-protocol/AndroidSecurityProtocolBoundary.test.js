@@ -401,6 +401,20 @@ describe('React Native Android security protocol boundary', () => {
       normalized: { code: 'lifecycle.destroyed' }
     })
   })
+
+  test('releases failed security watches from backend ownership', async () => {
+    const security = new ReactNativeAndroidSecurityBackend(
+      securityAdapter({ securityState: jest.fn(async () => Promise.reject(new Error('state failed'))) }),
+      () => 20
+    )
+    const stream = security.watch(peerId)
+    await new Promise(resolve => setImmediate(resolve))
+    expect(security.streams.size).toBe(0)
+    await expect(stream[Symbol.asyncIterator]().next()).resolves.toMatchObject({
+      value: { kind: 'terminal', reason: 'source-failed' }
+    })
+    security.close()
+  })
 })
 
 function securityState(bond) {

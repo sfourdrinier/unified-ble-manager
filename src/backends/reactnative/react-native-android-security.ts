@@ -60,7 +60,10 @@ export class ReactNativeAndroidSecurityBackend implements SecurityBackend {
     this.streams.set(peerId, streams)
     this.state(peerId, { signal: null, deadline: null }).then(
       state => this.emit(peerId, state),
-      () => stream.closeWithReason('source-failed')
+      () => {
+        stream.closeWithReason('source-failed')
+        this.removeStream(peerId, stream)
+      }
     )
     return stream
   }
@@ -188,6 +191,13 @@ export class ReactNativeAndroidSecurityBackend implements SecurityBackend {
     this.sequences.set(peerId, sequence)
     const event = Object.freeze({ kind: 'state' as const, peerId, sequence, state })
     for (const stream of [...streams]) if (stream.emit(event, 1).terminated) streams.delete(stream)
+    if (streams.size === 0) this.streams.delete(peerId)
+  }
+
+  private removeStream(peerId: string, stream: CoreBoundedStream<PeerSecurityEvent>): void {
+    const streams = this.streams.get(peerId)
+    if (streams === undefined) return
+    streams.delete(stream)
     if (streams.size === 0) this.streams.delete(peerId)
   }
 }
