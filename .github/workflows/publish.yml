@@ -236,6 +236,10 @@ jobs:
       - name: Canonical pack+install export smoke
         run: node scripts/ci/pack-install-smoke.js
 
+      # Independent G6A packed-consumer proof; keep separate from generic smoke to avoid artifact collisions.
+      - name: G6A packed consumer proof
+        run: node scripts/ci/g6a-packed-consumer-proof.js
+
       - name: Generate the exact canonical npm publish tarball
         run: |
           set -euo pipefail

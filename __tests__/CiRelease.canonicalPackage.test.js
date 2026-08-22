@@ -261,6 +261,39 @@ describe('ci-release canonical package (4.0)', () => {
     expect(fs.existsSync(path.join(root, 'scripts/ci/pack-install-smoke.js'))).toBe(true)
   })
 
+  test('G6A packed-consumer proof follows canonical smoke on the required release lanes', () => {
+    const ci = read('.github/workflows/ci.yml')
+    const publish = read('.github/workflows/publish.yml')
+    const release = read('RELEASE.md')
+    const g6aCommand = 'node scripts/ci/g6a-packed-consumer-proof.js'
+    const g6aCommandPattern = new RegExp(g6aCommand.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')
+
+    expect(ci.match(g6aCommandPattern)).toHaveLength(1)
+    expect(ci).toMatch(
+      /- name: Canonical npm pack \+ install export smoke[\s\S]+?run: node scripts\/ci\/pack-install-smoke\.js[\s\S]+?- name: G6A packed consumer proof\n\s+if: runner\.os == 'Linux' && matrix\.node == '22'\n\s+run: node scripts\/ci\/g6a-packed-consumer-proof\.js/
+    )
+
+    const publishJob = publish.slice(publish.indexOf('\n  publish:'))
+    expect(publishJob).toContain('runs-on: ubuntu-latest')
+    expect(publishJob).toMatch(/name: Setup Node\.js[\s\S]+?node-version: 24/)
+    expect(publishJob.match(g6aCommandPattern)).toHaveLength(1)
+    const publishSmokeIndex = publishJob.indexOf('- name: Canonical pack+install export smoke')
+    const publishG6AIndex = publishJob.indexOf('- name: G6A packed consumer proof')
+    expect(publishSmokeIndex).toBeGreaterThan(-1)
+    expect(publishG6AIndex).toBeGreaterThan(publishSmokeIndex)
+    expect(publishJob.slice(publishSmokeIndex, publishG6AIndex)).toContain(
+      'run: node scripts/ci/pack-install-smoke.js'
+    )
+    expect(publishJob.slice(publishG6AIndex)).toMatch(
+      /- name: G6A packed consumer proof\n\s+run: node scripts\/ci\/g6a-packed-consumer-proof\.js/
+    )
+
+    expect(release).toMatch(
+      /node scripts\/ci\/pack-install-smoke\.js\nnode scripts\/ci\/g6a-packed-consumer-proof\.js\nnpm pack --dry-run/
+    )
+    expect(release.match(g6aCommandPattern)).toHaveLength(1)
+  })
+
   // R2-F040: verify-release aligned with publish (Expo + classic required / explicit skip)
   test('R2-F040 verify-release and publish share Expo CNG + classic Android + host typeof', () => {
     const sh = read('scripts/verify-release.sh')

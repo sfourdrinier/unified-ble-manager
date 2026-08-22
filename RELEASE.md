@@ -69,6 +69,7 @@ pnpm lint
 pnpm prepack
 pnpm release:artifacts:check
 node scripts/ci/pack-install-smoke.js
+node scripts/ci/g6a-packed-consumer-proof.js
 npm pack --dry-run
 ```
 
