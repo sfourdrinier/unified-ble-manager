@@ -40,7 +40,7 @@ export async function createExpoBleManagerWithEnvironment(
   environment: ReactNativeBleManagerOptions
 ): Promise<BleManager> {
   const internal = await createReactNativeBleManagerWithEnvironment(environment)
-  return (await import('./public/ble-manager')).createPublicBleManager(internal, environment.now)
+  return (await import('./public/ble-manager.js')).createPublicBleManager(internal, environment.now)
 }
 
 export type { ReactNativeBleManagerOptions as ExpoBleManagerEnvironment }
