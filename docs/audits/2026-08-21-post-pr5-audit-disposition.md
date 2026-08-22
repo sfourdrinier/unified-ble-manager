@@ -310,7 +310,7 @@ PR6 to a release claim by itself.
 ## PR8 current checkpoint
 
 The current PR8 branch is `feat/4.0-link-controls` at committed tip
-`f07ac04`. The readiness ingress, core
+`6aa26b8`. The readiness ingress, core
 writeWhenReady lifecycle, packed-consumer validator, public Web consumers,
 Android PHY runtime truth, and executable TCK closure slices are committed
 through this tip; the cumulative package gate has been reverified against the
@@ -325,9 +325,9 @@ runtime source immediately before the documentation-only checkpoint.
 | CoreBluetooth readiness | `canSendWriteWithoutResponse`, `peripheralIsReady(toSendWriteWithoutResponse:)`, native ordinal/generation, bounded stream, disconnect/destroy cleanup | Direct Node/Electron-main only, limited/deterministic; other hosts remain unsupported |
 | Scheduler and recovery | Per-connection bounded round-robin lanes, queue overflow, service-change cancellation, reasoned rediscovery, uncertain-write preservation, hidden-refresh source guard | Fixed with focused TDD/TCK coverage |
 | TCK and docs | PR8 closure scenarios now execute PHY/readiness probes, keep parameters/subrate explicitly scoped to the absent seam, preserve nullable skipped security observations, and include the corrected advanced-helper imports | Deterministic evidence only; no physical-radio claim |
-| Local package gate | `pnpm test:package`: 140 suites / 1,290 tests; `pnpm test:plugin`: 36 tests; docs/API, native protocol, artifact, smell, lint/typecheck, and diff checks included | Green locally |
+| Local package gate | `pnpm test:package`: 140 suites / 1,291 tests; `pnpm test:plugin`: 36 tests; docs/API, native protocol, artifact, smell, lint/typecheck, and diff checks included | Green locally |
 | Native/plugin gates | CoreBluetooth macOS Node-API build, native protocol host, plugin 36/36, release artifacts, typecheck/lint | Green locally; Android/Windows hosted qualification remains required |
 | Packed consumer gate | Local npm pack smoke still encounters npm `Exit handler never called!`; normal npm subprocesses now have a 600-second bound; the stale 41-fact validator was corrected to the current 43-fact profile | Hosted supported-Node proof required |
 | Performance baselines | Deterministic baseline `unified-ble-pr8-deterministic-performance-v1`: 23 measurements in the focused 3-payload test and 31 measurements / 15 categories in default `performance:check`, including all ten PR8 IDs, bounded cleanup and ownership metadata | Deterministic baseline fixed; live/native comparison remains a PR12 gate |
 | Remaining contract gaps | Parameter/subrate remain unsupported because no truthful pinned API is wired; readiness is unsupported outside the direct CoreBluetooth seam; `writeWhenReady` has a capability-gated public/core implementation with deterministic cleanup and uncertainty semantics | Parameter/subrate/readiness host coverage remain open; no capability is promoted from deterministic evidence to physical support |
-| Review/release | PR #41 is open; first Copilot/Codex findings and current Codex threads are dispositioned through `f07ac04`; hosted CI rerun including G6A, final exact-SHA review, merge, and RC3 remain pending | Blocking; RC2 remains immutable |
+| Review/release | PR #41 is open; first Copilot/Codex findings and current Codex threads are dispositioned through `6aa26b8`; hosted CI rerun including G6A, final exact-SHA review, merge, and RC3 remain pending | Blocking; RC2 remains immutable |

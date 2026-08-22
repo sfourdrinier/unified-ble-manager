@@ -22,8 +22,8 @@ consumer proof remain separate gates.
 
 ## Follow-up inventory — current PR41 source
 
-Verified against current HEAD `f07ac04`.
-The current package gate is 140 suites / 1,290 tests; plugin is 36/36.
+Verified against current HEAD `6aa26b8`.
+The current package gate is 140 suites / 1,291 tests; plugin is 36/36.
 
 | ID | Source/reviewer | Finding | Disposition |
 | --- | --- | --- | --- |
@@ -61,5 +61,6 @@ Verified against the integrated source through current HEAD `f07ac04`.
 | F-16 | Codex P2 thread 3836520647 | IPC rediscovery left old renderer/main-process database handles alive. | Confirmed and fixed in `9982b1d`; renderer databases invalidate before route, and the main router retires exact-connection databases/subscriptions with retryable failure retention. |
 | F-17 | Hosted G6A run `32588860410` | Generic packed smoke passed, but the separate G6A Node fixture imported retired root `BleManager`/factory APIs. | Confirmed and fixed in `8c1d4bd`; Web example and packed Web fixture use current public managers, environment factory, object GATT, and diagnostics. Direct deterministic Web fixture execution passes locally; hosted rerun remains required. |
 | F-18 | Fresh native adversarial review | Closed CoreBluetooth readiness watches retain the backend-owned native ingress handler until boundary destruction. | Reviewed as non-actionable for this slice: the handler is shared by active watches, per-watch JS listeners are removed, ingress is bounded, and boundary teardown owns native handler removal. |
+| F-19 | Hosted G6A run `32590629321` | Node G6A fixture consumed retired internal root manager constructors; the public package intentionally exports only host-neutral types at root. | Confirmed and fixed in `6aa26b8`; `/testing` now exposes a deterministic public-manager helper, and the packed Node fixture uses public manager/GATT/diagnostics APIs. Local deterministic Node/Web fixture executions pass; hosted packed rerun remains required. |
 
 Remaining release gates at this checkpoint: push the integrated fixes, hosted CI including G6A and Android qualification, final exact-SHA adversarial review, the required external review rounds, merge PR41, then proceed to the plan’s RC3 checkpoint. RC2 remains immutable.
