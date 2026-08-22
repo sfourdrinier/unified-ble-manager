@@ -6,6 +6,8 @@ const {
 const { createPublicBleManager, filterScanObservations, findPeerInScan } = require('../src/public/ble-manager')
 const { CoreBoundedStream } = require('../src/core/bounded-stream')
 const { capacity } = require('../src/backend-contract/primitives')
+const { createDeterministicTestBleManager } = require('../src/testing/deterministic/deterministic-test-manager')
+const { deterministicScenarioAdvertisement } = require('../src/testing/scenarios/manager-scenario-executor')
 
 function observation(overrides = {}) {
   return {
@@ -20,6 +22,23 @@ function observation(overrides = {}) {
     serviceData: [{ service: '0000180d-0000-1000-8000-00805f9b34fb', data: new Uint8Array([1, 2, 3]) }],
     ...overrides
   }
+}
+
+async function settleDeterministic(fixture, promise) {
+  let settled = false
+  void promise.then(
+    () => {
+      settled = true
+    },
+    () => {
+      settled = true
+    }
+  )
+  for (let attempt = 0; attempt < 20 && !settled; attempt += 1) {
+    fixture.controller.clock.runUntilIdle()
+    await Promise.resolve()
+  }
+  return promise
 }
 
 describe('canonical public ScanQuery v1', () => {
@@ -274,5 +293,45 @@ describe('canonical public ScanQuery v1', () => {
     source.closeWithReason('closed')
     await expect(unchangedValue).resolves.toMatchObject({ value: { kind: 'terminal', reason: 'closed' } })
     await iterator.return()
+  })
+
+  test('public deterministic coalesced scans deliver RSSI-only changes and suppress unchanged repeats', async () => {
+    const { manager, fixture } = await createDeterministicTestBleManager()
+    let scan
+    try {
+      scan = await settleDeterministic(fixture, manager.scan({ duplicates: 'coalesced' }))
+      const iterator = scan.observations[Symbol.asyncIterator]()
+      const firstObservation = {
+        ...deterministicScenarioAdvertisement(),
+        rssi: { state: 'present', value: -40, provenance: 'observed' }
+      }
+      const firstValue = iterator.next()
+      fixture.controller.emitAdvertisement(firstObservation)
+      await expect(firstValue).resolves.toMatchObject({ value: { kind: 'value', value: { rssi: -40 } } })
+
+      const changedValue = iterator.next()
+      fixture.controller.emitAdvertisement({
+        ...firstObservation,
+        rssi: { state: 'present', value: -39, provenance: 'observed' }
+      })
+      await expect(
+        Promise.race([
+          changedValue,
+          new Promise(resolve => setTimeout(() => resolve({ done: false, value: { kind: 'timeout' } }), 100))
+        ])
+      ).resolves.toMatchObject({ value: { kind: 'value', value: { rssi: -39 } } })
+
+      const unchangedValue = iterator.next()
+      fixture.controller.emitAdvertisement({
+        ...firstObservation,
+        rssi: { state: 'present', value: -39, provenance: 'observed' }
+      })
+      await settleDeterministic(fixture, scan.stop())
+      await expect(unchangedValue).resolves.toMatchObject({ value: { kind: 'terminal' } })
+      await iterator.return()
+    } finally {
+      if (scan !== undefined) await settleDeterministic(fixture, scan.stop())
+      await settleDeterministic(fixture, manager.destroy())
+    }
   })
 })

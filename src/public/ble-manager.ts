@@ -859,7 +859,7 @@ class PublicBleManager implements BleManager {
       const normalizedQuery = normalizeScanQuery(options.query)
       const internalOptions: InternalScanOptions<string, string> = {
         filter: { serviceUuids: [], manufacturerData: [], localNamePrefix: null },
-        duplicatePolicy: options.duplicates === 'all' ? 'all' : 'merged',
+        duplicatePolicy: 'all',
         timestampPolicy: 'source-then-receipt',
         delivery: {
           itemCapacity: delivery.itemCapacity,
