@@ -251,6 +251,7 @@ function runG6APackedConsumerProof({
         `G6A ${host.id} consumer installed ${String(installedManifest.name)}@${String(installedManifest.version)} instead of ${packageName}@${packageVersion}`
       )
     }
+    assertInstalledPackageResolution(consumer, packageName)
     const output = run(process.execPath, [path.join(consumer, host.entrypoint)], {
       cwd: consumer,
       timeoutMs: childTimeoutMs
@@ -568,6 +569,19 @@ function validateZeroResourceCounters(counters, label) {
     if (typeof counters[key] !== 'number' || Number.isSafeInteger(counters[key]) === false || counters[key] !== 0) {
       throw new Error(`${label}.${key} must be the numeric zero`)
     }
+  }
+}
+
+function assertInstalledPackageResolution(consumer, packageName) {
+  const packageJsonPath = require.resolve(`${packageName}/package.json`, { paths: [consumer] })
+  const packageRoot = fs.realpathSync(path.dirname(packageJsonPath))
+  const consumerRoot = fs.realpathSync(consumer)
+  const expectedRoot = path.join(consumerRoot, 'node_modules', packageName)
+  if (!packageRoot.startsWith(expectedRoot)) {
+    throw new Error(`G6A package resolution escaped the installed tarball: ${packageRoot}`)
+  }
+  if (packageRoot.startsWith(fs.realpathSync(root))) {
+    throw new Error(`G6A package resolution used repository source: ${packageRoot}`)
   }
 }
 

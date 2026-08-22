@@ -31,7 +31,8 @@ function npmCommand() {
   return process.platform === 'win32' ? 'npm.cmd' : 'npm'
 }
 
-function collectExportTargets(value, targets = []) {
+function collectRuntimeTargets(value, targets = []) {
+  if (value === undefined) return targets
   if (typeof value === 'string') {
     targets.push(value)
     return targets
@@ -39,7 +40,9 @@ function collectExportTargets(value, targets = []) {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error('package export must be a string or conditional export object')
   }
-  for (const target of Object.values(value)) collectExportTargets(target, targets)
+  for (const [condition, target] of Object.entries(value)) {
+    if (condition !== 'types') collectRuntimeTargets(target, targets)
+  }
   return targets
 }
 
@@ -51,9 +54,9 @@ function collectExportTargets(value, targets = []) {
 function derivePackedHostConsumerExports(exportsMap) {
   const result = []
   for (const [exportPath, exportTarget] of Object.entries(exportsMap)) {
-    const targets = collectExportTargets(exportTarget)
     const matchingHosts = Object.keys(PACKED_HOST_CONSUMER_CONTRACTS).filter(host =>
-      targets.some(target => target.endsWith(`/lib/module/${host}.js`) || target.endsWith(`/lib/commonjs/${host}.js`))
+      collectRuntimeTargets(exportTarget.import).some(target => target.endsWith(`/lib/module/${host}.js`)) &&
+      collectRuntimeTargets(exportTarget.require).some(target => target.endsWith(`/lib/commonjs/${host}.js`))
     )
     if (matchingHosts.length > 1) {
       throw new Error(`package export maps to multiple packed host contracts: ${exportPath}`)

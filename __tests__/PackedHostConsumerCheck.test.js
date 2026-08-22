@@ -40,6 +40,22 @@ describe('packed Expo/Tauri consumer release gate', () => {
     expect(Object.keys(PACKED_HOST_CONSUMER_CONTRACTS).sort()).toEqual(['expo', 'tauri'])
   })
 
+  test('does not accept a default fallback when a conditional branch is missing', () => {
+    expect(
+      derivePackedHostConsumerExports({
+        './expo-without-require': {
+          import: { default: './lib/module/expo.js' },
+          default: './lib/commonjs/expo.js'
+        },
+        './tauri-complete': {
+          import: { default: './lib/module/tauri.js' },
+          require: { default: './lib/commonjs/tauri.js' },
+          default: './lib/commonjs/tauri.js'
+        }
+      })
+    ).toEqual([{ exportPath: './tauri-complete', host: 'tauri' }])
+  })
+
   test('runner is a published-tarball gate and cannot use repository aliases', () => {
     const runner = fs.readFileSync(path.join(root, 'scripts/ci/packed-host-consumer-check.js'), 'utf8')
 
