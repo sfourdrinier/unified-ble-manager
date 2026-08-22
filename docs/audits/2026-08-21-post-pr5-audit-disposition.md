@@ -3,7 +3,7 @@
 Source audit: `~/Downloads/unified-ble-manager-post-pr5-audit.md`
 Audit snapshot: `bc4a347c496e994e97cec9da06e2c0a6223a72f8`
 RC2 release snapshot: `main` / `ab331517083c5a580894adb3d79d075f299c9db5` / `v4.0.0-rc.2`
-Current PR6 audit source: `feat/4.0-pr6-audit-closure` / `01e50ae69b9315c7915234df141568f10aebee77`
+Current PR6 audit source: `feat/4.0-pr6-audit-closure` / `dac701f3bef8213074c829f1dce8ce3a2f42df38`
 
 Execution authority for this continuation is the revised session instruction,
 `docs/superpowers/plans/2026-08-20-next-12-prs.md`, this disposition ledger,
@@ -99,11 +99,13 @@ This branch has now verified the following PR6 slices against current source:
 - Electron renderer documentation, composition examples, package-surface fixtures, and the reviewed renderer API report describe the public factory;
 - Tauri late-cancellation cleanup and lifecycle terminal delivery retain retry ownership rather than abandoning failed cleanup.
 
-The current local PR6 package, plugin, native, lint/typecheck, evidence,
-documentation/API, artifact, smell, and diff gates are green. The exact
-current-source Node24 packed-consumer refresh and the final PR6E adversarial
-review remain release-process gates before opening the PR. Native-authoritative
-React Native/Expo restoration is an explicit PR10 deferral tracked by [#34](https://github.com/sfourdrinier/unified-ble-manager/issues/34);
-PR6 must not claim it is implemented. The local Node22/npm packed smoke is
-environment-blocked before consumer assertions; it is not counted as packed
-evidence.
+The exact current PR6 source has green local package evidence (117 suites,
+1,120 tests), plugin/native/lint/typecheck, evidence, documentation/API,
+artifact, smell, and diff gates, plus green hosted Node22/Node24, Windows and
+macOS, Tauri, React Native Android, and Expo CNG CI lanes. The final exact-SHA
+adversarial reviews found no actionable source or lifecycle findings, and all
+first- and second-round review findings are replied to and resolved on PR #39.
+Native-authoritative React Native/Expo restoration is an explicit PR10
+deferral tracked by [#34](https://github.com/sfourdrinier/unified-ble-manager/issues/34); PR6 must not claim it is
+implemented. RC3 remains gated for after PR8, and this ledger does not promote
+PR6 to a release claim by itself.
