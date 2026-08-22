@@ -5,6 +5,7 @@ package com.sfourdrinier.unifiedblemanager.protocol
 import com.sfourdrinier.unifiedblemanager.protocol.generated.RecordKind
 import com.sfourdrinier.unifiedblemanager.radio.nextUuidOccurrence
 import com.sfourdrinier.unifiedblemanager.radio.resolveUuidOccurrence
+import com.sfourdrinier.unifiedblemanager.radio.OwnedAndroidGattRadio
 import com.sfourdrinier.unifiedblemanager.radio.OwnedAndroidGattRadio.GattSerialQueue
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertArrayEquals
