@@ -324,7 +324,7 @@ reverified against this source afterward.
 | CoreBluetooth readiness | `canSendWriteWithoutResponse`, `peripheralIsReady(toSendWriteWithoutResponse:)`, native ordinal/generation, bounded stream, disconnect/destroy cleanup | Direct Node/Electron-main only, limited/deterministic; other hosts remain unsupported |
 | Scheduler and recovery | Per-connection bounded round-robin lanes, queue overflow, service-change cancellation, reasoned rediscovery, uncertain-write preservation, hidden-refresh source guard | Fixed with focused TDD/TCK coverage |
 | TCK and docs | PR8 closure scenarios, Android PHY/priority truth, explicit unsupported parameters/subrate/other-host readiness truth, migration/semantics guidance | Deterministic evidence only; no physical-radio claim |
-| Local package gate | `pnpm test:package`: 138 suites / 1,246 tests; docs/API, native protocol, artifact, and smell checks included | Green locally |
+| Local package gate | `pnpm test:package`: 138 suites / 1,248 tests; docs/API, native protocol, artifact, and smell checks included | Green locally |
 | Native/plugin gates | CoreBluetooth macOS Node-API build, native protocol host, plugin 36/36, release artifacts, typecheck/lint | Green locally; Android/Windows hosted qualification remains required |
 | Packed consumer gate | Local npm pack smoke still encounters npm `Exit handler never called!` | Hosted supported-Node proof required |
 | Performance baselines | Deterministic baseline `unified-ble-pr8-deterministic-performance-v1`: 23 measurements in the focused 3-payload test and 31 measurements / 15 categories in default `performance:check`, including all ten PR8 IDs, bounded cleanup and ownership metadata | Deterministic baseline fixed; live/native comparison remains a PR12 gate |

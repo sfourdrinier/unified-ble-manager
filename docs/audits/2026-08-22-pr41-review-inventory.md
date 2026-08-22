@@ -15,7 +15,7 @@ this round.
 | X-2 | Codex | Renderer `writeReadiness` maps a registered unavailable capability to unsupported. | Confirmed and fixed: unsupported and unavailable stream errors are distinct. |
 | X-3 | Codex | `writeReadiness` TCK handling does not preserve supported/unavailable capability states. | Confirmed and fixed: capability-state truth is covered by TCK and IPC tests. |
 
-Local evidence before this round: package 138 suites / 1246 tests, plugin
+Local evidence before this round: package 138 suites / 1248 tests, plugin
 36/36, lint/typecheck/docs/API, native protocol, CoreBluetooth build, release
 artifacts/evidence, performance, and diff checks green. Hosted CI and packed
 consumer proof remain separate gates.
