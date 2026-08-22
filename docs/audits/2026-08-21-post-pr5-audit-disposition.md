@@ -309,10 +309,11 @@ PR6 to a release claim by itself.
 
 ## PR8 current checkpoint
 
-The current PR8 branch is `feat/4.0-link-controls` at the dirty working-tree
-tip whose committed parent is `e497fc24`; the readiness implementation and
-writeWhenReady remediation are uncommitted in this checkpoint. The cumulative
-package gate has been reverified against the current source afterward.
+The current PR8 branch is `feat/4.0-link-controls` at committed tip
+`6edfa6e7990d46a83c940ef4d7b0cc4dcef79550`. The readiness ingress, core
+writeWhenReady lifecycle, and reviewed contract/evidence slices are committed
+as `ac3b46a`, `9502a13`, and `6edfa6e`; the cumulative package gate has been
+reverified against this source afterward.
 
 | Area | Current evidence | Disposition |
 | --- | --- | --- |
