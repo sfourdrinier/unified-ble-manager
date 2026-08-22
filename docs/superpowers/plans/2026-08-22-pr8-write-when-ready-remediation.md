@@ -110,13 +110,17 @@ Run the focused Jest command from Task 1 and confirm all new and existing tests 
 
 - [x] **Step 1: Run the requested canonical checks proportionate to the change**
 
-`pnpm validate:evidence`, `pnpm test:package` (138 suites / 1,246 tests),
+`pnpm validate:evidence`, `pnpm test:package` (139 suites / 1,271 tests),
 `pnpm test:plugin` (36 tests), `pnpm prepack`,
 `pnpm release:artifacts:check`, performance, protocol, Tauri, and the
-CoreBluetooth addon build are green. The local packed-consumer smoke was
-attempted and remains environment-blocked in npm; hosted supported-Node proof
-is still required. Android Gradle is separately blocked before compilation by
-the fixture's `npx` exit 127.
+CoreBluetooth addon build are green. The local packed-consumer smoke remains
+environment-blocked by npm's `Exit handler never called!`; hosted supported-
+Node proof is still required. The prior hosted Node 22/24 run reached the
+packed artifact and failed only because its validator had the pre-PR8 41-fact
+profile; `077d797` updates that profile to the current 43-fact contract.
+Android Gradle is separately blocked before compilation by the checkout's
+missing `:unified-ble-manager` project; hosted Android compilation remains
+required.
 
 - [x] **Step 2: Verify scope and report exact evidence**
 
