@@ -159,6 +159,12 @@ Node-API addon implements the same methods/events and the WinRT first-party TCK
 and ABI/build evidence are added. Existing native artifacts therefore remain
 fail-closed and unsupported.
 
+Commit `4cc6e1aa9efddf44cfbb32844f375784d906aaf2` adds the corresponding native
+Node-API source methods and strict loader/CI surface checks for
+`securityState`, `pair`, `cancelPairing`, `unpair`, and `onSecurityState`.
+Windows compilation and runtime/TCK evidence are still required; source-level
+tests on macOS do not qualify the native artifact.
+
 ## PR6 current checkpoint
 
 This branch has now verified the following PR6 slices against current source:
