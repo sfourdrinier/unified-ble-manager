@@ -21,9 +21,13 @@
 - `WinRtDescriptorRecord`
 - `WinRtGattSnapshot`
 - `WinRtIngressTelemetry`
+- `WinRtPairResult`
 - `WinRtScanTerminalError`
 - `WinRtScanTerminalRecord`
 - `WinRtScanTerminalStatus`
+- `WinRtSecurityBoundary`
+- `WinRtSecurityState`
+- `WinRtSecurityStateChangedRecord`
 - `WinRtServiceRecord`
 - `createNativeWinRtBackendProvider`
 - `createNativeWinRtBoundary`

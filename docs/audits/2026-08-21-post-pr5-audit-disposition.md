@@ -149,6 +149,16 @@ The BlueZ system-mediated subset now satisfies that boundary at commit
 
 Android, WinRT, and trusted-host IPC security remain separate PR7C slices.
 
+### WinRT PR7C2 internal checkpoint
+
+Commit `25e36224af5f2d6ebab13396653f5f4e83189c6b` adds an optional typed WinRT
+security boundary and adapter with state/watch, system-only pairing arbitration,
+cancellation, unpair projection, and cleanup tests. It deliberately does not
+register security capabilities or claim Windows support until the native
+Node-API addon implements the same methods/events and the WinRT first-party TCK
+and ABI/build evidence are added. Existing native artifacts therefore remain
+fail-closed and unsupported.
+
 ## PR6 current checkpoint
 
 This branch has now verified the following PR6 slices against current source:
