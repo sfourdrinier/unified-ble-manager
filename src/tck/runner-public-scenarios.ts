@@ -1380,7 +1380,7 @@ async function executeConnectionControlsScenario<
   let mtuExplicitlyUnavailable = false
   let priorityAcceptedOrRejected = false
   let priorityRejected = false
-  let priorityClaimedObservedParameters = false
+  const priorityClaimedObservedParameters = false
   try {
     const rssiState = featureState(fixture.backend, BUILT_IN_FEATURE_IDS.connectionRssi)
     if (rssiState === 'supported' || rssiState === 'limited') {
@@ -1410,9 +1410,7 @@ async function executeConnectionControlsScenario<
 
     const priorityState = featureState(fixture.backend, BUILT_IN_FEATURE_IDS.connectionPriority)
     if (priorityState === 'supported' || priorityState === 'limited') {
-      const priority = await fixture.controller.settle(
-        connection.requestPriority('high-throughput', operationOptions)
-      )
+      const priority = await fixture.controller.settle(connection.requestPriority('high-throughput', operationOptions))
       priorityAcceptedOrRejected = typeof priority.accepted === 'boolean'
       priorityRejected = !priority.accepted
     } else {
@@ -1456,7 +1454,9 @@ async function executeConnectionControlsScenario<
         observationsBoundToGeneration,
         connectionGeneration: connection.connectionGeneration
       }),
-      fact('connection-phy-truth-is-explicit', phyTruth, { state: featureState(fixture.backend, BUILT_IN_FEATURE_IDS.connectionPhy) }),
+      fact('connection-phy-truth-is-explicit', phyTruth, {
+        state: featureState(fixture.backend, BUILT_IN_FEATURE_IDS.connectionPhy)
+      }),
       fact('connection-parameters-truth-is-explicit', parametersTruth, {
         state: featureState(fixture.backend, BUILT_IN_FEATURE_IDS.connectionParameters)
       }),
