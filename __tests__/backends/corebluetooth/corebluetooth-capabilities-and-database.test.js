@@ -191,6 +191,64 @@ describe('CoreBluetooth runtime capabilities and database-change semantics', () 
     await backend.destroy()
   })
 
+  test('re-probes authoritative readiness after a dropped native ready edge', async () => {
+    const readinessListeners = new Set()
+    const snapshots = [
+      {
+        nativePeerId: 'native-polar-h10',
+        connectionGeneration: '1',
+        ready: false,
+        ordinal: 1
+      },
+      {
+        nativePeerId: 'native-polar-h10',
+        connectionGeneration: '1',
+        ready: true,
+        ordinal: 2
+      }
+    ]
+    let probe
+    let backend
+    let watch
+    try {
+      ;({ backend } = await backendFixture(currentBoundary => {
+        probe = jest.fn(async () => {
+          const snapshot = snapshots.shift()
+          if (snapshot === undefined) {
+            throw new Error('readiness probe called more than expected')
+          }
+          return snapshot
+        })
+        currentBoundary.canSendWriteWithoutResponse = probe
+        currentBoundary.onWriteWithoutResponseReadiness = listener => {
+          readinessListeners.add(listener)
+          return () => readinessListeners.delete(listener)
+        }
+      }))
+      const { lease } = await connectedDatabase(backend)
+      jest.useFakeTimers()
+      watch = await backend.connectionControls.writeWithoutResponseReadiness(lease.connection)
+      const iterator = watch.events[Symbol.asyncIterator]()
+
+      await expect(iterator.next()).resolves.toMatchObject({
+        value: { kind: 'value', value: { ready: false, ordinal: 1 } }
+      })
+      expect(readinessListeners.size).toBe(1)
+
+      // The native true edge is dropped by bounded ingress; no listener receives it.
+      await jest.advanceTimersByTimeAsync(100)
+
+      expect(probe).toHaveBeenCalledTimes(2)
+      await expect(iterator.next()).resolves.toMatchObject({
+        value: { kind: 'value', value: { ready: true, ordinal: 2 } }
+      })
+    } finally {
+      await watch?.close()
+      await backend?.destroy()
+      jest.useRealTimers()
+    }
+  })
+
   test('preserves every rich CoreBluetooth advertisement field as detached owned bytes', async () => {
     const { backend, boundary } = await backendFixture()
     const rawRecord = new Uint8Array([1, 2, 3])

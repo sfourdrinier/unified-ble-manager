@@ -29,10 +29,12 @@ import type { BackendOperationDispatch } from '../../backend-contract/operations
 import type { PublicOperationOptions } from '../../backend-contract/operations'
 import { capacity } from '../../backend-contract/primitives'
 import { CoreBoundedStream } from '../../core/bounded-stream'
-import type { CoreBluetoothWriteReadinessEvent } from './corebluetooth-boundary'
+import type { CoreBluetoothWriteReadinessEvent, CoreBluetoothWriteReadinessSnapshot } from './corebluetooth-boundary'
 import { successfulTerminal } from './corebluetooth-handles'
 import type { CoreBluetoothBackend } from './corebluetooth-backend'
 import { awaitWithOperationAdmission } from '../../core/unified-ble-core-helpers'
+
+const READINESS_REPROBE_DELAY_MS = 100
 
 /** Bridges optional direct-boundary connection controls into the canonical operation dispatcher. */
 export class CoreBluetoothConnectionControls {
@@ -279,6 +281,20 @@ export class CoreBluetoothConnectionControls {
     let unregisterWatch: (() => void) | null = null
     const buffered: { current: CoreBluetoothWriteReadinessEvent | null } = { current: null }
     let nativeGeneration: string | null = null
+    let ready = false
+    let reprobeTimer: ReturnType<typeof setTimeout> | null = null
+    let reprobeInFlight = false
+    const reprobeCancellation = new AbortController()
+    const clearReprobeTimer = (): void => {
+      if (reprobeTimer !== null) {
+        clearTimeout(reprobeTimer)
+        reprobeTimer = null
+      }
+    }
+    const cancelReprobe = (): void => {
+      clearReprobeTimer()
+      reprobeCancellation.abort()
+    }
     const isCurrentGenerationEvent = (event: CoreBluetoothWriteReadinessEvent): boolean =>
       !closed &&
       nativeGeneration !== null &&
@@ -297,7 +313,59 @@ export class CoreBluetoothConnectionControls {
         ordinal: event.ordinal
       })
       lastOrdinal = event.ordinal
+      ready = event.ready
       stream.emit(value, 128)
+      if (ready) {
+        clearReprobeTimer()
+      } else {
+        scheduleReprobe()
+      }
+    }
+    const validateSnapshot = (snapshot: CoreBluetoothWriteReadinessSnapshot): void => {
+      if (
+        snapshot.nativePeerId !== record.nativePeerId ||
+        !/^[0-9]+$/.test(snapshot.connectionGeneration) ||
+        typeof snapshot.ready !== 'boolean' ||
+        !Number.isSafeInteger(snapshot.ordinal)
+      ) {
+        throw contractError('protocol.malformed', 'connection', 'corebluetooth.connection.write-readiness.snapshot')
+      }
+      if (nativeGeneration !== null && snapshot.connectionGeneration !== nativeGeneration) {
+        throw contractError(
+          'protocol.malformed',
+          'connection',
+          'corebluetooth.connection.write-readiness.snapshot-generation'
+        )
+      }
+    }
+    const reprobe = async (): Promise<void> => {
+      if (closed || !initialized || ready || reprobeInFlight) return
+      reprobeInFlight = true
+      try {
+        const snapshot = await awaitWithOperationAdmission(
+          probe(record.nativePeerId),
+          { signal: reprobeCancellation.signal, deadline: options.deadline },
+          this.backend.monotonicNow,
+          'corebluetooth.connection.write-readiness.reprobe'
+        )
+        if (closed) return
+        validateSnapshot(snapshot)
+        emit(snapshot)
+      } catch {
+        if (!closed) {
+          await close('source-failed')
+        }
+      } finally {
+        reprobeInFlight = false
+        if (!closed && !ready) scheduleReprobe()
+      }
+    }
+    function scheduleReprobe(): void {
+      if (closed || !initialized || ready || reprobeTimer !== null || reprobeInFlight) return
+      reprobeTimer = setTimeout(() => {
+        reprobeTimer = null
+        reprobe().catch(() => undefined)
+      }, READINESS_REPROBE_DELAY_MS)
     }
     const unsubscribe = onReadiness(event => {
       if (!initialized) {
@@ -312,9 +380,14 @@ export class CoreBluetoothConnectionControls {
       }
       emit(event)
     })
+    const onSignalAbort = (): void => {
+      close('owner-released').catch(() => undefined)
+    }
     const close = (reason: 'owner-released' | 'connection-lost' | 'source-failed'): Promise<CleanupRecord> => {
       if (closePromise !== null) return closePromise
       closed = true
+      cancelReprobe()
+      options.signal?.removeEventListener('abort', onSignalAbort)
       unsubscribe()
       unsubscribeDisconnect?.()
       unregisterWatch?.()
@@ -322,6 +395,7 @@ export class CoreBluetoothConnectionControls {
       closePromise = Promise.resolve({ state: 'released', failures: [] })
       return closePromise
     }
+    options.signal?.addEventListener('abort', onSignalAbort, { once: true })
     unsubscribeDisconnect = this.backend.boundary.onDisconnect(nativePeerId => {
       if (nativePeerId === record.nativePeerId) {
         close('connection-lost').catch(() => undefined)
@@ -335,16 +409,10 @@ export class CoreBluetoothConnectionControls {
         this.backend.monotonicNow,
         'corebluetooth.connection.write-readiness.probe'
       )
-      if (
-        snapshot.nativePeerId !== record.nativePeerId ||
-        !/^[0-9]+$/.test(snapshot.connectionGeneration) ||
-        typeof snapshot.ready !== 'boolean' ||
-        !Number.isSafeInteger(snapshot.ordinal)
-      ) {
-        throw contractError('protocol.malformed', 'connection', 'corebluetooth.connection.write-readiness.snapshot')
-      }
+      validateSnapshot(snapshot)
       nativeGeneration = snapshot.connectionGeneration
       lastOrdinal = snapshot.ordinal
+      ready = snapshot.ready
       stream.emit(
         Object.freeze({
           connectionId: record.connectionId,
@@ -359,6 +427,7 @@ export class CoreBluetoothConnectionControls {
       const pending = buffered.current
       buffered.current = null
       if (pending !== null && pending.connectionGeneration === snapshot.connectionGeneration) emit(pending)
+      if (!ready) scheduleReprobe()
       return {
         events: stream,
         close: () => close('owner-released')
