@@ -11,7 +11,11 @@ const {
   validateThirdPartyTckProof,
   expectedThirdPartyTckProfile
 } = require('../scripts/ci/g6a-packed-consumer-proof')
-const { assertChildProcessResult, run: runCanonicalChild } = require('../scripts/ci/pack-install-smoke')
+const {
+  assertChildProcessResult,
+  PACK_INSTALL_CHILD_TIMEOUT_MS,
+  run: runCanonicalChild
+} = require('../scripts/ci/pack-install-smoke')
 
 const root = path.join(__dirname, '..')
 const fixtureRoot = path.join(root, 'fixtures', 'g6a-packed-consumer')
@@ -259,6 +263,25 @@ describe('G6A packed independent-consumer proof fixture', () => {
         timeoutMs: 1000,
       })
     ).toThrow(/terminated by signal SIGTERM/u)
+  })
+
+  test('bounds normal pack/install npm boundaries without replacing the G6A timeout', () => {
+    const smokeSource = fs.readFileSync(path.join(root, 'scripts', 'ci', 'pack-install-smoke.js'), 'utf8')
+
+    expect(PACK_INSTALL_CHILD_TIMEOUT_MS).toBe(600000)
+    expect(smokeSource).toContain('/** Maximum duration for one normal-mode npm pack/install subprocess. */')
+
+    expect(smokeSource).toMatch(
+      /run\(npmCommand\(\), \['pack', '--pack-destination', artifactDirectory, '--loglevel=warn'\], \{\s+cwd: root,\s+env: npmEnvironment,\s+timeoutMs: PACK_INSTALL_CHILD_TIMEOUT_MS,\s+\.\.\.g6aPreflightOptions\s+\}\)/u
+    )
+    expect(smokeSource).toMatch(
+      /\['install', '--ignore-scripts', '--include=dev', '--omit=optional', '--prefer-offline', '--loglevel=warn', rootTgz\],\s+\{ cwd: consumer, env: npmEnvironment, timeoutMs: PACK_INSTALL_CHILD_TIMEOUT_MS\s+\}\s*\)/u
+    )
+    expect(smokeSource).toMatch(
+      /\['install', '--ignore-scripts', '--include=dev', '--prefer-offline', '--loglevel=error', rootTgz\],\s+\{\s+cwd: consumer,\s+env: npmEnvironment,\s+timeoutMs: PACK_INSTALL_CHILD_TIMEOUT_MS\s+\}\s+\)/u
+    )
+    expect(smokeSource).toContain('childTimeoutMs: G6A_CHILD_TIMEOUT_MS')
+    expect(smokeSource).toContain('runPackedThirdPartyBackendFixture(consumer, artifactDirectory, npmEnvironment, PACK_INSTALL_CHILD_TIMEOUT_MS)')
   })
 })
 

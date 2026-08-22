@@ -24,6 +24,8 @@ const isolatedConsumerToolVersions = Object.freeze({
   webpack: '5.109.2'
 })
 const G6A_CHILD_TIMEOUT_MS = 120000
+/** Maximum duration for one normal-mode npm pack/install subprocess. */
+const PACK_INSTALL_CHILD_TIMEOUT_MS = 600000
 const requiredPackedOptionalHostDependencies = Object.freeze({
   'node-addon-api': '8.9.0',
   'node-gyp': '12.4.0'
@@ -398,7 +400,7 @@ function createPackedBrowserBundleConsumer(tmp, rootTgz, npmEnvironment) {
   run(
     npmCommand(),
     ['install', '--ignore-scripts', '--include=dev', '--omit=optional', '--prefer-offline', '--loglevel=warn', rootTgz],
-    { cwd: consumer, env: npmEnvironment }
+    { cwd: consumer, env: npmEnvironment, timeoutMs: PACK_INSTALL_CHILD_TIMEOUT_MS }
   )
   moveBrowserBundleHostDependenciesAside(consumer)
   assertBrowserBundleHostDependenciesAreUnavailable(consumer)
@@ -865,6 +867,7 @@ function main(options = {}) {
     run(npmCommand(), ['pack', '--pack-destination', artifactDirectory, '--loglevel=warn'], {
       cwd: root,
       env: npmEnvironment,
+      timeoutMs: PACK_INSTALL_CHILD_TIMEOUT_MS,
       ...g6aPreflightOptions
     })
     if (!fs.existsSync(rootTgz)) {
@@ -929,7 +932,8 @@ function main(options = {}) {
       ['install', '--ignore-scripts', '--include=dev', '--prefer-offline', '--loglevel=error', rootTgz],
       {
         cwd: consumer,
-        env: npmEnvironment
+        env: npmEnvironment,
+        timeoutMs: PACK_INSTALL_CHILD_TIMEOUT_MS
       }
     )
     run(
@@ -1134,7 +1138,7 @@ function main(options = {}) {
     }
 
     compileExternalConsumerFixtures(consumer)
-    runPackedThirdPartyBackendFixture(consumer, artifactDirectory, npmEnvironment)
+    runPackedThirdPartyBackendFixture(consumer, artifactDirectory, npmEnvironment, PACK_INSTALL_CHILD_TIMEOUT_MS)
 
     console.log(
       'pack-install-smoke: OK (canonical CJS/ESM, zero-warning browser public-surface bundle, native build tooling, Electron L1 + data-only preload-surface membrane, CLI, Web, BlueZ, external third-party TCK, Bundler, Node16, NodeNext)'
@@ -1166,6 +1170,7 @@ if (require.main === module) {
 
 module.exports = {
   G6A_CHILD_TIMEOUT_MS,
+  PACK_INSTALL_CHILD_TIMEOUT_MS,
   assertChildProcessResult,
   main,
   run,
