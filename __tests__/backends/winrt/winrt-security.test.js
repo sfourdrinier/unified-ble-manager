@@ -88,6 +88,9 @@ describe('WinRT security backend adapter', () => {
   test('arbitrates pairing and maps cancellation to one terminal result', async () => {
     const boundary = createBoundary()
     const security = new WinRtSecurityBackend(boundary, () => 50)
+    await expect(security.pair('peer-1', options({ protection: 'authenticated' }))).rejects.toMatchObject({
+      normalized: { code: 'capability.unsupported' }
+    })
     const first = security.pair('peer-1', options())
     await expect(security.pair('peer-1', options())).rejects.toMatchObject({ normalized: { code: 'ownership.denied' } })
     await expect(security.cancelPairing('peer-1', options())).resolves.toEqual({ outcome: 'cancelled' })

@@ -58,7 +58,6 @@ using winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::GattSessionSt
 using winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::GattWriteOption;
 using winrt::Windows::Devices::Enumeration::DeviceAccessInformation;
 using winrt::Windows::Devices::Enumeration::DeviceAccessStatus;
-using winrt::Windows::Devices::Enumeration::DevicePairingProtectionLevel;
 using winrt::Windows::Devices::Enumeration::DevicePairingResultStatus;
 using winrt::Windows::Devices::Enumeration::DeviceUnpairingResultStatus;
 using winrt::Windows::Devices::Enumeration::DeviceInformation;
@@ -145,14 +144,10 @@ SecurityStateView ReadWinRtSecurityState(const std::string& peer) {
   const BluetoothLEDevice device = AwaitWinRt(BluetoothLEDevice::FromBluetoothAddressAsync(ParseAddress(peer)));
   if (device == nullptr) throw std::runtime_error("The Windows Bluetooth peer could not be opened for security state");
   const auto pairing = device.DeviceInformation().Pairing();
-  const auto protection = pairing.ProtectionLevel();
-  const bool encrypted = protection == DevicePairingProtectionLevel::Encryption ||
-      protection == DevicePairingProtectionLevel::EncryptionAndAuthentication;
-  const bool authenticated = protection == DevicePairingProtectionLevel::EncryptionAndAuthentication;
   return {
       pairing.IsPaired() ? "bonded" : "not-bonded",
-      encrypted ? "encrypted" : "not-encrypted",
-      authenticated ? "authenticated" : "unauthenticated",
+      "unsupported",
+      "unsupported",
       "unsupported",
       pairing.CanPair()};
 }

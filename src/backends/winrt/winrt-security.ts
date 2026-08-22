@@ -109,6 +109,9 @@ export class WinRtSecurityBackend implements SecurityBackend {
     if (options.ceremony !== 'system') {
       return Promise.reject(contractError('capability.unsupported', 'capability', 'winrt.security.custom-ceremony'))
     }
+    if (options.protection !== 'system-default') {
+      return Promise.reject(contractError('capability.unsupported', 'capability', 'winrt.security.pair.protection'))
+    }
     if (this.activePairings.has(peerId)) {
       return Promise.reject(contractError('ownership.denied', 'platform', 'winrt.security.pair.arbitration'))
     }

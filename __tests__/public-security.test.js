@@ -197,6 +197,41 @@ describe('public security façade', () => {
     expect(stream.close).toHaveBeenCalledTimes(1)
   })
 
+  test('preserves overflow and cleanup failures together at the public watch boundary', async () => {
+    const overflow = {
+      kind: 'overflow',
+      policy: 'error',
+      droppedItems: 1,
+      droppedBytes: 1,
+      replacedItems: 0
+    }
+    const cleanupError = contractError('lifecycle.invalid-state', 'core', 'public-security.watch-overflow-close')
+    const stream = {
+      [Symbol.asyncIterator]: () => ({
+        next: async () => ({ done: false, value: overflow }),
+        return: async () => ({ done: true, value: undefined }),
+        [Symbol.asyncIterator]() {
+          return this
+        }
+      }),
+      close: jest.fn(async () => {
+        throw cleanupError
+      })
+    }
+    const security = {
+      state: jest.fn(),
+      watch: jest.fn(() => stream),
+      pair: jest.fn(),
+      cancelPairing: jest.fn(),
+      unpair: jest.fn()
+    }
+    const manager = await createPublicBleManager(internalWithSecurity(security), () => 100)
+    const iterator = manager.security.watch({ id: 'peer-1', name: null, rssi: null })[Symbol.asyncIterator]()
+
+    await expect(iterator.next()).rejects.toBeInstanceOf(AggregateError)
+    expect(stream.close).toHaveBeenCalledTimes(1)
+  })
+
   test('rehydrates and preserves both security watch return and close failures', async () => {
     const iteratorError = contractError('operation.aborted', 'core', 'public-security.watch-return')
     const closeError = contractError('lifecycle.invalid-state', 'core', 'public-security.watch-close')

@@ -454,8 +454,16 @@ function mapSecurityEvents(
             }
             if (item.value.kind === 'overflow') {
               teardownAttempted = true
-              await closeSource()
-              throw contractError('stream.overflow', 'stream', 'public-security.watch')
+              const overflowError = contractError('stream.overflow', 'stream', 'public-security.watch')
+              try {
+                await closeSource()
+              } catch (cleanupError) {
+                throw new AggregateError(
+                  [rehydratePublicError(overflowError), rehydratePublicError(cleanupError)],
+                  'BLE security watch overflow and cleanup both failed'
+                )
+              }
+              throw overflowError
             }
             const event = item.value.value
             if (event.kind !== 'state' || typeof event.peerId !== 'string' || !Number.isSafeInteger(event.sequence)) {

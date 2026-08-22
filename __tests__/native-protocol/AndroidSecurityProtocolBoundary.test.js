@@ -211,6 +211,39 @@ describe('React Native Android security protocol boundary', () => {
     security.close()
   })
 
+  test('rejects non-default protection instead of silently ignoring it', async () => {
+    const pair = jest.fn(async () => ({ outcome: 'paired', state: securityState('bonded') }))
+    const security = new ReactNativeAndroidSecurityBackend(securityAdapter({ pair }), () => 20)
+
+    await expect(
+      security.pair(peerId, {
+        signal: null,
+        deadline: null,
+        transport: 'auto',
+        protection: 'authenticated',
+        ceremony: 'system'
+      })
+    ).rejects.toMatchObject({ normalized: { code: 'capability.unsupported' } })
+    expect(pair).not.toHaveBeenCalled()
+    security.close()
+  })
+
+  test('honors pre-aborted Android security state requests before native dispatch', async () => {
+    const securityStateCall = jest.fn(async () => securityState('not-bonded'))
+    const security = new ReactNativeAndroidSecurityBackend(
+      securityAdapter({ securityState: securityStateCall }),
+      () => 20
+    )
+    const controller = new AbortController()
+    controller.abort()
+
+    await expect(security.state(peerId, { signal: controller.signal, deadline: null })).rejects.toMatchObject({
+      normalized: { code: 'operation.aborted' }
+    })
+    expect(securityStateCall).not.toHaveBeenCalled()
+    security.close()
+  })
+
   test('maps a native system-pair rejection to the documented rejected result', async () => {
     const rejection = contractError('platform.failure', 'platform', 'android.security.pair', {
       domain: 'android',

@@ -110,6 +110,9 @@ export class BluezSecurityBackend implements SecurityBackend {
         contractError('capability.unsupported', 'capability', 'bluez.security.pair.custom-ceremony')
       )
     }
+    if (options.protection !== 'system-default') {
+      return Promise.reject(contractError('capability.unsupported', 'capability', 'bluez.security.pair.protection'))
+    }
     if (this.activePairings.has(peerId)) {
       return Promise.reject(contractError('ownership.denied', 'platform', 'bluez.security.pair.arbitration'))
     }
@@ -178,15 +181,22 @@ export class BluezSecurityBackend implements SecurityBackend {
 
   async unpair(peerId: string, _options: PublicOperationOptions): Promise<SecurityUnpairResult> {
     this.runtime.assertUsable('bluez.security.unpair')
-    const current = this.readState(peerId)
-    if (current.bond !== 'bonded') return { outcome: 'already-unpaired' }
-    const path = this.runtime.devicePathForPeer(peerId)
-    const adapterPath = String(this.runtime.selectedAdapter.adapterId)
-    await this.runtime.boundary.methods.callVoid(adapterPath, BLUEZ_ADAPTER_INTERFACE, 'RemoveDevice', [
-      { signature: 'o', value: path }
-    ])
-    this.runtime.removePeerPath(peerId)
-    return { outcome: 'unpaired' }
+    const dispatch = this.runtime.dispatcher.dispatch<SecurityUnpairResult>(
+      _options,
+      'bluez.security.unpair',
+      async () => {
+        const current = this.readState(peerId)
+        if (current.bond !== 'bonded') return { outcome: 'already-unpaired' }
+        const path = this.runtime.devicePathForPeer(peerId)
+        const adapterPath = String(this.runtime.selectedAdapter.adapterId)
+        await this.runtime.boundary.methods.callVoid(adapterPath, BLUEZ_ADAPTER_INTERFACE, 'RemoveDevice', [
+          { signature: 'o', value: path }
+        ])
+        this.runtime.removePeerPath(peerId)
+        return { outcome: 'unpaired' }
+      }
+    )
+    return dispatch.completion
   }
 
   propertiesChanged(event: BluezPropertiesChanged): void {

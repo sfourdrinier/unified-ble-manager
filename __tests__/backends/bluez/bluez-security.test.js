@@ -103,6 +103,20 @@ describe('BlueZ system security backend', () => {
     await expect(backend.destroy()).resolves.toMatchObject({ state: 'released' })
   })
 
+  test('does not remove a device when unpair is already aborted', async () => {
+    const { backend, boundary, peerId } = await createFixture(true)
+    const controller = new AbortController()
+    controller.abort()
+
+    await expect(
+      backend.security.unpair(peerId, { signal: controller.signal, deadline: null })
+    ).rejects.toMatchObject({ normalized: { code: 'operation.aborted' } })
+    expect(boundary.calls).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ interfaceName: BLUEZ_ADAPTER_INTERFACE, method: 'RemoveDevice' })])
+    )
+    await expect(backend.destroy()).resolves.toMatchObject({ state: 'released' })
+  })
+
   test('measures Paired, resolves after the Paired property, watches changes, and removes the OS device', async () => {
     const { backend, boundary, peerId: observedPeerId } = await createFixture()
     const stream = backend.security.watch(observedPeerId)
@@ -157,6 +171,9 @@ describe('BlueZ system security backend', () => {
 
   test('does not dispatch pairing after the caller has already aborted', async () => {
     const { backend, boundary, peerId: observedPeerId } = await createFixture()
+    await expect(
+      backend.security.pair(observedPeerId, pairOptions({ protection: 'encrypted' }))
+    ).rejects.toMatchObject({ normalized: { code: 'capability.unsupported' } })
     const controller = new AbortController()
     controller.abort()
     await expect(backend.security.pair(observedPeerId, pairOptions({ signal: controller.signal }))).resolves.toEqual({

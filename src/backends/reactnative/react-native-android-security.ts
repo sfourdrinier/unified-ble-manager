@@ -47,9 +47,16 @@ export class ReactNativeAndroidSecurityBackend implements SecurityBackend {
     )
   }
 
-  async state(peerId: string, _options: PublicOperationOptions): Promise<PeerSecurityState> {
+  async state(peerId: string, options: PublicOperationOptions): Promise<PeerSecurityState> {
     this.assertOpen('android.security.state')
-    return this.snapshot(await this.boundary.securityState(peerId))
+    if (options.signal?.aborted === true) {
+      throw contractError('operation.aborted', 'core', 'android.security.state')
+    }
+    if (options.deadline !== null && options.deadline <= this.now()) {
+      throw contractError('operation.timed-out', 'core', 'android.security.state')
+    }
+    const operation = this.boundary.securityState(peerId)
+    return this.snapshot(await settleAndroidOperation(operation, options, this.now, 'android.security.state'))
   }
 
   watch(peerId: string): BoundedAsyncStream<PeerSecurityEvent> {
@@ -72,6 +79,9 @@ export class ReactNativeAndroidSecurityBackend implements SecurityBackend {
     this.assertOpen('android.security.pair')
     if (options.ceremony !== 'system') {
       throw contractError('capability.unsupported', 'capability', 'android.security.custom-ceremony')
+    }
+    if (options.protection !== 'system-default') {
+      throw contractError('capability.unsupported', 'capability', 'android.security.pair.protection')
     }
     if (options.signal?.aborted === true) {
       throw contractError('operation.aborted', 'core', 'android.security.pair')
@@ -200,4 +210,46 @@ export class ReactNativeAndroidSecurityBackend implements SecurityBackend {
     streams.delete(stream)
     if (streams.size === 0) this.streams.delete(peerId)
   }
+}
+
+function settleAndroidOperation<Value>(
+  operation: Promise<Value>,
+  options: PublicOperationOptions,
+  now: () => number,
+  operationName: string
+): Promise<Value> {
+  return new Promise((resolve, reject) => {
+    let settled = false
+    let timer: ReturnType<typeof setTimeout> | null = null
+    const clear = (): void => {
+      options.signal?.removeEventListener('abort', abort)
+      if (timer !== null) {
+        clearTimeout(timer)
+        timer = null
+      }
+    }
+    const fail = (error: Error): void => {
+      if (settled) return
+      settled = true
+      clear()
+      reject(error)
+    }
+    const abort = (): void => fail(contractError('operation.aborted', 'core', operationName))
+    options.signal?.addEventListener('abort', abort, { once: true })
+    if (options.deadline !== null) {
+      timer = setTimeout(
+        () => fail(contractError('operation.timed-out', 'core', operationName)),
+        Math.max(0, options.deadline - now())
+      )
+    }
+    operation.then(
+      value => {
+        if (settled) return
+        settled = true
+        clear()
+        resolve(value)
+      },
+      error => fail(error instanceof Error ? error : new Error('Android security state operation failed'))
+    )
+  })
 }
