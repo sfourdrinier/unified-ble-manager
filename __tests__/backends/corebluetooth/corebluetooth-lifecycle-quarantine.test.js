@@ -326,4 +326,80 @@ describe('CoreBluetooth late-operation quarantine', () => {
       expect(boundary.destroyed).toBe(true)
     }
   )
+
+  test('does not start adapter-loss cleanup after destroy closes admission and retains failed native ownership', async () => {
+    const { backend, boundary } = await fixture()
+    const peerId = await observedPeerId(backend)
+    await backend.connections.connect(
+      peerId,
+      opaqueId('destroy-adapter-loss-client', 'client', 'corebluetooth:destroy-adapter-loss'),
+      operation()
+    )
+    const disconnectGate = deferred()
+    let disconnectCalls = 0
+    boundary.disconnect = async () => {
+      disconnectCalls += 1
+      await disconnectGate.promise
+      throw new Error('The native disconnect remained unresolved')
+    }
+
+    const destroy = backend.destroy()
+    await flushMicrotasks()
+    boundary.setAdapterState({ availability: 'unavailable', authorization: 'granted', power: 'on', safeReason: 'lost' })
+    await flushMicrotasks()
+    const callsBeforeRelease = disconnectCalls
+
+    disconnectGate.reject(new Error('The native disconnect remained unresolved'))
+    await expect(destroy).resolves.toMatchObject({
+      state: 'release-failed',
+      failures: [{ resourceKind: 'connection' }]
+    })
+    await flushMicrotasks()
+
+    expect(callsBeforeRelease).toBe(1)
+    expect(disconnectCalls).toBe(1)
+    expect(boundary.destroyed).toBe(false)
+    expect(boundary.connected).toBe(true)
+    expect(backend.resourceCounters()).toMatchObject({ physicalLinks: 1, connectionLeases: 1 })
+  })
+
+  test('keeps a connection readiness watch open until its blocked native disconnect settles', async () => {
+    const readinessListeners = new Set()
+    const { backend, boundary } = await fixture()
+    boundary.canSendWriteWithoutResponse = jest.fn(async nativePeerId => ({
+      nativePeerId,
+      connectionGeneration: '1',
+      ready: true,
+      ordinal: 1
+    }))
+    boundary.onWriteWithoutResponseReadiness = listener => {
+      readinessListeners.add(listener)
+      return () => readinessListeners.delete(listener)
+    }
+    const peerId = await observedPeerId(backend)
+    const lease = await backend.connections.connect(
+      peerId,
+      opaqueId('blocked-disconnect-client', 'client', 'corebluetooth:readiness-disconnect'),
+      operation()
+    )
+    const watch = await backend.connectionControls.writeWithoutResponseReadiness(lease.connection)
+    const disconnectGate = deferred()
+    const nativeDisconnect = boundary.disconnect.bind(boundary)
+    boundary.disconnect = async nativePeerId => {
+      await disconnectGate.promise
+      await nativeDisconnect(nativePeerId)
+    }
+
+    const release = lease.release()
+    await flushMicrotasks()
+    expect(readinessListeners.size).toBe(1)
+
+    disconnectGate.resolve()
+    await expect(release).resolves.toEqual({ state: 'released', failures: [] })
+    expect(readinessListeners.size).toBe(0)
+    await expect(watch.events[Symbol.asyncIterator]().next()).resolves.toMatchObject({
+      value: { kind: 'terminal', reason: 'owner-released' }
+    })
+    await backend.destroy()
+  })
 })

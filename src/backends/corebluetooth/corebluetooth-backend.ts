@@ -817,7 +817,6 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
       return releasedCleanup
     }
     record.state = 'disconnecting'
-    this.closeConnectionReadinessWatches(record)
     const subscriptionCleanup = await this.removeConnectionSubscriptions(record, 'connection-lost')
     const failures: CleanupFailure[] = [...subscriptionCleanup.failures]
     try {
@@ -886,7 +885,7 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
   }
   private handleAdapterState(state: CoreBluetoothAdapterSnapshot): void {
     this.attachmentLifecycle.updateAdapterState(state)
-    if (this.destroyed) {
+    if (this.admissionClosed || this.destroyed) {
       return
     }
     const adapterLost =
@@ -910,7 +909,12 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
     this.nextIngressOrdinal += 1
   }
   private startAdapterLossCleanup(): void {
-    if (this.adapterLossCleanup !== null || (this.adapterLossActive && !this.adapterLossPending)) {
+    if (
+      this.admissionClosed ||
+      this.destroyed ||
+      this.adapterLossCleanup !== null ||
+      (this.adapterLossActive && !this.adapterLossPending)
+    ) {
       return
     }
     this.adapterLossActive = true
