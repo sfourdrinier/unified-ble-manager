@@ -243,7 +243,8 @@ function createBluezTckBoundary() {
               RSSI: { signature: 'n', value: -40 },
               UUIDs: { signature: 'as', value: [SERVICE_UUID] },
               Connected: { signature: 'b', value: true },
-              ServicesResolved: { signature: 'b', value: true }
+              ServicesResolved: { signature: 'b', value: true },
+              Paired: { signature: 'b', value: false }
             }
           }
         ]
