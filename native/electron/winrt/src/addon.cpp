@@ -127,6 +127,20 @@ uint64_t ParseAddress(const std::string& address) {
   return value;
 }
 
+struct SecurityStateView {
+  std::string bond;
+  std::string encryption;
+  std::string authentication;
+  std::string secure_connections;
+  bool pairing_possible;
+};
+
+struct SecurityPairResultView {
+  std::string outcome;
+  std::optional<SecurityStateView> state;
+  std::optional<std::string> reason;
+};
+
 SecurityStateView ReadWinRtSecurityState(const std::string& peer) {
   const BluetoothLEDevice device = AwaitWinRt(BluetoothLEDevice::FromBluetoothAddressAsync(ParseAddress(peer)));
   if (device == nullptr) throw std::runtime_error("The Windows Bluetooth peer could not be opened for security state");
@@ -211,20 +225,6 @@ struct AdapterView {
   std::string power;
   std::optional<std::string> safe_reason;
   std::string deployment;
-};
-
-struct SecurityStateView {
-  std::string bond;
-  std::string encryption;
-  std::string authentication;
-  std::string secure_connections;
-  bool pairing_possible;
-};
-
-struct SecurityPairResultView {
-  std::string outcome;
-  std::optional<SecurityStateView> state;
-  std::optional<std::string> reason;
 };
 
 bool IsAdapterReadyForScanTerminal(const AdapterView& adapter) {
