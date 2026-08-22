@@ -15,6 +15,7 @@ function createInternal() {
     ['connection:effective-mtu', capability('limited')]
   ])
   const connection = {
+    connectionId: 'connection-1',
     connectionGeneration: 'generation-1',
     events: {
       [Symbol.asyncIterator]: () => ({

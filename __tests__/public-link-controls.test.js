@@ -35,14 +35,25 @@ function fakeGattDatabase(generation) {
   }
 }
 
-function fakeInternalManager({ readinessEnabled = false } = {}) {
+function fakeInternalManager({
+  readinessEnabled = false,
+  readinessObservation = {
+    connectionId: 'connection-1',
+    connectionGeneration: 'generation-1',
+    ready: true,
+    observedAtMonotonicMs: 8000,
+    ordinal: 1
+  },
+  readinessWatchOverride,
+  effectiveMtuObservation
+} = {}) {
   const descriptors = new Map([
     ['connection:direct', capability('supported')],
     ['connection:rssi', capability('limited')],
     ['connection:request-mtu', capability('limited')],
     ['connection:priority', capability('limited')],
     ['connection:phy', capability('limited')],
-    ['connection:effective-mtu', capability('unsupported')],
+    ['connection:effective-mtu', capability(effectiveMtuObservation === undefined ? 'unsupported' : 'limited')],
     ['gatt:maximum-write-length', capability('limited')],
     ['connection:parameters', capability('unavailable')],
     ...(readinessEnabled ? [['gatt:write-without-response-readiness', capability('limited')]] : [])
@@ -59,7 +70,13 @@ function fakeInternalManager({ readinessEnabled = false } = {}) {
     readiness.closeWithReason('owner-released')
     return { state: 'released', failures: [] }
   })
+  const readinessWatch =
+    readinessWatchOverride ?? {
+      events: readiness,
+      close: readinessClose
+    }
   const internalConnection = {
+    connectionId: 'connection-1',
     connectionGeneration: 'generation-1',
     events: { [Symbol.asyncIterator]: () => ({ next: async () => ({ done: true, value: undefined }), return: async () => ({ done: true, value: undefined }) }) },
     readRssi: async () => ({ rssi: -42, observedAtMonotonicMs: 5678, terminal: terminal() }),
@@ -80,6 +97,16 @@ function fakeInternalManager({ readinessEnabled = false } = {}) {
         terminal: terminal()
       }
     },
+    ...(effectiveMtuObservation === undefined
+      ? {}
+      : {
+          effectiveMtu: async () => ({
+            connectionId: 'connection-1',
+            connectionGeneration: 'generation-1',
+            ...effectiveMtuObservation,
+            terminal: terminal()
+          })
+        }),
     requestPriority: async (requested, options) => {
       priorityRequests.push({ requested, options })
       return {
@@ -110,17 +137,8 @@ function fakeInternalManager({ readinessEnabled = false } = {}) {
     ...(readinessEnabled
       ? {
           writeWithoutResponseReadiness: async () => {
-            readiness.emit(
-              {
-                connectionId: 'connection-1',
-                connectionGeneration: 'generation-1',
-                ready: true,
-                observedAtMonotonicMs: 8000,
-                ordinal: 1
-              },
-              128
-            )
-            return { events: readiness, close: readinessClose }
+            if (readinessWatchOverride === undefined) readiness.emit(readinessObservation, 128)
+            return readinessWatch
           }
         }
       : {}),
@@ -146,7 +164,33 @@ function fakeInternalManager({ readinessEnabled = false } = {}) {
     maximumWriteLengthRequests,
     priorityRequests,
     readiness,
-    readinessClose
+    readinessClose,
+    readinessWatch
+  }
+}
+
+function readinessEvents(next) {
+  const iterator = {
+    next: jest.fn(next),
+    return: jest.fn(async () => ({ done: true, value: undefined })),
+    [Symbol.asyncIterator]() {
+      return this
+    }
+  }
+  return {
+    [Symbol.asyncIterator]: () => iterator
+  }
+}
+
+function failedReadinessCleanup() {
+  return {
+    state: 'release-failed',
+    failures: [
+      {
+        resourceKind: 'gatt.write-readiness',
+        error: { code: 'platform.failure', domain: 'cleanup', operation: 'test-readiness-close' }
+      }
+    ]
   }
 }
 
@@ -243,6 +287,59 @@ describe('PR8A public link controls', () => {
     expect(internal.rediscoveryReasons).toEqual(['manual-rediscovery'])
   })
 
+  test.each([
+    ['connectionId', { connectionId: 'stale-connection' }],
+    ['connectionGeneration', { connectionGeneration: 'stale-generation' }]
+  ])('rejects readiness observations with a mismatched %s before projection', async (_identity, mismatch) => {
+    const internal = fakeInternalManager({
+      readinessEnabled: true,
+      readinessObservation: {
+        connectionId: 'connection-1',
+        connectionGeneration: 'generation-1',
+        ready: true,
+        observedAtMonotonicMs: 8000,
+        ordinal: 1,
+        ...mismatch
+      }
+    })
+    const manager = await createPublicBleManager(internal, () => 1234)
+    const connection = await manager.connect('peer-1')
+    const iterator = connection.controls.writeReadiness('without-response')[Symbol.asyncIterator]()
+
+    await expect(iterator.next()).rejects.toMatchObject({ code: 'protocol.violation' })
+    expect(internal.readinessClose).toHaveBeenCalledTimes(1)
+  })
+
+  test.each([
+    ['connectionId', { connectionId: 'stale-connection' }],
+    ['connectionGeneration', { connectionGeneration: 'stale-generation' }]
+  ])('rejects effective MTU observations with a mismatched %s before projection', async (_identity, mismatch) => {
+    const internal = fakeInternalManager({
+      effectiveMtuObservation: {
+        attMtu: 185,
+        payloadBytes: 182,
+        platformPduBytes: null,
+        observedAtMonotonicMs: 8000,
+        ...mismatch
+      }
+    })
+    const manager = await createPublicBleManager(internal, () => 1234)
+    const connection = await manager.connect('peer-1')
+
+    await expect(connection.controls.effectiveMtu()).rejects.toMatchObject({ code: 'protocol.violation' })
+  })
+
+  test('rejects a runtime-invalid maximum-write mode before dispatch', async () => {
+    const internal = fakeInternalManager()
+    const manager = await createPublicBleManager(internal, () => 1234)
+    const connection = await manager.connect('peer-1')
+
+    await expect(connection.controls.maximumWriteLength('without-respons')).rejects.toMatchObject({
+      code: 'argument.invalid'
+    })
+    expect(internal.maximumWriteLengthRequests).toEqual([])
+  })
+
   test('leaves Android PHY registration to the opened runtime capability registry', () => {
     const registry = createReactNativeConnectionControlFeatureRegistry('android', 'test')
     expect(registry.registrations.map(registration => registration.id)).toEqual([
@@ -284,5 +381,74 @@ describe('PR8A public link controls', () => {
     })
     await iterator.return()
     expect(internal.readinessClose).toHaveBeenCalledTimes(1)
+  })
+
+  test.each([
+    [
+      'iterator close',
+      readinessEvents(async () => ({
+        done: false,
+        value: {
+          kind: 'value',
+          value: {
+            connectionId: 'connection-1',
+            connectionGeneration: 'generation-1',
+            ready: true,
+            observedAtMonotonicMs: 8000,
+            ordinal: 1
+          }
+        }
+      })),
+      async iterator => {
+        await expect(iterator.next()).resolves.toMatchObject({ done: false })
+        await expect(iterator.return()).rejects.toMatchObject({
+          cleanup: { state: 'release-failed' }
+        })
+      }
+    ],
+    [
+      'terminal delivery',
+      readinessEvents(async () => ({
+        done: false,
+        value: { kind: 'terminal', reason: 'closed' }
+      })),
+      async iterator => {
+        await expect(iterator.next()).rejects.toMatchObject({
+          cleanup: { state: 'release-failed' }
+        })
+      }
+    ],
+    [
+      'source error',
+      readinessEvents(async () => {
+        throw new Error('readiness source failed')
+      }),
+      async iterator => {
+        let failure
+        try {
+          await iterator.next()
+        } catch (error) {
+          failure = error
+        }
+        expect(failure).toBeInstanceOf(AggregateError)
+        expect(failure.errors).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ message: 'readiness source failed' }),
+            expect.objectContaining({ cleanup: expect.objectContaining({ state: 'release-failed' }) })
+          ])
+        )
+      }
+    ]
+  ])('retains release-failed cleanup on readiness %s', async (_path, events, assertFailure) => {
+    const internal = fakeInternalManager({
+      readinessEnabled: true,
+      readinessWatchOverride: {
+        events,
+        close: jest.fn(async () => failedReadinessCleanup())
+      }
+    })
+    const manager = await createPublicBleManager(internal, () => 1234)
+    const connection = await manager.connect('peer-1')
+    await assertFailure(connection.controls.writeReadiness('without-response')[Symbol.asyncIterator]())
   })
 })

@@ -45,6 +45,7 @@ import {
   MAXIMUM_REQUESTED_ATT_MTU,
   MINIMUM_ATT_MTU,
   type ConnectionPriority,
+  type ConnectionWriteReadinessObservation,
   type ConnectionWriteReadinessWatch
 } from '../backend-contract/connection-controls'
 
@@ -381,6 +382,24 @@ function controlMetadata(
   })
 }
 
+interface PublicConnectionIdentity {
+  readonly connectionId: string
+  readonly connectionGeneration: string
+}
+
+function assertPublicConnectionIdentity(
+  expected: PublicConnectionIdentity,
+  actual: PublicConnectionIdentity,
+  operation: string
+): void {
+  if (
+    String(actual.connectionId) !== String(expected.connectionId) ||
+    String(actual.connectionGeneration) !== String(expected.connectionGeneration)
+  ) {
+    throw contractError('protocol.violation', 'connection', operation)
+  }
+}
+
 function requireControlCapability(
   internal: Pick<InternalBleManager<string, BackendIdentity<string>>, 'capability'>,
   id: `${string}:${string}`,
@@ -416,31 +435,141 @@ function publicWriteReadinessStream(
   generation: string,
   descriptor: ReturnType<InternalBleManager<string, BackendIdentity<string>>['capability']>
 ): AsyncIterable<WriteReadinessEvent> {
-  return (async function* (): AsyncGenerator<WriteReadinessEvent> {
-    const observe = connection.writeWithoutResponseReadiness
-    if (observe === undefined) {
-      throw contractError('capability.unsupported', 'connection', 'public-connection.controls.write-readiness')
-    }
-    const watch = await observe()
-    try {
-      for await (const item of watch.events) {
-        if (item.kind === 'value') {
-          yield Object.freeze({
-            ...controlMetadata(generation, item.value.observedAtMonotonicMs, descriptor, 'backend-observation'),
-            state: 'measured' as const,
-            mode: 'without-response' as const,
-            ready: item.value.ready
-          })
-        } else if (item.kind === 'overflow') {
-          throw contractError('stream.overflow', 'connection', 'public-connection.controls.write-readiness')
-        } else if (item.kind === 'terminal') {
-          return
+  return {
+    [Symbol.asyncIterator](): AsyncIterator<WriteReadinessEvent> {
+      let watch: ConnectionWriteReadinessWatch<string> | null = null
+      let iterator: BoundedAsyncStreamIterator<ConnectionWriteReadinessObservation<string>> | null = null
+      let closed = false
+      let iteratorDone = false
+      let teardownAttempted = false
+
+      const open = async (): Promise<void> => {
+        if (watch !== null) return
+        const observe = connection.writeWithoutResponseReadiness
+        if (observe === undefined) {
+          throw contractError('capability.unsupported', 'connection', 'public-connection.controls.write-readiness')
+        }
+        watch = await observe()
+        iterator = watch.events[Symbol.asyncIterator]()
+      }
+
+      const close = async (): Promise<void> => {
+        if (teardownAttempted) return
+        teardownAttempted = true
+        if (watch === null || iterator === null) return
+        await closePublicReadinessWatch(iterator, watch.close, iteratorDone)
+      }
+
+      return {
+        async next(): Promise<IteratorResult<WriteReadinessEvent, undefined>> {
+          if (closed) return { done: true, value: undefined }
+          try {
+            await open()
+            if (iterator === null) {
+              throw contractError(
+                'lifecycle.invariant-violation',
+                'connection',
+                'public-connection.controls.write-readiness'
+              )
+            }
+            const item = await iterator.next()
+            if (item.done) {
+              iteratorDone = true
+              closed = true
+              await close()
+              return { done: true, value: undefined }
+            }
+            const streamItem = item.value
+            if (streamItem.kind === 'value') {
+              assertPublicConnectionIdentity(
+                connection,
+                streamItem.value,
+                'public-connection.controls.write-readiness.identity'
+              )
+              return {
+                done: false,
+                value: Object.freeze({
+                  ...controlMetadata(
+                    generation,
+                    streamItem.value.observedAtMonotonicMs,
+                    descriptor,
+                    'backend-observation'
+                  ),
+                  state: 'measured' as const,
+                  mode: 'without-response' as const,
+                  ready: streamItem.value.ready
+                })
+              }
+            }
+            if (streamItem.kind === 'overflow') {
+              throw contractError('stream.overflow', 'connection', 'public-connection.controls.write-readiness')
+            }
+            closed = true
+            await close()
+            return { done: true, value: undefined }
+          } catch (error) {
+            const sourceError = rehydratePublicError(error)
+            if (closed) throw sourceError
+            closed = true
+            try {
+              await close()
+            } catch (cleanupError) {
+              throw new AggregateError(
+                [sourceError, rehydratePublicError(cleanupError)],
+                'BLE readiness watch operation and cleanup both failed'
+              )
+            }
+            throw sourceError
+          }
+        },
+        async return(): Promise<IteratorResult<WriteReadinessEvent, undefined>> {
+          closed = true
+          try {
+            await close()
+            return { done: true, value: undefined }
+          } catch (error) {
+            throw rehydratePublicError(error)
+          }
         }
       }
-    } finally {
-      await watch.close()
     }
-  })()
+  }
+}
+
+async function closePublicReadinessWatch(
+  iterator: BoundedAsyncStreamIterator<ConnectionWriteReadinessObservation<string>>,
+  close: () => Promise<CleanupRecord>,
+  iteratorDone: boolean
+): Promise<void> {
+  let iteratorError: unknown
+  if (!iteratorDone) {
+    try {
+      if (iterator.return !== undefined) await iterator.return()
+    } catch (error) {
+      iteratorError = error
+    }
+  }
+
+  let closeError: unknown
+  try {
+    const cleanup = await close()
+    if (cleanup.state === 'release-failed') {
+      const error = new Error('BLE readiness watch cleanup failed')
+      Object.defineProperty(error, 'cleanup', { value: cleanup, enumerable: true })
+      closeError = error
+    }
+  } catch (error) {
+    closeError = error
+  }
+
+  if (iteratorError !== undefined && closeError !== undefined) {
+    throw new AggregateError(
+      [rehydratePublicError(iteratorError), rehydratePublicError(closeError)],
+      'BLE readiness watch teardown failed'
+    )
+  }
+  if (iteratorError !== undefined) throw rehydratePublicError(iteratorError)
+  if (closeError !== undefined) throw rehydratePublicError(closeError)
 }
 
 class UnsupportedControlStream<Value> implements AsyncIterable<Value> {
@@ -499,6 +628,7 @@ function createPublicConnectionControls(
         throw contractError('capability.unsupported', 'connection', 'public-connection.controls.effective-mtu')
       }
       const result = await observe()
+      assertPublicConnectionIdentity(connection, result, 'public-connection.controls.effective-mtu.identity')
       return Object.freeze({
         ...controlMetadata(generation, result.observedAtMonotonicMs, descriptor, 'backend-observation'),
         state: result.attMtu === null ? ('unavailable' as const) : ('measured' as const),
@@ -544,6 +674,9 @@ function createPublicConnectionControls(
 
   const maximumWriteLength = (mode: WriteMode): Promise<MaximumWriteLengthObservation> =>
     runPublicControl(async () => {
+      if (mode !== 'with-response' && mode !== 'without-response') {
+        throw contractError('argument.invalid', 'connection', 'public-connection.controls.maximum-write-length')
+      }
       const descriptor = requireControlCapability(
         internal,
         'gatt:maximum-write-length',
