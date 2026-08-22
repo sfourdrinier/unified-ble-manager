@@ -45,6 +45,9 @@ function createRadio() {
     getAdapterState: jest.fn(() => 'PoweredOn'),
     readRssi: jest.fn(() => Promise.resolve(-61)),
     maximumWriteValueLengthForType: jest.fn(() => Promise.resolve(182)),
+    canSendWriteWithoutResponse: jest.fn(() =>
+      Promise.resolve({ id: 'peripheral-id', connectionGeneration: 'native-generation-1', ready: true, ordinal: 1 })
+    ),
     discoverServices: jest.fn(() => Promise.resolve([])),
     discoverCharacteristicsAt: jest.fn(() => Promise.resolve([])),
     readDescriptorAt: jest.fn(() => Promise.resolve(Buffer.alloc(0))),
@@ -56,6 +59,7 @@ function createRadio() {
     setDisconnectHandler: jest.fn(),
     setDatabaseChangedHandler: jest.fn(),
     setAdapterStateHandler: jest.fn(),
+    setWriteWithoutResponseReadinessHandler: jest.fn(),
     destroy: jest.fn()
   }
 }
