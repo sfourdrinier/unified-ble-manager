@@ -104,8 +104,8 @@ function registerRenderer(arbiter, renderer) {
 
 test('trusted security scopes are snapshotted at bootstrap and never come from renderer payloads', async () => {
   const current = fixture()
-  current.senderA.securityPermissions = ['security:state']
-  current.rendererA.securityPermissions = ['security:state']
+  current.senderA.securityPermissions = ['security:state', 'security:pair']
+  current.rendererA.securityPermissions = ['security:state', 'security:pair']
   const routed = []
   const arbiter = new ElectronMainArbiterContext(current.authority, {
     route: async request => {
@@ -121,19 +121,26 @@ test('trusted security scopes are snapshotted at bootstrap and never come from r
   ).resolves.toEqual({})
   await expect(
     arbiter.route(current.senderA, envelope(current, current.rendererA, 2, { __command: 'security.pair' }))
+  ).resolves.toEqual({})
+
+  await expect(
+    arbiter.route(
+      current.senderA,
+      envelope(current, current.rendererA, 4, { __command: 'security.pair', ceremony: 'custom' })
+    )
   ).rejects.toMatchObject({ normalized: { code: 'permission.denied' } })
 
-  current.senderA.securityPermissions.push('security:pair')
+  current.senderA.securityPermissions.push('security:custom-ceremony')
   await expect(
     arbiter.route(
       current.senderA,
       envelope(current, current.rendererA, 3, {
         __command: 'security.pair',
-        securityPermissions: ['security:pair']
+        securityPermissions: ['security:custom-ceremony']
       })
     )
   ).rejects.toMatchObject({ normalized: { code: 'ownership.denied' } })
-  expect(routed).toEqual(['security.state'])
+  expect(routed).toEqual(['security.state', 'security.pair'])
 })
 
 function deferred() {

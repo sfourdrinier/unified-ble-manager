@@ -222,7 +222,11 @@ export class IpcArbiterContext<Attachment extends string> implements ElectronMai
     this.assertAttachment(envelope)
     this.assertVersions(accounting.versions, envelope)
     const prepared = this.prepareEnvelope(envelope, accounting.versions)
-    assertSecurityCommandPermission(prepared.envelope.command, accounting.securityPermissions)
+    assertSecurityCommandPermission(
+      prepared.envelope.command,
+      prepared.envelope.payload,
+      accounting.securityPermissions
+    )
     // A cancellation must remain admissible when normal work has filled the
     // operation quota; it still receives full replay and byte accounting.
     const reservesOperationSlot = prepared.envelope.command !== 'operation.cancel'
@@ -577,7 +581,11 @@ function isIpcSecurityPermission(value: string): value is IpcSecurityPermission 
   )
 }
 
-function assertSecurityCommandPermission(command: string, permissions: readonly IpcSecurityPermission[]): void {
+function assertSecurityCommandPermission(
+  command: string,
+  payload: SerializableRecord,
+  permissions: readonly IpcSecurityPermission[]
+): void {
   const permission =
     command === 'security.state'
       ? 'security:state'
@@ -590,8 +598,14 @@ function assertSecurityCommandPermission(command: string, permissions: readonly 
             : command === 'security.custom-ceremony'
               ? 'security:custom-ceremony'
               : null
-  if (permission !== null && !permissions.includes(permission)) {
-    throw contractError('permission.denied', 'ipc', `electron-main-arbiter.${permission}`)
+  const required: IpcSecurityPermission[] = permission === null ? [] : [permission]
+  if (command === 'security.pair' && payload.ceremony === 'custom') {
+    required.push('security:custom-ceremony')
+  }
+  for (const requiredPermission of required) {
+    if (!permissions.includes(requiredPermission)) {
+      throw contractError('permission.denied', 'ipc', `electron-main-arbiter.${requiredPermission}`)
+    }
   }
 }
 
