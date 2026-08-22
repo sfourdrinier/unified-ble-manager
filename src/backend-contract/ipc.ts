@@ -599,7 +599,7 @@ function assertSecurityCommandPermission(
               ? 'security:custom-ceremony'
               : null
   const required: IpcSecurityPermission[] = permission === null ? [] : [permission]
-  if (command === 'security.pair' && payload.ceremony === 'custom') {
+  if (command === 'security.pair' && payload.ceremony !== undefined && payload.ceremony !== 'system') {
     required.push('security:custom-ceremony')
   }
   for (const requiredPermission of required) {

@@ -129,6 +129,12 @@ test('trusted security scopes are snapshotted at bootstrap and never come from r
       envelope(current, current.rendererA, 4, { __command: 'security.pair', ceremony: 'custom' })
     )
   ).rejects.toMatchObject({ normalized: { code: 'permission.denied' } })
+  await expect(
+    arbiter.route(
+      current.senderA,
+      envelope(current, current.rendererA, 5, { __command: 'security.pair', ceremony: { kind: 'agent' } })
+    )
+  ).rejects.toMatchObject({ normalized: { code: 'permission.denied' } })
 
   current.senderA.securityPermissions.push('security:custom-ceremony')
   await expect(

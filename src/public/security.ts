@@ -417,7 +417,11 @@ function snapshotUnpairResult(value: InternalSecurityUnpairResult, operation: st
 function mapSecurityEvents(
   source: BoundedAsyncStream<InternalPeerSecurityEvent> | Promise<BoundedAsyncStream<InternalPeerSecurityEvent>>
 ): AsyncIterable<PeerSecurityEvent> {
-  const sourcePromise = Promise.resolve(source)
+  let sourceResolved = false
+  const sourcePromise = Promise.resolve(source).then(value => {
+    sourceResolved = true
+    return value
+  })
   let closePromise: Promise<void> | null = null
   const closeSource = (): Promise<void> => {
     if (closePromise === null) {
@@ -431,17 +435,25 @@ function mapSecurityEvents(
   return {
     [Symbol.asyncIterator]() {
       const iteratorPromise = sourcePromise.then(value => value[Symbol.asyncIterator]())
+      let teardownAttempted = false
       return {
         async next(): Promise<IteratorResult<PeerSecurityEvent, undefined>> {
+          let iterator: BoundedAsyncStreamIterator<InternalPeerSecurityEvent> | null = null
           try {
-            const iterator = await iteratorPromise
+            iterator = await iteratorPromise
             const item = await iterator.next()
-            if (item.done) return { done: true, value: undefined }
+            if (item.done) {
+              teardownAttempted = true
+              await closeSource()
+              return { done: true, value: undefined }
+            }
             if (item.value.kind === 'terminal') {
+              teardownAttempted = true
               await closeSecurityIterator(iterator, closeSource)
               return { done: true, value: undefined }
             }
             if (item.value.kind === 'overflow') {
+              teardownAttempted = true
               await closeSource()
               throw contractError('stream.overflow', 'stream', 'public-security.watch')
             }
@@ -459,15 +471,46 @@ function mapSecurityEvents(
               })
             }
           } catch (error) {
+            if (!teardownAttempted) {
+              teardownAttempted = true
+              let cleanupError: unknown
+              try {
+                if (iterator === null) {
+                  if (sourceResolved) await closeSource()
+                } else {
+                  await closeSecurityIterator(iterator, closeSource)
+                }
+              } catch (errorValue) {
+                cleanupError = errorValue
+              }
+              if (cleanupError !== undefined) {
+                throw new AggregateError(
+                  [rehydratePublicError(error), rehydratePublicError(cleanupError)],
+                  'BLE security watch operation and cleanup both failed'
+                )
+              }
+            }
             throw rehydratePublicError(error)
           }
         },
         return: async () => {
           try {
             const iterator = await iteratorPromise
+            teardownAttempted = true
             await closeSecurityIterator(iterator, closeSource)
             return { done: true, value: undefined }
           } catch (error) {
+            if (!teardownAttempted) {
+              teardownAttempted = true
+              try {
+                if (sourceResolved) await closeSource()
+              } catch (cleanupError) {
+                throw new AggregateError(
+                  [rehydratePublicError(error), rehydratePublicError(cleanupError)],
+                  'BLE security watch return and cleanup both failed'
+                )
+              }
+            }
             throw rehydratePublicError(error)
           }
         },

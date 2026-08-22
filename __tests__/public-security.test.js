@@ -144,20 +144,21 @@ describe('public security façade', () => {
       [Symbol.asyncIterator]()
     await expect(sourceFailureIterator.next()).rejects.toMatchObject({ code: 'protocol.violation' })
 
+    const iteratorFailureStream = {
+      [Symbol.asyncIterator]: () => ({
+        next: async () => {
+          throw backendError
+        },
+        return: async () => ({ done: true, value: undefined }),
+        [Symbol.asyncIterator]() {
+          return this
+        }
+      }),
+      close: jest.fn(async () => ({ state: 'released', failures: [] }))
+    }
     const iteratorFailureSecurity = {
       state: jest.fn(),
-      watch: jest.fn(() => ({
-        [Symbol.asyncIterator]: () => ({
-          next: async () => {
-            throw backendError
-          },
-          return: async () => ({ done: true, value: undefined }),
-          [Symbol.asyncIterator]() {
-            return this
-          }
-        }),
-        close: jest.fn(async () => ({ state: 'released', failures: [] }))
-      })),
+      watch: jest.fn(() => iteratorFailureStream),
       pair: jest.fn(),
       cancelPairing: jest.fn(),
       unpair: jest.fn()
@@ -168,6 +169,32 @@ describe('public security façade', () => {
     )
     const iteratorFailure = iteratorFailureManager.security.watch({ id: 'peer-1', name: null, rssi: null })
     await expect(iteratorFailure[Symbol.asyncIterator]().next()).rejects.toMatchObject({ code: 'protocol.violation' })
+    expect(iteratorFailureStream.close).toHaveBeenCalledTimes(1)
+  })
+
+  test('closes the backend security stream when its iterator reaches done', async () => {
+    const stream = {
+      [Symbol.asyncIterator]: () => ({
+        next: async () => ({ done: true, value: undefined }),
+        return: async () => ({ done: true, value: undefined }),
+        [Symbol.asyncIterator]() {
+          return this
+        }
+      }),
+      close: jest.fn(async () => ({ state: 'released', failures: [] }))
+    }
+    const security = {
+      state: jest.fn(),
+      watch: jest.fn(() => stream),
+      pair: jest.fn(),
+      cancelPairing: jest.fn(),
+      unpair: jest.fn()
+    }
+    const manager = await createPublicBleManager(internalWithSecurity(security), () => 100)
+    const iterator = manager.security.watch({ id: 'peer-1', name: null, rssi: null })[Symbol.asyncIterator]()
+
+    await expect(iterator.next()).resolves.toEqual({ done: true, value: undefined })
+    expect(stream.close).toHaveBeenCalledTimes(1)
   })
 
   test('rehydrates and preserves both security watch return and close failures', async () => {
