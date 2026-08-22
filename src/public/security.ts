@@ -1,4 +1,4 @@
-import { BackendContractError, contractError } from '../backend-contract/errors'
+import { BackendContractError, contractError, type CleanupRecord } from '../backend-contract/errors'
 import type {
   PeerSecurityEvent as InternalPeerSecurityEvent,
   PeerSecurityState as InternalPeerSecurityState,
@@ -12,7 +12,7 @@ import type {
   SecurityPairingResponse as InternalSecurityPairingResponse
 } from '../backend-contract/security'
 import type { FeatureId, Limitation } from '../backend-contract/capabilities'
-import type { BoundedAsyncStream } from '../backend-contract/streams'
+import type { BoundedAsyncStream, BoundedAsyncStreamIterator } from '../backend-contract/streams'
 import { rehydratePublicError } from './error-bridge'
 import type { OperationOptions } from './operation-options'
 import { normalizeOperationOptions } from './operation-options'
@@ -417,42 +417,59 @@ function snapshotUnpairResult(value: InternalSecurityUnpairResult, operation: st
 function mapSecurityEvents(
   source: BoundedAsyncStream<InternalPeerSecurityEvent> | Promise<BoundedAsyncStream<InternalPeerSecurityEvent>>
 ): AsyncIterable<PeerSecurityEvent> {
+  const sourcePromise = Promise.resolve(source)
+  let closePromise: Promise<void> | null = null
+  const closeSource = (): Promise<void> => {
+    if (closePromise === null) {
+      closePromise = sourcePromise.then(async stream => {
+        const cleanup = await stream.close()
+        assertSecurityStreamCleanup(cleanup)
+      })
+    }
+    return closePromise
+  }
   return {
     [Symbol.asyncIterator]() {
-      const iteratorPromise = Promise.resolve(source).then(value => value[Symbol.asyncIterator]())
+      const iteratorPromise = sourcePromise.then(value => value[Symbol.asyncIterator]())
       return {
         async next(): Promise<IteratorResult<PeerSecurityEvent, undefined>> {
-          const iterator = await iteratorPromise
-          const item = await iterator.next()
-          if (item.done) return { done: true, value: undefined }
-          if (item.value.kind === 'terminal') {
-            await iterator.return()
-            await (await sourcePromise(source)).close()
-            return { done: true, value: undefined }
-          }
-          if (item.value.kind === 'overflow') {
-            await (await sourcePromise(source)).close()
-            throw contractError('stream.overflow', 'stream', 'public-security.watch')
-          }
-          const event = item.value.value
-          if (event.kind !== 'state' || typeof event.peerId !== 'string' || !Number.isSafeInteger(event.sequence)) {
-            throw contractError('protocol.violation', 'platform', 'public-security.watch-event')
-          }
-          return {
-            done: false,
-            value: Object.freeze({
-              kind: 'state',
-              peerId: event.peerId,
-              sequence: event.sequence,
-              state: snapshotSecurityState(event.state, 'public-security.watch-event')
-            })
+          try {
+            const iterator = await iteratorPromise
+            const item = await iterator.next()
+            if (item.done) return { done: true, value: undefined }
+            if (item.value.kind === 'terminal') {
+              await closeSecurityIterator(iterator, closeSource)
+              return { done: true, value: undefined }
+            }
+            if (item.value.kind === 'overflow') {
+              await closeSource()
+              throw contractError('stream.overflow', 'stream', 'public-security.watch')
+            }
+            const event = item.value.value
+            if (event.kind !== 'state' || typeof event.peerId !== 'string' || !Number.isSafeInteger(event.sequence)) {
+              throw contractError('protocol.violation', 'platform', 'public-security.watch-event')
+            }
+            return {
+              done: false,
+              value: Object.freeze({
+                kind: 'state',
+                peerId: event.peerId,
+                sequence: event.sequence,
+                state: snapshotSecurityState(event.state, 'public-security.watch-event')
+              })
+            }
+          } catch (error) {
+            throw rehydratePublicError(error)
           }
         },
         return: async () => {
-          const iterator = await iteratorPromise
-          await iterator.return()
-          await (await sourcePromise(source)).close()
-          return { done: true, value: undefined }
+          try {
+            const iterator = await iteratorPromise
+            await closeSecurityIterator(iterator, closeSource)
+            return { done: true, value: undefined }
+          } catch (error) {
+            throw rehydratePublicError(error)
+          }
         },
         [Symbol.asyncIterator]() {
           return this
@@ -462,10 +479,44 @@ function mapSecurityEvents(
   }
 }
 
-function sourcePromise(
-  source: BoundedAsyncStream<InternalPeerSecurityEvent> | Promise<BoundedAsyncStream<InternalPeerSecurityEvent>>
-): Promise<BoundedAsyncStream<InternalPeerSecurityEvent>> {
-  return Promise.resolve(source)
+async function closeSecurityIterator(
+  iterator: BoundedAsyncStreamIterator<InternalPeerSecurityEvent>,
+  closeSource: () => Promise<void>
+): Promise<void> {
+  let iteratorError: unknown
+  let iteratorFailed = false
+  try {
+    await iterator.return()
+  } catch (error) {
+    iteratorFailed = true
+    iteratorError = error
+  }
+
+  let closeError: unknown
+  let closeFailed = false
+  try {
+    await closeSource()
+  } catch (error) {
+    closeFailed = true
+    closeError = error
+  }
+
+  if (iteratorFailed && closeFailed) {
+    throw new AggregateError(
+      [rehydratePublicError(iteratorError), rehydratePublicError(closeError)],
+      'BLE security watch teardown failed'
+    )
+  }
+  if (iteratorFailed) throw rehydratePublicError(iteratorError)
+  if (closeFailed) throw rehydratePublicError(closeError)
+}
+
+function assertSecurityStreamCleanup(cleanup: CleanupRecord): void {
+  if (cleanup.state === 'release-failed') {
+    const error = new Error('BLE security watch cleanup failed')
+    Object.defineProperty(error, 'cleanup', { value: cleanup, enumerable: true })
+    throw error
+  }
 }
 
 function isSecurityStateValue(value: unknown, allowed: readonly string[]): value is string {

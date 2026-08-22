@@ -2,6 +2,7 @@ const { createPublicBleManager } = require('../src/public/ble-manager')
 const { withRequiredSecurity } = require('../src/public/security')
 const { CoreBoundedStream } = require('../src/core/bounded-stream')
 const { capacity } = require('../src/backend-contract/primitives')
+const { contractError } = require('../src/backend-contract/errors')
 
 function measuredState(overrides = {}) {
   return Object.freeze({
@@ -123,6 +124,81 @@ describe('public security façade', () => {
     await expect(next).resolves.toEqual({ done: false, value: event })
     await expect(iterator.return()).resolves.toEqual({ done: true, value: undefined })
     expect(await stream[Symbol.asyncIterator]().return()).toEqual({ done: true, value: undefined })
+  })
+
+  test('rehydrates deferred security watch source and iterator failures', async () => {
+    const backendError = contractError('protocol.violation', 'platform', 'public-security.watch-source')
+    const sourceFailureSecurity = {
+      state: jest.fn(),
+      watch: jest.fn(() => Promise.reject(backendError)),
+      pair: jest.fn(),
+      cancelPairing: jest.fn(),
+      unpair: jest.fn()
+    }
+    const sourceFailureManager = await createPublicBleManager(
+      internalWithSecurity(sourceFailureSecurity),
+      () => 100
+    )
+    const sourceFailureIterator = sourceFailureManager.security
+      .watch({ id: 'peer-1', name: null, rssi: null })
+      [Symbol.asyncIterator]()
+    await expect(sourceFailureIterator.next()).rejects.toMatchObject({ code: 'protocol.violation' })
+
+    const iteratorFailureSecurity = {
+      state: jest.fn(),
+      watch: jest.fn(() => ({
+        [Symbol.asyncIterator]: () => ({
+          next: async () => {
+            throw backendError
+          },
+          return: async () => ({ done: true, value: undefined }),
+          [Symbol.asyncIterator]() {
+            return this
+          }
+        }),
+        close: jest.fn(async () => ({ state: 'released', failures: [] }))
+      })),
+      pair: jest.fn(),
+      cancelPairing: jest.fn(),
+      unpair: jest.fn()
+    }
+    const iteratorFailureManager = await createPublicBleManager(
+      internalWithSecurity(iteratorFailureSecurity),
+      () => 100
+    )
+    const iteratorFailure = iteratorFailureManager.security.watch({ id: 'peer-1', name: null, rssi: null })
+    await expect(iteratorFailure[Symbol.asyncIterator]().next()).rejects.toMatchObject({ code: 'protocol.violation' })
+  })
+
+  test('rehydrates and preserves both security watch return and close failures', async () => {
+    const iteratorError = contractError('operation.aborted', 'core', 'public-security.watch-return')
+    const closeError = contractError('lifecycle.invalid-state', 'core', 'public-security.watch-close')
+    const stream = {
+      [Symbol.asyncIterator]: () => ({
+        next: async () => ({ done: false, value: { kind: 'terminal', reason: 'closed' } }),
+        return: async () => {
+          throw iteratorError
+        },
+        [Symbol.asyncIterator]() {
+          return this
+        }
+      }),
+      close: jest.fn(async () => {
+        throw closeError
+      })
+    }
+    const security = {
+      state: jest.fn(),
+      watch: jest.fn(() => stream),
+      pair: jest.fn(),
+      cancelPairing: jest.fn(),
+      unpair: jest.fn()
+    }
+    const manager = await createPublicBleManager(internalWithSecurity(security), () => 100)
+    const iterator = manager.security.watch({ id: 'peer-1', name: null, rssi: null })[Symbol.asyncIterator]()
+
+    await expect(iterator.next()).rejects.toBeInstanceOf(AggregateError)
+    expect(stream.close).toHaveBeenCalledTimes(1)
   })
 
   test('adapts custom ceremony challenges without passing native objects or losing passkey zeros', async () => {
