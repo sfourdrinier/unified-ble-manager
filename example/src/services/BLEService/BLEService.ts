@@ -181,11 +181,20 @@ class CanonicalBleExampleService {
   }
 
   async readRssi(): Promise<number> {
-    return this.requireConnection().readRssi(this.operation())
+    const observation = await this.requireConnection().controls.readRssi(this.operation())
+    if (observation.rssi === null) {
+      throw new Error('The connected backend did not provide an RSSI measurement.')
+    }
+    return observation.rssi
   }
 
   async requestMtu(requestedMtu: number): Promise<number> {
-    return this.requireConnection().requestMtu(requestedMtu, this.operation())
+    const negotiation = await this.requireConnection().controls.requestMtu(requestedMtu, this.operation())
+    const attMtu = negotiation.observation?.attMtu
+    if (attMtu === null || attMtu === undefined) {
+      throw new Error('The connected backend did not provide an effective ATT MTU observation.')
+    }
+    return attMtu
   }
 
   async subscribeCharacteristic(
