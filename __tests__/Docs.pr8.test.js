@@ -122,6 +122,16 @@ describe('PR8 documentation contract', () => {
     expect(semantics).toMatch(/peripheralIsReady\(toSendWriteWithoutResponse:\)/)
     expect(semantics).toMatch(/connection:parameters[\s\S]{0,120}unsupported/i)
     expect(semantics).toMatch(/connection:subrate[\s\S]{0,120}unsupported/i)
-    expect(semantics).toMatch(/writeWhenReady[\s\S]{0,120}(?:not implemented|unsupported)/i)
+    expect(semantics).toMatch(/writeWhenReady[\s\S]{0,220}capability\.unsupported/i)
+  })
+
+  test('root API report records the exact public writeWhenReady method contract', () => {
+    const report = read('etc/api/root.api.md')
+
+    expect(report).toContain('readonly security: BleSecurity')
+    expect(report).toContain('readonly state?: BlePeerState')
+    expect(report).toMatch(
+      /export interface GattCharacteristic \{[\s\S]*readonly uuid: string[\s\S]*readonly occurrence: number[\s\S]*readonly service: GattService[\s\S]*readonly properties: GattCharacteristicProperties[\s\S]*readonly access: GattAccessRequirements[\s\S]*readonly descriptors: readonly GattDescriptor\[\][\s\S]*read\(options\?: OperationOptions\): Promise<Uint8Array>[\s\S]*write\(value: Uint8Array, options\?: GattWriteOptions\): Promise<GattWriteReceipt>[\s\S]*writeWhenReady\(value: Uint8Array, options\?: OperationOptions\): Promise<GattWriteReceipt>[\s\S]*writeLong\(value: Uint8Array, options\?: LongWriteOptions\): Promise<GattLongWriteReceipt>[\s\S]*subscribe\(options\?: GattSubscribeOptions\): Promise<GattSubscription>[\s\S]*withSubscription<T>\(options: GattSubscribeOptions, action: \(subscription: GattSubscription\) => Promise<T>\): Promise<T>[\s\S]*descriptor\(uuid: UuidInput, selector\?: OccurrenceSelector\): GattDescriptor[\s\S]*\}/
+    )
   })
 })

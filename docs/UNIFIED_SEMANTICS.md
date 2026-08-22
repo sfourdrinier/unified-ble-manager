@@ -695,10 +695,29 @@ readiness event does not prove that a later payload was retained. Callers use
 the mode-specific maximum write length and the write result's exact commit or
 unknown state.
 
+`GattCharacteristic.writeWhenReady(value, options)` is a bounded convenience
+operation for write-without-response only. Its public options are exactly
+`signal` and `timeoutMs`. It rejects `capability.unsupported` when the
+capability is absent or unsupported and preserves `capability.unavailable`
+when the instantiated backend reports temporary unavailability. The
+coordinator copies the caller's bytes before asynchronous retention, waits at
+the connection FIFO head, and rechecks the generation-bound database path and
+the readiness stream at the native dispatch boundary. Abort, deadline,
+service change, disconnect, or destroy before native submission releases that
+copy, closes the readiness watch exactly once, and dispatches no write. A
+readiness close failure remains a `CleanupFailure` in manager/connection
+cleanup instead of being reduced to a trace-only success. Cancellation after
+native submission retains the ordinary uncertain commit semantics. The helper
+never replays a write.
+
 The direct CoreBluetooth Node/Electron-main backend advertises this capability
 only when both `CBPeripheral.canSendWriteWithoutResponse` and
 `peripheralIsReady(toSendWriteWithoutResponse:)` are bridged. Its snapshots and
-edges carry a native ordinal and connection generation. React Native Apple,
+edges carry a native ordinal and native connection generation, which the
+backend maps to the opaque public connection generation. The bounded native
+ingress retains the newest state in a source's slot and refuses to evict a
+different source's newest state when saturated; a new readiness watch always
+starts with a fresh authoritative probe. React Native Apple,
 Android, Web, BlueZ, WinRT, Tauri, and Electron renderer IPC remain explicitly
 unsupported until they expose equivalent platform-authoritative flow control.
 
@@ -712,10 +731,10 @@ qualification remains open.
 
 | Host/backend | MTU request / effective observation | PHY read/request | Write-without-response readiness | Parameters / subrate / `writeWhenReady` |
 | --- | --- | --- | --- | --- |
-| React Native Android | `limited` / deterministic. `effectiveMtu()` reads only the generation-bound value recorded by a successful `onMtuChanged`; it is unavailable before measurement. | `limited` / deterministic. `readPhy()` is the `onPhyRead` callback result. `requestPhy()` separates callback-derived `accepted` from its optional `onPhyUpdate` observation. | `unsupported` | `connection:parameters`, `connection:subrate`, and `writeWhenReady` are unsupported; no `writeWhenReady` helper is implemented. |
-| React Native Apple | Caller-directed MTU request, effective ATT MTU observation, and PHY read/request are `unsupported` because CoreBluetooth exposes none of those application controls. | `unsupported` | `unsupported` | `connection:parameters`, `connection:subrate`, and `writeWhenReady` are unsupported and absent. |
-| Direct CoreBluetooth Node/Electron-main | `connection:request-mtu` is unsupported because CoreBluetooth negotiates internally; effective MTU is unsupported unless the concrete boundary exposes an authoritative observation. | `connection:phy` is unsupported in the current boundary. | `limited` / deterministic only when both `canSendWriteWithoutResponse` and `peripheralIsReady(toSendWriteWithoutResponse:)` are bridged; otherwise `unsupported`. | `connection:parameters`, `connection:subrate`, and `writeWhenReady` are unsupported and absent. |
-| Web, BlueZ, WinRT, Tauri, and Electron renderer IPC | `unsupported` | `unsupported` | `unsupported` | `connection:parameters`, `connection:subrate`, and `writeWhenReady` are unsupported and absent. |
+| React Native Android | `limited` / deterministic. `effectiveMtu()` reads only the generation-bound value recorded by a successful `onMtuChanged`; it is unavailable before measurement. | `limited` / deterministic. `readPhy()` is the `onPhyRead` callback result. `requestPhy()` separates callback-derived `accepted` from its optional `onPhyUpdate` observation. | `unsupported` | `connection:parameters` and `connection:subrate` are unsupported; `writeWhenReady` rejects `capability.unsupported`. |
+| React Native Apple | Caller-directed MTU request, effective ATT MTU observation, and PHY read/request are `unsupported` because CoreBluetooth exposes none of those application controls. | `unsupported` | `unsupported` | `connection:parameters` and `connection:subrate` are unsupported; `writeWhenReady` rejects `capability.unsupported`. |
+| Direct CoreBluetooth Node/Electron-main | `connection:request-mtu` is unsupported because CoreBluetooth negotiates internally; effective MTU is unsupported unless the concrete boundary exposes an authoritative observation. | `connection:phy` is unsupported in the current boundary. | `limited` / deterministic only when both `canSendWriteWithoutResponse` and `peripheralIsReady(toSendWriteWithoutResponse:)` are bridged; otherwise `unsupported`. | `writeWhenReady` is `limited` / deterministic when readiness is authoritative and otherwise rejects `capability.unsupported`; parameters and subrate remain unsupported. |
+| Web, BlueZ, WinRT, Tauri, and Electron renderer IPC | `unsupported` | `unsupported` | `unsupported` | `connection:parameters` and `connection:subrate` are unsupported; `writeWhenReady` rejects `capability.unsupported`. |
 
 Android `requestPhy()` does not treat dispatch or a preferred-PHY call as proof
 of the resulting link state: a successful `onPhyUpdate` supplies the accepted

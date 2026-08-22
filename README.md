@@ -180,10 +180,18 @@ PHY read/request as `limited` / deterministic controls: effective MTU is
 unavailable before a successful `onMtuChanged` callback, and PHY request
 `accepted` plus its observation come from the native callback result. Direct
 CoreBluetooth Node/Electron-main readiness is also `limited` / deterministic
-when both native readiness hooks are bridged. `parameters`, `subrate`, and the
-`connection:parameters`, `connection:subrate`, and `writeWhenReady` remain
-unsupported; no `writeWhenReady` helper is implemented. The separate
-`writeReadiness('without-response')` stream is not an automatic write helper.
+when both native readiness hooks are bridged. `parameters`, `subrate`,
+`connection:parameters`, and `connection:subrate` remain unsupported.
+`writeWhenReady` is available only when the instantiated backend advertises
+authoritative write-without-response readiness; otherwise it rejects
+`capability.unsupported` (or `capability.unavailable` when the registered
+capability cannot currently be used). It accepts only `{ signal, timeoutMs }`,
+waits at the connection FIFO head, rechecks the generation-bound database path
+and readiness stream before dispatch, and never replays an uncertain write.
+Cancellation and teardown retain readiness cleanup failures for the manager's
+cleanup receipt. The separate
+`writeReadiness('without-response')` stream is an observation surface, not an
+automatic write helper.
 
 ### `GattDatabase`
 
@@ -194,6 +202,7 @@ unsupported; no `writeWhenReady` helper is implemented. The separate
 | `characteristic(serviceUuid, characteristicUuid, selector?)` | Generation-bound `GattCharacteristic` object |
 | `characteristic.read(options)` | `Uint8Array` |
 | `characteristic.write(value, { response, signal, timeoutMs })` | `response` is `'required'`, `'not-required'`, or `'automatic'` |
+| `characteristic.writeWhenReady(value, { signal, timeoutMs })` | Bounded write-without-response helper when authoritative readiness is advertised |
 | `characteristic.writeLong(value, { response, signal, timeoutMs, chunkSize })` | Chunked write when supported |
 | `characteristic.subscribe({ signal, timeoutMs, stream })` | Notification / indication stream |
 | `characteristic.descriptor(uuid).read/write(...)` | Descriptor bytes through the generation-bound characteristic object |

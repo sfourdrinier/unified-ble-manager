@@ -309,10 +309,10 @@ PR6 to a release claim by itself.
 
 ## PR8 current checkpoint
 
-The current PR8 branch is `feat/4.0-link-controls` at `897b561`, with the
-readiness implementation committed in `0626c51`, the latest readiness/docs
-follow-ups in its descendants, and the cumulative package gate reverified
-afterward.
+The current PR8 branch is `feat/4.0-link-controls` at the dirty working-tree
+tip whose committed parent is `e497fc24`; the readiness implementation and
+writeWhenReady remediation are uncommitted in this checkpoint. The cumulative
+package gate has been reverified against the current source afterward.
 
 | Area | Current evidence | Disposition |
 | --- | --- | --- |
@@ -323,9 +323,9 @@ afterward.
 | CoreBluetooth readiness | `canSendWriteWithoutResponse`, `peripheralIsReady(toSendWriteWithoutResponse:)`, native ordinal/generation, bounded stream, disconnect/destroy cleanup | Direct Node/Electron-main only, limited/deterministic; other hosts remain unsupported |
 | Scheduler and recovery | Per-connection bounded round-robin lanes, queue overflow, service-change cancellation, reasoned rediscovery, uncertain-write preservation, hidden-refresh source guard | Fixed with focused TDD/TCK coverage |
 | TCK and docs | PR8 closure scenarios, Android PHY/priority truth, explicit unsupported parameters/subrate/other-host readiness truth, migration/semantics guidance | Deterministic evidence only; no physical-radio claim |
-| Local package gate | `pnpm test:package`: 136 suites / 1,214 tests; docs/API, native protocol, artifact, and smell checks included | Green locally |
+| Local package gate | `pnpm test:package`: 138 suites / 1,246 tests; docs/API, native protocol, artifact, and smell checks included | Green locally |
 | Native/plugin gates | CoreBluetooth macOS Node-API build, native protocol host, plugin 36/36, release artifacts, typecheck/lint | Green locally; Android/Windows hosted qualification remains required |
 | Packed consumer gate | Local npm pack smoke still encounters npm `Exit handler never called!` | Hosted supported-Node proof required |
 | Performance baselines | Deterministic baseline `unified-ble-pr8-deterministic-performance-v1`: 23 measurements in the focused 3-payload test and 31 measurements / 15 categories in default `performance:check`, including all ten PR8 IDs, bounded cleanup and ownership metadata | Deterministic baseline fixed; live/native comparison remains a PR12 gate |
-| Remaining contract gaps | `writeWhenReady` helper is not yet implemented; parameter/subrate remain unsupported because no truthful pinned API is wired | Blocking PR8 acceptance until implemented or explicitly reconciled with the plan |
+| Remaining contract gaps | Parameter/subrate remain unsupported because no truthful pinned API is wired; `writeWhenReady` now has a capability-gated public/core implementation with deterministic cleanup and uncertainty semantics | Parameter/subrate remain open; writeWhenReady is addressed in the current worktree and still requires the focused/package validation gates |
 | Review/release | No PR8 GitHub PR, Copilot/Codex review rounds, merge, or RC3 tag yet | Blocking; RC2 remains immutable |

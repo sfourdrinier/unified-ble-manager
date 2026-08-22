@@ -9,6 +9,7 @@ export interface BleManager {
   readonly adapter: BleAdapter
   readonly diagnostics: BleDiagnostics
   readonly peers: BlePeerDirectory
+  readonly security: BleSecurity
   readonly discovery: BleDiscoveryInfo
   destroy(): Promise<CleanupRecord>
   scan(options?: ScanOptions): Promise<ScanSession>
@@ -27,6 +28,7 @@ export interface BlePeer {
   readonly reference: PeerReference | null
   readonly sources: readonly PeerSource[]
   readonly lastAdvertisement: NormalizedScanObservation | null
+  readonly state?: BlePeerState
 }
 export interface BleConnection {
   readonly peer: BlePeer
@@ -50,6 +52,21 @@ export interface BleConnectionControls {
   parameterEvents(): AsyncIterable<ConnectionParametersObservation>
   requestSubrate(mode: SubrateMode, options?: OperationOptions): Promise<SubrateResult>
   writeReadiness(mode: 'without-response'): AsyncIterable<WriteReadinessEvent>
+}
+export interface GattCharacteristic {
+  readonly uuid: string
+  readonly occurrence: number
+  readonly service: GattService
+  readonly properties: GattCharacteristicProperties
+  readonly access: GattAccessRequirements
+  readonly descriptors: readonly GattDescriptor[]
+  read(options?: OperationOptions): Promise<Uint8Array>
+  write(value: Uint8Array, options?: GattWriteOptions): Promise<GattWriteReceipt>
+  writeWhenReady(value: Uint8Array, options?: OperationOptions): Promise<GattWriteReceipt>
+  writeLong(value: Uint8Array, options?: LongWriteOptions): Promise<GattLongWriteReceipt>
+  subscribe(options?: GattSubscribeOptions): Promise<GattSubscription>
+  withSubscription<T>(options: GattSubscribeOptions, action: (subscription: GattSubscription) => Promise<T>): Promise<T>
+  descriptor(uuid: UuidInput, selector?: OccurrenceSelector): GattDescriptor
 }
 export interface RediscoverGattOptions extends OperationOptions { readonly reason: 'service-changed' | 'manual' }
 export type ConnectionPriority = 'low-power' | 'balanced' | 'high-throughput'
