@@ -316,6 +316,12 @@ jobs:
         if: runner.os == 'Linux'
         run: node scripts/ci/pack-install-smoke.js
 
+      # Focused packed host proof; this consumes only the canonical tarball and
+      # remains separate from the Node/Web-only G6A schema.
+      - name: Packed Expo/Tauri consumer proof
+        if: runner.os == 'Linux' && matrix.node == '22'
+        run: node scripts/ci/packed-host-consumer-check.js
+
       # Independent G6A packed-consumer proof; keep separate from generic smoke to avoid artifact collisions.
       - name: G6A packed consumer proof
         if: runner.os == 'Linux' && matrix.node == '22'

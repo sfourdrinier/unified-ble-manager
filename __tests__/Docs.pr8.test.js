@@ -1,6 +1,7 @@
 const fs = require('fs')
 const path = require('path')
 const { parseVerifiedSection } = require('../scripts/docs/check-api-reports')
+const { assertByteIdentical, assertPublicApiBoundary, extractPublicApiSection } = require('../scripts/docs/check-generated-html')
 
 const root = path.join(__dirname, '..')
 const read = relativePath => fs.readFileSync(path.join(root, relativePath), 'utf8').replace(/\r\n/g, '\n')
@@ -173,19 +174,22 @@ describe('PR8 documentation contract', () => {
   test('generated HTML does not present internal implementation symbols as root API', () => {
     const html = read('docs/index.html')
     expect(html).toContain('id="public-api"')
-    const publicApi = html.slice(
-      html.indexOf('<h2 id="public-api"'),
-      html.indexOf('</section>', html.indexOf('<h2 id="public-api"'))
-    )
-    for (const internalSymbol of [
-      'createBackendOperationCapabilityRegistration',
-      'normalizeOperationOptions',
-      'CoreBoundedStream'
-    ]) {
-      expect(publicApi).not.toContain(internalSymbol)
-    }
-    expect(publicApi).not.toContain('unified-ble-manager/advanced')
+    expect(() => assertPublicApiBoundary(html)).not.toThrow()
     expect(html).toContain('backend authors can use the typed helpers under <code>/advanced</code>')
+  })
+
+  test('rejects generated HTML byte drift', () => {
+    expect(() => assertByteIdentical(Buffer.from('committed'), Buffer.from('regenerated'))).toThrow(
+      'Generated HTML differs byte-for-byte from docs/index.html'
+    )
+  })
+
+  test('scopes the root API boundary to the Public API section', () => {
+    const explanatoryHtml = '<h2 id="public-api">Public API</h2><p>Host-neutral manager exported by the package root.</p></section><p>Backend authors can use <code>/advanced</code> and normalizeOperationOptions.</p>'
+    expect(extractPublicApiSection(explanatoryHtml)).toContain('Public API')
+    expect(() => assertPublicApiBoundary(explanatoryHtml)).not.toThrow()
+    const leakedHtml = explanatoryHtml.replace('Host-neutral manager', 'normalizeOperationOptions Host-neutral manager')
+    expect(() => assertPublicApiBoundary(leakedHtml)).toThrow('Public API section advertises forbidden symbol')
   })
 
   test('marks historical Expo restoration schema as a non-copyable fixture in Markdown and generated HTML', () => {

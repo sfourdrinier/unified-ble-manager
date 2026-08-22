@@ -110,7 +110,7 @@ Run the focused Jest command from Task 1 and confirm all new and existing tests 
 
 - [x] **Step 1: Run the requested canonical checks proportionate to the change**
 
-`pnpm validate:evidence`, `pnpm test:package` (140 suites / 1,303 tests),
+`pnpm validate:evidence`, `pnpm test:package` (140 suites / 1,310 tests),
 `pnpm test:plugin` (36 tests), `pnpm prepack`,
 `pnpm release:artifacts:check`, performance, protocol, Tauri, and the
 CoreBluetooth addon build are green. The local packed-consumer smoke remains
@@ -133,7 +133,8 @@ cleanup is `ed83e8a`. The generated documentation/public-boundary slice is
 `95494e1`; local package and focused CoreBluetooth gates are green. The later
 runtime hardening commits are `762c00f` (canonical physical settlement),
 `947f479` (changed-observation preservation), and `5f29080` (CoreBluetooth
-connection idle barrier), plus the explicit Expo ESM import fix in `14850ff`.
+connection idle barrier), plus the explicit Expo ESM import fix in `14850ff` and
+the final BlueZ/WinRT barriers in `c864d9d`/`016d269`.
 The hosted run remains bound to `046b764` until the
 final branch tip is pushed.
 
