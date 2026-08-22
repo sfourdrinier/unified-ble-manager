@@ -642,6 +642,19 @@ interface PeerConnectionDeclaration {
       readonly cause: never
     }
   }>
+  effectiveMtu(): Promise<{
+    readonly connectionId: string
+    readonly connectionGeneration: string
+    readonly attMtu: number | null
+    readonly payloadBytes: number | null
+    readonly platformPduBytes: number | null
+    readonly observedAtMonotonicMs: number
+    readonly terminal: {
+      readonly correlation: string
+      readonly outcome: 'succeeded' | 'failed' | 'aborted' | 'timed-out' | 'disconnected' | 'reset' | 'adapter-unavailable' | 'destroyed'
+      readonly cause: never
+    }
+  }>
 }
 
 declare class PeerOneManager {
@@ -665,6 +678,7 @@ declare class PeerOneConnection implements PeerConnectionDeclaration {
   disconnect(): Promise<PeerCleanupRecord>
   readRssi(options: PeerOperationOptions): ReturnType<PeerConnectionDeclaration['readRssi']>
   requestMtu(requestedMtu: number, options: PeerOperationOptions): ReturnType<PeerConnectionDeclaration['requestMtu']>
+  effectiveMtu(): ReturnType<PeerConnectionDeclaration['effectiveMtu']>
 }
 declare class PeerTwoConnection implements PeerConnectionDeclaration {
   private readonly peerTwoConnectionBrand: undefined
@@ -677,6 +691,7 @@ declare class PeerTwoConnection implements PeerConnectionDeclaration {
   disconnect(): Promise<PeerCleanupRecord>
   readRssi(options: PeerOperationOptions): ReturnType<PeerConnectionDeclaration['readRssi']>
   requestMtu(requestedMtu: number, options: PeerOperationOptions): ReturnType<PeerConnectionDeclaration['requestMtu']>
+  effectiveMtu(): ReturnType<PeerConnectionDeclaration['effectiveMtu']>
 }
 declare class PeerOneDatabase implements PeerDatabaseDeclaration {
   private readonly peerOneDatabaseBrand: undefined
