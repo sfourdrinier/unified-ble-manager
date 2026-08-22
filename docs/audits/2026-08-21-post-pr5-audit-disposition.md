@@ -4,7 +4,7 @@ Source audit: `~/Downloads/unified-ble-manager-post-pr5-audit.md`
 Audit snapshot: `bc4a347c496e994e97cec9da06e2c0a6223a72f8`
 RC2 release snapshot: `main` / `ab331517083c5a580894adb3d79d075f299c9db5` / `v4.0.0-rc.2`
 Historical PR6 audit source: `feat/4.0-pr6-audit-closure` / `dac701f3bef8213074c829f1dce8ce3a2f42df38`
-Current PR7 implementation checkpoint: `feat/4.0-security-pairing` / `96a6078` plus documentation-only descendants
+Current PR7 implementation checkpoint: `feat/4.0-security-pairing` / `d28f96c` (implementation tip); documentation-only descendants from this commit
 
 Execution authority for this continuation is the revised session instruction,
 `docs/superpowers/plans/2026-08-20-next-12-prs.md`, this disposition ledger,
@@ -202,8 +202,10 @@ this deterministic binding into a Windows capability claim.
 ### PR7C4 trusted-host security-scope checkpoint
 
 The PR7C4 trusted-host boundary is implemented in the clean commits
-`ed6e05a` (Tauri), `0965fff` (Electron), and `96a6078` (custom-ceremony
-authorization), with later documentation-only descendants. Tauri now exposes distinct command scopes for state, system pair,
+`ed6e05a` (Tauri permission definitions), `0965fff` (Electron), `96a6078`
+(custom-ceremony authorization), and `45a22e5` (Tauri custom-ceremony
+authorization), with later implementation descendants and documentation-only
+descendants. Tauri now exposes distinct command scopes for state, system pair,
 pair cancellation, unpair, and custom ceremony; unpair and custom ceremony are
 not part of the default permission. Rust enforces the injected scope before
 dispatch and ignores renderer-supplied scope fields. Electron snapshots
@@ -217,11 +219,31 @@ TCK/evidence exist. Custom Electron ceremonies remain rejected rather than
 downgraded because the current data-only IPC has no challenge/response wire
 protocol.
 
-Evidence: Tauri Rust tests (20), focused Electron/Tauri tests (124), full
-package gate (123 suites, 1,148 tests), lint/typecheck, clippy, native protocol,
+Evidence: Tauri Rust tests (21), focused Electron/Tauri tests previously passed,
+full package gate previously passed (123 suites, 1,148 tests), lint/typecheck, clippy, native protocol,
 plugin, docs/API, evidence, artifact, diff, and forbidden-assertion-smell
-gates passed locally. Hosted CI, Android/Windows native qualification, and
+gates passed locally at the prior implementation checkpoint. Hosted CI,
+Android/Windows native qualification, and
 physical-radio evidence remain open; no RC3 or merge claim is made.
+
+### PR7 review-finding disposition at the current implementation tip
+
+The first Codex review was triggered against an earlier PR tip, but every
+reported finding was re-verified against the current source and is tracked here
+by its exact fix and regression proof:
+
+| Review finding | Disposition | Exact proof |
+| --- | --- | --- |
+| Copilot Android concurrent-pair arbitration | Fixed | `32d47b4`; Android boundary regression test rejects the second same-peer pair with `ownership.denied`. |
+| Codex `3835119248` BlueZ cancellation while `Device1.Pair` is pending | Fixed | `a571fb3`; dispatcher cancellation hook, one-shot `CancelPairing`, deferred-pair abort/deadline tests. |
+| Codex `3835119251` WinRT deadline after `PairAsync` dispatch | Fixed | `06c9eee`; shared `WinRtOperationDispatcher` deadline/physical-retirement path and deadline cancellation test. |
+| Codex `3835119257` public security-watch async error rehydration | Fixed | `d28f96c`; deferred source/iterator/teardown error tests and public error bridge. |
+| Codex `3835119260` BlueZ closed-watch ownership | Fixed | `a571fb3`; stream close unregisters immediately and the no-later-event retention test passes. |
+| Codex `3835119263` Tauri custom-ceremony permission bypass | Fixed | `45a22e5`; Rust permission mapping requires both `Pair` and `CustomCeremony` for serialized custom ceremonies. |
+
+The exact candidate still requires hosted CI, the final exact-tip adversarial
+review, two Codex review rounds, and all native/evidence gates below before PR7
+can merge.
 
 ### PR7E evidence disposition
 
@@ -234,7 +256,7 @@ physical-radio evidence remain open; no RC3 or merge claim is made.
 | Raw npm pack-install smoke | Blocked locally | `node scripts/ci/pack-install-smoke.js` reaches local npm packing but hangs/encounters the npm exit-handler failure; hosted supported-Node proof is required. |
 | Android Gradle/JVM and physical Android | Blocked/open | Local lane is blocked before compilation by missing `example/node_modules/@react-native/gradle-plugin`; hosted Android compile/JVM and physical-radio evidence remain required. |
 | WinRT native ABI/runtime and physical desktop | Blocked/open | macOS cannot qualify the Windows native artifact; hosted Windows compile/ABI/runtime and physical evidence remain required. |
-| Hosted CI and release qualification | Missing for this branch tip | No exact-tip hosted CI/PR checks have run; PR7 merge and RC3 remain prohibited until the complete matrix is green. |
+| Hosted CI and release qualification | In progress for `d28f96c` | Exact-tip PR40 CI run `32553685932` is pending; PR7 merge and RC3 remain prohibited until the complete matrix is green. |
 
 PR7E is therefore an explicit evidence checkpoint, not a closure claim. Its
 remaining blockers must be re-audited at the exact PR7 merge candidate before
