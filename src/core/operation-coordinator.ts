@@ -13,6 +13,7 @@ export type CoreCommitState = 'not-applicable' | 'confirmed' | 'unknown'
 
 /** Maximum number of waiting operations retained by one connection lane by default. */
 const DEFAULT_MAXIMUM_QUEUED_OPERATIONS_PER_CONNECTION = 8
+const DEFAULT_FAIRNESS_KEY = 'default'
 
 export interface CoreOperationSuccess<Attachment extends string, Value> {
   readonly correlation: OperationCorrelation<Attachment, string>
@@ -41,6 +42,8 @@ export interface CoreOperationDispatch<Value> {
 
 export interface CoreOperationExecution<Attachment extends string, Value> {
   readonly queueKey: string | null
+  /** Internal stable class used for deterministic per-connection round-robin selection. */
+  readonly fairnessKey?: string
   readonly options: PublicOperationOptions
   readonly mayCommit: boolean
   readonly retainedPayloadBytes?: number
@@ -54,6 +57,7 @@ type OperationPhase = 'queued' | 'dispatched' | 'quarantined' | 'completed'
 
 interface TrackedOperation {
   readonly queueKey: string | null
+  readonly fairnessKey: string
   phase: OperationPhase
   cancelOperation(outcome: Exclude<CoreOperationOutcome, 'succeeded' | 'failed'>): void
   beginDispatch(): void
@@ -70,6 +74,12 @@ interface PendingOperation<Attachment extends string, Value> extends TrackedOper
   publicResult: CoreOperationResult<Attachment, Value> | null
   readonly retainedPayloadBytes: number
   payloadRetained: boolean
+}
+
+interface ConnectionQueue {
+  readonly lanes: Map<string, TrackedOperation[]>
+  readonly fairnessOrder: string[]
+  lastDispatchedFairnessKey: string | null
 }
 
 export interface CoreOperationCoordinatorOptions<Attachment extends string> {
@@ -92,7 +102,7 @@ export interface CoreOperationCoordinatorOptions<Attachment extends string> {
  * reordering same-connection radio work.
  */
 export class CoreOperationCoordinator<Attachment extends string> {
-  private readonly queues = new Map<string, TrackedOperation[]>()
+  private readonly queues = new Map<string, ConnectionQueue>()
   private readonly operations = new Set<TrackedOperation>()
   private admissionOpen = true
   private nextTraceLabel = 1
@@ -164,6 +174,7 @@ export class CoreOperationCoordinator<Attachment extends string> {
         dispatchHandle: null,
         phase: 'queued',
         queueKey: execution.queueKey,
+        fairnessKey: execution.fairnessKey ?? DEFAULT_FAIRNESS_KEY,
         cancelOperation: outcome => this.cancel(operation, outcome),
         beginDispatch: () => this.dispatch(operation),
         publicResult: null,
@@ -185,20 +196,31 @@ export class CoreOperationCoordinator<Attachment extends string> {
         this.dispatch(operation)
         return
       }
-      const queue = this.queues.get(execution.queueKey) ?? []
-      queue.push(operation)
+      const queue = this.queues.get(execution.queueKey) ?? {
+        lanes: new Map<string, TrackedOperation[]>(),
+        fairnessOrder: [],
+        lastDispatchedFairnessKey: null
+      }
+      let lane = queue.lanes.get(operation.fairnessKey)
+      if (lane === undefined) {
+        lane = []
+        queue.lanes.set(operation.fairnessKey, lane)
+        queue.fairnessOrder.push(operation.fairnessKey)
+      }
+      lane.push(operation)
       this.queues.set(execution.queueKey, queue)
       this.pump(execution.queueKey)
     })
   }
 
   cancelQueue(queueKey: string, outcome: Exclude<CoreOperationOutcome, 'succeeded' | 'failed'>): void {
-    const queue = this.queues.get(queueKey)
-    if (queue === undefined) {
+    if (!this.queues.has(queueKey)) {
       return
     }
-    for (const operation of [...queue]) {
-      operation.cancelOperation(outcome)
+    for (const operation of [...this.operations]) {
+      if (operation.queueKey === queueKey) {
+        operation.cancelOperation(outcome)
+      }
     }
   }
 
@@ -234,11 +256,39 @@ export class CoreOperationCoordinator<Attachment extends string> {
 
   private pump(queueKey: string): void {
     const queue = this.queues.get(queueKey)
-    const head = queue?.[0]
-    if (head === undefined || head.phase !== 'queued') {
+    if (queue === undefined) {
       return
     }
-    head.beginDispatch()
+    for (const lane of queue.lanes.values()) {
+      const head = lane[0]
+      if (head !== undefined && head.phase !== 'queued') {
+        return
+      }
+    }
+    this.selectNextQueuedOperation(queue)?.beginDispatch()
+  }
+
+  private selectNextQueuedOperation(queue: ConnectionQueue): TrackedOperation | undefined {
+    if (queue.fairnessOrder.length === 0) {
+      return undefined
+    }
+    const lastIndex =
+      queue.lastDispatchedFairnessKey === null ? -1 : queue.fairnessOrder.indexOf(queue.lastDispatchedFairnessKey)
+    const startIndex = lastIndex < 0 ? 0 : (lastIndex + 1) % queue.fairnessOrder.length
+    for (let offset = 0; offset < queue.fairnessOrder.length; offset += 1) {
+      const index = (startIndex + offset) % queue.fairnessOrder.length
+      const fairnessKey = queue.fairnessOrder[index]
+      if (fairnessKey === undefined) {
+        continue
+      }
+      const lane = queue.lanes.get(fairnessKey)
+      const head = lane?.[0]
+      if (head !== undefined && head.phase === 'queued') {
+        queue.lastDispatchedFairnessKey = fairnessKey
+        return head
+      }
+    }
+    return undefined
   }
 
   private canAdmitQueuedOperation(queueKey: string): boolean {
@@ -247,9 +297,11 @@ export class CoreOperationCoordinator<Attachment extends string> {
       return true
     }
     let queued = 0
-    for (const operation of queue) {
-      if (operation.phase === 'queued') {
-        queued += 1
+    for (const lane of queue.lanes.values()) {
+      for (const operation of lane) {
+        if (operation.phase === 'queued') {
+          queued += 1
+        }
       }
     }
     return queued < this.maximumQueuedOperationsPerConnection
@@ -500,12 +552,19 @@ export class CoreOperationCoordinator<Attachment extends string> {
     if (queue === undefined) {
       return
     }
-    const index = queue.indexOf(operation)
+    const lane = queue.lanes.get(operation.fairnessKey)
+    if (lane === undefined) {
+      return
+    }
+    const index = lane.indexOf(operation)
     if (index < 0) {
       return
     }
-    queue.splice(index, 1)
-    if (queue.length === 0) {
+    lane.splice(index, 1)
+    if (lane.length === 0) {
+      queue.lanes.delete(operation.fairnessKey)
+    }
+    if (queue.lanes.size === 0) {
       this.queues.delete(queueKey)
       return
     }

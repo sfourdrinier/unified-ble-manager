@@ -44,6 +44,7 @@ export async function readCoreCharacteristic<Attachment extends string, Identity
   database.assertPath(path)
   const result = await operationCoordinator.run({
     queueKey: String(path.connectionId),
+    fairnessKey: 'read',
     options,
     mayCommit: false,
     dispatch: correlation => {
@@ -69,6 +70,7 @@ export async function writeCoreCharacteristic<Attachment extends string, Identit
   const owned = ownBytes(bytes, maximumValueBytes)
   const result = await operationCoordinator.run({
     queueKey: String(path.connectionId),
+    fairnessKey: 'write',
     options,
     mayCommit: true,
     retainedPayloadBytes: owned.byteLength,
@@ -108,6 +110,7 @@ export async function writeCoreLongCharacteristic<
   let progress: MutableLongWriteProgress | null = null
   const result = await operationCoordinator.run({
     queueKey: String(path.connectionId),
+    fairnessKey: 'write',
     options,
     mayCommit: true,
     retainedPayloadBytes: owned.byteLength,

@@ -38,10 +38,12 @@ function operation(
   signal = null,
   mayCommit = false,
   retainedPayloadBytes = 0,
-  queueKey = 'connection-1'
+  queueKey = 'connection-1',
+  fairnessKey
 ) {
   return {
     queueKey,
+    fairnessKey,
     options: { signal, deadline: null },
     mayCommit,
     retainedPayloadBytes,
@@ -163,6 +165,181 @@ describe('CoreOperationCoordinator', () => {
 
     secondConnection.resolve('other-value')
     await expect(otherResult).resolves.toMatchObject({ outcome: 'succeeded', value: 'other-value' })
+    expect(ledger.isZero()).toBe(true)
+  })
+
+  test('round-robins non-empty fairness classes while preserving FIFO within each class', async () => {
+    const { coordinator, ledger } = createCoordinator()
+    const firstRead = deferred()
+    const firstWrite = deferred()
+    const secondRead = deferred()
+    const secondWrite = deferred()
+    const thirdRead = deferred()
+    const started = []
+
+    const firstReadResult = coordinator.run(
+      operation(
+        () => {
+          started.push('read:first')
+          return firstRead.promise
+        },
+        null,
+        false,
+        0,
+        'connection-1',
+        'read'
+      )
+    )
+    const secondReadResult = coordinator.run(
+      operation(
+        () => {
+          started.push('read:second')
+          return secondRead.promise
+        },
+        null,
+        false,
+        0,
+        'connection-1',
+        'read'
+      )
+    )
+    const thirdReadResult = coordinator.run(
+      operation(
+        () => {
+          started.push('read:third')
+          return thirdRead.promise
+        },
+        null,
+        false,
+        0,
+        'connection-1',
+        'read'
+      )
+    )
+    const firstWriteResult = coordinator.run(
+      operation(
+        () => {
+          started.push('write:first')
+          return firstWrite.promise
+        },
+        null,
+        false,
+        0,
+        'connection-1',
+        'write'
+      )
+    )
+    const secondWriteResult = coordinator.run(
+      operation(
+        () => {
+          started.push('write:second')
+          return secondWrite.promise
+        },
+        null,
+        false,
+        0,
+        'connection-1',
+        'write'
+      )
+    )
+
+    expect(started).toEqual(['read:first'])
+    firstRead.resolve('first-read')
+    await expect(firstReadResult).resolves.toMatchObject({ outcome: 'succeeded', value: 'first-read' })
+    expect(started).toEqual(['read:first', 'write:first'])
+
+    firstWrite.resolve('first-write')
+    await expect(firstWriteResult).resolves.toMatchObject({ outcome: 'succeeded', value: 'first-write' })
+    expect(started).toEqual(['read:first', 'write:first', 'read:second'])
+
+    secondRead.resolve('second-read')
+    await expect(secondReadResult).resolves.toMatchObject({ outcome: 'succeeded', value: 'second-read' })
+    expect(started).toEqual(['read:first', 'write:first', 'read:second', 'write:second'])
+
+    secondWrite.resolve('second-write')
+    await expect(secondWriteResult).resolves.toMatchObject({ outcome: 'succeeded', value: 'second-write' })
+    expect(started).toEqual(['read:first', 'write:first', 'read:second', 'write:second', 'read:third'])
+
+    thirdRead.resolve('third-read')
+    await expect(thirdReadResult).resolves.toMatchObject({ outcome: 'succeeded', value: 'third-read' })
+    expect(coordinator.activeCounts()).toEqual({ queued: 0, dispatched: 0, quarantined: 0 })
+    expect(ledger.isZero()).toBe(true)
+  })
+
+  test('removing a queued fairness class does not corrupt the next round-robin selection', async () => {
+    const { coordinator, ledger } = createCoordinator()
+    const firstRead = deferred()
+    const queuedRead = deferred()
+    const control = deferred()
+    const cancelledWrite = new AbortController()
+    const started = []
+
+    const firstReadResult = coordinator.run(
+      operation(
+        () => {
+          started.push('read:first')
+          return firstRead.promise
+        },
+        null,
+        false,
+        0,
+        'connection-1',
+        'read'
+      )
+    )
+    const queuedReadResult = coordinator.run(
+      operation(
+        () => {
+          started.push('read:queued')
+          return queuedRead.promise
+        },
+        null,
+        false,
+        0,
+        'connection-1',
+        'read'
+      )
+    )
+    const cancelledWriteResult = coordinator.run(
+      operation(
+        () => {
+          started.push('write:cancelled')
+          return 'must-not-dispatch'
+        },
+        cancelledWrite.signal,
+        false,
+        0,
+        'connection-1',
+        'write'
+      )
+    )
+    const controlResult = coordinator.run(
+      operation(
+        () => {
+          started.push('control:first')
+          return control.promise
+        },
+        null,
+        false,
+        0,
+        'connection-1',
+        'control'
+      )
+    )
+
+    cancelledWrite.abort()
+    await expect(cancelledWriteResult).resolves.toMatchObject({ outcome: 'aborted' })
+    firstRead.resolve('first-read')
+    await expect(firstReadResult).resolves.toMatchObject({ outcome: 'succeeded', value: 'first-read' })
+    expect(started).toEqual(['read:first', 'control:first'])
+
+    control.resolve('control-value')
+    await expect(controlResult).resolves.toMatchObject({ outcome: 'succeeded', value: 'control-value' })
+    expect(started).toEqual(['read:first', 'control:first', 'read:queued'])
+
+    queuedRead.resolve('queued-read')
+    await expect(queuedReadResult).resolves.toMatchObject({ outcome: 'succeeded', value: 'queued-read' })
+    expect(coordinator.activeCounts()).toEqual({ queued: 0, dispatched: 0, quarantined: 0 })
     expect(ledger.isZero()).toBe(true)
   })
 

@@ -90,6 +90,7 @@ export async function requestCorePriority<Attachment extends string, Identity ex
   connection.assertCurrent()
   const result = await operationCoordinator.run({
     queueKey: String(connection.resource.connectionId),
+    fairnessKey: 'control',
     options,
     mayCommit: false,
     dispatch: correlation => {
@@ -117,6 +118,7 @@ export async function readCoreRssi<Attachment extends string, Identity extends B
   connection.assertCurrent()
   const result = await operationCoordinator.run({
     queueKey: String(connection.resource.connectionId),
+    fairnessKey: 'control',
     options,
     mayCommit: false,
     dispatch: correlation => {
@@ -149,6 +151,7 @@ export async function requestCoreMtu<Attachment extends string, Identity extends
   connection.assertCurrent()
   const result = await operationCoordinator.run({
     queueKey: String(connection.resource.connectionId),
+    fairnessKey: 'control',
     options,
     mayCommit: true,
     dispatch: correlation => {
@@ -180,6 +183,7 @@ export async function observeCoreMaximumWriteLength<
   connection.assertCurrent()
   const result = await operationCoordinator.run({
     queueKey: String(connection.resource.connectionId),
+    fairnessKey: 'control',
     options,
     mayCommit: false,
     dispatch: correlation => {
