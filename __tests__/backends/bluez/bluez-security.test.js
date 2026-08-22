@@ -127,6 +127,7 @@ describe('BlueZ system security backend', () => {
     })
     await iterator.return()
     await stream.close()
+    expect(backend.security.streams.size).toBe(0)
     await expect(backend.destroy()).resolves.toMatchObject({ state: 'released' })
   })
 
@@ -157,5 +158,64 @@ describe('BlueZ system security backend', () => {
       expect.arrayContaining([expect.objectContaining({ interfaceName: BLUEZ_DEVICE_INTERFACE, method: 'Pair' })])
     )
     await expect(backend.destroy()).resolves.toMatchObject({ state: 'released' })
+  })
+
+  test('cancels promptly while the native Pair call remains pending and issues one CancelPairing', async () => {
+    const { backend, boundary, peerId: observedPeerId } = await createFixture()
+    let resolvePair = () => undefined
+    boundary.onCall(
+      devicePath,
+      BLUEZ_DEVICE_INTERFACE,
+      'Pair',
+      () =>
+        new Promise(resolve => {
+          resolvePair = resolve
+        })
+    )
+    const pairing = backend.security.pair(observedPeerId, pairOptions())
+    await Promise.resolve()
+    await Promise.resolve()
+
+    await expect(backend.security.cancelPairing(observedPeerId, pairOptions())).resolves.toEqual({
+      outcome: 'cancelled'
+    })
+    await expect(pairing).resolves.toEqual({ outcome: 'cancelled' })
+    expect(
+      boundary.calls.filter(call => call.interfaceName === BLUEZ_DEVICE_INTERFACE && call.method === 'CancelPairing')
+    ).toHaveLength(1)
+
+    resolvePair()
+    await Promise.resolve()
+    await expect(backend.destroy()).resolves.toMatchObject({ state: 'released' })
+  })
+
+  test('cancels promptly at a deadline while the native Pair call remains pending', async () => {
+    jest.useFakeTimers()
+    try {
+      const { backend, boundary, peerId: observedPeerId } = await createFixture()
+      let resolvePair = () => undefined
+      boundary.onCall(
+        devicePath,
+        BLUEZ_DEVICE_INTERFACE,
+        'Pair',
+        () =>
+          new Promise(resolve => {
+            resolvePair = resolve
+          })
+      )
+      const pairing = backend.security.pair(observedPeerId, pairOptions({ deadline: 110 }))
+      const result = expect(pairing).resolves.toEqual({ outcome: 'cancelled' })
+      await jest.advanceTimersByTimeAsync(10)
+
+      await result
+      expect(
+        boundary.calls.filter(call => call.interfaceName === BLUEZ_DEVICE_INTERFACE && call.method === 'CancelPairing')
+      ).toHaveLength(1)
+      resolvePair()
+      await Promise.resolve()
+      await expect(backend.destroy()).resolves.toMatchObject({ state: 'released' })
+    } finally {
+      jest.useRealTimers()
+    }
   })
 })

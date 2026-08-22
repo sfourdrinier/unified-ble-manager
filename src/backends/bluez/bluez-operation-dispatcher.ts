@@ -30,7 +30,8 @@ export class BluezOperationDispatcher {
   dispatch<Result>(
     options: PublicOperationOptions,
     operationName: string,
-    operation: () => Promise<Result>
+    operation: () => Promise<Result>,
+    onCancellation?: () => Promise<void>
   ): BluezOperationDispatch<Result> {
     const handle = opaqueId(`bluez-operation-${this.nextOperation}`, 'backend-operation', 'bluez:dispatcher')
     this.nextOperation += 1
@@ -38,10 +39,17 @@ export class BluezOperationDispatcher {
     let physicalTerminal = false
     let rejectCompletion: ((error: Error) => void) | null = null
     let deadlineTimer: ReturnType<typeof setTimeout> | null = null
+    let cancellation: Promise<void> | null = null
     let resolvePhysicalSettled: (() => void) | null = null
     const physicalSettled = new Promise<void>(resolve => {
       resolvePhysicalSettled = resolve
     })
+    const requestPhysicalCancellation = (): Promise<void> => {
+      if (cancellation === null) {
+        cancellation = onCancellation === undefined ? Promise.resolve() : Promise.resolve().then(onCancellation)
+      }
+      return cancellation
+    }
     const abort = (): void => {
       if (callerTerminal) {
         return
@@ -49,6 +57,7 @@ export class BluezOperationDispatcher {
       callerTerminal = true
       clearAdmission()
       rejectCompletion?.(contractError('operation.aborted', 'core', operationName))
+      requestPhysicalCancellation().catch(() => undefined)
     }
     const clearAdmission = (): void => {
       if (deadlineTimer !== null) {
@@ -99,6 +108,7 @@ export class BluezOperationDispatcher {
             callerTerminal = true
             clearAdmission()
             reject(contractError('operation.timed-out', 'core', operationName))
+            requestPhysicalCancellation().catch(() => undefined)
           },
           Math.max(0, options.deadline - this.now())
         )
@@ -170,7 +180,14 @@ export class BluezOperationDispatcher {
     if (!physicalTerminal) {
       this.active.set(String(handle), active)
     }
-    return { ...createBackendOperationDispatch(handle, completion, async () => active.cancel()), physicalSettled }
+    return {
+      ...createBackendOperationDispatch(handle, completion, async () => {
+        const acknowledgement = active.cancel()
+        await requestPhysicalCancellation()
+        return acknowledgement
+      }),
+      physicalSettled
+    }
   }
 
   cancelAll(): void {

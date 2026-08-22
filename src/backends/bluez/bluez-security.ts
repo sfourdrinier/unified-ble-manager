@@ -1,4 +1,4 @@
-import { BackendContractError, contractError } from '../../backend-contract/errors'
+import { BackendContractError, contractError, type CleanupRecord } from '../../backend-contract/errors'
 import type { PublicOperationOptions } from '../../backend-contract/operations'
 import type {
   PeerSecurityEvent,
@@ -11,7 +11,7 @@ import type {
 } from '../../backend-contract/security'
 import { capacity } from '../../backend-contract/primitives'
 import { CoreBoundedStream } from '../../core/bounded-stream'
-import type { BoundedAsyncStream } from '../../backend-contract/streams'
+import type { BoundedAsyncStream, BoundedAsyncStreamIterator } from '../../backend-contract/streams'
 import {
   BLUEZ_ADAPTER_INTERFACE,
   BLUEZ_DEVICE_INTERFACE,
@@ -20,6 +20,7 @@ import {
 } from './bluez-dbus-contract'
 import type { BluezBackendRuntime } from './bluez-backend-runtime'
 import { waitForBluezBoolean } from './bluez-property-waiters'
+import type { BluezOperationDispatch } from './bluez-operation-dispatcher'
 
 const securityStreamLimits = Object.freeze({
   itemCapacity: capacity(16),
@@ -37,9 +38,41 @@ const securityLimitations = Object.freeze([
 ])
 
 interface ActivePairing {
-  readonly controller: AbortController
-  readonly removeOuterAbort: (() => void) | null
+  readonly dispatch: BluezOperationDispatch<SecurityPairResult>
   readonly operation: Promise<SecurityPairResult>
+}
+
+class BluezSecurityStream implements BoundedAsyncStream<PeerSecurityEvent> {
+  constructor(
+    private readonly source: CoreBoundedStream<PeerSecurityEvent>,
+    private readonly release: () => void
+  ) {}
+
+  get limits() {
+    return this.source.limits
+  }
+
+  get overflowPolicy() {
+    return this.source.overflowPolicy
+  }
+
+  [Symbol.asyncIterator](): BoundedAsyncStreamIterator<PeerSecurityEvent> {
+    const sourceIterator = this.source[Symbol.asyncIterator]()
+    const iterator: BoundedAsyncStreamIterator<PeerSecurityEvent> = {
+      next: () => sourceIterator.next(),
+      return: () => sourceIterator.return(),
+      [Symbol.asyncIterator]: () => iterator
+    }
+    return iterator
+  }
+
+  async close(): Promise<CleanupRecord> {
+    try {
+      return await this.source.close()
+    } finally {
+      this.release()
+    }
+  }
 }
 
 /** BlueZ system-mediated pairing only; Agent1/custom ceremonies are intentionally unsupported. */
@@ -57,12 +90,12 @@ export class BluezSecurityBackend implements SecurityBackend {
 
   watch(peerId: string): BoundedAsyncStream<PeerSecurityEvent> {
     this.runtime.assertUsable('bluez.security.watch')
-    const stream = new CoreBoundedStream<PeerSecurityEvent>(securityStreamLimits, 'error')
+    const source = new CoreBoundedStream<PeerSecurityEvent>(securityStreamLimits, 'error')
     const peerStreams = this.streams.get(peerId) ?? new Set<CoreBoundedStream<PeerSecurityEvent>>()
-    peerStreams.add(stream)
+    peerStreams.add(source)
     this.streams.set(peerId, peerStreams)
-    stream.emit(this.createEvent(peerId, this.readState(peerId)), 1)
-    return stream
+    source.emit(this.createEvent(peerId, this.readState(peerId)), 1)
+    return new BluezSecurityStream(source, () => this.releaseStream(peerId, source))
   }
 
   pair(peerId: string, options: SecurityPairOptions): Promise<SecurityPairResult> {
@@ -79,8 +112,38 @@ export class BluezSecurityBackend implements SecurityBackend {
     const current = this.readState(peerId)
     if (current.bond === 'bonded') return Promise.resolve({ outcome: 'already-paired', state: current })
     const controller = new AbortController()
-    const removeOuterAbort = bindOuterAbort(options.signal, controller)
-    const operation = this.executePair(peerId, path, options, controller).catch(error => {
+    let pairCallStarted = false
+    let pairCallSettled = false
+    const dispatch = this.runtime.dispatcher.dispatch<SecurityPairResult>(
+      { signal: options.signal, deadline: options.deadline },
+      'bluez.security.pair',
+      async () => {
+        if (controller.signal.aborted) {
+          throw contractError('operation.aborted', 'core', 'bluez.security.pair')
+        }
+        if (options.deadline !== null && options.deadline <= this.runtime.now()) {
+          throw contractError('operation.timed-out', 'core', 'bluez.security.pair')
+        }
+        pairCallStarted = true
+        try {
+          await this.runtime.boundary.methods.callVoid(path, BLUEZ_DEVICE_INTERFACE, 'Pair', [])
+        } finally {
+          pairCallSettled = true
+        }
+        await waitForBluezBoolean(this.runtime, path, BLUEZ_DEVICE_INTERFACE, 'Paired', true, {
+          signal: controller.signal,
+          deadline: options.deadline
+        })
+        return { outcome: 'paired', state: this.readState(peerId) }
+      },
+      async () => {
+        controller.abort()
+        if (pairCallStarted && !pairCallSettled) {
+          await this.cancelNativePairing(path)
+        }
+      }
+    )
+    const operation = dispatch.completion.catch(error => {
       if (
         error instanceof BackendContractError &&
         (error.normalized.code === 'operation.aborted' || error.normalized.code === 'operation.timed-out')
@@ -89,15 +152,14 @@ export class BluezSecurityBackend implements SecurityBackend {
       }
       throw error
     })
-    this.activePairings.set(peerId, { controller, removeOuterAbort, operation })
+    this.activePairings.set(peerId, { dispatch, operation })
     const settle = () => {
       const active = this.activePairings.get(peerId)
-      if (active?.operation === operation) {
-        active.removeOuterAbort?.()
+      if (active?.dispatch === dispatch) {
         this.activePairings.delete(peerId)
       }
     }
-    operation.then(settle, settle).catch(() => undefined)
+    dispatch.physicalSettled.then(settle, settle).catch(() => undefined)
     return operation
   }
 
@@ -105,13 +167,7 @@ export class BluezSecurityBackend implements SecurityBackend {
     this.runtime.assertUsable('bluez.security.cancel-pairing')
     const active = this.activePairings.get(peerId)
     if (active === undefined) return { outcome: 'not-pairing' }
-    active.controller.abort()
-    try {
-      const path = this.runtime.devicePathForPeer(peerId)
-      await this.runtime.boundary.methods.callVoid(path, BLUEZ_DEVICE_INTERFACE, 'CancelPairing', [])
-    } catch (error) {
-      if (!(error instanceof BluezDbusMethodError)) throw error
-    }
+    await active.dispatch.requestCancellation()
     return { outcome: 'cancelled' }
   }
 
@@ -144,32 +200,21 @@ export class BluezSecurityBackend implements SecurityBackend {
   }
 
   close(): void {
-    for (const active of this.activePairings.values()) active.controller.abort()
-    this.activePairings.clear()
+    for (const active of this.activePairings.values()) {
+      active.dispatch.requestCancellation().catch(() => undefined)
+    }
     for (const streams of this.streams.values()) {
       for (const stream of streams) stream.closeWithReason('owner-released')
     }
     this.streams.clear()
   }
 
-  private async executePair(
-    peerId: string,
-    path: string,
-    options: SecurityPairOptions,
-    controller: AbortController
-  ): Promise<SecurityPairResult> {
-    if (controller.signal.aborted) {
-      throw contractError('operation.aborted', 'core', 'bluez.security.pair')
+  private async cancelNativePairing(path: string): Promise<void> {
+    try {
+      await this.runtime.boundary.methods.callVoid(path, BLUEZ_DEVICE_INTERFACE, 'CancelPairing', [])
+    } catch (error) {
+      if (!(error instanceof BluezDbusMethodError)) throw error
     }
-    if (options.deadline !== null && options.deadline <= this.runtime.now()) {
-      throw contractError('operation.timed-out', 'core', 'bluez.security.pair')
-    }
-    await this.runtime.boundary.methods.callVoid(path, BLUEZ_DEVICE_INTERFACE, 'Pair', [])
-    await waitForBluezBoolean(this.runtime, path, BLUEZ_DEVICE_INTERFACE, 'Paired', true, {
-      signal: controller.signal,
-      deadline: options.deadline
-    })
-    return { outcome: 'paired', state: this.readState(peerId) }
   }
 
   private readState(peerId: string): PeerSecurityState {
@@ -201,20 +246,16 @@ export class BluezSecurityBackend implements SecurityBackend {
     if (streams.size === 0) this.streams.delete(peerId)
   }
 
+  private releaseStream(peerId: string, stream: CoreBoundedStream<PeerSecurityEvent>): void {
+    const streams = this.streams.get(peerId)
+    if (streams === undefined) return
+    streams.delete(stream)
+    if (streams.size === 0) this.streams.delete(peerId)
+  }
+
   private createEvent(peerId: string, state: PeerSecurityState): PeerSecurityEvent {
     const sequence = (this.sequenceByPeer.get(peerId) ?? 0) + 1
     this.sequenceByPeer.set(peerId, sequence)
     return Object.freeze({ kind: 'state', peerId, sequence, state })
   }
-}
-
-function bindOuterAbort(signal: AbortSignal | null, controller: AbortController): (() => void) | null {
-  if (signal === null) return null
-  const abort = () => controller.abort()
-  if (signal.aborted) {
-    controller.abort()
-    return null
-  }
-  signal.addEventListener('abort', abort, { once: true })
-  return () => signal.removeEventListener('abort', abort)
 }
