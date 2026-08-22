@@ -120,6 +120,16 @@ describe('G6A packed independent-consumer proof fixture', () => {
     expect(validateG6AProof(aggregate, 'unified-ble-manager', '4.0.0')).toEqual(aggregate)
   })
 
+  test('includes the PR8 fair-and-bounded operation queue fact in the 43-fact TCK contract', () => {
+    const scenario = expectedThirdPartyTckProfile.find(
+      profile => profile.id === 'gatt.reads-descriptors-write-policy-and-dispatched-cancellation'
+    )
+    const factCount = expectedThirdPartyTckProfile.reduce((total, profile) => total + profile.facts.length, 0)
+
+    expect(scenario?.facts).toEqual(expect.arrayContaining(['gatt-operation-queue-is-fair-and-bounded']))
+    expect(factCount).toBe(43)
+  })
+
   test.each([
     [
       'third-party unknown field',
@@ -329,7 +339,7 @@ function validAggregate(node, web) {
         featureBindingCount: 0,
         receiptCount: 17,
         successfulReceiptCount: 17,
-        factCount: 41
+        factCount: 43
       }
     },
     hardware: {
