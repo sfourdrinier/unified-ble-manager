@@ -487,7 +487,7 @@ class OwnedAndroidGattRadio(private val context: Context) {
         pendingBondPairs.remove(key, callback)
         throw IllegalStateException("Android rejected the bond request")
       }
-    } catch (error: SecurityException) {
+    } catch (error: Exception) {
       pendingBondPairs.remove(key, callback)
       throw error
     }
@@ -517,7 +517,11 @@ class OwnedAndroidGattRadio(private val context: Context) {
           if (callback != null && state != "bonding") {
             pendingBondPairs.remove(deviceId.uppercase(), callback)
             callback(
-              if (state == "bonded") "paired" else "rejected",
+              when (state) {
+                "bonded" -> "paired"
+                "notBonded" -> "rejected"
+                else -> "unknown"
+              },
               OwnedAndroidSecurityState(state, pairingPossible)
             )
           }
@@ -546,6 +550,9 @@ class OwnedAndroidGattRadio(private val context: Context) {
       OwnedRadioTeardownFailure("unregisterBondStateReceiver", error)
     }
   }
+
+  internal fun clearPendingBondPair(deviceId: String): Boolean =
+    pendingBondPairs.remove(deviceId.uppercase()) !== null
 
   private fun hasBluetoothConnectPermission(): Boolean =
     Build.VERSION.SDK_INT < Build.VERSION_CODES.S ||

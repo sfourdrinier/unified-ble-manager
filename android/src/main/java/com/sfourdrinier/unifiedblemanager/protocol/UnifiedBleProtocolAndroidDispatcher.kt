@@ -631,6 +631,8 @@ class UnifiedBleProtocolAndroidDispatcher(
       if (!isPending(command)) return@pair
       if (outcome == "rejected") {
         emitFailure(command, "pairRejected", "Android rejected the system bond request")
+      } else if (outcome == "unknown") {
+        emitFailure(command, "bondStateUnknown", "Android did not report a recognized terminal bond state")
       } else {
         emitSuccess(command, "securityPair", securityFields(peerId, state.bond))
       }
@@ -639,12 +641,18 @@ class UnifiedBleProtocolAndroidDispatcher(
   }
 
   private fun securityCancelPairing(command: ProtocolWireRecord) {
-    command.requiredString(15)
-    emitFailure(
-      command,
-      "unsupportedCommand",
-      "Android pairing cancellation requires a public API unavailable to this compile-SDK-36 artifact"
-    )
+    val peerId = command.requiredString(15)
+    val pendingPair = pendingCommands.values.firstOrNull { candidate ->
+      candidate.requiredString(3) == "securityPair" && candidate.requiredString(15).equals(peerId, ignoreCase = true)
+    }
+    if (pendingPair != null) {
+      radio.clearPendingBondPair(peerId)
+      emitCancelled(pendingPair)
+    }
+    // Compile-SDK 36 cannot physically cancel the Android system ceremony.
+    // This command only releases library ownership; the public cancellation
+    // capability remains unregistered until a public API is compiled in.
+    emitSuccess(command, "accepted")
   }
 
   private fun emitSuccess(command: ProtocolWireRecord, kind: String, additions: Map<Int, ProtocolWireValue> = emptyMap()) {

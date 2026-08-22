@@ -335,6 +335,12 @@ export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary
     await this.dispatch('securityCancelPairing', [field(15, nativePeerId)])
   }
 
+  async cleanupPairing(nativePeerId: string): Promise<void> {
+    this.requireSecurityExtension('pairing-cleanup')
+    this.requireOpen('pairing-cleanup')
+    await this.dispatch('securityCancelPairing', [field(15, nativePeerId)])
+  }
+
   async unpair(_nativePeerId: string): Promise<'unsupported'> {
     this.requireSecurityExtension('unpair')
     return 'unsupported'
@@ -604,6 +610,10 @@ export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary
   private receiveEvent(event: NativeProtocolRecord): void {
     const kind = requiredString(event, 3, 'rn-android-boundary.event.kind')
     if (kind === 'securityStateChanged') {
+      this.assertCurrentAttachment(
+        requiredRecord(event, 4, 'rn-android-boundary.event.security-attachment'),
+        'security-event'
+      )
       const nativePeerId = requiredString(event, 16, 'rn-android-boundary.event.security-peer')
       const bondState = requiredString(event, 17, 'rn-android-boundary.event.security-bond-state')
       const state = securityStateFromBondState(bondState, 'rn-android-boundary.event.security-state')
@@ -965,6 +975,20 @@ export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary
   private requireSecurityCancellationExtension(operation: string): void {
     if (!this.securityCancellationExtensionAvailable) {
       throw contractError('capability.unsupported', 'capability', `rn-android-boundary.${operation}`)
+    }
+  }
+
+  private assertCurrentAttachment(record: NativeProtocolRecord, operation: string): void {
+    const expected = attachmentIdentityFromRecord(this.requireAttachmentRecord(operation))
+    const actual = attachmentIdentityFromRecord(record)
+    if (
+      actual.attachmentId !== expected.attachmentId ||
+      actual.backendInstanceId !== expected.backendInstanceId ||
+      actual.backendGeneration !== expected.backendGeneration ||
+      actual.adapterId !== expected.adapterId ||
+      actual.adapterGeneration !== expected.adapterGeneration
+    ) {
+      throw contractError('protocol.violation', 'boundary', `rn-android-boundary.${operation}.attachment-mismatch`)
     }
   }
 

@@ -95,6 +95,52 @@ describe('React Native Android security protocol boundary', () => {
     await boundary.destroy()
   })
 
+  test('quarantines a security event from a stale attachment generation', async () => {
+    const control = new SecurityControl(true, true)
+    const runtime = new SecurityRuntime(control)
+    runtime.eventAttachment = protocolRecord('attachment', [
+      field(1, 'stale-attachment'),
+      field(2, attachment.backendInstanceId),
+      field(3, 'stale-generation'),
+      field(4, attachment.adapterId),
+      field(5, attachment.adapterGeneration)
+    ])
+    global.__unifiedBleNativeProtocolV2 = runtime
+    const boundary = await openBoundary(control)
+    const events = []
+    const removeListener = boundary.onSecurityState(event => events.push(event))
+
+    runtime.emitSecurityState(peerId, 'bonded')
+
+    expect(events).toEqual([])
+    expectConsoleErrorMatching(
+      '[ReactNativeAndroidProtocolBoundary.receiveRecord] Native record was rejected:',
+      expect.objectContaining({
+        normalized: expect.objectContaining({
+          operation: 'rn-android-boundary.security-event.attachment-mismatch'
+        })
+      })
+    )
+    removeListener()
+    await boundary.destroy()
+  })
+
+  test('uses cancellation commands as cleanup-only ownership release when physical cancellation is unavailable', async () => {
+    const control = new SecurityControl(true, false)
+    const runtime = new SecurityRuntime(control)
+    runtime.deferPair = true
+    global.__unifiedBleNativeProtocolV2 = runtime
+    const boundary = await openBoundary(control)
+
+    const pairing = boundary.pair(peerId)
+    for (let turn = 0; turn < 4; turn += 1) await Promise.resolve()
+    await boundary.cleanupPairing(peerId)
+
+    await expect(pairing).rejects.toMatchObject({ normalized: { code: 'operation.aborted' } })
+    expect(runtime.commands).toEqual(['securityState', 'securityPair', 'securityCancelPairing'])
+    await boundary.destroy()
+  })
+
   test('rejects a native result that changes the requested peer identity', async () => {
     const control = new SecurityControl(true, true)
     const runtime = new SecurityRuntime(control)
@@ -195,8 +241,8 @@ describe('React Native Android security protocol boundary', () => {
         resolveNative = resolve
       })
     })
-    const cancelPairing = jest.fn(async () => undefined)
-    const security = new ReactNativeAndroidSecurityBackend(securityAdapter({ pair, cancelPairing }), () => 20)
+    const cleanupPairing = jest.fn(async () => undefined)
+    const security = new ReactNativeAndroidSecurityBackend(securityAdapter({ pair, cleanupPairing }), () => 20)
     const controller = new AbortController()
     const pending = security.pair(peerId, {
       signal: controller.signal,
@@ -208,7 +254,7 @@ describe('React Native Android security protocol boundary', () => {
 
     controller.abort()
     await expect(pending).resolves.toEqual({ outcome: 'cancelled' })
-    expect(cancelPairing).toHaveBeenCalledWith(peerId)
+    expect(cleanupPairing).toHaveBeenCalledWith(peerId)
     expect([...security.active]).toEqual([peerId])
 
     resolveNative({ outcome: 'paired', state: securityState('bonded') })
@@ -243,6 +289,7 @@ function securityAdapter(overrides = {}) {
     securityState: jest.fn(async () => ({ ...securityState('not-bonded') })),
     pair: jest.fn(async () => ({ outcome: 'paired', state: securityState('bonded') })),
     cancelPairing: jest.fn(async () => undefined),
+    cleanupPairing: jest.fn(async () => undefined),
     unpair: jest.fn(async () => 'unsupported'),
     onSecurityState: () => () => undefined,
     securityAvailable: true,
@@ -297,6 +344,9 @@ class SecurityRuntime {
     this.commands = []
     this.bondState = 'notBonded'
     this.resultPeerId = peerId
+    this.eventAttachment = null
+    this.deferPair = false
+    this.pendingPair = null
   }
 
   setEventSink(listener) {
@@ -325,11 +375,21 @@ class SecurityRuntime {
       return
     }
     if (kind === 'securityPair') {
+      if (this.deferPair) {
+        this.deferPair = false
+        this.pendingPair = command
+        return
+      }
       this.bondState = 'bonded'
       this.emitResult(command, 'securityPair', peerId, this.bondState)
       return
     }
     if (kind === 'securityCancelPairing') {
+      if (this.pendingPair !== null) {
+        const pending = this.pendingPair
+        this.pendingPair = null
+        this.emitFailure(pending, 'cancelled', 'Android security pairing cleanup released ownership')
+      }
       this.emitResult(command, 'accepted')
       return
     }
@@ -368,12 +428,40 @@ class SecurityRuntime {
     this.emit(protocolRecord('result', fields))
   }
 
+  emitFailure(command, code, safeMessage) {
+    this.emit(
+      protocolRecord('result', [
+        field(1, 1),
+        field(2, 'cancelled'),
+        field(
+          3,
+          protocolRecord('terminal', [
+            field(1, requiredRecord(command, 2, 'test.correlation')),
+            field(2, 'failed'),
+            field(3, code)
+          ])
+        ),
+        field(
+          10,
+          protocolRecord('error', [
+            field(1, code),
+            field(2, 'android'),
+            field(3, requiredString(command, 3, 'test.command.kind')),
+            field(4, 'notRetryable'),
+            field(7, safeMessage)
+          ])
+        )
+      ])
+    )
+  }
+
   emit(record) {
     if (this.listener === null) throw new Error('The test event sink is not installed')
     this.listener(encodeNativeProtocolRecord(record))
   }
 
   activeAttachment() {
+    if (this.eventAttachment !== null) return this.eventAttachment
     return protocolRecord('attachment', [
       field(1, attachment.attachmentId),
       field(2, attachment.backendInstanceId),

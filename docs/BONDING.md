@@ -47,8 +47,9 @@ public APIs provide it. Android reports public bond-state transitions but does
 not ship a reflection-based remove-bond operation. On the current Expo SDK 57 /
 Android API 36 artifact, the cancellation capability is also omitted because
 the public `cancelBondProcess` API is newer; an aborted or timed-out Android
-pair stops awaiting the result, but the OS ceremony may still reach a later
-bond terminal state, which `watch()` reports. Apple and Web keep generic
+pair releases the library's pending-operation ownership but cannot cancel the
+OS ceremony; it may still reach a later bond terminal state, which `watch()`
+reports. Apple and Web keep generic
 pairing/bonding unsupported where their public APIs do not provide a truthful
 measurement; Web `forget()` remains origin-authorization revocation, not
 `unpair`.

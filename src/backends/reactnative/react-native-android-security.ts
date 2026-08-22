@@ -91,7 +91,7 @@ export class ReactNativeAndroidSecurityBackend implements SecurityBackend {
       }
       abortListener = (): void => {
         resolveCancelled()
-        if (this.boundary.securityCancellationAvailable) this.requestCancellation(peerId)
+        this.requestCancellation(peerId)
       }
       options.signal?.addEventListener('abort', abortListener, { once: true })
       if (options.deadline !== null) {
@@ -100,7 +100,7 @@ export class ReactNativeAndroidSecurityBackend implements SecurityBackend {
             if (publicSettled) return
             publicSettled = true
             reject(contractError('operation.timed-out', 'core', 'android.security.pair'))
-            if (this.boundary.securityCancellationAvailable) this.requestCancellation(peerId)
+            this.requestCancellation(peerId)
           },
           Math.max(0, options.deadline - this.now())
         )
@@ -161,7 +161,7 @@ export class ReactNativeAndroidSecurityBackend implements SecurityBackend {
   }
 
   private requestCancellation(peerId: string): void {
-    this.boundary.cancelPairing(peerId).catch(error => {
+    this.boundary.cleanupPairing(peerId).catch(error => {
       console.error('[ReactNativeAndroidSecurityBackend.pair] Pair cancellation was not accepted:', error)
     })
   }
