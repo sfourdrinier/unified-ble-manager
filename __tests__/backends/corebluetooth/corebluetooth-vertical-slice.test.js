@@ -1224,7 +1224,7 @@ function emitAdapterState(boundary, state) {
 }
 
 async function flushAdapterLossCleanup() {
-  for (let index = 0; index < 12; index += 1) {
+  for (let index = 0; index < 64; index += 1) {
     await Promise.resolve()
   }
 }

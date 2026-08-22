@@ -2,6 +2,7 @@
 
 import type { CleanupFailure, CleanupRecord } from '../../backend-contract/errors'
 import type { CoreBluetoothBoundary } from './corebluetooth-boundary'
+import { withCoreBluetoothCleanupTimeout } from './corebluetooth-cleanup'
 import { cleanupFailureDetail, releasedCleanup } from './corebluetooth-handles'
 import type { CoreBluetoothGattOperations } from './corebluetooth-gatt-operations'
 import type { ConnectionRecord, PhysicalSubscription, ScanConsumer, ScanGroup } from './corebluetooth-backend'
@@ -30,7 +31,7 @@ export async function releaseCoreBluetoothAdapterLossResources(
       consumer.stream.closeWithReason('source-failed')
     }
     try {
-      await state.boundary.stopScan()
+      await withCoreBluetoothCleanupTimeout(() => state.boundary.stopScan(), 'corebluetooth.adapter-loss.stop-scan')
       group.consumers.clear()
       state.clearScanGroup(group)
     } catch (error) {
@@ -49,7 +50,10 @@ export async function releaseCoreBluetoothAdapterLossResources(
   for (const record of [...state.connections.values()]) {
     record.state = 'disconnecting'
     try {
-      await state.boundary.disconnect(record.nativePeerId)
+      await withCoreBluetoothCleanupTimeout(
+        () => state.boundary.disconnect(record.nativePeerId),
+        'corebluetooth.adapter-loss.disconnect'
+      )
       state.invalidateConnection(record)
     } catch (error) {
       record.state = 'connected'

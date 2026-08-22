@@ -16,6 +16,7 @@ import type {
 } from '../../backend-contract/operations'
 import { byteLimit, opaqueId, ownBytes, type OwnedBytes } from '../../backend-contract/primitives'
 import type { CoreBluetoothCharacteristicAddress, CoreBluetoothDescriptorAddress } from './corebluetooth-boundary'
+import { withCoreBluetoothCleanupTimeout } from './corebluetooth-cleanup'
 import { CoreBoundedStream } from '../../core/bounded-stream'
 import {
   addressKey,
@@ -198,7 +199,7 @@ export class CoreBluetoothGattOperations {
         const subscriptionId = identifiers.subscriptionId(`corebluetooth-subscription-${this.backend.nextSubscription}`)
         this.backend.nextSubscription += 1
         if (physical === undefined) {
-          physical = { key, address, consumers: new Set(), state: 'enabling', removal: null }
+          physical = { key, address, consumers: new Set(), state: 'enabling', removal: null, nativeRemoval: null }
           this.backend.subscriptions.set(key, physical)
           const enabling = physical
           const subscription = new CoreBluetoothBackendSubscription(
@@ -308,21 +309,49 @@ export class CoreBluetoothGattOperations {
     if (physical.removal !== null) {
       return physical.removal
     }
+    if (physical.nativeRemoval !== null) {
+      return Promise.resolve(
+        cleanupFailure(
+          'subscription',
+          'corebluetooth.gatt.stop-notify',
+          new Error('CoreBluetooth notification cleanup remains in flight')
+        )
+      )
+    }
     physical.state = 'removing'
-    const removal = this.backend.boundary.stopNotify(physical.address).then(
+    let nativeRemoval: Promise<void>
+    try {
+      nativeRemoval = this.backend.boundary.stopNotify(physical.address)
+    } catch (error) {
+      nativeRemoval = Promise.reject(error)
+    }
+    physical.nativeRemoval = nativeRemoval
+    const nativeCompletion = nativeRemoval.then(
       () => {
+        physical.nativeRemoval = null
         if (this.backend.subscriptions.get(physical.key) === physical) {
           this.backend.subscriptions.delete(physical.key)
         }
         return releasedCleanup
       },
       error => {
+        physical.nativeRemoval = null
         physical.state = 'cleanup-failed'
-        physical.removal = null
+        return cleanupFailure('subscription', 'corebluetooth.gatt.stop-notify', error)
+      }
+    )
+    const removal = withCoreBluetoothCleanupTimeout(() => nativeCompletion, 'corebluetooth.gatt.stop-notify').catch(
+      error => {
+        physical.state = 'cleanup-failed'
         return cleanupFailure('subscription', 'corebluetooth.gatt.stop-notify', error)
       }
     )
     physical.removal = removal
+    nativeCompletion.then(() => {
+      if (physical.removal === removal) {
+        physical.removal = null
+      }
+    })
     return removal
   }
 

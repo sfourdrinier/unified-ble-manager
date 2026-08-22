@@ -118,6 +118,143 @@ async function flushMicrotasks() {
 }
 
 describe('CoreBluetooth late-operation quarantine', () => {
+  test('bounds a never-settling stopNotify and retains the original cleanup for retry', async () => {
+    jest.useFakeTimers()
+    const stopGate = deferred()
+    try {
+      const { backend, boundary } = await fixture()
+      const peerId = await observedPeerId(backend)
+      const lease = await backend.connections.connect(
+        peerId,
+        opaqueId('stop-notify-timeout', 'client', 'corebluetooth:stop-notify-timeout'),
+        operation()
+      )
+      const database = await backend.gatt.discover(lease.connection, operation())
+      const characteristic = (await database.snapshot()).characteristics[0].path
+      const subscription = await database.subscribe(characteristic, { ...operation(), delivery: delivery() })
+      const nativeStopNotify = boundary.stopNotify.bind(boundary)
+      let stopNotifyCalls = 0
+      boundary.stopNotify = async address => {
+        stopNotifyCalls += 1
+        await stopGate.promise
+        return nativeStopNotify(address)
+      }
+
+      const removal = subscription.remove()
+      await flushMicrotasks()
+      jest.advanceTimersByTime(1_000)
+      await flushMicrotasks()
+
+      await expect(removal).resolves.toMatchObject({
+        state: 'release-failed',
+        failures: [{ resourceKind: 'subscription', error: { code: 'operation.timed-out', domain: 'cleanup' } }]
+      })
+      expect(stopNotifyCalls).toBe(1)
+      expect(backend.resourceCounters()).toMatchObject({ physicalCccdEnablements: 1 })
+
+      const retryWhilePending = await subscription.remove()
+      expect(retryWhilePending).toMatchObject({ state: 'release-failed' })
+      expect(stopNotifyCalls).toBe(1)
+
+      stopGate.resolve()
+      await flushMicrotasks()
+      await expect(subscription.remove()).resolves.toEqual({ state: 'released', failures: [] })
+      expect(backend.resourceCounters()).toMatchObject({ physicalCccdEnablements: 0 })
+      await expect(lease.release()).resolves.toEqual({ state: 'released', failures: [] })
+      await expect(backend.destroy()).resolves.toEqual({ state: 'released', failures: [] })
+    } finally {
+      stopGate.resolve()
+      jest.useRealTimers()
+    }
+  })
+
+  test('bounds a never-settling stopScan and retains the original cleanup for retry', async () => {
+    jest.useFakeTimers()
+    const stopGate = deferred()
+    try {
+      const { backend, boundary } = await fixture()
+      const scan = await backend.scanner.start(scanOptions(), opaqueId('stop-scan-timeout', 'client', 'corebluetooth:stop-scan-timeout'))
+      const nativeStopScan = boundary.stopScan.bind(boundary)
+      let stopScanCalls = 0
+      boundary.stopScan = async () => {
+        stopScanCalls += 1
+        await stopGate.promise
+        return nativeStopScan()
+      }
+
+      const stop = scan.stop()
+      await flushMicrotasks()
+      jest.advanceTimersByTime(1_000)
+      await flushMicrotasks()
+
+      await expect(stop).resolves.toMatchObject({
+        state: 'release-failed',
+        failures: [{ resourceKind: 'scan', error: { code: 'operation.timed-out', domain: 'cleanup' } }]
+      })
+      expect(stopScanCalls).toBe(1)
+      expect(backend.resourceCounters()).toMatchObject({ activeScanControllers: 1, scanConsumers: 1 })
+
+      await expect(scan.stop()).resolves.toMatchObject({ state: 'release-failed' })
+      expect(stopScanCalls).toBe(1)
+
+      stopGate.resolve()
+      await flushMicrotasks()
+      await expect(scan.stop()).resolves.toEqual({ state: 'released', failures: [] })
+      expect(backend.resourceCounters()).toMatchObject({ activeScanControllers: 0, scanConsumers: 0 })
+      await expect(backend.destroy()).resolves.toEqual({ state: 'released', failures: [] })
+    } finally {
+      stopGate.resolve()
+      jest.useRealTimers()
+    }
+  })
+
+  test('bounds a never-settling disconnect and retains the original cleanup for retry', async () => {
+    jest.useFakeTimers()
+    const disconnectGate = deferred()
+    try {
+      const { backend, boundary } = await fixture()
+      const peerId = await observedPeerId(backend)
+      const lease = await backend.connections.connect(
+        peerId,
+        opaqueId('disconnect-timeout', 'client', 'corebluetooth:disconnect-timeout'),
+        operation()
+      )
+      const nativeDisconnect = boundary.disconnect.bind(boundary)
+      let disconnectCalls = 0
+      boundary.disconnect = async nativePeerId => {
+        disconnectCalls += 1
+        await disconnectGate.promise
+        return nativeDisconnect(nativePeerId)
+      }
+
+      const release = lease.release()
+      await flushMicrotasks()
+      jest.advanceTimersByTime(1_000)
+      await flushMicrotasks()
+
+      await expect(release).resolves.toMatchObject({
+        state: 'release-failed',
+        failures: [{ resourceKind: 'connection', error: { code: 'operation.timed-out', domain: 'cleanup' } }]
+      })
+      expect(disconnectCalls).toBe(1)
+      expect(boundary.connected).toBe(true)
+      expect(backend.resourceCounters()).toMatchObject({ physicalLinks: 1, connectionLeases: 1 })
+
+      await expect(lease.release()).resolves.toMatchObject({ state: 'release-failed' })
+      expect(disconnectCalls).toBe(1)
+
+      disconnectGate.resolve()
+      await flushMicrotasks()
+      await expect(lease.release()).resolves.toEqual({ state: 'released', failures: [] })
+      expect(disconnectCalls).toBe(1)
+      expect(backend.resourceCounters()).toMatchObject({ physicalLinks: 0, connectionLeases: 0 })
+      await expect(backend.destroy()).resolves.toEqual({ state: 'released', failures: [] })
+    } finally {
+      disconnectGate.resolve()
+      jest.useRealTimers()
+    }
+  })
+
   test.each(['abort', 'deadline'])(
     'stops a late native notification enable after public %s and releases every subscription resource',
     async termination => {
@@ -165,6 +302,7 @@ describe('CoreBluetooth late-operation quarantine', () => {
 
         startGate.resolve()
         await flushMicrotasks()
+        await backend.dispatcher.waitForIdle()
 
         expect(boundary.stopNotifyCalls).toBe(1)
         expect(backend.resourceCounters()).toMatchObject({
