@@ -218,6 +218,7 @@ describe('Native Protocol v2 schema authority', () => {
     expect(dispatcher).toContain('securityEventsEnabled.set(false)\n    radio.onSecurityState = null')
     expect(dispatcher).toContain('bondStateUnknown')
     expect(radio).toContain('catch (error: SecurityException)')
+    expect(radio).toContain('internal var onSecurityState: ((deviceId: String, state: OwnedAndroidSecurityState) -> Unit)?')
     expect(radio).toContain('else -> "unknown"')
     expect(radio).not.toContain('cancelBondProcess')
     expect(radio).not.toContain('removeBond')
