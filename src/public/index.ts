@@ -42,7 +42,6 @@ export type {
 export type {
   BleConnectionEvent,
   BleConnectionControls,
-  BleConnectionWithControls,
   BleControlObservationMetadata,
   BleControlObservationState,
   BleObservationSource,

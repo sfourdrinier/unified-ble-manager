@@ -13,7 +13,7 @@ import type {
 import type {
   BleConnectionControls,
   BleConnectionEvent,
-  BleConnectionWithControls,
+  BleConnection,
   BleManager,
   BlePeer,
   BleControlObservationMetadata,
@@ -284,7 +284,7 @@ class IpcPublicScanSession implements ScanSession {
   }
 }
 
-class IpcPublicConnection implements BleConnectionWithControls {
+class IpcPublicConnection implements BleConnection {
   readonly peer: BlePeer
   readonly handle: string
   readonly connectionId: string

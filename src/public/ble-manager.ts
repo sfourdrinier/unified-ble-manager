@@ -253,18 +253,11 @@ export interface BleConnection {
   readonly peer: BlePeer
   readonly connectionGeneration: string
   readonly lifecycleEvents: AsyncIterable<BleConnectionEvent>
-  /** Present on the direct host façade; legacy IPC adapters are upgraded independently. */
-  readonly controls?: BleConnectionControls
+  readonly controls: BleConnectionControls
   readonly discover: (options?: OperationOptions) => Promise<GattDatabase>
-  /** Present on the direct host façade; legacy IPC adapters are upgraded independently. */
-  readonly rediscoverGatt?: (options: RediscoverGattOptions) => Promise<GattDatabase>
+  readonly rediscoverGatt: (options: RediscoverGattOptions) => Promise<GattDatabase>
   readonly disconnect: () => Promise<CleanupRecord>
   readonly release: () => Promise<CleanupRecord>
-}
-
-export interface BleConnectionWithControls extends BleConnection {
-  readonly controls: BleConnectionControls
-  readonly rediscoverGatt: (options: RediscoverGattOptions) => Promise<GattDatabase>
 }
 
 // Public scan session — bounded stream, no generic.
