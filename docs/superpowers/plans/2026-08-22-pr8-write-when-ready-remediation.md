@@ -110,7 +110,7 @@ Run the focused Jest command from Task 1 and confirm all new and existing tests 
 
 - [x] **Step 1: Run the requested canonical checks proportionate to the change**
 
-`pnpm validate:evidence`, `pnpm test:package` (141 suites / 1,324 tests),
+`pnpm validate:evidence`, `pnpm test:package` (142 suites / 1,343 tests),
 `pnpm test:plugin` (36 tests), `pnpm prepack`,
 `pnpm release:artifacts:check`, performance, protocol, Tauri, and the
 CoreBluetooth addon build are green. The local packed-consumer smoke remains
@@ -135,8 +135,9 @@ runtime hardening commits are `762c00f` (canonical physical settlement),
 `947f479` (changed-observation preservation), and `5f29080` (CoreBluetooth
 connection idle barrier), plus the explicit Expo ESM import fix in `14850ff` and
 the final BlueZ/WinRT barriers in `c864d9d`/`016d269`.
-The hosted run remains bound to `046b764` until the
-final branch tip is pushed.
+The hosted run remains bound to `046b764` until the final branch tip is pushed.
+The final source tip for the current local gate is `4ec3298`; F-32 is fixed
+with the memoized native-cleanup transition and focused lifecycle coverage.
 
 - [x] **Step 2: Verify scope and report exact evidence**
 
@@ -144,4 +145,5 @@ The native/electron/CoreBluetooth addon diff is limited to the bounded
 readiness ingress and focused guards. Exact commit identities and changed-file
 scope are recorded in the branch history and audit ledger; local green gates,
 environment-gated limitations, and the absence of hosted/physical evidence are
-explicitly retained. This plan no longer blocks the serialized commit step.
+explicitly retained. The final CoreBluetooth native-cleanup timeout finding
+remains a blocking gate before the serialized push/merge step.
