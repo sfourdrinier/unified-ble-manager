@@ -215,6 +215,8 @@ describe('Native Protocol v2 schema authority', () => {
     expect(dispatcher).toContain('securityEventsEnabled')
     expect(dispatcher).toContain('if (securityEventsEnabled.get()) emitSecurityStateChanged')
     expect(dispatcher).toContain('securityEventsEnabled.set(true)')
+    expect(dispatcher).toContain('securityEventsEnabled.set(false)\n    radio.onSecurityState = null')
+    expect(radio).toContain('catch (error: SecurityException)')
     expect(radio).not.toContain('cancelBondProcess')
     expect(radio).not.toContain('removeBond')
   })

@@ -498,25 +498,31 @@ class OwnedAndroidGattRadio(private val context: Context) {
     if (bondStateReceiver != null) return
     val receiver = object : BroadcastReceiver() {
       override fun onReceive(ctx: Context?, intent: Intent?) {
-        if (intent?.action != BluetoothDevice.ACTION_BOND_STATE_CHANGED) return
-        val device = intent.getParcelableExtra<BluetoothDevice>(BluetoothDevice.EXTRA_DEVICE) ?: return
-        val state = when (intent.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, BluetoothDevice.ERROR)) {
-          BluetoothDevice.BOND_BONDED -> "bonded"
-          BluetoothDevice.BOND_BONDING -> "bonding"
-          BluetoothDevice.BOND_NONE -> "notBonded"
-          else -> "unknown"
-        }
-        onSecurityState?.invoke(
-          device.address,
-          OwnedAndroidSecurityState(bond = state, pairingPossible = hasBluetoothConnectPermission())
-        )
-        val callback = pendingBondPairs[device.address.uppercase()]
-        if (callback != null && state != "bonding") {
-          pendingBondPairs.remove(device.address.uppercase(), callback)
-          callback(
-            if (state == "bonded") "paired" else "rejected",
-            OwnedAndroidSecurityState(state, hasBluetoothConnectPermission())
+        try {
+          if (intent?.action != BluetoothDevice.ACTION_BOND_STATE_CHANGED) return
+          val device = intent.getParcelableExtra<BluetoothDevice>(BluetoothDevice.EXTRA_DEVICE) ?: return
+          val state = when (intent.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, BluetoothDevice.ERROR)) {
+            BluetoothDevice.BOND_BONDED -> "bonded"
+            BluetoothDevice.BOND_BONDING -> "bonding"
+            BluetoothDevice.BOND_NONE -> "notBonded"
+            else -> "unknown"
+          }
+          val deviceId = device.address
+          val pairingPossible = hasBluetoothConnectPermission()
+          onSecurityState?.invoke(
+            deviceId,
+            OwnedAndroidSecurityState(bond = state, pairingPossible = pairingPossible)
           )
+          val callback = pendingBondPairs[deviceId.uppercase()]
+          if (callback != null && state != "bonding") {
+            pendingBondPairs.remove(deviceId.uppercase(), callback)
+            callback(
+              if (state == "bonded") "paired" else "rejected",
+              OwnedAndroidSecurityState(state, pairingPossible)
+            )
+          }
+        } catch (error: SecurityException) {
+          OwnedAndroidLog.e("bondStateReceiver", error)
         }
       }
     }

@@ -209,6 +209,8 @@ class UnifiedBleProtocolAndroidDispatcher(
 
   fun close(): Boolean {
     attachmentCloseRequested.set(true)
+    securityEventsEnabled.set(false)
+    radio.onSecurityState = null
     val result = radio.destroy()
     if (!result.isSuccessful) {
       UnifiedBleProtocolJsiBinding.emitDiagnostic(
@@ -224,7 +226,6 @@ class UnifiedBleProtocolAndroidDispatcher(
       pendingConnects.clear()
       establishedConnections.clear()
       activeSubscriptions.clear()
-      securityEventsEnabled.set(false)
       activeScanCommand.set(null)
     }
     return result.isSuccessful
@@ -495,6 +496,8 @@ class UnifiedBleProtocolAndroidDispatcher(
   }
 
   private fun destroy(command: ProtocolWireRecord) {
+    securityEventsEnabled.set(false)
+    radio.onSecurityState = null
     val pendingBeforeDestroy = pendingCommands.values
       .filter { it !== command }
       .toList()
@@ -505,7 +508,6 @@ class UnifiedBleProtocolAndroidDispatcher(
     pendingConnects.clear()
     establishedConnections.clear()
     activeSubscriptions.clear()
-    securityEventsEnabled.set(false)
     if (result.isSuccessful) {
       activeScanCommand.set(null)
       completeCancelledScanCommands()
