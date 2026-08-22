@@ -173,11 +173,15 @@ export class NavigatorWebBluetoothBoundary implements WebBluetoothBoundary {
   constructor(private readonly environment: NavigatorWebBluetoothEnvironment) {
     this.implementationVersion = environment.implementationVersion
     this.browserEngine = environment.browserEngine
+    const bluetooth = environment.bluetooth
     this.getAuthorizedDevices =
-      environment.bluetooth?.getDevices === undefined
+      bluetooth?.getDevices === undefined
         ? undefined
         : async () => {
-            const devices = await environment.bluetooth!.getDevices!()
+            if (bluetooth === null || bluetooth.getDevices === undefined) {
+              throw new Error('Web Bluetooth authorized-device enumeration is no longer available')
+            }
+            const devices = await bluetooth.getDevices()
             return devices.map(device => new NavigatorDeviceBoundary(device))
           }
   }
