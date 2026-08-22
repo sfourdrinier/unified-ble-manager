@@ -218,6 +218,34 @@ describe('CoreBluetooth runtime capabilities and database-change semantics', () 
     await backend.destroy()
   })
 
+  test('does not resolve readiness creation after its connection is released during the initial probe', async () => {
+    const probe = deferred()
+    const readinessListeners = new Set()
+    const { backend } = await backendFixture(currentBoundary => {
+      currentBoundary.canSendWriteWithoutResponse = jest.fn(() => probe.promise)
+      currentBoundary.onWriteWithoutResponseReadiness = listener => {
+        readinessListeners.add(listener)
+        return () => readinessListeners.delete(listener)
+      }
+    })
+    const { lease } = await connectedDatabase(backend)
+    const watchPromise = backend.connectionControls.writeWithoutResponseReadiness(lease.connection)
+    await flushMicrotasks()
+    expect(readinessListeners.size).toBe(1)
+
+    await lease.release()
+    probe.resolve({
+      nativePeerId: 'native-polar-h10',
+      connectionGeneration: '1',
+      ready: true,
+      ordinal: 1
+    })
+
+    await expect(watchPromise).rejects.toMatchObject({ normalized: { code: 'connection.stale' } })
+    expect(readinessListeners.size).toBe(0)
+    await backend.destroy()
+  })
+
   test('re-probes authoritative readiness after a dropped native ready edge', async () => {
     const readinessListeners = new Set()
     const snapshots = [

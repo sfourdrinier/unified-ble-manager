@@ -409,6 +409,9 @@ export class CoreBluetoothConnectionControls {
         this.backend.monotonicNow,
         'corebluetooth.connection.write-readiness.probe'
       )
+      if (closed) {
+        throw contractError('connection.stale', 'connection', 'corebluetooth.connection.write-readiness.closed')
+      }
       validateSnapshot(snapshot)
       nativeGeneration = snapshot.connectionGeneration
       lastOrdinal = snapshot.ordinal
