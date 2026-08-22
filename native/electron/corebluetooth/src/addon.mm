@@ -11,7 +11,12 @@
 #include <napi.h>
 #include <climits>
 #include <cstdint>
+#include <cstddef>
+#include <condition_variable>
+#include <deque>
 #include <map>
+#include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -1722,6 +1727,132 @@ struct JsCallbackData {
   bool hasDeferred = false;
 };
 
+static constexpr std::size_t kReadinessTsfnQueueCapacity = 64;
+static constexpr std::size_t kReadinessIngressCapacity = 64;
+
+static void CallJs(Napi::Env env, Napi::Function jsCallback, JsCallbackData *data);
+
+/**
+ * Keeps readiness ingress bounded without making CoreBluetooth wait for JS.
+ *
+ * CoreBluetooth callbacks only take this queue's mutex and schedule one work
+ * item. The dedicated serial worker is the only place allowed to block in a
+ * ThreadSafeFunction call. Each scheduled worker owns one explicit TSFN
+ * Acquire/Release lifetime. If the native pending queue is full, replacing
+ * the newest record for the same device and native generation retains the
+ * newest ordinal/state in that source's FIFO position. A record from a new
+ * source is dropped instead of evicting another source's newest state; the
+ * caller owns deletion on every false return.
+ */
+class ReadinessIngress final {
+ public:
+  explicit ReadinessIngress(Napi::ThreadSafeFunction tsfn)
+      : tsfn_(tsfn),
+        queue_(dispatch_queue_create("com.sfourdrinier.unifiedble.corebluetooth.readiness-ingress",
+                                     DISPATCH_QUEUE_SERIAL)) {}
+
+  ~ReadinessIngress() { Close(); }
+
+  bool Enqueue(JsCallbackData *data) {
+    if (!data) return false;
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (closed_) return false;
+    if (pending_.size() >= kReadinessIngressCapacity) {
+      bool replaced = false;
+      for (auto it = pending_.rbegin(); it != pending_.rend(); ++it) {
+        JsCallbackData *pending = *it;
+            if (pending->deviceId == data->deviceId &&
+                pending->connectionGeneration == data->connectionGeneration) {
+              // Replace in place so this source keeps its FIFO position while
+              // retaining the newest readiness state.
+              delete *it;
+          *it = data;
+          replaced = true;
+          break;
+        }
+      }
+      if (!replaced) {
+        // A different source must not lose its newest retained state.
+        return false;
+      }
+    } else {
+      pending_.push_back(data);
+    }
+    if (!scheduled_) {
+      scheduled_ = true;
+      const napi_status acquireStatus = tsfn_.Acquire();
+      if (acquireStatus != napi_ok) {
+        scheduled_ = false;
+        for (auto it = pending_.begin(); it != pending_.end(); ++it) {
+          if (*it == data) {
+            pending_.erase(it);
+            break;
+          }
+        }
+        return false;
+      }
+      dispatch_async(queue_, ^{
+        Drain();
+      });
+    }
+    return true;
+  }
+
+  void Close() {
+    {
+      std::unique_lock<std::mutex> lock(mutex_);
+      if (closed_) {
+        closeCompletedCondition_.wait(lock, [this] { return closeCompleted_; });
+        return;
+      }
+      closed_ = true;
+      for (JsCallbackData *data : pending_) {
+        delete data;
+      }
+      pending_.clear();
+    }
+    // Abort wakes a worker blocked in BlockingCall so teardown never waits
+    // for JavaScript to resume draining the TSFN queue.
+    tsfn_.Abort();
+    dispatch_sync(queue_, ^{
+      // Wait until the worker has observed the close/abort and returned.
+    });
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      closeCompleted_ = true;
+    }
+    closeCompletedCondition_.notify_all();
+  }
+
+ private:
+  void Drain() {
+    while (true) {
+      JsCallbackData *data = nullptr;
+      {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (pending_.empty()) {
+          scheduled_ = false;
+          tsfn_.Release();
+          return;
+        }
+        data = pending_.front();
+        pending_.pop_front();
+      }
+      const napi_status status = tsfn_.BlockingCall(data, CallJs);
+      if (status != napi_ok) delete data;
+    }
+  }
+
+  Napi::ThreadSafeFunction tsfn_;
+  dispatch_queue_t queue_;
+  std::mutex mutex_;
+  std::condition_variable closeCompletedCondition_;
+  std::deque<JsCallbackData *> pending_;
+  bool scheduled_ = false;
+  bool closed_ = false;
+  bool closeCompleted_ = false;
+};
+
 static std::vector<std::uint8_t> CopyBytes(NSData *data) {
   std::vector<std::uint8_t> bytes;
   if (data.length == 0U) return bytes;
@@ -1746,6 +1877,10 @@ static JsCharacteristicMetadata CharacteristicMetadataFromDictionary(NSDictionar
 
 static void CallJs(Napi::Env env, Napi::Function jsCallback, JsCallbackData *data) {
   if (!data) return;
+  if (!env || !jsCallback) {
+    delete data;
+    return;
+  }
   Napi::HandleScope scope(env);
   if (data->type == "scan" && jsCallback) {
     Napi::Object ad = Napi::Object::New(env);
@@ -1937,6 +2072,7 @@ class CoreBluetoothAddon : public Napi::ObjectWrap<CoreBluetoothAddon> {
   Napi::ThreadSafeFunction databaseChangedTsfn_;
   Napi::ThreadSafeFunction adapterStateTsfn_;
   Napi::ThreadSafeFunction writeWithoutResponseReadinessTsfn_;
+  std::shared_ptr<ReadinessIngress> readinessIngress_;
 
   static std::string NotifyMapKey(const std::string &id, const std::string &svc, const std::string &ch) {
     return id + "::" + svc + "::" + ch;
@@ -1970,7 +2106,13 @@ class CoreBluetoothAddon : public Napi::ObjectWrap<CoreBluetoothAddon> {
       adapterStateTsfn_.Release();
       adapterStateTsfn_ = Napi::ThreadSafeFunction();
     }
-    if (writeWithoutResponseReadinessTsfn_) {
+    if (readinessIngress_) {
+      readinessIngress_->Close();
+      readinessIngress_.reset();
+      // Abort releases the initial TSFN owner; the worker has already released
+      // its acquired owner before Close returns. Only clear the wrapper here.
+      writeWithoutResponseReadinessTsfn_ = Napi::ThreadSafeFunction();
+    } else if (writeWithoutResponseReadinessTsfn_) {
       writeWithoutResponseReadinessTsfn_.Release();
       writeWithoutResponseReadinessTsfn_ = Napi::ThreadSafeFunction();
     }
@@ -1978,6 +2120,7 @@ class CoreBluetoothAddon : public Napi::ObjectWrap<CoreBluetoothAddon> {
 
   void DestroyInternal() {
     if (radio_) {
+      radio_.writeWithoutResponseReadinessHandler = nil;
       [radio_ invalidate:nil];
       radio_ = nil;
     }
@@ -2656,17 +2799,26 @@ characteristicOccurrence:chOccurrence
           .ThrowAsJavaScriptException();
       return env.Undefined();
     }
-    if (writeWithoutResponseReadinessTsfn_) {
+    if (radio_) radio_.writeWithoutResponseReadinessHandler = nil;
+    if (readinessIngress_) {
+      readinessIngress_->Close();
+      readinessIngress_.reset();
+      writeWithoutResponseReadinessTsfn_ = Napi::ThreadSafeFunction();
+    } else if (writeWithoutResponseReadinessTsfn_) {
       writeWithoutResponseReadinessTsfn_.Release();
       writeWithoutResponseReadinessTsfn_ = Napi::ThreadSafeFunction();
     }
     if (info[0].IsNull()) {
-      if (radio_) radio_.writeWithoutResponseReadinessHandler = nil;
       return env.Undefined();
     }
     writeWithoutResponseReadinessTsfn_ = Napi::ThreadSafeFunction::New(
-        env, info[0].As<Napi::Function>(), "ubm_write_without_response_readiness", 0, 1);
-    Napi::ThreadSafeFunction readinessTsfn = writeWithoutResponseReadinessTsfn_;
+        env,
+        info[0].As<Napi::Function>(),
+        "ubm_write_without_response_readiness",
+        kReadinessTsfnQueueCapacity,
+        1);
+    auto readinessIngress = std::make_shared<ReadinessIngress>(writeWithoutResponseReadinessTsfn_);
+    readinessIngress_ = readinessIngress;
     if (radio_) {
       radio_.writeWithoutResponseReadinessHandler = ^(NSString *deviceId,
                                                        NSString *connectionGeneration,
@@ -2678,7 +2830,7 @@ characteristicOccurrence:chOccurrence
         data->connectionGeneration = connectionGeneration ? [connectionGeneration UTF8String] : "";
         data->booleanValue = ready;
         data->ordinal = ordinal;
-        readinessTsfn.BlockingCall(data, CallJs);
+        if (!readinessIngress->Enqueue(data)) delete data;
       };
     }
     return env.Undefined();
@@ -2689,18 +2841,28 @@ characteristicOccurrence:chOccurrence
     napi_deferred deferred;
     napi_value promise;
     napi_create_promise(env, &deferred, &promise);
-    if (!radio_) {
+    UBMRadio *radio = radio_;
+    radio_ = nil;
+    if (radio) {
+      radio.scanHandler = nil;
+      radio.disconnectHandler = nil;
+      radio.databaseChangedHandler = nil;
+      radio.adapterStateHandler = nil;
+      radio.writeWithoutResponseReadinessHandler = nil;
+    }
+    // Release persistent TSFNs only after the readiness worker has been
+    // synchronized by ReleasePersistentTsfns. Pending operation completions
+    // remain owned by their per-operation resolver TSFNs until invalidate
+    // finishes below.
+    ReleasePersistentTsfns();
+    if (!radio) {
       napi_value undefined;
       napi_get_undefined(env, &undefined);
       napi_resolve_deferred(env, deferred, undefined);
       return Napi::Promise(env, promise);
     }
-    UBMRadio *radio = radio_;
-    radio_ = nil;
-    CoreBluetoothAddon *self = this;
     auto tsfn = MakeResolverTsfn(env, "ubm_destroy");
     [radio invalidate:^(NSError *error) {
-      self->ReleasePersistentTsfns();
       CompleteVoid(tsfn, deferred, error);
     }];
     return Napi::Promise(env, promise);
