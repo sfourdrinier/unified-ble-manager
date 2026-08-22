@@ -50,7 +50,7 @@ jobs:
       matrix: ${{ steps.matrix.outputs.matrix }}
     steps:
       - name: Checkout tag
-        uses: actions/checkout@v7.0.0
+        uses: actions/checkout@v7.0.1
 
       - name: Emit maintained prebuild matrix
         id: matrix
@@ -68,7 +68,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
       - name: Checkout tag
-        uses: actions/checkout@v7.0.0
+        uses: actions/checkout@v7.0.1
 
       - name: Setup Python for node-gyp
         uses: actions/setup-python@v6.0.0
@@ -115,7 +115,7 @@ jobs:
 
     steps:
       - name: Checkout tag
-        uses: actions/checkout@v7.0.0
+        uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0 # Stable tags must prove their commit is current main.
 
