@@ -2451,7 +2451,7 @@ class OwnedAndroidGattRadio(private val context: Context) {
       if (!isCurrentGattCallback(gatt)) return
       val key = "phyRequest:${gatt.device.address.uppercase()}"
       if (status != BluetoothGatt.GATT_SUCCESS) {
-        pendingPhyRequests.remove(key)?.invoke(Result.success(null))
+        pendingPhyRequests.remove(key)?.invoke(Result.failure(IllegalStateException("onPhyUpdate status=$status")))
         return
       }
       val mappedTx = phyName(txPhy)
@@ -2722,15 +2722,26 @@ class OwnedAndroidGattRadio(private val context: Context) {
     fun scanFailMessage(errorCode: Int): String = "scan failed code=$errorCode"
 
     @JvmStatic
-    fun phyValue(value: String?): Int {
-      return when (value) {
-        null -> ScanSettings.PHY_LE_ALL_SUPPORTED
-        "le1m" -> BluetoothDevice.PHY_LE_1M
-        "le2m" -> BluetoothDevice.PHY_LE_2M
-        "leCoded" -> BluetoothDevice.PHY_LE_CODED
-        else -> throw IllegalArgumentException("Android PHY is unsupported")
-      }
-    }
+        fun phyValue(value: String?): Int {
+          return when (value) {
+            null -> ScanSettings.PHY_LE_ALL_SUPPORTED
+            "le1m" -> BluetoothDevice.PHY_LE_1M
+            "le2m" -> BluetoothDevice.PHY_LE_2M
+            "leCoded" -> BluetoothDevice.PHY_LE_CODED
+            else -> throw IllegalArgumentException("Android PHY is unsupported")
+          }
+        }
+
+        @JvmStatic
+        fun phyMaskValue(value: String?): Int {
+          return when (value) {
+            null -> 0
+            "le1m" -> BluetoothDevice.PHY_LE_1M_MASK
+            "le2m" -> BluetoothDevice.PHY_LE_2M_MASK
+            "leCoded" -> BluetoothDevice.PHY_LE_CODED_MASK
+            else -> throw IllegalArgumentException("Android PHY is unsupported")
+          }
+        }
 
     private fun phyName(value: Int): String? = when (value) {
       BluetoothDevice.PHY_LE_1M -> "le1m"

@@ -64,6 +64,10 @@ class UnifiedBleProtocolAndroidDispatcherLifecycleTest {
     assertEquals(BluetoothDevice.PHY_LE_2M, OwnedAndroidGattRadio.phyValue("le2m"))
     assertEquals(BluetoothDevice.PHY_LE_CODED, OwnedAndroidGattRadio.phyValue("leCoded"))
     assertEquals(ScanSettings.PHY_LE_ALL_SUPPORTED, OwnedAndroidGattRadio.phyValue(null))
+    assertEquals(0, OwnedAndroidGattRadio.phyMaskValue(null))
+    assertEquals(BluetoothDevice.PHY_LE_1M_MASK, OwnedAndroidGattRadio.phyMaskValue("le1m"))
+    assertEquals(BluetoothDevice.PHY_LE_2M_MASK, OwnedAndroidGattRadio.phyMaskValue("le2m"))
+    assertEquals(BluetoothDevice.PHY_LE_CODED_MASK, OwnedAndroidGattRadio.phyMaskValue("leCoded"))
     var rejected = false
     try {
       OwnedAndroidGattRadio.phyValue("unknown")

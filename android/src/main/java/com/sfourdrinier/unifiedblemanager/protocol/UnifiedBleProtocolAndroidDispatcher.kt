@@ -524,8 +524,8 @@ class UnifiedBleProtocolAndroidDispatcher(
   private fun requestPhy(command: ProtocolWireRecord) {
     requirePhyAvailable()
     val deviceId = command.requiredRecord(10).requiredString(2)
-    val txPhy = OwnedAndroidGattRadio.phyValue(command.optionalString(17))
-    val rxPhy = OwnedAndroidGattRadio.phyValue(command.optionalString(18))
+    val txPhy = OwnedAndroidGattRadio.phyMaskValue(command.optionalString(17))
+    val rxPhy = OwnedAndroidGattRadio.phyMaskValue(command.optionalString(18))
     val radioOperationId = radio.requestPhy(deviceId, txPhy, rxPhy) { result ->
       result.fold(
         onSuccess = { phy ->

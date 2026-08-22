@@ -9,13 +9,23 @@ describe('Android PHY source seam', () => {
       path.join(repositoryRoot, 'android/src/main/java/com/sfourdrinier/unifiedblemanager/radio/OwnedAndroidGattRadio.kt'),
       'utf8'
     )
+    const dispatcher = fs.readFileSync(
+      path.join(
+        repositoryRoot,
+        'android/src/main/java/com/sfourdrinier/unifiedblemanager/protocol/UnifiedBleProtocolAndroidDispatcher.kt'
+      ),
+      'utf8'
+    )
 
     expect(source).toContain('fun readPhy(')
     expect(source).toContain('fun requestPhy(')
     expect(source).toContain('override fun onPhyRead(')
     expect(source).toContain('override fun onPhyUpdate(')
+    expect(source).toContain('Result.failure(IllegalStateException("onPhyUpdate status=$status"))')
     expect(source).toContain('gatt.readPhy()')
     expect(source).toContain('gatt.setPreferredPhy(')
+    expect(dispatcher).toContain('phyMaskValue(command.optionalString(17))')
+    expect(dispatcher).toContain('phyMaskValue(command.optionalString(18))')
     expect(source).toContain('isCurrentGattCallback(gatt)')
     expect(source).toContain('deviceQueues.remove(key)?.clear()')
   })
