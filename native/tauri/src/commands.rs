@@ -31,7 +31,7 @@ pub async fn invoke<R: Runtime>(
     let caller = AuthenticatedCaller::from_window(&window);
     let dispatcher = state.dispatcher();
     let request = IpcValue::from_wire(request)?;
-    if let Some(permission) = security_permission_for(&request) {
+    for permission in security_permissions_for(&request) {
         let allowed = security_scope
             .allows()
             .iter()
@@ -64,26 +64,50 @@ fn is_attach_request(request: &IpcValue) -> bool {
     matches!(fields.get("kind"), Some(IpcValue::String(kind)) if kind == ATTACH_REQUEST_KIND)
 }
 
-fn security_permission_for(request: &IpcValue) -> Option<SecurityPermission> {
+fn security_permissions_for(request: &IpcValue) -> Vec<SecurityPermission> {
     let IpcValue::Object(fields) = request else {
-        return None;
+        return Vec::new();
     };
     if !matches!(fields.get("kind"), Some(IpcValue::String(kind)) if kind == "route") {
-        return None;
+        return Vec::new();
     }
-    let IpcValue::Object(envelope) = fields.get("envelope")? else {
-        return None;
+    let Some(IpcValue::Object(envelope)) = fields.get("envelope") else {
+        return Vec::new();
     };
-    let IpcValue::String(command) = envelope.get("command")? else {
-        return None;
+    let Some(IpcValue::String(command)) = envelope.get("command") else {
+        return Vec::new();
     };
-    match command.as_str() {
+    let Some(permission) = security_permission_for_command(command) else {
+        return Vec::new();
+    };
+    let mut permissions = vec![permission];
+    if permission == SecurityPermission::Pair
+        && pairing_uses_custom_ceremony(envelope.get("payload"))
+    {
+        permissions.push(SecurityPermission::CustomCeremony);
+    }
+    permissions
+}
+
+fn security_permission_for_command(command: &str) -> Option<SecurityPermission> {
+    match command {
         "security.state" => Some(SecurityPermission::State),
         "security.pair" => Some(SecurityPermission::Pair),
         "security.cancel-pairing" => Some(SecurityPermission::CancelPairing),
         "security.unpair" => Some(SecurityPermission::Unpair),
         "security.custom-ceremony" => Some(SecurityPermission::CustomCeremony),
         _ => None,
+    }
+}
+
+fn pairing_uses_custom_ceremony(payload: Option<&IpcValue>) -> bool {
+    let Some(IpcValue::Object(payload)) = payload else {
+        return false;
+    };
+    match payload.get("ceremony") {
+        Some(IpcValue::String(ceremony)) => ceremony != "system",
+        Some(IpcValue::Object(_)) => true,
+        _ => false,
     }
 }
 
@@ -113,58 +137,88 @@ fn security_permission_denied(permission: SecurityPermission) -> IpcValue {
 mod tests {
     use std::collections::BTreeMap;
 
-    use super::security_permission_for;
+    use super::security_permissions_for;
     use crate::{security_scope::SecurityPermission, IpcValue};
 
     fn route(command: &str) -> IpcValue {
+        route_with_payload(command, None)
+    }
+
+    fn route_with_payload(command: &str, payload: Option<IpcValue>) -> IpcValue {
+        let mut envelope =
+            BTreeMap::from([("command".to_owned(), IpcValue::String(command.to_owned()))]);
+        if let Some(payload) = payload {
+            envelope.insert("payload".to_owned(), payload);
+        }
         IpcValue::Object(BTreeMap::from([
             ("kind".to_owned(), IpcValue::String("route".to_owned())),
-            (
-                "envelope".to_owned(),
-                IpcValue::Object(BTreeMap::from([(
-                    "command".to_owned(),
-                    IpcValue::String(command.to_owned()),
-                )])),
-            ),
+            ("envelope".to_owned(), IpcValue::Object(envelope)),
         ]))
     }
 
     #[test]
     fn security_commands_map_to_independent_permission_atoms() {
         assert_eq!(
-            security_permission_for(&route("security.state")),
-            Some(SecurityPermission::State)
+            security_permissions_for(&route("security.state")),
+            vec![SecurityPermission::State]
         );
         assert_eq!(
-            security_permission_for(&route("security.pair")),
-            Some(SecurityPermission::Pair)
+            security_permissions_for(&route("security.pair")),
+            vec![SecurityPermission::Pair]
         );
         assert_eq!(
-            security_permission_for(&route("security.cancel-pairing")),
-            Some(SecurityPermission::CancelPairing)
+            security_permissions_for(&route("security.cancel-pairing")),
+            vec![SecurityPermission::CancelPairing]
         );
         assert_eq!(
-            security_permission_for(&route("security.unpair")),
-            Some(SecurityPermission::Unpair)
+            security_permissions_for(&route("security.unpair")),
+            vec![SecurityPermission::Unpair]
         );
         assert_eq!(
-            security_permission_for(&route("security.custom-ceremony")),
-            Some(SecurityPermission::CustomCeremony)
+            security_permissions_for(&route("security.custom-ceremony")),
+            vec![SecurityPermission::CustomCeremony]
         );
     }
 
     #[test]
     fn unknown_commands_and_renderer_scope_fields_do_not_grant_security_permission() {
-        assert_eq!(security_permission_for(&route("security.wildcard")), None);
         assert_eq!(
-            security_permission_for(&IpcValue::Object(BTreeMap::from([
+            security_permissions_for(&route("security.wildcard")),
+            Vec::new()
+        );
+        assert_eq!(
+            security_permissions_for(&IpcValue::Object(BTreeMap::from([
                 ("kind".to_owned(), IpcValue::String("route".to_owned())),
                 (
                     "securityScope".to_owned(),
                     IpcValue::String("unpair".to_owned())
                 ),
             ]))),
-            None
+            Vec::new()
+        );
+    }
+
+    #[test]
+    fn custom_pairing_requires_pair_and_custom_ceremony_permissions() {
+        let custom_payload = IpcValue::Object(BTreeMap::from([(
+            "ceremony".to_owned(),
+            IpcValue::String("custom".to_owned()),
+        )]));
+        assert_eq!(
+            security_permissions_for(&route_with_payload("security.pair", Some(custom_payload))),
+            vec![SecurityPermission::Pair, SecurityPermission::CustomCeremony]
+        );
+
+        let agent_payload = IpcValue::Object(BTreeMap::from([(
+            "ceremony".to_owned(),
+            IpcValue::Object(BTreeMap::from([(
+                "kind".to_owned(),
+                IpcValue::String("agent".to_owned()),
+            )])),
+        )]));
+        assert_eq!(
+            security_permissions_for(&route_with_payload("security.pair", Some(agent_payload))),
+            vec![SecurityPermission::Pair, SecurityPermission::CustomCeremony]
         );
     }
 }
