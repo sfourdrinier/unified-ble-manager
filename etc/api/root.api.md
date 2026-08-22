@@ -32,12 +32,41 @@ export interface BleConnection {
   readonly peer: BlePeer
   readonly connectionGeneration: string
   readonly lifecycleEvents: AsyncIterable<BleConnectionEvent>
+  readonly controls: BleConnectionControls
   discover(options?: OperationOptions): Promise<GattDatabase>
-  readRssi(options?: OperationOptions): Promise<number>
-  requestMtu(requestedMtu: number, options?: OperationOptions): Promise<number>
+  rediscoverGatt(options: RediscoverGattOptions): Promise<GattDatabase>
   disconnect(): Promise<CleanupRecord>
   release(): Promise<CleanupRecord>
 }
+export interface BleConnectionControls {
+  readRssi(options?: OperationOptions): Promise<RssiObservation>
+  effectiveMtu(): Promise<MtuObservation>
+  requestMtu(mtu: number, options?: OperationOptions): Promise<MtuNegotiation>
+  maximumWriteLength(mode: WriteMode): Promise<MaximumWriteLengthObservation>
+  requestPriority(priority: ConnectionPriority, options?: OperationOptions): Promise<ConnectionPriorityResult>
+  readPhy(options?: OperationOptions): Promise<PhyObservation>
+  requestPhy(preference: PhyPreference, options?: OperationOptions): Promise<PhyUpdateResult>
+  parameters(): Promise<ConnectionParametersObservation>
+  parameterEvents(): AsyncIterable<ConnectionParametersObservation>
+  requestSubrate(mode: SubrateMode, options?: OperationOptions): Promise<SubrateResult>
+  writeReadiness(mode: 'without-response'): AsyncIterable<WriteReadinessEvent>
+}
+export interface RediscoverGattOptions extends OperationOptions { readonly reason: 'service-changed' | 'manual' }
+export type ConnectionPriority = 'low-power' | 'balanced' | 'high-throughput'
+export type WriteMode = 'with-response' | 'without-response'
+export interface RssiObservation extends BleControlObservationMetadata { readonly state: 'measured' | 'unavailable' | 'unsupported'; readonly rssi: number | null }
+export interface MtuObservation extends BleControlObservationMetadata { readonly state: 'measured' | 'unavailable' | 'unsupported'; readonly attMtu: number | null; readonly payloadBytes: number | null; readonly platformPduBytes: number | null }
+export interface MtuNegotiation extends BleControlObservationMetadata { readonly state: 'accepted' | 'rejected' | 'unavailable' | 'unsupported'; readonly requestedMtu: number; readonly observation: MtuObservation | null }
+export interface MaximumWriteLengthObservation extends BleControlObservationMetadata { readonly state: 'measured' | 'unavailable' | 'unsupported'; readonly mode: WriteMode; readonly maximumWriteLength: number | null }
+export interface ConnectionPriorityResult extends BleControlObservationMetadata { readonly state: 'accepted' | 'rejected' | 'unavailable' | 'unsupported'; readonly requested: ConnectionPriority }
+export interface PhyPreference { readonly tx?: BlePhy; readonly rx?: BlePhy }
+export interface PhyObservation extends BleControlObservationMetadata { readonly state: 'measured' | 'unavailable' | 'unsupported'; readonly tx: BlePhy | null; readonly rx: BlePhy | null }
+export interface PhyUpdateResult extends BleControlObservationMetadata { readonly state: 'accepted' | 'rejected' | 'unavailable' | 'unsupported'; readonly requested: PhyPreference; readonly observation: PhyObservation | null }
+export interface ConnectionParametersObservation extends BleControlObservationMetadata { readonly state: 'measured' | 'unavailable' | 'unsupported'; readonly intervalMs: number | null; readonly peripheralLatency: number | null; readonly supervisionTimeoutMs: number | null; readonly subrateFactor: number | null; readonly connectionEventLengthMs: number | null }
+export type SubrateMode = 'default' | 'low-latency' | 'low-power'
+export interface SubrateResult extends BleControlObservationMetadata { readonly state: 'accepted' | 'rejected' | 'unavailable' | 'unsupported'; readonly requested: SubrateMode; readonly observation: ConnectionParametersObservation | null }
+export interface WriteReadinessEvent extends BleControlObservationMetadata { readonly state: 'measured' | 'unavailable' | 'unsupported'; readonly mode: 'without-response'; readonly ready: boolean | null }
+export interface BleControlObservationMetadata { readonly connectionGeneration: string; readonly observedAtMonotonicMs: number; readonly source: string; readonly authority: string; readonly limitations: readonly Limitation[] }
 export interface ScanSession {
   readonly observations: BoundedAsyncStream<PublicScanObservation>
   readonly state: AsyncIterable<ScanStateEvent>
@@ -82,13 +111,17 @@ All BLE payloads are bytes. Application operations use `AbortSignal` and
 - `BleAdapterState`
 - `BleCapabilities`
 - `BleConnection`
+- `BleConnectionControls`
 - `BleConnectionEvent`
+- `BleControlObservationMetadata`
+- `BleControlObservationState`
 - `BleDiagnostics`
 - `BleDiagnosticsSnapshot`
 - `BleDiscoveryInfo`
 - `BleError`
 - `BleManager`
 - `BleManagerCreateOptions`
+- `BleObservationSource`
 - `BlePeer`
 - `BlePeerDirectory`
 - `BlePeerState`
@@ -108,6 +141,9 @@ All BLE payloads are bytes. Application operations use `AbortSignal` and
 - `ConnectionGateContext`
 - `ConnectionGateDecision`
 - `ConnectionIntent`
+- `ConnectionParametersObservation`
+- `ConnectionPriority`
+- `ConnectionPriorityResult`
 - `ConnectionSupervisor`
 - `ConnectionSupervisorEvent`
 - `ConnectionSupervisorOptions`
@@ -139,6 +175,10 @@ All BLE payloads are bytes. Application operations use `AbortSignal` and
 - `KnownPeerQuery`
 - `LongWriteOptions`
 - `ManufacturerDataPattern`
+- `MaximumWriteLengthObservation`
+- `MtuNegotiation`
+- `MtuNegotiationState`
+- `MtuObservation`
 - `OccurrenceSelector`
 - `OperationOptions`
 - `PairCancelResult`
@@ -153,9 +193,14 @@ All BLE payloads are bytes. Application operations use `AbortSignal` and
 - `PeerSecurityEvent`
 - `PeerSecurityState`
 - `PeerSource`
+- `PhyObservation`
+- `PhyPreference`
+- `PhyUpdateResult`
 - `PublicScanObservation`
+- `RediscoverGattOptions`
 - `RequiredSecurityOptions`
 - `RetryPolicy`
+- `RssiObservation`
 - `ScanClause`
 - `ScanOptions`
 - `ScanQuery`
@@ -170,8 +215,12 @@ All BLE payloads are bytes. Application operations use `AbortSignal` and
 - `ServiceDataPattern`
 - `StreamPolicy`
 - `StreamPreset`
+- `SubrateMode`
+- `SubrateResult`
 - `UnpairResult`
 - `UuidInput`
+- `WriteMode`
+- `WriteReadinessEvent`
 - `createConnectionSupervisor`
 - `decodePeerReference`
 - `encodePeerReference`

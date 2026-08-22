@@ -28,10 +28,45 @@ import type {
   AdapterReadinessOptions,
   BleDiagnostics
 } from 'unified-ble-manager'
-import type { ConnectionIntent, ConnectionSupervisor, ConnectOptions, RetryPolicy } from 'unified-ble-manager'
+import type {
+  BleConnectionControls,
+  BleControlObservationMetadata,
+  BleObservationSource,
+  RssiObservation,
+  MtuObservation,
+  MtuNegotiation,
+  MaximumWriteLengthObservation as PublicMaximumWriteLengthObservation,
+  ConnectionPriority,
+  ConnectionPriorityResult,
+  PhyPreference,
+  PhyObservation,
+  PhyUpdateResult,
+  ConnectionParametersObservation,
+  SubrateMode,
+  SubrateResult,
+  WriteMode,
+  WriteReadinessEvent,
+  RediscoverGattOptions,
+  ConnectionIntent,
+  ConnectionSupervisor,
+  ConnectOptions,
+  RetryPolicy
+} from 'unified-ble-manager'
 // Ensure root types are considered used for TS noUnusedLocals
 type _RootImportCheck = BlePeer &
   BleConnection &
+  BleConnectionControls &
+  RssiObservation &
+  MtuObservation &
+  MtuNegotiation &
+  PublicMaximumWriteLengthObservation &
+  ConnectionPriorityResult &
+  PhyObservation &
+  PhyUpdateResult &
+  ConnectionParametersObservation &
+  SubrateResult &
+  WriteReadinessEvent &
+  BleControlObservationMetadata &
   ScanSession &
   GattDatabase &
   GattService &
@@ -53,10 +88,22 @@ declare const connectionIntent: ConnectionIntent
 declare const connectOptions: ConnectOptions
 declare const retryPolicy: RetryPolicy
 declare const supervisor: ConnectionSupervisor
+declare const observationSource: BleObservationSource
+declare const connectionPriority: ConnectionPriority
+declare const phyPreference: PhyPreference
+declare const subrateMode: SubrateMode
+declare const writeMode: WriteMode
+declare const rediscoverOptions: RediscoverGattOptions
 void connectionIntent
 void connectOptions
 void retryPolicy
 void supervisor
+void observationSource
+void connectionPriority
+void phyPreference
+void subrateMode
+void writeMode
+void rediscoverOptions
 declare const publicDatabase: GattDatabase
 declare const publicService: GattService
 declare const publicCharacteristic: GattCharacteristic
