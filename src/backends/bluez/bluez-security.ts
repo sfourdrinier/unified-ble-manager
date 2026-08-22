@@ -94,7 +94,12 @@ export class BluezSecurityBackend implements SecurityBackend {
     const peerStreams = this.streams.get(peerId) ?? new Set<CoreBoundedStream<PeerSecurityEvent>>()
     peerStreams.add(source)
     this.streams.set(peerId, peerStreams)
-    source.emit(this.createEvent(peerId, this.readState(peerId)), 1)
+    try {
+      source.emit(this.createEvent(peerId, this.readState(peerId)), 1)
+    } catch (error) {
+      this.releaseStream(peerId, source)
+      throw error
+    }
     return new BluezSecurityStream(source, () => this.releaseStream(peerId, source))
   }
 
@@ -194,9 +199,20 @@ export class BluezSecurityBackend implements SecurityBackend {
   peerRemoved(path: string): void {
     const peerId = this.runtime.peerIdForPathIfKnown(path)
     if (peerId === null) return
+    this.activePairings.get(peerId)?.dispatch.requestCancellation().catch(() => undefined)
     const streams = this.streams.get(peerId)
     for (const stream of streams ?? []) stream.closeWithReason('operation-aborted')
     this.streams.delete(peerId)
+  }
+
+  reset(): void {
+    for (const active of this.activePairings.values()) {
+      active.dispatch.requestCancellation().catch(() => undefined)
+    }
+    for (const streams of this.streams.values()) {
+      for (const stream of streams) stream.closeWithReason('source-failed')
+    }
+    this.streams.clear()
   }
 
   close(): void {

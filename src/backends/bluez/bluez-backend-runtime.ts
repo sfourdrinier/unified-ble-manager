@@ -767,6 +767,7 @@ export class BluezBackendRuntime implements BluezObjectStoreObserver {
     this.backendGeneration += 1
     this.adapterGeneration += 1
     this.refreshAdapterStateUpdatedAt()
+    this.security.reset()
     this.peerPaths.clear()
     this.peerHandles.clear()
     if (this.scanGroup !== null) {

@@ -95,6 +95,14 @@ function pairOptions(overrides = {}) {
 }
 
 describe('BlueZ system security backend', () => {
+  test('rolls back security watch ownership when the initial state read fails', async () => {
+    const { backend } = await createFixture()
+
+    expect(() => backend.security.watch('missing-peer')).toThrow()
+    expect(backend.security.streams.size).toBe(0)
+    await expect(backend.destroy()).resolves.toMatchObject({ state: 'released' })
+  })
+
   test('measures Paired, resolves after the Paired property, watches changes, and removes the OS device', async () => {
     const { backend, boundary, peerId: observedPeerId } = await createFixture()
     const stream = backend.security.watch(observedPeerId)
@@ -217,5 +225,76 @@ describe('BlueZ system security backend', () => {
     } finally {
       jest.useRealTimers()
     }
+  })
+
+  test('cancels active pairing and terminates security watchers when the device is removed', async () => {
+    const { backend, boundary, peerId: observedPeerId } = await createFixture()
+    let resolvePair = () => undefined
+    boundary.onCall(
+      devicePath,
+      BLUEZ_DEVICE_INTERFACE,
+      'Pair',
+      () =>
+        new Promise(resolve => {
+          resolvePair = resolve
+        })
+    )
+    const stream = backend.security.watch(observedPeerId)
+    const iterator = stream[Symbol.asyncIterator]()
+    await iterator.next()
+    const terminal = iterator.next()
+    const pairing = backend.security.pair(observedPeerId, pairOptions())
+    await Promise.resolve()
+    await Promise.resolve()
+
+    boundary.objectManager.emitInterfacesRemoved(devicePath, [BLUEZ_DEVICE_INTERFACE])
+    await expect(terminal).resolves.toMatchObject({ value: { kind: 'terminal', reason: 'operation-aborted' } })
+    await expect(pairing).resolves.toEqual({ outcome: 'cancelled' })
+    expect(
+      boundary.calls.filter(call => call.interfaceName === BLUEZ_DEVICE_INTERFACE && call.method === 'CancelPairing')
+    ).toHaveLength(1)
+
+    const active = backend.security.activePairings.get(observedPeerId)
+    if (active === undefined) throw new Error('BlueZ active pairing disappeared before physical settlement')
+    resolvePair()
+    await active.dispatch.physicalSettled
+    expect(backend.security.activePairings.size).toBe(0)
+    expect(backend.security.streams.size).toBe(0)
+    await expect(backend.destroy()).resolves.toMatchObject({ state: 'released' })
+  })
+
+  test('cancels active pairing and terminates security watchers on a BlueZ daemon reset', async () => {
+    const { backend, boundary, peerId: observedPeerId } = await createFixture()
+    let resolvePair = () => undefined
+    boundary.onCall(
+      devicePath,
+      BLUEZ_DEVICE_INTERFACE,
+      'Pair',
+      () =>
+        new Promise(resolve => {
+          resolvePair = resolve
+        })
+    )
+    const stream = backend.security.watch(observedPeerId)
+    const iterator = stream[Symbol.asyncIterator]()
+    await iterator.next()
+    const terminal = iterator.next()
+    const pairing = backend.security.pair(observedPeerId, pairOptions())
+    await Promise.resolve()
+    await Promise.resolve()
+
+    boundary.emitReset('test reset')
+    await expect(terminal).resolves.toMatchObject({ value: { kind: 'terminal', reason: 'source-failed' } })
+    await expect(pairing).resolves.toEqual({ outcome: 'cancelled' })
+    expect(
+      boundary.calls.filter(call => call.interfaceName === BLUEZ_DEVICE_INTERFACE && call.method === 'CancelPairing')
+    ).toHaveLength(1)
+
+    const active = backend.security.activePairings.get(observedPeerId)
+    if (active === undefined) throw new Error('BlueZ active pairing disappeared before physical settlement')
+    resolvePair()
+    await active.dispatch.physicalSettled
+    expect(backend.security.activePairings.size).toBe(0)
+    await expect(backend.destroy()).resolves.toMatchObject({ state: 'released' })
   })
 })
