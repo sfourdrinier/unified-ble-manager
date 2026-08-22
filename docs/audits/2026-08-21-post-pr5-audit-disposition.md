@@ -130,10 +130,10 @@ only after a security-aware command and attachment-validated before delivery,
 so an older or stale Native Protocol v2 peer cannot receive an unknown/stale event.
 
 Verified in this checkpoint: `pnpm typecheck`, `pnpm native-protocol:check`,
-`pnpm test:native-protocol`, the Android boundary suite (8 tests), the
+`pnpm test:native-protocol`, the Android boundary suite (10 tests), the
 React-Native Android vertical slice (30 tests), the first-party deterministic
 backend TCK registry (including the Android security suite), and the full
-package gate (123 suites, 1,144 tests). The Android Gradle
+package gate (123 suites, 1,146 tests). The Android Gradle
 lane remains unverified locally because the example checkout lacks
 `example/node_modules/@react-native/gradle-plugin`; hosted Android compile/JVM
 evidence and physical-radio evidence remain open. This is not an RC3 or merge
