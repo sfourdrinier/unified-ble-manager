@@ -891,6 +891,8 @@ describe('UnifiedBleCore lifecycle hardening', () => {
     jest.useFakeTimers()
     const { fixture, manager } = await createFixture()
     const { connection, database, characteristic } = await connectedDatabase(fixture, manager)
+    const events = connection.events[Symbol.asyncIterator]()
+    await events.next()
     const originalWrite = fixture.backend.gatt.write
     let resolveWrite = null
     let release = null
@@ -936,6 +938,20 @@ describe('UnifiedBleCore lifecycle hardening', () => {
           }
         ]
       })
+      let lifecycleEvent
+      const lifecycleEventPromise = events.next()
+      void lifecycleEventPromise.then(result => {
+        lifecycleEvent = result
+      })
+      await flushMicrotasks()
+      expect(lifecycleEvent).toMatchObject({
+        done: false,
+        value: { kind: 'value', value: { cause: 'released', current: 'disconnected' } }
+      })
+      await expect(events.next()).resolves.toMatchObject({
+        done: false,
+        value: { kind: 'terminal', reason: 'owner-released' }
+      })
       expect(Number(manager.localResourceCounters().retainedByteBuffers)).toBe(17)
       expect(Number(manager.localResourceCounters().connectionLeases)).toBe(1)
 
@@ -949,6 +965,7 @@ describe('UnifiedBleCore lifecycle hardening', () => {
       fixture.backend.gatt.write = originalWrite
       if (resolveWrite !== null) resolveWrite()
       if (release !== null) await settle(fixture.controller, release)
+      await events.return()
       jest.useRealTimers()
       await settle(fixture.controller, manager.destroy())
     }

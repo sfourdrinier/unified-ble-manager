@@ -749,13 +749,13 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
     if (backendResult.state === 'release-failed') {
       return mergeAdmissionFailures(mergeChildFailures(backendResult))
     }
+    connection.finishLifecycle(cause, null)
     if (admissionFailures.length > 0) {
       return mergeAdmissionFailures(mergeChildFailures(backendResult))
     }
     if (cleanup.state === 'release-failed') {
       return mergeAdmissionFailures({ state: 'release-failed', failures: cleanup.failures })
     }
-    connection.finishLifecycle(cause, null)
     connection.markReleased()
     this.connections.delete(String(connection.resource.connectionId))
     this.resourceLedger.decrement('connectionLeases')
