@@ -887,6 +887,142 @@ describe('UnifiedBleCore lifecycle hardening', () => {
     expectNoResources(fixture.backend.resourceCounters())
   })
 
+  test('bounds connection release while retaining an unresolved quarantined operation for retry', async () => {
+    jest.useFakeTimers()
+    const { fixture, manager } = await createFixture()
+    const { connection, database, characteristic } = await connectedDatabase(fixture, manager)
+    const originalWrite = fixture.backend.gatt.write
+    let resolveWrite = null
+    let release = null
+    fixture.backend.gatt.write = (_path, request) => ({
+      completion: new Promise(resolve => {
+        resolveWrite = () =>
+          resolve({
+            terminal: {
+              correlation: request.operation.correlation,
+              outcome: 'succeeded',
+              cause: null
+            },
+            commitState: 'confirmed'
+          })
+      }),
+      requestCancellation: async () => undefined
+    })
+
+    try {
+      const write = database.write(characteristic, new Uint8Array(17), {
+        ...operation(),
+        mode: 'with-response'
+      })
+      await flushMicrotasks()
+      release = connection.release()
+      await expect(write).rejects.toMatchObject({ normalized: { code: 'operation.disconnected' } })
+      await flushMicrotasks()
+      let releaseSettled = false
+      void release.then(() => {
+        releaseSettled = true
+      })
+
+      jest.runOnlyPendingTimers()
+      await flushVirtual(fixture.controller)
+
+      expect(releaseSettled).toBe(true)
+      await expect(release).resolves.toMatchObject({
+        state: 'release-failed',
+        failures: [
+          {
+            resourceKind: 'operation-quarantine',
+            error: { code: 'operation.timed-out', domain: 'cleanup' }
+          }
+        ]
+      })
+      expect(Number(manager.localResourceCounters().retainedByteBuffers)).toBe(17)
+      expect(Number(manager.localResourceCounters().connectionLeases)).toBe(1)
+
+      resolveWrite()
+      await expect(settle(fixture.controller, connection.release())).resolves.toEqual({
+        state: 'released',
+        failures: []
+      })
+      expectNoResources(fixture.backend.resourceCounters())
+    } finally {
+      fixture.backend.gatt.write = originalWrite
+      if (resolveWrite !== null) resolveWrite()
+      if (release !== null) await settle(fixture.controller, release)
+      jest.useRealTimers()
+      await settle(fixture.controller, manager.destroy())
+    }
+  })
+
+  test('bounds manager destruction while retaining an unresolved quarantined operation for retry', async () => {
+    jest.useFakeTimers()
+    const { fixture, manager } = await createFixture()
+    const { connection, database, characteristic } = await connectedDatabase(fixture, manager)
+    const originalWrite = fixture.backend.gatt.write
+    let resolveWrite = null
+    let destruction = null
+    fixture.backend.gatt.write = (_path, request) => ({
+      completion: new Promise(resolve => {
+        resolveWrite = () =>
+          resolve({
+            terminal: {
+              correlation: request.operation.correlation,
+              outcome: 'succeeded',
+              cause: null
+            },
+            commitState: 'confirmed'
+          })
+      }),
+      requestCancellation: async () => undefined
+    })
+
+    try {
+      const write = database.write(characteristic, new Uint8Array(17), {
+        ...operation(),
+        mode: 'with-response'
+      })
+      await flushMicrotasks()
+      destruction = manager.destroy()
+      await expect(write).rejects.toMatchObject({ normalized: { code: 'operation.cancelled-by-destroy' } })
+      await flushMicrotasks()
+      let destructionSettled = false
+      void destruction.then(() => {
+        destructionSettled = true
+      })
+
+      jest.runOnlyPendingTimers()
+      await flushVirtual(fixture.controller)
+
+      expect(destructionSettled).toBe(true)
+      await expect(destruction).resolves.toMatchObject({
+        state: 'release-failed',
+        failures: [
+          {
+            resourceKind: 'operation-quarantine',
+            error: { code: 'operation.timed-out', domain: 'cleanup' }
+          }
+        ]
+      })
+      expect(manager.state).toBe('failed')
+      expect(Number(manager.localResourceCounters().retainedByteBuffers)).toBe(17)
+      expect(Number(manager.localResourceCounters().connectionLeases)).toBe(1)
+
+      resolveWrite()
+      await expect(settle(fixture.controller, manager.destroy())).resolves.toEqual({
+        state: 'released',
+        failures: []
+      })
+      expect(manager.state).toBe('destroyed')
+      expectNoResources(fixture.backend.resourceCounters())
+    } finally {
+      fixture.backend.gatt.write = originalWrite
+      if (resolveWrite !== null) resolveWrite()
+      if (destruction !== null) await settle(fixture.controller, destruction)
+      jest.useRealTimers()
+      await settle(fixture.controller, manager.destroy())
+    }
+  })
+
   test.each([
     ['owning', 'late success', null],
     ['owning', 'late failure', 'platform.failure'],

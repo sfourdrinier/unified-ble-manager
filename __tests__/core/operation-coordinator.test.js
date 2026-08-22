@@ -625,6 +625,28 @@ describe('CoreOperationCoordinator', () => {
     expect(trace.snapshot().some(record => record.transition === 'late-success')).toBe(true)
   })
 
+  test('cancels a quarantine drain waiter without retaining it until late acknowledgement', async () => {
+    const { coordinator } = createCoordinator()
+    const backend = deferred()
+    const abortController = new AbortController()
+    const result = coordinator.run(operation(() => backend.promise, abortController.signal, true))
+
+    abortController.abort()
+    await expect(result).resolves.toMatchObject({ outcome: 'aborted', commitState: 'unknown' })
+    const drain = coordinator.waitForQuarantineDrainCancellable()
+    let drained = false
+    void drain.promise.then(() => {
+      drained = true
+    })
+
+    drain.cancel()
+    backend.resolve('late-result')
+    await new Promise(resolve => setImmediate(resolve))
+
+    expect(drained).toBe(false)
+    expect(coordinator.activeCounts()).toEqual({ queued: 0, dispatched: 0, quarantined: 0 })
+  })
+
   test('rejects pre-aborted and expired operations before allocating queue state', async () => {
     const { coordinator, ledger } = createCoordinator()
     const abortController = new AbortController()

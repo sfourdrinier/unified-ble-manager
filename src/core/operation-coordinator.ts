@@ -98,6 +98,11 @@ interface DrainWaiter {
   readonly resolve: () => void
 }
 
+export interface CoreQuarantineDrainWait {
+  readonly promise: Promise<void>
+  cancel(): void
+}
+
 export interface CoreOperationCoordinatorOptions<Attachment extends string> {
   readonly now: () => number
   readonly createCorrelation: () => OperationCorrelation<Attachment, string>
@@ -263,12 +268,27 @@ export class CoreOperationCoordinator<Attachment extends string> {
   }
 
   waitForQuarantineDrain(queueKey?: string): Promise<void> {
+    return this.waitForQuarantineDrainCancellable(queueKey).promise
+  }
+
+  waitForQuarantineDrainCancellable(queueKey?: string): CoreQuarantineDrainWait {
     if (!this.hasPendingDrain(queueKey)) {
-      return Promise.resolve()
+      return { promise: Promise.resolve(), cancel: () => undefined }
     }
-    return new Promise(resolve => {
-      this.quarantineDrainWaiters.add({ queueKey, resolve })
+    let waiter: DrainWaiter | null = null
+    const promise = new Promise<void>(resolve => {
+      waiter = { queueKey, resolve }
+      this.quarantineDrainWaiters.add(waiter)
     })
+    return {
+      promise,
+      cancel: () => {
+        if (waiter !== null) {
+          this.quarantineDrainWaiters.delete(waiter)
+          waiter = null
+        }
+      }
+    }
   }
 
   hasPendingDrain(queueKey?: string): boolean {

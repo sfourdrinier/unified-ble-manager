@@ -33,6 +33,7 @@ import type {
   OwnedBytes,
   PeerId
 } from '../backend-contract/primitives'
+import { deadline as createDeadline } from '../backend-contract/primitives'
 import type { BoundedAsyncStream } from '../backend-contract/streams'
 import type { SecurityBackend } from '../backend-contract/security'
 import type { ConnectionLifecycleTerminalCause } from '../backend-contract/connection-lifecycle'
@@ -74,6 +75,8 @@ import { isConnectionLossCause, lifecycleCauseFromBackendDisconnect } from './co
 import type { DiagnosticTraceDocument } from '../diagnostics/trace-format'
 export { DEFAULT_CORE_MAXIMUM_VALUE_BYTES } from './unified-ble-core-helpers'
 export type { CoreDeadlineHandle, CoreDeadlineScheduler } from './unified-ble-core-helpers'
+
+const QUARANTINE_DRAIN_TIMEOUT_MS = 1_000
 
 export interface UnifiedBleCoreOptions {
   readonly now: () => number
@@ -565,13 +568,12 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
       (admissionEpoch, value, operation) => this.assertAdmissionCurrent(admissionEpoch, value, operation),
       this.admissionEpoch,
       reason,
-      () =>
-        awaitWithOperationAdmission(
-          this.operationCoordinator.waitForQuarantineDrain(key),
-          options,
-          this.options.now,
-          'rediscover'
-        )
+      () => {
+        const drain = this.operationCoordinator.waitForQuarantineDrainCancellable(key)
+        return awaitWithOperationAdmission(drain.promise, options, this.options.now, 'rediscover').finally(() => {
+          drain.cancel()
+        })
+      }
     )
     this.discoveries.set(key, discovery)
     try {
@@ -702,10 +704,8 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
   ): Promise<CleanupRecord> {
     const key = String(connection.resource.connectionId)
     this.operationCoordinator.cancelQueue(key, 'disconnected')
-    if (this.operationCoordinator.hasPendingDrain(key)) {
-      await this.operationCoordinator.waitForQuarantineDrain(key)
-    }
-    const admissionFailures = this.operationCoordinator.takeCleanupFailures(key)
+    const quarantine = await this.awaitQuarantineDrain(key)
+    const admissionFailures = [...this.operationCoordinator.takeCleanupFailures(key), ...quarantine.failures]
     const mergeAdmissionFailures = (record: CleanupRecord): CleanupRecord => {
       if (admissionFailures.length === 0) return record
       return {
@@ -745,6 +745,9 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
       )
     }
     if (backendResult.state === 'release-failed') {
+      return mergeAdmissionFailures(mergeChildFailures(backendResult))
+    }
+    if (admissionFailures.length > 0) {
       return mergeAdmissionFailures(mergeChildFailures(backendResult))
     }
     if (cleanup.state === 'release-failed') {
@@ -1038,8 +1041,14 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
     failures.push(...subscriptions.failures)
     const events = await eventClose
     failures.push(...events.failures)
-    if (this.operationCoordinator.hasPendingDrain()) {
-      await this.operationCoordinator.waitForQuarantineDrain()
+    if (
+      this.operationCoordinator.hasPendingDrain() &&
+      !failures.some(failure => failure.resourceKind === 'operation-quarantine')
+    ) {
+      const quarantine = await this.awaitQuarantineDrain()
+      if (quarantine.failures.length > 0) {
+        failures.push(...quarantine.failures)
+      }
     }
     failures.push(...this.operationCoordinator.takeCleanupFailures())
     const result: CleanupRecord =
@@ -1047,6 +1056,34 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
     this.syncRetainedByteBuffers()
     this.coreState = result.state === 'released' ? 'destroyed' : 'failed'
     return result
+  }
+
+  private async awaitQuarantineDrain(queueKey?: string): Promise<CleanupRecord> {
+    if (!this.operationCoordinator.hasPendingDrain(queueKey)) {
+      return { state: 'released', failures: [] }
+    }
+    const drainDeadline = createDeadline(this.options.now() + QUARANTINE_DRAIN_TIMEOUT_MS)
+    const drain = this.operationCoordinator.waitForQuarantineDrainCancellable(queueKey)
+    try {
+      await awaitWithOperationAdmission(
+        drain.promise,
+        { signal: null, deadline: drainDeadline },
+        this.options.now,
+        'unified-core.quarantine-drain'
+      )
+    } catch (error) {
+      if (!this.operationCoordinator.hasPendingDrain(queueKey)) {
+        return { state: 'released', failures: [] }
+      }
+      const failure =
+        error instanceof BackendContractError && error.normalized.code === 'operation.timed-out'
+          ? contractError('operation.timed-out', 'cleanup', 'unified-core.quarantine-drain')
+          : contractError('platform.failure', 'cleanup', 'unified-core.quarantine-drain')
+      return cleanupFailure('operation-quarantine', failure)
+    } finally {
+      drain.cancel()
+    }
+    return { state: 'released', failures: [] }
   }
 
   private assertReady(operation: string): void {
