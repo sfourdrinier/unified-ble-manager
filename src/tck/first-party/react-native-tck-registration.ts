@@ -107,6 +107,7 @@ export function createReactNativeAndroidFirstPartyTckRegistration(
       }),
       create: async _context => {
         const backend = await provider.create({ selectedAdapterId: reactNativeAndroidDefaultAdapterId() })
+        const publicPeerId = backend.peerIdForNativeId(options.nativePeerId)
         return {
           backend,
           controller: createReactNativeController(options.boundary, options.nativePeerId, options.now),
@@ -116,7 +117,7 @@ export function createReactNativeAndroidFirstPartyTckRegistration(
               ? {}
               : {
                   security: Object.freeze({
-                    peerId: options.nativePeerId,
+                    peerId: publicPeerId,
                     ...options.security,
                     prepareCancellation: () => options.boundary.prepareSecurityCancellation?.()
                   })

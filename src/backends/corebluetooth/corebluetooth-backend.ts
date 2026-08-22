@@ -1031,7 +1031,7 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
     return this.peerIdsByNativeId.get(nativePeerId) ?? null
   }
 
-  private peerIdForNativeId(nativePeerId: string): PeerId<string> {
+  peerIdForNativeId(nativePeerId: string): PeerId<string> {
     const existing = this.peerIdsByNativeId.get(nativePeerId)
     if (existing !== undefined) {
       return existing

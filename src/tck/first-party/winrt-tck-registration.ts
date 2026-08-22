@@ -82,12 +82,13 @@ async function createFixture(options: WinRtFirstPartyTckRegistrationOptions) {
     await boundary.selectAdapter(selected.nativeAdapterId).completion
     const createdBackend = new WinRtBackend(boundary, selected, options.now, 'node')
     backend = createdBackend
+    const publicPeerId = createdBackend.peerIdForNativeId(options.nativePeerId)
     return {
       backend: createdBackend,
       controller: createWinRtController(boundary, options.nativePeerId, options.now),
       featureScenarioAdapters: Object.freeze({
         security: Object.freeze({
-          peerId: options.nativePeerId,
+          peerId: publicPeerId,
           customCeremonySupported: false,
           supportsAlreadyUnpaired: true,
           prepareCancellation: () => boundary.prepareSecurityCancellation?.()

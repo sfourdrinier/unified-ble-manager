@@ -1365,7 +1365,7 @@ export class WinRtBackend implements BleCentralBackend<string, HostNeutralBacken
     }
   }
 
-  private peerIdForNativeId(nativePeerId: string): PeerId<string> {
+  peerIdForNativeId(nativePeerId: string): PeerId<string> {
     const existing = this.peerIdsByNativeId.get(nativePeerId)
     if (existing !== undefined) {
       return existing

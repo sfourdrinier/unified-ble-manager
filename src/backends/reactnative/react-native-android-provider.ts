@@ -68,13 +68,17 @@ export interface ReactNativeAndroidBackendProviderOptions {
   readonly createOwnerId?: () => string
 }
 
+export interface ReactNativeAndroidBackendProvider extends ReactNativeRestorationBackendProvider {
+  create(selection: AdapterSelection<string>): Promise<ReactNativeAndroidBackend>
+}
+
 /**
  * Creates the Android provider without importing React Native from this public module.
  * The caller supplies the generated control module, preserving an explicit native boundary.
  */
 export function createReactNativeAndroidBackendProvider(
   options: ReactNativeAndroidBackendProviderOptions
-): ReactNativeRestorationBackendProvider {
+): ReactNativeAndroidBackendProvider {
   const createOwnerId = options.createOwnerId ?? allocateBoundaryOwnerId
   const restoration = new ReactNativeRestorationCoordinator(options.control, 'android')
   return Object.freeze({
@@ -103,7 +107,7 @@ export function createReactNativeAndroidBackendProvider(
   })
 }
 
-class ReactNativeAndroidBackend implements BleCentralBackend<string, NativeBackendIdentity<string>> {
+export class ReactNativeAndroidBackend implements BleCentralBackend<string, NativeBackendIdentity<string>> {
   readonly adapter: AdapterBackend<string>
   readonly scanner: ScannerBackend<string>
   readonly connections: ConnectionBackend<string>
@@ -188,6 +192,10 @@ class ReactNativeAndroidBackend implements BleCentralBackend<string, NativeBacke
 
   resourceCounters(): ResourceCounters {
     return this.delegate.resourceCounters()
+  }
+
+  peerIdForNativeId(nativePeerId: string): string {
+    return String(this.delegate.peerIdForNativeId(nativePeerId))
   }
 
   destroy(): Promise<import('../../backend-contract/errors').CleanupRecord> {
