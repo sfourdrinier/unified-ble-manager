@@ -372,6 +372,17 @@ describe('consumer documentation matches the published package', () => {
     )
   })
 
+  test('advanced-only profile helpers are imported from the advanced entrypoint', () => {
+    const commands = read('docs/PROFILES_AND_COMMANDS.md')
+
+    expect(commands).toContain(
+      "import { defaultScanDelivery, firstNotification } from 'unified-ble-manager/advanced'"
+    )
+    expect(commands).not.toContain(
+      "import { defaultScanDelivery, firstNotification } from 'unified-ble-manager'"
+    )
+  })
+
   test('README is a human teaching front door for the current package', () => {
     const readme = read('README.md')
     const teachingLead = readme.split('\n').slice(0, 40).join('\n')

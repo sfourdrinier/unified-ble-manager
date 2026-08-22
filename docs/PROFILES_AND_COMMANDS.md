@@ -40,7 +40,7 @@ address. Commands operate on the generation-bound path returned by discovery
 and fail with `gatt.ambiguous-path` when the selector is not specific enough.
 
 ```ts
-import { defaultScanDelivery, firstNotification } from 'unified-ble-manager'
+import { defaultScanDelivery, firstNotification } from 'unified-ble-manager/advanced'
 import { resolveCharacteristicPath } from 'unified-ble-manager/profiles/commands'
 import {
   HEART_RATE_SERVICE,
@@ -83,7 +83,7 @@ has completed successfully. It forwards the caller's `AbortSignal`, deadline,
 write mode, and subscription delivery limits without changing them.
 
 ```ts
-import { defaultScanDelivery, firstNotification } from 'unified-ble-manager'
+import { defaultScanDelivery, firstNotification } from 'unified-ble-manager/advanced'
 import {
   readBatteryLevel,
   resetHeartRateEnergyExpended,
