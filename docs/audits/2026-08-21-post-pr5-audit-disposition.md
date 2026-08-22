@@ -114,7 +114,7 @@ required gate before PR7 can merge.
 
 ### PR7C1 Android working-tree checkpoint
 
-The current source is the clean commits `b23a09e`, `4c029f2`, and `5242123` on
+The current source is the clean commits through `d21cf6f` on
 `feat/4.0-security-pairing`. It contains the additive Native Protocol v2
 security command/result/event schema, generated C++/Kotlin/Swift/TypeScript
 bindings, Android public-API bond state and `createBond` handling, the RN
@@ -124,8 +124,10 @@ The current compile-SDK-36 Android artifact intentionally advertises only
 state/pair support. Pair cancellation is not registered because the supported
 public `cancelBondProcess` API is newer than this artifact; no hidden reflection
 or `removeBond` API is shipped. Generic Android unpair remains explicitly
-unsupported. Security events are enabled only after a security-aware command so
-an older Native Protocol v2 JavaScript peer cannot receive an unknown event kind.
+unsupported. Abort/timeout uses a cleanup-only command to release library
+ownership; the OS ceremony may still finish later. Security events are enabled
+only after a security-aware command and attachment-validated before delivery,
+so an older or stale Native Protocol v2 peer cannot receive an unknown/stale event.
 
 Verified in this checkpoint: `pnpm typecheck`, `pnpm native-protocol:check`,
 `pnpm test:native-protocol`, the Android boundary suite (8 tests), the
