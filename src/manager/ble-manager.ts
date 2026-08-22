@@ -37,7 +37,7 @@ import type {
 import type { BoundedAsyncStream } from '../backend-contract/streams'
 import type { RestorationAdoptionRequest, RestorationAdoptionResult } from '../backend-contract/restoration'
 import type { SecurityBackend } from '../backend-contract/security'
-import type { ConnectionPriority } from '../backend-contract/connection-controls'
+import type { ConnectionPriority, ConnectionWriteReadinessWatch } from '../backend-contract/connection-controls'
 import type { DiagnosticTraceDocument } from '../diagnostics/trace-format'
 import { DEFAULT_CORE_MAXIMUM_VALUE_BYTES, UnifiedBleCore } from '../core/unified-ble-core'
 import type { CoreDeadlineHandle, CoreScanSession, UnifiedBleCoreOptions } from '../core/unified-ble-core'
@@ -672,6 +672,10 @@ export class Connection<Attachment extends string, Identity extends BackendIdent
 
   maximumWriteLength(mode: WriteMode, options: PortableOperationOptions) {
     return this.connection.maximumWriteLength(mode, toPublicOperationOptions(options))
+  }
+
+  writeWithoutResponseReadiness(): Promise<ConnectionWriteReadinessWatch<Attachment>> {
+    return this.connection.writeWithoutResponseReadiness()
   }
 }
 

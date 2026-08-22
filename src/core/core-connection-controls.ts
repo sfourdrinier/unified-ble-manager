@@ -6,6 +6,7 @@ import {
   MINIMUM_ATT_MTU,
   type ConnectionMaximumWriteLengthMeasurement,
   type ConnectionPriorityRequest,
+  type ConnectionWriteReadinessWatch,
   type MtuNegotiation,
   type RssiMeasurement,
   type ConnectionPriority
@@ -37,6 +38,9 @@ export interface CoreConnectionControls<Attachment extends string, Identity exte
     mode: WriteMode,
     options: PublicOperationOptions
   ): Promise<ConnectionMaximumWriteLengthMeasurement<Attachment, string>>
+  writeWithoutResponseReadiness(
+    connection: CoreConnection<Attachment, Identity>
+  ): Promise<ConnectionWriteReadinessWatch<Attachment>>
 }
 
 export function createCoreConnectionControls<Attachment extends string, Identity extends BackendIdentity<Attachment>>(
@@ -72,6 +76,10 @@ export function createCoreConnectionControls<Attachment extends string, Identity
     ) => {
       assertReady('maximum-write-length')
       return observeCoreMaximumWriteLength(backend, operationCoordinator, connection, mode, options)
+    },
+    writeWithoutResponseReadiness: (connection: CoreConnection<Attachment, Identity>) => {
+      assertReady('write-readiness')
+      return observeCoreWriteReadiness(backend, connection)
     }
   })
 }
@@ -103,6 +111,21 @@ export async function requestCorePriority<Attachment extends string, Identity ex
     }
   })
   return requireOperationValue(result, 'unified-core.request-priority')
+}
+
+export async function observeCoreWriteReadiness<
+  Attachment extends string,
+  Identity extends BackendIdentity<Attachment>
+>(
+  backend: BleCentralBackend<Attachment, Identity>,
+  connection: CoreConnection<Attachment, Identity>
+): Promise<ConnectionWriteReadinessWatch<Attachment>> {
+  const observe = backend.connections.writeWithoutResponseReadiness
+  if (observe === undefined) {
+    throw contractError('capability.unsupported', 'connection', 'unified-core.write-readiness')
+  }
+  connection.assertCurrent()
+  return observe(connection.resource)
 }
 
 export async function readCoreRssi<Attachment extends string, Identity extends BackendIdentity<Attachment>>(

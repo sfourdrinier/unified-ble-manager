@@ -27,6 +27,7 @@ import type {
   ConnectionMaximumWriteLengthMeasurement,
   ConnectionMaximumWriteLengthRequest,
   ConnectionPriorityRequest,
+  ConnectionWriteReadinessWatch,
   MtuNegotiation,
   ReadRssiRequest,
   RequestPriorityRequest,
@@ -180,6 +181,9 @@ export interface ConnectionBackend<Attachment extends string> {
     connection: BackendConnection<Attachment, string>,
     request: RequestPriorityRequest<Attachment, Operation>
   ): BackendOperationDispatch<Attachment, ConnectionPriorityRequest<Attachment, Operation>>
+  writeWithoutResponseReadiness?(
+    connection: BackendConnection<Attachment, string>
+  ): Promise<ConnectionWriteReadinessWatch<Attachment>>
   maximumWriteLength?<Operation extends string>(
     connection: BackendConnection<Attachment, string>,
     request: ConnectionMaximumWriteLengthRequest<Attachment, Operation>

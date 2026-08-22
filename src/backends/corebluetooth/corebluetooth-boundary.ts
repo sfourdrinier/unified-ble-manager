@@ -74,6 +74,20 @@ export interface CoreBluetoothGattSnapshot {
   readonly services: readonly CoreBluetoothServiceRecord[]
 }
 
+export interface CoreBluetoothWriteReadinessSnapshot {
+  readonly nativePeerId: string
+  readonly connectionGeneration: string
+  readonly ready: boolean
+  readonly ordinal: number
+}
+
+export interface CoreBluetoothWriteReadinessEvent {
+  readonly nativePeerId: string
+  readonly connectionGeneration: string
+  readonly ready: boolean
+  readonly ordinal: number
+}
+
 export interface CoreBluetoothCharacteristicAddress {
   readonly nativePeerId: string
   readonly serviceUuid: string
@@ -106,6 +120,7 @@ export interface CoreBluetoothBoundary {
   maximumWriteValueLength?(nativePeerId: string, withResponse: boolean): Promise<number>
   requestMtu?(nativePeerId: string, requestedMtu: number): Promise<number>
   requestPriority?(nativePeerId: string, priority: ConnectionPriority): Promise<boolean>
+  canSendWriteWithoutResponse?(nativePeerId: string): Promise<CoreBluetoothWriteReadinessSnapshot>
   discover(nativePeerId: string): Promise<CoreBluetoothGattSnapshot>
   read(address: CoreBluetoothCharacteristicAddress): Promise<Uint8Array>
   write(address: CoreBluetoothCharacteristicAddress, bytes: Uint8Array, withResponse: boolean): Promise<void>
@@ -116,6 +131,7 @@ export interface CoreBluetoothBoundary {
   onDisconnect(listener: (nativePeerId: string, safeMessage: string | null) => void): () => void
   /** Emits when the peer's GATT Services Changed indication invalidates the discovered database. */
   onDatabaseChanged?(listener: (nativePeerId: string) => void): () => void
+  onWriteWithoutResponseReadiness?(listener: (event: CoreBluetoothWriteReadinessEvent) => void): () => void
   /** Android may report a terminal scanner failure after scan-start has already succeeded. */
   onScanFailure?(listener: (safeMessage: string) => void): () => void
   onAdapterState(listener: (state: CoreBluetoothAdapterSnapshot) => void): () => void

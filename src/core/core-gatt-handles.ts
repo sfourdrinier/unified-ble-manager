@@ -38,6 +38,7 @@ import type {
   ConnectionMaximumWriteLengthMeasurement,
   ConnectionPriority,
   ConnectionPriorityRequest,
+  ConnectionWriteReadinessWatch,
   MtuNegotiation,
   RssiMeasurement
 } from '../backend-contract/connection-controls'
@@ -143,6 +144,10 @@ export class CoreConnection<Attachment extends string, Identity extends BackendI
     options: PublicOperationOptions
   ): Promise<ConnectionMaximumWriteLengthMeasurement<Attachment, string>> {
     return this.controls.maximumWriteLength(this, mode, options)
+  }
+
+  writeWithoutResponseReadiness(): Promise<ConnectionWriteReadinessWatch<Attachment>> {
+    return this.controls.writeWithoutResponseReadiness(this)
   }
 
   isCurrent(): boolean {

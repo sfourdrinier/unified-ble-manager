@@ -2,6 +2,8 @@
 
 import type { OperationOptions, OperationTerminalRecord, WriteMode } from './operations'
 import type { ConnectionId, GenerationId } from './primitives'
+import type { CleanupRecord } from './errors'
+import type { BoundedAsyncStream } from './streams'
 
 /** BLE's mandatory lower ATT MTU bound, including opcode and attribute handle bytes. */
 export const MINIMUM_ATT_MTU = 23
@@ -40,6 +42,19 @@ export interface ConnectionPriorityRequest<Attachment extends string, _Operation
   readonly accepted: boolean
   readonly observedAtMonotonicMs: number
   readonly terminal: OperationTerminalRecord<Attachment, string>
+}
+
+export interface ConnectionWriteReadinessObservation<Attachment extends string> {
+  readonly connectionId: ConnectionId<Attachment, string>
+  readonly connectionGeneration: GenerationId<'connection-generation', string>
+  readonly ready: boolean
+  readonly observedAtMonotonicMs: number
+  readonly ordinal: number
+}
+
+export interface ConnectionWriteReadinessWatch<Attachment extends string> {
+  readonly events: BoundedAsyncStream<ConnectionWriteReadinessObservation<Attachment>>
+  close(): Promise<CleanupRecord>
 }
 
 /** Backend result for the connection-level write-length boundary. */

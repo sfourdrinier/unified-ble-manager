@@ -1,5 +1,7 @@
 const { createPublicBleManager } = require('../src/public/ble-manager')
 const { createReactNativeConnectionControlFeatureRegistry } = require('../src/backends/reactnative/react-native-connection-control-features')
+const { CoreBoundedStream } = require('../src/core/bounded-stream')
+const { capacity } = require('../src/backend-contract/primitives')
 
 function terminal() {
   return { correlation: 'operation-1', outcome: 'succeeded', cause: null }
@@ -33,7 +35,7 @@ function fakeGattDatabase(generation) {
   }
 }
 
-function fakeInternalManager() {
+function fakeInternalManager({ readinessEnabled = false } = {}) {
   const descriptors = new Map([
     ['connection:direct', capability('supported')],
     ['connection:rssi', capability('limited')],
@@ -41,12 +43,21 @@ function fakeInternalManager() {
     ['connection:priority', capability('limited')],
     ['connection:effective-mtu', capability('unsupported')],
     ['gatt:maximum-write-length', capability('limited')],
-    ['connection:parameters', capability('unavailable')]
+    ['connection:parameters', capability('unavailable')],
+    ...(readinessEnabled ? [['gatt:write-without-response-readiness', capability('limited')]] : [])
   ])
   let discoveryGeneration = 1
   const rediscoveryReasons = []
-    const maximumWriteLengthRequests = []
-    const priorityRequests = []
+  const maximumWriteLengthRequests = []
+  const priorityRequests = []
+  const readiness = new CoreBoundedStream(
+    { itemCapacity: capacity(8), byteCapacity: capacity(4096), reservedControlCapacity: capacity(1) },
+    'drop-oldest'
+  )
+  const readinessClose = jest.fn(async () => {
+    readiness.closeWithReason('owner-released')
+    return { state: 'released', failures: [] }
+  })
   const internalConnection = {
     connectionGeneration: 'generation-1',
     events: { [Symbol.asyncIterator]: () => ({ next: async () => ({ done: true, value: undefined }), return: async () => ({ done: true, value: undefined }) }) },
@@ -77,6 +88,23 @@ function fakeInternalManager() {
         terminal: terminal()
       }
     },
+    ...(readinessEnabled
+      ? {
+          writeWithoutResponseReadiness: async () => {
+            readiness.emit(
+              {
+                connectionId: 'connection-1',
+                connectionGeneration: 'generation-1',
+                ready: true,
+                observedAtMonotonicMs: 8000,
+                ordinal: 1
+              },
+              128
+            )
+            return { events: readiness, close: readinessClose }
+          }
+        }
+      : {}),
     discover: async () => fakeGattDatabase(`database-${discoveryGeneration++}`),
     rediscoverGatt: async (_options, reason) => {
       rediscoveryReasons.push(reason)
@@ -97,7 +125,9 @@ function fakeInternalManager() {
     destroy: async () => ({ state: 'released', failures: [] }),
     rediscoveryReasons,
     maximumWriteLengthRequests,
-    priorityRequests
+    priorityRequests,
+    readiness,
+    readinessClose
   }
 }
 
@@ -187,5 +217,39 @@ describe('PR8A public link controls', () => {
       'connection:rssi',
       'connection:request-mtu'
     ])
+  })
+
+  test('delivers a current readiness snapshot, ordered edge, and owned cleanup', async () => {
+    const internal = fakeInternalManager({ readinessEnabled: true })
+    const manager = await createPublicBleManager(internal, () => 1234)
+    const connection = await manager.connect('peer-1')
+    const iterator = connection.controls.writeReadiness('without-response')[Symbol.asyncIterator]()
+
+    await expect(iterator.next()).resolves.toMatchObject({
+      done: false,
+      value: {
+        state: 'measured',
+        mode: 'without-response',
+        ready: true,
+        connectionGeneration: 'generation-1',
+        observedAtMonotonicMs: 8000
+      }
+    })
+    internal.readiness.emit(
+      {
+        connectionId: 'connection-1',
+        connectionGeneration: 'generation-1',
+        ready: false,
+        observedAtMonotonicMs: 8001,
+        ordinal: 2
+      },
+      128
+    )
+    await expect(iterator.next()).resolves.toMatchObject({
+      done: false,
+      value: { ready: false, observedAtMonotonicMs: 8001 }
+    })
+    await iterator.return()
+    expect(internal.readinessClose).toHaveBeenCalledTimes(1)
   })
 })

@@ -60,6 +60,22 @@ export function createCoreBluetoothRuntimeFeatureRegistry(
   if (!hasRegistration(registrations, BUILT_IN_FEATURE_IDS.maximumWriteLength)) {
     registrations.push(createMaximumWriteLengthRegistration(options))
   }
+  if (
+    !hasRegistration(registrations, BUILT_IN_FEATURE_IDS.writeWithoutResponseReadiness) &&
+    options.boundary.canSendWriteWithoutResponse !== undefined &&
+    options.boundary.onWriteWithoutResponseReadiness !== undefined
+  ) {
+    registrations.push(
+      createBackendOperationCapabilityRegistration({
+        id: BUILT_IN_FEATURE_IDS.writeWithoutResponseReadiness,
+        implementationVersion: options.implementationVersion,
+        sourceDigest: 'corebluetooth-write-without-response-readiness-v1',
+        tckSuiteId: 'connection-controls',
+        requiredScenarioIds: ['connection.rssi-and-att-mtu-capability-contract'],
+        operation: 'connection:write-without-response-readiness.invoke-without-connection'
+      })
+    )
+  }
   return createFeatureRegistry(Object.freeze(registrations))
 }
 

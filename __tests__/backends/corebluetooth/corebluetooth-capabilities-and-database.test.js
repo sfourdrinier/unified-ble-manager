@@ -124,6 +124,24 @@ async function flushMicrotasks() {
 }
 
 describe('CoreBluetooth runtime capabilities and database-change semantics', () => {
+  test('advertises write-readiness only when the boundary exposes probe and edge callback', async () => {
+    const { backend } = await backendFixture(currentBoundary => {
+      currentBoundary.canSendWriteWithoutResponse = jest.fn(async nativePeerId => ({
+        nativePeerId,
+        connectionGeneration: '1',
+        ready: true,
+        ordinal: 1
+      }))
+      currentBoundary.onWriteWithoutResponseReadiness = jest.fn(() => () => undefined)
+    })
+    expect(backend.features.registrations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: 'gatt:write-without-response-readiness', state: 'limited' })
+      ])
+    )
+    await backend.destroy()
+  })
+
   test('preserves every rich CoreBluetooth advertisement field as detached owned bytes', async () => {
     const { backend, boundary } = await backendFixture()
     const rawRecord = new Uint8Array([1, 2, 3])

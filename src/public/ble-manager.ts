@@ -44,7 +44,8 @@ import type { Limitation } from '../backend-contract/capabilities'
 import {
   MAXIMUM_REQUESTED_ATT_MTU,
   MINIMUM_ATT_MTU,
-  type ConnectionPriority
+  type ConnectionPriority,
+  type ConnectionWriteReadinessWatch
 } from '../backend-contract/connection-controls'
 
 export type { ConnectionPriority } from '../backend-contract/connection-controls'
@@ -358,6 +359,7 @@ interface OptionalInternalControlConnection {
     readonly platformPduBytes: number | null
     readonly observedAtMonotonicMs?: number
   }>
+  readonly writeWithoutResponseReadiness?: () => Promise<ConnectionWriteReadinessWatch<string>>
 }
 
 type PublicControlConnection = InternalPublicConnection & OptionalInternalControlConnection
@@ -402,6 +404,38 @@ async function runPublicControl<Value>(action: () => Promise<Value>): Promise<Va
 
 function unsupportedControlStream<Value>(operation: string): AsyncIterable<Value> {
   return new UnsupportedControlStream(operation)
+}
+
+function publicWriteReadinessStream(
+  connection: PublicControlConnection,
+  generation: string,
+  descriptor: ReturnType<InternalBleManager<string, BackendIdentity<string>>['capability']>
+): AsyncIterable<WriteReadinessEvent> {
+  return (async function* (): AsyncGenerator<WriteReadinessEvent> {
+    const observe = connection.writeWithoutResponseReadiness
+    if (observe === undefined) {
+      throw contractError('capability.unsupported', 'connection', 'public-connection.controls.write-readiness')
+    }
+    const watch = await observe()
+    try {
+      for await (const item of watch.events) {
+        if (item.kind === 'value') {
+          yield Object.freeze({
+            ...controlMetadata(generation, item.value.observedAtMonotonicMs, descriptor, 'backend-observation'),
+            state: 'measured' as const,
+            mode: 'without-response' as const,
+            ready: item.value.ready
+          })
+        } else if (item.kind === 'overflow') {
+          throw contractError('stream.overflow', 'connection', 'public-connection.controls.write-readiness')
+        } else if (item.kind === 'terminal') {
+          return
+        }
+      }
+    } finally {
+      await watch.close()
+    }
+  })()
 }
 
 class UnsupportedControlStream<Value> implements AsyncIterable<Value> {
@@ -567,8 +601,18 @@ function createPublicConnectionControls(
       unsupportedControlStream<ConnectionParametersObservation>('public-connection.controls.parameter-events'),
     requestSubrate: (_mode: SubrateMode, _options: OperationOptions = {}) =>
       unsupportedPromise<SubrateResult>('connection:subrate', 'public-connection.controls.request-subrate'),
-    writeReadiness: (_mode: 'without-response') =>
-      unsupportedControlStream<WriteReadinessEvent>('public-connection.controls.write-readiness')
+    writeReadiness: (_mode: 'without-response') => {
+      const descriptor = internal.capability('gatt:write-without-response-readiness')
+      if (
+        descriptor === null ||
+        descriptor.state === 'unsupported' ||
+        descriptor.state === 'unavailable' ||
+        connection.writeWithoutResponseReadiness === undefined
+      ) {
+        return unsupportedControlStream<WriteReadinessEvent>('public-connection.controls.write-readiness')
+      }
+      return publicWriteReadinessStream(connection, generation, descriptor)
+    }
   })
 }
 
