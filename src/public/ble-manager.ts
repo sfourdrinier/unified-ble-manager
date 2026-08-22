@@ -512,8 +512,9 @@ function createPublicConnectionControls(
       })
     })
 
-  const unsupportedPromise = <Value>(operation: string): Promise<Value> =>
+  const unsupportedPromise = <Value>(id: `${string}:${string}`, operation: string): Promise<Value> =>
     runPublicControl(async () => {
+      requireControlCapability(internal, id, operation)
       throw contractError('capability.unsupported', 'connection', operation)
     })
 
@@ -523,16 +524,20 @@ function createPublicConnectionControls(
     requestMtu,
     maximumWriteLength,
     requestPriority: (_priority: ConnectionPriority, _options: OperationOptions = {}) =>
-      unsupportedPromise<ConnectionPriorityResult>('public-connection.controls.request-priority'),
+      unsupportedPromise<ConnectionPriorityResult>(
+        'connection:priority',
+        'public-connection.controls.request-priority'
+      ),
     readPhy: (_options: OperationOptions = {}) =>
-      unsupportedPromise<PhyObservation>('public-connection.controls.read-phy'),
+      unsupportedPromise<PhyObservation>('connection:phy', 'public-connection.controls.read-phy'),
     requestPhy: (_preference: PhyPreference, _options: OperationOptions = {}) =>
-      unsupportedPromise<PhyUpdateResult>('public-connection.controls.request-phy'),
-    parameters: () => unsupportedPromise<ConnectionParametersObservation>('public-connection.controls.parameters'),
+      unsupportedPromise<PhyUpdateResult>('connection:phy', 'public-connection.controls.request-phy'),
+    parameters: () =>
+      unsupportedPromise<ConnectionParametersObservation>('connection:parameters', 'public-connection.controls.parameters'),
     parameterEvents: () =>
       unsupportedControlStream<ConnectionParametersObservation>('public-connection.controls.parameter-events'),
     requestSubrate: (_mode: SubrateMode, _options: OperationOptions = {}) =>
-      unsupportedPromise<SubrateResult>('public-connection.controls.request-subrate'),
+      unsupportedPromise<SubrateResult>('connection:subrate', 'public-connection.controls.request-subrate'),
     writeReadiness: (_mode: 'without-response') =>
       unsupportedControlStream<WriteReadinessEvent>('public-connection.controls.write-readiness')
   })

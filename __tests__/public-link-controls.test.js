@@ -39,7 +39,8 @@ function fakeInternalManager() {
     ['connection:rssi', capability('limited')],
     ['connection:request-mtu', capability('limited')],
     ['connection:effective-mtu', capability('unsupported')],
-    ['gatt:maximum-write-length', capability('limited')]
+    ['gatt:maximum-write-length', capability('limited')],
+    ['connection:parameters', capability('unavailable')]
   ])
   let discoveryGeneration = 1
   const rediscoveryReasons = []
@@ -141,6 +142,7 @@ describe('PR8A public link controls', () => {
 
     await expect(connection.controls.effectiveMtu()).rejects.toMatchObject({ code: 'capability.unsupported' })
     await expect(connection.controls.requestPriority('high-throughput')).rejects.toMatchObject({ code: 'capability.unsupported' })
+    await expect(connection.controls.parameters()).rejects.toMatchObject({ code: 'capability.unavailable' })
 
     await connection.discover()
     const rediscovered = await connection.rediscoverGatt({ reason: 'manual' })
