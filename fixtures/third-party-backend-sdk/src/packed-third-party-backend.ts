@@ -98,6 +98,7 @@ class PackedThirdPartyBackend implements ExternalBackend {
   readonly scanner
   readonly connections
   readonly gatt
+  readonly security
   readonly features = packedThirdPartyFeatures
 
   constructor(private readonly backend: ExternalBackend) {
@@ -105,6 +106,7 @@ class PackedThirdPartyBackend implements ExternalBackend {
     this.scanner = backend.scanner
     this.connections = backend.connections
     this.gatt = backend.gatt
+    this.security = backend.security
   }
 
   get identity(): ExternalIdentity {
