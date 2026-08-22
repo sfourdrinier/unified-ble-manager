@@ -231,6 +231,27 @@ describe('React Native Android security protocol boundary', () => {
     security.close()
   })
 
+  test('rejects a concurrent pair attempt for the same peer with ownership.denied', async () => {
+    let resolveNative
+    const pair = jest.fn(
+      () =>
+        new Promise(resolve => {
+          resolveNative = resolve
+        })
+    )
+    const security = new ReactNativeAndroidSecurityBackend(securityAdapter({ pair }), () => 20)
+    const opts = { signal: null, deadline: null, transport: 'auto', protection: 'system-default', ceremony: 'system' }
+
+    const first = security.pair(peerId, opts)
+    await expect(security.pair(peerId, opts)).rejects.toMatchObject({
+      normalized: { code: 'ownership.denied' }
+    })
+
+    resolveNative({ outcome: 'paired', state: securityState('bonded') })
+    await expect(first).resolves.toMatchObject({ outcome: 'paired' })
+    security.close()
+  })
+
   test('settles caller cancellation promptly while retaining peer ownership until native pairing settles', async () => {
     let resolveNative
     let firstPair = true

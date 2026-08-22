@@ -72,8 +72,9 @@ export class ReactNativeAndroidSecurityBackend implements SecurityBackend {
     if (options.deadline !== null && options.deadline <= this.now()) {
       throw contractError('operation.timed-out', 'core', 'android.security.pair')
     }
-    if (!this.active.add(peerId))
+    if (this.active.has(peerId))
       throw contractError('ownership.denied', 'platform', 'android.security.pair.arbitration')
+    this.active.add(peerId)
     let publicSettled = false
     let abortListener: (() => void) | null = null
     let deadlineTimer: ReturnType<typeof setTimeout> | null = null
