@@ -11,6 +11,9 @@ export type CoreOperationOutcome = OperationTerminalOutcome
 
 export type CoreCommitState = 'not-applicable' | 'confirmed' | 'unknown'
 
+/** Maximum number of waiting operations retained by one connection lane by default. */
+const DEFAULT_MAXIMUM_QUEUED_OPERATIONS_PER_CONNECTION = 8
+
 export interface CoreOperationSuccess<Attachment extends string, Value> {
   readonly correlation: OperationCorrelation<Attachment, string>
   readonly outcome: 'succeeded'
@@ -74,6 +77,12 @@ export interface CoreOperationCoordinatorOptions<Attachment extends string> {
   readonly createCorrelation: () => OperationCorrelation<Attachment, string>
   readonly resourceLedger: ResourceLedger
   readonly trace: CoreTraceRecorder
+  /**
+   * Finite per-connection waiting capacity. The active operation is not part of
+   * this bound; an overflow is rejected before operation state or payload
+   * ownership is allocated.
+   */
+  readonly maximumQueuedOperationsPerConnection?: number
 }
 
 /**
@@ -89,8 +98,16 @@ export class CoreOperationCoordinator<Attachment extends string> {
   private nextTraceLabel = 1
   private quarantinedOperations = 0
   private readonly quarantineDrainWaiters = new Set<() => void>()
+  private readonly maximumQueuedOperationsPerConnection: number
 
-  constructor(private readonly options: CoreOperationCoordinatorOptions<Attachment>) {}
+  constructor(private readonly options: CoreOperationCoordinatorOptions<Attachment>) {
+    const maximumQueuedOperationsPerConnection =
+      options.maximumQueuedOperationsPerConnection ?? DEFAULT_MAXIMUM_QUEUED_OPERATIONS_PER_CONNECTION
+    if (!Number.isSafeInteger(maximumQueuedOperationsPerConnection) || maximumQueuedOperationsPerConnection < 1) {
+      throw contractError('argument.invalid', 'core', 'operation-coordinator.maximum-queued-operations-per-connection')
+    }
+    this.maximumQueuedOperationsPerConnection = maximumQueuedOperationsPerConnection
+  }
 
   run<Value>(execution: CoreOperationExecution<Attachment, Value>): Promise<CoreOperationResult<Attachment, Value>> {
     return this.runWithAdmission(execution, false)
@@ -123,18 +140,18 @@ export class CoreOperationCoordinator<Attachment extends string> {
         this.failure(correlation, 'timed-out', execution.mayCommit, 'operation-coordinator.pre-deadline')
       )
     }
+    const retainedPayloadBytes = execution.retainedPayloadBytes ?? 0
+    if (!Number.isSafeInteger(retainedPayloadBytes) || retainedPayloadBytes < 0) {
+      return Promise.resolve(
+        this.failure(correlation, 'failed', execution.mayCommit, 'operation-coordinator.invalid-retained-payload-bytes')
+      )
+    }
+    if (execution.queueKey !== null && !this.canAdmitQueuedOperation(execution.queueKey)) {
+      return Promise.resolve(
+        this.failure(correlation, 'failed', execution.mayCommit, 'operation-coordinator.queue-capacity', 'stream.quota')
+      )
+    }
     return new Promise(resolve => {
-      const retainedPayloadBytes = execution.retainedPayloadBytes ?? 0
-      if (!Number.isSafeInteger(retainedPayloadBytes) || retainedPayloadBytes < 0) {
-        return resolve(
-          this.failure(
-            correlation,
-            'failed',
-            execution.mayCommit,
-            'operation-coordinator.invalid-retained-payload-bytes'
-          )
-        )
-      }
       const traceLabel = `operation-${this.nextTraceLabel}`
       this.nextTraceLabel += 1
       const operation: PendingOperation<Attachment, Value> = {
@@ -222,6 +239,20 @@ export class CoreOperationCoordinator<Attachment extends string> {
       return
     }
     head.beginDispatch()
+  }
+
+  private canAdmitQueuedOperation(queueKey: string): boolean {
+    const queue = this.queues.get(queueKey)
+    if (queue === undefined) {
+      return true
+    }
+    let queued = 0
+    for (const operation of queue) {
+      if (operation.phase === 'queued') {
+        queued += 1
+      }
+    }
+    return queued < this.maximumQueuedOperationsPerConnection
   }
 
   private dispatch<Value>(operation: PendingOperation<Attachment, Value>): void {
@@ -485,13 +516,14 @@ export class CoreOperationCoordinator<Attachment extends string> {
     correlation: OperationCorrelation<Attachment, string>,
     outcome: Exclude<CoreOperationOutcome, 'succeeded'>,
     mayCommit: boolean,
-    operation: string
+    operation: string,
+    code: NormalizedBleError['code'] = this.codeForOutcome(outcome)
   ): CoreOperationFailure<Attachment> {
     return {
       correlation,
       outcome,
       value: null,
-      error: contractError(this.codeForOutcome(outcome), 'core', operation).normalized,
+      error: contractError(code, 'core', operation).normalized,
       commitState: mayCommit && outcome !== 'failed' ? 'unknown' : 'not-applicable'
     }
   }

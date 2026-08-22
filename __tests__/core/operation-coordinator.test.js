@@ -15,7 +15,7 @@ function deferred() {
   return { promise, resolve, reject }
 }
 
-function createCoordinator() {
+function createCoordinator(maximumQueuedOperationsPerConnection) {
   const ledger = new ResourceLedger()
   const trace = new CoreTraceRecorder(32, 4096)
   let nextCorrelation = 1
@@ -27,14 +27,21 @@ function createCoordinator() {
       return id
     },
     resourceLedger: ledger,
-    trace
+    trace,
+    maximumQueuedOperationsPerConnection
   })
   return { coordinator, ledger, trace }
 }
 
-function operation(dispatch, signal = null, mayCommit = false, retainedPayloadBytes = 0) {
+function operation(
+  dispatch,
+  signal = null,
+  mayCommit = false,
+  retainedPayloadBytes = 0,
+  queueKey = 'connection-1'
+) {
   return {
-    queueKey: 'connection-1',
+    queueKey,
     options: { signal, deadline: null },
     mayCommit,
     retainedPayloadBytes,
@@ -46,6 +53,119 @@ function operation(dispatch, signal = null, mayCommit = false, retainedPayloadBy
 }
 
 describe('CoreOperationCoordinator', () => {
+  test('rejects queued overflow with one quota result without dispatching or retaining its payload', async () => {
+    const { coordinator, ledger } = createCoordinator(1)
+    const first = deferred()
+    const started = []
+    const firstResult = coordinator.run(
+      operation(async () => {
+        started.push('first')
+        return first.promise
+      })
+    )
+    const queuedResult = coordinator.run(
+      operation(async () => {
+        started.push('queued')
+        return 'queued'
+      }, null, false, 5)
+    )
+    let overflowSettlements = 0
+    let overflowSettlement = null
+    const overflowResult = coordinator.run(
+      operation(async () => {
+        started.push('overflow')
+        return 'must-not-dispatch'
+      }, null, false, 11)
+    )
+    void overflowResult.then(result => {
+      overflowSettlements += 1
+      overflowSettlement = result
+    })
+
+    await Promise.resolve()
+    expect(overflowSettlements).toBe(1)
+    expect(overflowSettlement).toMatchObject({
+      outcome: 'failed',
+      value: null,
+      error: {
+        code: 'stream.quota',
+        domain: 'core',
+        operation: 'operation-coordinator.queue-capacity'
+      }
+    })
+    expect(started).toEqual(['first'])
+    expect(Number(ledger.current('retainedByteBuffers'))).toBe(5)
+    expect(coordinator.activeCounts()).toEqual({ queued: 1, dispatched: 1, quarantined: 0 })
+
+    first.resolve('first-value')
+    await expect(firstResult).resolves.toMatchObject({ outcome: 'succeeded' })
+    await expect(queuedResult).resolves.toMatchObject({ outcome: 'succeeded', value: 'queued' })
+    expect(overflowSettlements).toBe(1)
+    expect(started).toEqual(['first', 'queued'])
+    expect(ledger.isZero()).toBe(true)
+  })
+
+  test('preserves pre-abort and deadline admission precedence when the connection queue is full', async () => {
+    const { coordinator, ledger } = createCoordinator(1)
+    const first = deferred()
+    const firstResult = coordinator.run(operation(() => first.promise))
+    const queuedResult = coordinator.run(operation(async () => 'queued', null, false, 3))
+    const abortController = new AbortController()
+    abortController.abort()
+
+    await expect(
+      coordinator.run(operation(async () => 'not-dispatched', abortController.signal, false, 7))
+    ).resolves.toMatchObject({ outcome: 'aborted' })
+    await expect(
+      coordinator.run({
+        ...operation(async () => 'not-dispatched', null, false, 7),
+        options: { signal: null, deadline: deadline(10) }
+      })
+    ).resolves.toMatchObject({ outcome: 'timed-out' })
+    expect(Number(ledger.current('retainedByteBuffers'))).toBe(3)
+    expect(coordinator.activeCounts()).toEqual({ queued: 1, dispatched: 1, quarantined: 0 })
+
+    first.resolve('first-value')
+    await expect(firstResult).resolves.toMatchObject({ outcome: 'succeeded' })
+    await expect(queuedResult).resolves.toMatchObject({ outcome: 'succeeded', value: 'queued' })
+    expect(ledger.isZero()).toBe(true)
+  })
+
+  test('keeps each connection FIFO while admitting different connections concurrently', async () => {
+    const { coordinator, ledger } = createCoordinator(1)
+    const firstConnection = deferred()
+    const secondConnection = deferred()
+    const started = []
+    const firstResult = coordinator.run(
+      operation(async () => {
+        started.push('connection-1:first')
+        return firstConnection.promise
+      })
+    )
+    const queuedResult = coordinator.run(
+      operation(async () => {
+        started.push('connection-1:queued')
+        return 'queued-value'
+      })
+    )
+    const otherResult = coordinator.run(
+      operation(async () => {
+        started.push('connection-2:first')
+        return secondConnection.promise
+      }, null, false, 0, 'connection-2')
+    )
+
+    expect(started).toEqual(['connection-1:first', 'connection-2:first'])
+    firstConnection.resolve('first-value')
+    await expect(firstResult).resolves.toMatchObject({ outcome: 'succeeded' })
+    await expect(queuedResult).resolves.toMatchObject({ outcome: 'succeeded', value: 'queued-value' })
+    expect(started).toEqual(['connection-1:first', 'connection-2:first', 'connection-1:queued'])
+
+    secondConnection.resolve('other-value')
+    await expect(otherResult).resolves.toMatchObject({ outcome: 'succeeded', value: 'other-value' })
+    expect(ledger.isZero()).toBe(true)
+  })
+
   test('keeps a cancelled dispatched operation at the FIFO head until its late acknowledgement arrives', async () => {
     const { coordinator, ledger, trace } = createCoordinator()
     const first = deferred()
