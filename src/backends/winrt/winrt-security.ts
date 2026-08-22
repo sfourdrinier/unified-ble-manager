@@ -120,9 +120,7 @@ export class WinRtSecurityBackend implements SecurityBackend {
       return Promise.reject(contractError('ownership.denied', 'platform', 'winrt.security.pair.arbitration'))
     }
     const nativePeerId = this.nativePeerIdForPeerId(peerId, 'winrt.security.pair')
-    const operation = this.dispatcher.dispatch(options, 'winrt.security.pair', () =>
-      this.boundary.pair(nativePeerId)
-    )
+    const operation = this.dispatcher.dispatch(options, 'winrt.security.pair', () => this.boundary.pair(nativePeerId))
     this.activePairings.set(peerId, { operation, nativePeerId })
     const settle = () => {
       const active = this.activePairings.get(peerId)
@@ -152,20 +150,16 @@ export class WinRtSecurityBackend implements SecurityBackend {
     if (active === undefined) return { outcome: 'not-pairing' }
     const dispatch = this.dispatcher.dispatch(_options, 'winrt.security.cancel-pairing', () => {
       const nativeCancellation = this.boundary.cancelPairing(active.nativePeerId)
-      const completion = Promise.all([
-        active.operation.requestCancellation(),
-        nativeCancellation.completion
-      ]).then(() => undefined)
+      const completion = Promise.all([active.operation.requestCancellation(), nativeCancellation.completion]).then(
+        () => undefined
+      )
       return {
         completion,
         cancel: async () => {
           await nativeCancellation.cancel()
           return 'cancellation-requested' as const
         },
-        physicalCompletion: Promise.all([
-          completion,
-          active.operation.physicalCompletion
-        ]).then(() => undefined)
+        physicalCompletion: Promise.all([completion, active.operation.physicalCompletion]).then(() => undefined)
       }
     })
     await dispatch.completion
