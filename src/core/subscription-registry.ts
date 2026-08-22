@@ -286,6 +286,7 @@ export class SubscriptionRegistry<Attachment extends string, Identity extends Ba
   ): Promise<void> {
     const result = await this.runtime.operationCoordinator.run({
       queueKey: physical.queueKey,
+      fairnessKey: 'subscription',
       options,
       mayCommit: false,
       dispatch: correlation => {
@@ -482,6 +483,7 @@ export class SubscriptionRegistry<Attachment extends string, Identity extends Ba
     const options: PublicOperationOptions = { signal: null, deadline: null }
     const result = await this.runtime.operationCoordinator.runCleanup({
       queueKey: physical.queueKey,
+      fairnessKey: 'subscription',
       options,
       mayCommit: false,
       dispatch: correlation => this.unsubscribeDispatch(backendSubscription, options, correlation)
@@ -533,6 +535,7 @@ export class SubscriptionRegistry<Attachment extends string, Identity extends Ba
     const options: PublicOperationOptions = { signal: null, deadline: null }
     const result = await this.runtime.operationCoordinator.runCleanup({
       queueKey: physical.queueKey,
+      fairnessKey: 'subscription',
       options,
       mayCommit: false,
       dispatch: correlation => this.unsubscribeDispatch(backendSubscription, options, correlation)

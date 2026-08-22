@@ -18,6 +18,7 @@ import type {
   CharacteristicProperties,
   DescriptorPath,
   GattAccessRequirements,
+  GattDatabaseChangedEvent,
   GattDescriptorProperties
 } from '../backend-contract/gatt'
 import type { HostNeutralBackendIdentity } from '../backend-contract/identity'
@@ -482,7 +483,11 @@ export class ElectronMainBleRouter {
       requiredString(payload, 'connectionHandle'),
       'connection'
     )
-    const database = await connection.discover(operationOptions(payload, controller))
+    const reason = optionalRediscoveryReason(payload)
+    const database =
+      reason === null
+        ? await connection.discover(operationOptions(payload, controller))
+        : await connection.rediscoverGatt(operationOptions(payload, controller), reason)
     const snapshot = await database.snapshot()
     const characteristics = new Map<string, MainCharacteristicPath>()
     const descriptors = new Map<string, MainDescriptorPath>()
@@ -544,7 +549,7 @@ export class ElectronMainBleRouter {
       characteristics,
       descriptors
     })
-    return Object.freeze({
+    const response = Object.freeze({
       schemaVersion: 2,
       handle,
       databaseId: String(database.path?.databaseId ?? ''),
@@ -553,6 +558,7 @@ export class ElectronMainBleRouter {
       characteristics: Object.freeze(serializedCharacteristics),
       descriptors: Object.freeze(serializedDescriptors)
     })
+    return reason === null ? response : Object.freeze({ ...response, rediscoveryReason: reason })
   }
 
   private async read(
@@ -1299,6 +1305,19 @@ function isDestructiveCleanupCommand(command: string): boolean {
 
 function operationOptions(payload: SerializableRecord, controller: AbortController) {
   return Object.freeze({ signal: controller.signal, deadline: deadlineFromPayload(payload) })
+}
+
+function optionalRediscoveryReason(
+  payload: SerializableRecord
+): Extract<GattDatabaseChangedEvent['reason'], 'service-changed' | 'manual-rediscovery'> | null {
+  const value = payload.rediscoveryReason
+  if (value === undefined) {
+    return null
+  }
+  if (value !== 'service-changed' && value !== 'manual-rediscovery') {
+    throw contractError('protocol.malformed', 'ipc', 'electron-main-router.rediscovery-reason')
+  }
+  return value
 }
 
 function requiredWriteMode(payload: SerializableRecord): 'with-response' | 'without-response' {

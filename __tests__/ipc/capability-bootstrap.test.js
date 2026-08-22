@@ -1,4 +1,5 @@
 const { createPublicBleCapabilities } = require('../../src/public/capabilities')
+const { projectRemoteCapabilities } = require('../../src/ipc/manager')
 
 function descriptor(id, scenario) {
   const range = {
@@ -31,6 +32,21 @@ function descriptor(id, scenario) {
 }
 
 describe('trusted IPC capability bootstrap', () => {
+  test('projects renderer-only control seams to unsupported until IPC routes them', () => {
+    const source = descriptor('gatt:write-without-response-readiness', 'connection-controls')
+    const projected = projectRemoteCapabilities({
+      schemaVersion: 2,
+      backendGeneration: 'backend-generation-1',
+      descriptors: [source]
+    })
+
+    expect(projected.descriptors[0]).toMatchObject({
+      id: source.id,
+      state: 'unsupported',
+      evidence: { sourceDigest: 'ipc-renderer-control-projection-v1' }
+    })
+  })
+
   test('projects host descriptors without changing evidence or TCK data', () => {
     const source = descriptor('gatt:indications', 'gatt.reads-descriptors-write-policy-and-dispatched-cancellation')
     const capabilities = createPublicBleCapabilities(

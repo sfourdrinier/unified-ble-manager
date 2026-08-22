@@ -652,6 +652,120 @@ returns an evidence-qualified result.
 | MTU | Negotiation exposes requested and effective values plus directional payload maxima. An implementation cannot infer peer acceptance from a request alone. |
 | RSSI | Sampling returns signed value, unit, monotonic receipt timestamp, source timestamp when supplied, and availability. It has no assumed sampling rate. |
 
+### 17.1 Connection controls and GATT recovery
+
+The public connection surface exposes advanced behavior through one
+generation-bound `connection.controls` façade. The façade methods and their
+canonical runtime capability IDs are:
+
+| Public control | Capability ID | Result semantics |
+| --- | --- | --- |
+| `controls.readRssi()` | `connection:rssi` | A current signed measurement when the backend can perform the operation. |
+| `controls.effectiveMtu()` | `connection:effective-mtu` | An observation, never a request. |
+| `controls.requestMtu()` | `connection:request-mtu` | A request result plus an optional effective-MTU observation. |
+| `controls.requestPriority()` | `connection:priority` | Request accepted/rejected; it does not guarantee final parameters. |
+| `controls.parameters()` / `parameterEvents()` | `connection:parameters` | Measured connection-parameter observations. |
+| `controls.readPhy()` / `requestPhy()` | `connection:phy` | Separate PHY observation and preference-request results. |
+| `controls.requestSubrate()` | `connection:subrate` | Request result plus an observation only when measurable. |
+| `controls.maximumWriteLength(mode)` | `gatt:maximum-write-length` | Authoritative mode-specific write limit for that connection. |
+| `controls.writeReadiness('without-response')` | `gatt:write-without-response-readiness` | Bounded readiness snapshots/events, when the backend advertises the feature. |
+
+Every control observation MUST carry typed metadata: `state`,
+`connectionGeneration`, `observedAtMonotonicMs`, `source`, `authority`, and
+`limitations`. Its measured values MUST distinguish ATT MTU, platform PDU
+size, and characteristic write length. An observation is bound to the
+connection generation that produced it; reconnecting or invalidating that
+generation does not make the old observation current again.
+
+A request and an observation are different facts. `accepted` means that the
+backend accepted the request for dispatch or negotiation; it MUST NOT be
+presented as proof that the controller or peer selected the requested priority,
+PHY, subrate, or MTU. The returned observation or a parameter/PHY event is the
+source for measured state. A `limited` capability may proceed only within its
+named limitation and MUST carry that limitation in its result. An
+`unsupported` capability MUST reject with `capability.unsupported`; an
+`unavailable` capability MUST reject with `capability.unavailable`. No control
+may silently no-op or report success because a façade method exists.
+
+Write-without-response readiness is `unsupported` until a backend advertises
+`gatt:write-without-response-readiness`. When advertised, the backend MUST
+provide a bounded stream with a current snapshot for a late subscriber when
+that snapshot is measurable; a missed edge event alone is insufficient. A
+readiness event does not prove that a later payload was retained. Callers use
+the mode-specific maximum write length and the write result's exact commit or
+unknown state.
+
+`GattCharacteristic.writeWhenReady(value, options)` is a bounded convenience
+operation for write-without-response only. Its public options are exactly
+`signal` and `timeoutMs`. It rejects `capability.unsupported` when the
+capability is absent or unsupported and preserves `capability.unavailable`
+when the instantiated backend reports temporary unavailability. The
+coordinator copies the caller's bytes before asynchronous retention, waits at
+the connection FIFO head, and rechecks the generation-bound database path and
+the readiness stream at the native dispatch boundary. Abort, deadline,
+service change, disconnect, or destroy before native submission releases that
+copy, closes the readiness watch exactly once, and dispatches no write. A
+readiness close failure remains a `CleanupFailure` in manager/connection
+cleanup instead of being reduced to a trace-only success. Cancellation after
+native submission retains the ordinary uncertain commit semantics. The helper
+never replays a write.
+
+The direct CoreBluetooth Node/Electron-main backend advertises this capability
+only when both `CBPeripheral.canSendWriteWithoutResponse` and
+`peripheralIsReady(toSendWriteWithoutResponse:)` are bridged. Its snapshots and
+edges carry a native ordinal and native connection generation, which the
+backend maps to the opaque public connection generation. The bounded native
+ingress retains the newest state in a source's slot and refuses to evict a
+different source's newest state when saturated; a new readiness watch always
+starts with a fresh authoritative probe. React Native Apple,
+Android, Web, BlueZ, WinRT, Tauri, and Electron renderer IPC remain explicitly
+unsupported until they expose equivalent platform-authoritative flow control.
+
+### 17.2 Current PR8 host matrix
+
+This is the current first-party implementation and evidence snapshot, not a
+static host capability matrix. The instantiated backend descriptor remains the
+runtime authority, and `limited` / deterministic means that deterministic
+contract and boundary coverage exists while hosted and physical-radio
+qualification remains open.
+
+| Host/backend | MTU request / effective observation | PHY read/request | Write-without-response readiness | Parameters / subrate / `writeWhenReady` |
+| --- | --- | --- | --- | --- |
+| React Native Android | `limited` / deterministic. `effectiveMtu()` reads only the generation-bound value recorded by a successful `onMtuChanged`; it is unavailable before measurement. | `limited` / deterministic. `readPhy()` is the `onPhyRead` callback result. `requestPhy()` separates callback-derived `accepted` from its optional `onPhyUpdate` observation. | `unsupported` | `connection:parameters` and `connection:subrate` are unsupported; `writeWhenReady` rejects `capability.unsupported`. |
+| React Native Apple | Caller-directed MTU request, effective ATT MTU observation, and PHY read/request are `unsupported` because CoreBluetooth exposes none of those application controls. | `unsupported` | `unsupported` | `connection:parameters` and `connection:subrate` are unsupported; `writeWhenReady` rejects `capability.unsupported`. |
+| Direct CoreBluetooth Node/Electron-main | `connection:request-mtu` is unsupported because CoreBluetooth negotiates internally; effective MTU is unsupported unless the concrete boundary exposes an authoritative observation. | `connection:phy` is unsupported in the current boundary. | `limited` / deterministic only when both `canSendWriteWithoutResponse` and `peripheralIsReady(toSendWriteWithoutResponse:)` are bridged; otherwise `unsupported`. | `writeWhenReady` is `limited` / deterministic when readiness is authoritative and otherwise rejects `capability.unsupported`; parameters and subrate remain unsupported. |
+| Web, BlueZ, WinRT, Tauri, and Electron renderer IPC | `unsupported` | `unsupported` | `unsupported` | `connection:parameters` and `connection:subrate` are unsupported; `writeWhenReady` rejects `capability.unsupported`. |
+
+Android `requestPhy()` does not treat dispatch or a preferred-PHY call as proof
+of the resulting link state: a successful `onPhyUpdate` supplies the accepted
+result and observation, while a failed callback yields rejection with no
+observation. The same request-versus-observation rule applies to MTU. None of
+these deterministic records is physical-radio qualification.
+
+GATT operations that require ordering use one serialized queue per physical
+connection; that queue is bounded. Queued cancellation removes the operation before
+dispatch; dispatched cancellation follows the race and uncertainty rules in
+Sections 13 and 14. Disconnect, service change, backend reset, and destroy
+settle every queued or in-flight operation exactly once. Different connection
+queues may proceed concurrently. Queue capacity and overflow/backpressure are
+explicit limits; the public contract never implies an unbounded command queue.
+
+The recovery façade is:
+
+```ts
+connection.rediscoverGatt({ reason: 'service-changed' | 'manual' })
+```
+
+`service-changed` is used after a platform Services Changed indication or
+equivalent invalidation; `manual` requests a deliberate fresh discovery. Both
+reasons invalidate the previous database-generation paths before returning a
+new generation-bound database. Android stable recovery uses supported
+disconnect/reconnect and rediscovery. It MUST NOT call hidden
+`BluetoothGatt.refresh()` or expose that diagnostic cache mutation as a
+portable operation. A cancelled or otherwise uncertain write MUST NOT be
+automatically replayed during cache recovery; the product protocol must make
+any retry decision after fresh discovery.
+
 Manifests, entitlements, plugins, and native declarations are deployment
 prerequisites, not evidence that runtime permission, background continuation,
 or security succeeded. The capability descriptor records the declaration

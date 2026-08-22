@@ -48,6 +48,7 @@ import { readCoreAdapterState } from './core-adapter-state'
 import {
   readCoreCharacteristic,
   writeCoreCharacteristic,
+  writeCoreCharacteristicWhenReady,
   writeCoreLongCharacteristic
 } from './core-characteristic-operations'
 import { createCoreFeatureRegistry, observeMaximumWriteLength, planLongWrite } from './core-capabilities'
@@ -522,7 +523,49 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
       operation => this.assertReady(operation),
       (value, operation) => this.assertOperationAdmission(value, operation),
       (admissionEpoch, value, operation) => this.assertAdmissionCurrent(admissionEpoch, value, operation),
-      this.admissionEpoch
+      this.admissionEpoch,
+      null,
+      null
+    )
+    this.discoveries.set(key, discovery)
+    try {
+      return await discovery
+    } finally {
+      if (this.discoveries.get(key) === discovery) {
+        this.discoveries.delete(key)
+      }
+    }
+  }
+
+  async rediscoverGatt(
+    connection: CoreConnection<Attachment, Identity>,
+    options: PublicOperationOptions,
+    reason: Extract<
+      import('../backend-contract/gatt').GattDatabaseChangedEvent['reason'],
+      'service-changed' | 'manual-rediscovery'
+    >
+  ): Promise<CoreGattDatabase<Attachment, Identity>> {
+    this.assertReady('rediscover')
+    this.assertOperationAdmission(options, 'rediscover')
+    const key = String(connection.resource.connectionId)
+    const existing = this.discoveries.get(key)
+    if (existing !== undefined) {
+      const database = await awaitWithOperationAdmission(existing, options, this.options.now, 'rediscover')
+      database.assertCurrent()
+    }
+    this.operationCoordinator.cancelQueue(key, 'disconnected')
+    const discovery = discoverCoreGattDatabase(
+      this,
+      this.backend,
+      this.resourceLedger,
+      connection,
+      options,
+      operation => this.assertReady(operation),
+      (value, operation) => this.assertOperationAdmission(value, operation),
+      (admissionEpoch, value, operation) => this.assertAdmissionCurrent(admissionEpoch, value, operation),
+      this.admissionEpoch,
+      reason,
+      () => this.operationCoordinator.waitForQuarantineDrain(key)
     )
     this.discoveries.set(key, discovery)
     try {
@@ -556,6 +599,23 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
     options: WritePolicy
   ): Promise<WriteReceipt<Attachment, string>> {
     return writeCoreCharacteristic(
+      this.backend,
+      this.operationCoordinator,
+      this.options.maximumValueBytes,
+      database,
+      path,
+      bytes,
+      options
+    )
+  }
+
+  async writeWhenReady(
+    database: CoreGattDatabase<Attachment, Identity>,
+    path: CurrentCharacteristicPath<Attachment>,
+    bytes: Readonly<Uint8Array>,
+    options: WritePolicy
+  ): Promise<WriteReceipt<Attachment, string>> {
+    return writeCoreCharacteristicWhenReady(
       this.backend,
       this.operationCoordinator,
       this.options.maximumValueBytes,
@@ -634,12 +694,24 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
     connection: CoreConnection<Attachment, Identity>,
     cause: ConnectionLifecycleTerminalCause
   ): Promise<CleanupRecord> {
-    this.operationCoordinator.cancelQueue(String(connection.resource.connectionId), 'disconnected')
+    const key = String(connection.resource.connectionId)
+    this.operationCoordinator.cancelQueue(key, 'disconnected')
+    if (this.operationCoordinator.hasPendingDrain(key)) {
+      await this.operationCoordinator.waitForQuarantineDrain(key)
+    }
+    const admissionFailures = this.operationCoordinator.takeCleanupFailures(key)
+    const mergeAdmissionFailures = (record: CleanupRecord): CleanupRecord => {
+      if (admissionFailures.length === 0) return record
+      return {
+        state: 'release-failed',
+        failures: [...admissionFailures, ...record.failures]
+      }
+    }
     const disconnect = cause === 'requested-disconnect'
     const reason = isConnectionLossCause(cause) ? 'connection-lost' : 'owner-released'
     const cleanup = await connection.cleanupChildren(reason)
     if (cleanup.state === 'release-failed') {
-      return cleanup
+      return mergeAdmissionFailures(cleanup)
     }
     let backendResult: CleanupRecord
     try {
@@ -656,19 +728,18 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
         dispatchedOperations: 0,
         quarantinedOperations: 0
       })
-      return cleanupFailure(
-        'connection',
-        contractError('platform.failure', 'cleanup', 'unified-core.connection-release')
+      return mergeAdmissionFailures(
+        cleanupFailure('connection', contractError('platform.failure', 'cleanup', 'unified-core.connection-release'))
       )
     }
     if (backendResult.state === 'release-failed') {
-      return backendResult
+      return mergeAdmissionFailures(backendResult)
     }
     connection.finishLifecycle(cause, null)
     connection.markReleased()
     this.connections.delete(String(connection.resource.connectionId))
     this.resourceLedger.decrement('connectionLeases')
-    return backendResult
+    return mergeAdmissionFailures(backendResult)
   }
 
   async invalidateDatabase(
@@ -801,6 +872,7 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
       for (const connection of this.connections.values()) {
         const database = connection.database
         if (database !== null && database.matchesDatabasePath(event.database)) {
+          this.operationCoordinator.cancelQueue(String(connection.resource.connectionId), 'disconnected')
           this.lifecycleObserver.observeCleanup(
             this.invalidateDatabase(database, 'connection-lost', 'service-changed'),
             'database-changed-cleanup'
@@ -951,7 +1023,10 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
     failures.push(...subscriptions.failures)
     const events = await eventClose
     failures.push(...events.failures)
-    await this.operationCoordinator.waitForQuarantineDrain()
+    if (this.operationCoordinator.hasPendingDrain()) {
+      await this.operationCoordinator.waitForQuarantineDrain()
+    }
+    failures.push(...this.operationCoordinator.takeCleanupFailures())
     const result: CleanupRecord =
       failures.length === 0 ? { state: 'released', failures: [] } : { state: 'release-failed', failures }
     this.syncRetainedByteBuffers()

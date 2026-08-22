@@ -277,7 +277,7 @@ describe('consumer documentation matches the published package', () => {
     const release = read('RELEASE.md')
 
     expect(migration).toContain(packageVersion)
-    expect(migration).toContain('hostSessionScope')
+    expect(migration).not.toContain('hostSessionScope')
     expect(migration).toContain('Uint8Array')
     expect(migration).toContain('AbortSignal')
     expect(migration).toContain('manager.destroy()')
@@ -369,6 +369,17 @@ describe('consumer documentation matches the published package', () => {
     }
     expect(discovery).not.toMatch(
       /profiles\/(heartRate|battery(?!-service)|deviceInformation|healthThermometer|bloodPressure)/
+    )
+  })
+
+  test('advanced-only profile helpers are imported from the advanced entrypoint', () => {
+    const commands = read('docs/PROFILES_AND_COMMANDS.md')
+
+    expect(commands).toContain(
+      "import { defaultScanDelivery, firstNotification } from 'unified-ble-manager/advanced'"
+    )
+    expect(commands).not.toContain(
+      "import { defaultScanDelivery, firstNotification } from 'unified-ble-manager'"
     )
   })
 

@@ -43,6 +43,8 @@ export interface BoundedAsyncStreamIterator<T> extends AsyncIterator<StreamItem<
 export interface BoundedAsyncStream<T> extends AsyncIterable<StreamItem<T>, undefined, undefined> {
   readonly limits: StreamLimits
   readonly overflowPolicy: OverflowPolicy
+  /** Optional synchronous state check for FIFO admission race prevention. */
+  readonly isTerminal?: () => boolean
   [Symbol.asyncIterator](): BoundedAsyncStreamIterator<T>
   close(): Promise<CleanupRecord>
 }

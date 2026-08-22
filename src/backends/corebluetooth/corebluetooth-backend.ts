@@ -273,7 +273,7 @@ function assertCoreBluetoothGattIdentity(
  * Electron-main hosts. It uses only the typed direct addon boundary.
  */
 export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutralBackendIdentity<string>> {
-  readonly features: FeatureRegistry
+  private runtimeFeatures: FeatureRegistry
   readonly adapter: AdapterBackend<string>
   readonly scanner: ScannerBackend<string>
   readonly connections: ConnectionBackend<string>
@@ -283,6 +283,7 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
   readonly operationLifecycle: CoreBluetoothOperationLifecycle
   private readonly eventStreams = new Set<CoreBoundedStream<BackendEvent<string>>>()
   private readonly stateStreams = new Set<CoreBoundedStream<AdapterStateSnapshot<string>>>()
+  private readonly readinessWatchClosures = new Set<() => Promise<void>>()
   private readonly peerIdsByNativeId = new Map<string, PeerId<string>>()
   private readonly nativeIdsByPeerId = new Map<string, string>()
   private readonly connectionsByNativeId = new Map<string, ConnectionRecord>()
@@ -314,7 +315,7 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
     private readonly hostKind: 'node' | 'desktop-native' | 'native-mobile',
     private readonly identityOptions: DirectGattBackendIdentityOptions = coreBluetoothIdentityOptions
   ) {
-    this.features = createCoreBluetoothRuntimeFeatureRegistry({
+    this.runtimeFeatures = createCoreBluetoothRuntimeFeatureRegistry({
       boundary,
       existingFeatures: identityOptions.features,
       implementationVersion: identityOptions.implementationVersion,
@@ -348,7 +349,14 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
     this.connections = {
       connect: (peerId, clientId, options) => this.connect(peerId, clientId, options),
       readRssi: (connection, request) => this.connectionControls.readRssi(connection, request),
-      requestMtu: (connection, request) => this.connectionControls.requestMtu(connection, request)
+      requestMtu: (connection, request) => this.connectionControls.requestMtu(connection, request),
+      effectiveMtu: (connection, request) => this.connectionControls.effectiveMtu(connection, request),
+      requestPriority: (connection, request) => this.connectionControls.requestPriority(connection, request),
+      readPhy: (connection, request) => this.connectionControls.readPhy(connection, request),
+      requestPhy: (connection, request) => this.connectionControls.requestPhy(connection, request),
+      maximumWriteLength: (connection, request) => this.connectionControls.maximumWriteLength(connection, request),
+      writeWithoutResponseReadiness: (connection, options) =>
+        this.connectionControls.writeWithoutResponseReadiness(connection, options)
     }
     this.gatt = {
       discover: (connection, options) => this.gattOperations.discover(connection, options),
@@ -374,6 +382,21 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
       this.handleAdapterState(state)
     })
   }
+  get features(): FeatureRegistry {
+    return this.runtimeFeatures
+  }
+
+  refreshRuntimeFeatureRegistry(): void {
+    this.runtimeFeatures = createCoreBluetoothRuntimeFeatureRegistry({
+      boundary: this.boundary,
+      existingFeatures: this.identityOptions.features,
+      implementationVersion: this.identityOptions.implementationVersion,
+      now: this.now,
+      resolveNativePeerId: (connectionId, connectionGeneration, operation) =>
+        this.nativePeerIdForRuntimeCapability(connectionId, connectionGeneration, operation)
+    })
+  }
+
   get identity(): HostNeutralBackendIdentity<string> {
     const attachment = this.attachment()
     return Object.freeze({
@@ -471,6 +494,14 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
       this.attachmentLifecycle.adapterState(),
       operation
     )
+  }
+  monotonicNow(): number {
+    return this.now()
+  }
+
+  registerReadinessWatch(close: () => Promise<void>): () => void {
+    this.readinessWatchClosures.add(close)
+    return () => this.readinessWatchClosures.delete(close)
   }
   private watchAdapterState(): AdapterStateWatch<string> {
     const stream = new CoreBoundedStream<AdapterStateSnapshot<string>>(adapterStateLimits, 'latest')
@@ -1164,6 +1195,10 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
   }
   private async destroyInternal(): Promise<CleanupRecord> {
     this.admissionClosed = true
+    for (const close of [...this.readinessWatchClosures]) {
+      await close()
+    }
+    this.readinessWatchClosures.clear()
     this.dispatcher.cancelAll()
     const adapterLossCleanup = this.adapterLossCleanup
     if (adapterLossCleanup !== null) {

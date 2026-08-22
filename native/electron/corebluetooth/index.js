@@ -38,6 +38,7 @@ function createContractBoundary() {
     'getAdapterState',
     'readRssi',
     'maximumWriteValueLengthForType',
+    'canSendWriteWithoutResponse',
     'discoverServices',
     'discoverCharacteristicsAt',
     'readDescriptorAt',
@@ -49,6 +50,7 @@ function createContractBoundary() {
     'setDisconnectHandler',
     'setDatabaseChangedHandler',
     'setAdapterStateHandler',
+    'setWriteWithoutResponseReadinessHandler',
     'destroy'
   ]
   for (const method of requiredMethods) {
@@ -59,6 +61,7 @@ function createContractBoundary() {
   const unsubscribe = new Set()
   const databaseChangeListeners = new Set()
   const stateListeners = new Set()
+  const readinessListeners = new Set()
   radio.setAdapterStateHandler(state => {
     const snapshot = adapterSnapshot(state)
     for (const listener of stateListeners) {
@@ -69,6 +72,18 @@ function createContractBoundary() {
     for (const listener of databaseChangeListeners) {
       listener(String(nativePeerId))
     }
+  })
+  radio.setWriteWithoutResponseReadinessHandler(event => {
+    if (event === null || typeof event !== 'object') return
+    if (typeof event.id !== 'string' || typeof event.connectionGeneration !== 'string') return
+    if (typeof event.ready !== 'boolean' || typeof event.ordinal !== 'number' || !Number.isSafeInteger(event.ordinal)) return
+    const readiness = Object.freeze({
+      nativePeerId: event.id,
+      connectionGeneration: event.connectionGeneration,
+      ready: event.ready,
+      ordinal: event.ordinal
+    })
+    for (const listener of readinessListeners) listener(readiness)
   })
   return {
     descriptorOperationsAvailable: true,
@@ -109,6 +124,26 @@ function createContractBoundary() {
       return state === 'connected' || state === 'connecting' ? state : 'disconnected'
     },
     readRssi: nativePeerId => radio.readRssi(String(nativePeerId)),
+    canSendWriteWithoutResponse: async nativePeerId => {
+      const result = await radio.canSendWriteWithoutResponse(String(nativePeerId))
+      if (result === null || typeof result !== 'object') {
+        throw new Error('CoreBluetooth readiness probe returned a malformed snapshot')
+      }
+      if (
+        typeof result.ready !== 'boolean' ||
+        typeof result.connectionGeneration !== 'string' ||
+        typeof result.ordinal !== 'number' ||
+        !Number.isSafeInteger(result.ordinal)
+      ) {
+        throw new Error('CoreBluetooth readiness probe returned a malformed snapshot')
+      }
+      return {
+        nativePeerId: String(nativePeerId),
+        connectionGeneration: result.connectionGeneration,
+        ready: result.ready,
+        ordinal: result.ordinal
+      }
+    },
     maximumWriteValueLength: (nativePeerId, withResponse) =>
       radio.maximumWriteValueLengthForType(String(nativePeerId), withResponse),
     discover: nativePeerId => discoverGattDatabase(radio, String(nativePeerId)),
@@ -193,10 +228,16 @@ function createContractBoundary() {
       listener(adapterSnapshot(radio.getAdapterState()))
       return () => stateListeners.delete(listener)
     },
+    onWriteWithoutResponseReadiness: listener => {
+      readinessListeners.add(listener)
+      return () => readinessListeners.delete(listener)
+    },
     destroy: async () => {
       unsubscribe.clear()
       databaseChangeListeners.clear()
       stateListeners.clear()
+      readinessListeners.clear()
+      radio.setWriteWithoutResponseReadinessHandler(null)
       await radio.destroy()
     }
   }

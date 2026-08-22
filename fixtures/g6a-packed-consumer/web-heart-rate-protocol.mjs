@@ -1,13 +1,9 @@
 // fixtures/g6a-packed-consumer/web-heart-rate-protocol.mjs
 
 import assert from 'node:assert/strict'
-import { capacity } from 'unified-ble-manager'
 import { createWebBleManager, createWebBluetoothProvider } from 'unified-ble-manager/web'
 import {
-  resetHeartRateEnergyExpended,
-  subscribeHeartRateMeasurements
-} from 'unified-ble-manager/profiles/standard-commands'
-import {
+  encodeResetEnergyExpended,
   HEART_RATE_CONTROL_POINT_CHARACTERISTIC,
   HEART_RATE_MEASUREMENT_CHARACTERISTIC,
   HEART_RATE_SERVICE,
@@ -16,6 +12,19 @@ import {
 import { strictNumericCounters } from './resource-counters.mjs'
 
 const operationOptions = Object.freeze({ signal: null, deadline: null })
+const notificationOptions = Object.freeze({
+  ...operationOptions,
+  delivery: 'prefer-notification',
+  stream: {
+    preset: 'custom',
+    budget: {
+      itemCapacity: 4,
+      byteCapacity: 128,
+      reservedControlCapacity: 1,
+      overflowPolicy: 'drop-oldest'
+    }
+  }
+})
 
 export async function runWebHeartRateProtocol() {
   const { boundary, controls } = createBoundary()
@@ -41,15 +50,15 @@ export async function runWebHeartRateProtocol() {
     )
     connection = await session.manager.connect(selection.peerId, operationOptions)
     const database = await connection.discover(operationOptions)
-    subscription = await subscribeHeartRateMeasurements(database, {
-      ...operationOptions,
-      delivery: {
-        itemCapacity: capacity(4),
-        byteCapacity: capacity(128),
-        reservedControlCapacity: capacity(1),
-        overflowPolicy: 'drop-oldest'
-      }
-    })
+    const measurementCharacteristic = database.characteristic(
+      HEART_RATE_SERVICE,
+      HEART_RATE_MEASUREMENT_CHARACTERISTIC
+    )
+    const controlPointCharacteristic = database.characteristic(
+      HEART_RATE_SERVICE,
+      HEART_RATE_CONTROL_POINT_CHARACTERISTIC
+    )
+    subscription = await measurementCharacteristic.subscribe(notificationOptions)
     const measurementPromise = subscription.values[Symbol.asyncIterator]().next()
     controls.emitNotification(new Uint8Array([0x06, 72]))
     const measurementItem = await measurementPromise
@@ -61,7 +70,10 @@ export async function runWebHeartRateProtocol() {
       'packed Web Heart Rate profile decoded the chooser-selected notification'
     )
 
-    const write = await resetHeartRateEnergyExpended(database, { ...operationOptions, mode: 'with-response' })
+    const write = await controlPointCharacteristic.write(encodeResetEnergyExpended(), {
+      ...operationOptions,
+      response: 'required'
+    })
     assert.equal(write.commitState, 'confirmed', 'packed Web Heart Rate command write committed')
     assert.deepEqual(controls.writes, [[1]], 'packed Web Heart Rate profile emitted the reset command')
 
@@ -78,15 +90,9 @@ export async function runWebHeartRateProtocol() {
 
     controls.holdNextSubscribe()
     const abort = new AbortController()
-    const cancelledSubscribe = subscribeHeartRateMeasurements(database, {
-      signal: abort.signal,
-      deadline: null,
-      delivery: {
-        itemCapacity: capacity(4),
-        byteCapacity: capacity(128),
-        reservedControlCapacity: capacity(1),
-        overflowPolicy: 'drop-oldest'
-      }
+    const cancelledSubscribe = measurementCharacteristic.subscribe({
+      ...notificationOptions,
+      signal: abort.signal
     })
     await flushMicrotasks()
     abort.abort()

@@ -4,6 +4,7 @@ package com.sfourdrinier.unifiedblemanager.protocol
 
 import android.bluetooth.BluetoothGattCharacteristic
 import android.content.Context
+import android.os.Build
 import android.os.SystemClock
 import com.sfourdrinier.unifiedblemanager.protocol.generated.RecordKind
 import com.sfourdrinier.unifiedblemanager.radio.OwnedAndroidGattRadio
@@ -178,6 +179,10 @@ class UnifiedBleProtocolAndroidDispatcher(
         "writeDescriptor" -> writeDescriptor(command)
         "readRssi" -> readRssi(command)
         "requestMtu" -> requestMtu(command)
+        "readMtu" -> readMtu(command)
+        "requestPriority" -> requestPriority(command)
+        "readPhy" -> readPhy(command)
+        "requestPhy" -> requestPhy(command)
         "securityState" -> {
           securityEventsEnabled.set(true)
           securityState(command)
@@ -443,6 +448,97 @@ class UnifiedBleProtocolAndroidDispatcher(
           emitSuccess(command, "mtu", mapOf(14 to ProtocolWireValue.UnsignedIntegerValue(negotiatedMtu.toLong())))
         },
         onFailure = { error -> emitFailure(command, "requestMtuFailed", error.message ?: "Android MTU request failed") }
+      )
+    }
+    radioOperationIds[operationKey(command)] = radioOperationId
+  }
+
+  private fun readMtu(command: ProtocolWireRecord) {
+    val deviceId = command.requiredRecord(10).requiredString(2)
+    val radioOperationId = radio.readEffectiveMtu(deviceId) { result ->
+      result.fold(
+        onSuccess = { effectiveMtu ->
+          val fields = if (effectiveMtu === null) {
+            emptyMap()
+          } else {
+            mapOf(22 to ProtocolWireValue.UnsignedIntegerValue(effectiveMtu.toLong()))
+          }
+          emitSuccess(command, "mtu", fields)
+        },
+        onFailure = { error -> emitFailure(command, "readMtuFailed", error.message ?: "Android effective MTU read failed") }
+      )
+    }
+    radioOperationIds[operationKey(command)] = radioOperationId
+  }
+
+  private fun requestPriority(command: ProtocolWireRecord) {
+    val deviceId = command.requiredRecord(10).requiredString(2)
+    val connectionPriority = when (command.requiredString(16)) {
+      "lowPower" -> android.bluetooth.BluetoothGatt.CONNECTION_PRIORITY_LOW_POWER
+      "balanced" -> android.bluetooth.BluetoothGatt.CONNECTION_PRIORITY_BALANCED
+      "highThroughput" -> android.bluetooth.BluetoothGatt.CONNECTION_PRIORITY_HIGH
+      else -> throw IllegalArgumentException("Android connection priority is unsupported")
+    }
+    val radioOperationId = radio.requestConnectionPriority(deviceId, connectionPriority) { result ->
+      result.fold(
+        onSuccess = { accepted ->
+          emitSuccess(
+            command,
+            "priority",
+            mapOf(18 to ProtocolWireValue.BooleanValue(accepted))
+          )
+        },
+        onFailure = { error ->
+          emitFailure(
+            command,
+            "requestPriorityFailed",
+            error.message ?: "Android connection priority request failed"
+          )
+        }
+      )
+    }
+    radioOperationIds[operationKey(command)] = radioOperationId
+  }
+
+  private fun readPhy(command: ProtocolWireRecord) {
+    requirePhyAvailable()
+    val deviceId = command.requiredRecord(10).requiredString(2)
+    val radioOperationId = radio.readPhy(deviceId) { result ->
+      result.fold(
+        onSuccess = { phy ->
+          emitSuccess(
+            command,
+            "phy",
+            mapOf(
+              19 to ProtocolWireValue.StringValue(phy.txPhy),
+              20 to ProtocolWireValue.StringValue(phy.rxPhy)
+            )
+          )
+        },
+        onFailure = { error -> emitFailure(command, "readPhyFailed", error.message ?: "Android PHY read failed") }
+      )
+    }
+    radioOperationIds[operationKey(command)] = radioOperationId
+  }
+
+  private fun requestPhy(command: ProtocolWireRecord) {
+    requirePhyAvailable()
+    val deviceId = command.requiredRecord(10).requiredString(2)
+    val txPhy = OwnedAndroidGattRadio.phyValue(command.optionalString(17))
+    val rxPhy = OwnedAndroidGattRadio.phyValue(command.optionalString(18))
+    val radioOperationId = radio.requestPhy(deviceId, txPhy, rxPhy) { result ->
+      result.fold(
+        onSuccess = { phy ->
+          val fields = mutableMapOf<Int, ProtocolWireValue>(
+            21 to ProtocolWireValue.BooleanValue(phy !== null)
+          )
+          if (phy !== null) {
+            fields[19] = ProtocolWireValue.StringValue(phy.txPhy)
+            fields[20] = ProtocolWireValue.StringValue(phy.rxPhy)
+          }
+          emitSuccess(command, "phy", fields)
+        },
+        onFailure = { error -> emitFailure(command, "requestPhyFailed", error.message ?: "Android PHY request failed") }
       )
     }
     radioOperationIds[operationKey(command)] = radioOperationId
@@ -892,7 +988,7 @@ class UnifiedBleProtocolAndroidDispatcher(
   private fun commandDeviceId(command: ProtocolWireRecord): String? {
     return try {
       when (command.requiredString(3)) {
-        "connect", "disconnect", "discover", "readRssi", "requestMtu" ->
+        "connect", "disconnect", "discover", "readRssi", "requestMtu", "readMtu", "requestPriority" ->
           command.requiredRecord(10).requiredString(2)
         "read", "write", "subscribe", "unsubscribe" -> characteristicEndpoint(command.requiredRecord(4)).deviceId
         "readDescriptor", "writeDescriptor" -> descriptorEndpoint(command.requiredRecord(5)).deviceId
@@ -960,6 +1056,12 @@ class UnifiedBleProtocolAndroidDispatcher(
       return characteristicOccurrence == endpoint.characteristicOccurrence
     }
   }
+
+  private fun requirePhyAvailable() {
+    check(Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+      "Android PHY requires API 26"
+    }
+  }
 }
 
 internal fun connectionLostEvent(
@@ -1006,6 +1108,9 @@ internal fun dispatcherResultKindFor(commandKind: String): String = when (comman
   "writeDescriptor" -> "descriptorWrite"
   "readRssi" -> "rssi"
   "requestMtu" -> "mtu"
+  "readMtu" -> "mtu"
+  "requestPriority" -> "priority"
+  "readPhy", "requestPhy" -> "phy"
   "subscribe" -> "subscribed"
   "unsubscribe" -> "unsubscribed"
   "securityState" -> "securityState"

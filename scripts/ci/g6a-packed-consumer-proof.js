@@ -141,7 +141,8 @@ const thirdPartyBaseProfile = Object.freeze([
     id: 'gatt.reads-descriptors-write-policy-and-dispatched-cancellation',
     facts: Object.freeze([
       'gatt-read-and-descriptor-return-owned-bytes',
-      'gatt-write-policy-and-uncertain-dispatched-commit-are-exact'
+      'gatt-write-policy-and-uncertain-dispatched-commit-are-exact',
+      'gatt-operation-queue-is-fair-and-bounded'
     ])
   }),
   Object.freeze({
@@ -164,7 +165,8 @@ const thirdPartyBaseProfile = Object.freeze([
     facts: Object.freeze([
       'destroy-closes-admission-and-is-idempotent',
       'destroy-settles-each-operation-once',
-      'resource-counters-return-to-zero-without-underflow'
+      'resource-counters-return-to-zero-without-underflow',
+      'operation-cancellation-and-destroy-leave-zero-residual-resources'
     ])
   }),
   Object.freeze({

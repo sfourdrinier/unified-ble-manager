@@ -1,6 +1,7 @@
 // __tests__/backends/reactnative/react-native-android-vertical-slice.test.js
 
 const { capacity, opaqueId, version, versionRange } = require('../../../src/backend-contract/primitives')
+const { BUILT_IN_FEATURE_IDS } = require('../../../src/backend-contract/capabilities')
 const { contractError } = require('../../../src/backend-contract/errors')
 const { createBleManagerFromProvider, DEFAULT_BLE_MANAGER_OPTIONS } = require('../../../src/manager/ble-manager')
 const {
@@ -93,7 +94,7 @@ describe('React Native Android canonical protocol vertical slice', () => {
   })
 
   test('opens the public provider with native-reported state and runs scan, connect, discovery, bytes, notify, and cleanup', async () => {
-    const control = new DeterministicAndroidControl()
+    const control = new DeterministicAndroidControl(null, 0, undefined, true)
     const runtime = new DeterministicAndroidProtocolRuntime(control)
     global.__unifiedBleNativeProtocolV2 = runtime
     const provider = createReactNativeAndroidBackendProvider({
@@ -128,7 +129,7 @@ describe('React Native Android canonical protocol vertical slice', () => {
     expect(manager.features.registrations).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          id: 'connection:rssi-measurement',
+          id: BUILT_IN_FEATURE_IDS.connectionRssi,
           state: 'limited',
           tck: expect.objectContaining({
             suiteId: 'connection-controls',
@@ -137,7 +138,7 @@ describe('React Native Android canonical protocol vertical slice', () => {
           evidence: expect.objectContaining({ evidenceLevel: 'deterministic' })
         }),
         expect.objectContaining({
-          id: 'connection:request-att-mtu',
+          id: BUILT_IN_FEATURE_IDS.connectionRequestMtu,
           state: 'limited',
           tck: expect.objectContaining({
             suiteId: 'connection-controls',
@@ -145,11 +146,21 @@ describe('React Native Android canonical protocol vertical slice', () => {
           }),
           evidence: expect.objectContaining({ evidenceLevel: 'deterministic' }),
           limits: { attMtu: { maximum: 517, minimum: 23, unit: 'bytes' } }
+        }),
+        expect.objectContaining({
+          id: BUILT_IN_FEATURE_IDS.connectionPriority,
+          state: 'limited',
+          evidence: expect.objectContaining({ evidenceLevel: 'deterministic' })
+        }),
+        expect.objectContaining({
+          id: BUILT_IN_FEATURE_IDS.connectionPhy,
+          state: 'limited',
+          evidence: expect.objectContaining({ evidenceLevel: 'deterministic' })
         })
       ])
     )
     const rssiFeature = manager.features.registrations.find(
-      registration => registration.id === 'connection:rssi-measurement'
+      registration => registration.id === BUILT_IN_FEATURE_IDS.connectionRssi
     )
     if (rssiFeature === undefined) {
       throw new Error('Android RSSI feature registration is missing')
@@ -169,9 +180,24 @@ describe('React Native Android canonical protocol vertical slice', () => {
 
     const connection = await manager.connect(observation.value.value.device.id, operation())
     await expect(connection.readRssi(operation())).resolves.toMatchObject({ rssi: -47 })
+    await expect(connection.effectiveMtu()).resolves.toMatchObject({ attMtu: null, payloadBytes: null })
     await expect(connection.requestMtu(300, operation())).resolves.toMatchObject({
       requestedMtu: 300,
       negotiatedMtu: 300
+    })
+    await expect(connection.effectiveMtu()).resolves.toMatchObject({ attMtu: 300, payloadBytes: 297 })
+    await expect(connection.requestPriority('high-throughput', operation())).resolves.toMatchObject({
+      requested: 'high-throughput',
+      accepted: true
+    })
+    await expect(connection.readPhy(operation())).resolves.toMatchObject({
+      txPhy: 'le-2m',
+      rxPhy: 'le-coded'
+    })
+    await expect(connection.requestPhy({ tx: 'le-2m', rx: 'le-coded' }, operation())).resolves.toMatchObject({
+      requested: { tx: 'le-2m', rx: 'le-coded' },
+      accepted: true,
+      observation: { txPhy: 'le-2m', rxPhy: 'le-coded' }
     })
     const database = await connection.discover(operation())
     const snapshot = await database.snapshot()
@@ -200,7 +226,12 @@ describe('React Native Android canonical protocol vertical slice', () => {
       'scanStop',
       'connect',
       'readRssi',
+      'readMtu',
       'requestMtu',
+      'readMtu',
+      'requestPriority',
+      'readPhy',
+      'requestPhy',
       'discover',
       'read',
       'write',
@@ -209,6 +240,88 @@ describe('React Native Android canonical protocol vertical slice', () => {
       'disconnect',
       'destroy'
     ])
+  })
+
+  test('Android priority control reports a platform rejection and pre-abort leaves no native operation', async () => {
+    const control = new DeterministicAndroidControl()
+    const runtime = new DeterministicAndroidProtocolRuntime(control)
+    runtime.priorityAccepted = false
+    global.__unifiedBleNativeProtocolV2 = runtime
+    const provider = createReactNativeAndroidBackendProvider({
+      control,
+      now: () => 20,
+      createOwnerId: () => 'deterministic-react-native-priority-lifecycle'
+    })
+    const adapters = await provider.listAdapters()
+    const manager = await createBleManagerFromProvider(
+      {
+        provider,
+        selection: { selectedAdapterId: adapters[0].adapterId },
+        coreCompatibility: compatibility(),
+        manager: {
+          clientId: opaqueId('priority-client', 'client', 'react-native-android:priority'),
+          managerId: opaqueId('priority-manager', 'manager', 'react-native-android:priority'),
+          ownerMode: 'owning'
+        }
+      },
+      DEFAULT_BLE_MANAGER_OPTIONS
+    )
+
+    const scan = await manager.scan(scanOptions())
+    runtime.emitAdvertisement()
+    const observation = await scan.observations[Symbol.asyncIterator]().next()
+    await scan.stop()
+    const connection = await manager.connect(observation.value.value.device.id, operation())
+    await expect(connection.requestPriority('balanced', operation())).resolves.toMatchObject({
+      requested: 'balanced',
+      accepted: false
+    })
+    const controller = new AbortController()
+    controller.abort()
+    await expect(connection.requestPriority('low-power', { signal: controller.signal, deadline: null })).rejects.toMatchObject({
+      normalized: { code: 'operation.aborted' }
+    })
+    expect(runtime.commandKinds.filter(kind => kind === 'requestPriority')).toHaveLength(1)
+    await expect(manager.destroy()).resolves.toEqual({ state: 'released', failures: [] })
+    expect(runtime.retainedPayloadCount()).toBe(0)
+  })
+
+  test('Android PHY request separates callback acceptance from observed PHY state', async () => {
+    const control = new DeterministicAndroidControl()
+    const runtime = new DeterministicAndroidProtocolRuntime(control)
+    runtime.phyAccepted = false
+    global.__unifiedBleNativeProtocolV2 = runtime
+    const provider = createReactNativeAndroidBackendProvider({
+      control,
+      now: () => 20,
+      createOwnerId: () => 'deterministic-react-native-phy-rejection'
+    })
+    const manager = await createBleManagerFromProvider(
+      {
+        provider,
+        selection: { selectedAdapterId: (await provider.listAdapters())[0].adapterId },
+        coreCompatibility: compatibility(),
+        manager: {
+          clientId: opaqueId('phy-client', 'client', 'react-native-android:phy'),
+          managerId: opaqueId('phy-manager', 'manager', 'react-native-android:phy'),
+          ownerMode: 'owning'
+        }
+      },
+      DEFAULT_BLE_MANAGER_OPTIONS
+    )
+    const scan = await manager.scan(scanOptions())
+    runtime.emitAdvertisement()
+    const observation = await scan.observations[Symbol.asyncIterator]().next()
+    await scan.stop()
+    const connection = await manager.connect(observation.value.value.device.id, operation())
+
+    await expect(connection.requestPhy({ tx: 'le-2m', rx: 'le-coded' }, operation())).resolves.toMatchObject({
+      requested: { tx: 'le-2m', rx: 'le-coded' },
+      accepted: false,
+      observation: null
+    })
+    expect(runtime.phyRequests).toEqual([{ tx: 'le2m', rx: 'leCoded' }])
+    await expect(manager.destroy()).resolves.toEqual({ state: 'released', failures: [] })
   })
 
   test('constructs the canonical public manager with explicit React Native ownership and exposes adapter authorization', async () => {
@@ -242,6 +355,56 @@ describe('React Native Android canonical protocol vertical slice', () => {
     ).rejects.toMatchObject({ normalized: { code: 'capability.unsupported' } })
     await expect(manager.destroy()).resolves.toEqual({ state: 'released', failures: [] })
     expect(control.closedAttachments).toHaveLength(1)
+  })
+
+  test('uses a false native PHY handshake capability for provider registration and public calls', async () => {
+    const control = new DeterministicAndroidControl(null, 0, undefined, false)
+    const runtime = new DeterministicAndroidProtocolRuntime(control)
+    global.__unifiedBleNativeProtocolV2 = runtime
+    const provider = createReactNativeAndroidBackendProvider({
+      control,
+      now: () => 20,
+      createOwnerId: () => 'deterministic-react-native-phy-unavailable'
+    })
+    const manager = await createBleManagerFromProvider(
+      {
+        provider,
+        selection: { selectedAdapterId: 'android-default-adapter' },
+        coreCompatibility: compatibility(),
+        manager: {
+          clientId: opaqueId('phy-unavailable-client', 'client', 'react-native-android:phy-unavailable'),
+          managerId: opaqueId('phy-unavailable-manager', 'manager', 'react-native-android:phy-unavailable'),
+          ownerMode: 'owning'
+        }
+      },
+      DEFAULT_BLE_MANAGER_OPTIONS
+    )
+
+    expect(manager.features.registrations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: BUILT_IN_FEATURE_IDS.connectionPhy,
+          state: 'unsupported',
+          evidence: expect.objectContaining({ evidenceLevel: 'blocked' })
+        })
+      ])
+    )
+
+    const scan = await manager.scan(scanOptions())
+    runtime.emitAdvertisement()
+    const observation = await scan.observations[Symbol.asyncIterator]().next()
+    await scan.stop()
+    const connection = await manager.connect(observation.value.value.device.id, operation())
+
+    await expect(connection.readPhy(operation())).rejects.toMatchObject({
+      normalized: { code: 'capability.unsupported' }
+    })
+    await expect(connection.requestPhy({ tx: 'le-2m' }, operation())).rejects.toMatchObject({
+      normalized: { code: 'capability.unsupported' }
+    })
+    expect(runtime.commandKinds).not.toEqual(expect.arrayContaining(['readPhy', 'requestPhy']))
+
+    await expect(manager.destroy()).resolves.toEqual({ state: 'released', failures: [] })
   })
 
   test.each([
@@ -992,7 +1155,7 @@ describe('React Native Android canonical protocol vertical slice', () => {
     const connection = await manager.connect(observation.value.value.device.id, operation())
     expect(manager.features.registrations).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ id: 'connection:rssi-measurement', state: 'limited' }),
+        expect.objectContaining({ id: BUILT_IN_FEATURE_IDS.connectionRssi, state: 'limited' }),
         expect.objectContaining({
           id: 'gatt:descriptor-operations',
           state: 'limited',
@@ -1003,7 +1166,7 @@ describe('React Native Android canonical protocol vertical slice', () => {
           })
         }),
         expect.objectContaining({
-          id: 'connection:request-att-mtu',
+          id: BUILT_IN_FEATURE_IDS.connectionRequestMtu,
           state: 'unsupported',
           evidence: expect.objectContaining({ evidenceLevel: 'blocked' }),
           limits: { attMtu: { maximum: 0, minimum: null, unit: 'bytes' } }
@@ -1148,7 +1311,7 @@ describe('React Native first-party standard TCK registrations', () => {
       ])
     )
     expect(registration.capabilityExclusions).toEqual([
-      expect.objectContaining({ featureId: 'connection:request-att-mtu', state: 'unsupported' })
+      expect.objectContaining({ featureId: BUILT_IN_FEATURE_IDS.connectionRequestMtu, state: 'unsupported' })
     ])
     expect(runtime.descriptorCommandPaths).toEqual(
       expect.arrayContaining([
@@ -1175,7 +1338,8 @@ class DeterministicAndroidControl {
   constructor(
     installFailure = null,
     closeAttachmentFailuresRemaining = 0,
-    initialAdapterState = { availability: 'available', authorization: 'granted', power: 'on' }
+    initialAdapterState = { availability: 'available', authorization: 'granted', power: 'on' },
+    phyAvailable = true
   ) {
     this.handshakes = []
     this.closedAttachments = []
@@ -1183,6 +1347,7 @@ class DeterministicAndroidControl {
     this.installFailure = installFailure
     this.closeAttachmentFailuresRemaining = closeAttachmentFailuresRemaining
     this.initialAdapterState = initialAdapterState
+    this.phyAvailable = phyAvailable
     this.restorationJournalSeeded = false
     this.restorationConsumed = false
   }
@@ -1197,7 +1362,8 @@ class DeterministicAndroidControl {
       eventSchema: 1,
       traceFormat: 1,
       maximumControlRecordBytes: 65536,
-      maximumBinaryPayloadBytes: 524288
+      maximumBinaryPayloadBytes: 524288,
+      phyAvailable: this.phyAvailable
     })
   }
 
@@ -1320,6 +1486,11 @@ class DeterministicAndroidProtocolRuntime {
     this.sinkFailure = sinkFailure
     this.emitInitialSubscriptionNotification = emitInitialSubscriptionNotification
     this.destroyFailuresRemaining = 0
+    this.priorityAccepted = true
+    this.priorityRequests = []
+    this.effectiveMtu = null
+    this.phyAccepted = true
+    this.phyRequests = []
   }
 
   retain(operationCorrelation, value) {
@@ -1420,7 +1591,36 @@ class DeterministicAndroidProtocolRuntime {
     }
     if (kind === 'requestMtu') {
       const requestedMtu = requiredNumber(command, 14)
+      this.effectiveMtu = requestedMtu
       this.emitResult(command, 'mtu', [field(14, requestedMtu)])
+      return
+    }
+    if (kind === 'readMtu') {
+      this.emitResult(
+        command,
+        'mtu',
+        this.effectiveMtu === null ? [] : [field(22, this.effectiveMtu)]
+      )
+      return
+    }
+    if (kind === 'requestPriority') {
+      this.priorityRequests.push(requiredString(command, 16))
+      this.emitResult(command, 'priority', [field(18, this.priorityAccepted)])
+      return
+    }
+    if (kind === 'readPhy') {
+      this.emitResult(command, 'phy', [field(19, 'le2m'), field(20, 'leCoded')])
+      return
+    }
+    if (kind === 'requestPhy') {
+      this.phyRequests.push({ tx: requiredString(command, 17), rx: requiredString(command, 18) })
+      this.emitResult(
+        command,
+        'phy',
+        this.phyAccepted
+          ? [field(19, 'le2m'), field(20, 'leCoded'), field(21, true)]
+          : [field(21, false)]
+      )
       return
     }
     if (kind === 'write') {

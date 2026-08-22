@@ -11,7 +11,12 @@
 #include <napi.h>
 #include <climits>
 #include <cstdint>
+#include <cstddef>
+#include <condition_variable>
+#include <deque>
 #include <map>
+#include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -177,6 +182,10 @@ typedef void (^UBMVoidBlock)(NSError *_Nullable error);
 typedef void (^UBMDataBlock)(NSData *_Nullable data, NSError *_Nullable error);
 typedef void (^UBMArrayBlock)(NSArray *_Nullable value, NSError *_Nullable error);
 typedef void (^UBMNumberBlock)(NSNumber *_Nullable value, NSError *_Nullable error);
+typedef void (^UBMReadinessSnapshotBlock)(BOOL value,
+                                          NSString *_Nullable connectionGeneration,
+                                          std::uint64_t ordinal,
+                                          NSError *_Nullable error);
 typedef void (^UBMScanBlock)(NSDictionary<NSString *, id> *advertisement);
 typedef void (^UBMNotifyBlock)(NSData *value);
 
@@ -185,6 +194,9 @@ typedef void (^UBMNotifyBlock)(NSData *value);
 @property(nonatomic, strong) dispatch_queue_t queue;
 @property(nonatomic, strong) NSMutableDictionary<NSString *, CBPeripheral *> *peripherals;
 @property(nonatomic, strong) NSMutableDictionary<NSString *, NSString *> *connectionState;
+@property(nonatomic, strong) NSMutableDictionary<NSString *, NSNumber *> *connectionGenerations;
+@property(nonatomic, assign) std::uint64_t nextConnectionGeneration;
+@property(nonatomic, assign) std::uint64_t nextReadinessOrdinal;
 @property(nonatomic, copy, nullable) UBMScanBlock scanHandler;
 /** Concurrent waitPoweredOn completions — drained together on PoweredOn / terminal state. */
 @property(nonatomic, strong) NSMutableArray<UBMVoidBlock> *powerWaiters;
@@ -211,6 +223,11 @@ typedef void (^UBMNotifyBlock)(NSData *value);
 @property(nonatomic, copy, nullable) void (^databaseChangedHandler)(NSString *deviceId);
 /** Reports CoreBluetooth adapter-state transitions to the contract-v1 host boundary. */
 @property(nonatomic, copy, nullable) void (^adapterStateHandler)(NSString *state);
+/** Reports only current-generation CoreBluetooth write-without-response readiness edges. */
+@property(nonatomic, copy, nullable) void (^writeWithoutResponseReadinessHandler)(NSString *deviceId,
+                                                                                      NSString *connectionGeneration,
+                                                                                      BOOL ready,
+                                                                                      std::uint64_t ordinal);
 - (void)waitPoweredOn:(UBMVoidBlock)completion;
 - (void)startScan:(UBMScanBlock)onDevice
     serviceUUIDs:(NSArray<NSString *> *_Nullable)serviceUUIDs
@@ -223,6 +240,8 @@ typedef void (^UBMNotifyBlock)(NSData *value);
 - (void)maximumWriteValueLengthForType:(NSString *)deviceId
                           withResponse:(BOOL)withResponse
                             completion:(UBMNumberBlock)completion;
+- (void)canSendWriteWithoutResponse:(NSString *)deviceId completion:(UBMReadinessSnapshotBlock)completion;
+- (void)emitWriteWithoutResponseReadinessForDevice:(NSString *)deviceId peripheral:(CBPeripheral *)peripheral;
 - (void)discoverServices:(NSString *)deviceId completion:(UBMArrayBlock)completion;
 - (void)discoverCharacteristics:(NSString *)deviceId
                     serviceUUID:(NSString *)serviceUUID
@@ -305,6 +324,9 @@ characteristicUUID:(NSString *)characteristicUUID
     _queue = dispatch_queue_create("com.sfourdrinier.unifiedble.corebluetooth", DISPATCH_QUEUE_SERIAL);
     _peripherals = [NSMutableDictionary dictionary];
     _connectionState = [NSMutableDictionary dictionary];
+    _connectionGenerations = [NSMutableDictionary dictionary];
+    _nextConnectionGeneration = 1U;
+    _nextReadinessOrdinal = 0U;
     _powerWaiters = [NSMutableArray array];
     _pendingConnect = [NSMutableDictionary dictionary];
     _pendingDisconnect = [NSMutableDictionary dictionary];
@@ -527,12 +549,17 @@ characteristicUUID:(NSString *)characteristicUUID
       }
     }
     [self failAllPendingWithError:invalidationError];
+    for (CBPeripheral *peripheral in self.peripherals.allValues) {
+      peripheral.delegate = nil;
+    }
     self.central.delegate = nil;
     self.central = nil;
     [self.peripherals removeAllObjects];
+    [self.connectionGenerations removeAllObjects];
     self.disconnectHandler = nil;
     self.databaseChangedHandler = nil;
     self.adapterStateHandler = nil;
+    self.writeWithoutResponseReadinessHandler = nil;
     if (completion) completion(nil);
   });
 }
@@ -693,9 +720,15 @@ characteristicUUID:(NSString *)characteristicUUID
         return;
       }
       if (p.state == CBPeripheralStateConnected) {
+        if (!self.connectionGenerations[deviceId]) {
+          self.connectionGenerations[deviceId] = @(self.nextConnectionGeneration++);
+        }
         self.connectionState[deviceId] = @"connected";
         completion(nil);
         return;
+      }
+      if (p.state != CBPeripheralStateConnecting || !self.connectionGenerations[deviceId]) {
+        self.connectionGenerations[deviceId] = @(self.nextConnectionGeneration++);
       }
       self.connectionState[deviceId] = @"connecting";
       // R3-F058: supersede in-flight connect waiter (mirror notify / disconnect prior).
@@ -788,6 +821,38 @@ characteristicUUID:(NSString *)characteristicUUID
     NSUInteger value = [peripheral maximumWriteValueLengthForType:type];
     completion(@(value), nil);
   });
+}
+
+- (void)canSendWriteWithoutResponse:(NSString *)deviceId completion:(UBMReadinessSnapshotBlock)completion {
+  dispatch_async(self.queue, ^{
+    NSError *error = nil;
+    CBPeripheral *peripheral = [self requireConnected:deviceId error:&error];
+    if (!peripheral) {
+      completion(NO, nil, 0U, error);
+      return;
+    }
+    NSNumber *generation = self.connectionGenerations[deviceId];
+    if (!generation) {
+      completion(NO, nil, 0U, [NSError errorWithDomain:@"UBMCoreBluetooth"
+                                                   code:409
+                                               userInfo:@{NSLocalizedDescriptionKey : @"Connection generation is unavailable"}]);
+      return;
+    }
+    const std::uint64_t ordinal = ++self.nextReadinessOrdinal;
+    NSString *connectionGeneration = [NSString stringWithFormat:@"%llu", generation.unsignedLongLongValue];
+    completion(peripheral.canSendWriteWithoutResponse, connectionGeneration, ordinal, nil);
+  });
+}
+
+- (void)emitWriteWithoutResponseReadinessForDevice:(NSString *)deviceId peripheral:(CBPeripheral *)peripheral {
+  NSNumber *generation = self.connectionGenerations[deviceId];
+  if (!generation || peripheral.state != CBPeripheralStateConnected || !self.writeWithoutResponseReadinessHandler) {
+    return;
+  }
+  const std::uint64_t ordinal = ++self.nextReadinessOrdinal;
+  NSString *connectionGeneration = [NSString stringWithFormat:@"%llu", generation.unsignedLongLongValue];
+  self.writeWithoutResponseReadinessHandler(
+      deviceId, connectionGeneration, peripheral.canSendWriteWithoutResponse, ordinal);
 }
 
 - (CBPeripheral *)requireConnected:(NSString *)deviceId error:(NSError **)outError {
@@ -1118,6 +1183,7 @@ characteristicUUID:(NSString *)characteristicUUID
       [p writeValue:data forCharacteristic:ch type:type];
     } else {
       [p writeValue:data forCharacteristic:ch type:type];
+      [self emitWriteWithoutResponseReadinessForDevice:deviceId peripheral:p];
       completion(nil);
     }
   });
@@ -1155,6 +1221,7 @@ characteristicUUID:(NSString *)characteristicUUID
       return;
     }
     [peripheral writeValue:data forCharacteristic:characteristic type:CBCharacteristicWriteWithoutResponse];
+    [self emitWriteWithoutResponseReadinessForDevice:deviceId peripheral:peripheral];
     completion(nil);
   });
 }
@@ -1293,6 +1360,9 @@ characteristicUUID:(NSString *)characteristicUUID
 
 - (void)centralManager:(CBCentralManager *)central didConnectPeripheral:(CBPeripheral *)peripheral {
   NSString *deviceId = peripheral.identifier.UUIDString;
+  if (!self.connectionGenerations[deviceId]) {
+    self.connectionGenerations[deviceId] = @(self.nextConnectionGeneration++);
+  }
   self.connectionState[deviceId] = @"connected";
   UBMVoidBlock done = self.pendingConnect[deviceId];
   [self.pendingConnect removeObjectForKey:deviceId];
@@ -1304,6 +1374,8 @@ characteristicUUID:(NSString *)characteristicUUID
                          error:(NSError *)error {
   NSString *deviceId = peripheral.identifier.UUIDString;
   self.connectionState[deviceId] = @"disconnected";
+  [self.connectionGenerations removeObjectForKey:deviceId];
+  peripheral.delegate = nil;
   UBMVoidBlock done = self.pendingConnect[deviceId];
   [self.pendingConnect removeObjectForKey:deviceId];
   if (done) {
@@ -1318,6 +1390,8 @@ characteristicUUID:(NSString *)characteristicUUID
                       error:(NSError *)error {
   NSString *deviceId = peripheral.identifier.UUIDString;
   self.connectionState[deviceId] = @"disconnected";
+  [self.connectionGenerations removeObjectForKey:deviceId];
+  peripheral.delegate = nil;
   NSError *failErr =
       error
           ?: [NSError errorWithDomain:@"UBMCoreBluetooth"
@@ -1336,6 +1410,18 @@ characteristicUUID:(NSString *)characteristicUUID
   if (self.disconnectHandler) {
     self.disconnectHandler(deviceId, error);
   }
+}
+
+- (void)peripheralIsReadyToSendWriteWithoutResponse:(CBPeripheral *)peripheral {
+  NSString *deviceId = peripheral.identifier.UUIDString;
+  NSNumber *generation = self.connectionGenerations[deviceId];
+  if (!generation || peripheral.state != CBPeripheralStateConnected || !self.writeWithoutResponseReadinessHandler) {
+    return;
+  }
+  const std::uint64_t ordinal = ++self.nextReadinessOrdinal;
+  NSString *connectionGeneration = [NSString stringWithFormat:@"%llu", generation.unsignedLongLongValue];
+  self.writeWithoutResponseReadinessHandler(
+      deviceId, connectionGeneration, peripheral.canSendWriteWithoutResponse, ordinal);
 }
 
 - (void)peripheral:(CBPeripheral *)peripheral didReadRSSI:(NSNumber *)RSSI error:(NSError *)error {
@@ -1621,8 +1707,11 @@ struct JsCallbackData {
   std::string message;
   std::vector<uint8_t> bytes;
   std::string deviceId;
+  std::string connectionGeneration;
   std::string name;
   bool hasName = false;
+  bool booleanValue = false;
+  std::uint64_t ordinal = 0;
   int rssi = INT_MIN;
   int number = INT_MIN;
   int txPower = INT_MIN;
@@ -1636,6 +1725,132 @@ struct JsCallbackData {
   std::vector<JsCharacteristicMetadata> charMetas;
   napi_deferred deferred = nullptr;
   bool hasDeferred = false;
+};
+
+static constexpr std::size_t kReadinessTsfnQueueCapacity = 64;
+static constexpr std::size_t kReadinessIngressCapacity = 64;
+
+static void CallJs(Napi::Env env, Napi::Function jsCallback, JsCallbackData *data);
+
+/**
+ * Keeps readiness ingress bounded without making CoreBluetooth wait for JS.
+ *
+ * CoreBluetooth callbacks only take this queue's mutex and schedule one work
+ * item. The dedicated serial worker is the only place allowed to block in a
+ * ThreadSafeFunction call. Each scheduled worker owns one explicit TSFN
+ * Acquire/Release lifetime. If the native pending queue is full, replacing
+ * the newest record for the same device and native generation retains the
+ * newest ordinal/state in that source's FIFO position. A record from a new
+ * source is dropped instead of evicting another source's newest state; the
+ * caller owns deletion on every false return.
+ */
+class ReadinessIngress final {
+ public:
+  explicit ReadinessIngress(Napi::ThreadSafeFunction tsfn)
+      : tsfn_(tsfn),
+        queue_(dispatch_queue_create("com.sfourdrinier.unifiedble.corebluetooth.readiness-ingress",
+                                     DISPATCH_QUEUE_SERIAL)) {}
+
+  ~ReadinessIngress() { Close(); }
+
+  bool Enqueue(JsCallbackData *data) {
+    if (!data) return false;
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (closed_) return false;
+    if (pending_.size() >= kReadinessIngressCapacity) {
+      bool replaced = false;
+      for (auto it = pending_.rbegin(); it != pending_.rend(); ++it) {
+        JsCallbackData *pending = *it;
+            if (pending->deviceId == data->deviceId &&
+                pending->connectionGeneration == data->connectionGeneration) {
+              // Replace in place so this source keeps its FIFO position while
+              // retaining the newest readiness state.
+              delete *it;
+          *it = data;
+          replaced = true;
+          break;
+        }
+      }
+      if (!replaced) {
+        // A different source must not lose its newest retained state.
+        return false;
+      }
+    } else {
+      pending_.push_back(data);
+    }
+    if (!scheduled_) {
+      scheduled_ = true;
+      const napi_status acquireStatus = tsfn_.Acquire();
+      if (acquireStatus != napi_ok) {
+        scheduled_ = false;
+        for (auto it = pending_.begin(); it != pending_.end(); ++it) {
+          if (*it == data) {
+            pending_.erase(it);
+            break;
+          }
+        }
+        return false;
+      }
+      dispatch_async(queue_, ^{
+        Drain();
+      });
+    }
+    return true;
+  }
+
+  void Close() {
+    {
+      std::unique_lock<std::mutex> lock(mutex_);
+      if (closed_) {
+        closeCompletedCondition_.wait(lock, [this] { return closeCompleted_; });
+        return;
+      }
+      closed_ = true;
+      for (JsCallbackData *data : pending_) {
+        delete data;
+      }
+      pending_.clear();
+    }
+    // Abort wakes a worker blocked in BlockingCall so teardown never waits
+    // for JavaScript to resume draining the TSFN queue.
+    tsfn_.Abort();
+    dispatch_sync(queue_, ^{
+      // Wait until the worker has observed the close/abort and returned.
+    });
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      closeCompleted_ = true;
+    }
+    closeCompletedCondition_.notify_all();
+  }
+
+ private:
+  void Drain() {
+    while (true) {
+      JsCallbackData *data = nullptr;
+      {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (pending_.empty()) {
+          scheduled_ = false;
+          tsfn_.Release();
+          return;
+        }
+        data = pending_.front();
+        pending_.pop_front();
+      }
+      const napi_status status = tsfn_.BlockingCall(data, CallJs);
+      if (status != napi_ok) delete data;
+    }
+  }
+
+  Napi::ThreadSafeFunction tsfn_;
+  dispatch_queue_t queue_;
+  std::mutex mutex_;
+  std::condition_variable closeCompletedCondition_;
+  std::deque<JsCallbackData *> pending_;
+  bool scheduled_ = false;
+  bool closed_ = false;
+  bool closeCompleted_ = false;
 };
 
 static std::vector<std::uint8_t> CopyBytes(NSData *data) {
@@ -1662,6 +1877,10 @@ static JsCharacteristicMetadata CharacteristicMetadataFromDictionary(NSDictionar
 
 static void CallJs(Napi::Env env, Napi::Function jsCallback, JsCallbackData *data) {
   if (!data) return;
+  if (!env || !jsCallback) {
+    delete data;
+    return;
+  }
   Napi::HandleScope scope(env);
   if (data->type == "scan" && jsCallback) {
     Napi::Object ad = Napi::Object::New(env);
@@ -1719,6 +1938,13 @@ static void CallJs(Napi::Env env, Napi::Function jsCallback, JsCallbackData *dat
       errArg = Napi::String::New(env, data->message);
     }
     jsCallback.Call({Napi::String::New(env, data->deviceId), errArg});
+  } else if (data->type == "write-readiness" && jsCallback) {
+    Napi::Object event = Napi::Object::New(env);
+    event.Set("id", data->deviceId);
+    event.Set("connectionGeneration", data->connectionGeneration);
+    event.Set("ready", data->booleanValue);
+    event.Set("ordinal", Napi::Number::New(env, static_cast<double>(data->ordinal)));
+    jsCallback.Call({event});
   } else if (data->type == "database-changed" && jsCallback) {
     jsCallback.Call({Napi::String::New(env, data->deviceId)});
   } else if (data->type == "adapter-state" && jsCallback) {
@@ -1763,6 +1989,12 @@ static void CallJs(Napi::Env env, Napi::Function jsCallback, JsCallbackData *dat
                             Napi::Buffer<uint8_t>::Copy(env, data->bytes.data(), data->bytes.size()));
     } else if (data->type == "resolve_number") {
       napi_resolve_deferred(env, data->deferred, Napi::Number::New(env, data->number));
+    } else if (data->type == "resolve_bool") {
+      Napi::Object snapshot = Napi::Object::New(env);
+      snapshot.Set("ready", data->booleanValue);
+      snapshot.Set("connectionGeneration", data->connectionGeneration);
+      snapshot.Set("ordinal", Napi::Number::New(env, static_cast<double>(data->ordinal)));
+      napi_resolve_deferred(env, data->deferred, snapshot);
     }
   }
   delete data;
@@ -1802,6 +2034,7 @@ class CoreBluetoothAddon : public Napi::ObjectWrap<CoreBluetoothAddon> {
             InstanceMethod("getConnectionState", &CoreBluetoothAddon::GetConnectionState),
             InstanceMethod("readRssi", &CoreBluetoothAddon::ReadRssi),
             InstanceMethod("maximumWriteValueLengthForType", &CoreBluetoothAddon::MaximumWriteValueLengthForType),
+            InstanceMethod("canSendWriteWithoutResponse", &CoreBluetoothAddon::CanSendWriteWithoutResponse),
             InstanceMethod("discoverServices", &CoreBluetoothAddon::DiscoverServices),
             InstanceMethod("discoverCharacteristicsAt", &CoreBluetoothAddon::DiscoverCharacteristicsAt),
             InstanceMethod("readDescriptorAt", &CoreBluetoothAddon::ReadDescriptorAt),
@@ -1813,6 +2046,7 @@ class CoreBluetoothAddon : public Napi::ObjectWrap<CoreBluetoothAddon> {
             InstanceMethod("setDisconnectHandler", &CoreBluetoothAddon::SetDisconnectHandler),
             InstanceMethod("setDatabaseChangedHandler", &CoreBluetoothAddon::SetDatabaseChangedHandler),
             InstanceMethod("setAdapterStateHandler", &CoreBluetoothAddon::SetAdapterStateHandler),
+            InstanceMethod("setWriteWithoutResponseReadinessHandler", &CoreBluetoothAddon::SetWriteWithoutResponseReadinessHandler),
             InstanceMethod("destroy", &CoreBluetoothAddon::Destroy),
         });
     auto *ctor = new Napi::FunctionReference();
@@ -1837,6 +2071,8 @@ class CoreBluetoothAddon : public Napi::ObjectWrap<CoreBluetoothAddon> {
   Napi::ThreadSafeFunction disconnectTsfn_;
   Napi::ThreadSafeFunction databaseChangedTsfn_;
   Napi::ThreadSafeFunction adapterStateTsfn_;
+  Napi::ThreadSafeFunction writeWithoutResponseReadinessTsfn_;
+  std::shared_ptr<ReadinessIngress> readinessIngress_;
 
   static std::string NotifyMapKey(const std::string &id, const std::string &svc, const std::string &ch) {
     return id + "::" + svc + "::" + ch;
@@ -1870,10 +2106,21 @@ class CoreBluetoothAddon : public Napi::ObjectWrap<CoreBluetoothAddon> {
       adapterStateTsfn_.Release();
       adapterStateTsfn_ = Napi::ThreadSafeFunction();
     }
+    if (readinessIngress_) {
+      readinessIngress_->Close();
+      readinessIngress_.reset();
+      // Abort releases the initial TSFN owner; the worker has already released
+      // its acquired owner before Close returns. Only clear the wrapper here.
+      writeWithoutResponseReadinessTsfn_ = Napi::ThreadSafeFunction();
+    } else if (writeWithoutResponseReadinessTsfn_) {
+      writeWithoutResponseReadinessTsfn_.Release();
+      writeWithoutResponseReadinessTsfn_ = Napi::ThreadSafeFunction();
+    }
   }
 
   void DestroyInternal() {
     if (radio_) {
+      radio_.writeWithoutResponseReadinessHandler = nil;
       [radio_ invalidate:nil];
       radio_ = nil;
     }
@@ -1942,6 +2189,40 @@ class CoreBluetoothAddon : public Napi::ObjectWrap<CoreBluetoothAddon> {
                                   tsfn.BlockingCall(data, CallJs);
                                   tsfn.Release();
                                 }];
+    return Napi::Promise(env, promise);
+  }
+
+  Napi::Value CanSendWriteWithoutResponse(const Napi::CallbackInfo &info) {
+    Napi::Env env = info.Env();
+    std::string id = info[0].As<Napi::String>().Utf8Value();
+    auto tsfn = MakeResolverTsfn(env, "ubm_can_send_write_without_response");
+    napi_deferred deferred;
+    napi_value promise;
+    napi_create_promise(env, &deferred, &promise);
+    [radio_ canSendWriteWithoutResponse:[NSString stringWithUTF8String:id.c_str()]
+                             completion:^(BOOL value,
+                                          NSString *connectionGeneration,
+                                          std::uint64_t ordinal,
+                                          NSError *error) {
+                               auto *data = new JsCallbackData();
+                               data->hasDeferred = true;
+                               data->deferred = deferred;
+                               if (error) {
+                                 data->type = "reject";
+                                 data->message = error.localizedDescription
+                                     ? [error.localizedDescription UTF8String]
+                                     : "canSendWriteWithoutResponse failed";
+                              } else {
+                                data->type = "resolve_bool";
+                                data->booleanValue = value;
+                                data->connectionGeneration = connectionGeneration
+                                    ? [connectionGeneration UTF8String]
+                                    : "";
+                                data->ordinal = ordinal;
+                              }
+                               tsfn.BlockingCall(data, CallJs);
+                               tsfn.Release();
+                             }];
     return Napi::Promise(env, promise);
   }
 
@@ -2511,23 +2792,77 @@ characteristicOccurrence:chOccurrence
     return env.Undefined();
   }
 
+  Napi::Value SetWriteWithoutResponseReadinessHandler(const Napi::CallbackInfo &info) {
+    Napi::Env env = info.Env();
+    if (info.Length() < 1 || (!info[0].IsFunction() && !info[0].IsNull())) {
+      Napi::TypeError::New(env, "setWriteWithoutResponseReadinessHandler expects a function or null")
+          .ThrowAsJavaScriptException();
+      return env.Undefined();
+    }
+    if (radio_) radio_.writeWithoutResponseReadinessHandler = nil;
+    if (readinessIngress_) {
+      readinessIngress_->Close();
+      readinessIngress_.reset();
+      writeWithoutResponseReadinessTsfn_ = Napi::ThreadSafeFunction();
+    } else if (writeWithoutResponseReadinessTsfn_) {
+      writeWithoutResponseReadinessTsfn_.Release();
+      writeWithoutResponseReadinessTsfn_ = Napi::ThreadSafeFunction();
+    }
+    if (info[0].IsNull()) {
+      return env.Undefined();
+    }
+    writeWithoutResponseReadinessTsfn_ = Napi::ThreadSafeFunction::New(
+        env,
+        info[0].As<Napi::Function>(),
+        "ubm_write_without_response_readiness",
+        kReadinessTsfnQueueCapacity,
+        1);
+    auto readinessIngress = std::make_shared<ReadinessIngress>(writeWithoutResponseReadinessTsfn_);
+    readinessIngress_ = readinessIngress;
+    if (radio_) {
+      radio_.writeWithoutResponseReadinessHandler = ^(NSString *deviceId,
+                                                       NSString *connectionGeneration,
+                                                       BOOL ready,
+                                                       std::uint64_t ordinal) {
+        auto *data = new JsCallbackData();
+        data->type = "write-readiness";
+        data->deviceId = deviceId ? [deviceId UTF8String] : "";
+        data->connectionGeneration = connectionGeneration ? [connectionGeneration UTF8String] : "";
+        data->booleanValue = ready;
+        data->ordinal = ordinal;
+        if (!readinessIngress->Enqueue(data)) delete data;
+      };
+    }
+    return env.Undefined();
+  }
+
   Napi::Value Destroy(const Napi::CallbackInfo &info) {
     Napi::Env env = info.Env();
     napi_deferred deferred;
     napi_value promise;
     napi_create_promise(env, &deferred, &promise);
-    if (!radio_) {
+    UBMRadio *radio = radio_;
+    radio_ = nil;
+    if (radio) {
+      radio.scanHandler = nil;
+      radio.disconnectHandler = nil;
+      radio.databaseChangedHandler = nil;
+      radio.adapterStateHandler = nil;
+      radio.writeWithoutResponseReadinessHandler = nil;
+    }
+    // Release persistent TSFNs only after the readiness worker has been
+    // synchronized by ReleasePersistentTsfns. Pending operation completions
+    // remain owned by their per-operation resolver TSFNs until invalidate
+    // finishes below.
+    ReleasePersistentTsfns();
+    if (!radio) {
       napi_value undefined;
       napi_get_undefined(env, &undefined);
       napi_resolve_deferred(env, deferred, undefined);
       return Napi::Promise(env, promise);
     }
-    UBMRadio *radio = radio_;
-    radio_ = nil;
-    CoreBluetoothAddon *self = this;
     auto tsfn = MakeResolverTsfn(env, "ubm_destroy");
     [radio invalidate:^(NSError *error) {
-      self->ReleasePersistentTsfns();
       CompleteVoid(tsfn, deferred, error);
     }];
     return Napi::Promise(env, promise);

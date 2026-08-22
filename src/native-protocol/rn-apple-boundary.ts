@@ -14,10 +14,13 @@ import { ReactNativeAndroidProtocolBoundary } from './rn-android-boundary'
  * The explicit capability declaration prevents the core from submitting that impossible command.
  */
 export class ReactNativeAppleProtocolBoundary extends ReactNativeAndroidProtocolBoundary {
-  readonly connectionControlCapabilities: ConnectionControlCapabilities = Object.freeze({
-    rssi: 'available',
-    requestMtu: 'unavailable'
-  })
+  override get connectionControlCapabilities(): ConnectionControlCapabilities {
+    return Object.freeze({
+      rssi: 'available',
+      requestMtu: 'unavailable',
+      phy: 'unavailable'
+    })
+  }
 
   override adapterSnapshot(): CoreBluetoothAdapterSnapshot {
     const snapshot = super.adapterSnapshot()

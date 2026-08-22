@@ -97,16 +97,18 @@ import { HEART_RATE_SERVICE } from 'unified-ble-manager/profiles/heart-rate'
 import { BATTERY_LEVEL_CHARACTERISTIC, parseBatteryLevel } from 'unified-ble-manager/profiles/battery-service'
 
 const manager = await createReactNativeBleManager()
+const abort = new AbortController()
 
 try {
   const peer = await manager.find({
     query: { anyOf: [{ services: { any: [HEART_RATE_SERVICE] } }] },
     timeoutMs: 10_000,
+    signal: abort.signal,
     select: 'first'
   })
-  await manager.withDiscoveredConnection(peer, { timeoutMs: 15_000 }, async ({ gatt }) => {
+  await manager.withDiscoveredConnection(peer, { timeoutMs: 15_000, signal: abort.signal }, async ({ gatt }) => {
     const battery = gatt.characteristic('180F', BATTERY_LEVEL_CHARACTERISTIC, { serviceOccurrence: 0, characteristicOccurrence: 0 })
-    const bytes = await battery.read({ timeoutMs: 10_000 })
+    const bytes = await battery.read({ timeoutMs: 10_000, signal: abort.signal })
     consume(parseBatteryLevel(bytes))
   })
 } finally {
@@ -160,25 +162,54 @@ Web Bluetooth replaces the scan with `ble.choose(...)` from a user gesture. Taur
 | `discover({ signal, timeoutMs })` | Discover GATT and return a generation-bound database |
 | `release()` | Drop the lease (happy-path cleanup) |
 | `disconnect()` | Ask the radio to disconnect |
-| `readRssi(options)` | RSSI if the backend supports it |
-| `requestMtu(n, options)` | Request an ATT MTU if supported |
+| `connection.controls.readRssi(options)` | RSSI when the instantiated backend advertises `connection:rssi` |
+| `connection.controls.requestMtu(n, options)` | Request an ATT MTU when `connection:request-mtu` is advertised; inspect the returned observation |
+| `connection.controls.maximumWriteLength(mode)` | Authoritative mode-specific write limit when `gatt:maximum-write-length` is advertised |
+| `connection.controls.writeReadiness('without-response')` | Bounded readiness only when `gatt:write-without-response-readiness` is advertised; otherwise `capability.unsupported` |
 | `events` | Lifecycle stream for this generation |
+
+Controls report the truth of the instantiated host backend, including
+`supported`, `limited`, `unavailable`, or `unsupported`; host family alone is
+not evidence of support. Readiness is unsupported until the backend advertises
+the readiness capability, and a readiness event does not prove a later payload
+was retained.
+
+Current PR8 host truth is detailed in the [semantics host matrix](docs/UNIFIED_SEMANTICS.md#172-current-pr8-host-matrix). In
+particular, React Native Android exposes MTU request/effective observation and
+PHY read/request as `limited` / deterministic controls: effective MTU is
+unavailable before a successful `onMtuChanged` callback, and PHY request
+`accepted` plus its observation come from the native callback result. Direct
+CoreBluetooth Node/Electron-main readiness is also `limited` / deterministic
+when both native readiness hooks are bridged. `parameters`, `subrate`,
+`connection:parameters`, and `connection:subrate` remain unsupported.
+`writeWhenReady` is available only when the instantiated backend advertises
+authoritative write-without-response readiness; otherwise it rejects
+`capability.unsupported` (or `capability.unavailable` when the registered
+capability cannot currently be used). It accepts only `{ signal, timeoutMs }`,
+waits at the connection FIFO head, rechecks the generation-bound database path
+and readiness stream before dispatch, and never replays an uncertain write.
+Cancellation and teardown retain readiness cleanup failures for the manager's
+cleanup receipt. The separate
+`writeReadiness('without-response')` stream is an observation surface, not an
+automatic write helper.
 
 ### `GattDatabase`
 
 | Member | Use |
 | --- | --- |
 | `snapshot()` | Immutable services / characteristics / descriptors |
-| `read(path, options)` | `Uint8Array` |
-| `write(path, bytes, { mode, signal, timeoutMs })` | `mode` is `'with-response'` or `'without-response'` |
-| `writeLong(path, bytes, options)` | Chunked write when supported |
-| `maximumWriteLength(path, mode)` | Payload size for that mode |
-| `readDescriptor` / `writeDescriptor` | Descriptor bytes |
-| `subscribe(path, { signal, timeoutMs, delivery })` | Notification / indication stream |
+| `service(uuid, selector?)` | Generation-bound `GattService` object |
+| `characteristic(serviceUuid, characteristicUuid, selector?)` | Generation-bound `GattCharacteristic` object |
+| `characteristic.read(options)` | `Uint8Array` |
+| `characteristic.write(value, { response, signal, timeoutMs })` | `response` is `'required'`, `'not-required'`, or `'automatic'` |
+| `characteristic.writeWhenReady(value, { signal, timeoutMs })` | Bounded write-without-response helper when authoritative readiness is advertised |
+| `characteristic.writeLong(value, { response, signal, timeoutMs, chunkSize })` | Chunked write when supported |
+| `characteristic.subscribe({ signal, timeoutMs, stream })` | Notification / indication stream |
+| `characteristic.descriptor(uuid).read/write(...)` | Descriptor bytes through the generation-bound characteristic object |
 
 Use the generation-bound service and characteristic objects returned by the
-public database. Do not manufacture portable paths or retain objects after
-disconnect, service change, or rediscovery.
+public database. Do not manufacture advanced portable paths or retain objects
+after disconnect, service change, or rediscovery.
 
 ### `Subscription`
 

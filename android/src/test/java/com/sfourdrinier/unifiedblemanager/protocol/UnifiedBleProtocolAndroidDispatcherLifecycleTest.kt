@@ -5,16 +5,106 @@ package com.sfourdrinier.unifiedblemanager.protocol
 import com.sfourdrinier.unifiedblemanager.protocol.generated.RecordKind
 import com.sfourdrinier.unifiedblemanager.radio.nextUuidOccurrence
 import com.sfourdrinier.unifiedblemanager.radio.resolveUuidOccurrence
+import com.sfourdrinier.unifiedblemanager.radio.OwnedAndroidGattRadio
 import com.sfourdrinier.unifiedblemanager.radio.OwnedAndroidGattRadio.GattSerialQueue
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.io.File
+import java.nio.file.Files
 import java.util.UUID
 import java.util.ArrayDeque
+import android.bluetooth.BluetoothDevice
+import android.bluetooth.le.ScanSettings
 
 class UnifiedBleProtocolAndroidDispatcherLifecycleTest {
+  @Test
+  fun hostedAndroidCompileSeamsStayTypedUnambiguousAndAutoConnectPreserving() {
+    val dispatcher = readAndroidSource(
+      "android/src/main/java/com/sfourdrinier/unifiedblemanager/protocol/UnifiedBleProtocolAndroidDispatcher.kt"
+    )
+    val decoder = readAndroidSource(
+      "android/src/main/java/com/sfourdrinier/unifiedblemanager/protocol/ProtocolCommandDecoder.kt"
+    )
+    val radio = readAndroidSource(
+      "android/src/main/java/com/sfourdrinier/unifiedblemanager/radio/OwnedAndroidGattRadio.kt"
+    )
+
+    assertEquals(
+      0,
+      Regex("private fun ProtocolWireRecord\\.optionalString\\(fieldId: Int\\): String\\?")
+        .findAll(dispatcher)
+        .count()
+    )
+    assertEquals(
+      1,
+      Regex("internal fun ProtocolWireRecord\\.optionalString\\(fieldId: Int\\): String\\?")
+        .findAll(decoder)
+        .count()
+    )
+    assertTrue(dispatcher.contains("command.optionalString(17)"))
+    assertTrue(dispatcher.contains("command.optionalString(18)"))
+    assertTrue(dispatcher.contains("Build.VERSION.SDK_INT >= Build.VERSION_CODES.O"))
+    assertTrue(Regex("internal fun readPhy\\(deviceId: String, onResult: \\(Result<OwnedAndroidPhy>").containsMatchIn(radio))
+    assertTrue(Regex("internal fun requestPhy\\(").containsMatchIn(radio))
+    assertTrue(radio.contains("Result<OwnedAndroidPhy?>"))
+    assertTrue(radio.contains("gatt.readPhy()"))
+    assertTrue(radio.contains("catch (error: Throwable)"))
+    assertTrue(radio.contains("connectGatt(context, autoConnect"))
+    assertTrue(radio.contains("ScanSettings.PHY_LE_ALL_SUPPORTED"))
+    assertTrue(!radio.contains("BluetoothDevice.PHY_LE_ALL_SUPPORTED"))
+    assertTrue(!radio.contains("!not"))
+  }
+
+  @Test
+  fun androidPhyWireValuesMapToFailClosedPlatformMasks() {
+    assertEquals(BluetoothDevice.PHY_LE_1M, OwnedAndroidGattRadio.phyValue("le1m"))
+    assertEquals(BluetoothDevice.PHY_LE_2M, OwnedAndroidGattRadio.phyValue("le2m"))
+    assertEquals(BluetoothDevice.PHY_LE_CODED, OwnedAndroidGattRadio.phyValue("leCoded"))
+    assertEquals(ScanSettings.PHY_LE_ALL_SUPPORTED, OwnedAndroidGattRadio.phyValue(null))
+    var rejected = false
+    try {
+      OwnedAndroidGattRadio.phyValue("unknown")
+    } catch (_: IllegalArgumentException) {
+      rejected = true
+    }
+    assertTrue(rejected)
+  }
+
+  @Test
+  fun sourceGuardReadsAndroidSourcesFromInstalledConsumerPackageLayout() {
+    val relativePath = "android/src/main/java/com/sfourdrinier/unifiedblemanager/protocol/PackagedSourceGuardTarget.kt"
+    val consumerRoot = Files.createTempDirectory("unified-ble-source-guard-").toFile()
+    val consumerAndroidDirectory = File(consumerRoot, "android")
+    val packagedSource = File(consumerRoot, "node_modules/unified-ble-manager/$relativePath")
+    consumerAndroidDirectory.mkdirs()
+    packagedSource.parentFile.mkdirs()
+    packagedSource.writeText("installed-package-source")
+
+    try {
+      assertEquals(
+        "installed-package-source",
+        readAndroidSource(relativePath, consumerAndroidDirectory)
+      )
+    } finally {
+      consumerRoot.deleteRecursively()
+    }
+  }
+
+  private fun readAndroidSource(relativePath: String, workingDirectory: File = File(".")): String {
+    val candidates = listOf(
+      File(workingDirectory, relativePath),
+      File(workingDirectory, "../$relativePath"),
+      File(workingDirectory, "../../$relativePath"),
+      File(workingDirectory, "../../../$relativePath"),
+      File(workingDirectory, "../node_modules/unified-ble-manager/$relativePath")
+    )
+    return candidates.firstOrNull { it.isFile }?.readText()
+      ?: throw AssertionError("Unable to locate Android source guard target: $relativePath")
+  }
+
   @Test
   fun duplicateInstallReservationDoesNotConstructALoserAndCloseReturnsOwnerCountsToZero() {
     class TrackingOwner(private val release: () -> Unit) {

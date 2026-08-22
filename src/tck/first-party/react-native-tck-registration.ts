@@ -12,6 +12,7 @@ import {
   REACT_NATIVE_APPLE_BACKEND_ID
 } from '../../backends/reactnative/react-native-apple-provider'
 import type { CoreBluetoothCharacteristicAddress } from '../../backends/corebluetooth/corebluetooth-boundary'
+import { BUILT_IN_FEATURE_IDS } from '../../backend-contract/capabilities'
 import type { NativeBackendIdentity } from '../../backend-contract/identity'
 import { opaqueId, type ClientId, type SerializableRecord } from '../../backend-contract/primitives'
 import type {
@@ -212,7 +213,7 @@ export function createReactNativeAppleFirstPartyTckRegistration(
     ]),
     capabilityExclusions: Object.freeze([
       Object.freeze({
-        featureId: 'connection:request-att-mtu',
+        featureId: BUILT_IN_FEATURE_IDS.connectionRequestMtu,
         state: 'unsupported',
         reason: 'CoreBluetooth negotiates ATT MTU internally and exposes no caller-directed request operation.'
       })

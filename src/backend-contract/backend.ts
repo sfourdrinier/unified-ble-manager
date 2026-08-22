@@ -23,7 +23,23 @@ import type {
   WriteRequest,
   WriteResult
 } from './operations'
-import type { MtuNegotiation, ReadRssiRequest, RequestMtuRequest, RssiMeasurement } from './connection-controls'
+import type {
+  ConnectionMaximumWriteLengthMeasurement,
+  ConnectionMaximumWriteLengthRequest,
+  ConnectionPhyObservation,
+  ConnectionPhyRequest,
+  ConnectionPriorityRequest,
+  ConnectionWriteReadinessWatch,
+  EffectiveMtuMeasurement,
+  EffectiveMtuRequest,
+  MtuNegotiation,
+  ReadRssiRequest,
+  ReadPhyRequest,
+  RequestPhyRequest,
+  RequestPriorityRequest,
+  RequestMtuRequest,
+  RssiMeasurement
+} from './connection-controls'
 import { contractError } from './errors'
 import type { CleanupRecord } from './errors'
 import type {
@@ -167,6 +183,30 @@ export interface ConnectionBackend<Attachment extends string> {
     connection: BackendConnection<Attachment, string>,
     request: RequestMtuRequest<Attachment, Operation>
   ): BackendOperationDispatch<Attachment, MtuNegotiation<Attachment, Operation>>
+  effectiveMtu?<Operation extends string>(
+    connection: BackendConnection<Attachment, string>,
+    request: EffectiveMtuRequest<Attachment, Operation>
+  ): BackendOperationDispatch<Attachment, EffectiveMtuMeasurement<Attachment, Operation>>
+  requestPriority?<Operation extends string>(
+    connection: BackendConnection<Attachment, string>,
+    request: RequestPriorityRequest<Attachment, Operation>
+  ): BackendOperationDispatch<Attachment, ConnectionPriorityRequest<Attachment, Operation>>
+  readPhy?<Operation extends string>(
+    connection: BackendConnection<Attachment, string>,
+    request: ReadPhyRequest<Attachment, Operation>
+  ): BackendOperationDispatch<Attachment, ConnectionPhyObservation<Attachment, Operation>>
+  requestPhy?<Operation extends string>(
+    connection: BackendConnection<Attachment, string>,
+    request: RequestPhyRequest<Attachment, Operation>
+  ): BackendOperationDispatch<Attachment, ConnectionPhyRequest<Attachment, Operation>>
+  writeWithoutResponseReadiness?(
+    connection: BackendConnection<Attachment, string>,
+    options?: PublicOperationOptions
+  ): Promise<ConnectionWriteReadinessWatch<Attachment>>
+  maximumWriteLength?<Operation extends string>(
+    connection: BackendConnection<Attachment, string>,
+    request: ConnectionMaximumWriteLengthRequest<Attachment, Operation>
+  ): BackendOperationDispatch<Attachment, ConnectionMaximumWriteLengthMeasurement<Attachment, Operation>>
 }
 export interface GattBackend<Attachment extends string> {
   discover(

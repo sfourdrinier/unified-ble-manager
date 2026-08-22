@@ -306,3 +306,28 @@ Native-authoritative React Native/Expo restoration is an explicit PR10
 deferral tracked by [#34](https://github.com/sfourdrinier/unified-ble-manager/issues/34); PR6 must not claim it is
 implemented. RC3 remains gated for after PR8, and this ledger does not promote
 PR6 to a release claim by itself.
+
+## PR8 current checkpoint
+
+The current PR8 branch is `feat/4.0-link-controls` at committed tip
+`526a985c825164006458f663aa8fa086b26b4824`. The readiness ingress, core
+writeWhenReady lifecycle, packed-consumer validator, public Web consumers,
+Android PHY runtime truth, and executable TCK closure slices are committed
+through this tip; the cumulative package gate has been reverified against the
+runtime source immediately before the documentation-only checkpoint.
+
+| Area | Current evidence | Disposition |
+| --- | --- | --- |
+| Public controls and API surface | Required `BleConnection.controls`, required `rediscoverGatt`, generation-bound observations, canonical root exports, and reviewed root API report | Fixed and locally verified |
+| Android priority | Versioned Native Protocol v2 command/result, Android `BluetoothGatt.requestConnectionPriority` through the per-device serial queue, accepted/rejected result without observed-parameter overclaim | Android-only, limited/deterministic; hosted Android and physical evidence remain open |
+| Android PHY | Versioned Native Protocol v2 read/request results, API-26+ `readPhy`/`setPreferredPhy`, callback mismatch/stale-generation rejection, and a handshake-derived API-level capability that fails closed below API 26 | Android-only, limited/deterministic on API 26+; hosted Android and physical evidence remain open |
+| Android effective MTU | Generation-bound `readMtu` probe backed only by successful `onMtuChanged` state; unavailable before measurement | Android-only, limited/deterministic; hosted Android and physical evidence remain open |
+| CoreBluetooth readiness | `canSendWriteWithoutResponse`, `peripheralIsReady(toSendWriteWithoutResponse:)`, native ordinal/generation, bounded stream, disconnect/destroy cleanup | Direct Node/Electron-main only, limited/deterministic; other hosts remain unsupported |
+| Scheduler and recovery | Per-connection bounded round-robin lanes, queue overflow, service-change cancellation, reasoned rediscovery, uncertain-write preservation, hidden-refresh source guard | Fixed with focused TDD/TCK coverage |
+| TCK and docs | PR8 closure scenarios now execute PHY/readiness probes, keep parameters/subrate explicitly scoped to the absent seam, preserve nullable skipped security observations, and include the corrected advanced-helper imports | Deterministic evidence only; no physical-radio claim |
+| Local package gate | `pnpm test:package`: 139 suites / 1,271 tests; `pnpm test:plugin`: 36 tests; docs/API, native protocol, artifact, smell, lint/typecheck, and diff checks included | Green locally |
+| Native/plugin gates | CoreBluetooth macOS Node-API build, native protocol host, plugin 36/36, release artifacts, typecheck/lint | Green locally; Android/Windows hosted qualification remains required |
+| Packed consumer gate | Local npm pack smoke still encounters npm `Exit handler never called!`; normal npm subprocesses now have a 600-second bound; the stale 41-fact validator was corrected to the current 43-fact profile | Hosted supported-Node proof required |
+| Performance baselines | Deterministic baseline `unified-ble-pr8-deterministic-performance-v1`: 23 measurements in the focused 3-payload test and 31 measurements / 15 categories in default `performance:check`, including all ten PR8 IDs, bounded cleanup and ownership metadata | Deterministic baseline fixed; live/native comparison remains a PR12 gate |
+| Remaining contract gaps | Parameter/subrate remain unsupported because no truthful pinned API is wired; readiness is unsupported outside the direct CoreBluetooth seam; `writeWhenReady` has a capability-gated public/core implementation with deterministic cleanup and uncertainty semantics | Parameter/subrate/readiness host coverage remain open; no capability is promoted from deterministic evidence to physical support |
+| Review/release | PR #41 is open; first Copilot/Codex findings and fresh adversarial findings are dispositioned through `526a985c`; hosted CI, final exact-SHA review, merge, and RC3 remain pending | Blocking; RC2 remains immutable |
