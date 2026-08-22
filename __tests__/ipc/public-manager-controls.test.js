@@ -112,6 +112,11 @@ function setup() {
       discoveryCount += 1
       return database(`generation-${discoveryCount}`)
     },
+    rediscoverGatt: async (options, reason) => {
+      calls.push({ kind: 'rediscover', options, reason })
+      discoveryCount += 1
+      return database(`generation-${discoveryCount}`)
+    },
     disconnect: async () => ({ state: 'released', failures: [] }),
     release: async () => ({ state: 'released', failures: [] })
   }
@@ -183,7 +188,7 @@ describe('IPC public connection controls', () => {
     }
   })
 
-  test('validates rediscovery reason and uses IPC discovery without replaying writes', async () => {
+  test('validates rediscovery reason and forwards mapped reasons over IPC without replaying writes', async () => {
     const { manager, calls } = setup()
     const connection = await manager.connect('peer-1')
 
@@ -193,6 +198,12 @@ describe('IPC public connection controls', () => {
     await expect(connection.rediscoverGatt({ reason: 'manual' })).resolves.toMatchObject({
       generation: 'generation-1'
     })
-    expect(calls.map(call => call.kind)).toEqual(['discover'])
+    await expect(connection.rediscoverGatt({ reason: 'service-changed' })).resolves.toMatchObject({
+      generation: 'generation-2'
+    })
+    expect(calls).toEqual([
+      expect.objectContaining({ kind: 'rediscover', reason: 'manual-rediscovery' }),
+      expect.objectContaining({ kind: 'rediscover', reason: 'service-changed' })
+    ])
   })
 })

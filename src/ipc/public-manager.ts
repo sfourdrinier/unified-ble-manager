@@ -342,10 +342,13 @@ class IpcPublicConnection implements BleConnection {
         throw contractError('argument.invalid', 'gatt', 'ipc-public-manager.rediscover-gatt.reason')
       }
       const normalized = normalizeOperationOptions(options, () => globalThis.performance.now())
-      const database = await this.base.discover({
-        signal: normalized.signal ?? undefined,
-        deadline: normalized.deadline
-      })
+      const database = await this.base.rediscoverGatt(
+        {
+          signal: normalized.signal ?? undefined,
+          deadline: normalized.deadline
+        },
+        options.reason === 'manual' ? 'manual-rediscovery' : 'service-changed'
+      )
       return createPublicGattDatabase(createIpcGattSource(database))
     } catch (error) {
       throw rehydratePublicError(error)

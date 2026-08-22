@@ -502,6 +502,72 @@ describe('UnifiedBleCore lifecycle hardening', () => {
     }
   })
 
+  test('quarantines pending and queued writes before reasoned rediscovery without replaying them', async () => {
+    const { fixture, manager } = await createFixture()
+    const { connection, database, characteristic } = await connectedDatabase(fixture, manager)
+    const changedIterator = database.changed[Symbol.asyncIterator]()
+    fixture.controller.queueCompletion('write', {
+      delayMs: 10,
+      failure: null,
+      cancellable: false,
+      deadlineOrder: 'completion-first'
+    })
+    const originalWrite = fixture.backend.gatt.write
+    let writeDispatches = 0
+    fixture.backend.gatt.write = (path, request) => {
+      writeDispatches += 1
+      return originalWrite(path, request)
+    }
+
+    const first = database.writeLong(characteristic, new Uint8Array(17), {
+      ...operation(),
+      mode: 'with-response'
+    })
+    await flushMicrotasks()
+    fixture.controller.clock.advanceBy(0)
+    await flushMicrotasks()
+    expect(writeDispatches).toBe(1)
+
+    const second = database.write(characteristic, new Uint8Array([2]), {
+      ...operation(),
+      mode: 'with-response'
+    })
+    expect(Number(manager.localResourceCounters().queuedOperations)).toBe(1)
+
+    const rediscovery = connection.rediscoverGatt(operation(), 'manual-rediscovery')
+    await flushMicrotasks()
+
+    await expect(first).resolves.toMatchObject({
+      terminal: { outcome: 'disconnected', cause: 'operation.disconnected' },
+      commitState: 'unknown',
+      planState: 'planned',
+      chunks: [{ state: 'uncertain' }]
+    })
+    await expect(second).rejects.toMatchObject({ normalized: { code: 'operation.disconnected' } })
+    await expect(changedIterator.next()).resolves.toMatchObject({
+      value: {
+        kind: 'value',
+        value: {
+          reason: 'manual-rediscovery',
+          affectedHandleRange: null
+        }
+      }
+    })
+    expect(writeDispatches).toBe(1)
+
+    try {
+      fixture.controller.clock.advanceBy(10)
+      const replacement = await settle(fixture.controller, rediscovery)
+      expect(replacement).toBeDefined()
+      expect(writeDispatches).toBe(1)
+    } finally {
+      fixture.controller.clock.advanceBy(10)
+      await flushMicrotasks()
+      fixture.backend.gatt.write = originalWrite
+      await settle(fixture.controller, manager.destroy())
+    }
+  })
+
   test('rejects malformed resolved read and write terminals instead of accepting backend values', async () => {
     const { fixture, manager } = await createFixture()
     const { database, characteristic } = await connectedDatabase(fixture, manager)

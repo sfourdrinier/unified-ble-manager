@@ -2,7 +2,7 @@
 
 import { BackendContractError, contractError } from '../backend-contract/errors'
 import type { BleCentralBackend } from '../backend-contract/backend'
-import type { GattDatabase } from '../backend-contract/gatt'
+import type { GattDatabase, GattDatabaseChangedEvent } from '../backend-contract/gatt'
 import type { BackendIdentity } from '../backend-contract/identity'
 import type { PublicOperationOptions } from '../backend-contract/operations'
 import type { CoreConnection, CoreGattDatabase } from './core-gatt-handles'
@@ -20,17 +20,22 @@ export async function discoverCoreGattDatabase<Attachment extends string, Identi
   assertReady: (operation: string) => void,
   assertOperationAdmission: (options: PublicOperationOptions, operation: string) => void,
   assertAdmissionCurrent: (admissionEpoch: number, options: PublicOperationOptions, operation: string) => void,
-  admissionEpoch: number
+  admissionEpoch: number,
+  changeReason: GattDatabaseChangedEvent['reason'] | null,
+  awaitQuarantineDrain: (() => Promise<void>) | null
 ): Promise<CoreGattDatabase<Attachment, Identity>> {
   assertReady('discover')
   assertOperationAdmission(options, 'discover')
   connection.assertCurrent()
-  const invalidation = await connection.invalidateDatabase('owner-released')
+  const invalidation = await connection.invalidateDatabase('owner-released', changeReason)
   if (invalidation.state === 'release-failed') {
     throw new BackendContractError(
       invalidation.failures[0]?.error ??
         contractError('platform.failure', 'gatt', 'unified-core.discover-cleanup').normalized
     )
+  }
+  if (awaitQuarantineDrain !== null) {
+    await awaitQuarantineDrain()
   }
   assertAdmissionCurrent(admissionEpoch, options, 'discover')
   connection.assertCurrent()

@@ -11,7 +11,12 @@ import type {
 } from '../backend-contract'
 import type { AdvertisementObservation, ScanOptions } from '../backend-contract/advertisement'
 import type { CleanupRecord } from '../backend-contract/errors'
-import type { CharacteristicPath, DescriptorPath, GattDatabaseSnapshot } from '../backend-contract/gatt'
+import type {
+  CharacteristicPath,
+  DescriptorPath,
+  GattDatabaseChangedEvent,
+  GattDatabaseSnapshot
+} from '../backend-contract/gatt'
 import type { AdapterSelection } from '../backend-contract/identity'
 import type { CapabilityDescriptor, FeatureId } from '../backend-contract/capabilities'
 import type {
@@ -633,6 +638,14 @@ export class Connection<Attachment extends string, Identity extends BackendIdent
 
   async discover(options: PortableOperationOptions): Promise<DiscoveredGattDatabase<Attachment, Identity>> {
     const database = await this.connection.discover(toPublicOperationOptions(options))
+    return new DiscoveredGattDatabase(database, await database.snapshot())
+  }
+
+  async rediscoverGatt(
+    options: PortableOperationOptions,
+    reason: Extract<GattDatabaseChangedEvent['reason'], 'service-changed' | 'manual-rediscovery'>
+  ): Promise<DiscoveredGattDatabase<Attachment, Identity>> {
+    const database = await this.connection.rediscoverGatt(toPublicOperationOptions(options), reason)
     return new DiscoveredGattDatabase(database, await database.snapshot())
   }
 

@@ -55,6 +55,7 @@ export interface IpcManagerOperationOptions {
   readonly signal?: AbortSignal
   readonly timeoutMs?: number
   readonly deadline?: number | null
+  readonly reason?: Extract<GattDatabaseChangedEvent['reason'], 'service-changed' | 'manual-rediscovery'>
   readonly deliveryMode?: 'prefer-notification' | 'prefer-indication' | 'require-notification' | 'require-indication'
   readonly stream?: {
     readonly itemCapacity: number
@@ -708,11 +709,28 @@ export class IpcConnection {
     await this.awaitLifecycleAdmission(options)
     const payload = await this.manager.route(
       'gatt.discover',
-      Object.freeze({ ...this.identityPayload(), deadline: operationDeadline(options) }),
+      Object.freeze({
+        ...this.identityPayload(),
+        deadline: operationDeadline(options),
+        ...(options.reason === undefined ? {} : { rediscoveryReason: options.reason })
+      }),
       null,
       options.signal
     )
+    if (options.reason !== undefined && payload.rediscoveryReason !== options.reason) {
+      throw contractError('protocol.incompatible', 'ipc', 'ipc-manager.rediscovery-reason')
+    }
     return IpcGattDatabase.fromPayload(this.manager, this, payload)
+  }
+
+  rediscoverGatt(
+    options: IpcManagerOperationOptions,
+    reason: Extract<GattDatabaseChangedEvent['reason'], 'service-changed' | 'manual-rediscovery'>
+  ): Promise<IpcGattDatabase> {
+    if (reason !== 'service-changed' && reason !== 'manual-rediscovery') {
+      throw contractError('argument.invalid', 'gatt', 'ipc-manager.rediscover-gatt.reason')
+    }
+    return this.discover({ ...options, reason })
   }
 
   async readRssi(options: IpcManagerOperationOptions = {}): Promise<number> {

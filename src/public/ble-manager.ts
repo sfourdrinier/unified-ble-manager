@@ -721,10 +721,13 @@ class PublicBleManager implements BleManager {
               throw contractError('argument.invalid', 'gatt', 'public-connection.rediscover-gatt.reason')
             }
             const normalized = normalizeOperationOptions(rediscoverOptions, this.now)
-            const source = await internalConnection.discover({
-              signal: normalized.signal,
-              deadline: normalized.deadline
-            })
+            const source = await internalConnection.rediscoverGatt(
+              {
+                signal: normalized.signal,
+                deadline: normalized.deadline
+              },
+              rediscoverOptions.reason === 'manual' ? 'manual-rediscovery' : 'service-changed'
+            )
             return createPublicGattDatabase(source)
           } catch (error) {
             throw rehydratePublicError(error)

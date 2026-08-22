@@ -42,12 +42,17 @@ function fakeInternalManager() {
     ['gatt:maximum-write-length', capability('unsupported')]
   ])
   let discoveryGeneration = 1
+  const rediscoveryReasons = []
   const internalConnection = {
     connectionGeneration: 'generation-1',
     events: { [Symbol.asyncIterator]: () => ({ next: async () => ({ done: true, value: undefined }), return: async () => ({ done: true, value: undefined }) }) },
     readRssi: async () => ({ rssi: -42, terminal: terminal() }),
     requestMtu: async requestedMtu => ({ requestedMtu, negotiatedMtu: 185, terminal: terminal() }),
     discover: async () => fakeGattDatabase(`database-${discoveryGeneration++}`),
+    rediscoverGatt: async (_options, reason) => {
+      rediscoveryReasons.push(reason)
+      return fakeGattDatabase(`database-${discoveryGeneration++}`)
+    },
     disconnect: async () => ({ state: 'released', failures: [] }),
     release: async () => ({ state: 'released', failures: [] })
   }
@@ -60,7 +65,8 @@ function fakeInternalManager() {
     localResourceCounters: () => ({}),
     traceDocument: () => ({ records: [], truncated: false }),
     adapterState: async () => ({}),
-    destroy: async () => ({ state: 'released', failures: [] })
+    destroy: async () => ({ state: 'released', failures: [] }),
+    rediscoveryReasons
   }
 }
 
@@ -115,6 +121,7 @@ describe('PR8A public link controls', () => {
     await connection.discover()
     const rediscovered = await connection.rediscoverGatt({ reason: 'manual' })
     expect(rediscovered.generation).toBe('database-2')
+    expect(internal.rediscoveryReasons).toEqual(['manual-rediscovery'])
   })
 
   test('registers canonical link-control capability IDs', () => {

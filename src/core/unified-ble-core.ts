@@ -522,7 +522,49 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
       operation => this.assertReady(operation),
       (value, operation) => this.assertOperationAdmission(value, operation),
       (admissionEpoch, value, operation) => this.assertAdmissionCurrent(admissionEpoch, value, operation),
-      this.admissionEpoch
+      this.admissionEpoch,
+      null,
+      null
+    )
+    this.discoveries.set(key, discovery)
+    try {
+      return await discovery
+    } finally {
+      if (this.discoveries.get(key) === discovery) {
+        this.discoveries.delete(key)
+      }
+    }
+  }
+
+  async rediscoverGatt(
+    connection: CoreConnection<Attachment, Identity>,
+    options: PublicOperationOptions,
+    reason: Extract<
+      import('../backend-contract/gatt').GattDatabaseChangedEvent['reason'],
+      'service-changed' | 'manual-rediscovery'
+    >
+  ): Promise<CoreGattDatabase<Attachment, Identity>> {
+    this.assertReady('rediscover')
+    this.assertOperationAdmission(options, 'rediscover')
+    const key = String(connection.resource.connectionId)
+    const existing = this.discoveries.get(key)
+    if (existing !== undefined) {
+      const database = await awaitWithOperationAdmission(existing, options, this.options.now, 'rediscover')
+      database.assertCurrent()
+    }
+    this.operationCoordinator.cancelQueue(key, 'disconnected')
+    const discovery = discoverCoreGattDatabase(
+      this,
+      this.backend,
+      this.resourceLedger,
+      connection,
+      options,
+      operation => this.assertReady(operation),
+      (value, operation) => this.assertOperationAdmission(value, operation),
+      (admissionEpoch, value, operation) => this.assertAdmissionCurrent(admissionEpoch, value, operation),
+      this.admissionEpoch,
+      reason,
+      () => this.operationCoordinator.waitForQuarantineDrain()
     )
     this.discoveries.set(key, discovery)
     try {

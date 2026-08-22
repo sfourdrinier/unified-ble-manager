@@ -102,6 +102,13 @@ export class CoreConnection<Attachment extends string, Identity extends BackendI
     return this.core.discover(this, options)
   }
 
+  rediscoverGatt(
+    options: PublicOperationOptions,
+    reason: Extract<GattDatabaseChangedEvent['reason'], 'service-changed' | 'manual-rediscovery'>
+  ): Promise<CoreGattDatabase<Attachment, Identity>> {
+    return this.core.rediscoverGatt(this, options, reason)
+  }
+
   release(): Promise<CleanupRecord> {
     return this.core.releaseConnection(this, 'released')
   }
@@ -145,10 +152,13 @@ export class CoreConnection<Attachment extends string, Identity extends BackendI
     }
   }
 
-  invalidateDatabase(reason: 'connection-lost' | 'owner-released'): Promise<CleanupRecord> {
+  invalidateDatabase(
+    reason: 'connection-lost' | 'owner-released',
+    changeReason: GattDatabaseChangedEvent['reason'] | null = null
+  ): Promise<CleanupRecord> {
     const database = this.database ?? this.pendingDatabaseCleanup
     if (database !== null) {
-      return this.core.invalidateDatabase(database, reason)
+      return this.core.invalidateDatabase(database, reason, changeReason)
     }
     return Promise.resolve({ state: 'released', failures: [] })
   }
