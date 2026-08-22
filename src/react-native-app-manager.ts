@@ -27,8 +27,8 @@ export async function createReactNativeBleManager(options: BleManagerCreateOptio
   if (normalized.restoration !== undefined) {
     const derived = deriveRestorationIdentity(normalized.restoration)
     hostSessionScope = derived.opaqueRestorationId
-    clientId = derived.opaqueRestorationId.slice(0, 16) + (normalized.instanceId ? `-${normalized.instanceId}` : '')
-    managerId = derived.opaqueRestorationId.slice(0, 16) + '-mgr'
+    clientId = derived.opaqueRestorationId
+    managerId = `${derived.opaqueRestorationId}-manager`
   } else {
     hostSessionScope = `ephemeral:${ephemeral.operationNonce}`
   }
@@ -39,7 +39,9 @@ export async function createReactNativeBleManager(options: BleManagerCreateOptio
     now: () => performance.now(),
     clientId,
     managerId,
-    hostSessionScope
+    hostSessionScope,
+    adapterId: normalized.adapterId,
+    diagnostics: normalized.diagnostics
   })
   return createPublicBleManager(internal, () => performance.now())
 }

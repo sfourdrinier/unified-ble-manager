@@ -55,17 +55,24 @@ export type {
 
 export type {
   PortableAttachmentRecord,
+  PortableBoundedAsyncStream,
+  PortableBoundedAsyncStreamIterator,
+  PortableConnectionLifecycleEvent,
   PortableConnectionPath,
   PortableDatabasePath,
   PortableCurrentCharacteristicPath,
   PortableCurrentDescriptorPath,
   PortableGattDatabaseSnapshot,
+  PortableLongWriteReceipt,
+  PortableMaximumWriteLengthObservation,
+  PortableNotificationValue,
   PortableOperationOptions,
+  PortableOperationTerminalRecord,
   PortableSubscriptionOptions,
   PortableWritePolicy,
+  PortableWriteReceipt,
   PortableCleanupRecord,
-  PortableCleanupFailure,
-  PortableLongWriteReceipt
+  PortableCleanupFailure
 } from './manager/consumer-handles'
 
 export type {

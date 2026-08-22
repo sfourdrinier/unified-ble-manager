@@ -28,6 +28,7 @@ export type {
   IpcClientTransport as ElectronRendererIpcTransport,
   IpcConnectionEventsSubscribeResponseV2 as ElectronConnectionEventsSubscribeResponseV2,
   IpcConnectionLifecycleEventV2 as ElectronConnectionLifecycleEventV2,
+  IpcDiscoveryDescriptor as ElectronDiscoveryDescriptor,
   IpcEventAcknowledgeRequest as ElectronEventAcknowledgeRequest,
   IpcEventAcknowledgeResponse as ElectronEventAcknowledgeResponse,
   IpcFailureResponse as ElectronFailureResponse,

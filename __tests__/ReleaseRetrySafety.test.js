@@ -18,7 +18,7 @@ describe('release retry safety', () => {
     expect(npmStatus).toBeGreaterThan(-1)
     expect(stableGuard).toBeGreaterThan(npmStatus)
     expect(workflow).toContain(
-      "if: env.NPM_DIST_TAG == 'latest' && steps.npm_status.outputs.package_published != 'true'"
+      "if: steps.release_channel.outputs.is_stable == 'true' && steps.npm_status.outputs.package_published != 'true'"
     )
     expect(bind).toBeGreaterThan(stableGuard)
     expect(restore).toBeGreaterThan(bind)

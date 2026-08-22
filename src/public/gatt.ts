@@ -13,7 +13,7 @@ import type {
   PortableGattDatabaseSnapshot
 } from '../manager/consumer-handles'
 import { normalizeOperationOptions, type OperationOptions } from './operation-options'
-import { resolveStreamPreset, type StreamPreset } from './stream-presets'
+import { resolveStreamPolicy, type StreamPolicy } from './stream-presets'
 import { rehydratePublicError, runWithCleanup } from './error-bridge'
 
 export type { GattAccessRequirements, GattCharacteristicPropertyAvailability } from '../backend-contract/gatt'
@@ -68,7 +68,7 @@ export interface DescriptorWriteOptions extends OperationOptions {
 
 export interface GattSubscribeOptions extends OperationOptions {
   readonly delivery?: 'prefer-notification' | 'prefer-indication' | 'require-notification' | 'require-indication'
-  readonly stream?: StreamPreset
+  readonly stream?: StreamPolicy
 }
 
 export type GattDelivery = 'notification' | 'indication' | 'unknown'
@@ -339,7 +339,7 @@ class PublicGattCharacteristic implements GattCharacteristic {
         throw contractError('capability.limited', 'gatt', 'public-gatt.subscribe.delivery-selection')
       }
       const effectiveDelivery = this.source.deliverySelection === 'unknown' ? 'unknown' : selectedDelivery
-      const budget = resolveStreamPreset({ preset: options.stream ?? 'balanced' })
+      const budget = resolveStreamPolicy(options.stream ?? 'balanced')
       const subscription = await this.source.subscribe(this.indexedRecord.record.path, {
         ...normalizeOperationOptions(options, () => this.source.monotonicNow()),
         delivery: budget,
@@ -432,7 +432,7 @@ class PublicGattDescriptor implements GattDescriptor {
       if (this.uuid === normalizeUuid('2902')) {
         throw contractError('gatt.cccd-managed', 'gatt', 'public-gatt.descriptor.write-cccd')
       }
-      if (!this.properties.write) {
+      if (!this.properties.write && this.properties.availability.write === 'known') {
         throw contractError('gatt.property-not-supported', 'gatt', 'public-gatt.descriptor.write')
       }
       return this.source.writeDescriptor(this.indexedRecord.record.path, value, {

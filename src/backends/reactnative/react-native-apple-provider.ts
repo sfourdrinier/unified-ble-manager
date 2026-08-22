@@ -46,7 +46,7 @@ export const REACT_NATIVE_APPLE_DEFAULT_ADAPTER_NATIVE_ID = 'apple-corebluetooth
 
 export const reactNativeAppleCompatibility: NativeCompatibilityOffer = Object.freeze({
   ...coreBluetoothCompatibility,
-  nativeProtocol: versionRange(version('native-protocol', 1), version('native-protocol', 1))
+  nativeProtocol: versionRange(version('native-protocol', 2), version('native-protocol', 2))
 })
 
 let nextBoundaryOwner = 1

@@ -1,6 +1,38 @@
 const { createPublicBleManager } = require('../src/public/ble-manager')
 
 describe('public BleCapabilities', () => {
+  test('rejects direct connections when the backend omits the direct capability descriptor', async () => {
+    const connect = jest.fn()
+    const internal = {
+      supports: () => false,
+      capability: () => null,
+      capabilities: () => [],
+      destroy: jest.fn(),
+      scan: jest.fn(),
+      connect
+    }
+    const manager = await createPublicBleManager(internal, () => 0)
+
+    await expect(manager.connect('peer-without-capability')).rejects.toMatchObject({ code: 'capability.unsupported' })
+    expect(connect).not.toHaveBeenCalled()
+  })
+
+  test('rejects direct connections when the backend explicitly marks them unsupported', async () => {
+    const connect = jest.fn()
+    const internal = {
+      supports: () => false,
+      capability: id => (id === 'connection:direct' ? { id, state: 'unsupported' } : null),
+      capabilities: () => [{ id: 'connection:direct', state: 'unsupported' }],
+      destroy: jest.fn(),
+      scan: jest.fn(),
+      connect
+    }
+    const manager = await createPublicBleManager(internal, () => 0)
+
+    await expect(manager.connect('peer-direct')).rejects.toMatchObject({ code: 'capability.unsupported' })
+    expect(connect).not.toHaveBeenCalled()
+  })
+
   test('projects negotiated capabilities without exposing backend manager methods', async () => {
     const supported = { id: 'gatt:descriptors', state: 'supported' }
     const limited = {
@@ -8,7 +40,12 @@ describe('public BleCapabilities', () => {
       state: 'limited',
       limitations: [{ code: 'no-indication-bit', explanation: 'test limitation', affectedGuarantee: 'delivery' }]
     }
-    const descriptors = [supported, limited]
+    const direct = {
+      id: 'connection:direct',
+      state: 'limited',
+      limitations: [{ code: 'deterministic-only', explanation: 'test limitation', affectedGuarantee: 'radio' }]
+    }
+    const descriptors = [supported, limited, direct]
     const internal = {
       supports: id => id === supported.id || id === limited.id,
       capability: id => descriptors.find(descriptor => descriptor.id === id) ?? null,

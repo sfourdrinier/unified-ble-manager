@@ -2,19 +2,21 @@
 
 import type { AdvertisementObservation } from '../backend-contract/advertisement'
 import type { ScanOptions as InternalScanOptions } from '../backend-contract/advertisement'
+import type { ConnectionLifecycleCause, ConnectionLifecycleEvent } from '../backend-contract/connection-lifecycle'
 import { contractError, type CleanupRecord } from '../backend-contract/errors'
 import type { BackendIdentity } from '../backend-contract/identity'
-import { opaqueId } from '../backend-contract/primitives'
+import { capacity, canonicalUuid, opaqueId } from '../backend-contract/primitives'
 import type { BleManager as InternalBleManager } from '../manager/ble-manager'
 import type { BleManagerOptions } from '../manager/ble-manager'
 import type { BoundedAsyncStream } from '../backend-contract/streams'
+import { CoreBoundedStream } from '../core/bounded-stream'
 import { normalizeOperationOptions } from './operation-options'
 import type { OperationOptions } from './operation-options'
-import { resolveStreamPreset } from './stream-presets'
-import type { StreamPreset } from './stream-presets'
+import { resolveStreamPolicy } from './stream-presets'
+import type { StreamPolicy } from './stream-presets'
 import type { IpcAdvertisement } from '../ipc/manager'
 import { rehydratePublicError, rehydratePublicPromise, runWithCleanup } from './error-bridge'
-import { PublicBleCapabilities } from './capabilities'
+import { assertDirectConnectionCapability, PublicBleCapabilities } from './capabilities'
 import type { BleCapabilities } from './capabilities'
 import type { BleAdapter, BleAdapterState, AdapterReadinessOptions } from './ble-adapter'
 import type { BleDiagnostics } from './diagnostics'
@@ -33,10 +35,25 @@ import type { BoundedAsyncStreamIterator } from '../backend-contract/streams'
 import { createScanState } from './scan-state'
 import type { BlePeerDirectory, BlePeerState, PeerSource } from './peer-directory'
 import { createPublicPeerDirectory } from './peer-directory'
-import { isPeerReference, snapshotPeerReference } from './peer-reference'
+import { encodePeerReference, isPeerReference, snapshotPeerReference } from './peer-reference'
 import type { PeerReference } from './peer-reference'
 
 export type GattSubscriptionValue = GattValueEvent
+export type ConnectionIntent = 'direct' | 'when-available'
+export type BlePhy = 'le-1m' | 'le-2m' | 'le-coded'
+export interface ConnectOptions extends OperationOptions {
+  readonly intent?: ConnectionIntent
+  readonly transport?: 'le' | 'auto'
+  readonly preferredPhy?: readonly BlePhy[]
+}
+export interface BleConnectionEvent {
+  readonly kind: 'connection-lifecycle'
+  readonly previous: ConnectionLifecycleEvent<string>['previous']
+  readonly current: ConnectionLifecycleEvent<string>['current']
+  readonly cause: ConnectionLifecycleCause
+  readonly connectionGeneration: string
+  readonly sequence: number
+}
 export type {
   GattDatabase,
   GattDatabaseSnapshot,
@@ -109,7 +126,11 @@ export function snapshotBlePeer(peer: BlePeerInput): BlePeer {
 // Public connection — generation-bound lease, no generic.
 export interface BleConnection {
   readonly peer: BlePeer
+  readonly connectionGeneration: string
+  readonly lifecycleEvents: AsyncIterable<BleConnectionEvent>
   readonly discover: (options?: OperationOptions) => Promise<GattDatabase>
+  readonly readRssi: (options?: OperationOptions) => Promise<number>
+  readonly requestMtu: (requestedMtu: number, options?: OperationOptions) => Promise<number>
   readonly disconnect: () => Promise<CleanupRecord>
   readonly release: () => Promise<CleanupRecord>
 }
@@ -117,7 +138,10 @@ export interface BleConnection {
 // Public scan session — bounded stream, no generic.
 // Union embraces both native AdvertisementObservation and Tauri IpcAdvertisement
 // until PR4 scan semantics unify; covariance lets each backend stream satisfy the union without casts.
-export type PublicScanObservation = AdvertisementObservation<string> | IpcAdvertisement
+export interface PublicScanObservation extends NormalizedScanObservation {
+  readonly peer: BlePeer
+  readonly observedAtMonotonicMs: number | null
+}
 
 export interface ScanSession {
   readonly stop: () => Promise<CleanupRecord>
@@ -141,16 +165,16 @@ export interface BleManager {
   scan(options?: ScanOptions): Promise<ScanSession>
   find(options?: FindOptions): Promise<BlePeer>
   choose(options?: ChooseOptions): Promise<BlePeer>
-  connect(peer: BlePeer | string | PeerReference, options?: OperationOptions): Promise<BleConnection>
+  connect(peer: BlePeer | string | PeerReference, options?: ConnectOptions): Promise<BleConnection>
   withConnection<T>(
     peer: BlePeer | string | PeerReference,
-    options: OperationOptions,
+    options: ConnectOptions,
     action: (connection: BleConnection) => Promise<T>
   ): Promise<T>
   withScan<T>(options: ScanOptions, action: (scan: ScanSession) => Promise<T>): Promise<T>
   withDiscoveredConnection<T>(
-    peer: BlePeer | string,
-    options: OperationOptions,
+    peer: BlePeer | string | PeerReference,
+    options: ConnectOptions,
     action: (scope: { readonly connection: BleConnection; readonly gatt: GattDatabase }) => Promise<T>
   ): Promise<T>
 }
@@ -160,7 +184,7 @@ export { PublicBleManager as BleManagerImpl }
 export interface ScanOptions extends OperationOptions {
   readonly query?: ScanQuery
   readonly duplicates?: 'coalesced' | 'all'
-  readonly delivery?: StreamPreset
+  readonly delivery?: StreamPolicy
 }
 
 export interface FindOptions extends OperationOptions {
@@ -170,7 +194,18 @@ export interface FindOptions extends OperationOptions {
 }
 
 export interface ChooseOptions extends OperationOptions {
-  readonly services?: readonly (string | number)[]
+  readonly filters?: readonly ChooseFilter[]
+  readonly optionalServices?: readonly (string | number)[]
+  readonly acceptAllDevices?: boolean
+}
+
+export interface ChooseFilter {
+  readonly serviceUuids?: readonly (string | number)[]
+  readonly manufacturerData?: readonly {
+    readonly companyIdentifier: number
+    readonly dataPrefix?: Readonly<Uint8Array>
+  }[]
+  readonly localNamePrefix?: string
 }
 
 export interface BleDiscoveryInfo {
@@ -231,8 +266,7 @@ class PublicBleManager implements BleManager {
     try {
       assertPublicScanOptions(options)
       const { signal, deadline } = normalizeOperationOptions(options, this.now)
-      const preset = options.delivery ?? 'balanced'
-      const delivery = resolveStreamPreset({ preset })
+      const delivery = resolveStreamPolicy(options.delivery ?? 'balanced')
       const normalizedQuery = normalizeScanQuery(options.query)
       const internalOptions: InternalScanOptions<string, string> = {
         filter: { serviceUuids: [], manufacturerData: [], localNamePrefix: null },
@@ -256,7 +290,9 @@ class PublicBleManager implements BleManager {
           scanState.emit({ state: 'stopping' })
           try {
             const cleanup = await rehydratePublicPromise(session.stop())
-            scanState.emit({ state: 'stopped' })
+            scanState.emit(
+              cleanup.state === 'released' ? { state: 'stopped' } : { state: 'failed', reason: 'scan-stop-failed' }
+            )
             scanState.close()
             return cleanup
           } catch (error) {
@@ -274,31 +310,47 @@ class PublicBleManager implements BleManager {
   }
 
   async find(options: FindOptions = {}): Promise<BlePeer> {
+    const { select, ...scanOptions } = options
+    const operation = normalizeOperationOptions(options, this.now)
     const scan = await this.scan({
-      ...options,
-      query: options.query,
+      ...scanOptions,
       duplicates: 'coalesced',
       delivery: 'latest',
       timeoutMs: options.timeoutMs ?? 10_000
     })
     return runWithCleanup(
-      () => findPeerInScan(scan, options.select),
+      () => findPeerInScan(scan, select, { ...operation, now: this.now }),
       () => scan.stop()
     )
   }
 
-  choose(options: ChooseOptions = {}): Promise<BlePeer> {
-    if (this.chooseImpl === undefined) {
-      return Promise.reject(
-        rehydratePublicError(contractError('capability.unsupported', 'chooser', 'public-ble-manager.choose'))
-      )
+  async choose(options: ChooseOptions = {}): Promise<BlePeer> {
+    try {
+      assertPublicChooseOptions(options)
+      if (this.chooseImpl === undefined) {
+        throw contractError('capability.unsupported', 'chooser', 'public-ble-manager.choose')
+      }
+      return await this.chooseImpl(options)
+    } catch (error) {
+      throw rehydratePublicError(error)
     }
-    return this.chooseImpl(options)
   }
 
-  async connect(peer: BlePeer | string | PeerReference, options: OperationOptions = {}): Promise<BleConnection> {
+  async connect(peer: BlePeer | string | PeerReference, options: ConnectOptions = {}): Promise<BleConnection> {
     try {
+      assertPublicConnectOptions(options)
       const { signal, deadline } = normalizeOperationOptions(options, this.now)
+      const intent = options.intent ?? 'direct'
+      assertDirectConnectionCapability(
+        this.internal.capability('connection:direct'),
+        'public-ble-manager.connect.direct'
+      )
+      if (intent === 'when-available' && !this.internal.supports('connection:when-available')) {
+        throw contractError('capability.unsupported', 'connection', 'public-ble-manager.connect.when-available')
+      }
+      if (options.preferredPhy !== undefined && !this.internal.supports('connection:phy')) {
+        throw contractError('capability.unsupported', 'connection', 'public-ble-manager.connect.preferred-phy')
+      }
       if (isReferenceLike(peer) && !isPeerReference(peer)) {
         throw contractError('peer.reference-invalid', 'connection', 'public-ble-manager.connect-reference')
       }
@@ -311,7 +363,10 @@ class PublicBleManager implements BleManager {
       const peerId = opaqueId<'peer', string>(peerIdString, 'peer', 'public-ble-manager')
       const internalConnection = await this.internal.connect(peerId, {
         signal,
-        deadline
+        deadline,
+        intent,
+        transport: options.transport,
+        preferredPhy: options.preferredPhy
       })
       const publicPeer =
         typeof resolvedPeer === 'string'
@@ -319,6 +374,32 @@ class PublicBleManager implements BleManager {
           : snapshotBlePeer(resolvedPeer)
       return {
         peer: publicPeer,
+        connectionGeneration: String(internalConnection.connectionGeneration),
+        lifecycleEvents: publicConnectionEvents(internalConnection.events),
+        readRssi: async (rssiOptions: OperationOptions = {}) => {
+          try {
+            const normalized = normalizeOperationOptions(rssiOptions, this.now)
+            const result = await internalConnection.readRssi({
+              signal: normalized.signal,
+              deadline: normalized.deadline
+            })
+            return Number(result.rssi)
+          } catch (error) {
+            throw rehydratePublicError(error)
+          }
+        },
+        requestMtu: async (requestedMtu: number, mtuOptions: OperationOptions = {}) => {
+          try {
+            const normalized = normalizeOperationOptions(mtuOptions, this.now)
+            const result = await internalConnection.requestMtu(requestedMtu, {
+              signal: normalized.signal,
+              deadline: normalized.deadline
+            })
+            return Number(result.negotiatedMtu)
+          } catch (error) {
+            throw rehydratePublicError(error)
+          }
+        },
         discover: async (discoverOptions: OperationOptions = {}) => {
           try {
             const normalized = normalizeOperationOptions(discoverOptions, this.now)
@@ -341,7 +422,7 @@ class PublicBleManager implements BleManager {
 
   async withConnection<T>(
     peer: BlePeer | string | PeerReference,
-    options: OperationOptions,
+    options: ConnectOptions,
     action: (connection: BleConnection) => Promise<T>
   ): Promise<T> {
     const connection = await this.connect(peer, options)
@@ -360,8 +441,8 @@ class PublicBleManager implements BleManager {
   }
 
   async withDiscoveredConnection<T>(
-    peer: BlePeer | string,
-    options: OperationOptions,
+    peer: BlePeer | string | PeerReference,
+    options: ConnectOptions,
     action: (scope: { readonly connection: BleConnection; readonly gatt: GattDatabase }) => Promise<T>
   ): Promise<T> {
     return this.withConnection(peer, options, async connection => {
@@ -403,27 +484,51 @@ async function waitForPublicAdapter(
     const deadline = normalized.deadline ?? now() + 10_000
     const watch = await internal.adapterStates({ signal: normalized.signal })
     const iterator = watch.values[Symbol.asyncIterator]()
-    try {
-      let current = watch.initial
-      while (true) {
-        assertAdapterCanBecomeReady(current, options.operation ?? 'scan')
-        if (adapterIsReady(current)) return snapshotPublicAdapterState(current)
-        if (normalized.signal?.aborted === true)
-          throw contractError('operation.aborted', 'adapter', 'public-adapter.wait-until-ready')
-        if (now() >= deadline) throw contractError('operation.timed-out', 'adapter', 'public-adapter.wait-until-ready')
-        const item = await nextAdapterState(iterator, deadline - now())
-        if (item.done) throw contractError('stream.closed', 'adapter', 'public-adapter.wait-until-ready')
-        if (item.value.kind === 'terminal')
-          throw contractError('stream.closed', 'adapter', 'public-adapter.wait-until-ready')
-        if (item.value.kind === 'overflow') continue
-        current = item.value.value
-      }
-    } finally {
-      await watch.stop()
-    }
+    return await runWithCleanup(
+      async () => {
+        let current = watch.initial
+        while (true) {
+          assertAdapterCanBecomeReady(current, options.operation ?? 'scan')
+          if (adapterIsReady(current)) return snapshotPublicAdapterState(current)
+          if (normalized.signal?.aborted === true)
+            throw contractError('operation.aborted', 'adapter', 'public-adapter.wait-until-ready')
+          if (now() >= deadline)
+            throw contractError('operation.timed-out', 'adapter', 'public-adapter.wait-until-ready')
+          const item = await nextAdapterState(iterator, deadline - now())
+          if (item.done) throw contractError('stream.closed', 'adapter', 'public-adapter.wait-until-ready')
+          if (item.value.kind === 'terminal')
+            throw contractError('stream.closed', 'adapter', 'public-adapter.wait-until-ready')
+          if (item.value.kind === 'overflow') continue
+          current = item.value.value
+        }
+      },
+      () => stopAdapterWatch(iterator, watch.stop)
+    )
   } catch (error) {
     throw rehydratePublicError(error)
   }
+}
+
+async function stopAdapterWatch(
+  iterator: AsyncIterator<unknown>,
+  stop: () => Promise<CleanupRecord>
+): Promise<CleanupRecord> {
+  const failures: unknown[] = []
+  try {
+    if (iterator.return !== undefined) await iterator.return()
+  } catch (error) {
+    failures.push(error)
+  }
+  let cleanup: CleanupRecord
+  try {
+    cleanup = await stop()
+  } catch (error) {
+    failures.push(error)
+    throw new AggregateError(failures, 'BLE adapter watch cleanup failed')
+  }
+  if (cleanup.state === 'release-failed') failures.push(new Error('BLE adapter watch cleanup failed'))
+  if (failures.length > 0) throw new AggregateError(failures, 'BLE adapter watch cleanup failed')
+  return cleanup
 }
 
 function adapterIsReady(state: AdapterStateSnapshot<string>): boolean {
@@ -474,9 +579,11 @@ function snapshotPublicAdapterState(state: AdapterStateSnapshot<string>): BleAda
 }
 
 export function filterScanObservations(
-  source: BoundedAsyncStream<PublicScanObservation>,
-  query: ReturnType<typeof normalizeScanQuery>
+  source: BoundedAsyncStream<AdvertisementObservation<string> | IpcAdvertisement>,
+  query: ReturnType<typeof normalizeScanQuery>,
+  duplicates: 'coalesced' | 'all' = 'all'
 ): BoundedAsyncStream<PublicScanObservation> {
+  const lastObservations = new Map<string, string>()
   return {
     limits: source.limits,
     overflowPolicy: source.overflowPolicy,
@@ -486,11 +593,25 @@ export function filterScanObservations(
         async next() {
           while (true) {
             const item = await iterator.next()
-            if (item.done || item.value.kind !== 'value') return item
-            if (observationMatchesScanQuery(query, normalizeScanObservation(item.value.value))) return item
+            if (item.done) return item
+            if (item.value.kind === 'overflow' || item.value.kind === 'terminal') {
+              return { done: false, value: item.value }
+            }
+            const observation = projectPublicScanObservation(item.value.value)
+            if (observationMatchesScanQuery(query, observation)) {
+              if (duplicates === 'coalesced') {
+                const fingerprint = publicObservationFingerprint(observation)
+                if (lastObservations.get(observation.peer.id) === fingerprint) continue
+                lastObservations.set(observation.peer.id, fingerprint)
+              }
+              return { done: false, value: { kind: 'value', value: observation } }
+            }
           }
         },
-        return: () => iterator.return(),
+        return: async () => {
+          await iterator.return()
+          return { done: true, value: undefined }
+        },
         [Symbol.asyncIterator]() {
           return this
         }
@@ -500,31 +621,158 @@ export function filterScanObservations(
   }
 }
 
-export function peerFromPublicObservation(observation: PublicScanObservation): BlePeer {
-  if (isCompactObservation(observation)) {
-    const normalized = normalizeScanObservation(observation)
-    return snapshotBlePeer({
-      id: observation.peerId,
-      name: observation.localName,
-      rssi: observation.rssi,
-      reference: normalized.peerReference ?? null,
-      sources: ['scan-observed'],
-      lastAdvertisement: normalized
-    })
+function publicObservationFingerprint(observation: PublicScanObservation): string {
+  const bytes = (value: Readonly<Uint8Array>): readonly number[] => [...value]
+  return JSON.stringify({
+    peerReference: observation.peerReference === undefined ? null : encodePeerReference(observation.peerReference),
+    localName: observation.localName,
+    rssi: observation.rssi,
+    connectable: observation.connectable,
+    serviceUuids: observation.serviceUuids,
+    manufacturerData:
+      observation.manufacturerData?.map(entry => ({ companyId: entry.companyId, data: bytes(entry.data) })) ?? null,
+    serviceData: observation.serviceData?.map(entry => ({ service: entry.service, data: bytes(entry.data) })) ?? null
+  })
+}
+
+export function publicConnectionEvents(
+  source: BoundedAsyncStream<ConnectionLifecycleEvent<string>>
+): AsyncIterable<BleConnectionEvent> {
+  return broadcastConnectionEvents(mapPublicConnectionEvents(source))
+}
+
+export function broadcastConnectionEvents(
+  source: AsyncIterable<BleConnectionEvent>
+): AsyncIterable<BleConnectionEvent> {
+  return new PublicConnectionEventBroadcast(source)
+}
+
+function mapPublicConnectionEvents(
+  source: BoundedAsyncStream<ConnectionLifecycleEvent<string>>
+): AsyncIterable<BleConnectionEvent> {
+  return {
+    [Symbol.asyncIterator]() {
+      const iterator = source[Symbol.asyncIterator]()
+      return {
+        async next(): Promise<IteratorResult<BleConnectionEvent, undefined>> {
+          while (true) {
+            const item = await iterator.next()
+            if (item.done) return { done: true, value: undefined }
+            if (item.value.kind !== 'value') {
+              if (item.value.kind === 'terminal') return { done: true, value: undefined }
+              throw contractError('stream.overflow', 'connection', 'public-connection.events')
+            }
+            const event = item.value.value
+            return {
+              done: false,
+              value: Object.freeze({
+                kind: event.kind,
+                previous: event.previous,
+                current: event.current,
+                cause: event.cause,
+                connectionGeneration: String(event.connectionGeneration),
+                sequence: event.sequence
+              })
+            }
+          }
+        },
+        return: async () => {
+          await iterator.return()
+          return { done: true, value: undefined }
+        },
+        [Symbol.asyncIterator]() {
+          return this
+        }
+      }
+    }
   }
+}
+
+class PublicConnectionEventBroadcast implements AsyncIterable<BleConnectionEvent> {
+  private readonly subscribers = new Set<CoreBoundedStream<BleConnectionEvent>>()
+  private pumping = false
+  private terminalReason: 'closed' | 'source-failed' | null = null
+
+  constructor(private readonly source: AsyncIterable<BleConnectionEvent>) {}
+
+  [Symbol.asyncIterator](): AsyncIterator<BleConnectionEvent> {
+    const stream = new CoreBoundedStream<BleConnectionEvent>(
+      { itemCapacity: capacity(64), byteCapacity: capacity(64 * 1024), reservedControlCapacity: capacity(1) },
+      'error'
+    )
+    if (this.terminalReason === null) {
+      this.subscribers.add(stream)
+      this.startPump()
+    } else {
+      stream.closeWithReason(this.terminalReason)
+    }
+    const iterator = stream[Symbol.asyncIterator]()
+    return {
+      next: async () => {
+        const item = await iterator.next()
+        if (item.done) return { done: true, value: undefined }
+        if (item.value.kind === 'value') return { done: false, value: item.value.value }
+        if (item.value.kind === 'overflow') {
+          throw contractError('stream.overflow', 'connection', 'public-connection.events')
+        }
+        return { done: true, value: undefined }
+      },
+      return: async () => {
+        this.subscribers.delete(stream)
+        await iterator.return()
+        return { done: true, value: undefined }
+      }
+    }
+  }
+
+  private startPump(): void {
+    if (this.pumping) return
+    this.pumping = true
+    this.pump().catch(() => undefined)
+  }
+
+  private async pump(): Promise<void> {
+    try {
+      for await (const event of this.source) {
+        for (const subscriber of this.subscribers) subscriber.emit(event, 512)
+      }
+      this.terminalReason = 'closed'
+      for (const subscriber of this.subscribers) subscriber.closeWithReason('closed')
+    } catch {
+      this.terminalReason = 'source-failed'
+      for (const subscriber of this.subscribers) subscriber.closeWithReason('source-failed')
+    }
+  }
+}
+
+export function peerFromPublicObservation(
+  observation: PublicScanObservation | AdvertisementObservation<string> | IpcAdvertisement
+): BlePeer {
+  return 'peer' in observation ? observation.peer : projectPublicScanObservation(observation).peer
+}
+
+function projectPublicScanObservation(
+  observation: AdvertisementObservation<string> | IpcAdvertisement
+): PublicScanObservation {
   const normalized = normalizeScanObservation(observation)
-  return snapshotBlePeer({
-    id: String(observation.device.id),
-    name: observation.localName.state === 'present' ? observation.localName.value : null,
-    rssi: observation.rssi.state === 'present' ? observation.rssi.value : null,
+  const isCompact = 'peerId' in observation
+  const id = isCompact ? observation.peerId : String(observation.device.id)
+  const name = isCompact
+    ? observation.localName
+    : observation.localName.state === 'present'
+      ? observation.localName.value
+      : null
+  const rssi = isCompact ? observation.rssi : observation.rssi.state === 'present' ? observation.rssi.value : null
+  const peer = snapshotBlePeer({
+    id,
+    name,
+    rssi,
     reference: normalized.peerReference ?? null,
     sources: ['scan-observed'],
     lastAdvertisement: normalized
   })
-}
-
-function isCompactObservation(observation: PublicScanObservation): observation is IpcAdvertisement {
-  return 'peerId' in observation
+  const observedAtMonotonicMs = isCompact ? null : Number(observation.receivedAtMonotonicMs)
+  return Object.freeze({ ...normalized, peer, observedAtMonotonicMs })
 }
 
 function isReferenceLike(value: unknown): value is object {
@@ -545,22 +793,139 @@ export function assertPublicScanOptions(options: ScanOptions): void {
   }
   if (
     options.delivery !== undefined &&
-    options.delivery !== 'latest' &&
-    options.delivery !== 'balanced' &&
-    options.delivery !== 'lossless-bounded' &&
-    options.delivery !== 'custom'
+    (typeof options.delivery === 'object'
+      ? options.delivery.preset !== 'custom'
+      : options.delivery !== 'latest' && options.delivery !== 'balanced' && options.delivery !== 'lossless-bounded')
   ) {
     throw contractError('argument.invalid', 'scan', 'public-ble-manager.scan.delivery')
   }
+  if (
+    typeof options.delivery === 'object' &&
+    (options.delivery.budget === undefined ||
+      !Number.isSafeInteger(options.delivery.budget.itemCapacity) ||
+      options.delivery.budget.itemCapacity <= 0 ||
+      !Number.isSafeInteger(options.delivery.budget.byteCapacity) ||
+      options.delivery.budget.byteCapacity <= 0)
+  ) {
+    throw contractError('argument.invalid', 'scan', 'public-ble-manager.scan.delivery.budget')
+  }
 }
 
-export async function findPeerInScan(scan: ScanSession, select: FindOptions['select']): Promise<BlePeer> {
+export function assertPublicConnectOptions(options: ConnectOptions): void {
+  const allowed = new Set(['signal', 'timeoutMs', 'intent', 'transport', 'preferredPhy'])
+  if (Object.keys(options).some(key => !allowed.has(key))) {
+    throw contractError('argument.invalid', 'connection', 'public-ble-manager.connect.options')
+  }
+  if (options.intent !== undefined && options.intent !== 'direct' && options.intent !== 'when-available') {
+    throw contractError('argument.invalid', 'connection', 'public-ble-manager.connect.intent')
+  }
+  if (options.transport !== undefined && options.transport !== 'le' && options.transport !== 'auto') {
+    throw contractError('argument.invalid', 'connection', 'public-ble-manager.connect.transport')
+  }
+  if (options.preferredPhy !== undefined) {
+    if (
+      !Array.isArray(options.preferredPhy) ||
+      options.preferredPhy.length === 0 ||
+      options.preferredPhy.some(phy => phy !== 'le-1m' && phy !== 'le-2m' && phy !== 'le-coded')
+    ) {
+      throw contractError('argument.invalid', 'connection', 'public-ble-manager.connect.preferred-phy')
+    }
+  }
+}
+
+export function assertPublicChooseOptions(options: ChooseOptions): void {
+  const allowed = new Set(['signal', 'timeoutMs', 'filters', 'optionalServices', 'acceptAllDevices'])
+  if (Object.keys(options).some(key => !allowed.has(key))) {
+    throw contractError('argument.invalid', 'chooser', 'public-ble-manager.choose.options')
+  }
+  if (options.filters !== undefined && !Array.isArray(options.filters)) {
+    throw contractError('argument.invalid', 'chooser', 'public-ble-manager.choose.filters')
+  }
+  if (options.filters !== undefined) {
+    for (const filter of options.filters) {
+      if (typeof filter !== 'object' || filter === null || Array.isArray(filter)) {
+        throw contractError('argument.invalid', 'chooser', 'public-ble-manager.choose.filter')
+      }
+      const allowedFilterKeys = new Set(['serviceUuids', 'manufacturerData', 'localNamePrefix'])
+      if (Object.keys(filter).some(key => !allowedFilterKeys.has(key))) {
+        throw contractError('argument.invalid', 'chooser', 'public-ble-manager.choose.filter.options')
+      }
+      if (filter.serviceUuids !== undefined) {
+        if (!Array.isArray(filter.serviceUuids)) {
+          throw contractError('argument.invalid', 'chooser', 'public-ble-manager.choose.filter.services')
+        }
+        for (const uuid of filter.serviceUuids) assertChooseUuid(uuid)
+      }
+      if (filter.localNamePrefix !== undefined && typeof filter.localNamePrefix !== 'string') {
+        throw contractError('argument.invalid', 'chooser', 'public-ble-manager.choose.filter.name-prefix')
+      }
+      if (filter.manufacturerData !== undefined) {
+        if (!Array.isArray(filter.manufacturerData)) {
+          throw contractError('argument.invalid', 'chooser', 'public-ble-manager.choose.filter.manufacturer-data')
+        }
+        for (const manufacturer of filter.manufacturerData) {
+          if (
+            typeof manufacturer !== 'object' ||
+            manufacturer === null ||
+            !Number.isSafeInteger(manufacturer.companyIdentifier) ||
+            manufacturer.companyIdentifier < 0 ||
+            (manufacturer.dataPrefix !== undefined && !(manufacturer.dataPrefix instanceof Uint8Array))
+          ) {
+            throw contractError('argument.invalid', 'chooser', 'public-ble-manager.choose.filter.manufacturer-entry')
+          }
+        }
+      }
+      const hasServiceCriterion = filter.serviceUuids !== undefined && filter.serviceUuids.length > 0
+      const hasManufacturerCriterion = filter.manufacturerData !== undefined && filter.manufacturerData.length > 0
+      const hasNameCriterion = filter.localNamePrefix !== undefined && filter.localNamePrefix.length > 0
+      if (!hasServiceCriterion && !hasManufacturerCriterion && !hasNameCriterion) {
+        throw contractError('scan.filter-invalid', 'chooser', 'public-ble-manager.choose.filter-empty')
+      }
+    }
+  }
+  if (options.optionalServices !== undefined && !Array.isArray(options.optionalServices)) {
+    throw contractError('argument.invalid', 'chooser', 'public-ble-manager.choose.optional-services')
+  }
+  if (options.optionalServices !== undefined) {
+    for (const uuid of options.optionalServices) assertChooseUuid(uuid)
+  }
+  if (options.acceptAllDevices !== undefined && typeof options.acceptAllDevices !== 'boolean') {
+    throw contractError('argument.invalid', 'chooser', 'public-ble-manager.choose.accept-all-devices')
+  }
+}
+
+function assertChooseUuid(value: unknown): void {
+  if (!(typeof value === 'string' || typeof value === 'number')) {
+    throw contractError('argument.invalid', 'chooser', 'public-ble-manager.choose.uuid')
+  }
+  try {
+    canonicalUuid(typeof value === 'number' ? value.toString(16) : value)
+  } catch {
+    throw contractError('argument.invalid', 'chooser', 'public-ble-manager.choose.uuid')
+  }
+}
+
+export async function findPeerInScan(
+  scan: ScanSession,
+  select: FindOptions['select'],
+  operation: {
+    readonly signal: AbortSignal | null
+    readonly deadline: number | null
+    readonly now: () => number
+  } | null = null
+): Promise<BlePeer> {
   const iterator = scan.observations[Symbol.asyncIterator]()
   while (true) {
     const item = await iterator.next()
     if (item.done) throw rehydratePublicError(contractError('operation.timed-out', 'scan', 'public-ble-manager.find'))
     if (item.value.kind === 'terminal') {
       if (item.value.reason === 'operation-timed-out') {
+        throw rehydratePublicError(contractError('operation.timed-out', 'scan', 'public-ble-manager.find'))
+      }
+      if (operation !== null && operation.signal !== null && operation.signal.aborted) {
+        throw rehydratePublicError(contractError('operation.aborted', 'scan', 'public-ble-manager.find'))
+      }
+      if (operation !== null && operation.deadline !== null && operation.deadline <= operation.now()) {
         throw rehydratePublicError(contractError('operation.timed-out', 'scan', 'public-ble-manager.find'))
       }
       throw rehydratePublicError(contractError('stream.closed', 'scan', 'public-ble-manager.find'))

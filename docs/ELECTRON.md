@@ -16,18 +16,20 @@ Runnable composition lives in [`example-electron/`](../example-electron/)
 2. create the router and install the binding;
 3. authenticate `WebContents`;
 4. expose a narrow preload bridge (no generic `ipcRenderer`);
-5. initialize `ElectronRendererBleClient` (`initialize`, `request`, `subscribeConnectionEvents`, `destroy`);
-6. issue versioned `client.request` commands for scan/connect/GATT — the renderer client has no `scan()`/`connect()` methods;
+5. create the public `BleManager` with `createElectronRendererBleManager({ transport })`;
+6. use the same `scan`/`find`, `connect`, `discover`, `read`, `subscribe`, and `destroy` vocabulary as other hosts;
 7. release renderer resources, destroy the binding, destroy the manager.
 
 BrowserWindow must use `contextIsolation: true` and `nodeIntegration: false`.
 Security internals live in [`ELECTRON_SECURITY_MODEL.md`](ELECTRON_SECURITY_MODEL.md).
 
-In main, build a `BleManager` from a provider the same way Node does, then bind
-IPC. The renderer uses `ElectronRendererBleClient` — not `BleManager`.
+In main, build the host-owned generic manager from a provider, then bind IPC.
+The renderer uses the public `BleManager` façade; the low-level
+`ElectronRendererBleClient` remains an implementation seam for the transport
+and advanced boundary tests, not an application API.
 
 ```ts
-import { createBleManagerFromProvider, DEFAULT_BLE_MANAGER_OPTIONS } from 'unified-ble-manager'
+import { createBleManagerFromProvider, DEFAULT_BLE_MANAGER_OPTIONS } from 'unified-ble-manager/advanced'
 import {
   coreBluetoothCompatibility,
   createElectronMainCoreBluetoothBackendProvider
@@ -57,9 +59,9 @@ const manager = await createBleManagerFromProvider(
 They deliberately split physical-radio ownership from renderer use:
 
 - the Electron **main** process creates one selected owned backend and owns the
-  `BleManager`/radio lifecycle;
+  generic manager/radio lifecycle;
 - the preload exposes a narrow versioned IPC transport to the renderer;
-- the renderer uses `ElectronRendererBleClient` and can never select a radio,
+- the renderer uses the public `BleManager` and can never select a radio,
   access a native addon, or impersonate another renderer;
 - `ElectronMainBleBinding` authenticates each `WebContents` from host facts,
   owns the attachment/session mapping, bounds outbound events, and cleans up
@@ -114,12 +116,12 @@ leases on main-frame cross-document navigation or renderer-process exit, and
 waits for that cleanup before a replacement document can bootstrap. Child
 frames cannot bootstrap, route, release, or acknowledge BLE ownership.
 
-The renderer creates `ElectronRendererBleClient` from that preload transport,
-calls `initialize()` before issuing requests, and calls `destroy()` during its
-own teardown. The main process calls `binding.destroy()` before it destroys the
-manager. The binding handles operation correlation, event acknowledgement,
-bounded backpressure, cancellation routing, and retryable cleanup; applications
-must not duplicate those policies.
+The renderer creates the public manager from the preload transport and calls
+`destroy()` during its own teardown. The public factory initializes the
+low-level client internally. The main process calls `binding.destroy()` before
+it destroys the manager. The binding handles operation correlation, event
+acknowledgement, bounded backpressure, cancellation routing, and retryable
+cleanup; applications must not duplicate those policies.
 
 For a connected opaque handle, `subscribeConnectionEvents(connectionHandle)`
 returns a versioned lifecycle subscription. Its `events` stream contains

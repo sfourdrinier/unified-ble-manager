@@ -2,6 +2,17 @@
 
 # Expo plugin option reference
 
+> PR10 deferral: the RC1 five-field restoration/plugin schema documented below
+> is retained for native/plugin contract tests, but is not the current PR6
+> application configuration recipe. Do not copy `iosNativeProtocolRestoration`
+> or author `clientId`/`hostSessionScope` in application code until the PR10
+> Expo v2 schema and native-authoritative restoration slice lands.
+
+Everything below this notice is historical schema/reference material for the
+plugin contract tests. It is intentionally non-copyable application guidance
+until PR10 lands; current PR6 consumers must not treat the table or JSON block
+as a supported release recipe.
+
 Configure the published plugin as `unified-ble-manager`. The plugin's supported
 options are exactly the schema implemented in `plugin/src/withBLE.ts`:
 

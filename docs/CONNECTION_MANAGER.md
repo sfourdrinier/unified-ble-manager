@@ -3,35 +3,31 @@
 # Connection ownership and reconnect policy
 
 Unified BLE 4.0 has one public `BleManager` and generation-bound `Connection`
-handles. The shared core owns connection admission, cancellation, deadlines,
+handles. The shared core owns connection admission, cancellation, timeouts,
 late-completion quarantine, disconnect invalidation, and deterministic cleanup.
 Applications own product retry and reconnect policy.
 
-There is no separate package reconnect manager, hidden retry engine, or global
-radio singleton.
+There is no hidden retry engine or global radio singleton. The optional
+`createConnectionSupervisor()` API is an explicit PR6E application-owned
+supervisor with visible retry/gate state; it never runs implicitly.
 
 ## One connection lease
 
 ```ts
-import { deadline } from 'unified-ble-manager'
+import { createReactNativeBleManager } from 'unified-ble-manager/react-native'
 
 const abortController = new AbortController()
-const options = {
-  signal: abortController.signal,
-  deadline: deadline(manager.monotonicNow() + 15_000)
-}
-
-const connection = await manager.connect(peerId, options)
+const manager = await createReactNativeBleManager()
+const options = { signal: abortController.signal, timeoutMs: 15_000 }
 
 try {
-  const database = await connection.discover(options)
-  const snapshot = await database.snapshot()
-  // Resolve paths from this snapshot and perform GATT operations.
+  await manager.withConnection(peerId, options, async connection => {
+    const database = await connection.discover(options)
+    const characteristic = database.service('180f').characteristic('2a19')
+    await characteristic.read(options)
+  })
 } finally {
-  const cleanup = await connection.release()
-  if (cleanup.state === 'release-failed') {
-    throw new Error('The connection lease did not release cleanly.')
-  }
+  await manager.destroy()
 }
 ```
 
@@ -44,9 +40,7 @@ and resolve fresh paths instead of reusing the previous snapshot.
 `withConnection()` owns one lease and releases it on every terminal path:
 
 ```ts
-import { withConnection } from 'unified-ble-manager'
-
-const value = await withConnection(manager, peerId, options, async connection => {
+const value = await manager.withConnection(peerId, options, async connection => {
   const database = await connection.discover(options)
   return readBatteryLevel(database, options)
 })
@@ -70,10 +64,7 @@ async function connectWithProductPolicy(manager, peerId, signal) {
     }
 
     try {
-      return await manager.connect(peerId, {
-        signal,
-        deadline: deadline(manager.monotonicNow() + 15_000)
-      })
+      return await manager.connect(peerId, { signal, timeoutMs: 15_000 })
     } catch (error) {
       if (!isProductRetryableBleError(error) || attempt === 5) {
         throw error

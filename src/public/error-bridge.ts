@@ -20,9 +20,14 @@ export function rehydratePublicPromise<Value>(operation: Promise<Value>): Promis
   })
 }
 
+interface CleanupResultLike {
+  readonly state: 'released' | 'release-failed'
+  readonly failures: readonly object[]
+}
+
 export async function runWithCleanup<Value>(
   operation: () => Promise<Value>,
-  cleanup: () => Promise<unknown>
+  cleanup: () => Promise<CleanupResultLike | void>
 ): Promise<Value> {
   let outcome: { readonly kind: 'value'; readonly value: Value } | { readonly kind: 'error'; readonly error: unknown }
   try {
@@ -50,8 +55,8 @@ export async function runWithCleanup<Value>(
   return outcome.value
 }
 
-function resolvedCleanupFailure(value: unknown): Error | null {
-  if (typeof value !== 'object' || value === null || !('state' in value) || value.state !== 'release-failed') {
+function resolvedCleanupFailure(value: CleanupResultLike | void): Error | null {
+  if (value === undefined || value.state !== 'release-failed') {
     return null
   }
   const error = new Error('BLE cleanup failed')

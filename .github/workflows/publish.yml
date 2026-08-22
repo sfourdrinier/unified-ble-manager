@@ -313,11 +313,11 @@ jobs:
       # their initial npm publication. Once npm contains the immutable version,
       # reruns reuse that registry tarball solely to finish release creation.
       - name: Fetch main for stable tag verification
-        if: env.NPM_DIST_TAG == 'latest' && steps.npm_status.outputs.package_published != 'true'
+        if: steps.release_channel.outputs.is_stable == 'true' && steps.npm_status.outputs.package_published != 'true'
         run: git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
 
       - name: Verify stable tag points at current main
-        if: env.NPM_DIST_TAG == 'latest' && steps.npm_status.outputs.package_published != 'true'
+        if: steps.release_channel.outputs.is_stable == 'true' && steps.npm_status.outputs.package_published != 'true'
         run: |
           set -euo pipefail
           TAG_COMMIT="$(git rev-parse "${GITHUB_REF_NAME}^{commit}")"
@@ -342,11 +342,11 @@ jobs:
           set -euo pipefail
           VER="$(node -p "require('./package.json').version")"
           REGISTRY_TARBALL=""
-          for ATTEMPT in $(seq 1 12); do
+          for ATTEMPT in $(seq 1 36); do
             if REGISTRY_TARBALL="$(npm view "unified-ble-manager@${VER}" dist.tarball --json 2>/dev/null | node -e "let body = ''; process.stdin.setEncoding('utf8'); process.stdin.on('data', chunk => { body += chunk }); process.stdin.on('end', () => { const value = JSON.parse(body); if (typeof value !== 'string' || !value.startsWith('https://')) { throw new Error('npm dist.tarball must be an HTTPS URL'); } process.stdout.write(value) })")"; then
               break
             fi
-            echo "npm registry metadata is not visible yet (attempt ${ATTEMPT}/12)"
+            echo "npm registry metadata is not visible yet (attempt ${ATTEMPT}/36)"
             sleep 5
           done
           if [ -z "${REGISTRY_TARBALL}" ]; then
@@ -375,7 +375,7 @@ jobs:
           fi
 
           PROVENANCE_VERIFIED=false
-          for ATTEMPT in $(seq 1 12); do
+          for ATTEMPT in $(seq 1 36); do
             if npm view "unified-ble-manager@${VER}" dist.attestations --json 2>/dev/null | node -e "
               let body = '';
               process.stdin.setEncoding('utf8');
@@ -393,7 +393,7 @@ jobs:
               PROVENANCE_VERIFIED=true
               break
             fi
-            echo "npm provenance metadata is not visible yet (attempt ${ATTEMPT}/12)"
+            echo "npm provenance metadata is not visible yet (attempt ${ATTEMPT}/36)"
             sleep 5
           done
           if [ "${PROVENANCE_VERIFIED}" != true ]; then
@@ -414,7 +414,7 @@ jobs:
           ATTESTATIONS_FILE="$(mktemp)"
           trap 'rm -f "${ATTESTATIONS_FILE}"' EXIT
           ATTESTATIONS_READY=false
-          for ATTEMPT in $(seq 1 12); do
+          for ATTEMPT in $(seq 1 36); do
             if ATTESTATIONS_URL="$(npm view "unified-ble-manager@${VER}" dist.attestations.url --json 2>/dev/null | node -e "let body = ''; process.stdin.setEncoding('utf8'); process.stdin.on('data', chunk => { body += chunk }); process.stdin.on('end', () => { const value = JSON.parse(body); if (typeof value !== 'string' || !value.startsWith('https://registry.npmjs.org/')) throw new Error('npm attestation URL must use the npm registry HTTPS origin'); process.stdout.write(value) })")" && \
               curl --fail --location --silent --show-error --proto '=https' \
                 --output "${ATTESTATIONS_FILE}" \
@@ -423,7 +423,7 @@ jobs:
               ATTESTATIONS_READY=true
               break
             fi
-            echo "npm provenance attestations are not visible yet (attempt ${ATTEMPT}/12)"
+            echo "npm provenance attestations are not visible yet (attempt ${ATTEMPT}/36)"
             sleep 5
           done
           if [ "${ATTESTATIONS_READY}" != true ]; then
@@ -435,7 +435,6 @@ jobs:
             "${GITHUB_SHA}" \
             "${GITHUB_REF_NAME}" \
             "https://github.com/sfourdrinier/unified-ble-manager"
-
 
       # Tags remain manual. After npm succeeds, create the GitHub Release from
       # CHANGELOG.md notes so the Releases page matches the published package.

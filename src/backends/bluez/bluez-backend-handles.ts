@@ -166,8 +166,15 @@ export class BluezGattDatabase implements GattDatabase<string, string, string> {
       services.push(
         Object.freeze({
           path: Object.freeze(servicePath),
-          primary: true,
-          includedServices: Object.freeze([])
+          primary: service.primary,
+          includedServices: Object.freeze(
+            service.includedServices.map(included =>
+              Object.freeze({
+                uuid: included.uuid,
+                occurrence: opaqueId(included.objectPath, 'service-occurrence', String(this.path.databaseId))
+              })
+            )
+          )
         })
       )
       for (const characteristic of service.characteristics) {

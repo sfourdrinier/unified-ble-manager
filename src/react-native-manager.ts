@@ -2,7 +2,7 @@
 
 import type { NativeBackendIdentity } from './backend-contract/identity'
 import { contractError } from './backend-contract/errors'
-import { opaqueId } from './backend-contract/primitives'
+import { byteLimit, opaqueId } from './backend-contract/primitives'
 import {
   createReactNativeAndroidBackendProvider,
   reactNativeAndroidCompatibility,
@@ -18,6 +18,7 @@ import {
 import { createBleManagerFromProvider, DEFAULT_BLE_MANAGER_OPTIONS, type BleManager } from './manager/ble-manager'
 import type { Spec as NativeUnifiedBleProtocolControl } from './NativeUnifiedBleProtocolControl'
 import type { ReactNativeRestorationBackendProvider } from './backends/reactnative/react-native-restoration'
+import type { DiagnosticsOptions } from './public/host-identity'
 
 export type ReactNativeBlePlatform = 'android' | 'apple'
 
@@ -30,6 +31,8 @@ export interface ReactNativeBleManagerOptions {
   readonly managerId: string
   /** Host authentication scope bound to the one native restoration adopter. */
   readonly hostSessionScope: string
+  readonly adapterId?: string
+  readonly diagnostics?: DiagnosticsOptions
   readonly createOwnerId?: () => string
 }
 
@@ -46,8 +49,22 @@ export async function createReactNativeBleManagerWithEnvironment(
   if (options.hostSessionScope.length === 0) {
     throw contractError('argument.invalid', 'restoration', 'react-native-manager.host-session-scope')
   }
+  const expectedAdapterId =
+    options.platform === 'android' ? reactNativeAndroidDefaultAdapterId() : reactNativeAppleDefaultAdapterId()
+  if (options.adapterId !== undefined && options.adapterId !== String(expectedAdapterId)) {
+    throw contractError('adapter.unavailable', 'adapter', 'react-native-manager.adapter')
+  }
   const provider = providerFor(options)
-  const managerOptions = { ...DEFAULT_BLE_MANAGER_OPTIONS, now: options.now }
+  const managerOptions = {
+    ...DEFAULT_BLE_MANAGER_OPTIONS,
+    now: options.now,
+    maximumValueBytes:
+      options.diagnostics?.maximumValueBytes === undefined
+        ? DEFAULT_BLE_MANAGER_OPTIONS.maximumValueBytes
+        : byteLimit(options.diagnostics.maximumValueBytes),
+    traceMaximumRecords: options.diagnostics?.traceMaximumRecords ?? DEFAULT_BLE_MANAGER_OPTIONS.traceMaximumRecords,
+    traceMaximumBytes: options.diagnostics?.traceMaximumBytes ?? DEFAULT_BLE_MANAGER_OPTIONS.traceMaximumBytes
+  }
   const scope: `${string}:${string}` = `react-native:${options.platform}`
   const clientId = opaqueId(options.clientId, 'client', scope)
   return createBleManagerFromProvider(

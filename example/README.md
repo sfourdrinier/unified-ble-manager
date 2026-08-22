@@ -3,8 +3,9 @@
 # Classic React Native fixture
 
 This is a repository fixture for the 4.0 React Native host. It constructs the
-manager through `createReactNativeBleManager` with a stable `hostSessionScope`,
-bytes, `AbortSignal`, and snapshot-derived paths. Its dependency is
+manager through `createReactNativeBleManager` with bytes, `AbortSignal`, and
+snapshot-derived objects. Restoration identity is native-owned by the planned
+PR10 integration; the fixture does not author a host restoration scope. Its dependency is
 `unified-ble-manager: file:..`, so it exercises this checkout; it is not a
 published-package install recipe.
 

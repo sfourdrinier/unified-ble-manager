@@ -1,128 +1,81 @@
 <!-- docs/HELPERS.md -->
 
-# Public manager helpers
+# Application helpers
 
-Helpers sit on the host-neutral `BleManager`, `Connection`, `DiscoveredGattDatabase`, and `Subscription` handles. They do not pick a backend, retry connections, or hide cancellation.
+The normal application surface is the host-specific factory returning one
+public `BleManager`. It owns operation cancellation, bounded streams, GATT
+generation checks, and cleanup receipts. Custom backend authors can use the
+typed helpers under `/advanced`; application code should use the façade methods
+shown here.
 
-```ts
-import {
-  collectNotifications,
-  connectAndDiscover,
-  defaultScanDelivery,
-  find,
-  firstNotification,
-  scanForServices,
-  scanUntil,
-  throwIfCleanupFailed,
-  withConnection,
-  withDiscoveredConnection
-} from 'unified-ble-manager'
-```
-
-## Scan and connect
-
-`scanUntil()` starts one scan, waits until the predicate matches, and always stops the session. `find()` is the same function.
+## Find, connect, and discover
 
 ```ts
-import { capacity, deadline, scanUntil } from 'unified-ble-manager'
+import { createReactNativeBleManager } from 'unified-ble-manager/react-native'
 import { HEART_RATE_SERVICE } from 'unified-ble-manager/profiles/heart-rate'
 
-const abortController = new AbortController()
-const until = deadline(manager.monotonicNow() + 15_000)
+const ble = await createReactNativeBleManager()
+const abort = new AbortController()
 
-const observation = await scanUntil(manager, {
-  scan: {
-    filter: {
-      serviceUuids: [HEART_RATE_SERVICE],
-      manufacturerData: [],
-      localNamePrefix: null
-    },
-    duplicatePolicy: 'merged',
-    timestampPolicy: 'source-then-receipt',
-    delivery: {
-      itemCapacity: capacity(32),
-      byteCapacity: capacity(16 * 1024),
-      reservedControlCapacity: capacity(2),
-      overflowPolicy: 'drop-oldest'
-    },
-    deadline: until,
-    signal: abortController.signal,
-    sharing: { mode: 'owner', allowSharing: false }
-  },
-  matches: candidate =>
-    candidate.localName.state === 'present' && candidate.localName.value.includes('Polar')
-})
+try {
+  const peer = await ble.find({
+    query: { anyOf: [{ services: { any: [HEART_RATE_SERVICE] } }] },
+    signal: abort.signal,
+    timeoutMs: 15_000,
+    select: 'first'
+  })
 
-const connected = await connectAndDiscover(manager, observation.device.id, {
-  signal: abortController.signal,
-  deadline: until
-})
+  await ble.withDiscoveredConnection(peer, { signal: abort.signal, timeoutMs: 15_000 }, async ({ gatt }) => {
+    const characteristic = gatt.service(HEART_RATE_SERVICE).characteristic('2a37')
+    const bytes = await characteristic.read({ signal: abort.signal, timeoutMs: 5_000 })
+    consume(bytes)
+  })
+} finally {
+  await ble.destroy()
+}
 ```
 
-`connectAndDiscover()` returns `{ connection, database, snapshot }` and leaves the connection owned by the caller on success. If discovery fails, it releases the connection and preserves both the operation error and the cleanup error (`AggregateError` when both fail). The deadline is the one you passed in.
-
-`scanForServices(manager, uuids, { matches, scan })` fills a Heart Rate-style filter and `defaultScanDelivery()` unless you override them.
-
-`withDiscoveredConnection(manager, peerId, options, fn)` connects, discovers, runs `fn({ connection, database, snapshot })`, and always releases the lease.
-
-`throwIfCleanupFailed(record, operation)` throws a `BackendContractError` when `record.state === 'release-failed'`.
+`find()` owns and stops its scan. `withConnection()` and
+`withDiscoveredConnection()` release their connection lease even when the
+operation or callback fails. If both the callback and cleanup fail, the public
+error bridge preserves both failures in an `AggregateError`. Scan observations
+expose the advertised name as `localName`.
 
 ## Notifications
 
-Resolve a path from the snapshot. Never build occurrences or generations by hand.
+GATT objects are generation-bound views. Subscribe through the characteristic
+object and always remove the returned subscription:
 
 ```ts
-import { capacity, deadline, firstNotification } from 'unified-ble-manager'
-import { resolveCharacteristicPath } from 'unified-ble-manager/profiles/commands'
-import { heartRateMeasurementSelector, parseHeartRateMeasurement } from 'unified-ble-manager/profiles/heart-rate'
-
-const until = deadline(manager.monotonicNow() + 15_000)
-const path = await resolveCharacteristicPath(connected.snapshot, heartRateMeasurementSelector())
-
-const bytes = await firstNotification(connected.database, path, {
-  signal: abortController.signal,
-  deadline: until,
-  delivery: {
-    itemCapacity: capacity(16),
-    byteCapacity: capacity(8 * 1024),
-    reservedControlCapacity: capacity(2),
-    overflowPolicy: 'drop-oldest'
-  }
+const characteristic = gatt.service(HEART_RATE_SERVICE).characteristic('2a37')
+const subscription = await characteristic.subscribe({
+  signal: abort.signal,
+  timeoutMs: 10_000,
+  stream: 'balanced'
 })
 
-const measurement = parseHeartRateMeasurement(bytes)
-```
-
-`firstNotification()` removes the subscription before it returns. `collectNotifications()` does the same after at most `maximumValues` payloads.
-
-## Scoped connection ownership
-
-```ts
-import { deadline, withConnection } from 'unified-ble-manager'
-import { readBatteryLevel } from 'unified-ble-manager/profiles/standard-commands'
-
-const until = deadline(manager.monotonicNow() + 15_000)
-const batteryPercent = await withConnection(
-  manager,
-  observation.device.id,
-  { signal: abortController.signal, deadline: until },
-  async connection => {
-    const database = await connection.discover({
-      signal: abortController.signal,
-      deadline: until
-    })
-    return readBatteryLevel(database, {
-      signal: abortController.signal,
-      deadline: until
-    })
+try {
+  for await (const event of subscription.values) {
+    if (event.kind === 'value') consume(event.value.value)
+    break
   }
-)
+} finally {
+  await subscription.remove()
+}
 ```
 
-The helper always releases the lease. It never reconnects.
+Values are `Uint8Array`; notification events retain their delivery mode,
+monotonic observation time, and sequence number. Do not retain a GATT object
+after disconnect, service change, or rediscovery.
 
 ## Host boundaries
 
-Capabilities come from the instantiated backend. Web Bluetooth uses its explicit host entrypoint and chooser capability. Electron renderers use `ElectronRendererBleClient`. Tauri uses the zero-plumbing `createTauriBleManager()` factory; tests use `createTauriBleManagerWithEnvironment()`.
+Capabilities come from the instantiated backend. Web Bluetooth uses its
+explicit chooser entrypoint. Electron renderers use
+`createElectronRendererBleManager()` over the authenticated preload transport;
+the low-level `ElectronRendererBleClient` is an internal boundary seam. Tauri
+uses `createTauriBleManager()`; tests use
+`createTauriBleManagerWithEnvironment()`.
 
-See [`PROFILES_AND_COMMANDS.md`](PROFILES_AND_COMMANDS.md), [`WEB.md`](WEB.md), [`ELECTRON.md`](ELECTRON.md), and [`PLATFORMS.md`](PLATFORMS.md).
+See [`PROFILES_AND_COMMANDS.md`](PROFILES_AND_COMMANDS.md), [`WEB.md`](WEB.md),
+[`ELECTRON.md`](ELECTRON.md), and [`PLATFORMS.md`](PLATFORMS.md).

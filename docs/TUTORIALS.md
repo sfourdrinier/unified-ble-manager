@@ -2,57 +2,29 @@
 
 # Public API tutorials
 
-These recipes assume you already constructed a `BleManager` for your host. See [`GETTING_STARTED.md`](GETTING_STARTED.md). Web Bluetooth replaces the scan with `chooser.choose()`. Tauri and the Electron renderer use different client types. On `BleManager`, pass `deadline(...)` into `scan` and `connect`; GATT methods accept that same value. Import `BackendContractError` from `unified-ble-manager` when catching optional-feature absence.
+These recipes assume you already constructed a public `BleManager` for your host. See [`GETTING_STARTED.md`](GETTING_STARTED.md). Web Bluetooth uses `ble.choose()` from a user gesture; it does not provide continuous scanning. All public operations use `timeoutMs` and `AbortSignal`. Catch `BleError` from `unified-ble-manager` when handling optional-feature absence.
 
-Every cancellable call takes an `AbortSignal`. Scan and connect deadlines on `BleManager` use `deadline()`. GATT helpers on `Connection` / `DiscoveredGattDatabase` accept the same `deadline` value.
+Every cancellable call takes an `AbortSignal`. `BleManager.find`, `scan`, and `connect` accept operation-level `timeoutMs`; GATT objects accept the same public operation options.
 
 ## Scan, connect, and discover
 
 ```ts
-import { capacity, deadline, scanUntil } from 'unified-ble-manager'
+import { BleError } from 'unified-ble-manager'
 import { HEART_RATE_SERVICE } from 'unified-ble-manager/profiles/heart-rate'
 
 const controller = new AbortController()
-const until = deadline(manager.monotonicNow() + 20_000)
-
-const observation = await scanUntil(manager, {
-  scan: {
-    filter: {
-      serviceUuids: [HEART_RATE_SERVICE],
-      manufacturerData: [],
-      localNamePrefix: null
-    },
-    duplicatePolicy: 'merged',
-    timestampPolicy: 'source-then-receipt',
-    delivery: {
-      itemCapacity: capacity(32),
-      byteCapacity: capacity(16 * 1024),
-      reservedControlCapacity: capacity(2),
-      overflowPolicy: 'drop-oldest'
-    },
-    deadline: until,
-    signal: controller.signal,
-    sharing: { mode: 'owner', allowSharing: false }
-  },
-  matches: candidate =>
-    candidate.localName.state === 'present' && candidate.localName.value.includes('Polar')
-    // Polar often puts the full name in the scan response. Use 'merged' so that
-    // packet is not dropped after a nameless first advertisement.
-})
-
-const connection = await manager.connect(observation.device.id, {
+const peer = await manager.find({
+  query: { anyOf: [{ services: { any: [HEART_RATE_SERVICE] } }] },
+  timeoutMs: 20_000,
   signal: controller.signal,
-  deadline: until
+  select: 'first'
 })
-
-const database = await connection.discover({
-  signal: controller.signal,
-  deadline: until
-})
-const snapshot = await database.snapshot()
+const connection = await manager.connect(peer, { signal: controller.signal, timeoutMs: 15_000 })
+const database = await connection.discover({ signal: controller.signal, timeoutMs: 15_000 })
+const snapshot = database.snapshot()
 ```
 
-The advertised name is `observation.localName`. `observation.device` is identity only (`id`, address, stability).
+The public `BlePeer` snapshot carries `name` (from normalized `localName`), `rssi`, a scoped reference when the host can issue one, and the last normalized advertisement.
 
 ## Read and write
 
@@ -85,7 +57,7 @@ try {
     response: 'required'
   })
 } catch (error) {
-  if (!(error instanceof BackendContractError) || (error.normalized.code !== 'gatt.not-found' && error.normalized.code !== 'gatt.property-not-supported')) {
+  if (!(error instanceof BleError) || (error.code !== 'gatt.not-found' && error.code !== 'gatt.property-not-supported')) {
     throw error
   }
 }
@@ -96,20 +68,11 @@ A new connection or rediscovery needs a fresh snapshot and fresh paths. Stale pa
 ## Notifications
 
 ```ts
-import { capacity } from 'unified-ble-manager'
-import { resolveCharacteristicPath } from 'unified-ble-manager/profiles/commands'
-import { heartRateMeasurementSelector } from 'unified-ble-manager/profiles/heart-rate'
-
-const measurementPath = await resolveCharacteristicPath(snapshot, heartRateMeasurementSelector())
-const subscription = await database.subscribe(measurementPath, {
+const measurement = database.characteristic('180D', '2A37')
+const subscription = await measurement.subscribe({
   signal: controller.signal,
-  deadline: until,
-  delivery: {
-    itemCapacity: capacity(64),
-    byteCapacity: capacity(64 * 1024),
-    reservedControlCapacity: capacity(2),
-    overflowPolicy: 'drop-oldest'
-  }
+  timeoutMs: 15_000,
+  stream: 'balanced'
 })
 
 try {

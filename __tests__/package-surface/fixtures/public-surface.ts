@@ -28,6 +28,7 @@ import type {
   AdapterReadinessOptions,
   BleDiagnostics
 } from 'unified-ble-manager'
+import type { ConnectionIntent, ConnectionSupervisor, ConnectOptions, RetryPolicy } from 'unified-ble-manager'
 // Ensure root types are considered used for TS noUnusedLocals
 type _RootImportCheck = BlePeer &
   BleConnection &
@@ -48,6 +49,14 @@ declare const backendReference: BackendPeerReference
 declare const backendPeers: PeerDirectoryBackend<string>
 void backendReference
 void backendPeers
+declare const connectionIntent: ConnectionIntent
+declare const connectOptions: ConnectOptions
+declare const retryPolicy: RetryPolicy
+declare const supervisor: ConnectionSupervisor
+void connectionIntent
+void connectOptions
+void retryPolicy
+void supervisor
 declare const publicDatabase: GattDatabase
 declare const publicService: GattService
 declare const publicCharacteristic: GattCharacteristic
@@ -173,8 +182,11 @@ import type { ElectronMainBleBinding } from 'unified-ble-manager/electron/main'
 import {
   assertElectronAdvertisementObservation,
   ElectronRendererBleClient,
+  createElectronRendererBleManager,
+  createElectronRendererBleManagerWithEnvironment,
   isElectronConnectionEventsStreamHandle
 } from 'unified-ble-manager/electron/renderer'
+import type { ElectronRendererBleManagerEnvironment } from 'unified-ble-manager/electron/renderer'
 import type {
   ElectronConnectionEventCleanupReceipt,
   ElectronConnectionEventSubscription,
@@ -784,6 +796,10 @@ observe(createDbusNextBluezBackendProvider({ busKind: bluezBusKind, now: () => 0
 observe(createNativeWinRtBackendProvider)
 observe(createElectronMainWinRtBackendProvider)
 observe(ElectronRendererBleClient)
+observe(createElectronRendererBleManager)
+observe(createElectronRendererBleManagerWithEnvironment)
+declare const electronRendererManagerEnvironment: ElectronRendererBleManagerEnvironment
+observe(electronRendererManagerEnvironment)
 observe(assertElectronAdvertisementObservation)
 observe(isElectronConnectionEventsStreamHandle(electronConnectionEventStreamHandle))
 observe(electronConnectionEventSubscription.events)

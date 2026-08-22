@@ -7,6 +7,7 @@ import {
 } from '../../backend-contract/advertisement'
 import {
   BUILT_IN_FEATURE_IDS,
+  createBackendOperationCapabilityRegistration,
   createFeatureRegistry,
   type FeatureImplementation,
   type FeatureRegistration,
@@ -229,14 +230,25 @@ export abstract class DeterministicBackendBase {
     this.maximumOperationBytes = byteLimit(options.maximumOperationBytes ?? 512 * 1024)
     this.currentMaximumWriteLength = options.maximumWriteLength ?? 20
     this.assertMaximumWriteLength(this.currentMaximumWriteLength)
+    const customFeatureRegistrations = options.featureRegistrations ?? []
     const backendFeatures = createFeatureRegistry(
       Object.freeze([
+        ...(customFeatureRegistrations.some(registration => registration.id === BUILT_IN_FEATURE_IDS.connectionDirect)
+          ? []
+          : [
+              createBackendOperationCapabilityRegistration({
+                implementationVersion: UNIFIED_BLE_IMPLEMENTATION_VERSION,
+                sourceDigest: 'deterministic-direct-connection-v1',
+                tckSuiteId: 'capability.catalog-v2',
+                requiredScenarioIds: ['scenario.scan-connect-discover-read-notify-destroy']
+              })
+            ]),
         createDeterministicMaximumWriteLengthRegistration(
           () => this.currentMaximumWriteLength,
           () => Number(this.clock.now()),
           Number(this.maximumOperationBytes)
         ),
-        ...(options.featureRegistrations ?? [])
+        ...customFeatureRegistrations
       ])
     )
     this.features = createCoreFeatureRegistry(backendFeatures)

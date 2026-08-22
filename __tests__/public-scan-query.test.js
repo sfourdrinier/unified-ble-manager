@@ -105,6 +105,22 @@ describe('canonical public ScanQuery v1', () => {
       '0000180f-0000-1000-8000-00805f9b34fb'
     ])
     expect(first.digest).toMatch(/^scan-query-v1:[0-9a-f]{16}$/)
+    const clauses = [{ names: { prefixes: ['Target'] } }, { rssi: { minimum: -60 } }]
+    expect(normalizeScanQuery({ anyOf: clauses }).digest).toBe(
+      normalizeScanQuery({ anyOf: [...clauses].reverse() }).digest
+    )
+  })
+
+  test('canonical ordering does not depend on locale collation', () => {
+    const originalLocaleCompare = String.prototype.localeCompare
+    String.prototype.localeCompare = () => {
+      throw new Error('locale-sensitive ordering is forbidden for semantic digests')
+    }
+    try {
+      expect(() => normalizeScanQuery({ anyOf: [{ names: { exact: ['ä', 'z'] } }] })).not.toThrow()
+    } finally {
+      String.prototype.localeCompare = originalLocaleCompare
+    }
   })
 
   test('uses the same normalized query for the public residual stream and find helper', async () => {
@@ -142,7 +158,7 @@ describe('canonical public ScanQuery v1', () => {
       },
       32
     )
-    await expect(pending).resolves.toMatchObject({ value: { kind: 'value', value: { peerId: 'target' } } })
+    await expect(pending).resolves.toMatchObject({ value: { kind: 'value', value: { peer: { id: 'target' } } } })
     await filtered.close()
 
     const scan = {
@@ -150,5 +166,65 @@ describe('canonical public ScanQuery v1', () => {
       stop: async () => ({ state: 'released', failures: [] })
     }
     await expect(findPeerInScan(scan, 'first')).rejects.toMatchObject({ code: 'stream.closed' })
+  })
+
+  test('coalesces duplicate Tauri-style observations only when requested', async () => {
+    const source = new CoreBoundedStream(
+      { itemCapacity: capacity(8), byteCapacity: capacity(4096), reservedControlCapacity: capacity(1) },
+      'drop-oldest'
+    )
+    const filtered = filterScanObservations(source, normalizeScanQuery(), 'coalesced')
+    const first = filtered[Symbol.asyncIterator]()
+    const firstValue = first.next()
+    const observation = {
+      peerId: 'duplicate-peer',
+      localName: 'Duplicate',
+      rssi: -40,
+      txPowerLevel: null,
+      serviceUuids: [],
+      manufacturerData: [],
+      serviceData: []
+    }
+    source.emit(observation, 32)
+    source.emit(observation, 32)
+    await expect(firstValue).resolves.toMatchObject({
+      value: { kind: 'value', value: { peer: { id: 'duplicate-peer' } } }
+    })
+    const second = first.next()
+    source.closeWithReason('closed')
+    await expect(second).resolves.toMatchObject({ value: { kind: 'terminal', reason: 'closed' } })
+    await expect(first.next()).resolves.toMatchObject({ done: true })
+    await first.return()
+  })
+
+  test('coalesced scans deliver changed current-view observations', async () => {
+    const source = new CoreBoundedStream(
+      { itemCapacity: capacity(8), byteCapacity: capacity(4096), reservedControlCapacity: capacity(1) },
+      'drop-oldest'
+    )
+    const filtered = filterScanObservations(source, normalizeScanQuery(), 'coalesced')
+    const iterator = filtered[Symbol.asyncIterator]()
+    const firstValue = iterator.next()
+    const firstObservation = {
+      peerId: 'current-view-peer',
+      localName: 'Current view',
+      rssi: -40,
+      txPowerLevel: null,
+      serviceUuids: [],
+      manufacturerData: [],
+      serviceData: []
+    }
+    source.emit(firstObservation, 32)
+    await expect(firstValue).resolves.toMatchObject({ value: { kind: 'value', value: { rssi: -40 } } })
+
+    const changedValue = iterator.next()
+    source.emit({ ...firstObservation, rssi: -39 }, 32)
+    await expect(changedValue).resolves.toMatchObject({ value: { kind: 'value', value: { rssi: -39 } } })
+
+    const unchangedValue = iterator.next()
+    source.emit({ ...firstObservation, rssi: -39 }, 32)
+    source.closeWithReason('closed')
+    await expect(unchangedValue).resolves.toMatchObject({ value: { kind: 'terminal', reason: 'closed' } })
+    await iterator.return()
   })
 })

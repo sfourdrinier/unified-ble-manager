@@ -22,6 +22,11 @@
 namespace {
 
 constexpr double kProtocolVersion = static_cast<double>(unified_ble::native_protocol::v2::kProtocolVersion);
+constexpr double kAbiVersion = static_cast<double>(unified_ble::native_protocol::v2::kAbiVersion);
+constexpr double kContractVersion = 1.0;
+constexpr double kCapabilitySchemaVersion = 1.0;
+constexpr double kEventSchemaVersion = 1.0;
+constexpr double kTraceFormatVersion = 1.0;
 constexpr double kMaximumSafeInteger = 9007199254740991.0;
 
 bool validString(NSString *value) {
@@ -42,12 +47,16 @@ bool validInteger(double value) {
   return std::isfinite(value) && value >= 1.0 && value <= kMaximumSafeInteger && std::trunc(value) == value;
 }
 
-bool compatibleRange(double minimum, double maximum) {
+bool compatibleRangeFor(double minimum, double maximum, double selectedVersion) {
   return validInteger(minimum) &&
       validInteger(maximum) &&
       minimum <= maximum &&
-      minimum <= kProtocolVersion &&
-      maximum >= kProtocolVersion;
+      minimum <= selectedVersion &&
+      maximum >= selectedVersion;
+}
+
+bool compatibleRange(double minimum, double maximum) {
+  return compatibleRangeFor(minimum, maximum, kProtocolVersion);
 }
 
 NSDictionary *attachmentDictionary(
@@ -289,12 +298,12 @@ RCT_EXPORT_MODULE(UnifiedBleProtocolControl)
           resolve:(RCTPromiseResolveBlock)resolve
            reject:(RCTPromiseRejectBlock)reject {
   const auto rangesCompatible =
-      compatibleRange(request.nativeProtocol().minimum(), request.nativeProtocol().maximum()) &&
-      compatibleRange(request.abi().minimum(), request.abi().maximum()) &&
-      compatibleRange(request.backendContract().minimum(), request.backendContract().maximum()) &&
-      compatibleRange(request.capabilitySchema().minimum(), request.capabilitySchema().maximum()) &&
-      compatibleRange(request.eventSchema().minimum(), request.eventSchema().maximum()) &&
-      compatibleRange(request.traceFormat().minimum(), request.traceFormat().maximum());
+      compatibleRangeFor(request.nativeProtocol().minimum(), request.nativeProtocol().maximum(), kProtocolVersion) &&
+      compatibleRangeFor(request.abi().minimum(), request.abi().maximum(), kAbiVersion) &&
+      compatibleRangeFor(request.backendContract().minimum(), request.backendContract().maximum(), kContractVersion) &&
+      compatibleRangeFor(request.capabilitySchema().minimum(), request.capabilitySchema().maximum(), kCapabilitySchemaVersion) &&
+      compatibleRangeFor(request.eventSchema().minimum(), request.eventSchema().maximum(), kEventSchemaVersion) &&
+      compatibleRangeFor(request.traceFormat().minimum(), request.traceFormat().maximum(), kTraceFormatVersion);
   NSDictionary *requestedAttachment = attachmentDictionary(
       request.attachmentId(),
       request.backendInstanceId(),
@@ -361,8 +370,8 @@ RCT_EXPORT_MODULE(UnifiedBleProtocolControl)
   _radio.delegate = _radioDelegate;
   _execution->receiveAdapterState((__bridge void *)[_radio adapterSnapshot]);
   resolve(@{
-    @"nativeProtocol": @1,
-    @"abi": @1,
+    @"nativeProtocol": @2,
+    @"abi": @2,
     @"backendContract": @1,
     @"capabilitySchema": @1,
     @"eventSchema": @1,

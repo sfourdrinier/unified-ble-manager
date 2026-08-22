@@ -1,7 +1,7 @@
 // src/backend-contract/capabilities.ts
 
 import { contractError } from './errors'
-import type { SerializableRecord, VersionRange } from './primitives'
+import { version, versionRange, type SerializableRecord, type VersionRange } from './primitives'
 
 /** Canonical built-in capability identifiers. Third-party identifiers remain open namespaced strings. */
 export const BUILT_IN_FEATURE_IDS = Object.freeze({
@@ -183,6 +183,61 @@ export interface FeatureRegistry {
   readonly descriptors: readonly CapabilityDescriptor[]
 }
 
+export interface BackendOperationCapabilityOptions {
+  readonly implementationVersion: string
+  readonly sourceDigest: string
+  readonly tckSuiteId: string
+  readonly requiredScenarioIds: readonly string[]
+  readonly limitations?: readonly Limitation[]
+}
+
+/** Creates a truthful marker for an operation implemented by a concrete backend seam. */
+export function createBackendOperationCapabilityRegistration(
+  options: BackendOperationCapabilityOptions
+): FeatureRegistry['registrations'][number] {
+  const limitations = Object.freeze(
+    options.limitations === undefined
+      ? [
+          Object.freeze({
+            code: 'live-radio-qualification-pending',
+            explanation:
+              'The backend operation has deterministic contract coverage; physical-radio qualification remains separate.',
+            affectedGuarantee: 'reliability-qualified physical-radio interoperability'
+          })
+        ]
+      : options.limitations.map(limitation => Object.freeze({ ...limitation }))
+  )
+  const selectedSchemaRange = versionRange(version('capability-schema', 1), version('capability-schema', 1))
+  const scenarioIds = Object.freeze([...options.requiredScenarioIds])
+  const implementation: FeatureImplementation<SerializableRecord, SerializableRecord> = Object.freeze({
+    async invoke(): Promise<SerializableRecord> {
+      throw contractError('lifecycle.invalid-state', 'capability', 'connection:direct.invoke-without-connection')
+    }
+  })
+  return Object.freeze({
+    id: BUILT_IN_FEATURE_IDS.connectionDirect,
+    state: 'limited' as const,
+    selectedSchemaRange,
+    implementationOrigin: 'backend-native' as const,
+    implementation,
+    tck: Object.freeze({
+      suiteId: options.tckSuiteId,
+      requiredScenarioIds: scenarioIds,
+      contractRange: selectedSchemaRange
+    }),
+    evidence: Object.freeze({
+      receiptId: `${options.sourceDigest}:deterministic`,
+      evidenceLevel: 'deterministic' as const,
+      implementationVersion: options.implementationVersion,
+      sourceDigest: options.sourceDigest,
+      scenarioIds,
+      limitations
+    }),
+    limitations,
+    limits: Object.freeze({ availability: Object.freeze({ maximum: 1, minimum: null, unit: 'boolean' }) })
+  })
+}
+
 /** Validates the data-only capability projection used by every host boundary. */
 export function validateCapabilityDescriptor(descriptor: CapabilityDescriptor): CapabilityDescriptor {
   const operation = 'validateCapabilityDescriptor'
@@ -284,10 +339,46 @@ export function snapshotCapabilityDescriptors(
   if (ids.size !== snapshots.length || backendGeneration.length === 0) {
     throw contractError('protocol.violation', 'capability', 'snapshotCapabilityDescriptors')
   }
+  const complete = [...snapshots]
+  for (const entry of BUILT_IN_FEATURE_CATALOG) {
+    if (ids.has(entry.id)) continue
+    complete.push(unsupportedBuiltInDescriptor(entry.id, entry.requiredTckSuiteId))
+  }
   return Object.freeze({
     schemaVersion: 2,
     backendGeneration,
-    descriptors: Object.freeze(snapshots)
+    descriptors: Object.freeze(complete)
+  })
+}
+
+function unsupportedBuiltInDescriptor(id: BuiltInFeatureId, suiteId: string): CapabilityDescriptor {
+  const schemaRange = versionRange(version('capability-schema', 1), version('capability-schema', 1))
+  const scenarioId = 'capability.truth-limits-evidence-and-binding'
+  const limitation = Object.freeze({
+    code: 'not-implemented',
+    explanation: 'The instantiated host did not register this capability.',
+    affectedGuarantee: 'support'
+  })
+  return Object.freeze({
+    id,
+    state: 'unsupported',
+    selectedSchemaRange: schemaRange,
+    implementationOrigin: 'backend-native',
+    tck: Object.freeze({
+      suiteId,
+      requiredScenarioIds: Object.freeze([scenarioId]),
+      contractRange: schemaRange
+    }),
+    evidence: Object.freeze({
+      receiptId: `capability-missing-${id}`,
+      evidenceLevel: 'blocked',
+      implementationVersion: 'unknown',
+      sourceDigest: 'capability-catalog-completion-v2',
+      scenarioIds: Object.freeze([scenarioId]),
+      limitations: Object.freeze([limitation])
+    }),
+    limitations: Object.freeze([limitation]),
+    limits: Object.freeze({ availability: Object.freeze({ maximum: 1, minimum: null, unit: 'boolean' }) })
   })
 }
 

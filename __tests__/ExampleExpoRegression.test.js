@@ -49,15 +49,16 @@ describe('Expo example cold-review regressions', () => {
       expect(service).toMatch(/async stopScan[\s\S]*?assertReleased\(await scan\.stop\(\)[\s\S]*?this\.scan = null/)
       expect(service).toMatch(/async stopNotification[\s\S]*?assertReleased\(await subscription\.remove\(\)[\s\S]*?this\.notification = null/)
       expect(service).toMatch(/this\.connection = connection[\s\S]*?await this\.disconnect\(\)/)
-      expect(service).toMatch(/isOptionalFeatureAbsence\(error\)[\s\S]*skipped: true, reason: error\.normalized\.code/)
+      expect(service).toMatch(/isOptionalFeatureAbsence\(error\)[\s\S]*skipped: true, reason: error\.code/)
       expect(service).toContain('advertisement: observation')
     }
   })
 
-  test('Expo binds restoration adoption to its stable application identity', () => {
+  test('Expo delegates identity to the public React Native factory', () => {
     const service = readExampleSource('example-expo', 'services/BLEService/BLEService.ts')
-    expect(service).toContain("const EXPO_APPLICATION_HOST_SESSION_SCOPE = 'com.sfourdrinier.bleplxexample'")
-    expect(service).toContain('hostSessionScope: EXPO_APPLICATION_HOST_SESSION_SCOPE')
+    expect(service).toContain('createReactNativeBleManager({ instanceId:')
+    expect(service).not.toContain('hostSessionScope')
+    expect(service).not.toContain('clientId:')
   })
 
   test('nRF flow respects Apple-managed MTU and treats Android MTU failure as a failed flow', () => {

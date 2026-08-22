@@ -87,6 +87,8 @@ export interface BluezGattCharacteristicRecord {
 export interface BluezGattServiceRecord {
   readonly objectPath: string
   readonly uuid: Uuid
+  readonly primary: boolean
+  readonly includedServices: readonly { readonly objectPath: string; readonly uuid: Uuid }[]
   readonly characteristics: readonly BluezGattCharacteristicRecord[]
 }
 

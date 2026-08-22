@@ -1,6 +1,7 @@
 // src/public/capabilities.ts — application capability projection
 
 import { BleError } from './errors'
+import { contractError } from '../backend-contract/errors'
 import {
   snapshotCapabilityDescriptor,
   validateCapabilitySnapshot,
@@ -21,6 +22,18 @@ export interface BleCapabilities {
   get(id: FeatureId): CapabilityDescriptor | undefined
   require(id: BuiltInFeatureId): CapabilityDescriptor
   list(): readonly CapabilityDescriptor[]
+}
+
+export function assertDirectConnectionCapability(
+  descriptor: CapabilityDescriptor | null | undefined,
+  operation: string
+): void {
+  if (descriptor === undefined || descriptor === null || descriptor.state === 'unsupported') {
+    throw contractError('capability.unsupported', 'connection', operation)
+  }
+  if (descriptor.state === 'unavailable') {
+    throw contractError('capability.unavailable', 'connection', operation)
+  }
 }
 
 export class PublicBleCapabilities implements BleCapabilities {

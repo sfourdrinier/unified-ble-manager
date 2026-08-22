@@ -193,7 +193,7 @@ export class ElectronConnectionEventStreamRegistry {
           await this.terminalize(resources, rendererLease, handle, resource, 'source-failed')
           return
         }
-        const item = lifecycleStreamItemRecord(next.value, connection, attachment)
+        const item = lifecycleStreamItemRecord(next.value, connection, attachment, rendererLease)
         if (item === null) {
           console.info('[ElectronConnectionEventStreamRegistry] Stale lifecycle event quarantined:', {
             handle,
@@ -364,12 +364,16 @@ function publishedLifecycleTerminalReason(
 function lifecycleStreamItemRecord(
   item: StreamItem<ConnectionLifecycleEvent<string>>,
   connection: ConnectionLifecycleSource,
-  attachment: AttachmentRecord<string>
+  attachment: AttachmentRecord<string>,
+  rendererLease: RendererLeaseIdentity
 ): import('../backend-contract/primitives').SerializableRecord | null {
   if (item.kind === 'value') {
     const event = snapshotConnectionLifecycleEvent(item.value)
     return connectionLifecycleEventMatches(event, connection, attachment)
-      ? Object.freeze({ kind: 'value', value: event })
+      ? Object.freeze({
+          kind: 'value',
+          value: Object.freeze({ ...event, ownerLeaseId: String(rendererLease.leaseId) })
+        })
       : null
   }
   if (item.kind === 'overflow') {

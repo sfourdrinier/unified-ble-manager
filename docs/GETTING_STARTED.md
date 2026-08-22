@@ -101,26 +101,25 @@ async function ensureAndroidBluetoothPermission(): Promise<void> {
 ```ts
 import { createReactNativeBleManager } from 'unified-ble-manager/react-native'
 
-const manager = await createReactNativeBleManager({
-  clientId: 'com.example.app.ble-client',
-  managerId: 'com.example.app.ble-manager',
-  hostSessionScope: 'com.example.app'
-})
+const manager = await createReactNativeBleManager()
 ```
 
-`hostSessionScope` is the security scope for this app session. Use a stable string, not a React render id.
+The host factory owns ephemeral identity generation. Restoration-bound identity comes from the trusted native host and native configuration; application code does not pass client, manager, or host-session IDs.
 
 ### 4. Check the adapter, then run the loop
 
 ```ts
-const adapter = await manager.adapterState()
-if (adapter.power !== 'on' || isAuthorizationBlocking(adapter.authorization) || adapter.availability !== 'available') {
+const adapter = await manager.adapter.state()
+if (
+  adapter.power !== 'on' ||
+  adapter.availability !== 'available' ||
+  ['denied', 'restricted', 'unavailable'].includes(adapter.authorization)
+) {
   throw new Error(`Bluetooth is not ready: ${adapter.power} / ${adapter.authorization}`)
 }
 ```
 
-Use the exported `isAuthorizationBlocking` predicate; never gate on a bare
-`authorization !== 'granted'`. Only an explicit refusal — `'denied'`,
+Never gate on a bare `authorization !== 'granted'`. Only an explicit refusal — `'denied'`,
 `'restricted'`, `'unavailable'` — blocks. The other values are not refusals:
 `'unknown'` means the platform exposes no per-application Bluetooth
 authorization concept, as BlueZ on Linux does, or that the host did not query
@@ -128,62 +127,28 @@ one; `'not-determined'` means the user has not been asked yet, and since the
 prompt is raised by *using* the radio rather than by reading the state, blocking
 on it would stop the prompt from ever appearing.
 
-Then run the finite helper journey (`scanUntil` → `withConnection` → `firstNotification` → `destroy`) from the root [`README.md`](../README.md):
+Then run the finite public journey (`find` → `withDiscoveredConnection` → GATT read → `destroy`) from the root [`README.md`](../README.md):
 
 ```ts
-import {
-  deadline,
-  defaultScanDelivery,
-  firstNotification,
-  scanUntil,
-  throwIfCleanupFailed,
-  withConnection
-} from 'unified-ble-manager'
-import { resolveCharacteristicPath } from 'unified-ble-manager/profiles/commands'
-import {
-  HEART_RATE_SERVICE,
-  heartRateMeasurementSelector,
-  parseHeartRateMeasurement
-} from 'unified-ble-manager/profiles/heart-rate'
-
-const abort = new AbortController()
-const journeyDeadline = deadline(manager.monotonicNow() + 20_000)
-const op = { signal: abort.signal, deadline: journeyDeadline }
+import { HEART_RATE_SERVICE, parseHeartRateMeasurement } from 'unified-ble-manager/profiles/heart-rate'
 
 try {
-  const observation = await scanUntil(manager, {
-    scan: {
-      filter: {
-        serviceUuids: [HEART_RATE_SERVICE],
-        manufacturerData: [],
-        localNamePrefix: null
-      },
-      duplicatePolicy: 'merged',
-      timestampPolicy: 'source-then-receipt',
-      delivery: defaultScanDelivery(),
-      deadline: journeyDeadline,
-      signal: abort.signal,
-      sharing: { mode: 'owner', allowSharing: false }
-    },
-    matches: candidate => candidate.localName.state === 'present'
+  const peer = await manager.find({
+    query: { anyOf: [{ services: { any: [HEART_RATE_SERVICE] } }] },
+    timeoutMs: 20_000,
+    select: 'first'
   })
 
-  await withConnection(manager, observation.device.id, op, async connection => {
-    const database = await connection.discover(op)
-    const snapshot = await database.snapshot()
-    const measurementPath = await resolveCharacteristicPath(snapshot, heartRateMeasurementSelector())
-    const bytes = await firstNotification(database, measurementPath, {
-      ...op,
-      delivery: defaultScanDelivery()
-    })
+  await manager.withDiscoveredConnection(peer, { timeoutMs: 15_000 }, async ({ gatt }) => {
+    const bytes = await gatt.characteristic(HEART_RATE_SERVICE, '2A37').read({ timeoutMs: 10_000 })
     consume(parseHeartRateMeasurement(bytes))
   })
 } finally {
-  throwIfCleanupFailed(await manager.destroy(), 'manager.destroy')
+  await manager.destroy()
 }
 ```
 
-`journeyDeadline` is one budget for the whole sample. More recipes: [`TUTORIALS.md`](TUTORIALS.md) and [`HELPERS.md`](HELPERS.md). You can also watch adapter transitions with `manager.adapterStates()` instead of polling.
+Each `timeoutMs` is scoped to its public operation. More recipes: [`TUTORIALS.md`](TUTORIALS.md) and [`HELPERS.md`](HELPERS.md). Use `manager.adapter.waitUntilReady()` when an operation should wait for readiness.
 
 ### What will hurt you
 

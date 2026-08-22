@@ -7,6 +7,7 @@ import {
   capacity,
   createIpcOperationIdFactory,
   ownBytes,
+  opaqueId,
   resourceCount,
   assertIpcVersionsAccepted
 } from '../backend-contract/primitives'
@@ -32,6 +33,7 @@ import type {
   ElectronRendererBootstrap,
   ElectronRendererIpcTransport
 } from './protocol'
+import type { IpcClientLeaseIdentity } from '../backend-contract/ipc'
 
 const rendererEventLimits = Object.freeze({
   itemCapacity: capacity(128),
@@ -117,16 +119,41 @@ export class ElectronRendererBleClient<Attachment extends string, Renderer exten
 
   private async invokeBootstrap(): Promise<ElectronRendererBootstrap<Attachment, Renderer>> {
     const response = await this.transport.invoke(createIpcBootstrapRequest())
-    if (response.kind === 'failure') {
-      throw new BackendContractError(response.error)
+    try {
+      if (response.kind === 'failure') {
+        throw new BackendContractError(response.error)
+      }
+      if (response.kind !== 'bootstrap') {
+        throw contractError('protocol.malformed', 'ipc', 'electron-renderer.bootstrap-response')
+      }
+      assertIpcVersionsAccepted(response.bootstrap.versions, IPC_CLIENT_COMPATIBILITY_OFFER)
+      validateCapabilitySnapshot(
+        response.bootstrap.capabilities,
+        String(response.bootstrap.attachment.backendGeneration)
+      )
+      this.bootstrapValue = response.bootstrap
+      return response.bootstrap
+    } catch (error) {
+      try {
+        await this.releaseRejectedBootstrap(response)
+      } catch (cleanupError) {
+        throw new AggregateError([error, cleanupError], 'Electron bootstrap validation and cleanup both failed')
+      }
+      throw error
     }
-    if (response.kind !== 'bootstrap') {
-      throw contractError('protocol.malformed', 'ipc', 'electron-renderer.bootstrap-response')
+  }
+
+  private async releaseRejectedBootstrap(response: unknown): Promise<void> {
+    const rendererLease = rendererLeaseFromBootstrapResponse(response)
+    if (rendererLease === null) return
+    const release = await this.transport.invoke({ kind: 'release', rendererLease })
+    if (release.kind === 'failure') throw new BackendContractError(release.error)
+    if (release.kind !== 'release') {
+      throw contractError('protocol.malformed', 'ipc', 'electron-renderer.bootstrap-release-response')
     }
-    assertIpcVersionsAccepted(response.bootstrap.versions, IPC_CLIENT_COMPATIBILITY_OFFER)
-    validateCapabilitySnapshot(response.bootstrap.capabilities, String(response.bootstrap.attachment.backendGeneration))
-    this.bootstrapValue = response.bootstrap
-    return response.bootstrap
+    if (release.cleanup.state === 'release-failed') {
+      throw new Error('Electron bootstrap validation cleanup reported release-failed')
+    }
   }
 
   async request(request: ElectronIpcOperationRequest): Promise<ElectronIpcOperationReceipt> {
@@ -161,7 +188,7 @@ export class ElectronRendererBleClient<Attachment extends string, Renderer exten
     }
     request.signal?.addEventListener('abort', abort, { once: true })
     try {
-      const response = await this.transport.invoke({ kind: 'route', envelope })
+      const response = await this.transport.invoke({ kind: 'route', envelope, signal: request.signal })
       if (response.kind === 'failure') {
         throw new BackendContractError(response.error)
       }
@@ -660,6 +687,20 @@ function isRendererRegistrationLoss(error: BackendContractError): boolean {
 
 function isMissingConnectionEventSubscription(error: unknown): boolean {
   return error instanceof BackendContractError && error.normalized.code === 'ownership.denied'
+}
+
+function rendererLeaseFromBootstrapResponse(value: unknown): IpcClientLeaseIdentity | null {
+  if (!isRecord(value) || value.kind !== 'bootstrap' || !isRecord(value.bootstrap)) return null
+  const lease = value.bootstrap.rendererLease
+  if (!isRecord(lease) || typeof lease.leaseId !== 'string' || typeof lease.generation !== 'string') return null
+  return Object.freeze({
+    leaseId: opaqueId(lease.leaseId, 'renderer-lease', 'electron-renderer.bootstrap'),
+    generation: opaqueId(lease.generation, 'renderer-lease-generation', 'electron-renderer.bootstrap')
+  })
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value) && !(value instanceof Uint8Array)
 }
 
 function serializedByteLength(record: SerializableRecord): number {

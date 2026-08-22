@@ -86,7 +86,11 @@ import { createWebBleManager } from 'unified-ble-manager/web'
 
 const ble = await createWebBleManager()
 
-const peer = await ble.choose({ services: [HEART_RATE_SERVICE, BATTERY_SERVICE], timeoutMs: 20_000 })
+const peer = await ble.choose({
+  filters: [{ serviceUuids: [HEART_RATE_SERVICE] }],
+  optionalServices: [BATTERY_SERVICE],
+  timeoutMs: 20_000
+})
 
 const connection = await ble.connect(peer, { timeoutMs: 15_000 })
 const database = await connection.discover({ timeoutMs: 15_000 })

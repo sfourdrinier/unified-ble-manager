@@ -189,6 +189,48 @@ describe('WebBluetoothBackend', () => {
     await expect(backend.destroy()).resolves.toEqual({ state: 'released', failures: [] })
   })
 
+  test('preserves richer chooser grants when authorized-device enumeration has no grant metadata', async () => {
+    const mock = createBoundary()
+    mock.boundary.getAuthorizedDevices = async () => [mock.device]
+    const provider = createWebBluetoothProvider(mock.boundary)
+    const [adapter] = await provider.listAdapters()
+    const backend = await provider.create({ selectedAdapterId: adapter.adapterId })
+    await backend.attach({ coreCompatibility: provider.descriptor.compatibility })
+
+    const selected = await backend.choose(chooserRequest(), noDeadline())
+    await expect(backend.peers.authorized({ signal: null, deadline: null })).resolves.toHaveLength(1)
+    const lease = await backend.connections.connect(selected.peerId, 'grant-preservation-client', noDeadline())
+    const database = await backend.gatt.discover(lease.connection, noDeadline())
+    const characteristic = (await database.snapshot()).characteristics[0]
+    if (characteristic === undefined) throw new Error('expected deterministic Web characteristic')
+    await expect(database.read(characteristic.path, noDeadline())).resolves.toEqual(new Uint8Array([0, 72]))
+
+    await lease.release()
+    await backend.destroy()
+  })
+
+  test('races authorized-device enumeration against abort without retaining a late peer', async () => {
+    const mock = createBoundary()
+    let resolveDevices
+    mock.boundary.getAuthorizedDevices = () =>
+      new Promise(resolve => {
+        resolveDevices = resolve
+      })
+    const provider = createWebBluetoothProvider(mock.boundary)
+    const [adapter] = await provider.listAdapters()
+    const backend = await provider.create({ selectedAdapterId: adapter.adapterId })
+    await backend.attach({ coreCompatibility: provider.descriptor.compatibility })
+    const controller = new AbortController()
+    const pending = backend.peers.authorized({ signal: controller.signal, deadline: null })
+    controller.abort()
+
+    await expect(pending).rejects.toMatchObject({ normalized: { code: 'operation.aborted' } })
+    resolveDevices([mock.device])
+    mock.boundary.getAuthorizedDevices = async () => []
+    await expect(backend.peers.authorized({ signal: null, deadline: null })).resolves.toEqual([])
+    await backend.destroy()
+  })
+
   test('chooses, connects, discovers duplicate-safe paths, and owns read bytes', async () => {
     const mock = createBoundary()
     const provider = createWebBluetoothProvider(mock.boundary)
@@ -716,6 +758,52 @@ describe('WebBluetoothBackend', () => {
     // Verify WithEnvironment manager can be destroyed cleanly
     await expect(manager.destroy()).resolves.toEqual({ state: 'released', failures: [] })
     void provider
+  })
+
+  test('keeps Web chooser match filters separate from optional GATT grants', async () => {
+    const requestDevice = jest.fn(async () => ({
+      id: 'public-web-device',
+      gatt: {
+        connected: false,
+        connect: async function () {
+          return this
+        },
+        disconnect: () => undefined,
+        getPrimaryServices: async () => []
+      },
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined
+    }))
+    const { createWebBleManagerWithEnvironment } = require('../../src/web')
+    const manager = await createWebBleManagerWithEnvironment({
+      environment: {
+        implementationVersion: '4.0.0-rc.2',
+        browserEngine: 'test',
+        bluetooth: {
+          getAvailability: async () => true,
+          requestDevice
+        },
+        isSecureContext: () => true,
+        hasTransientUserActivation: () => true,
+        now: () => 10,
+        setTimer: callback => ({ callback }),
+        clearTimer: () => undefined,
+        addPageLifecycleListener: () => () => undefined
+      }
+    })
+
+    await expect(manager.choose({ filters: [{}] })).rejects.toMatchObject({ code: 'scan.filter-invalid' })
+    expect(requestDevice).not.toHaveBeenCalled()
+    await manager.choose({
+      filters: [{ serviceUuids: [HEART_RATE_SERVICE], localNamePrefix: 'Heart' }],
+      optionalServices: ['180f'],
+      acceptAllDevices: false
+    })
+    expect(requestDevice).toHaveBeenCalledWith({
+      filters: [{ services: [HEART_RATE_SERVICE], manufacturerData: undefined, namePrefix: 'Heart' }],
+      optionalServices: ['0000180f-0000-1000-8000-00805f9b34fb']
+    })
+    await manager.destroy()
   })
 })
 

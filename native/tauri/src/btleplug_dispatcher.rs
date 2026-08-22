@@ -384,6 +384,7 @@ impl BtleplugDispatcher {
                         "capabilities",
                         capabilities::snapshot(&attachment.backend_generation),
                     ),
+                    ("discovery", object([("kind", string("continuous-scan"))])),
                     ("renderer", renderer),
                     (
                         "rendererLease",
@@ -557,12 +558,8 @@ impl BtleplugDispatcher {
                     object([("scanHandle", string(handle.to_owned()))]),
                 )
             }),
-            "connection.connect" => payload.get("handle").and_then(as_string).map(|handle| {
-                (
-                    "connection.disconnect",
-                    object([("connectionHandle", string(handle.to_owned()))]),
-                )
-            }),
+            "connection.connect" => connection_cleanup_payload(payload)
+                .map(|cleanup_payload| ("connection.disconnect", cleanup_payload)),
             "gatt.subscribe" => payload.get("handle").and_then(as_string).map(|handle| {
                 (
                     "gatt.unsubscribe",
@@ -580,9 +577,53 @@ impl BtleplugDispatcher {
                 "__expectedLeaseGeneration".to_owned(),
                 string(expected_lease.1.clone()),
             );
-            self.execute(caller, cleanup_command, cleanup_payload, None)
+            if let Err(error) = self
+                .execute(caller, cleanup_command, cleanup_payload.clone(), None)
                 .await
-                .ok();
+            {
+                let dispatcher = self.clone();
+                let caller = caller.clone();
+                let command = cleanup_command.to_owned();
+                btleplug_runtime().spawn(async move {
+                    dispatcher
+                        .retry_quarantined_cleanup(&caller, &command, cleanup_payload, error)
+                        .await;
+                });
+            }
+        }
+    }
+
+    async fn retry_quarantined_cleanup(
+        &self,
+        caller: &AuthenticatedCaller,
+        command: &str,
+        payload: BTreeMap<String, IpcValue>,
+        _first_error: DispatchError,
+    ) {
+        let mut delay = Duration::from_millis(100);
+        let mut attempts = 0_u32;
+        loop {
+            tokio::time::sleep(delay).await;
+            match self.execute(caller, command, payload.clone(), None).await {
+                Ok(response) if cleanup_succeeded(&response) => return,
+                Ok(_) => {
+                    attempts = attempts.saturating_add(1);
+                    delay = std::cmp::min(delay.saturating_mul(2), Duration::from_secs(5));
+                }
+                Err(error) => {
+                    if error.code == "ownership.denied" {
+                        return;
+                    }
+                    attempts = attempts.saturating_add(1);
+                    if attempts % 8 == 0 {
+                        eprintln!(
+                            "ubm quarantined cleanup still retrying: {}",
+                            error.operation
+                        );
+                    }
+                    delay = std::cmp::min(delay.saturating_mul(2), Duration::from_secs(5));
+                }
+            }
         }
     }
 
@@ -1167,61 +1208,69 @@ impl BtleplugDispatcher {
             DispatchError::new("platform.failure", "connection", "tauri.disconnect")
                 .platform(error.to_string())
         })?;
-        let subscriptions = {
-            let mut state = self.inner.lock().await;
-            let Some(caller_state) = state.callers.get_mut(&key) else {
-                state.peer_owners.remove(&connection.peer_id);
-                drop(state);
-                return Ok(released());
-            };
-            caller_state.connections.remove(&handle);
-            let database_handles = caller_state
-                .databases
-                .iter()
-                .filter_map(|(database_handle, database)| {
-                    (database.connection_handle == handle).then_some(database_handle.clone())
-                })
-                .collect::<HashSet<_>>();
-            let subscription_handles = caller_state
-                .subscriptions
-                .iter()
-                .filter_map(|(subscription_handle, subscription)| {
-                    database_handles
-                        .contains(&subscription.database_handle)
-                        .then_some(subscription_handle.clone())
-                })
-                .collect::<Vec<_>>();
-            let subscriptions = subscription_handles
-                .into_iter()
-                .filter_map(|subscription_handle| {
-                    caller_state.subscriptions.remove(&subscription_handle)
-                })
-                .collect::<Vec<_>>();
-            caller_state
-                .databases
-                .retain(|database_handle, _| !database_handles.contains(database_handle));
-            let event_handles = caller_state
-                .connection_events
-                .iter()
-                .filter_map(|(event_handle, event)| {
-                    (event.connection_handle == handle).then_some(event_handle.clone())
-                })
-                .collect::<Vec<_>>();
-            let event_tasks = event_handles
-                .into_iter()
-                .filter_map(|event_handle| caller_state.connection_events.remove(&event_handle))
-                .filter_map(|event| event.task)
-                .collect::<Vec<_>>();
-            state.peer_owners.remove(&connection.peer_id);
-            (subscriptions, event_tasks)
-        };
-        for subscription in subscriptions.0 {
+        let resources = self
+            .remove_connection_resources(&key, &handle, &connection.peer_id)
+            .await;
+        for subscription in resources.0 {
             subscription.task.abort();
         }
-        for task in subscriptions.1 {
+        for task in resources.1 {
             task.abort();
         }
         Ok(released())
+    }
+
+    async fn remove_connection_resources(
+        &self,
+        caller_key: &str,
+        connection_handle: &str,
+        peer_id: &str,
+    ) -> (Vec<SubscriptionResource>, Vec<TauriJoinHandle<()>>) {
+        let mut state = self.inner.lock().await;
+        let Some(caller_state) = state.callers.get_mut(caller_key) else {
+            state.peer_owners.remove(peer_id);
+            return (Vec::new(), Vec::new());
+        };
+        caller_state.connections.remove(connection_handle);
+        let database_handles = caller_state
+            .databases
+            .iter()
+            .filter_map(|(database_handle, database)| {
+                (database.connection_handle == connection_handle).then_some(database_handle.clone())
+            })
+            .collect::<HashSet<_>>();
+        let subscription_handles = caller_state
+            .subscriptions
+            .iter()
+            .filter_map(|(subscription_handle, subscription)| {
+                database_handles
+                    .contains(&subscription.database_handle)
+                    .then_some(subscription_handle.clone())
+            })
+            .collect::<Vec<_>>();
+        let subscriptions = subscription_handles
+            .into_iter()
+            .filter_map(|subscription_handle| {
+                caller_state.subscriptions.remove(&subscription_handle)
+            })
+            .collect::<Vec<_>>();
+        caller_state
+            .databases
+            .retain(|database_handle, _| !database_handles.contains(database_handle));
+        let event_handles = caller_state
+            .connection_events
+            .iter()
+            .filter_map(|(event_handle, event)| {
+                (event.connection_handle == connection_handle).then_some(event_handle.clone())
+            })
+            .collect::<Vec<_>>();
+        let event_tasks = event_handles
+            .into_iter()
+            .filter_map(|event_handle| caller_state.connection_events.remove(&event_handle))
+            .filter_map(|event| event.task)
+            .collect::<Vec<_>>();
+        state.peer_owners.remove(peer_id);
+        (subscriptions, event_tasks)
     }
 
     async fn subscribe_connection_events(
@@ -1348,6 +1397,7 @@ impl BtleplugDispatcher {
                 attachment,
                 peripheral,
                 caller_state.lease_generation.clone(),
+                resource.connection_handle.clone(),
             )
         };
         let initial_event = object([
@@ -1393,6 +1443,7 @@ impl BtleplugDispatcher {
         let connection_generation = event.3.clone();
         let expected_lease_id = event.4.clone();
         let expected_lease_generation = event.8.clone();
+        let connection_handle = event.9.clone();
         let stream_id_for_task = stream_id.clone();
         let task = tauri::async_runtime::spawn(async move {
             loop {
@@ -1412,6 +1463,19 @@ impl BtleplugDispatcher {
                                 },
                             )
                             .await;
+                        let resources = dispatcher
+                            .remove_connection_resources(
+                                &stream_owner,
+                                &connection_handle,
+                                &peer_id,
+                            )
+                            .await;
+                        for subscription in resources.0 {
+                            subscription.task.abort();
+                        }
+                        for task in resources.1 {
+                            task.abort();
+                        }
                         break;
                     }
                     Err(_) => {
@@ -1499,51 +1563,61 @@ impl BtleplugDispatcher {
         let database_generation = self.id("database-generation");
         let mut characteristic_map = HashMap::new();
         let mut descriptor_map = HashMap::new();
-        let mut service_uuids = HashSet::new();
         let mut service_records = Vec::new();
         let mut characteristic_records = Vec::new();
         let mut descriptor_records = Vec::new();
-        let mut occurrences: HashMap<(Uuid, Uuid), usize> = HashMap::new();
-        for characteristic in peripheral.characteristics() {
-            let service_uuid = characteristic.service_uuid.to_string();
-            if service_uuids.insert(service_uuid.clone()) {
-                service_records.push(object([
-                    ("uuid", string(service_uuid.clone())),
-                    ("occurrence", string("0")),
-                    ("primary", IpcValue::Bool(true)),
-                    ("includedServices", IpcValue::Array(Vec::new())),
-                ]));
-            }
-            let occurrence = occurrences
-                .entry((characteristic.service_uuid, characteristic.uuid))
-                .or_default();
-            let handle = self.id("characteristic");
-            characteristic_records.push(object([
-                ("handle", string(handle.clone())),
-                ("serviceUuid", string(service_uuid)),
-                ("serviceOccurrence", string("0")),
-                (
-                    "characteristicUuid",
-                    string(characteristic.uuid.to_string()),
-                ),
-                ("characteristicOccurrence", string(occurrence.to_string())),
-                (
-                    "properties",
-                    characteristic_properties(characteristic.properties),
-                ),
+        let mut service_occurrences: HashMap<Uuid, usize> = HashMap::new();
+        let mut characteristic_occurrences: HashMap<(Uuid, usize, Uuid), usize> = HashMap::new();
+        for service in peripheral.services() {
+            let service_occurrence = service_occurrences.entry(service.uuid).or_default();
+            let service_uuid = service.uuid.to_string();
+            let current_service_occurrence = *service_occurrence;
+            service_records.push(object([
+                ("uuid", string(service_uuid.clone())),
+                ("occurrence", string(current_service_occurrence.to_string())),
+                ("primary", IpcValue::Bool(service.primary)),
+                ("includedServices", IpcValue::Array(Vec::new())),
             ]));
-            *occurrence += 1;
-            for (index, descriptor) in characteristic.descriptors.iter().enumerate() {
-                let descriptor_handle = self.id("descriptor");
-                descriptor_records.push(object([
-                    ("handle", string(descriptor_handle.clone())),
-                    ("characteristicHandle", string(handle.clone())),
-                    ("uuid", string(descriptor.uuid.to_string())),
-                    ("occurrence", string(index.to_string())),
+            *service_occurrence += 1;
+            for characteristic in &service.characteristics {
+                let occurrence = characteristic_occurrences
+                    .entry((
+                        service.uuid,
+                        current_service_occurrence,
+                        characteristic.uuid,
+                    ))
+                    .or_default();
+                let handle = self.id("characteristic");
+                characteristic_records.push(object([
+                    ("handle", string(handle.clone())),
+                    ("serviceUuid", string(service_uuid.clone())),
+                    (
+                        "serviceOccurrence",
+                        string(current_service_occurrence.to_string()),
+                    ),
+                    (
+                        "characteristicUuid",
+                        string(characteristic.uuid.to_string()),
+                    ),
+                    ("characteristicOccurrence", string(occurrence.to_string())),
+                    (
+                        "properties",
+                        characteristic_properties(characteristic.properties),
+                    ),
                 ]));
-                descriptor_map.insert(descriptor_handle, descriptor.clone());
+                *occurrence += 1;
+                for (index, descriptor) in characteristic.descriptors.iter().enumerate() {
+                    let descriptor_handle = self.id("descriptor");
+                    descriptor_records.push(object([
+                        ("handle", string(descriptor_handle.clone())),
+                        ("characteristicHandle", string(handle.clone())),
+                        ("uuid", string(descriptor.uuid.to_string())),
+                        ("occurrence", string(index.to_string())),
+                    ]));
+                    descriptor_map.insert(descriptor_handle, descriptor.clone());
+                }
+                characteristic_map.insert(handle, characteristic.clone());
             }
-            characteristic_map.insert(handle, characteristic);
         }
         let mut state = self.inner.lock().await;
         let caller_state = state.callers.get_mut(&caller_key(caller)).ok_or_else(|| {
@@ -1573,6 +1647,7 @@ impl BtleplugDispatcher {
             },
         );
         Ok(object([
+            ("schemaVersion", number(2)),
             ("handle", string(database_handle)),
             ("databaseId", string(database_id)),
             ("databaseGeneration", string(database_generation)),
@@ -2152,7 +2227,11 @@ impl BtleplugDispatcher {
             }
             if caller_state.pending_events.len() >= MAX_PENDING_EVENTS {
                 if drop_if_full {
-                    return Ok(());
+                    return Err(DispatchError::new(
+                        "stream.quota",
+                        "stream",
+                        "tauri.event-retention",
+                    ));
                 }
                 return Err(DispatchError::new(
                     "stream.quota",
@@ -2289,16 +2368,36 @@ impl BtleplugDispatcher {
                 false,
             )
             .await;
-        if send_result.is_ok() {
-            self.terminal(
-                caller_key,
-                expected_lease,
-                identity.stream_id,
-                terminal_reason,
-            )
-            .await
-            .ok();
-        }
+        // A full event acknowledgement queue cannot silently remove the
+        // lifecycle source. Keep retrying the terminal until it is delivered
+        // or the renderer explicitly revokes the lease and ownership denial
+        // proves that cleanup has taken over.
+        let terminal_reason = if send_result.is_ok() {
+            terminal_reason
+        } else {
+            "overflow"
+        };
+        let mut terminal_delay = Duration::from_millis(100);
+        let terminal_result = loop {
+            match self
+                .terminal(
+                    caller_key,
+                    expected_lease,
+                    identity.stream_id,
+                    terminal_reason,
+                )
+                .await
+            {
+                Ok(()) => break Ok(()),
+                Err(error) if error.code == "ownership.denied" => break Err(error),
+                Err(_error) => {
+                    tokio::time::sleep(terminal_delay).await;
+                    terminal_delay =
+                        std::cmp::min(terminal_delay.saturating_mul(2), Duration::from_secs(5));
+                }
+            }
+        };
+        terminal_result?;
         let mut state = self.inner.lock().await;
         if let Some(caller) = state.callers.get_mut(caller_key) {
             if caller.lease_id == expected_lease.0 && caller.lease_generation == expected_lease.1 {
@@ -2625,6 +2724,24 @@ impl BtleplugDispatcher {
         }
         cleanup_record(failures)
     }
+}
+
+fn connection_cleanup_payload(payload: &BTreeMap<String, IpcValue>) -> Option<IpcValue> {
+    let handle = payload.get("handle").and_then(as_string)?.to_owned();
+    let peer_id = payload.get("peerId").and_then(as_string)?.to_owned();
+    let connection_id = payload.get("connectionId").and_then(as_string)?.to_owned();
+    let owner_lease_id = payload.get("ownerLeaseId").and_then(as_string)?.to_owned();
+    let connection_generation = payload
+        .get("connectionGeneration")
+        .and_then(as_string)?
+        .to_owned();
+    Some(object([
+        ("connectionHandle", string(handle)),
+        ("peerId", string(peer_id)),
+        ("connectionId", string(connection_id)),
+        ("ownerLeaseId", string(owner_lease_id)),
+        ("connectionGeneration", string(connection_generation)),
+    ]))
 }
 
 impl IpcDispatcher for BtleplugDispatcher {
@@ -3412,6 +3529,14 @@ fn released() -> IpcValue {
         ("state", string("released")),
         ("failures", IpcValue::Array(Vec::new())),
     ])
+}
+
+fn cleanup_succeeded(value: &IpcValue) -> bool {
+    let IpcValue::Object(record) = value else {
+        return false;
+    };
+    matches!(record.get("state"), Some(IpcValue::String(state)) if state == "released")
+        && matches!(record.get("failures"), Some(IpcValue::Array(failures)) if failures.is_empty())
 }
 
 fn cleanup_record(failures: Vec<IpcValue>) -> IpcValue {

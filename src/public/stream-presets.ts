@@ -1,9 +1,21 @@
 // src/public/stream-presets.ts
 
 import { capacity, type Capacity } from '../backend-contract/primitives'
+import { contractError } from '../backend-contract/errors'
 import type { OverflowPolicy } from '../backend-contract/streams'
 
 export type StreamPreset = 'latest' | 'balanced' | 'lossless-bounded' | 'custom'
+
+export interface CustomStreamBudget {
+  readonly itemCapacity: number
+  readonly byteCapacity: number
+  readonly reservedControlCapacity?: number
+  readonly overflowPolicy?: OverflowPolicy
+}
+
+export type StreamPolicy =
+  | Exclude<StreamPreset, 'custom'>
+  | { readonly preset: 'custom'; readonly budget: CustomStreamBudget }
 
 export interface StreamBudget {
   readonly itemCapacity: Capacity
@@ -23,7 +35,7 @@ export interface StreamPresetInput {
  * - `latest`: UI/status where newest value matters (bounded drop-oldest)
  * - `balanced`: normal scan/sensor notifications (bounded drop-oldest with visible notice)
  * - `lossless-bounded`: command/response that must fail rather than drop (terminal overflow)
- * - `custom`: caller-supplied budgets via `/advanced`
+ * - `custom`: caller-supplied budgets through `StreamPolicy`
  */
 export function resolveStreamPreset(input: StreamPresetInput = {}): StreamBudget {
   const preset = input.preset ?? 'balanced'
@@ -54,16 +66,54 @@ export function resolveStreamPreset(input: StreamPresetInput = {}): StreamBudget
       if (custom === undefined || custom.itemCapacity === undefined || custom.byteCapacity === undefined) {
         throw new Error('custom stream preset requires itemCapacity and byteCapacity')
       }
+      const reservedControlCapacity = custom.reservedControlCapacity ?? capacity(2)
+      if (Number(custom.byteCapacity) <= Number(reservedControlCapacity)) {
+        throw contractError('argument.invalid', 'stream', 'stream-preset.custom-byte-capacity')
+      }
       return Object.freeze({
         itemCapacity: custom.itemCapacity,
         byteCapacity: custom.byteCapacity,
-        reservedControlCapacity: custom.reservedControlCapacity ?? capacity(2),
+        reservedControlCapacity,
         overflowPolicy: custom.overflowPolicy ?? 'drop-oldest'
       })
     }
     default:
       throw new Error(`unknown stream preset: ${String(preset)}`)
   }
+}
+
+export function resolveStreamPolicy(policy: StreamPolicy = 'balanced'): StreamBudget {
+  if (typeof policy === 'string') return resolveStreamPreset({ preset: policy })
+  if (policy.preset !== 'custom') {
+    throw contractError('argument.invalid', 'stream', 'public-stream-policy.preset')
+  }
+  const budget = policy.budget
+  const reservedControlCapacity = budget.reservedControlCapacity ?? 2
+  if (
+    !Number.isSafeInteger(budget.itemCapacity) ||
+    budget.itemCapacity <= 0 ||
+    !Number.isSafeInteger(budget.byteCapacity) ||
+    budget.byteCapacity <= 0 ||
+    !Number.isSafeInteger(reservedControlCapacity) ||
+    reservedControlCapacity <= 0 ||
+    budget.byteCapacity <= reservedControlCapacity ||
+    (budget.overflowPolicy !== undefined &&
+      budget.overflowPolicy !== 'latest' &&
+      budget.overflowPolicy !== 'drop-oldest' &&
+      budget.overflowPolicy !== 'drop-newest' &&
+      budget.overflowPolicy !== 'error')
+  ) {
+    throw contractError('argument.invalid', 'stream', 'public-stream-policy.budget')
+  }
+  return resolveStreamPreset({
+    preset: 'custom',
+    custom: {
+      itemCapacity: capacity(budget.itemCapacity),
+      byteCapacity: capacity(budget.byteCapacity),
+      reservedControlCapacity: capacity(reservedControlCapacity),
+      overflowPolicy: budget.overflowPolicy
+    }
+  })
 }
 
 export const STREAM_PRESET_DEFAULTS = Object.freeze({

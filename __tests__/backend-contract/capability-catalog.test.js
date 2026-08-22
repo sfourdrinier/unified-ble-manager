@@ -1,4 +1,8 @@
-const { BUILT_IN_FEATURE_CATALOG, BUILT_IN_FEATURE_IDS } = require('../../src/backend-contract/capabilities')
+const {
+  BUILT_IN_FEATURE_CATALOG,
+  BUILT_IN_FEATURE_IDS,
+  snapshotCapabilityDescriptors
+} = require('../../src/backend-contract/capabilities')
 const fs = require('fs')
 const path = require('path')
 
@@ -20,5 +24,12 @@ describe('built-in capability catalog', () => {
     for (const id of Object.values(BUILT_IN_FEATURE_IDS)) {
       expect(rust).toContain(`"${id}"`)
     }
+  })
+
+  test('completes boundary snapshots with explicit blocked unsupported built-ins', () => {
+    const snapshot = snapshotCapabilityDescriptors([], 'backend-generation-test')
+    expect(snapshot.descriptors).toHaveLength(BUILT_IN_FEATURE_CATALOG.length)
+    expect(snapshot.descriptors.every(descriptor => descriptor.state === 'unsupported')).toBe(true)
+    expect(snapshot.descriptors.every(descriptor => descriptor.evidence.evidenceLevel === 'blocked')).toBe(true)
   })
 })

@@ -33,11 +33,28 @@ describe('PR1 public contract reset (TDD)', () => {
     expect(balanced.itemCapacity).toBe(32)
     expect(lossless.overflowPolicy).toBe('error')
     expect(() => resolveStreamPreset({ preset: 'custom' })).toThrow()
+    expect(() => resolveStreamPreset({ preset: 'custom', custom: { itemCapacity: 1, byteCapacity: 1 } })).toThrow()
     const custom = resolveStreamPreset({
       preset: 'custom',
       custom: { itemCapacity: 10, byteCapacity: 1024 }
     })
     expect(custom.itemCapacity).toBe(10)
+    const customPolicy = require('../lib/commonjs/public/stream-presets').resolveStreamPolicy({
+      preset: 'custom',
+      budget: { itemCapacity: 3, byteCapacity: 256, reservedControlCapacity: 1, overflowPolicy: 'error' }
+    })
+    expect(customPolicy).toMatchObject({
+      itemCapacity: 3,
+      byteCapacity: 256,
+      reservedControlCapacity: 1,
+      overflowPolicy: 'error'
+    })
+    expect(() =>
+      require('../lib/commonjs/public/stream-presets').resolveStreamPolicy({
+        preset: 'custom',
+        budget: { itemCapacity: 1, byteCapacity: 1 }
+      })
+    ).toThrow()
   })
 
   test('Restoration identity is deterministic and matches golden vectors', () => {
@@ -66,22 +83,38 @@ describe('PR1 public contract reset (TDD)', () => {
     expect(e1.attachmentNonce).not.toBe(e2.attachmentNonce)
 
     // deterministic ephemeral injection stable
-    const d1 = createEphemeralHostIdentity({ randomBytes: () => new Uint8Array([1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16]) })
-    const d2 = createEphemeralHostIdentity({ randomBytes: () => new Uint8Array([1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16]) })
+    const d1 = createEphemeralHostIdentity({
+      randomBytes: () => new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16])
+    })
+    const d2 = createEphemeralHostIdentity({
+      randomBytes: () => new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16])
+    })
     expect(d1.attachmentNonce).toBe(d2.attachmentNonce)
   })
 
   test('BleManagerCreateOptions validates and instanceId does not affect restoration', () => {
-    const { normalizeBleManagerCreateOptions, deriveRestorationIdentity } = require('../lib/commonjs/public/host-identity')
+    const {
+      normalizeBleManagerCreateOptions,
+      deriveRestorationIdentity
+    } = require('../lib/commonjs/public/host-identity')
     const base = normalizeBleManagerCreateOptions({ instanceId: 'my-instance' })
     expect(base.instanceId).toBe('my-instance')
     expect(() => normalizeBleManagerCreateOptions({ instanceId: 'bad:id' })).toThrow()
     expect(() => normalizeBleManagerCreateOptions({ restoration: { applicationId: '', restorationId: 'x' } })).toThrow()
 
-    const withInstance = deriveRestorationIdentity({ applicationId: 'com.example.app', restorationId: 'ble', generation: '0' })
-    const withoutInstance = deriveRestorationIdentity({ applicationId: 'com.example.app', restorationId: 'ble', generation: '0' })
+    const withInstance = deriveRestorationIdentity({
+      applicationId: 'com.example.app',
+      restorationId: 'ble',
+      generation: '0'
+    })
+    const withoutInstance = deriveRestorationIdentity({
+      applicationId: 'com.example.app',
+      restorationId: 'ble',
+      generation: '0'
+    })
     // instanceId must not appear in restoration material — same opaque
     expect(withInstance.opaqueRestorationId).toBe(withoutInstance.opaqueRestorationId)
+    expect(() => normalizeBleManagerCreateOptions({ unsupported: true })).toThrow()
   })
 
   test('Advanced entrypoint re-exports low-level contracts', () => {
@@ -96,5 +129,12 @@ describe('PR1 public contract reset (TDD)', () => {
     const expo = require('../lib/commonjs/expo')
     expect(typeof expo.createExpoBleManager).toBe('function')
     expect(typeof expo.createExpoBleManagerWithEnvironment).toBe('function')
+  })
+
+  test('Expo restoration remains fail-closed until the PR10 native contract lands', async () => {
+    const expo = require('../src/expo')
+    await expect(
+      expo.createExpoBleManager({ restoration: { applicationId: 'com.example.app', restorationId: 'ble' } })
+    ).rejects.toMatchObject({ code: 'capability.unsupported' })
   })
 })

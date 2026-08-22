@@ -44,7 +44,17 @@ describe('external backend SDK and offline CLI', () => {
         backendId: 'unified-ble:deterministic-test',
         platformId: 'unified-ble:test'
       })
-      expect(capabilityReport.capabilities).toHaveLength(2)
+      expect(capabilityReport.capabilities).toHaveLength(3)
+      expect(capabilityReport.capabilities.find(capability => capability.id === 'connection:direct')).toMatchObject({
+        state: 'limited',
+        implementationOrigin: 'backend-native',
+        tck: {
+          suiteId: 'capability.catalog-v2',
+          requiredScenarioIds: ['scenario.scan-connect-discover-read-notify-destroy']
+        },
+        evidence: { evidenceLevel: 'deterministic' },
+        limits: { availability: { minimum: null, maximum: 1, unit: 'boolean' } }
+      })
       const maximumWriteLength = capabilityReport.capabilities.find(
         capability => capability.id === 'gatt:maximum-write-length'
       )

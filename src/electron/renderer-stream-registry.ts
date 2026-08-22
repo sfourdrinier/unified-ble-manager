@@ -47,6 +47,7 @@ export interface RendererStreamResources {
 
 export interface ElectronRendererStreamRegistryOptions {
   readonly maximumMessageBytes: number
+  readonly now?: () => number
   readonly publish: (rendererLeaseId: string, event: ElectronBleIpcEvent) => Promise<ElectronEventDelivery>
   readonly createEvent: (
     rendererLease: RendererLeaseIdentity,
@@ -182,9 +183,11 @@ export class ElectronRendererStreamRegistry {
     completeTerminal: () => Promise<void>,
     cleanupRequested: () => boolean
   ): Promise<void> {
+    let nextSequence = 1
+    const now = this.options.now ?? (() => globalThis.performance?.now() ?? Date.now())
     try {
       for await (const item of stream) {
-        const itemRecord = streamItemRecord(item)
+        const itemRecord = streamItemRecord(item, now, () => nextSequence++)
         const event = this.options.createEvent(rendererLease, streamId, itemRecord)
         if (
           snapshotSerializableRecord({
@@ -416,9 +419,13 @@ export class ElectronRendererStreamRegistry {
   }
 }
 
-function streamItemRecord<Value>(item: StreamItem<Value>): SerializableRecord {
+function streamItemRecord<Value>(
+  item: StreamItem<Value>,
+  now: () => number,
+  nextSequence: () => number
+): SerializableRecord {
   if (item.kind === 'value') {
-    return Object.freeze({ kind: 'value', value: snapshotStreamValue(item.value) })
+    return Object.freeze({ kind: 'value', value: snapshotStreamValue(item.value, now, nextSequence) })
   }
   if (item.kind === 'overflow') {
     return Object.freeze({
@@ -438,11 +445,14 @@ function streamItemRecord<Value>(item: StreamItem<Value>): SerializableRecord {
   })
 }
 
-function snapshotStreamValue(value: unknown): SerializableRecord {
+function snapshotStreamValue(value: unknown, now: () => number, nextSequence: () => number): SerializableRecord {
   if (isNotificationValue(value)) {
     return Object.freeze({
       value: ownBytes(value.value, byteLimit(value.value.byteLength)),
-      indication: value.indication === true
+      indication: value.indication === true,
+      delivery: value.indication === true ? 'indication' : 'notification',
+      observedAtMonotonicMs: now(),
+      sequence: nextSequence()
     })
   }
   if (isAdvertisementValue(value)) {

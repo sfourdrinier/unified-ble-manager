@@ -144,11 +144,18 @@ export interface BackendConnection<Attachment extends string, _Connection extend
   readonly state: ConnectionState
   disconnect(): Promise<CleanupRecord>
 }
+export type ConnectionIntent = 'direct' | 'when-available'
+export type BlePhy = 'le-1m' | 'le-2m' | 'le-coded'
+export interface ConnectionOptions extends PublicOperationOptions {
+  readonly intent?: ConnectionIntent
+  readonly transport?: 'le' | 'auto'
+  readonly preferredPhy?: readonly BlePhy[]
+}
 export interface ConnectionBackend<Attachment extends string> {
   connect(
     peerId: PeerId<Attachment>,
     clientId: ClientId<Attachment, string>,
-    options: PublicOperationOptions
+    options: ConnectionOptions
   ): Promise<ConnectionLease<Attachment, string, string>>
   readRssi?<Operation extends string>(
     connection: BackendConnection<Attachment, string>,

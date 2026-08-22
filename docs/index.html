@@ -2,10 +2,10 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <title>unified-ble-manager 4.0.0-alpha.40 | Documentation</title>
+    <title>unified-ble-manager 4.0.0-rc.2 | Documentation</title>
     <meta
       name="description"
-      content="Unified Bluetooth Low Energy manager for React Native, Electron, Web, and desktop (4.0 train)"
+      content="Unified Bluetooth Low Energy manager for React Native, Electron, Tauri, Web, and desktop"
     />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <link href="assets/bass.css" rel="stylesheet" />
@@ -18,7 +18,7 @@
       <div id="split-left" class="overflow-auto fs0 height-viewport-100">
         <div class="py1 px2">
           <h3 class="mb0 no-anchor">unified-ble-manager</h3>
-          <div class="mb1"><code>4.0.0-alpha.40</code></div>
+          <div class="mb1"><code>4.0.0-rc.2</code></div>
           <input
             placeholder="Filter"
             id="filter-input"
@@ -48,72 +48,77 @@
 
               <li><a href="#public-api" class="h5 bold black caps"> Public API </a></li>
 
-              <li>
-                <a href="#blemanager" class="toggle-sibling">
-                  BleManager
-                  <span class="icon">▸</span>
-                </a>
+              <li><a href="#built_in_feature_ids" class=""> BUILT_IN_FEATURE_IDS </a></li>
 
-                <div class="toggle-target display-none">
-                  <ul class="list-reset py1-ul pl1">
-                    <li class="h5"><span>Instance members</span></li>
-
-                    <li><a href="#blemanagersupports" class="regular pre-open"> #supports </a></li>
-
-                    <li><a href="#blemanagercapability" class="regular pre-open"> #capability </a></li>
-
-                    <li><a href="#blemanagercapabilities" class="regular pre-open"> #capabilities </a></li>
-
-                    <li><a href="#blemanageradoptrestoration" class="regular pre-open"> #adoptRestoration </a></li>
-
-                    <li>
-                      <a href="#blemanagerrevokeforownerdestroy" class="regular pre-open"> #revokeForOwnerDestroy </a>
-                    </li>
-
-                    <li><a href="#blemanagertransferownership" class="regular pre-open"> #transferOwnership </a></li>
-                  </ul>
-                </div>
-              </li>
-
-              <li><a href="#createblemanagerfromprovider" class=""> createBleManagerFromProvider </a></li>
-
-              <li><a href="#createblemanager" class=""> createBleManager </a></li>
-
-              <li><a href="#scanuntil" class=""> scanUntil </a></li>
-
-              <li><a href="#scanuntil" class=""> scanUntil </a></li>
-
-              <li><a href="#scanuntil" class=""> scanUntil </a></li>
-
-              <li><a href="#scanuntil" class=""> scanUntil </a></li>
-
-              <li><a href="#find" class=""> find </a></li>
-
-              <li><a href="#connectanddiscover" class=""> connectAndDiscover </a></li>
-
-              <li><a href="#firstnotification" class=""> firstNotification </a></li>
-
-              <li><a href="#collectnotifications" class=""> collectNotifications </a></li>
-
-              <li><a href="#withconnection" class=""> withConnection </a></li>
-
-              <li><a href="#attachblebackend" class=""> attachBleBackend </a></li>
-
-              <li><a href="#attachblebackend" class=""> attachBleBackend </a></li>
+              <li><a href="#built_in_feature_catalog" class=""> BUILT_IN_FEATURE_CATALOG </a></li>
 
               <li>
-                <a href="#isconstructedblemanagerownershipparticipant" class="">
-                  isConstructedBleManagerOwnershipParticipant
+                <a href="#createbackendoperationcapabilityregistration" class="">
+                  createBackendOperationCapabilityRegistration
                 </a>
               </li>
 
-              <li><a href="#createblemanagerfrombackend" class=""> createBleManagerFromBackend </a></li>
+              <li>
+                <a href="#createbackendoperationcapabilityregistration" class="">
+                  createBackendOperationCapabilityRegistration
+                </a>
+              </li>
 
-              <li><a href="#createmanagerownershipauthority" class=""> createManagerOwnershipAuthority </a></li>
+              <li>
+                <a href="#createbackendoperationcapabilityregistration" class="">
+                  createBackendOperationCapabilityRegistration
+                </a>
+              </li>
 
-              <li><a href="#unifiedblecore" class=""> UnifiedBleCore </a></li>
+              <li>
+                <a href="#createbackendoperationcapabilityregistration" class="">
+                  createBackendOperationCapabilityRegistration
+                </a>
+              </li>
 
-              <li><a href="#aggregatestreamquota" class=""> AggregateStreamQuota </a></li>
+              <li>
+                <a href="#createbackendoperationcapabilityregistration" class="">
+                  createBackendOperationCapabilityRegistration
+                </a>
+              </li>
+
+              <li>
+                <a href="#createbackendoperationcapabilityregistration" class="">
+                  createBackendOperationCapabilityRegistration
+                </a>
+              </li>
+
+              <li>
+                <a href="#createbackendoperationcapabilityregistration" class="">
+                  createBackendOperationCapabilityRegistration
+                </a>
+              </li>
+
+              <li>
+                <a href="#createbackendoperationcapabilityregistration" class="">
+                  createBackendOperationCapabilityRegistration
+                </a>
+              </li>
+
+              <li>
+                <a href="#createbackendoperationcapabilityregistration" class="">
+                  createBackendOperationCapabilityRegistration
+                </a>
+              </li>
+
+              <li><a href="#validatecapabilitydescriptor" class=""> validateCapabilityDescriptor </a></li>
+
+              <li><a href="#snapshotcapabilitydescriptor" class=""> snapshotCapabilityDescriptor </a></li>
+
+              <li><a href="#describefeatureregistry" class=""> describeFeatureRegistry </a></li>
+
+              <li><a href="#createipcoperationidfactory" class=""> createIpcOperationIdFactory </a></li>
+
+              <li><a href="#max_timeout_ms" class=""> MAX_TIMEOUT_MS </a></li>
+
+              <li><a href="#normalizeoperationoptions" class=""> normalizeOperationOptions </a></li>
+
+              <li><a href="#rehydratepublicerror" class=""> rehydratePublicError </a></li>
 
               <li>
                 <a href="#coreboundedstream" class="toggle-sibling">
@@ -144,176 +149,7 @@
                 </div>
               </li>
 
-              <li>
-                <a href="#coreoperationcoordinator" class="toggle-sibling">
-                  CoreOperationCoordinator
-                  <span class="icon">▸</span>
-                </a>
-
-                <div class="toggle-target display-none">
-                  <ul class="list-reset py1-ul pl1">
-                    <li class="h5"><span>Instance members</span></li>
-
-                    <li><a href="#coreoperationcoordinatorruncleanup" class="regular pre-open"> #runCleanup </a></li>
-                  </ul>
-                </div>
-              </li>
-
-              <li><a href="#resourceledger" class=""> ResourceLedger </a></li>
-
-              <li><a href="#coresubscription" class=""> CoreSubscription </a></li>
-
-              <li><a href="#subscriptionregistry" class=""> SubscriptionRegistry </a></li>
-
-              <li><a href="#coretracerecorder" class=""> CoreTraceRecorder </a></li>
-
-              <li><a href="#measuretracedocumentbytes" class=""> measureTraceDocumentBytes </a></li>
-
-              <li><a href="#measuretracedocumentbytes" class=""> measureTraceDocumentBytes </a></li>
-
-              <li><a href="#measuretracerecordbytes" class=""> measureTraceRecordBytes </a></li>
-
-              <li>
-                <a href="#measuretracedocumentbytesfromrecordbytes" class="">
-                  measureTraceDocumentBytesFromRecordBytes
-                </a>
-              </li>
-
-              <li><a href="#validatetracedocument" class=""> validateTraceDocument </a></li>
-
-              <li><a href="#redacttracedocument" class=""> redactTraceDocument </a></li>
-
-              <li><a href="#corelifecycleobserver" class=""> CoreLifecycleObserver </a></li>
-
-              <li><a href="#coreconnection" class=""> CoreConnection </a></li>
-
-              <li><a href="#coregattdatabase" class=""> CoreGattDatabase </a></li>
-
-              <li><a href="#readcoreadapterstate" class=""> readCoreAdapterState </a></li>
-
-              <li><a href="#writecorelongcharacteristic" class=""> writeCoreLongCharacteristic </a></li>
-
-              <li><a href="#createcorefeatureregistry" class=""> createCoreFeatureRegistry </a></li>
-
-              <li><a href="#observemaximumwritelength" class=""> observeMaximumWriteLength </a></li>
-
-              <li><a href="#planlongwrite" class=""> planLongWrite </a></li>
-
-              <li><a href="#built_in_feature_ids" class=""> BUILT_IN_FEATURE_IDS </a></li>
-
-              <li><a href="#validatefeatureregistration" class=""> validateFeatureRegistration </a></li>
-
-              <li><a href="#validatefeatureregistration" class=""> validateFeatureRegistration </a></li>
-
-              <li><a href="#validatefeatureregistration" class=""> validateFeatureRegistration </a></li>
-
-              <li><a href="#validatefeatureregistration" class=""> validateFeatureRegistration </a></li>
-
-              <li><a href="#validatefeatureregistration" class=""> validateFeatureRegistration </a></li>
-
-              <li><a href="#validatefeatureregistration" class=""> validateFeatureRegistration </a></li>
-
-              <li><a href="#validatefeatureregistration" class=""> validateFeatureRegistration </a></li>
-
-              <li><a href="#validatefeatureregistration" class=""> validateFeatureRegistration </a></li>
-
-              <li><a href="#describefeatureregistry" class=""> describeFeatureRegistry </a></li>
-
-              <li><a href="#discovercoregattdatabase" class=""> discoverCoreGattDatabase </a></li>
-
-              <li><a href="#forwardcorebackendevents" class=""> forwardCoreBackendEvents </a></li>
-
-              <li><a href="#ownershiptransfergrant" class=""> OwnershipTransferGrant </a></li>
-
-              <li>
-                <a href="#managerownershipauthority" class="toggle-sibling">
-                  ManagerOwnershipAuthority
-                  <span class="icon">▸</span>
-                </a>
-
-                <div class="toggle-target display-none">
-                  <ul class="list-reset py1-ul pl1">
-                    <li class="h5"><span>Instance members</span></li>
-
-                    <li>
-                      <a href="#managerownershipauthorityissuetransfergrant" class="regular pre-open">
-                        #issueTransferGrant
-                      </a>
-                    </li>
-
-                    <li>
-                      <a href="#managerownershipauthorityverifytransfergrant" class="regular pre-open">
-                        #verifyTransferGrant
-                      </a>
-                    </li>
-
-                    <li>
-                      <a href="#managerownershipauthorityconsumetransfergrant" class="regular pre-open">
-                        #consumeTransferGrant
-                      </a>
-                    </li>
-                  </ul>
-                </div>
-              </li>
-
-              <li>
-                <a href="#managerownershipauthority" class="toggle-sibling">
-                  ManagerOwnershipAuthority
-                  <span class="icon">▸</span>
-                </a>
-
-                <div class="toggle-target display-none">
-                  <ul class="list-reset py1-ul pl1">
-                    <li class="h5"><span>Instance members</span></li>
-
-                    <li>
-                      <a href="#managerownershipauthorityissuetransfergrant" class="regular pre-open">
-                        #issueTransferGrant
-                      </a>
-                    </li>
-
-                    <li>
-                      <a href="#managerownershipauthorityverifytransfergrant" class="regular pre-open">
-                        #verifyTransferGrant
-                      </a>
-                    </li>
-
-                    <li>
-                      <a href="#managerownershipauthorityconsumetransfergrant" class="regular pre-open">
-                        #consumeTransferGrant
-                      </a>
-                    </li>
-                  </ul>
-                </div>
-              </li>
-
-              <li><a href="#backenddisconnectreasons" class=""> backendDisconnectReasons </a></li>
-
-              <li><a href="#backenddisconnectreasons" class=""> backendDisconnectReasons </a></li>
-
-              <li><a href="#assertbackendevent" class=""> assertBackendEvent </a></li>
-
-              <li><a href="#attachedbackend" class=""> AttachedBackend </a></li>
-
-              <li><a href="#attachbackend" class=""> attachBackend </a></li>
-
-              <li><a href="#assertattachedbackend" class=""> assertAttachedBackend </a></li>
-
-              <li><a href="#snapshotserializablerecord" class=""> snapshotSerializableRecord </a></li>
-
-              <li><a href="#serializablerecordsequal" class=""> serializableRecordsEqual </a></li>
-
-              <li><a href="#attachmentrecordsequal" class=""> attachmentRecordsEqual </a></li>
-
-              <li><a href="#minimum_att_mtu" class=""> MINIMUM_ATT_MTU </a></li>
-
-              <li><a href="#maximum_requested_att_mtu" class=""> MAXIMUM_REQUESTED_ATT_MTU </a></li>
-
-              <li><a href="#" class=""> </a></li>
-
-              <li><a href="#" class=""> </a></li>
-
-              <li><a href="#createipcoperationidfactory" class=""> createIpcOperationIdFactory </a></li>
+              <li><a href="#bleerror" class=""> BleError </a></li>
             </ul>
           </div>
           <div class="mt1 h6 quiet">
@@ -327,105 +163,145 @@
             <h2 id="getting-started" class="mt0">Getting started</h2>
 
             <h1>Getting started</h1>
-            <h2>4.0 status</h2>
+            <p><strong>Current package:</strong> <code>4.0.0-rc.2</code> on npm <code>latest</code>.</p>
             <p>
-              <code>unified-ble-manager@4.0.0-alpha.40</code> is the current published 4.0 alpha package. It is a clean
-              API line with no released 4.0 consumer baseline: choose one explicit host entrypoint and build the
-              matching native integration before making a Bluetooth claim. It is not a source-compatible rename of the
-              retired 3.x package.
+              This page gets you to a first scan, connect, read, notify, and teardown on React Native. Other hosts are
+              linked at the bottom. The root import does not turn Bluetooth on.
+            </p>
+            <h2>Pick a host</h2>
+            <table>
+              <thead>
+                <tr>
+                  <th>You are building</th>
+                  <th>Import</th>
+                  <th>Next page</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>React Native / Expo</td>
+                  <td><code>unified-ble-manager/react-native</code></td>
+                  <td>this page</td>
+                </tr>
+                <tr>
+                  <td>Browser</td>
+                  <td><code>unified-ble-manager/web</code></td>
+                  <td>
+                    <a href="WEB.md"><code>WEB.md</code></a>
+                  </td>
+                </tr>
+                <tr>
+                  <td>Electron</td>
+                  <td><code>electron/main</code> + <code>electron/renderer</code></td>
+                  <td>
+                    <a href="ELECTRON.md"><code>ELECTRON.md</code></a>
+                  </td>
+                </tr>
+                <tr>
+                  <td>Node on macOS / Windows / Linux</td>
+                  <td><code>node/corebluetooth</code>, <code>node/winrt</code>, or <code>node/bluez</code></td>
+                  <td>
+                    <a href="NODE.md"><code>NODE.md</code></a>
+                  </td>
+                </tr>
+                <tr>
+                  <td>Tauri v2</td>
+                  <td><code>unified-ble-manager/tauri</code></td>
+                  <td>
+                    <a href="TAURI.md"><code>TAURI.md</code></a>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+            <h2>React Native / Expo in one hour</h2>
+            <h3>1. Install</h3>
+            <p>Three native setup paths:</p>
+            <p>
+              <strong>Expo / CNG.</strong> Install with <code>npx expo install unified-ble-manager</code> (or
+              <code>pnpm add</code> plus Expo 57). Add the plugin, run <code>npx expo prebuild</code>, then a
+              development client or production binary. Config-plugin changes require a native rebuild. The package does
+              not run in Expo Go.
             </p>
             <p>
-              The architecture and implementation sequence are controlled by
-              <a href="UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md"><code>UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md</code></a
-              >. Product scope is in <a href="../ROADMAP.4.0.md"><code>../ROADMAP.4.0.md</code></a
-              >, and backend/platform proof is in <a href="GAPS.4.0.md"><code>GAPS.4.0.md</code></a
+              <strong>Bare React Native adopting Expo modules.</strong> Install Expo modules first (<code
+                >npx install-expo-modules@latest</code
+              >), then add this plugin and prebuild.
+            </p>
+            <p>
+              <strong>Bare React Native without Prebuild.</strong> Declare Android Bluetooth permissions and the BLE
+              hardware feature yourself, request runtime permissions on Android 12+, add
+              <code>NSBluetoothAlwaysUsageDescription</code> on iOS, run pods, and rebuild.
+            </p>
+            <p>Expo also needs a native build. The package does not run in Expo Go.</p>
+            <p>
+              Add the plugin (full option table: <a href="EXPO_PLUGIN.md"><code>EXPO_PLUGIN.md</code></a
+              >):
+            </p>
+            <p>Then generate native projects and run a development build:</p>
+            <h3>2. Ask Android for runtime permission</h3>
+            <p>
+              The plugin writes the manifest. Android 12+ still needs a runtime request. The library will not do this
+              for you.
+            </p>
+            <h3>3. Create one manager and keep it</h3>
+            <p>
+              The host factory owns ephemeral identity generation. Restoration-bound identity comes from the trusted
+              native host and native configuration; application code does not pass client, manager, or host-session IDs.
+            </p>
+            <h3>4. Check the adapter, then run the loop</h3>
+            <p>
+              Never gate on a bare <code>authorization !== 'granted'</code>. Only an explicit refusal —
+              <code>'denied'</code>, <code>'restricted'</code>, <code>'unavailable'</code> — blocks. The other values
+              are not refusals: <code>'unknown'</code> means the platform exposes no per-application Bluetooth
+              authorization concept, as BlueZ on Linux does, or that the host did not query one;
+              <code>'not-determined'</code> means the user has not been asked yet, and since the prompt is raised by
+              <em>using</em> the radio rather than by reading the state, blocking on it would stop the prompt from ever
+              appearing.
+            </p>
+            <p>
+              Then run the finite public journey (<code>find</code> → <code>withDiscoveredConnection</code> → GATT read
+              → <code>destroy</code>) from the root <a href="../README.md"><code>README.md</code></a
+              >:
+            </p>
+            <p>
+              Each <code>timeoutMs</code> is scoped to its public operation. More recipes:
+              <a href="TUTORIALS.md"><code>TUTORIALS.md</code></a> and <a href="HELPERS.md"><code>HELPERS.md</code></a
+              >. Use <code>manager.adapter.waitUntilReady()</code> when an operation should wait for readiness.
+            </p>
+            <h3>What will hurt you</h3>
+            <ul>
+              <li>Expo Go has no native module. You need a prebuild / dev client.</li>
+              <li>
+                Android 12 without the runtime permission fails the first scan with <code>permission.denied</code>.
+                Android 11 and below need <code>ACCESS_FINE_LOCATION</code>. <code>neverForLocation: true</code> is only
+                honest if you do not use BLE for location.
+              </li>
+              <li>
+                Bare React Native still needs <code>NSBluetoothAlwaysUsageDescription</code> in Info.plist. The Expo
+                plugin writes that for Expo apps.
+              </li>
+              <li>
+                Creating a new manager on every render leaks the radio. Create one, await <code>destroy()</code> when
+                the session ends.
+              </li>
+              <li>
+                <code>requiresBluetoothLeHardware: true</code> only marks the Android BLE hardware feature. It does not
+                start a foreground service.
+              </li>
+            </ul>
+            <h2>Coming from react-native-ble-plx</h2>
+            <p>
+              This is a rewrite. There is no <code>new BleManager()</code> and no Base64 characteristic values. Start
+              with <a href="../MIGRATION_4.0.md"><code>MIGRATION_4.0.md</code></a
               >.
             </p>
-            <h2>Install and select a host</h2>
+            <h2>Maintainers</h2>
             <p>
-              The alpha train is published under npm's mutable <code>next</code> dist-tag. Pin the exact version you
-              validate; do not use a bare install or <code>@latest</code> to select 4.0 alpha. The package is
-              Experimental, and no current evidence record binds the published alpha.40 artifact to a physical-radio
-              backend result. Package builds and deterministic tests remain useful proof at their own scope, but do not
-              create a platform support label.
+              Normative contract and evidence rules:
+              <a href="UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md"><code>UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md</code></a
+              >, <a href="PLATFORMS.md"><code>PLATFORMS.md</code></a
+              >.
             </p>
-            <p>
-              The package support label remains Experimental. WinRT compile and ABI checks are L2/L3 evidence only;
-              alpha.40 makes no Windows live-radio claim.
-            </p>
-            <p>The root import is host-neutral. Import the selected integration explicitly:</p>
-            <ul>
-              <li><code>unified-ble-manager/react-native</code></li>
-              <li><code>unified-ble-manager/web</code></li>
-              <li><code>unified-ble-manager/electron/main</code></li>
-              <li><code>unified-ble-manager/electron/renderer</code></li>
-              <li><code>unified-ble-manager/node/corebluetooth</code></li>
-              <li><code>unified-ble-manager/node/winrt</code></li>
-              <li><code>unified-ble-manager/node/bluez</code></li>
-            </ul>
-            <p>
-              React Native applications create one manager with <code>createReactNativeBleManager</code>, a generated
-              control, a stable client/manager identity, and a stable <code>hostSessionScope</code>. Web applications
-              create one matched manager/chooser session through <code>createNavigatorWebBleManager</code>. Electron
-              main owns the radio and renderer code uses only the versioned IPC client.
-            </p>
-            <p>
-              All BLE payloads are <code>Uint8Array</code>; cancellable operations use <code>AbortSignal</code> and
-              deadline options. Do not use a legacy constructor, Base64 manager surface, public transaction IDs,
-              automatic radio selection, or a fallback backend.
-            </p>
-            <h2>Native and Expo setup</h2>
-            <p>
-              The React Native Expo plugin is configured as <code>unified-ble-manager</code> and cannot run in Expo Go.
-              Expo consumers install the plugin host peer explicitly with
-              <code>pnpm add unified-ble-manager@4.0.0-alpha.40 expo@^57.0.0</code>; the plugin uses Expo's public
-              <code>expo/config-plugins</code> subpath. Its optional <code>iosNativeProtocolRestoration</code> object
-              requires all five native identity values: identifier, namespace, epoch, client ID, and host-session scope.
-              See <a href="EXPO_PLUGIN.md"><code>EXPO_PLUGIN.md</code></a> before configuring restoration.
-            </p>
-            <p>
-              The CoreBluetooth package contains build sources and <code>node-gyp</code>, but no prebuilt addon. Build
-              against the host Node ABI or, for Electron, run the Electron-targeted <code>node-gyp</code> command with
-              <code>--target</code> and Electron headers from <a href="ELECTRON.md"><code>ELECTRON.md</code></a
-              >. A Node ABI addon cannot be loaded by Electron.
-            </p>
-            <p>
-              <code>example/</code> and <code>example-expo/</code> are repository fixtures using <code>file:..</code>,
-              not published-package installation recipes. The Electron fixture is deterministic L1 only, while
-              <code>example-web/</code> is historical source characterization. See the root
-              <a href="../README.md"><code>README.md</code></a> for their current boundaries.
-            </p>
-            <h2>Verify the selected host</h2>
-            <p>
-              Run the packed-artifact, platform-native, and physical-device checks appropriate to the selected backend.
-              A deterministic scenario or successful native build proves package wiring only; it is not live-radio
-              evidence. Inspect the typed capabilities of the instantiated backend and retain the evidence limits in the
-              product's own release decision.
-            </p>
-            <p>
-              For an end-to-end React Native manager construction and the supported Expo plugin object, use the
-              canonical examples in <a href="../README.md"><code>../README.md</code></a
-              >. Meta Quest and an nRF52840-based controllable fault-injection controller are deferred to 4.1 and are
-              not 4.0 host or hardware claims.
-            </p>
-            <h2>Related records</h2>
-            <ul>
-              <li>
-                <a href="../MIGRATION_4.0.md"><code>../MIGRATION_4.0.md</code></a>
-              </li>
-              <li>
-                <a href="PLATFORMS.md"><code>PLATFORMS.md</code></a>
-              </li>
-              <li>
-                <a href="EXPO_PLUGIN.md"><code>EXPO_PLUGIN.md</code></a>
-              </li>
-              <li>
-                <a href="UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md"><code>UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md</code></a>
-              </li>
-              <li>
-                <a href="../RELEASE.md"><code>../RELEASE.md</code></a>
-              </li>
-            </ul>
           </section>
         </div>
 
@@ -435,44 +311,46 @@
 
             <h1>Public API tutorials</h1>
             <p>
-              These examples start after a host has explicitly constructed a 4.0 manager. See
-              <a href="GETTING_STARTED.md"><code>GETTING_STARTED.md</code></a> for React Native, Web, Node, and Electron
-              factories. All normal GATT values are bytes, all cancellable operations carry an
-              <code>AbortSignal</code> and monotonic deadline, and all resources have explicit cleanup ownership.
+              These recipes assume you already constructed a public <code>BleManager</code> for your host. See
+              <a href="GETTING_STARTED.md"><code>GETTING_STARTED.md</code></a
+              >. Web Bluetooth uses <code>ble.choose()</code> from a user gesture; it does not provide continuous
+              scanning. All public operations use <code>timeoutMs</code> and <code>AbortSignal</code>. Catch
+              <code>BleError</code> from <code>unified-ble-manager</code> when handling optional-feature absence.
+            </p>
+            <p>
+              Every cancellable call takes an <code>AbortSignal</code>. <code>BleManager.find</code>, <code>scan</code>,
+              and <code>connect</code> accept operation-level <code>timeoutMs</code>; GATT objects accept the same
+              public operation options.
             </p>
             <h2>Scan, connect, and discover</h2>
             <p>
-              Web Bluetooth replaces scanning with the typed chooser from <code>createNavigatorWebBleManager()</code>.
-              After selection, the connection and GATT operations are the same public handles.
+              The public <code>BlePeer</code> snapshot carries <code>name</code> (from normalized
+              <code>localName</code>), <code>rssi</code>, a scoped reference when the host can issue one, and the last
+              normalized advertisement.
             </p>
             <h2>Read and write</h2>
+            <p>Use generation-bound objects from the current discovery. Do not invent occurrences or generations.</p>
             <p>
-              Resolve paths from the current discovery snapshot so repeated services and characteristics remain
-              unambiguous:
+              Battery Level is optional relative to Heart Rate Service. Catch only <code>gatt.not-found</code> or
+              <code>gatt.property-not-supported</code> if the peripheral may omit it.
             </p>
             <p>
-              Never construct occurrences or generations manually. A new connection or rediscovery requires a fresh
-              snapshot and fresh paths.
+              Heart Rate Control Point is conditional (Energy Expended). Resolve it separately and write only after it
+              exists:
+            </p>
+            <p>
+              A new connection or rediscovery needs a fresh snapshot and fresh paths. Stale paths throw
+              <code>gatt.stale-handle</code>.
             </p>
             <h2>Notifications</h2>
-            <p>The stream is bounded. Overflow is observable and never converted into silent loss.</p>
+            <p>The stream is bounded. Overflow is a real event, not silent loss.</p>
             <h2>Disconnect and destroy</h2>
+            <p>After <code>destroy()</code>, the manager admits no new operation.</p>
+            <h2>See also</h2>
             <p>
-              After <code>destroy()</code>, the manager admits no new operation. Applications must not hide cleanup
-              failures or create a fallback manager/backend.
-            </p>
-            <h2>Diagnostics</h2>
-            <p>
-              Portable traces use the redacted trace format from the root diagnostics types. The CLI can inspect
-              package/backend capabilities and run deterministic TCK or scenario commands; see
-              <a href="CLI.md"><code>CLI.md</code></a
-              >. Platform support still comes from retained evidence records, never from a successful mock or compile
-              alone.
-            </p>
-            <p>
-              See also <a href="HELPERS.md"><code>HELPERS.md</code></a
+              <a href="HELPERS.md"><code>HELPERS.md</code></a
               >, <a href="PROFILES_AND_COMMANDS.md"><code>PROFILES_AND_COMMANDS.md</code></a
-              >, and <a href="CONNECTION_MANAGER.md"><code>CONNECTION_MANAGER.md</code></a
+              >, <a href="CONNECTION_MANAGER.md"><code>CONNECTION_MANAGER.md</code></a
               >.
             </p>
           </section>
@@ -482,67 +360,38 @@
           <section class="py2 clearfix">
             <h2 id="public-helpers" class="mt0">Public helpers</h2>
 
-            <h1>Public manager helpers</h1>
+            <h1>Application helpers</h1>
             <p>
-              Unified BLE 4.0 ships a small host-neutral helper family over the public <code>BleManager</code>,
-              <code>Connection</code>, <code>DiscoveredGattDatabase</code>, and <code>Subscription</code> handles.
-              Helpers do not select a backend, infer capabilities from a host name, retry connections, or weaken
-              cancellation, error, generation, and cleanup semantics.
+              The normal application surface is the host-specific factory returning one public <code>BleManager</code>.
+              It owns operation cancellation, bounded streams, GATT generation checks, and cleanup receipts. Custom
+              backend authors can use the typed helpers under <code>/advanced</code>; application code should use the
+              façade methods shown here.
             </p>
-            <p>Import helpers from the host-neutral root:</p>
-            <h2>Scan and connect</h2>
+            <h2>Find, connect, and discover</h2>
             <p>
-              <code>scanUntil()</code> starts one public scan session, reads its bounded observation stream until the
-              predicate matches, and always stops the session. <code>find()</code> is a compact alias. The caller
-              supplies the complete <code>ScanOptions</code>, including its <code>AbortSignal</code>, monotonic
-              deadline, delivery bounds, filter, and sharing policy.
-            </p>
-            <p>
-              <code>connectAndDiscover()</code> returns the connection, its generation-bound database, and the
-              corresponding immutable discovery snapshot. If discovery fails, it releases the partially acquired
-              connection and preserves both the primary and cleanup errors when necessary.
+              <code>find()</code> owns and stops its scan. <code>withConnection()</code> and
+              <code>withDiscoveredConnection()</code> release their connection lease even when the operation or callback
+              fails. If both the callback and cleanup fail, the public error bridge preserves both failures in an
+              <code>AggregateError</code>. Scan observations expose the advertised name as <code>localName</code>.
             </p>
             <h2>Notifications</h2>
             <p>
-              Resolve a duplicate-safe characteristic path from the returned snapshot. Never construct service or
-              characteristic occurrences, connection generations, or database generations yourself.
+              GATT objects are generation-bound views. Subscribe through the characteristic object and always remove the
+              returned subscription:
             </p>
             <p>
-              <code>firstNotification()</code> removes the subscription before returning.
-              <code>collectNotifications()</code> applies the same ownership rule while collecting no more than the
-              caller's positive <code>maximumValues</code> bound. Stream overflow, terminal records, aborts, deadlines,
-              and cleanup failures remain explicit.
+              Values are <code>Uint8Array</code>; notification events retain their delivery mode, monotonic observation
+              time, and sequence number. Do not retain a GATT object after disconnect, service change, or rediscovery.
             </p>
-            <h2>Scoped connection ownership</h2>
-            <p>Use <code>withConnection()</code> when one operation should own exactly one connection lease:</p>
+            <h2>Host boundaries</h2>
             <p>
-              The helper releases the lease on success and failure. Applications still own product reconnect policy;
-              helpers never reconnect silently.
+              Capabilities come from the instantiated backend. Web Bluetooth uses its explicit chooser entrypoint.
+              Electron renderers use <code>createElectronRendererBleManager()</code> over the authenticated preload
+              transport; the low-level <code>ElectronRendererBleClient</code> is an internal boundary seam. Tauri uses
+              <code>createTauriBleManager()</code>; tests use <code>createTauriBleManagerWithEnvironment()</code>.
             </p>
-            <h2>Capability and host boundaries</h2>
             <p>
-              Capabilities come from the instantiated backend's feature registry. Do not use a static host table. Web
-              Bluetooth uses the chooser returned with <code>createNavigatorWebBleManager()</code> and intentionally
-              rejects continuous scans. Electron renderers use the versioned renderer client; the main process alone
-              owns the physical backend.
-            </p>
-            <h2>Verification</h2>
-            <ul>
-              <li>
-                <code>__tests__/manager/public-helpers.test.js</code> covers primitive parity, cancellation, deadlines,
-                overflow, and cleanup aggregation.
-              </li>
-              <li>
-                <code>__tests__/manager/public-helper-stream-teardown.test.js</code> covers stream and iterator
-                teardown.
-              </li>
-              <li>
-                <code>scripts/evidence/corebluetooth-live.js</code> runs the final public
-                scan/connect/discover/read/notify/reconnect/destroy path for retained macOS physical-radio evidence.
-              </li>
-            </ul>
-            <p>
-              See also <a href="PROFILES_AND_COMMANDS.md"><code>PROFILES_AND_COMMANDS.md</code></a
+              See <a href="PROFILES_AND_COMMANDS.md"><code>PROFILES_AND_COMMANDS.md</code></a
               >, <a href="WEB.md"><code>WEB.md</code></a
               >, <a href="ELECTRON.md"><code>ELECTRON.md</code></a
               >, and <a href="PLATFORMS.md"><code>PLATFORMS.md</code></a
@@ -556,14 +405,23 @@
             <h2 id="profiles-and-commands" class="mt0">Profiles and commands</h2>
 
             <h1>Profiles, codecs, and GATT commands</h1>
+            <blockquote>
+              <p>
+                Status: this page retains advanced/path-oriented authoring reference material. Application code should
+                follow the object-based <code>GattDatabase</code> and <code>GattCharacteristic</code> recipes in
+                <a href="HELPERS.md"><code>HELPERS.md</code></a
+                >. The older <code>deadline()</code>/<code>capacity()</code>/<code>firstNotification()</code> snippets
+                below are not the application façade and are not a current root-import recipe.
+              </p>
+            </blockquote>
             <p>
-              The 4.0 profile surface is optional, host-neutral, and built only on the public <code>Connection</code>,
-              <code>DiscoveredGattDatabase</code>, and <code>Subscription</code> handles. It does not select a backend,
-              connect a device, retry, or apply a product policy.
+              Optional helpers for SIG services (Heart Rate, Battery, DIS, thermometer, blood pressure). They sit on the
+              public <code>Connection</code>, <code>DiscoveredGattDatabase</code>, and
+              <code>Subscription</code> handles. They do not pick a backend or reconnect.
             </p>
             <p>
-              Normal BLE operations use <code>Uint8Array</code> and structured GATT paths. There is no Base64 profile,
-              command, or manager API.
+              BLE values stay <code>Uint8Array</code>. <code>unified-ble-manager/codecs</code> is IEEE-11073 and byte
+              views — not Base64.
             </p>
             <h2>Public subpaths</h2>
             <table>
@@ -624,9 +482,9 @@
               discovery and fail with <code>gatt.ambiguous-path</code> when the selector is not specific enough.
             </p>
             <p>
-              Do not construct a GATT path, occurrence, connection generation, or database generation yourself. A
-              profile selector only describes the match; the command always returns a path copied from the current
-              database snapshot.
+              Selector occurrences may be copied from a current snapshot. Full paths, database generations, and
+              connection generations must never be constructed manually. A profile selector only describes the match;
+              the command always returns a path copied from the current database snapshot.
             </p>
             <h2>Standard profile commands</h2>
             <p>
@@ -727,8 +585,9 @@
             </p>
             <p>
               The Node CLI intentionally accepts only backends whose provider declares <code>node</code>,
-              <code>desktop-native</code>, or <code>test</code>. Browser and React Native backends require their own host
-              integration and cannot be driven from a Node shell.
+              <code>desktop-native</code>, or <code>test</code>. Electron main and Tauri native providers use the
+              framework-neutral <code>desktop-native</code> host kind; browser and React Native backends require their
+              own host integration and cannot be driven from a Node shell.
             </p>
           </section>
         </div>
@@ -738,13 +597,18 @@
             <h2 id="expo-config-plugin" class="mt0">Expo config plugin</h2>
 
             <h1>Expo plugin option reference</h1>
+            <blockquote>
+              <p>
+                PR10 deferral: the RC1 five-field restoration/plugin schema documented below is retained for
+                native/plugin contract tests, but is not the current PR6 application configuration recipe. Do not copy
+                <code>iosNativeProtocolRestoration</code> or author <code>clientId</code>/<code>hostSessionScope</code>
+                in application code until the PR10 Expo v2 schema and native-authoritative restoration slice lands.
+              </p>
+            </blockquote>
             <p>
-              <strong>Status:</strong> current 4.0 alpha option reference; native and live-radio proof remain
-              host-specific
-            </p>
-            <p>
-              <strong>Architecture and sequencing authority:</strong>
-              <a href="UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md"><code>UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md</code></a>
+              Everything below this notice is historical schema/reference material for the plugin contract tests. It is
+              intentionally non-copyable application guidance until PR10 lands; current PR6 consumers must not treat the
+              table or JSON block as a supported release recipe.
             </p>
             <p>
               Configure the published plugin as <code>unified-ble-manager</code>. The plugin's supported options are
@@ -757,10 +621,9 @@
               resolve Expo tooling.
             </p>
             <p>
-              The plugin configuration is part of the published Experimental 4.0 alpha.40 prerelease. The release
-              workflow validates Expo SDK 57 CNG prebuild and Android assembly, but no current evidence record binds
-              alpha.40 to a physical device, permission, background, or restoration scenario. Configuration and
-              compilation therefore do not make a live-radio or restoration support claim.
+              The plugin writes native project configuration. That is not a live-radio or restoration support claim. See
+              <a href="PLATFORMS.md"><code>PLATFORMS.md</code></a
+              >.
             </p>
             <table>
               <thead>
@@ -774,14 +637,17 @@
                 <tr>
                   <td><code>debug</code></td>
                   <td><code>boolean</code></td>
-                  <td>Enables plugin diagnostics; <code>BLEPLX_PLUGIN_DEBUG=1</code> also enables them.</td>
+                  <td>
+                    Enables plugin diagnostics; <code>UNIFIED_BLE_MANAGER_PLUGIN_DEBUG=1</code> also enables them.
+                    <code>BLEPLX_PLUGIN_DEBUG=1</code> remains a deprecated alias.
+                  </td>
                 </tr>
                 <tr>
-                  <td><code>isBackgroundEnabled</code></td>
+                  <td><code>requiresBluetoothLeHardware</code></td>
                   <td><code>boolean</code></td>
                   <td>
-                    Adds the required Android BLE hardware feature. It does not create a foreground service or change
-                    manager lifecycle.
+                    Adds the required Android BLE hardware feature (<code>android.hardware.bluetooth_le</code>). It does
+                    not create a foreground service or change manager lifecycle.
                   </td>
                 </tr>
                 <tr>
@@ -789,13 +655,17 @@
                   <td><code>boolean</code></td>
                   <td>
                     Adds Android's <code>neverForLocation</code> scan flag and caps legacy location permissions at API
-                    30. Set it only when the product makes that assertion.
+                    30. Android treats this as a strong assertion and may filter some BLE beacons. Set it only when the
+                    product makes that assertion.
                   </td>
                 </tr>
                 <tr>
                   <td><code>modes</code></td>
-                  <td><code>('central' | 'peripheral')[]</code></td>
-                  <td>Adds the matching iOS Bluetooth background mode values.</td>
+                  <td><code>('central')[]</code></td>
+                  <td>
+                    Adds iOS <code>bluetooth-central</code> background mode. Peripheral mode is rejected; this library
+                    is a BLE central.
+                  </td>
                 </tr>
                 <tr>
                   <td><code>bluetoothAlwaysPermission</code></td>
@@ -829,7 +699,7 @@
               >, and ensure <code>clientId</code> and <code>hostSessionScope</code> exactly match the app's host-owned
               manager/adoption values. Do not claim restoration support from plugin configuration alone.
             </p>
-            <p>The following alpha-era/3.x option names are not accepted by this plugin:</p>
+            <p>These <code>react-native-ble-plx</code> plugin keys are not accepted:</p>
             <ul>
               <li><code>iosEnableRestoration</code></li>
               <li><code>iosRestorationIdentifier</code></li>
@@ -868,18 +738,54 @@
             <h2 id="electron" class="mt0">Electron</h2>
 
             <h1>Electron</h1>
+            <p>Main owns the radio. The renderer uses a versioned IPC client and never loads a native addon.</p>
+            <p>
+              <strong>Current package:</strong> <code>4.0.0-rc.2</code>. Published Node-API v8 prebuilds cover macOS and
+              Windows <code>arm64</code>/<code>x64</code> for both Node and modern Electron.
+            </p>
             <p>
               <code>unified-ble-manager/electron/main</code> and <code>unified-ble-manager/electron/renderer</code> are
-              the only Electron entrypoints. They deliberately split physical-radio ownership from renderer use:
+              the only Electron entrypoints.
             </p>
+            <p>
+              Runnable composition lives in
+              <a href="../example-electron/"><code>example-electron/</code></a> (<code>composition-main.js</code>,
+              <code>composition-preload.js</code>, <code>composition-renderer.js</code>). Sequence:
+            </p>
+            <ol>
+              <li>create a main-process provider and <code>BleManager</code>;</li>
+              <li>create the router and install the binding;</li>
+              <li>authenticate <code>WebContents</code>;</li>
+              <li>expose a narrow preload bridge (no generic <code>ipcRenderer</code>);</li>
+              <li>
+                create the public <code>BleManager</code> with
+                <code>createElectronRendererBleManager({ transport })</code>;
+              </li>
+              <li>
+                use the same <code>scan</code>/<code>find</code>, <code>connect</code>, <code>discover</code>,
+                <code>read</code>, <code>subscribe</code>, and <code>destroy</code> vocabulary as other hosts;
+              </li>
+              <li>release renderer resources, destroy the binding, destroy the manager.</li>
+            </ol>
+            <p>
+              BrowserWindow must use <code>contextIsolation: true</code> and <code>nodeIntegration: false</code>.
+              Security internals live in <a href="ELECTRON_SECURITY_MODEL.md"><code>ELECTRON_SECURITY_MODEL.md</code></a
+              >.
+            </p>
+            <p>
+              In main, build the host-owned generic manager from a provider, then bind IPC. The renderer uses the public
+              <code>BleManager</code> façade; the low-level <code>ElectronRendererBleClient</code> remains an
+              implementation seam for the transport and advanced boundary tests, not an application API.
+            </p>
+            <p>They deliberately split physical-radio ownership from renderer use:</p>
             <ul>
               <li>
-                the Electron <strong>main</strong> process creates one selected owned backend and owns the
-                <code>BleManager</code>/radio lifecycle;
+                the Electron <strong>main</strong> process creates one selected owned backend and owns the generic
+                manager/radio lifecycle;
               </li>
               <li>the preload exposes a narrow versioned IPC transport to the renderer;</li>
               <li>
-                the renderer uses <code>ElectronRendererBleClient</code> and can never select a radio, access a native
+                the renderer uses the public <code>BleManager</code> and can never select a radio, access a native
                 addon, or impersonate another renderer;
               </li>
               <li>
@@ -893,11 +799,10 @@
               <code>PortBleManager</code>, or mock-radio production fallback in these entrypoints.
             </p>
             <p>
-              The published <code>4.0.0-alpha.40</code> Electron prerelease is Experimental. The release workflow's
-              packed Electron smoke is deterministic L1 package/IPC proof, not an Electron host, adapter, or peripheral
-              support claim. No current evidence record binds alpha.40 to a physical Electron radio journey.
+              The release workflow's packed Electron smoke is deterministic L1 package/IPC proof, not an Electron host,
+              adapter, or peripheral support claim. Native prebuild compilation and runtime loading are L2/L3 evidence
+              only; they do not by themselves establish a physical-radio support claim.
             </p>
-            <p>WinRT compile and ABI checks are L2/L3 evidence only; alpha.40 makes no Windows live-radio claim.</p>
             <h2>Main-process backend selection</h2>
             <p>Select one concrete backend in main. The native loaders are fail-closed:</p>
             <ul>
@@ -919,9 +824,10 @@
             </ul>
             <p>
               An Electron application chooses the backend from trusted main-process platform configuration.
-              Renderer-provided data is never a backend selector. Native addons must be rebuilt or supplied for the
-              exact Electron ABI; an absent, incompatible, unauthorized, or unavailable native backend reports a typed
-              failure rather than silently using a simulated radio.
+              Renderer-provided data is never a backend selector. Native addons must be available for the host platform
+              and architecture; an absent, incompatible, unauthorized, or unavailable native backend reports a typed
+              failure rather than silently using a simulated radio. Published builds use Node-API v8, so one prebuild
+              per OS/CPU is shared by maintained Node and modern Electron runtimes.
             </p>
             <h2>IPC integration requirements</h2>
             <p>Install one <code>ElectronMainBleBinding</code> on <code>ipcMain</code> with:</p>
@@ -943,11 +849,11 @@
               bootstrap. Child frames cannot bootstrap, route, release, or acknowledge BLE ownership.
             </p>
             <p>
-              The renderer creates <code>ElectronRendererBleClient</code> from that preload transport, calls
-              <code>initialize()</code> before issuing requests, and calls <code>destroy()</code> during its own
-              teardown. The main process calls <code>binding.destroy()</code> before it destroys the manager. The
-              binding handles operation correlation, event acknowledgement, bounded backpressure, cancellation routing,
-              and retryable cleanup; applications must not duplicate those policies.
+              The renderer creates the public manager from the preload transport and calls <code>destroy()</code> during
+              its own teardown. The public factory initializes the low-level client internally. The main process calls
+              <code>binding.destroy()</code> before it destroys the manager. The binding handles operation correlation,
+              event acknowledgement, bounded backpressure, cancellation routing, and retryable cleanup; applications
+              must not duplicate those policies.
             </p>
             <p>
               For a connected opaque handle, <code>subscribeConnectionEvents(connectionHandle)</code> returns a
@@ -982,23 +888,31 @@
               It is useful as a fast deterministic check, but it does not substitute for the packed router/client
               boundary smoke or an Electron-runtime security test.
             </p>
+            <p>Published packages include these Node-API prebuilds:</p>
+            <ul>
+              <li>macOS <code>arm64</code> and <code>x64</code> CoreBluetooth;</li>
+              <li>Windows <code>arm64</code> and <code>x64</code> WinRT.</li>
+            </ul>
             <p>
-              The package publishes CoreBluetooth source plus <code>node-gyp</code>, not a prebuilt addon. Build from
-              the installed package source. On macOS, a host-Node build uses the current Node ABI:
+              The release matrix builds each artifact on its native runner and loads the same file under both Node and
+              Electron before npm publication. Native <code>.node</code> files must remain unpacked from ASAR and must
+              be included in the consumer application's signing/notarization process.
+            </p>
+            <p>Source and <code>node-gyp</code> remain available as an explicit fallback. For example:</p>
+            <p>
+              Published prebuilds remain the default after a source build. To deliberately load the local
+              <code>build/Release</code> (then <code>build/Debug</code>) artifact before the bundled prebuild, set the
+              explicit process-level override:
             </p>
             <p>
-              An Electron main process must use an Electron-targeted rebuild. Run this from the consumer project after
-              installing its exact Electron dependency:
-            </p>
-            <p>
-              The Node and Electron commands are not interchangeable: they produce addons for different ABIs. Rebuild
-              after any target runtime, ABI, architecture, or package-version change. Windows and Linux have their own
-              native/runtime requirements and are not implied by a macOS build. Windows CI builds and loads the actual
-              WinRT addon under Node, rebuilds it for the pinned Electron ABI, and loads the v2 public boundary under
-              Electron main. That smoke checks the method surface and destroys the boundary; it does not start a scan,
-              observe an advertisement, or establish live-radio support. Published evidence records state the exact
-              backend, package digest, OS/runtime/ABI, hardware, scenario, limitations, and proof level. See
-              <a href="PLATFORMS.md"><code>PLATFORMS.md</code></a> and the controlling
+              With Node-API v8, an Electron-targeted rebuild is not required merely because Electron's module ABI
+              differs from Node's. Rebuild only when using an unsupported target, changing native source, or
+              deliberately overriding the bundled prebuild. Windows and Linux still have their own native/runtime
+              requirements and are not implied by a macOS build. The Node/Electron load smoke checks the method surface
+              and destroys the boundary; it does not start a scan, observe an advertisement, or establish live-radio
+              support. Published evidence records state the exact backend, package digest, OS/runtime/ABI, hardware,
+              scenario, limitations, and proof level. See <a href="PLATFORMS.md"><code>PLATFORMS.md</code></a> and the
+              controlling
               <a href="UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md"><code>UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md</code></a
               >.
             </p>
@@ -1011,64 +925,82 @@
 
             <h1>Platform support and evidence</h1>
             <p>
-              <strong>Architecture and sequencing authority:</strong>
+              <strong>Architecture authority:</strong>
               <a href="UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md"><code>UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md</code></a>
             </p>
             <p>
-              This page is an evidence index, not a static 4.0 capability matrix. In 4.0, an application learns optional
-              behavior from the typed capabilities of its instantiated backend; platform names, build success, or a
-              compile-time helper never substitute for a capability implementation and its evidence.
+              This page is an evidence index, not a static compatibility matrix. An application learns optional behavior
+              from the typed capabilities of its instantiated backend; a platform name, successful build, or
+              compile-time helper never substitutes for an implemented capability and the evidence required for a
+              support claim.
             </p>
-            <h2>Current alpha maturity</h2>
+            <h2>Package stability and backend support are separate</h2>
+            <p>
+              <code>unified-ble-manager@4.0.0-rc.2</code> is the current
+              <strong>release-candidate package/API</strong> for the 4.x contract. Stable <code>4.0.0</code> is reserved
+              for the post-PR12 release gate.
+            </p>
+            <p>
+              This release candidate is the portable API/semantics freeze candidate; it does <strong>not</strong> mean
+              every first-party backend is automatically Preview, Supported, or Reliability-qualified.
+            </p>
+            <p>
+              Backend support labels remain derived from retained evidence. A backend can therefore be Experimental
+              while the host-neutral package is stable. Conversely, deterministic, compile, ABI, or package proof cannot
+              be relabeled as live-radio evidence merely because the package version no longer has a prerelease suffix.
+            </p>
             <p>
               <a href="generated/PLATFORM_SUPPORT.md"><code>generated/PLATFORM_SUPPORT.md</code></a> is the generated
-              evidence projection for the current package. Its generator validates every versioned record beneath
-              <code>evidence/v1/records/</code>, binds claims to the exact package artifact where possible, and fails
-              the package build when the generated page is stale. This document deliberately does not restate that
-              evidence as a manually maintained host matrix.
+              evidence projection for the current package. Its generator validates versioned records beneath
+              <code>evidence/v1/records/</code>, binds claims to the exact artifact where the evidence model requires
+              it, and fails validation when the generated page is stale.
             </p>
-            <p>
-              <code>unified-ble-manager@4.0.0-alpha.40</code> remains the published
-              <strong>Experimental</strong> prerelease. No current evidence record binds the published alpha.40 artifact
-              to a passed physical-radio scenario, so it does not authorize a Preview, Live Preview, Supported, or
-              Reliability-qualified label. WinRT compile and ABI checks remain L2/L3 evidence only; alpha.40 makes no
-              Windows live-radio claim.
-            </p>
-            <p>
-              Meta Quest and an nRF52840-based controllable fault-injection controller are deferred to 4.1. Neither has
-              a 4.0 entrypoint, support label, or release gate.
-            </p>
+            <p>This document deliberately does not duplicate that generated table as a manually maintained matrix.</p>
+            <h2>Evidence labels</h2>
             <p>
               <code>Experimental</code>, <code>Preview</code>, <code>Live Preview</code>, <code>Supported</code>, and
-              <code>Reliability-qualified</code> have the exact meanings in
+              <code>Reliability-qualified</code> have the exact meanings defined in
               <a href="../evidence/v1/README.md"><code>evidence/v1/README.md</code></a
-              >. A lower proof level must remain visible as a limitation. Hardware unavailability blocks the affected
-              support label, not deterministic TCK or package-artifact work.
+              >.
+            </p>
+            <p>
+              A lower proof level must remain visible as a limitation. Hardware unavailability blocks the affected
+              support label; it does not erase valid deterministic/TCK/package/build evidence and it does not force a
+              stable host-neutral API contract back into prerelease SemVer.
+            </p>
+            <p>
+              WinRT compilation or ABI loading, for example, is not by itself a Windows live-radio claim. The same rule
+              applies across Android, Apple/CoreBluetooth, BlueZ, Web Bluetooth, and Electron host boundaries.
+            </p>
+            <p>
+              Meta Quest and the controllable nRF52840 fault-injection controller remain deferred to 4.1. Neither is a
+              4.0 entrypoint or a requirement for the 4.0.0 package/API release.
             </p>
             <h2>Runtime capability truth</h2>
             <p>
-              The shipped 4.0 public core consumes the versioned backend contract and uses registered backend
-              capabilities at runtime. It has no static platform matrix, legacy
-              <code>BlePort</code>/<code>PortBleManager</code>, public Base64 BLE payload path, or Noble fallback. Host
-              packages remain responsible for selecting an explicit concrete backend and for surfacing its typed
-              unavailable/permission/adapter failures.
+              The public core consumes the versioned backend contract and uses backend-reported capabilities at runtime.
+              It has no static platform-support matrix, public Base64 BLE payload path, legacy
+              <code>BlePort</code>/<code>PortBleManager</code> compatibility surface, or production Noble fallback.
             </p>
             <p>
-              Deterministic and mock boundaries are test-only. They prove L1 conformance and fault behavior, never live
-              radio. Package, compile, ABI, and export checks can prove L2/L3 wiring only when captured in a current
-              evidence record. Native compilation and package installation do not upgrade a backend to a live support
-              label.
+              Host entrypoints select an explicit concrete backend and surface its typed unavailable, permission,
+              adapter, cancellation, deadline, and lifecycle failures.
+            </p>
+            <p>
+              Deterministic and mock boundaries are test-only. They prove contract/fault behavior, not live radio.
+              Package, compile, ABI, and export checks prove only the level they actually exercise. Native compilation
+              and package installation do not promote a backend to a higher support label.
             </p>
             <h2>Evidence records</h2>
             <p>
               <a href="GAPS.4.0.md"><code>GAPS.4.0.md</code></a> inventories current evidence work. The generated
               support page consumes versioned evidence manifests containing backend identity, protocol versions, package
-              digest, OS/runtime/hardware, commands, result artifacts, limitations, revalidation rules, and responsible
-              maintainer.
+              digest where applicable, OS/runtime/hardware, commands, result artifacts, limitations, revalidation rules,
+              and responsible maintainer.
             </p>
             <p>
-              The host notes below describe the packed 4.0 contract and its current proof boundaries. They are not a
-              substitute for backend-reported capability and evidence inspection:
+              The host guides describe the packed 4.0 contract and its proof boundaries; they do not replace runtime
+              capability or generated evidence inspection:
             </p>
             <ul>
               <li>
@@ -1101,6 +1033,9 @@
               <li>
                 <a href="GAPS.4.0.md"><code>GAPS.4.0.md</code></a>
               </li>
+              <li>
+                <a href="../RELEASE.md"><code>../RELEASE.md</code></a>
+              </li>
             </ul>
           </section>
         </div>
@@ -1118,565 +1053,332 @@
 
         <section class="p2 mb2 clearfix bg-white minishadow">
           <div class="clearfix">
-            <h3 class="fl m0" id="blemanager">BleManager</h3>
+            <h3 class="fl m0" id="built_in_feature_ids">BUILT_IN_FEATURE_IDS</h3>
           </div>
 
-          <p>
-            Host-neutral public manager. Construction is explicit and delegates all shared policy to UnifiedBleCore; it
-            neither detects a host nor creates a singleton or physical adapter owner on import.
-          </p>
+          <p>Canonical built-in capability identifiers. Third-party identifiers remain open namespaced strings.</p>
 
-          <div class="pre p1 fill-light mt0">new BleManager(core: any, ownershipAuthority: any)</div>
-
-          <div class="py1 quiet mt1 prose-big">Parameters</div>
-          <div class="prose">
-            <div class="space-bottom0">
-              <div><span class="code bold">core</span> <code class="quiet">(any)</code></div>
-            </div>
-
-            <div class="space-bottom0">
-              <div><span class="code bold">ownershipAuthority</span> <code class="quiet">(any)</code></div>
-            </div>
-          </div>
-
-          <div class="py1 quiet mt1 prose-big">Instance Members</div>
-          <div class="clearfix">
-            <div class="border-bottom" id="blemanagersupports">
-              <div class="clearfix small pointer toggle-sibling">
-                <div class="py1 contain">
-                  <a class="icon pin-right py1 dark-link caret-right">▸</a>
-                  <span class="code strong strong truncate">supports(id)</span>
-                </div>
-              </div>
-              <div class="clearfix display-none toggle-target">
-                <section class="p2 mb2 clearfix bg-white minishadow">
-                  <p>
-                    True only where the instantiated backend/core registry exposes an invocable feature implementation.
-                  </p>
-
-                  <div class="pre p1 fill-light mt0">supports(id: any)</div>
-
-                  <div class="py1 quiet mt1 prose-big">Parameters</div>
-                  <div class="prose">
-                    <div class="space-bottom0">
-                      <div><span class="code bold">id</span> <code class="quiet">(any)</code></div>
-                    </div>
-                  </div>
-                </section>
-              </div>
-            </div>
-
-            <div class="border-bottom" id="blemanagercapability">
-              <div class="clearfix small pointer toggle-sibling">
-                <div class="py1 contain">
-                  <a class="icon pin-right py1 dark-link caret-right">▸</a>
-                  <span class="code strong strong truncate">capability(id)</span>
-                </div>
-              </div>
-              <div class="clearfix display-none toggle-target">
-                <section class="p2 mb2 clearfix bg-white minishadow">
-                  <p>Returns one immutable capability descriptor, or null when no registration exists.</p>
-
-                  <div class="pre p1 fill-light mt0">capability(id: any)</div>
-
-                  <div class="py1 quiet mt1 prose-big">Parameters</div>
-                  <div class="prose">
-                    <div class="space-bottom0">
-                      <div><span class="code bold">id</span> <code class="quiet">(any)</code></div>
-                    </div>
-                  </div>
-                </section>
-              </div>
-            </div>
-
-            <div class="border-bottom" id="blemanagercapabilities">
-              <div class="clearfix small pointer toggle-sibling">
-                <div class="py1 contain">
-                  <a class="icon pin-right py1 dark-link caret-right">▸</a>
-                  <span class="code strong strong truncate">capabilities()</span>
-                </div>
-              </div>
-              <div class="clearfix display-none toggle-target">
-                <section class="p2 mb2 clearfix bg-white minishadow">
-                  <p>Returns the immutable capability projection derived from negotiated registrations.</p>
-
-                  <div class="pre p1 fill-light mt0">capabilities()</div>
-                </section>
-              </div>
-            </div>
-
-            <div class="border-bottom" id="blemanageradoptrestoration">
-              <div class="clearfix small pointer toggle-sibling">
-                <div class="py1 contain">
-                  <a class="icon pin-right py1 dark-link caret-right">▸</a>
-                  <span class="code strong strong truncate">adoptRestoration(request)</span>
-                </div>
-              </div>
-              <div class="clearfix display-none toggle-target">
-                <section class="p2 mb2 clearfix bg-white minishadow">
-                  <p>Explicitly consumes the active provider's bounded native restoration journal.</p>
-
-                  <div class="pre p1 fill-light mt0">adoptRestoration(request: any)</div>
-
-                  <div class="py1 quiet mt1 prose-big">Parameters</div>
-                  <div class="prose">
-                    <div class="space-bottom0">
-                      <div><span class="code bold">request</span> <code class="quiet">(any)</code></div>
-                    </div>
-                  </div>
-                </section>
-              </div>
-            </div>
-
-            <div class="border-bottom" id="blemanagerrevokeforownerdestroy">
-              <div class="clearfix small pointer toggle-sibling">
-                <div class="py1 contain">
-                  <a class="icon pin-right py1 dark-link caret-right">▸</a>
-                  <span class="code strong strong truncate">revokeForOwnerDestroy()</span>
-                </div>
-              </div>
-              <div class="clearfix display-none toggle-target">
-                <section class="p2 mb2 clearfix bg-white minishadow">
-                  <p>Called only by the explicit authority during settled owner revocation.</p>
-
-                  <div class="pre p1 fill-light mt0">revokeForOwnerDestroy()</div>
-                </section>
-              </div>
-            </div>
-
-            <div class="border-bottom" id="blemanagertransferownership">
-              <div class="clearfix small pointer toggle-sibling">
-                <div class="py1 contain">
-                  <a class="icon pin-right py1 dark-link caret-right">▸</a>
-                  <span class="code strong strong truncate">transferOwnership(grant)</span>
-                </div>
-              </div>
-              <div class="clearfix display-none toggle-target">
-                <section class="p2 mb2 clearfix bg-white minishadow">
-                  <p>
-                    Settles this owner's resources, then atomically hands backend authority to an accepted borrower.
-                  </p>
-
-                  <div class="pre p1 fill-light mt0">transferOwnership(grant: any)</div>
-
-                  <div class="py1 quiet mt1 prose-big">Parameters</div>
-                  <div class="prose">
-                    <div class="space-bottom0">
-                      <div><span class="code bold">grant</span> <code class="quiet">(any)</code></div>
-                    </div>
-                  </div>
-                </section>
-              </div>
-            </div>
-          </div>
+          <div class="pre p1 fill-light mt0">BUILT_IN_FEATURE_IDS</div>
         </section>
 
         <section class="p2 mb2 clearfix bg-white minishadow">
           <div class="clearfix">
-            <h3 class="fl m0" id="createblemanagerfromprovider">createBleManagerFromProvider</h3>
+            <h3 class="fl m0" id="built_in_feature_catalog">BUILT_IN_FEATURE_CATALOG</h3>
           </div>
 
-          <p>Explicitly creates a manager from a selected provider adapter.</p>
+          <p>One metadata authority for built-in capability documentation and TCK binding.</p>
 
-          <div class="pre p1 fill-light mt0">createBleManagerFromProvider(construction: any, options: any)</div>
-
-          <div class="py1 quiet mt1 prose-big">Parameters</div>
-          <div class="prose">
-            <div class="space-bottom0">
-              <div><span class="code bold">construction</span> <code class="quiet">(any)</code></div>
-            </div>
-
-            <div class="space-bottom0">
-              <div><span class="code bold">options</span> <code class="quiet">(any)</code></div>
-            </div>
-          </div>
+          <div class="pre p1 fill-light mt0">BUILT_IN_FEATURE_CATALOG</div>
         </section>
 
         <section class="p2 mb2 clearfix bg-white minishadow">
           <div class="clearfix">
-            <h3 class="fl m0" id="createblemanager">createBleManager</h3>
-          </div>
-
-          <p>Explicitly creates a manager from a backend that has already been selected by its host/provider.</p>
-
-          <div class="pre p1 fill-light mt0">
-            createBleManager(construction: any, ownershipAuthority: any, options: any)
-          </div>
-
-          <div class="py1 quiet mt1 prose-big">Parameters</div>
-          <div class="prose">
-            <div class="space-bottom0">
-              <div><span class="code bold">construction</span> <code class="quiet">(any)</code></div>
-            </div>
-
-            <div class="space-bottom0">
-              <div><span class="code bold">ownershipAuthority</span> <code class="quiet">(any)</code></div>
-            </div>
-
-            <div class="space-bottom0">
-              <div><span class="code bold">options</span> <code class="quiet">(any)</code></div>
-            </div>
-          </div>
-        </section>
-
-        <section class="p2 mb2 clearfix bg-white minishadow">
-          <div class="clearfix">
-            <h3 class="fl m0" id="scanuntil">scanUntil</h3>
-          </div>
-
-          <p>The exact public scan request and observation predicate used by find and scanUntil.</p>
-
-          <div class="pre p1 fill-light mt0">scanUntil(manager: any, options: any)</div>
-
-          <div class="py1 quiet mt1 prose-big">Parameters</div>
-          <div class="prose">
-            <div class="space-bottom0">
-              <div><span class="code bold">manager</span> <code class="quiet">(any)</code></div>
-            </div>
-
-            <div class="space-bottom0">
-              <div><span class="code bold">options</span> <code class="quiet">(any)</code></div>
-            </div>
-          </div>
-        </section>
-
-        <section class="p2 mb2 clearfix bg-white minishadow">
-          <div class="clearfix">
-            <h3 class="fl m0" id="scanuntil">scanUntil</h3>
-          </div>
-
-          <p>A discovered, generation-bound GATT database that remains owned by its returned connection.</p>
-
-          <div class="pre p1 fill-light mt0">scanUntil(manager: any, options: any)</div>
-
-          <div class="py1 quiet mt1 prose-big">Parameters</div>
-          <div class="prose">
-            <div class="space-bottom0">
-              <div><span class="code bold">manager</span> <code class="quiet">(any)</code></div>
-            </div>
-
-            <div class="space-bottom0">
-              <div><span class="code bold">options</span> <code class="quiet">(any)</code></div>
-            </div>
-          </div>
-        </section>
-
-        <section class="p2 mb2 clearfix bg-white minishadow">
-          <div class="clearfix">
-            <h3 class="fl m0" id="scanuntil">scanUntil</h3>
-          </div>
-
-          <p>Bounded collection configuration for collectNotifications.</p>
-
-          <div class="pre p1 fill-light mt0">scanUntil(manager: any, options: any)</div>
-
-          <div class="py1 quiet mt1 prose-big">Parameters</div>
-          <div class="prose">
-            <div class="space-bottom0">
-              <div><span class="code bold">manager</span> <code class="quiet">(any)</code></div>
-            </div>
-
-            <div class="space-bottom0">
-              <div><span class="code bold">options</span> <code class="quiet">(any)</code></div>
-            </div>
-          </div>
-        </section>
-
-        <section class="p2 mb2 clearfix bg-white minishadow">
-          <div class="clearfix">
-            <h3 class="fl m0" id="scanuntil">scanUntil</h3>
-          </div>
-
-          <p>
-            Scans until a caller-owned predicate accepts an observation. The exact scan request, including active
-            AbortSignal and deadline behavior, is forwarded unchanged to the public manager.
-          </p>
-
-          <div class="pre p1 fill-light mt0">scanUntil(manager: any, options: any)</div>
-
-          <div class="py1 quiet mt1 prose-big">Parameters</div>
-          <div class="prose">
-            <div class="space-bottom0">
-              <div><span class="code bold">manager</span> <code class="quiet">(any)</code></div>
-            </div>
-
-            <div class="space-bottom0">
-              <div><span class="code bold">options</span> <code class="quiet">(any)</code></div>
-            </div>
-          </div>
-        </section>
-
-        <section class="p2 mb2 clearfix bg-white minishadow">
-          <div class="clearfix">
-            <h3 class="fl m0" id="find">find</h3>
-          </div>
-
-          <p>Alias for scanUntil that keeps the public vocabulary compact.</p>
-
-          <div class="pre p1 fill-light mt0">find(manager: any, options: any)</div>
-
-          <div class="py1 quiet mt1 prose-big">Parameters</div>
-          <div class="prose">
-            <div class="space-bottom0">
-              <div><span class="code bold">manager</span> <code class="quiet">(any)</code></div>
-            </div>
-
-            <div class="space-bottom0">
-              <div><span class="code bold">options</span> <code class="quiet">(any)</code></div>
-            </div>
-          </div>
-        </section>
-
-        <section class="p2 mb2 clearfix bg-white minishadow">
-          <div class="clearfix">
-            <h3 class="fl m0" id="connectanddiscover">connectAndDiscover</h3>
-          </div>
-
-          <p>Connects and discovers through the public handles, releasing a partial connection if discovery fails.</p>
-
-          <div class="pre p1 fill-light mt0">connectAndDiscover(manager: any, peerId: any, options: any)</div>
-
-          <div class="py1 quiet mt1 prose-big">Parameters</div>
-          <div class="prose">
-            <div class="space-bottom0">
-              <div><span class="code bold">manager</span> <code class="quiet">(any)</code></div>
-            </div>
-
-            <div class="space-bottom0">
-              <div><span class="code bold">peerId</span> <code class="quiet">(any)</code></div>
-            </div>
-
-            <div class="space-bottom0">
-              <div><span class="code bold">options</span> <code class="quiet">(any)</code></div>
-            </div>
-          </div>
-        </section>
-
-        <section class="p2 mb2 clearfix bg-white minishadow">
-          <div class="clearfix">
-            <h3 class="fl m0" id="firstnotification">firstNotification</h3>
-          </div>
-
-          <p>Resolves the first notification value and removes the subscription before returning.</p>
-
-          <div class="pre p1 fill-light mt0">firstNotification(database: any, path: any, options: any)</div>
-
-          <div class="py1 quiet mt1 prose-big">Parameters</div>
-          <div class="prose">
-            <div class="space-bottom0">
-              <div><span class="code bold">database</span> <code class="quiet">(any)</code></div>
-            </div>
-
-            <div class="space-bottom0">
-              <div><span class="code bold">path</span> <code class="quiet">(any)</code></div>
-            </div>
-
-            <div class="space-bottom0">
-              <div><span class="code bold">options</span> <code class="quiet">(any)</code></div>
-            </div>
-          </div>
-        </section>
-
-        <section class="p2 mb2 clearfix bg-white minishadow">
-          <div class="clearfix">
-            <h3 class="fl m0" id="collectnotifications">collectNotifications</h3>
-          </div>
-
-          <p>Collects no more than maximumValues notification payloads, then removes the subscription.</p>
-
-          <div class="pre p1 fill-light mt0">collectNotifications(database: any, path: any, options: any)</div>
-
-          <div class="py1 quiet mt1 prose-big">Parameters</div>
-          <div class="prose">
-            <div class="space-bottom0">
-              <div><span class="code bold">database</span> <code class="quiet">(any)</code></div>
-            </div>
-
-            <div class="space-bottom0">
-              <div><span class="code bold">path</span> <code class="quiet">(any)</code></div>
-            </div>
-
-            <div class="space-bottom0">
-              <div><span class="code bold">options</span> <code class="quiet">(any)</code></div>
-            </div>
-          </div>
-        </section>
-
-        <section class="p2 mb2 clearfix bg-white minishadow">
-          <div class="clearfix">
-            <h3 class="fl m0" id="withconnection">withConnection</h3>
-          </div>
-
-          <p>Runs an operation with one connection lease and deterministically releases that lease on every exit.</p>
-
-          <div class="pre p1 fill-light mt0">
-            withConnection(manager: any, peerId: any, options: any, operation: any)
-          </div>
-
-          <div class="py1 quiet mt1 prose-big">Parameters</div>
-          <div class="prose">
-            <div class="space-bottom0">
-              <div><span class="code bold">manager</span> <code class="quiet">(any)</code></div>
-            </div>
-
-            <div class="space-bottom0">
-              <div><span class="code bold">peerId</span> <code class="quiet">(any)</code></div>
-            </div>
-
-            <div class="space-bottom0">
-              <div><span class="code bold">options</span> <code class="quiet">(any)</code></div>
-            </div>
-
-            <div class="space-bottom0">
-              <div><span class="code bold">operation</span> <code class="quiet">(any)</code></div>
-            </div>
-          </div>
-        </section>
-
-        <section class="p2 mb2 clearfix bg-white minishadow">
-          <div class="clearfix">
-            <h3 class="fl m0" id="attachblebackend">attachBleBackend</h3>
-          </div>
-
-          <p>Host-neutral public API for unified-ble-manager 4.0.</p>
-          <p>
-            Hosts select and construct a backend explicitly. Backend implementation and deterministic controls are
-            intentionally isolated behind <code>backend-sdk</code> and <code>testing</code>; importing this entrypoint
-            does not select a host or radio.
-          </p>
-
-          <div class="pre p1 fill-light mt0">attachBleBackend</div>
-        </section>
-
-        <section class="p2 mb2 clearfix bg-white minishadow">
-          <div class="clearfix">
-            <h3 class="fl m0" id="attachblebackend">attachBleBackend</h3>
-          </div>
-
-          <p>Performs the one manager-neutral attachment handshake for a selected backend.</p>
-
-          <div class="pre p1 fill-light mt0">attachBleBackend(backend: any, coreCompatibility: any)</div>
-
-          <div class="py1 quiet mt1 prose-big">Parameters</div>
-          <div class="prose">
-            <div class="space-bottom0">
-              <div><span class="code bold">backend</span> <code class="quiet">(any)</code></div>
-            </div>
-
-            <div class="space-bottom0">
-              <div><span class="code bold">coreCompatibility</span> <code class="quiet">(any)</code></div>
-            </div>
-          </div>
-        </section>
-
-        <section class="p2 mb2 clearfix bg-white minishadow">
-          <div class="clearfix">
-            <h3 class="fl m0" id="isconstructedblemanagerownershipparticipant">
-              isConstructedBleManagerOwnershipParticipant
+            <h3 class="fl m0" id="createbackendoperationcapabilityregistration">
+              createBackendOperationCapabilityRegistration
             </h3>
           </div>
 
-          <p>Internal non-enrolling bridge used by the authority to verify actual BleManager construction.</p>
+          <p>The backend-observed per-connection limit used to plan a chunked write.</p>
 
-          <div class="pre p1 fill-light mt0">isConstructedBleManagerOwnershipParticipant(participant: any)</div>
+          <div class="pre p1 fill-light mt0">createBackendOperationCapabilityRegistration(options: any)</div>
 
           <div class="py1 quiet mt1 prose-big">Parameters</div>
           <div class="prose">
             <div class="space-bottom0">
-              <div><span class="code bold">participant</span> <code class="quiet">(any)</code></div>
+              <div><span class="code bold">options</span> <code class="quiet">(any)</code></div>
             </div>
           </div>
         </section>
 
         <section class="p2 mb2 clearfix bg-white minishadow">
           <div class="clearfix">
-            <h3 class="fl m0" id="createblemanagerfrombackend">createBleManagerFromBackend</h3>
+            <h3 class="fl m0" id="createbackendoperationcapabilityregistration">
+              createBackendOperationCapabilityRegistration
+            </h3>
           </div>
 
-          <p>Creates an owning manager for a host backend that has already been selected.</p>
+          <p>Serializable maximum-write-length observation returned by a registered backend implementation.</p>
+
+          <div class="pre p1 fill-light mt0">createBackendOperationCapabilityRegistration(options: any)</div>
+
+          <div class="py1 quiet mt1 prose-big">Parameters</div>
+          <div class="prose">
+            <div class="space-bottom0">
+              <div><span class="code bold">options</span> <code class="quiet">(any)</code></div>
+            </div>
+          </div>
+        </section>
+
+        <section class="p2 mb2 clearfix bg-white minishadow">
+          <div class="clearfix">
+            <h3 class="fl m0" id="createbackendoperationcapabilityregistration">
+              createBackendOperationCapabilityRegistration
+            </h3>
+          </div>
+
+          <p>Typed registration implementation for the built-in maximum-write-length capability.</p>
+
+          <div class="pre p1 fill-light mt0">createBackendOperationCapabilityRegistration(options: any)</div>
+
+          <div class="py1 quiet mt1 prose-big">Parameters</div>
+          <div class="prose">
+            <div class="space-bottom0">
+              <div><span class="code bold">options</span> <code class="quiet">(any)</code></div>
+            </div>
+          </div>
+        </section>
+
+        <section class="p2 mb2 clearfix bg-white minishadow">
+          <div class="clearfix">
+            <h3 class="fl m0" id="createbackendoperationcapabilityregistration">
+              createBackendOperationCapabilityRegistration
+            </h3>
+          </div>
+
+          <p>The core-owned chunking policy is identified separately from native reliable-write support.</p>
+
+          <div class="pre p1 fill-light mt0">createBackendOperationCapabilityRegistration(options: any)</div>
+
+          <div class="py1 quiet mt1 prose-big">Parameters</div>
+          <div class="prose">
+            <div class="space-bottom0">
+              <div><span class="code bold">options</span> <code class="quiet">(any)</code></div>
+            </div>
+          </div>
+        </section>
+
+        <section class="p2 mb2 clearfix bg-white minishadow">
+          <div class="clearfix">
+            <h3 class="fl m0" id="createbackendoperationcapabilityregistration">
+              createBackendOperationCapabilityRegistration
+            </h3>
+          </div>
+
+          <p>Typed registration implementation for the core-emulated long-write planner.</p>
+
+          <div class="pre p1 fill-light mt0">createBackendOperationCapabilityRegistration(options: any)</div>
+
+          <div class="py1 quiet mt1 prose-big">Parameters</div>
+          <div class="prose">
+            <div class="space-bottom0">
+              <div><span class="code bold">options</span> <code class="quiet">(any)</code></div>
+            </div>
+          </div>
+        </section>
+
+        <section class="p2 mb2 clearfix bg-white minishadow">
+          <div class="clearfix">
+            <h3 class="fl m0" id="createbackendoperationcapabilityregistration">
+              createBackendOperationCapabilityRegistration
+            </h3>
+          </div>
+
+          <p>A bounded operating limit with a unit that remains meaningful after serialization.</p>
+
+          <div class="pre p1 fill-light mt0">createBackendOperationCapabilityRegistration(options: any)</div>
+
+          <div class="py1 quiet mt1 prose-big">Parameters</div>
+          <div class="prose">
+            <div class="space-bottom0">
+              <div><span class="code bold">options</span> <code class="quiet">(any)</code></div>
+            </div>
+          </div>
+        </section>
+
+        <section class="p2 mb2 clearfix bg-white minishadow">
+          <div class="clearfix">
+            <h3 class="fl m0" id="createbackendoperationcapabilityregistration">
+              createBackendOperationCapabilityRegistration
+            </h3>
+          </div>
+
+          <p>
+            Feature-specific limits are deliberately an open record: registered third-party features do not need a
+            central union, while every value still has a bounded, machine-readable shape.
+          </p>
+
+          <div class="pre p1 fill-light mt0">createBackendOperationCapabilityRegistration(options: any)</div>
+
+          <div class="py1 quiet mt1 prose-big">Parameters</div>
+          <div class="prose">
+            <div class="space-bottom0">
+              <div><span class="code bold">options</span> <code class="quiet">(any)</code></div>
+            </div>
+          </div>
+        </section>
+
+        <section class="p2 mb2 clearfix bg-white minishadow">
+          <div class="clearfix">
+            <h3 class="fl m0" id="createbackendoperationcapabilityregistration">
+              createBackendOperationCapabilityRegistration
+            </h3>
+          </div>
+
+          <p>Serializable capability truth. Typed implementations are intentionally excluded.</p>
+
+          <div class="pre p1 fill-light mt0">createBackendOperationCapabilityRegistration(options: any)</div>
+
+          <div class="py1 quiet mt1 prose-big">Parameters</div>
+          <div class="prose">
+            <div class="space-bottom0">
+              <div><span class="code bold">options</span> <code class="quiet">(any)</code></div>
+            </div>
+          </div>
+        </section>
+
+        <section class="p2 mb2 clearfix bg-white minishadow">
+          <div class="clearfix">
+            <h3 class="fl m0" id="createbackendoperationcapabilityregistration">
+              createBackendOperationCapabilityRegistration
+            </h3>
+          </div>
+
+          <p>Creates a truthful marker for an operation implemented by a concrete backend seam.</p>
+
+          <div class="pre p1 fill-light mt0">createBackendOperationCapabilityRegistration(options: any)</div>
+
+          <div class="py1 quiet mt1 prose-big">Parameters</div>
+          <div class="prose">
+            <div class="space-bottom0">
+              <div><span class="code bold">options</span> <code class="quiet">(any)</code></div>
+            </div>
+          </div>
+        </section>
+
+        <section class="p2 mb2 clearfix bg-white minishadow">
+          <div class="clearfix">
+            <h3 class="fl m0" id="validatecapabilitydescriptor">validateCapabilityDescriptor</h3>
+          </div>
+
+          <p>Validates the data-only capability projection used by every host boundary.</p>
+
+          <div class="pre p1 fill-light mt0">validateCapabilityDescriptor(descriptor: any)</div>
+
+          <div class="py1 quiet mt1 prose-big">Parameters</div>
+          <div class="prose">
+            <div class="space-bottom0">
+              <div><span class="code bold">descriptor</span> <code class="quiet">(any)</code></div>
+            </div>
+          </div>
+        </section>
+
+        <section class="p2 mb2 clearfix bg-white minishadow">
+          <div class="clearfix">
+            <h3 class="fl m0" id="snapshotcapabilitydescriptor">snapshotCapabilityDescriptor</h3>
+          </div>
+
+          <p>Deep-copies a validated descriptor while excluding no data-only fields.</p>
+
+          <div class="pre p1 fill-light mt0">snapshotCapabilityDescriptor(descriptor: any)</div>
+
+          <div class="py1 quiet mt1 prose-big">Parameters</div>
+          <div class="prose">
+            <div class="space-bottom0">
+              <div><span class="code bold">descriptor</span> <code class="quiet">(any)</code></div>
+            </div>
+          </div>
+        </section>
+
+        <section class="p2 mb2 clearfix bg-white minishadow">
+          <div class="clearfix">
+            <h3 class="fl m0" id="describefeatureregistry">describeFeatureRegistry</h3>
+          </div>
+
+          <p>Returns the frozen descriptive projection suitable for capability handshakes and IPC.</p>
+
+          <div class="pre p1 fill-light mt0">describeFeatureRegistry(registry: any)</div>
+
+          <div class="py1 quiet mt1 prose-big">Parameters</div>
+          <div class="prose">
+            <div class="space-bottom0">
+              <div><span class="code bold">registry</span> <code class="quiet">(any)</code></div>
+            </div>
+          </div>
+        </section>
+
+        <section class="p2 mb2 clearfix bg-white minishadow">
+          <div class="clearfix">
+            <h3 class="fl m0" id="createipcoperationidfactory">createIpcOperationIdFactory</h3>
+          </div>
+
+          <p>Creates renderer-local IPC correlation IDs scoped to one already-attached backend generation.</p>
+
+          <div class="pre p1 fill-light mt0">createIpcOperationIdFactory(scope: any)</div>
+
+          <div class="py1 quiet mt1 prose-big">Parameters</div>
+          <div class="prose">
+            <div class="space-bottom0">
+              <div><span class="code bold">scope</span> <code class="quiet">(any)</code></div>
+            </div>
+          </div>
+        </section>
+
+        <section class="p2 mb2 clearfix bg-white minishadow">
+          <div class="clearfix">
+            <h3 class="fl m0" id="max_timeout_ms">MAX_TIMEOUT_MS</h3>
+          </div>
+
+          <p>
+            Application-facing operation controls. Timeouts are expressed as a monotonic wall-clock delta and normalized
+            once to an internal Deadline; advanced callers use <code>/advanced</code> with an exact Deadline.
+          </p>
+
+          <div class="pre p1 fill-light mt0">MAX_TIMEOUT_MS</div>
+
+          <p>
+            Type:
+            <a href="https://developer.mozilla.org/docs/Web/JavaScript/Reference/Global_Objects/Number">number</a>
+          </p>
+        </section>
+
+        <section class="p2 mb2 clearfix bg-white minishadow">
+          <div class="clearfix">
+            <h3 class="fl m0" id="normalizeoperationoptions">normalizeOperationOptions</h3>
+          </div>
+
+          <p>Centralized application option normalization.</p>
+          <ul>
+            <li>validates <code>signal</code> and <code>timeoutMs</code> exactly once per public entry</li>
+            <li>composes an outer signal with internal cancellation without losing cause</li>
+            <li>preserves an earlier deadline when a helper calls another helper</li>
+            <li>converts <code>timeoutMs</code> to a monotonic Deadline using the provided <code>now</code></li>
+          </ul>
 
           <div class="pre p1 fill-light mt0">
-            createBleManagerFromBackend(backend: any, construction: any, options: any, expectedAdapterId: any)
+            normalizeOperationOptions(options: any, now: any, existingDeadline: any)
           </div>
 
           <div class="py1 quiet mt1 prose-big">Parameters</div>
           <div class="prose">
-            <div class="space-bottom0">
-              <div><span class="code bold">backend</span> <code class="quiet">(any)</code></div>
-            </div>
-
-            <div class="space-bottom0">
-              <div><span class="code bold">construction</span> <code class="quiet">(any)</code></div>
-            </div>
-
             <div class="space-bottom0">
               <div><span class="code bold">options</span> <code class="quiet">(any)</code></div>
             </div>
 
             <div class="space-bottom0">
-              <div><span class="code bold">expectedAdapterId</span> <code class="quiet">(any)</code></div>
+              <div><span class="code bold">now</span> <code class="quiet">(any)</code></div>
+            </div>
+
+            <div class="space-bottom0">
+              <div>
+                <span class="code bold">existingDeadline</span> <code class="quiet">(any = <code>null</code>)</code>
+              </div>
             </div>
           </div>
         </section>
 
         <section class="p2 mb2 clearfix bg-white minishadow">
           <div class="clearfix">
-            <h3 class="fl m0" id="createmanagerownershipauthority">createManagerOwnershipAuthority</h3>
+            <h3 class="fl m0" id="rehydratepublicerror">rehydratePublicError</h3>
           </div>
 
-          <p>Creates the explicit per-attachment authority shared by logical managers.</p>
+          <p>Converts backend errors only at an application façade boundary.</p>
 
-          <div class="pre p1 fill-light mt0">createManagerOwnershipAuthority(attachedBackend: any)</div>
+          <div class="pre p1 fill-light mt0">rehydratePublicError(error: any)</div>
 
           <div class="py1 quiet mt1 prose-big">Parameters</div>
           <div class="prose">
             <div class="space-bottom0">
-              <div><span class="code bold">attachedBackend</span> <code class="quiet">(any)</code></div>
-            </div>
-          </div>
-        </section>
-
-        <section class="p2 mb2 clearfix bg-white minishadow">
-          <div class="clearfix">
-            <h3 class="fl m0" id="unifiedblecore">UnifiedBleCore</h3>
-          </div>
-
-          <p>
-            One attached core owns the portable policy for one manager. It delegates only radio mechanics to the
-            negotiated backend and never imports a host runtime.
-          </p>
-
-          <div class="pre p1 fill-light mt0">new UnifiedBleCore(construction: any, options: any)</div>
-
-          <div class="py1 quiet mt1 prose-big">Parameters</div>
-          <div class="prose">
-            <div class="space-bottom0">
-              <div><span class="code bold">construction</span> <code class="quiet">(any)</code></div>
-            </div>
-
-            <div class="space-bottom0">
-              <div><span class="code bold">options</span> <code class="quiet">(any)</code></div>
-            </div>
-          </div>
-        </section>
-
-        <section class="p2 mb2 clearfix bg-white minishadow">
-          <div class="clearfix">
-            <h3 class="fl m0" id="aggregatestreamquota">AggregateStreamQuota</h3>
-          </div>
-
-          <p>
-            Applies one aggregate retained-byte ceiling across registered core streams. A quota breach terminates the
-            producing stream with its one overflow terminal rather than allowing a producer to allocate past its
-            declared budget.
-          </p>
-
-          <div class="pre p1 fill-light mt0">new AggregateStreamQuota(maximumRetainedBytes: any)</div>
-
-          <div class="py1 quiet mt1 prose-big">Parameters</div>
-          <div class="prose">
-            <div class="space-bottom0">
-              <div><span class="code bold">maximumRetainedBytes</span> <code class="quiet">(any)</code></div>
+              <div><span class="code bold">error</span> <code class="quiet">(any)</code></div>
             </div>
           </div>
         </section>
@@ -1782,1166 +1484,40 @@
 
         <section class="p2 mb2 clearfix bg-white minishadow">
           <div class="clearfix">
-            <h3 class="fl m0" id="coreoperationcoordinator">CoreOperationCoordinator</h3>
+            <h3 class="fl m0" id="bleerror">BleError</h3>
           </div>
 
           <p>
-            Serializes operations for each connection, chooses one public terminal result, and keeps a cancelled
-            dispatched operation at the FIFO head until its backend acknowledgement arrives. That prevents a late native
-            acknowledgement from reordering same-connection radio work.
+            Public application error. All façade and IPC errors rehydrate to BleError. Recovery catalog is deterministic
+            per code; platform detail is preserved separately.
           </p>
 
-          <div class="pre p1 fill-light mt0">new CoreOperationCoordinator(options: any)</div>
-
-          <div class="py1 quiet mt1 prose-big">Parameters</div>
-          <div class="prose">
-            <div class="space-bottom0">
-              <div><span class="code bold">options</span> <code class="quiet">(any)</code></div>
-            </div>
-          </div>
-
-          <div class="py1 quiet mt1 prose-big">Instance Members</div>
-          <div class="clearfix">
-            <div class="border-bottom" id="coreoperationcoordinatorruncleanup">
-              <div class="clearfix small pointer toggle-sibling">
-                <div class="py1 contain">
-                  <a class="icon pin-right py1 dark-link caret-right">▸</a>
-                  <span class="code strong strong truncate">runCleanup(execution)</span>
-                </div>
-              </div>
-              <div class="clearfix display-none toggle-target">
-                <section class="p2 mb2 clearfix bg-white minishadow">
-                  <p>Internal teardown lane: no public admission, but required cleanup may still dispatch.</p>
-
-                  <div class="pre p1 fill-light mt0">runCleanup(execution: any)</div>
-
-                  <div class="py1 quiet mt1 prose-big">Parameters</div>
-                  <div class="prose">
-                    <div class="space-bottom0">
-                      <div><span class="code bold">execution</span> <code class="quiet">(any)</code></div>
-                    </div>
-                  </div>
-                </section>
-              </div>
-            </div>
-          </div>
-        </section>
-
-        <section class="p2 mb2 clearfix bg-white minishadow">
-          <div class="clearfix">
-            <h3 class="fl m0" id="resourceledger">ResourceLedger</h3>
-          </div>
+          <div class="pre p1 fill-light mt0">new BleError(code: any, domain: any, operation: any, options: any)</div>
 
           <p>
-            Maintains the non-negative resource counters owned by one core attachment. The owner is responsible for
-            changing a counter before publishing the matching resource and before releasing that resource's ownership.
+            Extends
+
+            <a href="https://developer.mozilla.org/docs/Web/JavaScript/Reference/Global_Objects/Error">Error</a>
           </p>
 
-          <div class="pre p1 fill-light mt0">new ResourceLedger()</div>
-        </section>
-
-        <section class="p2 mb2 clearfix bg-white minishadow">
-          <div class="clearfix">
-            <h3 class="fl m0" id="coresubscription">CoreSubscription</h3>
-          </div>
-
-          <p>Public subscription handle with a consumer-owned bounded value stream.</p>
-
-          <div class="pre p1 fill-light mt0">
-            new CoreSubscription(subscriptionId: any, path: any, values: any, removeSubscription: any)
-          </div>
-
           <div class="py1 quiet mt1 prose-big">Parameters</div>
           <div class="prose">
             <div class="space-bottom0">
-              <div><span class="code bold">subscriptionId</span> <code class="quiet">(any)</code></div>
+              <div><span class="code bold">code</span> <code class="quiet">(any)</code></div>
             </div>
 
             <div class="space-bottom0">
-              <div><span class="code bold">path</span> <code class="quiet">(any)</code></div>
+              <div><span class="code bold">domain</span> <code class="quiet">(any)</code></div>
             </div>
 
             <div class="space-bottom0">
-              <div><span class="code bold">values</span> <code class="quiet">(any)</code></div>
+              <div><span class="code bold">operation</span> <code class="quiet">(any)</code></div>
             </div>
 
             <div class="space-bottom0">
-              <div><span class="code bold">removeSubscription</span> <code class="quiet">(any)</code></div>
-            </div>
-          </div>
-        </section>
-
-        <section class="p2 mb2 clearfix bg-white minishadow">
-          <div class="clearfix">
-            <h3 class="fl m0" id="subscriptionregistry">SubscriptionRegistry</h3>
-          </div>
-
-          <p>
-            Owns the one physical CCCD enablement for each exact current path. Each consumer gets its own bounded
-            stream; removing one never disables another.
-          </p>
-
-          <div class="pre p1 fill-light mt0">new SubscriptionRegistry(runtime: any)</div>
-
-          <div class="py1 quiet mt1 prose-big">Parameters</div>
-          <div class="prose">
-            <div class="space-bottom0">
-              <div><span class="code bold">runtime</span> <code class="quiet">(any)</code></div>
-            </div>
-          </div>
-        </section>
-
-        <section class="p2 mb2 clearfix bg-white minishadow">
-          <div class="clearfix">
-            <h3 class="fl m0" id="coretracerecorder">CoreTraceRecorder</h3>
-          </div>
-
-          <p>
-            A bounded, payload-free trace. Callers supply only redacted operation labels; peer IDs, paths, byte values,
-            and platform messages cannot enter this model.
-          </p>
-
-          <div class="pre p1 fill-light mt0">new CoreTraceRecorder(maximumRecords: any, maximumBytes: any)</div>
-
-          <div class="py1 quiet mt1 prose-big">Parameters</div>
-          <div class="prose">
-            <div class="space-bottom0">
-              <div><span class="code bold">maximumRecords</span> <code class="quiet">(any)</code></div>
-            </div>
-
-            <div class="space-bottom0">
-              <div><span class="code bold">maximumBytes</span> <code class="quiet">(any)</code></div>
-            </div>
-          </div>
-        </section>
-
-        <section class="p2 mb2 clearfix bg-white minishadow">
-          <div class="clearfix">
-            <h3 class="fl m0" id="measuretracedocumentbytes">measureTraceDocumentBytes</h3>
-          </div>
-
-          <p>
-            Portable trace record v1. The format intentionally has no peer, path, byte, platform-message, or application
-            payload field.
-          </p>
-
-          <div class="pre p1 fill-light mt0">measureTraceDocumentBytes(document: any)</div>
-
-          <div class="py1 quiet mt1 prose-big">Parameters</div>
-          <div class="prose">
-            <div class="space-bottom0">
-              <div><span class="code bold">document</span> <code class="quiet">(any)</code></div>
-            </div>
-          </div>
-        </section>
-
-        <section class="p2 mb2 clearfix bg-white minishadow">
-          <div class="clearfix">
-            <h3 class="fl m0" id="measuretracedocumentbytes">measureTraceDocumentBytes</h3>
-          </div>
-
-          <p>Measures the exact UTF-8 byte length of the canonical JSON document.</p>
-
-          <div class="pre p1 fill-light mt0">measureTraceDocumentBytes(document: any)</div>
-
-          <div class="py1 quiet mt1 prose-big">Parameters</div>
-          <div class="prose">
-            <div class="space-bottom0">
-              <div><span class="code bold">document</span> <code class="quiet">(any)</code></div>
-            </div>
-          </div>
-        </section>
-
-        <section class="p2 mb2 clearfix bg-white minishadow">
-          <div class="clearfix">
-            <h3 class="fl m0" id="measuretracerecordbytes">measureTraceRecordBytes</h3>
-          </div>
-
-          <p>Measures the exact UTF-8 byte length of one canonical JSON record.</p>
-
-          <div class="pre p1 fill-light mt0">measureTraceRecordBytes(record: any)</div>
-
-          <div class="py1 quiet mt1 prose-big">Parameters</div>
-          <div class="prose">
-            <div class="space-bottom0">
-              <div><span class="code bold">record</span> <code class="quiet">(any)</code></div>
-            </div>
-          </div>
-        </section>
-
-        <section class="p2 mb2 clearfix bg-white minishadow">
-          <div class="clearfix">
-            <h3 class="fl m0" id="measuretracedocumentbytesfromrecordbytes">
-              measureTraceDocumentBytesFromRecordBytes
-            </h3>
-          </div>
-
-          <p>Measures a canonical document from already-measured record JSON bytes.</p>
-
-          <div class="pre p1 fill-light mt0">
-            measureTraceDocumentBytesFromRecordBytes(truncated: any, recordCount: any, recordsByteLength: any)
-          </div>
-
-          <div class="py1 quiet mt1 prose-big">Parameters</div>
-          <div class="prose">
-            <div class="space-bottom0">
-              <div><span class="code bold">truncated</span> <code class="quiet">(any)</code></div>
-            </div>
-
-            <div class="space-bottom0">
-              <div><span class="code bold">recordCount</span> <code class="quiet">(any)</code></div>
-            </div>
-
-            <div class="space-bottom0">
-              <div><span class="code bold">recordsByteLength</span> <code class="quiet">(any)</code></div>
-            </div>
-          </div>
-        </section>
-
-        <section class="p2 mb2 clearfix bg-white minishadow">
-          <div class="clearfix">
-            <h3 class="fl m0" id="validatetracedocument">validateTraceDocument</h3>
-          </div>
-
-          <p>Validates bounded, ordered, payload-free trace format v1 input.</p>
-
-          <div class="pre p1 fill-light mt0">validateTraceDocument(input: any)</div>
-
-          <div class="py1 quiet mt1 prose-big">Parameters</div>
-          <div class="prose">
-            <div class="space-bottom0">
-              <div><span class="code bold">input</span> <code class="quiet">(any)</code></div>
-            </div>
-          </div>
-        </section>
-
-        <section class="p2 mb2 clearfix bg-white minishadow">
-          <div class="clearfix">
-            <h3 class="fl m0" id="redacttracedocument">redactTraceDocument</h3>
-          </div>
-
-          <p>
-            Drops unsupported input fields and applies every required redaction marker. It rejects malformed structural
-            fields instead of manufacturing a trace.
-          </p>
-
-          <div class="pre p1 fill-light mt0">redactTraceDocument(input: any)</div>
-
-          <div class="py1 quiet mt1 prose-big">Parameters</div>
-          <div class="prose">
-            <div class="space-bottom0">
-              <div><span class="code bold">input</span> <code class="quiet">(any)</code></div>
-            </div>
-          </div>
-        </section>
-
-        <section class="p2 mb2 clearfix bg-white minishadow">
-          <div class="clearfix">
-            <h3 class="fl m0" id="corelifecycleobserver">CoreLifecycleObserver</h3>
-          </div>
-
-          <p>Records asynchronous lifecycle cleanup without allowing background failures to escape unchecked.</p>
-
-          <div class="pre p1 fill-light mt0">new CoreLifecycleObserver(trace: any, now: any)</div>
-
-          <div class="py1 quiet mt1 prose-big">Parameters</div>
-          <div class="prose">
-            <div class="space-bottom0">
-              <div><span class="code bold">trace</span> <code class="quiet">(any)</code></div>
-            </div>
-
-            <div class="space-bottom0">
-              <div><span class="code bold">now</span> <code class="quiet">(any)</code></div>
-            </div>
-          </div>
-        </section>
-
-        <section class="p2 mb2 clearfix bg-white minishadow">
-          <div class="clearfix">
-            <h3 class="fl m0" id="coreconnection">CoreConnection</h3>
-          </div>
-
-          <p>A generation-bound logical lease over one backend connection.</p>
-
-          <div class="pre p1 fill-light mt0">new CoreConnection(core: any, lease: any, controls: any)</div>
-
-          <div class="py1 quiet mt1 prose-big">Parameters</div>
-          <div class="prose">
-            <div class="space-bottom0">
-              <div><span class="code bold">core</span> <code class="quiet">(any)</code></div>
-            </div>
-
-            <div class="space-bottom0">
-              <div><span class="code bold">lease</span> <code class="quiet">(any)</code></div>
-            </div>
-
-            <div class="space-bottom0">
-              <div><span class="code bold">controls</span> <code class="quiet">(any)</code></div>
-            </div>
-          </div>
-        </section>
-
-        <section class="p2 mb2 clearfix bg-white minishadow">
-          <div class="clearfix">
-            <h3 class="fl m0" id="coregattdatabase">CoreGattDatabase</h3>
-          </div>
-
-          <p>A discovered database epoch; any invalidation requires a fresh discovery.</p>
-
-          <div class="pre p1 fill-light mt0">
-            new CoreGattDatabase(core: any, connection: any, backendDatabase: any)
-          </div>
-
-          <div class="py1 quiet mt1 prose-big">Parameters</div>
-          <div class="prose">
-            <div class="space-bottom0">
-              <div><span class="code bold">core</span> <code class="quiet">(any)</code></div>
-            </div>
-
-            <div class="space-bottom0">
-              <div><span class="code bold">connection</span> <code class="quiet">(any)</code></div>
-            </div>
-
-            <div class="space-bottom0">
-              <div><span class="code bold">backendDatabase</span> <code class="quiet">(any)</code></div>
-            </div>
-          </div>
-        </section>
-
-        <section class="p2 mb2 clearfix bg-white minishadow">
-          <div class="clearfix">
-            <h3 class="fl m0" id="readcoreadapterstate">readCoreAdapterState</h3>
-          </div>
-
-          <p>Reads one native-authoritative adapter snapshot and normalizes unexpected boundary failures.</p>
-
-          <div class="pre p1 fill-light mt0">readCoreAdapterState(backend: any)</div>
-
-          <div class="py1 quiet mt1 prose-big">Parameters</div>
-          <div class="prose">
-            <div class="space-bottom0">
-              <div><span class="code bold">backend</span> <code class="quiet">(any)</code></div>
-            </div>
-          </div>
-        </section>
-
-        <section class="p2 mb2 clearfix bg-white minishadow">
-          <div class="clearfix">
-            <h3 class="fl m0" id="writecorelongcharacteristic">writeCoreLongCharacteristic</h3>
-          </div>
-
-          <p>
-            Runs one logical long write at the existing connection FIFO head. The backend sees ordinary writes only;
-            each following chunk starts after the preceding completion and after
-            cancellation/deadline/disconnect/destroy boundaries.
-          </p>
-
-          <div class="pre p1 fill-light mt0">
-            writeCoreLongCharacteristic(backend: any, operationCoordinator: any, maximumValueBytes: any, database: any,
-            path: any, bytes: any, options: any, planAtFifoHead: any)
-          </div>
-
-          <div class="py1 quiet mt1 prose-big">Parameters</div>
-          <div class="prose">
-            <div class="space-bottom0">
-              <div><span class="code bold">backend</span> <code class="quiet">(any)</code></div>
-            </div>
-
-            <div class="space-bottom0">
-              <div><span class="code bold">operationCoordinator</span> <code class="quiet">(any)</code></div>
-            </div>
-
-            <div class="space-bottom0">
-              <div><span class="code bold">maximumValueBytes</span> <code class="quiet">(any)</code></div>
-            </div>
-
-            <div class="space-bottom0">
-              <div><span class="code bold">database</span> <code class="quiet">(any)</code></div>
-            </div>
-
-            <div class="space-bottom0">
-              <div><span class="code bold">path</span> <code class="quiet">(any)</code></div>
-            </div>
-
-            <div class="space-bottom0">
-              <div><span class="code bold">bytes</span> <code class="quiet">(any)</code></div>
-            </div>
-
-            <div class="space-bottom0">
-              <div><span class="code bold">options</span> <code class="quiet">(any)</code></div>
-            </div>
-
-            <div class="space-bottom0">
-              <div><span class="code bold">planAtFifoHead</span> <code class="quiet">(any)</code></div>
-            </div>
-          </div>
-        </section>
-
-        <section class="p2 mb2 clearfix bg-white minishadow">
-          <div class="clearfix">
-            <h3 class="fl m0" id="createcorefeatureregistry">createCoreFeatureRegistry</h3>
-          </div>
-
-          <p>Combines backend registrations with the typed core-emulated long-write implementation.</p>
-
-          <div class="pre p1 fill-light mt0">createCoreFeatureRegistry(backendFeatures: any)</div>
-
-          <div class="py1 quiet mt1 prose-big">Parameters</div>
-          <div class="prose">
-            <div class="space-bottom0">
-              <div><span class="code bold">backendFeatures</span> <code class="quiet">(any)</code></div>
-            </div>
-          </div>
-        </section>
-
-        <section class="p2 mb2 clearfix bg-white minishadow">
-          <div class="clearfix">
-            <h3 class="fl m0" id="observemaximumwritelength">observeMaximumWriteLength</h3>
-          </div>
-
-          <p>Reads the current backend-owned limit through the canonical registered implementation.</p>
-
-          <div class="pre p1 fill-light mt0">observeMaximumWriteLength(features: any, path: any, mode: any)</div>
-
-          <div class="py1 quiet mt1 prose-big">Parameters</div>
-          <div class="prose">
-            <div class="space-bottom0">
-              <div><span class="code bold">features</span> <code class="quiet">(any)</code></div>
-            </div>
-
-            <div class="space-bottom0">
-              <div><span class="code bold">path</span> <code class="quiet">(any)</code></div>
-            </div>
-
-            <div class="space-bottom0">
-              <div><span class="code bold">mode</span> <code class="quiet">(any)</code></div>
-            </div>
-          </div>
-        </section>
-
-        <section class="p2 mb2 clearfix bg-white minishadow">
-          <div class="clearfix">
-            <h3 class="fl m0" id="planlongwrite">planLongWrite</h3>
-          </div>
-
-          <p>Uses the core registration rather than a separate chunk-count authority.</p>
-
-          <div class="pre p1 fill-light mt0">
-            planLongWrite(features: any, connectionId: any, connectionGeneration: any, mode: any, byteLength: any,
-            maximumWriteLength: any)
-          </div>
-
-          <div class="py1 quiet mt1 prose-big">Parameters</div>
-          <div class="prose">
-            <div class="space-bottom0">
-              <div><span class="code bold">features</span> <code class="quiet">(any)</code></div>
-            </div>
-
-            <div class="space-bottom0">
-              <div><span class="code bold">connectionId</span> <code class="quiet">(any)</code></div>
-            </div>
-
-            <div class="space-bottom0">
-              <div><span class="code bold">connectionGeneration</span> <code class="quiet">(any)</code></div>
-            </div>
-
-            <div class="space-bottom0">
-              <div><span class="code bold">mode</span> <code class="quiet">(any)</code></div>
-            </div>
-
-            <div class="space-bottom0">
-              <div><span class="code bold">byteLength</span> <code class="quiet">(any)</code></div>
-            </div>
-
-            <div class="space-bottom0">
-              <div><span class="code bold">maximumWriteLength</span> <code class="quiet">(any)</code></div>
-            </div>
-          </div>
-        </section>
-
-        <section class="p2 mb2 clearfix bg-white minishadow">
-          <div class="clearfix">
-            <h3 class="fl m0" id="built_in_feature_ids">BUILT_IN_FEATURE_IDS</h3>
-          </div>
-
-          <p>Canonical built-in capability identifiers. Third-party identifiers remain open namespaced strings.</p>
-
-          <div class="pre p1 fill-light mt0">BUILT_IN_FEATURE_IDS</div>
-        </section>
-
-        <section class="p2 mb2 clearfix bg-white minishadow">
-          <div class="clearfix">
-            <h3 class="fl m0" id="validatefeatureregistration">validateFeatureRegistration</h3>
-          </div>
-
-          <p>The backend-observed per-connection limit used to plan a chunked write.</p>
-
-          <div class="pre p1 fill-light mt0">validateFeatureRegistration(registration: any)</div>
-
-          <div class="py1 quiet mt1 prose-big">Parameters</div>
-          <div class="prose">
-            <div class="space-bottom0">
-              <div><span class="code bold">registration</span> <code class="quiet">(any)</code></div>
-            </div>
-          </div>
-        </section>
-
-        <section class="p2 mb2 clearfix bg-white minishadow">
-          <div class="clearfix">
-            <h3 class="fl m0" id="validatefeatureregistration">validateFeatureRegistration</h3>
-          </div>
-
-          <p>Serializable maximum-write-length observation returned by a registered backend implementation.</p>
-
-          <div class="pre p1 fill-light mt0">validateFeatureRegistration(registration: any)</div>
-
-          <div class="py1 quiet mt1 prose-big">Parameters</div>
-          <div class="prose">
-            <div class="space-bottom0">
-              <div><span class="code bold">registration</span> <code class="quiet">(any)</code></div>
-            </div>
-          </div>
-        </section>
-
-        <section class="p2 mb2 clearfix bg-white minishadow">
-          <div class="clearfix">
-            <h3 class="fl m0" id="validatefeatureregistration">validateFeatureRegistration</h3>
-          </div>
-
-          <p>Typed registration implementation for the built-in maximum-write-length capability.</p>
-
-          <div class="pre p1 fill-light mt0">validateFeatureRegistration(registration: any)</div>
-
-          <div class="py1 quiet mt1 prose-big">Parameters</div>
-          <div class="prose">
-            <div class="space-bottom0">
-              <div><span class="code bold">registration</span> <code class="quiet">(any)</code></div>
-            </div>
-          </div>
-        </section>
-
-        <section class="p2 mb2 clearfix bg-white minishadow">
-          <div class="clearfix">
-            <h3 class="fl m0" id="validatefeatureregistration">validateFeatureRegistration</h3>
-          </div>
-
-          <p>The core-owned chunking policy is identified separately from native reliable-write support.</p>
-
-          <div class="pre p1 fill-light mt0">validateFeatureRegistration(registration: any)</div>
-
-          <div class="py1 quiet mt1 prose-big">Parameters</div>
-          <div class="prose">
-            <div class="space-bottom0">
-              <div><span class="code bold">registration</span> <code class="quiet">(any)</code></div>
-            </div>
-          </div>
-        </section>
-
-        <section class="p2 mb2 clearfix bg-white minishadow">
-          <div class="clearfix">
-            <h3 class="fl m0" id="validatefeatureregistration">validateFeatureRegistration</h3>
-          </div>
-
-          <p>Typed registration implementation for the core-emulated long-write planner.</p>
-
-          <div class="pre p1 fill-light mt0">validateFeatureRegistration(registration: any)</div>
-
-          <div class="py1 quiet mt1 prose-big">Parameters</div>
-          <div class="prose">
-            <div class="space-bottom0">
-              <div><span class="code bold">registration</span> <code class="quiet">(any)</code></div>
-            </div>
-          </div>
-        </section>
-
-        <section class="p2 mb2 clearfix bg-white minishadow">
-          <div class="clearfix">
-            <h3 class="fl m0" id="validatefeatureregistration">validateFeatureRegistration</h3>
-          </div>
-
-          <p>A bounded operating limit with a unit that remains meaningful after serialization.</p>
-
-          <div class="pre p1 fill-light mt0">validateFeatureRegistration(registration: any)</div>
-
-          <div class="py1 quiet mt1 prose-big">Parameters</div>
-          <div class="prose">
-            <div class="space-bottom0">
-              <div><span class="code bold">registration</span> <code class="quiet">(any)</code></div>
-            </div>
-          </div>
-        </section>
-
-        <section class="p2 mb2 clearfix bg-white minishadow">
-          <div class="clearfix">
-            <h3 class="fl m0" id="validatefeatureregistration">validateFeatureRegistration</h3>
-          </div>
-
-          <p>
-            Feature-specific limits are deliberately an open record: registered third-party features do not need a
-            central union, while every value still has a bounded, machine-readable shape.
-          </p>
-
-          <div class="pre p1 fill-light mt0">validateFeatureRegistration(registration: any)</div>
-
-          <div class="py1 quiet mt1 prose-big">Parameters</div>
-          <div class="prose">
-            <div class="space-bottom0">
-              <div><span class="code bold">registration</span> <code class="quiet">(any)</code></div>
-            </div>
-          </div>
-        </section>
-
-        <section class="p2 mb2 clearfix bg-white minishadow">
-          <div class="clearfix">
-            <h3 class="fl m0" id="validatefeatureregistration">validateFeatureRegistration</h3>
-          </div>
-
-          <p>Serializable capability truth. Typed implementations are intentionally excluded.</p>
-
-          <div class="pre p1 fill-light mt0">validateFeatureRegistration(registration: any)</div>
-
-          <div class="py1 quiet mt1 prose-big">Parameters</div>
-          <div class="prose">
-            <div class="space-bottom0">
-              <div><span class="code bold">registration</span> <code class="quiet">(any)</code></div>
-            </div>
-          </div>
-        </section>
-
-        <section class="p2 mb2 clearfix bg-white minishadow">
-          <div class="clearfix">
-            <h3 class="fl m0" id="describefeatureregistry">describeFeatureRegistry</h3>
-          </div>
-
-          <p>Returns the frozen descriptive projection suitable for capability handshakes and IPC.</p>
-
-          <div class="pre p1 fill-light mt0">describeFeatureRegistry(registry: any)</div>
-
-          <div class="py1 quiet mt1 prose-big">Parameters</div>
-          <div class="prose">
-            <div class="space-bottom0">
-              <div><span class="code bold">registry</span> <code class="quiet">(any)</code></div>
-            </div>
-          </div>
-        </section>
-
-        <section class="p2 mb2 clearfix bg-white minishadow">
-          <div class="clearfix">
-            <h3 class="fl m0" id="discovercoregattdatabase">discoverCoreGattDatabase</h3>
-          </div>
-
-          <p>Performs a fresh database discovery after invalidating the prior generation-bound snapshot.</p>
-
-          <div class="pre p1 fill-light mt0">
-            discoverCoreGattDatabase(core: any, backend: any, resourceLedger: any, connection: any, options: any,
-            assertReady: any, assertOperationAdmission: any, assertAdmissionCurrent: any, admissionEpoch: any)
-          </div>
-
-          <div class="py1 quiet mt1 prose-big">Parameters</div>
-          <div class="prose">
-            <div class="space-bottom0">
-              <div><span class="code bold">core</span> <code class="quiet">(any)</code></div>
-            </div>
-
-            <div class="space-bottom0">
-              <div><span class="code bold">backend</span> <code class="quiet">(any)</code></div>
-            </div>
-
-            <div class="space-bottom0">
-              <div><span class="code bold">resourceLedger</span> <code class="quiet">(any)</code></div>
-            </div>
-
-            <div class="space-bottom0">
-              <div><span class="code bold">connection</span> <code class="quiet">(any)</code></div>
-            </div>
-
-            <div class="space-bottom0">
-              <div><span class="code bold">options</span> <code class="quiet">(any)</code></div>
-            </div>
-
-            <div class="space-bottom0">
-              <div><span class="code bold">assertReady</span> <code class="quiet">(any)</code></div>
-            </div>
-
-            <div class="space-bottom0">
-              <div><span class="code bold">assertOperationAdmission</span> <code class="quiet">(any)</code></div>
-            </div>
-
-            <div class="space-bottom0">
-              <div><span class="code bold">assertAdmissionCurrent</span> <code class="quiet">(any)</code></div>
-            </div>
-
-            <div class="space-bottom0">
-              <div><span class="code bold">admissionEpoch</span> <code class="quiet">(any)</code></div>
-            </div>
-          </div>
-        </section>
-
-        <section class="p2 mb2 clearfix bg-white minishadow">
-          <div class="clearfix">
-            <h3 class="fl m0" id="forwardcorebackendevents">forwardCoreBackendEvents</h3>
-          </div>
-
-          <p>Pumps the backend event stream and fails closed when its delivery contract is broken.</p>
-
-          <div class="pre p1 fill-light mt0">forwardCoreBackendEvents(runtime: any)</div>
-
-          <div class="py1 quiet mt1 prose-big">Parameters</div>
-          <div class="prose">
-            <div class="space-bottom0">
-              <div><span class="code bold">runtime</span> <code class="quiet">(any)</code></div>
-            </div>
-          </div>
-        </section>
-
-        <section class="p2 mb2 clearfix bg-white minishadow">
-          <div class="clearfix">
-            <h3 class="fl m0" id="ownershiptransfergrant">OwnershipTransferGrant</h3>
-          </div>
-
-          <p>
-            Opaque, authority-issued proof for a single ownership hand-off. Its private member prevents structural
-            construction in TypeScript; the authority's private WeakMap remains the runtime source of authenticity.
-          </p>
-
-          <div class="pre p1 fill-light mt0">new OwnershipTransferGrant()</div>
-        </section>
-
-        <section class="p2 mb2 clearfix bg-white minishadow">
-          <div class="clearfix">
-            <h3 class="fl m0" id="managerownershipauthority">ManagerOwnershipAuthority</h3>
-          </div>
-
-          <p>A manager admitted to the host-owned authority for one attached backend.</p>
-
-          <div class="pre p1 fill-light mt0">
-            new ManagerOwnershipAuthority(attachedBackend: any, issuanceToken: any)
-          </div>
-
-          <div class="py1 quiet mt1 prose-big">Parameters</div>
-          <div class="prose">
-            <div class="space-bottom0">
-              <div><span class="code bold">attachedBackend</span> <code class="quiet">(any)</code></div>
-            </div>
-
-            <div class="space-bottom0">
-              <div><span class="code bold">issuanceToken</span> <code class="quiet">(any)</code></div>
-            </div>
-          </div>
-
-          <div class="py1 quiet mt1 prose-big">Instance Members</div>
-          <div class="clearfix">
-            <div class="border-bottom" id="managerownershipauthorityissuetransfergrant">
-              <div class="clearfix small pointer toggle-sibling">
-                <div class="py1 contain">
-                  <a class="icon pin-right py1 dark-link caret-right">▸</a>
-                  <span class="code strong strong truncate"
-                    >issueTransferGrant(sourceManagerId, destinationManagerId)</span
-                  >
-                </div>
+              <div>
+                <span class="code bold">options</span> <code class="quiet">(any = <code>{}</code>)</code>
               </div>
-              <div class="clearfix display-none toggle-target">
-                <section class="p2 mb2 clearfix bg-white minishadow">
-                  <p>Issues a grant whose complete tuple and participants are fixed at issuance.</p>
-
-                  <div class="pre p1 fill-light mt0">
-                    issueTransferGrant(sourceManagerId: any, destinationManagerId: any)
-                  </div>
-
-                  <div class="py1 quiet mt1 prose-big">Parameters</div>
-                  <div class="prose">
-                    <div class="space-bottom0">
-                      <div><span class="code bold">sourceManagerId</span> <code class="quiet">(any)</code></div>
-                    </div>
-
-                    <div class="space-bottom0">
-                      <div><span class="code bold">destinationManagerId</span> <code class="quiet">(any)</code></div>
-                    </div>
-                  </div>
-                </section>
-              </div>
-            </div>
-
-            <div class="border-bottom" id="managerownershipauthorityverifytransfergrant">
-              <div class="clearfix small pointer toggle-sibling">
-                <div class="py1 contain">
-                  <a class="icon pin-right py1 dark-link caret-right">▸</a>
-                  <span class="code strong strong truncate">verifyTransferGrant(sourceManagerId, grant)</span>
-                </div>
-              </div>
-              <div class="clearfix display-none toggle-target">
-                <section class="p2 mb2 clearfix bg-white minishadow">
-                  <p>Checks a grant before the source starts asynchronous resource release.</p>
-
-                  <div class="pre p1 fill-light mt0">verifyTransferGrant(sourceManagerId: any, grant: any)</div>
-
-                  <div class="py1 quiet mt1 prose-big">Parameters</div>
-                  <div class="prose">
-                    <div class="space-bottom0">
-                      <div><span class="code bold">sourceManagerId</span> <code class="quiet">(any)</code></div>
-                    </div>
-
-                    <div class="space-bottom0">
-                      <div><span class="code bold">grant</span> <code class="quiet">(any)</code></div>
-                    </div>
-                  </div>
-                </section>
-              </div>
-            </div>
-
-            <div class="border-bottom" id="managerownershipauthorityconsumetransfergrant">
-              <div class="clearfix small pointer toggle-sibling">
-                <div class="py1 contain">
-                  <a class="icon pin-right py1 dark-link caret-right">▸</a>
-                  <span class="code strong strong truncate">consumeTransferGrant(sourceManagerId, grant)</span>
-                </div>
-              </div>
-              <div class="clearfix display-none toggle-target">
-                <section class="p2 mb2 clearfix bg-white minishadow">
-                  <p>Consumes the one-shot grant before synchronously changing either owner role.</p>
-
-                  <div class="pre p1 fill-light mt0">consumeTransferGrant(sourceManagerId: any, grant: any)</div>
-
-                  <div class="py1 quiet mt1 prose-big">Parameters</div>
-                  <div class="prose">
-                    <div class="space-bottom0">
-                      <div><span class="code bold">sourceManagerId</span> <code class="quiet">(any)</code></div>
-                    </div>
-
-                    <div class="space-bottom0">
-                      <div><span class="code bold">grant</span> <code class="quiet">(any)</code></div>
-                    </div>
-                  </div>
-                </section>
-              </div>
-            </div>
-          </div>
-        </section>
-
-        <section class="p2 mb2 clearfix bg-white minishadow">
-          <div class="clearfix">
-            <h3 class="fl m0" id="managerownershipauthority">ManagerOwnershipAuthority</h3>
-          </div>
-
-          <p>
-            Host-owned authority for one complete backend attachment tuple. It admits managers only when they bind to
-            this exact backend and issues one-shot, non-forgeable transfer grants instead of trusting caller-built
-            records.
-          </p>
-
-          <div class="pre p1 fill-light mt0">
-            new ManagerOwnershipAuthority(attachedBackend: any, issuanceToken: any)
-          </div>
-
-          <div class="py1 quiet mt1 prose-big">Parameters</div>
-          <div class="prose">
-            <div class="space-bottom0">
-              <div><span class="code bold">attachedBackend</span> <code class="quiet">(any)</code></div>
-            </div>
-
-            <div class="space-bottom0">
-              <div><span class="code bold">issuanceToken</span> <code class="quiet">(any)</code></div>
-            </div>
-          </div>
-
-          <div class="py1 quiet mt1 prose-big">Instance Members</div>
-          <div class="clearfix">
-            <div class="border-bottom" id="managerownershipauthorityissuetransfergrant">
-              <div class="clearfix small pointer toggle-sibling">
-                <div class="py1 contain">
-                  <a class="icon pin-right py1 dark-link caret-right">▸</a>
-                  <span class="code strong strong truncate"
-                    >issueTransferGrant(sourceManagerId, destinationManagerId)</span
-                  >
-                </div>
-              </div>
-              <div class="clearfix display-none toggle-target">
-                <section class="p2 mb2 clearfix bg-white minishadow">
-                  <p>Issues a grant whose complete tuple and participants are fixed at issuance.</p>
-
-                  <div class="pre p1 fill-light mt0">
-                    issueTransferGrant(sourceManagerId: any, destinationManagerId: any)
-                  </div>
-
-                  <div class="py1 quiet mt1 prose-big">Parameters</div>
-                  <div class="prose">
-                    <div class="space-bottom0">
-                      <div><span class="code bold">sourceManagerId</span> <code class="quiet">(any)</code></div>
-                    </div>
-
-                    <div class="space-bottom0">
-                      <div><span class="code bold">destinationManagerId</span> <code class="quiet">(any)</code></div>
-                    </div>
-                  </div>
-                </section>
-              </div>
-            </div>
-
-            <div class="border-bottom" id="managerownershipauthorityverifytransfergrant">
-              <div class="clearfix small pointer toggle-sibling">
-                <div class="py1 contain">
-                  <a class="icon pin-right py1 dark-link caret-right">▸</a>
-                  <span class="code strong strong truncate">verifyTransferGrant(sourceManagerId, grant)</span>
-                </div>
-              </div>
-              <div class="clearfix display-none toggle-target">
-                <section class="p2 mb2 clearfix bg-white minishadow">
-                  <p>Checks a grant before the source starts asynchronous resource release.</p>
-
-                  <div class="pre p1 fill-light mt0">verifyTransferGrant(sourceManagerId: any, grant: any)</div>
-
-                  <div class="py1 quiet mt1 prose-big">Parameters</div>
-                  <div class="prose">
-                    <div class="space-bottom0">
-                      <div><span class="code bold">sourceManagerId</span> <code class="quiet">(any)</code></div>
-                    </div>
-
-                    <div class="space-bottom0">
-                      <div><span class="code bold">grant</span> <code class="quiet">(any)</code></div>
-                    </div>
-                  </div>
-                </section>
-              </div>
-            </div>
-
-            <div class="border-bottom" id="managerownershipauthorityconsumetransfergrant">
-              <div class="clearfix small pointer toggle-sibling">
-                <div class="py1 contain">
-                  <a class="icon pin-right py1 dark-link caret-right">▸</a>
-                  <span class="code strong strong truncate">consumeTransferGrant(sourceManagerId, grant)</span>
-                </div>
-              </div>
-              <div class="clearfix display-none toggle-target">
-                <section class="p2 mb2 clearfix bg-white minishadow">
-                  <p>Consumes the one-shot grant before synchronously changing either owner role.</p>
-
-                  <div class="pre p1 fill-light mt0">consumeTransferGrant(sourceManagerId: any, grant: any)</div>
-
-                  <div class="py1 quiet mt1 prose-big">Parameters</div>
-                  <div class="prose">
-                    <div class="space-bottom0">
-                      <div><span class="code bold">sourceManagerId</span> <code class="quiet">(any)</code></div>
-                    </div>
-
-                    <div class="space-bottom0">
-                      <div><span class="code bold">grant</span> <code class="quiet">(any)</code></div>
-                    </div>
-                  </div>
-                </section>
-              </div>
-            </div>
-          </div>
-        </section>
-
-        <section class="p2 mb2 clearfix bg-white minishadow">
-          <div class="clearfix">
-            <h3 class="fl m0" id="backenddisconnectreasons">backendDisconnectReasons</h3>
-          </div>
-
-          <p>A loss is scoped to the exact attachment, connection generation, and owner lease.</p>
-
-          <div class="pre p1 fill-light mt0">backendDisconnectReasons</div>
-        </section>
-
-        <section class="p2 mb2 clearfix bg-white minishadow">
-          <div class="clearfix">
-            <h3 class="fl m0" id="backenddisconnectreasons">backendDisconnectReasons</h3>
-          </div>
-
-          <p>Normalized scan delivery, separate from a stream's bounded overflow accounting record.</p>
-
-          <div class="pre p1 fill-light mt0">backendDisconnectReasons</div>
-        </section>
-
-        <section class="p2 mb2 clearfix bg-white minishadow">
-          <div class="clearfix">
-            <h3 class="fl m0" id="assertbackendevent">assertBackendEvent</h3>
-          </div>
-
-          <p>
-            Open extension lane: namespaced event kinds retain typed serializable payloads without central-union edits.
-          </p>
-
-          <div class="pre p1 fill-light mt0">assertBackendEvent(event: any)</div>
-
-          <div class="py1 quiet mt1 prose-big">Parameters</div>
-          <div class="prose">
-            <div class="space-bottom0">
-              <div><span class="code bold">event</span> <code class="quiet">(any)</code></div>
-            </div>
-          </div>
-        </section>
-
-        <section class="p2 mb2 clearfix bg-white minishadow">
-          <div class="clearfix">
-            <h3 class="fl m0" id="attachedbackend">AttachedBackend</h3>
-          </div>
-
-          <p>Opaque result of the one manager-neutral backend attachment handshake.</p>
-
-          <div class="pre p1 fill-light mt0">new AttachedBackend()</div>
-        </section>
-
-        <section class="p2 mb2 clearfix bg-white minishadow">
-          <div class="clearfix">
-            <h3 class="fl m0" id="attachbackend">attachBackend</h3>
-          </div>
-
-          <p>Negotiates one backend attachment before logical manager admission.</p>
-
-          <div class="pre p1 fill-light mt0">attachBackend(backend: any, coreCompatibility: any)</div>
-
-          <div class="py1 quiet mt1 prose-big">Parameters</div>
-          <div class="prose">
-            <div class="space-bottom0">
-              <div><span class="code bold">backend</span> <code class="quiet">(any)</code></div>
-            </div>
-
-            <div class="space-bottom0">
-              <div><span class="code bold">coreCompatibility</span> <code class="quiet">(any)</code></div>
-            </div>
-          </div>
-        </section>
-
-        <section class="p2 mb2 clearfix bg-white minishadow">
-          <div class="clearfix">
-            <h3 class="fl m0" id="assertattachedbackend">assertAttachedBackend</h3>
-          </div>
-
-          <p>Rejects mismatched backend/identity tuples before any manager can use the binding.</p>
-
-          <div class="pre p1 fill-light mt0">assertAttachedBackend(attachedBackend: any)</div>
-
-          <div class="py1 quiet mt1 prose-big">Parameters</div>
-          <div class="prose">
-            <div class="space-bottom0">
-              <div><span class="code bold">attachedBackend</span> <code class="quiet">(any)</code></div>
-            </div>
-          </div>
-        </section>
-
-        <section class="p2 mb2 clearfix bg-white minishadow">
-          <div class="clearfix">
-            <h3 class="fl m0" id="snapshotserializablerecord">snapshotSerializableRecord</h3>
-          </div>
-
-          <p>Deep-copies a serializable record while measuring its deterministic wire-size budget.</p>
-
-          <div class="pre p1 fill-light mt0">snapshotSerializableRecord(record: any)</div>
-
-          <div class="py1 quiet mt1 prose-big">Parameters</div>
-          <div class="prose">
-            <div class="space-bottom0">
-              <div><span class="code bold">record</span> <code class="quiet">(any)</code></div>
-            </div>
-          </div>
-        </section>
-
-        <section class="p2 mb2 clearfix bg-white minishadow">
-          <div class="clearfix">
-            <h3 class="fl m0" id="serializablerecordsequal">serializableRecordsEqual</h3>
-          </div>
-
-          <p>Compares serializable records recursively, including owned byte contents.</p>
-
-          <div class="pre p1 fill-light mt0">serializableRecordsEqual(left: any, right: any)</div>
-
-          <div class="py1 quiet mt1 prose-big">Parameters</div>
-          <div class="prose">
-            <div class="space-bottom0">
-              <div><span class="code bold">left</span> <code class="quiet">(any)</code></div>
-            </div>
-
-            <div class="space-bottom0">
-              <div><span class="code bold">right</span> <code class="quiet">(any)</code></div>
-            </div>
-          </div>
-        </section>
-
-        <section class="p2 mb2 clearfix bg-white minishadow">
-          <div class="clearfix">
-            <h3 class="fl m0" id="attachmentrecordsequal">attachmentRecordsEqual</h3>
-          </div>
-
-          <p>Compares the complete immutable backend attachment tuple.</p>
-
-          <div class="pre p1 fill-light mt0">attachmentRecordsEqual(left: any, right: any)</div>
-
-          <div class="py1 quiet mt1 prose-big">Parameters</div>
-          <div class="prose">
-            <div class="space-bottom0">
-              <div><span class="code bold">left</span> <code class="quiet">(any)</code></div>
-            </div>
-
-            <div class="space-bottom0">
-              <div><span class="code bold">right</span> <code class="quiet">(any)</code></div>
-            </div>
-          </div>
-        </section>
-
-        <section class="p2 mb2 clearfix bg-white minishadow">
-          <div class="clearfix">
-            <h3 class="fl m0" id="minimum_att_mtu">MINIMUM_ATT_MTU</h3>
-          </div>
-
-          <p>BLE's mandatory lower ATT MTU bound, including opcode and attribute handle bytes.</p>
-
-          <div class="pre p1 fill-light mt0">MINIMUM_ATT_MTU</div>
-
-          <p>
-            Type:
-            <a href="https://developer.mozilla.org/docs/Web/JavaScript/Reference/Global_Objects/Number">number</a>
-          </p>
-        </section>
-
-        <section class="p2 mb2 clearfix bg-white minishadow">
-          <div class="clearfix">
-            <h3 class="fl m0" id="maximum_requested_att_mtu">MAXIMUM_REQUESTED_ATT_MTU</h3>
-          </div>
-
-          <p>Android's documented maximum request value; a peer may negotiate a lower value.</p>
-
-          <div class="pre p1 fill-light mt0">MAXIMUM_REQUESTED_ATT_MTU</div>
-
-          <p>
-            Type:
-            <a href="https://developer.mozilla.org/docs/Web/JavaScript/Reference/Global_Objects/Number">number</a>
-          </p>
-        </section>
-
-        <section class="p2 mb2 clearfix bg-white minishadow">
-          <div class="clearfix">
-            <h3 class="fl m0" id=""></h3>
-          </div>
-
-          <p>Whether a platform boundary can truthfully dispatch a connection-control operation.</p>
-
-          <div class="pre p1 fill-light mt0"></div>
-        </section>
-
-        <section class="p2 mb2 clearfix bg-white minishadow">
-          <div class="clearfix">
-            <h3 class="fl m0" id=""></h3>
-          </div>
-
-          <p>Per-platform dispatch capabilities for the canonical connection-control surface.</p>
-
-          <div class="pre p1 fill-light mt0"></div>
-        </section>
-
-        <section class="p2 mb2 clearfix bg-white minishadow">
-          <div class="clearfix">
-            <h3 class="fl m0" id="createipcoperationidfactory">createIpcOperationIdFactory</h3>
-          </div>
-
-          <p>Creates renderer-local IPC correlation IDs scoped to one already-attached backend generation.</p>
-
-          <div class="pre p1 fill-light mt0">createIpcOperationIdFactory(scope: any)</div>
-
-          <div class="py1 quiet mt1 prose-big">Parameters</div>
-          <div class="prose">
-            <div class="space-bottom0">
-              <div><span class="code bold">scope</span> <code class="quiet">(any)</code></div>
             </div>
           </div>
         </section>

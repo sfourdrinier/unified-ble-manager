@@ -14,7 +14,12 @@ import {
   type SerializableValue
 } from '../backend-contract/primitives'
 import { CoreBoundedStream } from '../core/bounded-stream'
-import { createGattCharacteristicProperties } from '../backend-contract/gatt'
+import {
+  createGattCharacteristicProperties,
+  type CharacteristicProperties,
+  type GattAccessRequirements,
+  type GattDescriptorProperties
+} from '../backend-contract/gatt'
 import type { GattDatabaseChangedEvent } from '../backend-contract/gatt'
 import { createPublicBleCapabilities, type BleCapabilities } from '../public/capabilities'
 import type {
@@ -26,9 +31,11 @@ import type {
   PortableSubscriptionOptions,
   PortableWritePolicy
 } from '../manager/consumer-handles'
+import type { AdvertisementObservation } from '../backend-contract/advertisement'
 import type { AttachmentRecord } from '../backend-contract/identity'
 import type { PeerReference } from '../backend-contract/peer-reference'
 import { IpcBleClient } from './client'
+import { IPC_GATT_DATABASE_SCHEMA_VERSION } from './protocol'
 import type { IpcClientTransport } from './protocol'
 
 export {
@@ -46,6 +53,7 @@ const REMOTE_STREAM_LIMITS = Object.freeze({
 export interface IpcManagerOperationOptions {
   readonly signal?: AbortSignal
   readonly timeoutMs?: number
+  readonly deadline?: number | null
   readonly deliveryMode?: 'prefer-notification' | 'prefer-indication' | 'require-notification' | 'require-indication'
   readonly stream?: {
     readonly itemCapacity: number
@@ -85,6 +93,7 @@ export interface IpcAdvertisement {
   readonly manufacturerData: readonly IpcManufacturerData[]
   readonly serviceData: readonly IpcServiceData[]
 }
+export type IpcScanObservation = IpcAdvertisement | AdvertisementObservation<string>
 
 export interface IpcNotificationValue {
   readonly value: Uint8Array
@@ -133,7 +142,7 @@ export interface IpcDescriptorRecord extends SerializableRecord {
 }
 
 interface StreamSink {
-  readonly closeWithReason: (reason: 'owner-released' | 'source-failed') => void
+  readonly closeWithReason: (reason: 'owner-released' | 'source-failed' | 'connection-lost' | 'service-changed') => void
   readonly deliver: (streamId: string, item: SerializableRecord) => void
 }
 
@@ -145,6 +154,8 @@ interface StreamSink {
 export class IpcBleManager<Attachment extends string = string, Client extends string = string> {
   private readonly streams = new Map<string, StreamSink>()
   private readonly pendingStreamItems = new Map<string, SerializableRecord[]>()
+  private readonly pendingStreamBytes = new Map<string, number>()
+  private readonly pendingStreamOverflows = new Map<string, { droppedItems: number; droppedBytes: number }>()
   private readonly eventPump: Promise<void>
   private nextConnectionEventHandle = 1
   private lifecycle: 'active' | 'releasing' | 'released' = 'active'
@@ -176,8 +187,13 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
     return this.client.bootstrap
   }
 
-  async adapterState(): Promise<SerializableRecord> {
-    const payload = await this.route('adapter.state', Object.freeze({ deadline: null }))
+  async adapterState(options: IpcManagerOperationOptions = {}): Promise<SerializableRecord> {
+    const payload = await this.route(
+      'adapter.state',
+      Object.freeze({ deadline: operationDeadline(options) }),
+      null,
+      options.signal
+    )
     return requiredRecord(payload, 'state', 'ipc-manager.adapter-state')
   }
 
@@ -207,9 +223,9 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
       options.signal
     )
     const handle = requiredString(payload, 'handle', 'ipc-manager.scan')
-    const observations = this.registerStream<IpcAdvertisement>(
+    const observations = this.registerStream<IpcScanObservation>(
       handle,
-      isIpcAdvertisement,
+      isIpcScanObservation,
       toRemoteStreamLimits(options.stream),
       options.stream?.overflowPolicy
     )
@@ -251,6 +267,8 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
           for (const sink of this.streams.values()) sink.closeWithReason('owner-released')
           this.streams.clear()
           this.pendingStreamItems.clear()
+          this.pendingStreamBytes.clear()
+          this.pendingStreamOverflows.clear()
           await this.eventPump
         } else {
           this.lifecycle = 'active'
@@ -340,6 +358,8 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
         onTerminal?.(reason)
         this.streams.delete(streamId)
         this.pendingStreamItems.delete(streamId)
+        this.pendingStreamBytes.delete(streamId)
+        this.pendingStreamOverflows.delete(streamId)
       }
     }
     const sink: StreamSink = {
@@ -348,7 +368,19 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
     }
     this.streams.set(handle, sink)
     const pending = this.pendingStreamItems.get(handle)
+    const pendingOverflow = this.pendingStreamOverflows.get(handle)
     this.pendingStreamItems.delete(handle)
+    this.pendingStreamBytes.delete(handle)
+    this.pendingStreamOverflows.delete(handle)
+    if (pendingOverflow !== undefined) {
+      deliver(handle, {
+        kind: 'overflow',
+        policy: 'drop-oldest',
+        droppedItems: pendingOverflow.droppedItems,
+        droppedBytes: pendingOverflow.droppedBytes,
+        replacedItems: 0
+      })
+    }
     if (pending !== undefined) {
       for (const item of pending) {
         deliver(handle, item)
@@ -408,8 +440,13 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
     }
   }
 
-  closeStream(handle: string, reason: 'owner-released' | 'source-failed' = 'owner-released'): void {
+  closeStream(
+    handle: string,
+    reason: 'owner-released' | 'source-failed' | 'connection-lost' | 'service-changed' = 'owner-released'
+  ): void {
     this.pendingStreamItems.delete(handle)
+    this.pendingStreamBytes.delete(handle)
+    this.pendingStreamOverflows.delete(handle)
     const sink = this.streams.get(handle)
     if (sink === undefined) return
     this.streams.delete(handle)
@@ -440,6 +477,8 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
           affected.closeWithReason('source-failed')
           this.streams.delete(streamId)
           this.pendingStreamItems.delete(streamId)
+          this.pendingStreamBytes.delete(streamId)
+          this.pendingStreamOverflows.delete(streamId)
         }
       }
     }
@@ -447,12 +486,51 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
 
   private bufferPendingStreamItem(streamId: string, item: SerializableRecord): void {
     const pending = this.pendingStreamItems.get(streamId) ?? []
+    let pendingBytes = this.pendingStreamBytes.get(streamId) ?? 0
+    if (item.kind === 'terminal') {
+      pending.length = 0
+      pendingBytes = 0
+    }
     const itemCapacity = Number(REMOTE_STREAM_LIMITS.itemCapacity)
-    if (pending.length >= itemCapacity) {
-      pending.shift()
+    const byteCapacity = Number(REMOTE_STREAM_LIMITS.byteCapacity)
+    const itemBytes = estimateByteLength(item)
+    let droppedItems = 0
+    let droppedBytes = 0
+    if (itemBytes > byteCapacity && item.kind !== 'terminal') {
+      pending.length = 0
+      pendingBytes = 0
+      droppedItems = 1
+      droppedBytes = itemBytes
+      pending.push({ kind: 'terminal', reason: 'overflow' })
+      pendingBytes = estimateByteLength(pending[0])
+      this.pendingStreamItems.set(streamId, pending)
+      this.pendingStreamBytes.set(streamId, pendingBytes)
+      const previous = this.pendingStreamOverflows.get(streamId)
+      this.pendingStreamOverflows.set(streamId, {
+        droppedItems: (previous?.droppedItems ?? 0) + droppedItems,
+        droppedBytes: (previous?.droppedBytes ?? 0) + droppedBytes
+      })
+      return
+    }
+    while (pending.length >= itemCapacity || (pending.length > 0 && pendingBytes + itemBytes > byteCapacity)) {
+      const removed = pending.shift()
+      if (removed === undefined) break
+      const removedBytes = estimateByteLength(removed)
+      pendingBytes -= removedBytes
+      droppedItems += 1
+      droppedBytes += removedBytes
     }
     pending.push(item)
+    pendingBytes += itemBytes
     this.pendingStreamItems.set(streamId, pending)
+    this.pendingStreamBytes.set(streamId, pendingBytes)
+    if (droppedItems > 0) {
+      const previous = this.pendingStreamOverflows.get(streamId)
+      this.pendingStreamOverflows.set(streamId, {
+        droppedItems: (previous?.droppedItems ?? 0) + droppedItems,
+        droppedBytes: (previous?.droppedBytes ?? 0) + droppedBytes
+      })
+    }
   }
 
   private assertActive(): void {
@@ -461,15 +539,32 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
 }
 
 export class IpcScanSession {
+  private stopResult: Promise<CleanupRecord> | null = null
+
   constructor(
     private readonly manager: IpcBleManager,
     readonly handle: string,
-    readonly observations: BoundedAsyncStream<IpcAdvertisement>
+    readonly observations: BoundedAsyncStream<IpcScanObservation>
   ) {}
 
-  async stop(): Promise<CleanupRecord> {
-    const result = cleanupRecord(await this.manager.route('scan.stop', Object.freeze({ scanHandle: this.handle })))
-    if (result.state === 'released') this.manager.closeStream(this.handle)
+  stop(): Promise<CleanupRecord> {
+    if (this.stopResult !== null) return this.stopResult
+    const result = this.manager
+      .route('scan.stop', Object.freeze({ scanHandle: this.handle }))
+      .then(payload => cleanupRecord(payload))
+      .then(cleanup => {
+        if (cleanup.state === 'released') {
+          this.manager.closeStream(this.handle)
+        } else {
+          this.stopResult = null
+        }
+        return cleanup
+      })
+      .catch(error => {
+        this.stopResult = null
+        throw error
+      })
+    this.stopResult = result
     return result
   }
 }
@@ -482,6 +577,7 @@ export class IpcConnection {
   private readonly _connectionId: string
   private readonly _ownerLeaseId: string
   private readonly _connectionGeneration: string
+  private disconnectResult: Promise<CleanupRecord> | null = null
 
   constructor(
     private readonly manager: IpcBleManager,
@@ -508,14 +604,18 @@ export class IpcConnection {
     return this._connectionGeneration
   }
 
+  get attachmentId(): string {
+    return String(this.manager.bootstrap.attachment.attachmentId)
+  }
+
   get events(): BoundedAsyncStream<SerializableRecord> {
-    this.ensureLifecycleAdmission()
+    this.ensureLifecycleAdmission().catch(() => undefined)
     return this.lifecycleEvents
   }
 
-  private ensureLifecycleAdmission(): void {
-    if (this.lifecycleAdmission !== null) return
-    this.lifecycleAdmission = this.manager
+  private ensureLifecycleAdmission(): Promise<void> {
+    if (this.lifecycleAdmission !== null) return this.lifecycleAdmission
+    const admission = this.manager
       .subscribeConnectionEvents(this.handle, this.identityPayload())
       .then(subscription => {
         this.lifecycleSubscription = subscription
@@ -523,10 +623,13 @@ export class IpcConnection {
           this.lifecycleEvents.closeWithReason('source-failed')
         })
       })
-      .catch(() => {
+      .catch(error => {
         this.lifecycleEvents.closeWithReason('source-failed')
         this.invalidateDatabases()
+        throw error
       })
+    this.lifecycleAdmission = admission
+    return admission
   }
 
   private async pumpLifecycleEvents(subscription: IpcConnectionEventSubscription): Promise<void> {
@@ -562,6 +665,7 @@ export class IpcConnection {
   }
 
   async discover(options: IpcManagerOperationOptions = {}): Promise<IpcGattDatabase> {
+    await this.awaitLifecycleAdmission(options)
     const payload = await this.manager.route(
       'gatt.discover',
       Object.freeze({ ...this.identityPayload(), deadline: operationDeadline(options) }),
@@ -589,15 +693,32 @@ export class IpcConnection {
     return requiredNumber(payload, 'bytes', 'ipc-manager.maximum-write-length')
   }
 
-  async disconnect(): Promise<CleanupRecord> {
+  disconnect(): Promise<CleanupRecord> {
+    if (this.disconnectResult !== null) return this.disconnectResult
+    const result = this.disconnectInternal().catch(error => {
+      this.disconnectResult = null
+      throw error
+    })
+    this.disconnectResult = result
+    return result
+  }
+
+  private async disconnectInternal(): Promise<CleanupRecord> {
+    this.invalidateDatabases()
     if (this.lifecycleAdmission !== null) {
-      await this.lifecycleAdmission
+      await this.lifecycleAdmission.catch(() => undefined)
     }
     if (this.lifecycleSubscription !== null) {
       await this.lifecycleSubscription.unsubscribe()
       this.lifecycleSubscription = null
     }
-    return cleanupRecord(await this.manager.route('connection.disconnect', Object.freeze(this.identityPayload())))
+    const cleanup = cleanupRecord(
+      await this.manager.route('connection.disconnect', Object.freeze(this.identityPayload()))
+    )
+    if (cleanup.state === 'release-failed') {
+      this.disconnectResult = null
+    }
+    return cleanup
   }
 
   release(): Promise<CleanupRecord> {
@@ -613,6 +734,56 @@ export class IpcConnection {
       connectionGeneration: this.connectionGeneration
     })
   }
+
+  private async awaitLifecycleAdmission(options: IpcManagerOperationOptions): Promise<void> {
+    const admission = this.ensureLifecycleAdmission()
+    const deadlineAt = operationDeadline(options)
+    if (options.signal === undefined && deadlineAt === null) {
+      return admission
+    }
+    return new Promise<void>((resolve, reject) => {
+      let settled = false
+      const timer =
+        deadlineAt === null
+          ? null
+          : globalThis.setTimeout(
+              () => {
+                finish(reject, contractError('operation.timed-out', 'ipc', 'ipc-manager.connection-events-admission'))
+              },
+              Math.max(0, deadlineAt - globalThis.performance.now())
+            )
+      const abort = () => {
+        finish(reject, contractError('operation.aborted', 'ipc', 'ipc-manager.connection-events-admission'))
+      }
+      const finish = (settle: (value: void | PromiseLike<void>) => void, value: void | BackendContractError): void => {
+        if (settled) return
+        settled = true
+        if (timer !== null) globalThis.clearTimeout(timer)
+        options.signal?.removeEventListener('abort', abort)
+        if (value instanceof BackendContractError) {
+          reject(value)
+          return
+        }
+        settle(value)
+      }
+      options.signal?.addEventListener('abort', abort, { once: true })
+      if (options.signal?.aborted === true) {
+        abort()
+        return
+      }
+      admission.then(
+        () => finish(resolve, undefined),
+        error => {
+          if (!settled) {
+            settled = true
+            if (timer !== null) globalThis.clearTimeout(timer)
+            options.signal?.removeEventListener('abort', abort)
+            reject(error)
+          }
+        }
+      )
+    })
+  }
 }
 
 export class IpcGattDatabase {
@@ -620,6 +791,7 @@ export class IpcGattDatabase {
   readonly descriptors: readonly IpcDescriptor[]
   private valid = true
   private readonly changedStream = new CoreBoundedStream<GattDatabaseChangedEvent>(REMOTE_STREAM_LIMITS, 'drop-oldest')
+  private readonly subscriptions = new Set<IpcSubscription>()
 
   private constructor(
     private readonly manager: IpcBleManager,
@@ -636,6 +808,11 @@ export class IpcGattDatabase {
   }
 
   static fromPayload(manager: IpcBleManager, connection: IpcConnection, payload: SerializableRecord): IpcGattDatabase {
+    if (
+      requiredNumber(payload, 'schemaVersion', 'ipc-manager.gatt-database-schema') !== IPC_GATT_DATABASE_SCHEMA_VERSION
+    ) {
+      throw contractError('protocol.incompatible', 'ipc', 'ipc-manager.gatt-database-schema')
+    }
     const characteristics = requiredCharacteristicRecords(
       requiredRecordArray(payload, 'characteristics', 'ipc-manager.gatt-database')
     )
@@ -696,6 +873,10 @@ export class IpcGattDatabase {
   invalidate(reason: 'service-changed' | null = null): void {
     if (!this.valid) return
     this.valid = false
+    for (const subscription of this.subscriptions) {
+      subscription.closeFromDatabase(reason === 'service-changed' ? 'service-changed' : 'connection-lost')
+    }
+    this.subscriptions.clear()
     if (reason === 'service-changed') {
       this.changedStream.emit(
         Object.freeze({
@@ -721,8 +902,19 @@ export class IpcGattDatabase {
     return this.manager.registerStream<Value>(handle, isValue, limits, overflowPolicy, onTerminal)
   }
 
-  closeStream(handle: string): void {
-    this.manager.closeStream(handle)
+  closeStream(
+    handle: string,
+    reason: 'owner-released' | 'source-failed' | 'connection-lost' | 'service-changed' = 'owner-released'
+  ): void {
+    this.manager.closeStream(handle, reason)
+  }
+
+  registerSubscription(subscription: IpcSubscription): void {
+    this.subscriptions.add(subscription)
+  }
+
+  forgetSubscription(subscription: IpcSubscription): void {
+    this.subscriptions.delete(subscription)
   }
 
   private connectionIdentityPayload(): SerializableRecord {
@@ -776,19 +968,8 @@ export class IpcGattDatabase {
         this.characteristics.map(characteristic =>
           Object.freeze({
             path: toCharacteristicPath(databasePath, characteristic.record),
-            properties: createGattCharacteristicProperties({
-              broadcast: characteristic.record.properties.includes('broadcast'),
-              read: characteristic.record.properties.includes('read'),
-              writeWithResponse: characteristic.record.properties.includes('write'),
-              writeWithoutResponse: characteristic.record.properties.includes('write-without-response'),
-              authenticatedSignedWrites: characteristic.record.properties.includes('authenticated-signed-writes'),
-              notify: characteristic.record.properties.includes('notify'),
-              indicate: characteristic.record.properties.includes('indicate'),
-              extendedProperties: characteristic.record.properties.includes('extended-properties'),
-              reliableWrite: characteristic.record.properties.includes('reliable-write'),
-              writableAuxiliaries: characteristic.record.properties.includes('writable-auxiliaries')
-            }),
-            access: Object.freeze({ read: 'unknown', write: 'unknown' })
+            properties: characteristicPropertiesFromRecord(characteristic.record),
+            access: characteristicAccessFromRecord(characteristic.record)
           })
         )
       ),
@@ -803,12 +984,7 @@ export class IpcGattDatabase {
               descriptorUuid: descriptor.record.uuid,
               descriptorOccurrence: String(descriptor.record.occurrence)
             }),
-            properties: Object.freeze({
-              read: true,
-              write: true,
-              availability: Object.freeze({ read: 'known', write: 'known' }),
-              access: Object.freeze({ read: 'unknown', write: 'unknown' })
-            })
+            properties: descriptorPropertiesFromRecord(descriptor.record)
           })
         )
       )
@@ -984,7 +1160,7 @@ export class IpcCharacteristic {
       options.signal
     )
     const handle = requiredString(payload, 'handle', 'ipc-manager.gatt-subscribe')
-    return new IpcSubscription(
+    const subscription = new IpcSubscription(
       this.database,
       handle,
       this.database.registerStream<IpcNotificationValue>(
@@ -997,6 +1173,8 @@ export class IpcCharacteristic {
         }
       )
     )
+    this.database.registerSubscription(subscription)
+    return subscription
   }
 }
 
@@ -1034,6 +1212,7 @@ export class IpcDescriptor {
 
 export class IpcSubscription {
   path: PortableCurrentCharacteristicPath | null = null
+  private removeResult: Promise<CleanupRecord> | null = null
 
   constructor(
     private readonly database: IpcGattDatabase,
@@ -1045,12 +1224,31 @@ export class IpcSubscription {
     return this.handle
   }
 
-  async remove(): Promise<CleanupRecord> {
-    const cleanup = cleanupRecord(
-      await this.database.route('gatt.unsubscribe', Object.freeze({ subscriptionHandle: this.handle }), null)
-    )
-    if (cleanup.state === 'released') this.database.closeStream(this.handle)
-    return cleanup
+  remove(): Promise<CleanupRecord> {
+    if (this.removeResult !== null) return this.removeResult
+    const result = this.database
+      .route('gatt.unsubscribe', Object.freeze({ subscriptionHandle: this.handle }), null)
+      .then(payload => cleanupRecord(payload))
+      .then(cleanup => {
+        if (cleanup.state === 'released') {
+          this.database.closeStream(this.handle)
+          this.database.forgetSubscription(this)
+        } else {
+          this.removeResult = null
+        }
+        return cleanup
+      })
+      .catch(error => {
+        this.removeResult = null
+        throw error
+      })
+    this.removeResult = result
+    return result
+  }
+
+  closeFromDatabase(reason: 'connection-lost' | 'service-changed'): void {
+    this.database.closeStream(this.handle, reason)
+    this.removeResult = Promise.resolve({ state: 'released', failures: [] })
   }
 }
 
@@ -1147,6 +1345,11 @@ function characteristicRecordForDescriptor(
 }
 
 function operationDeadline(options: IpcManagerOperationOptions): number | null {
+  if (options.deadline !== undefined) {
+    if (options.deadline === null) return null
+    if (!Number.isFinite(options.deadline)) throw new TypeError('deadline must be finite or null')
+    return options.deadline
+  }
   if (options.timeoutMs === undefined) return null
   if (!Number.isFinite(options.timeoutMs) || options.timeoutMs <= 0) throw new TypeError('timeoutMs must be positive')
   if (globalThis.performance === undefined) throw new TypeError('A monotonic performance clock is required')
@@ -1375,9 +1578,33 @@ function isIpcConnectionLifecycleEvent(value: unknown): value is SerializableRec
     typeof record.sequence === 'number' &&
     Number.isSafeInteger(record.sequence) &&
     record.sequence > 0 &&
-    typeof record.previous === 'string' &&
-    typeof record.current === 'string' &&
-    typeof record.cause === 'string'
+    isConnectionLifecycleState(record.previous) &&
+    isConnectionLifecycleState(record.current) &&
+    isConnectionLifecycleCause(record.cause)
+  )
+}
+
+function isConnectionLifecycleState(value: unknown): boolean {
+  return (
+    value === 'connecting' ||
+    value === 'connected' ||
+    value === 'disconnecting' ||
+    value === 'disconnected' ||
+    value === 'lost'
+  )
+}
+
+function isConnectionLifecycleCause(value: unknown): boolean {
+  return (
+    value === 'connected' ||
+    value === 'backend-transition' ||
+    value === 'requested-disconnect' ||
+    value === 'peer-link-loss' ||
+    value === 'adapter-loss' ||
+    value === 'backend-restart' ||
+    value === 'released' ||
+    value === 'manager-destroyed' ||
+    value === 'backend-failure'
   )
 }
 
@@ -1429,6 +1656,34 @@ function isIpcAdvertisement(value: unknown): value is IpcAdvertisement {
   return true
 }
 
+function isIpcScanObservation(value: unknown): value is IpcScanObservation {
+  return isIpcAdvertisement(value) || isNativeScanObservation(value)
+}
+
+function isNativeScanObservation(value: unknown): value is AdvertisementObservation<string> {
+  const requiredKeys = [
+    'device',
+    'provenance',
+    'sourceTimestamp',
+    'receivedAtMonotonicMs',
+    'ingressOrdinal',
+    'scanSessionId',
+    'localName',
+    'rssi',
+    'txPower',
+    'connectable',
+    'appearance',
+    'serviceUuids',
+    'solicitedServiceUuids',
+    'overflowServiceUuids',
+    'serviceData',
+    'manufacturerData',
+    'rawRecord',
+    'scanResponseRecord'
+  ]
+  return typeof value === 'object' && value !== null && !Array.isArray(value) && requiredKeys.every(key => key in value)
+}
+
 function isIpcCharacteristicRecord(value: unknown): value is IpcCharacteristicRecord {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
   if (
@@ -1447,6 +1702,8 @@ function isIpcCharacteristicRecord(value: unknown): value is IpcCharacteristicRe
   const characteristicUuid: unknown = Reflect.get(value, 'characteristicUuid')
   const characteristicOccurrence: unknown = Reflect.get(value, 'characteristicOccurrence')
   const properties: unknown = Reflect.get(value, 'properties')
+  const propertiesMetadata: unknown = Reflect.get(value, 'propertiesMetadata')
+  const access: unknown = Reflect.get(value, 'access')
   return (
     typeof handle === 'string' &&
     handle.length > 0 &&
@@ -1459,7 +1716,9 @@ function isIpcCharacteristicRecord(value: unknown): value is IpcCharacteristicRe
     typeof characteristicOccurrence === 'string' &&
     characteristicOccurrence.length > 0 &&
     Array.isArray(properties) &&
-    properties.every(entry => typeof entry === 'string')
+    properties.every(entry => typeof entry === 'string') &&
+    (propertiesMetadata === undefined || isCharacteristicProperties(propertiesMetadata)) &&
+    (access === undefined || isGattAccessRequirements(access))
   )
 }
 
@@ -1532,6 +1791,7 @@ function isIpcDescriptorRecord(value: unknown): value is IpcDescriptorRecord {
   const characteristicHandle: unknown = Reflect.get(value, 'characteristicHandle')
   const uuid: unknown = Reflect.get(value, 'uuid')
   const occurrence: unknown = Reflect.get(value, 'occurrence')
+  const properties: unknown = Reflect.get(value, 'properties')
   return (
     typeof handle === 'string' &&
     handle.length > 0 &&
@@ -1540,7 +1800,107 @@ function isIpcDescriptorRecord(value: unknown): value is IpcDescriptorRecord {
     typeof uuid === 'string' &&
     uuid.length > 0 &&
     typeof occurrence === 'string' &&
-    occurrence.length > 0
+    occurrence.length > 0 &&
+    (properties === undefined || isGattDescriptorProperties(properties))
+  )
+}
+
+function isGattAccessRequirements(value: unknown): value is GattAccessRequirements {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
+  return isGattAccessValue(Reflect.get(value, 'read')) && isGattAccessValue(Reflect.get(value, 'write'))
+}
+
+function characteristicPropertiesFromRecord(record: IpcCharacteristicRecord): CharacteristicProperties {
+  const metadata = Reflect.get(record, 'propertiesMetadata')
+  if (isCharacteristicProperties(metadata)) return metadata
+  return createGattCharacteristicProperties({
+    broadcast: record.properties.includes('broadcast'),
+    read: record.properties.includes('read'),
+    writeWithResponse: record.properties.includes('write') || record.properties.includes('write-with-response'),
+    writeWithoutResponse: record.properties.includes('write-without-response'),
+    authenticatedSignedWrites: record.properties.includes('authenticated-signed-writes'),
+    notify: record.properties.includes('notify'),
+    indicate: record.properties.includes('indicate'),
+    extendedProperties: record.properties.includes('extended-properties'),
+    reliableWrite: record.properties.includes('reliable-write'),
+    writableAuxiliaries: record.properties.includes('writable-auxiliaries')
+  })
+}
+
+function characteristicAccessFromRecord(record: IpcCharacteristicRecord): GattAccessRequirements {
+  const access = Reflect.get(record, 'access')
+  if (isGattAccessRequirements(access)) return Object.freeze({ read: access.read, write: access.write })
+  return Object.freeze({ read: 'unknown', write: 'unknown' })
+}
+
+function descriptorPropertiesFromRecord(record: IpcDescriptorRecord): GattDescriptorProperties {
+  const properties = Reflect.get(record, 'properties')
+  if (isGattDescriptorProperties(properties)) return properties
+  return Object.freeze({
+    read: false,
+    write: false,
+    availability: Object.freeze({ read: 'unknown', write: 'unknown' }),
+    access: Object.freeze({ read: 'unknown', write: 'unknown' })
+  })
+}
+
+function isGattAccessValue(value: unknown): value is GattAccessRequirements['read'] {
+  return (
+    value === 'none' ||
+    value === 'encrypted' ||
+    value === 'authenticated' ||
+    value === 'authorized' ||
+    value === 'unknown'
+  )
+}
+
+function isCharacteristicProperties(value: unknown): value is CharacteristicProperties {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
+  const booleanKeys = [
+    'broadcast',
+    'read',
+    'writeWithResponse',
+    'writeWithoutResponse',
+    'authenticatedSignedWrites',
+    'notify',
+    'indicate',
+    'extendedProperties',
+    'reliableWrite',
+    'writableAuxiliaries'
+  ]
+  if (!booleanKeys.every(key => typeof Reflect.get(value, key) === 'boolean')) return false
+  const availability = Reflect.get(value, 'availability')
+  if (typeof availability !== 'object' || availability === null || Array.isArray(availability)) return false
+  const availabilityKeys = [
+    'broadcast',
+    'read',
+    'writeWithResponse',
+    'writeWithoutResponse',
+    'authenticatedSignedWrites',
+    'notify',
+    'indicate',
+    'extendedProperties',
+    'reliableWrite',
+    'writableAuxiliaries'
+  ]
+  return availabilityKeys.every(key => {
+    const state = Reflect.get(availability, key)
+    return state === 'known' || state === 'unknown'
+  })
+}
+
+function isGattDescriptorProperties(value: unknown): value is GattDescriptorProperties {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
+  const availability = Reflect.get(value, 'availability')
+  return (
+    typeof Reflect.get(value, 'read') === 'boolean' &&
+    typeof Reflect.get(value, 'write') === 'boolean' &&
+    typeof availability === 'object' &&
+    availability !== null &&
+    !Array.isArray(availability) &&
+    (Reflect.get(availability, 'read') === 'known' || Reflect.get(availability, 'read') === 'unknown') &&
+    (Reflect.get(availability, 'write') === 'known' || Reflect.get(availability, 'write') === 'unknown') &&
+    isGattAccessRequirements(Reflect.get(value, 'access'))
   )
 }
 

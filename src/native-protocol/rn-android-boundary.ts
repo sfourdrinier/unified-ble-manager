@@ -53,9 +53,11 @@ import {
   parseAdvertisementRecord,
   requiredUnsigned
 } from './rn-android-protocol-records'
+import { NATIVE_PROTOCOL_VERSION } from './generated/native-protocol-v2-schema'
 import type { ParsedNativeAdvertisement } from './rn-android-protocol-records'
 
-const protocolVersion = 1
+const protocolVersion = NATIVE_PROTOCOL_VERSION
+const contractVersion = 1
 const maximumNativePayloadBytes = 512 * 1024
 
 type PendingResult = {
@@ -154,10 +156,10 @@ export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary
       const handshake = await this.control.handshake({
         nativeProtocol: { minimum: protocolVersion, maximum: protocolVersion },
         abi: { minimum: protocolVersion, maximum: protocolVersion },
-        backendContract: { minimum: protocolVersion, maximum: protocolVersion },
-        capabilitySchema: { minimum: protocolVersion, maximum: protocolVersion },
-        eventSchema: { minimum: protocolVersion, maximum: protocolVersion },
-        traceFormat: { minimum: protocolVersion, maximum: protocolVersion },
+        backendContract: { minimum: contractVersion, maximum: contractVersion },
+        capabilitySchema: { minimum: contractVersion, maximum: contractVersion },
+        eventSchema: { minimum: contractVersion, maximum: contractVersion },
+        traceFormat: { minimum: contractVersion, maximum: contractVersion },
         ...attachmentIdentityFromRecord(attachment),
         ownerId: this.ownerId
       })
@@ -941,10 +943,10 @@ function assertHandshakeSelection(handshake: NativeProtocolHandshakeResult): voi
   if (
     handshake.nativeProtocol !== protocolVersion ||
     handshake.abi !== protocolVersion ||
-    handshake.backendContract !== protocolVersion ||
-    handshake.capabilitySchema !== protocolVersion ||
-    handshake.eventSchema !== protocolVersion ||
-    handshake.traceFormat !== protocolVersion ||
+    handshake.backendContract !== contractVersion ||
+    handshake.capabilitySchema !== contractVersion ||
+    handshake.eventSchema !== contractVersion ||
+    handshake.traceFormat !== contractVersion ||
     !Number.isSafeInteger(handshake.maximumControlRecordBytes) ||
     handshake.maximumControlRecordBytes <= 0 ||
     !Number.isSafeInteger(handshake.maximumBinaryPayloadBytes) ||

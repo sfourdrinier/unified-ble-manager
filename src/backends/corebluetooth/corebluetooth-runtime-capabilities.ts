@@ -2,6 +2,7 @@
 
 import {
   BUILT_IN_FEATURE_IDS,
+  createBackendOperationCapabilityRegistration,
   createFeatureRegistry,
   type CapabilityLimits,
   type EvidenceLevel,
@@ -40,6 +41,16 @@ export function createCoreBluetoothRuntimeFeatureRegistry(
   options: CoreBluetoothRuntimeCapabilityOptions
 ): FeatureRegistry {
   const registrations = [...options.existingFeatures.registrations]
+  if (!hasRegistration(registrations, BUILT_IN_FEATURE_IDS.connectionDirect)) {
+    registrations.push(
+      createBackendOperationCapabilityRegistration({
+        implementationVersion: options.implementationVersion,
+        sourceDigest: 'corebluetooth-direct-connection-v1',
+        tckSuiteId: 'capability.catalog-v2',
+        requiredScenarioIds: ['scenario.scan-connect-discover-read-notify-destroy']
+      })
+    )
+  }
   if (!hasRegistration(registrations, 'connection:rssi-measurement')) {
     registrations.push(createRssiRegistration(options))
   }

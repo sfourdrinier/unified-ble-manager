@@ -17,7 +17,7 @@ It is an evolution of `react-native-ble-plx`, rewritten as a **cross-platform un
 | This README | Product, install, one React Native loop, method index |
 | [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md) | Host chooser + first-hour React Native / Expo path |
 | [`docs/TUTORIALS.md`](docs/TUTORIALS.md) | Scan, connect, read, write, subscribe, tear down |
-| [`docs/HELPERS.md`](docs/HELPERS.md) | `scanUntil`, `connectAndDiscover`, `withConnection`, notification helpers |
+| [`docs/HELPERS.md`](docs/HELPERS.md) | Public `find`, scoped connection, GATT, and notification recipes |
 | [`MIGRATION_4.0.md`](MIGRATION_4.0.md) | Side-by-side map from `react-native-ble-plx` |
 | [`docs/WEB.md`](docs/WEB.md) · [`docs/ELECTRON.md`](docs/ELECTRON.md) · [`docs/NODE.md`](docs/NODE.md) · [`docs/TAURI.md`](docs/TAURI.md) · [`docs/EXPO_PLUGIN.md`](docs/EXPO_PLUGIN.md) | Host construction |
 | [`docs/PEERS.md`](docs/PEERS.md) | Scoped peer directories, persistence, and reconnect-by-reference |
@@ -49,7 +49,7 @@ The root import selects no radio. Import the host you actually run.
 | `unified-ble-manager/react-native` | React Native Android / Apple manager |
 | `unified-ble-manager/web` | Web Bluetooth chooser + matched manager |
 | `unified-ble-manager/electron/main` | Trusted Electron-main radio + IPC router |
-| `unified-ble-manager/electron/renderer` | Versioned renderer IPC client — never a radio |
+| `unified-ble-manager/electron/renderer` | Public `BleManager` factory over an authenticated IPC transport; never a radio |
 | `unified-ble-manager/tauri` | Tauri v2 zero-plumbing `BleManager` factory |
 | `unified-ble-manager/node/corebluetooth` | macOS CoreBluetooth Node provider |
 | `unified-ble-manager/node/winrt` | Windows WinRT Node provider |
@@ -75,42 +75,20 @@ const manager = await createReactNativeBleManager({
 })
 ```
 
-`hostSessionScope` is a stable host-owned security scope. Do not derive it from a render, request, or operation counter.
-
 On Android 12+ the app must request `BLUETOOTH_SCAN` and `BLUETOOTH_CONNECT` itself. The library does not call `PermissionsAndroid`.
 
 ### Expo plugin
 
-```json
-{
-  "expo": {
-    "plugins": [
-      [
-        "unified-ble-manager",
-        {
-          "requiresBluetoothLeHardware": true,
-          "modes": ["central"],
-          "neverForLocation": false,
-          "bluetoothAlwaysPermission": "Allow $(PRODUCT_NAME) to connect to Bluetooth devices",
-          "iosNativeProtocolRestoration": {
-            "identifier": "com.example.app.ble",
-            "namespace": "com.example.app.ble",
-            "epoch": "2026-07-30",
-            "clientId": "com.example.app.ble-client",
-            "hostSessionScope": "com.example.app.mobile-ble"
-          }
-        }
-      ]
-    ]
-  }
-}
-```
-
-Then `npx expo prebuild` and run a development or production native build. `requiresBluetoothLeHardware` only marks the Android BLE hardware feature; it does not start a foreground service. See [`docs/EXPO_PLUGIN.md`](docs/EXPO_PLUGIN.md).
+Expo plugin v2 configuration and native restoration wiring are intentionally
+tracked for PR10. Do not copy the retired RC1 keys from older examples. Use an
+Expo development build, never Expo Go, and follow [`docs/EXPO_PLUGIN.md`](docs/EXPO_PLUGIN.md)
+for the current release-train status.
 
 ## One complete loop
 
-Values are `Uint8Array`. Cancellable work takes `AbortSignal`. Scan and connect deadlines on `BleManager` use `deadline()`. Advertised names live on `localName`, not `device.name`.
+Values are `Uint8Array`. Cancellable work takes `AbortSignal` and bounded
+operations use `timeoutMs`. Advertised names live on `localName`, not
+`device.name`.
 
 ```ts
 // @ubm-recipe finite-hrs
@@ -136,16 +114,16 @@ try {
 }
 ```
 
-`journeyDeadline` is one budget for the whole sample, not 20 seconds per call. Battery Level and Heart Rate Control Point are optional or conditional; see [`docs/TUTORIALS.md`](docs/TUTORIALS.md). Persistent subscriptions also live there.
+Battery Level and Heart Rate Control Point are optional or conditional; see [`docs/TUTORIALS.md`](docs/TUTORIALS.md). Persistent subscriptions also live there.
 
-Web Bluetooth replaces the scan with `session.chooser.choose(...)` from a user gesture. Tauri and the Electron renderer use different client types — see those host pages.
+Web Bluetooth replaces the scan with `ble.choose(...)` from a user gesture. Tauri and the Electron renderer use different host entrypoints — see those host pages.
 
 ## Why the API looks like this
 
 | Shape | Benefit |
 | --- | --- |
 | `Uint8Array`, not Base64 | BLE is binary. Encode text at the HTTP boundary yourself. |
-| `AbortSignal` + `deadline()` | Cancel the way you cancel `fetch`. The library owns operation correlation. |
+| `AbortSignal` + `timeoutMs` | Cancel the way you cancel `fetch`. The library owns operation correlation. |
 | Observation → `Connection` → snapshot | A peer id is not a live link. After disconnect, old objects would lie. |
 | Paths from `snapshot()` | The same UUID can appear twice. Generations make stale handles fail closed. |
 | Verbose scan `delivery` | Overflow is visible. A second scan is `scan.already-active` unless you join. |
@@ -159,20 +137,19 @@ Web Bluetooth replaces the scan with `session.chooser.choose(...)` from a user g
 | Member | Use |
 | --- | --- |
 | `scan(options)` | Start a bounded `ScanSession`. You must `stop()` it. |
-| `connect(peerId, { signal, deadline })` | Open a connection lease. |
+| `find(options)` | Find one normalized `BlePeer` and stop its scan. |
+| `choose(options)` | Use a system chooser where the backend supports it. |
+| `connect(peer, { signal, timeoutMs })` | Open a connection lease. |
 | `destroy()` | Async teardown. Await it. Inspect `CleanupRecord`. |
-| `adapterState()` | One snapshot of power / authorization / availability. |
-| `adapterStates()` | Bounded stream of adapter-state transitions. Stop it. |
-| `supports(id)` / `capability(id)` / `capabilities()` | Runtime features of **this** backend. |
-| `monotonicNow()` | Clock for `deadline()`. |
-| `adoptRestoration(request)` | Consume a native restoration journal. Does not auto-reconnect. |
+| `adapter.state()` / `adapter.waitUntilReady()` | Readiness of this instantiated backend. |
+| `capabilities` / `discovery` | Runtime feature and discovery truth from the host. |
 
 ### `ScanSession`
 
 | Member | Use |
 | --- | --- |
 | `observations` | Bounded stream: `value`, `overflow`, or `terminal` |
-| `stop()` | End the scan. `scanUntil` / `find` already do this. |
+| `stop()` | End the scan and return a cleanup receipt. `find` already does this. |
 
 `AdvertisementObservation.device` is identity (`id`, address, stability). The advertised name is `observation.localName`.
 
@@ -180,65 +157,62 @@ Web Bluetooth replaces the scan with `session.chooser.choose(...)` from a user g
 
 | Member | Use |
 | --- | --- |
-| `discover({ signal, deadline })` | Discover GATT and return a `DiscoveredGattDatabase` |
+| `discover({ signal, timeoutMs })` | Discover GATT and return a generation-bound database |
 | `release()` | Drop the lease (happy-path cleanup) |
 | `disconnect()` | Ask the radio to disconnect |
 | `readRssi(options)` | RSSI if the backend supports it |
 | `requestMtu(n, options)` | Request an ATT MTU if supported |
 | `events` | Lifecycle stream for this generation |
 
-### `DiscoveredGattDatabase`
+### `GattDatabase`
 
 | Member | Use |
 | --- | --- |
 | `snapshot()` | Immutable services / characteristics / descriptors |
 | `read(path, options)` | `Uint8Array` |
-| `write(path, bytes, { mode, signal, deadline })` | `mode` is `'with-response'` or `'without-response'` |
+| `write(path, bytes, { mode, signal, timeoutMs })` | `mode` is `'with-response'` or `'without-response'` |
 | `writeLong(path, bytes, options)` | Chunked write when supported |
 | `maximumWriteLength(path, mode)` | Payload size for that mode |
 | `readDescriptor` / `writeDescriptor` | Descriptor bytes |
-| `subscribe(path, { signal, deadline, delivery })` | Notification / indication stream |
+| `subscribe(path, { signal, timeoutMs, delivery })` | Notification / indication stream |
 
-Copy paths from `snapshot()` or `resolveCharacteristicPath`. Hand-built generations throw `gatt.stale-handle`.
+Use the generation-bound service and characteristic objects returned by the
+public database. Do not manufacture portable paths or retain objects after
+disconnect, service change, or rediscovery.
 
 ### `Subscription`
 
 | Member | Use |
 | --- | --- |
-| `values` | Bounded stream of `value` / `overflow` / `terminal` items. A value item carries `{ value, indication }` |
-| `remove()` | Always, including after abort |
+| `values` | Bounded stream of `value` / `overflow` / `terminal` items. A value item carries bytes, delivery, timestamp, and sequence |
+| `remove()` | Always, including after abort; inspect the cleanup receipt |
 
-### Helpers (`unified-ble-manager`)
+### Scoped façade methods
 
 | Helper | Use |
 | --- | --- |
-| `scanUntil` / `find` | Scan until a predicate matches, then stop |
-| `scanForServices` | `scanUntil` with a service UUID filter and `defaultScanDelivery()` |
-| `connectAndDiscover` | Connect + discover; releases the connection if discovery fails |
-| `firstNotification` | One payload, then `remove()` |
-| `collectNotifications` | Up to `maximumValues` payloads, then `remove()` |
 | `withConnection` | Run a function and always `release()` the lease |
 | `withDiscoveredConnection` | Connect, discover, run, then `release()` |
-| `throwIfCleanupFailed` | Throw if a `CleanupRecord` is `release-failed` |
-| `capacity()` / `deadline()` / `canonicalUuid()` | Branded scan/connect primitives |
+| `withScan` | Start a scan, run a function, then stop it |
+| `connection.lifecycleEvents` | Observe generation-bound lifecycle transitions |
 
 ### Host factories
 
 | Factory | Returns |
 | --- | --- |
-| `createReactNativeBleManager` | App factory: `{ clientId, managerId, hostSessionScope }` |
+| `createReactNativeBleManager` | Zero-plumbing public React Native manager |
 | `createReactNativeBleManagerWithEnvironment` | Injectable RN factory for tests |
-| `createNavigatorWebBleManager` | `{ chooser, manager }`; default navigator environment |
+| `createWebBleManager` | Zero-plumbing public Web manager; use `ble.choose()` from a user gesture |
 | `createCoreBluetoothBleManager` / `createWinRtBleManager` / `createBluezBleManager` | One-call Node managers |
 | `createElectronMainCoreBluetoothBackendProvider` / `WinRt` | Main-process provider; you still build a `BleManager` |
-| `ElectronRendererBleClient` | IPC client, not `BleManager` |
+| `createElectronRendererBleManager` / `createElectronRendererBleManagerWithEnvironment` | Public renderer `BleManager` over a preload transport; the renderer never loads a radio backend |
 | `createTauriBleManager` | Zero-plumbing Tauri `BleManager`; tests use `createTauriBleManagerWithEnvironment` |
 | `createBleManagerFromProvider` | Advanced provider construction |
 
 ## Other hosts
 
-- **Web:** user-gesture `chooser.choose()`, then the same `connect` / GATT handles. No continuous scan. [`docs/WEB.md`](docs/WEB.md)
-- **Electron:** main owns the radio; the renderer uses the IPC client. [`docs/ELECTRON.md`](docs/ELECTRON.md)
+- **Web:** user-gesture `ble.choose()`, then the same `connect` / GATT handles. No continuous scan. [`docs/WEB.md`](docs/WEB.md)
+- **Electron:** main owns the radio; the renderer creates the public manager from its authenticated preload transport. [`docs/ELECTRON.md`](docs/ELECTRON.md)
 - **Node:** `createCoreBluetoothBleManager` / `createWinRtBleManager` / `createBluezBleManager`, or list adapters and `createBleManagerFromProvider`. Published releases ship Node-API v8 prebuilds for macOS and Windows `arm64`/`x64`. [`docs/NODE.md`](docs/NODE.md)
 - **Tauri:** `createTauriBleManager()` returns the public `BleManager`; test transports use `createTauriBleManagerWithEnvironment`. [`docs/TAURI.md`](docs/TAURI.md)
 

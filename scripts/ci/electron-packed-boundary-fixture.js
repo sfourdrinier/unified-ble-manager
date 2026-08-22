@@ -170,6 +170,16 @@ async function main() {
     assert.equal(typeof value, 'function', `Electron main public surface must export ${name}`)
   }
   assert.equal(typeof electronRenderer.ElectronRendererBleClient, 'function', 'renderer public proxy exports its client')
+  assert.equal(
+    typeof electronRenderer.createElectronRendererBleManager,
+    'function',
+    'renderer public proxy exports the public manager factory'
+  )
+  assert.equal(
+    typeof electronRenderer.createElectronRendererBleManagerWithEnvironment,
+    'function',
+    'renderer public proxy exports the environment factory alias'
+  )
   for (const forbiddenExport of [
     'ElectronMainBleBinding',
     'ElectronMainBleRouter',

@@ -58,8 +58,7 @@ function capabilitySnapshot(backendGeneration) {
     ['connection:direct', 'connection.lease-joins-borrowing-transfer-and-revocation'],
     ['connection:rssi', 'connection.rssi-and-att-mtu-capability-contract'],
     ['gatt:descriptors', 'gatt.descriptor-discovery-read-write'],
-    ['gatt:indications', 'gatt.reads-descriptors-write-policy-and-dispatched-cancellation'],
-    ['gatt:maximum-write-length', 'gatt.maximum-write-length-boundaries']
+    ['gatt:indications', 'gatt.reads-descriptors-write-policy-and-dispatched-cancellation']
   ]
   const metadata = new Map(entries)
   return {
@@ -157,6 +156,88 @@ describe('Tauri v2 public manager', () => {
     await manager.destroy()
   })
 
+  test('rejects malformed reference-shaped peers before IPC connect', async () => {
+    const invoke = jest.fn(async (_command, args) => {
+      const request = args.request
+      if (request.kind === 'bootstrap') return { kind: 'bootstrap', bootstrap: bootstrap() }
+      if (request.kind === 'release') return { kind: 'release', cleanup: { state: 'released', failures: [] } }
+      throw new Error(`unexpected route ${request.envelope.command}`)
+    })
+    const { createTauriBleManagerWithEnvironment } = require('../src/tauri')
+    const manager = await createTauriBleManagerWithEnvironment({ invoke, Channel: FakeChannel })
+
+    await expect(
+      manager.connect({ version: 2, backendId: 'unified-ble:tauri', scope: 'system', opaqueId: 'peer-1' })
+    ).rejects.toMatchObject({ code: 'peer.reference-invalid' })
+    expect(invoke.mock.calls.some(([, args]) => args.request.envelope?.command === 'connection.connect')).toBe(false)
+    await manager.destroy()
+  })
+
+  test('rejects connection options that the Tauri IPC contract cannot route', async () => {
+    const invoke = jest.fn(async (_command, args) => {
+      const request = args.request
+      if (request.kind === 'bootstrap') return { kind: 'bootstrap', bootstrap: bootstrap() }
+      if (request.kind === 'event.ack') return { kind: 'event.ack' }
+      if (request.kind === 'release') return { kind: 'release', cleanup: { state: 'released', failures: [] } }
+      throw new Error(`unexpected route ${request.envelope.command}`)
+    })
+    const { createTauriBleManagerWithEnvironment } = require('../src/tauri')
+    const manager = await createTauriBleManagerWithEnvironment({ invoke, Channel: FakeChannel })
+
+    expect(manager.capabilities.supports('gatt:maximum-write-length')).toBe(false)
+    expect(manager.capabilities.supports('gatt:long-write')).toBe(false)
+    await expect(manager.connect('peer-1', { intent: 'when-available' })).rejects.toMatchObject({
+      code: 'capability.unsupported'
+    })
+    await expect(manager.connect('peer-1', { preferredPhy: ['le-2m'] })).rejects.toMatchObject({
+      code: 'capability.unsupported'
+    })
+    await expect(manager.connect('peer-1', { transport: 'le' })).rejects.toMatchObject({
+      code: 'capability.unsupported'
+    })
+    expect(invoke.mock.calls.some(([, args]) => args.request.envelope?.command === 'connection.connect')).toBe(false)
+    await manager.destroy()
+  })
+
+  test('does not discover GATT when lifecycle admission fails', async () => {
+    const commands = []
+    const invoke = jest.fn(async (_command, args) => {
+      const request = args.request
+      if (request.kind === 'bootstrap') return { kind: 'bootstrap', bootstrap: bootstrap() }
+      if (request.kind === 'event.ack') return { kind: 'event.ack' }
+      if (request.kind === 'release') return { kind: 'release', cleanup: { state: 'released', failures: [] } }
+      const { command } = request.envelope
+      commands.push(command)
+      if (command === 'connection.connect') {
+        return {
+          kind: 'route',
+          payload: {
+            handle: 'connection-lifecycle-admission-failure',
+            connectionId: 'connection-id-admission-failure',
+            ownerLeaseId: 'tauri-lease-1',
+            peerId: 'peer-admission-failure',
+            connectionGeneration: 'generation-admission-failure'
+          }
+        }
+      }
+      if (command === 'connection.events.subscribe') {
+        throw new Error('lifecycle admission rejected')
+      }
+      if (command === 'gatt.discover') {
+        throw new Error('discovery must not be routed after lifecycle admission failure')
+      }
+      throw new Error(`unexpected route ${command}`)
+    })
+    const { createTauriBleManagerWithEnvironment } = require('../src/tauri')
+    const manager = await createTauriBleManagerWithEnvironment({ invoke, Channel: FakeChannel })
+
+    const connection = await manager.connect('peer-admission-failure')
+    await expect(connection.discover()).rejects.toBeDefined()
+    expect(commands).toContain('connection.events.subscribe')
+    expect(commands).not.toContain('gatt.discover')
+    await manager.destroy()
+  })
+
   test('runs scan, connect, GATT, notifications, and deterministic cleanup through one manager surface', async () => {
     const commands = []
     const invoke = jest.fn(async (_command, args) => {
@@ -205,6 +286,7 @@ describe('Tauri v2 public manager', () => {
         'connection.events.ready': { state: 'ready' },
         'connection.events.unsubscribe': { state: 'released', failures: [] },
         'gatt.discover': {
+          schemaVersion: 2,
           handle: 'database-1',
           databaseId: 'database-id-1',
           databaseGeneration: 'database-generation-1',
@@ -250,7 +332,9 @@ describe('Tauri v2 public manager', () => {
     const scan = await manager.scan({})
     const observation = scan.observations[Symbol.asyncIterator]().next()
     streamValue('scan-1', advertisement('polar-h10', 'Polar H10', -47))
-    await expect(observation).resolves.toMatchObject({ value: { kind: 'value', value: { peerId: 'polar-h10' } } })
+    await expect(observation).resolves.toMatchObject({
+      value: { kind: 'value', value: { peer: { id: 'polar-h10' }, localName: 'Polar H10', rssi: -47 } }
+    })
     await expect(scan.stop()).resolves.toMatchObject({ state: 'released' })
 
     const connection = await manager.connect('polar-h10')
@@ -275,6 +359,11 @@ describe('Tauri v2 public manager', () => {
       commitState: 'confirmed'
     })
     expect(database.snapshot().characteristics).toHaveLength(1)
+    expect(database.snapshot().descriptors[0].properties).toMatchObject({
+      read: false,
+      write: false,
+      availability: { read: 'unknown', write: 'unknown' }
+    })
     const gattWriteRequest = invoke.mock.calls.find(([, args]) => args.request.envelope?.command === 'gatt.write')
     expect(gattWriteRequest?.[1].request.envelope.payload).toMatchObject({
       databaseId: 'database-id-1',
@@ -375,10 +464,26 @@ describe('Tauri v2 public manager', () => {
           }
         }
       }
+      if (command === 'connection.events.subscribe') {
+        return {
+          kind: 'route',
+          payload: {
+            handle: 'connection-events-ipc-1',
+            connectionId: 'connection-id-receipt',
+            connectionGeneration: 'generation-receipt',
+            eventSchemaVersion: 2
+          }
+        }
+      }
+      if (command === 'connection.events.ready') return { kind: 'route', payload: { state: 'ready' } }
+      if (command === 'connection.events.unsubscribe') {
+        return { kind: 'route', payload: { state: 'released', failures: [] } }
+      }
       if (command === 'gatt.discover') {
         return {
           kind: 'route',
           payload: {
+            schemaVersion: 2,
             handle: 'database-receipt',
             databaseId: 'database-id-receipt',
             databaseGeneration: 'database-generation-receipt',
@@ -626,8 +731,32 @@ describe('Tauri v2 public manager', () => {
     const scan = await manager.scan()
     const first = await scan.observations[Symbol.asyncIterator]().next()
     expect(first.done).toBe(false)
-    expect(first.value).toMatchObject({ kind: 'value', value: { peerId: 'early-peer' } })
+    expect(first.value).toMatchObject({ kind: 'value', value: { peer: { id: 'early-peer' }, localName: 'Early' } })
     await scan.stop()
+    await manager.destroy()
+  })
+
+  test('stops an active public scan when its AbortSignal is cancelled after start', async () => {
+    const scanStops = []
+    const invoke = jest.fn(async (_command, args) => {
+      const request = args.request
+      if (request.kind === 'bootstrap') return { kind: 'bootstrap', bootstrap: bootstrap() }
+      if (request.kind === 'event.ack') return { kind: 'event.ack' }
+      if (request.kind === 'release') return { kind: 'release', cleanup: { state: 'released', failures: [] } }
+      if (request.envelope.command === 'scan.start') return { kind: 'route', payload: { handle: 'scan-abort' } }
+      if (request.envelope.command === 'scan.stop') {
+        scanStops.push(request.envelope.payload.scanHandle)
+        return { kind: 'route', payload: { state: 'released', failures: [] } }
+      }
+      return { kind: 'route', payload: { accepted: true } }
+    })
+    const { createTauriBleManagerWithEnvironment } = require('../src/tauri')
+    const manager = await createTauriBleManagerWithEnvironment({ invoke, Channel: FakeChannel })
+    const controller = new AbortController()
+    const scan = await manager.scan({ signal: controller.signal })
+    controller.abort()
+    for (let turn = 0; turn < 4; turn += 1) await Promise.resolve()
+    expect(scanStops).toEqual(['scan-abort'])
     await manager.destroy()
   })
 
@@ -707,5 +836,28 @@ describe('Tauri v2 public manager', () => {
       scanStartCount
     )
     await manager.destroy()
+  })
+
+  test('releases the attached IPC lease when host option admission fails', async () => {
+    const invoke = jest.fn(async (_command, args) => {
+      if (args.request.kind === 'bootstrap') return { kind: 'bootstrap', bootstrap: bootstrap() }
+      if (args.request.kind === 'release') return { kind: 'release', cleanup: { state: 'released', failures: [] } }
+      return { kind: 'route', payload: { accepted: true } }
+    })
+    const { createTauriBleManagerWithEnvironment } = require('../src/tauri')
+
+    await expect(
+      createTauriBleManagerWithEnvironment({ invoke, Channel: FakeChannel }, { adapterId: 'wrong-adapter' })
+    ).rejects.toMatchObject({ normalized: { code: 'adapter.unavailable' } })
+    expect(invoke.mock.calls.map(([, args]) => args.request.kind)).toEqual(['bootstrap', 'release'])
+
+    invoke.mockClear()
+    await expect(
+      createTauriBleManagerWithEnvironment(
+        { invoke, Channel: FakeChannel },
+        { restoration: { applicationId: 'app', restorationId: 'ble' } }
+      )
+    ).rejects.toMatchObject({ normalized: { code: 'capability.unsupported' } })
+    expect(invoke.mock.calls.map(([, args]) => args.request.kind)).toEqual(['bootstrap', 'release'])
   })
 })
