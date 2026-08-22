@@ -114,7 +114,7 @@ required gate before PR7 can merge.
 
 ### PR7C1 Android working-tree checkpoint
 
-The current source is the clean commits `b23a09e` and `4c029f2` on
+The current source is the clean commits `b23a09e`, `4c029f2`, and `5242123` on
 `feat/4.0-security-pairing`. It contains the additive Native Protocol v2
 security command/result/event schema, generated C++/Kotlin/Swift/TypeScript
 bindings, Android public-API bond state and `createBond` handling, the RN
