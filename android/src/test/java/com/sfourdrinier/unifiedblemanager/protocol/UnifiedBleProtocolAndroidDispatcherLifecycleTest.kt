@@ -24,14 +24,23 @@ class UnifiedBleProtocolAndroidDispatcherLifecycleTest {
     val dispatcher = readAndroidSource(
       "android/src/main/java/com/sfourdrinier/unifiedblemanager/protocol/UnifiedBleProtocolAndroidDispatcher.kt"
     )
+    val decoder = readAndroidSource(
+      "android/src/main/java/com/sfourdrinier/unifiedblemanager/protocol/ProtocolCommandDecoder.kt"
+    )
     val radio = readAndroidSource(
       "android/src/main/java/com/sfourdrinier/unifiedblemanager/radio/OwnedAndroidGattRadio.kt"
     )
 
     assertEquals(
-      1,
+      0,
       Regex("private fun ProtocolWireRecord\\.optionalString\\(fieldId: Int\\): String\\?")
         .findAll(dispatcher)
+        .count()
+    )
+    assertEquals(
+      1,
+      Regex("internal fun ProtocolWireRecord\\.optionalString\\(fieldId: Int\\): String\\?")
+        .findAll(decoder)
         .count()
     )
     assertTrue(dispatcher.contains("command.optionalString(17)"))
