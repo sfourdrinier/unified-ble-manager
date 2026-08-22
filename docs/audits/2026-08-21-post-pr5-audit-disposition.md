@@ -309,7 +309,7 @@ PR6 to a release claim by itself.
 
 ## PR8 current checkpoint
 
-The current PR8 branch is `feat/4.0-link-controls` at `56b56b2`, with the
+The current PR8 branch is `feat/4.0-link-controls` at `9041c4f`, with the
 readiness implementation committed in `0626c51`, the latest readiness/docs
 follow-ups in its descendants, and the cumulative package gate reverified
 afterward.
@@ -317,12 +317,14 @@ afterward.
 | Area | Current evidence | Disposition |
 | --- | --- | --- |
 | Public controls and API surface | Required `BleConnection.controls`, required `rediscoverGatt`, generation-bound observations, canonical root exports, and reviewed root API report | Fixed and locally verified |
-| Android priority | Versioned Native Protocol v2 command/result, Android `BluetoothGatt.requestConnectionPriority`, accepted/rejected result without observed-parameter overclaim | Android-only, limited/deterministic; hosted Android and physical evidence remain open |
+| Android priority | Versioned Native Protocol v2 command/result, Android `BluetoothGatt.requestConnectionPriority` through the per-device serial queue, accepted/rejected result without observed-parameter overclaim | Android-only, limited/deterministic; hosted Android and physical evidence remain open |
+| Android PHY | Versioned Native Protocol v2 read/request results, API-26+ `readPhy`/`setPreferredPhy`, callback mismatch/stale-generation rejection, public accepted-vs-observed result | Android-only, limited/deterministic; hosted Android and physical evidence remain open |
 | CoreBluetooth readiness | `canSendWriteWithoutResponse`, `peripheralIsReady(toSendWriteWithoutResponse:)`, native ordinal/generation, bounded stream, disconnect/destroy cleanup | Direct Node/Electron-main only, limited/deterministic; other hosts remain unsupported |
 | Scheduler and recovery | Per-connection bounded round-robin lanes, queue overflow, service-change cancellation, reasoned rediscovery, uncertain-write preservation, hidden-refresh source guard | Fixed with focused TDD/TCK coverage |
-| TCK and docs | PR8 closure scenarios, explicit unsupported PHY/parameters/subrate/readiness truth, migration/semantics guidance | Deterministic evidence only; no physical-radio claim |
-| Local package gate | `pnpm test:package`: 129 suites / 1,199 tests; docs/API, native protocol, artifact, and smell checks included | Green locally |
+| TCK and docs | PR8 closure scenarios, Android PHY/priority truth, explicit unsupported parameters/subrate/other-host readiness truth, migration/semantics guidance | Deterministic evidence only; no physical-radio claim |
+| Local package gate | `pnpm test:package`: 133 suites / 1,210 tests; docs/API, native protocol, artifact, and smell checks included | Green locally |
 | Native/plugin gates | CoreBluetooth macOS Node-API build, native protocol host, plugin 36/36, release artifacts, typecheck/lint | Green locally; Android/Windows hosted qualification remains required |
 | Packed consumer gate | Local npm pack smoke still encounters npm `Exit handler never called!` | Hosted supported-Node proof required |
 | Performance baselines | Deterministic baseline `unified-ble-pr8-deterministic-performance-v1`: 23 measurements in the focused 3-payload test and 31 measurements / 15 categories in default `performance:check`, including all ten PR8 IDs, bounded cleanup and ownership metadata | Deterministic baseline fixed; live/native comparison remains a PR12 gate |
+| Remaining contract gaps | `writeWhenReady` helper and effective-MTU observation are not yet implemented; parameter/subrate remain unsupported because no truthful pinned API is wired | Blocking PR8 acceptance until implemented or explicitly reconciled with the plan |
 | Review/release | No PR8 GitHub PR, Copilot/Codex review rounds, merge, or RC3 tag yet | Blocking; RC2 remains immutable |
