@@ -2,6 +2,7 @@
 
 const { attachBackend } = require('../../../src/backend-contract/backend')
 const { capacity, opaqueId, version, versionRange } = require('../../../src/backend-contract/primitives')
+const { createBleManagerFromProvider, DEFAULT_BLE_MANAGER_OPTIONS } = require('../../../src/manager/ble-manager')
 const { createCoreBluetoothBackendProvider } = require('../../../src/backends/corebluetooth/corebluetooth-provider')
 const {
   InMemoryCoreBluetoothBoundary
@@ -69,6 +70,34 @@ async function fixture() {
   })
   await attachBackend(backend, compatibility())
   return { backend, boundary }
+}
+
+async function managerFixture() {
+  let boundary = null
+  const provider = createCoreBluetoothBackendProvider({
+    boundaryFactory: () => {
+      boundary = new InMemoryCoreBluetoothBoundary({ serviceUuid, characteristicUuid })
+      return boundary
+    },
+    now: () => 20,
+    hostKind: 'node'
+  })
+  const manager = await createBleManagerFromProvider(
+    {
+      provider,
+      selection: {
+        selectedAdapterId: opaqueId('corebluetooth-default-adapter', 'adapter', 'corebluetooth')
+      },
+      coreCompatibility: compatibility(),
+      manager: {
+        clientId: opaqueId('core-quarantine-client', 'client', 'corebluetooth:core-quarantine'),
+        managerId: opaqueId('core-quarantine-manager', 'manager', 'corebluetooth:core-quarantine'),
+        ownerMode: 'owning'
+      }
+    },
+    { ...DEFAULT_BLE_MANAGER_OPTIONS, now: () => 20 }
+  )
+  return { manager, backend: manager.attachedBackend.backend, boundary }
 }
 
 async function observedPeerId(backend) {
@@ -245,6 +274,78 @@ describe('CoreBluetooth late-operation quarantine', () => {
     expect(destroySettled).toBe(false)
     readGate.resolve(new Uint8Array([6, 6]))
     await expect(destroy).resolves.toEqual({ state: 'released', failures: [] })
+  })
+
+  test('retains the physical connection when core quarantine times out before native GATT settlement', async () => {
+    jest.useFakeTimers()
+    let manager = null
+    let readGate = null
+    try {
+      const fixture = await managerFixture()
+      manager = fixture.manager
+      const { backend, boundary } = fixture
+      const peerId = await observedPeerId(backend)
+      const connection = await manager.connect(peerId, operation())
+      const database = await connection.discover(operation())
+      const characteristic = (await database.snapshot()).characteristics[0].path
+      readGate = deferred()
+      boundary.readGate = readGate.promise
+      const nativeDisconnect = boundary.disconnect.bind(boundary)
+      let disconnectCalls = 0
+      boundary.disconnect = async nativePeerId => {
+        disconnectCalls += 1
+        await nativeDisconnect(nativePeerId)
+      }
+
+      const read = database.read(characteristic, operation())
+      await flushMicrotasks()
+      expect(backend.resourceCounters()).toMatchObject({ dispatchedOperations: 1 })
+
+      const release = connection.release()
+      await expect(read).rejects.toMatchObject({ normalized: { code: 'operation.disconnected' } })
+      jest.runOnlyPendingTimers()
+      await flushMicrotasks()
+
+      await expect(release).resolves.toMatchObject({
+        state: 'release-failed',
+        failures: expect.arrayContaining([
+          expect.objectContaining({
+            resourceKind: 'operation-quarantine',
+            error: expect.objectContaining({ code: 'operation.timed-out', domain: 'cleanup' })
+          }),
+          expect.objectContaining({
+            resourceKind: 'connection',
+            error: expect.objectContaining({ code: 'operation.timed-out', domain: 'cleanup' })
+          })
+        ])
+      })
+      expect(disconnectCalls).toBe(0)
+      expect(boundary.connected).toBe(true)
+      expect(backend.resourceCounters()).toMatchObject({
+        physicalLinks: 1,
+        connectionLeases: 1,
+        dispatchedOperations: 1
+      })
+
+      readGate.resolve(new Uint8Array([4, 2]))
+      await flushMicrotasks()
+      await expect(connection.release()).resolves.toEqual({ state: 'released', failures: [] })
+      expect(disconnectCalls).toBe(1)
+      expect(boundary.connected).toBe(false)
+      expect(backend.resourceCounters()).toMatchObject({
+        physicalLinks: 0,
+        connectionLeases: 0,
+        dispatchedOperations: 0
+      })
+    } finally {
+      if (readGate !== null) {
+        readGate.resolve(new Uint8Array([4, 2]))
+      }
+      if (manager !== null) {
+        await manager.destroy()
+      }
+      jest.useRealTimers()
+    }
   })
 
   test('rejects a foreign CoreBluetooth subscription before it can stop the owner boundary notification', async () => {

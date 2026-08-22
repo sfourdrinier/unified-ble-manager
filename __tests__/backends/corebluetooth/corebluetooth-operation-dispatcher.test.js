@@ -158,6 +158,8 @@ describe('CoreBluetoothOperationDispatcher cancellation admission', () => {
 
     await expect(result).resolves.toMatchObject({ outcome: 'aborted' })
     expect(dispatcher.activeCount()).toBe(1)
+    expect(dispatcher.activeCount('connection-1')).toBe(1)
+    expect(dispatcher.activeCount('other-connection')).toBe(0)
     expect(coordinator.activeCounts()).toMatchObject({ quarantined: 1 })
 
     let drained = false

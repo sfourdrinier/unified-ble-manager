@@ -816,6 +816,18 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
     if (record.state === 'disconnected' || record.state === 'lost') {
       return releasedCleanup
     }
+    if (this.dispatcher.activeCount(String(record.connectionId)) > 0) {
+      return Object.freeze({
+        state: 'release-failed',
+        failures: Object.freeze([
+          {
+            resourceKind: 'connection',
+            error: contractError('operation.timed-out', 'cleanup', 'corebluetooth.connection.dispatcher-idle')
+              .normalized
+          }
+        ])
+      })
+    }
     record.state = 'disconnecting'
     const subscriptionCleanup = await this.removeConnectionSubscriptions(record, 'connection-lost')
     const failures: CleanupFailure[] = [...subscriptionCleanup.failures]

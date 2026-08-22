@@ -192,8 +192,11 @@ export class CoreBluetoothOperationDispatcher {
     return createBackendOperationDispatch(handle, completion, requestCancellation, physicalSettlement)
   }
 
-  activeCount(): number {
-    return this.active.size
+  activeCount(serializationKey?: string): number {
+    if (serializationKey === undefined) {
+      return this.active.size
+    }
+    return this.activeBySerializationKey.has(serializationKey) ? 1 : 0
   }
 
   waitForIdle(): Promise<void> {
