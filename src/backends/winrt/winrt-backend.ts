@@ -20,8 +20,10 @@ import {
   type OwnerScanOptions
 } from '../../backend-contract/advertisement'
 import {
+  BUILT_IN_FEATURE_IDS,
   createBackendOperationCapabilityRegistration,
-  createFeatureRegistry
+  createFeatureRegistry,
+  type FeatureRegistry
 } from '../../backend-contract/capabilities'
 import {
   BackendContractError,
@@ -115,6 +117,37 @@ const adapterStateLimits = Object.freeze({
   byteCapacity: capacity(16 * 1024),
   reservedControlCapacity: capacity(1)
 })
+
+function createWinRtFeatureRegistry(securityAvailable: boolean): FeatureRegistry {
+  const registrations = [
+    createBackendOperationCapabilityRegistration({
+      implementationVersion: WINRT_IMPLEMENTATION_VERSION,
+      sourceDigest: 'winrt-direct-connection-v1',
+      tckSuiteId: 'capability.catalog-v2',
+      requiredScenarioIds: ['scenario.scan-connect-discover-read-notify-destroy']
+    })
+  ]
+  if (securityAvailable) {
+    registrations.push(
+      ...[
+        BUILT_IN_FEATURE_IDS.securityState,
+        BUILT_IN_FEATURE_IDS.securityPair,
+        BUILT_IN_FEATURE_IDS.securityCancelPairing,
+        BUILT_IN_FEATURE_IDS.securityUnpair
+      ].map(id =>
+        createBackendOperationCapabilityRegistration({
+          id,
+          implementationVersion: WINRT_IMPLEMENTATION_VERSION,
+          sourceDigest: `winrt-${id.replace(':', '-')}-v1`,
+          tckSuiteId: 'tck.feature.security.winrt',
+          requiredScenarioIds: ['security.state-pair-cancel-unpair'],
+          operation: `${id}.invoke-without-security-backend`
+        })
+      )
+    )
+  }
+  return createFeatureRegistry(registrations)
+}
 
 /** Removes backend-owned fan-out streams as soon as their consumer closes or they terminalize. */
 class WinRtOwnedStream<Value> extends CoreBoundedStream<Value> {
@@ -355,14 +388,7 @@ function allocateBackendInstance(): number {
  * late native completion has been quarantined.
  */
 export class WinRtBackend implements BleCentralBackend<string, HostNeutralBackendIdentity<string>> {
-  readonly features = createFeatureRegistry([
-    createBackendOperationCapabilityRegistration({
-      implementationVersion: WINRT_IMPLEMENTATION_VERSION,
-      sourceDigest: 'winrt-direct-connection-v1',
-      tckSuiteId: 'capability.catalog-v2',
-      requiredScenarioIds: ['scenario.scan-connect-discover-read-notify-destroy']
-    })
-  ])
+  readonly features: FeatureRegistry
   readonly adapter: AdapterBackend<string>
   readonly scanner: ScannerBackend<string>
   readonly connections: ConnectionBackend<string>
@@ -437,6 +463,7 @@ export class WinRtBackend implements BleCentralBackend<string, HostNeutralBacken
       unsubscribe: this.gattOperations.unsubscribe.bind(this.gattOperations)
     })
     this.security = isWinRtSecurityBoundary(boundary) ? new WinRtSecurityBackend(boundary, now) : undefined
+    this.features = createWinRtFeatureRegistry(this.security !== undefined)
     this.removeConnectionListener = boundary.onConnectionLost(record => {
       try {
         this.handleConnectionLoss(validateWinRtConnectionLossRecord(record))

@@ -165,6 +165,12 @@ Node-API source methods and strict loader/CI surface checks for
 Windows compilation and runtime/TCK evidence are still required; source-level
 tests on macOS do not qualify the native artifact.
 
+The deterministic WinRT first-party TCK now exercises the same system-only
+security adapter with measured bond state, terminal pairing, cancellation,
+unpair, watcher cleanup, and explicit custom-ceremony unsupported semantics.
+The native Windows compile/ABI lane remains the qualification gate for turning
+this deterministic binding into a Windows capability claim.
+
 ## PR6 current checkpoint
 
 This branch has now verified the following PR6 slices against current source:

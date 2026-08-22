@@ -42,6 +42,10 @@ class DeterministicWinRtBoundary {
     this.databaseListeners = new Set()
     this.scanTerminalListeners = new Set()
     this.adapterListeners = new Set()
+    this.securityListeners = new Set()
+    this.securityBonded = false
+    this.suppressNextSecurityPair = false
+    this.pendingSecurityPair = null
   }
 
   listAdapters() {
@@ -59,6 +63,72 @@ class DeterministicWinRtBoundary {
   }
   adapterSnapshot() {
     return { availability: 'available', authorization: 'granted', power: 'on', safeReason: null }
+  }
+
+  securityState(nativePeerId) {
+    if (nativePeerId !== 'C0FFEE000001') return operation(Promise.reject(new Error('unknown security peer')))
+    return operation(this.securityStateValue())
+  }
+
+  pair(nativePeerId) {
+    if (nativePeerId !== 'C0FFEE000001') return operation(Promise.reject(new Error('unknown security peer')))
+    if (this.suppressNextSecurityPair) {
+      this.suppressNextSecurityPair = false
+      let resolve
+      const completion = new Promise(result => {
+        resolve = result
+      })
+      this.pendingSecurityPair = resolve
+      return {
+        completion,
+        cancel: async () => {
+          this.pendingSecurityPair?.({ outcome: 'cancelled', state: null, reason: null })
+          this.pendingSecurityPair = null
+          return 'cancellation-requested'
+        }
+      }
+    }
+    if (this.securityBonded)
+      return operation({ outcome: 'already-paired', state: this.securityStateValue(), reason: null })
+    this.securityBonded = true
+    this.emitSecurityState()
+    return operation({ outcome: 'paired', state: this.securityStateValue(), reason: null })
+  }
+
+  cancelPairing() {
+    return operation(undefined)
+  }
+
+  unpair(nativePeerId) {
+    if (nativePeerId !== 'C0FFEE000001') return operation(Promise.reject(new Error('unknown security peer')))
+    if (!this.securityBonded) return operation('already-unpaired')
+    this.securityBonded = false
+    this.emitSecurityState()
+    return operation('unpaired')
+  }
+
+  onSecurityState(listener) {
+    this.securityListeners.add(listener)
+    return () => this.securityListeners.delete(listener)
+  }
+
+  prepareSecurityCancellation() {
+    this.suppressNextSecurityPair = true
+  }
+
+  securityStateValue() {
+    return {
+      bond: this.securityBonded ? 'bonded' : 'not-bonded',
+      encryption: 'unsupported',
+      authentication: 'unsupported',
+      secureConnections: 'unsupported',
+      pairingPossible: true
+    }
+  }
+
+  emitSecurityState() {
+    const record = { nativePeerId: 'C0FFEE000001', state: this.securityStateValue() }
+    for (const listener of [...this.securityListeners]) listener(record)
   }
   startScan(scanToken, _services, handler) {
     this.scanToken = scanToken
