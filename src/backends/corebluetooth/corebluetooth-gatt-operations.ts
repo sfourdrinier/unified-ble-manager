@@ -49,7 +49,10 @@ export class CoreBluetoothGattOperations {
       snapshot = await this.backend.operationLifecycle.awaitBoundaryOperation(
         options,
         'corebluetooth.gatt.discover',
-        () => this.backend.boundary.discover(record.nativePeerId)
+        () => this.backend.boundary.discover(record.nativePeerId),
+        undefined,
+        undefined,
+        String(record.connectionId)
       )
     } catch (error) {
       throw this.backend.operationLifecycle.platformError(

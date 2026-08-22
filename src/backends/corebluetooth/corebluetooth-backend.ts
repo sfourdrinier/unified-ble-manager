@@ -301,6 +301,7 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
   private adapterLossCleanup: Promise<void> | null = null
   private adapterLossPending = false
   private adapterLossActive = false
+  private adapterLossRetryScheduled = false
   private scanGroup: ScanGroup | null = null
   private nextPeer = 1
   private nextScan = 1
@@ -781,7 +782,8 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
           if (this.connectionsByNativeId.get(nativePeerId) === record) {
             this.connectionsByNativeId.delete(nativePeerId)
           }
-        }
+        },
+        String(record.connectionId)
       )
     } catch (error) {
       const terminalCancellation =
@@ -816,17 +818,10 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
     if (record.state === 'disconnected' || record.state === 'lost') {
       return releasedCleanup
     }
-    if (this.dispatcher.activeCount(String(record.connectionId)) > 0) {
-      return Object.freeze({
-        state: 'release-failed',
-        failures: Object.freeze([
-          {
-            resourceKind: 'connection',
-            error: contractError('operation.timed-out', 'cleanup', 'corebluetooth.connection.dispatcher-idle')
-              .normalized
-          }
-        ])
-      })
+    const connectionKey = String(record.connectionId)
+    const activeFailures = this.activeOperationCleanupFailures('corebluetooth.connection', connectionKey)
+    if (activeFailures.length > 0) {
+      return Object.freeze({ state: 'release-failed', failures: Object.freeze(activeFailures) })
     }
     record.state = 'disconnecting'
     const subscriptionCleanup = await this.removeConnectionSubscriptions(record, 'connection-lost')
@@ -932,26 +927,61 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
     this.adapterLossActive = true
     this.adapterLossPending = true
     this.dispatcher.cancelAll()
-    this.adapterLossCleanup = this.releaseAdapterLossResources().then(async cleanup => {
+    const activeFailures = this.activeOperationCleanupFailures('corebluetooth.adapter-loss')
+    if (activeFailures.length > 0) {
+      this.reportAdapterLossCleanupFailure(activeFailures)
+      this.scheduleAdapterLossRetry()
+      return
+    }
+    this.adapterLossCleanup = this.releaseAdapterLossResources().then(cleanup => {
       this.adapterLossCleanup = null
       if (cleanup.state === 'release-failed') {
-        console.error(
-          '[CoreBluetoothBackend.handleAdapterState] Native adapter-loss cleanup requires retry:',
-          cleanup.failures
-        )
-        const attachment = this.attachment()
-        this.broadcastEvent({
-          attachment,
-          attachmentId: attachment.attachmentId,
-          kind: 'diagnostic',
-          ingressOrdinal: this.nextIngressOrdinal
-        })
-        this.nextIngressOrdinal += 1
+        this.reportAdapterLossCleanupFailure(cleanup.failures)
         return
       }
-      await this.dispatcher.waitForIdle()
+      const lateFailures = this.activeOperationCleanupFailures('corebluetooth.adapter-loss')
+      if (lateFailures.length > 0) {
+        this.reportAdapterLossCleanupFailure(lateFailures)
+        this.scheduleAdapterLossRetry()
+        return
+      }
       this.adapterLossPending = false
-      this.advanceGeneration()
+      if (!this.admissionClosed && !this.destroyed) this.advanceGeneration()
+    })
+  }
+  private activeOperationCleanupFailures(operation: string, serializationKey?: string): CleanupFailure[] {
+    const failures: CleanupFailure[] = []
+    if (this.dispatcher.activeCount(serializationKey) > 0) {
+      failures.push({
+        resourceKind: serializationKey === undefined ? 'operation-quarantine' : 'connection',
+        error: contractError('operation.timed-out', 'cleanup', `${operation}.dispatcher-idle`).normalized
+      })
+    }
+    if (this.operationLifecycle.activeCount(serializationKey) > 0) {
+      failures.push({
+        resourceKind: 'operation-quarantine',
+        error: contractError('operation.timed-out', 'cleanup', `${operation}.operation-lifecycle-idle`).normalized
+      })
+    }
+    return failures
+  }
+  private reportAdapterLossCleanupFailure(failures: readonly CleanupFailure[]): void {
+    console.error('[CoreBluetoothBackend.handleAdapterState] Native adapter-loss cleanup requires retry:', failures)
+    const attachment = this.attachment()
+    this.broadcastEvent({
+      attachment,
+      attachmentId: attachment.attachmentId,
+      kind: 'diagnostic',
+      ingressOrdinal: this.nextIngressOrdinal
+    })
+    this.nextIngressOrdinal += 1
+  }
+  private scheduleAdapterLossRetry(): void {
+    if (this.adapterLossRetryScheduled || this.admissionClosed || this.destroyed) return
+    this.adapterLossRetryScheduled = true
+    Promise.all([this.dispatcher.waitForIdle(), this.operationLifecycle.waitForIdle()]).then(() => {
+      this.adapterLossRetryScheduled = false
+      this.startAdapterLossCleanup()
     })
   }
   private async releaseAdapterLossResources(): Promise<CleanupRecord> {
@@ -1225,10 +1255,21 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
     this.dispatcher.cancelAll()
     const adapterLossCleanup = this.adapterLossCleanup
     if (adapterLossCleanup !== null) {
-      await adapterLossCleanup
+      return Object.freeze({
+        state: 'release-failed',
+        failures: Object.freeze([
+          {
+            resourceKind: 'backend',
+            error: contractError('operation.timed-out', 'cleanup', 'corebluetooth.destroy.adapter-loss-cleanup')
+              .normalized
+          }
+        ])
+      })
     }
-    await this.operationLifecycle.waitForIdle()
-    await this.dispatcher.waitForIdle()
+    const activeFailures = this.activeOperationCleanupFailures('corebluetooth.destroy')
+    if (activeFailures.length > 0) {
+      return Object.freeze({ state: 'release-failed', failures: Object.freeze(activeFailures) })
+    }
     const failures: CleanupFailure[] = []
     if (this.scanGroup !== null) {
       const owner = this.scanGroup.consumers.get(String(this.scanGroup.ownerLeaseId))

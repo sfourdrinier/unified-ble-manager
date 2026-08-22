@@ -266,14 +266,12 @@ describe('CoreBluetooth late-operation quarantine', () => {
     expect(boundary.writeValues).toHaveLength(0)
 
     const destroy = backend.destroy()
-    let destroySettled = false
-    destroy.then(() => {
-      destroySettled = true
-    })
     await flushMicrotasks()
-    expect(destroySettled).toBe(false)
+    await expect(destroy).resolves.toMatchObject({ state: 'release-failed' })
+    expect(boundary.destroyed).toBe(false)
     readGate.resolve(new Uint8Array([6, 6]))
-    await expect(destroy).resolves.toEqual({ state: 'released', failures: [] })
+    await flushMicrotasks()
+    await expect(backend.destroy()).resolves.toEqual({ state: 'released', failures: [] })
   })
 
   test('retains the physical connection when core quarantine times out before native GATT settlement', async () => {
@@ -348,6 +346,84 @@ describe('CoreBluetooth late-operation quarantine', () => {
     }
   })
 
+  test('returns retryable release failure for pending discovery and releases after settlement', async () => {
+    const { backend, boundary } = await fixture()
+    const discoverGate = deferred()
+    try {
+      const peerId = await observedPeerId(backend)
+      const lease = await backend.connections.connect(
+        peerId,
+        opaqueId('pending-discovery-client', 'client', 'corebluetooth:pending-discovery'),
+        operation()
+      )
+      const nativeDiscover = boundary.discover.bind(boundary)
+      boundary.discover = async nativePeerId => {
+        await discoverGate.promise
+        return nativeDiscover(nativePeerId)
+      }
+      const pendingDiscovery = backend.gatt.discover(lease.connection, operation())
+      await Promise.resolve()
+
+      let disconnectCalls = 0
+      const nativeDisconnect = boundary.disconnect.bind(boundary)
+      boundary.disconnect = async nativePeerId => {
+        disconnectCalls += 1
+        return nativeDisconnect(nativePeerId)
+      }
+
+      await expect(lease.release()).resolves.toMatchObject({
+        state: 'release-failed',
+        failures: [expect.objectContaining({ resourceKind: 'operation-quarantine' })]
+      })
+      expect(disconnectCalls).toBe(0)
+      expect(boundary.connected).toBe(true)
+
+      discoverGate.resolve()
+      await expect(pendingDiscovery).resolves.toMatchObject({ path: expect.any(Object) })
+      await expect(lease.release()).resolves.toEqual({ state: 'released', failures: [] })
+      expect(disconnectCalls).toBe(1)
+      expect(boundary.connected).toBe(false)
+    } finally {
+      discoverGate.resolve()
+      await backend.destroy()
+    }
+  })
+
+  test('does not disconnect for a permanently blocked discovery and returns promptly', async () => {
+    const { backend, boundary } = await fixture()
+    const discoverGate = deferred()
+    try {
+      const peerId = await observedPeerId(backend)
+      const lease = await backend.connections.connect(
+        peerId,
+        opaqueId('blocked-discovery-client', 'client', 'corebluetooth:blocked-discovery'),
+        operation()
+      )
+      boundary.discover = async () => discoverGate.promise
+      const pendingDiscovery = backend.gatt.discover(lease.connection, operation())
+      await Promise.resolve()
+      let disconnectCalls = 0
+      boundary.disconnect = async () => {
+        disconnectCalls += 1
+      }
+
+      const result = await Promise.race([
+        lease.release(),
+        new Promise(resolve => setTimeout(() => resolve('blocked'), 50))
+      ])
+      expect(result).not.toBe('blocked')
+      expect(result).toMatchObject({ state: 'release-failed' })
+      expect(disconnectCalls).toBe(0)
+      expect(boundary.connected).toBe(true)
+
+      discoverGate.resolve({ services: [] })
+      await expect(pendingDiscovery).resolves.toMatchObject({ path: expect.any(Object) })
+    } finally {
+      discoverGate.resolve({ services: [] })
+      await backend.destroy()
+    }
+  })
+
   test('rejects a foreign CoreBluetooth subscription before it can stop the owner boundary notification', async () => {
     const first = await fixture()
     const second = await fixture()
@@ -409,12 +485,8 @@ describe('CoreBluetooth late-operation quarantine', () => {
 
       await Promise.resolve()
       const destroy = backend.destroy()
-      let destroySettled = false
-      destroy.then(() => {
-        destroySettled = true
-      })
       await flushMicrotasks()
-      expect(destroySettled).toBe(false)
+      await expect(destroy).resolves.toMatchObject({ state: 'release-failed' })
       expect(boundary.destroyed).toBe(false)
 
       gate.resolve()
@@ -423,7 +495,7 @@ describe('CoreBluetooth late-operation quarantine', () => {
       } else {
         await expect(operationPromise).resolves.toMatchObject({ path: expect.any(Object) })
       }
-      await expect(destroy).resolves.toEqual({ state: 'released', failures: [] })
+      await expect(backend.destroy()).resolves.toEqual({ state: 'released', failures: [] })
       expect(boundary.destroyed).toBe(true)
     }
   )

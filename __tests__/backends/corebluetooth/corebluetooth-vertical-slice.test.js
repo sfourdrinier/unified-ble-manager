@@ -709,6 +709,10 @@ describe('CoreBluetooth contract-v1 vertical slice', () => {
     })
     await expect(dispatch.completion).rejects.toMatchObject({ normalized: { code: 'operation.aborted' } })
     await flushAdapterLossCleanup()
+    expectConsoleErrorMatching(
+      '[CoreBluetoothBackend.handleAdapterState] Native adapter-loss cleanup requires retry:',
+      expect.arrayContaining([expect.objectContaining({ resourceKind: 'operation-quarantine' })])
+    )
 
     expect(backend.attachment().attachmentId).toBe(attachmentBeforeLoss.attachmentId)
     expect(backend.resourceCounters()).toMatchObject({ dispatchedOperations: 1 })
@@ -733,6 +737,111 @@ describe('CoreBluetooth contract-v1 vertical slice', () => {
     await backend.destroy()
   })
 
+  test('waits for pending discovery before adapter-loss disconnect and generation advance', async () => {
+    const { backend, boundary } = await backendFixture()
+    const attachmentBeforeLoss = backend.attachment()
+    const discoverGate = deferred()
+    let pendingDiscovery = null
+    try {
+      const peerId = await observedPeerId(backend)
+      const lease = await backend.connections.connect(
+        peerId,
+        opaqueId('pending-discovery-loss', 'client', 'corebluetooth:pending-discovery-loss'),
+        operation()
+      )
+      const nativeDiscover = boundary.discover.bind(boundary)
+      boundary.discover = async nativePeerId => {
+        await discoverGate.promise
+        return nativeDiscover(nativePeerId)
+      }
+      pendingDiscovery = backend.gatt.discover(lease.connection, operation())
+      await Promise.resolve()
+      let disconnectCalls = 0
+      const nativeDisconnect = boundary.disconnect.bind(boundary)
+      boundary.disconnect = async nativePeerId => {
+        disconnectCalls += 1
+        return nativeDisconnect(nativePeerId)
+      }
+
+      emitAdapterState(boundary, {
+        availability: 'unavailable',
+        authorization: 'granted',
+        power: 'on',
+        safeReason: 'The test radio was lost while discovery was pending.'
+      })
+      await flushAdapterLossCleanup()
+      expectConsoleErrorMatching(
+        '[CoreBluetoothBackend.handleAdapterState] Native adapter-loss cleanup requires retry:',
+        expect.arrayContaining([expect.objectContaining({ resourceKind: 'operation-quarantine' })])
+      )
+      expect(disconnectCalls).toBe(0)
+      expect(boundary.connected).toBe(true)
+      expect(backend.attachment().attachmentId).toBe(attachmentBeforeLoss.attachmentId)
+
+      discoverGate.resolve()
+      await expect(pendingDiscovery).resolves.toMatchObject({ path: expect.any(Object) })
+      await flushAdapterLossCleanup()
+      expect(disconnectCalls).toBe(1)
+      expect(boundary.connected).toBe(false)
+      expect(backend.attachment().attachmentId).not.toBe(attachmentBeforeLoss.attachmentId)
+    } finally {
+      discoverGate.resolve()
+      if (pendingDiscovery !== null) await pendingDiscovery.catch(() => undefined)
+      await backend.destroy()
+    }
+  })
+
+  test('returns retryable destroy failure for adapter loss with blocked discovery', async () => {
+    const { backend, boundary } = await backendFixture()
+    const attachmentBeforeLoss = backend.attachment()
+    const discoverGate = deferred()
+    let pendingDiscovery = null
+    let destroyPromise = null
+    try {
+      const peerId = await observedPeerId(backend)
+      const lease = await backend.connections.connect(
+        peerId,
+        opaqueId('blocked-discovery-loss', 'client', 'corebluetooth:blocked-discovery-loss'),
+        operation()
+      )
+      boundary.discover = async () => discoverGate.promise
+      pendingDiscovery = backend.gatt.discover(lease.connection, operation())
+      await Promise.resolve()
+      let disconnectCalls = 0
+      boundary.disconnect = async () => {
+        disconnectCalls += 1
+      }
+      emitAdapterState(boundary, {
+        availability: 'unavailable',
+        authorization: 'granted',
+        power: 'on',
+        safeReason: 'The test radio was lost while discovery remained blocked.'
+      })
+      await flushAdapterLossCleanup()
+      expectConsoleErrorMatching(
+        '[CoreBluetoothBackend.handleAdapterState] Native adapter-loss cleanup requires retry:',
+        expect.arrayContaining([expect.objectContaining({ resourceKind: 'operation-quarantine' })])
+      )
+
+      destroyPromise = backend.destroy()
+      const result = await Promise.race([
+        destroyPromise,
+        new Promise(resolve => setTimeout(() => resolve('blocked'), 50))
+      ])
+      expect(result).not.toBe('blocked')
+      expect(result).toMatchObject({ state: 'release-failed' })
+      expect(disconnectCalls).toBe(0)
+      expect(boundary.connected).toBe(true)
+      expect(boundary.destroyed).toBe(false)
+      expect(backend.attachment().attachmentId).toBe(attachmentBeforeLoss.attachmentId)
+    } finally {
+      discoverGate.resolve({ services: [] })
+      if (pendingDiscovery !== null) await pendingDiscovery.catch(() => undefined)
+      if (destroyPromise !== null) await destroyPromise
+      await backend.destroy()
+    }
+  })
+
   test('does not report destroy completion while a quarantined native read still owns the boundary', async () => {
     const { backend, boundary } = await backendFixture()
     const peerId = await observedPeerId(backend)
@@ -754,18 +863,15 @@ describe('CoreBluetooth contract-v1 vertical slice', () => {
       }
     })
     const destroy = backend.destroy()
-    let destroySettled = false
-    destroy.then(() => {
-      destroySettled = true
-    })
-
     await expect(dispatch.completion).rejects.toMatchObject({ normalized: { code: 'operation.aborted' } })
     await flushAdapterLossCleanup()
 
-    expect(destroySettled).toBe(false)
+    await expect(destroy).resolves.toMatchObject({ state: 'release-failed' })
+    expect(boundary.destroyed).toBe(false)
     expect(backend.resourceCounters()).toMatchObject({ dispatchedOperations: 1 })
     releaseRead(new Uint8Array([9, 9]))
-    await expect(destroy).resolves.toEqual({ state: 'released', failures: [] })
+    await flushAdapterLossCleanup()
+    await expect(backend.destroy()).resolves.toEqual({ state: 'released', failures: [] })
     expect(backend.resourceCounters()).toMatchObject({ dispatchedOperations: 0 })
   })
 
