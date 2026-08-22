@@ -1,6 +1,7 @@
 // src/backends/reactnative/react-native-connection-control-features.ts
 
 import {
+  BUILT_IN_FEATURE_IDS,
   createFeatureRegistry,
   type CapabilityLimits,
   type FeatureImplementation,
@@ -25,7 +26,7 @@ export function createReactNativeConnectionControlFeatureRegistry(
 ): FeatureRegistry {
   const rssiLimitation = liveQualificationLimitation('RSSI measurement')
   const rssi = createFeatureRegistration(
-    'connection:rssi-measurement',
+    BUILT_IN_FEATURE_IDS.connectionRssi,
     'limited',
     implementationVersion,
     `react-native-${platform}-rssi-dispatch-v1`,
@@ -35,7 +36,7 @@ export function createReactNativeConnectionControlFeatureRegistry(
   const requestMtu =
     platform === 'android'
       ? createFeatureRegistration(
-          'connection:request-att-mtu',
+          BUILT_IN_FEATURE_IDS.connectionRequestMtu,
           'limited',
           implementationVersion,
           'react-native-android-request-mtu-dispatch-v1',
@@ -49,7 +50,7 @@ export function createReactNativeConnectionControlFeatureRegistry(
           })
         )
       : createFeatureRegistration(
-          'connection:request-att-mtu',
+          BUILT_IN_FEATURE_IDS.connectionRequestMtu,
           'unsupported',
           implementationVersion,
           'react-native-apple-corebluetooth-mtu-capability-v1',
@@ -66,7 +67,7 @@ export function createReactNativeConnectionControlFeatureRegistry(
 }
 
 function createFeatureRegistration(
-  id: 'connection:rssi-measurement' | 'connection:request-att-mtu',
+  id: typeof BUILT_IN_FEATURE_IDS.connectionRssi | typeof BUILT_IN_FEATURE_IDS.connectionRequestMtu,
   state: 'limited' | 'unsupported',
   implementationVersion: string,
   sourceDigest: string,
