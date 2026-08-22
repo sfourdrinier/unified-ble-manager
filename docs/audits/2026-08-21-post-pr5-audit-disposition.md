@@ -223,6 +223,22 @@ plugin, docs/API, evidence, artifact, diff, and forbidden-assertion-smell
 gates passed locally. Hosted CI, Android/Windows native qualification, and
 physical-radio evidence remain open; no RC3 or merge claim is made.
 
+### PR7E evidence disposition
+
+| Evidence area | Current disposition | Authoritative proof or blocker |
+| --- | --- | --- |
+| TypeScript/API/docs/generated support | Proven | `pnpm docs:check`; 23 API entrypoints; Tauri permission schema/reference and Electron/Tauri security docs are committed. |
+| Package/prepack/deterministic packed consumer | Proven locally | `pnpm test:package` passed 123 suites / 1,148 tests, including prepack and G6A packed-consumer coverage. |
+| Native protocol and Tauri native scope | Proven locally | `pnpm native-protocol:check`, `pnpm test:native-protocol`, `cargo test --manifest-path native/tauri/Cargo.toml` (20 tests), and clippy `-D warnings` passed. |
+| Raw npm pack-install smoke | Blocked locally | `node scripts/ci/pack-install-smoke.js` reaches local npm packing but hangs/encounters the npm exit-handler failure; hosted supported-Node proof is required. |
+| Android Gradle/JVM and physical Android | Blocked/open | Local lane is blocked before compilation by missing `example/node_modules/@react-native/gradle-plugin`; hosted Android compile/JVM and physical-radio evidence remain required. |
+| WinRT native ABI/runtime and physical desktop | Blocked/open | macOS cannot qualify the Windows native artifact; hosted Windows compile/ABI/runtime and physical evidence remain required. |
+| Hosted CI and release qualification | Missing for this branch tip | No exact-tip hosted CI/PR checks have run; PR7 merge and RC3 remain prohibited until the complete matrix is green. |
+
+PR7E is therefore an explicit evidence checkpoint, not a closure claim. Its
+remaining blockers must be re-audited at the exact PR7 merge candidate before
+opening the final PR7 review cycle.
+
 ## PR6 current checkpoint
 
 This branch has now verified the following PR6 slices against current source:
