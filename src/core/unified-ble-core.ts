@@ -565,7 +565,13 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
       (admissionEpoch, value, operation) => this.assertAdmissionCurrent(admissionEpoch, value, operation),
       this.admissionEpoch,
       reason,
-      () => this.operationCoordinator.waitForQuarantineDrain(key)
+      () =>
+        awaitWithOperationAdmission(
+          this.operationCoordinator.waitForQuarantineDrain(key),
+          options,
+          this.options.now,
+          'rediscover'
+        )
     )
     this.discoveries.set(key, discovery)
     try {
@@ -710,8 +716,12 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
     const disconnect = cause === 'requested-disconnect'
     const reason = isConnectionLossCause(cause) ? 'connection-lost' : 'owner-released'
     const cleanup = await connection.cleanupChildren(reason)
-    if (cleanup.state === 'release-failed') {
-      return mergeAdmissionFailures(cleanup)
+    const mergeChildFailures = (record: CleanupRecord): CleanupRecord => {
+      if (cleanup.state === 'released') return record
+      return {
+        state: 'release-failed',
+        failures: [...cleanup.failures, ...record.failures]
+      }
     }
     let backendResult: CleanupRecord
     try {
@@ -729,11 +739,16 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
         quarantinedOperations: 0
       })
       return mergeAdmissionFailures(
-        cleanupFailure('connection', contractError('platform.failure', 'cleanup', 'unified-core.connection-release'))
+        mergeChildFailures(
+          cleanupFailure('connection', contractError('platform.failure', 'cleanup', 'unified-core.connection-release'))
+        )
       )
     }
     if (backendResult.state === 'release-failed') {
-      return mergeAdmissionFailures(backendResult)
+      return mergeAdmissionFailures(mergeChildFailures(backendResult))
+    }
+    if (cleanup.state === 'release-failed') {
+      return mergeAdmissionFailures({ state: 'release-failed', failures: cleanup.failures })
     }
     connection.finishLifecycle(cause, null)
     connection.markReleased()

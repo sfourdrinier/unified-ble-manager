@@ -9,13 +9,17 @@ const {
 const { createDeterministicTestBackend } = require('../../src/testing/deterministic/deterministic-test-backend')
 const {
   capacity,
+  deadline,
   monotonicTimestamp,
   opaqueId,
   ownBytes,
   version,
   versionRange
 } = require('../../src/backend-contract/primitives')
-const { BUILT_IN_FEATURE_IDS, createBackendOperationCapabilityRegistration } = require('../../src/backend-contract/capabilities')
+const {
+  BUILT_IN_FEATURE_IDS,
+  createBackendOperationCapabilityRegistration
+} = require('../../src/backend-contract/capabilities')
 const { CoreBoundedStream } = require('../../src/core/bounded-stream')
 
 const maximumBytes = 512 * 1024
@@ -38,8 +42,8 @@ function delivery() {
   }
 }
 
-function operation(signal = null) {
-  return { signal, deadline: null }
+function operation(signal = null, operationDeadline = null) {
+  return { signal, deadline: operationDeadline }
 }
 
 function subscriptionOptions(signal = null) {
@@ -158,6 +162,18 @@ async function flushVirtual(controller) {
     controller.clock.runUntilIdle()
     await Promise.resolve()
   }
+}
+
+async function settleWithin(promise, timeoutMs) {
+  return Promise.race([
+    promise.then(
+      value => ({ state: 'fulfilled', value }),
+      error => ({ state: 'rejected', error })
+    ),
+    new Promise(resolve => {
+      setTimeout(() => resolve({ state: 'pending' }), timeoutMs)
+    })
+  ])
 }
 
 async function connectedDatabase(fixture, manager) {
@@ -388,7 +404,7 @@ describe('UnifiedBleCore lifecycle hardening', () => {
     })
     expect(Number(manager.localResourceCounters().databaseSnapshots)).toBe(0)
     expect(Number(manager.localResourceCounters().connectionLeases)).toBe(1)
-    expect(Number(fixture.backend.resourceCounters().physicalCccdEnablements)).toBe(1)
+    expect(Number(fixture.backend.resourceCounters().physicalCccdEnablements)).toBe(0)
 
     await expect(settle(fixture.controller, connection.release())).resolves.toEqual({
       state: 'released',
@@ -445,6 +461,75 @@ describe('UnifiedBleCore lifecycle hardening', () => {
     })
     expect(readinessClose).toHaveBeenCalledTimes(1)
     await expect(settle(fixture.controller, connection.release())).resolves.toEqual({ state: 'released', failures: [] })
+    await expect(settle(fixture.controller, manager.destroy())).resolves.toEqual({ state: 'released', failures: [] })
+    expectNoResources(fixture.backend.resourceCounters())
+  })
+
+  test('continues backend teardown and merges admission and child cleanup failures', async () => {
+    const readinessRegistration = createBackendOperationCapabilityRegistration({
+      id: BUILT_IN_FEATURE_IDS.writeWithoutResponseReadiness,
+      implementationVersion: 'test',
+      sourceDigest: 'test-readiness-v1',
+      tckSuiteId: 'test.connection-cleanup',
+      requiredScenarioIds: ['test.connection-cleanup']
+    })
+    const { fixture, manager } = await createFixture({ featureRegistrations: [readinessRegistration] })
+    const { connection, database, characteristic } = await connectedDatabase(fixture, manager)
+    const readinessEvents = new CoreBoundedStream(
+      { itemCapacity: capacity(4), byteCapacity: capacity(1024), reservedControlCapacity: capacity(1) },
+      'drop-oldest'
+    )
+    const admissionFailure = {
+      resourceKind: 'gatt.write-readiness',
+      error: {
+        code: 'platform.failure',
+        domain: 'cleanup',
+        operation: 'test.connection-admission-close',
+        platform: null,
+        retryability: 'never'
+      }
+    }
+    const childFailure = {
+      resourceKind: 'gatt.database-child',
+      error: {
+        code: 'platform.failure',
+        domain: 'cleanup',
+        operation: 'test.connection-child-cleanup',
+        platform: null,
+        retryability: 'never'
+      }
+    }
+    const readinessClose = jest.fn(async () => ({ state: 'release-failed', failures: [admissionFailure] }))
+    fixture.backend.connections = {
+      ...fixture.backend.connections,
+      writeWithoutResponseReadiness: async () => ({ events: readinessEvents, close: readinessClose })
+    }
+    const cleanupChildren = jest
+      .spyOn(connection.connection, 'cleanupChildren')
+      .mockResolvedValueOnce({ state: 'release-failed', failures: [childFailure] })
+      .mockResolvedValue({ state: 'released', failures: [] })
+    const abortController = new AbortController()
+    const pendingWrite = database.writeWhenReady(characteristic, new Uint8Array([1]), {
+      ...operation(abortController.signal),
+      mode: 'without-response'
+    })
+
+    await flushMicrotasks()
+    abortController.abort()
+    await expect(pendingWrite).rejects.toMatchObject({ normalized: { code: 'operation.aborted' } })
+
+    await expect(settle(fixture.controller, connection.release())).resolves.toEqual({
+      state: 'release-failed',
+      failures: [admissionFailure, childFailure]
+    })
+    expect(cleanupChildren).toHaveBeenCalledWith('owner-released')
+    expect(readinessClose).toHaveBeenCalledTimes(1)
+    expect(Number(fixture.backend.resourceCounters().physicalLinks)).toBe(0)
+
+    await expect(settle(fixture.controller, connection.release())).resolves.toEqual({
+      state: 'released',
+      failures: []
+    })
     await expect(settle(fixture.controller, manager.destroy())).resolves.toEqual({ state: 'released', failures: [] })
     expectNoResources(fixture.backend.resourceCounters())
   })
@@ -618,6 +703,72 @@ describe('UnifiedBleCore lifecycle hardening', () => {
       if (originalWrite !== null) fixture.backend.gatt.write = originalWrite
       await settle(fixture.controller, manager.destroy())
     }
+  })
+
+  test.each([['abort'], ['deadline']])('bounds reasoned rediscovery quarantine recovery after %s', async _kind => {
+    const { fixture, manager } = await createFixture()
+    const { connection, database, characteristic } = await connectedDatabase(fixture, manager)
+    const originalDiscover = fixture.backend.gatt.discover
+    const originalWrite = fixture.backend.gatt.write
+    let discoverDispatches = 0
+    let resolveWrite = null
+    fixture.backend.gatt.discover = async (...args) => {
+      discoverDispatches += 1
+      return originalDiscover(...args)
+    }
+    fixture.backend.gatt.write = (_path, request) => ({
+      completion: new Promise(resolve => {
+        resolveWrite = () =>
+          resolve({
+            terminal: {
+              correlation: request.operation.correlation,
+              outcome: 'succeeded',
+              cause: null
+            },
+            commitState: 'confirmed'
+          })
+      }),
+      requestCancellation: async () => undefined
+    })
+    const first = database.write(characteristic, new Uint8Array([1]), {
+      ...operation(),
+      mode: 'with-response'
+    })
+    const firstOutcome = first.then(
+      () => null,
+      error => error
+    )
+    await flushMicrotasks()
+    expect(Number(manager.localResourceCounters().dispatchedOperations)).toBe(1)
+
+    const abortController = new AbortController()
+    const cancellation =
+      _kind === 'abort'
+        ? { options: operation(abortController.signal), cancel: () => abortController.abort() }
+        : { options: operation(null, deadline(database.monotonicNow() + 50)), cancel: () => undefined }
+    const rediscovery = connection.rediscoverGatt(cancellation.options, 'manual-rediscovery')
+    await flushMicrotasks()
+    cancellation.cancel()
+
+    try {
+      const outcome = await settleWithin(rediscovery, 250)
+      expect(outcome.state).toBe('rejected')
+      expect(outcome.error).toMatchObject({
+        normalized: { code: _kind === 'abort' ? 'operation.aborted' : 'operation.timed-out' }
+      })
+      expect(discoverDispatches).toBe(0)
+
+      resolveWrite()
+      await flushVirtual(fixture.controller)
+      await expect(firstOutcome).resolves.toMatchObject({ normalized: { code: 'operation.disconnected' } })
+    } finally {
+      fixture.backend.gatt.discover = originalDiscover
+      fixture.backend.gatt.write = originalWrite
+      if (resolveWrite !== null) resolveWrite()
+      await flushVirtual(fixture.controller)
+      await settle(fixture.controller, manager.destroy())
+    }
+    expectNoResources(fixture.backend.resourceCounters())
   })
 
   test('rejects malformed resolved read and write terminals instead of accepting backend values', async () => {
