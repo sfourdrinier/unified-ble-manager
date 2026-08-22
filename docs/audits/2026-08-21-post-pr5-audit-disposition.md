@@ -113,6 +113,23 @@ support claim is made by PR7A. The local packed smoke reached `npm pack` but was
 blocked by npm's local exit-handler failure; hosted supported-Node CI remains a
 required gate before PR7 can merge.
 
+## PR7C implementation inventory
+
+The remaining host work is intentionally atomic by boundary:
+
+| Slice | Required owned surfaces | Required proof before integration |
+| --- | --- | --- |
+| Android bond/system pairing | protocol schema and ABI manifest/version, generated C++/Kotlin/Swift/TypeScript bindings, Android radio bond receiver and public-API calls, Kotlin dispatcher, RN boundary/provider adapter | malformed-record rejection, bond-state ordering, terminal pair result, cancellation/timeout/destroy cleanup, Android unit/compile lanes, deterministic-versus-physical labels |
+| Windows system pairing/unpair | typed WinRT boundary, native addon DeviceInformation pairing methods, backend state/result mapping, cancellation and cached-peer invalidation | PairAsync/UnpairAsync terminal tests, HRESULT/user-cancel mapping, native ABI/build lanes, no custom-agent claim without PairingRequested transport |
+| BlueZ system pairing/unpair | D-Bus Device1 Pair/CancelPairing, Adapter1 RemoveDevice, Paired property observation, peer-path/cache invalidation | in-memory D-Bus lifecycle tests, system-agent limitation, remove-device destructive semantics, capability/TCK binding |
+| Electron/Tauri security scope | trusted-host command projection, distinct state/pair/cancel/unpair/custom permission decisions, renderer reload cleanup | authorization matrix, malformed/stale generation rejection, no generic invoke permission widening, native plugin/IPC CI |
+
+No slice may advertise a supported or limited security capability until its
+owned boundary and required TCK/evidence proof land together. Apple and Web
+remain explicit unsupported/implicit system-managed surfaces unless a public
+API provides a truthful measurement; Web origin `forget()` is not generic
+unpairing.
+
 ## PR6 current checkpoint
 
 This branch has now verified the following PR6 slices against current source:
