@@ -1175,7 +1175,7 @@ class OwnedAndroidGattRadio(private val context: Context) {
     }
   }
 
-  fun readPhy(deviceId: String, onResult: (Result<OwnedAndroidPhy>) -> Unit): Long {
+  internal fun readPhy(deviceId: String, onResult: (Result<OwnedAndroidPhy>) -> Unit): Long {
     return enqueue(
       deviceId,
       onCancelled = { onResult(Result.failure(IllegalStateException("PHY read cancelled"))) },
@@ -1197,15 +1197,17 @@ class OwnedAndroidGattRadio(private val context: Context) {
         if (!token.isPubliclySettled()) onResult(result)
         done()
       }
-      if (!gatt.readPhy()) {
+      try {
+        gatt.readPhy()
+      } catch (error: Throwable) {
         pendingPhyReads.remove(key)
-        if (!token.isPubliclySettled()) onResult(Result.failure(IllegalStateException("readPhy failed to start")))
+        if (!token.isPubliclySettled()) onResult(Result.failure(error))
         done()
       }
     }
   }
 
-  fun requestPhy(
+  internal fun requestPhy(
     deviceId: String,
     txPhy: Int,
     rxPhy: Int,
@@ -2722,7 +2724,7 @@ class OwnedAndroidGattRadio(private val context: Context) {
     @JvmStatic
     fun phyValue(value: String?): Int {
       return when (value) {
-        null -> BluetoothDevice.PHY_LE_ALL_SUPPORTED
+        null -> ScanSettings.PHY_LE_ALL_SUPPORTED
         "le1m" -> BluetoothDevice.PHY_LE_1M
         "le2m" -> BluetoothDevice.PHY_LE_2M
         "leCoded" -> BluetoothDevice.PHY_LE_CODED

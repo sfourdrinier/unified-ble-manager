@@ -1115,15 +1115,6 @@ private fun ProtocolWireRecord.requiredBoolean(fieldId: Int): Boolean {
   return if (value is ProtocolWireValue.BooleanValue) value.value else throw IllegalArgumentException("Boolean field is missing")
 }
 
-private fun ProtocolWireRecord.optionalString(fieldId: Int): String? {
-  val value = fields[fieldId]
-  return when (value) {
-    null -> null
-    is ProtocolWireValue.StringValue -> value.value
-    else -> throw IllegalArgumentException("String field is malformed")
-  }
-}
-
 private fun ProtocolWireRecord.requiredSignedInteger(fieldId: Int): Long {
   val value = fields[fieldId]
   return if (value is ProtocolWireValue.SignedIntegerValue) value.value else throw IllegalArgumentException("Signed field is missing")
