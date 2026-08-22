@@ -48,6 +48,10 @@ export interface BluezScanGroup {
   readonly consumers: Map<string, BluezScanConsumer>
   state: 'starting' | 'active' | 'stopping'
   physicalStarted: boolean
+  stopDiscoveryRequested: boolean
+  stopDiscovery: Promise<void> | null
+  filterClearRequested: boolean
+  filterClear: Promise<void> | null
   stopRequested: boolean
   startupComplete: boolean
   readonly startupSettled: Promise<void>
@@ -71,6 +75,7 @@ export interface BluezConnectionRecord {
   transition: Promise<void> | null
   disconnection: Promise<CleanupRecord> | null
   disconnectRequested: boolean
+  disconnectMethod: Promise<void> | null
   pendingConnectors: number
   orphanCleanupScheduled: boolean
 }
@@ -113,6 +118,8 @@ export interface BluezPhysicalSubscription {
   readonly startMethod: Promise<void>
   readonly enablement: Promise<void>
   removal: Promise<CleanupRecord> | null
+  stopMethod: Promise<void> | null
+  stopRequested: boolean
 }
 
 export interface BluezSubscriptionRecord {

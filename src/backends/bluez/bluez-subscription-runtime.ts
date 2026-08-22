@@ -1,6 +1,6 @@
 // src/backends/bluez/bluez-subscription-runtime.ts
 
-import { contractError, type CleanupRecord } from '../../backend-contract/errors'
+import { BackendContractError, contractError, type CleanupRecord } from '../../backend-contract/errors'
 import type { CharacteristicPath, NotificationValue } from '../../backend-contract/gatt'
 import type { OperationCorrelation } from '../../backend-contract/primitives'
 import type { SubscriptionOptions } from '../../backend-contract/operations'
@@ -9,7 +9,7 @@ import { CoreBoundedStream } from '../../core/bounded-stream'
 import type { BluezBackendRuntime } from './bluez-backend-runtime'
 import { BluezBackendSubscription, releasedBluezCleanup } from './bluez-backend-handles'
 import { BLUEZ_GATT_CHARACTERISTIC_INTERFACE } from './bluez-dbus-contract'
-import { awaitSharedBluezTransition, waitForBluezBoolean } from './bluez-property-waiters'
+import { awaitBluezNativePromise, awaitSharedBluezTransition, waitForBluezBoolean } from './bluez-property-waiters'
 import type { BluezPhysicalSubscription, BluezSubscriptionRecord } from './bluez-runtime-types'
 
 export async function subscribeBluez(
@@ -137,7 +137,9 @@ export async function removeBluezSubscription(
   physical.pendingRemovals.add(record)
   const cleanup = await removal
   physical.pendingRemovals.delete(record)
-  record.removed = true
+  if (cleanup.state === 'released') {
+    record.removed = true
+  }
   return cleanup
 }
 
@@ -146,12 +148,20 @@ export function beginBluezPhysicalRemoval(
   physical: BluezPhysicalSubscription
 ): Promise<CleanupRecord> {
   physical.state = 'removing'
-  const removal = stopBluezPhysicalSubscription(runtime, physical).catch(error => {
-    physical.state = 'ready'
-    physical.removal = null
-    console.error('[beginBluezPhysicalRemoval] BlueZ StopNotify failed:', error)
-    throw error
-  })
+  const removal = stopBluezPhysicalSubscription(runtime, physical).then(
+    cleanup => {
+      if (cleanup.state === 'release-failed' && physical.removal === removal) {
+        physical.removal = null
+      }
+      return cleanup
+    },
+    error => {
+      physical.state = 'ready'
+      physical.removal = null
+      console.error('[beginBluezPhysicalRemoval] BlueZ StopNotify failed:', error)
+      throw error
+    }
+  )
   physical.removal = removal
   return removal
 }
@@ -161,15 +171,38 @@ export async function stopBluezPhysicalSubscription(
   physical: BluezPhysicalSubscription
 ): Promise<CleanupRecord> {
   try {
-    await physical.startMethod
+    await awaitBluezNativePromise(physical.startMethod, runtime.now, 'bluez.gatt.start-notify.cleanup')
   } catch (error) {
     if (physicalSubscriptionIsGone(runtime, physical)) {
       return releasedBluezCleanup
     }
+    if (isBluezCleanupTimeout(error)) {
+      return pendingBluezSubscriptionCleanup('bluez.gatt.start-notify.cleanup')
+    }
     throw error
   }
   try {
-    await runtime.boundary.methods.callVoid(physical.objectPath, BLUEZ_GATT_CHARACTERISTIC_INTERFACE, 'StopNotify', [])
+    if (physical.stopMethod === null) {
+      physical.stopRequested = true
+      const stopMethod = runtime.boundary.methods.callVoid(
+        physical.objectPath,
+        BLUEZ_GATT_CHARACTERISTIC_INTERFACE,
+        'StopNotify',
+        []
+      )
+      physical.stopMethod = stopMethod
+      stopMethod.catch(() => {
+        if (physical.stopMethod === stopMethod) {
+          physical.stopMethod = null
+          physical.stopRequested = false
+        }
+      })
+    }
+    const stopMethod = physical.stopMethod
+    if (stopMethod === null) {
+      throw contractError('lifecycle.invariant-violation', 'gatt', 'bluez.gatt.stop-notify-method')
+    }
+    await awaitBluezNativePromise(stopMethod, runtime.now, 'bluez.gatt.stop-notify-method')
     await waitForBluezBoolean(runtime, physical.objectPath, BLUEZ_GATT_CHARACTERISTIC_INTERFACE, 'Notifying', false, {
       signal: null,
       deadline: null
@@ -178,12 +211,33 @@ export async function stopBluezPhysicalSubscription(
     if (physicalSubscriptionIsGone(runtime, physical)) {
       return releasedBluezCleanup
     }
+    if (isBluezCleanupTimeout(error)) {
+      return pendingBluezSubscriptionCleanup('bluez.gatt.stop-notify')
+    }
     throw error
   }
+  physical.stopMethod = null
+  physical.stopRequested = false
   if (runtime.physicalSubscriptions.get(physical.objectPath) === physical) {
     runtime.physicalSubscriptions.delete(physical.objectPath)
   }
   return releasedBluezCleanup
+}
+
+function pendingBluezSubscriptionCleanup(operation: string): CleanupRecord {
+  return Object.freeze({
+    state: 'release-failed',
+    failures: Object.freeze([
+      {
+        resourceKind: 'subscription',
+        error: contractError('operation.timed-out', 'cleanup', operation).normalized
+      }
+    ])
+  })
+}
+
+function isBluezCleanupTimeout(error: unknown): boolean {
+  return error instanceof BackendContractError && error.normalized.code === 'operation.timed-out'
 }
 
 async function confirmBluezPhysicalSubscription(
@@ -225,7 +279,9 @@ function createBluezPhysicalSubscription(runtime: BluezBackendRuntime, objectPat
     state: 'enabling',
     startMethod,
     enablement,
-    removal: null
+    removal: null,
+    stopMethod: null,
+    stopRequested: false
   }
   physical = created
   return created

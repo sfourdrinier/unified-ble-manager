@@ -1,7 +1,7 @@
 // src/backends/bluez/bluez-scan-runtime.ts
 
 import type { OwnerScanOptions } from '../../backend-contract/advertisement'
-import { contractError, type CleanupRecord } from '../../backend-contract/errors'
+import { BackendContractError, contractError, type CleanupRecord } from '../../backend-contract/errors'
 import type { ClientId, LeaseId, ScanShareToken } from '../../backend-contract/primitives'
 import { CoreBoundedStream } from '../../core/bounded-stream'
 import type { BluezBackendRuntime } from './bluez-backend-runtime'
@@ -9,7 +9,7 @@ import type { BluezScanConsumer, BluezScanGroup } from './bluez-runtime-types'
 import { BLUEZ_ADAPTER_INTERFACE, BLUEZ_DEVICE_INTERFACE } from './bluez-dbus-contract'
 import { BluezScanLease, releasedBluezCleanup } from './bluez-backend-handles'
 import { scanFilterVariant, scanSignature } from './bluez-runtime-models'
-import { waitForBluezBoolean } from './bluez-property-waiters'
+import { awaitBluezNativePromise, BLUEZ_NATIVE_CLEANUP_TIMEOUT_MS, waitForBluezBoolean } from './bluez-property-waiters'
 
 export async function startBluezScan(
   runtime: BluezBackendRuntime,
@@ -65,6 +65,10 @@ export async function startBluezScan(
     consumers: new Map([[String(leaseId), consumer]]),
     state: 'starting',
     physicalStarted: false,
+    stopDiscoveryRequested: false,
+    stopDiscovery: null,
+    filterClearRequested: false,
+    filterClear: null,
     stopRequested: false,
     startupComplete: false,
     startupSettled,
@@ -205,6 +209,9 @@ export async function stopBluezScan(runtime: BluezBackendRuntime, consumer: Blue
     try {
       await stopBluezPhysicalDiscovery(runtime, group)
     } catch (error) {
+      if (isBluezCleanupTimeout(error)) {
+        return pendingBluezScanCleanup('bluez.scan.stop-discovery')
+      }
       if (runtime.scanGroup === group) {
         group.state = 'active'
       }
@@ -213,8 +220,11 @@ export async function stopBluezScan(runtime: BluezBackendRuntime, consumer: Blue
     }
   }
   try {
-    await clearBluezDiscoveryFilter(runtime)
+    await clearBluezDiscoveryFilter(runtime, group)
   } catch (error) {
+    if (isBluezCleanupTimeout(error)) {
+      return pendingBluezScanCleanup('bluez.scan.discovery-filter')
+    }
     group.state = 'active'
     console.error('[stopBluezScan] BlueZ discovery-filter cleanup failed; scan ownership retained for retry:', error)
     throw error
@@ -265,7 +275,7 @@ async function failBluezScanStartup(
   }
   if (ownsGroup) {
     try {
-      await clearBluezDiscoveryFilter(runtime)
+      await clearBluezDiscoveryFilter(runtime, group)
     } catch (cleanupError) {
       cleanupErrors.push(cleanupError)
       console.error('[startBluezScan] Failed to clear the BlueZ discovery filter after start failure:', cleanupError)
@@ -320,22 +330,59 @@ function retainFailedScanStartup(
   group.settleStartup()
 }
 
-async function clearBluezDiscoveryFilter(runtime: BluezBackendRuntime): Promise<void> {
-  await runtime.boundary.methods.callVoid(
-    String(runtime.selectedAdapter.adapterId),
-    BLUEZ_ADAPTER_INTERFACE,
-    'SetDiscoveryFilter',
-    [{ signature: 'a{sv}', value: Object.freeze({}) }]
+async function clearBluezDiscoveryFilter(runtime: BluezBackendRuntime, group: BluezScanGroup): Promise<void> {
+  if (!group.filterClearRequested) {
+    group.filterClearRequested = true
+    const filterClear = runtime.boundary.methods.callVoid(
+      String(runtime.selectedAdapter.adapterId),
+      BLUEZ_ADAPTER_INTERFACE,
+      'SetDiscoveryFilter',
+      [{ signature: 'a{sv}', value: Object.freeze({}) }]
+    )
+    group.filterClear = filterClear
+    filterClear.catch(() => {
+      if (group.filterClear === filterClear) {
+        group.filterClear = null
+        group.filterClearRequested = false
+      }
+    })
+  }
+  const filterClear = group.filterClear
+  if (filterClear === null) {
+    throw contractError('lifecycle.invariant-violation', 'scan', 'bluez.scan.discovery-filter')
+  }
+  await awaitBluezNativePromise(
+    filterClear,
+    runtime.now,
+    'bluez.scan.discovery-filter',
+    BLUEZ_NATIVE_CLEANUP_TIMEOUT_MS
   )
+  group.filterClear = null
+  group.filterClearRequested = false
 }
 
 async function stopBluezPhysicalDiscovery(runtime: BluezBackendRuntime, group: BluezScanGroup): Promise<void> {
-  await runtime.boundary.methods.callVoid(
-    String(runtime.selectedAdapter.adapterId),
-    BLUEZ_ADAPTER_INTERFACE,
-    'StopDiscovery',
-    []
-  )
+  if (!group.stopDiscoveryRequested) {
+    group.stopDiscoveryRequested = true
+    const stopDiscovery = runtime.boundary.methods.callVoid(
+      String(runtime.selectedAdapter.adapterId),
+      BLUEZ_ADAPTER_INTERFACE,
+      'StopDiscovery',
+      []
+    )
+    group.stopDiscovery = stopDiscovery
+    stopDiscovery.catch(() => {
+      if (group.stopDiscovery === stopDiscovery) {
+        group.stopDiscovery = null
+        group.stopDiscoveryRequested = false
+      }
+    })
+  }
+  const stopDiscovery = group.stopDiscovery
+  if (stopDiscovery === null) {
+    throw contractError('lifecycle.invariant-violation', 'scan', 'bluez.scan.stop-discovery')
+  }
+  await awaitBluezNativePromise(stopDiscovery, runtime.now, 'bluez.scan.stop-discovery')
   await waitForBluezBoolean(
     runtime,
     String(runtime.selectedAdapter.adapterId),
@@ -345,6 +392,24 @@ async function stopBluezPhysicalDiscovery(runtime: BluezBackendRuntime, group: B
     { signal: null, deadline: null }
   )
   group.physicalStarted = false
+  group.stopDiscovery = null
+  group.stopDiscoveryRequested = false
+}
+
+function pendingBluezScanCleanup(operation: string): CleanupRecord {
+  return Object.freeze({
+    state: 'release-failed',
+    failures: Object.freeze([
+      {
+        resourceKind: 'scan',
+        error: contractError('operation.timed-out', 'cleanup', operation).normalized
+      }
+    ])
+  })
+}
+
+function isBluezCleanupTimeout(error: unknown): boolean {
+  return error instanceof BackendContractError && error.normalized.code === 'operation.timed-out'
 }
 
 function observeScanCleanup(cleanup: Promise<CleanupRecord>): void {

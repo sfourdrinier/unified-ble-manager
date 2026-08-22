@@ -5,6 +5,33 @@ import type { PublicOperationOptions } from '../../backend-contract/operations'
 import type { BluezBackendRuntime } from './bluez-backend-runtime'
 import type { BluezConnectionRecord, BluezPropertyWaiter } from './bluez-runtime-types'
 
+export const BLUEZ_NATIVE_CLEANUP_TIMEOUT_MS = 1_000
+
+export async function awaitBluezNativePromise(
+  nativePromise: Promise<void>,
+  now: () => number,
+  operation: string,
+  timeoutMs = BLUEZ_NATIVE_CLEANUP_TIMEOUT_MS
+): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | null = null
+  const deadline = now() + timeoutMs
+  try {
+    await Promise.race([
+      nativePromise,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(
+          () => reject(contractError('operation.timed-out', 'cleanup', operation)),
+          Math.max(0, deadline - now())
+        )
+      })
+    ])
+  } finally {
+    if (timer !== null) {
+      clearTimeout(timer)
+    }
+  }
+}
+
 export function waitForBluezBoolean(
   runtime: BluezBackendRuntime,
   path: string,

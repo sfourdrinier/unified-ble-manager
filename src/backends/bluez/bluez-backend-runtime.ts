@@ -359,7 +359,11 @@ export class BluezBackendRuntime implements BluezObjectStoreObserver {
     const stop = stopBluezScan(this, consumer)
     consumer.stopped = stop
     try {
-      return await stop
+      const cleanup = await stop
+      if (cleanup.state === 'release-failed') {
+        consumer.stopped = null
+      }
+      return cleanup
     } catch (error) {
       consumer.stopped = null
       throw error

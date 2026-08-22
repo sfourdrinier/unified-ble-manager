@@ -1042,6 +1042,140 @@ describe('BlueZ contract-v1 vertical slice', () => {
     }
   })
 
+  test('bounds an in-flight native Disconnect during destroy and retries it without duplication', async () => {
+    jest.useFakeTimers({ now: 1_000 })
+    try {
+      const { backend, boundary } = await backendFixture(() => Date.now())
+      await connectedDatabase(backend)
+      let releaseDisconnect
+      const disconnectGate = new Promise(resolve => {
+        releaseDisconnect = resolve
+      })
+      boundary.onCall(devicePath, BLUEZ_DEVICE_INTERFACE, 'Disconnect', async () => disconnectGate)
+
+      const firstDestroy = backend.destroy()
+      await flushMicrotasks()
+      expect(boundary.calls.filter(call => call.method === 'Disconnect')).toHaveLength(1)
+
+      await jest.advanceTimersByTimeAsync(1_000)
+      await expect(firstDestroy).resolves.toMatchObject({ state: 'release-failed' })
+      expect(boundary.calls.filter(call => call.method === 'Disconnect')).toHaveLength(1)
+      expect(boundary.closed).toBe(false)
+
+      releaseDisconnect()
+      await flushMicrotasks()
+      await expect(backend.destroy()).resolves.toEqual({ state: 'released', failures: [] })
+      expect(boundary.calls.filter(call => call.method === 'Disconnect')).toHaveLength(1)
+    } finally {
+      jest.useRealTimers()
+    }
+  })
+
+  test('bounds an in-flight StopDiscovery during destroy and retries it without duplication', async () => {
+    jest.useFakeTimers({ now: 1_000 })
+    try {
+      const { backend, boundary } = await backendFixture(() => Date.now())
+      await backend.scanner.start(scanOptions(), opaqueId('destroy-stop-discovery', 'client', 'bluez:scan-race'))
+      let releaseStop
+      const stopGate = new Promise(resolve => {
+        releaseStop = resolve
+      })
+      boundary.onCall(adapterPath, BLUEZ_ADAPTER_INTERFACE, 'StopDiscovery', async () => stopGate)
+
+      const firstDestroy = backend.destroy()
+      await flushMicrotasks()
+      expect(boundary.calls.filter(call => call.method === 'StopDiscovery')).toHaveLength(1)
+
+      await jest.advanceTimersByTimeAsync(1_000)
+      await expect(firstDestroy).resolves.toMatchObject({ state: 'release-failed' })
+      expect(boundary.calls.filter(call => call.method === 'StopDiscovery')).toHaveLength(1)
+      expect(Number(backend.resourceCounters().activeScanControllers)).toBe(1)
+
+      releaseStop()
+      await flushMicrotasks()
+      await expect(backend.destroy()).resolves.toEqual({ state: 'released', failures: [] })
+      expect(boundary.calls.filter(call => call.method === 'StopDiscovery')).toHaveLength(1)
+    } finally {
+      jest.useRealTimers()
+    }
+  })
+
+  test('bounds an in-flight discovery-filter clear during destroy and retries it without duplication', async () => {
+    jest.useFakeTimers({ now: 1_000 })
+    try {
+      const { backend, boundary } = await backendFixture(() => Date.now())
+      await backend.scanner.start(scanOptions(), opaqueId('destroy-filter-clear', 'client', 'bluez:scan-race'))
+      let releaseFilter
+      const filterGate = new Promise(resolve => {
+        releaseFilter = resolve
+      })
+      boundary.onCall(adapterPath, BLUEZ_ADAPTER_INTERFACE, 'SetDiscoveryFilter', async call => {
+        if (Object.keys(call.argumentsValue[0].value).length === 0) {
+          await filterGate
+        }
+      })
+
+      const firstDestroy = backend.destroy()
+      await flushMicrotasks()
+      expect(
+        boundary.calls.filter(
+          call => call.method === 'SetDiscoveryFilter' && Object.keys(call.argumentsValue[0].value).length === 0
+        )
+      ).toHaveLength(1)
+
+      await jest.advanceTimersByTimeAsync(1_000)
+      await expect(firstDestroy).resolves.toMatchObject({ state: 'release-failed' })
+      expect(Number(backend.resourceCounters().activeScanControllers)).toBe(1)
+
+      releaseFilter()
+      await flushMicrotasks()
+      await expect(backend.destroy()).resolves.toEqual({ state: 'released', failures: [] })
+      expect(
+        boundary.calls.filter(
+          call => call.method === 'SetDiscoveryFilter' && Object.keys(call.argumentsValue[0].value).length === 0
+        )
+      ).toHaveLength(1)
+    } finally {
+      jest.useRealTimers()
+    }
+  })
+
+  test('bounds an in-flight StopNotify during destroy and retries it without duplication', async () => {
+    jest.useFakeTimers({ now: 1_000 })
+    try {
+      const { backend, boundary } = await backendFixture(() => Date.now())
+      const { database } = await connectedDatabase(backend)
+      const characteristic = (await database.snapshot()).characteristics[0].path
+      await database.subscribe(characteristic, { ...operation(), delivery: delivery() })
+      let releaseStopNotify
+      const stopNotifyGate = new Promise(resolve => {
+        releaseStopNotify = resolve
+      })
+      boundary.onCall(
+        String(characteristic.characteristicOccurrence),
+        BLUEZ_GATT_CHARACTERISTIC_INTERFACE,
+        'StopNotify',
+        async () => stopNotifyGate
+      )
+
+      const firstDestroy = backend.destroy()
+      await flushMicrotasks()
+      expect(boundary.calls.filter(call => call.method === 'StopNotify')).toHaveLength(1)
+
+      await jest.advanceTimersByTimeAsync(1_000)
+      await expect(firstDestroy).resolves.toMatchObject({ state: 'release-failed' })
+      expect(boundary.calls.filter(call => call.method === 'StopNotify')).toHaveLength(1)
+      expect(Number(backend.resourceCounters().physicalCccdEnablements)).toBe(1)
+
+      releaseStopNotify()
+      await flushMicrotasks()
+      await expect(backend.destroy()).resolves.toEqual({ state: 'released', failures: [] })
+      expect(boundary.calls.filter(call => call.method === 'StopNotify')).toHaveLength(1)
+    } finally {
+      jest.useRealTimers()
+    }
+  })
+
   test('retains child ownership after destroy cleanup failure and permits a full destroy retry', async () => {
     const { backend, boundary } = await backendFixture()
     const { database } = await connectedDatabase(backend)

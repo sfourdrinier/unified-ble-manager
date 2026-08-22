@@ -8,6 +8,7 @@ import { BluezConnection, BluezConnectionLease, releasedBluezCleanup } from './b
 import type { BluezBackendRuntime } from './bluez-backend-runtime'
 import { createPendingConnectionRecord, requireRecordConnection } from './bluez-runtime-models'
 import {
+  awaitBluezNativePromise,
   awaitSharedBluezTransition,
   scheduleOrphanedBluezConnectionCleanup,
   waitForBluezBoolean
@@ -133,7 +134,7 @@ export async function disconnectBluezConnection(
   record: BluezConnectionRecord,
   invalidate: () => void
 ): Promise<CleanupRecord> {
-  if (!record.active && !record.physicalLinkMayExist) {
+  if (!record.active && !record.physicalLinkMayExist && record.disconnectMethod === null) {
     return releasedBluezCleanup
   }
   if (record.disconnection !== null) {
@@ -167,8 +168,25 @@ async function disconnectBluezPhysicalLink(
   try {
     if (!record.disconnectRequested) {
       record.disconnectRequested = true
-      await runtime.boundary.methods.callVoid(record.devicePath, BLUEZ_DEVICE_INTERFACE, 'Disconnect', [])
+      const disconnectMethod = runtime.boundary.methods.callVoid(
+        record.devicePath,
+        BLUEZ_DEVICE_INTERFACE,
+        'Disconnect',
+        []
+      )
+      record.disconnectMethod = disconnectMethod
+      disconnectMethod.catch(() => {
+        if (record.disconnectMethod === disconnectMethod) {
+          record.disconnectMethod = null
+          record.disconnectRequested = false
+        }
+      })
     }
+    const disconnectMethod = record.disconnectMethod
+    if (disconnectMethod === null) {
+      throw contractError('lifecycle.invariant-violation', 'connection', 'bluez.connection.disconnect-method')
+    }
+    await awaitBluezNativePromise(disconnectMethod, runtime.now, 'bluez.connection.disconnect-method')
     await waitForBluezBoolean(runtime, record.devicePath, BLUEZ_DEVICE_INTERFACE, 'Connected', false, {
       signal: null,
       deadline: deadline(runtime.now() + DISCONNECT_CONFIRMATION_TIMEOUT_MS)
@@ -186,6 +204,8 @@ async function disconnectBluezPhysicalLink(
     record.state = 'disconnecting'
     throw error
   }
+  record.disconnectMethod = null
+  record.disconnectRequested = false
   invalidate()
   return releasedBluezCleanup
 }
