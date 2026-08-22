@@ -25,6 +25,10 @@ function options(overrides = {}) {
 function createBoundary() {
   const listeners = new Set()
   let pairResolve = null
+  const pairCancellation = jest.fn(async () => {
+    pairResolve?.({ outcome: 'cancelled', state: null, reason: null })
+    return 'cancellation-requested'
+  })
   const boundary = {
     securityState: jest.fn(peerId => {
       expect(peerId).toBe('peer-1')
@@ -36,10 +40,7 @@ function createBoundary() {
       })
       return {
         completion,
-        cancel: jest.fn(async () => {
-          pairResolve?.({ outcome: 'cancelled', state: null, reason: null })
-          return 'cancellation-requested'
-        })
+        cancel: pairCancellation
       }
     }),
     cancelPairing: jest.fn(() => ({ completion: Promise.resolve(), cancel: jest.fn(async () => 'already-terminal') })),
@@ -55,6 +56,7 @@ function createBoundary() {
       for (const listener of [...listeners]) listener(record)
     }
   }
+  boundary.pairCancellation = pairCancellation
   return boundary
 }
 
@@ -92,5 +94,23 @@ describe('WinRT security backend adapter', () => {
     await expect(security.cancelPairing('peer-1', options())).resolves.toEqual({ outcome: 'not-pairing' })
     await expect(security.unpair('peer-1', options())).resolves.toEqual({ outcome: 'unpaired' })
     security.close()
+  })
+
+  test('settles a pending pairing at its deadline and requests native cancellation', async () => {
+    jest.useFakeTimers()
+    try {
+      const boundary = createBoundary()
+      const security = new WinRtSecurityBackend(boundary, () => 50)
+      const pairing = security.pair('peer-1', options({ deadline: 60 }))
+      const result = expect(pairing).rejects.toMatchObject({ normalized: { code: 'operation.timed-out' } })
+
+      await jest.advanceTimersByTimeAsync(10)
+
+      await result
+      expect(boundary.pairCancellation).toHaveBeenCalledTimes(1)
+      security.close()
+    } finally {
+      jest.useRealTimers()
+    }
   })
 })

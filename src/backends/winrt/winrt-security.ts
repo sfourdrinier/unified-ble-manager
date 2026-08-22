@@ -18,6 +18,7 @@ import type {
   WinRtSecurityState,
   WinRtSecurityStateChangedRecord
 } from './winrt-boundary'
+import { WinRtOperationDispatcher, type WinRtOperationDispatch } from './winrt-operation-dispatcher'
 
 export interface WinRtSecurityBoundary extends WinRtBoundary {
   readonly securityState: NonNullable<WinRtBoundary['securityState']>
@@ -53,8 +54,7 @@ const securityLimitations = Object.freeze([
 ])
 
 interface ActivePairing {
-  readonly operation: ReturnType<NonNullable<WinRtBoundary['pair']>>
-  readonly removeOuterAbort: (() => void) | null
+  readonly operation: WinRtOperationDispatch<WinRtPairResult>
 }
 
 export class WinRtSecurityBackend implements SecurityBackend {
@@ -65,7 +65,13 @@ export class WinRtSecurityBackend implements SecurityBackend {
 
   constructor(
     private readonly boundary: WinRtSecurityBoundary,
-    private readonly now: () => number
+    private readonly now: () => number,
+    private readonly dispatcher = new WinRtOperationDispatcher({
+      now,
+      onLateSuccess: () => undefined,
+      onLateFailure: () => undefined,
+      onCancellationFailure: () => undefined
+    })
   ) {
     this.removeStateListener = boundary.onSecurityState(record => this.stateChanged(record))
   }
@@ -93,8 +99,7 @@ export class WinRtSecurityBackend implements SecurityBackend {
     if (this.activePairings.has(peerId)) {
       return Promise.reject(contractError('ownership.denied', 'platform', 'winrt.security.pair.arbitration'))
     }
-    const operation = this.boundary.pair(peerId)
-    const removeOuterAbort = bindOuterAbort(options.signal, operation)
+    const operation = this.dispatcher.dispatch(options, 'winrt.security.pair', () => this.boundary.pair(peerId))
     const result = operation.completion
       .then(value => this.snapshotPairResult(value))
       .catch(error => {
@@ -103,22 +108,21 @@ export class WinRtSecurityBackend implements SecurityBackend {
         }
         throw error
       })
-    this.activePairings.set(peerId, { operation, removeOuterAbort })
+    this.activePairings.set(peerId, { operation })
     const settle = () => {
       const active = this.activePairings.get(peerId)
       if (active?.operation === operation) {
-        active.removeOuterAbort?.()
         this.activePairings.delete(peerId)
       }
     }
-    result.then(settle, settle).catch(() => undefined)
+    operation.physicalCompletion.then(settle, settle).catch(() => undefined)
     return result
   }
 
   async cancelPairing(peerId: string, _options: PublicOperationOptions): Promise<SecurityCancelPairingResult> {
     const active = this.activePairings.get(peerId)
     if (active === undefined) return { outcome: 'not-pairing' }
-    await active.operation.cancel()
+    await active.operation.requestCancellation()
     await this.boundary.cancelPairing(peerId).completion
     return { outcome: 'cancelled' }
   }
@@ -130,10 +134,8 @@ export class WinRtSecurityBackend implements SecurityBackend {
   close(): void {
     this.removeStateListener()
     for (const active of this.activePairings.values()) {
-      active.operation.cancel().catch(() => undefined)
-      active.removeOuterAbort?.()
+      active.operation.requestCancellation().catch(() => undefined)
     }
-    this.activePairings.clear()
     for (const streams of this.streams.values()) {
       for (const stream of streams) stream.closeWithReason('owner-released')
     }
@@ -174,18 +176,4 @@ export class WinRtSecurityBackend implements SecurityBackend {
     if (result.state === null) throw contractError('protocol.violation', 'platform', 'winrt.security.pair-result')
     return { outcome: result.outcome, state: this.snapshotState(result.state) }
   }
-}
-
-function bindOuterAbort(
-  signal: AbortSignal | null,
-  operation: ReturnType<NonNullable<WinRtBoundary['pair']>>
-): (() => void) | null {
-  if (signal === null) return null
-  const abort = () => operation.cancel().catch(() => undefined)
-  if (signal.aborted) {
-    abort()
-    return null
-  }
-  signal.addEventListener('abort', abort, { once: true })
-  return () => signal.removeEventListener('abort', abort)
 }

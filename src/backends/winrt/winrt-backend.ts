@@ -462,7 +462,9 @@ export class WinRtBackend implements BleCentralBackend<string, HostNeutralBacken
       subscribe: this.gattOperations.subscribe.bind(this.gattOperations),
       unsubscribe: this.gattOperations.unsubscribe.bind(this.gattOperations)
     })
-    this.security = isWinRtSecurityBoundary(boundary) ? new WinRtSecurityBackend(boundary, now) : undefined
+    this.security = isWinRtSecurityBoundary(boundary)
+      ? new WinRtSecurityBackend(boundary, now, this.dispatcher)
+      : undefined
     this.features = createWinRtFeatureRegistry(this.security !== undefined)
     this.removeConnectionListener = boundary.onConnectionLost(record => {
       try {
