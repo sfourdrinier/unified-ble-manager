@@ -101,6 +101,22 @@ describe('WinRT security backend adapter', () => {
     security.close()
   })
 
+  test('honors a pre-aborted cancelPairing request before native cancellation dispatch', async () => {
+    const boundary = createBoundary()
+    const security = new WinRtSecurityBackend(boundary, () => 50)
+    const first = security.pair('peer-1', options())
+    const controller = new AbortController()
+    controller.abort()
+
+    await expect(
+      security.cancelPairing('peer-1', { signal: controller.signal, deadline: null })
+    ).rejects.toMatchObject({ normalized: { code: 'operation.aborted' } })
+    expect(boundary.cancelPairing).not.toHaveBeenCalled()
+    await expect(security.cancelPairing('peer-1', options())).resolves.toEqual({ outcome: 'cancelled' })
+    await expect(first).resolves.toEqual({ outcome: 'cancelled' })
+    security.close()
+  })
+
   test('settles a pending pairing at its deadline and requests native cancellation', async () => {
     jest.useFakeTimers()
     try {
