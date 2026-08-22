@@ -34,7 +34,11 @@ import { CoreBoundedStream } from './bounded-stream'
 import { assertBackendLifecycleTransition } from './connection-lifecycle-rules'
 import type { CoreSubscription } from './subscription-registry'
 import type { CoreDeadlineHandle, UnifiedBleCore } from './unified-ble-core'
-import type { MtuNegotiation, RssiMeasurement } from '../backend-contract/connection-controls'
+import type {
+  ConnectionMaximumWriteLengthMeasurement,
+  MtuNegotiation,
+  RssiMeasurement
+} from '../backend-contract/connection-controls'
 import type { CoreConnectionControls } from './core-connection-controls'
 import { connectionPathsEqual, databasePathsEqual } from './gatt-path-equality'
 
@@ -123,6 +127,13 @@ export class CoreConnection<Attachment extends string, Identity extends BackendI
 
   requestMtu(requestedMtu: number, options: PublicOperationOptions): Promise<MtuNegotiation<Attachment, string>> {
     return this.controls.requestMtu(this, requestedMtu, options)
+  }
+
+  maximumWriteLength(
+    mode: WriteMode,
+    options: PublicOperationOptions
+  ): Promise<ConnectionMaximumWriteLengthMeasurement<Attachment, string>> {
+    return this.controls.maximumWriteLength(this, mode, options)
   }
 
   isCurrent(): boolean {

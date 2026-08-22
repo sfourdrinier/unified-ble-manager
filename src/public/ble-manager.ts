@@ -353,10 +353,6 @@ interface OptionalInternalControlConnection {
     readonly platformPduBytes: number | null
     readonly observedAtMonotonicMs?: number
   }>
-  readonly maximumWriteLength?: (mode: WriteMode) => Promise<{
-    readonly maximumWriteLength: number
-    readonly observedAtMonotonicMs?: number
-  }>
 }
 
 type PublicControlConnection = InternalPublicConnection & OptionalInternalControlConnection
@@ -503,13 +499,13 @@ function createPublicConnectionControls(
         'gatt:maximum-write-length',
         'public-connection.controls.maximum-write-length'
       )
-      const observe = connection.maximumWriteLength
-      if (observe === undefined) {
-        throw contractError('capability.unsupported', 'connection', 'public-connection.controls.maximum-write-length')
-      }
-      const result = await observe(mode)
+      const normalized = normalizeOperationOptions({}, now)
+      const result = await connection.maximumWriteLength(mode, {
+        signal: normalized.signal,
+        deadline: normalized.deadline
+      })
       return Object.freeze({
-        ...controlMetadata(generation, now(), descriptor, 'backend-observation'),
+        ...controlMetadata(generation, result.observedAtMonotonicMs, descriptor, 'backend-observation'),
         state: 'measured' as const,
         mode,
         maximumWriteLength: result.maximumWriteLength

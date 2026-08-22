@@ -39,15 +39,27 @@ function fakeInternalManager() {
     ['connection:rssi', capability('limited')],
     ['connection:request-mtu', capability('limited')],
     ['connection:effective-mtu', capability('unsupported')],
-    ['gatt:maximum-write-length', capability('unsupported')]
+    ['gatt:maximum-write-length', capability('limited')]
   ])
   let discoveryGeneration = 1
   const rediscoveryReasons = []
+  const maximumWriteLengthRequests = []
   const internalConnection = {
     connectionGeneration: 'generation-1',
     events: { [Symbol.asyncIterator]: () => ({ next: async () => ({ done: true, value: undefined }), return: async () => ({ done: true, value: undefined }) }) },
     readRssi: async () => ({ rssi: -42, terminal: terminal() }),
     requestMtu: async requestedMtu => ({ requestedMtu, negotiatedMtu: 185, terminal: terminal() }),
+    maximumWriteLength: async (mode, options) => {
+      maximumWriteLengthRequests.push({ mode, options })
+      return {
+        connectionId: 'connection-1',
+        connectionGeneration: 'generation-1',
+        mode,
+        maximumWriteLength: mode === 'with-response' ? 182 : 185,
+        observedAtMonotonicMs: 4321,
+        terminal: terminal()
+      }
+    },
     discover: async () => fakeGattDatabase(`database-${discoveryGeneration++}`),
     rediscoverGatt: async (_options, reason) => {
       rediscoveryReasons.push(reason)
@@ -66,7 +78,8 @@ function fakeInternalManager() {
     traceDocument: () => ({ records: [], truncated: false }),
     adapterState: async () => ({}),
     destroy: async () => ({ state: 'released', failures: [] }),
-    rediscoveryReasons
+    rediscoveryReasons,
+    maximumWriteLengthRequests
   }
 }
 
@@ -113,9 +126,20 @@ describe('PR8A public link controls', () => {
         source: 'backend'
       }
     })
+    await expect(connection.controls.maximumWriteLength('without-response')).resolves.toMatchObject({
+      state: 'measured',
+      mode: 'without-response',
+      maximumWriteLength: 185,
+      connectionGeneration: 'generation-1',
+      observedAtMonotonicMs: 4321,
+      source: 'backend',
+      authority: 'backend-observation'
+    })
+    expect(internal.maximumWriteLengthRequests).toEqual([
+      { mode: 'without-response', options: { signal: null, deadline: null } }
+    ])
 
     await expect(connection.controls.effectiveMtu()).rejects.toMatchObject({ code: 'capability.unsupported' })
-    await expect(connection.controls.maximumWriteLength('without-response')).rejects.toMatchObject({ code: 'capability.unsupported' })
     await expect(connection.controls.requestPriority('high-throughput')).rejects.toMatchObject({ code: 'capability.unsupported' })
 
     await connection.discover()

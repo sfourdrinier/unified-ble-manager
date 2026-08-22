@@ -1,6 +1,7 @@
 // src/backend-contract/connection-controls.ts
 
-import type { OperationOptions, OperationTerminalRecord } from './operations'
+import type { OperationOptions, OperationTerminalRecord, WriteMode } from './operations'
+import type { ConnectionId, GenerationId } from './primitives'
 
 /** BLE's mandatory lower ATT MTU bound, including opcode and attribute handle bytes. */
 export const MINIMUM_ATT_MTU = 23
@@ -27,6 +28,16 @@ export interface MtuNegotiation<Attachment extends string, _Operation extends st
   readonly terminal: OperationTerminalRecord<Attachment, string>
 }
 
+/** Backend result for the connection-level write-length boundary. */
+export interface ConnectionMaximumWriteLengthMeasurement<Attachment extends string, _Operation extends string> {
+  readonly connectionId: ConnectionId<Attachment, string>
+  readonly connectionGeneration: GenerationId<'connection-generation', string>
+  readonly mode: WriteMode
+  readonly maximumWriteLength: number
+  readonly observedAtMonotonicMs: number
+  readonly terminal: OperationTerminalRecord<Attachment, string>
+}
+
 export interface ReadRssiRequest<Attachment extends string, Operation extends string> {
   readonly operation: OperationOptions<Attachment, Operation>
 }
@@ -34,4 +45,9 @@ export interface ReadRssiRequest<Attachment extends string, Operation extends st
 export interface RequestMtuRequest<Attachment extends string, Operation extends string> {
   readonly operation: OperationOptions<Attachment, Operation>
   readonly requestedMtu: number
+}
+
+export interface ConnectionMaximumWriteLengthRequest<Attachment extends string, Operation extends string> {
+  readonly operation: OperationOptions<Attachment, Operation>
+  readonly mode: WriteMode
 }

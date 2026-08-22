@@ -348,7 +348,8 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
     this.connections = {
       connect: (peerId, clientId, options) => this.connect(peerId, clientId, options),
       readRssi: (connection, request) => this.connectionControls.readRssi(connection, request),
-      requestMtu: (connection, request) => this.connectionControls.requestMtu(connection, request)
+      requestMtu: (connection, request) => this.connectionControls.requestMtu(connection, request),
+      maximumWriteLength: (connection, request) => this.connectionControls.maximumWriteLength(connection, request)
     }
     this.gatt = {
       discover: (connection, options) => this.gattOperations.discover(connection, options),
@@ -471,6 +472,9 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
       this.attachmentLifecycle.adapterState(),
       operation
     )
+  }
+  monotonicNow(): number {
+    return this.now()
   }
   private watchAdapterState(): AdapterStateWatch<string> {
     const stream = new CoreBoundedStream<AdapterStateSnapshot<string>>(adapterStateLimits, 'latest')

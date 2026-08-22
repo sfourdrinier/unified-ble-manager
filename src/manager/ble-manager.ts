@@ -664,6 +664,10 @@ export class Connection<Attachment extends string, Identity extends BackendIdent
   requestMtu(requestedMtu: number, options: PortableOperationOptions) {
     return this.connection.requestMtu(requestedMtu, toPublicOperationOptions(options))
   }
+
+  maximumWriteLength(mode: WriteMode, options: PortableOperationOptions) {
+    return this.connection.maximumWriteLength(mode, toPublicOperationOptions(options))
+  }
 }
 
 export class DiscoveredGattDatabase<Attachment extends string, Identity extends BackendIdentity<Attachment>>

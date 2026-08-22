@@ -4,12 +4,13 @@ import type { BleCentralBackend } from '../backend-contract/backend'
 import {
   MAXIMUM_REQUESTED_ATT_MTU,
   MINIMUM_ATT_MTU,
+  type ConnectionMaximumWriteLengthMeasurement,
   type MtuNegotiation,
   type RssiMeasurement
 } from '../backend-contract/connection-controls'
 import { contractError } from '../backend-contract/errors'
 import type { BackendIdentity } from '../backend-contract/identity'
-import type { PublicOperationOptions } from '../backend-contract/operations'
+import type { PublicOperationOptions, WriteMode } from '../backend-contract/operations'
 import type { CoreConnection } from './core-gatt-handles'
 import type { CoreOperationCoordinator } from './operation-coordinator'
 import { coreDispatch, requireOperationValue } from './unified-ble-core-helpers'
@@ -24,6 +25,11 @@ export interface CoreConnectionControls<Attachment extends string, Identity exte
     requestedMtu: number,
     options: PublicOperationOptions
   ): Promise<MtuNegotiation<Attachment, string>>
+  maximumWriteLength(
+    connection: CoreConnection<Attachment, Identity>,
+    mode: WriteMode,
+    options: PublicOperationOptions
+  ): Promise<ConnectionMaximumWriteLengthMeasurement<Attachment, string>>
 }
 
 export function createCoreConnectionControls<Attachment extends string, Identity extends BackendIdentity<Attachment>>(
@@ -43,6 +49,14 @@ export function createCoreConnectionControls<Attachment extends string, Identity
     ) => {
       assertReady('request-mtu')
       return requestCoreMtu(backend, operationCoordinator, connection, requestedMtu, options)
+    },
+    maximumWriteLength: (
+      connection: CoreConnection<Attachment, Identity>,
+      mode: WriteMode,
+      options: PublicOperationOptions
+    ) => {
+      assertReady('maximum-write-length')
+      return observeCoreMaximumWriteLength(backend, operationCoordinator, connection, mode, options)
     }
   })
 }
@@ -104,4 +118,35 @@ export async function requestCoreMtu<Attachment extends string, Identity extends
     }
   })
   return requireOperationValue(result, 'unified-core.request-mtu')
+}
+
+export async function observeCoreMaximumWriteLength<
+  Attachment extends string,
+  Identity extends BackendIdentity<Attachment>
+>(
+  backend: BleCentralBackend<Attachment, Identity>,
+  operationCoordinator: CoreOperationCoordinator<Attachment>,
+  connection: CoreConnection<Attachment, Identity>,
+  mode: WriteMode,
+  options: PublicOperationOptions
+): Promise<ConnectionMaximumWriteLengthMeasurement<Attachment, string>> {
+  const maximumWriteLength = backend.connections.maximumWriteLength
+  if (maximumWriteLength === undefined) {
+    throw contractError('capability.unsupported', 'connection', 'unified-core.maximum-write-length')
+  }
+  connection.assertCurrent()
+  const result = await operationCoordinator.run({
+    queueKey: String(connection.resource.connectionId),
+    options,
+    mayCommit: false,
+    dispatch: correlation => {
+      connection.assertCurrent()
+      const dispatch = maximumWriteLength(connection.resource, {
+        operation: { ...options, correlation },
+        mode
+      })
+      return coreDispatch(dispatch, correlation, value => value.terminal)
+    }
+  })
+  return requireOperationValue(result, 'unified-core.maximum-write-length')
 }

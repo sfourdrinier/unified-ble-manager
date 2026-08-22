@@ -23,7 +23,14 @@ import type {
   WriteRequest,
   WriteResult
 } from './operations'
-import type { MtuNegotiation, ReadRssiRequest, RequestMtuRequest, RssiMeasurement } from './connection-controls'
+import type {
+  ConnectionMaximumWriteLengthMeasurement,
+  ConnectionMaximumWriteLengthRequest,
+  MtuNegotiation,
+  ReadRssiRequest,
+  RequestMtuRequest,
+  RssiMeasurement
+} from './connection-controls'
 import { contractError } from './errors'
 import type { CleanupRecord } from './errors'
 import type {
@@ -167,6 +174,10 @@ export interface ConnectionBackend<Attachment extends string> {
     connection: BackendConnection<Attachment, string>,
     request: RequestMtuRequest<Attachment, Operation>
   ): BackendOperationDispatch<Attachment, MtuNegotiation<Attachment, Operation>>
+  maximumWriteLength?<Operation extends string>(
+    connection: BackendConnection<Attachment, string>,
+    request: ConnectionMaximumWriteLengthRequest<Attachment, Operation>
+  ): BackendOperationDispatch<Attachment, ConnectionMaximumWriteLengthMeasurement<Attachment, Operation>>
 }
 export interface GattBackend<Attachment extends string> {
   discover(

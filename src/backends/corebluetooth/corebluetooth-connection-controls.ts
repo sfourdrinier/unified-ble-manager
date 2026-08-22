@@ -5,6 +5,8 @@ import { BUILT_IN_FEATURE_IDS } from '../../backend-contract/capabilities'
 import {
   MAXIMUM_REQUESTED_ATT_MTU,
   MINIMUM_ATT_MTU,
+  type ConnectionMaximumWriteLengthMeasurement,
+  type ConnectionMaximumWriteLengthRequest,
   type MtuNegotiation,
   type ReadRssiRequest,
   type RequestMtuRequest,
@@ -77,6 +79,41 @@ export class CoreBluetoothConnectionControls {
         return Object.freeze({
           requestedMtu: request.requestedMtu,
           negotiatedMtu,
+          terminal: successfulTerminal(request.operation)
+        })
+      },
+      String(connection.connectionId)
+    )
+  }
+
+  maximumWriteLength<Operation extends string>(
+    connection: BackendConnection<string, string>,
+    request: ConnectionMaximumWriteLengthRequest<string, Operation>
+  ): BackendOperationDispatch<string, ConnectionMaximumWriteLengthMeasurement<string, Operation>> {
+    const maximumWriteValueLength = this.backend.boundary.maximumWriteValueLength?.bind(this.backend.boundary)
+    if (maximumWriteValueLength === undefined) {
+      return this.unsupported(request.operation, 'corebluetooth.connection.maximum-write-length')
+    }
+    this.backend.assertOperational('corebluetooth.connection.maximum-write-length')
+    const record = this.backend.requireConnection(connection, 'corebluetooth.connection.maximum-write-length')
+    return this.backend.dispatcher.dispatch(
+      request.operation,
+      'corebluetooth.connection.maximum-write-length',
+      async () => {
+        const maximumWriteLength = await maximumWriteValueLength(record.nativePeerId, request.mode === 'with-response')
+        if (!Number.isSafeInteger(maximumWriteLength) || maximumWriteLength < 1) {
+          throw contractError(
+            'protocol.malformed',
+            'connection',
+            'corebluetooth.connection.maximum-write-length.result'
+          )
+        }
+        return Object.freeze({
+          connectionId: record.connectionId,
+          connectionGeneration: record.connectionGeneration,
+          mode: request.mode,
+          maximumWriteLength,
+          observedAtMonotonicMs: this.backend.monotonicNow(),
           terminal: successfulTerminal(request.operation)
         })
       },

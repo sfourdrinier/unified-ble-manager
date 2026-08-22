@@ -252,6 +252,32 @@ describe('CoreBluetooth runtime capabilities and database-change semantics', () 
     await backend.destroy()
   })
 
+  test('dispatches the canonical connection maximum write length with live identity and backend time', async () => {
+    const { backend, boundary } = await backendFixture(currentBoundary => {
+      currentBoundary.maximumWriteValueLength = jest.fn(async (_nativePeerId, withResponse) => {
+        return withResponse ? 182 : 185
+      })
+    })
+    expect(typeof backend.connections.maximumWriteLength).toBe('function')
+
+    const { lease } = await connectedDatabase(backend)
+    const dispatch = backend.connections.maximumWriteLength(lease.connection, {
+      operation: operationRequest('connection-maximum-write-length'),
+      mode: 'with-response'
+    })
+
+    await expect(dispatch.completion).resolves.toMatchObject({
+      connectionId: String(lease.connection.connectionId),
+      connectionGeneration: String(lease.connection.connectionGeneration),
+      mode: 'with-response',
+      maximumWriteLength: 182,
+      observedAtMonotonicMs: 20,
+      terminal: { outcome: 'succeeded', cause: null }
+    })
+    expect(boundary.maximumWriteValueLength).toHaveBeenCalledWith('native-polar-h10', true)
+    await backend.destroy()
+  })
+
   test('Services Changed invalidates the current database and subscriptions, emits the canonical event, and permits rediscovery', async () => {
     let databaseChanged = null
     const { backend, boundary } = await backendFixture(currentBoundary => {
