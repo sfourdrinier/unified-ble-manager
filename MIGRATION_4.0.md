@@ -202,16 +202,94 @@ try {
 
 `monitorCharacteristicForDevice` + `cancelTransaction` become `database.subscribe` + `AbortSignal` + `subscription.remove()`.
 
-## RSSI, MTU, long write
+## Advanced link controls, readiness, and GATT recovery
+
+Advanced connection behavior lives under the generation-bound controls façade;
+it is not added as methods on `connection` itself. The façade is capability
+gated at runtime, so an unsupported control rejects with
+`capability.unsupported` and a limited control carries its named limitation.
+It never silently no-ops or reports a request as successful merely because the
+method exists.
 
 ```ts
-const rssi = (await connection.readRssi({ signal: abort.signal, deadline: journeyDeadline })).rssi
-if (manager.supports('connection:request-att-mtu')) {
-  await connection.requestMtu(185, { signal: abort.signal, deadline: journeyDeadline })
+const rssi = await connection.controls.readRssi({ signal: abort.signal, deadline: journeyDeadline })
+if (rssi.state === 'measured') {
+  consumeRssi(rssi.rssi, rssi.connectionGeneration, rssi.observedAtMonotonicMs)
 }
-const maxWrite = await database.maximumWriteLength(path, 'without-response')
-await database.writeLong(path, largeBytes, { signal: abort.signal, deadline: journeyDeadline, mode: 'with-response' })
+
+const mtu = await connection.controls.requestMtu(185, {
+  signal: abort.signal,
+  deadline: journeyDeadline
+})
+if (mtu.state === 'accepted' && mtu.observation?.state === 'measured') {
+  consumeMtu(mtu.observation.attMtu, mtu.observation.payloadBytes)
+}
+
+const maxWrite = await connection.controls.maximumWriteLength('without-response')
+await database.writeLong(path, largeBytes, {
+  signal: abort.signal,
+  deadline: journeyDeadline,
+  mode: 'with-response'
+})
 ```
+
+Every observation is typed and bound to the connection generation that produced
+it. Its common metadata includes `state`, `connectionGeneration`,
+`observedAtMonotonicMs`, `source`, `authority`, and `limitations`; values are
+not naked integers whose meaning changes by host. A request and its observation
+are different facts: an accepted MTU, priority, PHY, or subrate request means
+the backend accepted the request, not that the controller or peer selected the
+requested value. Use the returned observation or a separate observation stream
+for measured state.
+
+The canonical runtime capability IDs are:
+
+| Control | Capability ID |
+| --- | --- |
+| `connection.controls.readRssi` | `connection:rssi` |
+| `connection.controls.effectiveMtu` | `connection:effective-mtu` |
+| `connection.controls.requestMtu` | `connection:request-mtu` |
+| `connection.controls.requestPriority` | `connection:priority` |
+| `connection.controls.parameters` / `parameterEvents` | `connection:parameters` |
+| `connection.controls.readPhy` / `requestPhy` | `connection:phy` |
+| `connection.controls.requestSubrate` | `connection:subrate` |
+| `connection.controls.maximumWriteLength` | `gatt:maximum-write-length` |
+| `connection.controls.writeReadiness` | `gatt:write-without-response-readiness` |
+
+The operation scheduler is an implementation invariant, not a public command
+queue: operations that must be serialized use one bounded queue per physical
+connection, queued cancellation removes work before dispatch, and disconnect,
+service change, backend reset, or destroy settles queued and in-flight work
+exactly once. Work for different connections may proceed concurrently. A
+bounded queue can reject new work with an explicit overflow/backpressure error;
+callers must not assume an unbounded write loop.
+
+Write-without-response readiness is unsupported until a backend advertises
+`gatt:write-without-response-readiness`. A readiness stream is not evidence
+that a payload was retained; use the authoritative maximum write length and
+the write result's exact outcome. A late listener must be able to obtain the
+current snapshot when the backend supports readiness, rather than relying only
+on a missed edge event.
+
+Use explicit GATT recovery when a service change is observed or when the
+application deliberately wants a fresh database:
+
+```ts
+const afterServiceChange = await connection.rediscoverGatt({ reason: 'service-changed' })
+const manualRefresh = await connection.rediscoverGatt({ reason: 'manual' })
+```
+
+Both reasons invalidate the prior database-generation paths and return a fresh
+generation-bound database. Android recovery is supported disconnect/reconnect
+and rediscovery; stable code does not call hidden `BluetoothGatt.refresh()`.
+If a write was cancelled or otherwise has an uncertain commit state, cache
+recovery never performs an uncertain-write replay. Resolve that ambiguity with
+the product protocol after fresh discovery, with an explicit caller decision.
+
+The package's deterministic tests, TCK, and host-compile checks prove only
+their declared contract or host scope. They are not physical-radio
+qualification; a platform support claim requires the matching retained live
+evidence.
 
 ## Destroy
 
@@ -241,8 +319,8 @@ if (gone.state === 'release-failed') {
 | `writeCharacteristicWithoutResponseForDevice` | `database.write(..., { mode: 'without-response' })` |
 | `monitorCharacteristicForDevice` | `database.subscribe` + `for await` + `remove()` |
 | `cancelTransaction` | `AbortController.abort()` |
-| `readRSSI` | `connection.readRssi` |
-| `requestMTU` | `connection.requestMtu` if `supports('connection:request-att-mtu')` |
+| `readRSSI` | `connection.controls.readRssi` when `connection:rssi` is advertised |
+| `requestMTU` | `connection.controls.requestMtu` when `connection:request-mtu` is advertised; inspect its observation for the effective result |
 | `destroy` | `await manager.destroy()` |
 
 ## Gone on purpose
@@ -255,7 +333,7 @@ if (gone.state === 'release-failed') {
 | `createBond` / `removeBond` / `bondedDevices` | OS pairing only. See [`docs/BONDING.md`](docs/BONDING.md). |
 | `enable()` / `disable()` | The library does not toggle the adapter. |
 | `devices()` / `isDeviceConnected` / `connectedDevices()` | Own the `Connection` you created. |
-| `requestConnectionPriority` | No direct 4.0 replacement. Inspect `manager.capabilities()` and apply host-specific policy only where explicitly supported. |
+| `requestConnectionPriority` | `connection.controls.requestPriority` when `connection:priority` is advertised; acceptance is not an observation of final parameters. |
 | `checkBluetoothPermissions` helpers | `adapterState().authorization` + OS APIs. |
 | `setLogLevel` | `manager.traces()` / `traceDocument()` if you need diagnostics. |
 | Android `scanMode` / `callbackType` | `duplicatePolicy`, `filter`, `delivery`. |

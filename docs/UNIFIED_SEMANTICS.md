@@ -652,6 +652,73 @@ returns an evidence-qualified result.
 | MTU | Negotiation exposes requested and effective values plus directional payload maxima. An implementation cannot infer peer acceptance from a request alone. |
 | RSSI | Sampling returns signed value, unit, monotonic receipt timestamp, source timestamp when supplied, and availability. It has no assumed sampling rate. |
 
+### 17.1 Connection controls and GATT recovery
+
+The public connection surface exposes advanced behavior through one
+generation-bound `connection.controls` façade. The façade methods and their
+canonical runtime capability IDs are:
+
+| Public control | Capability ID | Result semantics |
+| --- | --- | --- |
+| `controls.readRssi()` | `connection:rssi` | A current signed measurement when the backend can perform the operation. |
+| `controls.effectiveMtu()` | `connection:effective-mtu` | An observation, never a request. |
+| `controls.requestMtu()` | `connection:request-mtu` | A request result plus an optional effective-MTU observation. |
+| `controls.requestPriority()` | `connection:priority` | Request accepted/rejected; it does not guarantee final parameters. |
+| `controls.parameters()` / `parameterEvents()` | `connection:parameters` | Measured connection-parameter observations. |
+| `controls.readPhy()` / `requestPhy()` | `connection:phy` | Separate PHY observation and preference-request results. |
+| `controls.requestSubrate()` | `connection:subrate` | Request result plus an observation only when measurable. |
+| `controls.maximumWriteLength(mode)` | `gatt:maximum-write-length` | Authoritative mode-specific write limit for that connection. |
+| `controls.writeReadiness('without-response')` | `gatt:write-without-response-readiness` | Bounded readiness snapshots/events, when the backend advertises the feature. |
+
+Every control observation MUST carry typed metadata: `state`,
+`connectionGeneration`, `observedAtMonotonicMs`, `source`, `authority`, and
+`limitations`. Its measured values MUST distinguish ATT MTU, platform PDU
+size, and characteristic write length. An observation is bound to the
+connection generation that produced it; reconnecting or invalidating that
+generation does not make the old observation current again.
+
+A request and an observation are different facts. `accepted` means that the
+backend accepted the request for dispatch or negotiation; it MUST NOT be
+presented as proof that the controller or peer selected the requested priority,
+PHY, subrate, or MTU. The returned observation or a parameter/PHY event is the
+source for measured state. A `limited` capability may proceed only within its
+named limitation and MUST carry that limitation in its result. An
+`unsupported` capability MUST reject with `capability.unsupported`; an
+`unavailable` capability MUST reject with `capability.unavailable`. No control
+may silently no-op or report success because a façade method exists.
+
+Write-without-response readiness is `unsupported` until a backend advertises
+`gatt:write-without-response-readiness`. When advertised, the backend MUST
+provide a bounded stream with a current snapshot for a late subscriber when
+that snapshot is measurable; a missed edge event alone is insufficient. A
+readiness event does not prove that a later payload was retained. Callers use
+the mode-specific maximum write length and the write result's exact commit or
+unknown state.
+
+GATT operations that require ordering use one serialized queue per physical
+connection; that queue is bounded. Queued cancellation removes the operation before
+dispatch; dispatched cancellation follows the race and uncertainty rules in
+Sections 13 and 14. Disconnect, service change, backend reset, and destroy
+settle every queued or in-flight operation exactly once. Different connection
+queues may proceed concurrently. Queue capacity and overflow/backpressure are
+explicit limits; the public contract never implies an unbounded command queue.
+
+The recovery façade is:
+
+```ts
+connection.rediscoverGatt({ reason: 'service-changed' | 'manual' })
+```
+
+`service-changed` is used after a platform Services Changed indication or
+equivalent invalidation; `manual` requests a deliberate fresh discovery. Both
+reasons invalidate the previous database-generation paths before returning a
+new generation-bound database. Android stable recovery uses supported
+disconnect/reconnect and rediscovery. It MUST NOT call hidden
+`BluetoothGatt.refresh()` or expose that diagnostic cache mutation as a
+portable operation. A cancelled or otherwise uncertain write MUST NOT be
+automatically replayed during cache recovery; the product protocol must make
+any retry decision after fresh discovery.
+
 Manifests, entitlements, plugins, and native declarations are deployment
 prerequisites, not evidence that runtime permission, background continuation,
 or security succeeded. The capability descriptor records the declaration
