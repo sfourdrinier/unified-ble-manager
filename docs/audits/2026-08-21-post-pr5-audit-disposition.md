@@ -306,3 +306,22 @@ Native-authoritative React Native/Expo restoration is an explicit PR10
 deferral tracked by [#34](https://github.com/sfourdrinier/unified-ble-manager/issues/34); PR6 must not claim it is
 implemented. RC3 remains gated for after PR8, and this ledger does not promote
 PR6 to a release claim by itself.
+
+## PR8 current checkpoint
+
+The current PR8 branch is `feat/4.0-link-controls` at `fd4e1d9`, with the
+readiness implementation committed in `0626c51` and the cumulative package
+gate reverified afterward.
+
+| Area | Current evidence | Disposition |
+| --- | --- | --- |
+| Public controls and API surface | Required `BleConnection.controls`, required `rediscoverGatt`, generation-bound observations, canonical root exports, and reviewed root API report | Fixed and locally verified |
+| Android priority | Versioned Native Protocol v2 command/result, Android `BluetoothGatt.requestConnectionPriority`, accepted/rejected result without observed-parameter overclaim | Android-only, limited/deterministic; hosted Android and physical evidence remain open |
+| CoreBluetooth readiness | `canSendWriteWithoutResponse`, `peripheralIsReady(toSendWriteWithoutResponse:)`, native ordinal/generation, bounded stream, disconnect/destroy cleanup | Direct Node/Electron-main only, limited/deterministic; other hosts remain unsupported |
+| Scheduler and recovery | Per-connection bounded round-robin lanes, queue overflow, service-change cancellation, reasoned rediscovery, uncertain-write preservation, hidden-refresh source guard | Fixed with focused TDD/TCK coverage |
+| TCK and docs | PR8 closure scenarios, explicit unsupported PHY/parameters/subrate/readiness truth, migration/semantics guidance | Deterministic evidence only; no physical-radio claim |
+| Local package gate | `pnpm test:package`: 129 suites / 1,199 tests; docs/API, native protocol, artifact, and smell checks included | Green locally |
+| Native/plugin gates | CoreBluetooth macOS Node-API build, native protocol host, plugin 36/36, release artifacts, typecheck/lint | Green locally; Android/Windows hosted qualification remains required |
+| Packed consumer gate | Local npm pack smoke still encounters npm `Exit handler never called!` | Hosted supported-Node proof required |
+| Performance baselines | Existing benchmark suite passes, but the complete PR8 baseline set is not yet artifact-bound | Blocking before RC3 |
+| Review/release | No PR8 GitHub PR, Copilot/Codex review rounds, merge, or RC3 tag yet | Blocking; RC2 remains immutable |
