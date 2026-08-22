@@ -57,11 +57,15 @@ interface ActivePairing {
   readonly operation: WinRtOperationDispatch<WinRtPairResult>
 }
 
+type SecurityLifecycle = 'active' | 'adapter-lost' | 'closed'
+
 export class WinRtSecurityBackend implements SecurityBackend {
   private readonly streams = new Map<string, Set<CoreBoundedStream<PeerSecurityEvent>>>()
   private readonly activePairings = new Map<string, ActivePairing>()
   private readonly sequenceByPeer = new Map<string, number>()
-  private readonly removeStateListener: () => void
+  private removeStateListener: () => void
+  private stateListenerGeneration = 0
+  private lifecycle: SecurityLifecycle = 'active'
 
   constructor(
     private readonly boundary: WinRtSecurityBoundary,
@@ -73,14 +77,17 @@ export class WinRtSecurityBackend implements SecurityBackend {
       onCancellationFailure: () => undefined
     })
   ) {
-    this.removeStateListener = boundary.onSecurityState(record => this.stateChanged(record))
+    this.removeStateListener = this.registerStateListener(this.stateListenerGeneration)
   }
 
-  async state(peerId: string, _options: PublicOperationOptions): Promise<PeerSecurityState> {
-    return this.snapshotState(await this.boundary.securityState(peerId).completion)
+  async state(peerId: string, options: PublicOperationOptions): Promise<PeerSecurityState> {
+    this.assertActive('winrt.security.state')
+    const operation = this.dispatcher.dispatch(options, 'winrt.security.state', () => this.boundary.securityState(peerId))
+    return this.snapshotState(await operation.completion)
   }
 
   watch(peerId: string): BoundedAsyncStream<PeerSecurityEvent> {
+    this.assertActive('winrt.security.watch')
     const stream = new CoreBoundedStream<PeerSecurityEvent>(securityStreamLimits, 'error')
     const peerStreams = this.streams.get(peerId) ?? new Set<CoreBoundedStream<PeerSecurityEvent>>()
     peerStreams.add(stream)
@@ -93,6 +100,7 @@ export class WinRtSecurityBackend implements SecurityBackend {
   }
 
   pair(peerId: string, options: SecurityPairOptions): Promise<SecurityPairResult> {
+    this.assertActive('winrt.security.pair')
     if (options.ceremony !== 'system') {
       return Promise.reject(contractError('capability.unsupported', 'capability', 'winrt.security.custom-ceremony'))
     }
@@ -127,6 +135,7 @@ export class WinRtSecurityBackend implements SecurityBackend {
   }
 
   async cancelPairing(peerId: string, _options: PublicOperationOptions): Promise<SecurityCancelPairingResult> {
+    this.assertActive('winrt.security.cancel-pairing')
     const active = this.activePairings.get(peerId)
     if (active === undefined) return { outcome: 'not-pairing' }
     await active.operation.requestCancellation()
@@ -135,10 +144,36 @@ export class WinRtSecurityBackend implements SecurityBackend {
   }
 
   async unpair(peerId: string, _options: PublicOperationOptions): Promise<SecurityUnpairResult> {
-    return { outcome: await this.boundary.unpair(peerId).completion }
+    this.assertActive('winrt.security.unpair')
+    const operation = this.dispatcher.dispatch(
+      _options,
+      'winrt.security.unpair',
+      () => this.boundary.unpair(peerId)
+    )
+    return { outcome: await operation.completion }
+  }
+
+  resetForAdapterLoss(): void {
+    if (this.lifecycle === 'closed') return
+    this.lifecycle = 'adapter-lost'
+    this.removeStateListener()
+    this.stateListenerGeneration += 1
+    this.removeStateListener = this.registerStateListener(this.stateListenerGeneration)
+    for (const active of this.activePairings.values()) {
+      active.operation.requestCancellation().catch(() => undefined)
+    }
+    for (const streams of this.streams.values()) {
+      for (const stream of streams) stream.closeWithReason('connection-lost')
+    }
+    this.streams.clear()
+  }
+
+  adapterRecovered(): void {
+    if (this.lifecycle === 'adapter-lost') this.lifecycle = 'active'
   }
 
   close(): void {
+    this.lifecycle = 'closed'
     this.removeStateListener()
     for (const active of this.activePairings.values()) {
       active.operation.requestCancellation().catch(() => undefined)
@@ -150,7 +185,20 @@ export class WinRtSecurityBackend implements SecurityBackend {
   }
 
   private stateChanged(record: WinRtSecurityStateChangedRecord): void {
+    if (this.lifecycle !== 'active') return
     this.emit(record.nativePeerId, this.snapshotState(record.state))
+  }
+
+  private registerStateListener(generation: number): () => void {
+    return this.boundary.onSecurityState(record => {
+      if (generation !== this.stateListenerGeneration || this.lifecycle === 'closed') return
+      this.stateChanged(record)
+    })
+  }
+
+  private assertActive(operation: string): void {
+    if (this.lifecycle === 'closed') throw contractError('lifecycle.destroyed', 'core', operation)
+    if (this.lifecycle === 'adapter-lost') throw contractError('lifecycle.invalid-state', 'core', operation)
   }
 
   private emit(peerId: string, state: PeerSecurityState): void {

@@ -56,6 +56,7 @@ function createBoundary() {
       for (const listener of [...listeners]) listener(record)
     }
   }
+  boundary.listeners = listeners
   boundary.pairCancellation = pairCancellation
   return boundary
 }
@@ -113,5 +114,49 @@ describe('WinRT security backend adapter', () => {
     } finally {
       jest.useRealTimers()
     }
+  })
+
+  test('honors cancellation and deadlines for state and unpair operations before native dispatch', async () => {
+    const boundary = createBoundary()
+    const security = new WinRtSecurityBackend(boundary, () => 50)
+    const controller = new AbortController()
+    controller.abort()
+
+    await expect(security.state('peer-1', { signal: controller.signal, deadline: null })).rejects.toMatchObject({
+      normalized: { code: 'operation.aborted' }
+    })
+    await expect(security.unpair('peer-1', { signal: controller.signal, deadline: null })).rejects.toMatchObject({
+      normalized: { code: 'operation.aborted' }
+    })
+    expect(boundary.securityState).not.toHaveBeenCalled()
+    expect(boundary.unpair).not.toHaveBeenCalled()
+    security.close()
+  })
+
+  test('terminates security watches during adapter loss and ignores retired listener callbacks', async () => {
+    const boundary = createBoundary()
+    const security = new WinRtSecurityBackend(boundary, () => 50)
+    const stream = security.watch('peer-1')
+    const iterator = stream[Symbol.asyncIterator]()
+    await iterator.next()
+    const terminal = iterator.next()
+    const oldListener = [...boundary.listeners][0]
+
+    security.resetForAdapterLoss()
+    await expect(terminal).resolves.toMatchObject({ value: { kind: 'terminal', reason: 'connection-lost' } })
+    oldListener({ nativePeerId: 'peer-1', state: state({ bond: 'bonded' }) })
+    expect(security.streams.size).toBe(0)
+
+    security.adapterRecovered()
+    const recovered = security.watch('peer-1')
+    const recoveredIterator = recovered[Symbol.asyncIterator]()
+    await recoveredIterator.next()
+    boundary.emitSecurityState({ nativePeerId: 'peer-1', state: state({ bond: 'bonded' }) })
+    await expect(recoveredIterator.next()).resolves.toMatchObject({
+      value: { kind: 'value', value: { state: { bond: 'bonded' } } }
+    })
+    await recoveredIterator.return()
+    await recovered.close()
+    security.close()
   })
 })

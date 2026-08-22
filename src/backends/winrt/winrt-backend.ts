@@ -1544,6 +1544,7 @@ export class WinRtBackend implements BleCentralBackend<string, HostNeutralBacken
       this.backendGeneration += 1
       this.adapterGeneration += 1
       this.adapterLossPending = true
+      this.security?.resetForAdapterLoss()
       this.dispatcher.cancelAll('reset').catch(error => {
         console.error('[WinRtBackend.adapter-state] Native operation cancellation failed:', error)
       })
@@ -1586,6 +1587,7 @@ export class WinRtBackend implements BleCentralBackend<string, HostNeutralBacken
         this.adapterLossPending = false
         this.peerIdsByNativeId.clear()
         this.nativeIdsByPeerId.clear()
+        this.security?.adapterRecovered()
         this.adapterLossCleanup = null
       },
       error => {
