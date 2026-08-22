@@ -82,7 +82,7 @@ function completeCapabilityDescriptors() {
   }
   return BUILT_IN_FEATURE_CATALOG.map(entry => ({
     id: entry.id,
-    state: entry.id === 'connection:direct' ? 'limited' : 'unsupported',
+    state: entry.id === 'connection:direct' || entry.id === 'connection:rssi' ? 'limited' : 'unsupported',
     selectedSchemaRange: schema,
     implementationOrigin: 'backend-native',
     tck: {
@@ -92,7 +92,7 @@ function completeCapabilityDescriptors() {
     },
     evidence: {
       receiptId: `electron-test-${entry.id}`,
-      evidenceLevel: entry.id === 'connection:direct' ? 'deterministic' : 'blocked',
+      evidenceLevel: entry.id === 'connection:direct' || entry.id === 'connection:rssi' ? 'deterministic' : 'blocked',
       implementationVersion: 'test',
       sourceDigest: `electron-test-${entry.id}`,
       scenarioIds: ['capability.truth-limits-evidence-and-binding'],
@@ -2688,7 +2688,7 @@ describe('Electron v4 IPC boundary', () => {
     await expect(scan.stop()).resolves.toEqual({ state: 'released', failures: [] })
 
     const publicConnection = await manager.connect('peer-public')
-    await expect(publicConnection.readRssi()).resolves.toBe(-42)
+    await expect(publicConnection.controls.readRssi()).resolves.toMatchObject({ rssi: -42, state: 'measured' })
     const publicDatabase = await publicConnection.discover()
     const publicCharacteristic = publicDatabase.characteristic('180d', '2a37')
     await expect(publicCharacteristic.read()).resolves.toEqual(new Uint8Array([1, 2, 3]))

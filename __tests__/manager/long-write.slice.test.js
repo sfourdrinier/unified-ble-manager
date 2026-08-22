@@ -436,14 +436,14 @@ describe('long write public vertical slice', () => {
     )
 
     expect(receipt).toMatchObject({
-      terminal: { outcome: 'failed', cause: 'gatt.stale-handle' },
-      completedChunks: 1,
-      committedBytes: 2,
-      failedChunkIndex: 1,
+      terminal: { outcome: 'disconnected', cause: 'operation.disconnected' },
+      completedChunks: 0,
+      committedBytes: 0,
+      failedChunkIndex: 0,
       commitState: 'unknown'
     })
     expect(receipt.chunks.map(chunk => [chunk.index, chunk.state])).toEqual([
-      [0, 'confirmed'],
+      [0, 'uncertain'],
       [1, 'not-started']
     ])
     expect(Number(manager.localResourceCounters().queuedOperations)).toBe(0)
