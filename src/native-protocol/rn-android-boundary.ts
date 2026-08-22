@@ -1078,6 +1078,6 @@ function securityStateFromBondState(value: string, operation: string): AndroidSe
     encryption: 'unsupported',
     authentication: 'unsupported',
     secureConnections: 'unsupported',
-    pairingPossible: value === 'unsupported' ? null : true
+    pairingPossible: value === 'bonded' || value === 'bonding' || value === 'notBonded' ? true : null
   })
 }

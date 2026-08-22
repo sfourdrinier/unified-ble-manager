@@ -81,6 +81,20 @@ describe('React Native Android security protocol boundary', () => {
     await boundary.destroy()
   })
 
+  test('does not infer pairing availability from an unknown bond state', async () => {
+    const control = new SecurityControl(true, true)
+    const runtime = new SecurityRuntime(control)
+    runtime.bondState = 'unknown'
+    global.__unifiedBleNativeProtocolV2 = runtime
+    const boundary = await openBoundary(control)
+
+    await expect(boundary.securityState(peerId)).resolves.toMatchObject({
+      bond: 'unknown',
+      pairingPossible: null
+    })
+    await boundary.destroy()
+  })
+
   test('rejects a native result that changes the requested peer identity', async () => {
     const control = new SecurityControl(true, true)
     const runtime = new SecurityRuntime(control)
