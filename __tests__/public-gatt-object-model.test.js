@@ -95,6 +95,20 @@ describe('stable public GATT object model (PR3 TDD)', () => {
     await second.return()
   })
 
+  test('closes lifecycle iterators created after the source has terminated', async () => {
+    const source = new CoreBoundedStream(
+      { itemCapacity: capacity(2), byteCapacity: capacity(64), reservedControlCapacity: capacity(1) },
+      'drop-oldest'
+    )
+    const events = publicConnectionEvents(source)
+    const first = events[Symbol.asyncIterator]()
+    source.closeWithReason('closed')
+    await expect(first.next()).resolves.toMatchObject({ done: true })
+
+    const second = events[Symbol.asyncIterator]()
+    await expect(second.next()).resolves.toMatchObject({ done: true })
+  })
+
   test('reports failed scan cleanup instead of a false stopped state', async () => {
     const source = new CoreBoundedStream(
       { itemCapacity: capacity(2), byteCapacity: capacity(64), reservedControlCapacity: capacity(1) },

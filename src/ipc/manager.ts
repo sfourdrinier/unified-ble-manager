@@ -53,6 +53,7 @@ const REMOTE_STREAM_LIMITS = Object.freeze({
 export interface IpcManagerOperationOptions {
   readonly signal?: AbortSignal
   readonly timeoutMs?: number
+  readonly deadline?: number | null
   readonly deliveryMode?: 'prefer-notification' | 'prefer-indication' | 'require-notification' | 'require-indication'
   readonly stream?: {
     readonly itemCapacity: number
@@ -186,8 +187,13 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
     return this.client.bootstrap
   }
 
-  async adapterState(): Promise<SerializableRecord> {
-    const payload = await this.route('adapter.state', Object.freeze({ deadline: null }))
+  async adapterState(options: IpcManagerOperationOptions = {}): Promise<SerializableRecord> {
+    const payload = await this.route(
+      'adapter.state',
+      Object.freeze({ deadline: operationDeadline(options) }),
+      null,
+      options.signal
+    )
     return requiredRecord(payload, 'state', 'ipc-manager.adapter-state')
   }
 
@@ -603,7 +609,7 @@ export class IpcConnection {
   }
 
   get events(): BoundedAsyncStream<SerializableRecord> {
-    this.ensureLifecycleAdmission()
+    this.ensureLifecycleAdmission().catch(() => undefined)
     return this.lifecycleEvents
   }
 
@@ -731,21 +737,21 @@ export class IpcConnection {
 
   private async awaitLifecycleAdmission(options: IpcManagerOperationOptions): Promise<void> {
     const admission = this.ensureLifecycleAdmission()
-    if (options.signal === undefined && options.timeoutMs === undefined) {
+    const deadlineAt = operationDeadline(options)
+    if (options.signal === undefined && deadlineAt === null) {
       return admission
-    }
-    const timeoutMs = options.timeoutMs
-    if (timeoutMs !== undefined && (!Number.isFinite(timeoutMs) || timeoutMs <= 0)) {
-      throw contractError('argument.invalid', 'core', 'ipc-manager.lifecycle-admission.timeoutMs')
     }
     return new Promise<void>((resolve, reject) => {
       let settled = false
       const timer =
-        timeoutMs === undefined
+        deadlineAt === null
           ? null
-          : globalThis.setTimeout(() => {
-              finish(reject, contractError('operation.timed-out', 'ipc', 'ipc-manager.connection-events-admission'))
-            }, timeoutMs)
+          : globalThis.setTimeout(
+              () => {
+                finish(reject, contractError('operation.timed-out', 'ipc', 'ipc-manager.connection-events-admission'))
+              },
+              Math.max(0, deadlineAt - globalThis.performance.now())
+            )
       const abort = () => {
         finish(reject, contractError('operation.aborted', 'ipc', 'ipc-manager.connection-events-admission'))
       }
@@ -1339,6 +1345,11 @@ function characteristicRecordForDescriptor(
 }
 
 function operationDeadline(options: IpcManagerOperationOptions): number | null {
+  if (options.deadline !== undefined) {
+    if (options.deadline === null) return null
+    if (!Number.isFinite(options.deadline)) throw new TypeError('deadline must be finite or null')
+    return options.deadline
+  }
   if (options.timeoutMs === undefined) return null
   if (!Number.isFinite(options.timeoutMs) || options.timeoutMs <= 0) throw new TypeError('timeoutMs must be positive')
   if (globalThis.performance === undefined) throw new TypeError('A monotonic performance clock is required')

@@ -691,6 +691,7 @@ function mapPublicConnectionEvents(
 class PublicConnectionEventBroadcast implements AsyncIterable<BleConnectionEvent> {
   private readonly subscribers = new Set<CoreBoundedStream<BleConnectionEvent>>()
   private pumping = false
+  private terminalReason: 'closed' | 'source-failed' | null = null
 
   constructor(private readonly source: AsyncIterable<BleConnectionEvent>) {}
 
@@ -699,8 +700,12 @@ class PublicConnectionEventBroadcast implements AsyncIterable<BleConnectionEvent
       { itemCapacity: capacity(64), byteCapacity: capacity(64 * 1024), reservedControlCapacity: capacity(1) },
       'error'
     )
-    this.subscribers.add(stream)
-    this.startPump()
+    if (this.terminalReason === null) {
+      this.subscribers.add(stream)
+      this.startPump()
+    } else {
+      stream.closeWithReason(this.terminalReason)
+    }
     const iterator = stream[Symbol.asyncIterator]()
     return {
       next: async () => {
@@ -731,8 +736,10 @@ class PublicConnectionEventBroadcast implements AsyncIterable<BleConnectionEvent
       for await (const event of this.source) {
         for (const subscriber of this.subscribers) subscriber.emit(event, 512)
       }
+      this.terminalReason = 'closed'
       for (const subscriber of this.subscribers) subscriber.closeWithReason('closed')
     } catch {
+      this.terminalReason = 'source-failed'
       for (const subscriber of this.subscribers) subscriber.closeWithReason('source-failed')
     }
   }

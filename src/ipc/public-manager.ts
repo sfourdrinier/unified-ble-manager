@@ -145,6 +145,9 @@ export class IpcPublicManagerAdapter implements BleManager {
       const normalized = normalizeOperationOptions(options, () => globalThis.performance.now())
       assertIpcConnectionOptions(options)
       assertDirectConnectionCapability(this.capabilities.get('connection:direct'), 'ipc-public-manager.connect.direct')
+      if (isReferenceLike(peer) && !isPeerReference(peer)) {
+        throw contractError('peer.reference-invalid', 'connection', 'ipc-public-manager.connect-reference')
+      }
       if (isPeerReference(peer)) {
         throw contractError('capability.unsupported', 'connection', 'ipc-public-manager.peer-reference')
       }
@@ -296,7 +299,7 @@ class IpcPublicConnection implements BleConnection {
       const normalized = normalizeOperationOptions(options, () => globalThis.performance.now())
       const database = await this.base.discover({
         signal: normalized.signal ?? undefined,
-        timeoutMs: options.timeoutMs
+        deadline: normalized.deadline
       })
       return createPublicGattDatabase(createIpcGattSource(database))
     } catch (error) {
@@ -445,6 +448,14 @@ function toIpcScanOptions(options: ScanOptions, signal: AbortSignal | null) {
   }
 }
 
+function isReferenceLike(value: unknown): boolean {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    ('version' in value || 'backendId' in value || 'scope' in value || 'opaqueId' in value)
+  )
+}
+
 function assertIpcConnectionOptions(options: ConnectOptions): void {
   if (options.intent === 'when-available') {
     throw contractError('capability.unsupported', 'connection', 'ipc-public-manager.connect.when-available')
@@ -551,9 +562,9 @@ function parseConnectionCause(value: unknown): ConnectionLifecycleCause | null {
 }
 
 function createIpcAdapter(ipc: IpcBleManager): BleAdapter {
-  const state = async (): Promise<BleAdapterState> => {
+  const readState = async (options: import('./manager').IpcManagerOperationOptions = {}): Promise<BleAdapterState> => {
     try {
-      const value = await ipc.adapterState()
+      const value = await ipc.adapterState(options)
       if (typeof value !== 'object' || value === null || Array.isArray(value)) {
         throw contractError('protocol.malformed', 'adapter', 'ipc-public-manager.adapter-state')
       }
@@ -583,12 +594,12 @@ function createIpcAdapter(ipc: IpcBleManager): BleAdapter {
   }
   return {
     id: String(ipc.bootstrap.attachment.adapter.adapterId),
-    state,
+    state: () => readState(),
     waitUntilReady: async (options: AdapterReadinessOptions = {}) => {
       const normalized = normalizeOperationOptions(options, () => globalThis.performance.now())
       const deadline = normalized.deadline === null ? globalThis.performance.now() + 10_000 : normalized.deadline
       while (true) {
-        const current = await state()
+        const current = await readState({ signal: normalized.signal ?? undefined, deadline })
         if (current.availability === 'unsupported' || current.power === 'unsupported')
           throw contractError('capability.unsupported', 'adapter', 'ipc-public-manager.adapter-ready')
         if (

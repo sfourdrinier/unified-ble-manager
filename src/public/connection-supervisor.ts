@@ -255,6 +255,7 @@ class ConnectionSupervisorImpl<Session> implements ConnectionSupervisor<Session>
     try {
       while (!this.stopRequested) {
         if (!(await this.awaitLateConfigureCleanup())) break
+        if (this.attemptLimitReached()) break
         const gate = await this.awaitGate()
         if (gate === 'stop' || this.stopRequested) break
         if (gate === 'pause') continue
@@ -287,6 +288,7 @@ class ConnectionSupervisorImpl<Session> implements ConnectionSupervisor<Session>
         this.transition('backoff', null, delayMs, null)
         const delayOutcome = await this.waitForDelay(delayMs)
         if (delayOutcome === 'stop') break
+        if (this.attemptLimitReached()) break
       }
     } finally {
       const cleanup = await this.cleanupCurrentConnection()
@@ -337,22 +339,30 @@ class ConnectionSupervisorImpl<Session> implements ConnectionSupervisor<Session>
           continue
         }
       }
-      const decisionResult =
-        this.options.gate === undefined
-          ? ({ kind: 'value' as const, value: 'allow' as const } satisfies {
-              kind: 'value'
-              value: ConnectionGateDecision
-            })
-          : await this.awaitControl(
-              Promise.resolve(
-                this.options.gate({
-                  attempt: this.attempt,
-                  adapter,
-                  lastError: this.lastError,
-                  lastDisconnect: this.lastDisconnect
-                })
+      let decisionResult: Awaited<ReturnType<typeof this.awaitControl<ConnectionGateDecision>>>
+      try {
+        const gate = this.options.gate
+        decisionResult =
+          gate === undefined
+            ? ({ kind: 'value' as const, value: 'allow' as const } satisfies {
+                kind: 'value'
+                value: ConnectionGateDecision
+              })
+            : await this.awaitControl(
+                Promise.resolve().then(() =>
+                  gate({
+                    attempt: this.attempt,
+                    adapter,
+                    lastError: this.lastError,
+                    lastDisconnect: this.lastDisconnect
+                  })
+                )
               )
-            )
+      } catch (error) {
+        this.lastError = toBleError(error)
+        this.stopRequested = true
+        return 'stop'
+      }
       if (decisionResult.kind === 'control') {
         this.deferControl(decisionResult.pending)
         return decisionResult.reason === 'stop' ? 'stop' : 'pause'

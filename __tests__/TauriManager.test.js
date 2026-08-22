@@ -156,6 +156,23 @@ describe('Tauri v2 public manager', () => {
     await manager.destroy()
   })
 
+  test('rejects malformed reference-shaped peers before IPC connect', async () => {
+    const invoke = jest.fn(async (_command, args) => {
+      const request = args.request
+      if (request.kind === 'bootstrap') return { kind: 'bootstrap', bootstrap: bootstrap() }
+      if (request.kind === 'release') return { kind: 'release', cleanup: { state: 'released', failures: [] } }
+      throw new Error(`unexpected route ${request.envelope.command}`)
+    })
+    const { createTauriBleManagerWithEnvironment } = require('../src/tauri')
+    const manager = await createTauriBleManagerWithEnvironment({ invoke, Channel: FakeChannel })
+
+    await expect(
+      manager.connect({ version: 2, backendId: 'unified-ble:tauri', scope: 'system', opaqueId: 'peer-1' })
+    ).rejects.toMatchObject({ code: 'peer.reference-invalid' })
+    expect(invoke.mock.calls.some(([, args]) => args.request.envelope?.command === 'connection.connect')).toBe(false)
+    await manager.destroy()
+  })
+
   test('rejects connection options that the Tauri IPC contract cannot route', async () => {
     const invoke = jest.fn(async (_command, args) => {
       const request = args.request

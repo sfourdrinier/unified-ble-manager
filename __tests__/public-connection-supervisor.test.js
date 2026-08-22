@@ -383,6 +383,43 @@ describe('public connection supervisor', () => {
     expect(supervisor.snapshot.state).toBe('stopped')
   })
 
+  test('does not start another attempt after a backoff exhausts the elapsed retry budget', async () => {
+    let now = 0
+    const ble = manager(null)
+    ble.connect.mockRejectedValue(new BleError('connection.failed', 'connection', 'test.elapsed'))
+    const supervisor = createConnectionSupervisor(ble, 'peer-elapsed', {
+      retry: { initialDelayMs: 1_000, maximumDelayMs: 1_000, multiplier: 1, jitter: 0, maximumElapsedMs: 100 },
+      now: () => now,
+      setTimeout: callback => {
+        now = 200
+        callback()
+        return 1
+      },
+      clearTimeout: () => undefined
+    })
+
+    supervisor.start()
+    await wait()
+
+    expect(ble.connect).toHaveBeenCalledTimes(1)
+    expect(supervisor.snapshot.state).toBe('stopped')
+  })
+
+  test('records a rejected asynchronous gate without an unhandled run rejection', async () => {
+    const supervisor = createConnectionSupervisor(manager(connection()), 'peer-gate-rejection', {
+      retry: { initialDelayMs: 1, maximumDelayMs: 1, multiplier: 1, jitter: 0 },
+      gate: async () => {
+        throw new Error('gate failed')
+      }
+    })
+
+    supervisor.start()
+    await wait()
+
+    expect(supervisor.snapshot.state).toBe('stopped')
+    await expect(supervisor.stop()).resolves.toMatchObject({ state: 'released' })
+  })
+
   test('does not reconnect after configure fails with a released connection', async () => {
     const current = connection()
     const ble = manager(current)
