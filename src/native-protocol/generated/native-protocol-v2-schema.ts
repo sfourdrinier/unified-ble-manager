@@ -1,7 +1,7 @@
 // src/native-protocol/generated/native-protocol-v2-schema.ts
 
 export const NATIVE_PROTOCOL_VERSION = 2
-export const NATIVE_PROTOCOL_ABI_VERSION = 2
+export const NATIVE_PROTOCOL_ABI_VERSION = 3
 export const MAXIMUM_CONTROL_RECORD_BYTES = 262144
 export const MAXIMUM_BINARY_PAYLOAD_BYTES = 524288
 

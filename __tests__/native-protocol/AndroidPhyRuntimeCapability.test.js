@@ -87,7 +87,7 @@ class PhyCapabilityControl {
     this.handshakes.push(request)
     return Promise.resolve({
       nativeProtocol: 2,
-      abi: 2,
+      abi: 3,
       backendContract: 1,
       capabilitySchema: 1,
       eventSchema: 1,

@@ -224,6 +224,31 @@ describe('Native Protocol v2 schema authority', () => {
     expect(schema).not.toContain('phyAvailable')
   })
 
+  test('versions Android link-control schema additions with ABI v3 while retaining protocol v2 records', () => {
+    const schema = JSON.parse(fs.readFileSync(schemaPath, 'utf8'))
+    const manifest = JSON.parse(fs.readFileSync(path.join(path.dirname(schemaPath), schema.abiManifest), 'utf8'))
+    const cpp = read('native/protocol/generated/NativeProtocolV2Schema.hpp')
+    const kotlin = read('android/src/main/java/com/sfourdrinier/unifiedblemanager/protocol/generated/NativeProtocolV2Schema.kt')
+    const swift = read('ios/Generated/NativeProtocolV2Schema.swift')
+    const typescript = read('src/native-protocol/generated/native-protocol-v2-schema.ts')
+    const androidControl = read(
+      'android/src/main/java/com/sfourdrinier/unifiedblemanager/protocol/UnifiedBleProtocolControlModule.java'
+    )
+
+    expect(schema.version).toBe(2)
+    expect(schema.abiVersion).toBe(3)
+    expect(manifest.version).toBe(3)
+    expect(cpp).toContain('kProtocolVersion = 2U')
+    expect(cpp).toContain('kAbiVersion = 3U')
+    expect(kotlin).toContain('NATIVE_PROTOCOL_VERSION: Int = 2')
+    expect(kotlin).toContain('NATIVE_PROTOCOL_ABI_VERSION: Int = 3')
+    expect(swift).toContain('nativeProtocolVersion: UInt32 = 2')
+    expect(swift).toContain('nativeProtocolABIVersion: UInt32 = 3')
+    expect(typescript).toContain('export const NATIVE_PROTOCOL_VERSION = 2')
+    expect(typescript).toContain('export const NATIVE_PROTOCOL_ABI_VERSION = 3')
+    expect(androidControl).toContain('NativeProtocolV2SchemaKt.NATIVE_PROTOCOL_ABI_VERSION')
+  })
+
   test('keeps Android JNI advertisement bytes and rejected command input under explicit native ownership', () => {
     const androidBinding = read('android/src/main/jni/UnifiedBleProtocolJsiBinding.cpp')
     const nativeRuntime = read('native/protocol/src/NativeProtocolControlRuntime.cpp')

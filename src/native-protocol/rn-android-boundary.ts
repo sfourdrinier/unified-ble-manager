@@ -65,7 +65,7 @@ import {
   parseAdvertisementRecord,
   requiredUnsigned
 } from './rn-android-protocol-records'
-import { NATIVE_PROTOCOL_VERSION } from './generated/native-protocol-v2-schema'
+import { NATIVE_PROTOCOL_ABI_VERSION, NATIVE_PROTOCOL_VERSION } from './generated/native-protocol-v2-schema'
 import type { ParsedNativeAdvertisement } from './rn-android-protocol-records'
 
 export type AndroidSecurityBondState = 'bonded' | 'bonding' | 'not-bonded' | 'unknown' | 'unsupported'
@@ -200,7 +200,7 @@ export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary
     try {
       const handshake = await this.control.handshake({
         nativeProtocol: { minimum: protocolVersion, maximum: protocolVersion },
-        abi: { minimum: protocolVersion, maximum: protocolVersion },
+        abi: { minimum: NATIVE_PROTOCOL_ABI_VERSION, maximum: NATIVE_PROTOCOL_ABI_VERSION },
         backendContract: { minimum: contractVersion, maximum: contractVersion },
         capabilitySchema: { minimum: contractVersion, maximum: contractVersion },
         eventSchema: { minimum: contractVersion, maximum: contractVersion },
@@ -1188,7 +1188,7 @@ function nativeErrorCode(error: NativeProtocolRecord): string {
 function assertHandshakeSelection(handshake: NativeProtocolHandshakeResult): void {
   if (
     handshake.nativeProtocol !== protocolVersion ||
-    handshake.abi !== protocolVersion ||
+    handshake.abi !== NATIVE_PROTOCOL_ABI_VERSION ||
     handshake.backendContract !== contractVersion ||
     handshake.capabilitySchema !== contractVersion ||
     handshake.eventSchema !== contractVersion ||
