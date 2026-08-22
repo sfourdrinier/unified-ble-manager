@@ -135,10 +135,11 @@ function writePeerStubs(tmp) {
 }
 
 function assertInstalledFromTarball(consumer) {
-  const packageJsonPath = require.resolve(`${rootPackage.name}/package.json`, { paths: [consumer] })
-  const packageRoot = path.dirname(packageJsonPath)
+  const packageRoot = fs.realpathSync(path.join(consumer, 'node_modules', rootPackage.name))
+  assert.ok(fs.existsSync(path.join(packageRoot, 'package.json')), `installed package manifest is missing: ${packageRoot}`)
+  const consumerRoot = fs.realpathSync(consumer)
   assert.ok(
-    packageRoot.startsWith(path.join(consumer, 'node_modules', rootPackage.name)),
+    packageRoot.startsWith(path.join(consumerRoot, 'node_modules', rootPackage.name)),
     `consumer resolved outside installed package: ${packageRoot}`
   )
   assert.ok(!packageRoot.startsWith(root), `consumer resolved repository source instead of tarball: ${packageRoot}`)

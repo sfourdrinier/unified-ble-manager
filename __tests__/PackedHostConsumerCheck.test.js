@@ -61,7 +61,8 @@ describe('packed Expo/Tauri consumer release gate', () => {
 
     expect(runner).toContain("npmCommand(), ['pack'")
     expect(runner).toContain("installedFrom: 'packed-tarball'")
-    expect(runner).toContain('require.resolve')
+    expect(runner).toContain("path.join(consumer, 'node_modules', rootPackage.name)")
+    expect(runner).not.toContain('require.resolve')
     expect(runner).not.toContain('moduleNameMapper')
     expect(runner).not.toContain("'unified-ble-manager': 'file:")
     expect(runner).toContain('physicalRadio:')

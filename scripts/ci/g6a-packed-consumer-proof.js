@@ -573,8 +573,10 @@ function validateZeroResourceCounters(counters, label) {
 }
 
 function assertInstalledPackageResolution(consumer, packageName) {
-  const packageJsonPath = require.resolve(`${packageName}/package.json`, { paths: [consumer] })
-  const packageRoot = fs.realpathSync(path.dirname(packageJsonPath))
+  const packageRoot = fs.realpathSync(path.join(consumer, 'node_modules', packageName))
+  if (!fs.existsSync(path.join(packageRoot, 'package.json'))) {
+    throw new Error(`G6A installed package manifest is missing: ${packageRoot}`)
+  }
   const consumerRoot = fs.realpathSync(consumer)
   const expectedRoot = path.join(consumerRoot, 'node_modules', packageName)
   if (!packageRoot.startsWith(expectedRoot)) {
