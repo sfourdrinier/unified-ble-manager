@@ -91,6 +91,7 @@ describe('WinRT security backend adapter', () => {
     await expect(security.pair('peer-1', options())).rejects.toMatchObject({ normalized: { code: 'ownership.denied' } })
     await expect(security.cancelPairing('peer-1', options())).resolves.toEqual({ outcome: 'cancelled' })
     await expect(first).resolves.toEqual({ outcome: 'cancelled' })
+    expect(security.activePairings.size).toBe(0)
     await expect(security.cancelPairing('peer-1', options())).resolves.toEqual({ outcome: 'not-pairing' })
     await expect(security.unpair('peer-1', options())).resolves.toEqual({ outcome: 'unpaired' })
     security.close()

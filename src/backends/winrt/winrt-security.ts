@@ -100,14 +100,6 @@ export class WinRtSecurityBackend implements SecurityBackend {
       return Promise.reject(contractError('ownership.denied', 'platform', 'winrt.security.pair.arbitration'))
     }
     const operation = this.dispatcher.dispatch(options, 'winrt.security.pair', () => this.boundary.pair(peerId))
-    const result = operation.completion
-      .then(value => this.snapshotPairResult(value))
-      .catch(error => {
-        if (error instanceof BackendContractError && error.normalized.code === 'operation.aborted') {
-          return { outcome: 'cancelled' as const }
-        }
-        throw error
-      })
     this.activePairings.set(peerId, { operation })
     const settle = () => {
       const active = this.activePairings.get(peerId)
@@ -115,7 +107,22 @@ export class WinRtSecurityBackend implements SecurityBackend {
         this.activePairings.delete(peerId)
       }
     }
+    operation.completion.then(() => settle(), () => undefined).catch(() => undefined)
     operation.physicalCompletion.then(settle, settle).catch(() => undefined)
+    const result = operation.completion
+      .then(async value => {
+        const result = this.snapshotPairResult(value)
+        if (value.outcome === 'cancelled') {
+          await operation.physicalCompletion
+        }
+        return result
+      })
+      .catch(error => {
+        if (error instanceof BackendContractError && error.normalized.code === 'operation.aborted') {
+          return { outcome: 'cancelled' as const }
+        }
+        throw error
+      })
     return result
   }
 
