@@ -72,8 +72,12 @@ export type {
   WinRtScanTerminalError,
   WinRtScanTerminalRecord,
   WinRtScanTerminalStatus,
-  WinRtServiceRecord
+  WinRtServiceRecord,
+  WinRtPairResult,
+  WinRtSecurityState,
+  WinRtSecurityStateChangedRecord
 } from './backends/winrt/winrt-boundary'
+export type { WinRtSecurityBoundary } from './backends/winrt/winrt-security'
 export type { WinRtBackendProviderOptions } from './backends/winrt/winrt-provider'
 
 export interface NativeWinRtProviderOptions {

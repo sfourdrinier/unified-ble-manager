@@ -69,6 +69,7 @@ import {
   releasedCleanup
 } from './winrt-handles'
 import { WinRtGattOperations } from './winrt-gatt-operations'
+import { isWinRtSecurityBoundary, WinRtSecurityBackend } from './winrt-security'
 import {
   assertWinRtOperationAdmission,
   broadcastWinRtEvent,
@@ -366,6 +367,7 @@ export class WinRtBackend implements BleCentralBackend<string, HostNeutralBacken
   readonly scanner: ScannerBackend<string>
   readonly connections: ConnectionBackend<string>
   readonly gatt: GattBackend<string>
+  readonly security: WinRtSecurityBackend | undefined
   readonly dispatcher: WinRtOperationDispatcher
   readonly subscriptions = new Map<string, WinRtPhysicalSubscription>()
   private readonly backendInstanceId: BackendInstanceId<string>
@@ -434,6 +436,7 @@ export class WinRtBackend implements BleCentralBackend<string, HostNeutralBacken
       subscribe: this.gattOperations.subscribe.bind(this.gattOperations),
       unsubscribe: this.gattOperations.unsubscribe.bind(this.gattOperations)
     })
+    this.security = isWinRtSecurityBoundary(boundary) ? new WinRtSecurityBackend(boundary, now) : undefined
     this.removeConnectionListener = boundary.onConnectionLost(record => {
       try {
         this.handleConnectionLoss(validateWinRtConnectionLossRecord(record))
@@ -1753,6 +1756,7 @@ export class WinRtBackend implements BleCentralBackend<string, HostNeutralBacken
 
   private async destroyInternal(): Promise<CleanupRecord> {
     this.admissionClosed = true
+    this.security?.close()
     const failures: CleanupFailure[] = []
     try {
       await this.dispatcher.cancelAll('destroyed')
