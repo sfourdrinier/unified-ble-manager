@@ -42,7 +42,11 @@ export class CoreBluetoothConnectionControls {
         if (!Number.isSafeInteger(rssi)) {
           throw contractError('protocol.malformed', 'connection', 'corebluetooth.connection.read-rssi.result')
         }
-        return Object.freeze({ rssi, terminal: successfulTerminal(request.operation) })
+        return Object.freeze({
+          rssi,
+          observedAtMonotonicMs: this.backend.monotonicNow(),
+          terminal: successfulTerminal(request.operation)
+        })
       },
       String(connection.connectionId)
     )
@@ -79,6 +83,7 @@ export class CoreBluetoothConnectionControls {
         return Object.freeze({
           requestedMtu: request.requestedMtu,
           negotiatedMtu,
+          observedAtMonotonicMs: this.backend.monotonicNow(),
           terminal: successfulTerminal(request.operation)
         })
       },

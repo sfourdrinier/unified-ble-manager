@@ -48,8 +48,13 @@ function fakeInternalManager() {
   const internalConnection = {
     connectionGeneration: 'generation-1',
     events: { [Symbol.asyncIterator]: () => ({ next: async () => ({ done: true, value: undefined }), return: async () => ({ done: true, value: undefined }) }) },
-    readRssi: async () => ({ rssi: -42, terminal: terminal() }),
-    requestMtu: async requestedMtu => ({ requestedMtu, negotiatedMtu: 185, terminal: terminal() }),
+    readRssi: async () => ({ rssi: -42, observedAtMonotonicMs: 5678, terminal: terminal() }),
+    requestMtu: async requestedMtu => ({
+      requestedMtu,
+      negotiatedMtu: 185,
+      observedAtMonotonicMs: 6789,
+      terminal: terminal()
+    }),
     maximumWriteLength: async (mode, options) => {
       maximumWriteLengthRequests.push({ mode, options })
       return {
@@ -110,7 +115,7 @@ describe('PR8A public link controls', () => {
       state: 'measured',
       rssi: -42,
       connectionGeneration: 'generation-1',
-      observedAtMonotonicMs: 1234,
+      observedAtMonotonicMs: 5678,
       source: 'backend',
       authority: 'backend-operation',
       limitations: [{ code: 'test' }]
@@ -118,12 +123,13 @@ describe('PR8A public link controls', () => {
     await expect(connection.controls.requestMtu(185)).resolves.toMatchObject({
       state: 'accepted',
       requestedMtu: 185,
+      observedAtMonotonicMs: 6789,
       observation: {
         state: 'measured',
         attMtu: 185,
         payloadBytes: 182,
         connectionGeneration: 'generation-1',
-        observedAtMonotonicMs: 1234,
+        observedAtMonotonicMs: 6789,
         source: 'backend'
       }
     })

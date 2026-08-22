@@ -19,12 +19,14 @@ export interface ConnectionControlCapabilities {
 
 export interface RssiMeasurement<Attachment extends string, _Operation extends string> {
   readonly rssi: number
+  readonly observedAtMonotonicMs: number
   readonly terminal: OperationTerminalRecord<Attachment, string>
 }
 
 export interface MtuNegotiation<Attachment extends string, _Operation extends string> {
   readonly requestedMtu: number
   readonly negotiatedMtu: number
+  readonly observedAtMonotonicMs: number
   readonly terminal: OperationTerminalRecord<Attachment, string>
 }
 

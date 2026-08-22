@@ -431,7 +431,7 @@ function createPublicConnectionControls(
       const normalized = normalizeOperationOptions(options, now)
       const result = await connection.readRssi({ signal: normalized.signal, deadline: normalized.deadline })
       return Object.freeze({
-        ...controlMetadata(generation, now(), descriptor, 'backend-operation'),
+        ...controlMetadata(generation, result.observedAtMonotonicMs, descriptor, 'backend-operation'),
         state: 'measured' as const,
         rssi: Number(result.rssi)
       })
@@ -478,14 +478,14 @@ function createPublicConnectionControls(
         deadline: normalized.deadline
       })
       const observation = Object.freeze({
-        ...controlMetadata(generation, now(), descriptor, 'backend-operation'),
+        ...controlMetadata(generation, result.observedAtMonotonicMs, descriptor, 'backend-operation'),
         state: 'measured' as const,
         attMtu: Number(result.negotiatedMtu),
         payloadBytes: Number(result.negotiatedMtu) - 3,
         platformPduBytes: null
       })
       return Object.freeze({
-        ...controlMetadata(generation, now(), descriptor, 'backend-operation'),
+        ...controlMetadata(generation, result.observedAtMonotonicMs, descriptor, 'backend-operation'),
         state: 'accepted' as const,
         requestedMtu,
         observation
@@ -533,7 +533,10 @@ function createPublicConnectionControls(
     requestPhy: (_preference: PhyPreference, _options: OperationOptions = {}) =>
       unsupportedPromise<PhyUpdateResult>('connection:phy', 'public-connection.controls.request-phy'),
     parameters: () =>
-      unsupportedPromise<ConnectionParametersObservation>('connection:parameters', 'public-connection.controls.parameters'),
+      unsupportedPromise<ConnectionParametersObservation>(
+        'connection:parameters',
+        'public-connection.controls.parameters'
+      ),
     parameterEvents: () =>
       unsupportedControlStream<ConnectionParametersObservation>('public-connection.controls.parameter-events'),
     requestSubrate: (_mode: SubrateMode, _options: OperationOptions = {}) =>

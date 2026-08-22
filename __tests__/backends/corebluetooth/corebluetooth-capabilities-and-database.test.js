@@ -192,7 +192,11 @@ describe('CoreBluetooth runtime capabilities and database-change semantics', () 
 
     const { lease } = await connectedDatabase(backend)
     const dispatch = backend.connections.readRssi(lease.connection, { operation: operationRequest('read-rssi') })
-    await expect(dispatch.completion).resolves.toMatchObject({ rssi: -47, terminal: { outcome: 'succeeded' } })
+    await expect(dispatch.completion).resolves.toMatchObject({
+      rssi: -47,
+      observedAtMonotonicMs: 20,
+      terminal: { outcome: 'succeeded' }
+    })
     expect(boundary.readRssi).toHaveBeenCalledWith('native-polar-h10')
     await backend.destroy()
   })
