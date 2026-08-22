@@ -1,9 +1,10 @@
-# Post-PR5 audit disposition and PR6 closure plan
+# Post-PR5 audit disposition, PR6 closure, and PR7 continuation
 
 Source audit: `~/Downloads/unified-ble-manager-post-pr5-audit.md`
 Audit snapshot: `bc4a347c496e994e97cec9da06e2c0a6223a72f8`
 RC2 release snapshot: `main` / `ab331517083c5a580894adb3d79d075f299c9db5` / `v4.0.0-rc.2`
-Current PR6 audit source: `feat/4.0-pr6-audit-closure` / `dac701f3bef8213074c829f1dce8ce3a2f42df38`
+Historical PR6 audit source: `feat/4.0-pr6-audit-closure` / `dac701f3bef8213074c829f1dce8ce3a2f42df38`
+Current PR7 implementation checkpoint: `feat/4.0-security-pairing` / `96a6078` plus documentation-only descendants
 
 Execution authority for this continuation is the revised session instruction,
 `docs/superpowers/plans/2026-08-20-next-12-prs.md`, this disposition ledger,
@@ -14,7 +15,7 @@ is superseded where it conflicts with those authorities.
 
 RC2 is an immutable, quarantined prerelease. It reached the tag workflow because no confirmed P0 required cancelling the already-running release operation, and the tag/package/CI/provenance gates are independent of the unresolved application defects. Publication recovery completed on workflow attempt 2 after npm registry attestation propagation; the GitHub Release, npm `latest` dist-tag, exact tag commit, tarball, and provenance source binding were independently read back successfully. RC2 remains quarantined: it must not be treated as the finished RC2 closure, stable-ready, or evidence that the normal user journey is production-safe.
 
-The existing PR6 implementation WIP is preserved in `stash@{0}` and is applied to the PR6 closure branch without popping the stash. No audit correction is added to the immutable RC2 tag.
+The preserved PR6 implementation WIP remains in `stash@{0}` and is not popped or rewritten. No audit correction is added to the immutable RC2 tag.
 
 ## Disposition legend
 
@@ -107,8 +108,8 @@ At commit `1de583bcd92495bc9150a33b80512b2dd9a81539`, PR7A has landed:
   assertions.
 
 Android security is now tracked as the PR7C1 working-tree slice; Windows pairing/unpairing, BlueZ system pairing,
-and trusted-host Electron/Tauri security scopes remain PR7C work. No native
-support closure claim is made by PR7A or the Android WIP. The local packed smoke reached `npm pack` but was
+and trusted-host Electron/Tauri security scopes remain PR7C4 work. No native
+support closure claim is made by PR7A, PR7C1, or PR7C4. The local packed smoke reached `npm pack` but was
 blocked by npm's local exit-handler failure; hosted supported-Node CI remains a
 required gate before PR7 can merge.
 
