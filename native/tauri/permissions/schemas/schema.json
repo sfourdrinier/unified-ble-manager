@@ -311,6 +311,36 @@
           "type": "string",
           "const": "default",
           "markdownDescription": "Allows the Unified BLE Manager webview transport to invoke its versioned IPC boundary.\n#### This default permission set includes:\n\n- `allow-invoke`"
+        },
+        {
+          "description": "Allows reading trusted-host BLE security state.",
+          "type": "string",
+          "const": "allow-security-state",
+          "markdownDescription": "Allows reading trusted-host BLE security state."
+        },
+        {
+          "description": "Allows trusted-host system pairing requests.",
+          "type": "string",
+          "const": "allow-security-pair",
+          "markdownDescription": "Allows trusted-host system pairing requests."
+        },
+        {
+          "description": "Allows trusted-host pairing cancellation requests.",
+          "type": "string",
+          "const": "allow-security-cancel-pairing",
+          "markdownDescription": "Allows trusted-host pairing cancellation requests."
+        },
+        {
+          "description": "Allows trusted-host removal of durable pairing state.",
+          "type": "string",
+          "const": "allow-security-unpair",
+          "markdownDescription": "Allows trusted-host removal of durable pairing state."
+        },
+        {
+          "description": "Allows trusted-host custom pairing ceremony handling.",
+          "type": "string",
+          "const": "allow-security-custom-ceremony",
+          "markdownDescription": "Allows trusted-host custom pairing ceremony handling."
         }
       ]
     }

@@ -1,0 +1,36 @@
+"$schema" = "schemas/schema.json"
+
+[[permission]]
+identifier = "allow-security-state"
+description = "Allows reading trusted-host BLE security state."
+commands.allow = ["invoke"]
+[[permission.scope.allow]]
+operation = "state"
+
+[[permission]]
+identifier = "allow-security-pair"
+description = "Allows trusted-host system pairing requests."
+commands.allow = ["invoke"]
+[[permission.scope.allow]]
+operation = "pair"
+
+[[permission]]
+identifier = "allow-security-cancel-pairing"
+description = "Allows trusted-host pairing cancellation requests."
+commands.allow = ["invoke"]
+[[permission.scope.allow]]
+operation = "cancel-pairing"
+
+[[permission]]
+identifier = "allow-security-unpair"
+description = "Allows trusted-host removal of durable pairing state."
+commands.allow = ["invoke"]
+[[permission.scope.allow]]
+operation = "unpair"
+
+[[permission]]
+identifier = "allow-security-custom-ceremony"
+description = "Allows trusted-host custom pairing ceremony handling."
+commands.allow = ["invoke"]
+[[permission.scope.allow]]
+operation = "custom-ceremony"

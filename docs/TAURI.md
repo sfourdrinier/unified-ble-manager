@@ -53,6 +53,15 @@ tauri::Builder::default()
 
 Grant `unified-ble-manager:default` only to intended windows. Await `manager.destroy()` when the webview session ends.
 
+Security permissions are separate from the default transport permission. The
+plugin defines `unified-ble-manager:allow-security-state`,
+`allow-security-pair`, `allow-security-cancel-pairing`,
+`allow-security-unpair`, and `allow-security-custom-ceremony`; each is enforced
+by a Rust command scope, never by renderer request fields. The default set does
+not grant unpair or custom-ceremony authority. The current btleplug dispatcher
+still reports all generic security capabilities as unsupported until a native
+pairing implementation and matching TCK/evidence are added.
+
 See [`example-tauri/`](../example-tauri/) for a small public-API proof.
 
 ## Maintainers
