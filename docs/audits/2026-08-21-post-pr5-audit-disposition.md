@@ -4,7 +4,7 @@ Source audit: `~/Downloads/unified-ble-manager-post-pr5-audit.md`
 Audit snapshot: `bc4a347c496e994e97cec9da06e2c0a6223a72f8`
 RC2 release snapshot: `main` / `ab331517083c5a580894adb3d79d075f299c9db5` / `v4.0.0-rc.2`
 Historical PR6 audit source: `feat/4.0-pr6-audit-closure` / `dac701f3bef8213074c829f1dce8ce3a2f42df38`
-Current PR7 implementation checkpoint: `feat/4.0-security-pairing` / `e53629c` (implementation tip); documentation-only descendants from this commit
+Current PR7 implementation checkpoint: `feat/4.0-security-pairing` / `9201780` (implementation tip); documentation-only descendants from this commit
 
 Execution authority for this continuation is the revised session instruction,
 `docs/superpowers/plans/2026-08-20-next-12-prs.md`, this disposition ledger,
@@ -222,7 +222,7 @@ protocol.
 Evidence: Tauri Rust tests (21 on the local macOS target; the Linux-only
 authorization test is included by the hosted Linux target), focused
 Electron/Tauri tests previously passed, full package gate at the current
-candidate passed (123 suites, 1,172 tests), lint/typecheck, clippy, native protocol,
+candidate passed (123 suites, 1,175 tests), lint/typecheck, clippy, native protocol,
 plugin, docs/API, evidence, artifact, diff, and forbidden-assertion-smell
 gates passed locally at the prior implementation checkpoint. Hosted CI,
 Android/Windows native qualification, and
@@ -260,6 +260,9 @@ by its exact fix and regression proof:
 | Final adversarial WinRT current-link security overclaim | Fixed | `e53629c`; native WinRT pairing projection leaves encryption/authentication unsupported because pairing protection is not a current-link measurement. |
 | Final adversarial Android state and BlueZ unpair cancellation/deadline gaps | Fixed | `e53629c`; Android state uses a cancellation/deadline race and BlueZ unpair uses the operation dispatcher. |
 | Final adversarial overflow-plus-cleanup error loss | Fixed | `e53629c`; public watch overflow preserves both the overflow and cleanup failures. |
+| Second Codex P1 Android peer-ID translation | Fixed | `3481c27` and `95ab287`; CoreBluetooth-owned mappings now translate Android public IDs to native IDs and events back, including TCK fixture wiring. |
+| Second Codex P1 WinRT peer-ID translation | Fixed | `3481c27` and `95ab287`; WinRT security receives the backend-owned bidirectional resolver and never publishes native IDs. |
+| Second Codex P2 WinRT cancelPairing operation controls | Fixed | `3481c27` and `9201780`; composite cancellation is dispatcher-tracked, honors pre-abort/deadline admission, and retains both cancellation and pairing physical ownership. |
 
 The exact candidate now has a complete green hosted PR40 CI run; it still
 requires the final exact-tip adversarial review, the second Codex review round,
@@ -270,13 +273,13 @@ and the remaining native/evidence gates below before PR7 can merge.
 | Evidence area | Current disposition | Authoritative proof or blocker |
 | --- | --- | --- |
 | TypeScript/API/docs/generated support | Proven | `pnpm docs:check`; 23 API entrypoints; Tauri permission schema/reference and Electron/Tauri security docs are committed. |
-| Package/prepack/deterministic packed consumer | Proven locally | `pnpm test:package` passed 123 suites / 1,172 tests, including prepack and G6A packed-consumer coverage. |
+| Package/prepack/deterministic packed consumer | Proven locally | `pnpm test:package` passed 123 suites / 1,175 tests, including prepack and G6A packed-consumer coverage. |
 | Native protocol and Tauri native scope | Proven locally | `pnpm native-protocol:check`, `pnpm test:native-protocol`, `cargo test --manifest-path native/tauri/Cargo.toml` (21 tests on local macOS; Linux adds the platform-specific authorization test), and clippy `-D warnings` passed. |
 | Desktop IPC security capability truth | Proven locally | Electron/Tauri scope tests and `ElectronPublicManager` regression ensure unsupported native security is not promoted through IPC bootstrap. |
 | Raw npm pack-install smoke | Blocked locally | `node scripts/ci/pack-install-smoke.js` reaches local npm packing but hangs/encounters the npm exit-handler failure; hosted supported-Node proof is required. |
 | Android Gradle/JVM and physical Android | Blocked/open | Local lane is blocked before compilation by missing `example/node_modules/@react-native/gradle-plugin`; hosted Android compile/JVM and physical-radio evidence remain required. |
 | WinRT native ABI/runtime and physical desktop | Blocked/open | macOS cannot qualify the Windows native artifact; hosted Windows compile/ABI/runtime and physical evidence remain required. |
-| Hosted CI and release qualification | Proven for exact code tip `e53629c` | Hosted PR40 run `32557364881` is green across JS Node22/24/macOS/Windows, Tauri macOS/Linux/Windows, Expo CNG Android, and Classic RN Android. Apple compile checks are skipped by the workflow’s opt-in policy. |
+| Hosted CI and release qualification | Awaiting exact code tip `9201780` | Hosted PR40 run `32557364881` is green for the prior semantic candidate; the second-Codex peer-ID/cancellation fixes require a new exact-tip hosted run. Apple compile checks are skipped by the workflow’s opt-in policy. |
 
 PR7E is therefore an explicit evidence checkpoint, not a closure claim. Its
 remaining local packed-smoke, physical-radio, and later-release distribution
