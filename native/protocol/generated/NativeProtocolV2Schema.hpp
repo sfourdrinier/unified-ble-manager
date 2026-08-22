@@ -62,7 +62,8 @@ enum class CommandKinds : std::uint16_t {
   securityPair = 18U,
   securityCancelPairing = 19U,
   readPhy = 21U,
-  requestPhy = 22U
+  requestPhy = 22U,
+  readMtu = 23U
 };
 
 enum class ResultKinds : std::uint16_t {
@@ -224,7 +225,7 @@ inline constexpr std::array<RecordKindDescriptor, 23> kRecordKindDescriptors{{
   RecordKindDescriptor{RecordKind::restorationAdoptionResult, "restorationAdoptionResult"}
 }};
 
-inline constexpr std::array<FieldDescriptor, 166> kFieldDescriptors{{
+inline constexpr std::array<FieldDescriptor, 167> kFieldDescriptors{{
   FieldDescriptor{RecordKind::attachment, 1U, "attachmentId", "string", true},
   FieldDescriptor{RecordKind::attachment, 2U, "backendInstanceId", "string", true},
   FieldDescriptor{RecordKind::attachment, 3U, "backendGeneration", "string", true},
@@ -320,6 +321,7 @@ inline constexpr std::array<FieldDescriptor, 166> kFieldDescriptors{{
   FieldDescriptor{RecordKind::result, 19U, "phyTx", "enum:connectionPhys", false},
   FieldDescriptor{RecordKind::result, 20U, "phyRx", "enum:connectionPhys", false},
   FieldDescriptor{RecordKind::result, 21U, "phyAccepted", "boolean", false},
+  FieldDescriptor{RecordKind::result, 22U, "effectiveMtu", "uint64", false},
   FieldDescriptor{RecordKind::advertisement, 1U, "peerId", "string", true},
   FieldDescriptor{RecordKind::advertisement, 2U, "observedAt", "uint64", true},
   FieldDescriptor{RecordKind::advertisement, 3U, "ingressOrdinal", "uint64", true},
@@ -393,7 +395,7 @@ inline constexpr std::array<FieldDescriptor, 166> kFieldDescriptors{{
   FieldDescriptor{RecordKind::restorationAdoptionResult, 7U, "records", "records:restorationRecord", true}
 }};
 
-inline constexpr std::array<EnumValueDescriptor, 95> kEnumValueDescriptors{{
+inline constexpr std::array<EnumValueDescriptor, 96> kEnumValueDescriptors{{
   EnumValueDescriptor{"commandKinds", "scanStart"},
   EnumValueDescriptor{"commandKinds", "scanStop"},
   EnumValueDescriptor{"commandKinds", "connect"},
@@ -416,6 +418,7 @@ inline constexpr std::array<EnumValueDescriptor, 95> kEnumValueDescriptors{{
   EnumValueDescriptor{"commandKinds", "securityCancelPairing"},
   EnumValueDescriptor{"commandKinds", "readPhy"},
   EnumValueDescriptor{"commandKinds", "requestPhy"},
+  EnumValueDescriptor{"commandKinds", "readMtu"},
   EnumValueDescriptor{"resultKinds", "accepted"},
   EnumValueDescriptor{"resultKinds", "scanStarted"},
   EnumValueDescriptor{"resultKinds", "connected"},

@@ -30,6 +30,8 @@ import type {
   ConnectionPhyRequest,
   ConnectionPriorityRequest,
   ConnectionWriteReadinessWatch,
+  EffectiveMtuMeasurement,
+  EffectiveMtuRequest,
   MtuNegotiation,
   ReadRssiRequest,
   ReadPhyRequest,
@@ -181,6 +183,10 @@ export interface ConnectionBackend<Attachment extends string> {
     connection: BackendConnection<Attachment, string>,
     request: RequestMtuRequest<Attachment, Operation>
   ): BackendOperationDispatch<Attachment, MtuNegotiation<Attachment, Operation>>
+  effectiveMtu?<Operation extends string>(
+    connection: BackendConnection<Attachment, string>,
+    request: EffectiveMtuRequest<Attachment, Operation>
+  ): BackendOperationDispatch<Attachment, EffectiveMtuMeasurement<Attachment, Operation>>
   requestPriority?<Operation extends string>(
     connection: BackendConnection<Attachment, string>,
     request: RequestPriorityRequest<Attachment, Operation>

@@ -350,6 +350,7 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
       connect: (peerId, clientId, options) => this.connect(peerId, clientId, options),
       readRssi: (connection, request) => this.connectionControls.readRssi(connection, request),
       requestMtu: (connection, request) => this.connectionControls.requestMtu(connection, request),
+      effectiveMtu: (connection, request) => this.connectionControls.effectiveMtu(connection, request),
       requestPriority: (connection, request) => this.connectionControls.requestPriority(connection, request),
       readPhy: (connection, request) => this.connectionControls.readPhy(connection, request),
       requestPhy: (connection, request) => this.connectionControls.requestPhy(connection, request),

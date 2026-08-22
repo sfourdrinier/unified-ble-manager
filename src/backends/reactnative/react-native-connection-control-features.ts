@@ -63,6 +63,32 @@ export function createReactNativeConnectionControlFeatureRegistry(
           ]),
           Object.freeze({ attMtu: Object.freeze({ maximum: 0, minimum: null, unit: 'bytes' }) })
         )
+  const effectiveMtu =
+    platform === 'android'
+      ? createFeatureRegistration(
+          BUILT_IN_FEATURE_IDS.connectionEffectiveMtu,
+          'limited',
+          implementationVersion,
+          'react-native-android-effective-mtu-probe-v1',
+          Object.freeze([liveQualificationLimitation('effective ATT MTU observation')]),
+          Object.freeze({
+            attMtu: Object.freeze({ maximum: MAXIMUM_REQUESTED_ATT_MTU, minimum: MINIMUM_ATT_MTU, unit: 'bytes' })
+          })
+        )
+      : createFeatureRegistration(
+          BUILT_IN_FEATURE_IDS.connectionEffectiveMtu,
+          'unsupported',
+          implementationVersion,
+          'react-native-apple-corebluetooth-effective-mtu-v1',
+          Object.freeze([
+            Object.freeze({
+              code: 'corebluetooth-effective-mtu-unavailable',
+              explanation: 'CoreBluetooth exposes neither the current ATT MTU nor a platform PDU observation.',
+              affectedGuarantee: 'current effective ATT MTU observation'
+            })
+          ]),
+          Object.freeze({ attMtu: Object.freeze({ maximum: 0, minimum: null, unit: 'bytes' }) })
+        )
   const phy =
     platform === 'android'
       ? createFeatureRegistration(
@@ -87,13 +113,14 @@ export function createReactNativeConnectionControlFeatureRegistry(
           ]),
           Object.freeze({ phyModes: Object.freeze({ maximum: 0, minimum: null, unit: 'modes' }) })
         )
-  return createFeatureRegistry(Object.freeze([rssi, requestMtu, phy]))
+  return createFeatureRegistry(Object.freeze([rssi, requestMtu, effectiveMtu, phy]))
 }
 
 function createFeatureRegistration(
   id:
     | typeof BUILT_IN_FEATURE_IDS.connectionRssi
     | typeof BUILT_IN_FEATURE_IDS.connectionRequestMtu
+    | typeof BUILT_IN_FEATURE_IDS.connectionEffectiveMtu
     | typeof BUILT_IN_FEATURE_IDS.connectionPhy,
   state: 'limited' | 'unsupported',
   implementationVersion: string,

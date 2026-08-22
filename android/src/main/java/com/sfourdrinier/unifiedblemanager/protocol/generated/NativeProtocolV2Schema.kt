@@ -55,7 +55,8 @@ enum class CommandKinds(val wireValue: Int) {
   SECURITY_PAIR(18),
   SECURITY_CANCEL_PAIRING(19),
   READ_PHY(21),
-  REQUEST_PHY(22)
+  REQUEST_PHY(22),
+  READ_MTU(23)
 }
 
 enum class ResultKinds(val wireValue: Int) {
@@ -277,6 +278,7 @@ val NATIVE_PROTOCOL_FIELDS: List<FieldDescriptor> = listOf(
     FieldDescriptor(RecordKind.RESULT, 19, "phyTx", "enum:connectionPhys", false),
     FieldDescriptor(RecordKind.RESULT, 20, "phyRx", "enum:connectionPhys", false),
     FieldDescriptor(RecordKind.RESULT, 21, "phyAccepted", "boolean", false),
+    FieldDescriptor(RecordKind.RESULT, 22, "effectiveMtu", "uint64", false),
     FieldDescriptor(RecordKind.ADVERTISEMENT, 1, "peerId", "string", true),
     FieldDescriptor(RecordKind.ADVERTISEMENT, 2, "observedAt", "uint64", true),
     FieldDescriptor(RecordKind.ADVERTISEMENT, 3, "ingressOrdinal", "uint64", true),

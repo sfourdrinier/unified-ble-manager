@@ -178,6 +178,7 @@ class UnifiedBleProtocolAndroidDispatcher(
         "writeDescriptor" -> writeDescriptor(command)
         "readRssi" -> readRssi(command)
         "requestMtu" -> requestMtu(command)
+        "readMtu" -> readMtu(command)
         "requestPriority" -> requestPriority(command)
         "readPhy" -> readPhy(command)
         "requestPhy" -> requestPhy(command)
@@ -446,6 +447,24 @@ class UnifiedBleProtocolAndroidDispatcher(
           emitSuccess(command, "mtu", mapOf(14 to ProtocolWireValue.UnsignedIntegerValue(negotiatedMtu.toLong())))
         },
         onFailure = { error -> emitFailure(command, "requestMtuFailed", error.message ?: "Android MTU request failed") }
+      )
+    }
+    radioOperationIds[operationKey(command)] = radioOperationId
+  }
+
+  private fun readMtu(command: ProtocolWireRecord) {
+    val deviceId = command.requiredRecord(10).requiredString(2)
+    val radioOperationId = radio.readEffectiveMtu(deviceId) { result ->
+      result.fold(
+        onSuccess = { effectiveMtu ->
+          val fields = if (effectiveMtu === null) {
+            emptyMap()
+          } else {
+            mapOf(22 to ProtocolWireValue.UnsignedIntegerValue(effectiveMtu.toLong()))
+          }
+          emitSuccess(command, "mtu", fields)
+        },
+        onFailure = { error -> emitFailure(command, "readMtuFailed", error.message ?: "Android effective MTU read failed") }
       )
     }
     radioOperationIds[operationKey(command)] = radioOperationId
@@ -966,7 +985,7 @@ class UnifiedBleProtocolAndroidDispatcher(
   private fun commandDeviceId(command: ProtocolWireRecord): String? {
     return try {
       when (command.requiredString(3)) {
-        "connect", "disconnect", "discover", "readRssi", "requestMtu", "requestPriority" ->
+        "connect", "disconnect", "discover", "readRssi", "requestMtu", "readMtu", "requestPriority" ->
           command.requiredRecord(10).requiredString(2)
         "read", "write", "subscribe", "unsubscribe" -> characteristicEndpoint(command.requiredRecord(4)).deviceId
         "readDescriptor", "writeDescriptor" -> descriptorEndpoint(command.requiredRecord(5)).deviceId
@@ -1080,6 +1099,7 @@ internal fun dispatcherResultKindFor(commandKind: String): String = when (comman
   "writeDescriptor" -> "descriptorWrite"
   "readRssi" -> "rssi"
   "requestMtu" -> "mtu"
+  "readMtu" -> "mtu"
   "requestPriority" -> "priority"
   "readPhy", "requestPhy" -> "phy"
   "subscribe" -> "subscribed"

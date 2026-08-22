@@ -1,10 +1,12 @@
 // src/native-protocol/rn-android-boundary.ts
 
 import { contractError } from '../backend-contract/errors'
-import type {
-  ConnectionControlCapabilities,
-  ConnectionPriority,
-  PhyPreference
+import {
+  MAXIMUM_REQUESTED_ATT_MTU,
+  MINIMUM_ATT_MTU,
+  type ConnectionControlCapabilities,
+  type ConnectionPriority,
+  type PhyPreference
 } from '../backend-contract/connection-controls'
 import type {
   NativeAttachmentIdentity,
@@ -58,6 +60,7 @@ import {
   snapshotFromRecord,
   optionalRecord,
   optionalString,
+  optionalUnsigned,
   publicPhyFromNative,
   parseAdvertisementRecord,
   requiredUnsigned
@@ -112,6 +115,7 @@ export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary
   readonly connectionControlCapabilities: ConnectionControlCapabilities = Object.freeze({
     rssi: 'available',
     requestMtu: 'available',
+    effectiveMtu: 'available',
     priority: 'available',
     phy: 'available'
   })
@@ -319,6 +323,24 @@ export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary
     }
     const result = await this.dispatch('requestMtu', [field(10, connection.record), field(14, requestedMtu)])
     return requiredUnsigned(result, 14, 'rn-android-boundary.request-mtu.negotiated')
+  }
+
+  async effectiveMtu(nativePeerId: string): Promise<number | null> {
+    this.requireOpen('effective-mtu')
+    const connection = this.requireConnection(nativePeerId, 'effective-mtu')
+    if (connection.state !== 'connected') {
+      throw contractError('operation.disconnected', 'connection', 'rn-android-boundary.effective-mtu')
+    }
+    const result = await this.dispatch('readMtu', [field(10, connection.record)])
+    if (requiredString(result, 2, 'rn-android-boundary.effective-mtu.kind') !== 'mtu') {
+      throw contractError('protocol.malformed', 'boundary', 'rn-android-boundary.effective-mtu.kind')
+    }
+    const value = optionalUnsigned(result, 22, 'rn-android-boundary.effective-mtu.value')
+    if (value === null) return null
+    if (value < MINIMUM_ATT_MTU || value > MAXIMUM_REQUESTED_ATT_MTU) {
+      throw contractError('protocol.malformed', 'boundary', 'rn-android-boundary.effective-mtu.range')
+    }
+    return value
   }
 
   async requestPriority(nativePeerId: string, priority: ConnectionPriority): Promise<boolean> {

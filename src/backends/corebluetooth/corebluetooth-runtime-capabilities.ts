@@ -57,6 +57,9 @@ export function createCoreBluetoothRuntimeFeatureRegistry(
   if (!hasRegistration(registrations, BUILT_IN_FEATURE_IDS.connectionRequestMtu)) {
     registrations.push(createRequestMtuRegistration(options.implementationVersion))
   }
+  if (!hasRegistration(registrations, BUILT_IN_FEATURE_IDS.connectionEffectiveMtu)) {
+    registrations.push(createEffectiveMtuRegistration(options))
+  }
   if (!hasRegistration(registrations, BUILT_IN_FEATURE_IDS.maximumWriteLength)) {
     registrations.push(createMaximumWriteLengthRegistration(options))
   }
@@ -121,6 +124,36 @@ function createRequestMtuRegistration(implementationVersion: string) {
     connectionControlScenarioIds,
     limitations,
     Object.freeze({ attMtu: Object.freeze({ minimum: null, maximum: 0, unit: 'bytes' }) })
+  )
+}
+
+function createEffectiveMtuRegistration(options: CoreBluetoothRuntimeCapabilityOptions) {
+  const available =
+    options.boundary.connectionControlCapabilities?.effectiveMtu !== 'unavailable' &&
+    options.boundary.effectiveMtu !== undefined
+  const limitations = available
+    ? liveQualificationLimitation('effective ATT MTU observation')
+    : Object.freeze([
+        Object.freeze({
+          code: 'effective-mtu-boundary-unavailable',
+          explanation: 'This CoreBluetooth boundary exposes no authoritative current ATT MTU observation.',
+          affectedGuarantee: 'current effective ATT MTU observation'
+        })
+      ])
+  return createMetadataRegistration(
+    BUILT_IN_FEATURE_IDS.connectionEffectiveMtu,
+    available ? 'limited' : 'unsupported',
+    options.implementationVersion,
+    available ? 'corebluetooth-effective-mtu-dispatch-v1' : 'corebluetooth-effective-mtu-unavailable-v1',
+    connectionControlScenarioIds,
+    limitations,
+    Object.freeze({
+      attMtu: Object.freeze({
+        minimum: available ? 23 : null,
+        maximum: available ? 517 : 0,
+        unit: 'bytes'
+      })
+    })
   )
 }
 
@@ -216,7 +249,10 @@ function assertMaximumWriteLengthInput(input: MaximumWriteLengthFeatureInput): v
 }
 
 function createMetadataRegistration(
-  id: typeof BUILT_IN_FEATURE_IDS.connectionRssi | typeof BUILT_IN_FEATURE_IDS.connectionRequestMtu,
+  id:
+    | typeof BUILT_IN_FEATURE_IDS.connectionRssi
+    | typeof BUILT_IN_FEATURE_IDS.connectionRequestMtu
+    | typeof BUILT_IN_FEATURE_IDS.connectionEffectiveMtu,
   state: RuntimeFeatureState,
   implementationVersion: string,
   sourceDigest: string,

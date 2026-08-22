@@ -56,6 +56,7 @@ public enum CommandKinds: UInt16, CaseIterable, Sendable {
   case securityCancelPairing = 19
   case readPhy = 21
   case requestPhy = 22
+  case readMtu = 23
 }
 
 public enum ResultKinds: UInt16, CaseIterable, Sendable {
@@ -277,6 +278,7 @@ public let nativeProtocolFields: [FieldDescriptor] = [
     FieldDescriptor(record: .result, fieldID: 19, name: "phyTx", type: "enum:connectionPhys", required: false),
     FieldDescriptor(record: .result, fieldID: 20, name: "phyRx", type: "enum:connectionPhys", required: false),
     FieldDescriptor(record: .result, fieldID: 21, name: "phyAccepted", type: "boolean", required: false),
+    FieldDescriptor(record: .result, fieldID: 22, name: "effectiveMtu", type: "uint64", required: false),
     FieldDescriptor(record: .advertisement, fieldID: 1, name: "peerId", type: "string", required: true),
     FieldDescriptor(record: .advertisement, fieldID: 2, name: "observedAt", type: "uint64", required: true),
     FieldDescriptor(record: .advertisement, fieldID: 3, name: "ingressOrdinal", type: "uint64", required: true),

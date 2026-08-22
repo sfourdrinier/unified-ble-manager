@@ -52,7 +52,8 @@
     "securityPair",
     "securityCancelPairing",
     "readPhy",
-    "requestPhy"
+    "requestPhy",
+    "readMtu"
   ],
   "resultKinds": [
     "accepted",
@@ -283,7 +284,8 @@
         ["priorityAccepted", "boolean", false],
         ["phyTx", "enum:connectionPhys", false],
         ["phyRx", "enum:connectionPhys", false],
-        ["phyAccepted", "boolean", false]
+        ["phyAccepted", "boolean", false],
+        ["effectiveMtu", "uint64", false]
       ]
     },
     {

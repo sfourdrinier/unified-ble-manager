@@ -134,6 +134,7 @@ export interface CoreBluetoothBoundary {
   /** Reports the current CoreBluetooth write length for the selected response mode. */
   maximumWriteValueLength?(nativePeerId: string, withResponse: boolean): Promise<number>
   requestMtu?(nativePeerId: string, requestedMtu: number): Promise<number>
+  effectiveMtu?(nativePeerId: string): Promise<number | null>
   requestPriority?(nativePeerId: string, priority: ConnectionPriority): Promise<boolean>
   readPhy?(nativePeerId: string): Promise<CoreBluetoothPhyObservation>
   requestPhy?(nativePeerId: string, preference: PhyPreference): Promise<CoreBluetoothPhyRequestResult>

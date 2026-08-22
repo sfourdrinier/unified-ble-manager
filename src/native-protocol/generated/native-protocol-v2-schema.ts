@@ -81,7 +81,8 @@ export const nativeProtocolEnumValues: Readonly<Record<string, readonly string[]
     'securityPair',
     'securityCancelPairing',
     'readPhy',
-    'requestPhy'
+    'requestPhy',
+    'readMtu'
   ],
   resultKinds: [
     'accepted',
@@ -158,7 +159,8 @@ export const commandKinds = Object.freeze([
   'securityPair',
   'securityCancelPairing',
   'readPhy',
-  'requestPhy'
+  'requestPhy',
+  'readMtu'
 ])
 export type CommandKinds = (typeof commandKinds)[number]
 
@@ -355,6 +357,7 @@ export const nativeProtocolFields: readonly NativeProtocolFieldDescriptor[] = Ob
   nativeProtocolField('result', 19, 'phyTx', 'enum:connectionPhys', false),
   nativeProtocolField('result', 20, 'phyRx', 'enum:connectionPhys', false),
   nativeProtocolField('result', 21, 'phyAccepted', 'boolean', false),
+  nativeProtocolField('result', 22, 'effectiveMtu', 'uint64', false),
   nativeProtocolField('advertisement', 1, 'peerId', 'string', true),
   nativeProtocolField('advertisement', 2, 'observedAt', 'uint64', true),
   nativeProtocolField('advertisement', 3, 'ingressOrdinal', 'uint64', true),

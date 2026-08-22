@@ -41,6 +41,7 @@ import type {
   ConnectionPriority,
   ConnectionPriorityRequest,
   ConnectionWriteReadinessWatch,
+  EffectiveMtuMeasurement,
   MtuNegotiation,
   PhyPreference,
   RssiMeasurement
@@ -133,6 +134,10 @@ export class CoreConnection<Attachment extends string, Identity extends BackendI
 
   requestMtu(requestedMtu: number, options: PublicOperationOptions): Promise<MtuNegotiation<Attachment, string>> {
     return this.controls.requestMtu(this, requestedMtu, options)
+  }
+
+  effectiveMtu(options: PublicOperationOptions): Promise<EffectiveMtuMeasurement<Attachment, string>> {
+    return this.controls.effectiveMtu(this, options)
   }
 
   requestPriority(

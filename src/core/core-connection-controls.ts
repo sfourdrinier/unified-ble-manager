@@ -9,6 +9,7 @@ import {
   type ConnectionPhyRequest,
   type ConnectionPriorityRequest,
   type ConnectionWriteReadinessWatch,
+  type EffectiveMtuMeasurement,
   type MtuNegotiation,
   type RssiMeasurement,
   type ConnectionPriority,
@@ -32,6 +33,10 @@ export interface CoreConnectionControls<Attachment extends string, Identity exte
     requestedMtu: number,
     options: PublicOperationOptions
   ): Promise<MtuNegotiation<Attachment, string>>
+  effectiveMtu(
+    connection: CoreConnection<Attachment, Identity>,
+    options: PublicOperationOptions
+  ): Promise<EffectiveMtuMeasurement<Attachment, string>>
   requestPriority(
     connection: CoreConnection<Attachment, Identity>,
     priority: ConnectionPriority,
@@ -73,6 +78,10 @@ export function createCoreConnectionControls<Attachment extends string, Identity
     ) => {
       assertReady('request-mtu')
       return requestCoreMtu(backend, operationCoordinator, connection, requestedMtu, options)
+    },
+    effectiveMtu: (connection: CoreConnection<Attachment, Identity>, options: PublicOperationOptions) => {
+      assertReady('effective-mtu')
+      return observeCoreEffectiveMtu(backend, operationCoordinator, connection, options)
     },
     requestPriority: (
       connection: CoreConnection<Attachment, Identity>,
@@ -272,6 +281,31 @@ export async function requestCoreMtu<Attachment extends string, Identity extends
     }
   })
   return requireOperationValue(result, 'unified-core.request-mtu')
+}
+
+export async function observeCoreEffectiveMtu<Attachment extends string, Identity extends BackendIdentity<Attachment>>(
+  backend: BleCentralBackend<Attachment, Identity>,
+  operationCoordinator: CoreOperationCoordinator<Attachment>,
+  connection: CoreConnection<Attachment, Identity>,
+  options: PublicOperationOptions
+): Promise<EffectiveMtuMeasurement<Attachment, string>> {
+  const effectiveMtu = backend.connections.effectiveMtu
+  if (effectiveMtu === undefined) {
+    throw contractError('capability.unsupported', 'connection', 'unified-core.effective-mtu')
+  }
+  connection.assertCurrent()
+  const result = await operationCoordinator.run({
+    queueKey: String(connection.resource.connectionId),
+    fairnessKey: 'control',
+    options,
+    mayCommit: false,
+    dispatch: correlation => {
+      connection.assertCurrent()
+      const dispatch = effectiveMtu(connection.resource, { operation: { ...options, correlation } })
+      return coreDispatch(dispatch, correlation, value => value.terminal)
+    }
+  })
+  return requireOperationValue(result, 'unified-core.effective-mtu')
 }
 
 export async function observeCoreMaximumWriteLength<

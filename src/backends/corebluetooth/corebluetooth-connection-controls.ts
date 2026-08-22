@@ -13,6 +13,8 @@ import {
   type ConnectionPriorityRequest,
   type ConnectionWriteReadinessObservation,
   type ConnectionWriteReadinessWatch,
+  type EffectiveMtuMeasurement,
+  type EffectiveMtuRequest,
   type RequestPriorityRequest,
   type ReadPhyRequest,
   type RequestPhyRequest,
@@ -96,6 +98,44 @@ export class CoreBluetoothConnectionControls {
         return Object.freeze({
           requestedMtu: request.requestedMtu,
           negotiatedMtu,
+          observedAtMonotonicMs: this.backend.monotonicNow(),
+          terminal: successfulTerminal(request.operation)
+        })
+      },
+      String(connection.connectionId)
+    )
+  }
+
+  effectiveMtu<Operation extends string>(
+    connection: BackendConnection<string, string>,
+    request: EffectiveMtuRequest<string, Operation>
+  ): BackendOperationDispatch<string, EffectiveMtuMeasurement<string, Operation>> {
+    if (this.backend.boundary.connectionControlCapabilities?.effectiveMtu === 'unavailable') {
+      return this.unsupported(request.operation, 'corebluetooth.connection.effective-mtu')
+    }
+    const effectiveMtu = this.backend.boundary.effectiveMtu?.bind(this.backend.boundary)
+    if (effectiveMtu === undefined) {
+      return this.unsupported(request.operation, 'corebluetooth.connection.effective-mtu')
+    }
+    this.backend.assertOperational('corebluetooth.connection.effective-mtu')
+    const record = this.backend.requireConnection(connection, 'corebluetooth.connection.effective-mtu')
+    return this.backend.dispatcher.dispatch(
+      request.operation,
+      'corebluetooth.connection.effective-mtu',
+      async () => {
+        const attMtu = await effectiveMtu(record.nativePeerId)
+        if (
+          attMtu !== null &&
+          (!Number.isSafeInteger(attMtu) || attMtu < MINIMUM_ATT_MTU || attMtu > MAXIMUM_REQUESTED_ATT_MTU)
+        ) {
+          throw contractError('protocol.malformed', 'connection', 'corebluetooth.connection.effective-mtu.result')
+        }
+        return Object.freeze({
+          connectionId: record.connectionId,
+          connectionGeneration: record.connectionGeneration,
+          attMtu,
+          payloadBytes: attMtu === null ? null : attMtu - 3,
+          platformPduBytes: null,
           observedAtMonotonicMs: this.backend.monotonicNow(),
           terminal: successfulTerminal(request.operation)
         })

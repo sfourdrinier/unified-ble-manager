@@ -23,6 +23,7 @@ export type ConnectionControlSupport = 'available' | 'unavailable'
 export interface ConnectionControlCapabilities {
   readonly rssi: ConnectionControlSupport
   readonly requestMtu: ConnectionControlSupport
+  readonly effectiveMtu?: ConnectionControlSupport
   readonly priority?: ConnectionControlSupport
   readonly phy?: ConnectionControlSupport
 }
@@ -36,6 +37,17 @@ export interface RssiMeasurement<Attachment extends string, _Operation extends s
 export interface MtuNegotiation<Attachment extends string, _Operation extends string> {
   readonly requestedMtu: number
   readonly negotiatedMtu: number
+  readonly observedAtMonotonicMs: number
+  readonly terminal: OperationTerminalRecord<Attachment, string>
+}
+
+/** Backend observation of the currently measured ATT MTU for this connection generation. */
+export interface EffectiveMtuMeasurement<Attachment extends string, _Operation extends string> {
+  readonly connectionId: ConnectionId<Attachment, string>
+  readonly connectionGeneration: GenerationId<'connection-generation', string>
+  readonly attMtu: number | null
+  readonly payloadBytes: number | null
+  readonly platformPduBytes: number | null
   readonly observedAtMonotonicMs: number
   readonly terminal: OperationTerminalRecord<Attachment, string>
 }
@@ -93,6 +105,10 @@ export interface ReadRssiRequest<Attachment extends string, Operation extends st
 export interface RequestMtuRequest<Attachment extends string, Operation extends string> {
   readonly operation: OperationOptions<Attachment, Operation>
   readonly requestedMtu: number
+}
+
+export interface EffectiveMtuRequest<Attachment extends string, Operation extends string> {
+  readonly operation: OperationOptions<Attachment, Operation>
 }
 
 export interface RequestPriorityRequest<Attachment extends string, Operation extends string> {

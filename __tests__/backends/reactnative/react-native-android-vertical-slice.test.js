@@ -175,10 +175,12 @@ describe('React Native Android canonical protocol vertical slice', () => {
 
     const connection = await manager.connect(observation.value.value.device.id, operation())
     await expect(connection.readRssi(operation())).resolves.toMatchObject({ rssi: -47 })
+    await expect(connection.effectiveMtu()).resolves.toMatchObject({ attMtu: null, payloadBytes: null })
     await expect(connection.requestMtu(300, operation())).resolves.toMatchObject({
       requestedMtu: 300,
       negotiatedMtu: 300
     })
+    await expect(connection.effectiveMtu()).resolves.toMatchObject({ attMtu: 300, payloadBytes: 297 })
     await expect(connection.requestPriority('high-throughput', operation())).resolves.toMatchObject({
       requested: 'high-throughput',
       accepted: true
@@ -219,7 +221,9 @@ describe('React Native Android canonical protocol vertical slice', () => {
       'scanStop',
       'connect',
       'readRssi',
+      'readMtu',
       'requestMtu',
+      'readMtu',
       'requestPriority',
       'readPhy',
       'requestPhy',
@@ -1426,6 +1430,7 @@ class DeterministicAndroidProtocolRuntime {
     this.destroyFailuresRemaining = 0
     this.priorityAccepted = true
     this.priorityRequests = []
+    this.effectiveMtu = null
     this.phyAccepted = true
     this.phyRequests = []
   }
@@ -1528,7 +1533,16 @@ class DeterministicAndroidProtocolRuntime {
     }
     if (kind === 'requestMtu') {
       const requestedMtu = requiredNumber(command, 14)
+      this.effectiveMtu = requestedMtu
       this.emitResult(command, 'mtu', [field(14, requestedMtu)])
+      return
+    }
+    if (kind === 'readMtu') {
+      this.emitResult(
+        command,
+        'mtu',
+        this.effectiveMtu === null ? [] : [field(22, this.effectiveMtu)]
+      )
       return
     }
     if (kind === 'requestPriority') {

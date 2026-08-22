@@ -354,6 +354,8 @@ type InternalPublicConnection = Awaited<ReturnType<InternalBleManager<string, Ba
 
 interface OptionalInternalControlConnection {
   readonly effectiveMtu?: () => Promise<{
+    readonly connectionId: string
+    readonly connectionGeneration: string
     readonly attMtu: number | null
     readonly payloadBytes: number | null
     readonly platformPduBytes: number | null
@@ -489,8 +491,8 @@ function createPublicConnectionControls(
       }
       const result = await observe()
       return Object.freeze({
-        ...controlMetadata(generation, now(), descriptor, 'backend-observation'),
-        state: 'measured' as const,
+        ...controlMetadata(generation, result.observedAtMonotonicMs, descriptor, 'backend-observation'),
+        state: result.attMtu === null ? ('unavailable' as const) : ('measured' as const),
         attMtu: result.attMtu,
         payloadBytes: result.payloadBytes,
         platformPduBytes: result.platformPduBytes

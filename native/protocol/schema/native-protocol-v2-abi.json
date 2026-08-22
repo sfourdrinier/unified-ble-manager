@@ -49,7 +49,8 @@
       "securityPair": 18,
       "securityCancelPairing": 19,
       "readPhy": 21,
-      "requestPhy": 22
+      "requestPhy": 22,
+      "readMtu": 23
     },
     "resultKinds": {
       "accepted": 1,
@@ -173,7 +174,8 @@
       "priorityAccepted": 18,
       "phyTx": 19,
       "phyRx": 20,
-      "phyAccepted": 21
+      "phyAccepted": 21,
+      "effectiveMtu": 22
     },
     "advertisement": {
       "peerId": 1,

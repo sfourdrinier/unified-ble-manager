@@ -330,6 +330,15 @@ export interface BleConnectionHandle {
     readonly negotiatedMtu: number
     readonly terminal: PortableOperationTerminalRecord
   }>
+  effectiveMtu(): Promise<{
+    readonly connectionId: string
+    readonly connectionGeneration: string
+    readonly attMtu: number | null
+    readonly payloadBytes: number | null
+    readonly platformPduBytes: number | null
+    readonly observedAtMonotonicMs: number
+    readonly terminal: PortableOperationTerminalRecord
+  }>
 }
 
 /** Public, unbranded discovered-GATT contract for domain consumers. */

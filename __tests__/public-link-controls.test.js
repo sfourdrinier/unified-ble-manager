@@ -248,6 +248,7 @@ describe('PR8A public link controls', () => {
     expect(registry.registrations.map(registration => registration.id)).toEqual([
       'connection:rssi',
       'connection:request-mtu',
+      'connection:effective-mtu',
       'connection:phy'
     ])
   })

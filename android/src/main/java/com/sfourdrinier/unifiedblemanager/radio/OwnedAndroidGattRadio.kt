@@ -64,6 +64,11 @@ internal data class OwnedAndroidPhy(
   val rxPhy: String
 )
 
+private data class EffectiveMtuState(
+  val gattGeneration: Long,
+  val mtu: Int
+)
+
 internal data class OwnedAndroidProtocolServiceData(
   val serviceUuid: String,
   val value: ByteArray
@@ -124,6 +129,7 @@ class OwnedAndroidGattRadio(private val context: Context) {
   private val charCache = ConcurrentHashMap<String, BluetoothGattCharacteristic>()
   private val pending = ConcurrentHashMap<String, (Result<ByteArray?>) -> Unit>()
   private val pendingMtu = ConcurrentHashMap<String, (Result<Int>) -> Unit>()
+  private val effectiveMtuByDevice = ConcurrentHashMap<String, EffectiveMtuState>()
   private val pendingRssi = ConcurrentHashMap<String, (Result<Int>) -> Unit>()
   private val pendingPhyReads = ConcurrentHashMap<String, (Result<OwnedAndroidPhy>) -> Unit>()
   private val pendingPhyRequests = ConcurrentHashMap<String, (Result<OwnedAndroidPhy?>) -> Unit>()
@@ -647,6 +653,7 @@ class OwnedAndroidGattRadio(private val context: Context) {
       throw IllegalStateException("Android could not open BluetoothGatt for $deviceId", throwable)
     }
     val generation = nextGattGeneration.getAndIncrement()
+    effectiveMtuByDevice.remove(key)
     gatts[key] = gatt
     gattGenerations[key] = generation
     gattGenerationByInstance[gatt] = generation
@@ -684,6 +691,9 @@ class OwnedAndroidGattRadio(private val context: Context) {
     gattGenerations.remove(key, generation)
     gattGenerationByInstance.remove(gatt, generation)
     discovered.remove(key)
+    effectiveMtuByDevice[key]?.let { state ->
+      if (state.gattGeneration == generation) effectiveMtuByDevice.remove(key, state)
+    }
     clearCharCacheForDevice(key)
     deviceQueues.remove(key)?.clear()
     return null
@@ -1103,6 +1113,34 @@ class OwnedAndroidGattRadio(private val context: Context) {
         }
         done()
       }
+    }
+  }
+
+  /**
+   * Reads the MTU measured by the current GATT generation. Android exposes no
+   * synchronous getter for the negotiated ATT MTU, so an unmeasured link is
+   * reported as a successful null observation rather than a guessed default.
+   */
+  fun readEffectiveMtu(deviceId: String, onResult: (Result<Int?>) -> Unit): Long {
+    return enqueue(
+      deviceId,
+      onCancelled = { onResult(Result.failure(IllegalStateException("effective MTU read cancelled"))) },
+      onStartFailure = { error -> onResult(Result.failure(error)) }
+    ) { token, done ->
+      val key = deviceId.uppercase()
+      val gatt = gatts[key]
+      val generation = gattGenerations[key]
+      if (gatt == null || generation == null) {
+        if (token.markPubliclySettled()) {
+          onResult(Result.failure(IllegalStateException("Not connected to $deviceId")))
+        }
+        done()
+        return@enqueue
+      }
+      val state = effectiveMtuByDevice[key]
+      val value = if (state?.gattGeneration == generation) state.mtu else null
+      if (token.markPubliclySettled()) onResult(Result.success(value))
+      done()
     }
   }
 
@@ -1728,6 +1766,7 @@ class OwnedAndroidGattRadio(private val context: Context) {
       deviceQueues.clear()
       pending.clear()
       pendingMtu.clear()
+      effectiveMtuByDevice.clear()
       pendingRssi.clear()
       pendingPhyReads.clear()
       pendingPhyRequests.clear()
@@ -1765,6 +1804,7 @@ class OwnedAndroidGattRadio(private val context: Context) {
   }
 
   private fun failPendingForDevice(deviceKeyUpper: String, reason: String) {
+    effectiveMtuByDevice.remove(deviceKeyUpper)
     deviceQueues.remove(deviceKeyUpper)?.clear(IllegalStateException(reason))
     val failBytes = Result.failure<ByteArray?>(IllegalStateException(reason))
     val failInt = Result.failure<Int>(IllegalStateException(reason))
@@ -2367,8 +2407,12 @@ class OwnedAndroidGattRadio(private val context: Context) {
       val id = gatt.device.address.uppercase()
       if (!isCurrentGattCallback(gatt)) return
       val key = "mtu:$id"
-      if (status == BluetoothGatt.GATT_SUCCESS) {
+      val generation = gattGenerationByInstance[gatt] ?: return
+      if (status == BluetoothGatt.GATT_SUCCESS && mtu in 23..517) {
+        effectiveMtuByDevice[id] = EffectiveMtuState(generation, mtu)
         pendingMtu.remove(key)?.invoke(Result.success(mtu))
+      } else if (status == BluetoothGatt.GATT_SUCCESS) {
+        pendingMtu.remove(key)?.invoke(Result.failure(IllegalStateException("onMtuChanged returned invalid MTU=$mtu")))
       } else {
         pendingMtu.remove(key)?.invoke(Result.failure(IllegalStateException("onMtuChanged status=$status")))
       }
