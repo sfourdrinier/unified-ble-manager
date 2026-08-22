@@ -75,7 +75,10 @@ export const nativeProtocolEnumValues: Readonly<Record<string, readonly string[]
     'readRssi',
     'requestMtu',
     'readDescriptor',
-    'writeDescriptor'
+    'writeDescriptor',
+    'securityState',
+    'securityPair',
+    'securityCancelPairing'
   ],
   resultKinds: [
     'accepted',
@@ -92,7 +95,9 @@ export const nativeProtocolEnumValues: Readonly<Record<string, readonly string[]
     'rssi',
     'mtu',
     'descriptorRead',
-    'descriptorWrite'
+    'descriptorWrite',
+    'securityState',
+    'securityPair'
   ],
   eventKinds: [
     'adapterState',
@@ -102,7 +107,8 @@ export const nativeProtocolEnumValues: Readonly<Record<string, readonly string[]
     'notification',
     'backendRestarted',
     'restorationAvailable',
-    'diagnostic'
+    'diagnostic',
+    'securityStateChanged'
   ],
   terminalOutcomes: ['succeeded', 'failed'],
   cancellationStates: ['cancellationRequested', 'alreadyTerminal', 'notCancellable'],
@@ -111,6 +117,7 @@ export const nativeProtocolEnumValues: Readonly<Record<string, readonly string[]
   adapterAvailability: ['available', 'unavailable', 'unsupported', 'unknown'],
   adapterAuthorization: ['granted', 'denied', 'restricted', 'notDetermined', 'unavailable'],
   adapterPower: ['on', 'off', 'resetting', 'unsupported', 'unknown'],
+  securityBondStates: ['bonded', 'bonding', 'notBonded', 'unknown', 'unsupported'],
   restorationKinds: ['adapter', 'connection', 'subscription', 'event'],
   restorationOutcomes: [
     'adopted',
@@ -138,7 +145,10 @@ export const commandKinds = Object.freeze([
   'readRssi',
   'requestMtu',
   'readDescriptor',
-  'writeDescriptor'
+  'writeDescriptor',
+  'securityState',
+  'securityPair',
+  'securityCancelPairing'
 ])
 export type CommandKinds = (typeof commandKinds)[number]
 
@@ -157,7 +167,9 @@ export const resultKinds = Object.freeze([
   'rssi',
   'mtu',
   'descriptorRead',
-  'descriptorWrite'
+  'descriptorWrite',
+  'securityState',
+  'securityPair'
 ])
 export type ResultKinds = (typeof resultKinds)[number]
 
@@ -169,7 +181,8 @@ export const eventKinds = Object.freeze([
   'notification',
   'backendRestarted',
   'restorationAvailable',
-  'diagnostic'
+  'diagnostic',
+  'securityStateChanged'
 ])
 export type EventKinds = (typeof eventKinds)[number]
 
@@ -193,6 +206,9 @@ export type AdapterAuthorization = (typeof adapterAuthorization)[number]
 
 export const adapterPower = Object.freeze(['on', 'off', 'resetting', 'unsupported', 'unknown'])
 export type AdapterPower = (typeof adapterPower)[number]
+
+export const securityBondStates = Object.freeze(['bonded', 'bonding', 'notBonded', 'unknown', 'unsupported'])
+export type SecurityBondStates = (typeof securityBondStates)[number]
 
 export const restorationKinds = Object.freeze(['adapter', 'connection', 'subscription', 'event'])
 export type RestorationKinds = (typeof restorationKinds)[number]
@@ -293,6 +309,7 @@ export const nativeProtocolFields: readonly NativeProtocolFieldDescriptor[] = Ob
   nativeProtocolField('command', 12, 'scanOptions', 'record:scanOptions', false),
   nativeProtocolField('command', 13, 'writeMode', 'enum:writeModes', false),
   nativeProtocolField('command', 14, 'requestedMtu', 'uint64', false),
+  nativeProtocolField('command', 15, 'peerId', 'string', false),
   nativeProtocolField('terminal', 1, 'correlation', 'record:operationCorrelation', true),
   nativeProtocolField('terminal', 2, 'outcome', 'enum:terminalOutcomes', true),
   nativeProtocolField('terminal', 3, 'cause', 'string', false),
@@ -311,6 +328,8 @@ export const nativeProtocolFields: readonly NativeProtocolFieldDescriptor[] = Ob
   nativeProtocolField('result', 13, 'rssi', 'int64', false),
   nativeProtocolField('result', 14, 'negotiatedMtu', 'uint64', false),
   nativeProtocolField('result', 15, 'descriptorPath', 'record:descriptorPath', false),
+  nativeProtocolField('result', 16, 'peerId', 'string', false),
+  nativeProtocolField('result', 17, 'bondState', 'enum:securityBondStates', false),
   nativeProtocolField('advertisement', 1, 'peerId', 'string', true),
   nativeProtocolField('advertisement', 2, 'observedAt', 'uint64', true),
   nativeProtocolField('advertisement', 3, 'ingressOrdinal', 'uint64', true),
@@ -343,6 +362,8 @@ export const nativeProtocolFields: readonly NativeProtocolFieldDescriptor[] = Ob
   nativeProtocolField('event', 13, 'binary', 'record:binaryReference', false),
   nativeProtocolField('event', 14, 'error', 'record:error', false),
   nativeProtocolField('event', 15, 'adapterState', 'record:adapterStateSnapshot', false),
+  nativeProtocolField('event', 16, 'peerId', 'string', false),
+  nativeProtocolField('event', 17, 'bondState', 'enum:securityBondStates', false),
   nativeProtocolField('error', 1, 'code', 'string', true),
   nativeProtocolField('error', 2, 'domain', 'string', true),
   nativeProtocolField('error', 3, 'operation', 'string', true),

@@ -54,6 +54,11 @@ internal data class OwnedRadioAdapterProtocolState(
   val safeReason: String?
 )
 
+internal data class OwnedAndroidSecurityState(
+  val bond: String,
+  val pairingPossible: Boolean?
+)
+
 internal data class OwnedAndroidProtocolServiceData(
   val serviceUuid: String,
   val value: ByteArray
@@ -102,6 +107,7 @@ class OwnedAndroidGattRadio(private val context: Context) {
   private var scanner: BluetoothLeScanner? = null
   private var scanCallback: ScanCallback? = null
   private var adapterStateReceiver: BroadcastReceiver? = null
+  private var bondStateReceiver: BroadcastReceiver? = null
   private val scanSeenDeviceIds = ConcurrentHashMap.newKeySet<String>()
 
   private val gatts = ConcurrentHashMap<String, BluetoothGatt>()
@@ -118,6 +124,8 @@ class OwnedAndroidGattRadio(private val context: Context) {
   private val pendingDescRead = ConcurrentHashMap<String, (Result<ByteArray?>) -> Unit>()
   /** Stashed write payloads so API-33 callbacks need not read deprecated characteristic.value. */
   private val pendingWriteValues = ConcurrentHashMap<String, ByteArray>()
+  private val pendingBondPairs =
+    ConcurrentHashMap<String, (String, OwnedAndroidSecurityState) -> Unit>()
 
   /**
    * Protocol-v1 operations are keyed by the concrete Android attribute object,
@@ -193,6 +201,7 @@ class OwnedAndroidGattRadio(private val context: Context) {
    * apps should re-run discoverServices (Android docs).
    */
   var onServicesChanged: ((deviceId: String) -> Unit)? = null
+  internal var onSecurityState: ((deviceId: String, state: OwnedAndroidSecurityState) -> Unit)? = null
   /** Runtime scan failures (permissions, internal errors) — not start exceptions. */
   var onScanFailed: ((errorCode: Int) -> Unit)? = null
   internal var onCleanupFailure: ((OwnedRadioTeardownFailure) -> Unit)? = null
@@ -441,6 +450,113 @@ class OwnedAndroidGattRadio(private val context: Context) {
   }
 
   internal fun hasScanCleanupOwnership(): Boolean = scanCallback != null
+
+  internal fun securityState(deviceId: String): OwnedAndroidSecurityState {
+    val bluetoothAdapter = adapter ?: throw IllegalStateException("Bluetooth adapter unavailable")
+    if (!hasBluetoothConnectPermission()) {
+      return OwnedAndroidSecurityState(bond = "unknown", pairingPossible = null)
+    }
+    val device = bluetoothAdapter.getRemoteDevice(deviceId)
+    return try {
+      OwnedAndroidSecurityState(
+        bond = when (device.bondState) {
+          BluetoothDevice.BOND_BONDED -> "bonded"
+          BluetoothDevice.BOND_BONDING -> "bonding"
+          BluetoothDevice.BOND_NONE -> "notBonded"
+          else -> "unknown"
+        },
+        pairingPossible = true
+      )
+    } catch (error: SecurityException) {
+      OwnedAndroidLog.e("securityState", error)
+      OwnedAndroidSecurityState(bond = "unknown", pairingPossible = null)
+    }
+  }
+
+  internal fun pair(deviceId: String, callback: (String, OwnedAndroidSecurityState) -> Unit): Long {
+    val bluetoothAdapter = adapter ?: throw IllegalStateException("Bluetooth adapter unavailable")
+    val device = bluetoothAdapter.getRemoteDevice(deviceId)
+    if (device.bondState == BluetoothDevice.BOND_BONDED) {
+      mainHandler.post { callback("alreadyPaired", OwnedAndroidSecurityState("bonded", true)) }
+      return 0L
+    }
+    val key = device.address.uppercase()
+    check(pendingBondPairs.putIfAbsent(key, callback) == null) { "Android pairing is already active for $deviceId" }
+    try {
+      if (!device.createBond()) {
+        pendingBondPairs.remove(key, callback)
+        throw IllegalStateException("Android rejected the bond request")
+      }
+    } catch (error: Exception) {
+      pendingBondPairs.remove(key, callback)
+      throw error
+    }
+    return nextGattOperationId.getAndIncrement()
+  }
+
+  internal fun registerBondStateReceiver() {
+    if (bondStateReceiver != null) return
+    val receiver = object : BroadcastReceiver() {
+      override fun onReceive(ctx: Context?, intent: Intent?) {
+        try {
+          if (intent?.action != BluetoothDevice.ACTION_BOND_STATE_CHANGED) return
+          val device = intent.getParcelableExtra<BluetoothDevice>(BluetoothDevice.EXTRA_DEVICE) ?: return
+          val state = when (intent.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, BluetoothDevice.ERROR)) {
+            BluetoothDevice.BOND_BONDED -> "bonded"
+            BluetoothDevice.BOND_BONDING -> "bonding"
+            BluetoothDevice.BOND_NONE -> "notBonded"
+            else -> "unknown"
+          }
+          val deviceId = device.address
+          val pairingPossible = hasBluetoothConnectPermission()
+          onSecurityState?.invoke(
+            deviceId,
+            OwnedAndroidSecurityState(bond = state, pairingPossible = pairingPossible)
+          )
+          val callback = pendingBondPairs[deviceId.uppercase()]
+          if (callback != null && state != "bonding") {
+            pendingBondPairs.remove(deviceId.uppercase(), callback)
+            callback(
+              when (state) {
+                "bonded" -> "paired"
+                "notBonded" -> "rejected"
+                else -> "unknown"
+              },
+              OwnedAndroidSecurityState(state, pairingPossible)
+            )
+          }
+        } catch (error: SecurityException) {
+          OwnedAndroidLog.e("bondStateReceiver", error)
+        }
+      }
+    }
+    bondStateReceiver = receiver
+    val filter = IntentFilter(BluetoothDevice.ACTION_BOND_STATE_CHANGED)
+    if (Build.VERSION.SDK_INT >= 33) context.registerReceiver(receiver, filter, Context.RECEIVER_EXPORTED)
+    else {
+      @Suppress("UnspecifiedRegisterReceiverFlag")
+      context.registerReceiver(receiver, filter)
+    }
+  }
+
+  internal fun unregisterBondStateReceiver(): OwnedRadioTeardownFailure? {
+    val receiver = bondStateReceiver ?: return null
+    return try {
+      context.unregisterReceiver(receiver)
+      bondStateReceiver = null
+      null
+    } catch (error: Exception) {
+      OwnedAndroidLog.e("unregisterBondStateReceiver", error)
+      OwnedRadioTeardownFailure("unregisterBondStateReceiver", error)
+    }
+  }
+
+  internal fun clearPendingBondPair(deviceId: String): Boolean =
+    pendingBondPairs.remove(deviceId.uppercase()) !== null
+
+  private fun hasBluetoothConnectPermission(): Boolean =
+    Build.VERSION.SDK_INT < Build.VERSION_CODES.S ||
+      context.checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED
 
   fun connect(deviceId: String, autoConnect: Boolean) {
     val key = deviceId.uppercase()
@@ -1498,6 +1614,8 @@ class OwnedAndroidGattRadio(private val context: Context) {
     val failures = mutableListOf<OwnedRadioTeardownFailure>()
     stopScan()?.let { failure -> failures.add(failure) }
     unregisterAdapterStateReceiver()?.let { failure -> failures.add(failure) }
+    unregisterBondStateReceiver()?.let { failure -> failures.add(failure) }
+    pendingBondPairs.clear()
     pendingReconnect.clear()
     failures.addAll(retryCleanupLedger())
     val pendingDeviceKeys = mutableSetOf<String>()

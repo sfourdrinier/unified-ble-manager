@@ -1,6 +1,7 @@
 // src/backends/winrt/winrt-boundary.ts
 
 import { contractError, type BackendContractError } from '../../backend-contract/errors'
+import type { PeerSecurityState, SecurityPairResult, SecurityUnpairResult } from '../../backend-contract/security'
 
 /**
  * The only interface between the shared backend and the Windows native addon.
@@ -266,6 +267,22 @@ export interface WinRtConnectionLossRecord extends WinRtConnectionEventBase {
 
 export type WinRtDatabaseChangedRecord = WinRtConnectionEventBase
 
+export type WinRtSecurityState = Pick<
+  PeerSecurityState,
+  'bond' | 'encryption' | 'authentication' | 'secureConnections' | 'pairingPossible'
+>
+
+export interface WinRtSecurityStateChangedRecord {
+  readonly nativePeerId: string
+  readonly state: WinRtSecurityState
+}
+
+export interface WinRtPairResult {
+  readonly outcome: Extract<SecurityPairResult['outcome'], 'paired' | 'already-paired' | 'rejected' | 'cancelled'>
+  readonly state: WinRtSecurityState | null
+  readonly reason: string | null
+}
+
 function invalidWinRtScanTerminalRecord(message: string): Error {
   return new Error(`WinRT scan terminal record ${message}`)
 }
@@ -453,6 +470,10 @@ export interface WinRtBoundary {
     bytes: Uint8Array,
     mode: 'with-response' | 'without-response'
   ): WinRtAsyncOperation<void>
+  readonly securityState?: (nativePeerId: string) => WinRtAsyncOperation<WinRtSecurityState>
+  readonly pair?: (nativePeerId: string) => WinRtAsyncOperation<WinRtPairResult>
+  readonly cancelPairing?: (nativePeerId: string) => WinRtAsyncOperation<void>
+  readonly unpair?: (nativePeerId: string) => WinRtAsyncOperation<SecurityUnpairResult['outcome']>
   onScanTerminal(listener: (record: WinRtScanTerminalRecord) => void): () => void
   startNotify(
     address: WinRtCharacteristicAddress,
@@ -463,6 +484,7 @@ export interface WinRtBoundary {
   onConnectionLost(listener: (record: WinRtConnectionLossRecord) => void): () => void
   onDatabaseChanged(listener: (record: WinRtDatabaseChangedRecord) => void): () => void
   onAdapterState(listener: (state: WinRtAdapterSnapshot) => void): () => void
+  readonly onSecurityState?: (listener: (record: WinRtSecurityStateChangedRecord) => void) => () => void
   ingressTelemetry(): WinRtIngressTelemetry
   destroy(): WinRtAsyncOperation<void>
 }

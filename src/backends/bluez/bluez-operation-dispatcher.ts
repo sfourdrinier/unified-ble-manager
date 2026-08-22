@@ -30,18 +30,28 @@ export class BluezOperationDispatcher {
   dispatch<Result>(
     options: PublicOperationOptions,
     operationName: string,
-    operation: () => Promise<Result>
+    operation: () => Promise<Result>,
+    onCancellation?: () => Promise<void>
   ): BluezOperationDispatch<Result> {
     const handle = opaqueId(`bluez-operation-${this.nextOperation}`, 'backend-operation', 'bluez:dispatcher')
     this.nextOperation += 1
     let callerTerminal = false
-    let physicalTerminal = false
+    let operationSettled = false
+    let retired = false
     let rejectCompletion: ((error: Error) => void) | null = null
     let deadlineTimer: ReturnType<typeof setTimeout> | null = null
+    let cancellation: Promise<void> | null = null
     let resolvePhysicalSettled: (() => void) | null = null
     const physicalSettled = new Promise<void>(resolve => {
       resolvePhysicalSettled = resolve
     })
+    const requestPhysicalCancellation = (): Promise<void> => {
+      if (operationSettled) return Promise.resolve()
+      if (cancellation === null) {
+        cancellation = onCancellation === undefined ? Promise.resolve() : Promise.resolve().then(onCancellation)
+      }
+      return cancellation
+    }
     const abort = (): void => {
       if (callerTerminal) {
         return
@@ -49,6 +59,7 @@ export class BluezOperationDispatcher {
       callerTerminal = true
       clearAdmission()
       rejectCompletion?.(contractError('operation.aborted', 'core', operationName))
+      requestPhysicalCancellation().catch(() => undefined)
     }
     const clearAdmission = (): void => {
       if (deadlineTimer !== null) {
@@ -58,22 +69,28 @@ export class BluezOperationDispatcher {
       options.signal?.removeEventListener('abort', abort)
     }
     const settlePhysical = (): void => {
-      if (physicalTerminal) {
+      if (operationSettled) {
         return
       }
-      physicalTerminal = true
+      operationSettled = true
       clearAdmission()
-      this.active.delete(String(handle))
-      if (resolvePhysicalSettled === null) {
-        throw new Error('BlueZ physical settlement resolver was not initialized')
-      }
-      resolvePhysicalSettled()
-      if (this.active.size === 0) {
-        for (const resolve of this.idleWaiters) {
-          resolve()
+      const retire = (): void => {
+        if (retired) return
+        retired = true
+        this.active.delete(String(handle))
+        if (resolvePhysicalSettled === null) {
+          throw new Error('BlueZ physical settlement resolver was not initialized')
         }
-        this.idleWaiters.clear()
+        resolvePhysicalSettled()
+        if (this.active.size === 0) {
+          for (const resolve of this.idleWaiters) {
+            resolve()
+          }
+          this.idleWaiters.clear()
+        }
       }
+      if (cancellation === null) retire()
+      else cancellation.then(retire, retire)
     }
     const completion = new Promise<Result>((resolve, reject) => {
       rejectCompletion = reject
@@ -99,12 +116,18 @@ export class BluezOperationDispatcher {
             callerTerminal = true
             clearAdmission()
             reject(contractError('operation.timed-out', 'core', operationName))
+            requestPhysicalCancellation().catch(() => undefined)
           },
           Math.max(0, options.deadline - this.now())
         )
       }
       Promise.resolve()
-        .then(operation)
+        .then(() => {
+          if (callerTerminal) {
+            throw contractError('operation.aborted', 'core', operationName)
+          }
+          return operation()
+        })
         .then(
           result => {
             settlePhysical()
@@ -160,17 +183,24 @@ export class BluezOperationDispatcher {
     const active: ActiveBluezOperation = {
       handle,
       cancel: () => {
-        if (physicalTerminal) {
+        if (operationSettled) {
           return { handle, state: 'already-terminal' }
         }
         abort()
         return { handle, state: 'not-cancellable' }
       }
     }
-    if (!physicalTerminal) {
+    if (!operationSettled) {
       this.active.set(String(handle), active)
     }
-    return { ...createBackendOperationDispatch(handle, completion, async () => active.cancel()), physicalSettled }
+    return {
+      ...createBackendOperationDispatch(handle, completion, async () => {
+        const acknowledgement = active.cancel()
+        await requestPhysicalCancellation()
+        return acknowledgement
+      }),
+      physicalSettled
+    }
   }
 
   cancelAll(): void {

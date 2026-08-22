@@ -42,6 +42,25 @@ describe('WinRT native boundary source contract', () => {
     expect(electronDocs).toContain('onScanTerminal(listener)')
   })
 
+  test('exposes only system pairing/unpair operations and sanitizes the security result projection', () => {
+    const addon = read('native/electron/winrt/src/addon.cpp')
+    const boundary = read('native/electron/winrt/src/winrt-boundary.inc')
+
+    expect(boundary).toContain('InstanceMethod("securityState"')
+    expect(boundary).toContain('InstanceMethod("pair"')
+    expect(boundary).toContain('InstanceMethod("cancelPairing"')
+    expect(boundary).toContain('InstanceMethod("unpair"')
+    expect(boundary).toContain('InstanceMethod("onSecurityState"')
+    expect(boundary).toContain('PairWinRtPeer(peer)')
+    expect(boundary).toContain('UnpairWinRtPeer(peer)')
+    expect(addon).not.toContain('DevicePairingProtectionLevel::Encryption')
+    expect(addon).toContain('"unsupported"')
+    expect(addon).toContain('DevicePairingResultStatus::PairingCanceled')
+    expect(addon).toContain('DeviceUnpairingResultStatus::AlreadyUnpaired')
+    expect(addon).not.toContain('PairingRequested')
+    expect(addon).not.toContain('removeBond')
+  })
+
   test('adopts an existing Electron COM apartment without hiding unrelated initialization failures', () => {
     const addon = read('native/electron/winrt/src/addon.cpp')
     const ensureApartment = section(addon, 'void EnsureWinRtApartment()', 'std::string ToUtf8')

@@ -124,11 +124,17 @@ describe('production backend TCK runner authority', () => {
       baseTckScenarios.filter(definition => definition.execution === 'base').map(definition => definition.id)
     )
     expect(report.featureSuiteIds).toEqual([
+      'tck.feature.security.pairing',
       'tck.feature.gatt.maximum-write-length',
       'tck.feature.gatt.long-write'
     ])
     expect(report.receipts.map(receipt => receipt.scenarioId)).toEqual([
       ...report.baseScenarioIds,
+      'security.state-pair-cancel-unpair',
+      'security.state-pair-cancel-unpair',
+      'security.state-pair-cancel-unpair',
+      'security.state-pair-cancel-unpair',
+      'security.state-pair-cancel-unpair',
       'gatt.maximum-write-length-boundaries',
       'gatt.maximum-write-length-boundaries',
       'gatt.long-write-partial-failure',

@@ -58,6 +58,8 @@ using winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::GattSessionSt
 using winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::GattWriteOption;
 using winrt::Windows::Devices::Enumeration::DeviceAccessInformation;
 using winrt::Windows::Devices::Enumeration::DeviceAccessStatus;
+using winrt::Windows::Devices::Enumeration::DevicePairingResultStatus;
+using winrt::Windows::Devices::Enumeration::DeviceUnpairingResultStatus;
 using winrt::Windows::Devices::Enumeration::DeviceInformation;
 using winrt::Windows::Devices::Radios::Radio;
 using winrt::Windows::Devices::Radios::RadioState;
@@ -122,6 +124,65 @@ uint64_t ParseAddress(const std::string& address) {
     throw std::runtime_error("The WinRT peer identifier is not a Bluetooth address");
   }
   return value;
+}
+
+struct SecurityStateView {
+  std::string bond;
+  std::string encryption;
+  std::string authentication;
+  std::string secure_connections;
+  bool pairing_possible;
+};
+
+struct SecurityPairResultView {
+  std::string outcome;
+  std::optional<SecurityStateView> state;
+  std::optional<std::string> reason;
+};
+
+SecurityStateView ReadWinRtSecurityState(const std::string& peer) {
+  const BluetoothLEDevice device = AwaitWinRt(BluetoothLEDevice::FromBluetoothAddressAsync(ParseAddress(peer)));
+  if (device == nullptr) throw std::runtime_error("The Windows Bluetooth peer could not be opened for security state");
+  const auto pairing = device.DeviceInformation().Pairing();
+  return {
+      pairing.IsPaired() ? "bonded" : "not-bonded",
+      "unsupported",
+      "unsupported",
+      "unsupported",
+      pairing.CanPair()};
+}
+
+SecurityPairResultView PairWinRtPeer(const std::string& peer) {
+  const BluetoothLEDevice device = AwaitWinRt(BluetoothLEDevice::FromBluetoothAddressAsync(ParseAddress(peer)));
+  if (device == nullptr) throw std::runtime_error("The Windows Bluetooth peer could not be opened for pairing");
+  const auto pairing = device.DeviceInformation().Pairing();
+  if (pairing.IsPaired()) return {"already-paired", ReadWinRtSecurityState(peer), std::nullopt};
+  if (!pairing.CanPair()) return {"rejected", std::nullopt, std::string("Windows reported that pairing is unavailable")};
+  const auto result = AwaitWinRt(pairing.PairAsync());
+  switch (result.Status()) {
+    case DevicePairingResultStatus::Paired:
+      return {"paired", ReadWinRtSecurityState(peer), std::nullopt};
+    case DevicePairingResultStatus::AlreadyPaired:
+      return {"already-paired", ReadWinRtSecurityState(peer), std::nullopt};
+    case DevicePairingResultStatus::PairingCanceled:
+      return {"cancelled", std::nullopt, std::nullopt};
+    default:
+      return {"rejected", std::nullopt, std::string("Windows rejected the pairing request")};
+  }
+}
+
+std::string UnpairWinRtPeer(const std::string& peer) {
+  const BluetoothLEDevice device = AwaitWinRt(BluetoothLEDevice::FromBluetoothAddressAsync(ParseAddress(peer)));
+  if (device == nullptr) throw std::runtime_error("The Windows Bluetooth peer could not be opened for unpairing");
+  const auto result = AwaitWinRt(device.DeviceInformation().Pairing().UnpairAsync());
+  switch (result.Status()) {
+    case DeviceUnpairingResultStatus::Unpaired:
+      return "unpaired";
+    case DeviceUnpairingResultStatus::AlreadyUnpaired:
+      return "already-unpaired";
+    default:
+      throw std::runtime_error("Windows rejected the unpair request");
+  }
 }
 
 bool IsPackagedProcess() {
@@ -263,6 +324,25 @@ Napi::Object ToJsAdapter(Napi::Env env, const AdapterView& view) {
   record.Set("state", ToJsAdapterState(env, view));
   record.Set("deployment", Napi::String::New(env, view.deployment));
   return record;
+}
+
+Napi::Object ToJsSecurityState(Napi::Env env, const SecurityStateView& state) {
+  Napi::Object result = Napi::Object::New(env);
+  result.Set("bond", Napi::String::New(env, state.bond));
+  result.Set("encryption", Napi::String::New(env, state.encryption));
+  result.Set("authentication", Napi::String::New(env, state.authentication));
+  result.Set("secureConnections", Napi::String::New(env, state.secure_connections));
+  result.Set("pairingPossible", Napi::Boolean::New(env, state.pairing_possible));
+  return result;
+}
+
+Napi::Object ToJsSecurityPairResult(Napi::Env env, const SecurityPairResultView& result) {
+  Napi::Object output = Napi::Object::New(env);
+  output.Set("outcome", Napi::String::New(env, result.outcome));
+  if (result.state.has_value()) output.Set("state", ToJsSecurityState(env, *result.state));
+  if (result.reason.has_value()) output.Set("reason", Napi::String::New(env, *result.reason));
+  else output.Set("reason", env.Null());
+  return output;
 }
 
 struct OperationStatus {
@@ -871,6 +951,37 @@ class AdapterListener final : public ListenerLifecycle {
   }
 };
 
+struct SecurityStatePayload {
+  std::string peer;
+  SecurityStateView state;
+};
+
+class SecurityListener final : public ListenerLifecycle {
+ public:
+  explicit SecurityListener(Napi::ThreadSafeFunction function) : ListenerLifecycle(std::move(function)) {}
+
+  void Emit(const std::string& peer, const SecurityStateView& state) {
+    auto* payload = new SecurityStatePayload{peer, state};
+    const napi_status status = function_.BlockingCall(payload, [](Napi::Env env, Napi::Function callback, SecurityStatePayload* value) {
+      std::unique_ptr<SecurityStatePayload> owned(value);
+      try {
+        Napi::Object record = Napi::Object::New(env);
+        record.Set("nativePeerId", Napi::String::New(env, value->peer));
+        record.Set("state", ToJsSecurityState(env, value->state));
+        callback.Call({record});
+      } catch (const std::exception& error) {
+        ReportWinRtDelegateFailure("security-state callback", error);
+      } catch (...) {
+        ReportWinRtDelegateFailure("security-state callback");
+      }
+    });
+    if (status != napi_ok) {
+      delete payload;
+      ReportControlIngressFailure("security-state", status);
+    }
+  }
+};
+
 struct ScanTerminalPayload {
   std::string scan_token;
   std::string status;
@@ -1038,6 +1149,7 @@ struct BoundaryState : public std::enable_shared_from_this<BoundaryState> {
   std::vector<std::shared_ptr<DatabaseListener>> database_listeners;
   std::vector<std::shared_ptr<AdapterListener>> adapter_listeners;
   std::vector<std::shared_ptr<ScanTerminalListener>> scan_terminal_listeners;
+  std::vector<std::shared_ptr<SecurityListener>> security_listeners;
   std::shared_ptr<IngressTelemetry> ingress_telemetry = std::make_shared<IngressTelemetry>();
   std::optional<Radio> radio;
   std::optional<winrt::event_token> radio_token;
@@ -1063,6 +1175,15 @@ struct BoundaryState : public std::enable_shared_from_this<BoundaryState> {
     for (const std::shared_ptr<DatabaseListener>& listener : listeners) {
       listener->Emit(peer, connection_generation);
     }
+  }
+
+  void EmitSecurityState(const std::string& peer, const SecurityStateView& state) {
+    std::vector<std::shared_ptr<SecurityListener>> listeners;
+    {
+      std::lock_guard<std::mutex> guard(mutex);
+      listeners = security_listeners;
+    }
+    for (const std::shared_ptr<SecurityListener>& listener : listeners) listener->Emit(peer, state);
   }
 
   AdapterView EmitAdapterState(bool wait_for_callbacks = false) {

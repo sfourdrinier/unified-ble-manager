@@ -48,6 +48,23 @@ export type {
   BlePeerState,
   KnownPeerQuery,
   PeerSource,
+  BleSecurity,
+  PairCancelResult,
+  PairingAgent,
+  PairingChallenge,
+  PairingResponse,
+  PairOptions,
+  RequiredSecurityOptions,
+  PairResult,
+  PeerSecurityEvent,
+  PeerSecurityState,
+  SecurityAuthenticationState,
+  SecurityBondState,
+  SecurityEncryptionState,
+  SecureConnectionsState,
+  SecurityPeer,
+  UnpairResult,
+  SecurityRequirement,
   PeerReference,
   PeerReferenceScope,
   ScanQuery,
@@ -63,6 +80,7 @@ export type { PeerDirectoryRecord } from './public/peer-directory'
 export { mergePeerDirectoryRecords } from './public/peer-directory'
 export { encodePeerReference, decodePeerReference } from './public/peer-reference'
 export { createConnectionSupervisor } from './public/connection-supervisor'
+export { withRequiredSecurity } from './public/security'
 export type {
   ConnectionGate,
   ConnectionGateContext,

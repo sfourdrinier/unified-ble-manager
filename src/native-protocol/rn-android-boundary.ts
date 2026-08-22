@@ -56,6 +56,21 @@ import {
 import { NATIVE_PROTOCOL_VERSION } from './generated/native-protocol-v2-schema'
 import type { ParsedNativeAdvertisement } from './rn-android-protocol-records'
 
+export type AndroidSecurityBondState = 'bonded' | 'bonding' | 'not-bonded' | 'unknown' | 'unsupported'
+
+export interface AndroidSecurityState {
+  readonly bond: AndroidSecurityBondState
+  readonly encryption: 'encrypted' | 'not-encrypted' | 'unknown' | 'unsupported'
+  readonly authentication: 'authenticated' | 'unauthenticated' | 'unknown' | 'unsupported'
+  readonly secureConnections: 'yes' | 'no' | 'unknown' | 'unsupported'
+  readonly pairingPossible: boolean | null
+}
+
+export interface AndroidSecurityStateChangedRecord {
+  readonly nativePeerId: string
+  readonly state: AndroidSecurityState
+}
+
 const protocolVersion = NATIVE_PROTOCOL_VERSION
 const contractVersion = 1
 const maximumNativePayloadBytes = 512 * 1024
@@ -89,6 +104,17 @@ export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary
     rssi: 'available',
     requestMtu: 'available'
   })
+  private securityExtensionAvailable = false
+  private securityCancellationExtensionAvailable = false
+  private readonly securityListeners = new Set<(record: AndroidSecurityStateChangedRecord) => void>()
+
+  get securityAvailable(): boolean {
+    return this.securityExtensionAvailable
+  }
+
+  get securityCancellationAvailable(): boolean {
+    return this.securityCancellationExtensionAvailable
+  }
   private readonly pending = new Map<string, PendingResult>()
   private readonly connections = new Map<string, NativeConnection>()
   private readonly databases = new Map<string, NativeProtocolRecord>()
@@ -167,6 +193,9 @@ export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary
       this.nativeDestroyCompleted = false
       assertHandshakeSelection(handshake)
       this.maximumInputPayloadBytes = Math.min(maximumNativePayloadBytes, handshake.maximumBinaryPayloadBytes)
+      this.securityExtensionAvailable = handshake.securityAvailable === true
+      this.securityCancellationExtensionAvailable =
+        this.securityExtensionAvailable && handshake.securityCancelPairingAvailable === true
       await this.control.installExecutionRuntime()
       setNativeProtocolFatalSink(reason => this.failAttachment(reason))
       setNativeProtocolEventSink(bytes => this.receiveRecord(bytes))
@@ -279,6 +308,54 @@ export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary
     }
     const result = await this.dispatch('requestMtu', [field(10, connection.record), field(14, requestedMtu)])
     return requiredUnsigned(result, 14, 'rn-android-boundary.request-mtu.negotiated')
+  }
+
+  async securityState(nativePeerId: string): Promise<AndroidSecurityState> {
+    this.requireSecurityExtension('security-state')
+    this.requireOpen('security-state')
+    const result = await this.dispatch('securityState', [field(15, nativePeerId)])
+    return securityStateFromRecord(result, nativePeerId, 'rn-android-boundary.security-state')
+  }
+
+  async pair(
+    nativePeerId: string,
+    signal: AbortSignal | null = null
+  ): Promise<{ readonly outcome: 'paired' | 'already-paired' | 'rejected'; readonly state: AndroidSecurityState }> {
+    this.requireSecurityExtension('pair')
+    this.requireOpen('pair')
+    if (isAbortSignalAborted(signal)) {
+      throw contractError('operation.aborted', 'core', 'rn-android-boundary.pair')
+    }
+    const current = await this.securityState(nativePeerId)
+    if (isAbortSignalAborted(signal)) {
+      throw contractError('operation.aborted', 'core', 'rn-android-boundary.pair')
+    }
+    if (current.bond === 'bonded') return { outcome: 'already-paired', state: current }
+    const result = await this.dispatch('securityPair', [field(15, nativePeerId)])
+    const state = securityStateFromRecord(result, nativePeerId, 'rn-android-boundary.pair')
+    return { outcome: state.bond === 'bonded' ? 'paired' : 'rejected', state }
+  }
+
+  async cancelPairing(nativePeerId: string): Promise<void> {
+    this.requireSecurityCancellationExtension('cancel-pairing')
+    this.requireOpen('cancel-pairing')
+    await this.dispatch('securityCancelPairing', [field(15, nativePeerId)])
+  }
+
+  async cleanupPairing(nativePeerId: string): Promise<void> {
+    this.requireSecurityExtension('pairing-cleanup')
+    this.requireOpen('pairing-cleanup')
+    await this.dispatch('securityCancelPairing', [field(15, nativePeerId)])
+  }
+
+  async unpair(_nativePeerId: string): Promise<'unsupported'> {
+    this.requireSecurityExtension('unpair')
+    return 'unsupported'
+  }
+
+  onSecurityState(listener: (record: AndroidSecurityStateChangedRecord) => void): () => void {
+    this.securityListeners.add(listener)
+    return () => this.securityListeners.delete(listener)
   }
 
   async discover(nativePeerId: string): Promise<CoreBluetoothGattSnapshot> {
@@ -450,6 +527,7 @@ export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary
     this.subscriptionsByAddress.clear()
     this.disconnectListeners.clear()
     this.adapterListeners.clear()
+    this.securityListeners.clear()
     this.rejectPending('Native protocol attachment was destroyed')
   }
 
@@ -538,6 +616,19 @@ export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary
 
   private receiveEvent(event: NativeProtocolRecord): void {
     const kind = requiredString(event, 3, 'rn-android-boundary.event.kind')
+    if (kind === 'securityStateChanged') {
+      this.assertCurrentAttachment(
+        requiredRecord(event, 4, 'rn-android-boundary.event.security-attachment'),
+        'security-event'
+      )
+      const nativePeerId = requiredString(event, 16, 'rn-android-boundary.event.security-peer')
+      const bondState = requiredString(event, 17, 'rn-android-boundary.event.security-bond-state')
+      const state = securityStateFromBondState(bondState, 'rn-android-boundary.event.security-state')
+      for (const listener of this.securityListeners) {
+        this.invokeConsumerListener('securityStateChanged', () => listener({ nativePeerId, state }))
+      }
+      return
+    }
     if (kind === 'advertisement') {
       const advertisement = requiredRecord(event, 12, 'rn-android-boundary.event.advertisement')
       const parsedAdvertisement = parseAdvertisementRecord(advertisement)
@@ -769,6 +860,7 @@ export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary
     this.subscriptionsByAddress.clear()
     this.disconnectListeners.clear()
     this.adapterListeners.clear()
+    this.securityListeners.clear()
     this.rejectPending(reason)
     const attachment = this.requireAttachmentRecord('fatal-attachment')
     const teardown = (async () => {
@@ -881,6 +973,32 @@ export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary
     }
   }
 
+  private requireSecurityExtension(operation: string): void {
+    if (!this.securityExtensionAvailable) {
+      throw contractError('capability.unsupported', 'capability', `rn-android-boundary.${operation}`)
+    }
+  }
+
+  private requireSecurityCancellationExtension(operation: string): void {
+    if (!this.securityCancellationExtensionAvailable) {
+      throw contractError('capability.unsupported', 'capability', `rn-android-boundary.${operation}`)
+    }
+  }
+
+  private assertCurrentAttachment(record: NativeProtocolRecord, operation: string): void {
+    const expected = attachmentIdentityFromRecord(this.requireAttachmentRecord(operation))
+    const actual = attachmentIdentityFromRecord(record)
+    if (
+      actual.attachmentId !== expected.attachmentId ||
+      actual.backendInstanceId !== expected.backendInstanceId ||
+      actual.backendGeneration !== expected.backendGeneration ||
+      actual.adapterId !== expected.adapterId ||
+      actual.adapterGeneration !== expected.adapterGeneration
+    ) {
+      throw contractError('protocol.violation', 'boundary', `rn-android-boundary.${operation}.attachment-mismatch`)
+    }
+  }
+
   private requireAttachmentRecord(operation: string): NativeProtocolRecord {
     if (this.attachmentRecord === null) {
       throw contractError('lifecycle.invalid-state', 'boundary', `rn-android-boundary.${operation}.attachment`)
@@ -915,6 +1033,10 @@ export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary
   }
 }
 
+function isAbortSignalAborted(signal: AbortSignal | null): boolean {
+  return signal?.aborted === true
+}
+
 /** Preserves native platform details instead of flattening CoreBluetooth failures to plain Error. */
 function nativeOperationFailure(error: NativeProtocolRecord | null, operation: string): Error {
   const safeMessage = error === null ? null : optionalString(error, 7)
@@ -923,6 +1045,12 @@ function nativeOperationFailure(error: NativeProtocolRecord | null, operation: s
   }
   const nativeDomain = optionalString(error, 9) ?? optionalString(error, 2) ?? 'native-protocol'
   const nativeCode = nativeErrorCode(error)
+  if (nativeCode === 'cancelled') {
+    return contractError('operation.aborted', 'core', `rn-android-boundary.${operation}`)
+  }
+  if (nativeCode === 'permissionDenied') {
+    return contractError('permission.denied', 'adapter', `rn-android-boundary.${operation}`)
+  }
   return contractError('platform.failure', 'platform', `rn-android-boundary.${operation}`, {
     domain: nativeDomain,
     code: nativeCode,
@@ -950,8 +1078,41 @@ function assertHandshakeSelection(handshake: NativeProtocolHandshakeResult): voi
     !Number.isSafeInteger(handshake.maximumControlRecordBytes) ||
     handshake.maximumControlRecordBytes <= 0 ||
     !Number.isSafeInteger(handshake.maximumBinaryPayloadBytes) ||
-    handshake.maximumBinaryPayloadBytes <= 0
+    handshake.maximumBinaryPayloadBytes <= 0 ||
+    (handshake.securityAvailable !== undefined && typeof handshake.securityAvailable !== 'boolean') ||
+    (handshake.securityCancelPairingAvailable !== undefined &&
+      typeof handshake.securityCancelPairingAvailable !== 'boolean')
   ) {
     throw contractError('protocol.incompatible', 'boundary', 'rn-android-boundary.open.handshake')
   }
+}
+
+function securityStateFromRecord(
+  record: NativeProtocolRecord,
+  expectedPeerId: string,
+  operation: string
+): AndroidSecurityState {
+  const peerId = requiredString(record, 16, `${operation}.peer`)
+  if (peerId !== expectedPeerId) throw contractError('protocol.violation', 'boundary', `${operation}.peer-mismatch`)
+  return securityStateFromBondState(requiredString(record, 17, `${operation}.bond-state`), operation)
+}
+
+function securityStateFromBondState(value: string, operation: string): AndroidSecurityState {
+  if (
+    value !== 'bonded' &&
+    value !== 'bonding' &&
+    value !== 'notBonded' &&
+    value !== 'unknown' &&
+    value !== 'unsupported'
+  ) {
+    throw contractError('protocol.malformed', 'boundary', `${operation}.bond-state`)
+  }
+  const bond = value === 'notBonded' ? 'not-bonded' : value
+  return Object.freeze({
+    bond,
+    encryption: 'unsupported',
+    authentication: 'unsupported',
+    secureConnections: 'unsupported',
+    pairingPossible: value === 'bonded' || value === 'bonding' || value === 'notBonded' ? true : null
+  })
 }

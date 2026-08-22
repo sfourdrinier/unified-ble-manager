@@ -22,6 +22,7 @@ import {
 } from '../backend-contract/gatt'
 import type { GattDatabaseChangedEvent } from '../backend-contract/gatt'
 import { createPublicBleCapabilities, type BleCapabilities } from '../public/capabilities'
+import { BUILT_IN_FEATURE_IDS, type CapabilityDescriptor } from '../backend-contract/capabilities'
 import type {
   PortableCurrentCharacteristicPath,
   PortableCurrentDescriptorPath,
@@ -36,7 +37,7 @@ import type { AttachmentRecord } from '../backend-contract/identity'
 import type { PeerReference } from '../backend-contract/peer-reference'
 import { IpcBleClient } from './client'
 import { IPC_GATT_DATABASE_SCHEMA_VERSION } from './protocol'
-import type { IpcClientTransport } from './protocol'
+import type { IpcCapabilitySnapshotV2, IpcClientTransport } from './protocol'
 
 export {
   advertisementPassesViewFilter,
@@ -176,7 +177,7 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
     return new IpcBleManager(
       client,
       createPublicBleCapabilities(
-        client.bootstrap.capabilities,
+        projectRemoteSecurityCapabilities(client.bootstrap.capabilities),
         String(client.bootstrap.attachment.backendGeneration),
         true
       )
@@ -536,6 +537,45 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
   private assertActive(): void {
     if (this.lifecycle !== 'active') throw new TypeError('Tauri BLE manager has been released')
   }
+}
+
+const REMOTE_SECURITY_CAPABILITY_IDS = new Set<string>([
+  BUILT_IN_FEATURE_IDS.securityState,
+  BUILT_IN_FEATURE_IDS.securityPair,
+  BUILT_IN_FEATURE_IDS.securityCancelPairing,
+  BUILT_IN_FEATURE_IDS.securityUnpair,
+  BUILT_IN_FEATURE_IDS.securityCustomCeremony
+])
+
+function projectRemoteSecurityCapabilities(snapshot: IpcCapabilitySnapshotV2): IpcCapabilitySnapshotV2 {
+  return Object.freeze({
+    ...snapshot,
+    descriptors: Object.freeze(
+      snapshot.descriptors.map(descriptor =>
+        REMOTE_SECURITY_CAPABILITY_IDS.has(descriptor.id) ? unsupportedRemoteSecurityDescriptor(descriptor) : descriptor
+      )
+    )
+  })
+}
+
+function unsupportedRemoteSecurityDescriptor(descriptor: CapabilityDescriptor): CapabilityDescriptor {
+  const limitation = Object.freeze({
+    code: 'ipc-security-backend-unavailable',
+    explanation: 'This desktop IPC projection does not currently route a native security backend.',
+    affectedGuarantee: 'security operation support over trusted-host IPC'
+  })
+  return Object.freeze({
+    ...descriptor,
+    state: 'unsupported' as const,
+    evidence: Object.freeze({
+      ...descriptor.evidence,
+      receiptId: `ipc-security-unavailable-${descriptor.id}`,
+      evidenceLevel: 'blocked' as const,
+      sourceDigest: 'ipc-security-projection-v1',
+      limitations: Object.freeze([limitation])
+    }),
+    limitations: Object.freeze([limitation])
+  })
 }
 
 export class IpcScanSession {

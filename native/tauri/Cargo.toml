@@ -17,6 +17,7 @@ crate-type = ["rlib"]
 btleplug = "0.12"
 futures-util = "0.3"
 serde = { version = "1", features = ["derive"] }
+schemars = "0.8"
 serde_json = "1"
 tauri = { version = "2", default-features = false }
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
@@ -32,4 +33,6 @@ objc2 = "0.5.2"
 objc2-core-bluetooth = { version = "0.2.2", default-features = false, features = ["std", "CBManager"] }
 
 [build-dependencies]
+schemars = "0.8"
+serde = { version = "1", features = ["derive"] }
 tauri-plugin = { version = "2", features = ["build"] }

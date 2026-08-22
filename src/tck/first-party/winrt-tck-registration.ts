@@ -14,6 +14,7 @@ import type { FirstPartyBackendTckRegistration } from './first-party-tck-registr
 export interface DeterministicWinRtBoundary extends WinRtBoundary {
   emitAdvertisement(): void
   emitNotification(address: WinRtCharacteristicAddress, bytes: Uint8Array): void
+  prepareSecurityCancellation?(): void
 }
 
 export interface WinRtFirstPartyTckRegistrationOptions {
@@ -52,7 +53,12 @@ export function createWinRtFirstPartyTckRegistration(
     suites: Object.freeze([
       Object.freeze({ suiteId: 'winrt-provider-contract-v2', baseScenarioIds: winRtScenarioIds })
     ]),
-    featureSuites: Object.freeze([]),
+    featureSuites: Object.freeze([
+      Object.freeze({
+        suiteId: 'tck.feature.security.winrt',
+        scenarioIds: Object.freeze(['security.state-pair-cancel-unpair' as const])
+      })
+    ]),
     capabilityExclusions: Object.freeze([
       Object.freeze({
         featureId: 'winrt:live-radio',
@@ -76,9 +82,18 @@ async function createFixture(options: WinRtFirstPartyTckRegistrationOptions) {
     await boundary.selectAdapter(selected.nativeAdapterId).completion
     const createdBackend = new WinRtBackend(boundary, selected, options.now, 'node')
     backend = createdBackend
+    const publicPeerId = createdBackend.peerIdForNativeId(options.nativePeerId)
     return {
       backend: createdBackend,
       controller: createWinRtController(boundary, options.nativePeerId, options.now),
+      featureScenarioAdapters: Object.freeze({
+        security: Object.freeze({
+          peerId: publicPeerId,
+          customCeremonySupported: false,
+          supportsAlreadyUnpaired: true,
+          prepareCancellation: () => boundary.prepareSecurityCancellation?.()
+        })
+      }),
       dispose: () => createdBackend.destroy()
     }
   } finally {

@@ -9,6 +9,10 @@ This page is the ownership and threat boundary for Electron. Consumer setup live
 - Main-process code selects and owns the radio/backend.
 - Renderers use the versioned IPC client and never load a Node-API addon.
 - `ElectronMainBleBinding` authenticates each `WebContents` from host facts.
+- Security-sensitive IPC authority is a main-process snapshot of distinct
+  `security:state`, `security:pair`, `security:cancel-pairing`,
+  `security:unpair`, and `security:custom-ceremony` permissions; renderer
+  payload fields cannot grant or mutate those permissions.
 - Navigation, renderer destruction, app shutdown, and backend restart must drop renderer leases.
 
 ## Window policy
@@ -25,6 +29,9 @@ This page is the ownership and threat boundary for Electron. Consumer setup live
 
 - Event acknowledgement and bounded streams apply on the IPC membrane.
 - Generation quarantine: stale connection/database handles fail closed.
+- Security command admission is checked before routing, and a scope change
+  requires a new authenticated bootstrap; custom ceremonies remain rejected
+  until a data-only challenge protocol exists.
 - Unsupported threat claims (for example “this IPC path is immune to a compromised renderer”) are out of scope.
 
 ## Evidence

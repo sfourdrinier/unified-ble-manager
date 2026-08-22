@@ -62,6 +62,26 @@ export type { PeerDirectoryRecord } from './peer-directory'
 export { mergePeerDirectoryRecords } from './peer-directory'
 export type { PeerReference, PeerReferenceScope } from './peer-reference'
 export { encodePeerReference, decodePeerReference } from './peer-reference'
+export type {
+  BleSecurity,
+  PairCancelResult,
+  PairingAgent,
+  PairingChallenge,
+  PairingResponse,
+  PairOptions,
+  RequiredSecurityOptions,
+  PairResult,
+  PeerSecurityEvent,
+  PeerSecurityState,
+  SecurityAuthenticationState,
+  SecurityBondState,
+  SecurityEncryptionState,
+  SecureConnectionsState,
+  SecurityPeer,
+  UnpairResult,
+  SecurityRequirement
+} from './security'
+export { withRequiredSecurity } from './security'
 export { createConnectionSupervisor } from './connection-supervisor'
 export type {
   ConnectionGate,

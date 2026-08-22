@@ -35,9 +35,7 @@ describe('first-party backend standard TCK registrations', () => {
       },
       chooserRequest: webChooserRequest()
     })
-    const registry = createFirstPartyBackendTckRegistry([
-      registration
-    ])
+    const registry = createFirstPartyBackendTckRegistry([registration])
 
     const report = await registry.run('unified-ble:web-bluetooth')
 
@@ -101,11 +99,7 @@ describe('first-party backend standard TCK registrations', () => {
               detail: expect.objectContaining({
                 scanRejected: true,
                 resourcesReleased: true,
-                unsupportedFeatureIds: [
-                  'web:background-operation',
-                  'web:continuous-scan',
-                  'web:state-restoration'
-                ]
+                unsupportedFeatureIds: ['web:background-operation', 'web:continuous-scan', 'web:state-restoration']
               })
             })
           ]
@@ -150,11 +144,7 @@ describe('first-party backend standard TCK registrations', () => {
   test('binds every blocked Web capability to the runner-owned unsupported-capability receipt', () => {
     const registry = createWebBluetoothFeatureRegistry('web-registry-receipt-binding-test')
     const canonicalReceiptId = 'web.unsupported-capabilities-reject-and-remain-honest'
-    const expectedFeatureIds = [
-      'web:background-operation',
-      'web:continuous-scan',
-      'web:state-restoration'
-    ]
+    const expectedFeatureIds = ['web:background-operation', 'web:continuous-scan', 'web:state-restoration']
 
     for (const featureId of expectedFeatureIds) {
       const feature = registry.registrations.find(registration => registration.id === featureId)
@@ -219,17 +209,17 @@ describe('first-party backend standard TCK registrations', () => {
   test('runs every applicable CoreBluetooth deterministic callback and capability scenario without unsupported promotion', async () => {
     const boundaries = []
     const registration = createCoreBluetoothFirstPartyTckRegistration({
-        now: () => 20,
-        nativePeerId: 'native-polar-h10',
-        createBoundary: () => {
-          const boundary = new InMemoryCoreBluetoothBoundary({
-            serviceUuid: SERVICE_UUID,
-            characteristicUuid: CHARACTERISTIC_UUID
-          })
-          boundaries.push(boundary)
-          return boundary
-        }
-      })
+      now: () => 20,
+      nativePeerId: 'native-polar-h10',
+      createBoundary: () => {
+        const boundary = new InMemoryCoreBluetoothBoundary({
+          serviceUuid: SERVICE_UUID,
+          characteristicUuid: CHARACTERISTIC_UUID
+        })
+        boundaries.push(boundary)
+        return boundary
+      }
+    })
     const registry = createFirstPartyBackendTckRegistry([registration])
 
     const report = await registry.run('unified-ble:corebluetooth')
@@ -249,10 +239,7 @@ describe('first-party backend standard TCK registrations', () => {
       'diagnostics.trace-redaction-and-resource-counters',
       'scenario.scan-connect-discover-read-notify-destroy'
     ])
-    expect(report.standard.featureSuiteIds).toEqual([
-      'connection-controls',
-      'tck.feature.gatt.maximum-write-length'
-    ])
+    expect(report.standard.featureSuiteIds).toEqual(['connection-controls', 'tck.feature.gatt.maximum-write-length'])
     expect(report.standard.featureBindings.map(binding => binding.featureId)).toEqual([
       'connection:direct',
       'connection:rssi-measurement',
@@ -289,7 +276,7 @@ describe('first-party backend standard TCK registrations', () => {
           facts: expect.arrayContaining([
             expect.objectContaining({ id: 'gatt-services-changed-invalidates-database-generation', holds: true })
           ])
-        }),
+        })
       ])
     )
     expect(report.standard.featureBindings.map(binding => binding.featureId)).not.toContain(
@@ -332,14 +319,24 @@ describe('first-party backend standard TCK registrations', () => {
       'capability.truth-limits-evidence-and-binding',
       'scenario.scan-connect-discover-read-notify-destroy'
     ])
-    expect(report.standard.receipts).toHaveLength(6)
+    expect(report.standard.featureSuiteIds).toEqual(['tck.feature.security.bluez'])
+    expect(report.standard.featureBindings.map(binding => binding.featureId)).toEqual([
+      'connection:direct',
+      'security:state',
+      'security:pair',
+      'security:cancel-pairing',
+      'security:unpair'
+    ])
+    expect(report.standard.receipts).toHaveLength(10)
     expect(report.standard.receipts).toEqual(
-      report.standard.baseScenarioIds.map(scenarioId =>
-        expect.objectContaining({
-          scenarioId,
-          error: null,
-          facts: expect.arrayContaining([expect.objectContaining({ holds: true })])
-        })
+      expect.arrayContaining(
+        report.standard.baseScenarioIds.map(scenarioId =>
+          expect.objectContaining({
+            scenarioId,
+            error: null,
+            facts: expect.arrayContaining([expect.objectContaining({ holds: true })])
+          })
+        )
       )
     )
     expect(report.standard.receipts).toEqual(
@@ -351,6 +348,11 @@ describe('first-party backend standard TCK registrations', () => {
         })
       ])
     )
+    expect(
+      report.standard.receipts
+        .filter(receipt => receipt.scenarioId === 'security.state-pair-cancel-unpair')
+        .every(receipt => receipt.error === null && receipt.facts.every(fact => fact.holds))
+    ).toBe(true)
     expect(
       report.capabilityExclusions.map(exclusion => ({ featureId: exclusion.featureId, state: exclusion.state }))
     ).toEqual([
@@ -421,7 +423,8 @@ function createBluezTckBoundary(busKind = 'system') {
               RSSI: { signature: 'n', value: -40 },
               UUIDs: { signature: 'as', value: [SERVICE_UUID] },
               Connected: { signature: 'b', value: true },
-              ServicesResolved: { signature: 'b', value: true }
+              ServicesResolved: { signature: 'b', value: true },
+              Paired: { signature: 'b', value: false }
             }
           }
         ]

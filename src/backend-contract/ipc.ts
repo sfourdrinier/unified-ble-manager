@@ -26,6 +26,14 @@ export const ELECTRON_MAX_ACTIVE_RENDERER_LEASES_PER_IDENTITY = 2
 /** Framework-neutral name for the bounded overlapping client lease policy. */
 export const IPC_MAX_ACTIVE_CLIENT_LEASES_PER_IDENTITY = ELECTRON_MAX_ACTIVE_RENDERER_LEASES_PER_IDENTITY
 
+/** Trusted-host permissions for security-sensitive desktop IPC operations. */
+export type IpcSecurityPermission =
+  | 'security:state'
+  | 'security:pair'
+  | 'security:cancel-pairing'
+  | 'security:unpair'
+  | 'security:custom-ceremony'
+
 export interface RendererIdentity<Attachment extends string, Renderer extends string> {
   readonly clientId: ClientId<Attachment, Renderer>
   readonly windowScope: string
@@ -43,6 +51,8 @@ export interface TrustedIpcSender<Attachment extends string, Renderer extends st
   readonly authenticatedClientId: ClientId<Attachment, Renderer>
   readonly authenticatedWindowScope: string
   readonly authenticatedSessionScope: string
+  /** Derived by the main process; renderer payloads cannot grant or change it. */
+  readonly securityPermissions?: readonly IpcSecurityPermission[]
 }
 
 /** Framework-neutral aliases used by desktop webview transports such as Tauri. */
@@ -123,6 +133,7 @@ interface RendererAccounting<Attachment extends string> {
   readonly identity: RendererIdentity<Attachment, string>
   readonly lease: RendererLeaseIdentity
   readonly versions: IpcVersionAxes
+  readonly securityPermissions: readonly IpcSecurityPermission[]
   /**
    * Bounded terminal replay ledger. In-flight entries are never evicted, while
    * settled entries remain long enough to reject a replay before LRU eviction.
@@ -164,7 +175,8 @@ export class IpcArbiterContext<Attachment extends string> implements ElectronMai
 
   registerRenderer<Renderer extends string>(
     identity: RendererIdentity<Attachment, Renderer>,
-    versions: IpcVersionAxes = this.authority.versions
+    versions: IpcVersionAxes = this.authority.versions,
+    securityPermissions: readonly IpcSecurityPermission[] = []
   ): RendererLeaseIdentity {
     let matchingLeaseCount = 0
     for (const accounting of this.renderers.values()) {
@@ -186,6 +198,7 @@ export class IpcArbiterContext<Attachment extends string> implements ElectronMai
       identity: snapshotRendererIdentity(identity),
       lease,
       versions: snapshotIpcVersionAxes(versions),
+      securityPermissions: snapshotSecurityPermissions(securityPermissions),
       replayLedger: new Map<string, ReplayLedgerEntry>(),
       lifecycle: 'active',
       outstandingOperations: 0,
@@ -204,10 +217,16 @@ export class IpcArbiterContext<Attachment extends string> implements ElectronMai
     this.assertSender(sender, envelope.renderer)
     const accounting = this.requireAccounting(envelope.rendererLease)
     this.assertRegisteredRenderer(accounting, envelope.renderer, envelope.rendererLease)
+    this.assertSecurityPermissions(accounting.securityPermissions, sender.securityPermissions)
     this.assertRendererActive(accounting)
     this.assertAttachment(envelope)
     this.assertVersions(accounting.versions, envelope)
     const prepared = this.prepareEnvelope(envelope, accounting.versions)
+    assertSecurityCommandPermission(
+      prepared.envelope.command,
+      prepared.envelope.payload,
+      accounting.securityPermissions
+    )
     // A cancellation must remain admissible when normal work has filled the
     // operation quota; it still receives full replay and byte accounting.
     const reservesOperationSlot = prepared.envelope.command !== 'operation.cancel'
@@ -283,6 +302,16 @@ export class IpcArbiterContext<Attachment extends string> implements ElectronMai
       sender.authenticatedSessionScope !== renderer.sessionScope
     ) {
       throw contractError('ownership.denied', 'ipc', 'electron-main-arbiter.sender')
+    }
+  }
+
+  private assertSecurityPermissions(
+    expected: readonly IpcSecurityPermission[],
+    supplied: readonly IpcSecurityPermission[] | undefined
+  ): void {
+    const actual = supplied ?? []
+    if (!securityPermissionsEqual(expected, actual)) {
+      throw contractError('ownership.denied', 'ipc', 'electron-main-arbiter.security-scope')
     }
   }
 
@@ -525,6 +554,59 @@ function snapshotRendererLease(lease: RendererLeaseIdentity): RendererLeaseIdent
     leaseId: lease.leaseId,
     generation: lease.generation
   })
+}
+
+function snapshotSecurityPermissions(permissions: readonly IpcSecurityPermission[]): readonly IpcSecurityPermission[] {
+  const unique = [...new Set(permissions)]
+  if (unique.some(permission => !isIpcSecurityPermission(permission))) {
+    throw contractError('protocol.violation', 'ipc', 'electron-main-arbiter.security-scope')
+  }
+  return Object.freeze(unique)
+}
+
+function securityPermissionsEqual(
+  expected: readonly IpcSecurityPermission[],
+  actual: readonly IpcSecurityPermission[]
+): boolean {
+  return expected.length === actual.length && expected.every(permission => actual.includes(permission))
+}
+
+function isIpcSecurityPermission(value: string): value is IpcSecurityPermission {
+  return (
+    value === 'security:state' ||
+    value === 'security:pair' ||
+    value === 'security:cancel-pairing' ||
+    value === 'security:unpair' ||
+    value === 'security:custom-ceremony'
+  )
+}
+
+function assertSecurityCommandPermission(
+  command: string,
+  payload: SerializableRecord,
+  permissions: readonly IpcSecurityPermission[]
+): void {
+  const permission =
+    command === 'security.state'
+      ? 'security:state'
+      : command === 'security.pair'
+        ? 'security:pair'
+        : command === 'security.cancel-pairing'
+          ? 'security:cancel-pairing'
+          : command === 'security.unpair'
+            ? 'security:unpair'
+            : command === 'security.custom-ceremony'
+              ? 'security:custom-ceremony'
+              : null
+  const required: IpcSecurityPermission[] = permission === null ? [] : [permission]
+  if (command === 'security.pair' && payload.ceremony !== undefined && payload.ceremony !== 'system') {
+    required.push('security:custom-ceremony')
+  }
+  for (const requiredPermission of required) {
+    if (!permissions.includes(requiredPermission)) {
+      throw contractError('permission.denied', 'ipc', `electron-main-arbiter.${requiredPermission}`)
+    }
+  }
 }
 
 function ipcVersionsByteLength(versions: IpcVersionAxes): number {

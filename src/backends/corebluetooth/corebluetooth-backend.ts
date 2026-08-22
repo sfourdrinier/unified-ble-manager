@@ -699,10 +699,7 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
   ): Promise<ConnectionLease<string, string, string>> {
     this.assertOperational('corebluetooth.connect')
     this.operationLifecycle.assertAdmission(options, 'corebluetooth.connect')
-    const nativePeerId = this.nativeIdsByPeerId.get(String(peerId))
-    if (nativePeerId === undefined) {
-      throw contractError('connection.not-found', 'connection', 'corebluetooth.connect.peer')
-    }
+    const nativePeerId = this.nativePeerIdForPeerId(peerId, 'corebluetooth.connect.peer')
     let existing = this.connectionsByNativeId.get(nativePeerId)
     if (existing?.state === 'cleanup-failed') {
       try {
@@ -1024,7 +1021,17 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
     }
     throw contractError('connection.stale', 'connection', operation)
   }
-  private peerIdForNativeId(nativePeerId: string): PeerId<string> {
+  nativePeerIdForPeerId(peerId: string, operation: string): string {
+    const nativePeerId = this.nativeIdsByPeerId.get(String(peerId))
+    if (nativePeerId === undefined) throw contractError('connection.not-found', 'connection', operation)
+    return nativePeerId
+  }
+
+  peerIdForKnownNativeId(nativePeerId: string): string | null {
+    return this.peerIdsByNativeId.get(nativePeerId) ?? null
+  }
+
+  peerIdForNativeId(nativePeerId: string): PeerId<string> {
     const existing = this.peerIdsByNativeId.get(nativePeerId)
     if (existing !== undefined) {
       return existing

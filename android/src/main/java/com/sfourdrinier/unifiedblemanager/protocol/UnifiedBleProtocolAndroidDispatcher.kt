@@ -28,6 +28,9 @@ class UnifiedBleProtocolAndroidDispatcher(
   private val activeScanCommand = AtomicReference<ProtocolWireRecord?>(null)
   private val cancelledScanCommands = ConcurrentHashMap<String, ProtocolWireRecord>()
   private val attachmentCloseRequested = AtomicBoolean(false)
+  /** Security events are enabled only after a security-aware JS peer sends a security command. */
+  private val securityEventsEnabled = AtomicBoolean(false)
+  private var attachmentRecord: ProtocolWireRecord? = null
 
   init {
     radio.onAdapterState = {
@@ -41,6 +44,10 @@ class UnifiedBleProtocolAndroidDispatcher(
           (failure.throwable.message ?: "unknown error")
       )
     }
+    radio.onSecurityState = { deviceId, state ->
+      if (securityEventsEnabled.get()) emitSecurityStateChanged(deviceId, state.bond)
+    }
+    radio.registerBondStateReceiver()
     radio.registerAdapterStateReceiver()
     radio.onConnectionState = { deviceId, connected, status ->
       val deviceKey = deviceId.uppercase()
@@ -148,6 +155,7 @@ class UnifiedBleProtocolAndroidDispatcher(
       throw error
     }
     val operationKey = operationKey(command)
+    attachmentRecord = command.requiredRecord(2).requiredRecord(1)
     val prior = pendingCommands.putIfAbsent(operationKey, command)
     if (prior != null) {
       UnifiedBleProtocolJsiBinding.emitDiagnostic(
@@ -170,6 +178,18 @@ class UnifiedBleProtocolAndroidDispatcher(
         "writeDescriptor" -> writeDescriptor(command)
         "readRssi" -> readRssi(command)
         "requestMtu" -> requestMtu(command)
+        "securityState" -> {
+          securityEventsEnabled.set(true)
+          securityState(command)
+        }
+        "securityPair" -> {
+          securityEventsEnabled.set(true)
+          securityPair(command)
+        }
+        "securityCancelPairing" -> {
+          securityEventsEnabled.set(true)
+          securityCancelPairing(command)
+        }
         "subscribe" -> subscribe(command, true)
         "unsubscribe" -> subscribe(command, false)
         "cancel" -> cancel(command)
@@ -180,6 +200,8 @@ class UnifiedBleProtocolAndroidDispatcher(
       emitFailure(command, "invalidCommand", error.message ?: "Android command is invalid")
     } catch (error: IllegalStateException) {
       emitFailure(command, "radioFailure", error.message ?: "Android radio rejected the command")
+    } catch (error: SecurityException) {
+      emitFailure(command, "permissionDenied", "Android Bluetooth permission is required for this operation")
     } catch (error: Exception) {
       emitFailure(command, "platformFailure", error.message ?: "Android platform operation failed")
     }
@@ -187,6 +209,8 @@ class UnifiedBleProtocolAndroidDispatcher(
 
   fun close(): Boolean {
     attachmentCloseRequested.set(true)
+    securityEventsEnabled.set(false)
+    radio.onSecurityState = null
     val result = radio.destroy()
     if (!result.isSuccessful) {
       UnifiedBleProtocolJsiBinding.emitDiagnostic(
@@ -472,6 +496,8 @@ class UnifiedBleProtocolAndroidDispatcher(
   }
 
   private fun destroy(command: ProtocolWireRecord) {
+    securityEventsEnabled.set(false)
+    radio.onSecurityState = null
     val pendingBeforeDestroy = pendingCommands.values
       .filter { it !== command }
       .toList()
@@ -593,6 +619,42 @@ class UnifiedBleProtocolAndroidDispatcher(
     emitCancellationAcknowledgement(command, state)
   }
 
+  private fun securityState(command: ProtocolWireRecord) {
+    val peerId = command.requiredString(15)
+    val state = radio.securityState(peerId)
+    emitSuccess(command, "securityState", securityFields(peerId, state.bond))
+  }
+
+  private fun securityPair(command: ProtocolWireRecord) {
+    val peerId = command.requiredString(15)
+    val operationId = radio.pair(peerId) { outcome, state ->
+      if (!isPending(command)) return@pair
+      if (outcome == "rejected") {
+        emitFailure(command, "pairRejected", "Android rejected the system bond request")
+      } else if (outcome == "unknown") {
+        emitFailure(command, "bondStateUnknown", "Android did not report a recognized terminal bond state")
+      } else {
+        emitSuccess(command, "securityPair", securityFields(peerId, state.bond))
+      }
+    }
+    if (operationId != 0L) radioOperationIds[operationKey(command)] = operationId
+  }
+
+  private fun securityCancelPairing(command: ProtocolWireRecord) {
+    val peerId = command.requiredString(15)
+    val pendingPair = pendingCommands.values.firstOrNull { candidate ->
+      candidate.requiredString(3) == "securityPair" && candidate.requiredString(15).equals(peerId, ignoreCase = true)
+    }
+    if (pendingPair != null) {
+      radio.clearPendingBondPair(peerId)
+      emitCancelled(pendingPair)
+    }
+    // Compile-SDK 36 cannot physically cancel the Android system ceremony.
+    // This command only releases library ownership; the public cancellation
+    // capability remains unregistered until a public API is compiled in.
+    emitSuccess(command, "accepted")
+  }
+
   private fun emitSuccess(command: ProtocolWireRecord, kind: String, additions: Map<Int, ProtocolWireValue> = emptyMap()) {
     if (!isPending(command)) return
     val fields = mutableMapOf<Int, ProtocolWireValue>(
@@ -685,6 +747,29 @@ class UnifiedBleProtocolAndroidDispatcher(
     val event = connectionLostEvent(nativeHandle, connection, status, 0L, SystemClock.elapsedRealtime())
     UnifiedBleProtocolJsiBinding.emitRecord(nativeHandle, ProtocolWireEncoder.encode(event))
   }
+
+  private fun emitSecurityStateChanged(peerId: String, bondState: String) {
+    val attachment = attachmentRecord ?: return
+    val event = ProtocolWireRecord(
+      RecordKind.EVENT,
+      mapOf(
+        1 to ProtocolWireValue.UnsignedIntegerValue(1),
+        2 to ProtocolWireValue.StringValue("native-security-state-${SystemClock.elapsedRealtimeNanos()}"),
+        3 to ProtocolWireValue.StringValue("securityStateChanged"),
+        4 to ProtocolWireValue.RecordValue(attachment),
+        5 to ProtocolWireValue.UnsignedIntegerValue(0),
+        6 to ProtocolWireValue.UnsignedIntegerValue(SystemClock.elapsedRealtime()),
+        16 to ProtocolWireValue.StringValue(peerId),
+        17 to ProtocolWireValue.StringValue(bondState)
+      )
+    )
+    UnifiedBleProtocolJsiBinding.emitRecord(nativeHandle, ProtocolWireEncoder.encode(event))
+  }
+
+  private fun securityFields(peerId: String, bondState: String): Map<Int, ProtocolWireValue> = mapOf(
+    16 to ProtocolWireValue.StringValue(peerId),
+    17 to ProtocolWireValue.StringValue(bondState)
+  )
 
   private fun terminal(command: ProtocolWireRecord, outcome: String, cause: String? = null): ProtocolWireRecord {
     val fields = mutableMapOf<Int, ProtocolWireValue>(
@@ -811,6 +896,7 @@ class UnifiedBleProtocolAndroidDispatcher(
           command.requiredRecord(10).requiredString(2)
         "read", "write", "subscribe", "unsubscribe" -> characteristicEndpoint(command.requiredRecord(4)).deviceId
         "readDescriptor", "writeDescriptor" -> descriptorEndpoint(command.requiredRecord(5)).deviceId
+        "securityState", "securityPair", "securityCancelPairing" -> command.requiredString(15)
         else -> null
       }
     } catch (error: IllegalArgumentException) {
@@ -922,6 +1008,8 @@ internal fun dispatcherResultKindFor(commandKind: String): String = when (comman
   "requestMtu" -> "mtu"
   "subscribe" -> "subscribed"
   "unsubscribe" -> "unsubscribed"
+  "securityState" -> "securityState"
+  "securityPair" -> "securityPair"
   "destroy" -> "destroyed"
   else -> "accepted"
 }

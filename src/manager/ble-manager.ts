@@ -31,6 +31,7 @@ import type {
 } from '../backend-contract/backend'
 import type { BoundedAsyncStream } from '../backend-contract/streams'
 import type { RestorationAdoptionRequest, RestorationAdoptionResult } from '../backend-contract/restoration'
+import type { SecurityBackend } from '../backend-contract/security'
 import type { DiagnosticTraceDocument } from '../diagnostics/trace-format'
 import { DEFAULT_CORE_MAXIMUM_VALUE_BYTES, UnifiedBleCore } from '../core/unified-ble-core'
 import type { CoreDeadlineHandle, CoreScanSession, UnifiedBleCoreOptions } from '../core/unified-ble-core'
@@ -164,6 +165,10 @@ export class BleManager<Attachment extends string, Identity extends BackendIdent
 
   get features() {
     return this.core.features
+  }
+
+  securityBackend(): SecurityBackend | undefined {
+    return this.core.securityBackend()
   }
 
   /** True only where the instantiated backend/core registry exposes an invocable feature implementation. */

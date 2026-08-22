@@ -2,7 +2,7 @@
 
 import type { BleCentralBackend } from '../../backend-contract/backend'
 import type { AdapterSelection, HostNeutralBackendIdentity } from '../../backend-contract/identity'
-import { opaqueId, type SerializableRecord } from '../../backend-contract/primitives'
+import { capacity, opaqueId, type SerializableRecord } from '../../backend-contract/primitives'
 import { createBluezBackendProvider } from '../../backends/bluez/bluez-backend-provider'
 import type {
   BluezBusKind,
@@ -25,6 +25,7 @@ export interface BluezFirstPartyTckRegistrationOptions {
 export interface DeterministicBluezTckBoundary extends BluezDbusBoundary {
   queueAdvertisement(): void
   emitNotification(input: BluezNotificationInput): void
+  onCall?: (path: string, interfaceName: string, method: string, handler: () => boolean) => void
 }
 
 export interface BluezNotificationInput {
@@ -74,7 +75,12 @@ export function createBluezFirstPartyTckRegistration(
     suites: Object.freeze([
       Object.freeze({ suiteId: 'bluez-provider-contract-v1', baseScenarioIds: bluezScenarioIds })
     ]),
-    featureSuites: Object.freeze([]),
+    featureSuites: Object.freeze([
+      Object.freeze({
+        suiteId: 'tck.feature.security.bluez',
+        scenarioIds: Object.freeze(['security.state-pair-cancel-unpair' as const])
+      })
+    ]),
     capabilityExclusions: Object.freeze([
       Object.freeze({
         featureId: 'bluez:acquire-write',
@@ -133,11 +139,66 @@ async function createBluezFixture(
     now: options.now
   })
   const backend = await provider.create(selection)
+  const securityPeer = await primeSecurityPeer(backend, boundary)
+  let suppressNextPair = false
   return Object.freeze({
     backend,
     controller: createBluezProviderController(boundary, options.now),
+    featureScenarioAdapters: Object.freeze({
+      security: Object.freeze({
+        peerId: securityPeer.peerId,
+        customCeremonySupported: false,
+        supportsAlreadyUnpaired: false,
+        prepareCancellation: () => {
+          suppressNextPair = true
+          boundary.onCall?.(securityPeer.path, 'org.bluez.Device1', 'Pair', () => {
+            if (suppressNextPair) {
+              suppressNextPair = false
+              return false
+            }
+            return true
+          })
+        }
+      })
+    }),
     dispose: () => backend.destroy()
   })
+}
+
+async function primeSecurityPeer(
+  backend: BluezTckBackend,
+  boundary: DeterministicBluezTckBoundary
+): Promise<{ readonly peerId: string; readonly path: string }> {
+  const scan = await backend.scanner.start(
+    {
+      filter: { serviceUuids: [], manufacturerData: [], localNamePrefix: null },
+      duplicatePolicy: 'all',
+      timestampPolicy: 'receipt-monotonic',
+      delivery: {
+        itemCapacity: capacity(4),
+        byteCapacity: capacity(4096),
+        reservedControlCapacity: capacity(1),
+        overflowPolicy: 'drop-oldest'
+      },
+      deadline: null,
+      signal: null,
+      sharing: { mode: 'owner', allowSharing: false }
+    },
+    opaqueId('bluez-security-tck-client', 'client', 'bluez-security:tck')
+  )
+  const iterator = scan.observations[Symbol.asyncIterator]()
+  const observation = iterator.next()
+  boundary.queueAdvertisement()
+  const item = await observation
+  await iterator.return()
+  await scan.stop()
+  if (item.done || item.value.kind !== 'value') {
+    throw new Error('BlueZ security TCK could not prime a peer observation')
+  }
+  const objects = await boundary.objectManager.getManagedObjects()
+  const device = objects.find(object => object.interfaces.some(entry => entry.name === 'org.bluez.Device1'))
+  if (device === undefined) throw new Error('BlueZ security TCK has no Device1 object')
+  return { peerId: String(item.value.value.device.id), path: device.path }
 }
 
 async function validateBoundaryBusKind<Boundary extends BluezDbusBoundary>(

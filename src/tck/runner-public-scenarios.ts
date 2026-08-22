@@ -15,6 +15,12 @@ import {
 } from '../backend-contract/primitives'
 import type { GenerationId } from '../backend-contract/primitives'
 import type { StreamItem } from '../backend-contract/streams'
+import type {
+  SecurityCancelPairingResult,
+  SecurityPairResult,
+  SecurityPairingChallenge,
+  SecurityPairingResponse
+} from '../backend-contract/security'
 import {
   attachBleBackend,
   createBleManager,
@@ -28,7 +34,8 @@ import {
   type BackendTckFactory,
   type BackendTckFixture,
   type TckFact,
-  type TckScenarioDefinition
+  type TckScenarioDefinition,
+  type TckSecurityScenarioAdapter
 } from './contracts'
 import { TckAssertionError } from './contracts'
 import {
@@ -216,6 +223,9 @@ async function executeManagerScenario<
   if (definition.id === 'diagnostics.trace-redaction-and-resource-counters') {
     return executeDiagnosticsScenario(manager, fixture, definition)
   }
+  if (definition.id === 'security.state-pair-cancel-unpair') {
+    return executeSecurityScenario(manager, fixture)
+  }
   if (definition.id === WEB_CHOOSER_TCK_SCENARIO_ID) {
     const detail = await executePublicWebChooserVerticalSlice(manager, fixture, definition)
     return [fact('web-chooser-vertical-slice-preserves-selection-and-cleans-up', true, detail)]
@@ -239,6 +249,232 @@ async function executeManagerScenario<
       reason: 'the public manager TCK has no scenario-specific observer for this feature scenario'
     })
   )
+}
+
+async function executeSecurityScenario<
+  Attachment extends string,
+  Identity extends BackendIdentity<Attachment>,
+  Backend extends BleCentralBackend<Attachment, Identity>
+>(
+  manager: PublicManager<Attachment, Identity>,
+  fixture: BackendTckFixture<Attachment, Identity, Backend>
+): Promise<readonly TckFact[]> {
+  const securityAdapter = fixture.featureScenarioAdapters?.security
+  if (securityAdapter !== undefined && !securityAdapter.customCeremonySupported) {
+    return executeSystemOnlySecurityScenario(manager, fixture, securityAdapter)
+  }
+  const security = manager.securityBackend()
+  if (security === undefined)
+    throw new TckAssertionError('security.state-pair-cancel-unpair', 'security backend is absent')
+  const peerId = securityAdapter?.peerId ?? 'deterministic-peer'
+  const customCeremonySupported = securityAdapter?.customCeremonySupported ?? true
+  const securityOperationOptions = { signal: null, deadline: null }
+  const events = security.watch(peerId)
+  const iterator = events[Symbol.asyncIterator]()
+  const initial = await fixture.controller.settle(security.state(peerId, securityOperationOptions))
+  const initialItem = await fixture.controller.settle(iterator.next())
+  const paired = await fixture.controller.settle(
+    security.pair(peerId, {
+      ...securityOperationOptions,
+      transport: 'auto',
+      protection: 'system-default',
+      ceremony: 'system'
+    })
+  )
+  const pairedItem = await fixture.controller.settle(iterator.next())
+  const alreadyPaired = await fixture.controller.settle(
+    security.pair(peerId, {
+      ...securityOperationOptions,
+      transport: 'auto',
+      protection: 'system-default',
+      ceremony: 'system'
+    })
+  )
+  let custom: { readonly outcome: string }
+  if (customCeremonySupported) {
+    const customAgent = {
+      onChallenge: async (challenge: SecurityPairingChallenge): Promise<SecurityPairingResponse> => {
+        if (challenge.kind !== 'confirm-passkey' || challenge.passkey !== 123456 || challenge.peerId !== peerId) {
+          throw new Error('deterministic security challenge did not preserve its bounded passkey')
+        }
+        return { kind: 'confirm-passkey', confirmed: true }
+      }
+    }
+    custom = await fixture.controller.settle(
+      security.pair(peerId, {
+        ...securityOperationOptions,
+        transport: 'auto',
+        protection: 'system-default',
+        ceremony: { kind: 'agent', agent: customAgent }
+      })
+    )
+  } else {
+    custom = { outcome: 'unsupported' }
+  }
+  securityAdapter?.prepareCancellation?.()
+  const pending = security.pair(
+    peerId,
+    customCeremonySupported
+      ? {
+          ...securityOperationOptions,
+          transport: 'auto',
+          protection: 'system-default',
+          ceremony: { kind: 'agent', agent: { onChallenge: () => new Promise(() => undefined) } }
+        }
+      : { ...securityOperationOptions, transport: 'auto', protection: 'system-default', ceremony: 'system' }
+  )
+  await fixture.controller.flush()
+  const cancelled = await fixture.controller.settle(security.cancelPairing(peerId, securityOperationOptions))
+  const cancelledPair = await fixture.controller.settle(pending)
+  const afterCancellation = await fixture.controller.settle(security.cancelPairing(peerId, securityOperationOptions))
+  const unpaired = await fixture.controller.settle(security.unpair(peerId, securityOperationOptions))
+  const alreadyUnpaired =
+    securityAdapter?.supportsAlreadyUnpaired === false
+      ? { outcome: 'unsupported' }
+      : await fixture.controller.settle(security.unpair(peerId, securityOperationOptions))
+  await iterator.return()
+  await events.close()
+  const counters = manager.attachedBackend.backend.resourceCounters()
+  return [
+    fact(
+      'security-state-distinguishes-unbonded',
+      initial.bond === 'not-bonded' && (initial.encryption === 'not-encrypted' || initial.encryption === 'unsupported'),
+      {
+        bond: initial.bond,
+        encryption: initial.encryption,
+        initialEvent: !initialItem.done && initialItem.value.kind === 'value'
+      }
+    ),
+    fact(
+      'security-pairing-is-terminal-and-idempotent',
+      paired.outcome === 'paired' &&
+        alreadyPaired.outcome === 'already-paired' &&
+        !pairedItem.done &&
+        pairedItem.value.kind === 'value',
+      {
+        paired: paired.outcome,
+        alreadyPaired: alreadyPaired.outcome,
+        pairedEvent: !pairedItem.done && pairedItem.value.kind === 'value'
+      }
+    ),
+    fact(
+      'security-custom-challenge-is-bounded',
+      !customCeremonySupported || custom.outcome === 'already-paired' || custom.outcome === 'paired',
+      { outcome: custom.outcome, supported: customCeremonySupported }
+    ),
+    fact(
+      'security-pairing-cancellation-cleans-up',
+      cancelled.outcome === 'cancelled' &&
+        cancelledPair.outcome === 'cancelled' &&
+        afterCancellation.outcome === 'not-pairing',
+      {
+        cancelled: cancelled.outcome,
+        cancelledPair: cancelledPair.outcome,
+        afterCancellation: afterCancellation.outcome,
+        retainedByteBuffers: counters.retainedByteBuffers
+      }
+    ),
+    fact(
+      'security-unpair-is-explicit',
+      unpaired.outcome === 'unpaired' &&
+        (!securityAdapter || securityAdapter.supportsAlreadyUnpaired || alreadyUnpaired.outcome === 'unsupported'),
+      {
+        unpaired: unpaired.outcome,
+        alreadyUnpaired: alreadyUnpaired.outcome,
+        supportsAlreadyUnpaired: securityAdapter?.supportsAlreadyUnpaired ?? true
+      }
+    )
+  ]
+}
+
+async function executeSystemOnlySecurityScenario<
+  Attachment extends string,
+  Identity extends BackendIdentity<Attachment>,
+  Backend extends BleCentralBackend<Attachment, Identity>
+>(
+  manager: PublicManager<Attachment, Identity>,
+  fixture: BackendTckFixture<Attachment, Identity, Backend>,
+  securityAdapter: TckSecurityScenarioAdapter
+): Promise<readonly TckFact[]> {
+  const security = manager.securityBackend()
+  if (security === undefined) {
+    throw new TckAssertionError('security.state-pair-cancel-unpair', 'security backend is absent')
+  }
+  const peerId = securityAdapter.peerId
+  const options = { signal: null, deadline: null }
+  const events = security.watch(peerId)
+  const iterator = events[Symbol.asyncIterator]()
+  const initial = await fixture.controller.settle(security.state(peerId, options))
+  const initialItem = await fixture.controller.settle(iterator.next())
+  const supportsCancellation = securityAdapter.supportsCancellation ?? true
+  const supportsUnpair = securityAdapter.supportsUnpair ?? true
+  let cancelled: SecurityCancelPairingResult = { outcome: 'not-pairing' }
+  let cancelledPair: SecurityPairResult = { outcome: 'cancelled' }
+  let afterCancellation: SecurityCancelPairingResult = { outcome: 'not-pairing' }
+  if (supportsCancellation) {
+    securityAdapter.prepareCancellation?.()
+    const pending = security.pair(peerId, {
+      ...options,
+      transport: 'auto',
+      protection: 'system-default',
+      ceremony: 'system'
+    })
+    await fixture.controller.flush()
+    cancelled = await fixture.controller.settle(security.cancelPairing(peerId, options))
+    cancelledPair = await fixture.controller.settle(pending)
+    afterCancellation = await fixture.controller.settle(security.cancelPairing(peerId, options))
+  }
+  const paired = await fixture.controller.settle(
+    security.pair(peerId, { ...options, transport: 'auto', protection: 'system-default', ceremony: 'system' })
+  )
+  const alreadyPaired = await fixture.controller.settle(
+    security.pair(peerId, { ...options, transport: 'auto', protection: 'system-default', ceremony: 'system' })
+  )
+  const unpaired = supportsUnpair
+    ? await fixture.controller.settle(security.unpair(peerId, options))
+    : { outcome: 'unsupported' as const }
+  await iterator.return()
+  await events.close()
+  const counters = manager.attachedBackend.backend.resourceCounters()
+  return [
+    fact(
+      'security-state-distinguishes-unbonded',
+      initial.bond === 'not-bonded' && initial.encryption === 'unsupported',
+      { bond: initial.bond, encryption: initial.encryption, initialEvent: !initialItem.done }
+    ),
+    fact(
+      'security-pairing-is-terminal-and-idempotent',
+      paired.outcome === 'paired' && alreadyPaired.outcome === 'already-paired',
+      { paired: paired.outcome, alreadyPaired: alreadyPaired.outcome }
+    ),
+    fact('security-custom-challenge-is-bounded', true, {
+      supported: false,
+      reason: 'BlueZ Agent1 custom ceremony is intentionally unsupported in this slice'
+    }),
+    fact(
+      'security-pairing-cancellation-cleans-up',
+      !supportsCancellation ||
+        (cancelled.outcome === 'cancelled' &&
+          cancelledPair.outcome === 'cancelled' &&
+          afterCancellation.outcome === 'not-pairing'),
+      {
+        cancelled: cancelled.outcome,
+        cancelledPair: cancelledPair.outcome,
+        afterCancellation: afterCancellation.outcome,
+        supportsCancellation,
+        retainedByteBuffers: counters.retainedByteBuffers
+      }
+    ),
+    fact(
+      'security-unpair-is-explicit',
+      (!supportsUnpair && unpaired.outcome === 'unsupported') || unpaired.outcome === 'unpaired',
+      {
+        unpaired: unpaired.outcome,
+        supportsUnpair,
+        supportsAlreadyUnpaired: securityAdapter.supportsAlreadyUnpaired
+      }
+    )
+  ]
 }
 
 async function executeMaximumWriteLengthScenario<

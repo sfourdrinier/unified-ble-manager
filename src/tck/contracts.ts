@@ -124,6 +124,19 @@ export interface TckFeatureScenarioAdapters<Attachment extends string, Identity 
   readonly ipcTransport?: TckIpcTransportScenarioAdapter<Attachment>
   readonly restoration?: TckRestorationScenarioAdapter<Attachment, Identity>
   readonly webChooser?: TckWebChooserScenarioAdapter<Attachment>
+  readonly security?: TckSecurityScenarioAdapter
+}
+
+/** Host-specific peer/lifecycle controls for the runner-owned security scenario. */
+export interface TckSecurityScenarioAdapter {
+  readonly peerId: string
+  readonly customCeremonySupported: boolean
+  readonly supportsAlreadyUnpaired: boolean
+  /** False when the host exposes state/pair but its compiled public API cannot cancel pairing. */
+  readonly supportsCancellation?: boolean
+  /** False when the host has no public durable-unpair API; the scenario records that limitation. */
+  readonly supportsUnpair?: boolean
+  readonly prepareCancellation?: () => void
 }
 
 export interface BackendTckFixture<
@@ -195,6 +208,7 @@ export type TckScenarioId =
   | 'web.unsupported-capabilities-reject-and-remain-honest'
   | 'web.chooser-connect-discover-read-notify-destroy'
   | 'ipc.event-sink-survives-request-response-traffic'
+  | 'security.state-pair-cancel-unpair'
 
 /** One authority for the runner-owned Web unsupported-capability scenario. */
 export const WEB_UNSUPPORTED_CAPABILITIES_TCK_SCENARIO_ID =
@@ -260,6 +274,11 @@ export type TckFactId =
   | 'web-unsupported-capabilities-reject-and-report-runtime-truth'
   | 'web-chooser-vertical-slice-preserves-selection-and-cleans-up'
   | 'ipc-event-sink-survives-request-response-traffic'
+  | 'security-state-distinguishes-unbonded'
+  | 'security-pairing-is-terminal-and-idempotent'
+  | 'security-custom-challenge-is-bounded'
+  | 'security-pairing-cancellation-cleans-up'
+  | 'security-unpair-is-explicit'
 
 export interface TckScenarioDefinition {
   readonly id: TckScenarioId

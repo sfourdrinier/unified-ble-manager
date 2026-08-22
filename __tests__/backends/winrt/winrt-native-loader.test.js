@@ -20,7 +20,12 @@ const nativeBoundaryMethodNames = [
   'onConnectionLost',
   'onDatabaseChanged',
   'onAdapterState',
+  'onSecurityState',
   'onScanTerminal',
+  'securityState',
+  'pair',
+  'cancelPairing',
+  'unpair',
   'ingressTelemetry',
   'destroy'
 ]

@@ -478,6 +478,7 @@ void BoundaryState::Destroy() {
   std::vector<std::shared_ptr<DatabaseListener>> changed_listeners;
   std::vector<std::shared_ptr<AdapterListener>> state_listeners;
   std::vector<std::shared_ptr<ScanTerminalListener>> scan_terminal_listeners;
+  std::vector<std::shared_ptr<SecurityListener>> security_state_listeners;
   {
     std::lock_guard<std::mutex> guard(mutex);
     if (destroyed) {
@@ -515,6 +516,7 @@ void BoundaryState::Destroy() {
     changed_listeners = database_listeners;
     state_listeners = adapter_listeners;
     scan_terminal_listeners = this->scan_terminal_listeners;
+    security_state_listeners = this->security_listeners;
   }
 
   // A resource-owning WinRT await can still be active when Destroy begins.
@@ -554,6 +556,9 @@ void BoundaryState::Destroy() {
   for (const std::shared_ptr<ScanTerminalListener>& listener : scan_terminal_listeners) {
     ContinueWinRtTeardown(failures, "scan-terminal listener release", [&] { listener->Release(); });
   }
+  for (const std::shared_ptr<SecurityListener>& listener : security_state_listeners) {
+    ContinueWinRtTeardown(failures, "security-state listener release", [&] { listener->Release(); });
+  }
   if (!failures.empty()) {
     std::lock_guard<std::mutex> guard(mutex);
     destroying = false;
@@ -578,6 +583,7 @@ void BoundaryState::Destroy() {
     database_listeners.clear();
     adapter_listeners.clear();
     scan_terminal_listeners.clear();
+    security_listeners.clear();
     destroyed = true;
     destroying = false;
   }
@@ -606,7 +612,12 @@ class WinRtContractBoundary final : public Napi::ObjectWrap<WinRtContractBoundar
       InstanceMethod("onConnectionLost", &WinRtContractBoundary::OnConnectionLost),
       InstanceMethod("onDatabaseChanged", &WinRtContractBoundary::OnDatabaseChanged),
       InstanceMethod("onAdapterState", &WinRtContractBoundary::OnAdapterState),
+      InstanceMethod("onSecurityState", &WinRtContractBoundary::OnSecurityState),
       InstanceMethod("onScanTerminal", &WinRtContractBoundary::OnScanTerminal),
+      InstanceMethod("securityState", &WinRtContractBoundary::SecurityState),
+      InstanceMethod("pair", &WinRtContractBoundary::Pair),
+      InstanceMethod("cancelPairing", &WinRtContractBoundary::CancelPairing),
+      InstanceMethod("unpair", &WinRtContractBoundary::Unpair),
       InstanceMethod("ingressTelemetry", &WinRtContractBoundary::IngressTelemetrySnapshot),
       InstanceMethod("destroy", &WinRtContractBoundary::Destroy)
     });
@@ -1284,6 +1295,58 @@ class WinRtContractBoundary final : public Napi::ObjectWrap<WinRtContractBoundar
     return AddListener<AdapterListener>(info, state_->adapter_listeners, "winrt-adapter-state");
   }
 
+  Napi::Value OnSecurityState(const Napi::CallbackInfo& info) {
+    return AddListener<SecurityListener>(info, state_->security_listeners, "winrt-security-state");
+  }
+
+  Napi::Value SecurityState(const Napi::CallbackInfo& info) {
+    if (info.Length() != 1 || !info[0].IsString()) {
+      throw Napi::TypeError::New(info.Env(), "WinRT security state requires a native peer identifier");
+    }
+    const std::string peer = info[0].As<Napi::String>().Utf8Value();
+    return StartOperation<SecurityStateView>(info.Env(), [peer] { return ReadWinRtSecurityState(peer); }, ToJsSecurityState);
+  }
+
+  Napi::Value Pair(const Napi::CallbackInfo& info) {
+    if (info.Length() != 1 || !info[0].IsString()) {
+      throw Napi::TypeError::New(info.Env(), "WinRT pairing requires a native peer identifier");
+    }
+    const std::string peer = info[0].As<Napi::String>().Utf8Value();
+    const std::shared_ptr<BoundaryState> state = state_;
+    return StartOperation<SecurityPairResultView>(info.Env(), [state, peer] {
+      try {
+        SecurityPairResultView result = PairWinRtPeer(peer);
+        if (result.state.has_value()) state->EmitSecurityState(peer, *result.state);
+        return result;
+      } catch (...) {
+        if (current_operation_status != nullptr && current_operation_status->cancellation_requested.load()) {
+          return SecurityPairResultView{"cancelled", std::nullopt, std::nullopt};
+        }
+        throw;
+      }
+    }, ToJsSecurityPairResult);
+  }
+
+  Napi::Value CancelPairing(const Napi::CallbackInfo& info) {
+    if (info.Length() != 1 || !info[0].IsString()) {
+      throw Napi::TypeError::New(info.Env(), "WinRT pairing cancellation requires a native peer identifier");
+    }
+    return StartOperation<VoidResult>(info.Env(), [] { return VoidResult{}; }, ToJsVoid);
+  }
+
+  Napi::Value Unpair(const Napi::CallbackInfo& info) {
+    if (info.Length() != 1 || !info[0].IsString()) {
+      throw Napi::TypeError::New(info.Env(), "WinRT unpair requires a native peer identifier");
+    }
+    const std::string peer = info[0].As<Napi::String>().Utf8Value();
+    const std::shared_ptr<BoundaryState> state = state_;
+    return StartOperation<std::string>(info.Env(), [state, peer] {
+      const std::string result = UnpairWinRtPeer(peer);
+      state->EmitSecurityState(peer, ReadWinRtSecurityState(peer));
+      return result;
+    }, [](Napi::Env env, const std::string& result) { return Napi::String::New(env, result); });
+  }
+
   Napi::Value OnScanTerminal(const Napi::CallbackInfo& info) {
     return AddListener<ScanTerminalListener>(info, state_->scan_terminal_listeners, "winrt-scan-terminal");
   }
@@ -1340,6 +1403,7 @@ class WinRtContractBoundary final : public Napi::ObjectWrap<WinRtContractBoundar
         if constexpr (std::is_same_v<Listener, DatabaseListener>) erase_from(state->database_listeners);
         if constexpr (std::is_same_v<Listener, AdapterListener>) erase_from(state->adapter_listeners);
         if constexpr (std::is_same_v<Listener, ScanTerminalListener>) erase_from(state->scan_terminal_listeners);
+        if constexpr (std::is_same_v<Listener, SecurityListener>) erase_from(state->security_listeners);
         listener->Release();
         return callback.Env().Undefined();
       });

@@ -34,7 +34,12 @@ const requiredBoundaryMethods = [
   'onConnectionLost',
   'onDatabaseChanged',
   'onAdapterState',
+  'onSecurityState',
   'onScanTerminal',
+  'securityState',
+  'pair',
+  'cancelPairing',
+  'unpair',
   'ingressTelemetry',
   'destroy'
 ]

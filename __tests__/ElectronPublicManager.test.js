@@ -18,7 +18,7 @@ function capabilitySnapshot(backendGeneration) {
     backendGeneration,
     descriptors: Object.values(BUILT_IN_FEATURE_IDS).map(id => ({
       id,
-      state: id === 'connection:direct' ? 'limited' : 'unsupported',
+      state: id === 'connection:direct' || id === 'security:state' ? 'limited' : 'unsupported',
       selectedSchemaRange: schema,
       implementationOrigin: 'backend-native',
       tck: {
@@ -28,7 +28,7 @@ function capabilitySnapshot(backendGeneration) {
       },
       evidence: {
         receiptId: `test-${id}`,
-        evidenceLevel: id === 'connection:direct' ? 'deterministic' : 'blocked',
+        evidenceLevel: id === 'connection:direct' || id === 'security:state' ? 'deterministic' : 'blocked',
         implementationVersion: 'test',
         sourceDigest: `test-${id}`,
         scenarioIds: ['capability.truth-limits-evidence-and-binding'],
@@ -91,6 +91,20 @@ function bootstrap() {
 }
 
 describe('Electron public manager façade', () => {
+  test('projects unsupported security capabilities when IPC has no remote security backend', async () => {
+    const current = bootstrap()
+    const invoke = jest.fn(async request => {
+      if (request.kind === 'bootstrap') return { kind: 'bootstrap', bootstrap: current }
+      throw new Error(`unexpected routed request ${request.kind}`)
+    })
+    const manager = await createElectronRendererBleManager({
+      transport: { invoke, subscribe: () => () => undefined, acknowledge: async () => ({ kind: 'event.ack' }) }
+    })
+
+    expect(manager.capabilities.get('security:state')).toMatchObject({ state: 'unsupported' })
+    await expect(manager.security.state({ id: 'peer-1' })).resolves.toMatchObject({ bond: 'unsupported' })
+  })
+
   test('rejects malformed public operation options before routing IPC', async () => {
     const current = bootstrap()
     const invoke = jest.fn(async request => {

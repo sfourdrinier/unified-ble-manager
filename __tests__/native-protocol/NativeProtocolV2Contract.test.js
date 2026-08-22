@@ -207,6 +207,26 @@ describe('Native Protocol v2 schema authority', () => {
     expect(jniBinding).not.toMatch(/Base64/)
   })
 
+  test('gates additive Android security events and rejects hidden bond APIs', () => {
+    const dispatcher = read(
+      'android/src/main/java/com/sfourdrinier/unifiedblemanager/protocol/UnifiedBleProtocolAndroidDispatcher.kt'
+    )
+    const radio = read('android/src/main/java/com/sfourdrinier/unifiedblemanager/radio/OwnedAndroidGattRadio.kt')
+    const boundary = read('src/native-protocol/rn-android-boundary.ts')
+    expect(dispatcher).toContain('securityEventsEnabled')
+    expect(dispatcher).toContain('if (securityEventsEnabled.get()) emitSecurityStateChanged')
+    expect(dispatcher).toContain('securityEventsEnabled.set(true)')
+    expect(dispatcher).toContain('securityEventsEnabled.set(false)\n    radio.onSecurityState = null')
+    expect(dispatcher).toContain('bondStateUnknown')
+    expect(radio).toContain('catch (error: SecurityException)')
+    expect(radio).toContain('internal var onSecurityState: ((deviceId: String, state: OwnedAndroidSecurityState) -> Unit)?')
+    expect(radio).toContain('else -> "unknown"')
+    expect(radio).not.toContain('cancelBondProcess')
+    expect(radio).not.toContain('removeBond')
+    expect(boundary).toContain('signal: AbortSignal | null = null')
+    expect(boundary).toContain('if (isAbortSignalAborted(signal))')
+  })
+
   test('represents complete paths, rich advertisements, errors, cancellation, and restoration', () => {
     const schema = JSON.parse(fs.readFileSync(schemaPath, 'utf8'))
     const records = new Map(schema.records.map(record => [record.name, record.fields.map(field => field[0])]))

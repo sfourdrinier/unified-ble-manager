@@ -106,9 +106,7 @@ function cppOutput() {
         ([name, type, required]) =>
           `  FieldDescriptor{RecordKind::${record.name}, ${String(
             requireWireId(abiManifest.fields[record.name], name, `${record.name} field`)
-          )}U, ${quote(name)}, ${quote(
-            type
-          )}, ${required ? 'true' : 'false'}}`
+          )}U, ${quote(name)}, ${quote(type)}, ${required ? 'true' : 'false'}}`
       )
     )
     .join(',\n')
@@ -180,9 +178,7 @@ function kotlinOutput() {
         ([name, type, required]) =>
           `    FieldDescriptor(RecordKind.${screamingSnake(record.name)}, ${String(
             requireWireId(abiManifest.fields[record.name], name, `${record.name} field`)
-          )}, ${quote(
-            name
-          )}, ${quote(type)}, ${required ? 'true' : 'false'})`
+          )}, ${quote(name)}, ${quote(type)}, ${required ? 'true' : 'false'})`
       )
     )
     .join(',\n')
@@ -223,9 +219,7 @@ function swiftOutput() {
         ([name, type, required]) =>
           `    FieldDescriptor(record: .${record.name}, fieldID: ${String(
             requireWireId(abiManifest.fields[record.name], name, `${record.name} field`)
-          )}, name: ${quote(
-            name
-          )}, type: ${quote(type)}, required: ${required ? 'true' : 'false'})`
+          )}, name: ${quote(name)}, type: ${quote(type)}, required: ${required ? 'true' : 'false'})`
       )
     )
     .join(',\n')
@@ -276,12 +270,12 @@ export const recordKinds = Object.freeze([${schema.recordKinds.map(value => quot
 export type RecordKind = (typeof recordKinds)[number]
 
 export const nativeProtocolRecordWireIds: Readonly<Record<RecordKind, number>> = Object.freeze(${JSON.stringify(
-  abiManifest.recordKinds
-)})
+    abiManifest.recordKinds
+  )})
 
 export const nativeProtocolEnumValues: Readonly<Record<string, readonly string[]>> = Object.freeze(${JSON.stringify(
-  Object.fromEntries(enumEntries())
-)})
+    Object.fromEntries(enumEntries())
+  )})
 
 ${enumConstants}
 
@@ -310,9 +304,7 @@ ${schema.records
       ([name, type, required]) =>
         `  nativeProtocolField(${quote(record.name)}, ${String(
           requireWireId(abiManifest.fields[record.name], name, `${record.name} field`)
-        )}, ${quote(name)}, ${quote(type)}, ${
-          required ? 'true' : 'false'
-        })`
+        )}, ${quote(name)}, ${quote(type)}, ${required ? 'true' : 'false'})`
     )
   )
   .join(',\n')}
@@ -355,6 +347,10 @@ export interface NativeProtocolHandshakeResult {
   traceFormat: number
   maximumControlRecordBytes: number
   maximumBinaryPayloadBytes: number
+  /** True only when the native attachment implements the Android security extension. */
+  securityAvailable?: boolean
+  /** True only when the native attachment can cancel system pairing on this API level. */
+  securityCancelPairingAvailable?: boolean
 }
 
 export interface NativeAttachmentIdentity {

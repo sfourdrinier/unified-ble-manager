@@ -104,6 +104,7 @@ import {
   resolveBluezWaiters,
   waitForBluezBoolean
 } from './bluez-property-waiters'
+import { BluezSecurityBackend } from './bluez-security'
 
 const maximumOperationBytes = byteLimit(512 * 1024)
 
@@ -123,6 +124,7 @@ export class BluezBackendRuntime implements BluezObjectStoreObserver {
   readonly scanner: ScannerBackend<string>
   readonly connections: ConnectionBackend<string>
   readonly gatt: GattBackend<string>
+  readonly security: BluezSecurityBackend
   readonly boundary
   readonly store
   readonly selectedAdapter
@@ -183,6 +185,7 @@ export class BluezBackendRuntime implements BluezObjectStoreObserver {
       subscribe: (path, request) => this.subscribeDispatch(path, request),
       unsubscribe: (subscription, operation) => this.unsubscribeDispatch(subscription, operation)
     }
+    this.security = new BluezSecurityBackend(this)
   }
 
   attachment(): AttachmentRecord<string> {
@@ -296,6 +299,7 @@ export class BluezBackendRuntime implements BluezObjectStoreObserver {
 
   interfacesRemoved(event: BluezInterfacesRemoved): void {
     if (event.interfaces.includes(BLUEZ_DEVICE_INTERFACE)) {
+      this.security.peerRemoved(event.path)
       this.invalidateConnectionPath(event.path, 'connection.lost')
       const peerId = this.peerHandles.get(event.path)
       if (peerId !== undefined) {
@@ -315,6 +319,7 @@ export class BluezBackendRuntime implements BluezObjectStoreObserver {
   propertiesChanged(event: BluezPropertiesChanged): void {
     resolveBluezWaiters(this)
     if (event.interfaceName === BLUEZ_DEVICE_INTERFACE) {
+      this.security.propertiesChanged(event)
       this.emitAdvertisementForPath(event.path)
       if (event.changed.ServicesResolved?.signature === 'b' && event.changed.ServicesResolved.value === false) {
         this.invalidateGattDatabasePath(event.path)
@@ -762,6 +767,7 @@ export class BluezBackendRuntime implements BluezObjectStoreObserver {
     this.backendGeneration += 1
     this.adapterGeneration += 1
     this.refreshAdapterStateUpdatedAt()
+    this.security.reset()
     this.peerPaths.clear()
     this.peerHandles.clear()
     if (this.scanGroup !== null) {
@@ -816,12 +822,25 @@ export class BluezBackendRuntime implements BluezObjectStoreObserver {
     return peerId
   }
 
-  devicePathForPeer(peerId: PeerId<string>): string {
+  devicePathForPeer(peerId: string): string {
     const path = this.peerPaths.get(String(peerId))
     if (path === undefined) {
       throw contractError('connection.not-found', 'connection', 'bluez.connect.peer-handle')
     }
     return path
+  }
+
+  peerIdForPathIfKnown(path: string): string | null {
+    const peerId = this.peerHandles.get(path)
+    return peerId === undefined ? null : String(peerId)
+  }
+
+  removePeerPath(peerId: string): void {
+    const path = this.peerPaths.get(peerId)
+    if (path === undefined) return
+    this.invalidateConnectionPath(path, 'operation.reset')
+    this.peerPaths.delete(peerId)
+    this.peerHandles.delete(path)
   }
 
   private broadcastAdapterState(): void {
@@ -851,6 +870,7 @@ export class BluezBackendRuntime implements BluezObjectStoreObserver {
 
   private async destroyInternal(): Promise<CleanupRecord> {
     this.destroyed = true
+    this.security.close()
     this.dispatcher.cancelAll()
     rejectAllBluezWaiters(this)
     await this.dispatcher.waitForIdle()

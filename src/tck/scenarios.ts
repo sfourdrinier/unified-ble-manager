@@ -224,6 +224,18 @@ export const baseTckScenarios: readonly TckScenarioDefinition[] = [
     execution: 'feature',
     requiredFacts: ['ipc-event-sink-survives-request-response-traffic'],
     requiredControllerActions: ['emit-ipc-event']
+  },
+  {
+    id: 'security.state-pair-cancel-unpair',
+    execution: 'feature',
+    requiredFacts: [
+      'security-state-distinguishes-unbonded',
+      'security-pairing-is-terminal-and-idempotent',
+      'security-custom-challenge-is-bounded',
+      'security-pairing-cancellation-cleans-up',
+      'security-unpair-is-explicit'
+    ],
+    requiredControllerActions: []
   }
 ]
 

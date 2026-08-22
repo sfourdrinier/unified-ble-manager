@@ -184,11 +184,13 @@ export interface FeatureRegistry {
 }
 
 export interface BackendOperationCapabilityOptions {
+  readonly id?: BuiltInFeatureId
   readonly implementationVersion: string
   readonly sourceDigest: string
   readonly tckSuiteId: string
   readonly requiredScenarioIds: readonly string[]
   readonly limitations?: readonly Limitation[]
+  readonly operation?: string
 }
 
 /** Creates a truthful marker for an operation implemented by a concrete backend seam. */
@@ -211,11 +213,15 @@ export function createBackendOperationCapabilityRegistration(
   const scenarioIds = Object.freeze([...options.requiredScenarioIds])
   const implementation: FeatureImplementation<SerializableRecord, SerializableRecord> = Object.freeze({
     async invoke(): Promise<SerializableRecord> {
-      throw contractError('lifecycle.invalid-state', 'capability', 'connection:direct.invoke-without-connection')
+      throw contractError(
+        'lifecycle.invalid-state',
+        'capability',
+        options.operation ?? 'connection:direct.invoke-without-connection'
+      )
     }
   })
   return Object.freeze({
-    id: BUILT_IN_FEATURE_IDS.connectionDirect,
+    id: options.id ?? BUILT_IN_FEATURE_IDS.connectionDirect,
     state: 'limited' as const,
     selectedSchemaRange,
     implementationOrigin: 'backend-native' as const,

@@ -335,6 +335,53 @@ void testRoundTripAndAdversarialRecords() {
   assert(encoded[0] == 0x55U && encoded[1] == 0x42U && encoded[2] == 0x4EU && encoded[3] == 0x31U);
   assert(codec.encode(codec.decode(encoded)) == encoded);
 
+  const protocol::ProtocolRecord securityCommand{
+      .kind = protocol::RecordKind::command,
+      .fields = {
+          field(1U, std::uint64_t{protocol::kProtocolVersion}),
+          field(2U, correlation(4U)),
+          field(3U, std::string("securityState")),
+          field(15U, std::string("peer-1")),
+      },
+  };
+  assert(codec.encode(codec.decode(codec.encode(securityCommand))) == codec.encode(securityCommand));
+  auto malformedSecurityCommand = securityCommand;
+  malformedSecurityCommand.fields.pop_back();
+  expectFailure(protocol::ProtocolFailure::missingField, [&] { codec.validate(malformedSecurityCommand); });
+
+  const protocol::ProtocolRecord securityResult{
+      .kind = protocol::RecordKind::result,
+      .fields = {
+          field(1U, std::uint64_t{protocol::kProtocolVersion}),
+          field(2U, std::string("securityState")),
+          field(3U, std::make_shared<protocol::ProtocolRecord>(terminal(4U, "succeeded"))),
+          field(16U, std::string("peer-1")),
+          field(17U, std::string("notBonded")),
+      },
+  };
+  assert(codec.encode(securityResult).size() > 12U);
+  auto malformedSecurityResult = securityResult;
+  malformedSecurityResult.fields.pop_back();
+  expectFailure(protocol::ProtocolFailure::missingField, [&] { codec.validate(malformedSecurityResult); });
+
+  const protocol::ProtocolRecord securityEvent{
+      .kind = protocol::RecordKind::event,
+      .fields = {
+          field(1U, std::uint64_t{protocol::kProtocolVersion}),
+          field(2U, std::string("security-event-1")),
+          field(3U, std::string("securityStateChanged")),
+          field(4U, attachment()),
+          field(5U, std::uint64_t{1U}),
+          field(6U, std::uint64_t{20U}),
+          field(16U, std::string("peer-1")),
+          field(17U, std::string("bonded")),
+      },
+  };
+  assert(codec.encode(securityEvent).size() > 12U);
+  auto malformedSecurityEvent = securityEvent;
+  malformedSecurityEvent.fields.pop_back();
+  expectFailure(protocol::ProtocolFailure::missingField, [&] { codec.validate(malformedSecurityEvent); });
+
   const protocol::ProtocolRecord goldenAttachment{
       .kind = protocol::RecordKind::attachment,
       .fields = {

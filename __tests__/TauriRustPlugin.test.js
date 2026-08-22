@@ -19,6 +19,24 @@ describe('Tauri v2 Rust plugin boundary', () => {
     expect(permissions).toContain('"allow-invoke"')
   })
 
+  test('keeps security permissions distinct and enforced by the Rust command boundary', () => {
+    const securityPermissions = read('native/tauri/permissions/security.toml')
+    const commands = read('native/tauri/src/commands.rs')
+    const build = read('native/tauri/build.rs')
+
+    expect(securityPermissions).toContain('allow-security-state')
+    expect(securityPermissions).toContain('allow-security-pair')
+    expect(securityPermissions).toContain('allow-security-cancel-pairing')
+    expect(securityPermissions).toContain('allow-security-unpair')
+    expect(securityPermissions).toContain('allow-security-custom-ceremony')
+    expect(read('native/tauri/permissions/default.toml')).not.toContain('allow-security-unpair')
+    expect(read('native/tauri/permissions/default.toml')).not.toContain('allow-security-custom-ceremony')
+    expect(commands).toContain('CommandScope')
+    expect(commands).toContain('SecurityPermission')
+    expect(commands).toContain('.allows()')
+    expect(build).toContain('global_scope_schema')
+  })
+
   test('authenticates the invoking webview in Rust and never accepts caller identity as request data', () => {
     const commands = read('native/tauri/src/commands.rs')
 

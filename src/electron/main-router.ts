@@ -186,7 +186,7 @@ export class ElectronMainBleRouter {
     if (request.kind === 'bootstrap') {
       const renderer = rendererIdentity(sender)
       const versions = createElectronIpcVersionAxes(this.manager.identity.versions, request.offer)
-      const rendererLease = this.arbiter.registerRenderer(renderer, versions)
+      const rendererLease = this.arbiter.registerRenderer(renderer, versions, sender.securityPermissions)
       this.resourcesFor(rendererLease)
       return {
         kind: 'bootstrap',

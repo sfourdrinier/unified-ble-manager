@@ -19,6 +19,9 @@ import {
   type FeatureRegistration,
   type FeatureRegistry,
   type HostNeutralBackendIdentity,
+  type SecurityBackend,
+  type SecurityPairOptions,
+  type PeerSecurityState,
   type SerializableRecord,
   type TckRunReport,
   type TckScenarioId
@@ -28,6 +31,14 @@ import { createDeterministicBackendTckFactory } from 'unified-ble-manager/testin
 export const packedThirdPartyBackendId = 'example:packed-author-backend'
 export const packedThirdPartyPlatformId = 'example:deterministic-host'
 export const packedThirdPartyCapabilityId = 'example:no-physical-radio'
+
+export function preservePackedSecurityContractTypes(
+  backend: SecurityBackend,
+  options: SecurityPairOptions,
+  state: PeerSecurityState
+): { backend: SecurityBackend; options: SecurityPairOptions; state: PeerSecurityState } {
+  return { backend, options, state }
+}
 
 type ExternalIdentity = HostNeutralBackendIdentity<string>
 type ExternalBackend = BleCentralBackend<string, ExternalIdentity>
@@ -87,6 +98,7 @@ class PackedThirdPartyBackend implements ExternalBackend {
   readonly scanner
   readonly connections
   readonly gatt
+  readonly security = undefined
   readonly features = packedThirdPartyFeatures
 
   constructor(private readonly backend: ExternalBackend) {
@@ -177,23 +189,24 @@ export function createPackedThirdPartyBackendDefinition(): BackendAuthoringDefin
 export interface PackedThirdPartyBackendTckProof {
   readonly report: TckRunReport
   readonly unavailableCapabilityDeclared: boolean
+  readonly securityCapabilitiesUnsupported: boolean
 }
 
 /** Runs the declared deterministic TCK only; it makes no physical-radio support claim. */
 export async function runPackedThirdPartyBackendFixture(): Promise<PackedThirdPartyBackendTckProof> {
   const definition = createPackedThirdPartyBackendDefinition()
-  await assertUnavailableCapabilityBinding(definition)
+  const securityCapabilitiesUnsupported = await assertUnavailableCapabilityBinding(definition)
   const report = await runBackendAuthorTck(definition)
   assertCompleteBaseProfile(report)
   assertScenarioReceipt(report, 'identity.valid-all-axis-negotiation')
   assertScenarioReceipt(report, 'identity.version-skew-and-malformed-offers')
   assertScenarioReceipt(report, 'capability.truth-limits-evidence-and-binding')
-  return Object.freeze({ report, unavailableCapabilityDeclared: true })
+  return Object.freeze({ report, unavailableCapabilityDeclared: true, securityCapabilitiesUnsupported })
 }
 
 async function assertUnavailableCapabilityBinding(
   definition: BackendAuthoringDefinition<string, ExternalIdentity, PackedThirdPartyBackend>
-): Promise<void> {
+): Promise<boolean> {
   const fixture = await definition.factory.create({ scenarioId: 'capability.truth-limits-evidence-and-binding' })
   let inspectionError: unknown = null
   try {
@@ -207,6 +220,15 @@ async function assertUnavailableCapabilityBinding(
       capability.limitations.length !== 1
     ) {
       throw new Error('Packed third-party fixture did not declare its unavailable capability truthfully')
+    }
+    const securityCapabilities = inspectBackendCapabilities(fixture.backend).capabilities.filter(candidate =>
+      candidate.id.startsWith('security:')
+    )
+    if (
+      fixture.backend.security !== undefined ||
+      securityCapabilities.some(candidate => candidate.state === 'supported' || candidate.state === 'limited')
+    ) {
+      throw new Error('Packed third-party fixture must keep unsupported security explicit')
     }
   } catch (error) {
     inspectionError = error
@@ -236,6 +258,7 @@ async function assertUnavailableCapabilityBinding(
   if (inspectionError !== null) {
     throw inspectionError
   }
+  return true
 }
 
 function assertCompleteBaseProfile(report: TckRunReport): void {

@@ -382,7 +382,7 @@ rules as a characteristic.
 | descriptor read/write | Same as characteristic I/O, including full descriptor occurrence path. |
 | MTU request | Return effective inbound/outbound payload limits, requested size, and the source of each limit. |
 | RSSI read | Return a timestamped sample with unit and availability; never convert absence to zero. |
-| bonding/security | Explicit request only; report state transition, selected protection level, and typed platform refusal. |
+| bonding/security | Explicit request only; keep pairing, bonding, encryption, authentication, authorization, Android association, and Web origin authorization distinct. Report state transition, selected protection level, and typed platform refusal. |
 
 Write mode is mandatory. The implementation MUST reject a requested mode that
 is unavailable rather than selecting a different mode. Input validation occurs
@@ -648,7 +648,7 @@ returns an evidence-qualified result.
 | --- | --- |
 | permission | A request records its declared purpose/scope and ends granted, denied, restricted, or dismissed. Dismissal is not success. |
 | background | A request names an allowed background behavior and lifetime; if the backend reports that the declared behavior cannot continue, active work terminates with `background.terminated`. |
-| bond/security | A request names required protection; success includes effective level, while unavailable elevation fails rather than continuing weaker. |
+| bond/security | Pairing, bonding, encryption, authentication, authorization, Android association, and Web origin authorization are separate concepts. `manager.security.state()` preserves unknown versus unsupported; `pair()` resolves only after a terminal result; unavailable elevation fails rather than continuing weaker. |
 | MTU | Negotiation exposes requested and effective values plus directional payload maxima. An implementation cannot infer peer acceptance from a request alone. |
 | RSSI | Sampling returns signed value, unit, monotonic receipt timestamp, source timestamp when supplied, and availability. It has no assumed sampling rate. |
 

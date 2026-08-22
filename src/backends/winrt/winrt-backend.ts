@@ -20,8 +20,10 @@ import {
   type OwnerScanOptions
 } from '../../backend-contract/advertisement'
 import {
+  BUILT_IN_FEATURE_IDS,
   createBackendOperationCapabilityRegistration,
-  createFeatureRegistry
+  createFeatureRegistry,
+  type FeatureRegistry
 } from '../../backend-contract/capabilities'
 import {
   BackendContractError,
@@ -69,6 +71,7 @@ import {
   releasedCleanup
 } from './winrt-handles'
 import { WinRtGattOperations } from './winrt-gatt-operations'
+import { isWinRtSecurityBoundary, WinRtSecurityBackend } from './winrt-security'
 import {
   assertWinRtOperationAdmission,
   broadcastWinRtEvent,
@@ -114,6 +117,37 @@ const adapterStateLimits = Object.freeze({
   byteCapacity: capacity(16 * 1024),
   reservedControlCapacity: capacity(1)
 })
+
+function createWinRtFeatureRegistry(securityAvailable: boolean): FeatureRegistry {
+  const registrations = [
+    createBackendOperationCapabilityRegistration({
+      implementationVersion: WINRT_IMPLEMENTATION_VERSION,
+      sourceDigest: 'winrt-direct-connection-v1',
+      tckSuiteId: 'capability.catalog-v2',
+      requiredScenarioIds: ['scenario.scan-connect-discover-read-notify-destroy']
+    })
+  ]
+  if (securityAvailable) {
+    registrations.push(
+      ...[
+        BUILT_IN_FEATURE_IDS.securityState,
+        BUILT_IN_FEATURE_IDS.securityPair,
+        BUILT_IN_FEATURE_IDS.securityCancelPairing,
+        BUILT_IN_FEATURE_IDS.securityUnpair
+      ].map(id =>
+        createBackendOperationCapabilityRegistration({
+          id,
+          implementationVersion: WINRT_IMPLEMENTATION_VERSION,
+          sourceDigest: `winrt-${id.replace(':', '-')}-v1`,
+          tckSuiteId: 'tck.feature.security.winrt',
+          requiredScenarioIds: ['security.state-pair-cancel-unpair'],
+          operation: `${id}.invoke-without-security-backend`
+        })
+      )
+    )
+  }
+  return createFeatureRegistry(registrations)
+}
 
 /** Removes backend-owned fan-out streams as soon as their consumer closes or they terminalize. */
 class WinRtOwnedStream<Value> extends CoreBoundedStream<Value> {
@@ -354,18 +388,12 @@ function allocateBackendInstance(): number {
  * late native completion has been quarantined.
  */
 export class WinRtBackend implements BleCentralBackend<string, HostNeutralBackendIdentity<string>> {
-  readonly features = createFeatureRegistry([
-    createBackendOperationCapabilityRegistration({
-      implementationVersion: WINRT_IMPLEMENTATION_VERSION,
-      sourceDigest: 'winrt-direct-connection-v1',
-      tckSuiteId: 'capability.catalog-v2',
-      requiredScenarioIds: ['scenario.scan-connect-discover-read-notify-destroy']
-    })
-  ])
+  readonly features: FeatureRegistry
   readonly adapter: AdapterBackend<string>
   readonly scanner: ScannerBackend<string>
   readonly connections: ConnectionBackend<string>
   readonly gatt: GattBackend<string>
+  readonly security: WinRtSecurityBackend | undefined
   readonly dispatcher: WinRtOperationDispatcher
   readonly subscriptions = new Map<string, WinRtPhysicalSubscription>()
   private readonly backendInstanceId: BackendInstanceId<string>
@@ -434,6 +462,16 @@ export class WinRtBackend implements BleCentralBackend<string, HostNeutralBacken
       subscribe: this.gattOperations.subscribe.bind(this.gattOperations),
       unsubscribe: this.gattOperations.unsubscribe.bind(this.gattOperations)
     })
+    this.security = isWinRtSecurityBoundary(boundary)
+      ? new WinRtSecurityBackend(
+          boundary,
+          now,
+          this.dispatcher,
+          (peerId, operation) => this.nativePeerIdForPeerId(peerId, operation),
+          nativePeerId => this.peerIdsByNativeId.get(nativePeerId) ?? null
+        )
+      : undefined
+    this.features = createWinRtFeatureRegistry(this.security !== undefined)
     this.removeConnectionListener = boundary.onConnectionLost(record => {
       try {
         this.handleConnectionLoss(validateWinRtConnectionLossRecord(record))
@@ -1327,7 +1365,7 @@ export class WinRtBackend implements BleCentralBackend<string, HostNeutralBacken
     }
   }
 
-  private peerIdForNativeId(nativePeerId: string): PeerId<string> {
+  peerIdForNativeId(nativePeerId: string): PeerId<string> {
     const existing = this.peerIdsByNativeId.get(nativePeerId)
     if (existing !== undefined) {
       return existing
@@ -1337,6 +1375,12 @@ export class WinRtBackend implements BleCentralBackend<string, HostNeutralBacken
     this.peerIdsByNativeId.set(nativePeerId, peerId)
     this.nativeIdsByPeerId.set(String(peerId), nativePeerId)
     return peerId
+  }
+
+  nativePeerIdForPeerId(peerId: string, operation: string): string {
+    const nativePeerId = this.nativeIdsByPeerId.get(String(peerId))
+    if (nativePeerId === undefined) throw contractError('connection.not-found', 'connection', operation)
+    return nativePeerId
   }
 
   private handleConnectionLoss(event: WinRtConnectionLossRecord): void {
@@ -1512,6 +1556,7 @@ export class WinRtBackend implements BleCentralBackend<string, HostNeutralBacken
       this.backendGeneration += 1
       this.adapterGeneration += 1
       this.adapterLossPending = true
+      this.security?.resetForAdapterLoss()
       this.dispatcher.cancelAll('reset').catch(error => {
         console.error('[WinRtBackend.adapter-state] Native operation cancellation failed:', error)
       })
@@ -1554,6 +1599,7 @@ export class WinRtBackend implements BleCentralBackend<string, HostNeutralBacken
         this.adapterLossPending = false
         this.peerIdsByNativeId.clear()
         this.nativeIdsByPeerId.clear()
+        this.security?.adapterRecovered()
         this.adapterLossCleanup = null
       },
       error => {
@@ -1753,6 +1799,7 @@ export class WinRtBackend implements BleCentralBackend<string, HostNeutralBacken
 
   private async destroyInternal(): Promise<CleanupRecord> {
     this.admissionClosed = true
+    this.security?.close()
     const failures: CleanupFailure[] = []
     try {
       await this.dispatcher.cancelAll('destroyed')

@@ -154,6 +154,7 @@ export function deterministicResourceCounters(input: {
     DeterministicBoundedStream<import('../../backend-contract/backend').BackendEvent<string>>
   >
   readonly retainedOperationBytes: number
+  readonly securityReservedBytes: number
 }): ResourceCounters {
   let scanConsumers = 0
   let scanBytes = 0
@@ -193,7 +194,11 @@ export function deterministicResourceCounters(input: {
     queuedOperations: resourceCount(input.operation.queued),
     dispatchedOperations: resourceCount(input.operation.dispatched),
     retainedByteBuffers: resourceCount(
-      scanBytes + subscriptionBytes + eventRetainedBytes(input.eventStreams) + input.retainedOperationBytes
+      scanBytes +
+        subscriptionBytes +
+        eventRetainedBytes(input.eventStreams) +
+        input.retainedOperationBytes +
+        input.securityReservedBytes
     ),
     restorationRecords: resourceCount(0),
     orphanedIpcOwners: resourceCount(0)

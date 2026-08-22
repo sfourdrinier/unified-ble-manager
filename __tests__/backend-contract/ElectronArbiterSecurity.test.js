@@ -90,17 +90,64 @@ function envelope(current, renderer, ordinal, payload = {}, binaryPayload = null
     rendererLease: renderer.rendererLease,
     correlation: opaqueId(`correlation-${ordinal}`, 'ipc-operation', `desktop:operation-${ordinal}`),
     dispatchEpoch: opaqueId(`epoch-${ordinal}`, 'ipc-dispatch-epoch', `desktop:operation-${ordinal}`),
-    command: 'read',
+    command: payload.__command ?? 'read',
     payload,
     binaryPayload
   }
 }
 
 function registerRenderer(arbiter, renderer) {
-  const lease = arbiter.registerRenderer(renderer)
+  const lease = arbiter.registerRenderer(renderer, undefined, renderer.securityPermissions)
   renderer.rendererLease = lease
   return lease
 }
+
+test('trusted security scopes are snapshotted at bootstrap and never come from renderer payloads', async () => {
+  const current = fixture()
+  current.senderA.securityPermissions = ['security:state', 'security:pair']
+  current.rendererA.securityPermissions = ['security:state', 'security:pair']
+  const routed = []
+  const arbiter = new ElectronMainArbiterContext(current.authority, {
+    route: async request => {
+      routed.push(request.command)
+      return {}
+    },
+    release: async () => ({ state: 'released', failures: [] })
+  })
+  registerRenderer(arbiter, current.rendererA)
+
+  await expect(
+    arbiter.route(current.senderA, envelope(current, current.rendererA, 1, { __command: 'security.state' }))
+  ).resolves.toEqual({})
+  await expect(
+    arbiter.route(current.senderA, envelope(current, current.rendererA, 2, { __command: 'security.pair' }))
+  ).resolves.toEqual({})
+
+  await expect(
+    arbiter.route(
+      current.senderA,
+      envelope(current, current.rendererA, 4, { __command: 'security.pair', ceremony: 'custom' })
+    )
+  ).rejects.toMatchObject({ normalized: { code: 'permission.denied' } })
+  await expect(
+    arbiter.route(
+      current.senderA,
+      envelope(current, current.rendererA, 5, { __command: 'security.pair', ceremony: { kind: 'agent' } })
+    )
+  ).rejects.toMatchObject({ normalized: { code: 'permission.denied' } })
+
+  current.senderA.securityPermissions.push('security:custom-ceremony')
+  await expect(
+    arbiter.route(
+      current.senderA,
+      envelope(current, current.rendererA, 3, {
+        __command: 'security.pair',
+        securityPermissions: ['security:custom-ceremony']
+      })
+    )
+  ).rejects.toMatchObject({ normalized: { code: 'ownership.denied' } })
+  expect(routed).toEqual(['security.state', 'security.pair'])
+})
 
 function deferred() {
   let resolve
@@ -235,9 +282,10 @@ describe('ElectronMainArbiterContext security accounting', () => {
     await expect(arbiter.route(current.senderA, request)).rejects.toMatchObject({
       normalized: { code: 'protocol.violation', operation: 'electron-main-arbiter.replay' }
     })
-    await expect(
-      arbiter.releaseRenderer(current.senderA, current.rendererA.rendererLease)
-    ).resolves.toEqual({ state: 'released', failures: [] })
+    await expect(arbiter.releaseRenderer(current.senderA, current.rendererA.rendererLease)).resolves.toEqual({
+      state: 'released',
+      failures: []
+    })
     await expect(
       arbiter.releaseRenderer(
         {
@@ -364,11 +412,11 @@ describe('ElectronMainArbiterContext security accounting', () => {
       expect.objectContaining({ message: 'release transport failed' })
     )
     await expect(arbiter.route(current.senderA, envelope(current, current.rendererA, 3))).resolves.toEqual({})
-    await expect(
-      arbiter.releaseRenderer(current.senderA, current.rendererA.rendererLease)
-    ).resolves.toEqual({ state: 'released', failures: [] })
+    await expect(arbiter.releaseRenderer(current.senderA, current.rendererA.rendererLease)).resolves.toEqual({
+      state: 'released',
+      failures: []
+    })
     expect(releaseHandler).toHaveBeenCalledTimes(3)
-
   })
 
   test('retains exactly the active 128-entry terminal replay window and evicts older settled requests', async () => {

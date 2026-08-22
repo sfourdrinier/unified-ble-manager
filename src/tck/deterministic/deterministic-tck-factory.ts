@@ -31,6 +31,7 @@ const longWriteScenarioIds: readonly TckScenarioId[] = Object.freeze([
   'gatt.long-write-cancellation',
   'gatt.long-write-disconnect'
 ])
+const securityScenarioIds: readonly TckScenarioId[] = Object.freeze(['security.state-pair-cancel-unpair'])
 
 export const deterministicTckFeatureSuites: readonly TckFeatureSuite[] = Object.freeze([
   Object.freeze({
@@ -40,6 +41,10 @@ export const deterministicTckFeatureSuites: readonly TckFeatureSuite[] = Object.
   Object.freeze({
     suiteId: 'tck.feature.gatt.long-write',
     scenarioIds: longWriteScenarioIds
+  }),
+  Object.freeze({
+    suiteId: 'tck.feature.security.pairing',
+    scenarioIds: securityScenarioIds
   })
 ])
 

@@ -156,8 +156,14 @@ export function nativePeerIdForCommand(command: NativeProtocolRecord): string | 
     kind === 'disconnect' ||
     kind === 'discover' ||
     kind === 'readRssi' ||
-    kind === 'requestMtu'
+    kind === 'requestMtu' ||
+    kind === 'securityState' ||
+    kind === 'securityPair' ||
+    kind === 'securityCancelPairing'
   ) {
+    if (kind === 'securityState' || kind === 'securityPair' || kind === 'securityCancelPairing') {
+      return requiredString(command, 15, 'rn-android-boundary.command.security-peer')
+    }
     return requiredString(
       requiredRecord(command, 10, 'rn-android-boundary.command.connection'),
       2,
