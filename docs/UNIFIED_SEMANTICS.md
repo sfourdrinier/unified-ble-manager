@@ -702,6 +702,27 @@ edges carry a native ordinal and connection generation. React Native Apple,
 Android, Web, BlueZ, WinRT, Tauri, and Electron renderer IPC remain explicitly
 unsupported until they expose equivalent platform-authoritative flow control.
 
+### 17.2 Current PR8 host matrix
+
+This is the current first-party implementation and evidence snapshot, not a
+static host capability matrix. The instantiated backend descriptor remains the
+runtime authority, and `limited` / deterministic means that deterministic
+contract and boundary coverage exists while hosted and physical-radio
+qualification remains open.
+
+| Host/backend | MTU request / effective observation | PHY read/request | Write-without-response readiness | Parameters / subrate / `writeWhenReady` |
+| --- | --- | --- | --- | --- |
+| React Native Android | `limited` / deterministic. `effectiveMtu()` reads only the generation-bound value recorded by a successful `onMtuChanged`; it is unavailable before measurement. | `limited` / deterministic. `readPhy()` is the `onPhyRead` callback result. `requestPhy()` separates callback-derived `accepted` from its optional `onPhyUpdate` observation. | `unsupported` | `connection:parameters`, `connection:subrate`, and `writeWhenReady` are unsupported; no `writeWhenReady` helper is implemented. |
+| React Native Apple | Caller-directed MTU request, effective ATT MTU observation, and PHY read/request are `unsupported` because CoreBluetooth exposes none of those application controls. | `unsupported` | `unsupported` | `connection:parameters`, `connection:subrate`, and `writeWhenReady` are unsupported and absent. |
+| Direct CoreBluetooth Node/Electron-main | `connection:request-mtu` is unsupported because CoreBluetooth negotiates internally; effective MTU is unsupported unless the concrete boundary exposes an authoritative observation. | `connection:phy` is unsupported in the current boundary. | `limited` / deterministic only when both `canSendWriteWithoutResponse` and `peripheralIsReady(toSendWriteWithoutResponse:)` are bridged; otherwise `unsupported`. | `connection:parameters`, `connection:subrate`, and `writeWhenReady` are unsupported and absent. |
+| Web, BlueZ, WinRT, Tauri, and Electron renderer IPC | `unsupported` | `unsupported` | `unsupported` | `connection:parameters`, `connection:subrate`, and `writeWhenReady` are unsupported and absent. |
+
+Android `requestPhy()` does not treat dispatch or a preferred-PHY call as proof
+of the resulting link state: a successful `onPhyUpdate` supplies the accepted
+result and observation, while a failed callback yields rejection with no
+observation. The same request-versus-observation rule applies to MTU. None of
+these deterministic records is physical-radio qualification.
+
 GATT operations that require ordering use one serialized queue per physical
 connection; that queue is bounded. Queued cancellation removes the operation before
 dispatch; dispatched cancellation follows the race and uncertainty rules in

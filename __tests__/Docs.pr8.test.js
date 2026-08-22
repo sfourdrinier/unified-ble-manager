@@ -106,4 +106,22 @@ describe('PR8 documentation contract', () => {
     expect(gatt).toContain('characteristic.subscribe')
     expect(gatt).not.toMatch(/\b(?:read|write|writeLong|maximumWriteLength|subscribe)\(path\b/)
   })
+
+  test('records current PR8 host truth and keeps absent controls explicit', () => {
+    const readme = read('README.md')
+    const semantics = read('docs/UNIFIED_SEMANTICS.md')
+
+    expect(readme).not.toMatch(/\bconnection\.(?:readRssi|requestMtu)\s*\(/)
+    expect(semantics).toContain('### 17.2 Current PR8 host matrix')
+    expect(semantics).toMatch(/React Native Android[\s\S]{0,700}limited[\s\S]{0,700}deterministic/i)
+    expect(semantics).toMatch(/effectiveMtu\(\)[\s\S]{0,220}onMtuChanged[\s\S]{0,220}unavailable before measurement/i)
+    expect(semantics).toMatch(/React Native Android[\s\S]{0,900}onPhyRead/i)
+    expect(semantics).toMatch(/onPhyUpdate[\s\S]{0,180}observation/i)
+    expect(semantics).toMatch(/requestPhy\(\)[\s\S]{0,180}accepted/i)
+    expect(semantics).toMatch(/direct CoreBluetooth Node\/Electron-main[\s\S]{0,500}canSendWriteWithoutResponse/i)
+    expect(semantics).toMatch(/peripheralIsReady\(toSendWriteWithoutResponse:\)/)
+    expect(semantics).toMatch(/connection:parameters[\s\S]{0,120}unsupported/i)
+    expect(semantics).toMatch(/connection:subrate[\s\S]{0,120}unsupported/i)
+    expect(semantics).toMatch(/writeWhenReady[\s\S]{0,120}(?:not implemented|unsupported)/i)
+  })
 })

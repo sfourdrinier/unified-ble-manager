@@ -174,6 +174,17 @@ not evidence of support. Readiness is unsupported until the backend advertises
 the readiness capability, and a readiness event does not prove a later payload
 was retained.
 
+Current PR8 host truth is detailed in the [semantics host matrix](docs/UNIFIED_SEMANTICS.md#172-current-pr8-host-matrix). In
+particular, React Native Android exposes MTU request/effective observation and
+PHY read/request as `limited` / deterministic controls: effective MTU is
+unavailable before a successful `onMtuChanged` callback, and PHY request
+`accepted` plus its observation come from the native callback result. Direct
+CoreBluetooth Node/Electron-main readiness is also `limited` / deterministic
+when both native readiness hooks are bridged. `parameters`, `subrate`, and the
+`connection:parameters`, `connection:subrate`, and `writeWhenReady` remain
+unsupported; no `writeWhenReady` helper is implemented. The separate
+`writeReadiness('without-response')` stream is not an automatic write helper.
+
 ### `GattDatabase`
 
 | Member | Use |
