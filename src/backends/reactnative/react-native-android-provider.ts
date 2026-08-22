@@ -241,6 +241,7 @@ async function createOpenedBackend(
   boundary.bindAttachment(nativeAttachmentIdentity(directBackend.attachment()))
   try {
     await boundary.open()
+    directBackend.refreshRuntimeFeatureRegistry()
     directBackend.refreshAttachmentState()
     const activation = activateRestoration
       ? restoration.activate(directBackend.identity.attachment, nativeVersions(directBackend.identity.versions))

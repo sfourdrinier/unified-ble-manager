@@ -207,6 +207,23 @@ describe('Native Protocol v2 schema authority', () => {
     expect(nativeBinding).not.toMatch(/Base64/)
   })
 
+  test('keeps Android PHY runtime truth in the versioned handshake extension without changing protocol-v2 records', () => {
+    const control = read('src/NativeUnifiedBleProtocolControl.ts')
+    const androidControl = read(
+      'android/src/main/java/com/sfourdrinier/unifiedblemanager/protocol/UnifiedBleProtocolControlModule.java'
+    )
+    const dispatcher = read(
+      'android/src/main/java/com/sfourdrinier/unifiedblemanager/protocol/UnifiedBleProtocolAndroidDispatcher.kt'
+    )
+    const schema = read('src/native-protocol/generated/native-protocol-v2-schema.ts')
+
+    expect(control).toContain('phyAvailable?: boolean')
+    expect(androidControl).toContain('phyAvailable')
+    expect(dispatcher).toContain('Build.VERSION_CODES.O')
+    expect(schema).toContain('export const NATIVE_PROTOCOL_VERSION = 2')
+    expect(schema).not.toContain('phyAvailable')
+  })
+
   test('keeps Android JNI advertisement bytes and rejected command input under explicit native ownership', () => {
     const androidBinding = read('android/src/main/jni/UnifiedBleProtocolJsiBinding.cpp')
     const nativeRuntime = read('native/protocol/src/NativeProtocolControlRuntime.cpp')

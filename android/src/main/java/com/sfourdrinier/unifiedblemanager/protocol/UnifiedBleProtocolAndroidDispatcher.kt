@@ -4,6 +4,7 @@ package com.sfourdrinier.unifiedblemanager.protocol
 
 import android.bluetooth.BluetoothGattCharacteristic
 import android.content.Context
+import android.os.Build
 import android.os.SystemClock
 import com.sfourdrinier.unifiedblemanager.protocol.generated.RecordKind
 import com.sfourdrinier.unifiedblemanager.radio.OwnedAndroidGattRadio
@@ -500,6 +501,7 @@ class UnifiedBleProtocolAndroidDispatcher(
   }
 
   private fun readPhy(command: ProtocolWireRecord) {
+    requirePhyAvailable()
     val deviceId = command.requiredRecord(10).requiredString(2)
     val radioOperationId = radio.readPhy(deviceId) { result ->
       result.fold(
@@ -520,6 +522,7 @@ class UnifiedBleProtocolAndroidDispatcher(
   }
 
   private fun requestPhy(command: ProtocolWireRecord) {
+    requirePhyAvailable()
     val deviceId = command.requiredRecord(10).requiredString(2)
     val txPhy = OwnedAndroidGattRadio.phyValue(command.optionalString(17))
     val rxPhy = OwnedAndroidGattRadio.phyValue(command.optionalString(18))
@@ -1051,6 +1054,12 @@ class UnifiedBleProtocolAndroidDispatcher(
         .takeWhile { candidate -> candidate !== characteristic }
         .count()
       return characteristicOccurrence == endpoint.characteristicOccurrence
+    }
+  }
+
+  private fun requirePhyAvailable() {
+    check(Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+      "Android PHY requires API 26"
     }
   }
 }

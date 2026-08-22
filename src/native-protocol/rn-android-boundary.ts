@@ -112,16 +112,20 @@ type NativeSubscription = {
  */
 export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary {
   readonly descriptorOperationsAvailable: boolean = true
-  readonly connectionControlCapabilities: ConnectionControlCapabilities = Object.freeze({
-    rssi: 'available',
-    requestMtu: 'available',
-    effectiveMtu: 'available',
-    priority: 'available',
-    phy: 'available'
-  })
+  private phyExtensionAvailable = false
   private securityExtensionAvailable = false
   private securityCancellationExtensionAvailable = false
   private readonly securityListeners = new Set<(record: AndroidSecurityStateChangedRecord) => void>()
+
+  get connectionControlCapabilities(): ConnectionControlCapabilities {
+    return Object.freeze({
+      rssi: 'available',
+      requestMtu: 'available',
+      effectiveMtu: 'available',
+      priority: 'available',
+      phy: this.phyExtensionAvailable ? 'available' : 'unavailable'
+    })
+  }
 
   get securityAvailable(): boolean {
     return this.securityExtensionAvailable
@@ -208,6 +212,7 @@ export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary
       this.nativeDestroyCompleted = false
       assertHandshakeSelection(handshake)
       this.maximumInputPayloadBytes = Math.min(maximumNativePayloadBytes, handshake.maximumBinaryPayloadBytes)
+      this.phyExtensionAvailable = handshake.phyAvailable === true
       this.securityExtensionAvailable = handshake.securityAvailable === true
       this.securityCancellationExtensionAvailable =
         this.securityExtensionAvailable && handshake.securityCancelPairingAvailable === true
@@ -220,6 +225,7 @@ export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary
       this.opened = true
     } catch (error) {
       this.maximumInputPayloadBytes = 0
+      this.phyExtensionAvailable = false
       let closeFailure: Error | null = null
       if (this.nativeAttachmentOpened) {
         try {
@@ -360,6 +366,7 @@ export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary
   }
 
   async readPhy(nativePeerId: string): Promise<CoreBluetoothPhyObservation> {
+    this.requirePhyExtension('read-phy')
     this.requireOpen('read-phy')
     const connection = this.requireConnection(nativePeerId, 'read-phy')
     if (connection.state !== 'connected') {
@@ -376,6 +383,7 @@ export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary
   }
 
   async requestPhy(nativePeerId: string, preference: PhyPreference): Promise<CoreBluetoothPhyRequestResult> {
+    this.requirePhyExtension('request-phy')
     this.requireOpen('request-phy')
     const connection = this.requireConnection(nativePeerId, 'request-phy')
     if (connection.state !== 'connected') {
@@ -616,6 +624,7 @@ export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary
     }
     this.opened = false
     this.closing = false
+    this.phyExtensionAvailable = false
     this.scanListeners.clear()
     this.scanFailureListeners.clear()
     this.connections.clear()
@@ -1075,6 +1084,12 @@ export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary
     }
   }
 
+  private requirePhyExtension(operation: string): void {
+    if (!this.phyExtensionAvailable) {
+      throw contractError('capability.unsupported', 'capability', `rn-android-boundary.${operation}`)
+    }
+  }
+
   private requireSecurityCancellationExtension(operation: string): void {
     if (!this.securityCancellationExtensionAvailable) {
       throw contractError('capability.unsupported', 'capability', `rn-android-boundary.${operation}`)
@@ -1184,7 +1199,8 @@ function assertHandshakeSelection(handshake: NativeProtocolHandshakeResult): voi
     handshake.maximumBinaryPayloadBytes <= 0 ||
     (handshake.securityAvailable !== undefined && typeof handshake.securityAvailable !== 'boolean') ||
     (handshake.securityCancelPairingAvailable !== undefined &&
-      typeof handshake.securityCancelPairingAvailable !== 'boolean')
+      typeof handshake.securityCancelPairingAvailable !== 'boolean') ||
+    (handshake.phyAvailable !== undefined && typeof handshake.phyAvailable !== 'boolean')
   ) {
     throw contractError('protocol.incompatible', 'boundary', 'rn-android-boundary.open.handshake')
   }

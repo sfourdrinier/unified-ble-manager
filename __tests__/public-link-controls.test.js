@@ -243,13 +243,12 @@ describe('PR8A public link controls', () => {
     expect(internal.rediscoveryReasons).toEqual(['manual-rediscovery'])
   })
 
-  test('registers canonical link-control capability IDs', () => {
+  test('leaves Android PHY registration to the opened runtime capability registry', () => {
     const registry = createReactNativeConnectionControlFeatureRegistry('android', 'test')
     expect(registry.registrations.map(registration => registration.id)).toEqual([
       'connection:rssi',
       'connection:request-mtu',
-      'connection:effective-mtu',
-      'connection:phy'
+      'connection:effective-mtu'
     ])
   })
 

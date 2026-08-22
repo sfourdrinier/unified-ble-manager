@@ -273,7 +273,7 @@ function assertCoreBluetoothGattIdentity(
  * Electron-main hosts. It uses only the typed direct addon boundary.
  */
 export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutralBackendIdentity<string>> {
-  readonly features: FeatureRegistry
+  private runtimeFeatures: FeatureRegistry
   readonly adapter: AdapterBackend<string>
   readonly scanner: ScannerBackend<string>
   readonly connections: ConnectionBackend<string>
@@ -315,7 +315,7 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
     private readonly hostKind: 'node' | 'desktop-native' | 'native-mobile',
     private readonly identityOptions: DirectGattBackendIdentityOptions = coreBluetoothIdentityOptions
   ) {
-    this.features = createCoreBluetoothRuntimeFeatureRegistry({
+    this.runtimeFeatures = createCoreBluetoothRuntimeFeatureRegistry({
       boundary,
       existingFeatures: identityOptions.features,
       implementationVersion: identityOptions.implementationVersion,
@@ -382,6 +382,21 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
       this.handleAdapterState(state)
     })
   }
+  get features(): FeatureRegistry {
+    return this.runtimeFeatures
+  }
+
+  refreshRuntimeFeatureRegistry(): void {
+    this.runtimeFeatures = createCoreBluetoothRuntimeFeatureRegistry({
+      boundary: this.boundary,
+      existingFeatures: this.identityOptions.features,
+      implementationVersion: this.identityOptions.implementationVersion,
+      now: this.now,
+      resolveNativePeerId: (connectionId, connectionGeneration, operation) =>
+        this.nativePeerIdForRuntimeCapability(connectionId, connectionGeneration, operation)
+    })
+  }
+
   get identity(): HostNeutralBackendIdentity<string> {
     const attachment = this.attachment()
     return Object.freeze({

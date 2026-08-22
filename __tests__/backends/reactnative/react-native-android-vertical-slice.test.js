@@ -94,7 +94,7 @@ describe('React Native Android canonical protocol vertical slice', () => {
   })
 
   test('opens the public provider with native-reported state and runs scan, connect, discovery, bytes, notify, and cleanup', async () => {
-    const control = new DeterministicAndroidControl()
+    const control = new DeterministicAndroidControl(null, 0, undefined, true)
     const runtime = new DeterministicAndroidProtocolRuntime(control)
     global.__unifiedBleNativeProtocolV2 = runtime
     const provider = createReactNativeAndroidBackendProvider({
@@ -149,6 +149,11 @@ describe('React Native Android canonical protocol vertical slice', () => {
         }),
         expect.objectContaining({
           id: BUILT_IN_FEATURE_IDS.connectionPriority,
+          state: 'limited',
+          evidence: expect.objectContaining({ evidenceLevel: 'deterministic' })
+        }),
+        expect.objectContaining({
+          id: BUILT_IN_FEATURE_IDS.connectionPhy,
           state: 'limited',
           evidence: expect.objectContaining({ evidenceLevel: 'deterministic' })
         })
@@ -350,6 +355,56 @@ describe('React Native Android canonical protocol vertical slice', () => {
     ).rejects.toMatchObject({ normalized: { code: 'capability.unsupported' } })
     await expect(manager.destroy()).resolves.toEqual({ state: 'released', failures: [] })
     expect(control.closedAttachments).toHaveLength(1)
+  })
+
+  test('uses a false native PHY handshake capability for provider registration and public calls', async () => {
+    const control = new DeterministicAndroidControl(null, 0, undefined, false)
+    const runtime = new DeterministicAndroidProtocolRuntime(control)
+    global.__unifiedBleNativeProtocolV2 = runtime
+    const provider = createReactNativeAndroidBackendProvider({
+      control,
+      now: () => 20,
+      createOwnerId: () => 'deterministic-react-native-phy-unavailable'
+    })
+    const manager = await createBleManagerFromProvider(
+      {
+        provider,
+        selection: { selectedAdapterId: 'android-default-adapter' },
+        coreCompatibility: compatibility(),
+        manager: {
+          clientId: opaqueId('phy-unavailable-client', 'client', 'react-native-android:phy-unavailable'),
+          managerId: opaqueId('phy-unavailable-manager', 'manager', 'react-native-android:phy-unavailable'),
+          ownerMode: 'owning'
+        }
+      },
+      DEFAULT_BLE_MANAGER_OPTIONS
+    )
+
+    expect(manager.features.registrations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: BUILT_IN_FEATURE_IDS.connectionPhy,
+          state: 'unsupported',
+          evidence: expect.objectContaining({ evidenceLevel: 'blocked' })
+        })
+      ])
+    )
+
+    const scan = await manager.scan(scanOptions())
+    runtime.emitAdvertisement()
+    const observation = await scan.observations[Symbol.asyncIterator]().next()
+    await scan.stop()
+    const connection = await manager.connect(observation.value.value.device.id, operation())
+
+    await expect(connection.readPhy(operation())).rejects.toMatchObject({
+      normalized: { code: 'capability.unsupported' }
+    })
+    await expect(connection.requestPhy({ tx: 'le-2m' }, operation())).rejects.toMatchObject({
+      normalized: { code: 'capability.unsupported' }
+    })
+    expect(runtime.commandKinds).not.toEqual(expect.arrayContaining(['readPhy', 'requestPhy']))
+
+    await expect(manager.destroy()).resolves.toEqual({ state: 'released', failures: [] })
   })
 
   test.each([
@@ -1283,7 +1338,8 @@ class DeterministicAndroidControl {
   constructor(
     installFailure = null,
     closeAttachmentFailuresRemaining = 0,
-    initialAdapterState = { availability: 'available', authorization: 'granted', power: 'on' }
+    initialAdapterState = { availability: 'available', authorization: 'granted', power: 'on' },
+    phyAvailable = true
   ) {
     this.handshakes = []
     this.closedAttachments = []
@@ -1291,6 +1347,7 @@ class DeterministicAndroidControl {
     this.installFailure = installFailure
     this.closeAttachmentFailuresRemaining = closeAttachmentFailuresRemaining
     this.initialAdapterState = initialAdapterState
+    this.phyAvailable = phyAvailable
     this.restorationJournalSeeded = false
     this.restorationConsumed = false
   }
@@ -1305,7 +1362,8 @@ class DeterministicAndroidControl {
       eventSchema: 1,
       traceFormat: 1,
       maximumControlRecordBytes: 65536,
-      maximumBinaryPayloadBytes: 524288
+      maximumBinaryPayloadBytes: 524288,
+      phyAvailable: this.phyAvailable
     })
   }
 

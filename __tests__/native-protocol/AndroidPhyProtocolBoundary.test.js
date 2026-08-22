@@ -17,6 +17,14 @@ describe('Android PHY boundary mapping', () => {
 
     expect(androidSource.ReactNativeAndroidProtocolBoundary.prototype.readPhy).toBeDefined()
     expect(androidSource.ReactNativeAndroidProtocolBoundary.prototype.requestPhy).toBeDefined()
-    expect(appleSource.ReactNativeAppleProtocolBoundary.toString()).toContain('requestMtu')
+    expect(
+      Object.getOwnPropertyDescriptor(
+        appleSource.ReactNativeAppleProtocolBoundary.prototype,
+        'connectionControlCapabilities'
+      )?.get
+    ).toBeDefined()
+    expect(new appleSource.ReactNativeAppleProtocolBoundary({}, 'test-owner').connectionControlCapabilities.phy).toBe(
+      'unavailable'
+    )
   })
 })

@@ -2,6 +2,7 @@
 
 package com.sfourdrinier.unifiedblemanager.protocol;
 
+import android.os.Build;
 import android.util.Log;
 
 import androidx.annotation.NonNull;
@@ -81,6 +82,7 @@ public final class UnifiedBleProtocolControlModule extends NativeUnifiedBleProto
       result.putInt("traceFormat", CONTRACT_VERSION);
       result.putInt("maximumControlRecordBytes", MAXIMUM_CONTROL_RECORD_BYTES);
       result.putInt("maximumBinaryPayloadBytes", MAXIMUM_BINARY_PAYLOAD_BYTES);
+      result.putBoolean("phyAvailable", Build.VERSION.SDK_INT >= Build.VERSION_CODES.O);
       result.putBoolean("securityAvailable", true);
       promise.resolve(result);
     } catch (RuntimeException error) {

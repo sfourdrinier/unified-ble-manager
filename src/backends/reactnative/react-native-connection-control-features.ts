@@ -91,14 +91,7 @@ export function createReactNativeConnectionControlFeatureRegistry(
         )
   const phy =
     platform === 'android'
-      ? createFeatureRegistration(
-          BUILT_IN_FEATURE_IDS.connectionPhy,
-          'limited',
-          implementationVersion,
-          'react-native-android-phy-dispatch-v1',
-          Object.freeze([liveQualificationLimitation('LE PHY read/request')]),
-          Object.freeze({ phyModes: Object.freeze({ maximum: 3, minimum: 1, unit: 'modes' }) })
-        )
+      ? null
       : createFeatureRegistration(
           BUILT_IN_FEATURE_IDS.connectionPhy,
           'unsupported',
@@ -113,7 +106,7 @@ export function createReactNativeConnectionControlFeatureRegistry(
           ]),
           Object.freeze({ phyModes: Object.freeze({ maximum: 0, minimum: null, unit: 'modes' }) })
         )
-  return createFeatureRegistry(Object.freeze([rssi, requestMtu, effectiveMtu, phy]))
+  return createFeatureRegistry(Object.freeze([rssi, requestMtu, effectiveMtu, ...(phy === null ? [] : [phy])]))
 }
 
 function createFeatureRegistration(

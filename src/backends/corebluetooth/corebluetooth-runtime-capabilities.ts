@@ -60,6 +60,9 @@ export function createCoreBluetoothRuntimeFeatureRegistry(
   if (!hasRegistration(registrations, BUILT_IN_FEATURE_IDS.connectionEffectiveMtu)) {
     registrations.push(createEffectiveMtuRegistration(options))
   }
+  if (!hasRegistration(registrations, BUILT_IN_FEATURE_IDS.connectionPhy)) {
+    registrations.push(createPhyRegistration(options))
+  }
   if (!hasRegistration(registrations, BUILT_IN_FEATURE_IDS.maximumWriteLength)) {
     registrations.push(createMaximumWriteLengthRegistration(options))
   }
@@ -153,6 +156,31 @@ function createEffectiveMtuRegistration(options: CoreBluetoothRuntimeCapabilityO
         maximum: available ? 517 : 0,
         unit: 'bytes'
       })
+    })
+  )
+}
+
+function createPhyRegistration(options: CoreBluetoothRuntimeCapabilityOptions) {
+  const available =
+    options.boundary.connectionControlCapabilities?.phy === 'available' &&
+    options.boundary.readPhy !== undefined &&
+    options.boundary.requestPhy !== undefined
+  const limitations = available
+    ? liveQualificationLimitation('LE PHY read/request')
+    : unavailableLimitation(
+        'corebluetooth-phy-runtime-unavailable',
+        'The instantiated CoreBluetooth boundary did not report an executable LE PHY read/request capability.',
+        'caller-directed LE PHY control'
+      )
+  return createMetadataRegistration(
+    BUILT_IN_FEATURE_IDS.connectionPhy,
+    available ? 'limited' : 'unsupported',
+    options.implementationVersion,
+    available ? 'corebluetooth-phy-dispatch-v2' : 'corebluetooth-phy-unavailable-v2',
+    connectionControlScenarioIds,
+    limitations,
+    Object.freeze({
+      phyModes: Object.freeze({ maximum: available ? 3 : 0, minimum: available ? 1 : null, unit: 'modes' })
     })
   )
 }
@@ -252,7 +280,8 @@ function createMetadataRegistration(
   id:
     | typeof BUILT_IN_FEATURE_IDS.connectionRssi
     | typeof BUILT_IN_FEATURE_IDS.connectionRequestMtu
-    | typeof BUILT_IN_FEATURE_IDS.connectionEffectiveMtu,
+    | typeof BUILT_IN_FEATURE_IDS.connectionEffectiveMtu
+    | typeof BUILT_IN_FEATURE_IDS.connectionPhy,
   state: RuntimeFeatureState,
   implementationVersion: string,
   sourceDigest: string,
