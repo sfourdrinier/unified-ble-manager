@@ -93,6 +93,9 @@ export type { NormalizedBleError, FeatureRegistry, MaximumWriteLengthObservation
 - `OverflowPolicy`
 - `OwnedBytes`
 - `OwnershipTransferGrant`
+- `PairingAgent`
+- `PairingChallenge`
+- `PairingResponse`
 - `PeerDirectoryBackend`
 - `PeerDirectoryRecord`
 - `PeerId`
@@ -120,6 +123,7 @@ export type { NormalizedBleError, FeatureRegistry, MaximumWriteLengthObservation
 - `PortableWriteReceipt`
 - `ProviderBleManagerConstruction`
 - `PublicOperationOptions`
+- `RequiredSecurityOptions`
 - `RestorationHostIdentity`
 - `ScanClause`
 - `ScanOptions`
@@ -127,6 +131,7 @@ export type { NormalizedBleError, FeatureRegistry, MaximumWriteLengthObservation
 - `ScanSessionId`
 - `ScanShareToken`
 - `ScanUntilOptions`
+- `SecurityRequirement`
 - `Service`
 - `ServiceDataPattern`
 - `ServicePath`
@@ -171,3 +176,4 @@ export type { NormalizedBleError, FeatureRegistry, MaximumWriteLengthObservation
 - `throwIfCleanupFailed`
 - `withConnection`
 - `withDiscoveredConnection`
+- `withRequiredSecurity`

@@ -34,6 +34,7 @@ import type {
   PeerId
 } from '../backend-contract/primitives'
 import type { BoundedAsyncStream } from '../backend-contract/streams'
+import type { SecurityBackend } from '../backend-contract/security'
 import type { ConnectionLifecycleTerminalCause } from '../backend-contract/connection-lifecycle'
 import { AggregateStreamQuota } from './aggregate-stream-quota'
 import { CoreBoundedStream } from './bounded-stream'
@@ -199,6 +200,39 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
 
   get features() {
     return this.featureRegistry
+  }
+
+  /** Manager-admitted security operations; backend ownership remains behind this lifecycle gate. */
+  securityBackend(): SecurityBackend | undefined {
+    this.assertReady('security.backend')
+    const backend = this.backend.security
+    if (backend === undefined) return undefined
+    return {
+      state: (peerId, options) => {
+        this.assertReady('security.state')
+        this.assertOperationAdmission(options, 'security.state')
+        return backend.state(peerId, options)
+      },
+      watch: peerId => {
+        this.assertReady('security.watch')
+        return backend.watch(peerId)
+      },
+      pair: (peerId, options) => {
+        this.assertReady('security.pair')
+        this.assertOperationAdmission(options, 'security.pair')
+        return backend.pair(peerId, options)
+      },
+      cancelPairing: (peerId, options) => {
+        this.assertReady('security.cancel-pairing')
+        this.assertOperationAdmission(options, 'security.cancel-pairing')
+        return backend.cancelPairing(peerId, options)
+      },
+      unpair: (peerId, options) => {
+        this.assertReady('security.unpair')
+        this.assertOperationAdmission(options, 'security.unpair')
+        return backend.unpair(peerId, options)
+      }
+    }
   }
 
   traces(): readonly import('./trace-recorder').CoreTraceRecord[] {

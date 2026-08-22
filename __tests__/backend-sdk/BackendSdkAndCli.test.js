@@ -44,7 +44,7 @@ describe('external backend SDK and offline CLI', () => {
         backendId: 'unified-ble:deterministic-test',
         platformId: 'unified-ble:test'
       })
-      expect(capabilityReport.capabilities).toHaveLength(3)
+      expect(capabilityReport.capabilities).toHaveLength(8)
       expect(capabilityReport.capabilities.find(capability => capability.id === 'connection:direct')).toMatchObject({
         state: 'limited',
         implementationOrigin: 'backend-native',
@@ -55,6 +55,23 @@ describe('external backend SDK and offline CLI', () => {
         evidence: { evidenceLevel: 'deterministic' },
         limits: { availability: { minimum: null, maximum: 1, unit: 'boolean' } }
       })
+      for (const securityId of [
+        'security:state',
+        'security:pair',
+        'security:cancel-pairing',
+        'security:unpair',
+        'security:custom-ceremony'
+      ]) {
+        expect(capabilityReport.capabilities.find(capability => capability.id === securityId)).toMatchObject({
+          state: 'limited',
+          implementationOrigin: 'backend-native',
+          tck: {
+            suiteId: 'tck.feature.security.pairing',
+            requiredScenarioIds: ['security.state-pair-cancel-unpair']
+          },
+          evidence: { evidenceLevel: 'deterministic' }
+        })
+      }
       const maximumWriteLength = capabilityReport.capabilities.find(
         capability => capability.id === 'gatt:maximum-write-length'
       )

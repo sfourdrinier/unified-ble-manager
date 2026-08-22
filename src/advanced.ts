@@ -178,3 +178,11 @@ export { resolveStreamPreset } from './public/stream-presets'
 export type { StreamPreset, StreamBudget } from './public/stream-presets'
 export { deriveRestorationIdentity, createEphemeralHostIdentity } from './public/host-identity'
 export type { EphemeralHostIdentity, RestorationHostIdentity } from './public/host-identity'
+export { withRequiredSecurity } from './public/security'
+export type {
+  PairingAgent,
+  PairingChallenge,
+  PairingResponse,
+  RequiredSecurityOptions,
+  SecurityRequirement
+} from './public/security'

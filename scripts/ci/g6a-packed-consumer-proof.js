@@ -410,8 +410,13 @@ function validateThirdPartyResult(result) {
 }
 
 function validateThirdPartyTckProof(proof) {
-  requireExactKeys(proof, ['report', 'unavailableCapabilityDeclared'], 'G6A third-party TCK proof')
+  requireExactKeys(
+    proof,
+    ['report', 'unavailableCapabilityDeclared', 'securityCapabilitiesUnsupported'],
+    'G6A third-party TCK proof'
+  )
   requireLiteral(proof.unavailableCapabilityDeclared, true, 'G6A third-party unavailable capability declaration')
+  requireLiteral(proof.securityCapabilitiesUnsupported, true, 'G6A third-party security capability declaration')
   validateThirdPartyTckReport(proof.report)
   return expectedThirdPartyTckSummary
 }

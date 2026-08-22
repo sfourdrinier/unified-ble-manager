@@ -43,6 +43,7 @@ import {
   type ScanConsumer
 } from './deterministic-backend-base'
 import { DeterministicBoundedStream } from './deterministic-stream'
+import { DeterministicSecurityBackend } from './deterministic-security'
 import {
   characteristicAddress,
   databaseKey,
@@ -102,6 +103,7 @@ export class DeterministicTestBackend
   implements BleCentralBackend<string, HostNeutralBackendIdentity<string>>
 {
   readonly gatt: GattBackend<string>
+  readonly security: DeterministicSecurityBackend
   private readonly connectionsByPeer = new Map<string, ConnectionRecord>()
   private readonly databasesByKey = new Map<string, DeterministicGattDatabase>()
   private readonly physicalSubscriptions = new Map<string, PhysicalSubscription>()
@@ -114,12 +116,15 @@ export class DeterministicTestBackend
   constructor(options: DeterministicBackendOptions = {}) {
     super(options)
     this.gatt = createDeterministicGattBackend(this)
+    this.security = new DeterministicSecurityBackend(this.clock, this.operations, operation =>
+      this.assertUsable(operation)
+    )
   }
   get identity(): HostNeutralBackendIdentity<string> {
     return deterministicBackendIdentity(this.attachment())
   }
   protected reservedAdditionalStreamBytes(): number {
-    return retainedSubscriptionReservationBytes(this.physicalSubscriptions)
+    return retainedSubscriptionReservationBytes(this.physicalSubscriptions) + this.security.reservedBytes()
   }
   protected handleAdapterUnavailable(): void {
     invalidateDeterministicConnections(this.connectionsByPeer, record =>
@@ -207,7 +212,8 @@ export class DeterministicTestBackend
       physicalSubscriptions: this.physicalSubscriptions,
       operation: this.operations.snapshot(),
       eventStreams: this.eventStreams,
-      retainedOperationBytes: this.retainedOperationBytes
+      retainedOperationBytes: this.retainedOperationBytes,
+      securityReservedBytes: this.security.reservedBytes()
     })
   }
 
@@ -233,6 +239,7 @@ export class DeterministicTestBackend
   private async destroyInternal(): Promise<CleanupRecord> {
     this.destroyed = true
     this.operations.cancelAllForDestroy()
+    this.security.close()
     const failures: CleanupFailure[] = []
     const group = this.scanGroup
     if (group !== null) {

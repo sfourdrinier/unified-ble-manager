@@ -37,6 +37,9 @@ import type { BlePeerDirectory, BlePeerState, PeerSource } from './peer-director
 import { createPublicPeerDirectory } from './peer-directory'
 import { encodePeerReference, isPeerReference, snapshotPeerReference } from './peer-reference'
 import type { PeerReference } from './peer-reference'
+import type { ResourceCounters } from '../backend-contract/backend'
+import { createPublicSecurity } from './security'
+import type { BleSecurity } from './security'
 
 export type GattSubscriptionValue = GattValueEvent
 export type ConnectionIntent = 'direct' | 'when-available'
@@ -90,6 +93,25 @@ export type {
 } from './scan-query'
 export type { BlePeerDirectory, BlePeerState, KnownPeerQuery, PeerSource } from './peer-directory'
 export type { PeerReference, PeerReferenceScope } from './peer-reference'
+export type {
+  BleSecurity,
+  PairCancelResult,
+  PairingAgent,
+  PairingChallenge,
+  PairingResponse,
+  PairOptions,
+  RequiredSecurityOptions,
+  PairResult,
+  PeerSecurityEvent,
+  PeerSecurityState,
+  SecurityAuthenticationState,
+  SecurityBondState,
+  SecurityEncryptionState,
+  SecureConnectionsState,
+  SecurityPeer,
+  UnpairResult,
+  SecurityRequirement
+} from './security'
 
 // Public peer — opaque backend-scoped identifier, no generic.
 export interface BlePeer {
@@ -160,6 +182,7 @@ export interface BleManager {
   readonly adapter: BleAdapter
   readonly diagnostics: BleDiagnostics
   readonly peers: BlePeerDirectory
+  readonly security: BleSecurity
   readonly discovery: BleDiscoveryInfo
   readonly destroy: () => Promise<CleanupRecord>
   scan(options?: ScanOptions): Promise<ScanSession>
@@ -232,6 +255,7 @@ class PublicBleManager implements BleManager {
   readonly adapter: BleAdapter
   readonly diagnostics: BleDiagnostics
   readonly peers: BlePeerDirectory
+  readonly security: BleSecurity
 
   constructor(
     private readonly internal: InternalBleManager<string, BackendIdentity<string>>,
@@ -242,16 +266,12 @@ class PublicBleManager implements BleManager {
     this.adapter = createPublicAdapter(internal, now)
     this.diagnostics = {
       snapshot: () =>
-        Object.freeze({ trace: internal.traceDocument(), resourceCounters: this.diagnostics.resourceCounters() }),
-      resourceCounters: () =>
-        snapshotResourceCounters(
-          Object.fromEntries(
-            Object.entries(internal.localResourceCounters()).map(([key, value]) => [key, Number(value)])
-          )
-        ),
-      startTrace: () => ({ stop: async () => internal.traceDocument() })
+        Object.freeze({ trace: publicTraceDocument(internal), resourceCounters: this.diagnostics.resourceCounters() }),
+      resourceCounters: () => snapshotResourceCounters(publicResourceCounters(internal)),
+      startTrace: () => ({ stop: async () => publicTraceDocument(internal) })
     }
     this.peers = hostOptions.peers ?? createPublicPeerDirectory(internal.attachedBackend?.backend?.peers, now)
+    this.security = createPublicSecurity(resolveSecurityBackend(internal), this.peers, internal, now)
     const supportsContinuous = typeof internal.supports === 'function' && internal.supports('discovery:continuous-scan')
     this.discovery = Object.freeze({
       kind: hostOptions.discoveryKind ?? (supportsContinuous ? 'continuous-scan' : 'system-chooser')
@@ -455,6 +475,42 @@ class PublicBleManager implements BleManager {
     return this.internal.destroy().catch(error => {
       throw rehydratePublicError(error)
     })
+  }
+}
+
+function publicTraceDocument(
+  internal: InternalBleManager<string, BackendIdentity<string>>
+): ReturnType<InternalBleManager<string, BackendIdentity<string>>['traceDocument']> {
+  return internal.attachedBackend?.backend.traceDocument?.() ?? internal.traceDocument()
+}
+
+function resolveSecurityBackend(
+  internal: InternalBleManager<string, BackendIdentity<string>>
+): import('../backend-contract/security').SecurityBackend | undefined {
+  if (typeof internal.securityBackend === 'function') return internal.securityBackend()
+  return internal.attachedBackend?.backend?.security
+}
+
+function publicResourceCounters(
+  internal: InternalBleManager<string, BackendIdentity<string>>
+): Record<keyof ResourceCounters, number> {
+  const core = internal.localResourceCounters()
+  const backend = internal.attachedBackend?.backend.resourceCounters()
+  const value = (key: keyof ResourceCounters): number => Number(backend?.[key] ?? core[key])
+  return {
+    activeScanControllers: value('activeScanControllers'),
+    scanConsumers: value('scanConsumers'),
+    chooserSessions: value('chooserSessions'),
+    connectionLeases: value('connectionLeases'),
+    physicalLinks: value('physicalLinks'),
+    databaseSnapshots: value('databaseSnapshots'),
+    physicalCccdEnablements: value('physicalCccdEnablements'),
+    subscriptionConsumers: value('subscriptionConsumers'),
+    queuedOperations: value('queuedOperations'),
+    dispatchedOperations: value('dispatchedOperations'),
+    retainedByteBuffers: value('retainedByteBuffers'),
+    restorationRecords: value('restorationRecords'),
+    orphanedIpcOwners: value('orphanedIpcOwners')
   }
 }
 

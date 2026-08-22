@@ -47,6 +47,8 @@ import { serializableRecordsEqual, snapshotSerializableRecord } from './serializ
 import type { BoundedAsyncStream } from './streams'
 import type { ManagerRestorationCapability } from './restoration'
 import type { PeerReference } from './peer-reference'
+import type { SecurityBackend } from './security'
+import type { DiagnosticTraceDocument } from '../diagnostics/trace-format'
 
 export type OwnerMode = 'owning' | 'borrowing'
 export type ManagerState = 'new' | 'ready' | 'destroying' | 'destroyed' | 'failed'
@@ -415,8 +417,10 @@ export interface BleCentralBackend<Attachment extends string, Identity extends B
   readonly scanner: ScannerBackend<Attachment>
   readonly connections: ConnectionBackend<Attachment>
   readonly gatt: GattBackend<Attachment>
+  readonly security?: SecurityBackend
   readonly peers?: PeerDirectoryBackend<Attachment>
   readonly features: FeatureRegistry
+  readonly traceDocument?: () => DiagnosticTraceDocument
   attach(request: BackendAttachmentRequest): Promise<BackendAttachment<Attachment, Identity>>
   events(): BoundedAsyncStream<BackendEvent<Attachment>>
   resourceCounters(): ResourceCounters

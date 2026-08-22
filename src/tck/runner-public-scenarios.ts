@@ -15,6 +15,7 @@ import {
 } from '../backend-contract/primitives'
 import type { GenerationId } from '../backend-contract/primitives'
 import type { StreamItem } from '../backend-contract/streams'
+import type { SecurityPairingChallenge, SecurityPairingResponse } from '../backend-contract/security'
 import {
   attachBleBackend,
   createBleManager,
@@ -216,6 +217,9 @@ async function executeManagerScenario<
   if (definition.id === 'diagnostics.trace-redaction-and-resource-counters') {
     return executeDiagnosticsScenario(manager, fixture, definition)
   }
+  if (definition.id === 'security.state-pair-cancel-unpair') {
+    return executeSecurityScenario(manager, fixture)
+  }
   if (definition.id === WEB_CHOOSER_TCK_SCENARIO_ID) {
     const detail = await executePublicWebChooserVerticalSlice(manager, fixture, definition)
     return [fact('web-chooser-vertical-slice-preserves-selection-and-cleans-up', true, detail)]
@@ -239,6 +243,116 @@ async function executeManagerScenario<
       reason: 'the public manager TCK has no scenario-specific observer for this feature scenario'
     })
   )
+}
+
+async function executeSecurityScenario<
+  Attachment extends string,
+  Identity extends BackendIdentity<Attachment>,
+  Backend extends BleCentralBackend<Attachment, Identity>
+>(
+  manager: PublicManager<Attachment, Identity>,
+  fixture: BackendTckFixture<Attachment, Identity, Backend>
+): Promise<readonly TckFact[]> {
+  const security = manager.securityBackend()
+  if (security === undefined)
+    throw new TckAssertionError('security.state-pair-cancel-unpair', 'security backend is absent')
+  const peerId = 'deterministic-peer'
+  const securityOperationOptions = { signal: null, deadline: null }
+  const events = security.watch(peerId)
+  const iterator = events[Symbol.asyncIterator]()
+  const initial = await fixture.controller.settle(security.state(peerId, securityOperationOptions))
+  const initialItem = await fixture.controller.settle(iterator.next())
+  const paired = await fixture.controller.settle(
+    security.pair(peerId, {
+      ...securityOperationOptions,
+      transport: 'auto',
+      protection: 'system-default',
+      ceremony: 'system'
+    })
+  )
+  const pairedItem = await fixture.controller.settle(iterator.next())
+  const alreadyPaired = await fixture.controller.settle(
+    security.pair(peerId, {
+      ...securityOperationOptions,
+      transport: 'auto',
+      protection: 'system-default',
+      ceremony: 'system'
+    })
+  )
+  const customAgent = {
+    onChallenge: async (challenge: SecurityPairingChallenge): Promise<SecurityPairingResponse> => {
+      if (challenge.kind !== 'confirm-passkey' || challenge.passkey !== 123456 || challenge.peerId !== peerId) {
+        throw new Error('deterministic security challenge did not preserve its bounded passkey')
+      }
+      return { kind: 'confirm-passkey', confirmed: true }
+    }
+  }
+  const custom = await fixture.controller.settle(
+    security.pair(peerId, {
+      ...securityOperationOptions,
+      transport: 'auto',
+      protection: 'system-default',
+      ceremony: { kind: 'agent', agent: customAgent }
+    })
+  )
+  const unpaired = await fixture.controller.settle(security.unpair(peerId, securityOperationOptions))
+  const pending = security.pair(peerId, {
+    ...securityOperationOptions,
+    transport: 'auto',
+    protection: 'system-default',
+    ceremony: { kind: 'agent', agent: { onChallenge: () => new Promise(() => undefined) } }
+  })
+  await fixture.controller.flush()
+  const cancelled = await fixture.controller.settle(security.cancelPairing(peerId, securityOperationOptions))
+  const cancelledPair = await fixture.controller.settle(pending)
+  const afterCancellation = await fixture.controller.settle(security.cancelPairing(peerId, securityOperationOptions))
+  const alreadyUnpaired = await fixture.controller.settle(security.unpair(peerId, securityOperationOptions))
+  await iterator.return()
+  await events.close()
+  const counters = manager.attachedBackend.backend.resourceCounters()
+  return [
+    fact(
+      'security-state-distinguishes-unbonded',
+      initial.bond === 'not-bonded' && initial.encryption === 'not-encrypted',
+      {
+        bond: initial.bond,
+        encryption: initial.encryption,
+        initialEvent: !initialItem.done && initialItem.value.kind === 'value'
+      }
+    ),
+    fact(
+      'security-pairing-is-terminal-and-idempotent',
+      paired.outcome === 'paired' &&
+        alreadyPaired.outcome === 'already-paired' &&
+        !pairedItem.done &&
+        pairedItem.value.kind === 'value',
+      {
+        paired: paired.outcome,
+        alreadyPaired: alreadyPaired.outcome,
+        pairedEvent: !pairedItem.done && pairedItem.value.kind === 'value'
+      }
+    ),
+    fact('security-custom-challenge-is-bounded', custom.outcome === 'already-paired' || custom.outcome === 'paired', {
+      outcome: custom.outcome
+    }),
+    fact(
+      'security-pairing-cancellation-cleans-up',
+      cancelled.outcome === 'cancelled' &&
+        cancelledPair.outcome === 'cancelled' &&
+        afterCancellation.outcome === 'not-pairing',
+      {
+        cancelled: cancelled.outcome,
+        cancelledPair: cancelledPair.outcome,
+        afterCancellation: afterCancellation.outcome,
+        retainedByteBuffers: counters.retainedByteBuffers
+      }
+    ),
+    fact(
+      'security-unpair-is-explicit',
+      unpaired.outcome === 'unpaired' && alreadyUnpaired.outcome === 'already-unpaired',
+      { unpaired: unpaired.outcome, alreadyUnpaired: alreadyUnpaired.outcome }
+    )
+  ]
 }
 
 async function executeMaximumWriteLengthScenario<

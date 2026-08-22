@@ -280,7 +280,7 @@ function runPackedThirdPartyBackendFixture(consumer, artifactDirectory, npmEnvir
   const proofScript = [
     "const fixture = await import('@example/packed-third-party-backend');",
     'const proof = await fixture.runPackedThirdPartyBackendFixture();',
-    'console.log(JSON.stringify({ report: proof.report, unavailableCapabilityDeclared: proof.unavailableCapabilityDeclared }));'
+    'console.log(JSON.stringify({ report: proof.report, unavailableCapabilityDeclared: proof.unavailableCapabilityDeclared, securityCapabilitiesUnsupported: proof.securityCapabilitiesUnsupported }));'
   ].join('\n')
   const proofOutput = run(process.execPath, ['--input-type=module', '-e', proofScript], executionOptions(consumer))
   const proofLines = proofOutput
@@ -823,7 +823,7 @@ function runInstalledElectronL1Scenario(consumer) {
     '    assert.deepStrictEqual(publicCleanup.failures, [], "packed Electron public manager cleanup has no failures");',
     '  } finally {',
     '    try {',
-      '      clientCleanup = await settle(client.destroy());',
+    '      clientCleanup = await settle(client.destroy());',
     '      if (publicManager !== undefined && publicCleanup === undefined) publicCleanup = await settle(publicManager.destroy());',
     '    } finally {',
     '      bindingCleanup = await settle(binding.destroy());',
@@ -1169,5 +1169,5 @@ module.exports = {
   assertChildProcessResult,
   main,
   run,
-  runPackedThirdPartyBackendFixture,
+  runPackedThirdPartyBackendFixture
 }

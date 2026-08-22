@@ -46,6 +46,8 @@ import { unsupportedPeerDirectory } from '../public/peer-directory'
 import type { BlePeerDirectory } from '../public/peer-directory'
 import { isPeerReference } from '../public/peer-reference'
 import type { PeerReference } from '../public/peer-reference'
+import { createPublicSecurity } from '../public/security'
+import type { BleSecurity } from '../public/security'
 import { rehydratePublicError, rehydratePublicPromise, runWithCleanup } from '../public/error-bridge'
 import { resolveStreamPolicy } from '../public/stream-presets'
 import {
@@ -70,6 +72,7 @@ export class IpcPublicManagerAdapter implements BleManager {
   readonly adapter: BleAdapter
   readonly diagnostics: BleDiagnostics
   readonly peers: BlePeerDirectory
+  readonly security: BleSecurity
   readonly discovery: BleManager['discovery']
 
   constructor(
@@ -80,6 +83,7 @@ export class IpcPublicManagerAdapter implements BleManager {
     this.adapter = options.adapter ?? createIpcAdapter(ipc)
     this.diagnostics = options.diagnostics ?? diagnosticsUnavailable()
     this.peers = options.peers ?? unsupportedPeerDirectory()
+    this.security = createPublicSecurity(undefined, this.peers, this.capabilities, () => globalThis.performance.now())
     this.discovery = Object.freeze({
       kind: options.discoveryKind ?? ipc.bootstrap.discovery?.kind ?? discoveryKindFromCapabilities(this.capabilities)
     })

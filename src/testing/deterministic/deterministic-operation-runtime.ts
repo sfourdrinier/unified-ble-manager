@@ -17,6 +17,7 @@ export type DeterministicCompletionStage =
   | 'write-descriptor'
   | 'subscribe'
   | 'unsubscribe'
+  | 'security-pair'
   | 'destroy'
 
 export interface ProgrammableCompletion {

@@ -105,8 +105,9 @@ async function settle<Value>(fixture: DeterministicBackendFixture, promise: Prom
     }
   )
   for (let attempt = 0; attempt < 100 && !settled; attempt += 1) {
+    await flushMicrotasks()
     fixture.controller.clock.runUntilIdle()
-    await Promise.resolve()
+    await flushMicrotasks()
   }
   if (!settled) {
     throw contractError('operation.timed-out', 'core', 'deterministic-tck-controller.settle')

@@ -19,6 +19,7 @@ export type RecoveryAction =
   | { readonly kind: 'reconnect' }
   | { readonly kind: 'rediscover-gatt' }
   | { readonly kind: 'select-gatt-occurrence' }
+  | { readonly kind: 'pair' }
   | { readonly kind: 'repair' }
   | { readonly kind: 'reduce-payload'; readonly maximumBytes: number | null }
   | { readonly kind: 'wait-for-write-ready' }
@@ -129,9 +130,10 @@ export function recoveryForCode(code: BleErrorCode, operation: string): BleRecov
     case 'background.terminated':
       return { disposition: 'after-state-change', actions: [{ kind: 'reconnect' }] }
     case 'platform.failure':
-    case 'platform.security':
     case 'platform.transport':
       return { disposition: 'caller-policy', actions: [] }
+    case 'platform.security':
+      return { disposition: 'after-user-action', actions: [{ kind: 'pair' }, { kind: 'repair' }] }
     case 'operation.aborted':
     case 'operation.timed-out':
       return { disposition: 'caller-policy', actions: [{ kind: 'retry', afterMs: null }] }

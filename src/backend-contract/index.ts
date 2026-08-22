@@ -70,6 +70,23 @@ export type {
 } from './backend'
 export { assertAttachedBackend, assertBackendEvent, attachBackend } from './backend'
 export type { PeerReference, PeerReferenceScope } from './peer-reference'
+export type {
+  PeerSecurityEvent,
+  PeerSecurityState,
+  SecurityAuthenticationState,
+  SecurityBondState,
+  SecurityCancelPairingResult,
+  SecurityEncryptionState,
+  SecurityPairOptions,
+  SecurityPairingAgent,
+  SecurityPairingChallenge,
+  SecurityPairingCeremony,
+  SecurityPairingResponse,
+  SecurityPairResult,
+  SecurityUnpairResult,
+  SecureConnectionsState,
+  SecurityBackend
+} from './security'
 export {
   assertPeerReference,
   decodePeerReference,

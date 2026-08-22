@@ -195,6 +195,40 @@ function createDeterministicMaximumWriteLengthRegistration(
   })
 }
 
+function createDeterministicSecurityRegistrations(
+  customFeatureRegistrations: readonly FeatureRegistration<
+    `${string}:${string}`,
+    SerializableRecord,
+    SerializableRecord,
+    FeatureImplementation<SerializableRecord, SerializableRecord>
+  >[]
+): readonly FeatureRegistration<
+  `${string}:${string}`,
+  SerializableRecord,
+  SerializableRecord,
+  FeatureImplementation<SerializableRecord, SerializableRecord>
+>[] {
+  const ids = [
+    BUILT_IN_FEATURE_IDS.securityState,
+    BUILT_IN_FEATURE_IDS.securityPair,
+    BUILT_IN_FEATURE_IDS.securityCancelPairing,
+    BUILT_IN_FEATURE_IDS.securityUnpair,
+    BUILT_IN_FEATURE_IDS.securityCustomCeremony
+  ] as const
+  return ids
+    .filter(id => !customFeatureRegistrations.some(registration => registration.id === id))
+    .map(id =>
+      createBackendOperationCapabilityRegistration({
+        id,
+        implementationVersion: UNIFIED_BLE_IMPLEMENTATION_VERSION,
+        sourceDigest: `deterministic-${id.replace(':', '-')}-v1`,
+        tckSuiteId: 'tck.feature.security.pairing',
+        requiredScenarioIds: ['security.state-pair-cancel-unpair'],
+        operation: `${id}.invoke-without-security-backend`
+      })
+    )
+}
+
 /** Shared deterministic radio, attachment, stream, and operation mechanics. */
 export abstract class DeterministicBackendBase {
   readonly clock = new DeterministicVirtualClock()
@@ -243,6 +277,7 @@ export abstract class DeterministicBackendBase {
                 requiredScenarioIds: ['scenario.scan-connect-discover-read-notify-destroy']
               })
             ]),
+        ...createDeterministicSecurityRegistrations(customFeatureRegistrations),
         createDeterministicMaximumWriteLengthRegistration(
           () => this.currentMaximumWriteLength,
           () => Number(this.clock.now()),
