@@ -4,6 +4,7 @@ import type { BleCentralBackend } from '../backend-contract/backend'
 import type { ConnectionLifecycleCause, ConnectionLifecycleEvent } from '../backend-contract/connection-lifecycle'
 import { BUILT_IN_FEATURE_IDS, type FeatureState } from '../backend-contract/capabilities'
 import { MINIMUM_ATT_MTU } from '../backend-contract/connection-controls'
+import { BackendContractError } from '../backend-contract/errors'
 import type { Characteristic } from '../backend-contract/gatt'
 import type { BackendIdentity } from '../backend-contract/identity'
 import {
@@ -19,7 +20,8 @@ import type {
   SecurityCancelPairingResult,
   SecurityPairResult,
   SecurityPairingChallenge,
-  SecurityPairingResponse
+  SecurityPairingResponse,
+  SecurityUnpairResult
 } from '../backend-contract/security'
 import {
   attachBleBackend,
@@ -156,6 +158,10 @@ export async function executePublicTckScenario<
 
 export type PublicManager<Attachment extends string, Identity extends BackendIdentity<Attachment>> = Awaited<
   ReturnType<typeof createBleManager<Attachment, Identity>>
+>
+
+type ConnectionHandle<Attachment extends string, Identity extends BackendIdentity<Attachment>> = Awaited<
+  ReturnType<PublicManager<Attachment, Identity>['connect']>
 >
 
 export type PublicAuthority<Attachment extends string, Identity extends BackendIdentity<Attachment>> = ReturnType<
@@ -420,9 +426,9 @@ async function executeSystemOnlySecurityScenario<
   const initialItem = await fixture.controller.settle(iterator.next())
   const supportsCancellation = securityAdapter.supportsCancellation ?? true
   const supportsUnpair = securityAdapter.supportsUnpair ?? true
-  let cancelled: SecurityCancelPairingResult = { outcome: 'not-pairing' }
-  let cancelledPair: SecurityPairResult = { outcome: 'cancelled' }
-  let afterCancellation: SecurityCancelPairingResult = { outcome: 'not-pairing' }
+  let cancelled: SecurityCancelPairingResult | null = null
+  let cancelledPair: SecurityPairResult | null = null
+  let afterCancellation: SecurityCancelPairingResult | null = null
   if (supportsCancellation) {
     securityAdapter.prepareCancellation?.()
     const pending = security.pair(peerId, {
@@ -442,9 +448,9 @@ async function executeSystemOnlySecurityScenario<
   const alreadyPaired = await fixture.controller.settle(
     security.pair(peerId, { ...options, transport: 'auto', protection: 'system-default', ceremony: 'system' })
   )
-  const unpaired = supportsUnpair
+  const unpaired: SecurityUnpairResult | null = supportsUnpair
     ? await fixture.controller.settle(security.unpair(peerId, options))
-    : { outcome: 'unsupported' as const }
+    : null
   await iterator.return()
   await events.close()
   const counters = manager.attachedBackend.backend.resourceCounters()
@@ -466,26 +472,22 @@ async function executeSystemOnlySecurityScenario<
     fact(
       'security-pairing-cancellation-cleans-up',
       !supportsCancellation ||
-        (cancelled.outcome === 'cancelled' &&
-          cancelledPair.outcome === 'cancelled' &&
-          afterCancellation.outcome === 'not-pairing'),
+        (cancelled?.outcome === 'cancelled' &&
+          cancelledPair?.outcome === 'cancelled' &&
+          afterCancellation?.outcome === 'not-pairing'),
       {
-        cancelled: cancelled.outcome,
-        cancelledPair: cancelledPair.outcome,
-        afterCancellation: afterCancellation.outcome,
+        cancelled: cancelled?.outcome ?? null,
+        cancelledPair: cancelledPair?.outcome ?? null,
+        afterCancellation: afterCancellation?.outcome ?? null,
         supportsCancellation,
         retainedByteBuffers: counters.retainedByteBuffers
       }
     ),
-    fact(
-      'security-unpair-is-explicit',
-      (!supportsUnpair && unpaired.outcome === 'unsupported') || unpaired.outcome === 'unpaired',
-      {
-        unpaired: unpaired.outcome,
-        supportsUnpair,
-        supportsAlreadyUnpaired: securityAdapter.supportsAlreadyUnpaired
-      }
-    )
+    fact('security-unpair-is-explicit', !supportsUnpair || unpaired?.outcome === 'unpaired', {
+      unpaired: unpaired?.outcome ?? null,
+      supportsUnpair,
+      supportsAlreadyUnpaired: securityAdapter.supportsAlreadyUnpaired
+    })
   ]
 }
 
@@ -1376,61 +1378,75 @@ async function executeConnectionControlsScenario<
   const connection = await connectToDeterministicPeer(manager, fixture, definition)
   let rssiMeasured = false
   let rssiExplicitlyUnavailable = false
+  let rssiGenerationBound = false
   let mtuObserved = false
   let mtuExplicitlyUnavailable = false
+  let mtuObservationGenerationBound = false
   let priorityAcceptedOrRejected = false
   let priorityRejected = false
+  let priorityGenerationBound = false
   const priorityClaimedObservedParameters = false
   try {
     const rssiState = featureState(fixture.backend, BUILT_IN_FEATURE_IDS.connectionRssi)
     if (rssiState === 'supported' || rssiState === 'limited') {
-      const rssi = await fixture.controller.settle(connection.readRssi(operationOptions))
-      rssiMeasured = Number.isSafeInteger(rssi.rssi)
+      const rssi = await observePublicControl(() => fixture.controller.settle(connection.readRssi(operationOptions)))
+      rssiMeasured = rssi.errorCode === null && rssi.value !== null && Number.isSafeInteger(rssi.value.rssi)
+      rssiGenerationBound = rssiMeasured && connection.connectionGeneration.length > 0
     } else {
-      rssiExplicitlyUnavailable = await rejectsWithCode(
-        fixture.controller.settle(connection.readRssi(operationOptions)),
-        capabilityErrorCode(rssiState)
-      )
+      const rssi = await observePublicControl(() => fixture.controller.settle(connection.readRssi(operationOptions)))
+      rssiExplicitlyUnavailable = rssi.errorCode === capabilityErrorCode(rssiState)
     }
     const mtuState = featureState(fixture.backend, BUILT_IN_FEATURE_IDS.connectionRequestMtu)
     if (mtuState === 'supported' || mtuState === 'limited') {
-      const negotiation = await fixture.controller.settle(connection.requestMtu(adapter.requestedMtu, operationOptions))
-      const negotiatedMtu = negotiation.negotiatedMtu
+      const negotiation = await observePublicControl(() =>
+        fixture.controller.settle(connection.requestMtu(adapter.requestedMtu, operationOptions))
+      )
+      const negotiatedMtu = negotiation.value === null ? null : negotiation.value.negotiatedMtu
       mtuObserved =
-        negotiation.requestedMtu === adapter.requestedMtu &&
+        negotiation.errorCode === null &&
+        negotiation.value !== null &&
+        negotiation.value.requestedMtu === adapter.requestedMtu &&
+        typeof negotiatedMtu === 'number' &&
         Number.isSafeInteger(negotiatedMtu) &&
         negotiatedMtu >= MINIMUM_ATT_MTU &&
         negotiatedMtu <= adapter.requestedMtu
+      mtuObservationGenerationBound = mtuObserved && connection.connectionGeneration.length > 0
     } else {
-      mtuExplicitlyUnavailable = await rejectsWithCode(
-        fixture.controller.settle(connection.requestMtu(adapter.requestedMtu, operationOptions)),
-        capabilityErrorCode(mtuState)
+      const negotiation = await observePublicControl(() =>
+        fixture.controller.settle(connection.requestMtu(adapter.requestedMtu, operationOptions))
       )
+      mtuExplicitlyUnavailable = negotiation.errorCode === capabilityErrorCode(mtuState)
     }
 
     const priorityState = featureState(fixture.backend, BUILT_IN_FEATURE_IDS.connectionPriority)
     if (priorityState === 'supported' || priorityState === 'limited') {
-      const priority = await fixture.controller.settle(connection.requestPriority('high-throughput', operationOptions))
-      priorityAcceptedOrRejected = typeof priority.accepted === 'boolean'
-      priorityRejected = !priority.accepted
-    } else {
-      priorityRejected = await rejectsWithCode(
-        fixture.controller.settle(connection.requestPriority('high-throughput', operationOptions)),
-        capabilityErrorCode(priorityState)
+      const priority = await observePublicControl(() =>
+        fixture.controller.settle(connection.requestPriority('high-throughput', operationOptions))
       )
+      priorityAcceptedOrRejected =
+        priority.errorCode === null && priority.value !== null && typeof priority.value.accepted === 'boolean'
+      priorityRejected = priority.value !== null && !priority.value.accepted
+      priorityGenerationBound = priorityAcceptedOrRejected && connection.connectionGeneration.length > 0
+    } else {
+      const priority = await observePublicControl(() =>
+        fixture.controller.settle(connection.requestPriority('high-throughput', operationOptions))
+      )
+      priorityRejected = priority.errorCode === capabilityErrorCode(priorityState)
       priorityAcceptedOrRejected = priorityRejected
     }
 
-    const phyTruth = explicitFeatureState(featureState(fixture.backend, BUILT_IN_FEATURE_IDS.connectionPhy))
-    const parametersTruth = explicitFeatureState(
-      featureState(fixture.backend, BUILT_IN_FEATURE_IDS.connectionParameters)
-    )
-    const subrateTruth = explicitFeatureState(featureState(fixture.backend, BUILT_IN_FEATURE_IDS.connectionSubrate))
-    const readinessTruth = explicitFeatureState(
-      featureState(fixture.backend, BUILT_IN_FEATURE_IDS.writeWithoutResponseReadiness)
-    )
+    const phyState = featureState(fixture.backend, BUILT_IN_FEATURE_IDS.connectionPhy)
+    const parametersState = featureState(fixture.backend, BUILT_IN_FEATURE_IDS.connectionParameters)
+    const subrateState = featureState(fixture.backend, BUILT_IN_FEATURE_IDS.connectionSubrate)
+    const readinessState = featureState(fixture.backend, BUILT_IN_FEATURE_IDS.writeWithoutResponseReadiness)
+    const phy = await observePhyTruth(connection, fixture, phyState)
+    const parameters = await observeParametersTruth(parametersState)
+    const subrate = await observeSubrateTruth(subrateState)
+    const readiness = await observeReadinessTruth(connection, fixture, readinessState)
     const database = await fixture.controller.settle(connection.discover(operationOptions))
     const observationsBoundToGeneration =
+      connection.connectionGeneration.length > 0 &&
+      String(database.path.connectionGeneration).length > 0 &&
       String(database.path.connectionGeneration) === String(connection.connectionGeneration)
     return [
       fact('connection-rssi-is-measured-or-explicitly-unavailable', rssiMeasured || rssiExplicitlyUnavailable, {
@@ -1450,19 +1466,24 @@ async function executeConnectionControlsScenario<
       fact('connection-observation-is-bound-to-generation', observationsBoundToGeneration, {
         observations: 1,
         observationsBoundToGeneration,
-        connectionGeneration: connection.connectionGeneration
+        connectionGeneration: connection.connectionGeneration,
+        rssiGenerationBound,
+        mtuObservationGenerationBound,
+        priorityGenerationBound,
+        phyGenerationBound: phy.generationBound,
+        parametersGenerationBound: parameters.generationBound,
+        subrateGenerationBound: subrate.generationBound,
+        readinessGenerationBound: readiness.generationBound
       }),
-      fact('connection-phy-truth-is-explicit', phyTruth, {
-        state: featureState(fixture.backend, BUILT_IN_FEATURE_IDS.connectionPhy)
+      fact('connection-phy-truth-is-explicit', phy.holds, { state: phyState, ...phy.detail }),
+      fact('connection-parameters-truth-is-explicit', parameters.holds, {
+        state: parametersState,
+        ...parameters.detail
       }),
-      fact('connection-parameters-truth-is-explicit', parametersTruth, {
-        state: featureState(fixture.backend, BUILT_IN_FEATURE_IDS.connectionParameters)
-      }),
-      fact('connection-subrate-truth-is-explicit', subrateTruth, {
-        state: featureState(fixture.backend, BUILT_IN_FEATURE_IDS.connectionSubrate)
-      }),
-      fact('gatt-write-readiness-truth-is-explicit', readinessTruth, {
-        state: featureState(fixture.backend, BUILT_IN_FEATURE_IDS.writeWithoutResponseReadiness)
+      fact('connection-subrate-truth-is-explicit', subrate.holds, { state: subrateState, ...subrate.detail }),
+      fact('gatt-write-readiness-truth-is-explicit', readiness.holds, {
+        state: readinessState,
+        ...readiness.detail
       })
     ]
   } finally {
@@ -1471,6 +1492,195 @@ async function executeConnectionControlsScenario<
       await fixture.controller.settle(connection.release()),
       'connection-controls connection'
     )
+  }
+}
+
+interface PublicControlCall<Value> {
+  readonly invoked: boolean
+  readonly value: Value | null
+  readonly errorCode: string | null
+}
+
+interface ControlFactObservation {
+  readonly holds: boolean
+  readonly generationBound: boolean
+  readonly detail: Readonly<Record<string, boolean | number | string | null>>
+}
+
+async function observePublicControl<Value>(call: () => Promise<Value>): Promise<PublicControlCall<Value>> {
+  try {
+    return { invoked: true, value: await call(), errorCode: null }
+  } catch (error) {
+    return {
+      invoked: true,
+      value: null,
+      errorCode: error instanceof BackendContractError ? error.normalized.code : null
+    }
+  }
+}
+
+function isCallableFeatureState(state: FeatureState): boolean {
+  return state === 'supported' || state === 'limited'
+}
+
+function isBlePhy(value: string): boolean {
+  return value === 'le-1m' || value === 'le-2m' || value === 'le-coded'
+}
+
+async function observePhyTruth<
+  Attachment extends string,
+  Identity extends BackendIdentity<Attachment>,
+  Backend extends BleCentralBackend<Attachment, Identity>
+>(
+  connection: ConnectionHandle<Attachment, Identity>,
+  fixture: BackendTckFixture<Attachment, Identity, Backend>,
+  state: FeatureState
+): Promise<ControlFactObservation> {
+  const expectedError = capabilityErrorCode(state)
+  const read = await observePublicControl(() => fixture.controller.settle(connection.readPhy(operationOptions)))
+  const request = await observePublicControl(() =>
+    fixture.controller.settle(connection.requestPhy({ tx: 'le-1m', rx: 'le-1m' }, operationOptions))
+  )
+  if (!isCallableFeatureState(state)) {
+    return {
+      holds: read.errorCode === expectedError && request.errorCode === expectedError,
+      generationBound: true,
+      detail: {
+        invoked: read.invoked && request.invoked,
+        readErrorCode: read.errorCode,
+        requestErrorCode: request.errorCode
+      }
+    }
+  }
+  const readMeasured =
+    read.errorCode === null && read.value !== null && isBlePhy(read.value.txPhy) && isBlePhy(read.value.rxPhy)
+  const requestState = request.value === null ? null : request.value.accepted ? 'accepted' : 'rejected'
+  const requestObservationPresent = request.value !== null && request.value.observation !== null
+  const requestOutcomeIsCoherent =
+    request.errorCode === null &&
+    request.value !== null &&
+    typeof request.value.accepted === 'boolean' &&
+    ((request.value.accepted && requestObservationPresent) || (!request.value.accepted && !requestObservationPresent))
+  const readGenerationBound = read.value !== null && connection.connectionGeneration.length > 0
+  const requestObservationGenerationBound =
+    request.value === null || request.value.observation === null || connection.connectionGeneration.length > 0
+  return {
+    holds:
+      readMeasured &&
+      requestOutcomeIsCoherent &&
+      readGenerationBound &&
+      (!requestObservationPresent || requestObservationGenerationBound),
+    generationBound: connection.connectionGeneration.length > 0,
+    detail: {
+      invoked: read.invoked && request.invoked,
+      readMeasured,
+      readGenerationBound,
+      requestOutcomeIsCoherent,
+      requestObservationPresent,
+      requestObservationGenerationBound,
+      requestState,
+      readErrorCode: read.errorCode,
+      requestErrorCode: request.errorCode
+    }
+  }
+}
+
+function observeParametersTruth(state: FeatureState): ControlFactObservation {
+  const expectedError = capabilityErrorCode(state)
+  const descriptorTruth = state === 'unsupported' || state === 'unavailable'
+  return {
+    holds: descriptorTruth,
+    generationBound: true,
+    detail: {
+      invoked: false,
+      operationAvailable: false,
+      scope: 'descriptor/runtime-truth-only-no-parameters-seam',
+      expectedError
+    }
+  }
+}
+
+function observeSubrateTruth(state: FeatureState): ControlFactObservation {
+  const expectedError = capabilityErrorCode(state)
+  const descriptorTruth = state === 'unsupported' || state === 'unavailable'
+  return {
+    holds: descriptorTruth,
+    generationBound: true,
+    detail: {
+      invoked: false,
+      operationAvailable: false,
+      scope: 'descriptor/runtime-truth-only-no-subrate-seam',
+      expectedError
+    }
+  }
+}
+
+async function observeReadinessTruth<
+  Attachment extends string,
+  Identity extends BackendIdentity<Attachment>,
+  Backend extends BleCentralBackend<Attachment, Identity>
+>(
+  connection: ConnectionHandle<Attachment, Identity>,
+  fixture: BackendTckFixture<Attachment, Identity, Backend>,
+  state: FeatureState
+): Promise<ControlFactObservation> {
+  const watch = await observePublicControl(() => fixture.controller.settle(connection.writeWithoutResponseReadiness()))
+  const expectedError = capabilityErrorCode(state)
+  if (!isCallableFeatureState(state)) {
+    const refusedWatch = watch.value
+    if (refusedWatch !== null) {
+      const cleanup = await observePublicControl(() => fixture.controller.settle(refusedWatch.close()))
+      return {
+        holds: false,
+        generationBound: true,
+        detail: { invoked: watch.invoked, errorCode: watch.errorCode, cleanupErrorCode: cleanup.errorCode }
+      }
+    }
+    return {
+      holds: watch.errorCode === expectedError,
+      generationBound: true,
+      detail: { invoked: watch.invoked, errorCode: watch.errorCode, cleanupErrorCode: null }
+    }
+  }
+  const activeWatch = watch.value
+  if (activeWatch === null) {
+    return {
+      holds: false,
+      generationBound: true,
+      detail: {
+        invoked: watch.invoked,
+        snapshotObserved: false,
+        snapshotGenerationBound: false,
+        errorCode: watch.errorCode,
+        closeErrorCode: null
+      }
+    }
+  }
+  const iterator = activeWatch.events[Symbol.asyncIterator]()
+  const first = await observePublicControl(() => fixture.controller.settle(iterator.next()))
+  let closeErrorCode: string | null = null
+  if (iterator.return !== undefined) {
+    const closed = await observePublicControl(() => fixture.controller.settle(iterator.return()))
+    closeErrorCode = closed.errorCode
+  }
+  const watchCleanup = await observePublicControl(() => fixture.controller.settle(activeWatch.close()))
+  closeErrorCode = closeErrorCode ?? watchCleanup.errorCode
+  const snapshot =
+    first.errorCode === null && first.value !== null && !first.value.done && first.value.value.kind === 'value'
+      ? first.value.value.value
+      : null
+  const snapshotObserved = snapshot !== null && typeof snapshot.ready === 'boolean'
+  const snapshotGenerationBound = snapshot !== null && snapshot.connectionGeneration === connection.connectionGeneration
+  return {
+    holds: snapshotObserved && snapshotGenerationBound && closeErrorCode === null,
+    generationBound: snapshotGenerationBound,
+    detail: {
+      invoked: first.invoked,
+      snapshotObserved,
+      snapshotGenerationBound,
+      errorCode: first.errorCode ?? watch.errorCode,
+      closeErrorCode
+    }
   }
 }
 
@@ -1551,10 +1761,6 @@ function isConnectionLifecycleValue<Attachment extends string>(
     result.value.value.cause === cause &&
     result.value.value.connectionGeneration === generation
   )
-}
-
-function explicitFeatureState(state: FeatureState): boolean {
-  return state === 'supported' || state === 'limited' || state === 'unsupported' || state === 'unavailable'
 }
 
 function capabilityErrorCode(state: FeatureState): 'capability.unsupported' | 'capability.unavailable' {

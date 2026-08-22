@@ -219,6 +219,49 @@ describe('first-party deterministic backend TCK registry', () => {
     expect([...webScenarioBoundary.expectedReadValue]).toEqual([0, 72])
     expect([...webScenarioBoundary.expectedInitialNotificationValue]).toEqual([0, 73])
   })
+
+  test('does not fabricate skipped system-only security outcomes in receipt details', async () => {
+    const control = new DeterministicNativeControl(true)
+    const runtime = new DeterministicReactNativeProtocolRuntime(control, false)
+    global.__unifiedBleNativeProtocolV2 = runtime
+    const registration = createReactNativeAndroidFirstPartyTckRegistration({
+      control,
+      now: () => 20,
+      nativePeerId: REACT_NATIVE_PEER_ID,
+      boundary: deterministicReactNativeTckBoundary(runtime),
+      security: {
+        customCeremonySupported: false,
+        supportsAlreadyUnpaired: false,
+        supportsCancellation: false,
+        supportsUnpair: false
+      }
+    })
+
+    const report = await createFirstPartyBackendTckRegistry([registration]).run('unified-ble:react-native-android')
+    const receipt = report.standard.receipts.find(
+      candidate => candidate.scenarioId === 'security.state-pair-cancel-unpair'
+    )
+    expect(receipt).toBeDefined()
+    expect(receipt.facts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: 'security-pairing-cancellation-cleans-up',
+          holds: true,
+          detail: expect.objectContaining({
+            supportsCancellation: false,
+            cancelled: null,
+            cancelledPair: null,
+            afterCancellation: null
+          })
+        }),
+        expect.objectContaining({
+          id: 'security-unpair-is-explicit',
+          holds: true,
+          detail: expect.objectContaining({ supportsUnpair: false, unpaired: null })
+        })
+      ])
+    )
+  })
 })
 
 function createWebTckBoundary() {
@@ -507,7 +550,8 @@ class DeterministicReactNativeProtocolRuntime {
     }
     if (kind === 'readRssi') return this.emitResult(command, 'rssi', [field(13, -47)])
     if (kind === 'requestMtu') return this.emitResult(command, 'mtu', [field(14, requiredNumber(command, 14))])
-    if (kind === 'requestPriority') return this.emitResult(command, 'priority', [field(18, this.control.priorityAccepted)])
+    if (kind === 'requestPriority')
+      return this.emitResult(command, 'priority', [field(18, this.control.priorityAccepted)])
     if (kind === 'writeDescriptor') {
       const descriptorPath = requiredRecord(command, 5)
       const reference = binaryReferenceFromRecord(requiredRecord(command, 6))
