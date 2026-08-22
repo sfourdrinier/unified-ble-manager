@@ -43,6 +43,22 @@ function operation(signal = null) {
   return { signal, deadline: null }
 }
 
+function deferred() {
+  let resolve = null
+  let reject = null
+  const promise = new Promise((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise
+    reject = rejectPromise
+  })
+  return { promise, resolve, reject }
+}
+
+async function flushMicrotasks() {
+  for (let ordinal = 0; ordinal < 16; ordinal += 1) {
+    await Promise.resolve()
+  }
+}
+
 function scanOptions() {
   return {
     filter: { serviceUuids: [serviceUuid], manufacturerData: [], localNamePrefix: 'Polar' },
@@ -487,6 +503,44 @@ describe('BlueZ contract-v1 vertical slice', () => {
     await backend.destroy()
   })
 
+  test('tracks a pending dispatcher unsubscribe before allowing connection disconnect', async () => {
+    const { backend, boundary } = await backendFixture()
+    const { lease, database } = await connectedDatabase(backend)
+    const characteristic = (await database.snapshot()).characteristics[0].path
+    const subscription = await database.subscribe(characteristic, { ...operation(), delivery: delivery() })
+    const stopGate = deferred()
+    boundary.onCall(
+      String(characteristic.characteristicOccurrence),
+      BLUEZ_GATT_CHARACTERISTIC_INTERFACE,
+      'StopNotify',
+      async () => {
+        await stopGate.promise
+      }
+    )
+
+    const unsubscribe = backend.gatt.unsubscribe(subscription, {
+      ...operation(),
+      correlation: opaqueId('unsubscribe', 'core-operation', 'bluez:unsubscribe')
+    })
+    await flushMicrotasks()
+    expect(boundary.calls.filter(call => call.method === 'StopNotify')).toHaveLength(1)
+
+    const disconnect = lease.connection.disconnect()
+    let disconnectSettled = false
+    disconnect.then(() => {
+      disconnectSettled = true
+    })
+    await flushMicrotasks()
+    expect(boundary.calls.filter(call => call.method === 'Disconnect')).toHaveLength(0)
+    expect(disconnectSettled).toBe(false)
+
+    stopGate.resolve()
+    await expect(unsubscribe.completion).resolves.toMatchObject({ outcome: 'succeeded' })
+    await expect(disconnect).resolves.toEqual({ state: 'released', failures: [] })
+    expect(boundary.calls.filter(call => call.method === 'Disconnect')).toHaveLength(1)
+    await backend.destroy()
+  })
+
   test('destroys an unconfirmed physical notification by stopping it after StartNotify returned', async () => {
     const { backend, boundary } = await backendFixture()
     const { database } = await connectedDatabase(backend)
@@ -601,6 +655,83 @@ describe('BlueZ contract-v1 vertical slice', () => {
     )
     await expect(database.read(characteristic, operation())).resolves.toEqual(new Uint8Array([41]))
     await expect(backend.destroy()).resolves.toEqual({ state: 'released', failures: [] })
+  })
+
+  test('retains the physical connection when core quarantine times out before native GATT settlement', async () => {
+    jest.useFakeTimers()
+    let manager = null
+    let release = null
+    const readGate = deferred()
+    try {
+      const fixture = await managerFixture()
+      manager = fixture.manager
+      const { boundary } = fixture
+      const backend = manager.attachedBackend.backend
+      const peerId = await observedPeerId(backend)
+      const connection = await manager.connect(peerId, operation())
+      const database = await connection.discover(operation())
+      const characteristic = (await database.snapshot()).characteristics[0].path
+      boundary.onCall(
+        String(characteristic.characteristicOccurrence),
+        BLUEZ_GATT_CHARACTERISTIC_INTERFACE,
+        'ReadValue',
+        async () => readGate.promise
+      )
+
+      const read = database.read(characteristic, operation())
+      await flushMicrotasks()
+      expect(backend.resourceCounters()).toMatchObject({ dispatchedOperations: 1 })
+
+      release = connection.release()
+      await expect(read).rejects.toMatchObject({ normalized: { code: 'operation.disconnected' } })
+      jest.runOnlyPendingTimers()
+      await flushMicrotasks()
+
+      expect(boundary.calls.filter(call => call.method === 'Disconnect')).toHaveLength(0)
+      let releaseResult = null
+      release.then(result => {
+        releaseResult = result
+      })
+      await flushMicrotasks()
+      expect(releaseResult).toBeNull()
+      jest.runOnlyPendingTimers()
+      await flushMicrotasks()
+      expect(releaseResult).toMatchObject({
+        state: 'release-failed',
+        failures: expect.arrayContaining([
+          expect.objectContaining({
+            resourceKind: 'operation-quarantine',
+            error: expect.objectContaining({ code: 'operation.timed-out', domain: 'cleanup' })
+          }),
+          expect.objectContaining({
+            resourceKind: 'connection',
+            error: expect.objectContaining({ code: 'operation.timed-out', domain: 'cleanup' })
+          })
+        ])
+      })
+      const device = boundary.objectManager.objects.find(object => object.path === devicePath)
+      expect(device.interfaces[0].properties.Connected.value).toBe(true)
+      expect(backend.resourceCounters()).toMatchObject({
+        physicalLinks: 1,
+        connectionLeases: 1,
+        dispatchedOperations: 1
+      })
+
+      readGate.resolve(new Uint8Array([4, 2]))
+      await flushMicrotasks()
+      await expect(connection.release()).resolves.toEqual({ state: 'released', failures: [] })
+      expect(boundary.calls.filter(call => call.method === 'Disconnect')).toHaveLength(1)
+      expect(backend.resourceCounters()).toMatchObject({
+        physicalLinks: 0,
+        connectionLeases: 0,
+        dispatchedOperations: 0
+      })
+    } finally {
+      readGate.resolve(new Uint8Array([4, 2]))
+      if (release !== null) await release.catch(() => undefined)
+      if (manager !== null) await manager.destroy()
+      jest.useRealTimers()
+    }
   })
 
   test('cleans a failed connect record and rejects a ServicesResolved wait on disconnect', async () => {

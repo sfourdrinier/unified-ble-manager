@@ -3,8 +3,9 @@
 import type { AdvertisementObservation, OwnerScanOptions } from '../../backend-contract/advertisement'
 import type { CleanupRecord } from '../../backend-contract/errors'
 import type { NotificationValue } from '../../backend-contract/gatt'
-import type { OperationTerminalRecord } from '../../backend-contract/operations'
+import type { BackendOperationPhysicalSettlement, OperationTerminalRecord } from '../../backend-contract/operations'
 import type {
+  BackendOperationHandle,
   ClientId,
   LeaseId,
   PeerId,
@@ -59,6 +60,7 @@ export interface BluezConnectionRecord {
   connection: BluezConnection | null
   readonly leases: Set<BluezConnectionLease>
   readonly databases: Set<BluezGattDatabase>
+  readonly pendingOperations: Map<BackendOperationHandle<string, string>, BluezPendingConnectionOperation>
   state: 'connecting' | 'connected' | 'disconnecting' | 'disconnected' | 'lost'
   active: boolean
   /** A Connect call or an existing BlueZ link requires destroy-time Disconnect even before confirmation. */
@@ -70,6 +72,11 @@ export interface BluezConnectionRecord {
   disconnection: Promise<CleanupRecord> | null
   pendingConnectors: number
   orphanCleanupScheduled: boolean
+}
+
+export interface BluezPendingConnectionOperation {
+  readonly operationName: string
+  readonly physicalSettlement: BackendOperationPhysicalSettlement
 }
 
 export interface BluezGattDescriptorRecord {

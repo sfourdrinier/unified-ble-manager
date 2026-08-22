@@ -58,7 +58,7 @@ import {
 } from './bluez-dbus-contract'
 import type { BluezObjectStoreObserver } from './bluez-object-store'
 import { BluezObjectStore } from './bluez-object-store'
-import { BluezOperationDispatcher } from './bluez-operation-dispatcher'
+import { BluezOperationDispatcher, type BluezOperationDispatch } from './bluez-operation-dispatcher'
 import { connectBluezConnection, disconnectBluezConnection } from './bluez-connection-runtime'
 import {
   dispatchBluezCharacteristicRead,
@@ -356,22 +356,76 @@ export class BluezBackendRuntime implements BluezObjectStoreObserver {
 
   async releaseConnectionLease(lease: BluezConnectionLease): Promise<CleanupRecord> {
     const record = lease.record
-    record.leases.delete(lease)
-    if (record.ownerLeaseId === lease.leaseId) {
-      for (const database of record.databases) {
-        database.invalidate()
+    if (record.leases.size > 1) {
+      record.leases.delete(lease)
+      if (record.ownerLeaseId === lease.leaseId) {
+        for (const database of record.databases) {
+          database.invalidate()
+        }
+        record.currentDatabase = null
+        record.ownerLeaseId = record.leases.values().next().value?.leaseId ?? null
       }
-      record.currentDatabase = null
-      record.ownerLeaseId = record.leases.values().next().value?.leaseId ?? null
-    }
-    if (record.leases.size > 0) {
       return releasedBluezCleanup
     }
-    return this.disconnect(record)
+    const cleanup = await this.disconnect(record)
+    if (cleanup.state === 'released') {
+      record.leases.delete(lease)
+      if (record.ownerLeaseId === lease.leaseId) {
+        record.ownerLeaseId = null
+      }
+    }
+    return cleanup
   }
 
   async disconnect(record: BluezConnectionRecord): Promise<CleanupRecord> {
     return disconnectBluezConnection(this, record, () => this.invalidateConnection(record, 'operation.disconnected'))
+  }
+
+  trackConnectionOperation<Result>(
+    record: BluezConnectionRecord,
+    dispatch: BluezOperationDispatch<Result>,
+    operationName: string
+  ): BluezOperationDispatch<Result> {
+    const pending = { operationName, physicalSettlement: dispatch.physicalSettlement }
+    record.pendingOperations.set(dispatch.handle, pending)
+    dispatch.physicalSettlement.then(() => {
+      if (record.pendingOperations.get(dispatch.handle) === pending) {
+        record.pendingOperations.delete(dispatch.handle)
+      }
+    })
+    return dispatch
+  }
+
+  connectionRecordForConnectionId(connectionId: string): BluezConnectionRecord | null {
+    for (const record of this.connectionRecords.values()) {
+      if (record.connection !== null && String(record.connection.connectionId) === connectionId) {
+        return record
+      }
+    }
+    return null
+  }
+
+  trackConnectionOperationForPeer<Result>(
+    peerId: string,
+    dispatch: BluezOperationDispatch<Result>,
+    operationName: string
+  ): BluezOperationDispatch<Result> {
+    const record = [...this.connectionRecords.values()].find(candidate => String(candidate.peerId) === peerId)
+    return record === undefined ? dispatch : this.trackConnectionOperation(record, dispatch, operationName)
+  }
+
+  trackConnectionOperationForPath<Result>(
+    path:
+      | CharacteristicPath<string, string, string, string, string, 'current'>
+      | DescriptorPath<string, string, string, string, string, string, 'current'>,
+    dispatch: BluezOperationDispatch<Result>,
+    operationName: string
+  ): BluezOperationDispatch<Result> {
+    return this.trackConnectionOperation(
+      this.requireDatabaseForPath(path, operationName).record,
+      dispatch,
+      operationName
+    )
   }
 
   async readCharacteristic(
@@ -564,22 +618,28 @@ export class BluezBackendRuntime implements BluezObjectStoreObserver {
     request: SubscribeRequest<string, string>
   ): BackendOperationDispatch<string, BluezBackendSubscription> {
     const database = this.requireDatabaseForPath(path, 'bluez.gatt.subscribe')
-    return this.dispatcher.dispatch(request.operation, 'bluez.gatt.subscribe', () =>
+    const dispatch = this.dispatcher.dispatch(request.operation, 'bluez.gatt.subscribe', () =>
       this.subscribe(database, path, request.options, request.operation.correlation)
     )
+    return this.trackConnectionOperation(database.record, dispatch, 'bluez.gatt.subscribe')
   }
 
   private unsubscribeDispatch(
     subscription: import('../../backend-contract/backend').BackendSubscription<string, string, string, string, string>,
     operation: OperationOptions<string, string>
   ): BackendOperationDispatch<string, OperationTerminalRecord<string, string>> {
-    return this.dispatcher.dispatch(operation, 'bluez.gatt.unsubscribe', async () => {
+    const dispatch = this.dispatcher.dispatch(operation, 'bluez.gatt.unsubscribe', async () => {
       if (!(subscription instanceof BluezBackendSubscription)) {
         throw contractError('ownership.denied', 'gatt', 'bluez.gatt.unsubscribe')
       }
       await subscription.remove()
       return successfulTerminal(operation)
     })
+    if (!(subscription instanceof BluezBackendSubscription) || !subscription.isOwnedBy(this)) {
+      return dispatch
+    }
+    const record = this.connectionRecordForConnectionId(String(subscription.path.connectionId))
+    return record === null ? dispatch : this.trackConnectionOperation(record, dispatch, 'bluez.gatt.unsubscribe')
   }
 
   emitAdvertisementForPath(path: string): void {
@@ -647,7 +707,9 @@ export class BluezBackendRuntime implements BluezObjectStoreObserver {
   }
 
   private requireDatabaseForPath(
-    path: CharacteristicPath<string, string, string, string, string, 'current'>,
+    path:
+      | CharacteristicPath<string, string, string, string, string, 'current'>
+      | DescriptorPath<string, string, string, string, string, string, 'current'>,
     operation: string
   ): BluezGattDatabase {
     for (const record of this.connectionRecords.values()) {

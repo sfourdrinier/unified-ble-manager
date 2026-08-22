@@ -417,4 +417,8 @@ export class BluezBackendSubscription
   remove(): Promise<CleanupRecord> {
     return this.runtime.removeSubscription(this.record)
   }
+
+  isOwnedBy(runtime: BluezBackendRuntime): boolean {
+    return this.runtime === runtime
+  }
 }

@@ -84,7 +84,12 @@ export class WinRtOperationDispatcher {
       if (observedCompletion.completion !== null) {
         this.containPromiseRejection(observedCompletion.completion)
       }
-      return this.rejectedDispatch(handle, this.asError(error, operationName))
+      const physicalSettlement =
+        observedCompletion.completion?.then(
+          () => undefined,
+          () => undefined
+        ) ?? Promise.resolve()
+      return this.rejectedDispatch(handle, this.asError(error, operationName), physicalSettlement)
     }
     let resolvePublic: (value: Result) => void = () => undefined
     let rejectPublic: (reason: Error) => void = () => undefined
@@ -202,11 +207,11 @@ export class WinRtOperationDispatcher {
 
   private rejectedDispatch<Result>(
     handle: BackendOperationHandle<string, string>,
-    error: Error
+    error: Error,
+    physicalSettlement: Promise<void> = Promise.resolve()
   ): WinRtOperationDispatch<Result> {
     const completion = Promise.reject<Result>(error)
     this.containPromiseRejection(completion)
-    const physicalSettlement = Promise.resolve()
     const dispatch = createBackendOperationDispatch(
       handle,
       completion,

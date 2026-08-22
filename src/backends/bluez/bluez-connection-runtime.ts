@@ -15,6 +15,8 @@ import {
 } from './bluez-property-waiters'
 import type { BluezConnectionRecord } from './bluez-runtime-types'
 
+const CONNECTION_OPERATION_DRAIN_TIMEOUT_MS = 1_000
+
 export async function connectBluezConnection(
   runtime: BluezBackendRuntime,
   peerId: PeerId<string>,
@@ -137,11 +139,14 @@ export async function disconnectBluezConnection(
   if (record.disconnection !== null) {
     return record.disconnection
   }
-  record.state = 'disconnecting'
   const disconnect = disconnectBluezPhysicalLink(runtime, record, invalidate)
   record.disconnection = disconnect
   try {
-    return await disconnect
+    const cleanup = await disconnect
+    if (cleanup.state === 'release-failed' && record.disconnection === disconnect) {
+      record.disconnection = null
+    }
+    return cleanup
   } catch (error) {
     if (record.disconnection === disconnect) {
       record.disconnection = null
@@ -155,6 +160,10 @@ async function disconnectBluezPhysicalLink(
   record: BluezConnectionRecord,
   invalidate: () => void
 ): Promise<CleanupRecord> {
+  if (!(await waitForBluezConnectionOperations(runtime, record))) {
+    return pendingBluezConnectionCleanup()
+  }
+  record.state = 'disconnecting'
   try {
     await runtime.boundary.methods.callVoid(record.devicePath, BLUEZ_DEVICE_INTERFACE, 'Disconnect', [])
     await waitForBluezBoolean(runtime, record.devicePath, BLUEZ_DEVICE_INTERFACE, 'Connected', false, {
@@ -173,4 +182,45 @@ async function disconnectBluezPhysicalLink(
   }
   invalidate()
   return releasedBluezCleanup
+}
+
+async function waitForBluezConnectionOperations(
+  runtime: BluezBackendRuntime,
+  record: BluezConnectionRecord
+): Promise<boolean> {
+  if (record.pendingOperations.size === 0) {
+    return true
+  }
+  const deadline = runtime.now() + CONNECTION_OPERATION_DRAIN_TIMEOUT_MS
+  while (record.pendingOperations.size > 0) {
+    const pending = [...record.pendingOperations.values()]
+    const remaining = Math.max(0, deadline - runtime.now())
+    let timer: ReturnType<typeof setTimeout> | null = null
+    const timeout = new Promise<boolean>(resolve => {
+      timer = setTimeout(() => resolve(false), remaining)
+    })
+    const settled = await Promise.race([
+      Promise.all(pending.map(operation => operation.physicalSettlement)).then(() => true),
+      timeout
+    ])
+    if (timer !== null) {
+      clearTimeout(timer)
+    }
+    if (!settled) {
+      return false
+    }
+  }
+  return true
+}
+
+function pendingBluezConnectionCleanup(): CleanupRecord {
+  return Object.freeze({
+    state: 'release-failed',
+    failures: Object.freeze([
+      {
+        resourceKind: 'connection',
+        error: contractError('operation.timed-out', 'cleanup', 'bluez.connection.dispatcher-idle').normalized
+      }
+    ])
+  })
 }

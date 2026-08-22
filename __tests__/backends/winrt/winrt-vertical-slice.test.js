@@ -738,6 +738,32 @@ async function connectedDatabaseFixture(scope) {
   return { backend, boundary, lease, database, snapshot }
 }
 
+async function managerFixture() {
+  let boundary = null
+  const provider = createWinRtBackendProvider({
+    boundaryFactory: () => {
+      boundary = new DeterministicWinRtBoundary()
+      return boundary
+    },
+    now: () => 20,
+    hostKind: 'node'
+  })
+  const manager = await createBleManagerFromProvider(
+    {
+      provider,
+      selection: { selectedAdapterId: selectedAdapterId() },
+      coreCompatibility: compatibility(),
+      manager: {
+        clientId: opaqueId('core-quarantine-client', 'client', 'winrt:core-quarantine'),
+        managerId: opaqueId('core-quarantine-manager', 'manager', 'winrt:core-quarantine'),
+        ownerMode: 'owning'
+      }
+    },
+    { ...DEFAULT_BLE_MANAGER_OPTIONS, now: () => 20 }
+  )
+  return { manager, backend: manager.attachedBackend.backend, boundary }
+}
+
 describe('WinRT contract-v2 deterministic native-boundary vertical slice', () => {
   test('releases closed backend-event and adapter-watch streams from native fan-out ownership', async () => {
     const { backend } = await backendFixture()
@@ -2540,6 +2566,76 @@ describe('WinRT contract-v2 deterministic native-boundary vertical slice', () =>
     expectConsoleInfo('[WinRtBackend] Late WinRT completion quarantined: winrt.gatt.read')
     expect(boundary.destroyed).toBe(true)
     expect(Object.values(backend.resourceCounters()).every(value => Number(value) === 0)).toBe(true)
+  })
+
+  test('retains the physical connection when core quarantine times out before native GATT settlement', async () => {
+    jest.useFakeTimers()
+    let manager = null
+    let release = null
+    const readGate = deferred()
+    try {
+      const fixture = await managerFixture()
+      manager = fixture.manager
+      const { backend, boundary } = fixture
+      const peerId = await observedPeerId(backend, boundary)
+      const connection = await manager.connect(peerId, operation())
+      const database = await connection.discover(operation())
+      const characteristic = (await database.snapshot()).characteristics[0].path
+      boundary.readGate = readGate.promise
+
+      const read = database.read(characteristic, operation())
+      await flushMicrotasks()
+      expect(backend.resourceCounters()).toMatchObject({ dispatchedOperations: 1 })
+
+      release = connection.release()
+      await expect(read).rejects.toMatchObject({ normalized: { code: 'operation.disconnected' } })
+      jest.runOnlyPendingTimers()
+      await flushMicrotasks()
+
+      expect(boundary.disconnectCalls).toBe(0)
+      let releaseResult = null
+      release.then(result => {
+        releaseResult = result
+      })
+      await flushMicrotasks()
+      expect(releaseResult).toBeNull()
+      jest.runOnlyPendingTimers()
+      await flushMicrotasks()
+      expect(releaseResult).toMatchObject({
+        state: 'release-failed',
+        failures: expect.arrayContaining([
+          expect.objectContaining({
+            resourceKind: 'operation-quarantine',
+            error: expect.objectContaining({ code: 'operation.timed-out', domain: 'cleanup' })
+          }),
+          expect.objectContaining({
+            resourceKind: 'connection',
+            error: expect.objectContaining({ code: 'operation.timed-out', domain: 'cleanup' })
+          })
+        ])
+      })
+      expect(backend.resourceCounters()).toMatchObject({
+        physicalLinks: 1,
+        connectionLeases: 1,
+        dispatchedOperations: 1
+      })
+
+      readGate.resolve(new Uint8Array([4, 2]))
+      await flushMicrotasks()
+      expectConsoleInfo('[WinRtBackend] Late WinRT completion quarantined: winrt.gatt.read')
+      await expect(connection.release()).resolves.toEqual({ state: 'released', failures: [] })
+      expect(boundary.disconnectCalls).toBe(1)
+      expect(backend.resourceCounters()).toMatchObject({
+        physicalLinks: 0,
+        connectionLeases: 0,
+        dispatchedOperations: 0
+      })
+    } finally {
+      readGate.resolve(new Uint8Array([4, 2]))
+      if (release !== null) await release.catch(() => undefined)
+      if (manager !== null) await manager.destroy()
+      jest.useRealTimers()
+    }
   })
 
   test.each([

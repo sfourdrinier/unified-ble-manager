@@ -117,6 +117,7 @@ const adapterStateLimits = Object.freeze({
   byteCapacity: capacity(16 * 1024),
   reservedControlCapacity: capacity(1)
 })
+const CONNECTION_OPERATION_DRAIN_TIMEOUT_MS = 1_000
 
 function createWinRtFeatureRegistry(securityAvailable: boolean): FeatureRegistry {
   const registrations = [
@@ -147,6 +148,18 @@ function createWinRtFeatureRegistry(securityAvailable: boolean): FeatureRegistry
     )
   }
   return createFeatureRegistry(registrations)
+}
+
+function pendingWinRtConnectionCleanup(): CleanupRecord {
+  return Object.freeze({
+    state: 'release-failed',
+    failures: Object.freeze([
+      {
+        resourceKind: 'connection',
+        error: contractError('operation.timed-out', 'cleanup', 'winrt.connection.dispatcher-idle').normalized
+      }
+    ])
+  })
 }
 
 /** Removes backend-owned fan-out streams as soon as their consumer closes or they terminalize. */
@@ -728,6 +741,12 @@ export class WinRtBackend implements BleCentralBackend<string, HostNeutralBacken
       'owner-released',
       contractError('operation.disconnected', 'gatt', 'winrt.gatt.subscribe.connection-release')
     )
+    if (!(await this.waitForConnectionOperationsBeforeDisconnect(record))) {
+      if (record.state === 'disconnecting') {
+        record.state = 'connected'
+      }
+      return combineWinRtCleanup(invalidation, pendingWinRtConnectionCleanup())
+    }
     if (nativeDisconnectRequired) {
       let native: WinRtAsyncOperation<void>
       try {
@@ -1502,9 +1521,38 @@ export class WinRtBackend implements BleCentralBackend<string, HostNeutralBacken
   }
 
   private async waitForConnectionOperations(record: WinRtConnectionRecord): Promise<void> {
-    for (const operation of [...record.pendingOperations.values()]) {
+    for (const [handle, operation] of [...record.pendingOperations]) {
       await operation.physicalSettlement
+      if (record.pendingOperations.get(handle) === operation) {
+        record.pendingOperations.delete(handle)
+      }
     }
+  }
+
+  private async waitForConnectionOperationsBeforeDisconnect(record: WinRtConnectionRecord): Promise<boolean> {
+    if (record.pendingOperations.size === 0) {
+      return true
+    }
+    const deadline = this.now() + CONNECTION_OPERATION_DRAIN_TIMEOUT_MS
+    while (record.pendingOperations.size > 0) {
+      const pending = [...record.pendingOperations.values()]
+      const remaining = Math.max(0, deadline - this.now())
+      let timer: ReturnType<typeof setTimeout> | null = null
+      const timeout = new Promise<boolean>(resolve => {
+        timer = setTimeout(() => resolve(false), remaining)
+      })
+      const settled = await Promise.race([
+        Promise.all(pending.map(operation => operation.physicalSettlement)).then(() => true),
+        timeout
+      ])
+      if (timer !== null) {
+        clearTimeout(timer)
+      }
+      if (!settled) {
+        return false
+      }
+    }
+    return true
   }
 
   private handleDatabaseChanged(event: WinRtDatabaseChangedRecord): void {
@@ -1826,6 +1874,7 @@ export class WinRtBackend implements BleCentralBackend<string, HostNeutralBacken
       await adapterLossCleanup
     }
     await this.dispatcher.waitForIdle()
+    await Promise.resolve()
     const group = this.scanGroup
     if (group !== null) {
       for (const consumer of group.consumers.values()) {
@@ -1858,6 +1907,7 @@ export class WinRtBackend implements BleCentralBackend<string, HostNeutralBacken
       failures.push(...(await cleanup).failures)
     }
     for (const record of [...this.connectionsByNativeId.values()]) {
+      await this.waitForConnectionOperations(record)
       failures.push(...(await this.disconnect(record, 'winrt.destroy.connection')).failures)
     }
     const nonZeroCounters = Object.entries(this.resourceCounters()).filter(([, value]) => Number(value) !== 0)

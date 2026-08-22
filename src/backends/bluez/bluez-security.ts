@@ -122,34 +122,38 @@ export class BluezSecurityBackend implements SecurityBackend {
     const controller = new AbortController()
     let pairCallStarted = false
     let pairCallSettled = false
-    const dispatch = this.runtime.dispatcher.dispatch<SecurityPairResult>(
-      { signal: options.signal, deadline: options.deadline },
-      'bluez.security.pair',
-      async () => {
-        if (controller.signal.aborted) {
-          throw contractError('operation.aborted', 'core', 'bluez.security.pair')
+    const dispatch = this.runtime.trackConnectionOperationForPeer(
+      peerId,
+      this.runtime.dispatcher.dispatch<SecurityPairResult>(
+        { signal: options.signal, deadline: options.deadline },
+        'bluez.security.pair',
+        async () => {
+          if (controller.signal.aborted) {
+            throw contractError('operation.aborted', 'core', 'bluez.security.pair')
+          }
+          if (options.deadline !== null && options.deadline <= this.runtime.now()) {
+            throw contractError('operation.timed-out', 'core', 'bluez.security.pair')
+          }
+          pairCallStarted = true
+          try {
+            await this.runtime.boundary.methods.callVoid(path, BLUEZ_DEVICE_INTERFACE, 'Pair', [])
+          } finally {
+            pairCallSettled = true
+          }
+          await waitForBluezBoolean(this.runtime, path, BLUEZ_DEVICE_INTERFACE, 'Paired', true, {
+            signal: controller.signal,
+            deadline: options.deadline
+          })
+          return { outcome: 'paired', state: this.readState(peerId) }
+        },
+        async () => {
+          controller.abort()
+          if (pairCallStarted && !pairCallSettled) {
+            await this.cancelNativePairing(path)
+          }
         }
-        if (options.deadline !== null && options.deadline <= this.runtime.now()) {
-          throw contractError('operation.timed-out', 'core', 'bluez.security.pair')
-        }
-        pairCallStarted = true
-        try {
-          await this.runtime.boundary.methods.callVoid(path, BLUEZ_DEVICE_INTERFACE, 'Pair', [])
-        } finally {
-          pairCallSettled = true
-        }
-        await waitForBluezBoolean(this.runtime, path, BLUEZ_DEVICE_INTERFACE, 'Paired', true, {
-          signal: controller.signal,
-          deadline: options.deadline
-        })
-        return { outcome: 'paired', state: this.readState(peerId) }
-      },
-      async () => {
-        controller.abort()
-        if (pairCallStarted && !pairCallSettled) {
-          await this.cancelNativePairing(path)
-        }
-      }
+      ),
+      'bluez.security.pair'
     )
     const operation = dispatch.completion.catch(error => {
       if (
@@ -181,10 +185,9 @@ export class BluezSecurityBackend implements SecurityBackend {
 
   async unpair(peerId: string, _options: PublicOperationOptions): Promise<SecurityUnpairResult> {
     this.runtime.assertUsable('bluez.security.unpair')
-    const dispatch = this.runtime.dispatcher.dispatch<SecurityUnpairResult>(
-      _options,
-      'bluez.security.unpair',
-      async () => {
+    const dispatch = this.runtime.trackConnectionOperationForPeer(
+      peerId,
+      this.runtime.dispatcher.dispatch<SecurityUnpairResult>(_options, 'bluez.security.unpair', async () => {
         const current = this.readState(peerId)
         if (current.bond !== 'bonded') return { outcome: 'already-unpaired' }
         const path = this.runtime.devicePathForPeer(peerId)
@@ -194,7 +197,8 @@ export class BluezSecurityBackend implements SecurityBackend {
         ])
         this.runtime.removePeerPath(peerId)
         return { outcome: 'unpaired' }
-      }
+      }),
+      'bluez.security.unpair'
     )
     return dispatch.completion
   }
