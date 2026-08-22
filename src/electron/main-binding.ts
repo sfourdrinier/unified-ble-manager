@@ -986,7 +986,8 @@ function trustedSendersEqual(left: TrustedIpcSender<string, string>, right: Trus
   return (
     left.authenticatedClientId === right.authenticatedClientId &&
     left.authenticatedWindowScope === right.authenticatedWindowScope &&
-    left.authenticatedSessionScope === right.authenticatedSessionScope
+    left.authenticatedSessionScope === right.authenticatedSessionScope &&
+    securityPermissionsEqual(left.securityPermissions, right.securityPermissions)
   )
 }
 
@@ -994,8 +995,18 @@ function snapshotTrustedSender(trusted: TrustedIpcSender<string, string>): Trust
   return Object.freeze({
     authenticatedClientId: trusted.authenticatedClientId,
     authenticatedWindowScope: trusted.authenticatedWindowScope,
-    authenticatedSessionScope: trusted.authenticatedSessionScope
+    authenticatedSessionScope: trusted.authenticatedSessionScope,
+    securityPermissions: Object.freeze([...(trusted.securityPermissions ?? [])])
   })
+}
+
+function securityPermissionsEqual(left: readonly string[] | undefined, right: readonly string[] | undefined): boolean {
+  const leftPermissions = left ?? []
+  const rightPermissions = right ?? []
+  return (
+    leftPermissions.length === rightPermissions.length &&
+    leftPermissions.every(permission => rightPermissions.includes(permission))
+  )
 }
 
 function rendererLeaseForRequest(
