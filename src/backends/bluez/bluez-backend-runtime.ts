@@ -36,6 +36,7 @@ import {
   type AttachmentBinding,
   type BackendInstanceId,
   type ClientId,
+  type LeaseId,
   type MonotonicTimestamp,
   type OperationCorrelation,
   type OwnedBytes,
@@ -249,7 +250,7 @@ export class BluezBackendRuntime implements BluezObjectStoreObserver {
     let subscriptionConsumers = 0
     let retainedByteBuffers = 0
     for (const physical of this.physicalSubscriptions.values()) {
-      subscriptionConsumers += physical.consumers.size
+      subscriptionConsumers += physical.consumers.size + physical.pendingRemovals.size
       for (const consumer of physical.consumers) {
         retainedByteBuffers += consumer.stream.retainedPayloadBytes()
       }
@@ -279,7 +280,18 @@ export class BluezBackendRuntime implements BluezObjectStoreObserver {
     if (this.destroyResult !== null) {
       return this.destroyResult
     }
-    this.destroyResult = this.destroyInternal()
+    this.destroyResult = this.destroyInternal().then(
+      cleanup => {
+        if (cleanup.state === 'release-failed') {
+          this.destroyResult = null
+        }
+        return cleanup
+      },
+      error => {
+        this.destroyResult = null
+        throw error
+      }
+    )
     return this.destroyResult
   }
 
@@ -357,12 +369,12 @@ export class BluezBackendRuntime implements BluezObjectStoreObserver {
   async releaseConnectionLease(lease: BluezConnectionLease): Promise<CleanupRecord> {
     const record = lease.record
     if (record.leases.size > 1) {
+      await this.releaseLeaseSubscriptions(lease.leaseId)
+      if (record.ownerLeaseId === lease.leaseId) {
+        this.invalidateRecordDatabases(record)
+      }
       record.leases.delete(lease)
       if (record.ownerLeaseId === lease.leaseId) {
-        for (const database of record.databases) {
-          database.invalidate()
-        }
-        record.currentDatabase = null
         record.ownerLeaseId = record.leases.values().next().value?.leaseId ?? null
       }
       return releasedBluezCleanup
@@ -375,6 +387,17 @@ export class BluezBackendRuntime implements BluezObjectStoreObserver {
       }
     }
     return cleanup
+  }
+
+  private async releaseLeaseSubscriptions(leaseId: LeaseId<string, string>): Promise<void> {
+    for (const physical of this.physicalSubscriptions.values()) {
+      for (const subscription of [...physical.consumers, ...physical.pendingRemovals]) {
+        if (subscription.ownerLeaseId !== leaseId) {
+          continue
+        }
+        await removeBluezSubscription(this, subscription)
+      }
+    }
   }
 
   async disconnect(record: BluezConnectionRecord): Promise<CleanupRecord> {
@@ -578,7 +601,7 @@ export class BluezBackendRuntime implements BluezObjectStoreObserver {
     }
     const snapshot = createGattSnapshot(this.store.snapshot(), record.devicePath)
     if (record.currentDatabase !== null) {
-      record.currentDatabase.invalidate()
+      this.invalidateDatabase(record, record.currentDatabase)
     }
     const ids = this.identifiers()
     const generation = record.nextDatabaseGeneration
@@ -737,10 +760,7 @@ export class BluezBackendRuntime implements BluezObjectStoreObserver {
     record.active = false
     record.physicalLinkMayExist = false
     record.state = cause === 'connection.lost' ? 'lost' : 'disconnected'
-    for (const database of record.databases) {
-      database.invalidate()
-    }
-    record.currentDatabase = null
+    this.invalidateRecordDatabases(record)
     rejectBluezPathTreeWaiters(this, record.devicePath, 'operation.disconnected')
     for (const [objectPath, physical] of [...this.physicalSubscriptions]) {
       if (objectPath.startsWith(`${record.devicePath}/`)) {
@@ -748,7 +768,9 @@ export class BluezBackendRuntime implements BluezObjectStoreObserver {
           consumer.stream.closeWithReason('connection-lost')
           consumer.removed = true
         }
-        this.physicalSubscriptions.delete(objectPath)
+        if (!this.isDestroying()) {
+          this.physicalSubscriptions.delete(objectPath)
+        }
       }
     }
     if (this.connectionRecords.get(record.devicePath) === record) {
@@ -779,8 +801,7 @@ export class BluezBackendRuntime implements BluezObjectStoreObserver {
     if (database === null) {
       return
     }
-    database.invalidate()
-    record.currentDatabase = null
+    this.invalidateDatabase(record, database)
     rejectBluezPathTreeWaiters(this, record.devicePath, 'operation.disconnected')
     for (const [objectPath, physical] of [...this.physicalSubscriptions]) {
       if (!objectPath.startsWith(`${record.devicePath}/`)) {
@@ -806,6 +827,22 @@ export class BluezBackendRuntime implements BluezObjectStoreObserver {
       ingressOrdinal: this.ingressOrdinal
     })
     this.ingressOrdinal += 1
+  }
+
+  private invalidateDatabase(record: BluezConnectionRecord, database: BluezGattDatabase): void {
+    database.invalidate()
+    record.databases.delete(database)
+    if (record.currentDatabase === database) {
+      record.currentDatabase = null
+    }
+  }
+
+  private invalidateRecordDatabases(record: BluezConnectionRecord): void {
+    for (const database of [...record.databases]) {
+      database.invalidate()
+      record.databases.delete(database)
+    }
+    record.currentDatabase = null
   }
 
   private connectionPathFor(record: BluezConnectionRecord): ConnectionPath<string, string> | null {
@@ -960,6 +997,9 @@ export class BluezBackendRuntime implements BluezObjectStoreObserver {
           ...(await captureCleanup(this.disconnect(record), 'connection', 'bluez.destroy.connection')).failures
         )
       }
+    }
+    if (failures.length > 0) {
+      return Object.freeze({ state: 'release-failed', failures: Object.freeze(failures) })
     }
     for (const waiter of [...this.waiters]) {
       waiter.reject(contractError('operation.cancelled-by-destroy', 'core', `bluez.destroy.${waiter.property}`))

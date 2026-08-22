@@ -70,6 +70,7 @@ export interface BluezConnectionRecord {
   currentDatabase: BluezGattDatabase | null
   transition: Promise<void> | null
   disconnection: Promise<CleanupRecord> | null
+  disconnectRequested: boolean
   pendingConnectors: number
   orphanCleanupScheduled: boolean
 }
@@ -106,6 +107,7 @@ export interface BluezGattSnapshotRecord {
 export interface BluezPhysicalSubscription {
   readonly objectPath: string
   readonly consumers: Set<BluezSubscriptionRecord>
+  readonly pendingRemovals: Set<BluezSubscriptionRecord>
   pendingConsumers: number
   state: 'enabling' | 'ready' | 'removing'
   readonly startMethod: Promise<void>
@@ -115,6 +117,7 @@ export interface BluezPhysicalSubscription {
 
 export interface BluezSubscriptionRecord {
   readonly subscriptionId: SubscriptionId<string, string, string, string, string, string>
+  readonly ownerLeaseId: LeaseId<string, string>
   readonly stream: CoreBoundedStream<NotificationValue>
   readonly terminal: OperationTerminalRecord<string, string>
   readonly physical: BluezPhysicalSubscription

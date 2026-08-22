@@ -271,10 +271,11 @@ async function failBluezScanStartup(
       console.error('[startBluezScan] Failed to clear the BlueZ discovery filter after start failure:', cleanupError)
     }
   }
-  releaseFailedScanStartup(runtime, group, consumer)
   if (cleanupErrors.length > 0) {
+    retainFailedScanStartup(runtime, group, consumer)
     throw new AggregateError([primaryError, ...cleanupErrors], 'BlueZ scan start and cleanup both failed')
   }
+  releaseFailedScanStartup(runtime, group, consumer)
   throw primaryError
 }
 
@@ -286,8 +287,33 @@ function releaseFailedScanStartup(
   if (consumer.abort !== null) {
     consumer.options.signal?.removeEventListener('abort', consumer.abort)
   }
+  if (consumer.deadlineTimer !== null) {
+    clearTimeout(consumer.deadlineTimer)
+    consumer.deadlineTimer = null
+  }
   if (runtime.scanGroup === group) {
     runtime.scanGroup = null
+  }
+  consumer.stream.closeWithReason('owner-released')
+  group.startupComplete = true
+  group.settleStartup()
+}
+
+function retainFailedScanStartup(
+  runtime: BluezBackendRuntime,
+  group: BluezScanGroup,
+  consumer: BluezScanConsumer
+): void {
+  if (consumer.abort !== null) {
+    consumer.options.signal?.removeEventListener('abort', consumer.abort)
+  }
+  if (consumer.deadlineTimer !== null) {
+    clearTimeout(consumer.deadlineTimer)
+    consumer.deadlineTimer = null
+  }
+  if (runtime.scanGroup === group) {
+    group.state = 'active'
+    group.stopRequested = true
   }
   consumer.stream.closeWithReason('owner-released')
   group.startupComplete = true

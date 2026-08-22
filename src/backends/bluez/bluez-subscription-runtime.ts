@@ -88,6 +88,7 @@ export async function subscribeBluez(
   const stream = new CoreBoundedStream<NotificationValue>(options.delivery, options.delivery.overflowPolicy)
   const record: BluezSubscriptionRecord = {
     subscriptionId,
+    ownerLeaseId: path.ownerLeaseId,
     stream,
     terminal: Object.freeze({
       correlation:
@@ -108,9 +109,18 @@ export async function removeBluezSubscription(
   record: BluezSubscriptionRecord
 ): Promise<CleanupRecord> {
   if (record.removed) {
-    return releasedBluezCleanup
+    if (!record.physical.pendingRemovals.has(record)) {
+      return releasedBluezCleanup
+    }
   }
   const physical = record.physical
+  if (physical.pendingRemovals.has(record)) {
+    const removal = physical.removal ?? beginBluezPhysicalRemoval(runtime, physical)
+    await removal
+    physical.pendingRemovals.delete(record)
+    record.removed = true
+    return releasedBluezCleanup
+  }
   record.stream.closeWithReason('owner-released')
   physical.consumers.delete(record)
   if (physical.consumers.size > 0) {
@@ -124,7 +134,9 @@ export async function removeBluezSubscription(
   if (removal === null) {
     throw new Error('BlueZ notification removal transition was not installed')
   }
+  physical.pendingRemovals.add(record)
   const cleanup = await removal
+  physical.pendingRemovals.delete(record)
   record.removed = true
   return cleanup
 }
@@ -208,6 +220,7 @@ function createBluezPhysicalSubscription(runtime: BluezBackendRuntime, objectPat
   const created: BluezPhysicalSubscription = {
     objectPath,
     consumers: new Set(),
+    pendingRemovals: new Set(),
     pendingConsumers: 0,
     state: 'enabling',
     startMethod,
