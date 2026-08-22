@@ -309,9 +309,10 @@ PR6 to a release claim by itself.
 
 ## PR8 current checkpoint
 
-The current PR8 branch is `feat/4.0-link-controls` at `fd4e1d9`, with the
-readiness implementation committed in `0626c51` and the cumulative package
-gate reverified afterward.
+The current PR8 branch is `feat/4.0-link-controls` at `56b56b2`, with the
+readiness implementation committed in `0626c51`, the latest readiness/docs
+follow-ups in its descendants, and the cumulative package gate reverified
+afterward.
 
 | Area | Current evidence | Disposition |
 | --- | --- | --- |
@@ -323,5 +324,5 @@ gate reverified afterward.
 | Local package gate | `pnpm test:package`: 129 suites / 1,199 tests; docs/API, native protocol, artifact, and smell checks included | Green locally |
 | Native/plugin gates | CoreBluetooth macOS Node-API build, native protocol host, plugin 36/36, release artifacts, typecheck/lint | Green locally; Android/Windows hosted qualification remains required |
 | Packed consumer gate | Local npm pack smoke still encounters npm `Exit handler never called!` | Hosted supported-Node proof required |
-| Performance baselines | Existing benchmark suite passes, but the complete PR8 baseline set is not yet artifact-bound | Blocking before RC3 |
+| Performance baselines | Deterministic baseline `unified-ble-pr8-deterministic-performance-v1`: 23 measurements / 15 categories, including all ten PR8 IDs, bounded cleanup and ownership metadata | Deterministic baseline fixed; live/native comparison remains a PR12 gate |
 | Review/release | No PR8 GitHub PR, Copilot/Codex review rounds, merge, or RC3 tag yet | Blocking; RC2 remains immutable |
