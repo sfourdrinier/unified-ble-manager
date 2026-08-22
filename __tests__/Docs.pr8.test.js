@@ -173,12 +173,50 @@ describe('PR8 documentation contract', () => {
   test('generated HTML does not present internal implementation symbols as root API', () => {
     const html = read('docs/index.html')
     expect(html).toContain('id="public-api"')
+    const publicApi = html.slice(
+      html.indexOf('<h2 id="public-api"'),
+      html.indexOf('</section>', html.indexOf('<h2 id="public-api"'))
+    )
     for (const internalSymbol of [
       'createBackendOperationCapabilityRegistration',
       'normalizeOperationOptions',
       'CoreBoundedStream'
     ]) {
-      expect(html).not.toContain(internalSymbol)
+      expect(publicApi).not.toContain(internalSymbol)
     }
+    expect(publicApi).not.toContain('unified-ble-manager/advanced')
+    expect(html).toContain('backend authors can use the typed helpers under <code>/advanced</code>')
+  })
+
+  test('marks historical Expo restoration schema as a non-copyable fixture in Markdown and generated HTML', () => {
+    const markdown = read('docs/EXPO_PLUGIN.md')
+    const html = read('docs/index.html')
+
+    expect(markdown).toContain('DO NOT COPY: HISTORICAL CONTRACT-TEST FIXTURE ONLY')
+    expect(markdown).toContain('not supported application configuration')
+    expect(html).toMatch(/<strong>DO NOT COPY: HISTORICAL CONTRACT-TEST FIXTURE ONLY\.<\/strong>/)
+    expect(html).toMatch(/not supported\s+application configuration/)
+  })
+
+  test('labels provider construction as maintainer or host-authoring reference', () => {
+    const node = read('docs/NODE.md')
+    const electron = read('docs/ELECTRON.md')
+    const profiles = read('docs/PROFILES_AND_COMMANDS.md')
+
+    expect(node).toContain('Maintainer/host-authoring reference — not ordinary application construction')
+    expect(electron).toContain('Maintainer/host-authoring reference — not ordinary application construction')
+    expect(profiles).toContain('Advanced/path-oriented reference — not root or ordinary application construction')
+    expect(profiles).toContain("from 'unified-ble-manager/advanced'")
+  })
+
+  test('Expo API report prose matches the current environment-only overload', () => {
+    const report = read('etc/api/expo.api.md')
+
+    expect(report).toContain(
+      'export function createExpoBleManagerWithEnvironment(environment: ReactNativeBleManagerOptions): Promise<BleManager>'
+    )
+    expect(report).not.toContain(
+      'export function createExpoBleManagerWithEnvironment(environment: unknown, options?: BleManagerCreateOptions): Promise<BleManager>'
+    )
   })
 })

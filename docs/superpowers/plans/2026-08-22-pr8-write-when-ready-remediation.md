@@ -130,8 +130,12 @@ commits and must be rerun at the final pushed SHA before merge.
 The native-operation quarantine and adapter-loss follow-up slices are also
 committed: physical settlement is `2edb3ea`, and adapter-loss fail-closed
 cleanup is `ed83e8a`. The generated documentation/public-boundary slice is
-`95494e1`; local package and focused CoreBluetooth gates are green. The hosted
-run remains bound to `046b764` until the final branch tip is pushed.
+`95494e1`; local package and focused CoreBluetooth gates are green. The later
+runtime hardening commits are `762c00f` (canonical physical settlement),
+`947f479` (changed-observation preservation), and `5f29080` (CoreBluetooth
+connection idle barrier), plus the explicit Expo ESM import fix in `14850ff`.
+The hosted run remains bound to `046b764` until the
+final branch tip is pushed.
 
 - [x] **Step 2: Verify scope and report exact evidence**
 

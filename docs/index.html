@@ -304,11 +304,10 @@
             <h1>Profiles, codecs, and GATT commands</h1>
             <blockquote>
               <p>
-                Status: this page retains advanced/path-oriented authoring reference material. Application code should
-                follow the object-based <code>GattDatabase</code> and <code>GattCharacteristic</code> recipes in
-                <a href="HELPERS.md"><code>HELPERS.md</code></a
-                >. The older <code>deadline()</code>/<code>capacity()</code>/<code>firstNotification()</code> snippets
-                below are not the application façade and are not a current root-import recipe.
+                Application code should follow the object-based <code>GattDatabase</code> and
+                <code>GattCharacteristic</code> recipes in <a href="HELPERS.md"><code>HELPERS.md</code></a
+                >. The advanced/path-oriented snippets below are not the application façade and are not a current
+                root-import recipe.
               </p>
             </blockquote>
             <p>
@@ -372,6 +371,15 @@
             <p>
               The old camel-cased profile modules are not package exports and are not a supported 4.0 import surface.
             </p>
+            <h2>Advanced/path-oriented reference — not root or ordinary application construction</h2>
+            <blockquote>
+              <p>
+                <strong>Advanced/path-oriented reference — not root or ordinary application construction.</strong> The
+                following helpers operate on generation-bound paths and branded budgets. Keep them in maintainer,
+                host-authoring, or specialized integration code; use the object-based application recipes for ordinary
+                consumers.
+              </p>
+            </blockquote>
             <h2>Canonical GATT path selection</h2>
             <p>
               Bluetooth peripherals may contain repeated services or repeated characteristics with the same UUID. A UUID
@@ -494,34 +502,32 @@
             <h2 id="expo-config-plugin" class="mt0">Expo config plugin</h2>
 
             <h1>Expo plugin option reference</h1>
-            <blockquote>
-              <p>
-                PR10 deferral: the RC1 five-field restoration/plugin schema documented below is retained for
-                native/plugin contract tests, but is not the current PR6 application configuration recipe. Do not copy
-                <code>iosNativeProtocolRestoration</code> or author <code>clientId</code>/<code>hostSessionScope</code>
-                in application code until the PR10 Expo v2 schema and native-authoritative restoration slice lands.
-              </p>
-            </blockquote>
             <p>
-              Everything below this notice is historical schema/reference material for the plugin contract tests. It is
-              intentionally non-copyable application guidance until PR10 lands; current PR6 consumers must not treat the
-              table or JSON block as a supported release recipe.
+              The plugin writes native project configuration. That is not a live-radio or restoration support claim. See
+              <a href="PLATFORMS.md"><code>PLATFORMS.md</code></a
+              >.
             </p>
-            <p>
-              The historical contract-test fixture below records the RC1 schema implemented in
-              <code>plugin/src/withBLE.ts</code>. It is not the current application configuration surface; use it only
-              to understand the native contract tests until PR10 replaces the five-field restoration identity.
-            </p>
+            <h2>Current plugin package setup</h2>
             <p>
               <code>expo</code> is an optional host peer. The plugin imports Expo's supported
               <code>expo/config-plugins</code> subpath; applications must not install the internal
               <code>@expo/config-plugins</code> package directly. Web, bare React Native, and Node consumers do not
               resolve Expo tooling.
             </p>
+            <h2>Historical contract-test fixture — do not copy</h2>
+            <blockquote>
+              <p>
+                <strong>DO NOT COPY: HISTORICAL CONTRACT-TEST FIXTURE ONLY.</strong> The RC1 five-field
+                restoration/plugin schema below is retained for native/plugin contract tests. It is not supported
+                application configuration. Do not copy <code>iosNativeProtocolRestoration</code> or author
+                <code>clientId</code>/<code>hostSessionScope</code> in application code until the PR10 Expo v2 schema
+                and native-authoritative restoration slice lands.
+              </p>
+            </blockquote>
             <p>
-              The plugin writes native project configuration. That is not a live-radio or restoration support claim. See
-              <a href="PLATFORMS.md"><code>PLATFORMS.md</code></a
-              >.
+              The historical contract-test fixture records the schema implemented in <code>plugin/src/withBLE.ts</code>.
+              Use it only to understand the native contract tests until PR10 replaces the five-field restoration
+              identity. The table and JSON block below are not a current application recipe.
             </p>
             <table>
               <thead>
@@ -675,6 +681,15 @@
               <code>BleManager</code> façade; the low-level <code>ElectronRendererBleClient</code> remains an
               implementation seam for the transport and advanced boundary tests, not an application API.
             </p>
+            <h2>Advanced main-process provider construction</h2>
+            <blockquote>
+              <p>
+                <strong>Maintainer/host-authoring reference — not ordinary application construction.</strong> The
+                renderer application uses <code>createElectronRendererBleManager({ transport })</code>. The provider
+                construction below is only for maintainers implementing the trusted main-process host boundary or
+                authors wiring an explicit backend.
+              </p>
+            </blockquote>
             <p>They deliberately split physical-radio ownership from renderer use:</p>
             <ul>
               <li>
@@ -701,7 +716,14 @@
               adapter, or peripheral support claim. Native prebuild compilation and runtime loading are L2/L3 evidence
               only; they do not by themselves establish a physical-radio support claim.
             </p>
-            <h2>Main-process backend selection</h2>
+            <h2>Main-process backend selection (maintainer/host-authoring reference)</h2>
+            <blockquote>
+              <p>
+                <strong>Maintainer/host-authoring reference — not ordinary application construction.</strong> Backend
+                selection belongs to trusted Electron main-process host code; renderer application code must not
+                construct providers or select radios.
+              </p>
+            </blockquote>
             <p>Select one concrete backend in main. The native loaders are fail-closed:</p>
             <ul>
               <li>

@@ -61,6 +61,7 @@ export { createBackendAuthorDefinition, runBackendAuthorTck } from './backend-sd
 - `BackendNotificationOverflowEvent`
 - `BackendOperationDispatch`
 - `BackendOperationHandle`
+- `BackendOperationPhysicalSettlement`
 - `BackendPeerQuery`
 - `BackendPeerRecord`
 - `BackendPermissionStateChangedEvent`
