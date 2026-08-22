@@ -801,6 +801,7 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
       for (const connection of this.connections.values()) {
         const database = connection.database
         if (database !== null && database.matchesDatabasePath(event.database)) {
+          this.operationCoordinator.cancelQueue(String(connection.resource.connectionId), 'disconnected')
           this.lifecycleObserver.observeCleanup(
             this.invalidateDatabase(database, 'connection-lost', 'service-changed'),
             'database-changed-cleanup'
