@@ -4,7 +4,7 @@ Source audit: `~/Downloads/unified-ble-manager-post-pr5-audit.md`
 Audit snapshot: `bc4a347c496e994e97cec9da06e2c0a6223a72f8`
 RC2 release snapshot: `main` / `ab331517083c5a580894adb3d79d075f299c9db5` / `v4.0.0-rc.2`
 Historical PR6 audit source: `feat/4.0-pr6-audit-closure` / `dac701f3bef8213074c829f1dce8ce3a2f42df38`
-Current PR7 implementation checkpoint: `feat/4.0-security-pairing` / `d28f96c` (implementation tip); documentation-only descendants from this commit
+Current PR7 implementation checkpoint: `feat/4.0-security-pairing` / `03349c4` (implementation tip); documentation-only descendants from this commit
 
 Execution authority for this continuation is the revised session instruction,
 `docs/superpowers/plans/2026-08-20-next-12-prs.md`, this disposition ledger,
@@ -219,8 +219,10 @@ TCK/evidence exist. Custom Electron ceremonies remain rejected rather than
 downgraded because the current data-only IPC has no challenge/response wire
 protocol.
 
-Evidence: Tauri Rust tests (21), focused Electron/Tauri tests previously passed,
-full package gate previously passed (123 suites, 1,148 tests), lint/typecheck, clippy, native protocol,
+Evidence: Tauri Rust tests (21 on the local macOS target; the Linux-only
+authorization test is included by the hosted Linux target), focused
+Electron/Tauri tests previously passed, full package gate at the current
+candidate passed (123 suites, 1,155 tests), lint/typecheck, clippy, native protocol,
 plugin, docs/API, evidence, artifact, diff, and forbidden-assertion-smell
 gates passed locally at the prior implementation checkpoint. Hosted CI,
 Android/Windows native qualification, and
@@ -237,6 +239,7 @@ by its exact fix and regression proof:
 | Copilot Android concurrent-pair arbitration | Fixed | `32d47b4`; Android boundary regression test rejects the second same-peer pair with `ownership.denied`. |
 | Codex `3835119248` BlueZ cancellation while `Device1.Pair` is pending | Fixed | `a571fb3`; dispatcher cancellation hook, one-shot `CancelPairing`, deferred-pair abort/deadline tests. |
 | Codex `3835119251` WinRT deadline after `PairAsync` dispatch | Fixed | `06c9eee`; shared `WinRtOperationDispatcher` deadline/physical-retirement path and deadline cancellation test. |
+| WinRT TCK ownership gap after explicit cancellation | Fixed | `03349c4`; native completion retires security ownership before the next idempotent pair, with WinRT TCK and focused regression coverage. |
 | Codex `3835119257` public security-watch async error rehydration | Fixed | `d28f96c`; deferred source/iterator/teardown error tests and public error bridge. |
 | Codex `3835119260` BlueZ closed-watch ownership | Fixed | `a571fb3`; stream close unregisters immediately and the no-later-event retention test passes. |
 | Codex `3835119263` Tauri custom-ceremony permission bypass | Fixed | `45a22e5`; Rust permission mapping requires both `Pair` and `CustomCeremony` for serialized custom ceremonies. |
@@ -256,7 +259,7 @@ can merge.
 | Raw npm pack-install smoke | Blocked locally | `node scripts/ci/pack-install-smoke.js` reaches local npm packing but hangs/encounters the npm exit-handler failure; hosted supported-Node proof is required. |
 | Android Gradle/JVM and physical Android | Blocked/open | Local lane is blocked before compilation by missing `example/node_modules/@react-native/gradle-plugin`; hosted Android compile/JVM and physical-radio evidence remain required. |
 | WinRT native ABI/runtime and physical desktop | Blocked/open | macOS cannot qualify the Windows native artifact; hosted Windows compile/ABI/runtime and physical evidence remain required. |
-| Hosted CI and release qualification | In progress for `d28f96c` | Exact-tip PR40 CI run `32553685932` is pending; PR7 merge and RC3 remain prohibited until the complete matrix is green. |
+| Hosted CI and release qualification | In progress for the `03349c4` candidate | The prior exact-tip run was superseded by this lifecycle fix; the new hosted PR40 run must complete green before PR7 merge and RC3 consideration. |
 
 PR7E is therefore an explicit evidence checkpoint, not a closure claim. Its
 remaining blockers must be re-audited at the exact PR7 merge candidate before
