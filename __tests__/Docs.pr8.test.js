@@ -3,6 +3,7 @@ const path = require('path')
 
 const root = path.join(__dirname, '..')
 const read = relativePath => fs.readFileSync(path.join(root, relativePath), 'utf8').replace(/\r\n/g, '\n')
+const currentMigration = migration => migration.slice(0, migration.indexOf('## Historical RC1'))
 
 describe('PR8 documentation contract', () => {
   test('documents the controls facade, truthful capabilities, bounded operations, and GATT recovery', () => {
@@ -55,5 +56,54 @@ describe('PR8 documentation contract', () => {
     expect(documents).toMatch(
       /not[\s\S]{0,120}physical-radio[\s\S]{0,120}qualification|physical-radio[\s\S]{0,120}not[\s\S]{0,120}qualification/i
     )
+  })
+
+  test('current application recipes use the public timeout and object GATT APIs', () => {
+    const migration = read('MIGRATION_4.0.md')
+    const readme = read('README.md')
+    const current = `${currentMigration(migration)}\n${readme}`
+
+    expect(migration).toContain('## Historical RC1')
+    expect(migration).toMatch(/Historical RC1[\s\S]{0,120}non-copyable/i)
+    expect(current).not.toMatch(/\bmanager\.(adapterState|adapterStates|monotonicNow)\s*\(/)
+    expect(current).not.toMatch(/\b(?:scanUntil|resolveCharacteristicPath)\b/)
+    expect(current).not.toMatch(/\bdeadline\b/)
+    expect(current).not.toMatch(/\b(?:read|write|subscribe)\(path\b/)
+    expect(current).not.toMatch(/delivery:\s*\{[\s\S]*?itemCapacity/)
+    expect(current).not.toMatch(
+      /import\s+(?:type\s+)?\{[^}]*\b(?:capacity|deadline|scanUntil|BackendContractError)\b[^}]*\}\s+from\s+['"]unified-ble-manager(?:\/backend-sdk)?['"]/s
+    )
+    expect(migration).not.toContain('hostSessionScope')
+
+    for (const document of [migration, readme]) {
+      expect(document).toContain('timeoutMs')
+      expect(document).toContain('signal')
+    }
+    expect(migration).toContain('database.characteristic(')
+    expect(migration).toContain("response: 'required'")
+    expect(migration).toContain('chunkSize: maxWrite.maximumWriteLength')
+  })
+
+  test('README exposes controls through the generation-bound facade and runtime host truth', () => {
+    const readme = read('README.md')
+    const connection = readme.slice(readme.indexOf('### `Connection`'), readme.indexOf('### `GattDatabase`'))
+    const gatt = readme.slice(readme.indexOf('### `GattDatabase`'), readme.indexOf('### `Subscription`'))
+
+    expect(connection).toContain('connection.controls.readRssi')
+    expect(connection).toContain('connection.controls.requestMtu')
+    expect(connection).toContain('connection.controls.maximumWriteLength')
+    expect(connection).toContain('connection.controls.writeReadiness')
+    expect(connection).toMatch(/runtime|instantiated backend|host truth/i)
+    expect(connection).toMatch(/readiness[\s\S]{0,180}unsupported/i)
+    expect(connection).not.toMatch(/\|\s*`(?:readRssi|requestMtu|maximumWriteLength)\(/)
+
+    expect(gatt).toContain('characteristic(serviceUuid, characteristicUuid')
+    expect(gatt).toContain('characteristic.read(options)')
+    expect(gatt).toContain('characteristic.write(value')
+    expect(gatt).toContain('characteristic.writeLong(value')
+    expect(gatt).toContain('response')
+    expect(gatt).toContain('chunkSize')
+    expect(gatt).toContain('characteristic.subscribe')
+    expect(gatt).not.toMatch(/\b(?:read|write|writeLong|maximumWriteLength|subscribe)\(path\b/)
   })
 })

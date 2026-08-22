@@ -277,7 +277,7 @@ describe('consumer documentation matches the published package', () => {
     const release = read('RELEASE.md')
 
     expect(migration).toContain(packageVersion)
-    expect(migration).toContain('hostSessionScope')
+    expect(migration).not.toContain('hostSessionScope')
     expect(migration).toContain('Uint8Array')
     expect(migration).toContain('AbortSignal')
     expect(migration).toContain('manager.destroy()')

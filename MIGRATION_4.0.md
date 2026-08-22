@@ -22,7 +22,7 @@ This page is for a React Native app that already uses `react-native-ble-plx`. We
 | Immortal `Device` with methods | Scan observation → `Connection` lease → `snapshot()` paths |
 | `manager.destroy()` fire-and-forget | `await manager.destroy()` and check `CleanupRecord` |
 
-`instanceId` is an optional app-owned name for a distinct manager instance. For native restoration, pass `restoration: { applicationId, restorationId, generation? }`; the factory derives the trusted client, manager, and host-session identities internally. Do not pass `clientId`, `managerId`, or `hostSessionScope` to the RC2 factory.
+`instanceId` is an optional app-owned name for a distinct manager instance. For native restoration, pass `restoration: { applicationId, restorationId, generation? }`; the factory derives the trusted client, manager, and host-session identities internally.
 
 ## Install
 
@@ -60,14 +60,18 @@ manager.onStateChange((state) => {
   if (state === 'PoweredOn') start()
 }, true)
 
-// unified-ble-manager — public API is a snapshot
-const state = await manager.adapterState()
+// unified-ble-manager — state and readiness belong to the selected backend
+const abort = new AbortController()
+const state = await manager.adapter.state()
 if (state.power !== 'on' || state.authorization !== 'granted' || state.availability !== 'available') {
   // request OS permissions / ask the user to enable Bluetooth
 }
+await manager.adapter.waitUntilReady({ signal: abort.signal, timeoutMs: 20_000, operation: 'scan' })
 ```
 
-There is no public `onStateChange`. Use `adapterState()` for a snapshot, or `manager.adapterStates()` for a bounded stream of transitions. Stop the stream.
+There is no public `onStateChange`; use `manager.adapter.state()` for a snapshot and
+`manager.adapter.waitUntilReady(...)` when an operation should wait for the
+instantiated backend. Runtime state is host truth, not a static platform guess.
 
 ## Scan
 
@@ -77,35 +81,25 @@ manager.startDeviceScan(['180d'], { allowDuplicates: false }, (error, device) =>
   manager.stopDeviceScan()
 })
 
-// unified-ble-manager
-import { capacity, deadline, scanUntil } from 'unified-ble-manager/advanced'
+// unified-ble-manager — the public façade owns scan lifetime
 import { HEART_RATE_SERVICE } from 'unified-ble-manager/profiles/heart-rate'
 
 const abort = new AbortController()
-const journeyDeadline = deadline(manager.monotonicNow() + 20_000)
-const observation = await scanUntil(manager, {
-  scan: {
-    filter: { serviceUuids: [HEART_RATE_SERVICE], manufacturerData: [], localNamePrefix: null },
-    duplicatePolicy: 'merged',
-    timestampPolicy: 'source-then-receipt',
-    delivery: {
-      itemCapacity: capacity(32),
-      byteCapacity: capacity(64 * 1024),
-      reservedControlCapacity: capacity(2),
-      overflowPolicy: 'drop-oldest'
-    },
-    deadline: journeyDeadline,
-    signal: abort.signal,
-    sharing: { mode: 'owner', allowSharing: false }
-  },
-  matches: candidate => candidate.localName.state === 'present'
+const peer = await manager.find({
+  query: { anyOf: [{ services: { any: [HEART_RATE_SERVICE] } }] },
+  timeoutMs: 20_000,
+  signal: abort.signal,
+  select: 'first'
 })
-const peerId = observation.device.id
+const peerId = peer.id
 ```
 
-`startDeviceScan` / `stopDeviceScan` map to `manager.scan()` + `session.stop()`, or to `scanUntil` / `find`. The advertised name is `localName`, not `device.name`.
+`startDeviceScan` / `stopDeviceScan` map to `manager.find(...)`, or to
+`manager.scan(...)` with `session.stop()`. The advertised name is `localName`,
+not `device.name`.
 
-Scan options are verbose on purpose: overflow is visible, and a second scan is `scan.already-active` unless you join.
+Public scan delivery uses a bounded preset such as `delivery: 'balanced'`; a
+second scan is `scan.already-active` unless the host explicitly supports joining.
 
 ## Connect and discover
 
@@ -117,9 +111,8 @@ const services = await device.services()
 const characteristics = await device.characteristicsForService(hrsUuid)
 
 // unified-ble-manager
-const connection = await manager.connect(peerId, { signal: abort.signal, deadline: journeyDeadline })
-const database = await connection.discover({ signal: abort.signal, deadline: journeyDeadline })
-const snapshot = await database.snapshot()
+const connection = await manager.connect(peerId, { signal: abort.signal, timeoutMs: 15_000 })
+const database = await connection.discover({ signal: abort.signal, timeoutMs: 15_000 })
 ```
 
 There is no `autoConnect`, `refreshGatt`, or connect-time MTU option. After disconnect, create a new connection and a new snapshot. Old `Device` objects would have looked valid; stale 4.x paths throw `gatt.stale-handle`.
@@ -135,23 +128,37 @@ const bytes = Buffer.from(ch.value, 'base64')
 await device.writeCharacteristicWithResponseForDevice(id, service, char, Buffer.from([1]).toString('base64'))
 
 // unified-ble-manager
-import { resolveCharacteristicPath } from 'unified-ble-manager/profiles/commands'
-import { batteryLevelSelector } from 'unified-ble-manager/profiles/battery-service'
+import {
+  BATTERY_LEVEL_CHARACTERISTIC,
+  BATTERY_SERVICE,
+  parseBatteryLevel
+} from 'unified-ble-manager/profiles/battery-service'
 
-const readablePath = await resolveCharacteristicPath(snapshot, batteryLevelSelector())
-const value = await database.read(readablePath, { signal: abort.signal, deadline: journeyDeadline })
+const battery = database.characteristic(BATTERY_SERVICE, BATTERY_LEVEL_CHARACTERISTIC, {
+  serviceOccurrence: 0,
+  characteristicOccurrence: 0
+})
+const value = await battery.read({ signal: abort.signal, timeoutMs: 10_000 })
+consume(parseBatteryLevel(value))
 ```
 
 ```ts
 import { BleError } from 'unified-ble-manager'
-import { encodeResetEnergyExpended, heartRateControlPointSelector } from 'unified-ble-manager/profiles/heart-rate'
+import {
+  encodeResetEnergyExpended,
+  HEART_RATE_CONTROL_POINT_CHARACTERISTIC,
+  HEART_RATE_SERVICE
+} from 'unified-ble-manager/profiles/heart-rate'
 
 try {
-  const writablePath = await resolveCharacteristicPath(snapshot, heartRateControlPointSelector())
-  await database.write(writablePath, encodeResetEnergyExpended(), {
+  const controlPoint = database.characteristic(HEART_RATE_SERVICE, HEART_RATE_CONTROL_POINT_CHARACTERISTIC, {
+    serviceOccurrence: 0,
+    characteristicOccurrence: 0
+  })
+  await controlPoint.write(encodeResetEnergyExpended(), {
     signal: abort.signal,
-    deadline: journeyDeadline,
-    mode: 'with-response'
+    timeoutMs: 10_000,
+    response: 'required'
   })
 } catch (error) {
   if (!(error instanceof BleError) || (error.code !== 'gatt.not-found' && error.code !== 'gatt.property-not-supported')) {
@@ -162,7 +169,8 @@ try {
 
 `value` is `Uint8Array`. If an HTTP API wants Base64, encode at that boundary yourself. `unified-ble-manager/codecs` is IEEE-11073 and byte views, not a Base64 helper. Battery Level is read-oriented; do not write it. Use a distinct application characteristic (or Heart Rate Control Point only after it exists) for writes.
 
-Or use `readBatteryLevel` from `unified-ble-manager/profiles/standard-commands`. `journeyDeadline` is one budget for the whole sample, not 20 seconds per call.
+Each `timeoutMs` applies to the public operation that receives it; pass the same
+`AbortSignal` when several operations share one cancellation policy.
 
 ## Notify
 
@@ -174,18 +182,20 @@ device.monitorCharacteristicForDevice(id, '180d', '2a37', (error, c) => {
 manager.cancelTransaction('hr-monitor')
 
 // unified-ble-manager
-import { subscribeHeartRateMeasurements } from 'unified-ble-manager/profiles/standard-commands'
-import { parseHeartRateMeasurement } from 'unified-ble-manager/profiles/heart-rate'
+import {
+  HEART_RATE_MEASUREMENT_CHARACTERISTIC,
+  HEART_RATE_SERVICE,
+  parseHeartRateMeasurement
+} from 'unified-ble-manager/profiles/heart-rate'
 
-const sub = await subscribeHeartRateMeasurements(database, {
+const measurement = database.characteristic(HEART_RATE_SERVICE, HEART_RATE_MEASUREMENT_CHARACTERISTIC, {
+  serviceOccurrence: 0,
+  characteristicOccurrence: 0
+})
+const sub = await measurement.subscribe({
   signal: abort.signal,
-  deadline: journeyDeadline,
-  delivery: {
-    itemCapacity: capacity(16),
-    byteCapacity: capacity(32 * 1024),
-    reservedControlCapacity: capacity(2),
-    overflowPolicy: 'drop-oldest'
-  }
+  timeoutMs: 10_000,
+  stream: 'balanced'
 })
 const stop = setTimeout(() => abort.abort(), 5_000)
 try {
@@ -200,7 +210,9 @@ try {
 }
 ```
 
-`monitorCharacteristicForDevice` + `cancelTransaction` become `database.subscribe` + `AbortSignal` + `subscription.remove()`.
+`monitorCharacteristicForDevice` + `cancelTransaction` become a generation-bound
+`database.characteristic(...).subscribe(...)` + `AbortSignal` +
+`subscription.remove()`.
 
 ## Advanced link controls, readiness, and GATT recovery
 
@@ -212,14 +224,14 @@ It never silently no-ops or reports a request as successful merely because the
 method exists.
 
 ```ts
-const rssi = await connection.controls.readRssi({ signal: abort.signal, deadline: journeyDeadline })
+const rssi = await connection.controls.readRssi({ signal: abort.signal, timeoutMs: 5_000 })
 if (rssi.state === 'measured') {
   consumeRssi(rssi.rssi, rssi.connectionGeneration, rssi.observedAtMonotonicMs)
 }
 
 const mtu = await connection.controls.requestMtu(185, {
   signal: abort.signal,
-  deadline: journeyDeadline
+  timeoutMs: 10_000
 })
 if (mtu.state === 'accepted' && mtu.observation?.state === 'measured') {
   consumeMtu(mtu.observation.attMtu, mtu.observation.payloadBytes)
@@ -229,10 +241,14 @@ const maxWrite = await connection.controls.maximumWriteLength('with-response')
 if (maxWrite.state !== 'measured' || maxWrite.maximumWriteLength === null) {
   throw new Error('The backend did not provide a current write limit')
 }
-await database.writeLong(path, largeBytes, {
+const writable = database.characteristic(HEART_RATE_SERVICE, HEART_RATE_CONTROL_POINT_CHARACTERISTIC, {
+  serviceOccurrence: 0,
+  characteristicOccurrence: 0
+})
+await writable.writeLong(largeBytes, {
   signal: abort.signal,
-  deadline: journeyDeadline,
-  mode: 'with-response',
+  timeoutMs: 20_000,
+  response: 'required',
   chunkSize: maxWrite.maximumWriteLength
 })
 ```
@@ -313,18 +329,18 @@ if (gone.state === 'release-failed') {
 | react-native-ble-plx | unified-ble-manager |
 | --- | --- |
 | `new BleManager()` | `createReactNativeBleManager(...)` |
-| `state()` / `onStateChange` | `adapterState()` snapshot or `adapterStates()` stream |
-| `startDeviceScan` / `stopDeviceScan` | `manager.scan` + `ScanSession.stop`, or `scanUntil` / `find` |
-| `connectToDevice` | `manager.connect(peerId, { signal, deadline })` |
+| `state()` / `onStateChange` | `manager.adapter.state()` or `manager.adapter.waitUntilReady(...)` |
+| `startDeviceScan` / `stopDeviceScan` | `manager.find(...)`, or `manager.scan(...)` + `ScanSession.stop` |
+| `connectToDevice` | `manager.connect(peerId, { signal, timeoutMs })` |
 | `discoverAllServicesAndCharacteristics` | `connection.discover` |
 | `services` / `characteristicsForService` | `database.snapshot()` |
-| `readCharacteristicForDevice` | `database.read(path, options)` → `Uint8Array` |
-| `writeCharacteristicWithResponseForDevice` | `database.write(..., { mode: 'with-response' })` |
-| `writeCharacteristicWithoutResponseForDevice` | `database.write(..., { mode: 'without-response' })` |
-| `monitorCharacteristicForDevice` | `database.subscribe` + `for await` + `remove()` |
+| `readCharacteristicForDevice` | `database.characteristic(serviceUuid, characteristicUuid).read(options)` → `Uint8Array` |
+| `writeCharacteristicWithResponseForDevice` | `database.characteristic(...).write(value, { response: 'required', ... })` |
+| `writeCharacteristicWithoutResponseForDevice` | `database.characteristic(...).write(value, { response: 'not-required', ... })` |
+| `monitorCharacteristicForDevice` | `database.characteristic(...).subscribe` + `for await` + `remove()` |
 | `cancelTransaction` | `AbortController.abort()` |
-| `readRSSI` | `connection.controls.readRssi` when `connection:rssi` is advertised |
-| `requestMTU` | `connection.controls.requestMtu` when `connection:request-mtu` is advertised; inspect its observation for the effective result |
+| `readRSSI` | `connection.controls.readRssi(...)` when `connection:rssi` is advertised |
+| `requestMTU` | `connection.controls.requestMtu(...)` when `connection:request-mtu` is advertised; inspect its observation for the effective result |
 | `destroy` | `await manager.destroy()` |
 
 ## Gone on purpose
@@ -338,7 +354,7 @@ if (gone.state === 'release-failed') {
 | `enable()` / `disable()` | The library does not toggle the adapter. |
 | `devices()` / `isDeviceConnected` / `connectedDevices()` | Own the `Connection` you created. |
 | `requestConnectionPriority` | `connection.controls.requestPriority` when `connection:priority` is advertised; acceptance is not an observation of final parameters. |
-| `checkBluetoothPermissions` helpers | `adapterState().authorization` + OS APIs. |
+| `checkBluetoothPermissions` helpers | `manager.adapter.state().authorization` + OS APIs. |
 | `setLogLevel` | `manager.traces()` / `traceDocument()` if you need diagnostics. |
 | Android `scanMode` / `callbackType` | `duplicatePolicy`, `filter`, `delivery`. |
 | Expo `iosEnableRestoration` / `iosRestorationIdentifier` | `iosNativeProtocolRestoration` with five fields. |
@@ -361,20 +377,22 @@ still connect.
 7. Await `destroy()`.
 8. Remove `react-native-ble-plx`.
 
-## RC1 → 4.0.0-rc.2 (PR1 — public contract reset)
+## Historical RC1 → 4.0.0-rc.2 comparison (PR1 — non-copyable public contract history)
 
-`4.0.0-rc.2` is the pre-stable breaking window. There are **no compatibility aliases** — old names are removed, not deprecated.
+This table preserves the historical contract reset for maintainers. The RC1
+column is historical and non-copyable; current applications must follow the
+public recipes above.
 
 | RC1 | RC2 |
 |---|---|
-| `import { BleManager, createBleManager, attachBleBackend, capacity, deadline } from 'unified-ble-manager'` | `import type { BleManager, BlePeer, BleConnection, OperationOptions } from 'unified-ble-manager'`  +  `import { createBleManager, attachBleBackend, capacity, deadline } from 'unified-ble-manager/advanced'` |
+| Historical RC1 root import included generic constructors and advanced capacity/deadline values (non-copyable) | RC2 keeps application types at the root; advanced constructors and branded values remain under `unified-ble-manager/advanced` |
 | `new BleManager(...generic)` / `BleManager<Attachment, Identity>` | `BleManager` is non-generic interface; `ApplicationBleManager` façade over internal generic core |
-| `manager.scan({ deadline, signal, delivery: { itemCapacity, ... } })` | `manager.scan({ timeoutMs, signal, delivery: 'balanced' })` — `timeoutMs` normalizes once to `Deadline`; presets map to exact capacities |
-| `createReactNativeBleManager({ clientId, managerId, hostSessionScope })` | `createReactNativeBleManager({ instanceId?, restoration?: { applicationId, restorationId, generation? } })` — identity derived internally, ephemeral vs deterministic restoration split |
+| Historical RC1 exact deadline and custom-capacity scan options (non-copyable) | `manager.scan({ timeoutMs, signal, delivery: 'balanced' })` — the public façade resolves the bounded preset |
+| Historical RC1 caller-supplied identity fields (non-copyable) | `createReactNativeBleManager({ instanceId?, restoration?: { applicationId, restorationId, generation? } })` — identity derived internally, ephemeral vs deterministic restoration split |
 | `createWebBleManager({ provider, clientId, managerId }) => { chooser, manager }` | `createWebBleManager(options?: BleManagerCreateOptions): Promise<BleManager>` — single manager; chooser is capability. Tests use `createWebBleManagerWithEnvironment` |
 | `createTauriBleManager({ invoke, Channel })` | `createTauriBleManager(options?: BleManagerCreateOptions)` — imports `@tauri-apps/api/core` internally. Tests use `createTauriBleManagerWithEnvironment` |
-| `Portable*` paths, `AttachmentId`, `ManagerId`, `Deadline`, `Capacity` from root | Moved to `unified-ble-manager/advanced` |
-| `find`, `scanUntil`, `withConnection`, `defaultScanDelivery`, `throwIfCleanupFailed` from root | Moved to `unified-ble-manager/advanced` — application code should use façade `OperationOptions`/`StreamPreset` |
+| Historical RC1 low-level paths, `AttachmentId`, `ManagerId`, `Deadline`, and `Capacity` from root (non-copyable) | Moved to `unified-ble-manager/advanced` |
+| Historical RC1 low-level helpers such as `find` and `scanUntil` from root (non-copyable) | Advanced helpers remain under `unified-ble-manager/advanced`; application code uses façade `OperationOptions`/`StreamPreset` |
 | `ReactNativeBleManagerAppOptions` type alias | Removed — use `BleManagerCreateOptions` directly |
 
 Restoration identity is now deterministic via `deriveRestorationIdentity({ applicationId, restorationId, generation })` with domain `unified-ble-manager:restoration:v1` and golden fixtures at `__tests__/fixtures/restoration-identity.golden.json`. `instanceId` never affects restoration.
