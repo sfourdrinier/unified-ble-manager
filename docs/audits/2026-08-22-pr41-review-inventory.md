@@ -22,10 +22,9 @@ consumer proof remain separate gates.
 
 ## Follow-up inventory — current PR41 source
 
-Verified against current HEAD `ed83e8ac27f71c3574006ab56bea85994b24e04c`.
-The focused lifecycle gates are manager 12/12, core 46/46, and CoreBluetooth
-56/56; the full-package rerun for this exact SHA remains a required gate.
-Plugin remains 36/36.
+Verified against current HEAD `95494e1e6b2052e487bb0d6158d06367c85ecdcd`.
+The full package gate is 140 suites / 1,303 tests; focused lifecycle gates are
+manager 12/12, core 46/46, and CoreBluetooth 56/56. Plugin is 36/36.
 
 | ID | Source/reviewer | Finding | Disposition |
 | --- | --- | --- | --- |
@@ -72,6 +71,6 @@ Verified against the integrated source through current HEAD `f07ac04`.
 | T-1 | Post-PR6 review triage | Electron `adapter.state` receives a generic router controller but the public adapter snapshot has no operation options or cancellable work. | Not actionable: the router controller is not a caller-owned cancellation contract; adding an unused option would expand the public API without a cancellable backend operation. |
 | T-2 | Post-PR6 review triage | IPC GATT source uses `deliverySelection: 'unknown'`. | Intentional fail-closed behavior: the renderer cannot prove notification/indication selection control across the IPC boundary, so required delivery modes reject and effective delivery remains unknown. |
 | T-3 | Post-PR6 review triage | API report checker verifies generated export membership rather than repeating hand-written declaration signatures. | Intentional split: generated sections fail closed on export drift; the reviewed root contract remains hand-written in `etc/api/root.api.md`, with public-surface TypeScript fixtures and focused contract tests covering signatures. |
-| D-1 | Documentation/API review | Generated HTML previously traversed imported implementation docs and exposed advanced/internal symbols; Expo restoration prose called historical schema “supported options” and supplied a copyable-looking recipe. | Confirmed and fixed in the pending docs slice: `documentation` now uses `--shallow`, stale TOC sort entries are removed, an HTML boundary regression guards internal symbols, and Expo wording labels the schema historical/non-copyable. |
+| D-1 | Documentation/API review | Generated HTML previously traversed imported implementation docs and exposed advanced/internal symbols; Expo restoration prose called historical schema “supported options” and supplied a copyable-looking recipe. | Confirmed and fixed in `95494e1`; `documentation` now uses `--shallow`, stale TOC sort entries are removed, an HTML boundary regression guards internal symbols, and Expo wording labels the schema historical/non-copyable. |
 
-Remaining release gates at this checkpoint: full local package/artifact/native gates for `ed83e8a`, commit the pending docs slice, push and hosted rerun at that exact final SHA, final exact-SHA adversarial review, the required external review rounds, merge PR41, then proceed to the plan’s RC3 checkpoint. Physical-radio qualification and the opt-in Apple compile lane remain separately labeled; RC2 remains immutable.
+Remaining release gates at this checkpoint: native/artifact/performance gates for `95494e1`, push and hosted rerun at that exact final SHA, final exact-SHA adversarial review, the required external review rounds, merge PR41, then proceed to the plan’s RC3 checkpoint. Physical-radio qualification and the opt-in Apple compile lane remain separately labeled; RC2 remains immutable.
