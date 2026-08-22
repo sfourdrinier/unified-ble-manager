@@ -36,6 +36,7 @@ export class ReactNativeAndroidSecurityBackend implements SecurityBackend {
   private readonly active = new Set<string>()
   private readonly sequences = new Map<string, number>()
   private readonly removeListener: () => void
+  private closed = false
 
   constructor(
     private readonly boundary: ReactNativeAndroidProtocolBoundary,
@@ -47,10 +48,12 @@ export class ReactNativeAndroidSecurityBackend implements SecurityBackend {
   }
 
   async state(peerId: string, _options: PublicOperationOptions): Promise<PeerSecurityState> {
+    this.assertOpen('android.security.state')
     return this.snapshot(await this.boundary.securityState(peerId))
   }
 
   watch(peerId: string): BoundedAsyncStream<PeerSecurityEvent> {
+    this.assertOpen('android.security.watch')
     const stream = new CoreBoundedStream<PeerSecurityEvent>(limits, 'error')
     const streams = this.streams.get(peerId) ?? new Set<CoreBoundedStream<PeerSecurityEvent>>()
     streams.add(stream)
@@ -63,6 +66,7 @@ export class ReactNativeAndroidSecurityBackend implements SecurityBackend {
   }
 
   async pair(peerId: string, options: SecurityPairOptions): Promise<SecurityPairResult> {
+    this.assertOpen('android.security.pair')
     if (options.ceremony !== 'system') {
       throw contractError('capability.unsupported', 'capability', 'android.security.custom-ceremony')
     }
@@ -76,9 +80,10 @@ export class ReactNativeAndroidSecurityBackend implements SecurityBackend {
       throw contractError('ownership.denied', 'platform', 'android.security.pair.arbitration')
     this.active.add(peerId)
     let publicSettled = false
+    const cancellationController = new AbortController()
     let abortListener: (() => void) | null = null
     let deadlineTimer: ReturnType<typeof setTimeout> | null = null
-    const nativeOperation = this.boundary.pair(peerId)
+    const nativeOperation = this.boundary.pair(peerId, cancellationController.signal)
     const settleNative = (): void => {
       this.active.delete(peerId)
       if (abortListener !== null) options.signal?.removeEventListener('abort', abortListener)
@@ -91,6 +96,7 @@ export class ReactNativeAndroidSecurityBackend implements SecurityBackend {
         resolve({ outcome: 'cancelled' })
       }
       abortListener = (): void => {
+        cancellationController.abort()
         resolveCancelled()
         this.requestCancellation(peerId)
       }
@@ -100,6 +106,7 @@ export class ReactNativeAndroidSecurityBackend implements SecurityBackend {
           () => {
             if (publicSettled) return
             publicSettled = true
+            cancellationController.abort()
             reject(contractError('operation.timed-out', 'core', 'android.security.pair'))
             this.requestCancellation(peerId)
           },
@@ -136,17 +143,20 @@ export class ReactNativeAndroidSecurityBackend implements SecurityBackend {
   }
 
   async cancelPairing(peerId: string, _options: PublicOperationOptions): Promise<SecurityCancelPairingResult> {
+    this.assertOpen('android.security.cancel-pairing')
     if (!this.active.has(peerId)) return { outcome: 'not-pairing' }
     await this.boundary.cancelPairing(peerId)
     return { outcome: 'cancelled' }
   }
 
   async unpair(peerId: string, _options: PublicOperationOptions): Promise<SecurityUnpairResult> {
+    this.assertOpen('android.security.unpair')
     await this.boundary.unpair(peerId)
     return { outcome: 'unsupported' }
   }
 
   close(): void {
+    this.closed = true
     this.removeListener()
     this.active.clear()
     for (const streams of this.streams.values()) for (const stream of streams) stream.closeWithReason('owner-released')
@@ -165,6 +175,10 @@ export class ReactNativeAndroidSecurityBackend implements SecurityBackend {
     this.boundary.cleanupPairing(peerId).catch(error => {
       console.error('[ReactNativeAndroidSecurityBackend.pair] Pair cancellation was not accepted:', error)
     })
+  }
+
+  private assertOpen(operation: string): void {
+    if (this.closed) throw contractError('lifecycle.destroyed', 'core', operation)
   }
 
   private emit(peerId: string, state: PeerSecurityState): void {

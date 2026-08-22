@@ -318,11 +318,18 @@ export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary
   }
 
   async pair(
-    nativePeerId: string
+    nativePeerId: string,
+    signal: AbortSignal | null = null
   ): Promise<{ readonly outcome: 'paired' | 'already-paired' | 'rejected'; readonly state: AndroidSecurityState }> {
     this.requireSecurityExtension('pair')
     this.requireOpen('pair')
+    if (isAbortSignalAborted(signal)) {
+      throw contractError('operation.aborted', 'core', 'rn-android-boundary.pair')
+    }
     const current = await this.securityState(nativePeerId)
+    if (isAbortSignalAborted(signal)) {
+      throw contractError('operation.aborted', 'core', 'rn-android-boundary.pair')
+    }
     if (current.bond === 'bonded') return { outcome: 'already-paired', state: current }
     const result = await this.dispatch('securityPair', [field(15, nativePeerId)])
     const state = securityStateFromRecord(result, nativePeerId, 'rn-android-boundary.pair')
@@ -1024,6 +1031,10 @@ export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary
       }
     }
   }
+}
+
+function isAbortSignalAborted(signal: AbortSignal | null): boolean {
+  return signal?.aborted === true
 }
 
 /** Preserves native platform details instead of flattening CoreBluetooth failures to plain Error. */

@@ -171,6 +171,7 @@ describe('Native Protocol v2 schema authority', () => {
 
   test('carries every public Android ScanRecord advertisement field through the generated protocol records', () => {
     const radio = read('android/src/main/java/com/sfourdrinier/unifiedblemanager/radio/OwnedAndroidGattRadio.kt')
+    const boundary = read('src/native-protocol/rn-android-boundary.ts')
     const dispatcher = read(
       'android/src/main/java/com/sfourdrinier/unifiedblemanager/protocol/UnifiedBleProtocolAndroidDispatcher.kt'
     )
@@ -222,6 +223,8 @@ describe('Native Protocol v2 schema authority', () => {
     expect(radio).toContain('else -> "unknown"')
     expect(radio).not.toContain('cancelBondProcess')
     expect(radio).not.toContain('removeBond')
+    expect(boundary).toContain('signal: AbortSignal | null = null')
+    expect(boundary).toContain('if (isAbortSignalAborted(signal))')
   })
 
   test('represents complete paths, rich advertisements, errors, cancellation, and restoration', () => {

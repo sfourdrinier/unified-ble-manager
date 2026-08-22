@@ -180,7 +180,11 @@ describe('React Native Android security protocol boundary', () => {
   })
 
   test('rejects an already-aborted or already-expired pair before allocating native work', async () => {
-    const pair = jest.fn(async () => ({ outcome: 'paired', state: securityState('bonded') }))
+    const pair = jest.fn(async (_peerId, signal) => {
+      await securityStateCall()
+      if (signal?.aborted === true) throw contractError('operation.aborted', 'core', 'android.security.pair')
+      return { outcome: 'paired', state: securityState('bonded') }
+    })
     const security = new ReactNativeAndroidSecurityBackend(securityAdapter({ pair }), () => 20)
 
     const controller = new AbortController()
@@ -290,6 +294,112 @@ describe('React Native Android security protocol boundary', () => {
       })
     ).resolves.toMatchObject({ outcome: 'paired' })
     security.close()
+  })
+
+  test('does not submit native pairing when cancellation wins during the state preflight', async () => {
+    let resolveState
+    const dispatchPair = jest.fn()
+    const pair = jest.fn(async (_peerId, signal) => {
+      await securityStateCall()
+      if (signal?.aborted === true) throw contractError('operation.aborted', 'core', 'android.security.pair')
+      dispatchPair()
+      return { outcome: 'paired', state: securityState('bonded') }
+    })
+    const cleanupPairing = jest.fn(async () => undefined)
+    const securityStateCall = jest.fn(
+      () =>
+        new Promise(resolve => {
+          resolveState = resolve
+        })
+    )
+    const security = new ReactNativeAndroidSecurityBackend(
+      securityAdapter({ pair, cleanupPairing, securityState: securityStateCall }),
+      () => 20
+    )
+    const controller = new AbortController()
+    const pending = security.pair(peerId, {
+      signal: controller.signal,
+      deadline: null,
+      transport: 'auto',
+      protection: 'system-default',
+      ceremony: 'system'
+    })
+
+    await Promise.resolve()
+    controller.abort()
+    await expect(pending).resolves.toEqual({ outcome: 'cancelled' })
+    resolveState(securityState('not-bonded'))
+    await Promise.resolve()
+    expect(pair).toHaveBeenCalledTimes(1)
+    expect(dispatchPair).not.toHaveBeenCalled()
+    expect(cleanupPairing).toHaveBeenCalledWith(peerId)
+    security.close()
+  })
+
+  test('does not submit native pairing when a deadline wins during the state preflight', async () => {
+    jest.useFakeTimers()
+    try {
+      let resolveState
+      const dispatchPair = jest.fn()
+      const securityStateCall = jest.fn(
+        () =>
+          new Promise(resolve => {
+            resolveState = resolve
+          })
+      )
+      const pair = jest.fn(async (_peerId, signal) => {
+        await securityStateCall()
+        if (signal?.aborted === true) throw contractError('operation.aborted', 'core', 'android.security.pair')
+        dispatchPair()
+        return { outcome: 'paired', state: securityState('bonded') }
+      })
+      const security = new ReactNativeAndroidSecurityBackend(
+        securityAdapter({ pair, securityState: securityStateCall }),
+        () => 20
+      )
+      const pending = security.pair(peerId, {
+        signal: null,
+        deadline: 30,
+        transport: 'auto',
+        protection: 'system-default',
+        ceremony: 'system'
+      })
+      const result = expect(pending).rejects.toMatchObject({ normalized: { code: 'operation.timed-out' } })
+
+      await jest.advanceTimersByTimeAsync(10)
+      await result
+      resolveState(securityState('not-bonded'))
+      await Promise.resolve()
+      expect(dispatchPair).not.toHaveBeenCalled()
+      security.close()
+    } finally {
+      jest.useRealTimers()
+    }
+  })
+
+  test('rejects security operations and watches after backend close', async () => {
+    const security = new ReactNativeAndroidSecurityBackend(securityAdapter(), () => 20)
+    security.close()
+
+    expect(() => security.watch(peerId)).toThrow('lifecycle.destroyed')
+    await expect(security.state(peerId, { signal: null, deadline: null })).rejects.toMatchObject({
+      normalized: { code: 'lifecycle.destroyed' }
+    })
+    await expect(
+      security.pair(peerId, {
+        signal: null,
+        deadline: null,
+        transport: 'auto',
+        protection: 'system-default',
+        ceremony: 'system'
+      })
+    ).rejects.toMatchObject({ normalized: { code: 'lifecycle.destroyed' } })
+    await expect(security.cancelPairing(peerId, { signal: null, deadline: null })).rejects.toMatchObject({
+      normalized: { code: 'lifecycle.destroyed' }
+    })
+    await expect(security.unpair(peerId, { signal: null, deadline: null })).rejects.toMatchObject({
+      normalized: { code: 'lifecycle.destroyed' }
+    })
   })
 })
 
