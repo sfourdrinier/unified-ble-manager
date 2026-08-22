@@ -1585,13 +1585,32 @@ class OwnedAndroidGattRadio(private val context: Context) {
    * [BluetoothGatt.requestConnectionPriority] — returns false if not connected or call rejected.
    * Priority values match [BluetoothGatt.CONNECTION_PRIORITY_BALANCED]/HIGH/LOW_POWER (0/1/2).
    */
-  fun requestConnectionPriority(deviceId: String, connectionPriority: Int): Boolean {
-    val gatt = gatts[deviceId.uppercase()] ?: return false
-    return try {
-      gatt.requestConnectionPriority(connectionPriority)
-    } catch (t: Throwable) {
-      OwnedAndroidLog.e("requestConnectionPriority", t)
-      false
+  fun requestConnectionPriority(
+    deviceId: String,
+    connectionPriority: Int,
+    onResult: (Result<Boolean>) -> Unit
+  ): Long {
+    return enqueue(
+      deviceId,
+      onCancelled = {
+        onResult(Result.failure(IllegalStateException("connection priority request cancelled")))
+      },
+      onStartFailure = { error -> onResult(Result.failure(error)) }
+    ) { token, done ->
+      val gatt = gatts[deviceId.uppercase()]
+      if (gatt == null) {
+        if (token.markPubliclySettled()) onResult(Result.success(false))
+        done()
+        return@enqueue
+      }
+      val accepted = try {
+        gatt.requestConnectionPriority(connectionPriority)
+      } catch (t: Throwable) {
+        OwnedAndroidLog.e("requestConnectionPriority", t)
+        false
+      }
+      if (token.markPubliclySettled()) onResult(Result.success(accepted))
+      done()
     }
   }
 

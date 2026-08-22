@@ -457,12 +457,25 @@ class UnifiedBleProtocolAndroidDispatcher(
       "highThroughput" -> android.bluetooth.BluetoothGatt.CONNECTION_PRIORITY_HIGH
       else -> throw IllegalArgumentException("Android connection priority is unsupported")
     }
-    val accepted = radio.requestConnectionPriority(deviceId, connectionPriority)
-    emitSuccess(
-      command,
-      "priority",
-      mapOf(18 to ProtocolWireValue.BooleanValue(accepted))
-    )
+    val radioOperationId = radio.requestConnectionPriority(deviceId, connectionPriority) { result ->
+      result.fold(
+        onSuccess = { accepted ->
+          emitSuccess(
+            command,
+            "priority",
+            mapOf(18 to ProtocolWireValue.BooleanValue(accepted))
+          )
+        },
+        onFailure = { error ->
+          emitFailure(
+            command,
+            "requestPriorityFailed",
+            error.message ?: "Android connection priority request failed"
+          )
+        }
+      )
+    }
+    radioOperationIds[operationKey(command)] = radioOperationId
   }
 
   private fun subscribe(command: ProtocolWireRecord, enable: Boolean) {
