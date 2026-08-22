@@ -384,13 +384,15 @@ function createConnection(
   peerId,
   database,
   disconnect = jest.fn(async () => released()),
-  events = createConnectionLifecycleStream()
+  events = createConnectionLifecycleStream(),
+  rediscoveredDatabase = database
 ) {
   return {
     peerId,
     connectionId: `connection-${peerId}`,
     connectionGeneration: `connection-generation-${peerId}`,
     discover: jest.fn(async () => database),
+    rediscoverGatt: jest.fn(async () => rediscoveredDatabase),
     disconnect,
     events
   }
@@ -1615,6 +1617,43 @@ describe('Electron v4 IPC boundary', () => {
     ).resolves.toMatchObject({ kind: 'route', payload: { state: 'released' } })
     expect(disconnectB).toHaveBeenCalledTimes(1)
     expect(subscriptionAResponse.payload.handle).toMatch(/^subscription-/)
+    await current.binding.destroy()
+  })
+
+  test('retires the prior main-process database handle on explicit rediscovery', async () => {
+    const firstDatabase = createDatabase()
+    const secondDatabase = createDatabase()
+    const connection = createConnection(
+      'peer-rediscovery',
+      firstDatabase,
+      jest.fn(async () => released()),
+      createConnectionLifecycleStream(),
+      secondDatabase
+    )
+    const current = createMainFixture({ connect: jest.fn(async () => connection) })
+    const sender = createSender('client-rediscovery', 'window-rediscovery', 'session-rediscovery')
+    const renderer = await bootstrap(current, sender)
+
+    const connected = await current.port.handler(
+      { sender },
+      commandRequest(current, renderer, 1, 'connection.connect', { peerId: 'peer-rediscovery' })
+    )
+    const first = await current.port.handler(
+      { sender },
+      commandRequest(current, renderer, 2, 'gatt.discover', { connectionHandle: connected.payload.handle })
+    )
+    const second = await current.port.handler(
+      { sender },
+      commandRequest(current, renderer, 3, 'gatt.discover', {
+        connectionHandle: connected.payload.handle,
+        rediscoveryReason: 'manual-rediscovery'
+      })
+    )
+
+    const resources = current.router.resources.get(String(renderer.rendererLease.leaseId))
+    expect(connection.rediscoverGatt).toHaveBeenCalledWith(expect.any(Object), 'manual-rediscovery')
+    expect(resources.databases.has(first.payload.handle)).toBe(false)
+    expect(resources.databases.has(second.payload.handle)).toBe(true)
     await current.binding.destroy()
   })
 

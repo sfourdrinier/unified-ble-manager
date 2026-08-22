@@ -478,12 +478,18 @@ export class ElectronMainBleRouter {
     payload: SerializableRecord,
     controller: AbortController
   ): Promise<SerializableRecord> {
-    const connection = requiredResource(
-      resources.connections,
-      requiredString(payload, 'connectionHandle'),
-      'connection'
-    )
+    const connectionHandle = requiredString(payload, 'connectionHandle')
+    const connection = requiredResource(resources.connections, connectionHandle, 'connection')
     const reason = optionalRediscoveryReason(payload)
+    if (reason !== null) {
+      const retirement = await this.retireDatabasesForRediscovery(resources, connectionHandle)
+      if (retirement.state === 'release-failed') {
+        throw new BackendContractError(
+          retirement.failures[0]?.error ??
+            contractError('platform.failure', 'cleanup', 'electron-main-router.rediscovery-retirement').normalized
+        )
+      }
+    }
     const database =
       reason === null
         ? await connection.discover(operationOptions(payload, controller))
@@ -544,7 +550,7 @@ export class ElectronMainBleRouter {
     }
     const handle = this.allocateHandle('database')
     resources.databases.set(handle, {
-      connectionHandle: requiredString(payload, 'connectionHandle'),
+      connectionHandle,
       database,
       characteristics,
       descriptors
@@ -1011,6 +1017,33 @@ export class ElectronMainBleRouter {
         resources.databases.delete(databaseHandle)
       }
     }
+  }
+
+  private async retireDatabasesForRediscovery(
+    resources: RendererResources,
+    connectionHandle: string
+  ): Promise<CleanupRecord> {
+    const failures: CleanupFailure[] = []
+    for (const [databaseHandle, database] of resources.databases) {
+      if (database.connectionHandle !== connectionHandle) {
+        continue
+      }
+      let retired = true
+      for (const [subscriptionHandle, subscription] of resources.subscriptions) {
+        if (subscription.databaseHandle !== databaseHandle) {
+          continue
+        }
+        const cleanup = await this.streams.removeSubscription(resources, subscriptionHandle, subscription, true)
+        if (cleanup.state === 'release-failed') {
+          retired = false
+          failures.push(...cleanup.failures)
+        }
+      }
+      if (retired) {
+        resources.databases.delete(databaseHandle)
+      }
+    }
+    return failures.length === 0 ? { state: 'released', failures: [] } : { state: 'release-failed', failures }
   }
 
   private resourcesFor(rendererLease: RendererLeaseIdentity): RendererResources {

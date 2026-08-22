@@ -735,11 +735,15 @@ export class IpcConnection {
     this.databases.add(database)
   }
 
-  private invalidateDatabases(): void {
-    for (const database of this.databases) database.invalidate()
+  private invalidateDatabases(reason: GattDatabaseChangedEvent['reason'] | null = null): void {
+    for (const database of this.databases) database.invalidate(reason)
+    this.databases.clear()
   }
 
   async discover(options: IpcManagerOperationOptions = {}): Promise<IpcGattDatabase> {
+    if (options.reason !== undefined) {
+      this.invalidateDatabases(options.reason)
+    }
     await this.awaitLifecycleAdmission(options)
     const payload = await this.manager.route(
       'gatt.discover',
@@ -962,14 +966,14 @@ export class IpcGattDatabase {
     return this.changedStream
   }
 
-  invalidate(reason: 'service-changed' | null = null): void {
+  invalidate(reason: GattDatabaseChangedEvent['reason'] | null = null): void {
     if (!this.valid) return
     this.valid = false
     for (const subscription of this.subscriptions) {
       subscription.closeFromDatabase(reason === 'service-changed' ? 'service-changed' : 'connection-lost')
     }
     this.subscriptions.clear()
-    if (reason === 'service-changed') {
+    if (reason !== null) {
       this.changedStream.emit(
         Object.freeze({
           previousGeneration: this.databaseGeneration,

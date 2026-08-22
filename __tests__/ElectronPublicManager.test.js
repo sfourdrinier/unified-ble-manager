@@ -218,6 +218,105 @@ describe('Electron public manager façade', () => {
     expect(listeners.size).toBeGreaterThanOrEqual(0)
   })
 
+  test('invalidates the prior renderer database before explicit rediscovery', async () => {
+    const current = bootstrap()
+    const commands = []
+    let discoveryCount = 0
+    let readCount = 0
+    const databasePayload = generation => ({
+      schemaVersion: 2,
+      handle: `database-${generation}`,
+      databaseId: `database-id-${generation}`,
+      databaseGeneration: `database-generation-${generation}`,
+      services: [
+        { uuid: '0000180d-0000-1000-8000-00805f9b34fb', occurrence: '0', primary: true, includedServices: [] }
+      ],
+      characteristics: [
+        {
+          handle: `characteristic-${generation}`,
+          serviceUuid: '0000180d-0000-1000-8000-00805f9b34fb',
+          serviceOccurrence: '0',
+          characteristicUuid: '00002a37-0000-1000-8000-00805f9b34fb',
+          characteristicOccurrence: '0',
+          properties: ['read']
+        }
+      ],
+      descriptors: []
+    })
+    const invoke = jest.fn(async request => {
+      if (request.kind === 'bootstrap') return { kind: 'bootstrap', bootstrap: current }
+      if (request.kind === 'release') return { kind: 'release', cleanup: { state: 'released', failures: [] } }
+      const command = request.envelope.command
+      commands.push(command)
+      if (command === 'connection.connect') {
+        return {
+          kind: 'route',
+          payload: {
+            handle: 'connection-rediscovery',
+            peerId: 'peer-rediscovery',
+            connectionId: 'connection-id-rediscovery',
+            ownerLeaseId: 'renderer-lease-1',
+            connectionGeneration: 'connection-generation-rediscovery'
+          }
+        }
+      }
+      if (command === 'connection.events.subscribe') {
+        return {
+          kind: 'route',
+          payload: {
+            handle: request.envelope.payload.connectionEventsHandle,
+            connectionId: 'connection-id-rediscovery',
+            connectionGeneration: 'connection-generation-rediscovery',
+            eventSchemaVersion: 2
+          }
+        }
+      }
+      if (command === 'connection.events.ready') return { kind: 'route', payload: { state: 'ready' } }
+      if (command === 'gatt.discover') {
+        discoveryCount += 1
+        const payload = databasePayload(discoveryCount)
+        return {
+          kind: 'route',
+          payload:
+            request.envelope.payload.rediscoveryReason === undefined
+              ? payload
+              : { ...payload, rediscoveryReason: request.envelope.payload.rediscoveryReason }
+        }
+      }
+      if (command === 'gatt.read') {
+        readCount += 1
+        return { kind: 'route', payload: { value: new Uint8Array([readCount]) } }
+      }
+      if (command === 'connection.events.unsubscribe') {
+        return { kind: 'route', payload: { state: 'released', failures: [] } }
+      }
+      if (command === 'connection.disconnect') return { kind: 'route', payload: { state: 'released', failures: [] } }
+      throw new Error(`unexpected command ${command}`)
+    })
+    const transport = {
+      invoke,
+      subscribe: () => () => undefined,
+      acknowledge: async () => ({ kind: 'event.ack' })
+    }
+
+    const manager = await createElectronRendererBleManager({ transport })
+    const connection = await manager.connect('peer-rediscovery', { timeoutMs: 1_000 })
+    const first = await connection.discover({ timeoutMs: 1_000 })
+    await expect(first.characteristic('180d', '2a37').read({ timeoutMs: 1_000 })).resolves.toEqual(
+      new Uint8Array([1])
+    )
+
+    const second = await connection.rediscoverGatt({ reason: 'manual', timeoutMs: 1_000 })
+    await expect(second.characteristic('180d', '2a37').read({ timeoutMs: 1_000 })).resolves.toEqual(
+      new Uint8Array([2])
+    )
+    await expect(first.characteristic('180d', '2a37').read({ timeoutMs: 1_000 })).rejects.toMatchObject({
+      code: 'gatt.stale-handle'
+    })
+    expect(readCount).toBe(2)
+    expect(commands.filter(command => command === 'gatt.discover')).toHaveLength(2)
+  })
+
   test('forwards the public operation signal through the nested Electron transport', async () => {
     let observedSignal
     const invoke = jest.fn(async request => {
