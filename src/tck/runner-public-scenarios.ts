@@ -15,7 +15,12 @@ import {
 } from '../backend-contract/primitives'
 import type { GenerationId } from '../backend-contract/primitives'
 import type { StreamItem } from '../backend-contract/streams'
-import type { SecurityPairingChallenge, SecurityPairingResponse } from '../backend-contract/security'
+import type {
+  SecurityCancelPairingResult,
+  SecurityPairResult,
+  SecurityPairingChallenge,
+  SecurityPairingResponse
+} from '../backend-contract/security'
 import {
   attachBleBackend,
   createBleManager,
@@ -401,24 +406,33 @@ async function executeSystemOnlySecurityScenario<
   const iterator = events[Symbol.asyncIterator]()
   const initial = await fixture.controller.settle(security.state(peerId, options))
   const initialItem = await fixture.controller.settle(iterator.next())
-  securityAdapter.prepareCancellation?.()
-  const pending = security.pair(peerId, {
-    ...options,
-    transport: 'auto',
-    protection: 'system-default',
-    ceremony: 'system'
-  })
-  await fixture.controller.flush()
-  const cancelled = await fixture.controller.settle(security.cancelPairing(peerId, options))
-  const cancelledPair = await fixture.controller.settle(pending)
-  const afterCancellation = await fixture.controller.settle(security.cancelPairing(peerId, options))
+  const supportsCancellation = securityAdapter.supportsCancellation ?? true
+  const supportsUnpair = securityAdapter.supportsUnpair ?? true
+  let cancelled: SecurityCancelPairingResult = { outcome: 'not-pairing' }
+  let cancelledPair: SecurityPairResult = { outcome: 'cancelled' }
+  let afterCancellation: SecurityCancelPairingResult = { outcome: 'not-pairing' }
+  if (supportsCancellation) {
+    securityAdapter.prepareCancellation?.()
+    const pending = security.pair(peerId, {
+      ...options,
+      transport: 'auto',
+      protection: 'system-default',
+      ceremony: 'system'
+    })
+    await fixture.controller.flush()
+    cancelled = await fixture.controller.settle(security.cancelPairing(peerId, options))
+    cancelledPair = await fixture.controller.settle(pending)
+    afterCancellation = await fixture.controller.settle(security.cancelPairing(peerId, options))
+  }
   const paired = await fixture.controller.settle(
     security.pair(peerId, { ...options, transport: 'auto', protection: 'system-default', ceremony: 'system' })
   )
   const alreadyPaired = await fixture.controller.settle(
     security.pair(peerId, { ...options, transport: 'auto', protection: 'system-default', ceremony: 'system' })
   )
-  const unpaired = await fixture.controller.settle(security.unpair(peerId, options))
+  const unpaired = supportsUnpair
+    ? await fixture.controller.settle(security.unpair(peerId, options))
+    : { outcome: 'unsupported' as const }
   await iterator.return()
   await events.close()
   const counters = manager.attachedBackend.backend.resourceCounters()
@@ -439,20 +453,27 @@ async function executeSystemOnlySecurityScenario<
     }),
     fact(
       'security-pairing-cancellation-cleans-up',
-      cancelled.outcome === 'cancelled' &&
-        cancelledPair.outcome === 'cancelled' &&
-        afterCancellation.outcome === 'not-pairing',
+      !supportsCancellation ||
+        (cancelled.outcome === 'cancelled' &&
+          cancelledPair.outcome === 'cancelled' &&
+          afterCancellation.outcome === 'not-pairing'),
       {
         cancelled: cancelled.outcome,
         cancelledPair: cancelledPair.outcome,
         afterCancellation: afterCancellation.outcome,
+        supportsCancellation,
         retainedByteBuffers: counters.retainedByteBuffers
       }
     ),
-    fact('security-unpair-is-explicit', unpaired.outcome === 'unpaired', {
-      unpaired: unpaired.outcome,
-      supportsAlreadyUnpaired: securityAdapter.supportsAlreadyUnpaired
-    })
+    fact(
+      'security-unpair-is-explicit',
+      (!supportsUnpair && unpaired.outcome === 'unsupported') || unpaired.outcome === 'unpaired',
+      {
+        unpaired: unpaired.outcome,
+        supportsUnpair,
+        supportsAlreadyUnpaired: securityAdapter.supportsAlreadyUnpaired
+      }
+    )
   ]
 }
 
