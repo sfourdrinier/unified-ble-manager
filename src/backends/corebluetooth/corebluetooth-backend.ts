@@ -111,6 +111,7 @@ export interface ConnectionRecord {
   state: 'connecting' | 'connected' | 'disconnecting' | 'disconnected' | 'lost' | 'cleanup-failed'
   database: CoreBluetoothGattDatabase | null
   lease: CoreBluetoothConnectionLease | null
+  readinessWatchClosures: Set<() => Promise<void>>
 }
 export interface PhysicalSubscription {
   readonly key: string
@@ -283,7 +284,6 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
   readonly operationLifecycle: CoreBluetoothOperationLifecycle
   private readonly eventStreams = new Set<CoreBoundedStream<BackendEvent<string>>>()
   private readonly stateStreams = new Set<CoreBoundedStream<AdapterStateSnapshot<string>>>()
-  private readonly readinessWatchClosures = new Set<() => Promise<void>>()
   private readonly peerIdsByNativeId = new Map<string, PeerId<string>>()
   private readonly nativeIdsByPeerId = new Map<string, string>()
   private readonly connectionsByNativeId = new Map<string, ConnectionRecord>()
@@ -499,9 +499,9 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
     return this.now()
   }
 
-  registerReadinessWatch(close: () => Promise<void>): () => void {
-    this.readinessWatchClosures.add(close)
-    return () => this.readinessWatchClosures.delete(close)
+  registerReadinessWatch(record: ConnectionRecord, close: () => Promise<void>): () => void {
+    record.readinessWatchClosures.add(close)
+    return () => record.readinessWatchClosures.delete(close)
   }
   private watchAdapterState(): AdapterStateWatch<string> {
     const stream = new CoreBoundedStream<AdapterStateSnapshot<string>>(adapterStateLimits, 'latest')
@@ -760,7 +760,8 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
       ownerClientId: clientId,
       state: 'connecting',
       database: null,
-      lease: null
+      lease: null,
+      readinessWatchClosures: new Set()
     }
     this.nextConnection += 1
     this.nextLease += 1
@@ -816,6 +817,7 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
       return releasedCleanup
     }
     record.state = 'disconnecting'
+    this.closeConnectionReadinessWatches(record)
     const subscriptionCleanup = await this.removeConnectionSubscriptions(record, 'connection-lost')
     const failures: CleanupFailure[] = [...subscriptionCleanup.failures]
     try {
@@ -970,6 +972,7 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
     this.nextIngressOrdinal += 1
   }
   private invalidateRecord(record: ConnectionRecord, preservePhysicalSubscriptions = false): void {
+    this.closeConnectionReadinessWatches(record)
     record.state = 'lost'
     record.database?.invalidate()
     record.database = null
@@ -987,6 +990,14 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
       physical.consumers.clear()
       this.subscriptions.delete(physical.key)
     }
+  }
+  private closeConnectionReadinessWatches(record: ConnectionRecord): void {
+    for (const close of [...record.readinessWatchClosures]) {
+      close().catch(error => {
+        console.error('[CoreBluetoothBackend] Readiness watch cleanup rejected:', error)
+      })
+    }
+    record.readinessWatchClosures.clear()
   }
   private async removeConnectionSubscriptions(
     record: ConnectionRecord,
@@ -1195,10 +1206,6 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
   }
   private async destroyInternal(): Promise<CleanupRecord> {
     this.admissionClosed = true
-    for (const close of [...this.readinessWatchClosures]) {
-      await close()
-    }
-    this.readinessWatchClosures.clear()
     this.dispatcher.cancelAll()
     const adapterLossCleanup = this.adapterLossCleanup
     if (adapterLossCleanup !== null) {

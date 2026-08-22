@@ -401,7 +401,7 @@ export class CoreBluetoothConnectionControls {
         close('connection-lost').catch(() => undefined)
       }
     })
-    unregisterWatch = this.backend.registerReadinessWatch(() => close('owner-released').then(() => undefined))
+    unregisterWatch = this.backend.registerReadinessWatch(record, () => close('owner-released').then(() => undefined))
     try {
       const snapshot = await awaitWithOperationAdmission(
         probe(record.nativePeerId),

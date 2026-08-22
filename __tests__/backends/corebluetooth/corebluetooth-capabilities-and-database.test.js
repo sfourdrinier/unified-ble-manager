@@ -191,6 +191,33 @@ describe('CoreBluetooth runtime capabilities and database-change semantics', () 
     await backend.destroy()
   })
 
+  test('closes a readiness watch when its connection lease is released', async () => {
+    const readinessListeners = new Set()
+    const { backend } = await backendFixture(currentBoundary => {
+      currentBoundary.canSendWriteWithoutResponse = jest.fn(async nativePeerId => ({
+        nativePeerId,
+        connectionGeneration: '1',
+        ready: true,
+        ordinal: 1
+      }))
+      currentBoundary.onWriteWithoutResponseReadiness = listener => {
+        readinessListeners.add(listener)
+        return () => readinessListeners.delete(listener)
+      }
+    })
+    const { lease } = await connectedDatabase(backend)
+    const watch = await backend.connectionControls.writeWithoutResponseReadiness(lease.connection)
+
+    expect(readinessListeners.size).toBe(1)
+    await lease.release()
+
+    expect(readinessListeners.size).toBe(0)
+    await expect(watch.events[Symbol.asyncIterator]().next()).resolves.toMatchObject({
+      value: { kind: 'terminal', reason: 'owner-released' }
+    })
+    await backend.destroy()
+  })
+
   test('re-probes authoritative readiness after a dropped native ready edge', async () => {
     const readinessListeners = new Set()
     const snapshots = [
