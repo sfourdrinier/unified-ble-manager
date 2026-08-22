@@ -1526,9 +1526,9 @@ function requireRestorationAdapter<
 function featureState<Attachment extends string, Identity extends BackendIdentity<Attachment>>(
   backend: BleCentralBackend<Attachment, Identity>,
   featureId: string
-): FeatureState | null {
+): FeatureState {
   const registration = backend.features.registrations.find(candidate => candidate.id === featureId)
-  return registration?.state ?? null
+  return registration?.state ?? 'unsupported'
 }
 
 function restorationRecordCountIsBounded<Attachment extends string, Identity extends BackendIdentity<Attachment>>(
@@ -1553,11 +1553,11 @@ function isConnectionLifecycleValue<Attachment extends string>(
   )
 }
 
-function explicitFeatureState(state: FeatureState | null): boolean {
-  return state !== null
+function explicitFeatureState(state: FeatureState): boolean {
+  return state === 'supported' || state === 'limited' || state === 'unsupported' || state === 'unavailable'
 }
 
-function capabilityErrorCode(state: FeatureState | null): 'capability.unsupported' | 'capability.unavailable' {
+function capabilityErrorCode(state: FeatureState): 'capability.unsupported' | 'capability.unavailable' {
   return state === 'unavailable' ? 'capability.unavailable' : 'capability.unsupported'
 }
 
