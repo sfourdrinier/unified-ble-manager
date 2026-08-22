@@ -222,6 +222,39 @@ describe('WinRT operation dispatcher cancellation admission', () => {
     }
   })
 
+  test('retains observed native completion as physical settlement when physical-completion shape validation fails', async () => {
+    const pending = deferred()
+    const dispatcherInstance = dispatcher()
+    const dispatch = dispatcherInstance.dispatch({ signal: null, deadline: null }, 'winrt.gatt.read', () =>
+      Object.defineProperties(
+        {},
+        {
+          completion: { value: pending.promise },
+          cancel: { value: async () => 'already-terminal' },
+          physicalCompletion: {
+            get() {
+              throw new Error('physical completion getter failure')
+            }
+          }
+        }
+      )
+    )
+
+    await expect(dispatch.completion).rejects.toMatchObject({
+      normalized: { code: 'protocol.malformed', operation: 'winrt.dispatcher.native-operation.physical-completion' }
+    })
+    let physicalSettled = false
+    dispatch.physicalSettlement.then(() => {
+      physicalSettled = true
+    })
+    await Promise.resolve()
+    expect(physicalSettled).toBe(false)
+
+    pending.resolve(undefined)
+    await expect(dispatch.physicalSettlement).resolves.toBeUndefined()
+    expect(physicalSettled).toBe(true)
+  })
+
   test('contains an asynchronously rejecting late-success reporter without delaying retirement', async () => {
     const nativeCompletion = deferred()
     const diagnosticConsole = Object.freeze({ error: jest.fn() })
