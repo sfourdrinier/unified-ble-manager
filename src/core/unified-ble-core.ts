@@ -704,7 +704,9 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
   ): Promise<CleanupRecord> {
     const key = String(connection.resource.connectionId)
     this.operationCoordinator.cancelQueue(key, 'disconnected')
-    const quarantine = await this.awaitQuarantineDrain(key)
+    const quarantine: CleanupRecord = this.operationCoordinator.hasPendingDrain(key)
+      ? await this.awaitQuarantineDrain(key)
+      : { state: 'released', failures: [] }
     const admissionFailures = [...this.operationCoordinator.takeCleanupFailures(key), ...quarantine.failures]
     const mergeAdmissionFailures = (record: CleanupRecord): CleanupRecord => {
       if (admissionFailures.length === 0) return record
