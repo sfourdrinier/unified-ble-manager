@@ -13,6 +13,7 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
+import java.nio.file.Files
 import java.util.UUID
 import java.util.ArrayDeque
 import android.bluetooth.BluetoothDevice
@@ -45,6 +46,7 @@ class UnifiedBleProtocolAndroidDispatcherLifecycleTest {
     )
     assertTrue(dispatcher.contains("command.optionalString(17)"))
     assertTrue(dispatcher.contains("command.optionalString(18)"))
+    assertTrue(dispatcher.contains("Build.VERSION.SDK_INT >= Build.VERSION_CODES.O"))
     assertTrue(Regex("internal fun readPhy\\(deviceId: String, onResult: \\(Result<OwnedAndroidPhy>").containsMatchIn(radio))
     assertTrue(Regex("internal fun requestPhy\\(").containsMatchIn(radio))
     assertTrue(radio.contains("Result<OwnedAndroidPhy?>"))
@@ -71,12 +73,33 @@ class UnifiedBleProtocolAndroidDispatcherLifecycleTest {
     assertTrue(rejected)
   }
 
-  private fun readAndroidSource(relativePath: String): String {
+  @Test
+  fun sourceGuardReadsAndroidSourcesFromInstalledConsumerPackageLayout() {
+    val relativePath = "android/src/main/java/com/sfourdrinier/unifiedblemanager/protocol/PackagedSourceGuardTarget.kt"
+    val consumerRoot = Files.createTempDirectory("unified-ble-source-guard-").toFile()
+    val consumerAndroidDirectory = File(consumerRoot, "android")
+    val packagedSource = File(consumerRoot, "node_modules/unified-ble-manager/$relativePath")
+    consumerAndroidDirectory.mkdirs()
+    packagedSource.parentFile.mkdirs()
+    packagedSource.writeText("installed-package-source")
+
+    try {
+      assertEquals(
+        "installed-package-source",
+        readAndroidSource(relativePath, consumerAndroidDirectory)
+      )
+    } finally {
+      consumerRoot.deleteRecursively()
+    }
+  }
+
+  private fun readAndroidSource(relativePath: String, workingDirectory: File = File(".")): String {
     val candidates = listOf(
-      File(relativePath),
-      File("../$relativePath"),
-      File("../../$relativePath"),
-      File("../../../$relativePath")
+      File(workingDirectory, relativePath),
+      File(workingDirectory, "../$relativePath"),
+      File(workingDirectory, "../../$relativePath"),
+      File(workingDirectory, "../../../$relativePath"),
+      File(workingDirectory, "../node_modules/unified-ble-manager/$relativePath")
     )
     return candidates.firstOrNull { it.isFile }?.readText()
       ?: throw AssertionError("Unable to locate Android source guard target: $relativePath")
