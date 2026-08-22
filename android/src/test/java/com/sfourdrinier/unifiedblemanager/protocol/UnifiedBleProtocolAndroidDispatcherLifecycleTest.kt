@@ -13,8 +13,24 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.util.UUID
 import java.util.ArrayDeque
+import android.bluetooth.BluetoothDevice
 
 class UnifiedBleProtocolAndroidDispatcherLifecycleTest {
+  @Test
+  fun androidPhyWireValuesMapToFailClosedPlatformMasks() {
+    assertEquals(BluetoothDevice.PHY_LE_1M, OwnedAndroidGattRadio.phyValue("le1m"))
+    assertEquals(BluetoothDevice.PHY_LE_2M, OwnedAndroidGattRadio.phyValue("le2m"))
+    assertEquals(BluetoothDevice.PHY_LE_CODED, OwnedAndroidGattRadio.phyValue("leCoded"))
+    assertEquals(BluetoothDevice.PHY_LE_ALL_SUPPORTED, OwnedAndroidGattRadio.phyValue(null))
+    var rejected = false
+    try {
+      OwnedAndroidGattRadio.phyValue("unknown")
+    } catch (_: IllegalArgumentException) {
+      rejected = true
+    }
+    assertTrue(rejected)
+  }
+
   @Test
   fun duplicateInstallReservationDoesNotConstructALoserAndCloseReturnsOwnerCountsToZero() {
     class TrackingOwner(private val release: () -> Unit) {

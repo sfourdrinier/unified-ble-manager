@@ -79,7 +79,9 @@ export const nativeProtocolEnumValues: Readonly<Record<string, readonly string[]
     'writeDescriptor',
     'securityState',
     'securityPair',
-    'securityCancelPairing'
+    'securityCancelPairing',
+    'readPhy',
+    'requestPhy'
   ],
   resultKinds: [
     'accepted',
@@ -99,7 +101,8 @@ export const nativeProtocolEnumValues: Readonly<Record<string, readonly string[]
     'descriptorRead',
     'descriptorWrite',
     'securityState',
-    'securityPair'
+    'securityPair',
+    'phy'
   ],
   eventKinds: [
     'adapterState',
@@ -117,6 +120,7 @@ export const nativeProtocolEnumValues: Readonly<Record<string, readonly string[]
   binaryOwnership: ['nativeOwnedCopy', 'javascriptOwnedCopy', 'transferred'],
   writeModes: ['withResponse', 'withoutResponse'],
   connectionPriorities: ['lowPower', 'balanced', 'highThroughput'],
+  connectionPhys: ['le1m', 'le2m', 'leCoded'],
   adapterAvailability: ['available', 'unavailable', 'unsupported', 'unknown'],
   adapterAuthorization: ['granted', 'denied', 'restricted', 'notDetermined', 'unavailable'],
   adapterPower: ['on', 'off', 'resetting', 'unsupported', 'unknown'],
@@ -152,7 +156,9 @@ export const commandKinds = Object.freeze([
   'writeDescriptor',
   'securityState',
   'securityPair',
-  'securityCancelPairing'
+  'securityCancelPairing',
+  'readPhy',
+  'requestPhy'
 ])
 export type CommandKinds = (typeof commandKinds)[number]
 
@@ -174,7 +180,8 @@ export const resultKinds = Object.freeze([
   'descriptorRead',
   'descriptorWrite',
   'securityState',
-  'securityPair'
+  'securityPair',
+  'phy'
 ])
 export type ResultKinds = (typeof resultKinds)[number]
 
@@ -205,6 +212,9 @@ export type WriteModes = (typeof writeModes)[number]
 
 export const connectionPriorities = Object.freeze(['lowPower', 'balanced', 'highThroughput'])
 export type ConnectionPriorities = (typeof connectionPriorities)[number]
+
+export const connectionPhys = Object.freeze(['le1m', 'le2m', 'leCoded'])
+export type ConnectionPhys = (typeof connectionPhys)[number]
 
 export const adapterAvailability = Object.freeze(['available', 'unavailable', 'unsupported', 'unknown'])
 export type AdapterAvailability = (typeof adapterAvailability)[number]
@@ -319,6 +329,8 @@ export const nativeProtocolFields: readonly NativeProtocolFieldDescriptor[] = Ob
   nativeProtocolField('command', 14, 'requestedMtu', 'uint64', false),
   nativeProtocolField('command', 15, 'peerId', 'string', false),
   nativeProtocolField('command', 16, 'connectionPriority', 'enum:connectionPriorities', false),
+  nativeProtocolField('command', 17, 'phyTx', 'enum:connectionPhys', false),
+  nativeProtocolField('command', 18, 'phyRx', 'enum:connectionPhys', false),
   nativeProtocolField('terminal', 1, 'correlation', 'record:operationCorrelation', true),
   nativeProtocolField('terminal', 2, 'outcome', 'enum:terminalOutcomes', true),
   nativeProtocolField('terminal', 3, 'cause', 'string', false),
@@ -340,6 +352,9 @@ export const nativeProtocolFields: readonly NativeProtocolFieldDescriptor[] = Ob
   nativeProtocolField('result', 16, 'peerId', 'string', false),
   nativeProtocolField('result', 17, 'bondState', 'enum:securityBondStates', false),
   nativeProtocolField('result', 18, 'priorityAccepted', 'boolean', false),
+  nativeProtocolField('result', 19, 'phyTx', 'enum:connectionPhys', false),
+  nativeProtocolField('result', 20, 'phyRx', 'enum:connectionPhys', false),
+  nativeProtocolField('result', 21, 'phyAccepted', 'boolean', false),
   nativeProtocolField('advertisement', 1, 'peerId', 'string', true),
   nativeProtocolField('advertisement', 2, 'observedAt', 'uint64', true),
   nativeProtocolField('advertisement', 3, 'ingressOrdinal', 'uint64', true),

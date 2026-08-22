@@ -300,6 +300,24 @@ describe('CoreBluetooth runtime capabilities and database-change semantics', () 
     await backend.destroy()
   })
 
+  test('keeps PHY controls unsupported when a CoreBluetooth boundary has no concrete methods', async () => {
+    const { backend, boundary } = await backendFixture()
+    const { lease } = await connectedDatabase(backend)
+
+    expect(boundary.readPhy).toBeUndefined()
+    expect(boundary.requestPhy).toBeUndefined()
+    await expect(
+      backend.connections.readPhy(lease.connection, { operation: operationRequest('corebluetooth-read-phy') }).completion
+    ).rejects.toMatchObject({ normalized: { code: 'capability.unsupported' } })
+    await expect(
+      backend.connections.requestPhy(lease.connection, {
+        operation: operationRequest('corebluetooth-request-phy'),
+        preference: { tx: 'le-2m' }
+      }).completion
+    ).rejects.toMatchObject({ normalized: { code: 'capability.unsupported' } })
+    await backend.destroy()
+  })
+
   test('Services Changed invalidates the current database and subscriptions, emits the canonical event, and permits rediscovery', async () => {
     let databaseChanged = null
     const { backend, boundary } = await backendFixture(currentBoundary => {

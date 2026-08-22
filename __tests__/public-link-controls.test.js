@@ -41,6 +41,7 @@ function fakeInternalManager({ readinessEnabled = false } = {}) {
     ['connection:rssi', capability('limited')],
     ['connection:request-mtu', capability('limited')],
     ['connection:priority', capability('limited')],
+    ['connection:phy', capability('limited')],
     ['connection:effective-mtu', capability('unsupported')],
     ['gatt:maximum-write-length', capability('limited')],
     ['connection:parameters', capability('unavailable')],
@@ -88,6 +89,24 @@ function fakeInternalManager({ readinessEnabled = false } = {}) {
         terminal: terminal()
       }
     },
+    readPhy: async () => ({
+      txPhy: 'le-2m',
+      rxPhy: 'le-coded',
+      observedAtMonotonicMs: 8123,
+      terminal: terminal()
+    }),
+    requestPhy: async (requested, options) => ({
+      requested,
+      accepted: true,
+      observation: {
+        txPhy: 'le-2m',
+        rxPhy: 'le-coded',
+        observedAtMonotonicMs: 8124,
+        terminal: terminal()
+      },
+      observedAtMonotonicMs: 8124,
+      terminal: terminal()
+    }),
     ...(readinessEnabled
       ? {
           writeWithoutResponseReadiness: async () => {
@@ -183,6 +202,19 @@ describe('PR8A public link controls', () => {
       source: 'backend',
       authority: 'backend-operation'
     })
+    await expect(connection.controls.readPhy()).resolves.toMatchObject({
+      state: 'measured',
+      tx: 'le-2m',
+      rx: 'le-coded',
+      observedAtMonotonicMs: 8123,
+      source: 'backend'
+    })
+    await expect(connection.controls.requestPhy({ tx: 'le-1m', rx: 'le-coded' })).resolves.toMatchObject({
+      state: 'accepted',
+      requested: { tx: 'le-1m', rx: 'le-coded' },
+      observation: { state: 'measured', tx: 'le-2m', rx: 'le-coded', observedAtMonotonicMs: 8124 },
+      source: 'backend'
+    })
     const priorityResult = await connection.controls.requestPriority('balanced')
     expect(priorityResult).not.toHaveProperty('observation')
     expect(internal.priorityRequests).toEqual([
@@ -215,7 +247,8 @@ describe('PR8A public link controls', () => {
     const registry = createReactNativeConnectionControlFeatureRegistry('android', 'test')
     expect(registry.registrations.map(registration => registration.id)).toEqual([
       'connection:rssi',
-      'connection:request-mtu'
+      'connection:request-mtu',
+      'connection:phy'
     ])
   })
 

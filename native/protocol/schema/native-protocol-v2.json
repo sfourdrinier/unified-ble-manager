@@ -50,7 +50,9 @@
     "writeDescriptor",
     "securityState",
     "securityPair",
-    "securityCancelPairing"
+    "securityCancelPairing",
+    "readPhy",
+    "requestPhy"
   ],
   "resultKinds": [
     "accepted",
@@ -70,7 +72,8 @@
     "descriptorRead",
     "descriptorWrite",
     "securityState",
-    "securityPair"
+    "securityPair",
+    "phy"
   ],
   "eventKinds": [
     "adapterState",
@@ -88,6 +91,7 @@
   "binaryOwnership": ["nativeOwnedCopy", "javascriptOwnedCopy", "transferred"],
   "writeModes": ["withResponse", "withoutResponse"],
   "connectionPriorities": ["lowPower", "balanced", "highThroughput"],
+  "connectionPhys": ["le1m", "le2m", "leCoded"],
   "adapterAvailability": ["available", "unavailable", "unsupported", "unknown"],
   "adapterAuthorization": ["granted", "denied", "restricted", "notDetermined", "unavailable"],
   "adapterPower": ["on", "off", "resetting", "unsupported", "unknown"],
@@ -243,7 +247,9 @@
         ["writeMode", "enum:writeModes", false],
         ["requestedMtu", "uint64", false],
         ["peerId", "string", false],
-        ["connectionPriority", "enum:connectionPriorities", false]
+        ["connectionPriority", "enum:connectionPriorities", false],
+        ["phyTx", "enum:connectionPhys", false],
+        ["phyRx", "enum:connectionPhys", false]
       ]
     },
     {
@@ -274,7 +280,10 @@
         ["descriptorPath", "record:descriptorPath", false],
         ["peerId", "string", false],
         ["bondState", "enum:securityBondStates", false],
-        ["priorityAccepted", "boolean", false]
+        ["priorityAccepted", "boolean", false],
+        ["phyTx", "enum:connectionPhys", false],
+        ["phyRx", "enum:connectionPhys", false],
+        ["phyAccepted", "boolean", false]
       ]
     },
     {

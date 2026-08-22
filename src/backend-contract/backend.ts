@@ -26,10 +26,14 @@ import type {
 import type {
   ConnectionMaximumWriteLengthMeasurement,
   ConnectionMaximumWriteLengthRequest,
+  ConnectionPhyObservation,
+  ConnectionPhyRequest,
   ConnectionPriorityRequest,
   ConnectionWriteReadinessWatch,
   MtuNegotiation,
   ReadRssiRequest,
+  ReadPhyRequest,
+  RequestPhyRequest,
   RequestPriorityRequest,
   RequestMtuRequest,
   RssiMeasurement
@@ -181,6 +185,14 @@ export interface ConnectionBackend<Attachment extends string> {
     connection: BackendConnection<Attachment, string>,
     request: RequestPriorityRequest<Attachment, Operation>
   ): BackendOperationDispatch<Attachment, ConnectionPriorityRequest<Attachment, Operation>>
+  readPhy?<Operation extends string>(
+    connection: BackendConnection<Attachment, string>,
+    request: ReadPhyRequest<Attachment, Operation>
+  ): BackendOperationDispatch<Attachment, ConnectionPhyObservation<Attachment, Operation>>
+  requestPhy?<Operation extends string>(
+    connection: BackendConnection<Attachment, string>,
+    request: RequestPhyRequest<Attachment, Operation>
+  ): BackendOperationDispatch<Attachment, ConnectionPhyRequest<Attachment, Operation>>
   writeWithoutResponseReadiness?(
     connection: BackendConnection<Attachment, string>
   ): Promise<ConnectionWriteReadinessWatch<Attachment>>

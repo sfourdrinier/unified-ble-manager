@@ -1,6 +1,11 @@
 // src/backends/corebluetooth/corebluetooth-boundary.ts
 
-import type { ConnectionControlCapabilities, ConnectionPriority } from '../../backend-contract/connection-controls'
+import type {
+  BlePhy,
+  ConnectionControlCapabilities,
+  ConnectionPriority,
+  PhyPreference
+} from '../../backend-contract/connection-controls'
 
 /**
  * Typed, bytes-first boundary between the CoreBluetooth addon and the shared
@@ -101,6 +106,16 @@ export interface CoreBluetoothDescriptorAddress extends CoreBluetoothCharacteris
   readonly descriptorOccurrence: number
 }
 
+export interface CoreBluetoothPhyObservation {
+  readonly txPhy: BlePhy
+  readonly rxPhy: BlePhy
+}
+
+export interface CoreBluetoothPhyRequestResult {
+  readonly accepted: boolean
+  readonly observation: CoreBluetoothPhyObservation | null
+}
+
 export interface CoreBluetoothBoundary {
   /** A platform declares an unavailable control before the core submits any native command. */
   readonly connectionControlCapabilities?: ConnectionControlCapabilities
@@ -120,6 +135,8 @@ export interface CoreBluetoothBoundary {
   maximumWriteValueLength?(nativePeerId: string, withResponse: boolean): Promise<number>
   requestMtu?(nativePeerId: string, requestedMtu: number): Promise<number>
   requestPriority?(nativePeerId: string, priority: ConnectionPriority): Promise<boolean>
+  readPhy?(nativePeerId: string): Promise<CoreBluetoothPhyObservation>
+  requestPhy?(nativePeerId: string, preference: PhyPreference): Promise<CoreBluetoothPhyRequestResult>
   canSendWriteWithoutResponse?(nativePeerId: string): Promise<CoreBluetoothWriteReadinessSnapshot>
   discover(nativePeerId: string): Promise<CoreBluetoothGattSnapshot>
   read(address: CoreBluetoothCharacteristicAddress): Promise<Uint8Array>

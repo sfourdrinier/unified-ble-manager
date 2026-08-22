@@ -179,6 +179,8 @@ class UnifiedBleProtocolAndroidDispatcher(
         "readRssi" -> readRssi(command)
         "requestMtu" -> requestMtu(command)
         "requestPriority" -> requestPriority(command)
+        "readPhy" -> readPhy(command)
+        "requestPhy" -> requestPhy(command)
         "securityState" -> {
           securityEventsEnabled.set(true)
           securityState(command)
@@ -473,6 +475,48 @@ class UnifiedBleProtocolAndroidDispatcher(
             error.message ?: "Android connection priority request failed"
           )
         }
+      )
+    }
+    radioOperationIds[operationKey(command)] = radioOperationId
+  }
+
+  private fun readPhy(command: ProtocolWireRecord) {
+    val deviceId = command.requiredRecord(10).requiredString(2)
+    val radioOperationId = radio.readPhy(deviceId) { result ->
+      result.fold(
+        onSuccess = { phy ->
+          emitSuccess(
+            command,
+            "phy",
+            mapOf(
+              19 to ProtocolWireValue.StringValue(phy.txPhy),
+              20 to ProtocolWireValue.StringValue(phy.rxPhy)
+            )
+          )
+        },
+        onFailure = { error -> emitFailure(command, "readPhyFailed", error.message ?: "Android PHY read failed") }
+      )
+    }
+    radioOperationIds[operationKey(command)] = radioOperationId
+  }
+
+  private fun requestPhy(command: ProtocolWireRecord) {
+    val deviceId = command.requiredRecord(10).requiredString(2)
+    val txPhy = OwnedAndroidGattRadio.phyValue(command.optionalString(17))
+    val rxPhy = OwnedAndroidGattRadio.phyValue(command.optionalString(18))
+    val radioOperationId = radio.requestPhy(deviceId, txPhy, rxPhy) { result ->
+      result.fold(
+        onSuccess = { phy ->
+          val fields = mutableMapOf<Int, ProtocolWireValue>(
+            21 to ProtocolWireValue.BooleanValue(phy !== null)
+          )
+          if (phy !== null) {
+            fields[19] = ProtocolWireValue.StringValue(phy.txPhy)
+            fields[20] = ProtocolWireValue.StringValue(phy.rxPhy)
+          }
+          emitSuccess(command, "phy", fields)
+        },
+        onFailure = { error -> emitFailure(command, "requestPhyFailed", error.message ?: "Android PHY request failed") }
       )
     }
     radioOperationIds[operationKey(command)] = radioOperationId
@@ -1037,6 +1081,7 @@ internal fun dispatcherResultKindFor(commandKind: String): String = when (comman
   "readRssi" -> "rssi"
   "requestMtu" -> "mtu"
   "requestPriority" -> "priority"
+  "readPhy", "requestPhy" -> "phy"
   "subscribe" -> "subscribed"
   "unsubscribe" -> "unsubscribed"
   "securityState" -> "securityState"
@@ -1048,6 +1093,15 @@ internal fun dispatcherResultKindFor(commandKind: String): String = when (comman
 private fun ProtocolWireRecord.requiredBoolean(fieldId: Int): Boolean {
   val value = fields[fieldId]
   return if (value is ProtocolWireValue.BooleanValue) value.value else throw IllegalArgumentException("Boolean field is missing")
+}
+
+private fun ProtocolWireRecord.optionalString(fieldId: Int): String? {
+  val value = fields[fieldId]
+  return when (value) {
+    null -> null
+    is ProtocolWireValue.StringValue -> value.value
+    else -> throw IllegalArgumentException("String field is malformed")
+  }
 }
 
 private fun ProtocolWireRecord.requiredSignedInteger(fieldId: Int): Long {

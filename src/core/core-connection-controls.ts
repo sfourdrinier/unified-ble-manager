@@ -5,11 +5,15 @@ import {
   MAXIMUM_REQUESTED_ATT_MTU,
   MINIMUM_ATT_MTU,
   type ConnectionMaximumWriteLengthMeasurement,
+  type ConnectionPhyObservation,
+  type ConnectionPhyRequest,
   type ConnectionPriorityRequest,
   type ConnectionWriteReadinessWatch,
   type MtuNegotiation,
   type RssiMeasurement,
-  type ConnectionPriority
+  type ConnectionPriority,
+  type BlePhy,
+  type PhyPreference
 } from '../backend-contract/connection-controls'
 import { contractError } from '../backend-contract/errors'
 import type { BackendIdentity } from '../backend-contract/identity'
@@ -33,6 +37,15 @@ export interface CoreConnectionControls<Attachment extends string, Identity exte
     priority: ConnectionPriority,
     options: PublicOperationOptions
   ): Promise<ConnectionPriorityRequest<Attachment, string>>
+  readPhy(
+    connection: CoreConnection<Attachment, Identity>,
+    options: PublicOperationOptions
+  ): Promise<ConnectionPhyObservation<Attachment, string>>
+  requestPhy(
+    connection: CoreConnection<Attachment, Identity>,
+    preference: PhyPreference,
+    options: PublicOperationOptions
+  ): Promise<ConnectionPhyRequest<Attachment, string>>
   maximumWriteLength(
     connection: CoreConnection<Attachment, Identity>,
     mode: WriteMode,
@@ -69,6 +82,13 @@ export function createCoreConnectionControls<Attachment extends string, Identity
       assertReady('request-priority')
       return requestCorePriority(backend, operationCoordinator, connection, priority, options)
     },
+    readPhy: (connection: CoreConnection<Attachment, Identity>, options: PublicOperationOptions) =>
+      readCorePhy(backend, operationCoordinator, connection, options),
+    requestPhy: (
+      connection: CoreConnection<Attachment, Identity>,
+      preference: PhyPreference,
+      options: PublicOperationOptions
+    ) => requestCorePhy(backend, operationCoordinator, connection, preference, options),
     maximumWriteLength: (
       connection: CoreConnection<Attachment, Identity>,
       mode: WriteMode,
@@ -113,6 +133,67 @@ export async function requestCorePriority<Attachment extends string, Identity ex
   return requireOperationValue(result, 'unified-core.request-priority')
 }
 
+export async function readCorePhy<Attachment extends string, Identity extends BackendIdentity<Attachment>>(
+  backend: BleCentralBackend<Attachment, Identity>,
+  operationCoordinator: CoreOperationCoordinator<Attachment>,
+  connection: CoreConnection<Attachment, Identity>,
+  options: PublicOperationOptions
+): Promise<ConnectionPhyObservation<Attachment, string>> {
+  const readPhy = backend.connections.readPhy
+  if (readPhy === undefined) {
+    throw contractError('capability.unsupported', 'connection', 'unified-core.read-phy')
+  }
+  connection.assertCurrent()
+  const result = await operationCoordinator.run({
+    queueKey: String(connection.resource.connectionId),
+    fairnessKey: 'control',
+    options,
+    mayCommit: false,
+    dispatch: correlation => {
+      connection.assertCurrent()
+      const dispatch = readPhy(connection.resource, { operation: { ...options, correlation } })
+      return coreDispatch(dispatch, correlation, value => value.terminal)
+    }
+  })
+  return requireOperationValue(result, 'unified-core.read-phy')
+}
+
+export async function requestCorePhy<Attachment extends string, Identity extends BackendIdentity<Attachment>>(
+  backend: BleCentralBackend<Attachment, Identity>,
+  operationCoordinator: CoreOperationCoordinator<Attachment>,
+  connection: CoreConnection<Attachment, Identity>,
+  preference: PhyPreference,
+  options: PublicOperationOptions
+): Promise<ConnectionPhyRequest<Attachment, string>> {
+  if (
+    (preference.tx === undefined && preference.rx === undefined) ||
+    (preference.tx !== undefined && !isPhy(preference.tx)) ||
+    (preference.rx !== undefined && !isPhy(preference.rx))
+  ) {
+    throw contractError('argument.invalid', 'connection', 'unified-core.request-phy')
+  }
+  const requestPhy = backend.connections.requestPhy
+  if (requestPhy === undefined) {
+    throw contractError('capability.unsupported', 'connection', 'unified-core.request-phy')
+  }
+  connection.assertCurrent()
+  const result = await operationCoordinator.run({
+    queueKey: String(connection.resource.connectionId),
+    fairnessKey: 'control',
+    options,
+    mayCommit: false,
+    dispatch: correlation => {
+      connection.assertCurrent()
+      const dispatch = requestPhy(connection.resource, {
+        operation: { ...options, correlation },
+        preference
+      })
+      return coreDispatch(dispatch, correlation, value => value.terminal)
+    }
+  })
+  return requireOperationValue(result, 'unified-core.request-phy')
+}
+
 export async function observeCoreWriteReadiness<
   Attachment extends string,
   Identity extends BackendIdentity<Attachment>
@@ -126,6 +207,10 @@ export async function observeCoreWriteReadiness<
   }
   connection.assertCurrent()
   return observe(connection.resource)
+}
+
+function isPhy(value: string): value is BlePhy {
+  return value === 'le-1m' || value === 'le-2m' || value === 'le-coded'
 }
 
 export async function readCoreRssi<Attachment extends string, Identity extends BackendIdentity<Attachment>>(

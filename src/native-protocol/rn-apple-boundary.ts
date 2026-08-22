@@ -16,7 +16,8 @@ import { ReactNativeAndroidProtocolBoundary } from './rn-android-boundary'
 export class ReactNativeAppleProtocolBoundary extends ReactNativeAndroidProtocolBoundary {
   readonly connectionControlCapabilities: ConnectionControlCapabilities = Object.freeze({
     rssi: 'available',
-    requestMtu: 'unavailable'
+    requestMtu: 'unavailable',
+    phy: 'unavailable'
   })
 
   override adapterSnapshot(): CoreBluetoothAdapterSnapshot {

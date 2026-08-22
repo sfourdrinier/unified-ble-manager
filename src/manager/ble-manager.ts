@@ -37,7 +37,13 @@ import type {
 import type { BoundedAsyncStream } from '../backend-contract/streams'
 import type { RestorationAdoptionRequest, RestorationAdoptionResult } from '../backend-contract/restoration'
 import type { SecurityBackend } from '../backend-contract/security'
-import type { ConnectionPriority, ConnectionWriteReadinessWatch } from '../backend-contract/connection-controls'
+import type {
+  ConnectionPhyObservation,
+  ConnectionPhyRequest,
+  ConnectionPriority,
+  ConnectionWriteReadinessWatch,
+  PhyPreference
+} from '../backend-contract/connection-controls'
 import type { DiagnosticTraceDocument } from '../diagnostics/trace-format'
 import { DEFAULT_CORE_MAXIMUM_VALUE_BYTES, UnifiedBleCore } from '../core/unified-ble-core'
 import type { CoreDeadlineHandle, CoreScanSession, UnifiedBleCoreOptions } from '../core/unified-ble-core'
@@ -668,6 +674,17 @@ export class Connection<Attachment extends string, Identity extends BackendIdent
 
   requestPriority(priority: ConnectionPriority, options: PortableOperationOptions) {
     return this.connection.requestPriority(priority, toPublicOperationOptions(options))
+  }
+
+  readPhy(options: PortableOperationOptions): Promise<ConnectionPhyObservation<Attachment, string>> {
+    return this.connection.readPhy(toPublicOperationOptions(options))
+  }
+
+  requestPhy(
+    preference: PhyPreference,
+    options: PortableOperationOptions
+  ): Promise<ConnectionPhyRequest<Attachment, string>> {
+    return this.connection.requestPhy(preference, toPublicOperationOptions(options))
   }
 
   maximumWriteLength(mode: WriteMode, options: PortableOperationOptions) {

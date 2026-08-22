@@ -576,6 +576,53 @@ function createPublicConnectionControls(
       })
     })
 
+  const readPhy = (options: OperationOptions = {}): Promise<PhyObservation> =>
+    runPublicControl(async () => {
+      const descriptor = requireControlCapability(internal, 'connection:phy', 'public-connection.controls.read-phy')
+      const normalized = normalizeOperationOptions(options, now)
+      const result = await connection.readPhy({ signal: normalized.signal, deadline: normalized.deadline })
+      return Object.freeze({
+        ...controlMetadata(generation, result.observedAtMonotonicMs, descriptor, 'backend-operation'),
+        state: 'measured' as const,
+        tx: result.txPhy,
+        rx: result.rxPhy
+      })
+    })
+
+  const requestPhy = (preference: PhyPreference, options: OperationOptions = {}): Promise<PhyUpdateResult> =>
+    runPublicControl(async () => {
+      assertPublicPhyPreference(preference)
+      const descriptor = requireControlCapability(internal, 'connection:phy', 'public-connection.controls.request-phy')
+      const normalized = normalizeOperationOptions(options, now)
+      const result = await connection.requestPhy(preference, {
+        signal: normalized.signal,
+        deadline: normalized.deadline
+      })
+      if (result.accepted !== (result.observation !== null)) {
+        throw contractError('protocol.malformed', 'connection', 'public-connection.controls.request-phy.result')
+      }
+      const observation =
+        result.observation === null
+          ? null
+          : Object.freeze({
+              ...controlMetadata(
+                generation,
+                result.observation.observedAtMonotonicMs,
+                descriptor,
+                'backend-observation'
+              ),
+              state: 'measured' as const,
+              tx: result.observation.txPhy,
+              rx: result.observation.rxPhy
+            })
+      return Object.freeze({
+        ...controlMetadata(generation, result.observedAtMonotonicMs, descriptor, 'backend-operation'),
+        state: result.accepted ? ('accepted' as const) : ('rejected' as const),
+        requested: preference,
+        observation
+      })
+    })
+
   const unsupportedPromise = <Value>(id: `${string}:${string}`, operation: string): Promise<Value> =>
     runPublicControl(async () => {
       requireControlCapability(internal, id, operation)
@@ -588,10 +635,8 @@ function createPublicConnectionControls(
     requestMtu,
     maximumWriteLength,
     requestPriority,
-    readPhy: (_options: OperationOptions = {}) =>
-      unsupportedPromise<PhyObservation>('connection:phy', 'public-connection.controls.read-phy'),
-    requestPhy: (_preference: PhyPreference, _options: OperationOptions = {}) =>
-      unsupportedPromise<PhyUpdateResult>('connection:phy', 'public-connection.controls.request-phy'),
+    readPhy,
+    requestPhy,
     parameters: () =>
       unsupportedPromise<ConnectionParametersObservation>(
         'connection:parameters',
@@ -1262,6 +1307,24 @@ export function assertPublicConnectOptions(options: ConnectOptions): void {
       throw contractError('argument.invalid', 'connection', 'public-ble-manager.connect.preferred-phy')
     }
   }
+}
+
+function assertPublicPhyPreference(preference: PhyPreference): void {
+  if (
+    typeof preference !== 'object' ||
+    preference === null ||
+    Array.isArray(preference) ||
+    Object.keys(preference).some(key => key !== 'tx' && key !== 'rx') ||
+    (preference.tx === undefined && preference.rx === undefined) ||
+    (preference.tx !== undefined && !isPublicBlePhy(preference.tx)) ||
+    (preference.rx !== undefined && !isPublicBlePhy(preference.rx))
+  ) {
+    throw contractError('argument.invalid', 'connection', 'public-connection.controls.request-phy.preference')
+  }
+}
+
+function isPublicBlePhy(value: string): value is BlePhy {
+  return value === 'le-1m' || value === 'le-2m' || value === 'le-coded'
 }
 
 export function assertPublicChooseOptions(options: ChooseOptions): void {

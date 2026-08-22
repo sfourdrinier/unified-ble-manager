@@ -183,6 +183,15 @@ describe('React Native Android canonical protocol vertical slice', () => {
       requested: 'high-throughput',
       accepted: true
     })
+    await expect(connection.readPhy(operation())).resolves.toMatchObject({
+      txPhy: 'le-2m',
+      rxPhy: 'le-coded'
+    })
+    await expect(connection.requestPhy({ tx: 'le-2m', rx: 'le-coded' }, operation())).resolves.toMatchObject({
+      requested: { tx: 'le-2m', rx: 'le-coded' },
+      accepted: true,
+      observation: { txPhy: 'le-2m', rxPhy: 'le-coded' }
+    })
     const database = await connection.discover(operation())
     const snapshot = await database.snapshot()
     expect(snapshot.services).toHaveLength(1)
@@ -212,6 +221,8 @@ describe('React Native Android canonical protocol vertical slice', () => {
       'readRssi',
       'requestMtu',
       'requestPriority',
+      'readPhy',
+      'requestPhy',
       'discover',
       'read',
       'write',
@@ -264,6 +275,44 @@ describe('React Native Android canonical protocol vertical slice', () => {
     expect(runtime.commandKinds.filter(kind => kind === 'requestPriority')).toHaveLength(1)
     await expect(manager.destroy()).resolves.toEqual({ state: 'released', failures: [] })
     expect(runtime.retainedPayloadCount()).toBe(0)
+  })
+
+  test('Android PHY request separates callback acceptance from observed PHY state', async () => {
+    const control = new DeterministicAndroidControl()
+    const runtime = new DeterministicAndroidProtocolRuntime(control)
+    runtime.phyAccepted = false
+    global.__unifiedBleNativeProtocolV2 = runtime
+    const provider = createReactNativeAndroidBackendProvider({
+      control,
+      now: () => 20,
+      createOwnerId: () => 'deterministic-react-native-phy-rejection'
+    })
+    const manager = await createBleManagerFromProvider(
+      {
+        provider,
+        selection: { selectedAdapterId: (await provider.listAdapters())[0].adapterId },
+        coreCompatibility: compatibility(),
+        manager: {
+          clientId: opaqueId('phy-client', 'client', 'react-native-android:phy'),
+          managerId: opaqueId('phy-manager', 'manager', 'react-native-android:phy'),
+          ownerMode: 'owning'
+        }
+      },
+      DEFAULT_BLE_MANAGER_OPTIONS
+    )
+    const scan = await manager.scan(scanOptions())
+    runtime.emitAdvertisement()
+    const observation = await scan.observations[Symbol.asyncIterator]().next()
+    await scan.stop()
+    const connection = await manager.connect(observation.value.value.device.id, operation())
+
+    await expect(connection.requestPhy({ tx: 'le-2m', rx: 'le-coded' }, operation())).resolves.toMatchObject({
+      requested: { tx: 'le-2m', rx: 'le-coded' },
+      accepted: false,
+      observation: null
+    })
+    expect(runtime.phyRequests).toEqual([{ tx: 'le2m', rx: 'leCoded' }])
+    await expect(manager.destroy()).resolves.toEqual({ state: 'released', failures: [] })
   })
 
   test('constructs the canonical public manager with explicit React Native ownership and exposes adapter authorization', async () => {
@@ -1377,6 +1426,8 @@ class DeterministicAndroidProtocolRuntime {
     this.destroyFailuresRemaining = 0
     this.priorityAccepted = true
     this.priorityRequests = []
+    this.phyAccepted = true
+    this.phyRequests = []
   }
 
   retain(operationCorrelation, value) {
@@ -1483,6 +1534,21 @@ class DeterministicAndroidProtocolRuntime {
     if (kind === 'requestPriority') {
       this.priorityRequests.push(requiredString(command, 16))
       this.emitResult(command, 'priority', [field(18, this.priorityAccepted)])
+      return
+    }
+    if (kind === 'readPhy') {
+      this.emitResult(command, 'phy', [field(19, 'le2m'), field(20, 'leCoded')])
+      return
+    }
+    if (kind === 'requestPhy') {
+      this.phyRequests.push({ tx: requiredString(command, 17), rx: requiredString(command, 18) })
+      this.emitResult(
+        command,
+        'phy',
+        this.phyAccepted
+          ? [field(19, 'le2m'), field(20, 'leCoded'), field(21, true)]
+          : [field(21, false)]
+      )
       return
     }
     if (kind === 'write') {

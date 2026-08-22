@@ -5,12 +5,17 @@ import { BUILT_IN_FEATURE_IDS } from '../../backend-contract/capabilities'
 import {
   MAXIMUM_REQUESTED_ATT_MTU,
   MINIMUM_ATT_MTU,
+  type BlePhy,
   type ConnectionMaximumWriteLengthMeasurement,
   type ConnectionMaximumWriteLengthRequest,
+  type ConnectionPhyObservation,
+  type ConnectionPhyRequest,
   type ConnectionPriorityRequest,
   type ConnectionWriteReadinessObservation,
   type ConnectionWriteReadinessWatch,
   type RequestPriorityRequest,
+  type ReadPhyRequest,
+  type RequestPhyRequest,
   type MtuNegotiation,
   type ReadRssiRequest,
   type RequestMtuRequest,
@@ -125,6 +130,84 @@ export class CoreBluetoothConnectionControls {
           accepted,
           observedAtMonotonicMs: this.backend.monotonicNow(),
           terminal: successfulTerminal(request.operation)
+        })
+      },
+      String(connection.connectionId)
+    )
+  }
+
+  readPhy<Operation extends string>(
+    connection: BackendConnection<string, string>,
+    request: ReadPhyRequest<string, Operation>
+  ): BackendOperationDispatch<string, ConnectionPhyObservation<string, Operation>> {
+    if (this.backend.boundary.connectionControlCapabilities?.phy !== 'available') {
+      return this.unsupported(request.operation, 'corebluetooth.connection.read-phy')
+    }
+    const readPhy = this.backend.boundary.readPhy?.bind(this.backend.boundary)
+    if (readPhy === undefined) {
+      return this.unsupported(request.operation, 'corebluetooth.connection.read-phy')
+    }
+    this.backend.assertOperational('corebluetooth.connection.read-phy')
+    const record = this.backend.requireConnection(connection, 'corebluetooth.connection.read-phy')
+    return this.backend.dispatcher.dispatch(
+      request.operation,
+      'corebluetooth.connection.read-phy',
+      async () => {
+        const value = await readPhy(record.nativePeerId)
+        if (!isBlePhy(value.txPhy) || !isBlePhy(value.rxPhy)) {
+          throw contractError('protocol.malformed', 'connection', 'corebluetooth.connection.read-phy.result')
+        }
+        return Object.freeze({
+          txPhy: value.txPhy,
+          rxPhy: value.rxPhy,
+          observedAtMonotonicMs: this.backend.monotonicNow(),
+          terminal: successfulTerminal(request.operation)
+        })
+      },
+      String(connection.connectionId)
+    )
+  }
+
+  requestPhy<Operation extends string>(
+    connection: BackendConnection<string, string>,
+    request: RequestPhyRequest<string, Operation>
+  ): BackendOperationDispatch<string, ConnectionPhyRequest<string, Operation>> {
+    if (this.backend.boundary.connectionControlCapabilities?.phy !== 'available') {
+      return this.unsupported(request.operation, 'corebluetooth.connection.request-phy')
+    }
+    const requestPhy = this.backend.boundary.requestPhy?.bind(this.backend.boundary)
+    if (requestPhy === undefined) {
+      return this.unsupported(request.operation, 'corebluetooth.connection.request-phy')
+    }
+    this.backend.assertOperational('corebluetooth.connection.request-phy')
+    const record = this.backend.requireConnection(connection, 'corebluetooth.connection.request-phy')
+    return this.backend.dispatcher.dispatch(
+      request.operation,
+      'corebluetooth.connection.request-phy',
+      async () => {
+        const value = await requestPhy(record.nativePeerId, request.preference)
+        if (typeof value.accepted !== 'boolean') {
+          throw contractError('protocol.malformed', 'connection', 'corebluetooth.connection.request-phy.result')
+        }
+        const observation = value.observation
+        if (value.accepted !== (observation !== null)) {
+          throw contractError('protocol.malformed', 'connection', 'corebluetooth.connection.request-phy.observation')
+        }
+        const terminal = successfulTerminal(request.operation)
+        return Object.freeze({
+          requested: request.preference,
+          accepted: value.accepted,
+          observation:
+            observation === null
+              ? null
+              : Object.freeze({
+                  txPhy: requireBlePhy(observation.txPhy, 'corebluetooth.connection.request-phy.tx'),
+                  rxPhy: requireBlePhy(observation.rxPhy, 'corebluetooth.connection.request-phy.rx'),
+                  observedAtMonotonicMs: this.backend.monotonicNow(),
+                  terminal
+                }),
+          observedAtMonotonicMs: this.backend.monotonicNow(),
+          terminal
         })
       },
       String(connection.connectionId)
@@ -280,4 +363,15 @@ export class CoreBluetoothConnectionControls {
     )
     return registration?.state === 'supported' || registration?.state === 'limited'
   }
+}
+
+function isBlePhy(value: string): value is BlePhy {
+  return value === 'le-1m' || value === 'le-2m' || value === 'le-coded'
+}
+
+function requireBlePhy(value: string, operation: string): BlePhy {
+  if (!isBlePhy(value)) {
+    throw contractError('protocol.malformed', 'connection', operation)
+  }
+  return value
 }

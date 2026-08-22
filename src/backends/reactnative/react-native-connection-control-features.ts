@@ -63,11 +63,38 @@ export function createReactNativeConnectionControlFeatureRegistry(
           ]),
           Object.freeze({ attMtu: Object.freeze({ maximum: 0, minimum: null, unit: 'bytes' }) })
         )
-  return createFeatureRegistry(Object.freeze([rssi, requestMtu]))
+  const phy =
+    platform === 'android'
+      ? createFeatureRegistration(
+          BUILT_IN_FEATURE_IDS.connectionPhy,
+          'limited',
+          implementationVersion,
+          'react-native-android-phy-dispatch-v1',
+          Object.freeze([liveQualificationLimitation('LE PHY read/request')]),
+          Object.freeze({ phyModes: Object.freeze({ maximum: 3, minimum: 1, unit: 'modes' }) })
+        )
+      : createFeatureRegistration(
+          BUILT_IN_FEATURE_IDS.connectionPhy,
+          'unsupported',
+          implementationVersion,
+          'react-native-apple-corebluetooth-phy-v1',
+          Object.freeze([
+            Object.freeze({
+              code: 'corebluetooth-no-phy-control',
+              explanation: 'CoreBluetooth exposes no caller-directed LE PHY read or request API.',
+              affectedGuarantee: 'caller-directed LE PHY control'
+            })
+          ]),
+          Object.freeze({ phyModes: Object.freeze({ maximum: 0, minimum: null, unit: 'modes' }) })
+        )
+  return createFeatureRegistry(Object.freeze([rssi, requestMtu, phy]))
 }
 
 function createFeatureRegistration(
-  id: typeof BUILT_IN_FEATURE_IDS.connectionRssi | typeof BUILT_IN_FEATURE_IDS.connectionRequestMtu,
+  id:
+    | typeof BUILT_IN_FEATURE_IDS.connectionRssi
+    | typeof BUILT_IN_FEATURE_IDS.connectionRequestMtu
+    | typeof BUILT_IN_FEATURE_IDS.connectionPhy,
   state: 'limited' | 'unsupported',
   implementationVersion: string,
   sourceDigest: string,

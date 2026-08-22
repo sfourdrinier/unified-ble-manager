@@ -54,6 +54,8 @@ public enum CommandKinds: UInt16, CaseIterable, Sendable {
   case securityState = 17
   case securityPair = 18
   case securityCancelPairing = 19
+  case readPhy = 21
+  case requestPhy = 22
 }
 
 public enum ResultKinds: UInt16, CaseIterable, Sendable {
@@ -75,6 +77,7 @@ public enum ResultKinds: UInt16, CaseIterable, Sendable {
   case descriptorWrite = 15
   case securityState = 16
   case securityPair = 17
+  case phy = 19
 }
 
 public enum EventKinds: UInt16, CaseIterable, Sendable {
@@ -115,6 +118,12 @@ public enum ConnectionPriorities: UInt16, CaseIterable, Sendable {
   case lowPower = 1
   case balanced = 2
   case highThroughput = 3
+}
+
+public enum ConnectionPhys: UInt16, CaseIterable, Sendable {
+  case le1m = 1
+  case le2m = 2
+  case leCoded = 3
 }
 
 public enum AdapterAvailability: UInt16, CaseIterable, Sendable {
@@ -242,6 +251,8 @@ public let nativeProtocolFields: [FieldDescriptor] = [
     FieldDescriptor(record: .command, fieldID: 14, name: "requestedMtu", type: "uint64", required: false),
     FieldDescriptor(record: .command, fieldID: 15, name: "peerId", type: "string", required: false),
     FieldDescriptor(record: .command, fieldID: 16, name: "connectionPriority", type: "enum:connectionPriorities", required: false),
+    FieldDescriptor(record: .command, fieldID: 17, name: "phyTx", type: "enum:connectionPhys", required: false),
+    FieldDescriptor(record: .command, fieldID: 18, name: "phyRx", type: "enum:connectionPhys", required: false),
     FieldDescriptor(record: .terminal, fieldID: 1, name: "correlation", type: "record:operationCorrelation", required: true),
     FieldDescriptor(record: .terminal, fieldID: 2, name: "outcome", type: "enum:terminalOutcomes", required: true),
     FieldDescriptor(record: .terminal, fieldID: 3, name: "cause", type: "string", required: false),
@@ -263,6 +274,9 @@ public let nativeProtocolFields: [FieldDescriptor] = [
     FieldDescriptor(record: .result, fieldID: 16, name: "peerId", type: "string", required: false),
     FieldDescriptor(record: .result, fieldID: 17, name: "bondState", type: "enum:securityBondStates", required: false),
     FieldDescriptor(record: .result, fieldID: 18, name: "priorityAccepted", type: "boolean", required: false),
+    FieldDescriptor(record: .result, fieldID: 19, name: "phyTx", type: "enum:connectionPhys", required: false),
+    FieldDescriptor(record: .result, fieldID: 20, name: "phyRx", type: "enum:connectionPhys", required: false),
+    FieldDescriptor(record: .result, fieldID: 21, name: "phyAccepted", type: "boolean", required: false),
     FieldDescriptor(record: .advertisement, fieldID: 1, name: "peerId", type: "string", required: true),
     FieldDescriptor(record: .advertisement, fieldID: 2, name: "observedAt", type: "uint64", required: true),
     FieldDescriptor(record: .advertisement, fieldID: 3, name: "ingressOrdinal", type: "uint64", required: true),

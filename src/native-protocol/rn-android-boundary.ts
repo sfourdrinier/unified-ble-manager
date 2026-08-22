@@ -1,7 +1,11 @@
 // src/native-protocol/rn-android-boundary.ts
 
 import { contractError } from '../backend-contract/errors'
-import type { ConnectionControlCapabilities, ConnectionPriority } from '../backend-contract/connection-controls'
+import type {
+  ConnectionControlCapabilities,
+  ConnectionPriority,
+  PhyPreference
+} from '../backend-contract/connection-controls'
 import type {
   NativeAttachmentIdentity,
   NativeProtocolHandshakeResult,
@@ -13,7 +17,9 @@ import type {
   CoreBluetoothBoundary,
   CoreBluetoothCharacteristicAddress,
   CoreBluetoothDescriptorAddress,
-  CoreBluetoothGattSnapshot
+  CoreBluetoothGattSnapshot,
+  CoreBluetoothPhyObservation,
+  CoreBluetoothPhyRequestResult
 } from '../backends/corebluetooth/corebluetooth-boundary'
 import {
   copyNativeProtocolBytes,
@@ -42,6 +48,7 @@ import {
   commandRecord,
   field,
   nativePeerIdForCommand,
+  nativePhyFromPublic,
   operationKey,
   protocolRecord,
   requiredBoolean,
@@ -51,6 +58,7 @@ import {
   snapshotFromRecord,
   optionalRecord,
   optionalString,
+  publicPhyFromNative,
   parseAdvertisementRecord,
   requiredUnsigned
 } from './rn-android-protocol-records'
@@ -104,7 +112,8 @@ export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary
   readonly connectionControlCapabilities: ConnectionControlCapabilities = Object.freeze({
     rssi: 'available',
     requestMtu: 'available',
-    priority: 'available'
+    priority: 'available',
+    phy: 'available'
   })
   private securityExtensionAvailable = false
   private securityCancellationExtensionAvailable = false
@@ -326,6 +335,53 @@ export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary
       throw contractError('protocol.malformed', 'boundary', 'rn-android-boundary.request-priority.kind')
     }
     return requiredBoolean(result, 18, 'rn-android-boundary.request-priority.accepted')
+  }
+
+  async readPhy(nativePeerId: string): Promise<CoreBluetoothPhyObservation> {
+    this.requireOpen('read-phy')
+    const connection = this.requireConnection(nativePeerId, 'read-phy')
+    if (connection.state !== 'connected') {
+      throw contractError('operation.disconnected', 'connection', 'rn-android-boundary.read-phy')
+    }
+    const result = await this.dispatch('readPhy', [field(10, connection.record)])
+    if (requiredString(result, 2, 'rn-android-boundary.read-phy.kind') !== 'phy') {
+      throw contractError('protocol.malformed', 'boundary', 'rn-android-boundary.read-phy.kind')
+    }
+    return Object.freeze({
+      txPhy: publicPhyFromNative(requiredString(result, 19, 'rn-android-boundary.read-phy.tx')),
+      rxPhy: publicPhyFromNative(requiredString(result, 20, 'rn-android-boundary.read-phy.rx'))
+    })
+  }
+
+  async requestPhy(nativePeerId: string, preference: PhyPreference): Promise<CoreBluetoothPhyRequestResult> {
+    this.requireOpen('request-phy')
+    const connection = this.requireConnection(nativePeerId, 'request-phy')
+    if (connection.state !== 'connected') {
+      throw contractError('operation.disconnected', 'connection', 'rn-android-boundary.request-phy')
+    }
+    if (preference.tx === undefined && preference.rx === undefined) {
+      throw contractError('argument.invalid', 'connection', 'rn-android-boundary.request-phy.preference')
+    }
+    const fields: NativeProtocolField[] = [field(10, connection.record)]
+    if (preference.tx !== undefined) fields.push(field(17, nativePhyFromPublic(preference.tx)))
+    if (preference.rx !== undefined) fields.push(field(18, nativePhyFromPublic(preference.rx)))
+    const result = await this.dispatch('requestPhy', fields)
+    if (requiredString(result, 2, 'rn-android-boundary.request-phy.kind') !== 'phy') {
+      throw contractError('protocol.malformed', 'boundary', 'rn-android-boundary.request-phy.kind')
+    }
+    const accepted = requiredBoolean(result, 21, 'rn-android-boundary.request-phy.accepted')
+    const tx = optionalString(result, 19)
+    const rx = optionalString(result, 20)
+    if (accepted !== (tx !== null && rx !== null)) {
+      throw contractError('protocol.malformed', 'boundary', 'rn-android-boundary.request-phy.observation')
+    }
+    return Object.freeze({
+      accepted,
+      observation:
+        tx === null || rx === null
+          ? null
+          : Object.freeze({ txPhy: publicPhyFromNative(tx), rxPhy: publicPhyFromNative(rx) })
+    })
   }
 
   async securityState(nativePeerId: string): Promise<AndroidSecurityState> {

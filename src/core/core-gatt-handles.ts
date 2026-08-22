@@ -36,10 +36,13 @@ import type { CoreSubscription } from './subscription-registry'
 import type { CoreDeadlineHandle, UnifiedBleCore } from './unified-ble-core'
 import type {
   ConnectionMaximumWriteLengthMeasurement,
+  ConnectionPhyObservation,
+  ConnectionPhyRequest,
   ConnectionPriority,
   ConnectionPriorityRequest,
   ConnectionWriteReadinessWatch,
   MtuNegotiation,
+  PhyPreference,
   RssiMeasurement
 } from '../backend-contract/connection-controls'
 import type { CoreConnectionControls } from './core-connection-controls'
@@ -137,6 +140,17 @@ export class CoreConnection<Attachment extends string, Identity extends BackendI
     options: PublicOperationOptions
   ): Promise<ConnectionPriorityRequest<Attachment, string>> {
     return this.controls.requestPriority(this, priority, options)
+  }
+
+  readPhy(options: PublicOperationOptions): Promise<ConnectionPhyObservation<Attachment, string>> {
+    return this.controls.readPhy(this, options)
+  }
+
+  requestPhy(
+    preference: PhyPreference,
+    options: PublicOperationOptions
+  ): Promise<ConnectionPhyRequest<Attachment, string>> {
+    return this.controls.requestPhy(this, preference, options)
   }
 
   maximumWriteLength(

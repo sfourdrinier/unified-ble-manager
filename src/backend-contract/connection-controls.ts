@@ -13,6 +13,9 @@ export const MAXIMUM_REQUESTED_ATT_MTU = 517
 /** Android's supported caller-directed connection link-priority requests. */
 export type ConnectionPriority = 'low-power' | 'balanced' | 'high-throughput'
 
+export type BlePhy = 'le-1m' | 'le-2m' | 'le-coded'
+export type PhyPreference = Readonly<{ readonly tx?: BlePhy; readonly rx?: BlePhy }>
+
 /** Whether a platform boundary can truthfully dispatch a connection-control operation. */
 export type ConnectionControlSupport = 'available' | 'unavailable'
 
@@ -21,6 +24,7 @@ export interface ConnectionControlCapabilities {
   readonly rssi: ConnectionControlSupport
   readonly requestMtu: ConnectionControlSupport
   readonly priority?: ConnectionControlSupport
+  readonly phy?: ConnectionControlSupport
 }
 
 export interface RssiMeasurement<Attachment extends string, _Operation extends string> {
@@ -40,6 +44,21 @@ export interface MtuNegotiation<Attachment extends string, _Operation extends st
 export interface ConnectionPriorityRequest<Attachment extends string, _Operation extends string> {
   readonly requested: ConnectionPriority
   readonly accepted: boolean
+  readonly observedAtMonotonicMs: number
+  readonly terminal: OperationTerminalRecord<Attachment, string>
+}
+
+export interface ConnectionPhyObservation<Attachment extends string, _Operation extends string> {
+  readonly txPhy: BlePhy
+  readonly rxPhy: BlePhy
+  readonly observedAtMonotonicMs: number
+  readonly terminal: OperationTerminalRecord<Attachment, string>
+}
+
+export interface ConnectionPhyRequest<Attachment extends string, _Operation extends string> {
+  readonly requested: PhyPreference
+  readonly accepted: boolean
+  readonly observation: ConnectionPhyObservation<Attachment, _Operation> | null
   readonly observedAtMonotonicMs: number
   readonly terminal: OperationTerminalRecord<Attachment, string>
 }
@@ -79,6 +98,15 @@ export interface RequestMtuRequest<Attachment extends string, Operation extends 
 export interface RequestPriorityRequest<Attachment extends string, Operation extends string> {
   readonly operation: OperationOptions<Attachment, Operation>
   readonly priority: ConnectionPriority
+}
+
+export interface ReadPhyRequest<Attachment extends string, Operation extends string> {
+  readonly operation: OperationOptions<Attachment, Operation>
+}
+
+export interface RequestPhyRequest<Attachment extends string, Operation extends string> {
+  readonly operation: OperationOptions<Attachment, Operation>
+  readonly preference: PhyPreference
 }
 
 export interface ConnectionMaximumWriteLengthRequest<Attachment extends string, Operation extends string> {
