@@ -456,7 +456,7 @@ export class CoreBoundedStream<Value> implements BoundedAsyncStream<Value> {
     return this.terminalDelivered ? 0 : this.limits.reservedControlCapacity
   }
 
-  private isTerminal(): boolean {
+  isTerminal(): boolean {
     return this.terminalNotice !== null || this.terminalDelivered
   }
 

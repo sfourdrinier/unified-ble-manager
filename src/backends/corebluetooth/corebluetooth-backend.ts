@@ -355,7 +355,8 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
       readPhy: (connection, request) => this.connectionControls.readPhy(connection, request),
       requestPhy: (connection, request) => this.connectionControls.requestPhy(connection, request),
       maximumWriteLength: (connection, request) => this.connectionControls.maximumWriteLength(connection, request),
-      writeWithoutResponseReadiness: connection => this.connectionControls.writeWithoutResponseReadiness(connection)
+      writeWithoutResponseReadiness: (connection, options) =>
+        this.connectionControls.writeWithoutResponseReadiness(connection, options)
     }
     this.gatt = {
       discover: (connection, options) => this.gattOperations.discover(connection, options),

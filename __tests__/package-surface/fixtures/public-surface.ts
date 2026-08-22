@@ -112,6 +112,7 @@ declare const publicSubscription: GattSubscription
 declare const gattSnapshot: GattDatabaseSnapshot
 declare const gattPathSelector: GattPathSelector
 declare const gattWriteOptions: GattWriteOptions
+declare const writeWhenReadyOptions: OperationOptions
 declare const gattSubscribeOptions: GattSubscribeOptions
 declare const scanQuery: ScanQuery
 declare const scanClause: ScanClause
@@ -127,6 +128,7 @@ void publicService.characteristic('2a19', { occurrence: 0 })
 void publicCharacteristic.descriptor('2901', { occurrence: 0 })
 void publicCharacteristic.read()
 void publicCharacteristic.write(new Uint8Array([1]), gattWriteOptions)
+void publicCharacteristic.writeWhenReady(new Uint8Array([1]), writeWhenReadyOptions)
 void publicCharacteristic.subscribe(gattSubscribeOptions)
 void publicDescriptor.read()
 void publicSubscription.values

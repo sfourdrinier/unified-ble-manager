@@ -1,7 +1,13 @@
 // src/core/core-characteristic-operations.ts
 
 import type { BleCentralBackend } from '../backend-contract/backend'
+import { BUILT_IN_FEATURE_IDS } from '../backend-contract/capabilities'
+import type {
+  ConnectionWriteReadinessObservation,
+  ConnectionWriteReadinessWatch
+} from '../backend-contract/connection-controls'
 import { BackendContractError, contractError } from '../backend-contract/errors'
+import type { CleanupFailure, CleanupRecord } from '../backend-contract/errors'
 import type { CharacteristicPath } from '../backend-contract/gatt'
 import type { BackendIdentity } from '../backend-contract/identity'
 import type {
@@ -14,10 +20,15 @@ import type {
   WritePolicy,
   WriteReceipt
 } from '../backend-contract/operations'
-import { ownBytes, type ByteLimit, type OwnedBytes } from '../backend-contract/primitives'
+import { deadline, ownBytes, type ByteLimit, type OwnedBytes } from '../backend-contract/primitives'
 import type { CoreGattDatabase } from './core-gatt-handles'
-import type { CoreOperationCoordinator, CoreOperationDispatch, CoreOperationResult } from './operation-coordinator'
-import { coreDispatch, requireOperationValue } from './unified-ble-core-helpers'
+import type {
+  CoreOperationAdmission,
+  CoreOperationCoordinator,
+  CoreOperationDispatch,
+  CoreOperationResult
+} from './operation-coordinator'
+import { awaitWithOperationAdmission, coreDispatch, requireOperationValue } from './unified-ble-core-helpers'
 
 type CurrentCharacteristicPath<Attachment extends string> = CharacteristicPath<
   Attachment,
@@ -27,6 +38,8 @@ type CurrentCharacteristicPath<Attachment extends string> = CharacteristicPath<
   string,
   'current'
 >
+
+const READINESS_OPEN_CLEANUP_GRACE_MS = 1000
 
 interface LongWritePlan {
   readonly maximumWriteLength: number
@@ -85,6 +98,299 @@ export async function writeCoreCharacteristic<Attachment extends string, Identit
     }
   })
   return requireOperationValue(result, 'unified-core.write')
+}
+
+export async function writeCoreCharacteristicWhenReady<
+  Attachment extends string,
+  Identity extends BackendIdentity<Attachment>
+>(
+  backend: BleCentralBackend<Attachment, Identity>,
+  operationCoordinator: CoreOperationCoordinator<Attachment>,
+  maximumValueBytes: ByteLimit,
+  database: CoreGattDatabase<Attachment, Identity>,
+  path: CurrentCharacteristicPath<Attachment>,
+  bytes: Readonly<Uint8Array>,
+  options: WritePolicy
+): Promise<WriteReceipt<Attachment, string>> {
+  if (options.mode !== 'without-response') {
+    throw contractError('argument.invalid', 'gatt', 'unified-core.write-when-ready.mode')
+  }
+  const readinessRegistration = backend.features.registrations.find(
+    registration => registration.id === BUILT_IN_FEATURE_IDS.writeWithoutResponseReadiness
+  )
+  if (readinessRegistration?.state === 'unavailable') {
+    throw contractError('capability.unavailable', 'connection', 'unified-core.write-when-ready')
+  }
+  if (
+    readinessRegistration === undefined ||
+    readinessRegistration.state === 'unsupported' ||
+    backend.connections.writeWithoutResponseReadiness === undefined
+  ) {
+    throw contractError('capability.unsupported', 'connection', 'unified-core.write-when-ready')
+  }
+  database.assertPath(path)
+  const owned = ownBytes(bytes, maximumValueBytes)
+  const result = await operationCoordinator.run({
+    queueKey: String(path.connectionId),
+    fairnessKey: 'write',
+    options,
+    mayCommit: true,
+    retainedPayloadBytes: owned.byteLength,
+    admission: () => createWriteReadinessAdmission(database, path, options),
+    dispatch: correlation => {
+      database.assertPath(path)
+      const dispatch = backend.gatt.write(path, {
+        operation: { ...options, correlation },
+        bytes: owned,
+        mode: 'without-response'
+      })
+      return coreDispatch(dispatch, correlation, value => value.terminal)
+    }
+  })
+  return requireOperationValue(result, 'unified-core.write-when-ready')
+}
+
+interface WriteReadinessWaiter {
+  readonly resolve: () => void
+  readonly reject: (error: Error) => void
+}
+
+function createWriteReadinessAdmission<Attachment extends string, Identity extends BackendIdentity<Attachment>>(
+  database: CoreGattDatabase<Attachment, Identity>,
+  path: CurrentCharacteristicPath<Attachment>,
+  options: WritePolicy
+): CoreOperationAdmission {
+  let iterator: AsyncIterator<
+    import('../backend-contract/streams').StreamItem<ConnectionWriteReadinessObservation<Attachment>>,
+    undefined,
+    undefined
+  > | null = null
+  let ready = false
+  let closed = false
+  let failure: Error | null = null
+  let source: ConnectionWriteReadinessWatch<Attachment> | null = null
+  let sourceClosePromise: Promise<CleanupRecord> | null = null
+  let closePromise: Promise<CleanupRecord> | null = null
+  const admissionCancellation = new AbortController()
+  const cleanupFailureHandlers = new Set<(failure: CleanupFailure) => void>()
+  const waiters = new Set<WriteReadinessWaiter>()
+
+  const rejectWaiters = (error: Error): void => {
+    for (const waiter of waiters) waiter.reject(error)
+    waiters.clear()
+  }
+  const fail = (error: Error): void => {
+    if (failure !== null || closed) return
+    failure = error
+    ready = false
+    rejectWaiters(error)
+  }
+  const acceptReady = (): void => {
+    for (const waiter of waiters) waiter.resolve()
+    waiters.clear()
+  }
+  const observe = (observation: ConnectionWriteReadinessObservation<Attachment>): void => {
+    if (
+      String(observation.connectionId) !== String(path.connectionId) ||
+      String(observation.connectionGeneration) !== String(path.connectionGeneration)
+    ) {
+      fail(contractError('protocol.violation', 'connection', 'unified-core.write-when-ready.generation'))
+      return
+    }
+    ready = observation.ready
+    if (ready) acceptReady()
+  }
+  const closeSource = (watch: ConnectionWriteReadinessWatch<Attachment>): Promise<CleanupRecord> => {
+    if (sourceClosePromise !== null) return sourceClosePromise
+    sourceClosePromise = Promise.resolve()
+      .then(() => watch.close())
+      .then(
+        cleanup => {
+          if (cleanup.state === 'release-failed') {
+            for (const cleanupFailure of cleanup.failures) {
+              for (const handler of cleanupFailureHandlers) handler(cleanupFailure)
+            }
+          }
+          return cleanup
+        },
+        error => {
+          const cleanupFailure: CleanupFailure = {
+            resourceKind: 'gatt.write-readiness',
+            error:
+              error instanceof BackendContractError
+                ? error.normalized
+                : contractError('platform.failure', 'cleanup', 'unified-core.write-when-ready.close').normalized
+          }
+          for (const handler of cleanupFailureHandlers) handler(cleanupFailure)
+          return {
+            state: 'release-failed',
+            failures: [cleanupFailure]
+          }
+        }
+      )
+    return sourceClosePromise
+  }
+  const pump = async (watch: ConnectionWriteReadinessWatch<Attachment>): Promise<void> => {
+    const nextIterator = watch.events[Symbol.asyncIterator]()
+    iterator = nextIterator
+    while (!closed && failure === null) {
+      const item = await nextIterator.next()
+      if (closed || failure !== null) return
+      if (item.done) {
+        fail(contractError('operation.disconnected', 'connection', 'unified-core.write-when-ready.stream-closed'))
+        return
+      }
+      if (item.value.kind === 'value') {
+        observe(item.value.value)
+        continue
+      }
+      if (item.value.kind === 'overflow') {
+        fail(contractError('stream.overflow', 'connection', 'unified-core.write-when-ready.stream-overflow'))
+        return
+      }
+      fail(readinessTerminalError(item.value.reason))
+      return
+    }
+  }
+
+  const pendingOpen = Promise.resolve().then(() =>
+    database.connection.writeWithoutResponseReadiness({
+      signal: admissionCancellation.signal,
+      deadline: options.deadline
+    })
+  )
+  pendingOpen
+    .then(
+      openedSource => {
+        source = openedSource
+        if (closed) {
+          closeSource(openedSource).then(
+            () => undefined,
+            () => undefined
+          )
+          return
+        }
+        pump(openedSource).catch(error => {
+          fail(
+            error instanceof BackendContractError
+              ? error
+              : contractError('platform.failure', 'connection', 'unified-core.write-when-ready.readiness-pump')
+          )
+        })
+      },
+      error => {
+        const normalized =
+          error instanceof BackendContractError
+            ? error
+            : contractError('platform.failure', 'connection', 'unified-core.write-when-ready.readiness-open')
+        if (!closed) fail(normalized)
+      }
+    )
+    .catch(() => undefined)
+  const boundedOpen = awaitWithOperationAdmission(
+    pendingOpen,
+    options,
+    () => database.monotonicNow(),
+    'unified-core.write-when-ready.readiness-open'
+  )
+  boundedOpen.catch(error => {
+    if (!closed) {
+      fail(
+        error instanceof BackendContractError
+          ? error
+          : contractError('platform.failure', 'connection', 'unified-core.write-when-ready.readiness-open')
+      )
+    }
+  })
+
+  return {
+    waitUntilReady(): Promise<void> {
+      if (failure !== null) return Promise.reject(failure)
+      if (closed) {
+        return Promise.reject(
+          contractError('operation.aborted', 'connection', 'unified-core.write-when-ready.admission-closed')
+        )
+      }
+      if (ready) return Promise.resolve()
+      return new Promise((resolve, reject) => {
+        waiters.add({ resolve, reject })
+      })
+    },
+    isReady(): boolean {
+      if (closed || failure !== null) return false
+      if (source?.events.isTerminal?.() === true) {
+        fail(contractError('operation.disconnected', 'connection', 'unified-core.write-when-ready.stream-closed'))
+        return false
+      }
+      if (!ready) return false
+      database.assertPath(path)
+      return true
+    },
+    close(): Promise<CleanupRecord> {
+      if (closePromise !== null) return closePromise
+      closed = true
+      ready = false
+      admissionCancellation.abort()
+      rejectWaiters(contractError('operation.aborted', 'connection', 'unified-core.write-when-ready.close'))
+      if (source === null) {
+        const cleanupOpen = awaitWithOperationAdmission(
+          pendingOpen,
+          {
+            signal: null,
+            deadline: deadline(database.monotonicNow() + READINESS_OPEN_CLEANUP_GRACE_MS)
+          },
+          () => database.monotonicNow(),
+          'unified-core.write-when-ready.cleanup-open'
+        )
+        const closing = cleanupOpen
+          .then(
+            openedSource => {
+              source = openedSource
+              return closeSource(openedSource)
+            },
+            error => {
+              if (error instanceof BackendContractError && error.normalized.code === 'operation.timed-out') {
+                const cleanupFailure: CleanupFailure = {
+                  resourceKind: 'gatt.write-readiness-open',
+                  error: error.normalized
+                }
+                for (const handler of cleanupFailureHandlers) handler(cleanupFailure)
+                return { state: 'release-failed' as const, failures: [cleanupFailure] }
+              }
+              return { state: 'released' as const, failures: [] }
+            }
+          )
+          .then(async cleanup => {
+            if (iterator?.return !== undefined) await iterator.return()
+            return cleanup
+          })
+        closePromise = closing
+        return closing
+      }
+      const closing = closeSource(source).then(async cleanup => {
+        if (iterator?.return !== undefined) await iterator.return()
+        return cleanup
+      })
+      closePromise = closing
+      return closing
+    },
+    onCleanupFailure(handler: (failure: CleanupFailure) => void): void {
+      cleanupFailureHandlers.add(handler)
+    }
+  }
+}
+
+function readinessTerminalError(reason: import('../backend-contract/streams').StreamTerminalNotice['reason']): Error {
+  if (reason === 'operation-aborted') {
+    return contractError('operation.aborted', 'connection', 'unified-core.write-when-ready.readiness-terminal')
+  }
+  if (reason === 'operation-timed-out') {
+    return contractError('operation.timed-out', 'connection', 'unified-core.write-when-ready.readiness-terminal')
+  }
+  if (reason === 'source-failed' || reason === 'overflow') {
+    return contractError('platform.failure', 'connection', 'unified-core.write-when-ready.readiness-terminal')
+  }
+  return contractError('operation.disconnected', 'connection', 'unified-core.write-when-ready.readiness-terminal')
 }
 
 /**

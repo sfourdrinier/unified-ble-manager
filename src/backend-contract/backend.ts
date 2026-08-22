@@ -200,7 +200,8 @@ export interface ConnectionBackend<Attachment extends string> {
     request: RequestPhyRequest<Attachment, Operation>
   ): BackendOperationDispatch<Attachment, ConnectionPhyRequest<Attachment, Operation>>
   writeWithoutResponseReadiness?(
-    connection: BackendConnection<Attachment, string>
+    connection: BackendConnection<Attachment, string>,
+    options?: PublicOperationOptions
   ): Promise<ConnectionWriteReadinessWatch<Attachment>>
   maximumWriteLength?<Operation extends string>(
     connection: BackendConnection<Attachment, string>,

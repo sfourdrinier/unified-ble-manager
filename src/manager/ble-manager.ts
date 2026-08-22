@@ -695,8 +695,12 @@ export class Connection<Attachment extends string, Identity extends BackendIdent
     return this.connection.maximumWriteLength(mode, toPublicOperationOptions(options))
   }
 
-  writeWithoutResponseReadiness(): Promise<ConnectionWriteReadinessWatch<Attachment>> {
-    return this.connection.writeWithoutResponseReadiness()
+  writeWithoutResponseReadiness(
+    options?: PortableOperationOptions
+  ): Promise<ConnectionWriteReadinessWatch<Attachment>> {
+    return this.connection.writeWithoutResponseReadiness(
+      toPublicOperationOptions(options ?? { signal: null, deadline: null })
+    )
   }
 }
 
@@ -738,6 +742,14 @@ export class DiscoveredGattDatabase<Attachment extends string, Identity extends 
 
   async write(path: PortableCurrentCharacteristicPath, bytes: Readonly<Uint8Array>, options: PortableWritePolicy) {
     return this.database.write(this.resolveCharacteristicPath(path), bytes, toPublicWritePolicy(options))
+  }
+
+  async writeWhenReady(
+    path: PortableCurrentCharacteristicPath,
+    bytes: Readonly<Uint8Array>,
+    options: PortableWritePolicy
+  ) {
+    return this.database.writeWhenReady(this.resolveCharacteristicPath(path), bytes, toPublicWritePolicy(options))
   }
 
   async maximumWriteLength(path: PortableCurrentCharacteristicPath, mode: WriteMode) {

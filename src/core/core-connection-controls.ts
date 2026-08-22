@@ -57,7 +57,8 @@ export interface CoreConnectionControls<Attachment extends string, Identity exte
     options: PublicOperationOptions
   ): Promise<ConnectionMaximumWriteLengthMeasurement<Attachment, string>>
   writeWithoutResponseReadiness(
-    connection: CoreConnection<Attachment, Identity>
+    connection: CoreConnection<Attachment, Identity>,
+    options?: PublicOperationOptions
   ): Promise<ConnectionWriteReadinessWatch<Attachment>>
 }
 
@@ -106,9 +107,12 @@ export function createCoreConnectionControls<Attachment extends string, Identity
       assertReady('maximum-write-length')
       return observeCoreMaximumWriteLength(backend, operationCoordinator, connection, mode, options)
     },
-    writeWithoutResponseReadiness: (connection: CoreConnection<Attachment, Identity>) => {
+    writeWithoutResponseReadiness: (
+      connection: CoreConnection<Attachment, Identity>,
+      options?: PublicOperationOptions
+    ) => {
       assertReady('write-readiness')
-      return observeCoreWriteReadiness(backend, connection)
+      return observeCoreWriteReadiness(backend, connection, options)
     }
   })
 }
@@ -208,14 +212,15 @@ export async function observeCoreWriteReadiness<
   Identity extends BackendIdentity<Attachment>
 >(
   backend: BleCentralBackend<Attachment, Identity>,
-  connection: CoreConnection<Attachment, Identity>
+  connection: CoreConnection<Attachment, Identity>,
+  options?: PublicOperationOptions
 ): Promise<ConnectionWriteReadinessWatch<Attachment>> {
   const observe = backend.connections.writeWithoutResponseReadiness
   if (observe === undefined) {
     throw contractError('capability.unsupported', 'connection', 'unified-core.write-readiness')
   }
   connection.assertCurrent()
-  return observe(connection.resource)
+  return observe(connection.resource, options)
 }
 
 function isPhy(value: string): value is BlePhy {

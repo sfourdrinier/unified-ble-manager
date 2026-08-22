@@ -1,7 +1,7 @@
 // src/core/operation-coordinator.ts
 
 import { BackendContractError, contractError } from '../backend-contract/errors'
-import type { NormalizedBleError } from '../backend-contract/errors'
+import type { CleanupFailure, CleanupRecord, NormalizedBleError } from '../backend-contract/errors'
 import type { OperationTerminalOutcome, PublicOperationOptions } from '../backend-contract/operations'
 import type { OperationCorrelation } from '../backend-contract/primitives'
 import { ResourceLedger } from './resource-ledger'
@@ -40,6 +40,14 @@ export interface CoreOperationDispatch<Value> {
   requestCancellation(): Promise<void>
 }
 
+/** A FIFO-head pre-native gate whose current state is rechecked at dispatch. */
+export interface CoreOperationAdmission {
+  waitUntilReady(): Promise<void>
+  isReady(): boolean
+  close(): Promise<CleanupRecord>
+  onCleanupFailure?: (handler: (failure: CleanupFailure) => void) => void
+}
+
 export interface CoreOperationExecution<Attachment extends string, Value> {
   readonly queueKey: string | null
   /** Internal stable class used for deterministic per-connection round-robin selection. */
@@ -47,20 +55,21 @@ export interface CoreOperationExecution<Attachment extends string, Value> {
   readonly options: PublicOperationOptions
   readonly mayCommit: boolean
   readonly retainedPayloadBytes?: number
+  readonly admission?: () => CoreOperationAdmission
   readonly dispatch: (correlation: OperationCorrelation<Attachment, string>) => CoreOperationDispatch<Value>
   readonly onQuarantined?: () => void
   readonly onLateSuccess?: (value: Value) => Promise<void>
   readonly onLateFailure?: (error: Error) => Promise<void>
 }
 
-type OperationPhase = 'queued' | 'dispatched' | 'quarantined' | 'completed'
+type OperationPhase = 'queued' | 'admitting' | 'admission-cancelled' | 'dispatched' | 'quarantined' | 'completed'
 
 interface TrackedOperation {
   readonly queueKey: string | null
   readonly fairnessKey: string
   phase: OperationPhase
   cancelOperation(outcome: Exclude<CoreOperationOutcome, 'succeeded' | 'failed'>): void
-  beginDispatch(): void
+  beginOperation(): void
 }
 
 interface PendingOperation<Attachment extends string, Value> extends TrackedOperation {
@@ -71,6 +80,8 @@ interface PendingOperation<Attachment extends string, Value> extends TrackedOper
   readonly abortListener: () => void
   deadlineTimer: ReturnType<typeof setTimeout> | null
   dispatchHandle: CoreOperationDispatch<Value> | null
+  admissionHandle: CoreOperationAdmission | null
+  admissionClosePromise: Promise<CleanupRecord> | null
   publicResult: CoreOperationResult<Attachment, Value> | null
   readonly retainedPayloadBytes: number
   payloadRetained: boolean
@@ -80,6 +91,11 @@ interface ConnectionQueue {
   readonly lanes: Map<string, TrackedOperation[]>
   readonly fairnessOrder: string[]
   lastDispatchedFairnessKey: string | null
+}
+
+interface DrainWaiter {
+  readonly queueKey: string | undefined
+  readonly resolve: () => void
 }
 
 export interface CoreOperationCoordinatorOptions<Attachment extends string> {
@@ -107,7 +123,9 @@ export class CoreOperationCoordinator<Attachment extends string> {
   private admissionOpen = true
   private nextTraceLabel = 1
   private quarantinedOperations = 0
-  private readonly quarantineDrainWaiters = new Set<() => void>()
+  private drainingAdmissions = 0
+  private readonly quarantineDrainWaiters = new Set<DrainWaiter>()
+  private readonly retainedCleanupFailures = new Map<string | null, CleanupFailure[]>()
   private readonly maximumQueuedOperationsPerConnection: number
 
   constructor(private readonly options: CoreOperationCoordinatorOptions<Attachment>) {
@@ -172,11 +190,13 @@ export class CoreOperationCoordinator<Attachment extends string> {
         abortListener: () => this.cancel(operation, 'aborted'),
         deadlineTimer: null,
         dispatchHandle: null,
+        admissionHandle: null,
+        admissionClosePromise: null,
         phase: 'queued',
         queueKey: execution.queueKey,
         fairnessKey: execution.fairnessKey ?? DEFAULT_FAIRNESS_KEY,
         cancelOperation: outcome => this.cancel(operation, outcome),
-        beginDispatch: () => this.dispatch(operation),
+        beginOperation: () => this.beginOperation(operation),
         publicResult: null,
         retainedPayloadBytes,
         payloadRetained: retainedPayloadBytes > 0
@@ -193,7 +213,7 @@ export class CoreOperationCoordinator<Attachment extends string> {
       this.options.resourceLedger.increment('queuedOperations')
       this.record(operation, 'queued', null)
       if (execution.queueKey === null) {
-        this.dispatch(operation)
+        this.beginOperation(operation)
         return
       }
       const queue = this.queues.get(execution.queueKey) ?? {
@@ -231,20 +251,43 @@ export class CoreOperationCoordinator<Attachment extends string> {
     }
   }
 
-  waitForQuarantineDrain(): Promise<void> {
-    if (this.quarantinedOperations === 0) {
+  waitForQuarantineDrain(queueKey?: string): Promise<void> {
+    if (!this.hasPendingDrain(queueKey)) {
       return Promise.resolve()
     }
     return new Promise(resolve => {
-      this.quarantineDrainWaiters.add(resolve)
+      this.quarantineDrainWaiters.add({ queueKey, resolve })
     })
+  }
+
+  hasPendingDrain(queueKey?: string): boolean {
+    for (const operation of this.operations) {
+      if (
+        (operation.phase === 'quarantined' || operation.phase === 'admission-cancelled') &&
+        (queueKey === undefined || operation.queueKey === queueKey)
+      ) {
+        return true
+      }
+    }
+    return false
+  }
+
+  takeCleanupFailures(queueKey?: string): readonly CleanupFailure[] {
+    if (queueKey === undefined) {
+      const failures = Object.freeze([...this.retainedCleanupFailures.values()].flat())
+      this.retainedCleanupFailures.clear()
+      return failures
+    }
+    const failures = Object.freeze([...(this.retainedCleanupFailures.get(queueKey) ?? [])])
+    this.retainedCleanupFailures.delete(queueKey)
+    return failures
   }
 
   activeCounts(): { readonly queued: number; readonly dispatched: number; readonly quarantined: number } {
     let queued = 0
     let dispatched = 0
     for (const operation of this.operations) {
-      if (operation.phase === 'queued') {
+      if (operation.phase === 'queued' || operation.phase === 'admitting') {
         queued += 1
       }
       if (operation.phase === 'dispatched') {
@@ -265,7 +308,7 @@ export class CoreOperationCoordinator<Attachment extends string> {
         return
       }
     }
-    this.selectNextQueuedOperation(queue)?.beginDispatch()
+    this.selectNextQueuedOperation(queue)?.beginOperation()
   }
 
   private selectNextQueuedOperation(queue: ConnectionQueue): TrackedOperation | undefined {
@@ -299,7 +342,7 @@ export class CoreOperationCoordinator<Attachment extends string> {
     let queued = 0
     for (const lane of queue.lanes.values()) {
       for (const operation of lane) {
-        if (operation.phase === 'queued') {
+        if (operation.phase === 'queued' || operation.phase === 'admitting') {
           queued += 1
         }
       }
@@ -307,9 +350,120 @@ export class CoreOperationCoordinator<Attachment extends string> {
     return queued < this.maximumQueuedOperationsPerConnection
   }
 
-  private dispatch<Value>(operation: PendingOperation<Attachment, Value>): void {
+  private beginOperation<Value>(operation: PendingOperation<Attachment, Value>): void {
+    if (operation.execution.admission === undefined) {
+      this.dispatch(operation)
+      return
+    }
+    this.beginAdmission(operation)
+  }
+
+  private beginAdmission<Value>(operation: PendingOperation<Attachment, Value>): void {
     if (operation.phase !== 'queued') {
       return
+    }
+    operation.phase = 'admitting'
+    this.record(operation, 'admitting', null)
+    try {
+      operation.admissionHandle = operation.execution.admission?.() ?? null
+    } catch (error) {
+      this.failAdmission(operation, error)
+      return
+    }
+    if (operation.admissionHandle === null) {
+      this.failAdmission(
+        operation,
+        contractError('lifecycle.invariant-violation', 'core', 'operation-coordinator.missing-admission-handle')
+      )
+      return
+    }
+    operation.admissionHandle.onCleanupFailure?.(failure => this.retainCleanupFailures(operation.queueKey, [failure]))
+    this.waitForAdmission(operation)
+  }
+
+  private waitForAdmission<Value>(operation: PendingOperation<Attachment, Value>): void {
+    if (operation.phase !== 'admitting') {
+      return
+    }
+    const admission = operation.admissionHandle
+    if (admission === null) {
+      this.failAdmission(
+        operation,
+        contractError('lifecycle.invariant-violation', 'core', 'operation-coordinator.missing-admission-wait')
+      )
+      return
+    }
+    let wait: Promise<void>
+    try {
+      wait = admission.waitUntilReady()
+    } catch (error) {
+      this.failAdmission(operation, error)
+      return
+    }
+    wait.then(
+      () => this.finishAdmission(operation),
+      error => this.failAdmission(operation, error)
+    )
+  }
+
+  private finishAdmission<Value>(operation: PendingOperation<Attachment, Value>): void {
+    if (operation.phase !== 'admitting') {
+      return
+    }
+    if (operation.execution.options.signal?.aborted === true) {
+      this.cancel(operation, 'aborted')
+      return
+    }
+    if (operation.execution.options.deadline !== null && operation.execution.options.deadline <= this.options.now()) {
+      this.cancel(operation, 'timed-out')
+      return
+    }
+    const admission = operation.admissionHandle
+    if (admission === null) {
+      this.failAdmission(
+        operation,
+        contractError('lifecycle.invariant-violation', 'core', 'operation-coordinator.missing-admission-recheck')
+      )
+      return
+    }
+    let ready: boolean
+    try {
+      ready = admission.isReady()
+    } catch (error) {
+      this.failAdmission(operation, error)
+      return
+    }
+    if (!ready) {
+      this.waitForAdmission(operation)
+      return
+    }
+    this.dispatch(operation)
+  }
+
+  private dispatch<Value>(operation: PendingOperation<Attachment, Value>): void {
+    if (operation.phase !== 'queued' && operation.phase !== 'admitting') {
+      return
+    }
+    if (operation.phase === 'admitting') {
+      const admission = operation.admissionHandle
+      if (admission === null) {
+        this.failAdmission(
+          operation,
+          contractError('lifecycle.invariant-violation', 'core', 'operation-coordinator.missing-admission-dispatch')
+        )
+        return
+      }
+      let ready: boolean
+      try {
+        ready = admission.isReady()
+      } catch (error) {
+        this.failAdmission(operation, error)
+        return
+      }
+      if (!ready) {
+        this.waitForAdmission(operation)
+        return
+      }
     }
     operation.phase = 'dispatched'
     this.options.resourceLedger.decrement('queuedOperations')
@@ -323,11 +477,41 @@ export class CoreOperationCoordinator<Attachment extends string> {
         error instanceof BackendContractError
           ? error.normalized
           : contractError('platform.failure', 'core', 'operation-coordinator.synchronous-dispatch').normalized
-      this.acknowledgeSynchronousDispatchFailure(operation, normalized)
+      const admissionClose = this.closeAdmission(operation)
+      const completion = admissionClose.then(
+        () => Promise.reject(new BackendContractError(normalized)),
+        () => Promise.reject(new BackendContractError(normalized))
+      )
+      operation.dispatchHandle = {
+        completion,
+        requestCancellation: () =>
+          admissionClose.then(
+            () => undefined,
+            () => undefined
+          )
+      }
+      completion.catch(dispatchError => this.acknowledgeFailure(operation, dispatchError))
       return
     }
-    operation.dispatchHandle = dispatch
-    dispatch.completion.then(
+    const completion =
+      operation.admissionHandle === null
+        ? dispatch.completion
+        : (() => {
+            const admissionClose = this.closeAdmission(operation)
+            return dispatch.completion.then(
+              value => admissionClose.then(() => value),
+              error =>
+                admissionClose.then(
+                  () => Promise.reject(error),
+                  () => Promise.reject(error)
+                )
+            )
+          })()
+    operation.dispatchHandle = {
+      completion,
+      requestCancellation: () => dispatch.requestCancellation()
+    }
+    completion.then(
       value => this.acknowledgeSuccess(operation, value),
       error => this.acknowledgeFailure(operation, error)
     )
@@ -346,14 +530,32 @@ export class CoreOperationCoordinator<Attachment extends string> {
       this.removeQueuedOperation(operation)
       this.settlePublic(
         operation,
-        this.failure(
-          operation.correlation,
-          outcome,
-          operation.execution.mayCommit,
-          'operation-coordinator.cancel-queued'
-        )
+        this.failure(operation.correlation, outcome, false, 'operation-coordinator.cancel-queued')
       )
       this.completeAcknowledged(operation)
+      return
+    }
+    if (operation.phase === 'admitting') {
+      this.options.resourceLedger.decrement('queuedOperations')
+      this.releasePayload(operation)
+      this.settlePublic(
+        operation,
+        this.failure(operation.correlation, outcome, false, 'operation-coordinator.cancel-admitting')
+      )
+      operation.phase = 'admission-cancelled'
+      this.drainingAdmissions += 1
+      this.record(operation, 'admission-cancelled', this.codeForOutcome(outcome))
+      this.closeAdmission(operation).then(
+        () => this.releaseAdmissionDrain(operation, 'admission-cancelled-drained'),
+        error => {
+          this.record(
+            operation,
+            'admission-cancel-close-failed',
+            error instanceof BackendContractError ? error.normalized.code : 'platform.failure'
+          )
+          this.releaseAdmissionDrain(operation, 'admission-cancelled-drained')
+        }
+      )
       return
     }
     if (operation.phase === 'dispatched') {
@@ -393,7 +595,7 @@ export class CoreOperationCoordinator<Attachment extends string> {
     }
     this.options.resourceLedger.decrement('dispatchedOperations')
     this.releasePayload(operation)
-    this.settlePublic(operation, {
+    this.settlePublic<Value>(operation, {
       correlation: operation.correlation,
       outcome: 'succeeded',
       value,
@@ -429,26 +631,6 @@ export class CoreOperationCoordinator<Attachment extends string> {
     this.completeAcknowledged(operation)
   }
 
-  private acknowledgeSynchronousDispatchFailure<Value>(
-    operation: PendingOperation<Attachment, Value>,
-    error: NormalizedBleError
-  ): void {
-    if (operation.phase !== 'dispatched') {
-      return
-    }
-    this.options.resourceLedger.decrement('dispatchedOperations')
-    this.releasePayload(operation)
-    const result: CoreOperationFailure<Attachment> = {
-      correlation: operation.correlation,
-      outcome: 'failed',
-      value: null,
-      error,
-      commitState: operation.execution.mayCommit ? 'unknown' : 'not-applicable'
-    }
-    this.settlePublic(operation, result)
-    this.completeAcknowledged(operation)
-  }
-
   private releaseQuarantine<Value>(operation: PendingOperation<Attachment, Value>, transition: string): void {
     this.quarantinedOperations -= 1
     if (this.quarantinedOperations < 0) {
@@ -457,7 +639,7 @@ export class CoreOperationCoordinator<Attachment extends string> {
     this.record(operation, transition, operation.publicResult?.error?.code ?? null)
     this.releasePayload(operation)
     this.completeAcknowledged(operation)
-    this.resolveQuarantineDrain()
+    this.resolveOperationDrain()
   }
 
   private releasePayload<Value>(operation: PendingOperation<Attachment, Value>): void {
@@ -468,14 +650,118 @@ export class CoreOperationCoordinator<Attachment extends string> {
     this.options.resourceLedger.releaseOperationBytes(operation.retainedPayloadBytes)
   }
 
-  private resolveQuarantineDrain(): void {
-    if (this.quarantinedOperations !== 0) {
+  private resolveOperationDrain(): void {
+    for (const waiter of this.quarantineDrainWaiters) {
+      if (!this.hasPendingDrain(waiter.queueKey)) {
+        waiter.resolve()
+        this.quarantineDrainWaiters.delete(waiter)
+      }
+    }
+  }
+
+  private failAdmission<Value>(operation: PendingOperation<Attachment, Value>, error: unknown): void {
+    if (operation.phase !== 'admitting') {
       return
     }
-    for (const resolve of this.quarantineDrainWaiters) {
-      resolve()
+    this.options.resourceLedger.decrement('queuedOperations')
+    this.releasePayload(operation)
+    const normalized =
+      error instanceof BackendContractError
+        ? error.normalized
+        : contractError('platform.failure', 'core', 'operation-coordinator.admission-rejection').normalized
+    const outcome =
+      normalized.code === 'operation.aborted'
+        ? 'aborted'
+        : normalized.code === 'operation.timed-out'
+          ? 'timed-out'
+          : 'failed'
+    this.settlePublic<Value>(
+      operation,
+      this.failure(operation.correlation, outcome, false, normalized.operation, normalized.code)
+    )
+    operation.phase = 'admission-cancelled'
+    this.drainingAdmissions += 1
+    this.record(operation, 'admission-failed', normalized.code)
+    this.closeAdmission(operation).then(
+      () => this.releaseAdmissionDrain(operation, 'admission-failed-drained'),
+      closeError => {
+        this.record(
+          operation,
+          'admission-failure-close-failed',
+          closeError instanceof BackendContractError ? closeError.normalized.code : 'platform.failure'
+        )
+        this.releaseAdmissionDrain(operation, 'admission-failed-drained')
+      }
+    )
+  }
+
+  private closeAdmission<Value>(operation: PendingOperation<Attachment, Value>): Promise<CleanupRecord> {
+    if (operation.admissionClosePromise !== null) {
+      return operation.admissionClosePromise
     }
-    this.quarantineDrainWaiters.clear()
+    const admission = operation.admissionHandle
+    if (admission === null) {
+      operation.admissionClosePromise = Promise.resolve({ state: 'released', failures: [] })
+      return operation.admissionClosePromise
+    }
+    const admissionOwnsCleanupFailures = admission.onCleanupFailure !== undefined
+    try {
+      operation.admissionClosePromise = Promise.resolve(admission.close()).then(
+        cleanup => {
+          const normalized = cleanup ?? { state: 'released', failures: [] }
+          if (!admissionOwnsCleanupFailures) {
+            this.retainCleanupFailures(operation.queueKey, normalized.failures)
+          }
+          return normalized
+        },
+        error => {
+          const failure: CleanupFailure = {
+            resourceKind: 'operation-admission',
+            error:
+              error instanceof BackendContractError
+                ? error.normalized
+                : contractError('platform.failure', 'cleanup', 'operation-coordinator.admission-close').normalized
+          }
+          if (!admissionOwnsCleanupFailures) {
+            this.retainCleanupFailures(operation.queueKey, [failure])
+          }
+          return { state: 'release-failed', failures: [failure] }
+        }
+      )
+    } catch (error) {
+      const failure: CleanupFailure = {
+        resourceKind: 'operation-admission',
+        error:
+          error instanceof BackendContractError
+            ? error.normalized
+            : contractError('platform.failure', 'cleanup', 'operation-coordinator.admission-close').normalized
+      }
+      this.retainCleanupFailures(operation.queueKey, [failure])
+      operation.admissionClosePromise = Promise.resolve({ state: 'release-failed', failures: [failure] })
+    }
+    return operation.admissionClosePromise
+  }
+
+  private releaseAdmissionDrain<Value>(operation: PendingOperation<Attachment, Value>, transition: string): void {
+    if (operation.phase !== 'admission-cancelled') {
+      return
+    }
+    this.drainingAdmissions -= 1
+    if (this.drainingAdmissions < 0) {
+      throw contractError('lifecycle.invariant-violation', 'core', 'operation-coordinator.admission-drain-underflow')
+    }
+    this.record(operation, transition, operation.publicResult?.error?.code ?? null)
+    this.completeAcknowledged(operation)
+    this.resolveOperationDrain()
+  }
+
+  private retainCleanupFailures(queueKey: string | null, failures: readonly CleanupFailure[]): void {
+    if (failures.length === 0) {
+      return
+    }
+    const retained = this.retainedCleanupFailures.get(queueKey) ?? []
+    retained.push(...failures)
+    this.retainedCleanupFailures.set(queueKey, retained)
   }
 
   private notifyQuarantined<Value>(operation: PendingOperation<Attachment, Value>): void {

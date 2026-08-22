@@ -15,6 +15,8 @@ const {
   version,
   versionRange
 } = require('../../src/backend-contract/primitives')
+const { BUILT_IN_FEATURE_IDS, createBackendOperationCapabilityRegistration } = require('../../src/backend-contract/capabilities')
+const { CoreBoundedStream } = require('../../src/core/bounded-stream')
 
 const maximumBytes = 512 * 1024
 
@@ -99,8 +101,8 @@ function managerConstruction(attachedBackend) {
   }
 }
 
-async function createFixture() {
-  const fixture = createDeterministicTestBackend()
+async function createFixture(backendOptions = {}) {
+  const fixture = createDeterministicTestBackend(backendOptions)
   const attachedBackend = await attachBleBackend(fixture.backend, compatibility())
   const authority = createManagerOwnershipAuthority(attachedBackend)
   const manager = await BleManager.create(managerConstruction(attachedBackend), authority, DEFAULT_BLE_MANAGER_OPTIONS)
@@ -395,6 +397,55 @@ describe('UnifiedBleCore lifecycle hardening', () => {
     expect(Number(manager.localResourceCounters().databaseSnapshots)).toBe(0)
     expect(Number(manager.localResourceCounters().connectionLeases)).toBe(0)
     await settle(fixture.controller, manager.destroy())
+    expectNoResources(fixture.backend.resourceCounters())
+  })
+
+  test('connection cleanup receipt retains readiness-source cleanup failure', async () => {
+    const readinessRegistration = createBackendOperationCapabilityRegistration({
+      id: BUILT_IN_FEATURE_IDS.writeWithoutResponseReadiness,
+      implementationVersion: 'test',
+      sourceDigest: 'test-readiness-v1',
+      tckSuiteId: 'test.connection-cleanup',
+      requiredScenarioIds: ['test.connection-cleanup']
+    })
+    const { fixture, manager } = await createFixture({ featureRegistrations: [readinessRegistration] })
+    const { connection, database, characteristic } = await connectedDatabase(fixture, manager)
+    const readinessEvents = new CoreBoundedStream(
+      { itemCapacity: capacity(4), byteCapacity: capacity(1024), reservedControlCapacity: capacity(1) },
+      'drop-oldest'
+    )
+    const cleanupFailure = {
+      resourceKind: 'gatt.write-readiness',
+      error: {
+        code: 'platform.failure',
+        domain: 'cleanup',
+        operation: 'test.connection-late-readiness-close',
+        platform: null,
+        retryability: 'never'
+      }
+    }
+    const readinessClose = jest.fn(async () => ({ state: 'release-failed', failures: [cleanupFailure] }))
+    fixture.backend.connections = {
+      ...fixture.backend.connections,
+      writeWithoutResponseReadiness: async () => ({ events: readinessEvents, close: readinessClose })
+    }
+    const abortController = new AbortController()
+    const pendingWrite = database.writeWhenReady(characteristic, new Uint8Array([1]), {
+      ...operation(abortController.signal),
+      mode: 'without-response'
+    })
+
+    await flushMicrotasks()
+    abortController.abort()
+    await expect(pendingWrite).rejects.toMatchObject({ normalized: { code: 'operation.aborted' } })
+
+    await expect(settle(fixture.controller, connection.release())).resolves.toEqual({
+      state: 'release-failed',
+      failures: [cleanupFailure]
+    })
+    expect(readinessClose).toHaveBeenCalledTimes(1)
+    await expect(settle(fixture.controller, connection.release())).resolves.toEqual({ state: 'released', failures: [] })
+    await expect(settle(fixture.controller, manager.destroy())).resolves.toEqual({ state: 'released', failures: [] })
     expectNoResources(fixture.backend.resourceCounters())
   })
 

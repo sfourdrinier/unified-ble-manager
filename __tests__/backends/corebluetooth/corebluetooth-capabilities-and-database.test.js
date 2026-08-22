@@ -142,6 +142,55 @@ describe('CoreBluetooth runtime capabilities and database-change semantics', () 
     await backend.destroy()
   })
 
+  test('emits the initial readiness snapshot before only the latest pending native edge', async () => {
+    const probe = deferred()
+    const readinessListeners = new Set()
+    const { backend, boundary } = await backendFixture(currentBoundary => {
+      currentBoundary.canSendWriteWithoutResponse = jest.fn(() => probe.promise)
+      currentBoundary.onWriteWithoutResponseReadiness = listener => {
+        readinessListeners.add(listener)
+        return () => readinessListeners.delete(listener)
+      }
+    })
+    const { lease } = await connectedDatabase(backend)
+    const watchPromise = backend.connectionControls.writeWithoutResponseReadiness(lease.connection)
+    const nativeGeneration = '1'
+    const connectionGeneration = String(lease.connection.connectionGeneration)
+
+    for (let ordinal = 2; ordinal <= 256; ordinal += 1) {
+      for (const listener of readinessListeners) {
+        listener({
+          nativePeerId: 'native-polar-h10',
+          connectionGeneration: nativeGeneration,
+          ready: ordinal % 2 === 0,
+          ordinal
+        })
+      }
+    }
+
+    probe.resolve({
+      nativePeerId: 'native-polar-h10',
+      connectionGeneration: nativeGeneration,
+      ready: true,
+      ordinal: 1
+    })
+    const watch = await watchPromise
+    const iterator = watch.events[Symbol.asyncIterator]()
+
+    await expect(iterator.next()).resolves.toMatchObject({
+      value: { kind: 'value', value: { connectionGeneration, ready: true, ordinal: 1 } }
+    })
+    await expect(iterator.next()).resolves.toMatchObject({
+      value: { kind: 'value', value: { connectionGeneration, ready: true, ordinal: 256 } }
+    })
+
+    await watch.close()
+    await expect(iterator.next()).resolves.toMatchObject({
+      value: { kind: 'terminal', reason: 'owner-released' }
+    })
+    await backend.destroy()
+  })
+
   test('preserves every rich CoreBluetooth advertisement field as detached owned bytes', async () => {
     const { backend, boundary } = await backendFixture()
     const rawRecord = new Uint8Array([1, 2, 3])
@@ -307,7 +356,8 @@ describe('CoreBluetooth runtime capabilities and database-change semantics', () 
     expect(boundary.readPhy).toBeUndefined()
     expect(boundary.requestPhy).toBeUndefined()
     await expect(
-      backend.connections.readPhy(lease.connection, { operation: operationRequest('corebluetooth-read-phy') }).completion
+      backend.connections.readPhy(lease.connection, { operation: operationRequest('corebluetooth-read-phy') })
+        .completion
     ).rejects.toMatchObject({ normalized: { code: 'capability.unsupported' } })
     await expect(
       backend.connections.requestPhy(lease.connection, {

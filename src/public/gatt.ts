@@ -126,6 +126,7 @@ export interface GattCharacteristic {
   readonly descriptors: readonly GattDescriptor[]
   read(options?: OperationOptions): Promise<Uint8Array>
   write(value: Uint8Array, options?: GattWriteOptions): Promise<GattWriteReceipt>
+  writeWhenReady(value: Uint8Array, options?: OperationOptions): Promise<GattWriteReceipt>
   writeLong(value: Uint8Array, options?: LongWriteOptions): Promise<GattLongWriteReceipt>
   subscribe(options?: GattSubscribeOptions): Promise<GattSubscription>
   withSubscription<T>(options: GattSubscribeOptions, action: (subscription: GattSubscription) => Promise<T>): Promise<T>
@@ -320,6 +321,22 @@ class PublicGattCharacteristic implements GattCharacteristic {
         mode: resolveWriteMode(this.properties, options.response)
       })
     )
+  }
+
+  writeWhenReady(value: Uint8Array, options: OperationOptions = {}): Promise<GattWriteReceipt> {
+    return this.run(() => {
+      if (!this.properties.writeWithoutResponse) {
+        throw contractError('gatt.property-not-supported', 'gatt', 'public-gatt.characteristic.write-when-ready')
+      }
+      const writeWhenReady = this.source.writeWhenReady
+      if (writeWhenReady === undefined) {
+        throw contractError('capability.unsupported', 'connection', 'public-gatt.characteristic.write-when-ready')
+      }
+      return writeWhenReady(this.indexedRecord.record.path, value, {
+        ...normalizeOperationOptions(options, () => this.source.monotonicNow()),
+        mode: 'without-response'
+      })
+    })
   }
 
   writeLong(value: Uint8Array, options: LongWriteOptions = {}): Promise<GattLongWriteReceipt> {

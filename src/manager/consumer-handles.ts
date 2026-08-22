@@ -353,6 +353,11 @@ export interface DiscoveredGattDatabaseHandle {
     bytes: Readonly<Uint8Array>,
     options: PortableWritePolicy
   ): Promise<PortableWriteReceipt>
+  writeWhenReady?(
+    path: PortableCurrentCharacteristicPath,
+    bytes: Readonly<Uint8Array>,
+    options: PortableWritePolicy
+  ): Promise<PortableWriteReceipt>
   maximumWriteLength(
     path: PortableCurrentCharacteristicPath,
     mode: WriteMode

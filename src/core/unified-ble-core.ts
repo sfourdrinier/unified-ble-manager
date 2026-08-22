@@ -48,6 +48,7 @@ import { readCoreAdapterState } from './core-adapter-state'
 import {
   readCoreCharacteristic,
   writeCoreCharacteristic,
+  writeCoreCharacteristicWhenReady,
   writeCoreLongCharacteristic
 } from './core-characteristic-operations'
 import { createCoreFeatureRegistry, observeMaximumWriteLength, planLongWrite } from './core-capabilities'
@@ -564,7 +565,7 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
       (admissionEpoch, value, operation) => this.assertAdmissionCurrent(admissionEpoch, value, operation),
       this.admissionEpoch,
       reason,
-      () => this.operationCoordinator.waitForQuarantineDrain()
+      () => this.operationCoordinator.waitForQuarantineDrain(key)
     )
     this.discoveries.set(key, discovery)
     try {
@@ -598,6 +599,23 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
     options: WritePolicy
   ): Promise<WriteReceipt<Attachment, string>> {
     return writeCoreCharacteristic(
+      this.backend,
+      this.operationCoordinator,
+      this.options.maximumValueBytes,
+      database,
+      path,
+      bytes,
+      options
+    )
+  }
+
+  async writeWhenReady(
+    database: CoreGattDatabase<Attachment, Identity>,
+    path: CurrentCharacteristicPath<Attachment>,
+    bytes: Readonly<Uint8Array>,
+    options: WritePolicy
+  ): Promise<WriteReceipt<Attachment, string>> {
+    return writeCoreCharacteristicWhenReady(
       this.backend,
       this.operationCoordinator,
       this.options.maximumValueBytes,
@@ -676,7 +694,15 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
     connection: CoreConnection<Attachment, Identity>,
     cause: ConnectionLifecycleTerminalCause
   ): Promise<CleanupRecord> {
-    this.operationCoordinator.cancelQueue(String(connection.resource.connectionId), 'disconnected')
+    const key = String(connection.resource.connectionId)
+    this.operationCoordinator.cancelQueue(key, 'disconnected')
+    if (this.operationCoordinator.hasPendingDrain(key)) {
+      await this.operationCoordinator.waitForQuarantineDrain(key)
+    }
+    const admissionFailures = this.operationCoordinator.takeCleanupFailures(key)
+    if (admissionFailures.length > 0) {
+      return { state: 'release-failed', failures: admissionFailures }
+    }
     const disconnect = cause === 'requested-disconnect'
     const reason = isConnectionLossCause(cause) ? 'connection-lost' : 'owner-released'
     const cleanup = await connection.cleanupChildren(reason)
@@ -994,7 +1020,10 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
     failures.push(...subscriptions.failures)
     const events = await eventClose
     failures.push(...events.failures)
-    await this.operationCoordinator.waitForQuarantineDrain()
+    if (this.operationCoordinator.hasPendingDrain()) {
+      await this.operationCoordinator.waitForQuarantineDrain()
+    }
+    failures.push(...this.operationCoordinator.takeCleanupFailures())
     const result: CleanupRecord =
       failures.length === 0 ? { state: 'released', failures: [] } : { state: 'release-failed', failures }
     this.syncRetainedByteBuffers()

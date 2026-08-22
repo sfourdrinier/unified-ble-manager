@@ -26,11 +26,13 @@ import {
 import { contractError } from '../../backend-contract/errors'
 import type { CleanupRecord } from '../../backend-contract/errors'
 import type { BackendOperationDispatch } from '../../backend-contract/operations'
+import type { PublicOperationOptions } from '../../backend-contract/operations'
 import { capacity } from '../../backend-contract/primitives'
 import { CoreBoundedStream } from '../../core/bounded-stream'
 import type { CoreBluetoothWriteReadinessEvent } from './corebluetooth-boundary'
 import { successfulTerminal } from './corebluetooth-handles'
 import type { CoreBluetoothBackend } from './corebluetooth-backend'
+import { awaitWithOperationAdmission } from '../../core/unified-ble-core-helpers'
 
 /** Bridges optional direct-boundary connection controls into the canonical operation dispatcher. */
 export class CoreBluetoothConnectionControls {
@@ -255,7 +257,8 @@ export class CoreBluetoothConnectionControls {
   }
 
   async writeWithoutResponseReadiness(
-    connection: BackendConnection<string, string>
+    connection: BackendConnection<string, string>,
+    options: PublicOperationOptions = { signal: null, deadline: null }
   ): Promise<ConnectionWriteReadinessWatch<string>> {
     const probe = this.backend.boundary.canSendWriteWithoutResponse?.bind(this.backend.boundary)
     const onReadiness = this.backend.boundary.onWriteWithoutResponseReadiness
@@ -274,15 +277,16 @@ export class CoreBluetoothConnectionControls {
     let closePromise: Promise<CleanupRecord> | null = null
     let unsubscribeDisconnect: (() => void) | null = null
     let unregisterWatch: (() => void) | null = null
-    const buffered: CoreBluetoothWriteReadinessEvent[] = []
+    const buffered: { current: CoreBluetoothWriteReadinessEvent | null } = { current: null }
+    let nativeGeneration: string | null = null
+    const isCurrentGenerationEvent = (event: CoreBluetoothWriteReadinessEvent): boolean =>
+      !closed &&
+      nativeGeneration !== null &&
+      event.nativePeerId === record.nativePeerId &&
+      event.connectionGeneration === nativeGeneration &&
+      Number.isSafeInteger(event.ordinal)
     const emit = (event: CoreBluetoothWriteReadinessEvent): void => {
-      if (
-        closed ||
-        event.nativePeerId !== record.nativePeerId ||
-        event.connectionGeneration !== String(record.connectionGeneration) ||
-        !Number.isSafeInteger(event.ordinal) ||
-        event.ordinal <= lastOrdinal
-      ) {
+      if (!isCurrentGenerationEvent(event) || event.ordinal <= lastOrdinal) {
         return
       }
       const value = Object.freeze({
@@ -297,7 +301,13 @@ export class CoreBluetoothConnectionControls {
     }
     const unsubscribe = onReadiness(event => {
       if (!initialized) {
-        buffered.push(event)
+        if (
+          event.nativePeerId === record.nativePeerId &&
+          Number.isSafeInteger(event.ordinal) &&
+          (buffered.current === null || event.ordinal > buffered.current.ordinal)
+        ) {
+          buffered.current = event
+        }
         return
       }
       emit(event)
@@ -319,15 +329,21 @@ export class CoreBluetoothConnectionControls {
     })
     unregisterWatch = this.backend.registerReadinessWatch(() => close('owner-released').then(() => undefined))
     try {
-      const snapshot = await probe(record.nativePeerId)
+      const snapshot = await awaitWithOperationAdmission(
+        probe(record.nativePeerId),
+        options,
+        this.backend.monotonicNow,
+        'corebluetooth.connection.write-readiness.probe'
+      )
       if (
         snapshot.nativePeerId !== record.nativePeerId ||
-        snapshot.connectionGeneration !== String(record.connectionGeneration) ||
+        !/^[0-9]+$/.test(snapshot.connectionGeneration) ||
         typeof snapshot.ready !== 'boolean' ||
         !Number.isSafeInteger(snapshot.ordinal)
       ) {
         throw contractError('protocol.malformed', 'connection', 'corebluetooth.connection.write-readiness.snapshot')
       }
+      nativeGeneration = snapshot.connectionGeneration
       lastOrdinal = snapshot.ordinal
       stream.emit(
         Object.freeze({
@@ -340,9 +356,9 @@ export class CoreBluetoothConnectionControls {
         128
       )
       initialized = true
-      buffered.sort((left, right) => left.ordinal - right.ordinal)
-      for (const event of buffered) emit(event)
-      buffered.length = 0
+      const pending = buffered.current
+      buffered.current = null
+      if (pending !== null && pending.connectionGeneration === snapshot.connectionGeneration) emit(pending)
       return {
         events: stream,
         close: () => close('owner-released')

@@ -165,8 +165,8 @@ export class CoreConnection<Attachment extends string, Identity extends BackendI
     return this.controls.maximumWriteLength(this, mode, options)
   }
 
-  writeWithoutResponseReadiness(): Promise<ConnectionWriteReadinessWatch<Attachment>> {
-    return this.controls.writeWithoutResponseReadiness(this)
+  writeWithoutResponseReadiness(options?: PublicOperationOptions): Promise<ConnectionWriteReadinessWatch<Attachment>> {
+    return this.controls.writeWithoutResponseReadiness(this, options)
   }
 
   isCurrent(): boolean {
@@ -464,6 +464,14 @@ export class CoreGattDatabase<Attachment extends string, Identity extends Backen
     options: WritePolicy
   ): Promise<WriteReceipt<Attachment, string>> {
     return this.core.write(this, path, bytes, options)
+  }
+
+  writeWhenReady(
+    path: CurrentCharacteristicPath<Attachment>,
+    bytes: Readonly<Uint8Array>,
+    options: WritePolicy
+  ): Promise<WriteReceipt<Attachment, string>> {
+    return this.core.writeWhenReady(this, path, bytes, options)
   }
 
   maximumWriteLength(
