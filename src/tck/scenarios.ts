@@ -94,7 +94,13 @@ export const baseTckScenarios: readonly TckScenarioDefinition[] = [
     execution: 'feature',
     requiredFacts: [
       'connection-rssi-is-measured-or-explicitly-unavailable',
-      'connection-att-mtu-is-negotiated-or-explicitly-unavailable'
+      'connection-att-mtu-is-negotiated-or-explicitly-unavailable',
+      'connection-priority-request-outcome-is-not-observed-parameters',
+      'connection-observation-is-bound-to-generation',
+      'connection-phy-truth-is-explicit',
+      'connection-parameters-truth-is-explicit',
+      'connection-subrate-truth-is-explicit',
+      'gatt-write-readiness-truth-is-explicit'
     ],
     requiredControllerActions: []
   },
@@ -119,7 +125,8 @@ export const baseTckScenarios: readonly TckScenarioDefinition[] = [
     execution: 'base',
     requiredFacts: [
       'gatt-read-and-descriptor-return-owned-bytes',
-      'gatt-write-policy-and-uncertain-dispatched-commit-are-exact'
+      'gatt-write-policy-and-uncertain-dispatched-commit-are-exact',
+      'gatt-operation-queue-is-fair-and-bounded'
     ],
     requiredControllerActions: ['queue-operation-completion', 'advance-time']
   },
@@ -191,7 +198,8 @@ export const baseTckScenarios: readonly TckScenarioDefinition[] = [
     requiredFacts: [
       'destroy-closes-admission-and-is-idempotent',
       'destroy-settles-each-operation-once',
-      'resource-counters-return-to-zero-without-underflow'
+      'resource-counters-return-to-zero-without-underflow',
+      'operation-cancellation-and-destroy-leave-zero-residual-resources'
     ],
     requiredControllerActions: ['queue-advertisement', 'queue-operation-completion', 'advance-time']
   },

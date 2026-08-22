@@ -323,6 +323,7 @@ class DeterministicNativeControl {
     this.handshakes = []
     this.closedAttachments = []
     this.securityAvailable = securityAvailable
+    this.priorityAccepted = true
     this.restorationJournalSeeded = false
     this.restorationConsumed = false
   }
@@ -506,6 +507,7 @@ class DeterministicReactNativeProtocolRuntime {
     }
     if (kind === 'readRssi') return this.emitResult(command, 'rssi', [field(13, -47)])
     if (kind === 'requestMtu') return this.emitResult(command, 'mtu', [field(14, requiredNumber(command, 14))])
+    if (kind === 'requestPriority') return this.emitResult(command, 'priority', [field(18, this.control.priorityAccepted)])
     if (kind === 'writeDescriptor') {
       const descriptorPath = requiredRecord(command, 5)
       const reference = binaryReferenceFromRecord(requiredRecord(command, 6))

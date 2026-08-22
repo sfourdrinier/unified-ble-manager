@@ -2,7 +2,7 @@
 
 import type { BleCentralBackend } from '../backend-contract/backend'
 import type { ConnectionLifecycleCause, ConnectionLifecycleEvent } from '../backend-contract/connection-lifecycle'
-import { BUILT_IN_FEATURE_IDS } from '../backend-contract/capabilities'
+import { BUILT_IN_FEATURE_IDS, type FeatureState } from '../backend-contract/capabilities'
 import { MINIMUM_ATT_MTU } from '../backend-contract/connection-controls'
 import { BackendContractError } from '../backend-contract/errors'
 import type { Characteristic } from '../backend-contract/gatt'
@@ -22,6 +22,7 @@ import type {
   SecurityPairingChallenge,
   SecurityPairingResponse
 } from '../backend-contract/security'
+import { createPublicBleManager } from '../public/ble-manager'
 import {
   attachBleBackend,
   createBleManager,
@@ -219,7 +220,19 @@ async function executeManagerScenario<
     return executeSubscriptionOverflowScenario(manager, fixture, definition)
   }
   if (definition.id === 'lifecycle.destroy-idempotency-admission-and-exact-settlement') {
-    return executeLifecycleScenario(manager, fixture, definition)
+    const facts = await executeLifecycleScenario(manager, fixture, definition)
+    const residual = facts.find(candidate => candidate.id === 'resource-counters-return-to-zero-without-underflow')
+    return [
+      ...facts,
+      fact(
+        'operation-cancellation-and-destroy-leave-zero-residual-resources',
+        residual?.holds === true,
+        Object.freeze({
+          derivedFrom: residual?.id ?? 'missing-resource-counter-fact',
+          zeroCounters: residual?.holds === true
+        })
+      )
+    ]
   }
   if (definition.id === 'diagnostics.trace-redaction-and-resource-counters') {
     return executeDiagnosticsScenario(manager, fixture, definition)
@@ -1189,6 +1202,58 @@ async function executeGattReadWriteScenario<
   await fixture.controller.perform('advance-time', Object.freeze({ milliseconds: 10 }))
   const callerCancelled = await fixture.controller.settle(callerCancellation)
   const persistedValue = await fixture.controller.settle(connected.database.read(characteristic.path, operationOptions))
+  await fixture.controller.perform(
+    'queue-operation-completion',
+    Object.freeze({ stage: 'read', delayMilliseconds: 50 })
+  )
+  const firstScheduledRead = connected.database.read(characteristic.path, operationOptions)
+  await fixture.controller.perform('advance-time', Object.freeze({ milliseconds: 1 }))
+  await fixture.controller.flush()
+  let secondReadSettled = false
+  const queuedReads = [
+    connected.database.read(characteristic.path, operationOptions),
+    connected.database.read(characteristic.path, operationOptions)
+  ]
+  queuedReads[0]?.then(
+    () => {
+      secondReadSettled = true
+    },
+    () => {
+      secondReadSettled = true
+    }
+  )
+  let queuedWriteSettled = false
+  const fairWrite = connected.database.write(characteristic.path, new Uint8Array([92]), {
+    ...operationOptions,
+    mode: 'with-response'
+  })
+  fairWrite.then(
+    () => {
+      queuedWriteSettled = true
+    },
+    () => {
+      queuedWriteSettled = true
+    }
+  )
+  for (let index = 0; index < 5; index += 1) {
+    queuedReads.push(connected.database.read(characteristic.path, operationOptions))
+  }
+  const overflowRead = connected.database.read(characteristic.path, operationOptions)
+  const overflowRejectedPromise = rejectsWithCode(overflowRead, 'stream.quota')
+  await fixture.controller.perform('advance-time', Object.freeze({ milliseconds: 49 }))
+  await fixture.controller.flush()
+  await fixture.controller.perform('advance-time', Object.freeze({ milliseconds: 1 }))
+  await fixture.controller.flush()
+  const fairnessObserved = queuedWriteSettled && !secondReadSettled
+  await fixture.controller.settle(firstScheduledRead)
+  await fixture.controller.settle(fairWrite)
+  for (const queuedRead of queuedReads) {
+    await fixture.controller.settle(queuedRead)
+  }
+  const queueBackpressureWasObserved = await fixture.controller.settle(overflowRejectedPromise)
+  const operationTrace = manager.traceDocument().records.filter(record => record.kind === 'operation')
+  const queueTraceIsBounded = operationTrace.some(record => record.cause === 'stream.quota')
+  const queueFairAndBounded = fairnessObserved && queueBackpressureWasObserved
   assertCleanupReleased(definition, await fixture.controller.settle(connected.connection.release()), 'connection')
   return [
     fact('gatt-read-and-descriptor-return-owned-bytes', ownedBytes, {
@@ -1206,7 +1271,13 @@ async function executeGattReadWriteScenario<
         callerSettledBeforeAcknowledgement,
         persisted: persistedValue[0] === 91
       }
-    )
+    ),
+    fact('gatt-operation-queue-is-fair-and-bounded', queueFairAndBounded, {
+      fairnessObserved,
+      queueBackpressureWasObserved,
+      queueTraceIsBounded,
+      queuedReads: queuedReads.length
+    })
   ]
 }
 
@@ -1304,36 +1375,119 @@ async function executeConnectionControlsScenario<
   if (!Number.isSafeInteger(adapter.requestedMtu) || adapter.requestedMtu < MINIMUM_ATT_MTU) {
     throw new TckAssertionError(definition.id, 'connection-controls adapter has an invalid requested ATT MTU')
   }
-  const connection = await connectToDeterministicPeer(manager, fixture, definition)
+  const publicManager = await createPublicBleManager(manager, () => fixture.controller.now())
+  const connection = await connectPublicToDeterministicPeer(publicManager, fixture, definition)
   let rssiMeasured = false
   let rssiExplicitlyUnavailable = false
   let mtuObserved = false
   let mtuExplicitlyUnavailable = false
+  let priorityAcceptedOrRejected = false
+  let priorityRejected = false
+  let priorityClaimedObservedParameters = false
+  const observedGenerations: string[] = []
   try {
     const rssiState = featureState(fixture.backend, BUILT_IN_FEATURE_IDS.connectionRssi)
     if (rssiState === 'supported' || rssiState === 'limited') {
-      const rssi = await fixture.controller.settle(connection.readRssi(operationOptions))
+      const rssi = await fixture.controller.settle(connection.controls.readRssi(operationOptions))
       rssiMeasured = Number.isSafeInteger(rssi.rssi)
+      if (rssiMeasured) observedGenerations.push(rssi.connectionGeneration)
     } else {
-      rssiExplicitlyUnavailable = await rejectsWithCapabilityCode(
-        fixture.controller.settle(connection.readRssi(operationOptions)),
+      rssiExplicitlyUnavailable = await rejectsWithPublicCapabilityCode(
+        fixture.controller.settle(connection.controls.readRssi(operationOptions)),
         'capability.unsupported'
       )
     }
     const mtuState = featureState(fixture.backend, BUILT_IN_FEATURE_IDS.connectionRequestMtu)
     if (mtuState === 'supported' || mtuState === 'limited') {
-      const negotiation = await fixture.controller.settle(connection.requestMtu(adapter.requestedMtu, operationOptions))
+      const negotiation = await fixture.controller.settle(
+        connection.controls.requestMtu(adapter.requestedMtu, operationOptions)
+      )
       mtuObserved =
         negotiation.requestedMtu === adapter.requestedMtu &&
-        Number.isSafeInteger(negotiation.negotiatedMtu) &&
-        negotiation.negotiatedMtu >= MINIMUM_ATT_MTU &&
-        negotiation.negotiatedMtu <= adapter.requestedMtu
+        negotiation.state === 'accepted' &&
+        negotiation.observation !== null &&
+        Number.isSafeInteger(negotiation.observation.attMtu) &&
+        negotiation.observation.attMtu >= MINIMUM_ATT_MTU &&
+        negotiation.observation.attMtu <= adapter.requestedMtu
+      if (mtuObserved) observedGenerations.push(negotiation.connectionGeneration)
     } else {
-      mtuExplicitlyUnavailable = await rejectsWithCapabilityCode(
-        fixture.controller.settle(connection.requestMtu(adapter.requestedMtu, operationOptions)),
+      mtuExplicitlyUnavailable = await rejectsWithPublicCapabilityCode(
+        fixture.controller.settle(connection.controls.requestMtu(adapter.requestedMtu, operationOptions)),
         'capability.unsupported'
       )
     }
+
+    const priorityState = featureState(fixture.backend, BUILT_IN_FEATURE_IDS.connectionPriority)
+    if (priorityState === 'supported' || priorityState === 'limited') {
+      const priority = await fixture.controller.settle(
+        connection.controls.requestPriority('high-throughput', operationOptions)
+      )
+      priorityAcceptedOrRejected = priority.state === 'accepted' || priority.state === 'rejected'
+      priorityRejected = priority.state === 'rejected'
+      priorityClaimedObservedParameters =
+        'observation' in priority || 'parameters' in priority || 'intervalMs' in priority
+      observedGenerations.push(priority.connectionGeneration)
+    } else {
+      priorityRejected = await rejectsWithPublicCapabilityCode(
+        fixture.controller.settle(connection.controls.requestPriority('high-throughput', operationOptions)),
+        'capability.unsupported'
+      )
+      priorityAcceptedOrRejected = priorityRejected
+    }
+
+    const phyTruth = await observeUnsupportedControlTruth(
+      connection.controls.readPhy(operationOptions),
+      connection.controls.requestPhy({ tx: 'le-1m', rx: 'le-1m' }, operationOptions),
+      featureState(fixture.backend, BUILT_IN_FEATURE_IDS.connectionPhy)
+    )
+    const parametersTruth = await observeUnsupportedControlTruth(
+      connection.controls.parameters(),
+      connection.controls.parameterEvents()[Symbol.asyncIterator]().next(),
+      featureState(fixture.backend, BUILT_IN_FEATURE_IDS.connectionParameters)
+    )
+    const subrateTruth = await observeUnsupportedControlTruth(
+      connection.controls.requestSubrate('default', operationOptions),
+      null,
+      featureState(fixture.backend, BUILT_IN_FEATURE_IDS.connectionSubrate)
+    )
+    const readinessTruth = await observeUnsupportedControlTruth(
+      connection.controls.writeReadiness('without-response')[Symbol.asyncIterator]().next(),
+      null,
+      featureState(fixture.backend, BUILT_IN_FEATURE_IDS.writeWithoutResponseReadiness)
+    )
+    const observationsBoundToGeneration =
+      observedGenerations.length > 0 && observedGenerations.every(generation => generation === connection.connectionGeneration)
+    return [
+      fact('connection-rssi-is-measured-or-explicitly-unavailable', rssiMeasured || rssiExplicitlyUnavailable, {
+        rssiExplicitlyUnavailable,
+        rssiMeasured
+      }),
+      fact('connection-att-mtu-is-negotiated-or-explicitly-unavailable', mtuObserved || mtuExplicitlyUnavailable, {
+        mtuExplicitlyUnavailable,
+        mtuObserved,
+        requestedMtu: adapter.requestedMtu
+      }),
+      fact(
+        'connection-priority-request-outcome-is-not-observed-parameters',
+        priorityAcceptedOrRejected && !priorityClaimedObservedParameters,
+        { priorityAcceptedOrRejected, priorityRejected, priorityClaimedObservedParameters }
+      ),
+      fact('connection-observation-is-bound-to-generation', observationsBoundToGeneration, {
+        observations: observedGenerations.length,
+        observationsBoundToGeneration,
+        connectionGeneration: connection.connectionGeneration
+      }),
+      fact('connection-phy-truth-is-explicit', phyTruth, { state: featureState(fixture.backend, BUILT_IN_FEATURE_IDS.connectionPhy) }),
+      fact('connection-parameters-truth-is-explicit', parametersTruth, {
+        state: featureState(fixture.backend, BUILT_IN_FEATURE_IDS.connectionParameters)
+      }),
+      fact('connection-subrate-truth-is-explicit', subrateTruth, {
+        state: featureState(fixture.backend, BUILT_IN_FEATURE_IDS.connectionSubrate)
+      }),
+      fact('gatt-write-readiness-truth-is-explicit', readinessTruth, {
+        state: featureState(fixture.backend, BUILT_IN_FEATURE_IDS.writeWithoutResponseReadiness)
+      })
+    ]
   } finally {
     assertCleanupReleased(
       definition,
@@ -1341,17 +1495,38 @@ async function executeConnectionControlsScenario<
       'connection-controls connection'
     )
   }
-  return [
-    fact('connection-rssi-is-measured-or-explicitly-unavailable', rssiMeasured || rssiExplicitlyUnavailable, {
-      rssiExplicitlyUnavailable,
-      rssiMeasured
-    }),
-    fact('connection-att-mtu-is-negotiated-or-explicitly-unavailable', mtuObserved || mtuExplicitlyUnavailable, {
-      mtuExplicitlyUnavailable,
-      mtuObserved,
-      requestedMtu: adapter.requestedMtu
-    })
-  ]
+}
+
+type PublicApplicationManager = Awaited<ReturnType<typeof createPublicBleManager>>
+
+async function connectPublicToDeterministicPeer<
+  Attachment extends string,
+  Identity extends BackendIdentity<Attachment>,
+  Backend extends BleCentralBackend<Attachment, Identity>
+>(
+  manager: PublicApplicationManager,
+  fixture: BackendTckFixture<Attachment, Identity, Backend>,
+  definition: TckScenarioDefinition
+) {
+  const scan = await fixture.controller.settle(manager.scan())
+  const nextObservation = scan.observations[Symbol.asyncIterator]().next()
+  await fixture.controller.perform('queue-advertisement', emptyInput)
+  const observation = await fixture.controller.settle(nextObservation)
+  if (observation.done || observation.value.kind !== 'value') {
+    throw new TckAssertionError(definition.id, 'public connection setup did not observe a peer')
+  }
+  assertCleanupReleased(definition, await fixture.controller.settle(scan.stop()), 'public connection setup scan')
+  return fixture.controller.settle(manager.connect(observation.value.value.peer.id))
+}
+
+async function observeUnsupportedControlTruth(
+  first: Promise<unknown>,
+  second: Promise<unknown> | null,
+  state: FeatureState | null
+): Promise<boolean> {
+  const firstRejected = await rejectsWithPublicCapabilityCode(first, 'capability.unsupported')
+  const secondRejected = second === null ? true : await rejectsWithPublicCapabilityCode(second, 'capability.unsupported')
+  return firstRejected && secondRejected && (state === null || state === 'unsupported' || state === 'limited')
 }
 
 async function executeRestorationScenario<
@@ -1406,15 +1581,9 @@ function requireRestorationAdapter<
 function featureState<Attachment extends string, Identity extends BackendIdentity<Attachment>>(
   backend: BleCentralBackend<Attachment, Identity>,
   featureId: string
-) {
+) : FeatureState | null {
   const registration = backend.features.registrations.find(candidate => candidate.id === featureId)
-  if (registration === undefined) {
-    throw new TckAssertionError(
-      'connection.rssi-and-att-mtu-capability-contract',
-      `backend does not register ${featureId}`
-    )
-  }
-  return registration.state
+  return registration?.state ?? null
 }
 
 function restorationRecordCountIsBounded<Attachment extends string, Identity extends BackendIdentity<Attachment>>(
@@ -1443,6 +1612,15 @@ async function rejectsWithCapabilityCode<Value>(promise: Promise<Value>, code: s
   return promise.then(
     () => false,
     error => error instanceof BackendContractError && error.normalized.code === code
+  )
+}
+
+async function rejectsWithPublicCapabilityCode<Value>(promise: Promise<Value>, code: string): Promise<boolean> {
+  return promise.then(
+    () => false,
+    error =>
+      (error instanceof BackendContractError && error.normalized.code === code) ||
+      (typeof error === 'object' && error !== null && 'code' in error && error.code === code)
   )
 }
 
