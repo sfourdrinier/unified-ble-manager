@@ -124,6 +124,15 @@ export interface TckFeatureScenarioAdapters<Attachment extends string, Identity 
   readonly ipcTransport?: TckIpcTransportScenarioAdapter<Attachment>
   readonly restoration?: TckRestorationScenarioAdapter<Attachment, Identity>
   readonly webChooser?: TckWebChooserScenarioAdapter<Attachment>
+  readonly security?: TckSecurityScenarioAdapter
+}
+
+/** Host-specific peer/lifecycle controls for the runner-owned security scenario. */
+export interface TckSecurityScenarioAdapter {
+  readonly peerId: string
+  readonly customCeremonySupported: boolean
+  readonly supportsAlreadyUnpaired: boolean
+  readonly prepareCancellation?: () => void
 }
 
 export interface BackendTckFixture<

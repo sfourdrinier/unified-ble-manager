@@ -3,6 +3,7 @@
 import type { BackendAttachment, BackendAttachmentRequest, BleCentralBackend } from '../../backend-contract/backend'
 import { contractError, type CleanupRecord } from '../../backend-contract/errors'
 import {
+  BUILT_IN_FEATURE_IDS,
   createBackendOperationCapabilityRegistration,
   createFeatureRegistry
 } from '../../backend-contract/capabilities'
@@ -28,6 +29,13 @@ export interface BluezBackendConstruction {
 
 let nextBluezBackendInstance = 1
 
+const bluezSecurityFeatureIds = Object.freeze([
+  BUILT_IN_FEATURE_IDS.securityState,
+  BUILT_IN_FEATURE_IDS.securityPair,
+  BUILT_IN_FEATURE_IDS.securityCancelPairing,
+  BUILT_IN_FEATURE_IDS.securityUnpair
+])
+
 function allocateBluezBackendInstance(): number {
   const value = nextBluezBackendInstance
   nextBluezBackendInstance += 1
@@ -42,7 +50,17 @@ export class BluezBackend implements BleCentralBackend<string, HostNeutralBacken
       sourceDigest: 'bluez-direct-connection-v1',
       tckSuiteId: 'capability.catalog-v2',
       requiredScenarioIds: ['scenario.scan-connect-discover-read-notify-destroy']
-    })
+    }),
+    ...bluezSecurityFeatureIds.map(id =>
+      createBackendOperationCapabilityRegistration({
+        id,
+        implementationVersion: BLUEZ_IMPLEMENTATION_VERSION,
+        sourceDigest: `bluez-${id.replace(':', '-')}-v1`,
+        tckSuiteId: 'tck.feature.security.bluez',
+        requiredScenarioIds: ['security.state-pair-cancel-unpair'],
+        operation: `${id}.invoke-without-security-backend`
+      })
+    )
   ])
   readonly adapter
   readonly scanner

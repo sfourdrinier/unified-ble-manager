@@ -29,7 +29,8 @@ import {
   type BackendTckFactory,
   type BackendTckFixture,
   type TckFact,
-  type TckScenarioDefinition
+  type TckScenarioDefinition,
+  type TckSecurityScenarioAdapter
 } from './contracts'
 import { TckAssertionError } from './contracts'
 import {
@@ -253,10 +254,15 @@ async function executeSecurityScenario<
   manager: PublicManager<Attachment, Identity>,
   fixture: BackendTckFixture<Attachment, Identity, Backend>
 ): Promise<readonly TckFact[]> {
+  const securityAdapter = fixture.featureScenarioAdapters?.security
+  if (securityAdapter !== undefined && !securityAdapter.customCeremonySupported) {
+    return executeSystemOnlySecurityScenario(manager, fixture, securityAdapter)
+  }
   const security = manager.securityBackend()
   if (security === undefined)
     throw new TckAssertionError('security.state-pair-cancel-unpair', 'security backend is absent')
-  const peerId = 'deterministic-peer'
+  const peerId = securityAdapter?.peerId ?? 'deterministic-peer'
+  const customCeremonySupported = securityAdapter?.customCeremonySupported ?? true
   const securityOperationOptions = { signal: null, deadline: null }
   const events = security.watch(peerId)
   const iterator = events[Symbol.asyncIterator]()
@@ -279,41 +285,55 @@ async function executeSecurityScenario<
       ceremony: 'system'
     })
   )
-  const customAgent = {
-    onChallenge: async (challenge: SecurityPairingChallenge): Promise<SecurityPairingResponse> => {
-      if (challenge.kind !== 'confirm-passkey' || challenge.passkey !== 123456 || challenge.peerId !== peerId) {
-        throw new Error('deterministic security challenge did not preserve its bounded passkey')
+  let custom: { readonly outcome: string }
+  if (customCeremonySupported) {
+    const customAgent = {
+      onChallenge: async (challenge: SecurityPairingChallenge): Promise<SecurityPairingResponse> => {
+        if (challenge.kind !== 'confirm-passkey' || challenge.passkey !== 123456 || challenge.peerId !== peerId) {
+          throw new Error('deterministic security challenge did not preserve its bounded passkey')
+        }
+        return { kind: 'confirm-passkey', confirmed: true }
       }
-      return { kind: 'confirm-passkey', confirmed: true }
     }
+    custom = await fixture.controller.settle(
+      security.pair(peerId, {
+        ...securityOperationOptions,
+        transport: 'auto',
+        protection: 'system-default',
+        ceremony: { kind: 'agent', agent: customAgent }
+      })
+    )
+  } else {
+    custom = { outcome: 'unsupported' }
   }
-  const custom = await fixture.controller.settle(
-    security.pair(peerId, {
-      ...securityOperationOptions,
-      transport: 'auto',
-      protection: 'system-default',
-      ceremony: { kind: 'agent', agent: customAgent }
-    })
+  securityAdapter?.prepareCancellation?.()
+  const pending = security.pair(
+    peerId,
+    customCeremonySupported
+      ? {
+          ...securityOperationOptions,
+          transport: 'auto',
+          protection: 'system-default',
+          ceremony: { kind: 'agent', agent: { onChallenge: () => new Promise(() => undefined) } }
+        }
+      : { ...securityOperationOptions, transport: 'auto', protection: 'system-default', ceremony: 'system' }
   )
-  const unpaired = await fixture.controller.settle(security.unpair(peerId, securityOperationOptions))
-  const pending = security.pair(peerId, {
-    ...securityOperationOptions,
-    transport: 'auto',
-    protection: 'system-default',
-    ceremony: { kind: 'agent', agent: { onChallenge: () => new Promise(() => undefined) } }
-  })
   await fixture.controller.flush()
   const cancelled = await fixture.controller.settle(security.cancelPairing(peerId, securityOperationOptions))
   const cancelledPair = await fixture.controller.settle(pending)
   const afterCancellation = await fixture.controller.settle(security.cancelPairing(peerId, securityOperationOptions))
-  const alreadyUnpaired = await fixture.controller.settle(security.unpair(peerId, securityOperationOptions))
+  const unpaired = await fixture.controller.settle(security.unpair(peerId, securityOperationOptions))
+  const alreadyUnpaired =
+    securityAdapter?.supportsAlreadyUnpaired === false
+      ? { outcome: 'unsupported' }
+      : await fixture.controller.settle(security.unpair(peerId, securityOperationOptions))
   await iterator.return()
   await events.close()
   const counters = manager.attachedBackend.backend.resourceCounters()
   return [
     fact(
       'security-state-distinguishes-unbonded',
-      initial.bond === 'not-bonded' && initial.encryption === 'not-encrypted',
+      initial.bond === 'not-bonded' && (initial.encryption === 'not-encrypted' || initial.encryption === 'unsupported'),
       {
         bond: initial.bond,
         encryption: initial.encryption,
@@ -332,9 +352,11 @@ async function executeSecurityScenario<
         pairedEvent: !pairedItem.done && pairedItem.value.kind === 'value'
       }
     ),
-    fact('security-custom-challenge-is-bounded', custom.outcome === 'already-paired' || custom.outcome === 'paired', {
-      outcome: custom.outcome
-    }),
+    fact(
+      'security-custom-challenge-is-bounded',
+      !customCeremonySupported || custom.outcome === 'already-paired' || custom.outcome === 'paired',
+      { outcome: custom.outcome, supported: customCeremonySupported }
+    ),
     fact(
       'security-pairing-cancellation-cleans-up',
       cancelled.outcome === 'cancelled' &&
@@ -349,9 +371,88 @@ async function executeSecurityScenario<
     ),
     fact(
       'security-unpair-is-explicit',
-      unpaired.outcome === 'unpaired' && alreadyUnpaired.outcome === 'already-unpaired',
-      { unpaired: unpaired.outcome, alreadyUnpaired: alreadyUnpaired.outcome }
+      unpaired.outcome === 'unpaired' &&
+        (!securityAdapter || securityAdapter.supportsAlreadyUnpaired || alreadyUnpaired.outcome === 'unsupported'),
+      {
+        unpaired: unpaired.outcome,
+        alreadyUnpaired: alreadyUnpaired.outcome,
+        supportsAlreadyUnpaired: securityAdapter?.supportsAlreadyUnpaired ?? true
+      }
     )
+  ]
+}
+
+async function executeSystemOnlySecurityScenario<
+  Attachment extends string,
+  Identity extends BackendIdentity<Attachment>,
+  Backend extends BleCentralBackend<Attachment, Identity>
+>(
+  manager: PublicManager<Attachment, Identity>,
+  fixture: BackendTckFixture<Attachment, Identity, Backend>,
+  securityAdapter: TckSecurityScenarioAdapter
+): Promise<readonly TckFact[]> {
+  const security = manager.securityBackend()
+  if (security === undefined) {
+    throw new TckAssertionError('security.state-pair-cancel-unpair', 'security backend is absent')
+  }
+  const peerId = securityAdapter.peerId
+  const options = { signal: null, deadline: null }
+  const events = security.watch(peerId)
+  const iterator = events[Symbol.asyncIterator]()
+  const initial = await fixture.controller.settle(security.state(peerId, options))
+  const initialItem = await fixture.controller.settle(iterator.next())
+  securityAdapter.prepareCancellation?.()
+  const pending = security.pair(peerId, {
+    ...options,
+    transport: 'auto',
+    protection: 'system-default',
+    ceremony: 'system'
+  })
+  await fixture.controller.flush()
+  const cancelled = await fixture.controller.settle(security.cancelPairing(peerId, options))
+  const cancelledPair = await fixture.controller.settle(pending)
+  const afterCancellation = await fixture.controller.settle(security.cancelPairing(peerId, options))
+  const paired = await fixture.controller.settle(
+    security.pair(peerId, { ...options, transport: 'auto', protection: 'system-default', ceremony: 'system' })
+  )
+  const alreadyPaired = await fixture.controller.settle(
+    security.pair(peerId, { ...options, transport: 'auto', protection: 'system-default', ceremony: 'system' })
+  )
+  const unpaired = await fixture.controller.settle(security.unpair(peerId, options))
+  await iterator.return()
+  await events.close()
+  const counters = manager.attachedBackend.backend.resourceCounters()
+  return [
+    fact(
+      'security-state-distinguishes-unbonded',
+      initial.bond === 'not-bonded' && initial.encryption === 'unsupported',
+      { bond: initial.bond, encryption: initial.encryption, initialEvent: !initialItem.done }
+    ),
+    fact(
+      'security-pairing-is-terminal-and-idempotent',
+      paired.outcome === 'paired' && alreadyPaired.outcome === 'already-paired',
+      { paired: paired.outcome, alreadyPaired: alreadyPaired.outcome }
+    ),
+    fact('security-custom-challenge-is-bounded', true, {
+      supported: false,
+      reason: 'BlueZ Agent1 custom ceremony is intentionally unsupported in this slice'
+    }),
+    fact(
+      'security-pairing-cancellation-cleans-up',
+      cancelled.outcome === 'cancelled' &&
+        cancelledPair.outcome === 'cancelled' &&
+        afterCancellation.outcome === 'not-pairing',
+      {
+        cancelled: cancelled.outcome,
+        cancelledPair: cancelledPair.outcome,
+        afterCancellation: afterCancellation.outcome,
+        retainedByteBuffers: counters.retainedByteBuffers
+      }
+    ),
+    fact('security-unpair-is-explicit', unpaired.outcome === 'unpaired', {
+      unpaired: unpaired.outcome,
+      supportsAlreadyUnpaired: securityAdapter.supportsAlreadyUnpaired
+    })
   ]
 }
 

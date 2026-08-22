@@ -130,6 +130,25 @@ remain explicit unsupported/implicit system-managed surfaces unless a public
 API provides a truthful measurement; Web origin `forget()` is not generic
 unpairing.
 
+### BlueZ PR7C3 checkpoint
+
+The BlueZ system-mediated subset now satisfies that boundary at commit
+`b1be210a0bd4e2ad76bf0e98d82425a143f654e2` plus the current TCK integration:
+
+- `security:state`, `security:pair`, `security:cancel-pairing`, and
+  `security:unpair` are registered only after the D-Bus implementation exists;
+- `Device1.Pair`, `CancelPairing`, `Adapter1.RemoveDevice`, and `Paired`
+  property observation have lifecycle tests;
+- removal invalidates the cached peer path and closes security watchers;
+- the first-party BlueZ TCK executes the security scenario with four passing
+  capability bindings;
+- `security:custom-ceremony` remains unregistered and Agent1 remains an
+  explicit unsupported exclusion;
+- encryption, authentication, and Secure Connections are reported unsupported
+  because BlueZ `Device1` properties do not provide those measurements here.
+
+Android, WinRT, and trusted-host IPC security remain separate PR7C slices.
+
 ## PR6 current checkpoint
 
 This branch has now verified the following PR6 slices against current source:
