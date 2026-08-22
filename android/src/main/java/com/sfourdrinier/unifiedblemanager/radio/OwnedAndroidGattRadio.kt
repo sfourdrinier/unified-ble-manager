@@ -1595,21 +1595,6 @@ class OwnedAndroidGattRadio(private val context: Context) {
     }
   }
 
-  /**
-   * Hidden [BluetoothGatt.refresh] via reflection (clears local GATT cache).
-   * Best-effort; returns false if method missing or invoke fails.
-   */
-  fun refreshGatt(deviceId: String): Boolean {
-    val gatt = gatts[deviceId.uppercase()] ?: return false
-    return try {
-      val method = gatt.javaClass.getMethod("refresh")
-      (method.invoke(gatt) as? Boolean) == true
-    } catch (t: Throwable) {
-      OwnedAndroidLog.e("refreshGatt", t)
-      false
-    }
-  }
-
   internal fun destroy(): OwnedRadioTeardownResult {
     val failures = mutableListOf<OwnedRadioTeardownFailure>()
     stopScan()?.let { failure -> failures.add(failure) }
