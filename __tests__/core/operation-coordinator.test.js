@@ -296,7 +296,7 @@ describe('CoreOperationCoordinator', () => {
   })
 
   test('rejects queued overflow with one quota result without dispatching or retaining its payload', async () => {
-    const { coordinator, ledger } = createCoordinator(1)
+    const { coordinator, ledger, trace } = createCoordinator(1)
     const first = deferred()
     const started = []
     const firstResult = coordinator.run(
@@ -338,6 +338,9 @@ describe('CoreOperationCoordinator', () => {
     expect(started).toEqual(['first'])
     expect(Number(ledger.current('retainedByteBuffers'))).toBe(5)
     expect(coordinator.activeCounts()).toEqual({ queued: 1, dispatched: 1, quarantined: 0 })
+    expect(trace.snapshot()).toEqual(
+      expect.arrayContaining([expect.objectContaining({ cause: 'stream.quota', transition: 'queue-rejected' })])
+    )
 
     first.resolve('first-value')
     await expect(firstResult).resolves.toMatchObject({ outcome: 'succeeded' })

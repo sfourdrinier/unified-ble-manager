@@ -4,7 +4,7 @@ function descriptor(id, state, limitations = []) {
   return { id, state, limitations }
 }
 
-function capabilities() {
+function capabilities(readinessState = 'unsupported') {
   const descriptors = new Map([
     ['connection:direct', descriptor('connection:direct', 'supported')],
     [
@@ -24,7 +24,7 @@ function capabilities() {
     ['connection:phy', descriptor('connection:phy', 'unsupported')],
     ['connection:parameters', descriptor('connection:parameters', 'unsupported')],
     ['connection:subrate', descriptor('connection:subrate', 'unsupported')],
-    ['gatt:write-without-response-readiness', descriptor('gatt:write-without-response-readiness', 'unsupported')]
+    ['gatt:write-without-response-readiness', descriptor('gatt:write-without-response-readiness', readinessState)]
   ])
   return {
     supports: id => descriptors.get(id)?.state === 'supported',
@@ -87,8 +87,8 @@ function database(generation) {
   }
 }
 
-function setup() {
-  const capabilitySnapshot = capabilities()
+function setup(readinessState) {
+  const capabilitySnapshot = capabilities(readinessState)
   let discoveryCount = 0
   const calls = []
   const base = {
@@ -186,6 +186,15 @@ describe('IPC public connection controls', () => {
     ]) {
       await expect(stream[Symbol.asyncIterator]().next()).rejects.toMatchObject({ code: 'capability.unsupported' })
     }
+  })
+
+  test('preserves unavailable readiness state in the renderer stream error', async () => {
+    const { manager } = setup('unavailable')
+    const connection = await manager.connect('peer-1')
+
+    await expect(connection.controls.writeReadiness('without-response')[Symbol.asyncIterator]().next()).rejects.toMatchObject({
+      code: 'capability.unavailable'
+    })
   })
 
   test('validates rediscovery reason and forwards mapped reasons over IPC without replaying writes', async () => {

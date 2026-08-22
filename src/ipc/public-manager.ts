@@ -408,23 +408,32 @@ async function runIpcControl<Value>(operation: () => Promise<Value>): Promise<Va
   }
 }
 
-function unsupportedIpcControlStream<Value>(operation: string): AsyncIterable<Value> {
-  return new UnsupportedIpcControlStream(operation)
+function unsupportedIpcControlStream<Value>(
+  operation: string,
+  code: 'capability.unsupported' | 'capability.unavailable' = 'capability.unsupported'
+): AsyncIterable<Value> {
+  return new UnsupportedIpcControlStream(operation, code)
 }
 
 class UnsupportedIpcControlStream<Value> implements AsyncIterable<Value> {
-  constructor(private readonly operation: string) {}
+  constructor(
+    private readonly operation: string,
+    private readonly code: 'capability.unsupported' | 'capability.unavailable'
+  ) {}
 
   [Symbol.asyncIterator](): AsyncIterator<Value> {
-    return new UnsupportedIpcControlIterator(this.operation)
+    return new UnsupportedIpcControlIterator(this.operation, this.code)
   }
 }
 
 class UnsupportedIpcControlIterator<Value> implements AsyncIterator<Value> {
-  constructor(private readonly operation: string) {}
+  constructor(
+    private readonly operation: string,
+    private readonly code: 'capability.unsupported' | 'capability.unavailable'
+  ) {}
 
   async next(): Promise<IteratorResult<Value, undefined>> {
-    throw rehydratePublicError(contractError('capability.unsupported', 'connection', this.operation))
+    throw rehydratePublicError(contractError(this.code, 'connection', this.operation))
   }
 
   async return(): Promise<IteratorResult<Value, undefined>> {
@@ -499,8 +508,15 @@ function createIpcConnectionControls(
       unsupportedIpcControlStream<ConnectionParametersObservation>('ipc-public-manager.controls.parameter-events'),
     requestSubrate: (_mode: SubrateMode, _options: OperationOptions = {}): Promise<SubrateResult> =>
       unsupportedPromise('ipc-public-manager.controls.request-subrate'),
-    writeReadiness: (_mode: 'without-response') =>
-      unsupportedIpcControlStream<WriteReadinessEvent>('ipc-public-manager.controls.write-readiness')
+    writeReadiness: (_mode: 'without-response') => {
+      const descriptor = capabilities.get(BUILT_IN_FEATURE_IDS.writeWithoutResponseReadiness)
+      return descriptor?.state === 'unavailable'
+        ? unsupportedIpcControlStream<WriteReadinessEvent>(
+            'ipc-public-manager.controls.write-readiness',
+            'capability.unavailable'
+          )
+        : unsupportedIpcControlStream<WriteReadinessEvent>('ipc-public-manager.controls.write-readiness')
+    }
   })
 }
 

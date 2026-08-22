@@ -175,6 +175,17 @@ export class CoreOperationCoordinator<Attachment extends string> {
       )
     }
     if (execution.queueKey !== null && !this.canAdmitQueuedOperation(execution.queueKey)) {
+      const counts = this.activeCounts()
+      this.options.trace.record({
+        timestamp: this.options.now(),
+        resource: 'operation',
+        transition: 'queue-rejected',
+        operation: null,
+        cause: 'stream.quota',
+        queuedOperations: counts.queued,
+        dispatchedOperations: counts.dispatched,
+        quarantinedOperations: counts.quarantined
+      })
       return Promise.resolve(
         this.failure(correlation, 'failed', execution.mayCommit, 'operation-coordinator.queue-capacity', 'stream.quota')
       )

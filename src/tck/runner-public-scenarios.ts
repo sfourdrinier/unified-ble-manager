@@ -1212,7 +1212,7 @@ async function executeGattReadWriteScenario<
     connected.database.read(characteristic.path, operationOptions),
     connected.database.read(characteristic.path, operationOptions)
   ]
-  queuedReads[0]?.then(
+  queuedReads[1]?.then(
     () => {
       secondReadSettled = true
     },
@@ -1251,7 +1251,7 @@ async function executeGattReadWriteScenario<
   const queueBackpressureWasObserved = await fixture.controller.settle(overflowRejectedPromise)
   const operationTrace = manager.traceDocument().records.filter(record => record.kind === 'operation')
   const queueTraceIsBounded = operationTrace.some(record => record.cause === 'stream.quota')
-  const queueFairAndBounded = fairnessObserved && queueBackpressureWasObserved
+  const queueFairAndBounded = fairnessObserved && queueBackpressureWasObserved && queueTraceIsBounded
   assertCleanupReleased(definition, await fixture.controller.settle(connected.connection.release()), 'connection')
   return [
     fact('gatt-read-and-descriptor-return-owned-bytes', ownedBytes, {
@@ -1389,7 +1389,7 @@ async function executeConnectionControlsScenario<
     } else {
       rssiExplicitlyUnavailable = await rejectsWithCode(
         fixture.controller.settle(connection.readRssi(operationOptions)),
-        'capability.unsupported'
+        capabilityErrorCode(rssiState)
       )
     }
     const mtuState = featureState(fixture.backend, BUILT_IN_FEATURE_IDS.connectionRequestMtu)
@@ -1404,7 +1404,7 @@ async function executeConnectionControlsScenario<
     } else {
       mtuExplicitlyUnavailable = await rejectsWithCode(
         fixture.controller.settle(connection.requestMtu(adapter.requestedMtu, operationOptions)),
-        'capability.unsupported'
+        capabilityErrorCode(mtuState)
       )
     }
 
@@ -1416,19 +1416,17 @@ async function executeConnectionControlsScenario<
     } else {
       priorityRejected = await rejectsWithCode(
         fixture.controller.settle(connection.requestPriority('high-throughput', operationOptions)),
-        'capability.unsupported'
+        capabilityErrorCode(priorityState)
       )
       priorityAcceptedOrRejected = priorityRejected
     }
 
-    const phyTruth = explicitLimitedOrUnsupported(featureState(fixture.backend, BUILT_IN_FEATURE_IDS.connectionPhy))
-    const parametersTruth = explicitLimitedOrUnsupported(
+    const phyTruth = explicitFeatureState(featureState(fixture.backend, BUILT_IN_FEATURE_IDS.connectionPhy))
+    const parametersTruth = explicitFeatureState(
       featureState(fixture.backend, BUILT_IN_FEATURE_IDS.connectionParameters)
     )
-    const subrateTruth = explicitLimitedOrUnsupported(
-      featureState(fixture.backend, BUILT_IN_FEATURE_IDS.connectionSubrate)
-    )
-    const readinessTruth = explicitLimitedOrUnsupported(
+    const subrateTruth = explicitFeatureState(featureState(fixture.backend, BUILT_IN_FEATURE_IDS.connectionSubrate))
+    const readinessTruth = explicitFeatureState(
       featureState(fixture.backend, BUILT_IN_FEATURE_IDS.writeWithoutResponseReadiness)
     )
     const database = await fixture.controller.settle(connection.discover(operationOptions))
@@ -1555,8 +1553,12 @@ function isConnectionLifecycleValue<Attachment extends string>(
   )
 }
 
-function explicitLimitedOrUnsupported(state: FeatureState | null): boolean {
-  return state === null || state === 'unsupported' || state === 'limited'
+function explicitFeatureState(state: FeatureState | null): boolean {
+  return state !== null
+}
+
+function capabilityErrorCode(state: FeatureState | null): 'capability.unsupported' | 'capability.unavailable' {
+  return state === 'unavailable' ? 'capability.unavailable' : 'capability.unsupported'
 }
 
 function compatibility(): BackendCompatibilityOffer {

@@ -178,7 +178,7 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
     return new IpcBleManager(
       client,
       createPublicBleCapabilities(
-        projectRemoteSecurityCapabilities(client.bootstrap.capabilities),
+        projectRemoteCapabilities(client.bootstrap.capabilities),
         String(client.bootstrap.attachment.backendGeneration),
         true
       )
@@ -548,14 +548,48 @@ const REMOTE_SECURITY_CAPABILITY_IDS = new Set<string>([
   BUILT_IN_FEATURE_IDS.securityCustomCeremony
 ])
 
-function projectRemoteSecurityCapabilities(snapshot: IpcCapabilitySnapshotV2): IpcCapabilitySnapshotV2 {
+const REMOTE_RENDERER_UNSUPPORTED_CAPABILITY_IDS = new Set<string>([
+  BUILT_IN_FEATURE_IDS.connectionEffectiveMtu,
+  BUILT_IN_FEATURE_IDS.connectionRequestMtu,
+  BUILT_IN_FEATURE_IDS.connectionPriority,
+  BUILT_IN_FEATURE_IDS.connectionPhy,
+  BUILT_IN_FEATURE_IDS.connectionParameters,
+  BUILT_IN_FEATURE_IDS.connectionSubrate,
+  BUILT_IN_FEATURE_IDS.writeWithoutResponseReadiness
+])
+
+export function projectRemoteCapabilities(snapshot: IpcCapabilitySnapshotV2): IpcCapabilitySnapshotV2 {
   return Object.freeze({
     ...snapshot,
     descriptors: Object.freeze(
       snapshot.descriptors.map(descriptor =>
-        REMOTE_SECURITY_CAPABILITY_IDS.has(descriptor.id) ? unsupportedRemoteSecurityDescriptor(descriptor) : descriptor
+        REMOTE_SECURITY_CAPABILITY_IDS.has(descriptor.id)
+          ? unsupportedRemoteSecurityDescriptor(descriptor)
+          : REMOTE_RENDERER_UNSUPPORTED_CAPABILITY_IDS.has(descriptor.id)
+            ? unsupportedRemoteRendererDescriptor(descriptor)
+            : descriptor
       )
     )
+  })
+}
+
+function unsupportedRemoteRendererDescriptor(descriptor: CapabilityDescriptor): CapabilityDescriptor {
+  const limitation = Object.freeze({
+    code: 'ipc-renderer-control-unavailable',
+    explanation: 'This renderer IPC projection does not currently route this native control.',
+    affectedGuarantee: 'native control support over renderer IPC'
+  })
+  return Object.freeze({
+    ...descriptor,
+    state: 'unsupported' as const,
+    evidence: Object.freeze({
+      ...descriptor.evidence,
+      receiptId: `ipc-renderer-control-unavailable-${descriptor.id}`,
+      evidenceLevel: 'blocked' as const,
+      sourceDigest: 'ipc-renderer-control-projection-v1',
+      limitations: Object.freeze([limitation])
+    }),
+    limitations: Object.freeze([limitation])
   })
 }
 

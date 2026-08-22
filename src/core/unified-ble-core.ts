@@ -700,14 +700,18 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
       await this.operationCoordinator.waitForQuarantineDrain(key)
     }
     const admissionFailures = this.operationCoordinator.takeCleanupFailures(key)
-    if (admissionFailures.length > 0) {
-      return { state: 'release-failed', failures: admissionFailures }
+    const mergeAdmissionFailures = (record: CleanupRecord): CleanupRecord => {
+      if (admissionFailures.length === 0) return record
+      return {
+        state: 'release-failed',
+        failures: [...admissionFailures, ...record.failures]
+      }
     }
     const disconnect = cause === 'requested-disconnect'
     const reason = isConnectionLossCause(cause) ? 'connection-lost' : 'owner-released'
     const cleanup = await connection.cleanupChildren(reason)
     if (cleanup.state === 'release-failed') {
-      return cleanup
+      return mergeAdmissionFailures(cleanup)
     }
     let backendResult: CleanupRecord
     try {
@@ -724,19 +728,18 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
         dispatchedOperations: 0,
         quarantinedOperations: 0
       })
-      return cleanupFailure(
-        'connection',
-        contractError('platform.failure', 'cleanup', 'unified-core.connection-release')
+      return mergeAdmissionFailures(
+        cleanupFailure('connection', contractError('platform.failure', 'cleanup', 'unified-core.connection-release'))
       )
     }
     if (backendResult.state === 'release-failed') {
-      return backendResult
+      return mergeAdmissionFailures(backendResult)
     }
     connection.finishLifecycle(cause, null)
     connection.markReleased()
     this.connections.delete(String(connection.resource.connectionId))
     this.resourceLedger.decrement('connectionLeases')
-    return backendResult
+    return mergeAdmissionFailures(backendResult)
   }
 
   async invalidateDatabase(

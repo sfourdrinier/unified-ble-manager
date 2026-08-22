@@ -404,8 +404,11 @@ async function runPublicControl<Value>(action: () => Promise<Value>): Promise<Va
   }
 }
 
-function unsupportedControlStream<Value>(operation: string): AsyncIterable<Value> {
-  return new UnsupportedControlStream(operation)
+function unsupportedControlStream<Value>(
+  operation: string,
+  code: 'capability.unsupported' | 'capability.unavailable' = 'capability.unsupported'
+): AsyncIterable<Value> {
+  return new UnsupportedControlStream(operation, code)
 }
 
 function publicWriteReadinessStream(
@@ -441,18 +444,24 @@ function publicWriteReadinessStream(
 }
 
 class UnsupportedControlStream<Value> implements AsyncIterable<Value> {
-  constructor(private readonly operation: string) {}
+  constructor(
+    private readonly operation: string,
+    private readonly code: 'capability.unsupported' | 'capability.unavailable'
+  ) {}
 
   [Symbol.asyncIterator](): AsyncIterator<Value> {
-    return new UnsupportedControlIterator(this.operation)
+    return new UnsupportedControlIterator(this.operation, this.code)
   }
 }
 
 class UnsupportedControlIterator<Value> implements AsyncIterator<Value> {
-  constructor(private readonly operation: string) {}
+  constructor(
+    private readonly operation: string,
+    private readonly code: 'capability.unsupported' | 'capability.unavailable'
+  ) {}
 
   async next(): Promise<IteratorResult<Value, undefined>> {
-    throw rehydratePublicError(contractError('capability.unsupported', 'connection', this.operation))
+    throw rehydratePublicError(contractError(this.code, 'connection', this.operation))
   }
 
   async return(): Promise<IteratorResult<Value, undefined>> {
@@ -653,10 +662,15 @@ function createPublicConnectionControls(
       if (
         descriptor === null ||
         descriptor.state === 'unsupported' ||
-        descriptor.state === 'unavailable' ||
         connection.writeWithoutResponseReadiness === undefined
       ) {
         return unsupportedControlStream<WriteReadinessEvent>('public-connection.controls.write-readiness')
+      }
+      if (descriptor.state === 'unavailable') {
+        return unsupportedControlStream<WriteReadinessEvent>(
+          'public-connection.controls.write-readiness',
+          'capability.unavailable'
+        )
       }
       return publicWriteReadinessStream(connection, generation, descriptor)
     }
