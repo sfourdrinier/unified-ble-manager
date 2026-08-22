@@ -23,8 +23,8 @@ consumer proof remain separate gates.
 ## Follow-up inventory — current PR41 source
 
 Verified against implementation source tip
-`016d2694f753a201a6395a3face4775f3069e1ba`; documentation-only descendants
-preserve this source tree.
+`016d2694f753a201a6395a3face4775f3069e1ba`; later tests, CI/scripts, and
+documentation commits preserve this runtime source tree.
 The full package gate is 141 suites / 1,324 tests. Focused settlement,
 scan/CoreBluetooth, and package-surface gates are green. Plugin is 36/36.
 
@@ -62,7 +62,7 @@ Verified against the integrated source through current HEAD `f07ac04`.
 | F-14 | Codex P1 threads 3836416332 / 3836520644 | Connection cleanup could skip backend teardown after child failures; rediscovery could wait indefinitely for a quarantined operation. | Confirmed and fixed in `9d567aa`; teardown continues and merges failures, while quarantine drain is bounded by caller abort/deadline without releasing ownership early. |
 | F-15 | Codex P2 threads 3836490561 / 3836490570 / 3836505594 / 3836520651 / 3836419498 | Public controls needed identity and mode validation, unavailable readiness preservation, and cleanup-failure retention. | Confirmed and fixed in `966be9f`; stale identities fail closed, invalid modes reject before dispatch, unavailable remains distinct, and readiness teardown aggregates release failures. `3836419498` was stale against the current source and is recorded as such. |
 | F-16 | Codex P2 thread 3836520647 | IPC rediscovery left old renderer/main-process database handles alive. | Confirmed and fixed in `9982b1d`; renderer databases invalidate before route, and the main router retires exact-connection databases/subscriptions with retryable failure retention. |
-| F-17 | Hosted G6A run `32588860410` | Generic packed smoke passed, but the separate G6A Node fixture imported retired root `BleManager`/factory APIs. | Confirmed and fixed through `8c1d4bd`/`6aa26b8`; Web and Node packed fixtures use current public managers, environment/testing factories, object GATT, and diagnostics. Hosted G6A passed in `32592655162` at the exact source SHA. |
+| F-17 | Hosted G6A run `32588860410` | Generic packed smoke passed, but the separate G6A Node fixture imported retired root `BleManager`/factory APIs. | Confirmed and fixed through `8c1d4bd`/`6aa26b8`; Web and Node packed fixtures use current public managers, environment/testing factories, object GATT, and diagnostics. Hosted G6A passed in `32592655162` at exact source SHA `046b764356178830f605633e86762e6996621180`; a rerun remains required for `016d269`. |
 | F-18 | Fresh native adversarial review | Closed CoreBluetooth readiness watches retain the backend-owned native ingress handler until boundary destruction. | Confirmed and fixed in `986dfda`; readiness closures are owned by the connection record and close on connection release, native loss, and backend teardown without affecting other connections. |
 | F-19 | Hosted G6A run `32590629321` | Node G6A fixture consumed retired internal root manager constructors; the public package intentionally exports only host-neutral types at root. | Confirmed and fixed in `6aa26b8`; `/testing` now exposes a deterministic public-manager helper, and the packed Node fixture uses public manager/GATT/diagnostics APIs. Hosted deterministic Node/Web G6A passed in `32592655162`. |
 | F-20 | Current-code adversarial follow-up | Public `scan({ duplicates: 'coalesced' })` accepted the option but passed the default all-observations policy into the public stream filter. | Confirmed and fixed in `5dd6ea0`; the manager forwards the requested duplicate policy and has a regression test for coalescing. |

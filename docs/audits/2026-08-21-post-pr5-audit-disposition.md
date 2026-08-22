@@ -311,7 +311,7 @@ PR6 to a release claim by itself.
 
 The current PR8 branch is `feat/4.0-link-controls` with implementation source
 tip `016d2694f753a201a6395a3face4775f3069e1ba`; subsequent commits in this
-checkpoint are documentation-only descendants. The readiness ingress, core
+checkpoint contain only tests, CI/scripts, and documentation changes. The readiness ingress, core
 writeWhenReady lifecycle, packed-consumer validator, public Web consumers,
 Android PHY runtime truth, executable TCK closure slices, connection-scoped
 CoreBluetooth readiness ownership, physical native settlement quarantine across
