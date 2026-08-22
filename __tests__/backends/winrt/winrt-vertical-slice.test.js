@@ -2568,6 +2568,103 @@ describe('WinRT contract-v2 deterministic native-boundary vertical slice', () =>
     expect(Object.values(backend.resourceCounters()).every(value => Number(value) === 0)).toBe(true)
   })
 
+  test('bounds native disconnect completion while retaining ownership until a late settlement permits retry', async () => {
+    jest.useFakeTimers()
+    const disconnectGate = deferred()
+    let backend = null
+    let lease = null
+    try {
+      const fixture = await backendFixture()
+      backend = fixture.backend
+      const { boundary } = fixture
+      const peerId = await observedPeerId(backend, boundary)
+      lease = await backend.connections.connect(
+        peerId,
+        opaqueId('disconnect-timeout-client', 'client', 'winrt:disconnect-timeout'),
+        operation()
+      )
+      boundary.setDisconnectGate(disconnectGate.promise)
+
+      let releaseResult = null
+      const release = lease.release()
+      release.then(result => {
+        releaseResult = result
+      })
+      await flushMicrotasks()
+      expect(boundary.disconnectCalls).toBe(1)
+      expect(releaseResult).toBeNull()
+
+      jest.runOnlyPendingTimers()
+      await flushMicrotasks()
+      expect(releaseResult).toMatchObject({
+        state: 'release-failed',
+        failures: [expect.objectContaining({ resourceKind: 'connection' })]
+      })
+      expect(backend.resourceCounters()).toMatchObject({ connectionLeases: 1, physicalLinks: 1 })
+
+      disconnectGate.resolve()
+      await flushMicrotasks()
+      await expect(lease.release()).resolves.toEqual({ state: 'released', failures: [] })
+      expect(boundary.disconnectCalls).toBe(1)
+      expect(Object.values(backend.resourceCounters()).every(value => Number(value) === 0)).toBe(true)
+    } finally {
+      disconnectGate.resolve()
+      if (lease !== null) await lease.release().catch(() => undefined)
+      if (backend !== null) await backend.destroy().catch(() => undefined)
+      jest.useRealTimers()
+    }
+  })
+
+  test('bounds destroy while a physical GATT settlement is pending and retries after late settlement', async () => {
+    jest.useFakeTimers()
+    const readGate = deferred()
+    let backend = null
+    let destroy = null
+    try {
+      const fixture = await connectedDatabaseFixture('destroy-timeout')
+      backend = fixture.backend
+      const { boundary, snapshot } = fixture
+      boundary.readGate = readGate.promise
+      const dispatch = backend.gatt.read(snapshot.characteristics[0].path, {
+        operation: { ...operation(), correlation: opaqueId('destroy-timeout', 'core-operation', 'winrt:destroy-timeout') }
+      })
+      destroy = backend.destroy()
+      let destroyResult = null
+      destroy.then(result => {
+        destroyResult = result
+      })
+
+      await expect(dispatch.completion).rejects.toMatchObject({ normalized: { code: 'operation.cancelled-by-destroy' } })
+      await flushMicrotasks()
+      jest.runOnlyPendingTimers()
+      await flushMicrotasks()
+      jest.runOnlyPendingTimers()
+      await flushMicrotasks()
+      expect(destroyResult).toMatchObject({
+        state: 'release-failed',
+        failures: expect.arrayContaining([expect.objectContaining({ resourceKind: 'operation-quarantine' })])
+      })
+      expect(boundary.destroyed).toBe(false)
+      expect(backend.resourceCounters()).toMatchObject({
+        connectionLeases: 1,
+        physicalLinks: 1,
+        dispatchedOperations: 1
+      })
+
+      readGate.resolve(new Uint8Array([7, 7]))
+      await flushMicrotasks()
+      expectConsoleInfo('[WinRtBackend] Late WinRT completion quarantined: winrt.gatt.read')
+      await expect(backend.destroy()).resolves.toEqual({ state: 'released', failures: [] })
+      expect(boundary.destroyed).toBe(true)
+      expect(Object.values(backend.resourceCounters()).every(value => Number(value) === 0)).toBe(true)
+    } finally {
+      readGate.resolve(new Uint8Array([7, 7]))
+      if (destroy !== null) await destroy.catch(() => undefined)
+      if (backend !== null) await backend.destroy().catch(() => undefined)
+      jest.useRealTimers()
+    }
+  })
+
   test('retains the physical connection when core quarantine times out before native GATT settlement', async () => {
     jest.useFakeTimers()
     let manager = null
@@ -2878,6 +2975,7 @@ describe('WinRT contract-v2 deterministic native-boundary vertical slice', () =>
     boundary.emitConnectionLoss()
     await expect(first).rejects.toMatchObject({ normalized: { code: 'operation.disconnected' } })
     gate.resolve()
+    await flushMicrotasks()
     await flushMicrotasks()
     expectConsoleErrorMatching(
       '[WinRtBackend.connect] Late native connect cleanup requires retry:',
