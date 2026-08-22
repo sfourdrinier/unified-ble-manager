@@ -1415,7 +1415,8 @@ characteristicUUID:(NSString *)characteristicUUID
   }
   const std::uint64_t ordinal = ++self.nextReadinessOrdinal;
   NSString *connectionGeneration = [NSString stringWithFormat:@"%llu", generation.unsignedLongLongValue];
-  self.writeWithoutResponseReadinessHandler(deviceId, connectionGeneration, YES, ordinal);
+  self.writeWithoutResponseReadinessHandler(
+      deviceId, connectionGeneration, peripheral.canSendWriteWithoutResponse, ordinal);
 }
 
 - (void)peripheral:(CBPeripheral *)peripheral didReadRSSI:(NSNumber *)RSSI error:(NSError *)error {

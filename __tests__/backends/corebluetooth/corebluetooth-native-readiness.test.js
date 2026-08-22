@@ -82,6 +82,11 @@ describe('CoreBluetooth native write-readiness boundary', () => {
     expect(addonSource).toContain('connectionGeneration')
     expect(addonSource).toContain('ordinal')
     expect(addonSource).toContain('BlockingCall')
+    const readinessCallbackStart = addonSource.indexOf('peripheralIsReadyToSendWriteWithoutResponse')
+    expect(addonSource.slice(readinessCallbackStart, readinessCallbackStart + 900)).toContain(
+      'peripheral.canSendWriteWithoutResponse'
+    )
+    expect(addonSource).toContain('[self.connectionGenerations removeObjectForKey:deviceId]')
 
     const bridgeSource = fs.readFileSync(path.join(repositoryRoot, 'native/electron/corebluetooth/index.js'), 'utf8')
     expect(bridgeSource).toContain("'canSendWriteWithoutResponse'")
