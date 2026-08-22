@@ -37,7 +37,7 @@ The existing PR6 implementation WIP is preserved in `stash@{0}` and is applied t
 | F-025                                                                                     | Confirmed / closure | PR6C native lease-safe cancellation plus PR6E supervisor arbitration; four late-cancel/shared-peer race tests are required |
 | F-009                                                                                     | Confirmed / closure | PR6A custom stream input validation and end-to-end stream-budget test                                                      |
 | F-013                                                                                     | Confirmed / closure | PR6D public adapter/chooser/GATT/peer error-rehydration matrix                                                             |
-| F-014                                                                                     | Confirmed / defer   | PR7 diagnostics slice; acceptance test must include backend-owned chooser resources                                      |
+| F-014                                                                                     | Fixed in PR7A       | Backend-authoritative public diagnostics, including backend-owned chooser resources and optional backend trace       |
 | F-016                                                                                     | Confirmed / defer   | PR9 — provider discovery-kind descriptor matrix; Electron/Tauri bootstrap descriptors are covered in PR6C                 |
 | F-036                                                                                     | Confirmed / closure | PR6C permutation-invariant normalized query digest tests                                                                   |
 | F-038                                                                                     | Confirmed / closure | PR6C normalized public observation delivery tests                                                                          |
@@ -88,6 +88,30 @@ Every deferred finding must become a linked blocking issue with one target PR, o
 | D-013 | [#38](https://github.com/sfourdrinier/unified-ble-manager/issues/38) | `sfourdrinier` | PR11 | Independent Tauri consumer installs paired npm/crate artifacts and builds without a `node_modules` Cargo path |
 
 Each RC checkpoint must re-audit this register against current source; stale or unsupported findings must be explicitly closed rather than silently disappearing.
+
+## PR7A current checkpoint
+
+At commit `1de583bcd92495bc9150a33b80512b2dd9a81539`, PR7A has landed:
+
+- typed security state/result/ceremony contracts and root/backend-sdk exports;
+- manager-admitted public security operations with peer-reference resolution,
+  capability gates, bounded custom challenges, explicit cancellation, and
+  unsupported Apple/Web/IPC behavior;
+- deterministic pairing state, watch events, duplicate arbitration, timeout and
+  cancellation settlement, custom-agent validation, and destroy cleanup;
+- backend-authoritative public diagnostics, with a regression proving a live
+  backend chooser counter and backend trace are not replaced by core-local zeroes;
+- the opt-in protected-GATT security helper and `platform.security` recovery
+  actions;
+- a canonical deterministic security TCK scenario, generated API reports,
+  backend SDK scenario reference, and packed third-party security-unsupported
+  assertions.
+
+Native Android bond events, Windows pairing/unpairing, BlueZ system pairing,
+and trusted-host Electron/Tauri security scopes remain PR7C work. No native
+support claim is made by PR7A. The local packed smoke reached `npm pack` but was
+blocked by npm's local exit-handler failure; hosted supported-Node CI remains a
+required gate before PR7 can merge.
 
 ## PR6 current checkpoint
 
