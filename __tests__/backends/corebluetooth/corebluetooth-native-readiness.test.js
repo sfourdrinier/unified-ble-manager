@@ -8,11 +8,11 @@ const addonSource = fs.readFileSync(path.join(repositoryRoot, 'native/electron/c
 const bridgePath = path.join(repositoryRoot, 'native/electron/corebluetooth')
 const nativeAddonPath = path.join(bridgePath, 'build', 'Release', 'unified_ble_corebluetooth.node')
 
-function withDarwinPlatform(run) {
+async function withDarwinPlatform(run) {
   const originalDescriptor = Object.getOwnPropertyDescriptor(process, 'platform')
   Object.defineProperty(process, 'platform', { configurable: true, value: 'darwin' })
   try {
-    return run()
+    return await run()
   } finally {
     if (originalDescriptor === undefined) {
       delete process.platform
@@ -109,6 +109,7 @@ describe('CoreBluetooth native write-readiness boundary', () => {
         ready: true,
         ordinal: 17
       })
+      nativeHandler({ id: 'malformed', connectionGeneration: 'native-generation-1', ready: true, ordinal: '18' })
       stop()
       nativeHandler({
         id: 'ignored-after-unsubscribe',

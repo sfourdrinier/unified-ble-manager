@@ -78,7 +78,7 @@ manager.startDeviceScan(['180d'], { allowDuplicates: false }, (error, device) =>
 })
 
 // unified-ble-manager
-import { capacity, deadline, scanUntil } from 'unified-ble-manager'
+import { capacity, deadline, scanUntil } from 'unified-ble-manager/advanced'
 import { HEART_RATE_SERVICE } from 'unified-ble-manager/profiles/heart-rate'
 
 const abort = new AbortController()
@@ -143,7 +143,7 @@ const value = await database.read(readablePath, { signal: abort.signal, deadline
 ```
 
 ```ts
-import { BackendContractError } from 'unified-ble-manager'
+import { BleError } from 'unified-ble-manager'
 import { encodeResetEnergyExpended, heartRateControlPointSelector } from 'unified-ble-manager/profiles/heart-rate'
 
 try {
@@ -154,7 +154,7 @@ try {
     mode: 'with-response'
   })
 } catch (error) {
-  if (!(error instanceof BackendContractError) || (error.normalized.code !== 'gatt.not-found' && error.normalized.code !== 'gatt.property-not-supported')) {
+  if (!(error instanceof BleError) || (error.code !== 'gatt.not-found' && error.code !== 'gatt.property-not-supported')) {
     throw error
   }
 }
@@ -225,11 +225,15 @@ if (mtu.state === 'accepted' && mtu.observation?.state === 'measured') {
   consumeMtu(mtu.observation.attMtu, mtu.observation.payloadBytes)
 }
 
-const maxWrite = await connection.controls.maximumWriteLength('without-response')
+const maxWrite = await connection.controls.maximumWriteLength('with-response')
+if (maxWrite.state !== 'measured' || maxWrite.maximumWriteLength === null) {
+  throw new Error('The backend did not provide a current write limit')
+}
 await database.writeLong(path, largeBytes, {
   signal: abort.signal,
   deadline: journeyDeadline,
-  mode: 'with-response'
+  mode: 'with-response',
+  chunkSize: maxWrite.maximumWriteLength
 })
 ```
 
@@ -341,12 +345,15 @@ if (gone.state === 'release-failed') {
 | Expo `androidEnableForegroundService` | The app owns any FGS. |
 | Static `supports()` matrix | `manager.supports(id)` after the backend exists. |
 
-Restoration identity (`clientId`, `hostSessionScope`, Expo `iosNativeProtocolRestoration`) does **not** auto-reconnect peripherals. You still connect.
+Restoration identity (`applicationId`, `restorationId`, `generation`, and Expo
+`iosNativeProtocolRestoration`) does **not** auto-reconnect peripherals. You
+still connect.
 
 ## Suggested order
 
 1. Install `unified-ble-manager` next to the old package if you need a feature-flagged rollback. Only one stack may own the radio.
-2. Create one RN manager with a stable `hostSessionScope`.
+2. Create one RN manager with `instanceId` and, when restoration is required,
+   the explicit `restoration` object.
 3. Replace scan / connect / discover.
 4. Convert Base64 reads and writes to `Uint8Array`.
 5. Replace `cancelTransaction` with `AbortSignal`.
@@ -362,7 +369,7 @@ Restoration identity (`clientId`, `hostSessionScope`, Expo `iosNativeProtocolRes
 |---|---|
 | `import { BleManager, createBleManager, attachBleBackend, capacity, deadline } from 'unified-ble-manager'` | `import type { BleManager, BlePeer, BleConnection, OperationOptions } from 'unified-ble-manager'`  +  `import { createBleManager, attachBleBackend, capacity, deadline } from 'unified-ble-manager/advanced'` |
 | `new BleManager(...generic)` / `BleManager<Attachment, Identity>` | `BleManager` is non-generic interface; `ApplicationBleManager` façade over internal generic core |
-| `manager.scan({ deadline, signal, delivery: { itemCapacity, ... } })` | `manager.scan({ timeoutMs, signal, preset: 'balanced' })` — `timeoutMs` normalizes once to `Deadline`; presets map to exact capacities |
+| `manager.scan({ deadline, signal, delivery: { itemCapacity, ... } })` | `manager.scan({ timeoutMs, signal, delivery: 'balanced' })` — `timeoutMs` normalizes once to `Deadline`; presets map to exact capacities |
 | `createReactNativeBleManager({ clientId, managerId, hostSessionScope })` | `createReactNativeBleManager({ instanceId?, restoration?: { applicationId, restorationId, generation? } })` — identity derived internally, ephemeral vs deterministic restoration split |
 | `createWebBleManager({ provider, clientId, managerId }) => { chooser, manager }` | `createWebBleManager(options?: BleManagerCreateOptions): Promise<BleManager>` — single manager; chooser is capability. Tests use `createWebBleManagerWithEnvironment` |
 | `createTauriBleManager({ invoke, Channel })` | `createTauriBleManager(options?: BleManagerCreateOptions)` — imports `@tauri-apps/api/core` internally. Tests use `createTauriBleManagerWithEnvironment` |

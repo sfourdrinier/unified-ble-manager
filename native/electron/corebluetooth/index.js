@@ -76,12 +76,12 @@ function createContractBoundary() {
   radio.setWriteWithoutResponseReadinessHandler(event => {
     if (event === null || typeof event !== 'object') return
     if (typeof event.id !== 'string' || typeof event.connectionGeneration !== 'string') return
-    if (typeof event.ready !== 'boolean' || !Number.isSafeInteger(Number(event.ordinal))) return
+    if (typeof event.ready !== 'boolean' || typeof event.ordinal !== 'number' || !Number.isSafeInteger(event.ordinal)) return
     const readiness = Object.freeze({
       nativePeerId: event.id,
       connectionGeneration: event.connectionGeneration,
       ready: event.ready,
-      ordinal: Number(event.ordinal)
+      ordinal: event.ordinal
     })
     for (const listener of readinessListeners) listener(readiness)
   })
@@ -132,7 +132,8 @@ function createContractBoundary() {
       if (
         typeof result.ready !== 'boolean' ||
         typeof result.connectionGeneration !== 'string' ||
-        !Number.isSafeInteger(Number(result.ordinal))
+        typeof result.ordinal !== 'number' ||
+        !Number.isSafeInteger(result.ordinal)
       ) {
         throw new Error('CoreBluetooth readiness probe returned a malformed snapshot')
       }
@@ -140,7 +141,7 @@ function createContractBoundary() {
         nativePeerId: String(nativePeerId),
         connectionGeneration: result.connectionGeneration,
         ready: result.ready,
-        ordinal: Number(result.ordinal)
+        ordinal: result.ordinal
       }
     },
     maximumWriteValueLength: (nativePeerId, withResponse) =>

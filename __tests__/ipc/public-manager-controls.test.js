@@ -24,7 +24,7 @@ function capabilities() {
     ['connection:phy', descriptor('connection:phy', 'unsupported')],
     ['connection:parameters', descriptor('connection:parameters', 'unsupported')],
     ['connection:subrate', descriptor('connection:subrate', 'unsupported')],
-    ['connection:write-readiness', descriptor('connection:write-readiness', 'unsupported')]
+    ['gatt:write-without-response-readiness', descriptor('gatt:write-without-response-readiness', 'unsupported')]
   ])
   return {
     supports: id => descriptors.get(id)?.state === 'supported',

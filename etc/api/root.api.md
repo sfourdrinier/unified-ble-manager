@@ -66,7 +66,8 @@ export interface ConnectionParametersObservation extends BleControlObservationMe
 export type SubrateMode = 'default' | 'low-latency' | 'low-power'
 export interface SubrateResult extends BleControlObservationMetadata { readonly state: 'accepted' | 'rejected' | 'unavailable' | 'unsupported'; readonly requested: SubrateMode; readonly observation: ConnectionParametersObservation | null }
 export interface WriteReadinessEvent extends BleControlObservationMetadata { readonly state: 'measured' | 'unavailable' | 'unsupported'; readonly mode: 'without-response'; readonly ready: boolean | null }
-export interface BleControlObservationMetadata { readonly connectionGeneration: string; readonly observedAtMonotonicMs: number; readonly source: string; readonly authority: string; readonly limitations: readonly Limitation[] }
+export interface BleControlObservationMetadata { readonly connectionGeneration: string; readonly observedAtMonotonicMs: number; readonly source: BleObservationSource; readonly authority: string; readonly limitations: readonly Limitation[] }
+export type BleObservationSource = 'backend' | 'platform' | 'core' | 'unknown'
 export interface ScanSession {
   readonly observations: BoundedAsyncStream<PublicScanObservation>
   readonly state: AsyncIterable<ScanStateEvent>
