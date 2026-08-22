@@ -36,7 +36,8 @@ export class BluezOperationDispatcher {
     const handle = opaqueId(`bluez-operation-${this.nextOperation}`, 'backend-operation', 'bluez:dispatcher')
     this.nextOperation += 1
     let callerTerminal = false
-    let physicalTerminal = false
+    let operationSettled = false
+    let retired = false
     let rejectCompletion: ((error: Error) => void) | null = null
     let deadlineTimer: ReturnType<typeof setTimeout> | null = null
     let cancellation: Promise<void> | null = null
@@ -45,6 +46,7 @@ export class BluezOperationDispatcher {
       resolvePhysicalSettled = resolve
     })
     const requestPhysicalCancellation = (): Promise<void> => {
+      if (operationSettled) return Promise.resolve()
       if (cancellation === null) {
         cancellation = onCancellation === undefined ? Promise.resolve() : Promise.resolve().then(onCancellation)
       }
@@ -67,22 +69,28 @@ export class BluezOperationDispatcher {
       options.signal?.removeEventListener('abort', abort)
     }
     const settlePhysical = (): void => {
-      if (physicalTerminal) {
+      if (operationSettled) {
         return
       }
-      physicalTerminal = true
+      operationSettled = true
       clearAdmission()
-      this.active.delete(String(handle))
-      if (resolvePhysicalSettled === null) {
-        throw new Error('BlueZ physical settlement resolver was not initialized')
-      }
-      resolvePhysicalSettled()
-      if (this.active.size === 0) {
-        for (const resolve of this.idleWaiters) {
-          resolve()
+      const retire = (): void => {
+        if (retired) return
+        retired = true
+        this.active.delete(String(handle))
+        if (resolvePhysicalSettled === null) {
+          throw new Error('BlueZ physical settlement resolver was not initialized')
         }
-        this.idleWaiters.clear()
+        resolvePhysicalSettled()
+        if (this.active.size === 0) {
+          for (const resolve of this.idleWaiters) {
+            resolve()
+          }
+          this.idleWaiters.clear()
+        }
       }
+      if (cancellation === null) retire()
+      else cancellation.then(retire, retire)
     }
     const completion = new Promise<Result>((resolve, reject) => {
       rejectCompletion = reject
@@ -170,14 +178,14 @@ export class BluezOperationDispatcher {
     const active: ActiveBluezOperation = {
       handle,
       cancel: () => {
-        if (physicalTerminal) {
+        if (operationSettled) {
           return { handle, state: 'already-terminal' }
         }
         abort()
         return { handle, state: 'not-cancellable' }
       }
     }
-    if (!physicalTerminal) {
+    if (!operationSettled) {
       this.active.set(String(handle), active)
     }
     return {
