@@ -11,7 +11,14 @@ import type {
   ResourceCounters,
   ScannerBackend
 } from '../../backend-contract/backend'
+import {
+  BUILT_IN_FEATURE_IDS,
+  createBackendOperationCapabilityRegistration,
+  createFeatureRegistry,
+  type BuiltInFeatureId
+} from '../../backend-contract/capabilities'
 import { contractError } from '../../backend-contract/errors'
+import type { SecurityBackend } from '../../backend-contract/security'
 import type { AdapterSelection, NativeBackendIdentity, AttachmentRecord } from '../../backend-contract/identity'
 import { UNIFIED_BLE_IMPLEMENTATION_VERSION } from '../../implementation-version'
 import type { NativeAttachmentIdentity, Spec as NativeProtocolControl } from '../../NativeUnifiedBleProtocolControl'
@@ -31,6 +38,7 @@ import { ReactNativeAndroidProtocolBoundary } from '../../native-protocol/rn-and
 import { createReactNativeConnectionControlFeatureRegistry } from './react-native-connection-control-features'
 import { createReactNativeDescriptorFeatureRegistry } from './react-native-descriptor-features'
 import { withReactNativeProviderCleanup } from './react-native-provider-cleanup'
+import { ReactNativeAndroidSecurityBackend } from './react-native-android-security'
 import {
   combineReactNativeFeatureRegistries,
   createReactNativeRestorationFeatureRegistry,
@@ -101,11 +109,14 @@ class ReactNativeAndroidBackend implements BleCentralBackend<string, NativeBacke
   readonly connections: ConnectionBackend<string>
   readonly gatt: GattBackend<string>
   readonly features: CoreBluetoothBackend['features']
+  readonly security: SecurityBackend | undefined
 
   private destroyResult: Promise<import('../../backend-contract/errors').CleanupRecord> | null = null
 
   constructor(
     private readonly delegate: CoreBluetoothBackend,
+    boundary: ReactNativeAndroidProtocolBoundary,
+    now: () => number,
     readonly restoration: ReactNativeRestorationCoordinator,
     private readonly restorationActivation: ReactNativeRestorationActivation | null
   ) {
@@ -113,7 +124,28 @@ class ReactNativeAndroidBackend implements BleCentralBackend<string, NativeBacke
     this.scanner = delegate.scanner
     this.connections = delegate.connections
     this.gatt = delegate.gatt
-    this.features = delegate.features
+    this.security = boundary.securityAvailable ? new ReactNativeAndroidSecurityBackend(boundary, now) : undefined
+    const securityFeatureIds: readonly BuiltInFeatureId[] = Object.freeze([
+      BUILT_IN_FEATURE_IDS.securityState,
+      BUILT_IN_FEATURE_IDS.securityPair,
+      ...(boundary.securityCancellationAvailable ? [BUILT_IN_FEATURE_IDS.securityCancelPairing] : [])
+    ])
+    this.features =
+      this.security === undefined
+        ? delegate.features
+        : createFeatureRegistry([
+            ...delegate.features.registrations,
+            ...securityFeatureIds.map(id =>
+              createBackendOperationCapabilityRegistration({
+                id,
+                implementationVersion: REACT_NATIVE_ANDROID_IMPLEMENTATION_VERSION,
+                sourceDigest: `react-native-android-${id.replace(':', '-')}-v1`,
+                tckSuiteId: 'tck.feature.security.android',
+                requiredScenarioIds: ['security.state-pair-cancel-unpair'],
+                operation: `${id}.invoke-without-security-backend`
+              })
+            )
+          ])
   }
 
   get identity(): NativeBackendIdentity<string> {
@@ -171,6 +203,7 @@ class ReactNativeAndroidBackend implements BleCentralBackend<string, NativeBacke
   }
 
   private async destroyInternal(): Promise<import('../../backend-contract/errors').CleanupRecord> {
+    this.security?.close?.()
     if (this.restorationActivation !== null) {
       await this.restoration.deactivate(this.restorationActivation)
     }
@@ -197,7 +230,7 @@ async function createOpenedBackend(
     const activation = activateRestoration
       ? restoration.activate(directBackend.identity.attachment, nativeVersions(directBackend.identity.versions))
       : null
-    return new ReactNativeAndroidBackend(directBackend, restoration, activation)
+    return new ReactNativeAndroidBackend(directBackend, boundary, now, restoration, activation)
   } catch (error) {
     return withReactNativeProviderCleanup(
       directBackend,

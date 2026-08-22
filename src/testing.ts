@@ -88,6 +88,7 @@ export type {
 export type {
   DeterministicReactNativeAppleTckBoundary,
   DeterministicReactNativeTckBoundary,
+  ReactNativeAndroidSecurityTckOptions,
   ReactNativeAndroidFirstPartyTckRegistrationOptions,
   ReactNativeAppleFirstPartyTckRegistrationOptions
 } from './tck/first-party/react-native-tck-registration'

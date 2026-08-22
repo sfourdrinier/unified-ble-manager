@@ -45,6 +45,7 @@ export { createDeterministicTestBackend, DeterministicTestBackend } from './test
 - `ManagerScenarioUnsupported`
 - `ManagerScenarioUnsupportedReceipt`
 - `ReactNativeAndroidFirstPartyTckRegistrationOptions`
+- `ReactNativeAndroidSecurityTckOptions`
 - `ReactNativeAppleFirstPartyTckRegistrationOptions`
 - `TckAssertionError`
 - `TckFeatureBinding`

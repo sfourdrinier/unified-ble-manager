@@ -83,7 +83,6 @@ Every deferred finding must become a linked blocking issue with one target PR, o
 | --- | --- | --- | --- | --- |
 | F-019 | [#34](https://github.com/sfourdrinier/unified-ble-manager/issues/34) | `sfourdrinier` | PR10 | Native-authoritative restoration identity plus cross-language derivation fixtures and RN/Expo adoption regression |
 | D-004, D-014 | [#35](https://github.com/sfourdrinier/unified-ble-manager/issues/35) | `sfourdrinier` | PR10 | Expo schema-v2 validator, generated config fixture, and clean `example-expo` prebuild/config inspection |
-| F-014 | [#36](https://github.com/sfourdrinier/unified-ble-manager/issues/36) | `sfourdrinier` | PR7 | Backend-owned diagnostics snapshot/trace test proving counters and chooser resources come from the instantiated backend |
 | F-016 | [#37](https://github.com/sfourdrinier/unified-ble-manager/issues/37) | `sfourdrinier` | PR9 | Provider discovery-kind descriptor matrix and per-provider runtime capability regression |
 | D-013 | [#38](https://github.com/sfourdrinier/unified-ble-manager/issues/38) | `sfourdrinier` | PR11 | Independent Tauri consumer installs paired npm/crate artifacts and builds without a `node_modules` Cargo path |
 
@@ -107,11 +106,35 @@ At commit `1de583bcd92495bc9150a33b80512b2dd9a81539`, PR7A has landed:
   backend SDK scenario reference, and packed third-party security-unsupported
   assertions.
 
-Native Android bond events, Windows pairing/unpairing, BlueZ system pairing,
+Android security is now tracked as the PR7C1 working-tree slice; Windows pairing/unpairing, BlueZ system pairing,
 and trusted-host Electron/Tauri security scopes remain PR7C work. No native
-support claim is made by PR7A. The local packed smoke reached `npm pack` but was
+support closure claim is made by PR7A or the Android WIP. The local packed smoke reached `npm pack` but was
 blocked by npm's local exit-handler failure; hosted supported-Node CI remains a
 required gate before PR7 can merge.
+
+### PR7C1 Android working-tree checkpoint
+
+The current source is `HEAD 88f123577a1dde2da548be77292360ccc7c3ad73` plus an
+uncommitted PR7C1 working tree. It contains the additive Native Protocol v2
+security command/result/event schema, generated C++/Kotlin/Swift/TypeScript
+bindings, Android public-API bond state and `createBond` handling, the RN
+boundary/provider adapter, and deterministic boundary/TCK coverage.
+
+The current compile-SDK-36 Android artifact intentionally advertises only
+state/pair support. Pair cancellation is not registered because the supported
+public `cancelBondProcess` API is newer than this artifact; no hidden reflection
+or `removeBond` API is shipped. Generic Android unpair remains explicitly
+unsupported. Security events are enabled only after a security-aware command so
+an older Native Protocol v2 JavaScript peer cannot receive an unknown event kind.
+
+Verified in this checkpoint: `pnpm typecheck`, `pnpm native-protocol:check`,
+`pnpm test:native-protocol`, the Android boundary suite (6 tests), the
+React-Native Android vertical slice (30 tests), and the first-party deterministic
+backend TCK registry (including the Android security suite). The Android Gradle
+lane remains unverified locally because the example checkout lacks
+`example/node_modules/@react-native/gradle-plugin`; hosted Android compile/JVM
+evidence and physical-radio evidence remain open. This is not an RC3 or merge
+claim.
 
 ## PR7C implementation inventory
 

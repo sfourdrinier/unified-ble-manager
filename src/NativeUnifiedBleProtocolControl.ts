@@ -32,6 +32,10 @@ export interface NativeProtocolHandshakeResult {
   traceFormat: number
   maximumControlRecordBytes: number
   maximumBinaryPayloadBytes: number
+  /** True only when the native attachment implements the Android security extension. */
+  securityAvailable?: boolean
+  /** True only when the native attachment can cancel system pairing on this API level. */
+  securityCancelPairingAvailable?: boolean
 }
 
 export interface NativeAttachmentIdentity {

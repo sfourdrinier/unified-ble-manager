@@ -25,6 +25,7 @@ import type { FirstPartyBackendTckRegistration } from './first-party-tck-registr
 export interface DeterministicReactNativeTckBoundary {
   emitAdvertisement(): void
   emitNotification(address: CoreBluetoothCharacteristicAddress, bytes: Uint8Array): void
+  prepareSecurityCancellation?(): void
 }
 
 export interface DeterministicReactNativeAppleTckBoundary extends DeterministicReactNativeTckBoundary {
@@ -39,7 +40,17 @@ interface ReactNativeFirstPartyTckOptions {
   readonly createOwnerId?: () => string
 }
 
-export type ReactNativeAndroidFirstPartyTckRegistrationOptions = ReactNativeFirstPartyTckOptions
+export interface ReactNativeAndroidSecurityTckOptions {
+  readonly customCeremonySupported: boolean
+  readonly supportsAlreadyUnpaired: boolean
+  readonly supportsCancellation: boolean
+  readonly supportsUnpair: boolean
+}
+
+export interface ReactNativeAndroidFirstPartyTckRegistrationOptions extends ReactNativeFirstPartyTckOptions {
+  /** Opt-in deterministic security evidence; omitted while the supplied native control is security-unaware. */
+  readonly security?: ReactNativeAndroidSecurityTckOptions
+}
 
 export interface ReactNativeAppleFirstPartyTckRegistrationOptions
   extends Omit<ReactNativeFirstPartyTckOptions, 'boundary'> {
@@ -70,6 +81,11 @@ const restorationFeatureSuite = Object.freeze({
   scenarioIds: Object.freeze(['restoration.provider-journal-adoption-and-rejection'] as const)
 })
 
+const androidSecurityFeatureSuite = Object.freeze({
+  suiteId: 'tck.feature.security.android',
+  scenarioIds: Object.freeze(['security.state-pair-cancel-unpair' as const])
+})
+
 /** Registers Android's deterministic JSI provider path, including its limited RSSI and ATT-MTU controls. */
 export function createReactNativeAndroidFirstPartyTckRegistration(
   options: ReactNativeAndroidFirstPartyTckRegistrationOptions
@@ -95,7 +111,16 @@ export function createReactNativeAndroidFirstPartyTckRegistration(
           backend,
           controller: createReactNativeController(options.boundary, options.nativePeerId, options.now),
           featureScenarioAdapters: Object.freeze({
-            connectionControls: Object.freeze({ requestedMtu: 247 })
+            connectionControls: Object.freeze({ requestedMtu: 247 }),
+            ...(options.security === undefined
+              ? {}
+              : {
+                  security: Object.freeze({
+                    peerId: options.nativePeerId,
+                    ...options.security,
+                    prepareCancellation: () => options.boundary.prepareSecurityCancellation?.()
+                  })
+                })
           }),
           dispose: () => backend.destroy()
         }
@@ -107,7 +132,11 @@ export function createReactNativeAndroidFirstPartyTckRegistration(
         baseScenarioIds: reactNativeProviderScenarioIds
       })
     ]),
-    featureSuites: Object.freeze([connectionControlsFeatureSuite, descriptorOperationsFeatureSuite]),
+    featureSuites: Object.freeze([
+      connectionControlsFeatureSuite,
+      descriptorOperationsFeatureSuite,
+      ...(options.security === undefined ? [] : [androidSecurityFeatureSuite])
+    ]),
     capabilityExclusions: Object.freeze([
       Object.freeze({
         featureId: 'state:restoration-adoption',

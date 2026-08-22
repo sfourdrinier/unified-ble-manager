@@ -14,6 +14,21 @@ export type BleManagerCreateOptions = {
     readonly generation?: string
   }
 }
+
+export type NativeProtocolHandshakeResult = {
+  readonly nativeProtocol: number
+  readonly abi: number
+  readonly backendContract: number
+  readonly capabilitySchema: number
+  readonly eventSchema: number
+  readonly traceFormat: number
+  readonly maximumControlRecordBytes: number
+  readonly maximumBinaryPayloadBytes: number
+  /** True only when the native attachment implements the Android security extension. */
+  readonly securityAvailable?: boolean
+  /** True only when the native attachment can cancel system pairing on this API level. */
+  readonly securityCancelPairingAvailable?: boolean
+}
 ```
 
 `createReactNativeBleManager()` is the application factory and does not accept

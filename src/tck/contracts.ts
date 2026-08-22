@@ -132,6 +132,10 @@ export interface TckSecurityScenarioAdapter {
   readonly peerId: string
   readonly customCeremonySupported: boolean
   readonly supportsAlreadyUnpaired: boolean
+  /** False when the host exposes state/pair but its compiled public API cannot cancel pairing. */
+  readonly supportsCancellation?: boolean
+  /** False when the host has no public durable-unpair API; the scenario records that limitation. */
+  readonly supportsUnpair?: boolean
   readonly prepareCancellation?: () => void
 }
 

@@ -45,7 +45,7 @@ describe('first-party deterministic backend TCK registry', () => {
   })
 
   test('registers and executes every first-party deterministic backend while retaining explicit exclusions', async () => {
-    const androidControl = new DeterministicNativeControl()
+    const androidControl = new DeterministicNativeControl(true)
     const androidRuntime = new DeterministicReactNativeProtocolRuntime(androidControl, false)
     const appleControl = new DeterministicNativeControl()
     const appleRuntime = new DeterministicReactNativeProtocolRuntime(appleControl, false)
@@ -83,6 +83,12 @@ describe('first-party deterministic backend TCK registry', () => {
         now: () => 20,
         nativePeerId: REACT_NATIVE_PEER_ID,
         boundary: deterministicReactNativeTckBoundary(androidRuntime),
+        security: {
+          customCeremonySupported: false,
+          supportsAlreadyUnpaired: false,
+          supportsCancellation: true,
+          supportsUnpair: false
+        },
         createOwnerId: () => {
           androidOwner += 1
           return `first-party-registry-android-${androidOwner}`
@@ -175,6 +181,21 @@ describe('first-party deterministic backend TCK registry', () => {
                   detail: expect.objectContaining({ cancelledPeerRejected: true })
                 })
               ]
+            })
+          ])
+        )
+      }
+      if (registration.backendId === 'unified-ble:react-native-android') {
+        expect(report.standard.featureSuiteIds).toContain('tck.feature.security.android')
+        expect(report.standard.receipts).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              scenarioId: 'security.state-pair-cancel-unpair',
+              error: null,
+              facts: expect.arrayContaining([
+                expect.objectContaining({ id: 'security-pairing-cancellation-cleans-up', holds: true }),
+                expect.objectContaining({ id: 'security-unpair-is-explicit', holds: true })
+              ])
             })
           ])
         )
@@ -291,14 +312,16 @@ function createBluezTckBoundary() {
 function deterministicReactNativeTckBoundary(runtime) {
   return {
     emitAdvertisement: () => runtime.emitAdvertisement(),
-    emitNotification: (address, bytes) => runtime.emitNotification(address, bytes)
+    emitNotification: (address, bytes) => runtime.emitNotification(address, bytes),
+    prepareSecurityCancellation: () => runtime.prepareSecurityCancellation()
   }
 }
 
 class DeterministicNativeControl {
-  constructor() {
+  constructor(securityAvailable = false) {
     this.handshakes = []
     this.closedAttachments = []
+    this.securityAvailable = securityAvailable
     this.restorationJournalSeeded = false
     this.restorationConsumed = false
   }
@@ -313,7 +336,9 @@ class DeterministicNativeControl {
       eventSchema: 1,
       traceFormat: 1,
       maximumControlRecordBytes: 65536,
-      maximumBinaryPayloadBytes: 524288
+      maximumBinaryPayloadBytes: 524288,
+      securityAvailable: this.securityAvailable,
+      securityCancelPairingAvailable: this.securityAvailable
     })
   }
 
@@ -410,6 +435,9 @@ class DeterministicReactNativeProtocolRuntime {
     this.connection = null
     this.descriptorValue = new Uint8Array([8, 7])
     this.emitInitialSubscriptionNotification = emitInitialSubscriptionNotification
+    this.securityBondState = 'notBonded'
+    this.pendingSecurityPair = null
+    this.deferNextSecurityPair = false
   }
 
   retain(operationCorrelation, value) {
@@ -437,6 +465,9 @@ class DeterministicReactNativeProtocolRuntime {
 
   setEventSink(listener) {
     this.listener = listener
+    this.securityBondState = 'notBonded'
+    this.pendingSecurityPair = null
+    this.deferNextSecurityPair = false
     this.emitEvent('adapterState', [
       field(15, record('adapterStateSnapshot', [field(1, 'available'), field(2, 'granted'), field(3, 'on')]))
     ])
@@ -496,6 +527,36 @@ class DeterministicReactNativeProtocolRuntime {
         field(7, this.subscriptionId)
       ])
     }
+    if (kind === 'securityState') {
+      return this.emitResult(command, 'securityState', [
+        field(16, requiredString(command, 15)),
+        field(17, this.securityBondState)
+      ])
+    }
+    if (kind === 'securityPair') {
+      if (this.deferNextSecurityPair) {
+        this.deferNextSecurityPair = false
+        this.pendingSecurityPair = command
+        return
+      }
+      this.securityBondState = 'bonded'
+      this.emitEvent('securityStateChanged', [
+        field(16, requiredString(command, 15)),
+        field(17, this.securityBondState)
+      ])
+      return this.emitResult(command, 'securityPair', [
+        field(16, requiredString(command, 15)),
+        field(17, this.securityBondState)
+      ])
+    }
+    if (kind === 'securityCancelPairing') {
+      if (this.pendingSecurityPair !== null) {
+        const pending = this.pendingSecurityPair
+        this.pendingSecurityPair = null
+        this.emitFailure(pending, 'cancelled', 'Android security pairing was cancelled')
+      }
+      return this.emitResult(command, 'accepted')
+    }
     if (kind === 'destroy') return this.emitResult(command, 'destroyed')
     throw new Error(`Unsupported deterministic native command ${kind}`)
   }
@@ -526,6 +587,10 @@ class DeterministicReactNativeProtocolRuntime {
     ])
   }
 
+  prepareSecurityCancellation() {
+    this.deferNextSecurityPair = true
+  }
+
   emitResult(command, kind, additions = []) {
     this.emit(
       record('result', [
@@ -533,6 +598,26 @@ class DeterministicReactNativeProtocolRuntime {
         field(2, kind),
         field(3, record('terminal', [field(1, requiredRecord(command, 2)), field(2, 'succeeded')])),
         ...additions
+      ])
+    )
+  }
+
+  emitFailure(command, code, safeMessage) {
+    this.emit(
+      record('result', [
+        field(1, 1),
+        field(2, 'cancelled'),
+        field(3, record('terminal', [field(1, requiredRecord(command, 2)), field(2, 'failed'), field(3, code)])),
+        field(
+          10,
+          record('error', [
+            field(1, code),
+            field(2, 'android'),
+            field(3, requiredString(command, 3)),
+            field(4, 'notRetryable'),
+            field(7, safeMessage)
+          ])
+        )
       ])
     )
   }

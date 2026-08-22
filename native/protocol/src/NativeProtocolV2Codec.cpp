@@ -420,6 +420,8 @@ void validateCommandSemantics(const ProtocolRecord& record) {
     requireFieldSet(record, {1U, 2U, 3U, 8U}, {});
   } else if (*kind == "adoptRestoration") {
     requireFieldSet(record, {1U, 2U, 3U, 9U}, {});
+  } else if (*kind == "securityState" || *kind == "securityPair" || *kind == "securityCancelPairing") {
+    requireFieldSet(record, {1U, 2U, 3U, 15U}, {});
   }
 }
 
@@ -452,6 +454,8 @@ void validateResultSemantics(const ProtocolRecord& record) {
     requireFieldSet(record, {1U, 2U, 3U, 8U}, {});
   } else if (*kind == "restoration") {
     requireFieldSet(record, {1U, 2U, 3U, 9U}, {});
+  } else if (*kind == "securityState" || *kind == "securityPair") {
+    requireFieldSet(record, {1U, 2U, 3U, 16U, 17U}, {});
   }
 }
 
@@ -474,6 +478,8 @@ void validateEventSemantics(const ProtocolRecord& record) {
     requireFieldSet(record, {1U, 2U, 3U, 4U, 5U, 6U, 9U, 11U, 13U}, {10U});
   } else if (*kind == "diagnostic") {
     requireFieldSet(record, {1U, 2U, 3U, 4U, 5U, 6U, 14U}, {10U});
+  } else if (*kind == "securityStateChanged") {
+    requireFieldSet(record, {1U, 2U, 3U, 4U, 5U, 6U, 16U, 17U}, {});
   }
 }
 

@@ -46,7 +46,10 @@
     "readRssi",
     "requestMtu",
     "readDescriptor",
-    "writeDescriptor"
+    "writeDescriptor",
+    "securityState",
+    "securityPair",
+    "securityCancelPairing"
   ],
   "resultKinds": [
     "accepted",
@@ -63,7 +66,9 @@
     "rssi",
     "mtu",
     "descriptorRead",
-    "descriptorWrite"
+    "descriptorWrite",
+    "securityState",
+    "securityPair"
   ],
   "eventKinds": [
     "adapterState",
@@ -73,7 +78,8 @@
     "notification",
     "backendRestarted",
     "restorationAvailable",
-    "diagnostic"
+    "diagnostic",
+    "securityStateChanged"
   ],
   "terminalOutcomes": ["succeeded", "failed"],
   "cancellationStates": ["cancellationRequested", "alreadyTerminal", "notCancellable"],
@@ -82,6 +88,7 @@
   "adapterAvailability": ["available", "unavailable", "unsupported", "unknown"],
   "adapterAuthorization": ["granted", "denied", "restricted", "notDetermined", "unavailable"],
   "adapterPower": ["on", "off", "resetting", "unsupported", "unknown"],
+  "securityBondStates": ["bonded", "bonding", "notBonded", "unknown", "unsupported"],
   "restorationKinds": ["adapter", "connection", "subscription", "event"],
   "restorationOutcomes": [
     "adopted",
@@ -231,7 +238,8 @@
         ["databasePath", "record:databasePath", false],
         ["scanOptions", "record:scanOptions", false],
         ["writeMode", "enum:writeModes", false],
-        ["requestedMtu", "uint64", false]
+        ["requestedMtu", "uint64", false],
+        ["peerId", "string", false]
       ]
     },
     {
@@ -259,7 +267,9 @@
         ["databaseSnapshot", "record:databaseSnapshot", false],
         ["rssi", "int64", false],
         ["negotiatedMtu", "uint64", false],
-        ["descriptorPath", "record:descriptorPath", false]
+        ["descriptorPath", "record:descriptorPath", false],
+        ["peerId", "string", false],
+        ["bondState", "enum:securityBondStates", false]
       ]
     },
     {
@@ -301,7 +311,9 @@
         ["advertisement", "record:advertisement", false],
         ["binary", "record:binaryReference", false],
         ["error", "record:error", false],
-        ["adapterState", "record:adapterStateSnapshot", false]
+        ["adapterState", "record:adapterStateSnapshot", false],
+        ["peerId", "string", false],
+        ["bondState", "enum:securityBondStates", false]
       ]
     },
     {

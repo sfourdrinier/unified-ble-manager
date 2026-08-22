@@ -49,7 +49,10 @@ enum class CommandKinds(val wireValue: Int) {
   READ_RSSI(13),
   REQUEST_MTU(14),
   READ_DESCRIPTOR(15),
-  WRITE_DESCRIPTOR(16)
+  WRITE_DESCRIPTOR(16),
+  SECURITY_STATE(17),
+  SECURITY_PAIR(18),
+  SECURITY_CANCEL_PAIRING(19)
 }
 
 enum class ResultKinds(val wireValue: Int) {
@@ -67,7 +70,9 @@ enum class ResultKinds(val wireValue: Int) {
   RSSI(12),
   MTU(13),
   DESCRIPTOR_READ(14),
-  DESCRIPTOR_WRITE(15)
+  DESCRIPTOR_WRITE(15),
+  SECURITY_STATE(16),
+  SECURITY_PAIR(17)
 }
 
 enum class EventKinds(val wireValue: Int) {
@@ -78,7 +83,8 @@ enum class EventKinds(val wireValue: Int) {
   NOTIFICATION(5),
   BACKEND_RESTARTED(6),
   RESTORATION_AVAILABLE(7),
-  DIAGNOSTIC(8)
+  DIAGNOSTIC(8),
+  SECURITY_STATE_CHANGED(9)
 }
 
 enum class TerminalOutcomes(val wireValue: Int) {
@@ -124,6 +130,14 @@ enum class AdapterPower(val wireValue: Int) {
   RESETTING(3),
   UNSUPPORTED(4),
   UNKNOWN(5)
+}
+
+enum class SecurityBondStates(val wireValue: Int) {
+  BONDED(1),
+  BONDING(2),
+  NOT_BONDED(3),
+  UNKNOWN(4),
+  UNSUPPORTED(5)
 }
 
 enum class RestorationKinds(val wireValue: Int) {
@@ -218,6 +232,7 @@ val NATIVE_PROTOCOL_FIELDS: List<FieldDescriptor> = listOf(
     FieldDescriptor(RecordKind.COMMAND, 12, "scanOptions", "record:scanOptions", false),
     FieldDescriptor(RecordKind.COMMAND, 13, "writeMode", "enum:writeModes", false),
     FieldDescriptor(RecordKind.COMMAND, 14, "requestedMtu", "uint64", false),
+    FieldDescriptor(RecordKind.COMMAND, 15, "peerId", "string", false),
     FieldDescriptor(RecordKind.TERMINAL, 1, "correlation", "record:operationCorrelation", true),
     FieldDescriptor(RecordKind.TERMINAL, 2, "outcome", "enum:terminalOutcomes", true),
     FieldDescriptor(RecordKind.TERMINAL, 3, "cause", "string", false),
@@ -236,6 +251,8 @@ val NATIVE_PROTOCOL_FIELDS: List<FieldDescriptor> = listOf(
     FieldDescriptor(RecordKind.RESULT, 13, "rssi", "int64", false),
     FieldDescriptor(RecordKind.RESULT, 14, "negotiatedMtu", "uint64", false),
     FieldDescriptor(RecordKind.RESULT, 15, "descriptorPath", "record:descriptorPath", false),
+    FieldDescriptor(RecordKind.RESULT, 16, "peerId", "string", false),
+    FieldDescriptor(RecordKind.RESULT, 17, "bondState", "enum:securityBondStates", false),
     FieldDescriptor(RecordKind.ADVERTISEMENT, 1, "peerId", "string", true),
     FieldDescriptor(RecordKind.ADVERTISEMENT, 2, "observedAt", "uint64", true),
     FieldDescriptor(RecordKind.ADVERTISEMENT, 3, "ingressOrdinal", "uint64", true),
@@ -268,6 +285,8 @@ val NATIVE_PROTOCOL_FIELDS: List<FieldDescriptor> = listOf(
     FieldDescriptor(RecordKind.EVENT, 13, "binary", "record:binaryReference", false),
     FieldDescriptor(RecordKind.EVENT, 14, "error", "record:error", false),
     FieldDescriptor(RecordKind.EVENT, 15, "adapterState", "record:adapterStateSnapshot", false),
+    FieldDescriptor(RecordKind.EVENT, 16, "peerId", "string", false),
+    FieldDescriptor(RecordKind.EVENT, 17, "bondState", "enum:securityBondStates", false),
     FieldDescriptor(RecordKind.ERROR, 1, "code", "string", true),
     FieldDescriptor(RecordKind.ERROR, 2, "domain", "string", true),
     FieldDescriptor(RecordKind.ERROR, 3, "operation", "string", true),

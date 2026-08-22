@@ -50,6 +50,9 @@ public enum CommandKinds: UInt16, CaseIterable, Sendable {
   case requestMtu = 14
   case readDescriptor = 15
   case writeDescriptor = 16
+  case securityState = 17
+  case securityPair = 18
+  case securityCancelPairing = 19
 }
 
 public enum ResultKinds: UInt16, CaseIterable, Sendable {
@@ -68,6 +71,8 @@ public enum ResultKinds: UInt16, CaseIterable, Sendable {
   case mtu = 13
   case descriptorRead = 14
   case descriptorWrite = 15
+  case securityState = 16
+  case securityPair = 17
 }
 
 public enum EventKinds: UInt16, CaseIterable, Sendable {
@@ -79,6 +84,7 @@ public enum EventKinds: UInt16, CaseIterable, Sendable {
   case backendRestarted = 6
   case restorationAvailable = 7
   case diagnostic = 8
+  case securityStateChanged = 9
 }
 
 public enum TerminalOutcomes: UInt16, CaseIterable, Sendable {
@@ -124,6 +130,14 @@ public enum AdapterPower: UInt16, CaseIterable, Sendable {
   case resetting = 3
   case unsupported = 4
   case unknown = 5
+}
+
+public enum SecurityBondStates: UInt16, CaseIterable, Sendable {
+  case bonded = 1
+  case bonding = 2
+  case notBonded = 3
+  case unknown = 4
+  case unsupported = 5
 }
 
 public enum RestorationKinds: UInt16, CaseIterable, Sendable {
@@ -218,6 +232,7 @@ public let nativeProtocolFields: [FieldDescriptor] = [
     FieldDescriptor(record: .command, fieldID: 12, name: "scanOptions", type: "record:scanOptions", required: false),
     FieldDescriptor(record: .command, fieldID: 13, name: "writeMode", type: "enum:writeModes", required: false),
     FieldDescriptor(record: .command, fieldID: 14, name: "requestedMtu", type: "uint64", required: false),
+    FieldDescriptor(record: .command, fieldID: 15, name: "peerId", type: "string", required: false),
     FieldDescriptor(record: .terminal, fieldID: 1, name: "correlation", type: "record:operationCorrelation", required: true),
     FieldDescriptor(record: .terminal, fieldID: 2, name: "outcome", type: "enum:terminalOutcomes", required: true),
     FieldDescriptor(record: .terminal, fieldID: 3, name: "cause", type: "string", required: false),
@@ -236,6 +251,8 @@ public let nativeProtocolFields: [FieldDescriptor] = [
     FieldDescriptor(record: .result, fieldID: 13, name: "rssi", type: "int64", required: false),
     FieldDescriptor(record: .result, fieldID: 14, name: "negotiatedMtu", type: "uint64", required: false),
     FieldDescriptor(record: .result, fieldID: 15, name: "descriptorPath", type: "record:descriptorPath", required: false),
+    FieldDescriptor(record: .result, fieldID: 16, name: "peerId", type: "string", required: false),
+    FieldDescriptor(record: .result, fieldID: 17, name: "bondState", type: "enum:securityBondStates", required: false),
     FieldDescriptor(record: .advertisement, fieldID: 1, name: "peerId", type: "string", required: true),
     FieldDescriptor(record: .advertisement, fieldID: 2, name: "observedAt", type: "uint64", required: true),
     FieldDescriptor(record: .advertisement, fieldID: 3, name: "ingressOrdinal", type: "uint64", required: true),
@@ -268,6 +285,8 @@ public let nativeProtocolFields: [FieldDescriptor] = [
     FieldDescriptor(record: .event, fieldID: 13, name: "binary", type: "record:binaryReference", required: false),
     FieldDescriptor(record: .event, fieldID: 14, name: "error", type: "record:error", required: false),
     FieldDescriptor(record: .event, fieldID: 15, name: "adapterState", type: "record:adapterStateSnapshot", required: false),
+    FieldDescriptor(record: .event, fieldID: 16, name: "peerId", type: "string", required: false),
+    FieldDescriptor(record: .event, fieldID: 17, name: "bondState", type: "enum:securityBondStates", required: false),
     FieldDescriptor(record: .error, fieldID: 1, name: "code", type: "string", required: true),
     FieldDescriptor(record: .error, fieldID: 2, name: "domain", type: "string", required: true),
     FieldDescriptor(record: .error, fieldID: 3, name: "operation", type: "string", required: true),

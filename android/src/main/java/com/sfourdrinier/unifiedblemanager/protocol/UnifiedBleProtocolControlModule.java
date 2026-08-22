@@ -81,6 +81,7 @@ public final class UnifiedBleProtocolControlModule extends NativeUnifiedBleProto
       result.putInt("traceFormat", CONTRACT_VERSION);
       result.putInt("maximumControlRecordBytes", MAXIMUM_CONTROL_RECORD_BYTES);
       result.putInt("maximumBinaryPayloadBytes", MAXIMUM_BINARY_PAYLOAD_BYTES);
+      result.putBoolean("securityAvailable", true);
       promise.resolve(result);
     } catch (RuntimeException error) {
       Log.e(TAG, "handshake failed", error);

@@ -207,6 +207,18 @@ describe('Native Protocol v2 schema authority', () => {
     expect(jniBinding).not.toMatch(/Base64/)
   })
 
+  test('gates additive Android security events and rejects hidden bond APIs', () => {
+    const dispatcher = read(
+      'android/src/main/java/com/sfourdrinier/unifiedblemanager/protocol/UnifiedBleProtocolAndroidDispatcher.kt'
+    )
+    const radio = read('android/src/main/java/com/sfourdrinier/unifiedblemanager/radio/OwnedAndroidGattRadio.kt')
+    expect(dispatcher).toContain('securityEventsEnabled')
+    expect(dispatcher).toContain('if (securityEventsEnabled.get()) emitSecurityStateChanged')
+    expect(dispatcher).toContain('securityEventsEnabled.set(true)')
+    expect(radio).not.toContain('cancelBondProcess')
+    expect(radio).not.toContain('removeBond')
+  })
+
   test('represents complete paths, rich advertisements, errors, cancellation, and restoration', () => {
     const schema = JSON.parse(fs.readFileSync(schemaPath, 'utf8'))
     const records = new Map(schema.records.map(record => [record.name, record.fields.map(field => field[0])]))
