@@ -22,8 +22,8 @@ consumer proof remain separate gates.
 
 ## Follow-up inventory — current PR41 source
 
-Verified against current HEAD `526a985c825164006458f663aa8fa086b26b4824`.
-The current package gate is 139 suites / 1,271 tests; plugin is 36/36.
+Verified against current HEAD `f07ac04`.
+The current package gate is 140 suites / 1,290 tests; plugin is 36/36.
 
 | ID | Source/reviewer | Finding | Disposition |
 | --- | --- | --- | --- |
@@ -39,4 +39,27 @@ The current package gate is 139 suites / 1,271 tests; plugin is 36/36.
 | F-10 | Luna adversarial review | Unsupported security branches reported synthetic cancellation outcomes. | Confirmed and fixed in `663cbc3`; skipped outcomes are nullable “not observed” values while contract annotations remain explicit. |
 | F-11 | Luna adversarial review | API report checker did not reject stale generated-symbol entries or malformed/duplicate verified sections. | Confirmed and fixed in `526a985c`; generated sections now fail closed on stale, malformed, duplicate, missing, or incomplete entries, with focused RED/GREEN tests. |
 
-Remaining release gates at this checkpoint: push the final source, hosted CI including G6A and Android qualification, final exact-SHA adversarial review, the required external review rounds, merge PR41, then proceed to the plan’s RC3 checkpoint. RC2 remains immutable.
+## Working-tree follow-up — Codex P1 thread 3836505591
+
+Verified against the requested exact runtime source before the follow-up wave at
+`d1fe0757dabb1be86f6e00a81c8434e680a9f457`; the integrated current code tip is
+`9982b1d` and remains subject to a fresh hosted run.
+
+| ID | Source/reviewer | Finding | Disposition |
+| --- | --- | --- | --- |
+| F-12 | Codex P1 thread 3836505591 | Android `requestPriority`, `readPhy`, `requestPhy`, and `readMtu` expanded the generated command/result ABI while handshake and payload records still reported protocol/ABI v2, allowing an older native binary to attach before rejecting an unknown command or field. | Confirmed and fixed through `e5cada4`/`f07ac04`; payload protocol remains v2, generated ABI is v3, Android reports the generated ABI, and the TS boundary rejects ABI-v2 peers before runtime installation. |
+
+## Follow-up inventory — current Codex threads and G6A runtime proof
+
+Verified against the integrated source through current HEAD `f07ac04`.
+
+| ID | Source/reviewer | Finding | Disposition |
+| --- | --- | --- | --- |
+| F-13 | Codex P1 thread 3836520642 | Android preferred PHY requests used observed PHY constants and scan-all bits rather than `setPreferredPhy` masks. | Confirmed and fixed in `81c6898`; request conversion uses `PHY_LE_1M_MASK`, `PHY_LE_2M_MASK`, `PHY_LE_CODED_MASK`, and `0` for omitted directions while observed-value mapping remains separate. Failed callback status now rejects instead of fabricating an accepted=false observation. |
+| F-14 | Codex P1 threads 3836416332 / 3836520644 | Connection cleanup could skip backend teardown after child failures; rediscovery could wait indefinitely for a quarantined operation. | Confirmed and fixed in `9d567aa`; teardown continues and merges failures, while quarantine drain is bounded by caller abort/deadline without releasing ownership early. |
+| F-15 | Codex P2 threads 3836490561 / 3836490570 / 3836505594 / 3836520651 / 3836419498 | Public controls needed identity and mode validation, unavailable readiness preservation, and cleanup-failure retention. | Confirmed and fixed in `966be9f`; stale identities fail closed, invalid modes reject before dispatch, unavailable remains distinct, and readiness teardown aggregates release failures. `3836419498` was stale against the current source and is recorded as such. |
+| F-16 | Codex P2 thread 3836520647 | IPC rediscovery left old renderer/main-process database handles alive. | Confirmed and fixed in `9982b1d`; renderer databases invalidate before route, and the main router retires exact-connection databases/subscriptions with retryable failure retention. |
+| F-17 | Hosted G6A run `32588860410` | Generic packed smoke passed, but the separate G6A Node fixture imported retired root `BleManager`/factory APIs. | Confirmed and fixed in `8c1d4bd`; Web example and packed Web fixture use current public managers, environment factory, object GATT, and diagnostics. Direct deterministic Web fixture execution passes locally; hosted rerun remains required. |
+| F-18 | Fresh native adversarial review | Closed CoreBluetooth readiness watches retain the backend-owned native ingress handler until boundary destruction. | Reviewed as non-actionable for this slice: the handler is shared by active watches, per-watch JS listeners are removed, ingress is bounded, and boundary teardown owns native handler removal. |
+
+Remaining release gates at this checkpoint: push the integrated fixes, hosted CI including G6A and Android qualification, final exact-SHA adversarial review, the required external review rounds, merge PR41, then proceed to the plan’s RC3 checkpoint. RC2 remains immutable.
