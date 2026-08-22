@@ -5,8 +5,10 @@ import {
   MAXIMUM_REQUESTED_ATT_MTU,
   MINIMUM_ATT_MTU,
   type ConnectionMaximumWriteLengthMeasurement,
+  type ConnectionPriorityRequest,
   type MtuNegotiation,
-  type RssiMeasurement
+  type RssiMeasurement,
+  type ConnectionPriority
 } from '../backend-contract/connection-controls'
 import { contractError } from '../backend-contract/errors'
 import type { BackendIdentity } from '../backend-contract/identity'
@@ -25,6 +27,11 @@ export interface CoreConnectionControls<Attachment extends string, Identity exte
     requestedMtu: number,
     options: PublicOperationOptions
   ): Promise<MtuNegotiation<Attachment, string>>
+  requestPriority(
+    connection: CoreConnection<Attachment, Identity>,
+    priority: ConnectionPriority,
+    options: PublicOperationOptions
+  ): Promise<ConnectionPriorityRequest<Attachment, string>>
   maximumWriteLength(
     connection: CoreConnection<Attachment, Identity>,
     mode: WriteMode,
@@ -50,6 +57,14 @@ export function createCoreConnectionControls<Attachment extends string, Identity
       assertReady('request-mtu')
       return requestCoreMtu(backend, operationCoordinator, connection, requestedMtu, options)
     },
+    requestPriority: (
+      connection: CoreConnection<Attachment, Identity>,
+      priority: ConnectionPriority,
+      options: PublicOperationOptions
+    ) => {
+      assertReady('request-priority')
+      return requestCorePriority(backend, operationCoordinator, connection, priority, options)
+    },
     maximumWriteLength: (
       connection: CoreConnection<Attachment, Identity>,
       mode: WriteMode,
@@ -59,6 +74,34 @@ export function createCoreConnectionControls<Attachment extends string, Identity
       return observeCoreMaximumWriteLength(backend, operationCoordinator, connection, mode, options)
     }
   })
+}
+
+export async function requestCorePriority<Attachment extends string, Identity extends BackendIdentity<Attachment>>(
+  backend: BleCentralBackend<Attachment, Identity>,
+  operationCoordinator: CoreOperationCoordinator<Attachment>,
+  connection: CoreConnection<Attachment, Identity>,
+  priority: ConnectionPriority,
+  options: PublicOperationOptions
+): Promise<ConnectionPriorityRequest<Attachment, string>> {
+  const requestPriority = backend.connections.requestPriority
+  if (requestPriority === undefined) {
+    throw contractError('capability.unsupported', 'connection', 'unified-core.request-priority')
+  }
+  connection.assertCurrent()
+  const result = await operationCoordinator.run({
+    queueKey: String(connection.resource.connectionId),
+    options,
+    mayCommit: false,
+    dispatch: correlation => {
+      connection.assertCurrent()
+      const dispatch = requestPriority(connection.resource, {
+        operation: { ...options, correlation },
+        priority
+      })
+      return coreDispatch(dispatch, correlation, value => value.terminal)
+    }
+  })
+  return requireOperationValue(result, 'unified-core.request-priority')
 }
 
 export async function readCoreRssi<Attachment extends string, Identity extends BackendIdentity<Attachment>>(

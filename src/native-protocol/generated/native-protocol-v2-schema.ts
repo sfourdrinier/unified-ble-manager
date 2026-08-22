@@ -74,6 +74,7 @@ export const nativeProtocolEnumValues: Readonly<Record<string, readonly string[]
     'destroy',
     'readRssi',
     'requestMtu',
+    'requestPriority',
     'readDescriptor',
     'writeDescriptor',
     'securityState',
@@ -94,6 +95,7 @@ export const nativeProtocolEnumValues: Readonly<Record<string, readonly string[]
     'destroyed',
     'rssi',
     'mtu',
+    'priority',
     'descriptorRead',
     'descriptorWrite',
     'securityState',
@@ -114,6 +116,7 @@ export const nativeProtocolEnumValues: Readonly<Record<string, readonly string[]
   cancellationStates: ['cancellationRequested', 'alreadyTerminal', 'notCancellable'],
   binaryOwnership: ['nativeOwnedCopy', 'javascriptOwnedCopy', 'transferred'],
   writeModes: ['withResponse', 'withoutResponse'],
+  connectionPriorities: ['lowPower', 'balanced', 'highThroughput'],
   adapterAvailability: ['available', 'unavailable', 'unsupported', 'unknown'],
   adapterAuthorization: ['granted', 'denied', 'restricted', 'notDetermined', 'unavailable'],
   adapterPower: ['on', 'off', 'resetting', 'unsupported', 'unknown'],
@@ -144,6 +147,7 @@ export const commandKinds = Object.freeze([
   'destroy',
   'readRssi',
   'requestMtu',
+  'requestPriority',
   'readDescriptor',
   'writeDescriptor',
   'securityState',
@@ -166,6 +170,7 @@ export const resultKinds = Object.freeze([
   'destroyed',
   'rssi',
   'mtu',
+  'priority',
   'descriptorRead',
   'descriptorWrite',
   'securityState',
@@ -197,6 +202,9 @@ export type BinaryOwnership = (typeof binaryOwnership)[number]
 
 export const writeModes = Object.freeze(['withResponse', 'withoutResponse'])
 export type WriteModes = (typeof writeModes)[number]
+
+export const connectionPriorities = Object.freeze(['lowPower', 'balanced', 'highThroughput'])
+export type ConnectionPriorities = (typeof connectionPriorities)[number]
 
 export const adapterAvailability = Object.freeze(['available', 'unavailable', 'unsupported', 'unknown'])
 export type AdapterAvailability = (typeof adapterAvailability)[number]
@@ -310,6 +318,7 @@ export const nativeProtocolFields: readonly NativeProtocolFieldDescriptor[] = Ob
   nativeProtocolField('command', 13, 'writeMode', 'enum:writeModes', false),
   nativeProtocolField('command', 14, 'requestedMtu', 'uint64', false),
   nativeProtocolField('command', 15, 'peerId', 'string', false),
+  nativeProtocolField('command', 16, 'connectionPriority', 'enum:connectionPriorities', false),
   nativeProtocolField('terminal', 1, 'correlation', 'record:operationCorrelation', true),
   nativeProtocolField('terminal', 2, 'outcome', 'enum:terminalOutcomes', true),
   nativeProtocolField('terminal', 3, 'cause', 'string', false),
@@ -330,6 +339,7 @@ export const nativeProtocolFields: readonly NativeProtocolFieldDescriptor[] = Ob
   nativeProtocolField('result', 15, 'descriptorPath', 'record:descriptorPath', false),
   nativeProtocolField('result', 16, 'peerId', 'string', false),
   nativeProtocolField('result', 17, 'bondState', 'enum:securityBondStates', false),
+  nativeProtocolField('result', 18, 'priorityAccepted', 'boolean', false),
   nativeProtocolField('advertisement', 1, 'peerId', 'string', true),
   nativeProtocolField('advertisement', 2, 'observedAt', 'uint64', true),
   nativeProtocolField('advertisement', 3, 'ingressOrdinal', 'uint64', true),

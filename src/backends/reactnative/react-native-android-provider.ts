@@ -271,11 +271,27 @@ function androidDirectGattIdentity(): DirectGattBackendIdentityOptions {
       'Android exposes the process-selected default Bluetooth adapter through the canonical JSI protocol boundary'
     ]),
     features: combineReactNativeFeatureRegistries(
-      createReactNativeConnectionControlFeatureRegistry('android', REACT_NATIVE_ANDROID_IMPLEMENTATION_VERSION),
+      createReactNativeAndroidConnectionControlFeatureRegistry(),
       createReactNativeDescriptorFeatureRegistry('android', REACT_NATIVE_ANDROID_IMPLEMENTATION_VERSION),
       createReactNativeRestorationFeatureRegistry('android', REACT_NATIVE_ANDROID_IMPLEMENTATION_VERSION)
     )
   })
+}
+
+function createReactNativeAndroidConnectionControlFeatureRegistry() {
+  const controls = createReactNativeConnectionControlFeatureRegistry(
+    'android',
+    REACT_NATIVE_ANDROID_IMPLEMENTATION_VERSION
+  )
+  const priority = createBackendOperationCapabilityRegistration({
+    id: BUILT_IN_FEATURE_IDS.connectionPriority,
+    implementationVersion: REACT_NATIVE_ANDROID_IMPLEMENTATION_VERSION,
+    sourceDigest: 'react-native-android-request-priority-v1',
+    tckSuiteId: 'connection-controls',
+    requiredScenarioIds: ['connection.rssi-and-att-mtu-capability-contract'],
+    operation: 'connection:priority.invoke-without-connection'
+  })
+  return createFeatureRegistry(Object.freeze([...controls.registrations, priority]))
 }
 
 function nativeAttachmentIdentity(attachment: AttachmentRecord<string>): NativeAttachmentIdentity {

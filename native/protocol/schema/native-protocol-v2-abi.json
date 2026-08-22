@@ -42,6 +42,7 @@
       "destroy": 12,
       "readRssi": 13,
       "requestMtu": 14,
+      "requestPriority": 20,
       "readDescriptor": 15,
       "writeDescriptor": 16,
       "securityState": 17,
@@ -62,6 +63,7 @@
       "destroyed": 11,
       "rssi": 12,
       "mtu": 13,
+      "priority": 18,
       "descriptorRead": 14,
       "descriptorWrite": 15,
       "securityState": 16,
@@ -82,6 +84,7 @@
     "cancellationStates": { "cancellationRequested": 1, "alreadyTerminal": 2, "notCancellable": 3 },
     "binaryOwnership": { "nativeOwnedCopy": 1, "javascriptOwnedCopy": 2, "transferred": 3 },
     "writeModes": { "withResponse": 1, "withoutResponse": 2 },
+    "connectionPriorities": { "lowPower": 1, "balanced": 2, "highThroughput": 3 },
     "adapterAvailability": { "available": 1, "unavailable": 2, "unsupported": 3, "unknown": 4 },
     "adapterAuthorization": { "granted": 1, "denied": 2, "restricted": 3, "notDetermined": 4, "unavailable": 5 },
     "adapterPower": { "on": 1, "off": 2, "resetting": 3, "unsupported": 4, "unknown": 5 },
@@ -139,7 +142,8 @@
       "scanOptions": 12,
       "writeMode": 13,
       "requestedMtu": 14,
-      "peerId": 15
+      "peerId": 15,
+      "connectionPriority": 16
     },
     "terminal": { "correlation": 1, "outcome": 2, "cause": 3 },
     "result": {
@@ -159,7 +163,8 @@
       "negotiatedMtu": 14,
       "descriptorPath": 15,
       "peerId": 16,
-      "bondState": 17
+      "bondState": 17,
+      "priorityAccepted": 18
     },
     "advertisement": {
       "peerId": 1,

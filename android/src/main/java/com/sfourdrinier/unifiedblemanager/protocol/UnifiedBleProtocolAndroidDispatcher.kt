@@ -178,6 +178,7 @@ class UnifiedBleProtocolAndroidDispatcher(
         "writeDescriptor" -> writeDescriptor(command)
         "readRssi" -> readRssi(command)
         "requestMtu" -> requestMtu(command)
+        "requestPriority" -> requestPriority(command)
         "securityState" -> {
           securityEventsEnabled.set(true)
           securityState(command)
@@ -446,6 +447,22 @@ class UnifiedBleProtocolAndroidDispatcher(
       )
     }
     radioOperationIds[operationKey(command)] = radioOperationId
+  }
+
+  private fun requestPriority(command: ProtocolWireRecord) {
+    val deviceId = command.requiredRecord(10).requiredString(2)
+    val connectionPriority = when (command.requiredString(16)) {
+      "lowPower" -> android.bluetooth.BluetoothGatt.CONNECTION_PRIORITY_LOW_POWER
+      "balanced" -> android.bluetooth.BluetoothGatt.CONNECTION_PRIORITY_BALANCED
+      "highThroughput" -> android.bluetooth.BluetoothGatt.CONNECTION_PRIORITY_HIGH
+      else -> throw IllegalArgumentException("Android connection priority is unsupported")
+    }
+    val accepted = radio.requestConnectionPriority(deviceId, connectionPriority)
+    emitSuccess(
+      command,
+      "priority",
+      mapOf(18 to ProtocolWireValue.BooleanValue(accepted))
+    )
   }
 
   private fun subscribe(command: ProtocolWireRecord, enable: Boolean) {
@@ -892,7 +909,7 @@ class UnifiedBleProtocolAndroidDispatcher(
   private fun commandDeviceId(command: ProtocolWireRecord): String? {
     return try {
       when (command.requiredString(3)) {
-        "connect", "disconnect", "discover", "readRssi", "requestMtu" ->
+        "connect", "disconnect", "discover", "readRssi", "requestMtu", "requestPriority" ->
           command.requiredRecord(10).requiredString(2)
         "read", "write", "subscribe", "unsubscribe" -> characteristicEndpoint(command.requiredRecord(4)).deviceId
         "readDescriptor", "writeDescriptor" -> descriptorEndpoint(command.requiredRecord(5)).deviceId
@@ -1006,6 +1023,7 @@ internal fun dispatcherResultKindFor(commandKind: String): String = when (comman
   "writeDescriptor" -> "descriptorWrite"
   "readRssi" -> "rssi"
   "requestMtu" -> "mtu"
+  "requestPriority" -> "priority"
   "subscribe" -> "subscribed"
   "unsubscribe" -> "unsubscribed"
   "securityState" -> "securityState"

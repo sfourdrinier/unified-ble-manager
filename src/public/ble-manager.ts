@@ -41,7 +41,13 @@ import type { ResourceCounters } from '../backend-contract/backend'
 import { createPublicSecurity } from './security'
 import type { BleSecurity } from './security'
 import type { Limitation } from '../backend-contract/capabilities'
-import { MAXIMUM_REQUESTED_ATT_MTU, MINIMUM_ATT_MTU } from '../backend-contract/connection-controls'
+import {
+  MAXIMUM_REQUESTED_ATT_MTU,
+  MINIMUM_ATT_MTU,
+  type ConnectionPriority
+} from '../backend-contract/connection-controls'
+
+export type { ConnectionPriority } from '../backend-contract/connection-controls'
 
 export type GattSubscriptionValue = GattValueEvent
 export type ConnectionIntent = 'direct' | 'when-available'
@@ -90,7 +96,6 @@ export interface MtuNegotiation extends BleControlObservationMetadata {
   readonly observation: MtuObservation | null
 }
 
-export type ConnectionPriority = 'low-power' | 'balanced' | 'high-throughput'
 export type BlePhy = 'le-1m' | 'le-2m' | 'le-coded'
 export type PhyPreference = Readonly<{
   readonly tx?: BlePhy
@@ -512,6 +517,31 @@ function createPublicConnectionControls(
       })
     })
 
+  const requestPriority = (
+    priority: ConnectionPriority,
+    options: OperationOptions = {}
+  ): Promise<ConnectionPriorityResult> =>
+    runPublicControl(async () => {
+      if (priority !== 'low-power' && priority !== 'balanced' && priority !== 'high-throughput') {
+        throw contractError('argument.invalid', 'connection', 'public-connection.controls.request-priority')
+      }
+      const descriptor = requireControlCapability(
+        internal,
+        'connection:priority',
+        'public-connection.controls.request-priority'
+      )
+      const normalized = normalizeOperationOptions(options, now)
+      const result = await connection.requestPriority(priority, {
+        signal: normalized.signal,
+        deadline: normalized.deadline
+      })
+      return Object.freeze({
+        ...controlMetadata(generation, result.observedAtMonotonicMs, descriptor, 'backend-operation'),
+        state: result.accepted ? ('accepted' as const) : ('rejected' as const),
+        requested: priority
+      })
+    })
+
   const unsupportedPromise = <Value>(id: `${string}:${string}`, operation: string): Promise<Value> =>
     runPublicControl(async () => {
       requireControlCapability(internal, id, operation)
@@ -523,11 +553,7 @@ function createPublicConnectionControls(
     effectiveMtu,
     requestMtu,
     maximumWriteLength,
-    requestPriority: (_priority: ConnectionPriority, _options: OperationOptions = {}) =>
-      unsupportedPromise<ConnectionPriorityResult>(
-        'connection:priority',
-        'public-connection.controls.request-priority'
-      ),
+    requestPriority,
     readPhy: (_options: OperationOptions = {}) =>
       unsupportedPromise<PhyObservation>('connection:phy', 'public-connection.controls.read-phy'),
     requestPhy: (_preference: PhyPreference, _options: OperationOptions = {}) =>

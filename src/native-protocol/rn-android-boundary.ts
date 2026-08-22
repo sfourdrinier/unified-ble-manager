@@ -1,7 +1,7 @@
 // src/native-protocol/rn-android-boundary.ts
 
 import { contractError } from '../backend-contract/errors'
-import type { ConnectionControlCapabilities } from '../backend-contract/connection-controls'
+import type { ConnectionControlCapabilities, ConnectionPriority } from '../backend-contract/connection-controls'
 import type {
   NativeAttachmentIdentity,
   NativeProtocolHandshakeResult,
@@ -44,6 +44,7 @@ import {
   nativePeerIdForCommand,
   operationKey,
   protocolRecord,
+  requiredBoolean,
   requiredRecord,
   requiredSigned,
   requiredString,
@@ -102,7 +103,8 @@ export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary
   readonly descriptorOperationsAvailable: boolean = true
   readonly connectionControlCapabilities: ConnectionControlCapabilities = Object.freeze({
     rssi: 'available',
-    requestMtu: 'available'
+    requestMtu: 'available',
+    priority: 'available'
   })
   private securityExtensionAvailable = false
   private securityCancellationExtensionAvailable = false
@@ -308,6 +310,22 @@ export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary
     }
     const result = await this.dispatch('requestMtu', [field(10, connection.record), field(14, requestedMtu)])
     return requiredUnsigned(result, 14, 'rn-android-boundary.request-mtu.negotiated')
+  }
+
+  async requestPriority(nativePeerId: string, priority: ConnectionPriority): Promise<boolean> {
+    this.requireOpen('request-priority')
+    const connection = this.requireConnection(nativePeerId, 'request-priority')
+    if (connection.state !== 'connected') {
+      throw contractError('operation.disconnected', 'connection', 'rn-android-boundary.request-priority')
+    }
+    const result = await this.dispatch('requestPriority', [
+      field(10, connection.record),
+      field(16, nativePriorityFromPublic(priority))
+    ])
+    if (requiredString(result, 2, 'rn-android-boundary.request-priority.kind') !== 'priority') {
+      throw contractError('protocol.malformed', 'boundary', 'rn-android-boundary.request-priority.kind')
+    }
+    return requiredBoolean(result, 18, 'rn-android-boundary.request-priority.accepted')
   }
 
   async securityState(nativePeerId: string): Promise<AndroidSecurityState> {
@@ -1035,6 +1053,13 @@ export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary
 
 function isAbortSignalAborted(signal: AbortSignal | null): boolean {
   return signal?.aborted === true
+}
+
+function nativePriorityFromPublic(priority: ConnectionPriority): 'lowPower' | 'balanced' | 'highThroughput' {
+  if (priority === 'low-power') return 'lowPower'
+  if (priority === 'balanced') return 'balanced'
+  if (priority === 'high-throughput') return 'highThroughput'
+  throw contractError('argument.invalid', 'connection', 'rn-android-boundary.request-priority.priority')
 }
 
 /** Preserves native platform details instead of flattening CoreBluetooth failures to plain Error. */

@@ -48,6 +48,7 @@ enum class CommandKinds(val wireValue: Int) {
   DESTROY(12),
   READ_RSSI(13),
   REQUEST_MTU(14),
+  REQUEST_PRIORITY(20),
   READ_DESCRIPTOR(15),
   WRITE_DESCRIPTOR(16),
   SECURITY_STATE(17),
@@ -69,6 +70,7 @@ enum class ResultKinds(val wireValue: Int) {
   DESTROYED(11),
   RSSI(12),
   MTU(13),
+  PRIORITY(18),
   DESCRIPTOR_READ(14),
   DESCRIPTOR_WRITE(15),
   SECURITY_STATE(16),
@@ -107,6 +109,12 @@ enum class BinaryOwnership(val wireValue: Int) {
 enum class WriteModes(val wireValue: Int) {
   WITH_RESPONSE(1),
   WITHOUT_RESPONSE(2)
+}
+
+enum class ConnectionPriorities(val wireValue: Int) {
+  LOW_POWER(1),
+  BALANCED(2),
+  HIGH_THROUGHPUT(3)
 }
 
 enum class AdapterAvailability(val wireValue: Int) {
@@ -233,6 +241,7 @@ val NATIVE_PROTOCOL_FIELDS: List<FieldDescriptor> = listOf(
     FieldDescriptor(RecordKind.COMMAND, 13, "writeMode", "enum:writeModes", false),
     FieldDescriptor(RecordKind.COMMAND, 14, "requestedMtu", "uint64", false),
     FieldDescriptor(RecordKind.COMMAND, 15, "peerId", "string", false),
+    FieldDescriptor(RecordKind.COMMAND, 16, "connectionPriority", "enum:connectionPriorities", false),
     FieldDescriptor(RecordKind.TERMINAL, 1, "correlation", "record:operationCorrelation", true),
     FieldDescriptor(RecordKind.TERMINAL, 2, "outcome", "enum:terminalOutcomes", true),
     FieldDescriptor(RecordKind.TERMINAL, 3, "cause", "string", false),
@@ -253,6 +262,7 @@ val NATIVE_PROTOCOL_FIELDS: List<FieldDescriptor> = listOf(
     FieldDescriptor(RecordKind.RESULT, 15, "descriptorPath", "record:descriptorPath", false),
     FieldDescriptor(RecordKind.RESULT, 16, "peerId", "string", false),
     FieldDescriptor(RecordKind.RESULT, 17, "bondState", "enum:securityBondStates", false),
+    FieldDescriptor(RecordKind.RESULT, 18, "priorityAccepted", "boolean", false),
     FieldDescriptor(RecordKind.ADVERTISEMENT, 1, "peerId", "string", true),
     FieldDescriptor(RecordKind.ADVERTISEMENT, 2, "observedAt", "uint64", true),
     FieldDescriptor(RecordKind.ADVERTISEMENT, 3, "ingressOrdinal", "uint64", true),

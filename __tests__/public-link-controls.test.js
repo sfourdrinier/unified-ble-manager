@@ -38,13 +38,15 @@ function fakeInternalManager() {
     ['connection:direct', capability('supported')],
     ['connection:rssi', capability('limited')],
     ['connection:request-mtu', capability('limited')],
+    ['connection:priority', capability('limited')],
     ['connection:effective-mtu', capability('unsupported')],
     ['gatt:maximum-write-length', capability('limited')],
     ['connection:parameters', capability('unavailable')]
   ])
   let discoveryGeneration = 1
   const rediscoveryReasons = []
-  const maximumWriteLengthRequests = []
+    const maximumWriteLengthRequests = []
+    const priorityRequests = []
   const internalConnection = {
     connectionGeneration: 'generation-1',
     events: { [Symbol.asyncIterator]: () => ({ next: async () => ({ done: true, value: undefined }), return: async () => ({ done: true, value: undefined }) }) },
@@ -63,6 +65,15 @@ function fakeInternalManager() {
         mode,
         maximumWriteLength: mode === 'with-response' ? 182 : 185,
         observedAtMonotonicMs: 4321,
+        terminal: terminal()
+      }
+    },
+    requestPriority: async (requested, options) => {
+      priorityRequests.push({ requested, options })
+      return {
+        requested,
+        accepted: true,
+        observedAtMonotonicMs: 7890,
         terminal: terminal()
       }
     },
@@ -85,7 +96,8 @@ function fakeInternalManager() {
     adapterState: async () => ({}),
     destroy: async () => ({ state: 'released', failures: [] }),
     rediscoveryReasons,
-    maximumWriteLengthRequests
+    maximumWriteLengthRequests,
+    priorityRequests
   }
 }
 
@@ -133,6 +145,20 @@ describe('PR8A public link controls', () => {
         source: 'backend'
       }
     })
+    await expect(connection.controls.requestPriority('high-throughput')).resolves.toMatchObject({
+      state: 'accepted',
+      requested: 'high-throughput',
+      connectionGeneration: 'generation-1',
+      observedAtMonotonicMs: 7890,
+      source: 'backend',
+      authority: 'backend-operation'
+    })
+    const priorityResult = await connection.controls.requestPriority('balanced')
+    expect(priorityResult).not.toHaveProperty('observation')
+    expect(internal.priorityRequests).toEqual([
+      { requested: 'high-throughput', options: { signal: null, deadline: null } },
+      { requested: 'balanced', options: { signal: null, deadline: null } }
+    ])
     await expect(connection.controls.maximumWriteLength('without-response')).resolves.toMatchObject({
       state: 'measured',
       mode: 'without-response',
@@ -147,7 +173,6 @@ describe('PR8A public link controls', () => {
     ])
 
     await expect(connection.controls.effectiveMtu()).rejects.toMatchObject({ code: 'capability.unsupported' })
-    await expect(connection.controls.requestPriority('high-throughput')).rejects.toMatchObject({ code: 'capability.unsupported' })
     await expect(connection.controls.parameters()).rejects.toMatchObject({ code: 'capability.unavailable' })
 
     await connection.discover()

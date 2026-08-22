@@ -1,6 +1,6 @@
 // src/backends/corebluetooth/corebluetooth-boundary.ts
 
-import type { ConnectionControlCapabilities } from '../../backend-contract/connection-controls'
+import type { ConnectionControlCapabilities, ConnectionPriority } from '../../backend-contract/connection-controls'
 
 /**
  * Typed, bytes-first boundary between the CoreBluetooth addon and the shared
@@ -105,6 +105,7 @@ export interface CoreBluetoothBoundary {
   /** Reports the current CoreBluetooth write length for the selected response mode. */
   maximumWriteValueLength?(nativePeerId: string, withResponse: boolean): Promise<number>
   requestMtu?(nativePeerId: string, requestedMtu: number): Promise<number>
+  requestPriority?(nativePeerId: string, priority: ConnectionPriority): Promise<boolean>
   discover(nativePeerId: string): Promise<CoreBluetoothGattSnapshot>
   read(address: CoreBluetoothCharacteristicAddress): Promise<Uint8Array>
   write(address: CoreBluetoothCharacteristicAddress, bytes: Uint8Array, withResponse: boolean): Promise<void>

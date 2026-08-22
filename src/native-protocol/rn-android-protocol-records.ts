@@ -157,6 +157,7 @@ export function nativePeerIdForCommand(command: NativeProtocolRecord): string | 
     kind === 'discover' ||
     kind === 'readRssi' ||
     kind === 'requestMtu' ||
+    kind === 'requestPriority' ||
     kind === 'securityState' ||
     kind === 'securityPair' ||
     kind === 'securityCancelPairing'

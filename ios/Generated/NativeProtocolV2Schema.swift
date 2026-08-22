@@ -48,6 +48,7 @@ public enum CommandKinds: UInt16, CaseIterable, Sendable {
   case destroy = 12
   case readRssi = 13
   case requestMtu = 14
+  case requestPriority = 20
   case readDescriptor = 15
   case writeDescriptor = 16
   case securityState = 17
@@ -69,6 +70,7 @@ public enum ResultKinds: UInt16, CaseIterable, Sendable {
   case destroyed = 11
   case rssi = 12
   case mtu = 13
+  case priority = 18
   case descriptorRead = 14
   case descriptorWrite = 15
   case securityState = 16
@@ -107,6 +109,12 @@ public enum BinaryOwnership: UInt16, CaseIterable, Sendable {
 public enum WriteModes: UInt16, CaseIterable, Sendable {
   case withResponse = 1
   case withoutResponse = 2
+}
+
+public enum ConnectionPriorities: UInt16, CaseIterable, Sendable {
+  case lowPower = 1
+  case balanced = 2
+  case highThroughput = 3
 }
 
 public enum AdapterAvailability: UInt16, CaseIterable, Sendable {
@@ -233,6 +241,7 @@ public let nativeProtocolFields: [FieldDescriptor] = [
     FieldDescriptor(record: .command, fieldID: 13, name: "writeMode", type: "enum:writeModes", required: false),
     FieldDescriptor(record: .command, fieldID: 14, name: "requestedMtu", type: "uint64", required: false),
     FieldDescriptor(record: .command, fieldID: 15, name: "peerId", type: "string", required: false),
+    FieldDescriptor(record: .command, fieldID: 16, name: "connectionPriority", type: "enum:connectionPriorities", required: false),
     FieldDescriptor(record: .terminal, fieldID: 1, name: "correlation", type: "record:operationCorrelation", required: true),
     FieldDescriptor(record: .terminal, fieldID: 2, name: "outcome", type: "enum:terminalOutcomes", required: true),
     FieldDescriptor(record: .terminal, fieldID: 3, name: "cause", type: "string", required: false),
@@ -253,6 +262,7 @@ public let nativeProtocolFields: [FieldDescriptor] = [
     FieldDescriptor(record: .result, fieldID: 15, name: "descriptorPath", type: "record:descriptorPath", required: false),
     FieldDescriptor(record: .result, fieldID: 16, name: "peerId", type: "string", required: false),
     FieldDescriptor(record: .result, fieldID: 17, name: "bondState", type: "enum:securityBondStates", required: false),
+    FieldDescriptor(record: .result, fieldID: 18, name: "priorityAccepted", type: "boolean", required: false),
     FieldDescriptor(record: .advertisement, fieldID: 1, name: "peerId", type: "string", required: true),
     FieldDescriptor(record: .advertisement, fieldID: 2, name: "observedAt", type: "uint64", required: true),
     FieldDescriptor(record: .advertisement, fieldID: 3, name: "ingressOrdinal", type: "uint64", required: true),

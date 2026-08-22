@@ -7,6 +7,8 @@ import {
   MINIMUM_ATT_MTU,
   type ConnectionMaximumWriteLengthMeasurement,
   type ConnectionMaximumWriteLengthRequest,
+  type ConnectionPriorityRequest,
+  type RequestPriorityRequest,
   type MtuNegotiation,
   type ReadRssiRequest,
   type RequestMtuRequest,
@@ -83,6 +85,38 @@ export class CoreBluetoothConnectionControls {
         return Object.freeze({
           requestedMtu: request.requestedMtu,
           negotiatedMtu,
+          observedAtMonotonicMs: this.backend.monotonicNow(),
+          terminal: successfulTerminal(request.operation)
+        })
+      },
+      String(connection.connectionId)
+    )
+  }
+
+  requestPriority<Operation extends string>(
+    connection: BackendConnection<string, string>,
+    request: RequestPriorityRequest<string, Operation>
+  ): BackendOperationDispatch<string, ConnectionPriorityRequest<string, Operation>> {
+    if (this.backend.boundary.connectionControlCapabilities?.priority !== 'available') {
+      return this.unsupported(request.operation, 'corebluetooth.connection.request-priority')
+    }
+    const requestPriority = this.backend.boundary.requestPriority?.bind(this.backend.boundary)
+    if (requestPriority === undefined) {
+      return this.unsupported(request.operation, 'corebluetooth.connection.request-priority')
+    }
+    this.backend.assertOperational('corebluetooth.connection.request-priority')
+    const record = this.backend.requireConnection(connection, 'corebluetooth.connection.request-priority')
+    return this.backend.dispatcher.dispatch(
+      request.operation,
+      'corebluetooth.connection.request-priority',
+      async () => {
+        const accepted = await requestPriority(record.nativePeerId, request.priority)
+        if (typeof accepted !== 'boolean') {
+          throw contractError('protocol.malformed', 'connection', 'corebluetooth.connection.request-priority.result')
+        }
+        return Object.freeze({
+          requested: request.priority,
+          accepted,
           observedAtMonotonicMs: this.backend.monotonicNow(),
           terminal: successfulTerminal(request.operation)
         })

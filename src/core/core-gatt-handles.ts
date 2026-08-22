@@ -36,6 +36,8 @@ import type { CoreSubscription } from './subscription-registry'
 import type { CoreDeadlineHandle, UnifiedBleCore } from './unified-ble-core'
 import type {
   ConnectionMaximumWriteLengthMeasurement,
+  ConnectionPriority,
+  ConnectionPriorityRequest,
   MtuNegotiation,
   RssiMeasurement
 } from '../backend-contract/connection-controls'
@@ -127,6 +129,13 @@ export class CoreConnection<Attachment extends string, Identity extends BackendI
 
   requestMtu(requestedMtu: number, options: PublicOperationOptions): Promise<MtuNegotiation<Attachment, string>> {
     return this.controls.requestMtu(this, requestedMtu, options)
+  }
+
+  requestPriority(
+    priority: ConnectionPriority,
+    options: PublicOperationOptions
+  ): Promise<ConnectionPriorityRequest<Attachment, string>> {
+    return this.controls.requestPriority(this, priority, options)
   }
 
   maximumWriteLength(

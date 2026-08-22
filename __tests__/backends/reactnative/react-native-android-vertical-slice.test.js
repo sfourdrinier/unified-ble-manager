@@ -146,6 +146,11 @@ describe('React Native Android canonical protocol vertical slice', () => {
           }),
           evidence: expect.objectContaining({ evidenceLevel: 'deterministic' }),
           limits: { attMtu: { maximum: 517, minimum: 23, unit: 'bytes' } }
+        }),
+        expect.objectContaining({
+          id: BUILT_IN_FEATURE_IDS.connectionPriority,
+          state: 'limited',
+          evidence: expect.objectContaining({ evidenceLevel: 'deterministic' })
         })
       ])
     )
@@ -173,6 +178,10 @@ describe('React Native Android canonical protocol vertical slice', () => {
     await expect(connection.requestMtu(300, operation())).resolves.toMatchObject({
       requestedMtu: 300,
       negotiatedMtu: 300
+    })
+    await expect(connection.requestPriority('high-throughput', operation())).resolves.toMatchObject({
+      requested: 'high-throughput',
+      accepted: true
     })
     const database = await connection.discover(operation())
     const snapshot = await database.snapshot()
@@ -202,6 +211,7 @@ describe('React Native Android canonical protocol vertical slice', () => {
       'connect',
       'readRssi',
       'requestMtu',
+      'requestPriority',
       'discover',
       'read',
       'write',
@@ -210,6 +220,50 @@ describe('React Native Android canonical protocol vertical slice', () => {
       'disconnect',
       'destroy'
     ])
+  })
+
+  test('Android priority control reports a platform rejection and pre-abort leaves no native operation', async () => {
+    const control = new DeterministicAndroidControl()
+    const runtime = new DeterministicAndroidProtocolRuntime(control)
+    runtime.priorityAccepted = false
+    global.__unifiedBleNativeProtocolV2 = runtime
+    const provider = createReactNativeAndroidBackendProvider({
+      control,
+      now: () => 20,
+      createOwnerId: () => 'deterministic-react-native-priority-lifecycle'
+    })
+    const adapters = await provider.listAdapters()
+    const manager = await createBleManagerFromProvider(
+      {
+        provider,
+        selection: { selectedAdapterId: adapters[0].adapterId },
+        coreCompatibility: compatibility(),
+        manager: {
+          clientId: opaqueId('priority-client', 'client', 'react-native-android:priority'),
+          managerId: opaqueId('priority-manager', 'manager', 'react-native-android:priority'),
+          ownerMode: 'owning'
+        }
+      },
+      DEFAULT_BLE_MANAGER_OPTIONS
+    )
+
+    const scan = await manager.scan(scanOptions())
+    runtime.emitAdvertisement()
+    const observation = await scan.observations[Symbol.asyncIterator]().next()
+    await scan.stop()
+    const connection = await manager.connect(observation.value.value.device.id, operation())
+    await expect(connection.requestPriority('balanced', operation())).resolves.toMatchObject({
+      requested: 'balanced',
+      accepted: false
+    })
+    const controller = new AbortController()
+    controller.abort()
+    await expect(connection.requestPriority('low-power', { signal: controller.signal, deadline: null })).rejects.toMatchObject({
+      normalized: { code: 'operation.aborted' }
+    })
+    expect(runtime.commandKinds.filter(kind => kind === 'requestPriority')).toHaveLength(1)
+    await expect(manager.destroy()).resolves.toEqual({ state: 'released', failures: [] })
+    expect(runtime.retainedPayloadCount()).toBe(0)
   })
 
   test('constructs the canonical public manager with explicit React Native ownership and exposes adapter authorization', async () => {
@@ -1321,6 +1375,8 @@ class DeterministicAndroidProtocolRuntime {
     this.sinkFailure = sinkFailure
     this.emitInitialSubscriptionNotification = emitInitialSubscriptionNotification
     this.destroyFailuresRemaining = 0
+    this.priorityAccepted = true
+    this.priorityRequests = []
   }
 
   retain(operationCorrelation, value) {
@@ -1422,6 +1478,11 @@ class DeterministicAndroidProtocolRuntime {
     if (kind === 'requestMtu') {
       const requestedMtu = requiredNumber(command, 14)
       this.emitResult(command, 'mtu', [field(14, requestedMtu)])
+      return
+    }
+    if (kind === 'requestPriority') {
+      this.priorityRequests.push(requiredString(command, 16))
+      this.emitResult(command, 'priority', [field(18, this.priorityAccepted)])
       return
     }
     if (kind === 'write') {

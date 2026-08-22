@@ -55,6 +55,7 @@ enum class CommandKinds : std::uint16_t {
   destroy = 12U,
   readRssi = 13U,
   requestMtu = 14U,
+  requestPriority = 20U,
   readDescriptor = 15U,
   writeDescriptor = 16U,
   securityState = 17U,
@@ -76,6 +77,7 @@ enum class ResultKinds : std::uint16_t {
   destroyed = 11U,
   rssi = 12U,
   mtu = 13U,
+  priority = 18U,
   descriptorRead = 14U,
   descriptorWrite = 15U,
   securityState = 16U,
@@ -114,6 +116,12 @@ enum class BinaryOwnership : std::uint16_t {
 enum class WriteModes : std::uint16_t {
   withResponse = 1U,
   withoutResponse = 2U
+};
+
+enum class ConnectionPriorities : std::uint16_t {
+  lowPower = 1U,
+  balanced = 2U,
+  highThroughput = 3U
 };
 
 enum class AdapterAvailability : std::uint16_t {
@@ -207,7 +215,7 @@ inline constexpr std::array<RecordKindDescriptor, 23> kRecordKindDescriptors{{
   RecordKindDescriptor{RecordKind::restorationAdoptionResult, "restorationAdoptionResult"}
 }};
 
-inline constexpr std::array<FieldDescriptor, 159> kFieldDescriptors{{
+inline constexpr std::array<FieldDescriptor, 161> kFieldDescriptors{{
   FieldDescriptor{RecordKind::attachment, 1U, "attachmentId", "string", true},
   FieldDescriptor{RecordKind::attachment, 2U, "backendInstanceId", "string", true},
   FieldDescriptor{RecordKind::attachment, 3U, "backendGeneration", "string", true},
@@ -276,6 +284,7 @@ inline constexpr std::array<FieldDescriptor, 159> kFieldDescriptors{{
   FieldDescriptor{RecordKind::command, 13U, "writeMode", "enum:writeModes", false},
   FieldDescriptor{RecordKind::command, 14U, "requestedMtu", "uint64", false},
   FieldDescriptor{RecordKind::command, 15U, "peerId", "string", false},
+  FieldDescriptor{RecordKind::command, 16U, "connectionPriority", "enum:connectionPriorities", false},
   FieldDescriptor{RecordKind::terminal, 1U, "correlation", "record:operationCorrelation", true},
   FieldDescriptor{RecordKind::terminal, 2U, "outcome", "enum:terminalOutcomes", true},
   FieldDescriptor{RecordKind::terminal, 3U, "cause", "string", false},
@@ -296,6 +305,7 @@ inline constexpr std::array<FieldDescriptor, 159> kFieldDescriptors{{
   FieldDescriptor{RecordKind::result, 15U, "descriptorPath", "record:descriptorPath", false},
   FieldDescriptor{RecordKind::result, 16U, "peerId", "string", false},
   FieldDescriptor{RecordKind::result, 17U, "bondState", "enum:securityBondStates", false},
+  FieldDescriptor{RecordKind::result, 18U, "priorityAccepted", "boolean", false},
   FieldDescriptor{RecordKind::advertisement, 1U, "peerId", "string", true},
   FieldDescriptor{RecordKind::advertisement, 2U, "observedAt", "uint64", true},
   FieldDescriptor{RecordKind::advertisement, 3U, "ingressOrdinal", "uint64", true},
@@ -369,7 +379,7 @@ inline constexpr std::array<FieldDescriptor, 159> kFieldDescriptors{{
   FieldDescriptor{RecordKind::restorationAdoptionResult, 7U, "records", "records:restorationRecord", true}
 }};
 
-inline constexpr std::array<EnumValueDescriptor, 84> kEnumValueDescriptors{{
+inline constexpr std::array<EnumValueDescriptor, 89> kEnumValueDescriptors{{
   EnumValueDescriptor{"commandKinds", "scanStart"},
   EnumValueDescriptor{"commandKinds", "scanStop"},
   EnumValueDescriptor{"commandKinds", "connect"},
@@ -384,6 +394,7 @@ inline constexpr std::array<EnumValueDescriptor, 84> kEnumValueDescriptors{{
   EnumValueDescriptor{"commandKinds", "destroy"},
   EnumValueDescriptor{"commandKinds", "readRssi"},
   EnumValueDescriptor{"commandKinds", "requestMtu"},
+  EnumValueDescriptor{"commandKinds", "requestPriority"},
   EnumValueDescriptor{"commandKinds", "readDescriptor"},
   EnumValueDescriptor{"commandKinds", "writeDescriptor"},
   EnumValueDescriptor{"commandKinds", "securityState"},
@@ -402,6 +413,7 @@ inline constexpr std::array<EnumValueDescriptor, 84> kEnumValueDescriptors{{
   EnumValueDescriptor{"resultKinds", "destroyed"},
   EnumValueDescriptor{"resultKinds", "rssi"},
   EnumValueDescriptor{"resultKinds", "mtu"},
+  EnumValueDescriptor{"resultKinds", "priority"},
   EnumValueDescriptor{"resultKinds", "descriptorRead"},
   EnumValueDescriptor{"resultKinds", "descriptorWrite"},
   EnumValueDescriptor{"resultKinds", "securityState"},
@@ -425,6 +437,9 @@ inline constexpr std::array<EnumValueDescriptor, 84> kEnumValueDescriptors{{
   EnumValueDescriptor{"binaryOwnership", "transferred"},
   EnumValueDescriptor{"writeModes", "withResponse"},
   EnumValueDescriptor{"writeModes", "withoutResponse"},
+  EnumValueDescriptor{"connectionPriorities", "lowPower"},
+  EnumValueDescriptor{"connectionPriorities", "balanced"},
+  EnumValueDescriptor{"connectionPriorities", "highThroughput"},
   EnumValueDescriptor{"adapterAvailability", "available"},
   EnumValueDescriptor{"adapterAvailability", "unavailable"},
   EnumValueDescriptor{"adapterAvailability", "unsupported"},

@@ -26,8 +26,10 @@ import type {
 import type {
   ConnectionMaximumWriteLengthMeasurement,
   ConnectionMaximumWriteLengthRequest,
+  ConnectionPriorityRequest,
   MtuNegotiation,
   ReadRssiRequest,
+  RequestPriorityRequest,
   RequestMtuRequest,
   RssiMeasurement
 } from './connection-controls'
@@ -174,6 +176,10 @@ export interface ConnectionBackend<Attachment extends string> {
     connection: BackendConnection<Attachment, string>,
     request: RequestMtuRequest<Attachment, Operation>
   ): BackendOperationDispatch<Attachment, MtuNegotiation<Attachment, Operation>>
+  requestPriority?<Operation extends string>(
+    connection: BackendConnection<Attachment, string>,
+    request: RequestPriorityRequest<Attachment, Operation>
+  ): BackendOperationDispatch<Attachment, ConnectionPriorityRequest<Attachment, Operation>>
   maximumWriteLength?<Operation extends string>(
     connection: BackendConnection<Attachment, string>,
     request: ConnectionMaximumWriteLengthRequest<Attachment, Operation>
