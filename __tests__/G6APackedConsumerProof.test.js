@@ -43,10 +43,8 @@ describe('G6A packed independent-consumer proof fixture', () => {
 
     expect(importSpecifiers).toEqual(
       expect.arrayContaining([
-        'unified-ble-manager',
         'unified-ble-manager/testing',
         'unified-ble-manager/profiles/heart-rate',
-        'unified-ble-manager/profiles/standard-commands',
         'unified-ble-manager/web'
       ])
     )
@@ -63,6 +61,17 @@ describe('G6A packed independent-consumer proof fixture', () => {
     expect(runner).not.toContain("path.join(root, 'node_modules'")
     expect(runner.indexOf('module.exports =')).toBeLessThan(runner.indexOf('if (require.main === module)'))
     expect(runner).not.toContain('const result = main({ g6aOnly: true })')
+  })
+
+  test('uses the public deterministic testing manager instead of internal root constructors', () => {
+    const node = fs.readFileSync(path.join(fixtureRoot, 'node-heart-rate-protocol.mjs'), 'utf8')
+    expect(node).toContain("from 'unified-ble-manager/testing'")
+    expect(node).toContain('createDeterministicTestBleManager')
+    expect(node).not.toContain("from 'unified-ble-manager'")
+    expect(node).not.toContain('attachBleBackend')
+    expect(node).not.toContain('createManagerOwnershipAuthority')
+    expect(node).not.toContain('DEFAULT_BLE_MANAGER_OPTIONS')
+    expect(node).not.toContain('localResourceCounters')
   })
 
   test.each([

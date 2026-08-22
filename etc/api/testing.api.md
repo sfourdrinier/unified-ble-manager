@@ -21,6 +21,8 @@ export { createDeterministicTestBackend, DeterministicTestBackend } from './test
 - `DeterministicReactNativeAppleTckBoundary`
 - `DeterministicReactNativeTckBoundary`
 - `DeterministicTestBackend`
+- `DeterministicTestBleManager`
+- `DeterministicTestBleManagerOptions`
 - `DeterministicVirtualClock`
 - `DeterministicWebBluetoothTckBoundary`
 - `DeterministicWinRtBoundary`
@@ -76,6 +78,7 @@ export { createDeterministicTestBackend, DeterministicTestBackend } from './test
 - `createDeterministicBackendTckFactory`
 - `createDeterministicManagerScenarioFactory`
 - `createDeterministicTestBackend`
+- `createDeterministicTestBleManager`
 - `createFirstPartyBackendTckRegistry`
 - `createManagerScenarioFixture`
 - `createReactNativeAndroidFirstPartyTckRegistration`
