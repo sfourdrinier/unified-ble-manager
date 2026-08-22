@@ -695,6 +695,13 @@ readiness event does not prove that a later payload was retained. Callers use
 the mode-specific maximum write length and the write result's exact commit or
 unknown state.
 
+The direct CoreBluetooth Node/Electron-main backend advertises this capability
+only when both `CBPeripheral.canSendWriteWithoutResponse` and
+`peripheralIsReady(toSendWriteWithoutResponse:)` are bridged. Its snapshots and
+edges carry a native ordinal and connection generation. React Native Apple,
+Android, Web, BlueZ, WinRT, Tauri, and Electron renderer IPC remain explicitly
+unsupported until they expose equivalent platform-authoritative flow control.
+
 GATT operations that require ordering use one serialized queue per physical
 connection; that queue is bounded. Queued cancellation removes the operation before
 dispatch; dispatched cancellation follows the race and uncertainty rules in
