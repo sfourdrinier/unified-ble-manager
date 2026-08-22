@@ -11,15 +11,32 @@ import type {
   SubscriptionHandle
 } from '../manager/consumer-handles'
 import type {
+  BleConnectionControls,
   BleConnectionEvent,
-  BleConnection,
+  BleConnectionWithControls,
   BleManager,
   BlePeer,
+  BleControlObservationMetadata,
+  ConnectionParametersObservation,
+  ConnectionPriority,
+  ConnectionPriorityResult,
   ConnectOptions,
   FindOptions,
+  MaximumWriteLengthObservation,
+  MtuNegotiation,
+  MtuObservation,
+  PhyObservation,
+  PhyPreference,
+  PhyUpdateResult,
   PublicScanObservation,
+  RediscoverGattOptions,
+  RssiObservation,
   ScanOptions,
-  ScanSession
+  ScanSession,
+  SubrateMode,
+  SubrateResult,
+  WriteMode,
+  WriteReadinessEvent
 } from '../public/ble-manager'
 import {
   assertPublicConnectOptions,
@@ -32,7 +49,8 @@ import {
 } from '../public/ble-manager'
 import type { BleAdapter, BleAdapterState, AdapterReadinessOptions } from '../public/ble-adapter'
 import { assertDirectConnectionCapability } from '../public/capabilities'
-import type { BleCapabilities } from '../public/capabilities'
+import type { BleCapabilities, CapabilityDescriptor } from '../public/capabilities'
+import { BUILT_IN_FEATURE_IDS } from '../backend-contract/capabilities'
 import { createPublicGattDatabase, type PublicGattDatabaseSource } from '../public/gatt'
 import type { GattDatabase } from '../public/gatt'
 import type { BleDiagnostics } from '../public/diagnostics'
@@ -160,7 +178,7 @@ export class IpcPublicManagerAdapter implements BleManager {
         signal: normalized.signal ?? undefined,
         timeoutMs: options.timeoutMs
       })
-      return new IpcPublicConnection(base, peer)
+      return new IpcPublicConnection(base, peer, this.capabilities)
     } catch (error) {
       throw rehydratePublicError(error)
     }
@@ -266,17 +284,19 @@ class IpcPublicScanSession implements ScanSession {
   }
 }
 
-class IpcPublicConnection implements BleConnection {
+class IpcPublicConnection implements BleConnectionWithControls {
   readonly peer: BlePeer
   readonly handle: string
   readonly connectionId: string
   readonly ownerLeaseId: string
   readonly connectionGeneration: string
   readonly lifecycleEvents: AsyncIterable<BleConnectionEvent>
+  readonly controls: BleConnectionControls
 
   constructor(
     private readonly base: IpcConnection,
-    peer: BlePeer | string
+    peer: BlePeer | string,
+    capabilities: BleCapabilities
   ) {
     this.peer = typeof peer === 'string' ? snapshotBlePeer({ id: peer, name: null, rssi: null }) : snapshotBlePeer(peer)
     this.handle = base.handle
@@ -292,6 +312,7 @@ class IpcPublicConnection implements BleConnection {
         connectionGeneration: base.connectionGeneration
       })
     )
+    this.controls = createIpcConnectionControls(this.base, capabilities, this.connectionGeneration)
   }
 
   get events(): BoundedAsyncStream<import('../backend-contract/primitives').SerializableRecord> {
@@ -311,21 +332,24 @@ class IpcPublicConnection implements BleConnection {
     }
   }
 
-  readRssi(options: OperationOptions = {}): Promise<number> {
-    const normalized = normalizeOperationOptions(options, () => globalThis.performance.now())
-    return rehydratePublicPromise(
-      this.base.readRssi({ signal: normalized.signal ?? undefined, timeoutMs: options.timeoutMs })
-    )
-  }
-
-  maximumWriteLength(mode: 'with-response' | 'without-response' = 'with-response'): Promise<number> {
-    return rehydratePublicPromise(this.base.maximumWriteLength(mode))
-  }
-
-  requestMtu(_requestedMtu: number, _options: OperationOptions = {}): Promise<number> {
-    return Promise.reject(
-      rehydratePublicError(contractError('capability.unsupported', 'connection', 'ipc-public-manager.connection.mtu'))
-    )
+  async rediscoverGatt(options: RediscoverGattOptions): Promise<GattDatabase> {
+    try {
+      if (
+        options === undefined ||
+        options === null ||
+        (options.reason !== 'service-changed' && options.reason !== 'manual')
+      ) {
+        throw contractError('argument.invalid', 'gatt', 'ipc-public-manager.rediscover-gatt.reason')
+      }
+      const normalized = normalizeOperationOptions(options, () => globalThis.performance.now())
+      const database = await this.base.discover({
+        signal: normalized.signal ?? undefined,
+        deadline: normalized.deadline
+      })
+      return createPublicGattDatabase(createIpcGattSource(database))
+    } catch (error) {
+      throw rehydratePublicError(error)
+    }
   }
 
   disconnect(): Promise<CleanupRecord> {
@@ -335,6 +359,146 @@ class IpcPublicConnection implements BleConnection {
   release(): Promise<CleanupRecord> {
     return rehydratePublicPromise(this.base.release())
   }
+}
+
+const IPC_RECEIPT_TIMESTAMP_LIMITATION = Object.freeze({
+  code: 'ipc-receipt-timestamp',
+  explanation:
+    'The observation timestamp is the renderer receipt time because the IPC payload has no backend timestamp.',
+  affectedGuarantee: 'backend measurement timestamp authority'
+})
+
+function requireIpcControlCapability(
+  capabilities: BleCapabilities,
+  id: `${string}:${string}`,
+  operation: string
+): CapabilityDescriptor {
+  const descriptor = capabilities.get(id)
+  if (descriptor === undefined || descriptor.state === 'unsupported') {
+    throw contractError('capability.unsupported', 'connection', operation)
+  }
+  if (descriptor.state === 'unavailable') {
+    throw contractError('capability.unavailable', 'connection', operation)
+  }
+  return descriptor
+}
+
+function ipcControlMetadata(
+  generation: string,
+  capabilities: CapabilityDescriptor,
+  observedAtMonotonicMs: number
+): BleControlObservationMetadata {
+  return Object.freeze({
+    connectionGeneration: generation,
+    observedAtMonotonicMs,
+    source: 'backend',
+    authority: 'ipc-backend-operation',
+    limitations: Object.freeze([IPC_RECEIPT_TIMESTAMP_LIMITATION, ...capabilities.limitations])
+  })
+}
+
+async function runIpcControl<Value>(operation: () => Promise<Value>): Promise<Value> {
+  try {
+    return await operation()
+  } catch (error) {
+    throw rehydratePublicError(error)
+  }
+}
+
+function unsupportedIpcControlStream<Value>(operation: string): AsyncIterable<Value> {
+  return new UnsupportedIpcControlStream(operation)
+}
+
+class UnsupportedIpcControlStream<Value> implements AsyncIterable<Value> {
+  constructor(private readonly operation: string) {}
+
+  [Symbol.asyncIterator](): AsyncIterator<Value> {
+    return new UnsupportedIpcControlIterator(this.operation)
+  }
+}
+
+class UnsupportedIpcControlIterator<Value> implements AsyncIterator<Value> {
+  constructor(private readonly operation: string) {}
+
+  async next(): Promise<IteratorResult<Value, undefined>> {
+    throw rehydratePublicError(contractError('capability.unsupported', 'connection', this.operation))
+  }
+
+  async return(): Promise<IteratorResult<Value, undefined>> {
+    return { done: true, value: undefined }
+  }
+}
+
+function createIpcConnectionControls(
+  connection: Pick<IpcConnection, 'readRssi' | 'maximumWriteLength'>,
+  capabilities: BleCapabilities,
+  generation: string
+): BleConnectionControls {
+  const readRssi = (options: OperationOptions = {}): Promise<RssiObservation> =>
+    runIpcControl(async () => {
+      const descriptor = requireIpcControlCapability(
+        capabilities,
+        BUILT_IN_FEATURE_IDS.connectionRssi,
+        'ipc-public-manager.controls.read-rssi'
+      )
+      const normalized = normalizeOperationOptions(options, () => globalThis.performance.now())
+      const rssi = await connection.readRssi({
+        signal: normalized.signal ?? undefined,
+        deadline: normalized.deadline
+      })
+      const observation: RssiObservation = Object.freeze({
+        ...ipcControlMetadata(generation, descriptor, globalThis.performance.now()),
+        state: 'measured',
+        rssi
+      })
+      return observation
+    })
+
+  const maximumWriteLength = (mode: WriteMode): Promise<MaximumWriteLengthObservation> =>
+    runIpcControl(async () => {
+      const descriptor = requireIpcControlCapability(
+        capabilities,
+        BUILT_IN_FEATURE_IDS.maximumWriteLength,
+        'ipc-public-manager.controls.maximum-write-length'
+      )
+      const maximumWriteLengthValue = await connection.maximumWriteLength(mode)
+      const observation: MaximumWriteLengthObservation = Object.freeze({
+        ...ipcControlMetadata(generation, descriptor, globalThis.performance.now()),
+        state: 'measured',
+        mode,
+        maximumWriteLength: maximumWriteLengthValue
+      })
+      return observation
+    })
+
+  const unsupportedPromise = <Value>(operation: string): Promise<Value> =>
+    runIpcControl(async () => {
+      throw contractError('capability.unsupported', 'connection', operation)
+    })
+
+  return Object.freeze({
+    readRssi,
+    effectiveMtu: (): Promise<MtuObservation> => unsupportedPromise('ipc-public-manager.controls.effective-mtu'),
+    requestMtu: (_mtu: number, _options: OperationOptions = {}): Promise<MtuNegotiation> =>
+      unsupportedPromise('ipc-public-manager.controls.request-mtu'),
+    maximumWriteLength,
+    requestPriority: (
+      _priority: ConnectionPriority,
+      _options: OperationOptions = {}
+    ): Promise<ConnectionPriorityResult> => unsupportedPromise('ipc-public-manager.controls.request-priority'),
+    readPhy: (_options: OperationOptions = {}): Promise<PhyObservation> =>
+      unsupportedPromise('ipc-public-manager.controls.read-phy'),
+    requestPhy: (_preference: PhyPreference, _options: OperationOptions = {}): Promise<PhyUpdateResult> =>
+      unsupportedPromise('ipc-public-manager.controls.request-phy'),
+    parameters: (): Promise<ConnectionParametersObservation> =>
+      unsupportedPromise('ipc-public-manager.controls.parameters'),
+    parameterEvents: () =>
+      unsupportedIpcControlStream<ConnectionParametersObservation>('ipc-public-manager.controls.parameter-events'),
+    requestSubrate: (_mode: SubrateMode, _options: OperationOptions = {}): Promise<SubrateResult> =>
+      unsupportedPromise('ipc-public-manager.controls.request-subrate'),
+    writeReadiness: (_mode: 'without-response') =>
+      unsupportedIpcControlStream<WriteReadinessEvent>('ipc-public-manager.controls.write-readiness')
+  })
 }
 
 function createIpcGattSource(database: IpcGattDatabase): PublicGattDatabaseSource {
