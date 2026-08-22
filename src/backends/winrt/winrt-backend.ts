@@ -463,7 +463,13 @@ export class WinRtBackend implements BleCentralBackend<string, HostNeutralBacken
       unsubscribe: this.gattOperations.unsubscribe.bind(this.gattOperations)
     })
     this.security = isWinRtSecurityBoundary(boundary)
-      ? new WinRtSecurityBackend(boundary, now, this.dispatcher)
+      ? new WinRtSecurityBackend(
+          boundary,
+          now,
+          this.dispatcher,
+          (peerId, operation) => this.nativePeerIdForPeerId(peerId, operation),
+          nativePeerId => this.peerIdsByNativeId.get(nativePeerId) ?? null
+        )
       : undefined
     this.features = createWinRtFeatureRegistry(this.security !== undefined)
     this.removeConnectionListener = boundary.onConnectionLost(record => {
@@ -1369,6 +1375,12 @@ export class WinRtBackend implements BleCentralBackend<string, HostNeutralBacken
     this.peerIdsByNativeId.set(nativePeerId, peerId)
     this.nativeIdsByPeerId.set(String(peerId), nativePeerId)
     return peerId
+  }
+
+  nativePeerIdForPeerId(peerId: string, operation: string): string {
+    const nativePeerId = this.nativeIdsByPeerId.get(String(peerId))
+    if (nativePeerId === undefined) throw contractError('connection.not-found', 'connection', operation)
+    return nativePeerId
   }
 
   private handleConnectionLoss(event: WinRtConnectionLossRecord): void {

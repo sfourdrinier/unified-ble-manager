@@ -124,7 +124,14 @@ class ReactNativeAndroidBackend implements BleCentralBackend<string, NativeBacke
     this.scanner = delegate.scanner
     this.connections = delegate.connections
     this.gatt = delegate.gatt
-    this.security = boundary.securityAvailable ? new ReactNativeAndroidSecurityBackend(boundary, now) : undefined
+    this.security = boundary.securityAvailable
+      ? new ReactNativeAndroidSecurityBackend(
+          boundary,
+          now,
+          (peerId, operation) => delegate.nativePeerIdForPeerId(peerId, operation),
+          nativePeerId => delegate.peerIdForKnownNativeId(nativePeerId)
+        )
+      : undefined
     const securityFeatureIds: readonly BuiltInFeatureId[] = Object.freeze([
       BUILT_IN_FEATURE_IDS.securityState,
       BUILT_IN_FEATURE_IDS.securityPair,

@@ -179,4 +179,32 @@ describe('WinRT security backend adapter', () => {
     })
     security.close()
   })
+
+  test('translates public WinRT peer IDs at the native security boundary', async () => {
+    const boundary = createBoundary()
+    boundary.securityState = jest.fn(nativePeerId => {
+      expect(nativePeerId).toBe('C0FFEE000001')
+      return { completion: Promise.resolve(state()), cancel: jest.fn(async () => 'already-terminal') }
+    })
+    const security = new WinRtSecurityBackend(
+      boundary,
+      () => 50,
+      undefined,
+      () => 'C0FFEE000001',
+      nativePeerId => (nativePeerId === 'C0FFEE000001' ? 'public-peer-1' : null)
+    )
+
+    await expect(security.state('public-peer-1', options())).resolves.toMatchObject({ bond: 'not-bonded' })
+    const stream = security.watch('public-peer-1')
+    const iterator = stream[Symbol.asyncIterator]()
+    await iterator.next()
+    const next = iterator.next()
+    boundary.emitSecurityState({ nativePeerId: 'C0FFEE000001', state: state({ bond: 'bonded' }) })
+    await expect(next).resolves.toMatchObject({
+      value: { value: { peerId: 'public-peer-1', state: { bond: 'bonded' } } }
+    })
+    await iterator.return()
+    await stream.close()
+    security.close()
+  })
 })

@@ -55,6 +55,7 @@ const securityLimitations = Object.freeze([
 
 interface ActivePairing {
   readonly operation: WinRtOperationDispatch<WinRtPairResult>
+  readonly nativePeerId: string
 }
 
 type SecurityLifecycle = 'active' | 'adapter-lost' | 'closed'
@@ -75,15 +76,18 @@ export class WinRtSecurityBackend implements SecurityBackend {
       onLateSuccess: () => undefined,
       onLateFailure: () => undefined,
       onCancellationFailure: () => undefined
-    })
+    }),
+    private readonly nativePeerIdForPeerId: (peerId: string, operation: string) => string = peerId => peerId,
+    private readonly peerIdForNativePeerId: (nativePeerId: string) => string | null = nativePeerId => nativePeerId
   ) {
     this.removeStateListener = this.registerStateListener(this.stateListenerGeneration)
   }
 
   async state(peerId: string, options: PublicOperationOptions): Promise<PeerSecurityState> {
     this.assertActive('winrt.security.state')
+    const nativePeerId = this.nativePeerIdForPeerId(peerId, 'winrt.security.state')
     const operation = this.dispatcher.dispatch(options, 'winrt.security.state', () =>
-      this.boundary.securityState(peerId)
+      this.boundary.securityState(nativePeerId)
     )
     return this.snapshotState(await operation.completion)
   }
@@ -115,8 +119,11 @@ export class WinRtSecurityBackend implements SecurityBackend {
     if (this.activePairings.has(peerId)) {
       return Promise.reject(contractError('ownership.denied', 'platform', 'winrt.security.pair.arbitration'))
     }
-    const operation = this.dispatcher.dispatch(options, 'winrt.security.pair', () => this.boundary.pair(peerId))
-    this.activePairings.set(peerId, { operation })
+    const nativePeerId = this.nativePeerIdForPeerId(peerId, 'winrt.security.pair')
+    const operation = this.dispatcher.dispatch(options, 'winrt.security.pair', () =>
+      this.boundary.pair(nativePeerId)
+    )
+    this.activePairings.set(peerId, { operation, nativePeerId })
     const settle = () => {
       const active = this.activePairings.get(peerId)
       if (active?.operation === operation) {
@@ -143,14 +150,34 @@ export class WinRtSecurityBackend implements SecurityBackend {
     this.assertActive('winrt.security.cancel-pairing')
     const active = this.activePairings.get(peerId)
     if (active === undefined) return { outcome: 'not-pairing' }
-    await active.operation.requestCancellation()
-    await this.boundary.cancelPairing(peerId).completion
+    const dispatch = this.dispatcher.dispatch(_options, 'winrt.security.cancel-pairing', () => {
+      const nativeCancellation = this.boundary.cancelPairing(active.nativePeerId)
+      const completion = Promise.all([
+        active.operation.requestCancellation(),
+        nativeCancellation.completion
+      ]).then(() => undefined)
+      return {
+        completion,
+        cancel: async () => {
+          await nativeCancellation.cancel()
+          return 'cancellation-requested' as const
+        },
+        physicalCompletion: Promise.all([
+          completion,
+          active.operation.physicalCompletion
+        ]).then(() => undefined)
+      }
+    })
+    await dispatch.completion
     return { outcome: 'cancelled' }
   }
 
   async unpair(peerId: string, _options: PublicOperationOptions): Promise<SecurityUnpairResult> {
     this.assertActive('winrt.security.unpair')
-    const operation = this.dispatcher.dispatch(_options, 'winrt.security.unpair', () => this.boundary.unpair(peerId))
+    const nativePeerId = this.nativePeerIdForPeerId(peerId, 'winrt.security.unpair')
+    const operation = this.dispatcher.dispatch(_options, 'winrt.security.unpair', () =>
+      this.boundary.unpair(nativePeerId)
+    )
     return { outcome: await operation.completion }
   }
 
@@ -187,7 +214,8 @@ export class WinRtSecurityBackend implements SecurityBackend {
 
   private stateChanged(record: WinRtSecurityStateChangedRecord): void {
     if (this.lifecycle !== 'active') return
-    this.emit(record.nativePeerId, this.snapshotState(record.state))
+    const peerId = this.peerIdForNativePeerId(record.nativePeerId)
+    if (peerId !== null) this.emit(peerId, this.snapshotState(record.state))
   }
 
   private registerStateListener(generation: number): () => void {

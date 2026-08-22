@@ -34,17 +34,21 @@ const limitations = Object.freeze([
 export class ReactNativeAndroidSecurityBackend implements SecurityBackend {
   private readonly streams = new Map<string, Set<CoreBoundedStream<PeerSecurityEvent>>>()
   private readonly active = new Set<string>()
+  private readonly activeNativeIds = new Map<string, string>()
   private readonly sequences = new Map<string, number>()
   private readonly removeListener: () => void
   private closed = false
 
   constructor(
     private readonly boundary: ReactNativeAndroidProtocolBoundary,
-    private readonly now: () => number
+    private readonly now: () => number,
+    private readonly nativePeerIdForPeerId: (peerId: string, operation: string) => string = peerId => peerId,
+    private readonly peerIdForNativePeerId: (nativePeerId: string) => string | null = nativePeerId => nativePeerId
   ) {
-    this.removeListener = boundary.onSecurityState(record =>
-      this.emit(record.nativePeerId, this.snapshot(record.state))
-    )
+    this.removeListener = boundary.onSecurityState(record => {
+      const peerId = this.peerIdForNativePeerId(record.nativePeerId)
+      if (peerId !== null) this.emit(peerId, this.snapshot(record.state))
+    })
   }
 
   async state(peerId: string, options: PublicOperationOptions): Promise<PeerSecurityState> {
@@ -55,7 +59,8 @@ export class ReactNativeAndroidSecurityBackend implements SecurityBackend {
     if (options.deadline !== null && options.deadline <= this.now()) {
       throw contractError('operation.timed-out', 'core', 'android.security.state')
     }
-    const operation = this.boundary.securityState(peerId)
+    const nativePeerId = this.nativePeerIdForPeerId(peerId, 'android.security.state')
+    const operation = this.boundary.securityState(nativePeerId)
     return this.snapshot(await settleAndroidOperation(operation, options, this.now, 'android.security.state'))
   }
 
@@ -91,14 +96,17 @@ export class ReactNativeAndroidSecurityBackend implements SecurityBackend {
     }
     if (this.active.has(peerId))
       throw contractError('ownership.denied', 'platform', 'android.security.pair.arbitration')
+    const nativePeerId = this.nativePeerIdForPeerId(peerId, 'android.security.pair')
     this.active.add(peerId)
+    this.activeNativeIds.set(peerId, nativePeerId)
     let publicSettled = false
     const cancellationController = new AbortController()
     let abortListener: (() => void) | null = null
     let deadlineTimer: ReturnType<typeof setTimeout> | null = null
-    const nativeOperation = this.boundary.pair(peerId, cancellationController.signal)
+    const nativeOperation = this.boundary.pair(nativePeerId, cancellationController.signal)
     const settleNative = (): void => {
       this.active.delete(peerId)
+      this.activeNativeIds.delete(peerId)
       if (abortListener !== null) options.signal?.removeEventListener('abort', abortListener)
       if (deadlineTimer !== null) clearTimeout(deadlineTimer)
     }
@@ -158,13 +166,16 @@ export class ReactNativeAndroidSecurityBackend implements SecurityBackend {
   async cancelPairing(peerId: string, _options: PublicOperationOptions): Promise<SecurityCancelPairingResult> {
     this.assertOpen('android.security.cancel-pairing')
     if (!this.active.has(peerId)) return { outcome: 'not-pairing' }
-    await this.boundary.cancelPairing(peerId)
+    const nativePeerId = this.activeNativeIds.get(peerId)
+    if (nativePeerId === undefined) return { outcome: 'not-pairing' }
+    await this.boundary.cancelPairing(nativePeerId)
     return { outcome: 'cancelled' }
   }
 
   async unpair(peerId: string, _options: PublicOperationOptions): Promise<SecurityUnpairResult> {
     this.assertOpen('android.security.unpair')
-    await this.boundary.unpair(peerId)
+    const nativePeerId = this.nativePeerIdForPeerId(peerId, 'android.security.unpair')
+    await this.boundary.unpair(nativePeerId)
     return { outcome: 'unsupported' }
   }
 
@@ -172,6 +183,7 @@ export class ReactNativeAndroidSecurityBackend implements SecurityBackend {
     this.closed = true
     this.removeListener()
     this.active.clear()
+    this.activeNativeIds.clear()
     for (const streams of this.streams.values()) for (const stream of streams) stream.closeWithReason('owner-released')
     this.streams.clear()
   }
@@ -185,7 +197,9 @@ export class ReactNativeAndroidSecurityBackend implements SecurityBackend {
   }
 
   private requestCancellation(peerId: string): void {
-    this.boundary.cleanupPairing(peerId).catch(error => {
+    const nativePeerId = this.activeNativeIds.get(peerId)
+    if (nativePeerId === undefined) return
+    this.boundary.cleanupPairing(nativePeerId).catch(error => {
       console.error('[ReactNativeAndroidSecurityBackend.pair] Pair cancellation was not accepted:', error)
     })
   }

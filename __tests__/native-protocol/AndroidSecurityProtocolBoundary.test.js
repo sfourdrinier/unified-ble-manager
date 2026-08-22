@@ -244,6 +244,51 @@ describe('React Native Android security protocol boundary', () => {
     security.close()
   })
 
+  test('translates public Android peer IDs at the native security boundary', async () => {
+    let emitSecurityState
+    const securityStateCall = jest.fn(async nativePeerId => {
+      expect(nativePeerId).toBe('AA:BB:CC:DD:EE:FF')
+      return securityState('not-bonded')
+    })
+    const pair = jest.fn(async nativePeerId => {
+      expect(nativePeerId).toBe('AA:BB:CC:DD:EE:FF')
+      return { outcome: 'paired', state: securityState('bonded') }
+    })
+    const security = new ReactNativeAndroidSecurityBackend(
+      securityAdapter({
+        securityState: securityStateCall,
+        pair,
+        onSecurityState: listener => {
+          emitSecurityState = listener
+          return () => undefined
+        }
+      }),
+      () => 20,
+      () => 'AA:BB:CC:DD:EE:FF',
+      nativePeerId => (nativePeerId === 'AA:BB:CC:DD:EE:FF' ? peerId : null)
+    )
+
+    await expect(security.state(peerId, { signal: null, deadline: null })).resolves.toMatchObject({ bond: 'not-bonded' })
+    await expect(
+      security.pair(peerId, {
+        signal: null,
+        deadline: null,
+        transport: 'auto',
+        protection: 'system-default',
+        ceremony: 'system'
+      })
+    ).resolves.toMatchObject({ outcome: 'paired' })
+    const stream = security.watch(peerId)
+    const iterator = stream[Symbol.asyncIterator]()
+    await iterator.next()
+    const next = iterator.next()
+    emitSecurityState({ nativePeerId: 'AA:BB:CC:DD:EE:FF', state: securityState('bonded') })
+    await expect(next).resolves.toMatchObject({ value: { value: { peerId, state: { bond: 'bonded' } } } })
+    await iterator.return()
+    await stream.close()
+    security.close()
+  })
+
   test('maps a native system-pair rejection to the documented rejected result', async () => {
     const rejection = contractError('platform.failure', 'platform', 'android.security.pair', {
       domain: 'android',
