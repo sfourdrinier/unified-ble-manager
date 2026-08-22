@@ -216,13 +216,13 @@ interface WinRtScanGroup {
 
 interface WinRtPendingConnect {
   dispatch: WinRtOperationDispatch<void> | null
-  physicalCompletion: Promise<void> | null
+  physicalSettlement: Promise<void> | null
   terminalError: Error | null
 }
 
 interface WinRtPendingConnectionOperation {
   readonly operationName: string
-  readonly physicalCompletion: Promise<void>
+  readonly physicalSettlement: Promise<void>
 }
 
 /** A fully validated native advertisement that can safely enter backend state and public observations. */
@@ -652,10 +652,10 @@ export class WinRtBackend implements BleCentralBackend<string, HostNeutralBacken
   ): BackendOperationDispatch<string, Result> {
     record.pendingOperations.set(dispatch.handle, {
       operationName,
-      physicalCompletion: dispatch.physicalCompletion
+      physicalSettlement: dispatch.physicalSettlement
     })
-    dispatch.physicalCompletion.then(() => {
-      if (record.pendingOperations.get(dispatch.handle)?.physicalCompletion === dispatch.physicalCompletion) {
+    dispatch.physicalSettlement.then(() => {
+      if (record.pendingOperations.get(dispatch.handle)?.physicalSettlement === dispatch.physicalSettlement) {
         record.pendingOperations.delete(dispatch.handle)
       }
     })
@@ -851,7 +851,7 @@ export class WinRtBackend implements BleCentralBackend<string, HostNeutralBacken
         return
       }
       if (group.startDispatch !== null) {
-        await group.startDispatch.physicalCompletion
+        await group.startDispatch.physicalSettlement
       }
       if (this.scanGroup !== group) {
         return
@@ -979,7 +979,7 @@ export class WinRtBackend implements BleCentralBackend<string, HostNeutralBacken
           // its late completion either proves no watcher exists or compensating stop succeeds.
           group.state = 'stopping'
         } else {
-          await dispatch.physicalCompletion
+          await dispatch.physicalSettlement
           if (this.scanGroup === group && (group.state === 'starting' || group.state === 'stopping')) {
             this.retireScanGroup(group)
           }
@@ -1072,7 +1072,7 @@ export class WinRtBackend implements BleCentralBackend<string, HostNeutralBacken
     const ids = this.identifiers()
     const pendingConnect: WinRtPendingConnect = {
       dispatch: null,
-      physicalCompletion: null,
+      physicalSettlement: null,
       terminalError: null
     }
     const record: WinRtConnectionRecord = {
@@ -1104,7 +1104,7 @@ export class WinRtBackend implements BleCentralBackend<string, HostNeutralBacken
       }
     )
     pendingConnect.dispatch = dispatch
-    pendingConnect.physicalCompletion = dispatch.physicalCompletion
+    pendingConnect.physicalSettlement = dispatch.physicalSettlement
     if (pendingConnect.terminalError !== null) {
       this.dispatcher.terminalize(dispatch.handle, pendingConnect.terminalError)
     }
@@ -1456,10 +1456,10 @@ export class WinRtBackend implements BleCentralBackend<string, HostNeutralBacken
       contractError('operation.disconnected', 'gatt', 'winrt.gatt.subscribe.connection-lost')
     )
     if (pendingConnect !== null) {
-      while (pendingConnect.physicalCompletion === null) {
+      while (pendingConnect.physicalSettlement === null) {
         await Promise.resolve()
       }
-      await pendingConnect.physicalCompletion
+      await pendingConnect.physicalSettlement
       if (record.state === 'disconnecting') {
         return cleanupFailure(
           'connection',
@@ -1503,7 +1503,7 @@ export class WinRtBackend implements BleCentralBackend<string, HostNeutralBacken
 
   private async waitForConnectionOperations(record: WinRtConnectionRecord): Promise<void> {
     for (const operation of [...record.pendingOperations.values()]) {
-      await operation.physicalCompletion
+      await operation.physicalSettlement
     }
   }
 
@@ -1695,7 +1695,7 @@ export class WinRtBackend implements BleCentralBackend<string, HostNeutralBacken
         failures.push(...cleanup.failures)
       } else if (group.state === 'stopping') {
         if (group.startDispatch !== null) {
-          await group.startDispatch.physicalCompletion
+          await group.startDispatch.physicalSettlement
         }
         if (this.scanGroup === group) {
           const lateStopResult = this.scanGroupStopResult(group)
@@ -1839,7 +1839,7 @@ export class WinRtBackend implements BleCentralBackend<string, HostNeutralBacken
         failures.push(...(await this.stopScanGroup(group, 'winrt.destroy.scan')).failures)
       } else {
         if (group.startDispatch !== null) {
-          await group.startDispatch.physicalCompletion
+          await group.startDispatch.physicalSettlement
         }
         if (this.scanGroup === group) {
           const destroyStopResult = this.scanGroupStopResult(group)

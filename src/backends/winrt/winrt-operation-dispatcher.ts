@@ -4,6 +4,7 @@ import { contractError } from '../../backend-contract/errors'
 import {
   createBackendOperationDispatch,
   type BackendOperationDispatch,
+  type BackendOperationPhysicalSettlement,
   type CancellationAcknowledgement,
   type PublicOperationOptions
 } from '../../backend-contract/operations'
@@ -17,7 +18,7 @@ export interface WinRtTrackedAsyncOperation<Value> extends WinRtAsyncOperation<V
 
 /** Internal dispatch view that exposes when native ownership has actually retired. */
 export interface WinRtOperationDispatch<Result> extends BackendOperationDispatch<string, Result> {
-  readonly physicalCompletion: Promise<void>
+  readonly physicalSettlement: BackendOperationPhysicalSettlement
 }
 
 interface SnapshottedWinRtAsyncOperation<Value> {
@@ -187,13 +188,16 @@ export class WinRtOperationDispatcher {
         await this.retireAfterPhysicalCompletion(active, native.physicalCompletion, operationName)
       }
     )
-    const physicalCompletion = nativeContinuation.catch(error => {
+    const physicalSettlement = nativeContinuation.catch(error => {
       this.reportLateFailure(operationName, this.asError(error, operationName))
     })
-    return {
-      ...createBackendOperationDispatch(handle, completion, () => this.requestCancellation(active)),
-      physicalCompletion
-    }
+    const dispatch = createBackendOperationDispatch(
+      handle,
+      completion,
+      () => this.requestCancellation(active),
+      physicalSettlement
+    )
+    return { ...dispatch, physicalSettlement }
   }
 
   private rejectedDispatch<Result>(
@@ -202,10 +206,14 @@ export class WinRtOperationDispatcher {
   ): WinRtOperationDispatch<Result> {
     const completion = Promise.reject<Result>(error)
     this.containPromiseRejection(completion)
-    return {
-      ...createBackendOperationDispatch(handle, completion, async () => ({ handle, state: 'already-terminal' })),
-      physicalCompletion: Promise.resolve()
-    }
+    const physicalSettlement = Promise.resolve()
+    const dispatch = createBackendOperationDispatch(
+      handle,
+      completion,
+      async () => ({ handle, state: 'already-terminal' }),
+      physicalSettlement
+    )
+    return { ...dispatch, physicalSettlement }
   }
 
   /** Snapshots native members before admission so hostile getters cannot strand an active operation. */

@@ -7,7 +7,7 @@ import type { OperationTerminalRecord, PublicOperationOptions } from '../backend
 import type { CleanupRecord } from '../backend-contract/errors'
 import type { ScanOptions } from '../backend-contract/advertisement'
 import type { ByteLimit, OwnedBytes, OperationCorrelation } from '../backend-contract/primitives'
-import type { BackendOperationDispatch } from '../backend-contract/operations'
+import type { BackendOperationDispatch, BackendOperationPhysicalSettlement } from '../backend-contract/operations'
 import type { CoreOperationDispatch, CoreOperationResult } from './operation-coordinator'
 
 export interface CoreDeadlineHandle {
@@ -51,7 +51,7 @@ export function coreDispatch<Attachment extends string, Value>(
 
 function awaitPhysicalSettlement<Value>(
   completion: Promise<Value>,
-  physicalSettlement?: Promise<void>
+  physicalSettlement?: BackendOperationPhysicalSettlement
 ): Promise<Value> {
   if (physicalSettlement === undefined) {
     return completion

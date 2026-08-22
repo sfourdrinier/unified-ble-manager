@@ -69,7 +69,7 @@ export async function connectBluezConnection(
     })
     record.transition = dispatch.completion
     record.transition.catch(error => {
-      dispatch.physicalSettled.then(() => {
+      dispatch.physicalSettlement.then(() => {
         if (
           !sharedRecord.active &&
           !runtime.isDestroying() &&

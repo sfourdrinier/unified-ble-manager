@@ -4,6 +4,7 @@ import { BackendContractError, contractError } from '../../backend-contract/erro
 import {
   createBackendOperationDispatch,
   type BackendOperationDispatch,
+  type BackendOperationPhysicalSettlement,
   type CancellationAcknowledgement,
   type PublicOperationOptions
 } from '../../backend-contract/operations'
@@ -16,8 +17,7 @@ interface ActiveBluezOperation {
 }
 
 export interface BluezOperationDispatch<Result> extends BackendOperationDispatch<string, Result> {
-  /** Resolves only after the non-cancellable D-Bus work has physically settled. */
-  readonly physicalSettled: Promise<void>
+  readonly physicalSettlement: BackendOperationPhysicalSettlement
 }
 
 export class BluezOperationDispatcher {
@@ -41,9 +41,9 @@ export class BluezOperationDispatcher {
     let rejectCompletion: ((error: Error) => void) | null = null
     let deadlineTimer: ReturnType<typeof setTimeout> | null = null
     let cancellation: Promise<void> | null = null
-    let resolvePhysicalSettled: (() => void) | null = null
-    const physicalSettled = new Promise<void>(resolve => {
-      resolvePhysicalSettled = resolve
+    let resolvePhysicalSettlement: (() => void) | null = null
+    const physicalSettlement = new Promise<void>(resolve => {
+      resolvePhysicalSettlement = resolve
     })
     const requestPhysicalCancellation = (): Promise<void> => {
       if (operationSettled) return Promise.resolve()
@@ -78,10 +78,10 @@ export class BluezOperationDispatcher {
         if (retired) return
         retired = true
         this.active.delete(String(handle))
-        if (resolvePhysicalSettled === null) {
+        if (resolvePhysicalSettlement === null) {
           throw new Error('BlueZ physical settlement resolver was not initialized')
         }
-        resolvePhysicalSettled()
+        resolvePhysicalSettlement()
         if (this.active.size === 0) {
           for (const resolve of this.idleWaiters) {
             resolve()
@@ -193,14 +193,17 @@ export class BluezOperationDispatcher {
     if (!operationSettled) {
       this.active.set(String(handle), active)
     }
-    return {
-      ...createBackendOperationDispatch(handle, completion, async () => {
+    const dispatch = createBackendOperationDispatch(
+      handle,
+      completion,
+      async () => {
         const acknowledgement = active.cancel()
         await requestPhysicalCancellation()
         return acknowledgement
-      }),
-      physicalSettled
-    }
+      },
+      physicalSettlement
+    )
+    return { ...dispatch, physicalSettlement }
   }
 
   cancelAll(): void {

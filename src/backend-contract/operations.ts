@@ -40,18 +40,19 @@ export interface CancellationAcknowledgement<Attachment extends string> {
   readonly handle: BackendOperationHandle<Attachment, string>
   readonly state: 'cancellation-requested' | 'already-terminal' | 'not-cancellable'
 }
+/** Resolves after backend-owned/native resources for one dispatch have retired. */
+export type BackendOperationPhysicalSettlement = Promise<void>
 export interface BackendOperationDispatch<Attachment extends string, Result> {
   readonly handle: BackendOperationHandle<Attachment, string>
   readonly completion: Promise<Result>
-  /** Resolves after backend-owned/native resources for this dispatch have retired. */
-  readonly physicalSettlement?: Promise<void>
+  readonly physicalSettlement?: BackendOperationPhysicalSettlement
   requestCancellation(): Promise<CancellationAcknowledgement<Attachment>>
 }
 export function createBackendOperationDispatch<Attachment extends string, Result>(
   handle: BackendOperationHandle<Attachment, string>,
   completion: Promise<Result>,
   requestCancellation: () => Promise<CancellationAcknowledgement<Attachment>>,
-  physicalSettlement?: Promise<void>
+  physicalSettlement?: BackendOperationPhysicalSettlement
 ): BackendOperationDispatch<Attachment, Result> {
   const dispatch = { handle, completion, requestCancellation }
   return physicalSettlement === undefined ? dispatch : { ...dispatch, physicalSettlement }

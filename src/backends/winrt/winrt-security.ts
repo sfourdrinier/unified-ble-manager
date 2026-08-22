@@ -128,11 +128,11 @@ export class WinRtSecurityBackend implements SecurityBackend {
         this.activePairings.delete(peerId)
       }
     }
-    operation.physicalCompletion.then(settle, settle).catch(() => undefined)
+    operation.physicalSettlement.then(settle, settle).catch(() => undefined)
     const result = operation.completion
       .then(async value => {
         const snapshot = this.snapshotPairResult(value)
-        await operation.physicalCompletion
+        await operation.physicalSettlement
         return snapshot
       })
       .catch(error => {
@@ -159,7 +159,7 @@ export class WinRtSecurityBackend implements SecurityBackend {
           await nativeCancellation.cancel()
           return 'cancellation-requested' as const
         },
-        physicalCompletion: Promise.all([completion, active.operation.physicalCompletion]).then(() => undefined)
+        physicalCompletion: Promise.all([completion, active.operation.physicalSettlement]).then(() => undefined)
       }
     })
     await dispatch.completion

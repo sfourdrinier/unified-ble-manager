@@ -167,7 +167,7 @@ export class BluezSecurityBackend implements SecurityBackend {
         this.activePairings.delete(peerId)
       }
     }
-    dispatch.physicalSettled.then(settle, settle).catch(() => undefined)
+    dispatch.physicalSettlement.then(settle, settle).catch(() => undefined)
     return operation
   }
 
