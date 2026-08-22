@@ -198,6 +198,30 @@ unpair, watcher cleanup, and explicit custom-ceremony unsupported semantics.
 The native Windows compile/ABI lane remains the qualification gate for turning
 this deterministic binding into a Windows capability claim.
 
+### PR7C4 trusted-host security-scope checkpoint
+
+The PR7C4 trusted-host boundary is implemented in the clean commits
+`ed6e05a` (Tauri) and `0965fff` (Electron), with later documentation-only
+descendants. Tauri now exposes distinct command scopes for state, system pair,
+pair cancellation, unpair, and custom ceremony; unpair and custom ceremony are
+not part of the default permission. Rust enforces the injected scope before
+dispatch and ignores renderer-supplied scope fields. Electron snapshots
+main-process-derived security permissions at renderer bootstrap and rejects
+scope mutation or unauthorized security commands before router handlers run.
+
+Neither host promotes security capability support: the Tauri btleplug
+dispatcher and Electron IPC public adapter still report the security backend as
+unsupported until concrete native security methods, DTO routing, and matching
+TCK/evidence exist. Custom Electron ceremonies remain rejected rather than
+downgraded because the current data-only IPC has no challenge/response wire
+protocol.
+
+Evidence: Tauri Rust tests (20), focused Electron/Tauri tests (124), full
+package gate (123 suites, 1,148 tests), lint/typecheck, clippy, native protocol,
+plugin, docs/API, evidence, artifact, diff, and forbidden-assertion-smell
+gates passed locally. Hosted CI, Android/Windows native qualification, and
+physical-radio evidence remain open; no RC3 or merge claim is made.
+
 ## PR6 current checkpoint
 
 This branch has now verified the following PR6 slices against current source:
