@@ -39,13 +39,35 @@ export function coreDispatch<Attachment extends string, Value>(
   correlation: OperationCorrelation<Attachment, string>,
   terminalFor: (value: Value) => OperationTerminalRecord<Attachment, string>
 ): CoreOperationDispatch<Value> {
+  const completion = dispatch.completion.then(value => {
+    assertSuccessfulOperationTerminal(terminalFor(value), correlation, 'unified-core.operation-terminal')
+    return value
+  })
   return {
-    completion: dispatch.completion.then(value => {
-      assertSuccessfulOperationTerminal(terminalFor(value), correlation, 'unified-core.operation-terminal')
-      return value
-    }),
+    completion: awaitPhysicalSettlement(completion, dispatch.physicalSettlement),
     requestCancellation: () => dispatch.requestCancellation().then(() => undefined)
   }
+}
+
+function awaitPhysicalSettlement<Value>(
+  completion: Promise<Value>,
+  physicalSettlement?: Promise<void>
+): Promise<Value> {
+  if (physicalSettlement === undefined) {
+    return completion
+  }
+  return completion.then(
+    value =>
+      physicalSettlement.then(
+        () => value,
+        () => value
+      ),
+    error =>
+      physicalSettlement.then(
+        () => Promise.reject(error),
+        () => Promise.reject(error)
+      )
+  )
 }
 
 export function requireOperationValue<Attachment extends string, Value>(

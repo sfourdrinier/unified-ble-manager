@@ -1,6 +1,11 @@
 // __tests__/backends/corebluetooth/corebluetooth-operation-dispatcher.test.js
 
 const { CoreBluetoothOperationDispatcher } = require('../../../src/backends/corebluetooth/corebluetooth-operation-dispatcher')
+const { opaqueId } = require('../../../src/backend-contract/primitives')
+const { coreDispatch } = require('../../../src/core/unified-ble-core-helpers')
+const { CoreOperationCoordinator } = require('../../../src/core/operation-coordinator')
+const { ResourceLedger } = require('../../../src/core/resource-ledger')
+const { CoreTraceRecorder } = require('../../../src/core/trace-recorder')
 
 function deferred() {
   let resolve = null
@@ -10,6 +15,22 @@ function deferred() {
     reject = rejectPromise
   })
   return { promise, resolve, reject }
+}
+
+function createCoordinator() {
+  const resourceLedger = new ResourceLedger()
+  const trace = new CoreTraceRecorder(32, 4096)
+  let nextCorrelation = 1
+  return new CoreOperationCoordinator({
+    now: () => 100,
+    createCorrelation: () => {
+      const correlation = opaqueId(`corebluetooth-core-operation-${nextCorrelation}`, 'core-operation', 'corebluetooth')
+      nextCorrelation += 1
+      return correlation
+    },
+    resourceLedger,
+    trace
+  })
 }
 
 describe('CoreBluetoothOperationDispatcher cancellation admission', () => {
@@ -109,5 +130,48 @@ describe('CoreBluetoothOperationDispatcher cancellation admission', () => {
       'connection-1'
     )
     await expect(third.completion).resolves.toBe('third')
+  })
+
+  test('does not release core quarantine before a cancelled native source settles', async () => {
+    const pending = deferred()
+    const controller = new AbortController()
+    const dispatcher = new CoreBluetoothOperationDispatcher(() => 100)
+    const coordinator = createCoordinator()
+    let correlation
+    const result = coordinator.run({
+      queueKey: 'connection-1',
+      options: { signal: controller.signal, deadline: null },
+      mayCommit: false,
+      dispatch: operationCorrelation => {
+        correlation = operationCorrelation
+        const dispatch = dispatcher.dispatch(
+          { signal: controller.signal, deadline: null },
+          'corebluetooth.read',
+          () => pending.promise,
+          'connection-1'
+        )
+        return coreDispatch(dispatch, operationCorrelation, value => value.terminal)
+      }
+    })
+
+    controller.abort()
+
+    await expect(result).resolves.toMatchObject({ outcome: 'aborted' })
+    expect(dispatcher.activeCount()).toBe(1)
+    expect(coordinator.activeCounts()).toMatchObject({ quarantined: 1 })
+
+    let drained = false
+    void coordinator.waitForQuarantineDrain().then(() => {
+      drained = true
+    })
+    await new Promise(resolve => setImmediate(resolve))
+    expect(drained).toBe(false)
+
+    pending.resolve({
+      terminal: { correlation, outcome: 'succeeded', cause: null }
+    })
+    await coordinator.waitForQuarantineDrain()
+    expect(dispatcher.activeCount()).toBe(0)
+    expect(coordinator.activeCounts()).toMatchObject({ quarantined: 0 })
   })
 })
