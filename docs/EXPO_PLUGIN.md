@@ -13,8 +13,10 @@ plugin contract tests. It is intentionally non-copyable application guidance
 until PR10 lands; current PR6 consumers must not treat the table or JSON block
 as a supported release recipe.
 
-Configure the published plugin as `unified-ble-manager`. The plugin's supported
-options are exactly the schema implemented in `plugin/src/withBLE.ts`:
+The historical contract-test fixture below records the RC1 schema implemented
+in `plugin/src/withBLE.ts`. It is not the current application configuration
+surface; use it only to understand the native contract tests until PR10
+replaces the five-field restoration identity.
 
 ```sh
 pnpm add unified-ble-manager expo@^57.0.0
@@ -28,7 +30,7 @@ consumers do not resolve Expo tooling.
 The plugin writes native project configuration. That is not a live-radio or
 restoration support claim. See [`PLATFORMS.md`](PLATFORMS.md).
 
-| Option | Type | Effect |
+| Historical fixture option | Type | Contract-test effect |
 | --- | --- | --- |
 | `debug` | `boolean` | Enables plugin diagnostics; `UNIFIED_BLE_MANAGER_PLUGIN_DEBUG=1` also enables them. `BLEPLX_PLUGIN_DEBUG=1` remains a deprecated alias. |
 | `requiresBluetoothLeHardware` | `boolean` | Adds the required Android BLE hardware feature (`android.hardware.bluetooth_le`). It does not create a foreground service or change manager lifecycle. |
@@ -37,7 +39,7 @@ restoration support claim. See [`PLATFORMS.md`](PLATFORMS.md).
 | `bluetoothAlwaysPermission` | `string \| false` | Sets, or suppresses, `NSBluetoothAlwaysUsageDescription`. |
 | `iosNativeProtocolRestoration` | `{ identifier, namespace, epoch, clientId, hostSessionScope }` | Atomically writes the five non-empty native restoration identity values required by `UnifiedBleProtocolControl`. |
 
-For example:
+Historical contract-test fixture shape (do not copy into application config):
 
 ```json
 [
@@ -58,7 +60,7 @@ For example:
 ]
 ```
 
-Every provided plugin property is validated exactly: unknown keys, non-boolean
+The fixture validates every provided plugin property exactly: unknown keys, non-boolean
 flags, invalid or duplicate modes, invalid permission values, and incomplete
 restoration objects fail configuration. `iosNativeProtocolRestoration` writes
 `UnifiedBleProtocolRestoreIdentifier`,

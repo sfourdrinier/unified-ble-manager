@@ -74,7 +74,7 @@
     "docs:backend-sdk": "node scripts/docs/generate-backend-sdk-reference.js && node scripts/docs/generate-platform-support.js",
     "docs:check": "node scripts/docs/generate-backend-sdk-reference.js --check && node scripts/docs/generate-platform-support.js --check && node scripts/docs/check-api-reports.js",
     "cli": "node bin/ubm.js",
-    "docs": "pnpm prepack && documentation build lib/module/index.js -o docs --config documentation.yml -f html && prettier --write docs/index.html docs/assets/anchor.js docs/assets/site.js",
+  "docs": "pnpm prepack && documentation build lib/module/index.js -o docs --config documentation.yml -f html --shallow && prettier --write docs/index.html docs/assets/anchor.js docs/assets/site.js",
     "typecheck": "tsc --noEmit -p tsconfig.build.json",
     "lint": "eslint \"src/**/*.{ts,tsx}\" \"plugin/src/**/*.{ts,tsx}\" --max-warnings 0 && pnpm typecheck",
     "prepack": "node scripts/ci/build-package.js",

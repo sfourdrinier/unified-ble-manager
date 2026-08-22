@@ -169,4 +169,16 @@ describe('PR8 documentation contract', () => {
       /export interface GattCharacteristic \{[\s\S]*readonly uuid: string[\s\S]*readonly occurrence: number[\s\S]*readonly service: GattService[\s\S]*readonly properties: GattCharacteristicProperties[\s\S]*readonly access: GattAccessRequirements[\s\S]*readonly descriptors: readonly GattDescriptor\[\][\s\S]*read\(options\?: OperationOptions\): Promise<Uint8Array>[\s\S]*write\(value: Uint8Array, options\?: GattWriteOptions\): Promise<GattWriteReceipt>[\s\S]*writeWhenReady\(value: Uint8Array, options\?: OperationOptions\): Promise<GattWriteReceipt>[\s\S]*writeLong\(value: Uint8Array, options\?: LongWriteOptions\): Promise<GattLongWriteReceipt>[\s\S]*subscribe\(options\?: GattSubscribeOptions\): Promise<GattSubscription>[\s\S]*withSubscription<T>\(options: GattSubscribeOptions, action: \(subscription: GattSubscription\) => Promise<T>\): Promise<T>[\s\S]*descriptor\(uuid: UuidInput, selector\?: OccurrenceSelector\): GattDescriptor[\s\S]*\}/
     )
   })
+
+  test('generated HTML does not present internal implementation symbols as root API', () => {
+    const html = read('docs/index.html')
+    expect(html).toContain('id="public-api"')
+    for (const internalSymbol of [
+      'createBackendOperationCapabilityRegistration',
+      'normalizeOperationOptions',
+      'CoreBoundedStream'
+    ]) {
+      expect(html).not.toContain(internalSymbol)
+    }
+  })
 })

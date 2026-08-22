@@ -110,17 +110,27 @@ Run the focused Jest command from Task 1 and confirm all new and existing tests 
 
 - [x] **Step 1: Run the requested canonical checks proportionate to the change**
 
-`pnpm validate:evidence`, `pnpm test:package` (140 suites / 1,291 tests),
+`pnpm validate:evidence`, `pnpm test:package` (140 suites / 1,297 tests),
 `pnpm test:plugin` (36 tests), `pnpm prepack`,
 `pnpm release:artifacts:check`, performance, protocol, Tauri, and the
 CoreBluetooth addon build are green. The local packed-consumer smoke remains
 environment-blocked by npm's `Exit handler never called!`; hosted supported-
-Node proof is still required. The prior hosted Node 22/24 run reached the
-packed artifact and failed only because its validator had the pre-PR8 41-fact
-profile; `077d797` updates that profile to the current 43-fact contract.
-Android Gradle is separately blocked before compilation by the checkout's
-missing `:unified-ble-manager` project; hosted Android compilation remains
-required.
+Node proof is now green in hosted run `32592655162`, including generic
+pack/install and G6A. The local npm `Exit handler never called!` remains an
+environment-specific limitation; `077d797` updates the stale validator to the
+current 43-fact contract. Hosted classic/Expo Android compilation also passed
+in that run; no physical-radio claim is made.
+
+The later PR8 follow-up slices are committed separately: CoreBluetooth
+connection-scoped readiness cleanup in `986dfda`, bounded quarantine cleanup
+and cancellable drain waiters in `0635889`, and the deterministic teardown
+fast-path regression fix in `0940b8b`. The hosted run above predates those
+commits and must be rerun at the final pushed SHA before merge.
+
+The native-operation quarantine and adapter-loss follow-up slices are also
+committed: physical settlement is `2edb3ea`, and adapter-loss fail-closed
+cleanup is `ed83e8a`. Their focused CoreBluetooth gates are green; the hosted
+run remains bound to `046b764` until the final branch tip is pushed.
 
 - [x] **Step 2: Verify scope and report exact evidence**
 
