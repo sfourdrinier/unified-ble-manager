@@ -240,7 +240,8 @@ jobs:
               'listAdapters', 'selectAdapter', 'adapterSnapshot', 'startScan', 'stopScan',
               'connect', 'disconnect', 'discover', 'read', 'write', 'readDescriptor',
               'writeDescriptor', 'startNotify', 'stopNotify', 'onConnectionLost',
-              'onDatabaseChanged', 'onAdapterState', 'onScanTerminal', 'ingressTelemetry', 'destroy'
+              'onDatabaseChanged', 'onAdapterState', 'onSecurityState', 'onScanTerminal',
+              'securityState', 'pair', 'cancelPairing', 'unpair', 'ingressTelemetry', 'destroy'
             ];
             for (const method of required) {
               if (typeof boundary[method] !== 'function') {
