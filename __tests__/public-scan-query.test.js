@@ -197,7 +197,10 @@ describe('canonical public ScanQuery v1', () => {
     await first.return()
   })
 
-  test('manager coalesces duplicate observations when requested', async () => {
+  test.each([
+    ['by default', {}],
+    ['when requested', { duplicates: 'coalesced' }]
+  ])('manager coalesces duplicate observations %s', async (_label, scanOptions) => {
     const source = new CoreBoundedStream(
       { itemCapacity: capacity(8), byteCapacity: capacity(4096), reservedControlCapacity: capacity(1) },
       'drop-oldest'
@@ -216,7 +219,7 @@ describe('canonical public ScanQuery v1', () => {
       destroy: jest.fn(async () => ({ state: 'released', failures: [] }))
     }
     const manager = await createPublicBleManager(internal, () => 0)
-    const scan = await manager.scan({ duplicates: 'coalesced' })
+    const scan = await manager.scan(scanOptions)
     const iterator = scan.observations[Symbol.asyncIterator]()
     const firstValue = iterator.next()
     const observation = {

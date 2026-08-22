@@ -890,7 +890,7 @@ class PublicBleManager implements BleManager {
             throw error
           }
         },
-        observations: filterScanObservations(session.observations, normalizedQuery, options.duplicates ?? 'all'),
+        observations: filterScanObservations(session.observations, normalizedQuery, options.duplicates ?? 'coalesced'),
         state: scanState.stream
       }
     } catch (error) {
