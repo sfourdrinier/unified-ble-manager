@@ -51,10 +51,10 @@ export function createCoreBluetoothRuntimeFeatureRegistry(
       })
     )
   }
-  if (!hasRegistration(registrations, 'connection:rssi-measurement')) {
+  if (!hasRegistration(registrations, BUILT_IN_FEATURE_IDS.connectionRssi)) {
     registrations.push(createRssiRegistration(options))
   }
-  if (!hasRegistration(registrations, 'connection:request-att-mtu')) {
+  if (!hasRegistration(registrations, BUILT_IN_FEATURE_IDS.connectionRequestMtu)) {
     registrations.push(createRequestMtuRegistration(options.implementationVersion))
   }
   if (!hasRegistration(registrations, BUILT_IN_FEATURE_IDS.maximumWriteLength)) {
@@ -79,7 +79,7 @@ function createRssiRegistration(options: CoreBluetoothRuntimeCapabilityOptions) 
         'RSSI measurement'
       )
   return createMetadataRegistration(
-    'connection:rssi-measurement',
+    BUILT_IN_FEATURE_IDS.connectionRssi,
     state,
     options.implementationVersion,
     'corebluetooth-rssi-dispatch-v1',
@@ -98,7 +98,7 @@ function createRequestMtuRegistration(implementationVersion: string) {
     })
   ])
   return createMetadataRegistration(
-    'connection:request-att-mtu',
+    BUILT_IN_FEATURE_IDS.connectionRequestMtu,
     'unsupported',
     implementationVersion,
     'corebluetooth-auto-negotiated-mtu-v1',
@@ -200,7 +200,7 @@ function assertMaximumWriteLengthInput(input: MaximumWriteLengthFeatureInput): v
 }
 
 function createMetadataRegistration(
-  id: 'connection:rssi-measurement' | 'connection:request-att-mtu',
+  id: typeof BUILT_IN_FEATURE_IDS.connectionRssi | typeof BUILT_IN_FEATURE_IDS.connectionRequestMtu,
   state: RuntimeFeatureState,
   implementationVersion: string,
   sourceDigest: string,

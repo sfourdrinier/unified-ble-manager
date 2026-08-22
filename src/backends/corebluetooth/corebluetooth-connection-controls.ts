@@ -1,6 +1,7 @@
 // src/backends/corebluetooth/corebluetooth-connection-controls.ts
 
 import type { BackendConnection } from '../../backend-contract/backend'
+import { BUILT_IN_FEATURE_IDS } from '../../backend-contract/capabilities'
 import {
   MAXIMUM_REQUESTED_ATT_MTU,
   MINIMUM_ATT_MTU,
@@ -94,7 +95,7 @@ export class CoreBluetoothConnectionControls {
 
   private requestMtuFeatureIsCallable(): boolean {
     const registration = this.backend.features.registrations.find(
-      candidate => candidate.id === 'connection:request-att-mtu'
+      candidate => candidate.id === BUILT_IN_FEATURE_IDS.connectionRequestMtu
     )
     return registration?.state === 'supported' || registration?.state === 'limited'
   }

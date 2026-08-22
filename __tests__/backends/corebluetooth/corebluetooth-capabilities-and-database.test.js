@@ -1,6 +1,7 @@
 // __tests__/backends/corebluetooth/corebluetooth-capabilities-and-database.test.js
 
 const { attachBackend } = require('../../../src/backend-contract/backend')
+const { BUILT_IN_FEATURE_IDS } = require('../../../src/backend-contract/capabilities')
 const { capacity, opaqueId, version, versionRange } = require('../../../src/backend-contract/primitives')
 const { createCoreBluetoothBackendProvider } = require('../../../src/backends/corebluetooth/corebluetooth-provider')
 const {
@@ -182,9 +183,12 @@ describe('CoreBluetooth runtime capabilities and database-change semantics', () 
       })
     })
     const registration = backend.features.registrations.find(
-      candidate => candidate.id === 'connection:rssi-measurement'
+      candidate => candidate.id === BUILT_IN_FEATURE_IDS.connectionRssi
     )
-    expect(registration).toMatchObject({ id: 'connection:rssi-measurement', state: 'limited' })
+    expect(
+      backend.features.registrations.filter(candidate => candidate.id === BUILT_IN_FEATURE_IDS.connectionRssi)
+    ).toHaveLength(1)
+    expect(registration).toMatchObject({ id: BUILT_IN_FEATURE_IDS.connectionRssi, state: 'limited' })
 
     const { lease } = await connectedDatabase(backend)
     const dispatch = backend.connections.readRssi(lease.connection, { operation: operationRequest('read-rssi') })
@@ -203,9 +207,14 @@ describe('CoreBluetooth runtime capabilities and database-change semantics', () 
     const maximumWriteLength = backend.features.registrations.find(
       candidate => candidate.id === 'gatt:maximum-write-length'
     )
-    const requestMtu = backend.features.registrations.find(candidate => candidate.id === 'connection:request-att-mtu')
+    const requestMtu = backend.features.registrations.find(
+      candidate => candidate.id === BUILT_IN_FEATURE_IDS.connectionRequestMtu
+    )
+    expect(
+      backend.features.registrations.filter(candidate => candidate.id === BUILT_IN_FEATURE_IDS.connectionRequestMtu)
+    ).toHaveLength(1)
     expect(maximumWriteLength).toMatchObject({ id: 'gatt:maximum-write-length', state: 'limited' })
-    expect(requestMtu).toMatchObject({ id: 'connection:request-att-mtu', state: 'unsupported' })
+    expect(requestMtu).toMatchObject({ id: BUILT_IN_FEATURE_IDS.connectionRequestMtu, state: 'unsupported' })
     expect(requestMtu.limitations).toEqual(
       expect.arrayContaining([expect.objectContaining({ code: 'corebluetooth-auto-negotiated-mtu' })])
     )
