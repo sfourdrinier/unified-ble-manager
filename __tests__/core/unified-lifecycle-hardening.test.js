@@ -335,6 +335,38 @@ describe('UnifiedBleCore lifecycle hardening', () => {
     expectNoResources(fixture.backend.resourceCounters())
   })
 
+  test('retries the physical disable when the same subscription is removed again after failure', async () => {
+    const { fixture, manager } = await createFixture()
+    const { database, characteristic } = await connectedDatabase(fixture, manager)
+    const subscription = await settle(fixture.controller, database.subscribe(characteristic, subscriptionOptions()))
+    fixture.controller.queueCompletion('unsubscribe', {
+      delayMs: 1,
+      failure: 'platform.failure',
+      cancellable: false,
+      deadlineOrder: 'completion-first'
+    })
+
+    await expect(settle(fixture.controller, subscription.remove())).resolves.toMatchObject({
+      state: 'release-failed'
+    })
+    expect(Number(fixture.backend.resourceCounters().physicalCccdEnablements)).toBe(1)
+
+    fixture.controller.queueCompletion('unsubscribe', {
+      delayMs: 1,
+      failure: null,
+      cancellable: false,
+      deadlineOrder: 'completion-first'
+    })
+    await expect(settle(fixture.controller, subscription.remove())).resolves.toEqual({
+      state: 'released',
+      failures: []
+    })
+    expect(Number(fixture.backend.resourceCounters().physicalCccdEnablements)).toBe(0)
+
+    await settle(fixture.controller, manager.destroy())
+    expectNoResources(fixture.backend.resourceCounters())
+  })
+
   test('settles owner destruction with an active subscription and its cached backend event stream', async () => {
     const { fixture, manager } = await createFixture()
     const scan = await settle(fixture.controller, manager.scan(scanOptions()))

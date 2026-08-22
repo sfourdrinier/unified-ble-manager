@@ -30,7 +30,7 @@ export async function createExpoBleManager(options: BleManagerCreateOptions = {}
     if (normalized.restoration !== undefined) {
       throw contractError('capability.unsupported', 'restoration', 'expo-manager.restoration')
     }
-    return createReactNativeBleManager(options)
+    return await createReactNativeBleManager(options)
   } catch (error) {
     throw rehydratePublicError(error)
   }
