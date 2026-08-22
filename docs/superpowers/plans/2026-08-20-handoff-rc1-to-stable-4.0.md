@@ -554,18 +554,22 @@ Update this section in the **same branch** as the work, before opening the GitHu
 
 | # | Branch | GitHub PR | Adv. rounds | CodeRabbit rounds | Merged SHA | Tag / npm | Status |
 |---:|---|---|---:|---:|---|---|---|
-| 1 | `feat/4.0-public-contract-reset` | — | 0 | 0 | — | — | **in-progress** |
-| 2 | `feat/4.0-cross-host-semantics` | — | 0 | 0 | — | — | blocked on 1 |
-| 3 | `feat/4.0-gatt-object-model` | — | 0 | 0 | — | — | blocked on 2 |
-| 4 | `feat/4.0-high-level-workflow-scan-freeze` | — | 0 | 0 | — | `v4.0.0-rc.2` after merge | blocked on 3 |
-| 5 | `feat/4.0-known-peers` | — | 0 | 0 | — | — | blocked on 4 + rc.2 |
-| 6 | `feat/4.0-connection-intents-reconnect` | — | 0 | 0 | — | — | blocked on 5 |
-| 7 | `feat/4.0-security-pairing` | — | 0 | 0 | — | — | blocked on 6 |
+| 1 | `feat/4.0-public-contract-reset` | #27 | recorded in PR | 0 | `3e290abc7c1d920cef120f90ab540a3fb48f5ec7` | — | **merged** |
+| 2 | `feat/4.0-cross-host-semantics` | #28 | recorded in PR | 0 | `99fa0e6db123091bc2964898503a6035c23e4216` | — | **merged** |
+| 3 | `feat/4.0-gatt-object-model` | #29 | recorded in PR | 0 | `d5f69050595869138dbf253e8151217604cc04fe` | — | **merged** |
+| 4 | `feat/4.0-high-level-central-dx` | #30 | recorded in PR | 0 | `f66517bfd90f60dcc0e1f0a4d0f7a5e010578c19` | `v4.0.0-rc.2` (`ab331517083c5a580894adb3d79d075f299c9db5`) | **merged / RC2 published** |
+| 5 | `feat/4.0-known-peers` | #31 | recorded in PR | 0 | `bc4a347c496e994e97cec9da06e2c0a6223a72f8` | — | **merged** |
+| 6 | `feat/4.0-connection-intents-reconnect` | #39 | recorded in PR | 0 | `f90032ea9696444d0f66dd7acf25680626e25526` | — | **merged** |
+| 7 | `feat/4.0-security-pairing` | #40 | 1+ | 0 | — | — | **github-pr-open / adversarial review in progress** |
 | 8 | `feat/4.0-link-controls` | — | 0 | 0 | — | `v4.0.0-rc.3` after merge | blocked on 7 |
 | 9 | `feat/scan-native-residual-planner` | — | 0 | 0 | — | — | blocked on 8 |
 | 10 | `feat/expo-first-class-host` | — | 0 | 0 | — | `v4.0.0-rc.4` after merge | blocked on 9 |
 | 11 | `feat/distribution-tooling-testkit` | — | 0 | 0 | — | `v4.0.0-rc.5` after merge | blocked on 10 |
 | 12 | `release/4.0.0-stable` | — | 0 | 0 | — | `v4.0.0` after merge | blocked on 11 |
+
+The dated baseline below is retained as historical handoff context. This table
+is the current factual tracker; the revised session instructions and
+`docs/superpowers/plans/2026-08-20-next-12-prs.md` remain execution authority.
 
 **Status vocabulary:** `next` | `in-progress` | `pushed-awaiting-adversarial` | `adversarial-round-K` | `ready-for-github-pr` | `github-pr-open` | `coderabbit-round-K` | `ready-to-merge` | `merged` | `publishing-rc` | `done` | `blocked on N`.
 
