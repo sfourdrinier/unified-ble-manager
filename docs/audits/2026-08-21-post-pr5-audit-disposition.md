@@ -114,8 +114,8 @@ required gate before PR7 can merge.
 
 ### PR7C1 Android working-tree checkpoint
 
-The current source is `HEAD 88f123577a1dde2da548be77292360ccc7c3ad73` plus an
-uncommitted PR7C1 working tree. It contains the additive Native Protocol v2
+The current source is the clean commits `b23a09e` and `4c029f2` on
+`feat/4.0-security-pairing`. It contains the additive Native Protocol v2
 security command/result/event schema, generated C++/Kotlin/Swift/TypeScript
 bindings, Android public-API bond state and `createBond` handling, the RN
 boundary/provider adapter, and deterministic boundary/TCK coverage.
@@ -128,9 +128,10 @@ unsupported. Security events are enabled only after a security-aware command so
 an older Native Protocol v2 JavaScript peer cannot receive an unknown event kind.
 
 Verified in this checkpoint: `pnpm typecheck`, `pnpm native-protocol:check`,
-`pnpm test:native-protocol`, the Android boundary suite (6 tests), the
-React-Native Android vertical slice (30 tests), and the first-party deterministic
-backend TCK registry (including the Android security suite). The Android Gradle
+`pnpm test:native-protocol`, the Android boundary suite (8 tests), the
+React-Native Android vertical slice (30 tests), the first-party deterministic
+backend TCK registry (including the Android security suite), and the full
+package gate (123 suites, 1,144 tests). The Android Gradle
 lane remains unverified locally because the example checkout lacks
 `example/node_modules/@react-native/gradle-plugin`; hosted Android compile/JVM
 evidence and physical-radio evidence remain open. This is not an RC3 or merge
