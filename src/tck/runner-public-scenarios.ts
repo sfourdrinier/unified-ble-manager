@@ -2,6 +2,7 @@
 
 import type { BleCentralBackend } from '../backend-contract/backend'
 import type { ConnectionLifecycleCause, ConnectionLifecycleEvent } from '../backend-contract/connection-lifecycle'
+import { BUILT_IN_FEATURE_IDS } from '../backend-contract/capabilities'
 import { MINIMUM_ATT_MTU } from '../backend-contract/connection-controls'
 import { BackendContractError } from '../backend-contract/errors'
 import type { Characteristic } from '../backend-contract/gatt'
@@ -1309,7 +1310,7 @@ async function executeConnectionControlsScenario<
   let mtuObserved = false
   let mtuExplicitlyUnavailable = false
   try {
-    const rssiState = featureState(fixture.backend, 'connection:rssi-measurement')
+    const rssiState = featureState(fixture.backend, BUILT_IN_FEATURE_IDS.connectionRssi)
     if (rssiState === 'supported' || rssiState === 'limited') {
       const rssi = await fixture.controller.settle(connection.readRssi(operationOptions))
       rssiMeasured = Number.isSafeInteger(rssi.rssi)
@@ -1319,7 +1320,7 @@ async function executeConnectionControlsScenario<
         'capability.unsupported'
       )
     }
-    const mtuState = featureState(fixture.backend, 'connection:request-att-mtu')
+    const mtuState = featureState(fixture.backend, BUILT_IN_FEATURE_IDS.connectionRequestMtu)
     if (mtuState === 'supported' || mtuState === 'limited') {
       const negotiation = await fixture.controller.settle(connection.requestMtu(adapter.requestedMtu, operationOptions))
       mtuObserved =

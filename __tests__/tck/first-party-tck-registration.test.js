@@ -9,6 +9,7 @@ const {
 const { InMemoryCoreBluetoothBoundary } = require('../../test-support/corebluetooth/in-memory-corebluetooth-boundary')
 const { InMemoryWebBluetoothTckBoundary } = require('../../test-support/web/in-memory-web-bluetooth-tck-boundary')
 const { createWebBluetoothFeatureRegistry } = require('../../src/web/web-feature-registry')
+const { BUILT_IN_FEATURE_IDS } = require('../../src/backend-contract/capabilities')
 const {
   BLUEZ_ADAPTER_INTERFACE,
   BLUEZ_DEVICE_INTERFACE,
@@ -242,7 +243,7 @@ describe('first-party backend standard TCK registrations', () => {
     expect(report.standard.featureSuiteIds).toEqual(['connection-controls', 'tck.feature.gatt.maximum-write-length'])
     expect(report.standard.featureBindings.map(binding => binding.featureId)).toEqual([
       'connection:direct',
-      'connection:rssi-measurement',
+      BUILT_IN_FEATURE_IDS.connectionRssi,
       'gatt:maximum-write-length'
     ])
     expect(report.standard.receipts.slice(0, report.standard.baseScenarioIds.length)).toEqual(
@@ -280,7 +281,7 @@ describe('first-party backend standard TCK registrations', () => {
       ])
     )
     expect(report.standard.featureBindings.map(binding => binding.featureId)).not.toContain(
-      'connection:request-att-mtu'
+      BUILT_IN_FEATURE_IDS.connectionRequestMtu
     )
     expect(
       report.standard.receipts

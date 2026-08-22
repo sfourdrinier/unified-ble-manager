@@ -10,6 +10,7 @@ const {
   createReactNativeAppleFirstPartyTckRegistration
 } = require('../../src/testing')
 const { decodeNativeProtocolRecord, encodeNativeProtocolRecord } = require('../../src/native-protocol/v2-codec')
+const { BUILT_IN_FEATURE_IDS } = require('../../src/backend-contract/capabilities')
 const { InMemoryCoreBluetoothBoundary } = require('../../test-support/corebluetooth/in-memory-corebluetooth-boundary')
 const { InMemoryWebBluetoothTckBoundary } = require('../../test-support/web/in-memory-web-bluetooth-tck-boundary')
 const {
@@ -139,7 +140,7 @@ describe('first-party deterministic backend TCK registry', () => {
         prepare: () => {
           global.__unifiedBleNativeProtocolV2 = appleRuntime
         },
-        exclusions: ['connection:request-att-mtu']
+        exclusions: [BUILT_IN_FEATURE_IDS.connectionRequestMtu]
       }
     ]
 

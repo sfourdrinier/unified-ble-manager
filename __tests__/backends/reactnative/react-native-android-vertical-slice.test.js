@@ -1,6 +1,7 @@
 // __tests__/backends/reactnative/react-native-android-vertical-slice.test.js
 
 const { capacity, opaqueId, version, versionRange } = require('../../../src/backend-contract/primitives')
+const { BUILT_IN_FEATURE_IDS } = require('../../../src/backend-contract/capabilities')
 const { contractError } = require('../../../src/backend-contract/errors')
 const { createBleManagerFromProvider, DEFAULT_BLE_MANAGER_OPTIONS } = require('../../../src/manager/ble-manager')
 const {
@@ -128,7 +129,7 @@ describe('React Native Android canonical protocol vertical slice', () => {
     expect(manager.features.registrations).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          id: 'connection:rssi-measurement',
+          id: BUILT_IN_FEATURE_IDS.connectionRssi,
           state: 'limited',
           tck: expect.objectContaining({
             suiteId: 'connection-controls',
@@ -137,7 +138,7 @@ describe('React Native Android canonical protocol vertical slice', () => {
           evidence: expect.objectContaining({ evidenceLevel: 'deterministic' })
         }),
         expect.objectContaining({
-          id: 'connection:request-att-mtu',
+          id: BUILT_IN_FEATURE_IDS.connectionRequestMtu,
           state: 'limited',
           tck: expect.objectContaining({
             suiteId: 'connection-controls',
@@ -149,7 +150,7 @@ describe('React Native Android canonical protocol vertical slice', () => {
       ])
     )
     const rssiFeature = manager.features.registrations.find(
-      registration => registration.id === 'connection:rssi-measurement'
+      registration => registration.id === BUILT_IN_FEATURE_IDS.connectionRssi
     )
     if (rssiFeature === undefined) {
       throw new Error('Android RSSI feature registration is missing')
@@ -992,7 +993,7 @@ describe('React Native Android canonical protocol vertical slice', () => {
     const connection = await manager.connect(observation.value.value.device.id, operation())
     expect(manager.features.registrations).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ id: 'connection:rssi-measurement', state: 'limited' }),
+        expect.objectContaining({ id: BUILT_IN_FEATURE_IDS.connectionRssi, state: 'limited' }),
         expect.objectContaining({
           id: 'gatt:descriptor-operations',
           state: 'limited',
@@ -1003,7 +1004,7 @@ describe('React Native Android canonical protocol vertical slice', () => {
           })
         }),
         expect.objectContaining({
-          id: 'connection:request-att-mtu',
+          id: BUILT_IN_FEATURE_IDS.connectionRequestMtu,
           state: 'unsupported',
           evidence: expect.objectContaining({ evidenceLevel: 'blocked' }),
           limits: { attMtu: { maximum: 0, minimum: null, unit: 'bytes' } }
@@ -1148,7 +1149,7 @@ describe('React Native first-party standard TCK registrations', () => {
       ])
     )
     expect(registration.capabilityExclusions).toEqual([
-      expect.objectContaining({ featureId: 'connection:request-att-mtu', state: 'unsupported' })
+      expect.objectContaining({ featureId: BUILT_IN_FEATURE_IDS.connectionRequestMtu, state: 'unsupported' })
     ])
     expect(runtime.descriptorCommandPaths).toEqual(
       expect.arrayContaining([
