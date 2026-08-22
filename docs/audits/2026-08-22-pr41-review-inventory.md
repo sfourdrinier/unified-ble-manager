@@ -22,7 +22,9 @@ consumer proof remain separate gates.
 
 ## Follow-up inventory — current PR41 source
 
-Verified against current HEAD `95494e1e6b2052e487bb0d6158d06367c85ecdcd`.
+Verified against implementation source tip
+`95494e1e6b2052e487bb0d6158d06367c85ecdcd`; documentation-only descendants
+preserve this source tree.
 The full package gate is 140 suites / 1,303 tests; focused lifecycle gates are
 manager 12/12, core 46/46, and CoreBluetooth 56/56. Plugin is 36/36.
 
