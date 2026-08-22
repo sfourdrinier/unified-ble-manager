@@ -3,7 +3,7 @@ const {
   normalizeScanObservation,
   observationMatchesScanQuery
 } = require('../src/public/scan-query')
-const { filterScanObservations, findPeerInScan } = require('../src/public/ble-manager')
+const { createPublicBleManager, filterScanObservations, findPeerInScan } = require('../src/public/ble-manager')
 const { CoreBoundedStream } = require('../src/core/bounded-stream')
 const { capacity } = require('../src/backend-contract/primitives')
 
@@ -195,6 +195,51 @@ describe('canonical public ScanQuery v1', () => {
     await expect(second).resolves.toMatchObject({ value: { kind: 'terminal', reason: 'closed' } })
     await expect(first.next()).resolves.toMatchObject({ done: true })
     await first.return()
+  })
+
+  test('manager coalesces duplicate observations when requested', async () => {
+    const source = new CoreBoundedStream(
+      { itemCapacity: capacity(8), byteCapacity: capacity(4096), reservedControlCapacity: capacity(1) },
+      'drop-oldest'
+    )
+    const internal = {
+      identity: null,
+      attachedBackend: undefined,
+      supports: () => true,
+      capability: () => null,
+      capabilities: () => [],
+      scan: jest.fn(async () => ({
+        observations: source,
+        stop: async () => ({ state: 'released', failures: [] })
+      })),
+      connect: jest.fn(),
+      destroy: jest.fn(async () => ({ state: 'released', failures: [] }))
+    }
+    const manager = await createPublicBleManager(internal, () => 0)
+    const scan = await manager.scan({ duplicates: 'coalesced' })
+    const iterator = scan.observations[Symbol.asyncIterator]()
+    const firstValue = iterator.next()
+    const observation = {
+      peerId: 'manager-duplicate-peer',
+      localName: 'Manager duplicate',
+      rssi: -40,
+      txPowerLevel: null,
+      serviceUuids: [],
+      manufacturerData: [],
+      serviceData: []
+    }
+
+    source.emit(observation, 32)
+    await expect(firstValue).resolves.toMatchObject({
+      value: { kind: 'value', value: { peer: { id: 'manager-duplicate-peer' } } }
+    })
+
+    const secondValue = iterator.next()
+    source.emit(observation, 32)
+    source.closeWithReason('closed')
+    await expect(secondValue).resolves.toMatchObject({ value: { kind: 'terminal', reason: 'closed' } })
+    await iterator.return()
+    await scan.stop()
   })
 
   test('coalesced scans deliver changed current-view observations', async () => {

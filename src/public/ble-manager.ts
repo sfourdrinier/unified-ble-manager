@@ -890,7 +890,7 @@ class PublicBleManager implements BleManager {
             throw error
           }
         },
-        observations: filterScanObservations(session.observations, normalizedQuery),
+        observations: filterScanObservations(session.observations, normalizedQuery, options.duplicates ?? 'all'),
         state: scanState.stream
       }
     } catch (error) {
@@ -1362,10 +1362,17 @@ class PublicConnectionEventBroadcast implements AsyncIterable<BleConnectionEvent
         for (const subscriber of this.subscribers) subscriber.emit(event, 512)
       }
       this.terminalReason = 'closed'
-      for (const subscriber of this.subscribers) subscriber.closeWithReason('closed')
+      this.closeSubscribers('closed')
     } catch {
       this.terminalReason = 'source-failed'
-      for (const subscriber of this.subscribers) subscriber.closeWithReason('source-failed')
+      this.closeSubscribers('source-failed')
+    }
+  }
+
+  private closeSubscribers(reason: 'closed' | 'source-failed'): void {
+    for (const subscriber of this.subscribers) {
+      subscriber.closeWithReason(reason)
+      this.subscribers.delete(subscriber)
     }
   }
 }
