@@ -1,20 +1,22 @@
 // example-web/app.js
 
 import { createWebBleManager } from 'unified-ble-manager/web'
-import { BATTERY_SERVICE } from 'unified-ble-manager/profiles/battery-service'
+import {
+  BATTERY_LEVEL_CHARACTERISTIC,
+  BATTERY_SERVICE,
+  parseBatteryLevel
+} from 'unified-ble-manager/profiles/battery-service'
 import {
   HEART_RATE_SERVICE,
+  HEART_RATE_MEASUREMENT_CHARACTERISTIC,
   parseHeartRateMeasurement
 } from 'unified-ble-manager/profiles/heart-rate'
-import {
-  readBatteryLevel,
-  subscribeHeartRateMeasurements
-} from 'unified-ble-manager/profiles/standard-commands'
 
 const operationOptions = Object.freeze({})
 const notificationOptions = Object.freeze({
   ...operationOptions,
-  preset: 'balanced'
+  delivery: 'prefer-notification',
+  stream: 'balanced'
 })
 
 const controls = Object.freeze({
@@ -78,7 +80,7 @@ async function chooseAndConnect() {
   setStatus('Opening the Web Bluetooth chooser…')
   const selection = await activeSession.chooser.choose(
     {
-      filters: [{ serviceUuids: [HEART_RATE_SERVICE], manufacturerData: [], localNamePrefix: null }],
+      filters: [{ serviceUuids: [HEART_RATE_SERVICE], manufacturerData: [] }],
       acceptAllDevices: false,
       optionalServices: [HEART_RATE_SERVICE, BATTERY_SERVICE]
     },
@@ -110,11 +112,16 @@ async function connectSelectedPeer(operation) {
   const snapshot = await database.snapshot()
   appendEvent('discover', `${String(snapshot.services.length)} services`)
 
-  const battery = await readBatteryLevel(database, operationOptions)
+  const batteryCharacteristic = database.characteristic(BATTERY_SERVICE, BATTERY_LEVEL_CHARACTERISTIC)
+  const battery = parseBatteryLevel(await batteryCharacteristic.read(operationOptions))
   fields.battery.textContent = `${String(battery)}%`
   appendEvent('read', `Battery Level ${String(battery)}%`)
 
-  subscription = await subscribeHeartRateMeasurements(database, notificationOptions)
+  const measurementCharacteristic = database.characteristic(
+    HEART_RATE_SERVICE,
+    HEART_RATE_MEASUREMENT_CHARACTERISTIC
+  )
+  subscription = await measurementCharacteristic.subscribe(notificationOptions)
   notificationTask = consumeHeartRateNotifications(subscription)
   appendEvent('notify', 'Heart Rate Measurement subscription active')
   setStatus('Connected, discovered, read, and subscribed.')
