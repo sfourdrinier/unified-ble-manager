@@ -216,6 +216,22 @@ class InMemoryBluezBoundary {
       })
       return
     }
+    if (call.interfaceName === BLUEZ_DEVICE_INTERFACE && call.method === 'Pair') {
+      this.objectManager.emitPropertiesChanged(call.path, BLUEZ_DEVICE_INTERFACE, {
+        Paired: { signature: 'b', value: true }
+      })
+      return
+    }
+    if (call.interfaceName === BLUEZ_DEVICE_INTERFACE && call.method === 'CancelPairing') {
+      return
+    }
+    if (call.interfaceName === BLUEZ_ADAPTER_INTERFACE && call.method === 'RemoveDevice') {
+      const devicePath = call.argumentsValue[0]?.value
+      if (typeof devicePath === 'string') {
+        this.objectManager.emitInterfacesRemoved(devicePath, [BLUEZ_DEVICE_INTERFACE])
+      }
+      return
+    }
     if (call.interfaceName === BLUEZ_GATT_CHARACTERISTIC_INTERFACE && call.method === 'StartNotify') {
       this.objectManager.emitPropertiesChanged(call.path, BLUEZ_GATT_CHARACTERISTIC_INTERFACE, {
         Notifying: { signature: 'b', value: true }

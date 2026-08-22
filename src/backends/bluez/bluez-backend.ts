@@ -48,6 +48,7 @@ export class BluezBackend implements BleCentralBackend<string, HostNeutralBacken
   readonly scanner
   readonly connections
   readonly gatt
+  readonly security
   private readonly backendInstanceId: BackendInstanceId<string>
   private readonly runtime: BluezBackendRuntime
   private destroyedIdentity: HostNeutralBackendIdentity<string> | null = null
@@ -63,6 +64,7 @@ export class BluezBackend implements BleCentralBackend<string, HostNeutralBacken
     this.scanner = this.runtime.scanner
     this.connections = this.runtime.connections
     this.gatt = this.runtime.gatt
+    this.security = this.runtime.security
   }
 
   get identity(): HostNeutralBackendIdentity<string> {
