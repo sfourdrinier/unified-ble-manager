@@ -201,8 +201,8 @@ this deterministic binding into a Windows capability claim.
 ### PR7C4 trusted-host security-scope checkpoint
 
 The PR7C4 trusted-host boundary is implemented in the clean commits
-`ed6e05a` (Tauri) and `0965fff` (Electron), with later documentation-only
-descendants. Tauri now exposes distinct command scopes for state, system pair,
+`ed6e05a` (Tauri), `0965fff` (Electron), and `96a6078` (custom-ceremony
+authorization), with later documentation-only descendants. Tauri now exposes distinct command scopes for state, system pair,
 pair cancellation, unpair, and custom ceremony; unpair and custom ceremony are
 not part of the default permission. Rust enforces the injected scope before
 dispatch and ignores renderer-supplied scope fields. Electron snapshots
