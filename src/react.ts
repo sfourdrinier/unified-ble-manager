@@ -196,16 +196,19 @@ export function useBleReadiness(): UseBleReadinessResult {
 export function useDiscoveredPeers(options: ScanOptions = {}): UseDiscoveredPeersResult {
   const { manager } = useBle()
   const queryDigest = normalizeScanQuery(options.query).digest
+  const signal = options.signal
   const optionsKey = JSON.stringify({
     queryDigest,
+    timeoutMs: options.timeoutMs,
     duplicates: options.duplicates,
     delivery: options.delivery,
     observation: options.observation,
     platform: options.platform
   })
-  // The normalized digest is the semantic dependency; object identity must not restart a scan.
+  // The normalized digest and primitive controls are semantic dependencies; object identity must not restart a scan.
+  // AbortSignal identity is compared directly so mutable signal state does not restart an active scan.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  const stableOptions = React.useMemo(() => options, [optionsKey])
+  const stableOptions = React.useMemo(() => options, [optionsKey, signal])
   const [result, setResult] = React.useState<UseDiscoveredPeersResult>({
     peers: [],
     state: 'idle',
@@ -247,7 +250,7 @@ export function useDiscoveredPeers(options: ScanOptions = {}): UseDiscoveredPeer
       const current = session
       if (current !== null) current.stop().catch(() => undefined)
     }
-  }, [manager, optionsKey, stableOptions])
+  }, [manager, optionsKey, signal, stableOptions])
 
   return result
 }

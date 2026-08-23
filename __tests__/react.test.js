@@ -6,10 +6,22 @@ const hookHarness = {
   stateValues: [],
   stateIndex: 0,
   effectIndex: 0,
+  memoValues: [],
+  memoDependencies: [],
+  memoIndex: 0,
   reset() {
     this.effects = []
     this.stateIndex = 0
     this.effectIndex = 0
+    this.memoValues = []
+    this.memoDependencies = []
+    this.memoIndex = 0
+  },
+  rerender() {
+    this.effects = []
+    this.stateIndex = 0
+    this.effectIndex = 0
+    this.memoIndex = 0
   },
   nextState(initialValue) {
     const index = this.stateIndex++
@@ -23,6 +35,19 @@ const hookHarness = {
       }
     ]
   },
+  nextMemo(factory, dependencies) {
+    const index = this.memoIndex++
+    const previousDependencies = this.memoDependencies[index]
+    const changed =
+      previousDependencies === undefined ||
+      dependencies.length !== previousDependencies.length ||
+      dependencies.some((dependency, dependencyIndex) => !Object.is(dependency, previousDependencies[dependencyIndex]))
+    if (changed) {
+      this.memoValues[index] = factory()
+      this.memoDependencies[index] = dependencies
+    }
+    return this.memoValues[index]
+  },
   nextEffect(effect) {
     const index = this.effectIndex++
     this.effects[index] = effect
@@ -34,7 +59,7 @@ jest.mock('react', () => ({
   createElement: jest.fn((type, props, children) => ({ type, props, children })),
   useContext: jest.fn(() => hookHarness.contextValue),
   useEffect: jest.fn(effect => hookHarness.nextEffect(effect)),
-  useMemo: jest.fn(factory => factory()),
+  useMemo: jest.fn((factory, dependencies) => hookHarness.nextMemo(factory, dependencies)),
   useRef: jest.fn(initialValue => ({ current: initialValue })),
   useState: jest.fn(initialValue => hookHarness.nextState(initialValue))
 }))
@@ -45,7 +70,8 @@ const {
   getBleCapability,
   useAdapterState,
   useBle,
-  useBleCapability
+  useBleCapability,
+  useDiscoveredPeers
 } = require('../src/react')
 
 function deferred() {
@@ -70,6 +96,15 @@ function manager(overrides = {}) {
     },
     destroy: jest.fn().mockResolvedValue({ state: 'released', failures: [] }),
     ...overrides
+  }
+}
+
+function scanSession() {
+  return {
+    observations: (async function* () {
+      yield { kind: 'terminal' }
+    })(),
+    stop: jest.fn().mockResolvedValue(undefined)
   }
 }
 
@@ -173,5 +208,48 @@ describe('React host surface', () => {
     expect(cleanup).toEqual(expect.any(Function))
     await flush()
     expect(hookHarness.stateValues[0]).toEqual({ state: adapterState, loading: false, error: null })
+  })
+
+  test('restarts scans when timeout or AbortSignal identity changes and cleans up the prior session', async () => {
+    const firstSignal = new AbortController().signal
+    const secondSignal = new AbortController().signal
+    const firstSession = scanSession()
+    const secondSession = scanSession()
+    const thirdSession = scanSession()
+    const createdManager = manager({
+      scan: jest
+        .fn()
+        .mockResolvedValueOnce(firstSession)
+        .mockResolvedValueOnce(secondSession)
+        .mockResolvedValueOnce(thirdSession)
+    })
+    hookHarness.contextValue = { manager: createdManager, loading: false, error: null }
+
+    const firstOptions = { timeoutMs: 1_000, signal: firstSignal }
+    useDiscoveredPeers(firstOptions)
+    const firstCleanup = hookHarness.effects[0]()
+    await flush()
+    expect(createdManager.scan).toHaveBeenNthCalledWith(1, firstOptions)
+
+    firstCleanup()
+    hookHarness.rerender()
+    const secondOptions = { timeoutMs: 2_000, signal: firstSignal }
+    useDiscoveredPeers(secondOptions)
+    const secondCleanup = hookHarness.effects[0]()
+    await flush()
+    expect(firstSession.stop).toHaveBeenCalledTimes(1)
+    expect(createdManager.scan).toHaveBeenNthCalledWith(2, secondOptions)
+
+    secondCleanup()
+    hookHarness.rerender()
+    const thirdOptions = { timeoutMs: 2_000, signal: secondSignal }
+    useDiscoveredPeers(thirdOptions)
+    const thirdCleanup = hookHarness.effects[0]()
+    await flush()
+    expect(secondSession.stop).toHaveBeenCalledTimes(1)
+    expect(createdManager.scan).toHaveBeenNthCalledWith(3, thirdOptions)
+
+    thirdCleanup()
+    expect(thirdSession.stop).toHaveBeenCalledTimes(1)
   })
 })
