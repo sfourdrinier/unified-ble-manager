@@ -1,3 +1,4 @@
+import { snapshotNormalizedScanQuery } from './scan-query'
 import type { NormalizedScanQuery } from './scan-query'
 
 export type ScanPredicateClauseSet = 'anyOf' | 'exclude'
@@ -106,16 +107,22 @@ const MAX_LIMITATIONS = 32
 export function snapshotScanPlan<NormalizedQuery extends ScanPlanningNormalizedQuery>(
   plan: ScanPlan<NormalizedQuery>
 ): ScanPlan<NormalizedQuery> {
-  assertNormalizedScanQuery(plan.residual.query)
-  if (plan.queryDigest !== plan.residual.query.digest) {
+  const residualQuery = snapshotNormalizedScanQuery(plan.residual.query)
+  if (plan.queryDigest !== residualQuery.digest) {
     throw new Error('scan plan residual query digest must match queryDigest')
   }
   assertNativeGuarantee(plan.nativeGuarantee)
+  if (plan.nativeGuarantee === 'exact' && !plan.native.complete) {
+    throw new Error('exact native projection must be complete')
+  }
+  if (plan.nativeGuarantee === 'safe-superset' && !plan.residual.complete) {
+    throw new Error('safe-superset plan requires a complete residual')
+  }
   assertEstimatedCost(plan.estimatedCost)
   const native = snapshotProjection(plan.native, 'native')
   const residual = Object.freeze({
     ...snapshotProjection(plan.residual, 'residual'),
-    query: plan.residual.query
+    query: residualQuery
   })
   const unavailable = snapshotPredicates(plan.unavailable, 'unavailable', MAX_UNAVAILABLE_PREDICATES)
   const limitations = snapshotLimitations(plan.limitations)
@@ -207,20 +214,6 @@ function assertLimitationExplanation(value: ScanPlanLimitationExplanation): void
 function assertLimitationEffect(value: ScanPlanLimitation['effect']): void {
   if (value !== 'performance-only' && value !== 'field-unavailable' && value !== 'host-restriction') {
     throw new Error('scan plan limitation effect is invalid')
-  }
-}
-
-function assertNormalizedScanQuery(query: ScanPlanningNormalizedQuery): void {
-  if (
-    typeof query.digest !== 'string' ||
-    query.digest.length === 0 ||
-    (query.anyOf !== null && !Array.isArray(query.anyOf)) ||
-    (query.exclude !== null && !Array.isArray(query.exclude)) ||
-    !Object.isFrozen(query) ||
-    (query.anyOf !== null && !Object.isFrozen(query.anyOf)) ||
-    (query.exclude !== null && !Object.isFrozen(query.exclude))
-  ) {
-    throw new Error('scan plan residual query must be a frozen normalized query')
   }
 }
 

@@ -1,6 +1,7 @@
 import { canonicalUuid } from '../backend-contract/primitives'
 import { contractError } from '../backend-contract/errors'
 import type { AdvertisementObservation } from '../backend-contract/advertisement'
+import { canonicalScanQueryJson, scanQueryDigest } from '../backend-contract/scan-query'
 import { assertPeerReference, encodePeerReference, snapshotPeerReference } from './peer-reference'
 import type { PeerReference } from './peer-reference'
 import type {
@@ -81,7 +82,7 @@ export function normalizeScanQuery(query: ScanQuery | undefined = {}): Normalize
     anyOf,
     exclude
   })
-  return Object.freeze({ ...base, digest: digestFor(base) })
+  return Object.freeze({ ...base, digest: scanQueryDigest(base) })
 }
 
 export function normalizeScanObservation(observation: ScanObservation): NormalizedScanObservation {
@@ -147,7 +148,9 @@ function normalizeClauseList(
   if (clauses === undefined) return omittedIsNull ? null : null
   if (!Array.isArray(clauses) || clauses.length === 0) throw invalid(operation)
   const normalized = clauses.map((clause, index) => normalizeClause(clause, `${operation}[${index}]`))
-  return Object.freeze(normalized.sort((left, right) => compareCanonical(canonicalJson(left), canonicalJson(right))))
+  return Object.freeze(
+    normalized.sort((left, right) => compareCanonical(canonicalScanQueryJson(left), canonicalScanQueryJson(right)))
+  )
 }
 
 function normalizeClause(clause: ScanClause, operation: string): NormalizedScanClause {
@@ -453,23 +456,6 @@ function matchesBytes(
     if (((observed[index] ?? 0) & maskByte) !== ((prefix[index] ?? 0) & maskByte)) return false
   }
   return true
-}
-
-function digestFor(value: Omit<NormalizedScanQuery, 'digest'>): string {
-  const encoded = canonicalJson(value)
-  let hash = 0xcbf29ce484222325n
-  for (let index = 0; index < encoded.length; index += 1) {
-    hash ^= BigInt(encoded.charCodeAt(index))
-    hash = BigInt.asUintN(64, hash * 0x100000001b3n)
-  }
-  return `scan-query-v1:${hash.toString(16).padStart(16, '0')}`
-}
-
-function canonicalJson(value: unknown): string {
-  return JSON.stringify(value, (key, entry: unknown) => {
-    if (key === 'peers' && entry === null) return undefined
-    return entry instanceof Uint8Array ? bytesToHex(entry) : entry
-  })
 }
 
 function compareCanonical(left: string, right: string): number {

@@ -88,7 +88,8 @@ describe('PR9 scan planner contract and canonical oracle corpus', () => {
       estimatedCost: 'moderate'
     })
 
-    expect(plan.residual.query).toBe(residualQuery)
+    expect(plan.residual.query).not.toBe(residualQuery)
+    expect(plan.residual.query).toStrictEqual(residualQuery)
     expect(plan.nativeGuarantee).toBe('safe-superset')
     expect(plan.native.complete).toBe(false)
     expect(plan.residual.complete).toBe(true)
@@ -100,6 +101,24 @@ describe('PR9 scan planner contract and canonical oracle corpus', () => {
     expect(() => snapshotScanPlan({ ...plan, queryDigest: 'scan-query-v1:0000000000000000' })).toThrow(
       'residual query digest'
     )
+
+    const byteQuery = normalizeScanQuery({
+      anyOf: [{ manufacturerData: { any: [{ companyId: 76, dataPrefix: new Uint8Array([2]) }] } }]
+    })
+    const bytePlan = snapshotScanPlan({
+      queryDigest: byteQuery.digest,
+      nativeGuarantee: 'safe-superset',
+      native: { predicates: [], complete: false },
+      residual: { query: byteQuery, predicates: [], complete: true },
+      unavailable: [],
+      limitations: [],
+      estimatedCost: 'high'
+    })
+    const originalPrefix = byteQuery.anyOf[0].manufacturerData.any[0].dataPrefix
+    const snapshotPrefix = bytePlan.residual.query.anyOf[0].manufacturerData.any[0].dataPrefix
+    if (originalPrefix === undefined || snapshotPrefix === undefined) throw new Error('expected byte prefixes')
+    originalPrefix[0] = 9
+    expect([...snapshotPrefix]).toEqual([2])
   })
 
   test('rejects malformed predicate diagnostics before they can cross a host boundary', () => {
@@ -130,7 +149,20 @@ describe('PR9 scan planner contract and canonical oracle corpus', () => {
         limitations: [],
         estimatedCost: 'low'
       })
-    ).toThrow('residual query')
+    ).toThrow('normalized scan query')
+
+    const forgedQuery = Object.freeze({ anyOf: null, exclude: null, digest: residualQuery.digest })
+    expect(() =>
+      snapshotScanPlan({
+        queryDigest: residualQuery.digest,
+        nativeGuarantee: 'safe-superset',
+        native: { predicates: [], complete: false },
+        residual: { query: forgedQuery, predicates: [], complete: true },
+        unavailable: [],
+        limitations: [],
+        estimatedCost: 'low'
+      })
+    ).toThrow('digest')
 
     expect(() =>
       snapshotScanPlan({
@@ -169,5 +201,29 @@ describe('PR9 scan planner contract and canonical oracle corpus', () => {
         estimatedCost: 'low'
       })
     ).toThrow('effect')
+
+    expect(() =>
+      snapshotScanPlan({
+        queryDigest: residualQuery.digest,
+        nativeGuarantee: 'exact',
+        native: { predicates: [], complete: false },
+        residual: { query: residualQuery, predicates: [], complete: true },
+        unavailable: [],
+        limitations: [],
+        estimatedCost: 'low'
+      })
+    ).toThrow('exact native projection')
+
+    expect(() =>
+      snapshotScanPlan({
+        queryDigest: residualQuery.digest,
+        nativeGuarantee: 'safe-superset',
+        native: { predicates: [], complete: false },
+        residual: { query: residualQuery, predicates: [], complete: false },
+        unavailable: [],
+        limitations: [],
+        estimatedCost: 'low'
+      })
+    ).toThrow('complete residual')
   })
 })
