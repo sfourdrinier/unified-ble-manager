@@ -63,6 +63,7 @@ const missingProviderError = new Error('useBle must be used within a BleProvider
 const BleContext = React.createContext<BleContextValue | null>(null)
 const BleErrorContext = React.createContext<((error: Error) => void) | null>(null)
 let pendingManagerRelease: Promise<void> | null = null
+let pendingManagerReleaseRetry: (() => void) | null = null
 
 export function BleProvider({ createManager, onError, children }: BleProviderProps): React.ReactElement {
   const [lease] = React.useState(() => new ManagerLease(createManager))
@@ -474,6 +475,7 @@ class ManagerLease {
   create(): Promise<BleManager> {
     if (this.managerPromise === null) {
       const pendingRelease = pendingManagerRelease
+      pendingManagerReleaseRetry?.()
       this.managerPromise =
         pendingRelease === null ? this.createManager() : pendingRelease.then(() => this.createManager())
     }
@@ -502,6 +504,7 @@ class ManagerLease {
       pendingManagerRelease = scheduledRelease
       scheduledRelease.then(() => {
         if (pendingManagerRelease === scheduledRelease) pendingManagerRelease = null
+        if (pendingManagerRelease === null) pendingManagerReleaseRetry = null
         this.releaseBarrier = null
         this.resolveReleaseBarrier = null
       })
@@ -520,11 +523,15 @@ class ManagerLease {
           this.releaseInFlight = false
           if (succeeded) {
             this.released = true
+            pendingManagerReleaseRetry = null
             this.resolveReleaseBarrier?.()
+          } else {
+            pendingManagerReleaseRetry = () => this.scheduleRelease(report)
           }
         },
         () => {
           this.releaseInFlight = false
+          pendingManagerReleaseRetry = () => this.scheduleRelease(report)
         }
       )
     })

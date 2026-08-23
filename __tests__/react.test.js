@@ -274,6 +274,35 @@ describe('React host surface', () => {
     expect(secondCreateManager).toHaveBeenCalledTimes(1)
   })
 
+  test('a replacement provider retries a failed prior release without a second old cleanup', async () => {
+    const firstManager = manager({
+      destroy: jest
+        .fn()
+        .mockResolvedValueOnce({ state: 'release-failed', failures: [{ resourceKind: 'manager' }] })
+        .mockResolvedValueOnce({ state: 'released', failures: [] })
+    })
+    const secondManager = manager()
+    const firstCreateManager = jest.fn().mockResolvedValue(firstManager)
+    const secondCreateManager = jest.fn().mockResolvedValue(secondManager)
+    const onError = jest.fn()
+
+    BleProvider({ createManager: firstCreateManager, onError, children: null })
+    const firstCleanup = hookHarness.effects[0]()
+    await flush()
+    firstCleanup()
+    await flush()
+
+    hookHarness.stateValues = []
+    hookHarness.reset()
+    BleProvider({ createManager: secondCreateManager, children: null })
+    hookHarness.effects[0]()
+    await flush()
+
+    expect(firstManager.destroy).toHaveBeenCalledTimes(2)
+    expect(secondCreateManager).toHaveBeenCalledTimes(1)
+    expect(onError).toHaveBeenCalledWith(expect.objectContaining({ cleanup: expect.any(Object) }))
+  })
+
   test('keeps a replacement blocked after rejected cleanup until an explicit retry succeeds', async () => {
     const destructionError = new Error('destroy failed')
     const firstManager = manager({
