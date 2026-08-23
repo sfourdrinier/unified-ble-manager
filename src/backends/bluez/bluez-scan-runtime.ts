@@ -2,7 +2,7 @@
 
 import type { OwnerScanOptions } from '../../backend-contract/advertisement'
 import { BackendContractError, contractError, type CleanupRecord } from '../../backend-contract/errors'
-import type { ClientId, LeaseId, ScanShareToken } from '../../backend-contract/primitives'
+import { deadline, type ClientId, type LeaseId, type ScanShareToken } from '../../backend-contract/primitives'
 import { CoreBoundedStream } from '../../core/bounded-stream'
 import type { BluezBackendRuntime } from './bluez-backend-runtime'
 import type { BluezScanConsumer, BluezScanGroup } from './bluez-runtime-types'
@@ -389,7 +389,7 @@ async function stopBluezPhysicalDiscovery(runtime: BluezBackendRuntime, group: B
     BLUEZ_ADAPTER_INTERFACE,
     'Discovering',
     false,
-    { signal: null, deadline: null }
+    { signal: null, deadline: deadline(runtime.now() + BLUEZ_NATIVE_CLEANUP_TIMEOUT_MS) }
   )
   group.physicalStarted = false
   group.stopDiscovery = null

@@ -373,7 +373,10 @@ export class BluezBackendRuntime implements BluezObjectStoreObserver {
   async releaseConnectionLease(lease: BluezConnectionLease): Promise<CleanupRecord> {
     const record = lease.record
     if (record.leases.size > 1) {
-      await this.releaseLeaseSubscriptions(lease.leaseId)
+      const cleanup = await this.releaseLeaseSubscriptions(lease.leaseId)
+      if (cleanup.state === 'release-failed') {
+        return cleanup
+      }
       if (record.ownerLeaseId === lease.leaseId) {
         this.invalidateRecordDatabases(record)
       }
@@ -393,15 +396,23 @@ export class BluezBackendRuntime implements BluezObjectStoreObserver {
     return cleanup
   }
 
-  private async releaseLeaseSubscriptions(leaseId: LeaseId<string, string>): Promise<void> {
+  private async releaseLeaseSubscriptions(leaseId: LeaseId<string, string>): Promise<CleanupRecord> {
+    const failures: CleanupFailure[] = []
     for (const physical of this.physicalSubscriptions.values()) {
       for (const subscription of [...physical.consumers, ...physical.pendingRemovals]) {
         if (subscription.ownerLeaseId !== leaseId) {
           continue
         }
-        await removeBluezSubscription(this, subscription)
+        try {
+          failures.push(...(await removeBluezSubscription(this, subscription)).failures)
+        } catch {
+          failures.push(cleanupFailure('subscription', 'bluez.gatt.stop-notify'))
+        }
       }
     }
+    return failures.length === 0
+      ? releasedBluezCleanup
+      : Object.freeze({ state: 'release-failed', failures: Object.freeze(failures) })
   }
 
   async disconnect(record: BluezConnectionRecord): Promise<CleanupRecord> {

@@ -4,12 +4,17 @@ import { BackendContractError, contractError, type CleanupRecord } from '../../b
 import type { CharacteristicPath, NotificationValue } from '../../backend-contract/gatt'
 import type { OperationCorrelation } from '../../backend-contract/primitives'
 import type { SubscriptionOptions } from '../../backend-contract/operations'
-import { opaqueId } from '../../backend-contract/primitives'
+import { deadline, opaqueId } from '../../backend-contract/primitives'
 import { CoreBoundedStream } from '../../core/bounded-stream'
 import type { BluezBackendRuntime } from './bluez-backend-runtime'
 import { BluezBackendSubscription, releasedBluezCleanup } from './bluez-backend-handles'
 import { BLUEZ_GATT_CHARACTERISTIC_INTERFACE } from './bluez-dbus-contract'
-import { awaitBluezNativePromise, awaitSharedBluezTransition, waitForBluezBoolean } from './bluez-property-waiters'
+import {
+  awaitBluezNativePromise,
+  awaitSharedBluezTransition,
+  BLUEZ_NATIVE_CLEANUP_TIMEOUT_MS,
+  waitForBluezBoolean
+} from './bluez-property-waiters'
 import type { BluezPhysicalSubscription, BluezSubscriptionRecord } from './bluez-runtime-types'
 
 export async function subscribeBluez(
@@ -116,10 +121,12 @@ export async function removeBluezSubscription(
   const physical = record.physical
   if (physical.pendingRemovals.has(record)) {
     const removal = physical.removal ?? beginBluezPhysicalRemoval(runtime, physical)
-    await removal
-    physical.pendingRemovals.delete(record)
-    record.removed = true
-    return releasedBluezCleanup
+    const cleanup = await removal
+    if (cleanup.state === 'released') {
+      physical.pendingRemovals.delete(record)
+      record.removed = true
+    }
+    return cleanup
   }
   record.stream.closeWithReason('owner-released')
   physical.consumers.delete(record)
@@ -136,8 +143,8 @@ export async function removeBluezSubscription(
   }
   physical.pendingRemovals.add(record)
   const cleanup = await removal
-  physical.pendingRemovals.delete(record)
   if (cleanup.state === 'released') {
+    physical.pendingRemovals.delete(record)
     record.removed = true
   }
   return cleanup
@@ -205,7 +212,7 @@ export async function stopBluezPhysicalSubscription(
     await awaitBluezNativePromise(stopMethod, runtime.now, 'bluez.gatt.stop-notify-method')
     await waitForBluezBoolean(runtime, physical.objectPath, BLUEZ_GATT_CHARACTERISTIC_INTERFACE, 'Notifying', false, {
       signal: null,
-      deadline: null
+      deadline: deadline(runtime.now() + BLUEZ_NATIVE_CLEANUP_TIMEOUT_MS)
     })
   } catch (error) {
     if (physicalSubscriptionIsGone(runtime, physical)) {
