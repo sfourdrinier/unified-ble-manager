@@ -2,6 +2,7 @@
 
 const { attachBackend } = require('../../../src/backend-contract/backend')
 const { capacity, opaqueId, version, versionRange } = require('../../../src/backend-contract/primitives')
+const { normalizeScanQuery } = require('../../../src/public/scan-query')
 const { createCoreBluetoothBackendProvider } = require('../../../src/backends/corebluetooth/corebluetooth-provider')
 const { createBleManagerFromProvider, DEFAULT_BLE_MANAGER_OPTIONS } = require('../../../src/manager/ble-manager')
 const { findTckScenario } = require('../../../src/tck')
@@ -88,6 +89,67 @@ async function observedPeerId(backend) {
 }
 
 describe('CoreBluetooth contract-v1 vertical slice', () => {
+  test('forwards the trusted plan service projection and preserves legacy low-level filters', async () => {
+    const { backend, boundary } = await backendFixture()
+    const startScan = jest.spyOn(boundary, 'startScan')
+    const query = normalizeScanQuery({ anyOf: [{ services: { all: [serviceUuid] } }] })
+    const plan = backend.scanner.plan(query)
+
+    const plannedScan = await backend.scanner.start(
+      {
+        ...scanOptions(),
+        query,
+        plan,
+        filter: { serviceUuids: [], manufacturerData: [], localNamePrefix: null }
+      },
+      opaqueId('planned-scan', 'client', 'corebluetooth:scan-plan')
+    )
+    expect(startScan).toHaveBeenLastCalledWith(expect.any(Function), [serviceUuid])
+    await expect(plannedScan.stop()).resolves.toEqual({ state: 'released', failures: [] })
+
+    startScan.mockClear()
+    const legacyScan = await backend.scanner.start(
+      scanOptions(),
+      opaqueId('legacy-scan', 'client', 'corebluetooth:scan-plan')
+    )
+    expect(startScan).toHaveBeenLastCalledWith(expect.any(Function), [serviceUuid])
+    await expect(legacyScan.stop()).resolves.toEqual({ state: 'released', failures: [] })
+    await expect(backend.destroy()).resolves.toEqual({ state: 'released', failures: [] })
+  })
+
+  test('fails closed when a plan is not bound to its authoritative normalized query', async () => {
+    const { backend, boundary } = await backendFixture()
+    const startScan = jest.spyOn(boundary, 'startScan')
+    const query = normalizeScanQuery({ anyOf: [{ services: { all: [serviceUuid] } }] })
+    const plan = backend.scanner.plan(query)
+
+    await expect(
+      backend.scanner.start(
+        {
+          ...scanOptions(),
+          plan,
+          filter: { serviceUuids: [], manufacturerData: [], localNamePrefix: null }
+        },
+        opaqueId('missing-query', 'client', 'corebluetooth:scan-plan')
+      )
+    ).rejects.toMatchObject({ normalized: { code: 'protocol.violation' } })
+    expect(startScan).not.toHaveBeenCalled()
+
+    await expect(
+      backend.scanner.start(
+        {
+          ...scanOptions(),
+          query: normalizeScanQuery({ anyOf: [{ services: { all: ['180f'] } }] }),
+          plan,
+          filter: { serviceUuids: [], manufacturerData: [], localNamePrefix: null }
+        },
+        opaqueId('mismatched-query', 'client', 'corebluetooth:scan-plan')
+      )
+    ).rejects.toMatchObject({ normalized: { code: 'protocol.violation' } })
+    expect(startScan).not.toHaveBeenCalled()
+    await expect(backend.destroy()).resolves.toEqual({ state: 'released', failures: [] })
+  })
+
   test('binds the continuous-scan TCK facts and enforces explicit scan and connection ownership', async () => {
     expect(findTckScenario('scan.fairness-abort-deadline-and-final-cleanup').requiredFacts).toEqual([
       'scan-consumer-release-is-fair-and-isolated',

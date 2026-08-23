@@ -27,7 +27,7 @@ export function createServiceUuidScanPlan(
     localNamePrefix: null
   }
   const predicates = describeScanPredicates(query)
-  const nativePredicates = nativeServicePredicates(predicates, nativeFilter.serviceUuids)
+  const nativePredicates = nativeServicePredicates(query, predicates, nativeFilter.serviceUuids)
   const unavailable = predicates.filter(
     predicate => !context.availableObservationFields.includes(observationField(predicate.field))
   )
@@ -74,14 +74,33 @@ function commonRequiredServices(query: NormalizedScanQuery): readonly Uuid[] {
 }
 
 function nativeServicePredicates(
+  query: NormalizedScanQuery,
   predicates: readonly ScanPredicateDescription[],
   serviceUuids: readonly Uuid[]
 ): readonly ScanPredicateDescription[] {
   if (serviceUuids.length === 0) return Object.freeze([])
   return Object.freeze(
     predicates.filter(
-      predicate => predicate.clauseSet === 'anyOf' && predicate.field === 'services' && predicate.operator === 'all'
+      predicate =>
+        predicate.clauseSet === 'anyOf' &&
+        predicate.field === 'services' &&
+        predicate.operator === 'all' &&
+        fullyPushedServicePredicate(query, predicate, serviceUuids)
     )
+  )
+}
+
+function fullyPushedServicePredicate(
+  query: NormalizedScanQuery,
+  predicate: ScanPredicateDescription,
+  serviceUuids: readonly Uuid[]
+): boolean {
+  const clause = query.anyOf?.[predicate.clauseIndex]
+  if (clause === undefined || clause.services === null) return false
+  const requiredServices = clause.services.all.map(service => canonicalUuid(service))
+  return (
+    requiredServices.length === serviceUuids.length &&
+    serviceUuids.every(serviceUuid => requiredServices.includes(serviceUuid))
   )
 }
 

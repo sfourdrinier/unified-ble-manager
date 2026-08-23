@@ -1,10 +1,26 @@
-const { normalizeScanQuery } = require('../../../src/public/scan-query')
+const {
+  normalizeScanObservation,
+  normalizeScanQuery,
+  observationMatchesScanQuery
+} = require('../../../src/public/scan-query')
 const { CoreBluetoothBackend } = require('../../../src/backends/corebluetooth/corebluetooth-backend')
 const {
   CoreBluetoothScanPlanner,
   coreBluetoothScanPlanningContext,
   diagnosticCoreBluetoothScanPlan
 } = require('../../../src/backends/corebluetooth/corebluetooth-scan-planner')
+const vectors = require('../../backend-contract/fixtures/scan-query-pr9-planner.golden.json')
+
+function hydrate(value) {
+  if (value !== null && typeof value === 'object' && value.$bytes !== undefined) {
+    return new Uint8Array(value.$bytes)
+  }
+  if (Array.isArray(value)) return value.map(item => hydrate(item))
+  if (value !== null && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, hydrate(entry)]))
+  }
+  return value
+}
 
 describe('CoreBluetooth scan planner', () => {
   test('publishes the diagnostic planner through the backend scanner hook', () => {
@@ -69,14 +85,18 @@ describe('CoreBluetooth scan planner', () => {
       { clauseSet: 'anyOf', clauseIndex: 0, field: 'serviceData', operator: 'any' }
     ])
     expect(execution.residual.query).toEqual(query)
-    expect(execution.residual.predicates).toEqual(expect.arrayContaining([
-      { clauseSet: 'anyOf', clauseIndex: 0, field: 'names', operator: 'prefixes' },
-      { clauseSet: 'anyOf', clauseIndex: 0, field: 'serviceData', operator: 'any' }
-    ]))
-    expect(execution.limitations).toEqual(expect.arrayContaining([
-      expect.objectContaining({ code: 'native-filter-incomplete', effect: 'performance-only' }),
-      expect.objectContaining({ code: 'observation-field-unavailable', effect: 'field-unavailable' })
-    ]))
+    expect(execution.residual.predicates).toEqual(
+      expect.arrayContaining([
+        { clauseSet: 'anyOf', clauseIndex: 0, field: 'names', operator: 'prefixes' },
+        { clauseSet: 'anyOf', clauseIndex: 0, field: 'serviceData', operator: 'any' }
+      ])
+    )
+    expect(execution.limitations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: 'native-filter-incomplete', effect: 'performance-only' }),
+        expect.objectContaining({ code: 'observation-field-unavailable', effect: 'field-unavailable' })
+      ])
+    )
   })
 
   test('returns a defensive diagnostic snapshot', () => {
@@ -88,5 +108,21 @@ describe('CoreBluetooth scan planner', () => {
     })
     expect(plan.residual.query).toEqual(plan.sourceQuery)
     expect(Object.isFrozen(plan)).toBe(true)
+  })
+
+  test('keeps every canonical match in the CoreBluetooth native superset', () => {
+    for (const vector of vectors) {
+      const query = normalizeScanQuery(hydrate(vector.query))
+      const observation = normalizeScanObservation(hydrate(vector.observation))
+      const execution = new CoreBluetoothScanPlanner().plan(query, coreBluetoothScanPlanningContext)
+      const nativeAccepts =
+        execution.nativeFilter.serviceUuids.length === 0 ||
+        (observation.serviceUuids !== null &&
+          execution.nativeFilter.serviceUuids.every(uuid => observation.serviceUuids.includes(uuid)))
+      const optimizedMatch = nativeAccepts && observationMatchesScanQuery(execution.residual.query, observation)
+
+      expect(optimizedMatch).toBe(vector.expectedMatch)
+      if (vector.expectedMatch) expect(nativeAccepts).toBe(true)
+    }
   })
 })

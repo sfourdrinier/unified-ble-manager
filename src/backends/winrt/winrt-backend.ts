@@ -31,9 +31,10 @@ import {
   type CleanupFailure,
   type CleanupRecord
 } from '../../backend-contract/errors'
+import { snapshotScanPlan } from '../../backend-contract/scan-planning'
 import type { CharacteristicPath, DescriptorPath } from '../../backend-contract/gatt'
 import { attachmentRecordsEqual } from '../../backend-contract/identity'
-import type { NormalizedScanQuery } from '../../backend-contract/scan-query'
+import { snapshotNormalizedScanQuery, type NormalizedScanQuery } from '../../backend-contract/scan-query'
 import type {
   AdapterStateSnapshot,
   AdapterStateWatch,
@@ -111,7 +112,7 @@ import type {
   WinRtScanTerminalRecord
 } from './winrt-boundary'
 import { invalidateWinRtPhysicalSubscription } from './winrt-subscription-runtime'
-import { diagnosticWinRtScanPlan } from './winrt-scan-planner'
+import { diagnosticWinRtScanPlan, planWinRtScan } from './winrt-scan-planner'
 
 const eventLimits = Object.freeze({
   itemCapacity: capacity(64),
@@ -124,6 +125,20 @@ const adapterStateLimits = Object.freeze({
   reservedControlCapacity: capacity(1)
 })
 type WinRtDisconnectOutcome = { readonly state: 'released' } | { readonly state: 'failed'; readonly error: unknown }
+
+function trustedWinRtServiceUuids(options: OwnerScanOptions<string, string>): readonly string[] {
+  const plan = options.plan
+  if (plan === undefined) return options.filter.serviceUuids
+  const snapshot = snapshotScanPlan(plan)
+  if (options.query === undefined) {
+    throw contractError('protocol.violation', 'scan', 'winrt.scan.plan-query')
+  }
+  const query = snapshotNormalizedScanQuery(options.query)
+  if (query.digest !== snapshot.queryDigest) {
+    throw contractError('protocol.violation', 'scan', 'winrt.scan.plan-query')
+  }
+  return planWinRtScan(query).nativeFilter.serviceUuids
+}
 
 function createWinRtFeatureRegistry(securityAvailable: boolean): FeatureRegistry {
   const registrations = [
@@ -969,6 +984,7 @@ export class WinRtBackend implements BleCentralBackend<string, HostNeutralBacken
     this.assertUsable('winrt.scan.start')
     assertWinRtAdapterReady(this.adapterStateSnapshot, 'winrt.scan.start')
     assertWinRtOperationAdmission(options, this.now, 'winrt.scan.start')
+    const serviceUuids = trustedWinRtServiceUuids(options)
     await this.reconcilePendingScanGroup()
     this.assertUsable('winrt.scan.start')
     assertWinRtAdapterReady(this.adapterStateSnapshot, 'winrt.scan.start')
@@ -1012,7 +1028,7 @@ export class WinRtBackend implements BleCentralBackend<string, HostNeutralBacken
         options,
         'winrt.scan.start',
         () =>
-          this.boundary.startScan(group.scanToken, options.filter.serviceUuids, advertisement =>
+          this.boundary.startScan(group.scanToken, serviceUuids, advertisement =>
             this.handleAdvertisement(advertisement)
           ),
         async () => {

@@ -9,12 +9,7 @@ import type {
 } from '../../backend-contract/scan-planning'
 import type { NormalizedScanQuery } from '../../backend-contract/scan-query'
 
-const winRtScanObservationFields: readonly ScanObservationField[] = Object.freeze([
-  'localName',
-  'rssi',
-  'connectable',
-  'serviceUuids'
-])
+const winRtScanObservationFields: readonly ScanObservationField[] = Object.freeze(['localName', 'rssi', 'serviceUuids'])
 
 export const winRtScanPlanningContext: ScanPlanningContext = Object.freeze({
   backendId: 'winrt',

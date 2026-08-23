@@ -84,6 +84,19 @@ describe('BlueZ scan planner', () => {
     )
   })
 
+  test('does not describe partially pushed shared service predicates as native', () => {
+    const query = normalizeScanQuery({
+      anyOf: [{ services: { all: ['180d', '180f'] } }, { services: { all: ['180d'] } }]
+    })
+
+    const execution = new BluezScanPlanner().plan(query, context)
+
+    expect(execution.nativeFilter.serviceUuids).toEqual(['0000180d-0000-1000-8000-00805f9b34fb'])
+    expect(execution.native.predicates).toEqual([
+      { clauseSet: 'anyOf', clauseIndex: 1, field: 'services', operator: 'all' }
+    ])
+  })
+
   test('rejects invalid planning context fields', () => {
     expect(() =>
       new BluezScanPlanner().plan(normalizeScanQuery({}), {

@@ -20,6 +20,8 @@ import {
   type OwnerScanOptions
 } from '../../backend-contract/advertisement'
 import type { FeatureRegistry } from '../../backend-contract/capabilities'
+import { snapshotScanPlan } from '../../backend-contract/scan-planning'
+import { snapshotNormalizedScanQuery } from '../../backend-contract/scan-query'
 import {
   BackendContractError,
   contractError,
@@ -84,7 +86,7 @@ import { releaseCoreBluetoothAdapterLossResources } from './corebluetooth-adapte
 import { withCoreBluetoothCleanupTimeout } from './corebluetooth-cleanup'
 import { releaseLateCoreBluetoothConnection } from './corebluetooth-late-connect-cleanup'
 import { createCoreBluetoothRuntimeFeatureRegistry } from './corebluetooth-runtime-capabilities'
-import { diagnosticCoreBluetoothScanPlan } from './corebluetooth-scan-planner'
+import { diagnosticCoreBluetoothScanPlan, planCoreBluetoothScan } from './corebluetooth-scan-planner'
 export type { DirectGattBackendIdentityOptions } from './corebluetooth-identity'
 export interface ScanConsumer {
   readonly scanSessionId: ScanSessionId<string, string>
@@ -273,6 +275,20 @@ function assertCoreBluetoothGattIdentity(
     throwCoreBluetoothGattSnapshotMalformed(field)
   }
   identities.add(identity)
+}
+
+function trustedCoreBluetoothServiceUuids(options: OwnerScanOptions<string, string>): readonly string[] {
+  const plan = options.plan
+  if (plan === undefined) return options.filter.serviceUuids
+  const snapshot = snapshotScanPlan(plan)
+  if (options.query === undefined) {
+    throw contractError('protocol.violation', 'scan', 'corebluetooth.scan.plan-query')
+  }
+  const query = snapshotNormalizedScanQuery(options.query)
+  if (query.digest !== snapshot.queryDigest) {
+    throw contractError('protocol.violation', 'scan', 'corebluetooth.scan.plan-query')
+  }
+  return planCoreBluetoothScan(query).nativeFilter.serviceUuids
 }
 
 /**
@@ -527,6 +543,7 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
   ): Promise<ScanLease<string, string>> {
     this.assertOperational('corebluetooth.scan.start')
     assertScanFilter(options.filter, 'corebluetooth.scan.start')
+    const serviceUuids = trustedCoreBluetoothServiceUuids(options)
     const failedScanGroup = this.scanGroup
     if (failedScanGroup?.state === 'failed') {
       try {
@@ -593,10 +610,7 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
       consumer.deadlineTimer = setTimeout(deadline, Math.max(0, options.deadline - this.now()))
     }
     try {
-      await this.boundary.startScan(
-        advertisement => this.handleAdvertisement(advertisement),
-        options.filter.serviceUuids
-      )
+      await this.boundary.startScan(advertisement => this.handleAdvertisement(advertisement), serviceUuids)
     } catch (error) {
       this.releaseScanConsumerAdmission(consumer)
       this.scanGroup = null
