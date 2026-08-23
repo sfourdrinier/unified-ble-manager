@@ -57,6 +57,30 @@ The following findings came from the independent PR10 plan/documentation and adv
 | F10-REVIEW-011 | The Apple boundary inherited an Android-only effective-MTU operation without an explicit fail-closed capability guard. | Addressed by `ace039f`; Apple boundary regression and focused native suites pass. |
 | F10-REVIEW-012 | The StrictMode regression test did not invoke the first cleanup, so it did not exercise the actual setup/cleanup sequence. | Addressed by `bd6312f`; test now executes setup → first cleanup → setup. |
 
+## Fresh local verification at `100a4dbec3324a5508622b615e49b040e246377e`
+
+These receipts are from the post-remediation tip before the next hosted PR run. They are deterministic or host-build evidence only; no physical-radio or EAS claim is implied.
+
+- `pnpm install --frozen-lockfile`: passed; lockfile unchanged.
+- `pnpm validate:evidence`: passed for 3 evidence files.
+- `pnpm typecheck`: passed.
+- `pnpm lint`: passed with zero warnings.
+- Forbidden TypeScript smell scan over `src`/`plugin`: passed with no forbidden casts or suppression directives.
+- `pnpm test:package`: 155 suites / 1,485 tests passed.
+- `pnpm test:plugin`: 4 suites / 34 tests passed.
+- `pnpm prepack`: passed; 232 published source files, 1,940 source-derived artifacts, 8 plugin source files, 16 plugin artifacts, and 125 entrypoint targets verified.
+- `pnpm release:artifacts:check`: passed; 2 dependency-artifact files current.
+- `node scripts/ci/packed-host-consumer-check.js`: passed from the packed tarball for Expo/React/Tauri; `physicalRadio: not-provided`.
+- `node scripts/ci/pack-install-smoke.js`: passed across canonical CJS/ESM, browser, native tooling, Electron, CLI, Web, BlueZ, third-party TCK, Bundler, Node16, and NodeNext.
+- `node scripts/ci/g6a-packed-consumer-proof.js`: deterministic packed Node/Web/third-party TCK proof passed; hardware evidence absent.
+- `pnpm performance:check`: passed with 31 JS/core and 5 native-host measurements.
+- `pnpm test:native-protocol`: C++ host harness passed.
+- `pnpm test:native-protocol:android`: Android protocol Gradle unit lane passed.
+- `pnpm test:native-protocol:apple`: C++/Apple parser/execution harness passed; no physical BLE radio.
+- Android library `:unified-ble-manager:testDebugUnitTest`: passed; 29 actionable tasks.
+- Expo SDK 57 `tsc --noEmit`, clean CNG prebuild, and full Android debug APK build: passed; generated native directories remain ignored.
+- `git diff --check`: passed.
+
 ## Previously retained receipts
 
 - `pnpm test:plugin`: 30 tests passed before the review-remediation commits (the remediation lane separately passed 34 tests).
