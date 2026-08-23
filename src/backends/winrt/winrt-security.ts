@@ -136,6 +136,9 @@ function pairResult(value: unknown, operation: string): WinRtPairResult {
   }
   if (outcome === 'rejected' || outcome === 'cancelled') {
     if (state !== null) throw contractError('protocol.malformed', 'platform', operation)
+    if (outcome === 'cancelled' && reason !== null) {
+      throw contractError('protocol.malformed', 'platform', operation)
+    }
     return Object.freeze({ outcome, state: null, reason })
   }
   if (reason !== null) throw contractError('protocol.malformed', 'platform', operation)
