@@ -1,6 +1,7 @@
 # PR10 review inventory
 
 Target branch: `feat/expo-first-class-host`
+Current verified SHA: `aaa4ce7d6952a9a87476ed3227175a7226091e50`
 Base: `a252b5a7d6e09147ccd7fa636facab6ad2996ea6`
 Milestone: first-class Expo host, staged as PR10A–PR10D
 
@@ -23,13 +24,15 @@ This is a live disposition ledger. A finding is not closed by a test-only change
 - `pnpm native-protocol:check`: passed.
 - `pnpm lint`: passed after formatting and the restoration-factory const fix.
 - `pnpm typecheck`: passed at the current TypeScript boundary.
-- `pnpm test:package`: 153 suites / 1,465 tests passed.
+- `pnpm test:package`: 153 suites / 1,473 tests passed at the current SHA.
 - `pnpm test:native-protocol`: C++ protocol harness passed.
 - `pnpm test:native-protocol:android`: Android protocol unit/build lane passed.
 - `pnpm test:native-protocol:apple`: C++/Apple execution harness passed; no physical radio exercised.
 - `pnpm release:artifacts:check`: passed.
 - `pnpm performance:check`: passed (31 JS/core and 5 native-host measurements).
-- Packed host, install-smoke, and G6A proofs: passed from tarballs.
+- Packed host proof at the current SHA: Expo/Tauri tarball proof passed; `physicalRadio: not-provided`.
+- Packed install smoke at the current SHA: canonical CJS/ESM, browser, native tooling, Electron, CLI, Web, BlueZ, third-party TCK, Bundler, Node16, and NodeNext passed.
+- G6A at the current SHA: deterministic packed Node/Web/third-party TCK proof passed; hardware evidence remains explicitly absent.
 - Focused Expo and React Native restoration Jest suites: passed before the aggregate package rebuild.
 
 ## Remaining release gates
