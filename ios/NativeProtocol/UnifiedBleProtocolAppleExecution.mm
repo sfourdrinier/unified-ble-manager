@@ -430,6 +430,7 @@ void failAttachmentAfterTerminalAdmissionFailure(
       state->recordsAwaitingJavaScript.reset();
       state->drainScheduled = false;
       state->connections.clear();
+      state->pendingDisconnects.clear();
       releaseRadio = state->radio != nullptr;
     }
     try {
@@ -1006,17 +1007,59 @@ void fail(
   }
 }
 
+protocol::ProtocolRecord connectionLostEvent(
+    const std::shared_ptr<AppleNativeProtocolExecution::State>& state,
+    const protocol::ProtocolRecord& connection,
+    std::uint64_t ordinal,
+    const std::optional<protocol::ProtocolRecord>& eventError) {
+  std::vector<protocol::ProtocolField> fields{
+      field(1U, std::uint64_t{protocol::kProtocolVersion}),
+      field(2U, std::string("apple-connection-lost:") + std::to_string(ordinal)),
+      field(3U, std::string("connectionLost")),
+      field(4U, reference(attachmentRecord(state->runtime->attachmentIdentity()))),
+      field(5U, ordinal),
+      field(6U, monotonicMilliseconds()),
+      field(7U, reference(connection)),
+  };
+  if (eventError.has_value()) fields.push_back(field(14U, reference(*eventError)));
+  return {.kind = protocol::RecordKind::event, .fields = std::move(fields)};
+}
+
 void connectionOwnershipAfterSettlement(
     const std::shared_ptr<AppleNativeProtocolExecution::State>& state,
     const protocol::ProtocolRecord& command) {
   const auto kind = requiredString(command, 3U);
   if (kind != "connect" && kind != "disconnect") return;
-  const auto peer = requiredString(requiredRecord(command, 10U), 2U);
-  std::scoped_lock lock(state->mutex);
+  const auto connection = requiredRecord(command, 10U);
+  const auto peer = requiredString(connection, 2U);
+  std::optional<AppleNativeProtocolExecution::State::PendingDisconnect> pendingDisconnect;
+  {
+    std::scoped_lock lock(state->mutex);
+    if (kind == "connect") {
+      state->connections.insert_or_assign(peer, connection);
+      const auto pending = state->pendingDisconnects.find(peer);
+      if (pending != state->pendingDisconnects.end()) {
+        if (pending->second.attachmentGeneration == state->attachmentGeneration) {
+          pendingDisconnect = std::move(pending->second);
+        }
+        state->pendingDisconnects.erase(pending);
+      }
+    } else {
+      state->connections.erase(peer);
+      state->pendingDisconnects.erase(peer);
+    }
+  }
   if (kind == "connect") {
-    state->connections.insert_or_assign(peer, requiredRecord(command, 10U));
-  } else {
-    state->connections.erase(peer);
+    if (pendingDisconnect.has_value()) {
+      static_cast<void>(deliverEvent(
+          state,
+          connectionLostEvent(
+              state,
+              connection,
+              pendingDisconnect->ordinal,
+              pendingDisconnect->error),
+          pendingDisconnect->attachmentGeneration));
+    }
   }
 }
 
@@ -1699,6 +1742,7 @@ void AppleNativeProtocolExecution::beginAttachment() {
   state_->recordsAwaitingSink.reset();
   state_->recordsAwaitingJavaScript.reset();
   state_->drainScheduled = false;
+  state_->pendingDisconnects.clear();
 }
 
 void AppleNativeProtocolExecution::cancel(const protocol::NativeOperationIdentity& operation) {
@@ -1784,6 +1828,7 @@ void AppleNativeProtocolExecution::rollbackRestorationBootstrap() noexcept {
   state_->recordsAwaitingSink.reset();
   state_->recordsAwaitingJavaScript.reset();
   state_->drainScheduled = false;
+  state_->pendingDisconnects.clear();
 }
 
 void AppleNativeProtocolExecution::detachAttachment() {
@@ -1817,6 +1862,7 @@ void AppleNativeProtocolExecution::detachAttachment() {
     state->sinksAwaitingJavaScriptRelease.push_back(std::move(state->fatalSink));
   }
   state->connections.clear();
+  state->pendingDisconnects.clear();
   state->restorationAppended = false;
   state->ingressOrdinalAllocator.reset(state->mutex);
 }
@@ -1870,32 +1916,56 @@ void AppleNativeProtocolExecution::receiveDisconnect(void* peerIdentifier, void*
   if (peer == nil) return;
   try {
     const auto peerValue = nsString(peer, "disconnect peer");
-    std::optional<protocol::ProtocolRecord> connection;
-    {
-      std::scoped_lock lock(state_->mutex);
-      const auto found = state_->connections.find(peerValue);
-      if (found == state_->connections.end()) return;
-      connection = found->second;
-      state_->connections.erase(found);
-    }
-    const auto ingress = reserveNativeIngressOrdinal(state_);
-    if (!ingress.has_value()) return;
-    const auto ordinal = ingress->ordinal;
-    std::vector<protocol::ProtocolField> fields{
-        field(1U, std::uint64_t{protocol::kProtocolVersion}), field(2U, std::string("apple-connection-lost:") + std::to_string(ordinal)),
-        field(3U, std::string("connectionLost")), field(4U, reference(attachmentRecord(state_->runtime->attachmentIdentity()))),
-        field(5U, ordinal), field(6U, monotonicMilliseconds()), field(7U, reference(*connection))};
+    std::optional<protocol::ProtocolRecord> eventError;
     if (nativeError != nil) {
-      const auto eventError = protocol::ProtocolRecord{.kind = protocol::RecordKind::error, .fields = {
+      eventError = protocol::ProtocolRecord{.kind = protocol::RecordKind::error, .fields = {
           field(1U, std::string("connectionLost")), field(2U, std::string("corebluetooth")), field(3U, std::string("connectionLost")),
           field(4U, std::string("notRetryable")), field(7U, errorMessage(nativeError)), field(9U, nsString(nativeError.domain, "error domain")),
           field(10U, static_cast<std::int64_t>(nativeError.code))}};
-      fields.push_back(field(14U, reference(eventError)));
     }
+    std::optional<protocol::ProtocolRecord> connection;
+    std::optional<AppleNativeIngressReservation> immediateIngress;
+    bool pendingDisconnectAdmissionFailed = false;
+    std::optional<std::uint64_t> pendingDisconnectAdmissionGeneration;
+    {
+      std::scoped_lock lock(state_->mutex);
+      if (state_->pendingDisconnects.find(peerValue) != state_->pendingDisconnects.end()) return;
+      const auto found = state_->connections.find(peerValue);
+      if (found == state_->connections.end()) {
+        if (state_->pendingDisconnects.size() >= State::kMaximumPendingDisconnects) {
+          pendingDisconnectAdmissionFailed = true;
+          pendingDisconnectAdmissionGeneration = state_->attachmentGeneration;
+        } else {
+          const auto ingress = reserveNativeIngressOrdinal(state_);
+          if (!ingress.has_value()) return;
+          state_->pendingDisconnects.emplace(
+              peerValue,
+              State::PendingDisconnect{
+                  .attachmentGeneration = ingress->attachmentGeneration,
+                  .ordinal = ingress->ordinal,
+                  .error = std::move(eventError),
+              });
+          return;
+        }
+      } else {
+        immediateIngress = reserveNativeIngressOrdinal(state_);
+        if (!immediateIngress.has_value()) return;
+        connection = found->second;
+        state_->connections.erase(found);
+      }
+    }
+    if (pendingDisconnectAdmissionFailed) {
+      failAttachmentAfterTerminalAdmissionFailure(
+          state_,
+          "Apple pending disconnect admission overflow",
+          pendingDisconnectAdmissionGeneration);
+      return;
+    }
+    if (!connection.has_value() || !immediateIngress.has_value()) return;
     static_cast<void>(deliverEvent(
         state_,
-        {.kind = protocol::RecordKind::event, .fields = std::move(fields)},
-        ingress->attachmentGeneration));
+        connectionLostEvent(state_, *connection, immediateIngress->ordinal, eventError),
+        immediateIngress->attachmentGeneration));
   } catch (const std::exception& error) {
     logNativeFailure("disconnect serialization", error);
   }
@@ -1956,6 +2026,7 @@ void AppleNativeProtocolExecution::close() {
         "Apple execution close JavaScript discard");
     state->terminalResultsAwaitingJavaScript.clear();
     state->terminalConnectionCommandsAwaitingJavaScript.clear();
+    state->pendingDisconnects.clear();
     retryBinaryCleanupLedger(state, "Apple execution close binary cleanup retry");
     state->recordsAwaitingSink.reset();
     state->recordsAwaitingJavaScript.reset();

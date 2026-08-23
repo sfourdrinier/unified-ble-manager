@@ -23,6 +23,23 @@
 - (NSArray<NSString*>*)restorationPeerIdentifiers;
 @end
 
+@interface ImmediateDisconnectRadio : NSObject
+@end
+
+@implementation ImmediateDisconnectRadio
+
+- (void)releaseProtocolClientWithCompletion:(void (^)(NSError*))completion {
+  completion(nil);
+}
+
+- (void)connectWithPeerIdentifier:(NSString*)peer
+                 operationIdentifier:(NSString*)operation
+                          completion:(void (^)(NSError*))completion {
+  completion(nil);
+}
+
+@end
+
 #include "../../../ios/NativeProtocol/UnifiedBleProtocolAppleExecution.mm"
 
 #include <ReactCommon/CallInvoker.h>
@@ -128,6 +145,34 @@ protocol::ProtocolRecord command(std::uint64_t epoch) {
               },
           })),
           harnessField(3U, std::string("destroy")),
+      },
+  };
+}
+
+protocol::ProtocolRecord connectCommand(std::uint64_t epoch, const std::string& peer) {
+  return {
+      .kind = protocol::RecordKind::command,
+      .fields = {
+          harnessField(1U, std::uint64_t{protocol::kProtocolVersion}),
+          harnessField(2U, std::make_shared<protocol::ProtocolRecord>(protocol::ProtocolRecord{
+              .kind = protocol::RecordKind::operationCorrelation,
+              .fields = {
+                  harnessField(1U, attachment()),
+                  harnessField(2U, epoch),
+                  harnessField(3U, std::string("apple-immediate-disconnect-operation-") + std::to_string(epoch)),
+              },
+          })),
+          harnessField(3U, std::string("connect")),
+          harnessField(10U, std::make_shared<protocol::ProtocolRecord>(protocol::ProtocolRecord{
+              .kind = protocol::RecordKind::connectionPath,
+              .fields = {
+                  harnessField(1U, attachment()),
+                  harnessField(2U, peer),
+                  harnessField(3U, std::string("connection-1")),
+                  harnessField(4U, std::string("lease-1")),
+                  harnessField(5U, std::string("connection-generation-1")),
+              },
+          })),
       },
   };
 }
@@ -238,6 +283,69 @@ int runAppleNativeProtocolExecutionHarness() {
     missingInvokerControl->registerCommand(unavailableCommand, true);
     static_cast<void>(success(missingInvokerState, unavailableCommand));
     if (!require(!missingInvokerControl->open(), "actual scheduling-unavailable seam did not fatally close the attachment")) return 1;
+
+    const auto immediateDisconnectControl = openedRuntime();
+    const auto immediateDisconnectInvoker = std::make_shared<ControllableInvoker>(*runtime);
+    std::atomic<std::size_t> connectionLostEvents{0U};
+    const auto immediateDisconnectSink = std::make_shared<Function>(Function::createFromHostFunction(
+        *runtime,
+        PropNameID::forUtf8(*runtime, "appleImmediateDisconnectSink"),
+        1U,
+        [&connectionLostEvents](Runtime& inner, const Value&, const Value* arguments, std::size_t count) {
+          if (count != 1U || !arguments[0].isObject() || !arguments[0].asObject(inner).isUint8Array(inner)) return Value::undefined();
+          auto array = arguments[0].asObject(inner).asUint8Array(inner);
+          auto buffer = array.buffer(inner);
+          const auto offset = array.byteOffset(inner);
+          const auto length = array.byteLength(inner);
+          if (buffer.detached(inner) || offset > buffer.size(inner) || length > buffer.size(inner) - offset) return Value::undefined();
+          const auto* source = buffer.data(inner);
+          if (source == nullptr && length != 0U) return Value::undefined();
+          const auto bytes = length == 0U
+              ? std::vector<std::uint8_t>{}
+              : std::vector<std::uint8_t>(source + offset, source + offset + length);
+          const auto record = protocol::NativeProtocolV2Codec{}.decode(bytes);
+          if (record.kind != protocol::RecordKind::event) return Value::undefined();
+          for (const auto& field : record.fields) {
+            if (field.id == 3U && std::holds_alternative<std::string>(field.value) &&
+                std::get<std::string>(field.value) == "connectionLost") {
+              connectionLostEvents.fetch_add(1U, std::memory_order_relaxed);
+              break;
+            }
+          }
+          return Value::undefined();
+        }));
+    auto* immediateDisconnectRadio = [[ImmediateDisconnectRadio alloc] init];
+    AppleNativeProtocolExecution immediateDisconnectExecution(
+        immediateDisconnectControl,
+        (__bridge void*)immediateDisconnectRadio);
+    immediateDisconnectExecution.install(*runtime, immediateDisconnectInvoker);
+    immediateDisconnectExecution.beginAttachment();
+    const auto installedRuntime = runtime->global().getProperty(*runtime, "__unifiedBleNativeProtocolV2");
+    const auto installedObject = installedRuntime.asObject(*runtime);
+    const auto setEventSink = installedObject.getProperty(*runtime, "setEventSink").asObject(*runtime).asFunction(*runtime);
+    setEventSink.call(*runtime, *immediateDisconnectSink);
+    const auto immediateDisconnectCommand = connectCommand(1U, "peer-immediate-disconnect");
+    const auto commandBytes = protocol::NativeProtocolV2Codec{}.encode(immediateDisconnectCommand);
+    auto commandArray = jsi::Uint8Array(*runtime, commandBytes.size());
+    auto commandBuffer = commandArray.buffer(*runtime);
+    std::memcpy(commandBuffer.data(*runtime), commandBytes.data(), commandBytes.size());
+    const auto submit = installedObject.getProperty(*runtime, "submit").asObject(*runtime).asFunction(*runtime);
+    submit.call(*runtime, commandArray);
+    NSString* immediateDisconnectPeer = @"peer-immediate-disconnect";
+    NSError* immediateDisconnectError = [NSError errorWithDomain:@"ImmediateDisconnectTest" code:17 userInfo:nil];
+    immediateDisconnectExecution.receiveDisconnect(
+        (__bridge void*)immediateDisconnectPeer,
+        (__bridge void*)immediateDisconnectError);
+    immediateDisconnectExecution.receiveDisconnect(
+        (__bridge void*)immediateDisconnectPeer,
+        (__bridge void*)immediateDisconnectError);
+    if (!require(immediateDisconnectInvoker->pending() == 1U, "immediate disconnect race scheduled an unexpected number of drains before JavaScript delivery")) return 1;
+    immediateDisconnectInvoker->flushOne();
+    if (!require(immediateDisconnectInvoker->pending() == 1U, "immediate disconnect was not admitted behind connect settlement")) return 1;
+    immediateDisconnectInvoker->flushOne();
+    if (!require(connectionLostEvents.load(std::memory_order_relaxed) == 1U, "immediate disconnect was lost before JavaScript installed connection ownership")) return 1;
+    immediateDisconnectExecution.close();
+    while (immediateDisconnectInvoker->pending() != 0U) immediateDisconnectInvoker->flushOne();
 
     const auto throwingControl = openedRuntime();
     const auto throwingState = std::make_shared<AppleNativeProtocolExecution::State>(throwingControl, nullptr);
