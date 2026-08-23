@@ -9,7 +9,7 @@ import type {
   ScanOptions,
   ScanSession
 } from './public/ble-manager'
-import type { BleAdapterState } from './public/ble-adapter'
+import type { BleAdapterState, BleAdapterStateWatch } from './public/ble-adapter'
 import type { GattCharacteristic, GattSubscribeOptions, GattValueEvent } from './public/gatt'
 import type { BleCapabilities, CapabilityDescriptor, FeatureId } from './public/capabilities'
 import { normalizeScanQuery } from './public/scan-query'
@@ -60,6 +60,12 @@ export interface UseCharacteristicValueResult {
 }
 
 const missingProviderError = new Error('useBle must be used within a BleProvider')
+const expoReadinessUnavailableError = new Error('BLE readiness is available only from an Expo host manager.')
+const emptyStoreSubscribe =
+  (_listener: StoreListener): (() => void) =>
+  () =>
+    undefined
+const emptyCapabilitySnapshot = (): CapabilityDescriptor | undefined => undefined
 const BleContext = React.createContext<BleContextValue | null>(null)
 const BleErrorContext = React.createContext<((error: Error) => void) | null>(null)
 let pendingManagerRelease: Promise<void> | null = null
@@ -113,37 +119,19 @@ export function getAdapterState(manager: Pick<BleManager, 'adapter'>): Promise<B
 
 export function useAdapterState(): UseAdapterStateResult {
   const ble = useBle()
-  const [result, setResult] = React.useState<UseAdapterStateResult>({
-    state: null,
-    loading: true,
-    error: null
-  })
-
-  React.useEffect(() => {
-    let active = true
-    if (ble.manager === null) {
-      return () => {
-        active = false
-      }
-    }
-
-    getAdapterState(ble.manager)
-      .then(
-        state => {
-          if (active) setResult({ state, loading: false, error: null })
-        },
-        error => {
-          if (active) setResult({ state: null, loading: false, error: toError(error) })
-        }
-      )
-      .catch(() => undefined)
-
-    return () => {
-      active = false
-    }
-  }, [ble.manager, ble.loading, ble.error])
-
-  return ble.manager === null ? { state: null, loading: ble.loading, error: ble.error } : result
+  const reportError = useReactErrorReporter()
+  const emptySnapshot = React.useMemo(
+    () => ({ state: null, loading: ble.loading, error: ble.error }),
+    [ble.loading, ble.error]
+  )
+  const store = ble.manager === null ? null : getManagerStore(ble.manager)
+  store?.setErrorReporter(reportError)
+  const snapshot = React.useSyncExternalStore(
+    store?.subscribe ?? emptyStoreSubscribe,
+    store?.getAdapterSnapshot ?? (() => emptySnapshot),
+    store?.getAdapterSnapshot ?? (() => emptySnapshot)
+  )
+  return store === null ? emptySnapshot : snapshot
 }
 
 export function getBleCapability(
@@ -155,7 +143,14 @@ export function getBleCapability(
 
 export function useBleCapability(id: FeatureId): CapabilityDescriptor | undefined {
   const { manager } = useBle()
-  return manager === null ? undefined : getBleCapability(manager, id)
+  const reportError = useReactErrorReporter()
+  const store = manager === null ? null : getManagerStore(manager).getCapabilityStore(id)
+  store?.setErrorReporter(reportError)
+  return React.useSyncExternalStore(
+    store?.subscribe ?? emptyStoreSubscribe,
+    store?.getSnapshot ?? emptyCapabilitySnapshot,
+    store?.getSnapshot ?? emptyCapabilitySnapshot
+  )
 }
 
 export function getBleReadiness(manager: Pick<ExpoBleManager, 'readiness'>): Promise<BleReadiness> {
@@ -164,46 +159,295 @@ export function getBleReadiness(manager: Pick<ExpoBleManager, 'readiness'>): Pro
 
 export function useBleReadiness(): UseBleReadinessResult {
   const { manager, loading, error } = useBle()
-  const [result, setResult] = React.useState<UseBleReadinessResult>({
-    readiness: null,
-    loading: true,
-    error: null
-  })
-  const [previousManager, setPreviousManager] = React.useState(manager)
-  const managerChanged = previousManager !== manager
-  if (managerChanged) {
-    setPreviousManager(manager)
-    setResult({ readiness: null, loading: true, error: null })
+  const reportError = useReactErrorReporter()
+  const emptySnapshot = React.useMemo(
+    () => ({
+      readiness: null,
+      loading: manager === null ? loading : false,
+      error: manager === null ? error : expoReadinessUnavailableError
+    }),
+    [manager, loading, error]
+  )
+  const store = manager !== null && hasReadiness(manager) ? getManagerStore(manager) : null
+  store?.setErrorReporter(reportError)
+  const snapshot = React.useSyncExternalStore(
+    store?.subscribe ?? emptyStoreSubscribe,
+    store?.getReadinessSnapshot ?? (() => emptySnapshot),
+    store?.getReadinessSnapshot ?? (() => emptySnapshot)
+  )
+  return store === null ? emptySnapshot : snapshot
+}
+
+type StoreListener = () => void
+
+interface WatchRun {
+  readonly promise: Promise<BleAdapterStateWatch>
+  watch: BleAdapterStateWatch | null
+  stopped: boolean
+  stopPromise: Promise<void> | null
+  restartScheduled: boolean
+}
+
+const managerStores = new WeakMap<BleManager, ManagerStore>()
+
+function getManagerStore(manager: BleManager): ManagerStore {
+  const existing = managerStores.get(manager)
+  if (existing !== undefined) return existing
+  const created = new ManagerStore(manager)
+  managerStores.set(manager, created)
+  return created
+}
+
+class ManagerStore {
+  private readonly listeners = new Set<StoreListener>()
+  private readonly capabilityStores = new Map<FeatureId, CapabilityStore>()
+  private watchRun: WatchRun | null = null
+  private adapterState: BleAdapterState | null = null
+  private errorReporter: (error: Error) => void = () => undefined
+  private adapterSnapshot: UseAdapterStateResult = { state: null, loading: true, error: null }
+  private readinessSnapshot: UseBleReadinessResult = { readiness: null, loading: true, error: null }
+
+  readonly subscribe = (listener: StoreListener): (() => void) => {
+    this.listeners.add(listener)
+    if (this.listeners.size === 1) this.ensureWatch()
+    let active = true
+    return () => {
+      if (!active) return
+      active = false
+      this.listeners.delete(listener)
+      if (this.listeners.size === 0) this.stopWatch()
+    }
   }
 
-  React.useEffect(() => {
-    let active = true
-    if (manager === null) return () => undefined
-    if (!hasReadiness(manager)) {
-      return () => undefined
+  readonly getAdapterSnapshot = (): UseAdapterStateResult => this.adapterSnapshot
+
+  readonly getReadinessSnapshot = (): UseBleReadinessResult => this.readinessSnapshot
+
+  constructor(private readonly managerInstance: BleManager) {}
+
+  manager(): BleManager {
+    return this.managerInstance
+  }
+
+  setErrorReporter(reporter: (error: Error) => void): void {
+    this.errorReporter = reporter
+  }
+
+  getCapabilityStore(id: FeatureId): CapabilityStore {
+    const existing = this.capabilityStores.get(id)
+    if (existing !== undefined) return existing
+    const created = new CapabilityStore(this, id)
+    this.capabilityStores.set(id, created)
+    return created
+  }
+
+  currentState(): BleAdapterState | null {
+    return this.adapterState
+  }
+
+  setCapabilityReporter(reporter: (error: Error) => void): void {
+    this.setErrorReporter(reporter)
+  }
+
+  private ensureWatch(): void {
+    const existing = this.watchRun
+    if (existing !== null) {
+      if (!existing.stopped) return
+      if (existing.stopPromise !== null) {
+        if (!existing.restartScheduled) {
+          existing.restartScheduled = true
+          existing.stopPromise.then(() => {
+            if (this.watchRun !== existing || this.listeners.size === 0) return
+            this.watchRun = null
+            this.ensureWatch()
+          })
+        }
+        return
+      }
+      existing.stopped = false
+      return
     }
-    getBleReadiness(manager).then(
-      readiness => {
-        if (active) setResult({ readiness, loading: false, error: null })
+
+    const promise = Promise.resolve().then(() => this.managerInstance.adapter.watchState())
+    const run: WatchRun = {
+      promise,
+      watch: null,
+      stopped: false,
+      stopPromise: null,
+      restartScheduled: false
+    }
+    this.watchRun = run
+    promise.then(
+      watch => {
+        run.watch = watch
+        if (!this.isActive(run)) {
+          this.stopResolvedWatch(run, watch)
+          return
+        }
+        this.applyState(watch.initial)
+        this.consumeWatch(run, watch).catch(error => {
+          if (this.isActive(run)) this.applyError(toError(error))
+        })
       },
-      reason => {
-        if (active) setResult({ readiness: null, loading: false, error: toError(reason) })
+      error => {
+        if (this.isActive(run)) this.applyError(toError(error))
+        else if (this.watchRun === run) this.watchRun = null
       }
     )
-    return () => {
-      active = false
-    }
-  }, [manager, managerChanged])
+  }
 
-  if (manager === null) return { readiness: null, loading, error }
-  if (!hasReadiness(manager)) {
-    return {
-      readiness: null,
-      loading: false,
-      error: new Error('BLE readiness is available only from an Expo host manager.')
+  private stopWatch(): void {
+    const run = this.watchRun
+    if (run === null || run.stopped) return
+    run.stopped = true
+    if (run.watch !== null) {
+      this.stopResolvedWatch(run, run.watch)
+      return
+    }
+    run.promise
+      .then(watch => {
+        run.watch = watch
+        if (run.stopped) this.stopResolvedWatch(run, watch)
+      })
+      .catch(() => undefined)
+  }
+
+  private stopResolvedWatch(run: WatchRun, watch: BleAdapterStateWatch): void {
+    if (run.stopPromise !== null) return
+    run.stopPromise = settleCleanup(() => watch.stop(), this.errorReporter, 'adapter state watch')
+    run.stopPromise.then(() => {
+      if (this.watchRun === run && run.stopped && this.listeners.size === 0) this.watchRun = null
+    })
+  }
+
+  private isActive(run: WatchRun): boolean {
+    return this.watchRun === run && !run.stopped && this.listeners.size > 0
+  }
+
+  private async consumeWatch(run: WatchRun, watch: BleAdapterStateWatch): Promise<void> {
+    for await (const item of watch.values) {
+      if (!this.isActive(run)) return
+      if (item.kind === 'terminal') return
+      if (item.kind === 'overflow') {
+        this.applyError(streamOverflowError('react.adapterStateWatch'))
+        continue
+      }
+      this.applyState(item.value)
     }
   }
-  return managerChanged ? { readiness: null, loading: true, error: null } : result
+
+  private applyState(state: BleAdapterState): void {
+    this.adapterState = state
+    this.adapterSnapshot = { state, loading: false, error: null }
+    this.readinessSnapshot = {
+      readiness: projectExpoReadiness(state),
+      loading: false,
+      error: null
+    }
+    this.capabilityStores.forEach(store => store.onManagerStateChanged())
+    this.notify()
+  }
+
+  private applyError(error: Error): void {
+    this.adapterSnapshot = { state: this.adapterState, loading: false, error }
+    this.readinessSnapshot = {
+      readiness: this.adapterState === null ? null : projectExpoReadiness(this.adapterState),
+      loading: false,
+      error
+    }
+    this.notify()
+  }
+
+  private notify(): void {
+    this.listeners.forEach(listener => listener())
+  }
+}
+
+class CapabilityStore {
+  private readonly listeners = new Set<StoreListener>()
+  private ownerUnsubscribe: (() => void) | null = null
+  private snapshot: CapabilityDescriptor | undefined
+  private initialized = false
+  private backendGeneration: string | null = null
+
+  readonly subscribe = (listener: StoreListener): (() => void) => {
+    this.listeners.add(listener)
+    if (this.listeners.size === 1) this.ownerUnsubscribe = this.owner.subscribe(this.onManagerStateChanged)
+    let active = true
+    return () => {
+      if (!active) return
+      active = false
+      this.listeners.delete(listener)
+      if (this.listeners.size === 0) {
+        this.ownerUnsubscribe?.()
+        this.ownerUnsubscribe = null
+      }
+    }
+  }
+
+  readonly getSnapshot = (): CapabilityDescriptor | undefined => {
+    if (!this.initialized) {
+      this.snapshot = getBleCapability(this.owner.manager(), this.id)
+      this.backendGeneration = this.owner.currentState()?.backendGeneration ?? null
+      this.initialized = true
+    }
+    return this.snapshot
+  }
+
+  constructor(
+    private readonly owner: ManagerStore,
+    private readonly id: FeatureId
+  ) {}
+
+  setErrorReporter(reporter: (error: Error) => void): void {
+    this.owner.setCapabilityReporter(reporter)
+  }
+
+  onManagerStateChanged = (): void => {
+    const state = this.owner.currentState()
+    if (state === null) return
+    if (this.backendGeneration === null) {
+      this.backendGeneration = state.backendGeneration
+      return
+    }
+    if (this.backendGeneration === state.backendGeneration) return
+    this.backendGeneration = state.backendGeneration
+    if (!this.initialized) return
+    this.snapshot = getBleCapability(this.owner.manager(), this.id)
+    this.listeners.forEach(listener => listener())
+  }
+}
+
+function projectExpoReadiness(adapter: BleAdapterState): BleReadiness {
+  if (
+    adapter.availability !== 'available' ||
+    adapter.authorization === 'restricted' ||
+    adapter.authorization === 'unavailable' ||
+    adapter.power === 'unsupported'
+  ) {
+    return createReadiness(adapter, 'unavailable', [])
+  }
+  if (adapter.authorization === 'denied') {
+    return createReadiness(adapter, 'action-required', [{ kind: 'open-settings', target: 'app' }])
+  }
+  if (adapter.authorization === 'not-determined') {
+    return createReadiness(adapter, 'action-required', [{ kind: 'request-permission', permission: 'bluetooth' }])
+  }
+  if (adapter.power === 'off') {
+    return createReadiness(adapter, 'action-required', [{ kind: 'enable-bluetooth', systemUiOnly: true }])
+  }
+  if (adapter.power !== 'on' || adapter.authorization !== 'granted') {
+    return createReadiness(adapter, 'action-required', [])
+  }
+  return createReadiness(adapter, 'ready', [])
+}
+
+function createReadiness(
+  adapter: BleAdapterState,
+  state: BleReadiness['state'],
+  actions: BleReadiness['actions']
+): BleReadiness {
+  return Object.freeze({ adapter, state, actions: Object.freeze([...actions]) })
 }
 
 export function useDiscoveredPeers(options: ScanOptions = {}): UseDiscoveredPeersResult {

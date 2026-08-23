@@ -13,6 +13,8 @@ const hookHarness = {
   memoValues: [],
   memoDependencies: [],
   memoIndex: 0,
+  externalStores: [],
+  externalStoreIndex: 0,
   reset() {
     this.effects = []
     this.stateIndex = 0
@@ -22,6 +24,8 @@ const hookHarness = {
     this.memoValues = []
     this.memoDependencies = []
     this.memoIndex = 0
+    this.externalStores = []
+    this.externalStoreIndex = 0
   },
   rerender() {
     this.effects = []
@@ -29,6 +33,7 @@ const hookHarness = {
     this.effectIndex = 0
     this.refIndex = 0
     this.memoIndex = 0
+    this.externalStoreIndex = 0
   },
   nextState(initialValue) {
     const index = this.stateIndex++
@@ -63,6 +68,12 @@ const hookHarness = {
   nextEffect(effect) {
     const index = this.effectIndex++
     this.effects[index] = effect
+  },
+  nextExternalStore(subscribe, getSnapshot, getServerSnapshot) {
+    const index = this.externalStoreIndex++
+    const record = { subscribe, getSnapshot, getServerSnapshot }
+    this.externalStores[index] = record
+    return getSnapshot()
   }
 }
 
@@ -79,7 +90,10 @@ jest.mock('react', () => ({
   useEffect: jest.fn(effect => hookHarness.nextEffect(effect)),
   useMemo: jest.fn((factory, dependencies) => hookHarness.nextMemo(factory, dependencies)),
   useRef: jest.fn(initialValue => hookHarness.nextRef(initialValue)),
-  useState: jest.fn(initialValue => hookHarness.nextState(initialValue))
+  useState: jest.fn(initialValue => hookHarness.nextState(initialValue)),
+  useSyncExternalStore: jest.fn((subscribe, getSnapshot, getServerSnapshot) =>
+    hookHarness.nextExternalStore(subscribe, getSnapshot, getServerSnapshot)
+  )
 }))
 
 const {
@@ -105,10 +119,38 @@ function deferred() {
   return { promise, resolve, reject }
 }
 
+function adapterState(overrides = {}) {
+  return {
+    availability: 'available',
+    power: 'on',
+    authorization: 'granted',
+    backendGeneration: 'backend-1',
+    updatedAt: 1,
+    safeReason: null,
+    ...overrides
+  }
+}
+
+function adapterWatch(initial, values) {
+  return {
+    initial,
+    values,
+    stop: jest.fn().mockResolvedValue({ state: 'released', failures: [] })
+  }
+}
+
 function manager(overrides = {}) {
   return {
     adapter: {
       state: jest.fn().mockResolvedValue({ availability: 'available', power: 'on', authorization: 'granted' }),
+      watchState: jest.fn().mockResolvedValue(
+        adapterWatch(
+          adapterState(),
+          (async function* () {
+            await new Promise(() => undefined)
+          })()
+        )
+      ),
       ...overrides.adapter
     },
     capabilities: {
@@ -120,18 +162,22 @@ function manager(overrides = {}) {
   }
 }
 
-function scanSession(observations = (async function* () {
-  yield { kind: 'terminal' }
-})()) {
+function scanSession(
+  observations = (async function* () {
+    yield { kind: 'terminal' }
+  })()
+) {
   return {
     observations,
     stop: jest.fn().mockResolvedValue({ state: 'released', failures: [] })
   }
 }
 
-function characteristicSubscription(values = (async function* () {
-  yield { kind: 'terminal' }
-})()) {
+function characteristicSubscription(
+  values = (async function* () {
+    yield { kind: 'terminal' }
+  })()
+) {
   return {
     values,
     remove: jest.fn().mockResolvedValue({ state: 'released', failures: [] })
@@ -383,11 +429,21 @@ describe('React host surface', () => {
     expect(destroyOnError).toHaveBeenCalledWith(expect.objectContaining({ message: 'destroy failed' }))
   })
 
-  test('provides useBle readiness, adapter state, and capability hooks plus imperative equivalents', async () => {
-    const adapterState = { availability: 'available', power: 'on', authorization: 'granted' }
+  test('provides useBle adapter state and capability hooks plus imperative equivalents', async () => {
+    const currentAdapterState = adapterState()
     const capability = { id: 'scan', state: 'supported', limitations: [] }
     const createdManager = manager({
-      adapter: { state: jest.fn().mockResolvedValue(adapterState) },
+      adapter: {
+        state: jest.fn().mockResolvedValue(currentAdapterState),
+        watchState: jest.fn().mockResolvedValue(
+          adapterWatch(
+            currentAdapterState,
+            (async function* () {
+              await new Promise(() => undefined)
+            })()
+          )
+        )
+      },
       capabilities: { get: jest.fn().mockReturnValue(capability) }
     })
     hookHarness.contextValue = { manager: createdManager, loading: false, error: null }
@@ -395,41 +451,244 @@ describe('React host surface', () => {
     expect(useBle()).toEqual({ manager: createdManager, loading: false, error: null })
     expect(useBleCapability('scan')).toBe(capability)
     expect(getBleCapability(createdManager, 'scan')).toBe(capability)
-    await expect(getAdapterState(createdManager)).resolves.toBe(adapterState)
+    await expect(getAdapterState(createdManager)).resolves.toBe(currentAdapterState)
 
-    hookHarness.stateValues = []
     hookHarness.reset()
     const adapterResult = useAdapterState()
     expect(adapterResult).toEqual({ state: null, loading: true, error: null })
-    const cleanup = hookHarness.effects[0]()
-    expect(cleanup).toEqual(expect.any(Function))
+    const store = hookHarness.externalStores[0]
+    expect(store.getServerSnapshot()).toBe(store.getServerSnapshot())
+    const cleanup = store.subscribe(jest.fn())
     await flush()
-    expect(hookHarness.stateValues[0]).toEqual({ state: adapterState, loading: false, error: null })
+    expect(store.getSnapshot()).toEqual({ state: currentAdapterState, loading: false, error: null })
+    cleanup()
   })
 
   test('resets readiness when the provider manager is replaced', async () => {
-    const firstManager = manager({ readiness: jest.fn().mockResolvedValue({ state: 'ready' }) })
-    const secondReadiness = deferred()
-    const secondManager = manager({ readiness: jest.fn(() => secondReadiness.promise) })
+    const firstManager = manager({
+      readiness: jest.fn(),
+      adapter: {
+        watchState: jest.fn().mockResolvedValue(
+          adapterWatch(
+            adapterState(),
+            (async function* () {
+              await new Promise(() => undefined)
+            })()
+          )
+        )
+      }
+    })
+    const secondManager = manager({
+      readiness: jest.fn(),
+      adapter: {
+        watchState: jest.fn().mockResolvedValue(
+          adapterWatch(
+            adapterState({ backendGeneration: 'backend-2' }),
+            (async function* () {
+              await new Promise(() => undefined)
+            })()
+          )
+        )
+      }
+    })
 
     hookHarness.contextValue = { manager: firstManager, loading: false, error: null }
     expect(useBleReadiness()).toEqual({ readiness: null, loading: true, error: null })
-    const firstCleanup = hookHarness.effects[0]()
+    const firstStore = hookHarness.externalStores[0]
+    const firstCleanup = firstStore.subscribe(jest.fn())
     await flush()
-    expect(hookHarness.stateValues[0]).toEqual({ readiness: { state: 'ready' }, loading: false, error: null })
+    expect(firstStore.getSnapshot()).toMatchObject({ readiness: { state: 'ready' }, loading: false, error: null })
 
     firstCleanup()
     hookHarness.rerender()
     hookHarness.contextValue = { manager: secondManager, loading: false, error: null }
     expect(useBleReadiness()).toEqual({ readiness: null, loading: true, error: null })
-    const secondCleanup = hookHarness.effects[0]()
+    const secondStore = hookHarness.externalStores[0]
+    const secondCleanup = secondStore.subscribe(jest.fn())
     await flush()
-    expect(hookHarness.stateValues[0]).toEqual({ readiness: null, loading: true, error: null })
-
-    secondReadiness.resolve({ state: 'ready' })
-    await flush()
-    expect(hookHarness.stateValues[0]).toEqual({ readiness: { state: 'ready' }, loading: false, error: null })
+    expect(secondStore.getSnapshot()).toMatchObject({ readiness: { state: 'ready' }, loading: false, error: null })
     secondCleanup()
+  })
+
+  test('seeds the initial adapter snapshot, shares one watch, and stops after the final unsubscribe', async () => {
+    const initial = adapterState()
+    const next = deferred()
+    const watch = adapterWatch(
+      initial,
+      (async function* () {
+        yield { kind: 'value', value: await next.promise }
+      })()
+    )
+    const createdManager = manager({ adapter: { watchState: jest.fn().mockResolvedValue(watch) } })
+    hookHarness.contextValue = { manager: createdManager, loading: false, error: null }
+
+    useAdapterState()
+    const firstStore = hookHarness.externalStores[0]
+    hookHarness.rerender()
+    useAdapterState()
+    const secondStore = hookHarness.externalStores[0]
+    const firstListener = jest.fn()
+    const secondListener = jest.fn()
+    const firstCleanup = firstStore.subscribe(firstListener)
+    const secondCleanup = secondStore.subscribe(secondListener)
+
+    await flush()
+    expect(createdManager.adapter.watchState).toHaveBeenCalledTimes(1)
+    expect(firstStore.getSnapshot().state).toBe(initial)
+    expect(secondStore.getSnapshot()).toBe(firstStore.getSnapshot())
+
+    const updated = adapterState({ updatedAt: 2 })
+    next.resolve(updated)
+    await flush()
+    expect(firstStore.getSnapshot().state).toBe(updated)
+    expect(secondStore.getSnapshot()).toBe(firstStore.getSnapshot())
+
+    firstCleanup()
+    await flush()
+    expect(watch.stop).not.toHaveBeenCalled()
+    secondCleanup()
+    await flush()
+    expect(watch.stop).toHaveBeenCalledTimes(1)
+  })
+
+  test('reports a watch cleanup release failure when the final subscriber leaves', async () => {
+    const cleanup = { state: 'release-failed', failures: [new Error('watch cleanup failed')] }
+    const watch = adapterWatch(
+      adapterState(),
+      (async function* () {
+        await new Promise(() => undefined)
+      })()
+    )
+    watch.stop.mockResolvedValue(cleanup)
+    const onError = jest.fn()
+    hookHarness.errorContextValue = onError
+    const createdManager = manager({ adapter: { watchState: jest.fn().mockResolvedValue(watch) } })
+    hookHarness.contextValue = { manager: createdManager, loading: false, error: null }
+
+    useAdapterState()
+    const store = hookHarness.externalStores[0]
+    const unsubscribe = store.subscribe(jest.fn())
+    await flush()
+    unsubscribe()
+    await flush()
+
+    expect(onError).toHaveBeenCalledWith(expect.objectContaining({ cleanup }))
+  })
+
+  test('suppresses transitions from a stopped manager watch after replacement', async () => {
+    const staleTransition = deferred()
+    const staleWatch = adapterWatch(
+      adapterState(),
+      (async function* () {
+        yield { kind: 'value', value: await staleTransition.promise }
+      })()
+    )
+    const current = adapterState({ backendGeneration: 'backend-2' })
+    const currentWatch = adapterWatch(
+      current,
+      (async function* () {
+        await new Promise(() => undefined)
+      })()
+    )
+    const firstManager = manager({ adapter: { watchState: jest.fn().mockResolvedValue(staleWatch) } })
+    const secondManager = manager({ adapter: { watchState: jest.fn().mockResolvedValue(currentWatch) } })
+
+    hookHarness.contextValue = { manager: firstManager, loading: false, error: null }
+    useAdapterState()
+    const firstStore = hookHarness.externalStores[0]
+    const unsubscribeFirst = firstStore.subscribe(jest.fn())
+    await flush()
+    unsubscribeFirst()
+
+    hookHarness.rerender()
+    hookHarness.contextValue = { manager: secondManager, loading: false, error: null }
+    useAdapterState()
+    const secondStore = hookHarness.externalStores[0]
+    const unsubscribeSecond = secondStore.subscribe(jest.fn())
+    await flush()
+
+    staleTransition.resolve(adapterState({ updatedAt: 99 }))
+    await flush()
+    expect(secondStore.getSnapshot().state).toBe(current)
+    unsubscribeSecond()
+  })
+
+  test('refreshes capabilities only when the adapter backend generation changes', async () => {
+    const ordinary = deferred()
+    const regenerated = deferred()
+    const firstCapability = { id: 'scan', state: 'supported', limitations: [] }
+    const secondCapability = { id: 'scan', state: 'limited', limitations: ['restarted'] }
+    const watch = adapterWatch(
+      adapterState(),
+      (async function* () {
+        yield { kind: 'value', value: await ordinary.promise }
+        yield { kind: 'value', value: await regenerated.promise }
+      })()
+    )
+    const capabilityGet = jest.fn().mockReturnValueOnce(firstCapability).mockReturnValueOnce(secondCapability)
+    const createdManager = manager({
+      adapter: { watchState: jest.fn().mockResolvedValue(watch) },
+      capabilities: { get: capabilityGet }
+    })
+    hookHarness.contextValue = { manager: createdManager, loading: false, error: null }
+
+    expect(useBleCapability('scan')).toBe(firstCapability)
+    const store = hookHarness.externalStores[0]
+    const unsubscribe = store.subscribe(jest.fn())
+    await flush()
+    expect(store.getSnapshot()).toBe(firstCapability)
+
+    ordinary.resolve(adapterState({ updatedAt: 2 }))
+    await flush()
+    expect(capabilityGet).toHaveBeenCalledTimes(1)
+    expect(store.getSnapshot()).toBe(firstCapability)
+
+    regenerated.resolve(adapterState({ backendGeneration: 'backend-2', updatedAt: 3 }))
+    await flush()
+    expect(capabilityGet).toHaveBeenCalledTimes(2)
+    expect(store.getSnapshot()).toBe(secondCapability)
+    unsubscribe()
+  })
+
+  test('derives Expo readiness from the watched adapter snapshot and rejects non-Expo managers', async () => {
+    const initial = adapterState()
+    const next = deferred()
+    const watch = adapterWatch(
+      initial,
+      (async function* () {
+        yield { kind: 'value', value: await next.promise }
+      })()
+    )
+    const readiness = jest.fn()
+    const expoManager = manager({
+      readiness,
+      adapter: { watchState: jest.fn().mockResolvedValue(watch) }
+    })
+    hookHarness.contextValue = { manager: expoManager, loading: false, error: null }
+
+    expect(useBleReadiness()).toEqual({ readiness: null, loading: true, error: null })
+    const store = hookHarness.externalStores[0]
+    const unsubscribe = store.subscribe(jest.fn())
+    await flush()
+    expect(store.getSnapshot().readiness.adapter).toBe(initial)
+    expect(readiness).not.toHaveBeenCalled()
+
+    const updated = adapterState({ power: 'off', updatedAt: 2 })
+    next.resolve(updated)
+    await flush()
+    expect(store.getSnapshot().readiness.adapter).toBe(updated)
+    expect(store.getSnapshot().readiness.state).toBe('action-required')
+    unsubscribe()
+
+    hookHarness.rerender()
+    const bareManager = manager()
+    hookHarness.contextValue = { manager: bareManager, loading: false, error: null }
+    expect(useBleReadiness()).toEqual({
+      readiness: null,
+      loading: false,
+      error: new Error('BLE readiness is available only from an Expo host manager.')
+    })
+    expect(bareManager.adapter.watchState).not.toHaveBeenCalled()
   })
 
   test('resets connection state when the observed connection is replaced', async () => {
@@ -455,14 +714,18 @@ describe('React host surface', () => {
   test('resets characteristic value when the observed characteristic is replaced', async () => {
     const firstValue = { value: new Uint8Array([1]), delivery: 'notification', observedAtMonotonicMs: 1, sequence: 1 }
     const secondValue = { value: new Uint8Array([2]), delivery: 'notification', observedAtMonotonicMs: 2, sequence: 2 }
-    const firstSubscription = characteristicSubscription((async function* () {
-      yield { kind: 'value', value: firstValue }
-      await new Promise(() => undefined)
-    })())
-    const secondSubscription = characteristicSubscription((async function* () {
-      yield { kind: 'value', value: secondValue }
-      await new Promise(() => undefined)
-    })())
+    const firstSubscription = characteristicSubscription(
+      (async function* () {
+        yield { kind: 'value', value: firstValue }
+        await new Promise(() => undefined)
+      })()
+    )
+    const secondSubscription = characteristicSubscription(
+      (async function* () {
+        yield { kind: 'value', value: secondValue }
+        await new Promise(() => undefined)
+      })()
+    )
     const firstCharacteristic = { subscribe: jest.fn().mockResolvedValue(firstSubscription) }
     const secondCharacteristic = { subscribe: jest.fn().mockResolvedValue(secondSubscription) }
 
@@ -542,10 +805,12 @@ describe('React host surface', () => {
   })
 
   test('surfaces scan overflow notices in the result error', async () => {
-    const session = scanSession((async function* () {
-      yield overflowNotice()
-      yield { kind: 'terminal' }
-    })())
+    const session = scanSession(
+      (async function* () {
+        yield overflowNotice()
+        yield { kind: 'terminal' }
+      })()
+    )
     const createdManager = manager({ scan: jest.fn().mockResolvedValue(session) })
     hookHarness.contextValue = { manager: createdManager, loading: false, error: null }
 
@@ -596,10 +861,12 @@ describe('React host surface', () => {
   })
 
   test('surfaces characteristic overflow notices in the result error', async () => {
-    const subscription = characteristicSubscription((async function* () {
-      yield overflowNotice()
-      yield { kind: 'terminal' }
-    })())
+    const subscription = characteristicSubscription(
+      (async function* () {
+        yield overflowNotice()
+        yield { kind: 'terminal' }
+      })()
+    )
     const characteristic = { subscribe: jest.fn().mockResolvedValue(subscription) }
 
     useCharacteristicValue(characteristic)
