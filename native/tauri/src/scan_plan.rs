@@ -85,7 +85,12 @@ struct Predicate {
 
 pub(crate) fn decode_normalized_scan_query(value: &IpcValue) -> Result<DecodedScanQuery, String> {
     let query = object_ref(value, "normalized scan query")?;
-    exact_keys(query, &["anyOf", "exclude", "digest"], &[], "normalized scan query")?;
+    exact_keys(
+        query,
+        &["anyOf", "exclude", "digest"],
+        &[],
+        "normalized scan query",
+    )?;
     let any_of = parse_clause_list(query, "anyOf")?;
     let exclude = parse_clause_list(query, "exclude")?;
     let supplied_digest = string_field(query, "digest", "normalized scan query digest")?;
@@ -161,8 +166,16 @@ pub(crate) fn diagnostic_scan_plan(query: &DecodedScanQuery) -> IpcValue {
         .iter()
         .map(predicate_wire)
         .collect::<Vec<_>>();
-    let predicates = query.predicates.iter().map(predicate_wire).collect::<Vec<_>>();
-    let unavailable = query.unavailable.iter().map(predicate_wire).collect::<Vec<_>>();
+    let predicates = query
+        .predicates
+        .iter()
+        .map(predicate_wire)
+        .collect::<Vec<_>>();
+    let unavailable = query
+        .unavailable
+        .iter()
+        .map(predicate_wire)
+        .collect::<Vec<_>>();
     let estimated_cost = if query.native_service_uuids.is_empty() {
         "high"
     } else {
@@ -203,13 +216,20 @@ fn parse_clause_list(
         Some(IpcValue::Null) => Ok(None),
         Some(IpcValue::Array(values)) if !values.is_empty() => {
             if values.len() > MAX_QUERY_CLAUSES {
-                return Err(format!("normalized scan query {key} exceeds the clause count"));
+                return Err(format!(
+                    "normalized scan query {key} exceeds the clause count"
+                ));
             }
-            let mut clauses = values.iter().map(parse_clause).collect::<Result<Vec<_>, _>>()?;
+            let mut clauses = values
+                .iter()
+                .map(parse_clause)
+                .collect::<Result<Vec<_>, _>>()?;
             clauses.sort_by_key(clause_canonical_json);
             Ok(Some(clauses))
         }
-        _ => Err(format!("normalized scan query {key} must be null or non-empty")),
+        _ => Err(format!(
+            "normalized scan query {key} must be null or non-empty"
+        )),
     }
 }
 
@@ -265,7 +285,10 @@ fn parse_peers(value: Option<&IpcValue>) -> Result<Option<Vec<PeerReference>>, S
     match value {
         Some(IpcValue::Null) => Ok(None),
         Some(IpcValue::Array(values)) => {
-            let mut peers = values.iter().map(parse_peer).collect::<Result<Vec<_>, _>>()?;
+            let mut peers = values
+                .iter()
+                .map(parse_peer)
+                .collect::<Result<Vec<_>, _>>()?;
             peers.sort_by_key(peer_canonical_json);
             peers.dedup_by(|left, right| peer_canonical_json(left) == peer_canonical_json(right));
             Ok(Some(peers))
@@ -276,7 +299,12 @@ fn parse_peers(value: Option<&IpcValue>) -> Result<Option<Vec<PeerReference>>, S
 
 fn parse_peer(value: &IpcValue) -> Result<PeerReference, String> {
     let peer = object_ref(value, "normalized scan peer")?;
-    exact_keys(peer, &["version", "backendId", "scope", "opaqueId"], &[], "normalized scan peer")?;
+    exact_keys(
+        peer,
+        &["version", "backendId", "scope", "opaqueId"],
+        &[],
+        "normalized scan peer",
+    )?;
     if number_field(peer, "version", "normalized scan peer")?.as_u64() != Some(1) {
         return Err("normalized scan peer version is invalid".to_owned());
     }
@@ -317,9 +345,8 @@ fn parse_uuid_list(value: Option<&IpcValue>, field: &str) -> Result<Vec<String>,
     let mut result = values
         .iter()
         .map(|value| match value {
-            IpcValue::String(value) if !value.is_empty() => {
-                canonical_uuid(value).ok_or_else(|| format!("normalized scan clause {field} UUID is invalid"))
-            }
+            IpcValue::String(value) if !value.is_empty() => canonical_uuid(value)
+                .ok_or_else(|| format!("normalized scan clause {field} UUID is invalid")),
             _ => Err(format!("normalized scan clause {field} UUID is invalid")),
         })
         .collect::<Result<Vec<_>, _>>()?;
@@ -336,16 +363,25 @@ fn parse_name_field(value: Option<&IpcValue>) -> Result<Option<NameField>, Strin
         return Ok(None);
     }
     let field = object_ref(value, "normalized scan clause names")?;
-    exact_keys(field, &["exact", "prefixes"], &[], "normalized scan clause names")?;
+    exact_keys(
+        field,
+        &["exact", "prefixes"],
+        &[],
+        "normalized scan clause names",
+    )?;
     let exact = parse_non_empty_strings(field.get("exact"), "normalized scan names exact")?;
-    let prefixes = parse_non_empty_strings(field.get("prefixes"), "normalized scan names prefixes")?;
+    let prefixes =
+        parse_non_empty_strings(field.get("prefixes"), "normalized scan names prefixes")?;
     if exact.is_empty() && prefixes.is_empty() {
         return Err("normalized scan clause names is empty".to_owned());
     }
     Ok(Some(NameField { exact, prefixes }))
 }
 
-fn parse_non_empty_strings(value: Option<&IpcValue>, operation: &str) -> Result<Vec<String>, String> {
+fn parse_non_empty_strings(
+    value: Option<&IpcValue>,
+    operation: &str,
+) -> Result<Vec<String>, String> {
     let Some(IpcValue::Array(values)) = value else {
         return Err(format!("{operation} is invalid"));
     };
@@ -374,7 +410,11 @@ where
     if matches!(value, IpcValue::Null) {
         return Ok(None);
     }
-    let field_name = if service_data { "serviceData" } else { "manufacturerData" };
+    let field_name = if service_data {
+        "serviceData"
+    } else {
+        "manufacturerData"
+    };
     let field = object_ref(value, field_name)?;
     exact_keys(field, &["any", "all"], &[], field_name)?;
     let any = parse_patterns(field.get("any"), field_name)?;
@@ -436,7 +476,8 @@ impl ParsePattern for ServicePattern {
             "normalized service pattern",
         )?;
         let service = string_field(pattern, "service", "normalized service pattern")?;
-        let service = canonical_uuid(&service).ok_or_else(|| "normalized service UUID is invalid".to_owned())?;
+        let service = canonical_uuid(&service)
+            .ok_or_else(|| "normalized service UUID is invalid".to_owned())?;
         let (data_prefix, mask) = parse_bytes_and_mask(pattern, "normalized service pattern")?;
         Ok(Self {
             service,
@@ -467,7 +508,10 @@ fn parse_patterns<Pattern: ParsePattern>(
     let Some(IpcValue::Array(values)) = value else {
         return Err(format!("normalized scan {field} patterns are invalid"));
     };
-    let mut patterns = values.iter().map(Pattern::parse).collect::<Result<Vec<_>, _>>()?;
+    let mut patterns = values
+        .iter()
+        .map(Pattern::parse)
+        .collect::<Result<Vec<_>, _>>()?;
     patterns.sort_by_key(ParsePattern::canonical_json);
     Ok(patterns)
 }
@@ -484,7 +528,9 @@ fn parse_bytes_and_mask(
     let mask = match pattern.get("mask") {
         None => None,
         Some(IpcValue::Bytes(value))
-            if data_prefix.as_ref().is_some_and(|prefix| prefix.len() == value.len()) =>
+            if data_prefix
+                .as_ref()
+                .is_some_and(|prefix| prefix.len() == value.len()) =>
         {
             Some(value.clone())
         }
@@ -521,7 +567,9 @@ fn parse_rssi(value: Option<&IpcValue>) -> Result<Option<RssiField>, String> {
 fn optional_number(value: Option<&IpcValue>, operation: &str) -> Result<Option<Number>, String> {
     match value {
         None => Ok(None),
-        Some(IpcValue::Number(value)) if value.as_f64().is_some_and(f64::is_finite) => Ok(Some(value.clone())),
+        Some(IpcValue::Number(value)) if value.as_f64().is_some_and(f64::is_finite) => {
+            Ok(Some(value.clone()))
+        }
         _ => Err(format!("{operation} is invalid")),
     }
 }
@@ -563,7 +611,10 @@ fn is_fully_pushed_service_predicate(
     any_of: Option<&[Clause]>,
     native_service_uuids: &[String],
 ) -> bool {
-    if predicate.clause_set != "anyOf" || predicate.field != "services" || predicate.operator != "all" {
+    if predicate.clause_set != "anyOf"
+        || predicate.field != "services"
+        || predicate.operator != "all"
+    {
         return false;
     }
     let Some(clause) = any_of.and_then(|clauses| clauses.get(predicate.clause_index)) else {
@@ -622,10 +673,20 @@ fn describe_clause_set(
         }
         if let Some(data) = &clause.manufacturer_data {
             if !data.any.is_empty() {
-                predicates.push(predicate(clause_set, clause_index, "manufacturerData", "any"));
+                predicates.push(predicate(
+                    clause_set,
+                    clause_index,
+                    "manufacturerData",
+                    "any",
+                ));
             }
             if !data.all.is_empty() {
-                predicates.push(predicate(clause_set, clause_index, "manufacturerData", "all"));
+                predicates.push(predicate(
+                    clause_set,
+                    clause_index,
+                    "manufacturerData",
+                    "all",
+                ));
             }
         }
         if let Some(data) = &clause.service_data {
@@ -694,11 +755,17 @@ fn clause_wire(clause: &Clause) -> IpcValue {
         ),
         (
             "services",
-            clause.services.as_ref().map_or(IpcValue::Null, uuid_field_wire),
+            clause
+                .services
+                .as_ref()
+                .map_or(IpcValue::Null, uuid_field_wire),
         ),
         (
             "names",
-            clause.names.as_ref().map_or(IpcValue::Null, name_field_wire),
+            clause
+                .names
+                .as_ref()
+                .map_or(IpcValue::Null, name_field_wire),
         ),
         (
             "manufacturerData",
@@ -714,7 +781,10 @@ fn clause_wire(clause: &Clause) -> IpcValue {
                 .as_ref()
                 .map_or(IpcValue::Null, data_field_service_wire),
         ),
-        ("rssi", clause.rssi.as_ref().map_or(IpcValue::Null, rssi_wire)),
+        (
+            "rssi",
+            clause.rssi.as_ref().map_or(IpcValue::Null, rssi_wire),
+        ),
     ];
     entries.push((
         "connectable",
@@ -736,11 +806,23 @@ fn uuid_field_wire(field: &UuidField) -> IpcValue {
     ipc_object([
         (
             "any",
-            IpcValue::Array(field.any.iter().map(|value| string(value.as_str())).collect()),
+            IpcValue::Array(
+                field
+                    .any
+                    .iter()
+                    .map(|value| string(value.as_str()))
+                    .collect(),
+            ),
         ),
         (
             "all",
-            IpcValue::Array(field.all.iter().map(|value| string(value.as_str())).collect()),
+            IpcValue::Array(
+                field
+                    .all
+                    .iter()
+                    .map(|value| string(value.as_str()))
+                    .collect(),
+            ),
         ),
     ])
 }
@@ -749,11 +831,23 @@ fn name_field_wire(field: &NameField) -> IpcValue {
     ipc_object([
         (
             "exact",
-            IpcValue::Array(field.exact.iter().map(|value| string(value.as_str())).collect()),
+            IpcValue::Array(
+                field
+                    .exact
+                    .iter()
+                    .map(|value| string(value.as_str()))
+                    .collect(),
+            ),
         ),
         (
             "prefixes",
-            IpcValue::Array(field.prefixes.iter().map(|value| string(value.as_str())).collect()),
+            IpcValue::Array(
+                field
+                    .prefixes
+                    .iter()
+                    .map(|value| string(value.as_str()))
+                    .collect(),
+            ),
         ),
     ])
 }
@@ -768,8 +862,14 @@ fn data_field_service_wire(field: &DataField<ServicePattern>) -> IpcValue {
 
 fn data_field_wire<Pattern: PatternWire>(any: &[Pattern], all: &[Pattern]) -> IpcValue {
     ipc_object([
-        ("any", IpcValue::Array(any.iter().map(PatternWire::wire).collect())),
-        ("all", IpcValue::Array(all.iter().map(PatternWire::wire).collect())),
+        (
+            "any",
+            IpcValue::Array(any.iter().map(PatternWire::wire).collect()),
+        ),
+        (
+            "all",
+            IpcValue::Array(all.iter().map(PatternWire::wire).collect()),
+        ),
     ])
 }
 
@@ -779,10 +879,7 @@ trait PatternWire {
 
 impl PatternWire for ManufacturerPattern {
     fn wire(&self) -> IpcValue {
-        let mut entries = vec![(
-            "companyId",
-            IpcValue::Number(Number::from(self.company_id)),
-        )];
+        let mut entries = vec![("companyId", IpcValue::Number(Number::from(self.company_id)))];
         if let Some(prefix) = &self.data_prefix {
             entries.push(("dataPrefix", IpcValue::Bytes(prefix.clone())));
         }
@@ -838,16 +935,19 @@ fn canonical_query_json(any_of: Option<&[Clause]>, exclude: Option<&[Clause]>) -
 }
 
 fn canonical_clause_list_json(clauses: Option<&[Clause]>) -> String {
-    clauses.map_or_else(|| "null".to_owned(), |clauses| {
-        format!(
-            "[{}]",
-            clauses
-                .iter()
-                .map(clause_canonical_json)
-                .collect::<Vec<_>>()
-                .join(",")
-        )
-    })
+    clauses.map_or_else(
+        || "null".to_owned(),
+        |clauses| {
+            format!(
+                "[{}]",
+                clauses
+                    .iter()
+                    .map(clause_canonical_json)
+                    .collect::<Vec<_>>()
+                    .join(",")
+            )
+        },
+    )
 }
 
 fn clause_canonical_json(clause: &Clause) -> String {
@@ -860,7 +960,11 @@ fn clause_canonical_json(clause: &Clause) -> String {
             "peers",
             Some(format!(
                 "[{}]",
-                peers.iter().map(peer_canonical_json).collect::<Vec<_>>().join(",")
+                peers
+                    .iter()
+                    .map(peer_canonical_json)
+                    .collect::<Vec<_>>()
+                    .join(",")
             )),
         );
     }
@@ -921,24 +1025,54 @@ fn peer_canonical_json(peer: &PeerReference) -> String {
 fn uuid_field_canonical_json(field: &UuidField) -> String {
     format!(
         "{{\"any\":[{}],\"all\":[{}]}}",
-        field.any.iter().map(|value| json_string(value)).collect::<Vec<_>>().join(","),
-        field.all.iter().map(|value| json_string(value)).collect::<Vec<_>>().join(",")
+        field
+            .any
+            .iter()
+            .map(|value| json_string(value))
+            .collect::<Vec<_>>()
+            .join(","),
+        field
+            .all
+            .iter()
+            .map(|value| json_string(value))
+            .collect::<Vec<_>>()
+            .join(",")
     )
 }
 
 fn name_field_canonical_json(field: &NameField) -> String {
     format!(
         "{{\"exact\":[{}],\"prefixes\":[{}]}}",
-        field.exact.iter().map(|value| json_string(value)).collect::<Vec<_>>().join(","),
-        field.prefixes.iter().map(|value| json_string(value)).collect::<Vec<_>>().join(",")
+        field
+            .exact
+            .iter()
+            .map(|value| json_string(value))
+            .collect::<Vec<_>>()
+            .join(","),
+        field
+            .prefixes
+            .iter()
+            .map(|value| json_string(value))
+            .collect::<Vec<_>>()
+            .join(",")
     )
 }
 
 fn data_field_canonical_json<Pattern: ParsePattern>(field: &DataField<Pattern>) -> String {
     format!(
         "{{\"any\":[{}],\"all\":[{}]}}",
-        field.any.iter().map(ParsePattern::canonical_json).collect::<Vec<_>>().join(","),
-        field.all.iter().map(ParsePattern::canonical_json).collect::<Vec<_>>().join(",")
+        field
+            .any
+            .iter()
+            .map(ParsePattern::canonical_json)
+            .collect::<Vec<_>>()
+            .join(","),
+        field
+            .all
+            .iter()
+            .map(ParsePattern::canonical_json)
+            .collect::<Vec<_>>()
+            .join(",")
     )
 }
 
@@ -991,7 +1125,9 @@ fn canonical_uuid(value: &str) -> Option<String> {
         8 => format!("{value}-0000-1000-8000-00805f9b34fb"),
         _ => value.to_owned(),
     };
-    Uuid::parse_str(&expanded).ok().map(|value| value.to_string())
+    Uuid::parse_str(&expanded)
+        .ok()
+        .map(|value| value.to_string())
 }
 
 fn bytes_to_hex(bytes: &[u8]) -> String {
@@ -1018,7 +1154,10 @@ fn exact_keys(
     Ok(())
 }
 
-fn object_ref<'a>(value: &'a IpcValue, operation: &str) -> Result<&'a BTreeMap<String, IpcValue>, String> {
+fn object_ref<'a>(
+    value: &'a IpcValue,
+    operation: &str,
+) -> Result<&'a BTreeMap<String, IpcValue>, String> {
     match value {
         IpcValue::Object(value) => Ok(value),
         _ => Err(format!("{operation} must be an object")),
@@ -1115,24 +1254,35 @@ mod tests {
 
     #[test]
     fn trusted_decoder_rejects_a_tampered_query_digest() {
-        let error = decode_normalized_scan_query(&query_with_digest("scan-query-v1:0000000000000000"))
-            .expect_err("tampered query digest must fail closed");
+        let error =
+            decode_normalized_scan_query(&query_with_digest("scan-query-v1:0000000000000000"))
+                .expect_err("tampered query digest must fail closed");
         assert_eq!(error, "normalized scan query digest is invalid");
     }
 
     #[test]
     fn trusted_plan_projects_only_common_positive_services_and_retains_residual() {
-        let decoded = decode_normalized_scan_query(&query_with_digest(&canonical_service_query_digest()))
-            .expect("canonical query must decode");
+        let decoded =
+            decode_normalized_scan_query(&query_with_digest(&canonical_service_query_digest()))
+                .expect("canonical query must decode");
         let plan = diagnostic_scan_plan(&decoded);
 
-        assert_eq!(decoded.native_service_uuids, vec!["0000180d-0000-1000-8000-00805f9b34fb"]);
+        assert_eq!(
+            decoded.native_service_uuids,
+            vec!["0000180d-0000-1000-8000-00805f9b34fb"]
+        );
         assert!(!matches!(plan, IpcValue::Object(ref value) if value.contains_key("nativeFilter")));
         let IpcValue::Object(fields) = plan else {
             panic!("diagnostic scan plan must be an object")
         };
-        assert_eq!(fields.get("queryDigest"), Some(&string(decoded.digest.as_str())));
-        assert_eq!(fields.get("residualQueryDigest"), Some(&string(decoded.digest.as_str())));
+        assert_eq!(
+            fields.get("queryDigest"),
+            Some(&string(decoded.digest.as_str()))
+        );
+        assert_eq!(
+            fields.get("residualQueryDigest"),
+            Some(&string(decoded.digest.as_str()))
+        );
         assert!(fields.contains_key("residual"));
     }
 }

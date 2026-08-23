@@ -1,8 +1,8 @@
 mod btleplug_dispatcher;
 mod capabilities;
 mod commands;
-mod security_scope;
 mod scan_plan;
+mod security_scope;
 mod wire;
 
 use std::{future::Future, pin::Pin, sync::Arc};
