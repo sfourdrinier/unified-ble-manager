@@ -75,6 +75,8 @@ struct RssiField {
     maximum: Option<Number>,
 }
 
+type BytePair = (Option<Vec<u8>>, Option<Vec<u8>>);
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct Predicate {
     clause_set: &'static str,
@@ -519,7 +521,7 @@ fn parse_patterns<Pattern: ParsePattern>(
 fn parse_bytes_and_mask(
     pattern: &BTreeMap<String, IpcValue>,
     operation: &str,
-) -> Result<(Option<Vec<u8>>, Option<Vec<u8>>), String> {
+) -> Result<BytePair, String> {
     let data_prefix = match pattern.get("dataPrefix") {
         None => None,
         Some(IpcValue::Bytes(value)) if !value.is_empty() => Some(value.clone()),
