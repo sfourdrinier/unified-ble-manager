@@ -2,7 +2,7 @@
 
 # Getting started
 
-**Current prerelease:** `4.0.0-rc.3` is published from exact `main` and is immutable. Stable `4.0.0` remains reserved for the post-PR12 release gate.
+**Current prerelease:** `4.0.0-rc.3` is published from exact `main` and is immutable. The Expo plugin v2 surface described in this PR10 branch is unreleased branch work and becomes published only at RC4; do not change the package version or recreate RC3. RC4 remains reserved for the post-PR10 release gate.
 
 This page gets you to a first scan, connect, read, notify, and teardown on React Native. Other hosts are linked at the bottom. The root import does not turn Bluetooth on.
 
@@ -11,6 +11,7 @@ This page gets you to a first scan, connect, read, notify, and teardown on React
 | You are building | Import | Next page |
 | --- | --- | --- |
 | React Native / Expo | `unified-ble-manager/react-native` | this page |
+| React provider / hooks | `unified-ble-manager/react` | [`README.md`](../README.md#react-provider-and-hooks) |
 | Browser | `unified-ble-manager/web` | [`WEB.md`](WEB.md) |
 | Electron | `electron/main` + `electron/renderer` | [`ELECTRON.md`](ELECTRON.md) |
 | Node on macOS / Windows / Linux | `node/corebluetooth`, `node/winrt`, or `node/bluez` | [`NODE.md`](NODE.md) |
@@ -77,6 +78,15 @@ npx expo prebuild
 npx expo run:ios
 # or: npx expo run:android
 ```
+
+The packed-host proof is narrower than a full Expo app build. After `prepack`,
+`node scripts/ci/packed-host-consumer-check.js` installs the tarball (not the
+source tree) and checks the conditional `./expo`, `./react`, and `./tauri`
+exports through CJS and ESM runtime imports/loadability, with TypeScript
+imports compiled under Bundler and NodeNext resolution. The source-tree CNG
+prebuild and Android debug APK/assembly are separate package/plugin and
+Android compile evidence; Apple/Xcode, EAS, and physical-device proof are not
+implied and require their own host- or device-specific runs.
 
 ### 2. Ask Android for runtime permission
 

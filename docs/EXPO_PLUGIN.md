@@ -7,6 +7,10 @@ start a radio, request runtime permissions during prebuild, or prove physical
 radio/restoration reliability. Expo Go is not a supported BLE execution
 environment because it cannot contain this native module.
 
+The v2 Expo surface documented here is PR10 branch work. The immutable
+`4.0.0-rc.3` package is not recreated or changed; this v2 surface becomes
+published only at RC4 after the PR10 release gate.
+
 ## Installation and development build
 
     bunx expo install unified-ble-manager expo-dev-client
@@ -19,6 +23,13 @@ For EAS development builds:
 
     bunx eas build --profile development --platform ios
     bunx eas build --profile development --platform android
+
+These commands are build recipes, not evidence by themselves. The packed-host
+gate (`pnpm prepack && node scripts/ci/packed-host-consumer-check.js`) proves
+the installed tarball's conditional `./expo`, `./react`, and `./tauri` exports
+by CJS and ESM runtime import/loadability checks and TypeScript imports under
+Bundler and NodeNext resolution. That exact packed export/type/import proof
+does not prove a full Expo application build.
 
 expo is an optional host peer. Bare React Native, Web, Node, Electron, and
 Tauri consumers do not resolve Expo tooling.
@@ -119,6 +130,12 @@ The old flat keys are intentionally rejected:
 - bluetoothAlwaysPermission
 - iosNativeProtocolRestoration
 - androidEnableForegroundService
+
+The example's source-tree CNG prebuild and Android debug APK/assembly are
+separate source/plugin and Android compile evidence. Apple/Xcode and EAS build
+evidence require successful platform-specific runs, while physical-device
+permissions, restoration, background behavior, and radio reliability require
+separate device evidence.
 
 Do not author clientId, hostSessionScope, namespace, or protocol epoch values
 in application configuration. Those are native protocol identities, not

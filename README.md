@@ -6,7 +6,7 @@
 
 It is an evolution of `react-native-ble-plx`, rewritten as a **cross-platform unified product**. One bytes-first BLE model and lifecycle semantics across hosts, with host-specific construction and ownership. The root package never picks a radio for you, and it will not quietly fall back to a simulator or a different backend.
 
-**Current prerelease:** `4.0.0-rc.3` is published from exact `main` and is immutable. Package SemVer and backend support labels are independent: each radio backend stays Experimental until artifact-bound physical-hardware validation says otherwise. RC4 remains reserved for the post-PR10 release gate. See [`docs/PLATFORMS.md`](docs/PLATFORMS.md).
+**Current prerelease:** `4.0.0-rc.3` is published from exact `main` and is immutable. The Expo plugin v2 surface described in this PR10 branch is unreleased branch work; it becomes published only at RC4. Do not change the package version or recreate RC3. Package SemVer and backend support labels are independent: each radio backend stays Experimental until artifact-bound physical-hardware validation says otherwise. RC4 remains reserved for the post-PR10 release gate. See [`docs/PLATFORMS.md`](docs/PLATFORMS.md).
 
 > Sponsored by [Imagi Explain](https://imagiexplain.com) — researched, narrated whiteboard explainers from a prompt, a PDF, or your notes.
 
@@ -47,6 +47,7 @@ The root import selects no radio. Import the host you actually run.
 | ---------------------------------------- | ------------------------------------------------------------------------------ |
 | `unified-ble-manager`                    | Host-neutral manager, handles, helpers, and shared types                       |
 | `unified-ble-manager/react-native`       | React Native Android / Apple manager                                           |
+| `unified-ble-manager/react`               | React provider, hooks, and React-facing type utilities                         |
 | `unified-ble-manager/expo`               | Expo development-build manager, readiness, and native configuration checks     |
 | `unified-ble-manager/web`                | Web Bluetooth chooser + matched manager                                        |
 | `unified-ble-manager/electron/main`      | Trusted Electron-main radio + IPC router                                       |
@@ -63,6 +64,12 @@ The root import selects no radio. Import the host you actually run.
 Profile subpaths: `profiles/commands`, `profiles/standard-commands`, `profiles/heart-rate`, `profiles/battery-service`, `profiles/device-information`, `profiles/health-thermometer`, `profiles/blood-pressure`, `profiles/ieee-11073`.
 
 Deep imports are unsupported.
+
+## React provider and hooks
+
+`unified-ble-manager/react` supplies the provider and hooks; create the manager
+with the explicit host entrypoint for the application (`react-native`, `expo`,
+or another supported host). It does not select or load a radio backend.
 
 ## Create a React Native manager
 
@@ -96,6 +103,20 @@ const readiness = await ble.readiness()
 // Android only: system UI association, not bonding or an active connection.
 const associated = await ble.association.associate({ name: 'Sensor' })
 ```
+
+### PR10 Expo proof boundary
+
+The packed-host gate (`pnpm prepack && node scripts/ci/packed-host-consumer-check.js`)
+installs the generated tarball into an isolated consumer and proves the
+conditional `./expo`, `./react`, and `./tauri` exports: CJS and ESM runtime
+imports/loadability, plus TypeScript imports under Bundler and NodeNext
+resolution. It is an exact packed export/type/import proof, not a full Expo
+application build.
+
+The `example-expo` source-tree CNG prebuild and Android debug APK/assembly are
+separate source/plugin and Android compile evidence. Apple/Xcode, EAS builds,
+and physical-device permissions, restoration, background behavior, and radio
+reliability each require their own successful host- or device-specific proof.
 
 ## One complete loop
 

@@ -24,6 +24,21 @@ const PACKED_HOST_CONSUMER_CONTRACTS = Object.freeze({
       'createTauriBleManagerWithEnvironment',
       'createTauriBleProvider'
     ])
+  }),
+  react: Object.freeze({
+    runtimeExports: Object.freeze([
+      'BleProvider',
+      'getAdapterState',
+      'getBleCapability',
+      'getBleReadiness',
+      'useAdapterState',
+      'useBle',
+      'useBleCapability',
+      'useBleReadiness',
+      'useCharacteristicValue',
+      'useConnectionState',
+      'useDiscoveredPeers'
+    ])
   })
 })
 
@@ -54,9 +69,10 @@ function collectRuntimeTargets(value, targets = []) {
 function derivePackedHostConsumerExports(exportsMap) {
   const result = []
   for (const [exportPath, exportTarget] of Object.entries(exportsMap)) {
-    const matchingHosts = Object.keys(PACKED_HOST_CONSUMER_CONTRACTS).filter(host =>
-      collectRuntimeTargets(exportTarget.import).some(target => target.endsWith(`/lib/module/${host}.js`)) &&
-      collectRuntimeTargets(exportTarget.require).some(target => target.endsWith(`/lib/commonjs/${host}.js`))
+    const matchingHosts = Object.keys(PACKED_HOST_CONSUMER_CONTRACTS).filter(
+      host =>
+        collectRuntimeTargets(exportTarget.import).some(target => target.endsWith(`/lib/module/${host}.js`)) &&
+        collectRuntimeTargets(exportTarget.require).some(target => target.endsWith(`/lib/commonjs/${host}.js`))
     )
     if (matchingHosts.length > 1) {
       throw new Error(`package export maps to multiple packed host contracts: ${exportPath}`)
@@ -110,9 +126,36 @@ function writePeerStubs(tmp) {
   fs.mkdirSync(reactNativeStub)
   fs.writeFileSync(
     path.join(reactStub, 'package.json'),
-    JSON.stringify({ name: 'react', version: '19.0.0', main: 'index.js' })
+    JSON.stringify({ name: 'react', version: '19.0.0', main: 'index.js', types: 'index.d.ts' })
   )
-  fs.writeFileSync(path.join(reactStub, 'index.js'), 'module.exports = {}\n')
+  fs.writeFileSync(
+    path.join(reactStub, 'index.js'),
+    [
+      'function createContext(value) { return { Provider: {}, value }; }',
+      'function createElement(type, props, ...children) { return { type, props, children }; }',
+      'function useContext(context) { return context.value; }',
+      'function useEffect() {}',
+      'function useMemo(factory) { return factory(); }',
+      "function useState(initial) { return [typeof initial === 'function' ? initial() : initial, () => {}]; }",
+      'module.exports = { createContext, createElement, useContext, useEffect, useMemo, useState };',
+      ''
+    ].join('\n')
+  )
+  fs.writeFileSync(
+    path.join(reactStub, 'index.d.ts'),
+    [
+      'export type ReactNode = unknown',
+      'export interface ReactElement { readonly type?: unknown; readonly props?: unknown }',
+      'export interface Context<T> { readonly Provider: unknown; readonly value: T }',
+      'export function createContext<T>(value: T): Context<T>',
+      'export function createElement(type: unknown, props: unknown, ...children: readonly unknown[]): ReactElement',
+      'export function useContext<T>(context: Context<T>): T',
+      'export function useEffect(effect: () => void | (() => void), dependencies?: readonly unknown[]): void',
+      'export function useMemo<T>(factory: () => T, dependencies: readonly unknown[]): T',
+      'export function useState<T>(initial: T | (() => T)): [T, (value: T) => void]',
+      ''
+    ].join('\n')
+  )
   fs.writeFileSync(
     path.join(reactNativeStub, 'package.json'),
     JSON.stringify({ name: 'react-native', version: '0.86.0', main: 'index.js', types: 'index.d.ts' })
@@ -136,7 +179,10 @@ function writePeerStubs(tmp) {
 
 function assertInstalledFromTarball(consumer) {
   const packageRoot = fs.realpathSync(path.join(consumer, 'node_modules', rootPackage.name))
-  assert.ok(fs.existsSync(path.join(packageRoot, 'package.json')), `installed package manifest is missing: ${packageRoot}`)
+  assert.ok(
+    fs.existsSync(path.join(packageRoot, 'package.json')),
+    `installed package manifest is missing: ${packageRoot}`
+  )
   const consumerRoot = fs.realpathSync(consumer)
   assert.ok(
     packageRoot.startsWith(path.join(consumerRoot, 'node_modules', rootPackage.name)),
@@ -156,10 +202,13 @@ function writeTypeScriptFixture(consumer, module, moduleResolution) {
       "import type { ExpoBleManagerEnvironment } from 'unified-ble-manager/expo'",
       "import { createTauriBleManager, createTauriBleManagerWithEnvironment, createTauriBleProvider } from 'unified-ble-manager/tauri'",
       "import type { TauriBleManagerEnvironment, TauriBleProvider } from 'unified-ble-manager/tauri'",
+      "import { BleProvider, getAdapterState, getBleCapability, getBleReadiness, useAdapterState, useBle, useBleCapability, useBleReadiness, useCharacteristicValue, useConnectionState, useDiscoveredPeers } from 'unified-ble-manager/react'",
+      "import type { BleProviderProps } from 'unified-ble-manager/react'",
       '',
       'declare const expoEnvironment: ExpoBleManagerEnvironment',
       'declare const tauriEnvironment: TauriBleManagerEnvironment',
       'declare const tauriProvider: TauriBleProvider',
+      'declare const reactEnvironment: BleProviderProps',
       '',
       'void createExpoBleManager',
       'void createExpoBleManagerWithEnvironment(expoEnvironment)',
@@ -167,6 +216,18 @@ function writeTypeScriptFixture(consumer, module, moduleResolution) {
       'void createTauriBleManagerWithEnvironment(tauriEnvironment)',
       'void createTauriBleProvider',
       'void tauriProvider',
+      'void BleProvider',
+      'void getAdapterState',
+      'void getBleCapability',
+      'void getBleReadiness',
+      'void useAdapterState',
+      'void useBle',
+      'void useBleCapability',
+      'void useBleReadiness',
+      'void useCharacteristicValue',
+      'void useConnectionState',
+      'void useDiscoveredPeers',
+      'void reactEnvironment',
       ''
     ].join('\n')
   )
@@ -229,7 +290,7 @@ function runCjsConsumer(consumer, entries) {
   assertions.push(
     "assert.ok(packageRoot.includes(path.join('node_modules', 'unified-ble-manager')), 'CJS consumer uses installed package');"
   )
-  assertions.push("console.log('packed-host-consumer CJS Expo/Tauri imports ok');")
+  assertions.push("console.log('packed-host-consumer CJS Expo/Tauri/React imports ok');")
   run(process.execPath, ['-e', assertions.join('\n')], { cwd: consumer })
 }
 
@@ -252,7 +313,7 @@ function runEsmConsumer(consumer, entries) {
   assertions.push(
     "assert.ok(packageRoot.includes(path.join('node_modules', 'unified-ble-manager')), 'ESM consumer uses installed package');"
   )
-  assertions.push("console.log('packed-host-consumer ESM Expo/Tauri imports ok');")
+  assertions.push("console.log('packed-host-consumer ESM Expo/Tauri/React imports ok');")
   run(process.execPath, ['--input-type=module', '-e', assertions.join('\n')], { cwd: consumer })
 }
 
