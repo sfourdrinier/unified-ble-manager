@@ -94,6 +94,41 @@ describe('Expo factory', () => {
     expect(createReactNativeBleManagerWithEnvironment).not.toHaveBeenCalled()
   })
 
+  test('fails closed when the expected native configuration digest has no actual digest', async () => {
+    await expect(
+      createExpoBleManagerWithEnvironment(
+        environment({
+          executionEnvironment: 'development-build',
+          nativeModuleAvailable: true,
+          expectedConfiguration: { digest: 'expected' }
+        })
+      )
+    ).rejects.toMatchObject({
+      constructor: BleError,
+      code: 'protocol.incompatible',
+      operation: 'expo.runtime.configuration'
+    })
+    expect(createReactNativeBleManagerWithEnvironment).not.toHaveBeenCalled()
+  })
+
+  test('validates direct Expo runtime configuration before RN construction', async () => {
+    await expect(
+      createExpoBleManager(
+        {},
+        {
+          executionEnvironment: 'development-build',
+          nativeModuleAvailable: true,
+          expectedConfiguration: { digest: 'expected' }
+        }
+      )
+    ).rejects.toMatchObject({
+      constructor: BleError,
+      code: 'protocol.incompatible',
+      operation: 'expo.runtime.configuration'
+    })
+    expect(createReactNativeBleManager).not.toHaveBeenCalled()
+  })
+
   test('composes the existing RN manager and adds the Expo runtime surfaces', async () => {
     const manager = {
       adapter: { state: jest.fn().mockResolvedValue(adapterState()) }
@@ -134,6 +169,27 @@ describe('Expo factory', () => {
     ])
     expect(mapExpoReadiness(adapterState({ authorization: 'restricted' })).state).toBe('unavailable')
     expect(mapExpoReadiness(adapterState({ availability: 'unsupported' })).state).toBe('unavailable')
+  })
+
+  test('projects required Android legacy-location policy as guidance without claiming runtime permission state', async () => {
+    const manager = {
+      adapter: { state: jest.fn().mockResolvedValue(adapterState()) }
+    }
+    createReactNativeBleManagerWithEnvironment.mockResolvedValue(manager)
+
+    const result = await createExpoBleManagerWithEnvironment(
+      environment({
+        executionEnvironment: 'development-build',
+        nativeModuleAvailable: true,
+        permissions: { android: { legacyLocation: 'required' } }
+      })
+    )
+
+    await expect(result.readiness()).resolves.toEqual({
+      state: 'action-required',
+      adapter: adapterState(),
+      actions: [{ kind: 'open-settings', target: 'location-services' }]
+    })
   })
 
   test('fails closed when no trusted permission bridge is available', async () => {

@@ -112,6 +112,11 @@ export interface ExpoRuntimeConfiguration {
   readonly nativeModuleAvailable?: boolean
   readonly nativeConfiguration?: { readonly digest: string }
   readonly expectedConfiguration?: { readonly digest: string }
+  readonly permissions?: {
+    readonly android?: {
+      readonly legacyLocation?: 'auto' | 'required' | 'none'
+    }
+  }
   readonly settingsBridge?: ExpoSettingsBridge
   readonly permissionBridge?: ExpoPermissionBridge
 }
@@ -124,9 +129,13 @@ const EXPO_GO_MESSAGE =
   'Expo Go is not supported; create an Expo development build that includes UnifiedBleProtocolControl.'
 
 /** Creates the same RN manager and adds only Expo host ergonomics to it. */
-export async function createExpoBleManager(options: BleManagerCreateOptions = {}): Promise<ExpoBleManager> {
+export async function createExpoBleManager(
+  options: BleManagerCreateOptions = {},
+  runtimeConfiguration?: ExpoRuntimeConfiguration
+): Promise<ExpoBleManager> {
   try {
     normalizeBleManagerCreateOptions(options)
+    assertExpoRuntimeConfiguration(runtimeConfiguration)
     assertDirectExpoRuntime()
     return withExpoRuntime(
       await createReactNativeBleManager(options),
@@ -134,7 +143,8 @@ export async function createExpoBleManager(options: BleManagerCreateOptions = {}
       undefined,
       nativeBackgroundControl(),
       nativeAssociationControl(),
-      nativeRestorationControl()
+      nativeRestorationControl(),
+      runtimeConfiguration
     )
   } catch (error) {
     throw rehydratePublicError(error)
@@ -154,7 +164,8 @@ export async function createExpoBleManagerWithEnvironment(
       expo?.permissionBridge,
       environment.control,
       environment.control,
-      environment.control
+      environment.control,
+      expo
     )
   } catch (error) {
     throw rehydratePublicError(error)
@@ -162,16 +173,19 @@ export async function createExpoBleManagerWithEnvironment(
 }
 
 /** Reads one trusted adapter snapshot and derives deterministic Expo guidance. */
-export async function getExpoBleReadiness(manager: Pick<BleManager, 'adapter'>): Promise<BleReadiness> {
+export async function getExpoBleReadiness(
+  manager: Pick<BleManager, 'adapter'>,
+  configuration?: ExpoRuntimeConfiguration
+): Promise<BleReadiness> {
   try {
-    return mapExpoReadiness(await manager.adapter.state())
+    return mapExpoReadiness(await manager.adapter.state(), configuration)
   } catch (error) {
     throw rehydratePublicError(error)
   }
 }
 
 /** Pure readiness mapping shared by both Expo factory forms. */
-export function mapExpoReadiness(adapter: BleAdapterState): BleReadiness {
+export function mapExpoReadiness(adapter: BleAdapterState, configuration?: ExpoRuntimeConfiguration): BleReadiness {
   if (
     adapter.availability !== 'available' ||
     adapter.authorization === 'restricted' ||
@@ -192,6 +206,9 @@ export function mapExpoReadiness(adapter: BleAdapterState): BleReadiness {
   if (adapter.power !== 'on' || adapter.authorization !== 'granted') {
     return readiness(adapter, 'action-required', [])
   }
+  if (configuration?.permissions?.android?.legacyLocation === 'required') {
+    return readiness(adapter, 'action-required', [{ kind: 'open-settings', target: 'location-services' }])
+  }
   return readiness(adapter, 'ready', [])
 }
 
@@ -209,10 +226,11 @@ function withExpoRuntime(
   permissionBridge?: ExpoPermissionBridge,
   backgroundControl?: Pick<import('./NativeUnifiedBleProtocolControl').Spec, 'acquireBackground' | 'releaseBackground'>,
   associationControl?: Pick<import('./NativeUnifiedBleProtocolControl').Spec, 'associateCompanionDevice'>,
-  restorationControl?: Pick<import('./NativeUnifiedBleProtocolControl').Spec, 'claimRestoration'>
+  restorationControl?: Pick<import('./NativeUnifiedBleProtocolControl').Spec, 'claimRestoration'>,
+  runtimeConfiguration?: ExpoRuntimeConfiguration
 ): ExpoBleManager {
   return Object.assign(manager, {
-    readiness: () => getExpoBleReadiness(manager),
+    readiness: () => getExpoBleReadiness(manager, runtimeConfiguration),
     permissions: Object.freeze({
       request: (request: ExpoPermissionRequest) => requestExpoPermissions(request, permissionBridge)
     }),
@@ -444,11 +462,16 @@ function assertExpoRuntimeConfiguration(configuration: ExpoRuntimeConfiguration 
       'The native protocol module is absent; rebuild the Expo development build.'
     )
   }
-  if (
-    configuration.nativeConfiguration?.digest !== undefined &&
-    configuration.expectedConfiguration?.digest !== undefined &&
-    configuration.nativeConfiguration.digest !== configuration.expectedConfiguration.digest
-  ) {
+  const expectedDigest = configuration.expectedConfiguration?.digest
+  const actualDigest = configuration.nativeConfiguration?.digest
+  if (expectedDigest !== undefined && actualDigest === undefined) {
+    throwExpoRuntimeError(
+      'protocol.incompatible',
+      'expo.runtime.configuration',
+      'The native Expo configuration digest is unavailable; rebuild the native app before starting BLE.'
+    )
+  }
+  if (expectedDigest !== undefined && actualDigest !== expectedDigest) {
     throwExpoRuntimeError(
       'protocol.incompatible',
       'expo.runtime.configuration',
