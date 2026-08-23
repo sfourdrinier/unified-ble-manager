@@ -3,6 +3,13 @@
 // src/backend-contract/index.ts
 
 export type {
+  NormalizedManufacturerDataPattern,
+  NormalizedScanClause,
+  NormalizedScanObservation,
+  NormalizedScanQuery,
+  NormalizedServiceDataPattern
+} from './scan-query'
+export type {
   AdvertisementField,
   AdvertisementInput,
   AdvertisementObservation,
@@ -315,6 +322,8 @@ export type {
   BackendScanExecutionPlan,
   BackendScanPlanner,
   ScanPlan,
+  ScanPlanLimitationCode,
+  ScanPlanLimitationExplanation,
   ScanPlanLimitation,
   ScanPlanProjection,
   ScanPlanResidualProjection,

@@ -79,9 +79,9 @@ describe('PR9 scan planner contract and canonical oracle corpus', () => {
       unavailable: [],
       limitations: [
         {
-          code: 'native-name-filter-unavailable',
-          predicate: 'anyOf[0].names.prefixes',
-          explanation: 'name prefix remains in the canonical residual matcher',
+          code: 'native-predicate-unavailable',
+          predicate: { clauseSet: 'anyOf', clauseIndex: 0, field: 'names', operator: 'prefixes' },
+          explanation: 'predicate remains in the canonical residual matcher',
           effect: 'performance-only'
         }
       ],
@@ -96,27 +96,78 @@ describe('PR9 scan planner contract and canonical oracle corpus', () => {
     expect(Object.isFrozen(plan.native)).toBe(true)
     expect(Object.isFrozen(plan.residual)).toBe(true)
     expect(Object.isFrozen(plan.limitations)).toBe(true)
-    expect(JSON.stringify(plan.limitations)).not.toContain('manufacturerData')
+    expect(JSON.stringify(plan.limitations)).not.toContain('Heart')
     expect(() => snapshotScanPlan({ ...plan, queryDigest: 'scan-query-v1:0000000000000000' })).toThrow(
       'residual query digest'
     )
   })
 
   test('rejects malformed predicate diagnostics before they can cross a host boundary', () => {
-    const residualQuery = normalizeScanQuery()
+    const emptyQuery = normalizeScanQuery()
     expect(() =>
       snapshotScanPlan({
-        queryDigest: residualQuery.digest,
+        queryDigest: emptyQuery.digest,
         nativeGuarantee: 'safe-superset',
         native: {
           predicates: [{ clauseSet: 'anyOf', clauseIndex: 0, field: 'not-a-field', operator: 'exact' }],
           complete: false
         },
-        residual: { query: residualQuery, predicates: [], complete: true },
+        residual: { query: emptyQuery, predicates: [], complete: true },
         unavailable: [],
         limitations: [],
         estimatedCost: 'low'
       })
     ).toThrow('invalid predicate')
+
+    const residualQuery = normalizeScanQuery({ anyOf: [{ names: { prefixes: ['Heart'] } }] })
+    expect(() =>
+      snapshotScanPlan({
+        queryDigest: residualQuery.digest,
+        nativeGuarantee: 'safe-superset',
+        native: { predicates: [], complete: false },
+        residual: { query: { digest: residualQuery.digest }, predicates: [], complete: true },
+        unavailable: [],
+        limitations: [],
+        estimatedCost: 'low'
+      })
+    ).toThrow('residual query')
+
+    expect(() =>
+      snapshotScanPlan({
+        queryDigest: residualQuery.digest,
+        nativeGuarantee: 'safe-superset',
+        native: { predicates: [], complete: false },
+        residual: { query: residualQuery, predicates: [], complete: true },
+        unavailable: [],
+        limitations: [
+          {
+            code: 'native-predicate-unavailable',
+            predicate: { clauseSet: 'anyOf', clauseIndex: 0, field: 'names', operator: 'prefixes' },
+            explanation: 'raw manufacturer payload: 010203',
+            effect: 'performance-only'
+          }
+        ],
+        estimatedCost: 'low'
+      })
+    ).toThrow('explanation')
+
+    expect(() =>
+      snapshotScanPlan({
+        queryDigest: residualQuery.digest,
+        nativeGuarantee: 'safe-superset',
+        native: { predicates: [], complete: false },
+        residual: { query: residualQuery, predicates: [], complete: true },
+        unavailable: [],
+        limitations: [
+          {
+            code: 'native-predicate-unavailable',
+            predicate: { clauseSet: 'anyOf', clauseIndex: 0, field: 'names', operator: 'prefixes' },
+            explanation: 'predicate remains in the canonical residual matcher',
+            effect: 'not-a-real-effect'
+          }
+        ],
+        estimatedCost: 'low'
+      })
+    ).toThrow('effect')
   })
 })

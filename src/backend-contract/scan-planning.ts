@@ -1,3 +1,5 @@
+import type { NormalizedScanQuery } from './scan-query'
+
 export type ScanPredicateClauseSet = 'anyOf' | 'exclude'
 export type ScanPredicateField =
   | 'peers'
@@ -25,9 +27,7 @@ export interface ScanPlanProjection {
 }
 
 /** The canonical PR4 query retained for the one and only residual matcher. */
-export interface ScanPlanningNormalizedQuery {
-  readonly digest: string
-}
+export type ScanPlanningNormalizedQuery = NormalizedScanQuery
 
 export interface ScanPlanResidualProjection<
   NormalizedQuery extends ScanPlanningNormalizedQuery = ScanPlanningNormalizedQuery
@@ -35,10 +35,22 @@ export interface ScanPlanResidualProjection<
   readonly query: NormalizedQuery
 }
 
+export type ScanPlanLimitationCode =
+  | 'native-filter-incomplete'
+  | 'native-predicate-unavailable'
+  | 'observation-field-unavailable'
+  | 'host-predicate-restricted'
+
+export type ScanPlanLimitationExplanation =
+  | 'predicate remains in the canonical residual matcher'
+  | 'required observation field is unavailable on this host'
+  | 'host restriction prevents native evaluation'
+  | 'native filter is a safe superset'
+
 export interface ScanPlanLimitation {
-  readonly code: string
-  readonly predicate: string
-  readonly explanation: string
+  readonly code: ScanPlanLimitationCode
+  readonly predicate: ScanPredicateDescription
+  readonly explanation: ScanPlanLimitationExplanation
   readonly effect: 'performance-only' | 'field-unavailable' | 'host-restriction'
 }
 
@@ -86,13 +98,15 @@ export interface BackendScanPlanner<
 const MAX_PROJECTION_PREDICATES = 64
 const MAX_UNAVAILABLE_PREDICATES = 64
 const MAX_LIMITATIONS = 32
-const MAX_DIAGNOSTIC_TEXT_LENGTH = 160
 
 /**
  * Snapshots plan diagnostics without changing the canonical residual query. The native
  * projection is descriptive only; this helper does not evaluate any predicate.
  */
-export function snapshotScanPlan(plan: ScanPlan): ScanPlan {
+export function snapshotScanPlan<NormalizedQuery extends ScanPlanningNormalizedQuery>(
+  plan: ScanPlan<NormalizedQuery>
+): ScanPlan<NormalizedQuery> {
+  assertNormalizedScanQuery(plan.residual.query)
   if (plan.queryDigest !== plan.residual.query.digest) {
     throw new Error('scan plan residual query digest must match queryDigest')
   }
@@ -153,12 +167,14 @@ function snapshotPredicates(
 function snapshotLimitations(limitations: readonly ScanPlanLimitation[]): readonly ScanPlanLimitation[] {
   if (limitations.length > MAX_LIMITATIONS) throw new Error('scan plan exceeds bounded limitation count')
   const snapshot = limitations.map(limitation => {
-    assertDiagnosticText(limitation.code, 'code')
-    assertDiagnosticText(limitation.predicate, 'predicate')
-    assertDiagnosticText(limitation.explanation, 'explanation')
+    assertLimitationCode(limitation.code)
+    const predicate = snapshotPredicates([limitation.predicate], 'limitation.predicate', 1)[0]
+    if (predicate === undefined) throw new Error('scan plan limitation predicate is missing')
+    assertLimitationExplanation(limitation.explanation)
+    assertLimitationEffect(limitation.effect)
     return Object.freeze({
       code: limitation.code,
-      predicate: limitation.predicate,
+      predicate,
       explanation: limitation.explanation,
       effect: limitation.effect
     })
@@ -166,9 +182,45 @@ function snapshotLimitations(limitations: readonly ScanPlanLimitation[]): readon
   return Object.freeze(snapshot.sort((left, right) => compareCanonical(JSON.stringify(left), JSON.stringify(right))))
 }
 
-function assertDiagnosticText(value: string, name: string): void {
-  if (typeof value !== 'string' || value.length === 0 || value.length > MAX_DIAGNOSTIC_TEXT_LENGTH) {
-    throw new Error(`scan plan limitation ${name} exceeds bounded text length`)
+function assertLimitationCode(value: ScanPlanLimitationCode): void {
+  if (
+    value !== 'native-filter-incomplete' &&
+    value !== 'native-predicate-unavailable' &&
+    value !== 'observation-field-unavailable' &&
+    value !== 'host-predicate-restricted'
+  ) {
+    throw new Error('scan plan limitation code is invalid')
+  }
+}
+
+function assertLimitationExplanation(value: ScanPlanLimitationExplanation): void {
+  if (
+    value !== 'predicate remains in the canonical residual matcher' &&
+    value !== 'required observation field is unavailable on this host' &&
+    value !== 'host restriction prevents native evaluation' &&
+    value !== 'native filter is a safe superset'
+  ) {
+    throw new Error('scan plan limitation explanation is invalid')
+  }
+}
+
+function assertLimitationEffect(value: ScanPlanLimitation['effect']): void {
+  if (value !== 'performance-only' && value !== 'field-unavailable' && value !== 'host-restriction') {
+    throw new Error('scan plan limitation effect is invalid')
+  }
+}
+
+function assertNormalizedScanQuery(query: ScanPlanningNormalizedQuery): void {
+  if (
+    typeof query.digest !== 'string' ||
+    query.digest.length === 0 ||
+    (query.anyOf !== null && !Array.isArray(query.anyOf)) ||
+    (query.exclude !== null && !Array.isArray(query.exclude)) ||
+    !Object.isFrozen(query) ||
+    (query.anyOf !== null && !Object.isFrozen(query.anyOf)) ||
+    (query.exclude !== null && !Object.isFrozen(query.exclude))
+  ) {
+    throw new Error('scan plan residual query must be a frozen normalized query')
   }
 }
 
