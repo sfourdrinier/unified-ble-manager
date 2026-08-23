@@ -347,6 +347,229 @@ describe('canonical public ScanQuery v1', () => {
     await iterator.return()
   })
 
+  test('derives discovered and monotonic lost events without stealing observations', async () => {
+    const source = new CoreBoundedStream(
+      { itemCapacity: capacity(8), byteCapacity: capacity(4096), reservedControlCapacity: capacity(1) },
+      'drop-oldest'
+    )
+    let now = 0
+    let scheduled
+    const internal = {
+      identity: null,
+      attachedBackend: undefined,
+      supports: () => true,
+      capability: () => null,
+      capabilities: () => [],
+      scan: jest.fn(async () => ({
+        observations: source,
+        stop: async () => ({ state: 'released', failures: [] })
+      })),
+      scheduleDeadline: jest.fn((deadline, action) => {
+        scheduled = { deadline, action, cancel: jest.fn() }
+        return scheduled
+      }),
+      connect: jest.fn(),
+      destroy: jest.fn(async () => ({ state: 'released', failures: [] }))
+    }
+    const manager = await createPublicBleManager(internal, () => now)
+    const scan = await manager.scan({ reportLostAfterMs: 10 })
+    const observations = scan.observations[Symbol.asyncIterator]()
+    const events = scan.events[Symbol.asyncIterator]()
+    const observationNext = observations.next()
+    const discoveredNext = events.next()
+    source.emit(
+      {
+        peerId: 'derived-peer',
+        localName: 'Derived peer',
+        rssi: -42,
+        serviceUuids: [],
+        manufacturerData: [],
+        serviceData: []
+      },
+      32
+    )
+
+    await expect(observationNext).resolves.toMatchObject({
+      value: { kind: 'value', value: { peer: { id: 'derived-peer' } } }
+    })
+    await expect(discoveredNext).resolves.toMatchObject({
+      value: { kind: 'discovered', observation: { peer: { id: 'derived-peer' } } }
+    })
+    expect(scheduled.deadline).toBe(10)
+
+    now = 10
+    scheduled.action()
+    await expect(events.next()).resolves.toMatchObject({
+      value: {
+        kind: 'lost',
+        peer: { id: 'derived-peer' },
+        lastSeenAtMonotonicMs: 0,
+        lostAtMonotonicMs: 10
+      }
+    })
+    expect(scheduled.cancel).not.toHaveBeenCalled()
+    await observations.return()
+    await events.return()
+    await scan.stop()
+  })
+
+  test.each([0, -1, 1.5, Number.MAX_SAFE_INTEGER])('rejects invalid reportLostAfterMs %s', async reportLostAfterMs => {
+    const internal = {
+      identity: null,
+      attachedBackend: undefined,
+      supports: () => true,
+      capability: () => null,
+      capabilities: () => [],
+      scan: jest.fn(),
+      connect: jest.fn(),
+      destroy: jest.fn(async () => ({ state: 'released', failures: [] }))
+    }
+    const manager = await createPublicBleManager(internal, () => 0)
+
+    await expect(manager.scan({ reportLostAfterMs })).rejects.toMatchObject({ code: 'argument.invalid' })
+    expect(internal.scan).not.toHaveBeenCalled()
+  })
+
+  test('does not silently ignore lost reporting when the public timer authority is absent', async () => {
+    const internal = {
+      identity: null,
+      attachedBackend: undefined,
+      supports: () => true,
+      capability: () => null,
+      capabilities: () => [],
+      scan: jest.fn(),
+      connect: jest.fn(),
+      destroy: jest.fn(async () => ({ state: 'released', failures: [] }))
+    }
+    const manager = await createPublicBleManager(internal, () => 0)
+
+    await expect(manager.scan({ reportLostAfterMs: 10 })).rejects.toMatchObject({ code: 'capability.unavailable' })
+    expect(internal.scan).not.toHaveBeenCalled()
+  })
+
+  test('propagates source overflow to observations and terminates event subscribers with overflow', async () => {
+    const source = new CoreBoundedStream(
+      { itemCapacity: capacity(1), byteCapacity: capacity(128), reservedControlCapacity: capacity(1) },
+      'drop-newest'
+    )
+    const internal = {
+      identity: null,
+      attachedBackend: undefined,
+      supports: () => true,
+      capability: () => null,
+      capabilities: () => [],
+      scan: jest.fn(async () => ({
+        observations: source,
+        stop: async () => ({ state: 'released', failures: [] })
+      })),
+      connect: jest.fn(),
+      destroy: jest.fn(async () => ({ state: 'released', failures: [] }))
+    }
+    const manager = await createPublicBleManager(internal, () => 0)
+    const scan = await manager.scan()
+    const observation = {
+      peerId: 'overflow-peer',
+      localName: 'Overflow peer',
+      rssi: -42,
+      serviceUuids: [],
+      manufacturerData: [],
+      serviceData: []
+    }
+    source.emit(observation, 32)
+    source.emit({ ...observation, peerId: 'overflow-peer-2' }, 32)
+
+    const observations = scan.observations[Symbol.asyncIterator]()
+    const events = scan.events[Symbol.asyncIterator]()
+    await expect(observations.next()).resolves.toMatchObject({ value: { kind: 'overflow' } })
+    await expect(events.next()).rejects.toMatchObject({ code: 'stream.overflow' })
+    await scan.stop()
+  })
+
+  test('preserves source terminal delivery and cleans the lost timer on stop and destroy', async () => {
+    const createInternal = () => {
+      const source = new CoreBoundedStream(
+        { itemCapacity: capacity(8), byteCapacity: capacity(4096), reservedControlCapacity: capacity(1) },
+        'drop-oldest'
+      )
+      const scheduled = []
+      const internal = {
+        identity: null,
+        attachedBackend: undefined,
+        supports: () => true,
+        capability: () => null,
+        capabilities: () => [],
+        scan: jest.fn(async () => ({
+          observations: source,
+          stop: async () => ({ state: 'released', failures: [] })
+        })),
+        scheduleDeadline: jest.fn((deadline, action) => {
+          const handle = { deadline, action, cancel: jest.fn() }
+          scheduled.push(handle)
+          return handle
+        }),
+        connect: jest.fn(),
+        destroy: jest.fn(async () => ({ state: 'released', failures: [] }))
+      }
+      return { internal, scheduled, source }
+    }
+
+    const stopped = createInternal()
+    const stoppedManager = await createPublicBleManager(stopped.internal, () => 0)
+    const stoppedScan = await stoppedManager.scan({ reportLostAfterMs: 10 })
+    const stoppedObservations = stoppedScan.observations[Symbol.asyncIterator]()
+    const stoppedEvents = stoppedScan.events[Symbol.asyncIterator]()
+    const stoppedObservation = stoppedObservations.next()
+    const stoppedEvent = stoppedEvents.next()
+    stopped.source.emit(
+      {
+        peerId: 'stop-peer',
+        localName: 'Stop peer',
+        rssi: -40,
+        serviceUuids: [],
+        manufacturerData: [],
+        serviceData: []
+      },
+      32
+    )
+    await stoppedObservation
+    await stoppedEvent
+    await stoppedScan.stop()
+    expect(stopped.scheduled[0].cancel).toHaveBeenCalledTimes(1)
+    await expect(stoppedEvents.next()).resolves.toMatchObject({ done: true })
+
+    const destroyed = createInternal()
+    const destroyedManager = await createPublicBleManager(destroyed.internal, () => 0)
+    const destroyedScan = await destroyedManager.scan({ reportLostAfterMs: 10 })
+    const destroyedEvents = destroyedScan.events[Symbol.asyncIterator]()
+    const destroyedNext = destroyedEvents.next()
+    destroyed.source.emit(
+      {
+        peerId: 'destroy-peer',
+        localName: 'Destroy peer',
+        rssi: -41,
+        serviceUuids: [],
+        manufacturerData: [],
+        serviceData: []
+      },
+      32
+    )
+    await destroyedNext
+    await destroyedManager.destroy()
+    expect(destroyed.scheduled[0].cancel).toHaveBeenCalledTimes(1)
+    await expect(destroyedEvents.next()).resolves.toMatchObject({ done: true })
+
+    const terminal = createInternal()
+    const terminalManager = await createPublicBleManager(terminal.internal, () => 0)
+    const terminalScan = await terminalManager.scan({ reportLostAfterMs: 10 })
+    const terminalObservations = terminalScan.observations[Symbol.asyncIterator]()
+    const terminalEvents = terminalScan.events[Symbol.asyncIterator]()
+    terminal.source.closeWithReason('operation-timed-out')
+    await expect(terminalObservations.next()).resolves.toMatchObject({
+      value: { kind: 'terminal', reason: 'operation-timed-out' }
+    })
+    await expect(terminalEvents.next()).resolves.toMatchObject({ done: true })
+  })
+
   test('public deterministic coalesced scans deliver RSSI-only changes and suppress unchanged repeats', async () => {
     const { manager, fixture } = await createDeterministicTestBleManager()
     let scan

@@ -32,6 +32,7 @@ export type {
   WriteReadinessEvent,
   RediscoverGattOptions,
   PublicScanObservation,
+  DiscoveryEvent,
   ConnectionIntent,
   BlePhy,
   ConnectOptions,
