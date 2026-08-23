@@ -1045,6 +1045,7 @@ bool success(
 
 struct Endpoint {
   std::string peer;
+  std::string connectionGeneration;
   std::string serviceUuid;
   NSInteger serviceOccurrence;
   std::string characteristicUuid;
@@ -1060,6 +1061,7 @@ Endpoint endpointFor(const protocol::ProtocolRecord& path) {
   try {
     return {
         .peer = requiredString(connection, 2U),
+        .connectionGeneration = requiredString(connection, 5U),
         .serviceUuid = requiredString(service, 2U),
         .serviceOccurrence = static_cast<NSInteger>(std::stoll(serviceOccurrence)),
         .characteristicUuid = requiredString(path, 2U),
@@ -1068,6 +1070,16 @@ Endpoint endpointFor(const protocol::ProtocolRecord& path) {
   } catch (const std::exception&) {
     throw protocol::ProtocolException(protocol::ProtocolFailure::invalidPath, "Apple native characteristic occurrence is invalid");
   }
+}
+
+bool currentConnectionGenerationMatches(
+    const std::shared_ptr<AppleNativeProtocolExecution::State>& state,
+    const std::string& peer,
+    const std::string& generation) {
+  std::scoped_lock lock(state->mutex);
+  const auto found = state->connections.find(peer);
+  if (found == state->connections.end()) return false;
+  return requiredString(found->second, 5U) == generation;
 }
 
 struct DescriptorEndpoint {
@@ -1120,9 +1132,14 @@ void dispatchCommand(
     return;
   }
   if (kind == "connect" || kind == "disconnect") {
-    const auto peer = requiredString(requiredRecord(command, 10U), 2U);
+    const auto& connection = requiredRecord(command, 10U);
+    const auto peer = requiredString(connection, 2U);
     const auto identifier = [NSString stringWithUTF8String:peer.c_str()];
     const auto operation = [NSString stringWithUTF8String:nonce.c_str()];
+    if (kind == "disconnect" && !currentConnectionGenerationMatches(state, peer, requiredString(connection, 5U))) {
+      fail(state, command, "staleGeneration", nil);
+      return;
+    }
     void (^completion)(NSError*) = ^(NSError* error) {
       if (error == nil) static_cast<void>(success(state, command));
       else fail(state, command, kind == "connect" ? "connectFailed" : "disconnectFailed", error);
@@ -1132,7 +1149,12 @@ void dispatchCommand(
     return;
   }
   if (kind == "discover") {
-    const auto peer = requiredString(requiredRecord(command, 10U), 2U);
+    const auto& connection = requiredRecord(command, 10U);
+    const auto peer = requiredString(connection, 2U);
+    if (!currentConnectionGenerationMatches(state, peer, requiredString(connection, 5U))) {
+      fail(state, command, "staleGeneration", nil);
+      return;
+    }
     const auto database = requiredRecord(command, 11U);
     [radio discoverWithPeerIdentifier:[NSString stringWithUTF8String:peer.c_str()] operationIdentifier:[NSString stringWithUTF8String:nonce.c_str()] completion:^(NSDictionary* snapshot, NSError* error) {
       if (error != nil || snapshot == nil) {
@@ -1179,7 +1201,12 @@ void dispatchCommand(
     return;
   }
   if (kind == "readRssi") {
-    const auto peer = requiredString(requiredRecord(command, 10U), 2U);
+    const auto& connection = requiredRecord(command, 10U);
+    const auto peer = requiredString(connection, 2U);
+    if (!currentConnectionGenerationMatches(state, peer, requiredString(connection, 5U))) {
+      fail(state, command, "staleGeneration", nil);
+      return;
+    }
     [radio readRssiWithPeerIdentifier:[NSString stringWithUTF8String:peer.c_str()] operationIdentifier:[NSString stringWithUTF8String:nonce.c_str()] completion:^(NSNumber* value, NSError* error) {
       if (error != nil || value == nil) {
         fail(state, command, "readRssiFailed", error);
@@ -1196,6 +1223,10 @@ void dispatchCommand(
   if (kind == "readDescriptor" || kind == "writeDescriptor") {
     const auto& descriptorPath = requiredRecord(command, 5U);
     const auto endpoint = descriptorEndpointFor(descriptorPath);
+    if (!currentConnectionGenerationMatches(state, endpoint.characteristic.peer, endpoint.characteristic.connectionGeneration)) {
+      fail(state, command, "staleGeneration", nil);
+      return;
+    }
     const auto peer = [NSString stringWithUTF8String:endpoint.characteristic.peer.c_str()];
     const auto service = [NSString stringWithUTF8String:endpoint.characteristic.serviceUuid.c_str()];
     const auto characteristic = [NSString stringWithUTF8String:endpoint.characteristic.characteristicUuid.c_str()];
@@ -1237,6 +1268,10 @@ void dispatchCommand(
   }
   const auto path = requiredRecord(command, 4U);
   const auto endpoint = endpointFor(path);
+  if (!currentConnectionGenerationMatches(state, endpoint.peer, endpoint.connectionGeneration)) {
+    fail(state, command, "staleGeneration", nil);
+    return;
+  }
   const auto peer = [NSString stringWithUTF8String:endpoint.peer.c_str()];
   const auto service = [NSString stringWithUTF8String:endpoint.serviceUuid.c_str()];
   const auto characteristic = [NSString stringWithUTF8String:endpoint.characteristicUuid.c_str()];

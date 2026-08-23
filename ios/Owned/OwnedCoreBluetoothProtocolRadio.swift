@@ -228,6 +228,10 @@ public final class OwnedCoreBluetoothProtocolRadio: NSObject, CBPeripheralDelega
         completion(self.error(code: 1006, message: "A connection is already pending for this peripheral"))
         return
       }
+      guard self.pendingDisconnect[peerIdentifier] == nil else {
+        completion(self.error(code: 1025, message: "The previous connection generation is still disconnecting"))
+        return
+      }
       peripheral.delegate = self
       if peripheral.state == .connected {
         completion(nil)

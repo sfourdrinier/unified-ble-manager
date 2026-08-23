@@ -70,6 +70,17 @@ describe('Apple Native Protocol v2 radio boundary', () => {
     expect(handshake).not.toContain('@"abi": @2,')
   })
 
+  test('blocks reconnect overlap and validates generation-bound Apple dispatch paths', () => {
+    const radio = read('ios/Owned/OwnedCoreBluetoothProtocolRadio.swift')
+    const execution = read('ios/NativeProtocol/UnifiedBleProtocolAppleExecution.mm')
+
+    expect(radio).toContain('guard self.pendingDisconnect[peerIdentifier] == nil else')
+    expect(radio).toContain('servicesByPeer.removeValue(forKey: identifier)')
+    expect(execution).toContain('connectionGeneration')
+    expect(execution).toContain('currentConnectionGenerationMatches')
+    expect(execution).toContain('"staleGeneration"')
+  })
+
   test('treats a fatal runtime close as an idempotent attachment close', () => {
     const control = read('ios/UnifiedBleProtocolControl.mm')
     const closeAttachment = control.slice(
