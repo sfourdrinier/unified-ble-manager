@@ -27,6 +27,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.ParcelUuid
+import androidx.core.content.IntentCompat
 import com.sfourdrinier.unifiedblemanager.protocol.UnifiedBleProtocolAndroidDispatcher
 import java.util.ArrayDeque
 import java.util.UUID
@@ -577,7 +578,11 @@ class OwnedAndroidGattRadio(private val context: Context) {
       override fun onReceive(ctx: Context?, intent: Intent?) {
         try {
           if (intent?.action != BluetoothDevice.ACTION_BOND_STATE_CHANGED) return
-          val device = intent.getParcelableExtra<BluetoothDevice>(BluetoothDevice.EXTRA_DEVICE) ?: return
+          val device = IntentCompat.getParcelableExtra(
+            intent,
+            BluetoothDevice.EXTRA_DEVICE,
+            BluetoothDevice::class.java
+          ) ?: return
           val state = when (intent.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, BluetoothDevice.ERROR)) {
             BluetoothDevice.BOND_BONDED -> "bonded"
             BluetoothDevice.BOND_BONDING -> "bonding"

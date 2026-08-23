@@ -109,10 +109,13 @@ public final class BlePlxForegroundService extends Service {
       return configuration.restartWhileSessionIntentExists() ? START_STICKY : START_NOT_STICKY;
     } catch (RuntimeException error) {
       acknowledge(intent, ACK_FAILED, error.getMessage());
-      getSharedPreferences("unified-ble-manager", MODE_PRIVATE)
+      if (!getSharedPreferences("unified-ble-manager", MODE_PRIVATE)
           .edit()
           .putBoolean(SESSION_INTENT_PREFERENCE, false)
-          .apply();
+          .commit()) {
+        error.addSuppressed(
+            new IllegalStateException("Android could not clear the foreground-service session intent."));
+      }
       stopSelf();
       return START_NOT_STICKY;
     }

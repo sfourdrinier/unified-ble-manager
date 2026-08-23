@@ -58,6 +58,14 @@ public final class AndroidConnectedDeviceForegroundServiceDriver
       }
       try {
       if (!acknowledgement.await(5, TimeUnit.SECONDS)) {
+          if (!context.getSharedPreferences("unified-ble-manager", Context.MODE_PRIVATE)
+              .edit()
+              .putBoolean(BlePlxForegroundService.SESSION_INTENT_PREFERENCE, false)
+              .commit()) {
+            throw new ForegroundServiceControlException(
+                "foregroundServiceStopFailed",
+                "Android could not persist the timed-out connected-device foreground service release; retry the lease.");
+          }
           context.stopService(new Intent(context, BlePlxForegroundService.class));
           throw new ForegroundServiceControlException(
               "foregroundServiceStartTimedOut",

@@ -59,6 +59,35 @@ class BlePlxForegroundServiceLifecycleTest {
   }
 
   @Test
+  fun `timeout cleanup durably clears the session intent before requesting service stop`() {
+    val source = readAndroidSource(
+      "android/src/main/java/com/sfourdrinier/unifiedblemanager/background/AndroidConnectedDeviceForegroundServiceDriver.java"
+    )
+    val timeoutStart = source.indexOf("if (!acknowledgement.await")
+    val serviceStop = source.indexOf("context.stopService", timeoutStart)
+    val timeout = source.substring(timeoutStart, serviceStop)
+    val preferenceWrite = timeout.indexOf(
+      ".putBoolean(BlePlxForegroundService.SESSION_INTENT_PREFERENCE, false)"
+    )
+    assertTrue(preferenceWrite >= 0)
+    assertTrue(timeout.contains(".commit()"))
+    assertTrue(!timeout.contains(".apply()"))
+  }
+
+  @Test
+  fun `start failure cleanup checks its synchronous session intent commit`() {
+    val source = readAndroidSource(
+      "android/src/main/java/com/sfourdrinier/unifiedblemanager/BlePlxForegroundService.java"
+    )
+    val failure = source.substring(source.indexOf("} catch (RuntimeException error)"))
+
+    assertTrue(failure.contains("if (!getSharedPreferences"))
+    assertTrue(failure.contains(".putBoolean(SESSION_INTENT_PREFERENCE, false)"))
+    assertTrue(failure.contains(".commit())"))
+    assertTrue(!failure.contains(".apply()"))
+  }
+
+  @Test
   fun `ack receiver uses typed parcelable retrieval on API 33 and a guarded legacy path`() {
     val source = readAndroidSource(
       "android/src/main/java/com/sfourdrinier/unifiedblemanager/BlePlxForegroundService.java"
@@ -85,6 +114,26 @@ class BlePlxForegroundServiceLifecycleTest {
         "return configuration.restartWhileSessionIntentExists() ? START_STICKY : START_NOT_STICKY;"
       )
     )
+  }
+
+  @Test
+  fun `bond receiver uses the API safe typed parcelable helper on min sdk 24`() {
+    val source = readAndroidSource(
+      "android/src/main/java/com/sfourdrinier/unifiedblemanager/radio/OwnedAndroidGattRadio.kt"
+    )
+    val receiver = source.substring(
+      source.indexOf("internal fun registerBondStateReceiver()"),
+      source.indexOf("internal fun unregisterBondStateReceiver()")
+    )
+
+    assertTrue(source.contains("import androidx.core.content.IntentCompat"))
+    assertTrue(
+      receiver.contains("IntentCompat.getParcelableExtra(")
+    )
+    assertTrue(receiver.contains("BluetoothDevice.EXTRA_DEVICE"))
+    assertTrue(receiver.contains("BluetoothDevice::class.java"))
+    assertTrue(!receiver.contains("getParcelableExtra<BluetoothDevice>"))
+    assertTrue(!receiver.contains("intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE)"))
   }
 
   private fun readAndroidSource(relativePath: String): String {
