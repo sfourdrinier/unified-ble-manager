@@ -126,6 +126,20 @@ describe('Expo iOS reconciliation', () => {
     expect(disabled.NSBluetoothAlwaysUsageDescription).toBe(hostInfoPlist.NSBluetoothAlwaysUsageDescription)
   })
 
+  it('preserves a host-changed Bluetooth usage description when disabling prior plugin ownership', () => {
+    const infoPlist: Record<string, unknown> = {}
+
+    reconcileExpoInfoPlist(infoPlist, {
+      permissions: { bluetoothAlways: 'Plugin-authored Bluetooth explanation' }
+    })
+    infoPlist.NSBluetoothAlwaysUsageDescription = 'Host-changed Bluetooth explanation'
+
+    const disabled = reconcileExpoInfoPlist(infoPlist, { permissions: { bluetoothAlways: false } })
+
+    expect(disabled.NSBluetoothAlwaysUsageDescription).toBe('Host-changed Bluetooth explanation')
+    expect(disabled.UnifiedBlePluginBluetoothAlwaysUsageDescriptionOwnership).toBeUndefined()
+  })
+
   it('is idempotent, removes stale managed keys, and preserves unrelated host config', () => {
     const infoPlist: Record<string, unknown> = {
       unrelated: 'preserve',
@@ -150,7 +164,9 @@ describe('Expo iOS reconciliation', () => {
       UIBackgroundModes: ['audio', 'bluetooth-central'],
       UnifiedBleProtocolNativeLogging: 'events'
     })
-    expect(configured.UnifiedBlePluginBluetoothAlwaysUsageDescriptionOwnership).toBe('managed')
+    expect(configured.UnifiedBlePluginBluetoothAlwaysUsageDescriptionOwnership).toBe(
+      validOptions.permissions.bluetoothAlways
+    )
     expect(configured.BlePlxRestoreIdentifier).toBeUndefined()
     expect(configured.UnifiedBleProtocolRestoreIdentifier).toBeUndefined()
     expect(configured.UnifiedBleProtocolRestorationId).toBe('primary')

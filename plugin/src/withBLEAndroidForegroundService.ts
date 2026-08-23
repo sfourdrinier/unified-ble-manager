@@ -25,6 +25,20 @@ export const FOREGROUND_SERVICE_PERMISSIONS = Object.freeze([
 const FOREGROUND_SERVICE_OWNERSHIP_METADATA_VALUE = 'service=1'
 const FOREGROUND_SERVICE_PERMISSION_OWNERSHIP_METADATA_PREFIX = 'permissions='
 
+const FOREGROUND_SERVICE_PERMISSION_ATTRIBUTES: Readonly<Record<string, Readonly<Record<string, string>>>> = Object.freeze({
+  'android.permission.FOREGROUND_SERVICE': Object.freeze({
+    'android:name': 'android.permission.FOREGROUND_SERVICE'
+  }),
+  'android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE': Object.freeze({
+    'android:name': 'android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE',
+    'tools:targetApi': '34'
+  }),
+  'android.permission.POST_NOTIFICATIONS': Object.freeze({
+    'android:name': 'android.permission.POST_NOTIFICATIONS',
+    'tools:targetApi': '33'
+})
+  })
+
 type ManifestApplication = NonNullable<AndroidConfig.Manifest.AndroidManifest['manifest']['application']>[number]
 type ManagedMetadata = NonNullable<ManifestApplication['meta-data']>[number]
 
@@ -73,6 +87,17 @@ function ownedPermissionNames(androidManifest: AndroidManifestWithExtraTools): S
   }
   const permissions = markerValue.slice(FOREGROUND_SERVICE_PERMISSION_OWNERSHIP_METADATA_PREFIX.length)
   return new Set(permissions.length === 0 ? [] : permissions.split('|'))
+}
+
+function isPluginOwnedPermission(permission: { $: Record<string, string> }): boolean {
+  const expected = FOREGROUND_SERVICE_PERMISSION_ATTRIBUTES[permission.$['android:name']]
+  if (expected === undefined) return false
+  const actualAttributes = permission.$
+  const expectedAttributes = expected
+  return (
+    Object.keys(actualAttributes).length === Object.keys(expectedAttributes).length &&
+    Object.entries(expectedAttributes).every(([key, value]) => actualAttributes[key] === value)
+  )
 }
 
 function setForegroundServiceOwnershipMetadata(
@@ -167,10 +192,11 @@ function removeForegroundService(androidManifest: AndroidManifestWithExtraTools)
   const permissions = manifest['uses-permission']
   if (Array.isArray(permissions)) {
     const owned = ownedPermissionNames(androidManifest)
+    const removed = new Set<string>()
     manifest['uses-permission'] = permissions.filter(permission => {
       const name = permission.$['android:name']
-      if (!owned.has(name)) return true
-      owned.delete(name)
+      if (!owned.has(name) || removed.has(name) || !isPluginOwnedPermission(permission)) return true
+      removed.add(name)
       return false
     })
   }

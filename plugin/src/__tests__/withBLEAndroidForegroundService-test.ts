@@ -73,6 +73,31 @@ describe('withBLEAndroidForegroundService ownership', () => {
     expect(removed.manifest.application[0]['meta-data']).toBeUndefined()
   })
 
+  it('preserves a host-changed permission declaration when disabling prior plugin ownership', () => {
+    const manifest = {
+      manifest: {
+        $: { 'xmlns:android': 'http://schemas.android.com/apk/res/android' },
+        application: [{ $: { 'android:name': '.MainApplication' } }]
+      }
+    }
+
+    const configured = applyForegroundService(manifest, foregroundServiceOptions)
+    const connectedDevicePermission = configured.manifest['uses-permission']?.find(
+      permission => permission.$['android:name'] === 'android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE'
+    )
+    if (!connectedDevicePermission) throw new Error('Expected the plugin to add the connected-device permission')
+    connectedDevicePermission.$['tools:targetApi'] = '35'
+
+    const removed = applyForegroundService(configured, { mode: 'none' })
+
+    expect(removed.manifest['uses-permission']).toContainEqual({
+      $: {
+        'android:name': 'android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE',
+        'tools:targetApi': '35'
+      }
+    })
+  })
+
   it('emits the exact native service marker and a separate permission ownership marker', () => {
     const manifest = {
       manifest: {
