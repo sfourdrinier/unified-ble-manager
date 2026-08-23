@@ -7,12 +7,19 @@ import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
+import android.os.ResultReceiver;
 
 import com.facebook.react.bridge.ReactApplicationContext;
 import com.sfourdrinier.unifiedblemanager.BlePlxForegroundService;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 public final class AndroidConnectedDeviceForegroundServiceDriver
     implements ConnectedDeviceForegroundServiceDriver {
@@ -26,7 +33,19 @@ public final class AndroidConnectedDeviceForegroundServiceDriver
   public void start(String reason) {
     final ForegroundServiceNotificationConfiguration configuration = configuration();
     requireRuntimePermissions();
-    final Intent intent = BlePlxForegroundService.startIntent(context, configuration);
+    final CountDownLatch acknowledgement = new CountDownLatch(1);
+    final AtomicInteger resultCode = new AtomicInteger(0);
+    final AtomicReference<String> resultMessage = new AtomicReference<>();
+    final ResultReceiver receiver = new ResultReceiver(new Handler(Looper.getMainLooper())) {
+      @Override
+      protected void onReceiveResult(int code, Bundle resultData) {
+        resultCode.set(code);
+        if (resultData != null) resultMessage.set(resultData.getString("message"));
+        acknowledgement.countDown();
+      }
+    };
+    final Intent intent = BlePlxForegroundService.startIntent(context, configuration)
+        .putExtra(BlePlxForegroundService.EXTRA_ACK, receiver);
     try {
       final ComponentName started = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
           ? context.startForegroundService(intent)
@@ -35,6 +54,24 @@ public final class AndroidConnectedDeviceForegroundServiceDriver
         throw new ForegroundServiceControlException(
             "foregroundServiceNotConfigured",
             "Android could not resolve the configured connected-device foreground service. Rebuild the native app.");
+      }
+      try {
+        if (!acknowledgement.await(5, TimeUnit.SECONDS)) {
+          throw new ForegroundServiceControlException(
+              "foregroundServiceStartTimedOut",
+              "Android did not acknowledge foreground-service promotion within five seconds; retry the lease.");
+        }
+      } catch (InterruptedException error) {
+        Thread.currentThread().interrupt();
+        throw new ForegroundServiceControlException(
+            "foregroundServiceStartInterrupted",
+            "Android foreground-service promotion was interrupted; retry the lease.",
+            error);
+      }
+      if (resultCode.get() != BlePlxForegroundService.ACK_STARTED) {
+        throw new ForegroundServiceControlException(
+            "foregroundServiceStartNotAllowed",
+            resultMessage.get() == null ? "Android failed to promote the connected-device service." : resultMessage.get());
       }
     } catch (SecurityException error) {
       throw new ForegroundServiceControlException(

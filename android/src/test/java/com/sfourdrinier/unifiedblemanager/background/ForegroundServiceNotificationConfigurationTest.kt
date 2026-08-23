@@ -15,7 +15,8 @@ class ForegroundServiceNotificationConfigurationTest {
         ForegroundServiceNotificationConfiguration.CHANNEL_NAME_METADATA to "BLE session",
         ForegroundServiceNotificationConfiguration.TITLE_METADATA to "Connected device active",
         ForegroundServiceNotificationConfiguration.BODY_METADATA to "Workout in progress",
-        ForegroundServiceNotificationConfiguration.ICON_METADATA to "ic_ble"
+        ForegroundServiceNotificationConfiguration.ICON_METADATA to "ic_ble",
+        ForegroundServiceNotificationConfiguration.RESTART_METADATA to "while-session-intent-exists"
       )
     )
 
@@ -24,6 +25,7 @@ class ForegroundServiceNotificationConfigurationTest {
     assertEquals("Connected device active", configuration.title)
     assertEquals("Workout in progress", configuration.body)
     assertEquals("ic_ble", configuration.iconName)
+    assertTrue(configuration.restartWhileSessionIntentExists())
     assertEquals(0x55424d, ForegroundServiceNotificationConfiguration.NOTIFICATION_ID)
   }
 
@@ -33,6 +35,7 @@ class ForegroundServiceNotificationConfigurationTest {
 
     assertNull(configuration.body)
     assertNull(configuration.iconName)
+    assertTrue(!configuration.restartWhileSessionIntentExists())
   }
 
   @Test

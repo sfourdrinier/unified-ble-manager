@@ -80,6 +80,18 @@ class CanonicalBleExampleService {
     return (await this.ensureManager()).adapter.state()
   }
 
+  async readiness() {
+    return (await this.ensureManager()).readiness()
+  }
+
+  diagnosticsSnapshot() {
+    return this.manager?.diagnostics.snapshot() ?? null
+  }
+
+  scanPlan() {
+    return this.scan?.plan ?? null
+  }
+
   async scanForPeers(serviceUuids: readonly string[], onPeer: (peer: ExamplePeer) => void): Promise<void> {
     await this.stopScan()
     const manager = await this.ensureManager()

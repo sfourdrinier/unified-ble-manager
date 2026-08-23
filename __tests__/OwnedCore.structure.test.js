@@ -4,10 +4,7 @@ const fs = require('fs')
 const path = require('path')
 
 const root = path.join(__dirname, '..')
-const androidRoot = path.join(
-  root,
-  'android/src/main/java/com/sfourdrinier/unifiedblemanager'
-)
+const androidRoot = path.join(root, 'android/src/main/java/com/sfourdrinier/unifiedblemanager')
 
 function javaAndKotlinFiles(directory) {
   return fs
@@ -32,10 +29,7 @@ describe('Unified Android native protocol structure', () => {
       'utf8'
     )
     const radio = fs.readFileSync(
-      path.join(
-        root,
-        'android/src/main/java/com/sfourdrinier/unifiedblemanager/radio/OwnedAndroidGattRadio.kt'
-      ),
+      path.join(root, 'android/src/main/java/com/sfourdrinier/unifiedblemanager/radio/OwnedAndroidGattRadio.kt'),
       'utf8'
     )
     const buildGradle = fs.readFileSync(path.join(root, 'android/build.gradle'), 'utf8')

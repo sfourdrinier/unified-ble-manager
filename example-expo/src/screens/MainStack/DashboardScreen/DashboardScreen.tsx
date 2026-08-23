@@ -17,6 +17,24 @@ export function DashboardScreen({ navigation }: DashboardScreenProps) {
   const [isConnecting, setIsConnecting] = useState(false)
   const [foundPeers, setFoundPeers] = useState<readonly ExamplePeer[]>([])
   const [error, setError] = useState<string | null>(null)
+  const [readiness, setReadiness] = useState<string | null>(null)
+  const [planDigest, setPlanDigest] = useState<string | null>(null)
+  const [diagnosticCounters, setDiagnosticCounters] = useState<string | null>(null)
+
+  const inspectReadiness = async () => {
+    try {
+      const snapshot = await BLEService.readiness()
+      setReadiness(`${snapshot.state} (${snapshot.actions.length} action${snapshot.actions.length === 1 ? '' : 's'})`)
+    } catch (readinessError) {
+      setReadiness(messageFor(readinessError))
+    }
+  }
+
+  const inspectDiagnostics = () => {
+    const snapshot = BLEService.diagnosticsSnapshot()
+    setDiagnosticCounters(snapshot === null ? 'manager not created' : JSON.stringify(snapshot.resourceCounters))
+    setPlanDigest(BLEService.scanPlan()?.queryDigest ?? null)
+  }
 
   const startScan = async () => {
     if (!work.isActive()) {
@@ -80,6 +98,8 @@ export function DashboardScreen({ navigation }: DashboardScreenProps) {
         </DropDown>
       ) : null}
       <AppButton label="Scan with canonical manager" onPress={() => void startScan()} />
+      <AppButton label="Check Expo readiness" onPress={() => void inspectReadiness()} />
+      <AppButton label="Inspect plan and diagnostics" onPress={inspectDiagnostics} />
       <AppButton label="Stop scan" onPress={() => void stopScan(work, setError)} />
       <AppButton label="Go to nRF test" onPress={() => navigation.navigate('DEVICE_NRF_TEST_SCREEN')} />
       <AppButton
@@ -92,6 +112,9 @@ export function DashboardScreen({ navigation }: DashboardScreenProps) {
         onPress={() => navigation.navigate('DEVICE_ON_DISCONNECT_TEST_SCREEN')}
       />
       {error === null ? null : <AppText>BLE error: {error}</AppText>}
+      {readiness === null ? null : <AppText>Readiness: {readiness}</AppText>}
+      {planDigest === null ? null : <AppText>Scan plan digest: {planDigest}</AppText>}
+      {diagnosticCounters === null ? null : <AppText>Resource counters: {diagnosticCounters}</AppText>}
       <FlatList
         style={{ flex: 1 }}
         data={foundPeers}

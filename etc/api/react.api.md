@@ -9,6 +9,11 @@ export function getBleCapability(
 export function useAdapterState(): UseAdapterStateResult
 export function useBle(): BleContextValue
 export function useBleCapability(id: FeatureId): CapabilityDescriptor | undefined
+export function getBleReadiness(manager: Pick<ExpoBleManager, 'readiness'>): Promise<BleReadiness>
+export function useBleReadiness(): UseBleReadinessResult
+export function useDiscoveredPeers(options?: ScanOptions): UseDiscoveredPeersResult
+export function useConnectionState(connection: BleConnection | null): UseConnectionStateResult
+export function useCharacteristicValue(characteristic: GattCharacteristic | null, options?: GattSubscribeOptions): UseCharacteristicValueResult
 export function BleProvider(props: BleProviderProps): React.ReactElement
 ```
 ## Verified exported symbols

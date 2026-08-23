@@ -12,6 +12,9 @@ export interface ExpoBleManager extends BleManager {
     readonly request: (request: ExpoPermissionRequest) => Promise<ExpoPermissionResult>
   }
   readonly openSettings: (target: ExpoSettingsTarget) => Promise<void>
+  readonly background: {
+    readonly acquire: (request: ExpoBackgroundRequest) => Promise<ExpoBackgroundLease>
+  }
 }
 ```
 ## Verified exported symbols

@@ -16,24 +16,29 @@ public final class ForegroundServiceNotificationConfiguration {
       "com.sfourdrinier.unifiedblemanager.foreground-service.body";
   public static final String ICON_METADATA =
       "com.sfourdrinier.unifiedblemanager.foreground-service.icon";
+  public static final String RESTART_METADATA =
+      "com.sfourdrinier.unifiedblemanager.foreground-service.restart";
 
   private final String channelId;
   private final String channelName;
   private final String title;
   private final String body;
   private final String iconName;
+  private final boolean restartWhileSessionIntentExists;
 
   private ForegroundServiceNotificationConfiguration(
       String channelId,
       String channelName,
       String title,
       String body,
-      String iconName) {
+      String iconName,
+      boolean restartWhileSessionIntentExists) {
     this.channelId = channelId;
     this.channelName = channelName;
     this.title = title;
     this.body = body;
     this.iconName = iconName;
+    this.restartWhileSessionIntentExists = restartWhileSessionIntentExists;
   }
 
   public static ForegroundServiceNotificationConfiguration fromMetadata(Map<String, String> metadata) {
@@ -45,7 +50,24 @@ public final class ForegroundServiceNotificationConfiguration {
         required(metadata, CHANNEL_NAME_METADATA),
         required(metadata, TITLE_METADATA),
         optional(metadata.get(BODY_METADATA)),
-        optional(metadata.get(ICON_METADATA)));
+        optional(metadata.get(ICON_METADATA)),
+        "while-session-intent-exists".equals(metadata.get(RESTART_METADATA)));
+  }
+
+  public static ForegroundServiceNotificationConfiguration fromValues(
+      String channelId,
+      String channelName,
+      String title,
+      String body,
+      String iconName,
+      boolean restartWhileSessionIntentExists) {
+    return new ForegroundServiceNotificationConfiguration(
+        requiredValue(channelId, CHANNEL_ID_METADATA),
+        requiredValue(channelName, CHANNEL_NAME_METADATA),
+        requiredValue(title, TITLE_METADATA),
+        optional(body),
+        optional(iconName),
+        restartWhileSessionIntentExists);
   }
 
   public String getChannelId() {
@@ -68,10 +90,18 @@ public final class ForegroundServiceNotificationConfiguration {
     return iconName;
   }
 
+  public boolean restartWhileSessionIntentExists() {
+    return restartWhileSessionIntentExists;
+  }
+
   private static String required(Map<String, String> metadata, String key) {
-    final String value = optional(metadata.get(key));
-    if (value == null) throw notConfigured("required notification metadata is absent: " + key);
-    return value;
+    return requiredValue(metadata.get(key), key);
+  }
+
+  private static String requiredValue(String value, String key) {
+    final String normalized = optional(value);
+    if (normalized == null) throw notConfigured("required notification metadata is absent: " + key);
+    return normalized;
   }
 
   private static String optional(String value) {
