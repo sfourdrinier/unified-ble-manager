@@ -2,7 +2,7 @@
 
 # Getting started
 
-**RC3 candidate under preparation:** `4.0.0-rc.3`. The tag-driven trusted-publishing workflow publishes it to npm `latest` after the exact-main release gates pass.
+**Current prerelease:** `4.0.0-rc.3` is published from exact `main` and is immutable. Stable `4.0.0` remains reserved for the post-PR12 release gate.
 
 This page gets you to a first scan, connect, read, notify, and teardown on React Native. Other hosts are linked at the bottom. The root import does not turn Bluetooth on.
 

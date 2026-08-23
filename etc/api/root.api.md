@@ -86,6 +86,7 @@ export interface WriteReadinessEvent extends BleControlObservationMetadata { rea
 export interface BleControlObservationMetadata { readonly connectionGeneration: string; readonly observedAtMonotonicMs: number; readonly source: BleObservationSource; readonly authority: string; readonly limitations: readonly Limitation[] }
 export type BleObservationSource = 'backend' | 'platform' | 'core' | 'unknown'
 export interface ScanSession {
+  readonly plan: ScanPlan | null
   readonly observations: BoundedAsyncStream<PublicScanObservation>
   readonly state: AsyncIterable<ScanStateEvent>
   stop(): Promise<CleanupRecord>

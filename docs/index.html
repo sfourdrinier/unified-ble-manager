@@ -61,9 +61,8 @@
 
             <h1>Getting started</h1>
             <p>
-              <strong>RC3 candidate under preparation:</strong> <code>4.0.0-rc.3</code>. The tag-driven
-              trusted-publishing workflow publishes it to npm <code>latest</code> after the exact-main release gates
-              pass.
+              <strong>Current prerelease:</strong> <code>4.0.0-rc.3</code> is published from exact <code>main</code> and
+              is immutable. Stable <code>4.0.0</code> remains reserved for the post-PR12 release gate.
             </p>
             <p>
               This page gets you to a first scan, connect, read, notify, and teardown on React Native. Other hosts are
@@ -664,9 +663,11 @@
             <h1>Electron</h1>
             <p>Main owns the radio. The renderer uses a versioned IPC client and never loads a native addon.</p>
             <p>
-              <strong>RC3 candidate under preparation:</strong> <code>4.0.0-rc.3</code>. The tag-driven release
-              publishes Node-API v8 prebuilds covering macOS and Windows <code>arm64</code>/<code>x64</code> for both
-              Node and modern Electron.
+              <strong>Current prerelease:</strong> <code>4.0.0-rc.3</code> is published from exact <code>main</code> and
+              is immutable. The release ships Node-API v8 prebuilds covering macOS and Windows <code>arm64</code>/<code
+                >x64</code
+              >
+              for both Node and modern Electron.
             </p>
             <p>
               <code>unified-ble-manager/electron/main</code> and <code>unified-ble-manager/electron/renderer</code> are
@@ -877,10 +878,9 @@
             </p>
             <h2>Package stability and backend support are separate</h2>
             <p>
-              <code>unified-ble-manager@4.0.0-rc.3</code> is the prepared
-              <strong>release-candidate package/API</strong> for the 4.x contract; the RC3 tag workflow publishes this
-              candidate after the exact-main release gates pass. Stable <code>4.0.0</code> is reserved for the post-PR12
-              release gate.
+              <code>unified-ble-manager@4.0.0-rc.3</code> is the published
+              <strong>release-candidate package/API</strong> for the 4.x contract; it is immutable and stable
+              <code>4.0.0</code> remains reserved for the post-PR12 release gate.
             </p>
             <p>
               This release candidate is the portable API/semantics freeze candidate; it does <strong>not</strong> mean

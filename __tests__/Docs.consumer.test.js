@@ -325,9 +325,7 @@ describe('consumer documentation matches the published package', () => {
     const release = read('RELEASE.md')
     const platforms = read('docs/PLATFORMS.md')
 
-    expect(readme).toContain(
-      'The tag-driven trusted-publishing workflow publishes it to npm `latest` after the exact-main release gates pass'
-    )
+    expect(readme).toContain('`4.0.0-rc.3` is published from exact `main`')
     expect(readme).toContain('npm trusted publishing/OIDC with provenance')
     expect(release).toContain('git tag -a "v$release_candidate"')
     expect(release).toContain('release_candidate=4.0.0-rc.N')
@@ -335,7 +333,7 @@ describe('consumer documentation matches the published package', () => {
     expect(release).toContain('npm trusted publishing/OIDC')
     expect(release).toContain('publishes with provenance')
     expect(platforms).toContain(
-      '`unified-ble-manager@4.0.0-rc.3` is the prepared **release-candidate package/API** for the 4.x contract; the RC3 tag workflow publishes this candidate after the exact-main release gates pass'
+      '`unified-ble-manager@4.0.0-rc.3` is the published **release-candidate package/API** for the 4.x contract; it is immutable and stable `4.0.0` remains reserved for the post-PR12 release gate'
     )
     expect(platforms).toContain(
       'WinRT compilation or ABI loading, for example, is not by itself a Windows live-radio claim'
