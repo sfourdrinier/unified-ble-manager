@@ -84,6 +84,7 @@ import { releaseCoreBluetoothAdapterLossResources } from './corebluetooth-adapte
 import { withCoreBluetoothCleanupTimeout } from './corebluetooth-cleanup'
 import { releaseLateCoreBluetoothConnection } from './corebluetooth-late-connect-cleanup'
 import { createCoreBluetoothRuntimeFeatureRegistry } from './corebluetooth-runtime-capabilities'
+import { diagnosticCoreBluetoothScanPlan } from './corebluetooth-scan-planner'
 export type { DirectGattBackendIdentityOptions } from './corebluetooth-identity'
 export interface ScanConsumer {
   readonly scanSessionId: ScanSessionId<string, string>
@@ -350,6 +351,7 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
       watchState: async () => this.watchAdapterState()
     }
     this.scanner = {
+      plan: query => diagnosticCoreBluetoothScanPlan(query),
       start: (options, clientId) => this.startScan(options, clientId),
       join: (leaseId, token, clientId) => this.joinScan(leaseId, token, clientId)
     }

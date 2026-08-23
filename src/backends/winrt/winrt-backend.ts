@@ -33,6 +33,7 @@ import {
 } from '../../backend-contract/errors'
 import type { CharacteristicPath, DescriptorPath } from '../../backend-contract/gatt'
 import { attachmentRecordsEqual } from '../../backend-contract/identity'
+import type { NormalizedScanQuery } from '../../backend-contract/scan-query'
 import type {
   AdapterStateSnapshot,
   AdapterStateWatch,
@@ -110,6 +111,7 @@ import type {
   WinRtScanTerminalRecord
 } from './winrt-boundary'
 import { invalidateWinRtPhysicalSubscription } from './winrt-subscription-runtime'
+import { diagnosticWinRtScanPlan } from './winrt-scan-planner'
 
 const eventLimits = Object.freeze({
   itemCapacity: capacity(64),
@@ -463,6 +465,7 @@ export class WinRtBackend implements BleCentralBackend<string, HostNeutralBacken
       watchState: async () => this.watchAdapterState()
     })
     this.scanner = Object.freeze({
+      plan: (query: NormalizedScanQuery) => diagnosticWinRtScanPlan(query),
       start: this.startScan.bind(this),
       join: this.joinScan.bind(this)
     })
