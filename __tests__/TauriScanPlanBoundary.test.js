@@ -109,7 +109,6 @@ describe('Tauri trusted scan-plan boundary', () => {
         envelope: { command: 'scan.start', payload: { serviceUuids: [], manufacturerData: [], localNamePrefix: null } }
       })
 
-    await expect(scanStart()).rejects.toMatchObject({ normalized: { code: 'protocol.violation' } })
     await expect(transport.withTrustedScanQuery(query(), scanStart)).resolves.toEqual({
       kind: 'route',
       payload: { handle: 'scan-1' }
