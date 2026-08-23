@@ -7,6 +7,7 @@ import com.sfourdrinier.unifiedblemanager.radio.nextUuidOccurrence
 import com.sfourdrinier.unifiedblemanager.radio.resolveUuidOccurrence
 import com.sfourdrinier.unifiedblemanager.radio.OwnedAndroidGattRadio
 import com.sfourdrinier.unifiedblemanager.radio.OwnedAndroidGattRadio.GattSerialQueue
+import com.sfourdrinier.unifiedblemanager.radio.OwnedAndroidSubscriptionOwnership
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertNull
@@ -67,6 +68,42 @@ class UnifiedBleProtocolAndroidDispatcherLifecycleTest {
     assertTrue(dispatcher.contains("radio.onServicesChanged = { deviceId ->"))
     assertTrue(dispatcher.contains("activeDatabases"))
     assertTrue(dispatcher.contains("databaseChangedEvent"))
+  }
+
+  @Test
+  fun serviceChangedInvalidatesNativeSubscriptionOwnershipAndRoutesBeforeDatabaseChanged() {
+    val dispatcher = readAndroidSource(
+      "android/src/main/java/com/sfourdrinier/unifiedblemanager/protocol/UnifiedBleProtocolAndroidDispatcher.kt"
+    )
+    val radio = readAndroidSource(
+      "android/src/main/java/com/sfourdrinier/unifiedblemanager/radio/OwnedAndroidGattRadio.kt"
+    )
+
+    assertTrue(dispatcher.contains("activeSubscriptions.remove"))
+    assertTrue(dispatcher.contains("clearSubscriptionRoutesForDevice"))
+    assertTrue(radio.contains("activeNativeSubscriptionOwnership"))
+    assertTrue(radio.contains("invalidateForDatabaseChange"))
+    assertTrue(
+      dispatcher.indexOf("clearSubscriptionRoutesForDevice(deviceId)") <
+        dispatcher.indexOf("emitDatabaseChanged(database)")
+    )
+    assertTrue(
+      radio.indexOf("invalidateNativeSubscriptionsForDatabaseChange(key, gatt, generation)") <
+        radio.indexOf("onServicesChanged?.invoke(id)")
+    )
+  }
+
+  @Test
+  fun nativeSubscriptionOwnershipIsBoundToTheGattGenerationAndInvalidatedForThatGeneration() {
+    val ownership = OwnedAndroidSubscriptionOwnership<String>()
+    ownership.activate("AA:BB", 7L, "heart-rate")
+    ownership.activate("CC:DD", 3L, "battery")
+
+    assertTrue(ownership.isActive("AA:BB", 7L, "heart-rate"))
+    assertTrue(!ownership.isActive("AA:BB", 8L, "heart-rate"))
+    assertEquals(listOf("heart-rate"), ownership.invalidateForDatabaseChange("AA:BB", 7L))
+    assertTrue(!ownership.isActive("AA:BB", 7L, "heart-rate"))
+    assertTrue(ownership.isActive("CC:DD", 3L, "battery"))
   }
 
   @Test

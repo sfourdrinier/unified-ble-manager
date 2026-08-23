@@ -50,6 +50,7 @@ class UnifiedBleProtocolAndroidDispatcher(
       if (securityEventsEnabled.get()) emitSecurityStateChanged(deviceId, state.bond)
     }
     radio.onServicesChanged = { deviceId ->
+      clearSubscriptionRoutesForDevice(deviceId)
       activeDatabases[deviceId.uppercase()]?.let { database ->
         emitDatabaseChanged(database)
       }
@@ -1027,6 +1028,15 @@ class UnifiedBleProtocolAndroidDispatcher(
       }
     }
   }
+
+  private fun clearSubscriptionRoutesForDevice(deviceId: String) {
+    activeSubscriptions.entries.forEach { entry ->
+      if (entry.value.endpoint.deviceId.equals(deviceId, ignoreCase = true)) {
+        activeSubscriptions.remove(entry.key, entry.value)
+      }
+    }
+  }
+
   private data class CharacteristicEndpoint(
     val deviceId: String,
     val serviceUuid: UUID,

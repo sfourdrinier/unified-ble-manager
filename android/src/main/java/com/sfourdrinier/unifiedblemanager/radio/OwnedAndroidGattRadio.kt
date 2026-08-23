@@ -46,6 +46,66 @@ internal data class OwnedRadioTeardownResult(
     get() = failures.isEmpty()
 }
 
+/**
+ * Tracks exact native notification registrations by GATT generation.
+ *
+ * A Service Changed callback invalidates the database without replacing the
+ * BluetoothGatt instance, so the GATT object identity alone cannot protect
+ * notification delivery from stale characteristic ownership.
+ */
+internal class OwnedAndroidSubscriptionOwnership<K> {
+  private data class Registration(
+    val deviceKeyUpper: String,
+    val gattGeneration: Long
+  )
+
+  private val registrations = ConcurrentHashMap<K, Registration>()
+
+  fun activate(deviceKey: String, gattGeneration: Long, key: K) {
+    registrations[key] = Registration(deviceKey.uppercase(), gattGeneration)
+  }
+
+  fun deactivate(deviceKey: String, gattGeneration: Long, key: K) {
+    val registration = registrations[key] ?: return
+    if (registration.deviceKeyUpper == deviceKey.uppercase() &&
+      registration.gattGeneration == gattGeneration
+    ) {
+      registrations.remove(key, registration)
+    }
+  }
+
+  fun isActive(deviceKey: String, gattGeneration: Long, key: K): Boolean {
+    val registration = registrations[key] ?: return false
+    return registration.deviceKeyUpper == deviceKey.uppercase() &&
+      registration.gattGeneration == gattGeneration
+  }
+
+  fun invalidateForDatabaseChange(deviceKey: String, gattGeneration: Long): List<K> {
+    val deviceKeyUpper = deviceKey.uppercase()
+    return registrations.entries
+      .filter { entry ->
+        entry.value.deviceKeyUpper == deviceKeyUpper &&
+          entry.value.gattGeneration == gattGeneration
+      }
+      .toList()
+      .mapNotNull { entry ->
+        if (registrations.remove(entry.key, entry.value)) entry.key else null
+      }
+  }
+
+  fun clearDevice(deviceKey: String) {
+    val deviceKeyUpper = deviceKey.uppercase()
+    registrations.entries
+      .filter { entry -> entry.value.deviceKeyUpper == deviceKeyUpper }
+      .toList()
+      .forEach { entry -> registrations.remove(entry.key, entry.value) }
+  }
+
+  fun clear() {
+    registrations.clear()
+  }
+}
+
 /** Runtime adapter state derived from Android hardware and granted permissions. */
 internal data class OwnedRadioAdapterProtocolState(
   val availability: String,
@@ -162,7 +222,9 @@ class OwnedAndroidGattRadio(private val context: Context) {
     val token: GattSerialQueue.GattOperationToken,
     val callback: (Result<Unit>) -> Unit,
     val done: () -> Unit,
-    val physicalCleanup: (() -> OwnedRadioTeardownFailure?)? = null
+    val physicalCleanup: (() -> OwnedRadioTeardownFailure?)? = null,
+    val subscriptionEnabled: Boolean? = null,
+    val subscriptionCharacteristic: BluetoothGattCharacteristic? = null
   )
 
   private val exactReadPending = ConcurrentHashMap<BluetoothGattCharacteristic, ExactBytePending>()
@@ -171,6 +233,8 @@ class OwnedAndroidGattRadio(private val context: Context) {
   private val exactCccdPending = ConcurrentHashMap<BluetoothGattDescriptor, ExactUnitPending>()
   private val exactDescriptorReadPending = ConcurrentHashMap<BluetoothGattDescriptor, ExactBytePending>()
   private val exactDescriptorWritePending = ConcurrentHashMap<BluetoothGattDescriptor, ExactUnitPending>()
+  private val activeNativeSubscriptionOwnership =
+    OwnedAndroidSubscriptionOwnership<BluetoothGattCharacteristic>()
 
   /** Per-device connection lifecycle listeners (multi-device safe). */
   private val connectionListeners =
@@ -702,6 +766,7 @@ class OwnedAndroidGattRadio(private val context: Context) {
     effectiveMtuByDevice[key]?.let { state ->
       if (state.gattGeneration == generation) effectiveMtuByDevice.remove(key, state)
     }
+    activeNativeSubscriptionOwnership.clearDevice(key)
     clearCharCacheForDevice(key)
     deviceQueues.remove(key)?.clear()
     return null
@@ -1428,6 +1493,21 @@ class OwnedAndroidGattRadio(private val context: Context) {
       val cccd = characteristic.getDescriptor(CCCD_UUID)
       if (cccd == null) {
         // There is no remote CCCD to write, but the platform accepted the local registration.
+        if (!token.isPubliclySettled()) {
+          if (enable) {
+            activeNativeSubscriptionOwnership.activate(
+              deviceId.uppercase(),
+              gattGeneration,
+              characteristic
+            )
+          } else {
+            activeNativeSubscriptionOwnership.deactivate(
+              deviceId.uppercase(),
+              gattGeneration,
+              characteristic
+            )
+          }
+        }
         if (token.isPubliclySettled()) {
           rollbackRegistration()?.let { failure ->
             registerRetryableCleanup(failure.operation) { rollbackRegistration() }
@@ -1444,7 +1524,9 @@ class OwnedAndroidGattRadio(private val context: Context) {
         token,
         onResult,
         done,
-        rollbackRegistration
+        rollbackRegistration,
+        subscriptionEnabled = enable,
+        subscriptionCharacteristic = characteristic
       )
       if (exactCccdPending.putIfAbsent(cccd, pending) != null) {
         completeExactUnitDirect(
@@ -1789,6 +1871,7 @@ class OwnedAndroidGattRadio(private val context: Context) {
       exactCccdPending.clear()
       exactDescriptorReadPending.clear()
       exactDescriptorWritePending.clear()
+      activeNativeSubscriptionOwnership.clear()
     }
     return OwnedRadioTeardownResult(failures)
   }
@@ -1811,6 +1894,37 @@ class OwnedAndroidGattRadio(private val context: Context) {
   private fun clearCharCacheForDevice(deviceKeyUpper: String) {
     val prefix = "$deviceKeyUpper:"
     charCache.keys.filter { it.startsWith(prefix) }.forEach { charCache.remove(it) }
+  }
+
+  private fun invalidateNativeSubscriptionsForDatabaseChange(
+    deviceKeyUpper: String,
+    gatt: BluetoothGatt,
+    gattGeneration: Long
+  ) {
+    activeNativeSubscriptionOwnership
+      .invalidateForDatabaseChange(deviceKeyUpper, gattGeneration)
+      .forEach { characteristic ->
+        fun disable(): OwnedRadioTeardownFailure? = try {
+          if (gatt.setCharacteristicNotification(characteristic, false)) {
+            null
+          } else {
+            OwnedRadioTeardownFailure(
+              "serviceChangedDisable:$deviceKeyUpper:generation=$gattGeneration",
+              IllegalStateException("setCharacteristicNotification invalidation was rejected")
+            )
+          }
+        } catch (throwable: Throwable) {
+          OwnedRadioTeardownFailure(
+            "serviceChangedDisable:$deviceKeyUpper:generation=$gattGeneration",
+            throwable
+          )
+        }
+
+        disable()?.let { failure ->
+          registerRetryableCleanup(failure.operation) { disable() }
+          reportCleanupFailure(failure)
+        }
+      }
   }
 
   private fun failPendingForDevice(deviceKeyUpper: String, reason: String) {
@@ -2031,6 +2145,25 @@ class OwnedAndroidGattRadio(private val context: Context) {
           result.exceptionOrNull() ?: rollbackFailure.throwable
         )
       )
+    }
+    if (terminalResult.isSuccess && !pending.token.isPubliclySettled()) {
+      pending.subscriptionEnabled?.let { enabled ->
+        pending.subscriptionCharacteristic?.let { characteristic ->
+          if (enabled) {
+            activeNativeSubscriptionOwnership.activate(
+              pending.deviceKeyUpper,
+              pending.gattGeneration,
+              characteristic
+            )
+          } else {
+            activeNativeSubscriptionOwnership.deactivate(
+              pending.deviceKeyUpper,
+              pending.gattGeneration,
+              characteristic
+            )
+          }
+        }
+      }
     }
     try {
       pending.callback(terminalResult)
@@ -2391,6 +2524,9 @@ class OwnedAndroidGattRadio(private val context: Context) {
       characteristic: BluetoothGattCharacteristic
     ) {
       if (!isCurrentGattCallback(gatt)) return
+      val deviceKeyUpper = gatt.device.address.uppercase()
+      val gattGeneration = gattGenerationByInstance[gatt] ?: return
+      if (!activeNativeSubscriptionOwnership.isActive(deviceKeyUpper, gattGeneration, characteristic)) return
       @Suppress("DEPRECATION")
       val raw = characteristic.value ?: return
       // Clone immediately — binder may reuse the buffer on the next notify.
@@ -2406,6 +2542,9 @@ class OwnedAndroidGattRadio(private val context: Context) {
       value: ByteArray
     ) {
       if (!isCurrentGattCallback(gatt)) return
+      val deviceKeyUpper = gatt.device.address.uppercase()
+      val gattGeneration = gattGenerationByInstance[gatt] ?: return
+      if (!activeNativeSubscriptionOwnership.isActive(deviceKeyUpper, gattGeneration, characteristic)) return
       val serviceUuid = characteristic.service?.uuid ?: return
       // Clone immediately so concurrent notifies cannot share the stack buffer.
       val copied = value.copyOf()
@@ -2477,6 +2616,9 @@ class OwnedAndroidGattRadio(private val context: Context) {
       if (!isCurrentGattCallback(gatt)) return
       val id = gatt.device.address
       val key = id.uppercase()
+      val generation = gattGenerationByInstance[gatt] ?: return
+      failPendingForDevice(key, "GATT database changed")
+      invalidateNativeSubscriptionsForDatabaseChange(key, gatt, generation)
       discovered.remove(key)
       clearCharCacheForDevice(key)
       onServicesChanged?.invoke(id)
