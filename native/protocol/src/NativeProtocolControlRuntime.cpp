@@ -49,6 +49,7 @@ void validateRestorationAuthority(
   static_cast<void>(NativeProtocolV2Codec::negotiate(
       authority.nativeProtocol,
       {kAbiVersion, kAbiVersion},
+      {kControlSurfaceVersion, kControlSurfaceVersion},
       {1U, 1U},
       {1U, 1U},
       {1U, 1U},
@@ -183,6 +184,7 @@ NegotiatedVersions NativeProtocolControlRuntime::handshake(
     const std::string& ownerId,
     VersionRange nativeProtocol,
     VersionRange abi,
+    VersionRange controlSurface,
     VersionRange backendContract,
     VersionRange capabilitySchema,
     VersionRange eventSchema,
@@ -193,6 +195,7 @@ NegotiatedVersions NativeProtocolControlRuntime::handshake(
   const auto versions = NativeProtocolV2Codec::negotiate(
       nativeProtocol,
       abi,
+      controlSurface,
       backendContract,
       capabilitySchema,
       eventSchema,

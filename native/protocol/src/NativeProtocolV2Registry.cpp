@@ -317,6 +317,7 @@ RestorationAdoptionReceipt NativeRestorationJournal::adopt(
   static_cast<void>(NativeProtocolV2Codec::negotiate(
       {request.nativeProtocolMinimum, request.nativeProtocolMaximum},
       {kAbiVersion, kAbiVersion},
+      {kControlSurfaceVersion, kControlSurfaceVersion},
       {1U, 1U},
       {1U, 1U},
       {1U, 1U},

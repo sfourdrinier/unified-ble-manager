@@ -58,6 +58,10 @@ protocol::VersionRange abiVersionRange() {
   return {.minimum = protocol::kAbiVersion, .maximum = protocol::kAbiVersion};
 }
 
+protocol::VersionRange controlSurfaceVersionRange() {
+  return {.minimum = protocol::kControlSurfaceVersion, .maximum = protocol::kControlSurfaceVersion};
+}
+
 class ControllableInvoker final : public CallInvoker {
  public:
   void invokeAsync(CallFunc&& function) noexcept override {
@@ -139,7 +143,7 @@ std::shared_ptr<protocol::NativeProtocolControlRuntime> openedRuntime() {
           .adapterGeneration = "apple-execution-adapter-generation",
       },
       "apple-execution-owner",
-      nativeProtocolRange(), abiVersionRange(),
+      nativeProtocolRange(), abiVersionRange(), controlSurfaceVersionRange(),
       {1U, 1U},
       {1U, 1U},
       {1U, 1U},

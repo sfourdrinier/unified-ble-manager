@@ -24,6 +24,8 @@ namespace {
 
 constexpr double kProtocolVersion = static_cast<double>(unified_ble::native_protocol::v2::kProtocolVersion);
 constexpr double kAbiVersion = static_cast<double>(unified_ble::native_protocol::v2::kAbiVersion);
+constexpr double kControlSurfaceVersion =
+    static_cast<double>(unified_ble::native_protocol::v2::kControlSurfaceVersion);
 constexpr double kContractVersion = 1.0;
 constexpr double kCapabilitySchemaVersion = 1.0;
 constexpr double kEventSchemaVersion = 1.0;
@@ -430,6 +432,7 @@ RCT_EXPORT_MODULE(UnifiedBleProtocolControl)
   const auto rangesCompatible =
       compatibleRangeFor(request.nativeProtocol().minimum(), request.nativeProtocol().maximum(), kProtocolVersion) &&
       compatibleRangeFor(request.abi().minimum(), request.abi().maximum(), kAbiVersion) &&
+      compatibleRangeFor(request.controlSurface().minimum(), request.controlSurface().maximum(), kControlSurfaceVersion) &&
       compatibleRangeFor(request.backendContract().minimum(), request.backendContract().maximum(), kContractVersion) &&
       compatibleRangeFor(request.capabilitySchema().minimum(), request.capabilitySchema().maximum(), kCapabilitySchemaVersion) &&
       compatibleRangeFor(request.eventSchema().minimum(), request.eventSchema().maximum(), kEventSchemaVersion) &&
@@ -462,6 +465,7 @@ RCT_EXPORT_MODULE(UnifiedBleProtocolControl)
         nativeString(request.ownerId()),
         range(request.nativeProtocol()),
         range(request.abi()),
+        range(request.controlSurface()),
         range(request.backendContract()),
         range(request.capabilitySchema()),
         range(request.eventSchema()),
@@ -502,6 +506,7 @@ RCT_EXPORT_MODULE(UnifiedBleProtocolControl)
   resolve(@{
     @"nativeProtocol": @2,
     @"abi": @2,
+    @"controlSurface": @(kControlSurfaceVersion),
     @"backendContract": @1,
     @"capabilitySchema": @1,
     @"eventSchema": @1,

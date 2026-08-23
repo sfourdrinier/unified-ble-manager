@@ -41,9 +41,12 @@ public final class UnifiedBleProtocolControlModule extends NativeUnifiedBleProto
     implements ActivityEventListener {
   public static final String NAME = "UnifiedBleProtocolControl";
   private static final String TAG = "UnifiedBleProtocol";
-  private static final int NATIVE_PROTOCOL_VERSION = 2;
+  private static final int NATIVE_PROTOCOL_VERSION =
+      com.sfourdrinier.unifiedblemanager.protocol.generated.NativeProtocolV2SchemaKt.NATIVE_PROTOCOL_VERSION;
   private static final int ABI_VERSION =
       com.sfourdrinier.unifiedblemanager.protocol.generated.NativeProtocolV2SchemaKt.NATIVE_PROTOCOL_ABI_VERSION;
+  private static final int CONTROL_SURFACE_VERSION =
+      com.sfourdrinier.unifiedblemanager.protocol.generated.NativeProtocolV2SchemaKt.NATIVE_PROTOCOL_CONTROL_SURFACE_VERSION;
   private static final int CONTRACT_VERSION = 1;
   private static final int MAXIMUM_CONTROL_RECORD_BYTES = 262144;
   private static final int MAXIMUM_BINARY_PAYLOAD_BYTES = 524288;
@@ -263,6 +266,7 @@ public final class UnifiedBleProtocolControlModule extends NativeUnifiedBleProto
     try {
       requireVersionRange(request.getMap("nativeProtocol"), "nativeProtocol", NATIVE_PROTOCOL_VERSION);
       requireVersionRange(request.getMap("abi"), "abi", ABI_VERSION);
+      requireVersionRange(request.getMap("controlSurface"), "controlSurface", CONTROL_SURFACE_VERSION);
       requireVersionRange(request.getMap("backendContract"), "backendContract", CONTRACT_VERSION);
       requireVersionRange(request.getMap("capabilitySchema"), "capabilitySchema", CONTRACT_VERSION);
       requireVersionRange(request.getMap("eventSchema"), "eventSchema", CONTRACT_VERSION);
@@ -287,6 +291,7 @@ public final class UnifiedBleProtocolControlModule extends NativeUnifiedBleProto
       final WritableMap result = Arguments.createMap();
       result.putInt("nativeProtocol", NATIVE_PROTOCOL_VERSION);
       result.putInt("abi", ABI_VERSION);
+      result.putInt("controlSurface", CONTROL_SURFACE_VERSION);
       result.putInt("backendContract", CONTRACT_VERSION);
       result.putInt("capabilitySchema", CONTRACT_VERSION);
       result.putInt("eventSchema", CONTRACT_VERSION);
@@ -592,6 +597,7 @@ public final class UnifiedBleProtocolControlModule extends NativeUnifiedBleProto
     final String[] axes = {
         "nativeProtocol",
         "abi",
+        "controlSurface",
         "backendContract",
         "capabilitySchema",
         "eventSchema",

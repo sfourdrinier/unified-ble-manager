@@ -11,6 +11,7 @@ export interface NativeProtocolVersionRange {
 export interface NativeProtocolHandshakeRequest {
   nativeProtocol: NativeProtocolVersionRange
   abi: NativeProtocolVersionRange
+  controlSurface: NativeProtocolVersionRange
   backendContract: NativeProtocolVersionRange
   capabilitySchema: NativeProtocolVersionRange
   eventSchema: NativeProtocolVersionRange
@@ -26,6 +27,7 @@ export interface NativeProtocolHandshakeRequest {
 export interface NativeProtocolHandshakeResult {
   nativeProtocol: number
   abi: number
+  controlSurface: number
   backendContract: number
   capabilitySchema: number
   eventSchema: number

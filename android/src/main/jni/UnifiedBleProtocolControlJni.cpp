@@ -119,7 +119,7 @@ Java_com_sfourdrinier_unifiedblemanager_protocol_UnifiedBleProtocolControlModule
     jstring ownerId,
     jlongArray versionRanges) {
   try {
-    if (versionRanges == nullptr || environment->GetArrayLength(versionRanges) != 12) {
+    if (versionRanges == nullptr || environment->GetArrayLength(versionRanges) != 14) {
       throw protocol::ProtocolException(
           protocol::ProtocolFailure::incompatibleVersion,
           "Native protocol JNI version ranges are malformed");
@@ -144,7 +144,8 @@ Java_com_sfourdrinier_unifiedblemanager_protocol_UnifiedBleProtocolControlModule
         range(4U),
         range(6U),
         range(8U),
-        range(10U)));
+        range(10U),
+        range(12U)));
   } catch (const std::exception& error) {
     throwJava(environment, error);
   }
