@@ -94,6 +94,21 @@ describe('Apple Native Protocol v2 radio boundary', () => {
     expect(execution).toContain('Apple native descriptor occurrence is invalid')
   })
 
+  test('forwards CoreBluetooth service changes through the generation-bound database event', () => {
+    const radio = read('ios/Owned/OwnedCoreBluetoothProtocolRadio.swift')
+    const control = read('ios/UnifiedBleProtocolControl.mm')
+    const execution = read('ios/NativeProtocol/UnifiedBleProtocolAppleExecution.mm')
+    const executionHeader = read('ios/NativeProtocol/UnifiedBleProtocolAppleExecution.hpp')
+    const state = read('ios/NativeProtocol/UnifiedBleProtocolAppleExecutionState.hpp')
+
+    expect(radio).toContain('didModifyServices invalidatedServices')
+    expect(radio).toContain('protocolRadioDidModifyServices')
+    expect(control).toContain('protocolRadioDidModifyServices')
+    expect(executionHeader).toContain('receiveDatabaseChanged')
+    expect(execution).toContain('databaseChanged')
+    expect(state).toContain('databases')
+  })
+
   test('treats a fatal runtime close as an idempotent attachment close', () => {
     const control = read('ios/UnifiedBleProtocolControl.mm')
     const closeAttachment = control.slice(

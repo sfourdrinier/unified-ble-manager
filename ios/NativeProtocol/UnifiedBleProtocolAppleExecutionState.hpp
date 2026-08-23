@@ -69,6 +69,7 @@ class AppleNativeProtocolExecution::State final : public std::enable_shared_from
   bool attachmentFatal = false;
   bool restorationAppended = false;
   std::unordered_map<std::string, native_protocol::v2::ProtocolRecord> connections;
+  std::unordered_map<std::string, native_protocol::v2::ProtocolRecord> databases;
   std::unordered_map<std::string, PendingDisconnect> pendingDisconnects;
 };
 

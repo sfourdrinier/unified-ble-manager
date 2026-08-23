@@ -749,6 +749,12 @@ RCT_EXPORT_MODULE(UnifiedBleProtocolControl)
   }
 }
 
+- (void)protocolRadioDidModifyServices:(NSString *)peerIdentifier {
+  if (_execution != nullptr) {
+    _execution->receiveDatabaseChanged((__bridge void *)peerIdentifier);
+  }
+}
+
 - (void)protocolRadioDidReceiveNotification:(NSString *)subscriptionIdentifier value:(NSData *)value {
   if (_execution != nullptr) {
     _execution->receiveNotification((__bridge void *)subscriptionIdentifier, (__bridge void *)value);

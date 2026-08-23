@@ -450,6 +450,7 @@ void failAttachmentAfterTerminalAdmissionFailure(
       state->recordsAwaitingJavaScript.reset();
       state->drainScheduled = false;
       state->connections.clear();
+      state->databases.clear();
       state->pendingDisconnects.clear();
       releaseRadio = state->radio != nullptr;
     }
@@ -1055,6 +1056,18 @@ void connectionOwnershipAfterSettlement(
     const std::shared_ptr<AppleNativeProtocolExecution::State>& state,
     const protocol::ProtocolRecord& command) {
   const auto kind = requiredString(command, 3U);
+  if (kind == "discover") {
+    const auto& connection = requiredRecord(command, 10U);
+    const auto& database = requiredRecord(command, 11U);
+    const auto peer = requiredString(connection, 2U);
+    std::scoped_lock lock(state->mutex);
+    const auto current = state->connections.find(peer);
+    if (current == state->connections.end() || requiredString(current->second, 5U) != requiredString(connection, 5U)) {
+      return;
+    }
+    state->databases.insert_or_assign(peer, database);
+    return;
+  }
   if (kind != "connect" && kind != "disconnect") return;
   const auto connection = requiredRecord(command, 10U);
   const auto peer = requiredString(connection, 2U);
@@ -1063,6 +1076,7 @@ void connectionOwnershipAfterSettlement(
     std::scoped_lock lock(state->mutex);
     if (kind == "connect") {
       state->connections.insert_or_assign(peer, connection);
+      state->databases.erase(peer);
       const auto pending = state->pendingDisconnects.find(peer);
       if (pending != state->pendingDisconnects.end()) {
         if (pending->second.attachmentGeneration == state->attachmentGeneration) {
@@ -1072,6 +1086,7 @@ void connectionOwnershipAfterSettlement(
       }
     } else {
       state->connections.erase(peer);
+      state->databases.erase(peer);
       state->pendingDisconnects.erase(peer);
     }
   }
@@ -1768,6 +1783,7 @@ void AppleNativeProtocolExecution::beginAttachment() {
   state_->recordsAwaitingSink.reset();
   state_->recordsAwaitingJavaScript.reset();
   state_->drainScheduled = false;
+  state_->databases.clear();
   state_->pendingDisconnects.clear();
 }
 
@@ -1854,6 +1870,7 @@ void AppleNativeProtocolExecution::rollbackRestorationBootstrap() noexcept {
   state_->recordsAwaitingSink.reset();
   state_->recordsAwaitingJavaScript.reset();
   state_->drainScheduled = false;
+  state_->databases.clear();
   state_->pendingDisconnects.clear();
 }
 
@@ -1888,6 +1905,7 @@ void AppleNativeProtocolExecution::detachAttachment() {
     state->sinksAwaitingJavaScriptRelease.push_back(std::move(state->fatalSink));
   }
   state->connections.clear();
+  state->databases.clear();
   state->pendingDisconnects.clear();
   state->restorationAppended = false;
   state->ingressOrdinalAllocator.reset(state->mutex);
@@ -1978,6 +1996,7 @@ void AppleNativeProtocolExecution::receiveDisconnect(void* peerIdentifier, void*
         if (!immediateIngress.has_value()) return;
         connection = found->second;
         state_->connections.erase(found);
+        state_->databases.erase(peerValue);
       }
     }
     if (pendingDisconnectAdmissionFailed) {
@@ -1994,6 +2013,41 @@ void AppleNativeProtocolExecution::receiveDisconnect(void* peerIdentifier, void*
         immediateIngress->attachmentGeneration));
   } catch (const std::exception& error) {
     logNativeFailure("disconnect serialization", error);
+  }
+}
+
+void AppleNativeProtocolExecution::receiveDatabaseChanged(void* peerIdentifier) {
+  if (state_->closed.load(std::memory_order_acquire)) return;
+  NSString* peer = (__bridge NSString*)peerIdentifier;
+  if (peer == nil) return;
+  try {
+    const auto peerValue = nsString(peer, "database changed peer");
+    std::optional<protocol::ProtocolRecord> database;
+    std::optional<AppleNativeIngressReservation> ingress;
+    {
+      std::scoped_lock lock(state_->mutex);
+      const auto connection = state_->connections.find(peerValue);
+      const auto retainedDatabase = state_->databases.find(peerValue);
+      if (connection == state_->connections.end() || retainedDatabase == state_->databases.end()) return;
+      const auto& databaseConnection = requiredRecord(retainedDatabase->second, 1U);
+      if (requiredString(databaseConnection, 2U) != requiredString(connection->second, 2U) ||
+          requiredString(databaseConnection, 5U) != requiredString(connection->second, 5U)) return;
+      ingress = reserveNativeIngressOrdinal(state_);
+      if (!ingress.has_value()) return;
+      database = retainedDatabase->second;
+    }
+    const auto event = protocol::ProtocolRecord{.kind = protocol::RecordKind::event, .fields = {
+        field(1U, std::uint64_t{protocol::kProtocolVersion}),
+        field(2U, std::string("apple-database-changed:") + std::to_string(ingress->ordinal)),
+        field(3U, std::string("databaseChanged")),
+        field(4U, reference(attachmentRecord(state_->runtime->attachmentIdentity()))),
+        field(5U, ingress->ordinal),
+        field(6U, monotonicMilliseconds()),
+        field(8U, reference(*database)),
+    }};
+    static_cast<void>(deliverEvent(state_, event, ingress->attachmentGeneration));
+  } catch (const std::exception& error) {
+    logNativeFailure("database changed serialization", error);
   }
 }
 
@@ -2052,6 +2106,7 @@ void AppleNativeProtocolExecution::close() {
         "Apple execution close JavaScript discard");
     state->terminalResultsAwaitingJavaScript.clear();
     state->terminalConnectionCommandsAwaitingJavaScript.clear();
+    state->databases.clear();
     state->pendingDisconnects.clear();
     retryBinaryCleanupLedger(state, "Apple execution close binary cleanup retry");
     state->recordsAwaitingSink.reset();

@@ -7,6 +7,7 @@ import Foundation
   func protocolRadioDidUpdateAdapterState(_ snapshot: NSDictionary)
   func protocolRadioDidReceiveAdvertisement(_ advertisement: NSDictionary)
   func protocolRadioDidDisconnectPeer(_ peerIdentifier: String, error: NSError?)
+  func protocolRadioDidModifyServices(_ peerIdentifier: String)
   func protocolRadioDidReceiveNotification(_ subscriptionIdentifier: String, value: NSData)
 }
 
@@ -545,6 +546,17 @@ public final class OwnedCoreBluetoothProtocolRadio: NSObject, CBPeripheralDelega
       return
     }
     delegate?.protocolRadioDidDisconnectPeer(identifier, error: error as NSError?)
+  }
+
+  public func peripheral(_ peripheral: CBPeripheral, didModifyServices invalidatedServices: [CBService]) {
+    let identifier = peripheral.identifier.uuidString
+    servicesByPeer.removeValue(forKey: identifier)
+    pendingDiscovery.removeValue(forKey: identifier)?.completion(
+      nil,
+      self.error(code: 1026, message: "CoreBluetooth services changed during discovery")
+    )
+    failPendingGATT(for: identifier, error: self.error(code: 1027, message: "CoreBluetooth services changed"))
+    delegate?.protocolRadioDidModifyServices(identifier)
   }
 
   public func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
