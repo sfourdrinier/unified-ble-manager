@@ -1,7 +1,7 @@
 # PR10 review inventory
 
 Target branch: `feat/expo-first-class-host`
-Current verified SHA: `aaa4ce7d6952a9a87476ed3227175a7226091e50`
+Current verified SHA: `f8c7a48f3f6c9063dda0c412f3ec0e76a8ebe99e`
 Base: `a252b5a7d6e09147ccd7fa636facab6ad2996ea6`
 Milestone: first-class Expo host, staged as PR10A–PR10D
 
