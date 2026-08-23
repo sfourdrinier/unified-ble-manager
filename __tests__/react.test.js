@@ -8,6 +8,8 @@ const hookHarness = {
   stateValues: [],
   stateIndex: 0,
   effectIndex: 0,
+  refs: [],
+  refIndex: 0,
   memoValues: [],
   memoDependencies: [],
   memoIndex: 0,
@@ -15,6 +17,8 @@ const hookHarness = {
     this.effects = []
     this.stateIndex = 0
     this.effectIndex = 0
+    this.refs = []
+    this.refIndex = 0
     this.memoValues = []
     this.memoDependencies = []
     this.memoIndex = 0
@@ -23,6 +27,7 @@ const hookHarness = {
     this.effects = []
     this.stateIndex = 0
     this.effectIndex = 0
+    this.refIndex = 0
     this.memoIndex = 0
   },
   nextState(initialValue) {
@@ -36,6 +41,11 @@ const hookHarness = {
         this.stateValues[index] = typeof value === 'function' ? value(this.stateValues[index]) : value
       }
     ]
+  },
+  nextRef(initialValue) {
+    const index = this.refIndex++
+    if (!(index in this.refs)) this.refs[index] = { current: initialValue }
+    return this.refs[index]
   },
   nextMemo(factory, dependencies) {
     const index = this.memoIndex++
@@ -68,7 +78,7 @@ jest.mock('react', () => ({
   ),
   useEffect: jest.fn(effect => hookHarness.nextEffect(effect)),
   useMemo: jest.fn((factory, dependencies) => hookHarness.nextMemo(factory, dependencies)),
-  useRef: jest.fn(initialValue => ({ current: initialValue })),
+  useRef: jest.fn(initialValue => hookHarness.nextRef(initialValue)),
   useState: jest.fn(initialValue => hookHarness.nextState(initialValue))
 }))
 
@@ -79,6 +89,7 @@ const {
   useAdapterState,
   useBle,
   useBleCapability,
+  useBleReadiness,
   useCharacteristicValue,
   useConnectionState,
   useDiscoveredPeers
@@ -109,21 +120,57 @@ function manager(overrides = {}) {
   }
 }
 
-function scanSession() {
+function scanSession(observations = (async function* () {
+  yield { kind: 'terminal' }
+})()) {
   return {
-    observations: (async function* () {
-      yield { kind: 'terminal' }
-    })(),
+    observations,
     stop: jest.fn().mockResolvedValue({ state: 'released', failures: [] })
   }
 }
 
-function characteristicSubscription() {
+function characteristicSubscription(values = (async function* () {
+  yield { kind: 'terminal' }
+})()) {
   return {
-    values: (async function* () {
-      yield { kind: 'terminal' }
-    })(),
+    values,
     remove: jest.fn().mockResolvedValue({ state: 'released', failures: [] })
+  }
+}
+
+function overflowNotice() {
+  return {
+    kind: 'overflow',
+    policy: 'drop-oldest',
+    droppedItems: 1,
+    droppedBytes: 2,
+    replacedItems: 0
+  }
+}
+
+function connectionWithState(current) {
+  let emitted = false
+  const iterator = {
+    next: jest.fn(() => {
+      if (emitted) return new Promise(() => undefined)
+      emitted = true
+      return Promise.resolve({
+        done: false,
+        value: {
+          kind: 'connection-lifecycle',
+          previous: 'connecting',
+          current,
+          cause: 'caller',
+          connectionGeneration: `${current}-generation`,
+          sequence: 1
+        }
+      })
+    }),
+    return: jest.fn().mockResolvedValue({ done: true })
+  }
+  return {
+    iterator,
+    connection: { lifecycleEvents: { [Symbol.asyncIterator]: () => iterator } }
   }
 }
 
@@ -260,6 +307,79 @@ describe('React host surface', () => {
     expect(hookHarness.stateValues[0]).toEqual({ state: adapterState, loading: false, error: null })
   })
 
+  test('resets readiness when the provider manager is replaced', async () => {
+    const firstManager = manager({ readiness: jest.fn().mockResolvedValue({ state: 'ready' }) })
+    const secondReadiness = deferred()
+    const secondManager = manager({ readiness: jest.fn(() => secondReadiness.promise) })
+
+    hookHarness.contextValue = { manager: firstManager, loading: false, error: null }
+    expect(useBleReadiness()).toEqual({ readiness: null, loading: true, error: null })
+    const firstCleanup = hookHarness.effects[0]()
+    await flush()
+    expect(hookHarness.stateValues[0]).toEqual({ readiness: { state: 'ready' }, loading: false, error: null })
+
+    firstCleanup()
+    hookHarness.rerender()
+    hookHarness.contextValue = { manager: secondManager, loading: false, error: null }
+    expect(useBleReadiness()).toEqual({ readiness: null, loading: true, error: null })
+    const secondCleanup = hookHarness.effects[0]()
+    await flush()
+    expect(hookHarness.stateValues[0]).toEqual({ readiness: null, loading: true, error: null })
+
+    secondReadiness.resolve({ state: 'ready' })
+    await flush()
+    expect(hookHarness.stateValues[0]).toEqual({ readiness: { state: 'ready' }, loading: false, error: null })
+    secondCleanup()
+  })
+
+  test('resets connection state when the observed connection is replaced', async () => {
+    const first = connectionWithState('connected')
+    const second = connectionWithState('connecting')
+
+    const firstResult = useConnectionState(first.connection)
+    expect(firstResult).toEqual({ state: null, loading: true, error: null })
+    const firstCleanup = hookHarness.effects[0]()
+    await flush()
+    expect(hookHarness.stateValues[0]).toEqual({ state: 'connected', loading: false, error: null })
+
+    firstCleanup()
+    hookHarness.rerender()
+    const secondResult = useConnectionState(second.connection)
+    expect(secondResult).toEqual({ state: null, loading: true, error: null })
+    const secondCleanup = hookHarness.effects[0]()
+    await flush()
+    expect(hookHarness.stateValues[0]).toEqual({ state: 'connecting', loading: false, error: null })
+    secondCleanup()
+  })
+
+  test('resets characteristic value when the observed characteristic is replaced', async () => {
+    const firstValue = { value: new Uint8Array([1]), delivery: 'notification', observedAtMonotonicMs: 1, sequence: 1 }
+    const secondValue = { value: new Uint8Array([2]), delivery: 'notification', observedAtMonotonicMs: 2, sequence: 2 }
+    const firstSubscription = characteristicSubscription((async function* () {
+      yield { kind: 'value', value: firstValue }
+      await new Promise(() => undefined)
+    })())
+    const secondSubscription = characteristicSubscription((async function* () {
+      yield { kind: 'value', value: secondValue }
+      await new Promise(() => undefined)
+    })())
+    const firstCharacteristic = { subscribe: jest.fn().mockResolvedValue(firstSubscription) }
+    const secondCharacteristic = { subscribe: jest.fn().mockResolvedValue(secondSubscription) }
+
+    expect(useCharacteristicValue(firstCharacteristic)).toEqual({ value: null, loading: true, error: null })
+    const firstCleanup = hookHarness.effects[0]()
+    await flush()
+    expect(hookHarness.stateValues[0]).toEqual({ value: firstValue, loading: false, error: null })
+
+    firstCleanup()
+    hookHarness.rerender()
+    expect(useCharacteristicValue(secondCharacteristic)).toEqual({ value: null, loading: true, error: null })
+    const secondCleanup = hookHarness.effects[0]()
+    await flush()
+    expect(hookHarness.stateValues[0]).toEqual({ value: secondValue, loading: false, error: null })
+    secondCleanup()
+  })
+
   test('restarts scans when timeout or AbortSignal identity changes and cleans up the prior session', async () => {
     const firstSignal = new AbortController().signal
     const secondSignal = new AbortController().signal
@@ -321,6 +441,22 @@ describe('React host surface', () => {
     expect(onError).toHaveBeenCalledWith(expect.objectContaining({ cleanup }))
   })
 
+  test('surfaces scan overflow notices in the result error', async () => {
+    const session = scanSession((async function* () {
+      yield overflowNotice()
+      yield { kind: 'terminal' }
+    })())
+    const createdManager = manager({ scan: jest.fn().mockResolvedValue(session) })
+    hookHarness.contextValue = { manager: createdManager, loading: false, error: null }
+
+    useDiscoveredPeers()
+    const cleanup = hookHarness.effects[0]()
+    await flush()
+
+    expect(hookHarness.stateValues[0].error).toMatchObject({ normalized: { code: 'stream.overflow' } })
+    cleanup()
+  })
+
   test('reports a connection iterator cleanup rejection through the provider error callback', async () => {
     const cleanupError = new Error('iterator cleanup failed')
     const onError = jest.fn()
@@ -357,6 +493,21 @@ describe('React host surface', () => {
     await flush()
 
     expect(onError).toHaveBeenCalledWith(expect.objectContaining({ cleanup }))
+  })
+
+  test('surfaces characteristic overflow notices in the result error', async () => {
+    const subscription = characteristicSubscription((async function* () {
+      yield overflowNotice()
+      yield { kind: 'terminal' }
+    })())
+    const characteristic = { subscribe: jest.fn().mockResolvedValue(subscription) }
+
+    useCharacteristicValue(characteristic)
+    const cleanup = hookHarness.effects[0]()
+    await flush()
+
+    expect(hookHarness.stateValues[0].error).toMatchObject({ normalized: { code: 'stream.overflow' } })
+    cleanup()
   })
 
   test('restarts characteristic subscriptions when timeout or AbortSignal identity changes', async () => {

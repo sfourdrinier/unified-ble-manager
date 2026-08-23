@@ -1,6 +1,6 @@
 import * as React from 'react'
 import type { ReactNode } from 'react'
-import type { CleanupRecord } from './backend-contract/errors'
+import { contractError, type CleanupRecord } from './backend-contract/errors'
 import type {
   BleConnection,
   BleConnectionEvent,
@@ -168,6 +168,12 @@ export function useBleReadiness(): UseBleReadinessResult {
     loading: true,
     error: null
   })
+  const [previousManager, setPreviousManager] = React.useState(manager)
+  const managerChanged = previousManager !== manager
+  if (managerChanged) {
+    setPreviousManager(manager)
+    setResult({ readiness: null, loading: true, error: null })
+  }
 
   React.useEffect(() => {
     let active = true
@@ -186,7 +192,7 @@ export function useBleReadiness(): UseBleReadinessResult {
     return () => {
       active = false
     }
-  }, [manager])
+  }, [manager, managerChanged])
 
   if (manager === null) return { readiness: null, loading, error }
   if (!hasReadiness(manager)) {
@@ -196,7 +202,7 @@ export function useBleReadiness(): UseBleReadinessResult {
       error: new Error('BLE readiness is available only from an Expo host manager.')
     }
   }
-  return result
+  return managerChanged ? { readiness: null, loading: true, error: null } : result
 }
 
 export function useDiscoveredPeers(options: ScanOptions = {}): UseDiscoveredPeersResult {
@@ -229,6 +235,7 @@ export function useDiscoveredPeers(options: ScanOptions = {}): UseDiscoveredPeer
       return () => undefined
     }
     const peers = new Map<string, BlePeer>()
+    let overflowError: Error | null = null
     const run = async (): Promise<void> => {
       try {
         session = await manager.scan(stableOptions)
@@ -241,15 +248,21 @@ export function useDiscoveredPeers(options: ScanOptions = {}): UseDiscoveredPeer
         for await (const item of session.observations) {
           if (!active) return
           if (item.kind === 'terminal') break
-          if (item.kind === 'overflow') continue
+          if (item.kind === 'overflow') {
+            overflowError = streamOverflowError('react.useDiscoveredPeers.observations')
+            setResult({ peers: [...peers.values()], state: 'active', error: overflowError })
+            continue
+          }
           if (item.kind === 'value') {
             peers.set(item.value.peer.id, item.value.peer)
-            setResult({ peers: [...peers.values()], state: 'active', error: null })
+            setResult({ peers: [...peers.values()], state: 'active', error: overflowError })
           }
         }
-        if (active) setResult({ peers: [...peers.values()], state: 'stopped', error: null })
+        if (active) setResult({ peers: [...peers.values()], state: 'stopped', error: overflowError })
       } catch (reason) {
-        if (active) setResult({ peers: [...peers.values()], state: 'failed', error: toError(reason) })
+        if (active) {
+          setResult({ peers: [...peers.values()], state: 'failed', error: overflowError ?? toError(reason) })
+        }
       }
     }
     run().catch(() => undefined)
@@ -270,6 +283,12 @@ export function useConnectionState(connection: BleConnection | null): UseConnect
     loading: connection !== null,
     error: null
   })
+  const [previousConnection, setPreviousConnection] = React.useState(connection)
+  const connectionChanged = previousConnection !== connection
+  if (connectionChanged) {
+    setPreviousConnection(connection)
+    setResult({ state: null, loading: connection !== null, error: null })
+  }
   React.useEffect(() => {
     let active = true
     let iterator: AsyncIterator<BleConnectionEvent> | null = null
@@ -297,8 +316,12 @@ export function useConnectionState(connection: BleConnection | null): UseConnect
         observeRejected(() => close.call(current), reportError)
       }
     }
-  }, [connection, reportError])
-  return connection === null ? { state: null, loading: false, error: null } : result
+  }, [connection, connectionChanged, reportError])
+  return connection === null
+    ? { state: null, loading: false, error: null }
+    : connectionChanged
+      ? { state: null, loading: true, error: null }
+      : result
 }
 
 export function useCharacteristicValue(
@@ -311,6 +334,12 @@ export function useCharacteristicValue(
     loading: characteristic !== null,
     error: null
   })
+  const [previousCharacteristic, setPreviousCharacteristic] = React.useState(characteristic)
+  const characteristicChanged = previousCharacteristic !== characteristic
+  if (characteristicChanged) {
+    setPreviousCharacteristic(characteristic)
+    setResult({ value: null, loading: characteristic !== null, error: null })
+  }
   const signal = options.signal
   const optionsKey = JSON.stringify({
     timeoutMs: options.timeoutMs,
@@ -324,6 +353,8 @@ export function useCharacteristicValue(
   React.useEffect(() => {
     let active = true
     let subscription: Awaited<ReturnType<GattCharacteristic['subscribe']>> | null = null
+    let overflowError: Error | null = null
+    let latestValue: GattValueEvent | null = null
     if (characteristic === null) return () => undefined
     const observe = async (): Promise<void> => {
       try {
@@ -339,11 +370,18 @@ export function useCharacteristicValue(
         for await (const item of subscription.values) {
           if (!active) return
           if (item.kind === 'terminal') break
-          if (item.kind === 'overflow') continue
-          if (item.kind === 'value') setResult({ value: item.value, loading: false, error: null })
+          if (item.kind === 'overflow') {
+            overflowError = streamOverflowError('react.useCharacteristicValue.values')
+            setResult({ value: latestValue, loading: false, error: overflowError })
+            continue
+          }
+          if (item.kind === 'value') {
+            latestValue = item.value
+            setResult({ value: latestValue, loading: false, error: overflowError })
+          }
         }
       } catch (reason) {
-        if (active) setResult({ value: null, loading: false, error: toError(reason) })
+        if (active) setResult({ value: latestValue, loading: false, error: overflowError ?? toError(reason) })
       }
     }
     observe().catch(() => undefined)
@@ -352,8 +390,12 @@ export function useCharacteristicValue(
       const current = subscription
       if (current !== null) observeCleanup(() => current.remove(), reportError, 'characteristic subscription remove')
     }
-  }, [characteristic, optionsKey, signal, stableOptions, reportError])
-  return characteristic === null ? { value: null, loading: false, error: null } : result
+  }, [characteristic, characteristicChanged, optionsKey, signal, stableOptions, reportError])
+  return characteristic === null
+    ? { value: null, loading: false, error: null }
+    : characteristicChanged
+      ? { value: null, loading: true, error: null }
+      : result
 }
 
 type CleanupResult = Pick<CleanupRecord, 'state'> & { readonly failures: readonly unknown[] }
@@ -506,6 +548,10 @@ function reportCleanupFailure(cleanup: CleanupResult, report: (error: Error) => 
 
 function toError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error))
+}
+
+function streamOverflowError(operation: string): Error {
+  return contractError('stream.overflow', 'stream', operation)
 }
 
 export type { BleAdapterState, BleCapabilities, CapabilityDescriptor, FeatureId }
