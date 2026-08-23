@@ -185,8 +185,8 @@
                 the session ends.
               </li>
               <li>
-                <code>requiresBluetoothLeHardware: true</code> only marks the Android BLE hardware feature. It does not
-                start a foreground service.
+                <code>requiredHardware: true</code> only marks the Android BLE hardware feature. It does not start a
+                foreground service.
               </li>
             </ul>
             <h2>Coming from react-native-ble-plx</h2>
@@ -525,136 +525,137 @@
 
             <h1>Expo plugin option reference</h1>
             <p>
-              The plugin writes native project configuration. That is not a live-radio or restoration support claim. See
-              <a href="PLATFORMS.md"><code>PLATFORMS.md</code></a
-              >.
+              The plugin configures native projects for Expo development builds. It does not start a radio, request
+              runtime permissions during prebuild, or prove physical radio/restoration reliability. Expo Go is not a
+              supported BLE execution environment because it cannot contain this native module.
             </p>
-            <h2>Current plugin package setup</h2>
+            <h2>Installation and development build</h2>
+            <pre><code>bunx expo install unified-ble-manager expo-dev-client
+bunx expo prebuild --clean
+bunx expo run:ios
+# or
+bunx expo run:android
+</code></pre>
+            <p>For EAS development builds:</p>
+            <pre><code>bunx eas build --profile development --platform ios
+bunx eas build --profile development --platform android
+</code></pre>
             <p>
-              <code>expo</code> is an optional host peer. The plugin imports Expo's supported
-              <code>expo/config-plugins</code> subpath; applications must not install the internal
-              <code>@expo/config-plugins</code> package directly. Web, bare React Native, and Node consumers do not
-              resolve Expo tooling.
+              expo is an optional host peer. Bare React Native, Web, Node, Electron, and Tauri consumers do not resolve
+              Expo tooling.
             </p>
-            <h2>Historical contract-test fixture — do not copy</h2>
-            <blockquote>
-              <p>
-                <strong>DO NOT COPY: HISTORICAL CONTRACT-TEST FIXTURE ONLY.</strong> The RC1 five-field
-                restoration/plugin schema below is retained for native/plugin contract tests. It is not supported
-                application configuration. Do not copy <code>iosNativeProtocolRestoration</code> or author
-                <code>clientId</code>/<code>hostSessionScope</code> in application code until the PR10 Expo v2 schema
-                and native-authoritative restoration slice lands.
-              </p>
-            </blockquote>
+            <h2>Current v2 schema</h2>
+            <pre><code>[
+  "unified-ble-manager",
+  {
+    "requiredHardware": true,
+    "permissions": {
+      "bluetoothAlways": "Allow $(PRODUCT_NAME) to connect to Bluetooth devices",
+      "android": {
+        "neverForLocation": true,
+        "legacyLocation": "none"
+      }
+    },
+    "background": {
+      "ios": {
+        "mode": "central",
+        "restoration": {
+          "id": "primary-ble-central",
+          "generation": "1"
+        },
+        "showPowerAlert": true
+      },
+      "android": {
+        "mode": "none"
+      }
+    },
+    "diagnostics": {
+      "nativeLogging": "errors"
+    }
+  }
+]
+</code></pre>
             <p>
-              The historical contract-test fixture records the schema implemented in <code>plugin/src/withBLE.ts</code>.
-              Use it only to understand the native contract tests until PR10 replaces the five-field restoration
-              identity. The table and JSON block below are not a current application recipe.
+              The TypeScript contract is UnifiedBleExpoPluginOptions in plugin/src/expoPluginSchema.ts. That module is
+              the single runtime/type definition source for validation and normalization.
             </p>
-            <table>
-              <thead>
-                <tr>
-                  <th>Historical fixture option</th>
-                  <th>Type</th>
-                  <th>Contract-test effect</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr>
-                  <td><code>debug</code></td>
-                  <td><code>boolean</code></td>
-                  <td>
-                    Enables plugin diagnostics; <code>UNIFIED_BLE_MANAGER_PLUGIN_DEBUG=1</code> also enables them.
-                    <code>BLEPLX_PLUGIN_DEBUG=1</code> remains a deprecated alias.
-                  </td>
-                </tr>
-                <tr>
-                  <td><code>requiresBluetoothLeHardware</code></td>
-                  <td><code>boolean</code></td>
-                  <td>
-                    Adds the required Android BLE hardware feature (<code>android.hardware.bluetooth_le</code>). It does
-                    not create a foreground service or change manager lifecycle.
-                  </td>
-                </tr>
-                <tr>
-                  <td><code>neverForLocation</code></td>
-                  <td><code>boolean</code></td>
-                  <td>
-                    Adds Android's <code>neverForLocation</code> scan flag and caps legacy location permissions at API
-                    30. Android treats this as a strong assertion and may filter some BLE beacons. Set it only when the
-                    product makes that assertion.
-                  </td>
-                </tr>
-                <tr>
-                  <td><code>modes</code></td>
-                  <td><code>('central')[]</code></td>
-                  <td>
-                    Adds iOS <code>bluetooth-central</code> background mode. Peripheral mode is rejected; this library
-                    is a BLE central.
-                  </td>
-                </tr>
-                <tr>
-                  <td><code>bluetoothAlwaysPermission</code></td>
-                  <td><code>string | false</code></td>
-                  <td>Sets, or suppresses, <code>NSBluetoothAlwaysUsageDescription</code>.</td>
-                </tr>
-                <tr>
-                  <td><code>iosNativeProtocolRestoration</code></td>
-                  <td><code>{ identifier, namespace, epoch, clientId, hostSessionScope }</code></td>
-                  <td>
-                    Atomically writes the five non-empty native restoration identity values required by
-                    <code>UnifiedBleProtocolControl</code>.
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-            <p>Historical contract-test fixture shape (do not copy into application config):</p>
+            <h3>requiredHardware</h3>
             <p>
-              The fixture validates every provided plugin property exactly: unknown keys, non-boolean flags, invalid or
-              duplicate modes, invalid permission values, and incomplete restoration objects fail configuration.
-              <code>iosNativeProtocolRestoration</code> writes <code>UnifiedBleProtocolRestoreIdentifier</code>,
-              <code>UnifiedBleProtocolRestorationNamespace</code>, <code>UnifiedBleProtocolRestorationEpoch</code>,
-              <code>UnifiedBleProtocolRestorationClientId</code>, and
-              <code>UnifiedBleProtocolRestorationHostSessionScope</code> as one unit. When absent, the plugin removes
-              all five values rather than leaving a partial native identity.
+              When true, declares android.hardware.bluetooth_le as required. When omitted or false, the plugin does not
+              manage that feature declaration.
             </p>
-            <p>
-              This configuration does not create a second CoreBluetooth central, restore a connection, reconnect a
-              peripheral, or define a product restoration policy. Use it only with the explicit manager-owned adoption
-              flow in <a href="../MIGRATION_4.0.md"><code>MIGRATION_4.0.md</code></a
-              >, and ensure <code>clientId</code> and <code>hostSessionScope</code> exactly match the app's host-owned
-              manager/adoption values. Do not claim restoration support from plugin configuration alone.
-            </p>
-            <p>These <code>react-native-ble-plx</code> plugin keys are not accepted:</p>
+            <h3>permissions</h3>
             <ul>
-              <li><code>iosEnableRestoration</code></li>
-              <li><code>iosRestorationIdentifier</code></li>
-              <li><code>iosNativeProtocolRestorationIdentifier</code></li>
-              <li><code>androidEnableForegroundService</code></li>
+              <li>bluetoothAlways: a non-empty iOS Bluetooth usage description, or false to remove the managed key.</li>
+              <li>
+                android.neverForLocation: the explicit Android scan assertion. It is never inferred from product
+                behavior.
+              </li>
+              <li>
+                android.legacyLocation: auto, required, or none. Location permission declarations are managed only
+                according to this policy and target-SDK rules.
+              </li>
+            </ul>
+            <p>The plugin never requests runtime permission during import or prebuild.</p>
+            <h3>background</h3>
+            <ul>
+              <li>ios.mode must be central; peripheral mode is rejected.</li>
+              <li>
+                ios.restoration accepts one application-facing id and an optional generation. The plugin writes only
+                UnifiedBleProtocolRestorationId and UnifiedBleProtocolRestorationGeneration. The trusted native host
+                derives the restore identifier, namespace, client identity, and host scope from its bundle identifier
+                plus these values.
+              </li>
+              <li>
+                android.mode is none or connected-device-foreground-service. The latter requires a complete notification
+                (channelId, channelName, and title) and may set body, icon, and an explicit restart policy.
+              </li>
             </ul>
             <p>
-              Do not add aliases or compatibility transforms for those names. A host that needs an Android foreground
-              service must own and validate that platform policy; the plugin does not silently provide it.
+              Foreground-service declarations do not acquire a runtime lease or guarantee background reliability. The
+              application must explicitly acquire and release the runtime background lease exposed by the host when that
+              surface is available.
             </p>
+            <h3>diagnostics</h3>
             <p>
-              <a href="../example-expo/"><code>../example-expo/</code></a> is the repository CNG fixture and uses a
-              <code>file:..</code> dependency. It demonstrates the source-tree integration path only; pin the published
-              package version in a consumer and validate that consumer's native build separately.
+              nativeLogging is off, errors, or events. The normalized configuration is deterministic and managed values
+              are removed when the option is removed.
+            </p>
+            <h2>Validation and reconciliation</h2>
+            <p>
+              Unknown keys, empty strings, malformed restoration tokens, invalid discriminated-union combinations, and
+              incomplete foreground-service notifications fail closed. Consecutive prebuilds are idempotent; duplicate
+              managed declarations are reconciled; unrelated Info.plist and manifest configuration is preserved; stale
+              RC1 managed keys are removed.
+            </p>
+            <p>The old flat keys are intentionally rejected:</p>
+            <ul>
+              <li>requiresBluetoothLeHardware</li>
+              <li>neverForLocation</li>
+              <li>modes</li>
+              <li>bluetoothAlwaysPermission</li>
+              <li>iosNativeProtocolRestoration</li>
+              <li>androidEnableForegroundService</li>
+            </ul>
+            <p>
+              Do not author clientId, hostSessionScope, namespace, or protocol epoch values in application
+              configuration. Those are native protocol identities, not application policy.
+            </p>
+            <h2>Retired RC1 migration note</h2>
+            <blockquote>
+              <p><strong>DO NOT COPY: HISTORICAL CONTRACT-TEST FIXTURE ONLY.</strong></p>
+            </blockquote>
+            <p>
+              The RC1 five-field restoration shape is not supported application configuration. It is retained only in
+              historical native-contract evidence so the migration boundary remains auditable. Use the v2 one-token
+              schema above.
             </p>
             <h2>Related records</h2>
             <ul>
-              <li>
-                <a href="../MIGRATION_4.0.md"><code>MIGRATION_4.0.md</code></a>
-              </li>
-              <li>
-                <a href="BACKGROUND.md"><code>BACKGROUND.md</code></a>
-              </li>
-              <li>
-                <a href="PLATFORMS.md"><code>PLATFORMS.md</code></a>
-              </li>
-              <li>
-                <a href="UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md"><code>UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md</code></a>
-              </li>
+              <li>MIGRATION_4.0.md</li>
+              <li>BACKGROUND.md</li>
+              <li>PLATFORMS.md</li>
+              <li>UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md</li>
             </ul>
           </section>
         </div>

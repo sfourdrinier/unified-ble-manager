@@ -10,9 +10,9 @@ const root = path.join(__dirname, '..')
 const bare = fs.readFileSync(path.join(root, 'example/src/services/BLEService/BLEService.ts'), 'utf8')
 const expo = fs.readFileSync(path.join(root, 'example-expo/src/services/BLEService/BLEService.ts'), 'utf8')
 
-function assertCanonicalService(source) {
-  expect(source).toContain("from 'unified-ble-manager/react-native'")
-  expect(source).toContain('createReactNativeBleManager')
+function assertCanonicalService(source, host = 'react-native') {
+  expect(source).toContain(`from 'unified-ble-manager/${host}'`)
+  expect(source).toContain(host === 'expo' ? 'createExpoBleManager' : 'createReactNativeBleManager')
   expect(source).toContain('class CanonicalBleExampleService')
   expect(source).toContain('async scanForPeers')
   expect(source).toContain('await manager.scan({')
@@ -54,9 +54,11 @@ function assertCanonicalService(source) {
 function normalizeServiceSource(source) {
   return source
     .replace('// example-expo/', '// example/')
+    .replace("from 'unified-ble-manager/expo'", "from 'unified-ble-manager/react-native'")
+    .replaceAll('createExpoBleManager', 'createReactNativeBleManager')
     .replace('The Expo app owns', 'The bare app owns')
     .replace(
-      "// This application identifier is stable across manager recreation and native restoration adoption.\n",
+      '// This application identifier is stable across manager recreation and native restoration adoption.\n',
       ''
     )
     .replaceAll('EXPO_APPLICATION_BLE_CLIENT_ID', 'BARE_APPLICATION_BLE_CLIENT_ID')
@@ -72,14 +74,16 @@ function normalizeServiceSource(source) {
 describe('canonical example BLEService parity (bare ↔ Expo)', () => {
   test('both examples expose the same canonical manager lifecycle and byte GATT surface', () => {
     assertCanonicalService(bare)
-    assertCanonicalService(expo)
+    assertCanonicalService(expo, 'expo')
     expect(normalizeServiceSource(expo)).toBe(bare)
   })
 
   test('async operation failures propagate or are explicitly surfaced after cleanup', () => {
     for (const source of [bare, expo]) {
       expect(source).not.toContain('new Promise<')
-      expect(source).toMatch(/catch \(error\) \{[\s\S]*?this\.connection = connection[\s\S]*?await this\.disconnect\(\)[\s\S]*?throw error/)
+      expect(source).toMatch(
+        /catch \(error\) \{[\s\S]*?this\.connection = connection[\s\S]*?await this\.disconnect\(\)[\s\S]*?throw error/
+      )
       expect(source).toMatch(/readProfileValue[\s\S]*?gatt\.not-found[\s\S]*?gatt\.property-not-supported/)
       expect(source).toMatch(/consumeScan[\s\S]*?catch \(error\) \{[\s\S]*?console\.error/)
       expect(source).toMatch(/consumeNotification[\s\S]*?catch \(error\) \{[\s\S]*?console\.error/)
@@ -89,14 +93,14 @@ describe('canonical example BLEService parity (bare ↔ Expo)', () => {
   test('both examples retain Battery and DIS reads and do not read indicate-only SIG measurements', () => {
     for (const source of [bare, expo]) {
       expect(source).toContain('async readCommonProfiles')
-      expect(source).toContain("unified-ble-manager/profiles/battery-service")
-      expect(source).toContain("unified-ble-manager/profiles/device-information")
+      expect(source).toContain('unified-ble-manager/profiles/battery-service')
+      expect(source).toContain('unified-ble-manager/profiles/device-information')
       expect(source).toContain('parseBatteryLevel')
       expect(source).toContain('decodeDeviceInformationString')
       expect(source).toContain('readProfileValue')
       expect(source).toContain('readDeviceInformation')
-      expect(source).not.toContain("unified-ble-manager/profiles/health-thermometer")
-      expect(source).not.toContain("unified-ble-manager/profiles/blood-pressure")
+      expect(source).not.toContain('unified-ble-manager/profiles/health-thermometer')
+      expect(source).not.toContain('unified-ble-manager/profiles/blood-pressure')
       expect(source).not.toContain('isReadable === false')
     }
   })

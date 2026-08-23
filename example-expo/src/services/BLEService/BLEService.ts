@@ -8,7 +8,7 @@ import {
   type PublicScanObservation,
   type ScanSession
 } from 'unified-ble-manager'
-import { createReactNativeBleManager } from 'unified-ble-manager/react-native'
+import { createExpoBleManager } from 'unified-ble-manager/expo'
 import {
   BATTERY_LEVEL_CHARACTERISTIC,
   BATTERY_SERVICE,
@@ -26,7 +26,7 @@ import {
   type DeviceInformationStringField
 } from 'unified-ble-manager/profiles/device-information'
 
-type CanonicalManager = Awaited<ReturnType<typeof createReactNativeBleManager>>
+type CanonicalManager = Awaited<ReturnType<typeof createExpoBleManager>>
 type CanonicalConnection = BleConnection
 type CanonicalDatabase = GattDatabase
 type CanonicalSubscription = GattSubscription
@@ -307,7 +307,7 @@ class CanonicalBleExampleService {
   private async createOwnedManager(generation: number): Promise<CanonicalManager> {
     const managerId = nextExampleManagerId
     nextExampleManagerId += 1
-    const manager = await createReactNativeBleManager({ instanceId: `expo-example-${managerId.toString()}` })
+    const manager = await createExpoBleManager({ instanceId: `expo-example-${managerId.toString()}` })
     if (this.destroying || this.ownerGeneration !== generation) {
       await manager.destroy()
       throw new Error('CanonicalBleExampleService is destroying.')

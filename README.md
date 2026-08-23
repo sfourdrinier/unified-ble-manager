@@ -47,6 +47,7 @@ The root import selects no radio. Import the host you actually run.
 | --- | --- |
 | `unified-ble-manager` | Host-neutral manager, handles, helpers, and shared types |
 | `unified-ble-manager/react-native` | React Native Android / Apple manager |
+| `unified-ble-manager/expo` | Expo development-build manager, readiness, and native configuration checks |
 | `unified-ble-manager/web` | Web Bluetooth chooser + matched manager |
 | `unified-ble-manager/electron/main` | Trusted Electron-main radio + IPC router |
 | `unified-ble-manager/electron/renderer` | Public `BleManager` factory over an authenticated IPC transport; never a radio |

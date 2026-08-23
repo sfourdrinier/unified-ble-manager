@@ -56,7 +56,7 @@ describe('Expo example cold-review regressions', () => {
 
   test('Expo delegates identity to the public React Native factory', () => {
     const service = readExampleSource('example-expo', 'services/BLEService/BLEService.ts')
-    expect(service).toContain('createReactNativeBleManager({ instanceId:')
+    expect(service).toContain('createExpoBleManager({ instanceId:')
     expect(service).not.toContain('hostSessionScope')
     expect(service).not.toContain('clientId:')
   })

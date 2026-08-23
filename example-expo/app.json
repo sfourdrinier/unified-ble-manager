@@ -21,8 +21,20 @@
       [
         "unified-ble-manager",
         {
-          "requiresBluetoothLeHardware": true,
-          "modes": ["central"]
+          "requiredHardware": true,
+          "permissions": {
+            "android": {
+              "legacyLocation": "none"
+            }
+          },
+          "background": {
+            "ios": {
+              "mode": "central"
+            },
+            "android": {
+              "mode": "none"
+            }
+          }
         }
       ]
     ],

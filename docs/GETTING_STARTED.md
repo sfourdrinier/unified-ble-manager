@@ -47,10 +47,22 @@ Add the plugin (full option table: [`EXPO_PLUGIN.md`](EXPO_PLUGIN.md)):
       [
         "unified-ble-manager",
         {
-          "requiresBluetoothLeHardware": false,
-          "modes": ["central"],
-          "neverForLocation": false,
-          "bluetoothAlwaysPermission": "Allow $(PRODUCT_NAME) to connect to Bluetooth devices"
+          "requiredHardware": false,
+          "permissions": {
+            "bluetoothAlways": "Allow $(PRODUCT_NAME) to connect to Bluetooth devices",
+            "android": {
+              "neverForLocation": false,
+              "legacyLocation": "none"
+            }
+          },
+          "background": {
+            "ios": {
+              "mode": "central"
+            },
+            "android": {
+              "mode": "none"
+            }
+          }
         }
       ]
     ]
@@ -156,7 +168,7 @@ Each `timeoutMs` is scoped to its public operation. More recipes: [`TUTORIALS.md
 - Android 12 without the runtime permission fails the first scan with `permission.denied`. Android 11 and below need `ACCESS_FINE_LOCATION`. `neverForLocation: true` is only honest if you do not use BLE for location.
 - Bare React Native still needs `NSBluetoothAlwaysUsageDescription` in Info.plist. The Expo plugin writes that for Expo apps.
 - Creating a new manager on every render leaks the radio. Create one, await `destroy()` when the session ends.
-- `requiresBluetoothLeHardware: true` only marks the Android BLE hardware feature. It does not start a foreground service.
+- `requiredHardware: true` only marks the Android BLE hardware feature. It does not start a foreground service.
 
 ## Coming from react-native-ble-plx
 
