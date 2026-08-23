@@ -1,4 +1,5 @@
-import type { ScanFilter } from '../../backend-contract/advertisement'
+import type { OwnerScanOptions, ScanFilter } from '../../backend-contract/advertisement'
+import { contractError } from '../../backend-contract/errors'
 import { canonicalUuid, type Uuid } from '../../backend-contract/primitives'
 import {
   describeScanPredicates,
@@ -13,7 +14,23 @@ import type {
   ScanPredicateDescription,
   ScanPlanningContext
 } from '../../backend-contract/scan-planning'
+import { snapshotNormalizedScanQuery } from '../../backend-contract/scan-query'
 import type { NormalizedScanQuery } from '../../backend-contract/scan-query'
+
+export function trustedServiceUuidFilter(
+  options: OwnerScanOptions<string, string>,
+  planScan: (query: NormalizedScanQuery) => BackendScanExecutionPlan<ScanFilter>,
+  operation: string
+): ScanFilter {
+  if (options.plan === undefined) return options.filter
+  const snapshot = snapshotScanPlan(options.plan)
+  if (options.query === undefined) throw contractError('protocol.violation', 'scan', `${operation}.plan-query`)
+  const query = snapshotNormalizedScanQuery(options.query)
+  if (query.digest !== snapshot.queryDigest) {
+    throw contractError('protocol.violation', 'scan', `${operation}.plan-query`)
+  }
+  return planScan(query).nativeFilter
+}
 
 export function createServiceUuidScanPlan(
   query: NormalizedScanQuery,

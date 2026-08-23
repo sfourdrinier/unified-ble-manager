@@ -11,6 +11,7 @@ import type {
   ResourceCounters,
   ScannerBackend
 } from '../../backend-contract/backend'
+import type { OwnerScanOptions } from '../../backend-contract/advertisement'
 import { contractError } from '../../backend-contract/errors'
 import type { AdapterSelection, AttachmentRecord, NativeBackendIdentity } from '../../backend-contract/identity'
 import { UNIFIED_BLE_IMPLEMENTATION_VERSION } from '../../implementation-version'
@@ -23,6 +24,7 @@ import {
   type NativeCompatibilityOffer,
   type NativeVersionAxes
 } from '../../backend-contract/primitives'
+import type { ClientId } from '../../backend-contract/primitives'
 import type { BoundedAsyncStream } from '../../backend-contract/streams'
 import type { NativeAttachmentIdentity, Spec as NativeProtocolControl } from '../../NativeUnifiedBleProtocolControl'
 import { CoreBluetoothBackend, type DirectGattBackendIdentityOptions } from '../corebluetooth/corebluetooth-backend'
@@ -31,6 +33,8 @@ import { ReactNativeAppleProtocolBoundary } from '../../native-protocol/rn-apple
 import { createReactNativeConnectionControlFeatureRegistry } from './react-native-connection-control-features'
 import { createReactNativeDescriptorFeatureRegistry } from './react-native-descriptor-features'
 import { diagnosticReactNativeAppleScanPlan } from './react-native-scan-planner'
+import { planReactNativeAppleScan } from './react-native-scan-planner'
+import { trustedServiceUuidFilter } from '../scan-planning/service-uuid-scan-planner'
 import { withReactNativeProviderCleanup } from './react-native-provider-cleanup'
 import {
   combineReactNativeFeatureRegistries,
@@ -107,7 +111,14 @@ class ReactNativeAppleBackend implements BleCentralBackend<string, NativeBackend
     this.adapter = delegate.adapter
     this.scanner = Object.freeze({
       plan: diagnosticReactNativeAppleScanPlan,
-      start: delegate.scanner.start,
+      start: (options: OwnerScanOptions<string, string>, clientId: ClientId<string, string>) =>
+        delegate.scanner.start(
+          {
+            ...options,
+            filter: trustedServiceUuidFilter(options, planReactNativeAppleScan, 'rn-apple.scan')
+          },
+          clientId
+        ),
       join: delegate.scanner.join
     })
     this.connections = delegate.connections
