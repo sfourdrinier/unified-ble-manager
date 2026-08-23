@@ -327,7 +327,8 @@ describe('consumer documentation matches the published package', () => {
 
     expect(readme).toContain('`4.0.0-rc.*` versions publish to npm `latest`')
     expect(readme).toContain('npm trusted publishing/OIDC with provenance')
-    expect(release).toContain('git tag -a v4.0.0-rc.2')
+    expect(release).toContain('git tag -a "v$release_candidate"')
+    expect(release).toContain('release_candidate=4.0.0-rc.N')
     expect(release).toContain('git tag -a v4.0.0')
     expect(release).toContain('npm trusted publishing/OIDC')
     expect(release).toContain('publishes with provenance')
