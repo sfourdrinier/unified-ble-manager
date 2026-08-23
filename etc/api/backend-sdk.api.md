@@ -338,6 +338,7 @@ export { createBackendAuthorDefinition, runBackendAuthorTck } from './backend-sd
 - `snapshotCapabilityDescriptor`
 - `snapshotCapabilityDescriptors`
 - `snapshotPeerReference`
+- `snapshotScanExecutionPlan`
 - `snapshotScanPlan`
 - `validateCapabilityDescriptor`
 - `validateCapabilitySnapshot`
