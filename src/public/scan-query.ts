@@ -538,7 +538,128 @@ function isNativeObservationShape(value: ScanObservation): boolean {
     required
       .slice()
       .sort()
-      .every((key, index) => keys[index] === key) && keys.length === required.length
+      .every((key, index) => keys[index] === key) &&
+    keys.length === required.length &&
+    isNativeObservationValues(value)
+  )
+}
+
+function isNativeObservationValues(value: ScanObservation): boolean {
+  if (typeof value !== 'object' || value === null || !('device' in value)) return false
+  const native = value
+  return (
+    isDeviceIdentity(native.device) &&
+    isObservationSource(native.provenance) &&
+    isAdvertisementField(native.sourceTimestamp, isSourceTimestamp) &&
+    Number.isFinite(native.receivedAtMonotonicMs) &&
+    Number.isSafeInteger(native.ingressOrdinal) &&
+    typeof native.scanSessionId === 'string' &&
+    isAdvertisementField(native.localName, field => typeof field === 'string') &&
+    isAdvertisementField(native.rssi, field => typeof field === 'number' && Number.isFinite(field)) &&
+    isAdvertisementField(native.txPower, field => typeof field === 'number' && Number.isFinite(field)) &&
+    isAdvertisementField(native.connectable, field => typeof field === 'boolean') &&
+    isAdvertisementField(native.appearance, field => typeof field === 'number' && Number.isFinite(field)) &&
+    isAdvertisementField(native.serviceUuids, isUuidList) &&
+    isAdvertisementField(native.solicitedServiceUuids, isUuidList) &&
+    isAdvertisementField(native.overflowServiceUuids, isUuidList) &&
+    isAdvertisementField(native.serviceData, isServiceDataList) &&
+    isAdvertisementField(native.manufacturerData, isManufacturerDataList) &&
+    isAdvertisementField(native.rawRecord, field => field instanceof Uint8Array) &&
+    isAdvertisementField(native.scanResponseRecord, field => field instanceof Uint8Array) &&
+    (native.peerReference === undefined || isPeerReference(native.peerReference))
+  )
+}
+
+function isAdvertisementField(field: unknown, isValue: (value: unknown) => boolean): boolean {
+  if (typeof field !== 'object' || field === null || Array.isArray(field)) return false
+  const state = Reflect.get(field, 'state')
+  const provenance = Reflect.get(field, 'provenance')
+  if (!isFieldProvenance(provenance)) return false
+  if (state === 'present') {
+    const keys = Object.keys(field).sort()
+    return keys.join(',') === 'provenance,state,value' && 'value' in field && isValue(Reflect.get(field, 'value'))
+  }
+  if (state === 'absent' || state === 'unavailable') {
+    const keys = Object.keys(field).sort()
+    return keys.join(',') === 'provenance,reason,state' && typeof Reflect.get(field, 'reason') === 'string'
+  }
+  return false
+}
+
+function isFieldProvenance(value: unknown): boolean {
+  return value === 'observed' || value === 'derived' || value === 'synthesized' || value === 'not-provided'
+}
+
+function isObservationSource(value: unknown): boolean {
+  return value === 'platform-raw' || value === 'platform-derived' || value === 'core-merged'
+}
+
+function isSourceTimestamp(value: unknown): boolean {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
+  return (
+    Object.keys(value).sort().join(',') === 'monotonicMs,origin' &&
+    typeof Reflect.get(value, 'monotonicMs') === 'number' &&
+    Number.isFinite(Reflect.get(value, 'monotonicMs')) &&
+    (Reflect.get(value, 'origin') === 'platform' || Reflect.get(value, 'origin') === 'backend')
+  )
+}
+
+function isUuidList(value: unknown): boolean {
+  return Array.isArray(value) && value.every(uuid => isCanonicalUuid(uuid))
+}
+
+function isServiceDataList(value: unknown): boolean {
+  return (
+    Array.isArray(value) &&
+    value.every(
+      entry =>
+        typeof entry === 'object' &&
+        entry !== null &&
+        Object.keys(entry).sort().join(',') === 'data,serviceUuid' &&
+        isCanonicalUuid(Reflect.get(entry, 'serviceUuid')) &&
+        Reflect.get(entry, 'data') instanceof Uint8Array
+    )
+  )
+}
+
+function isManufacturerDataList(value: unknown): boolean {
+  return (
+    Array.isArray(value) &&
+    value.every(
+      entry =>
+        typeof entry === 'object' &&
+        entry !== null &&
+        Object.keys(entry).sort().join(',') === 'companyIdentifier,value' &&
+        Number.isSafeInteger(Reflect.get(entry, 'companyIdentifier')) &&
+        Reflect.get(entry, 'companyIdentifier') >= 0 &&
+        Reflect.get(entry, 'companyIdentifier') <= 0xffff &&
+        Reflect.get(entry, 'value') instanceof Uint8Array
+    )
+  )
+}
+
+function isDeviceIdentity(value: unknown): boolean {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
+  const address = Reflect.get(value, 'address')
+  const addressValid =
+    address === null ||
+    (typeof address === 'object' &&
+      address !== null &&
+      Object.keys(address).sort().join(',') === 'type,value' &&
+      typeof Reflect.get(address, 'value') === 'string' &&
+      (Reflect.get(address, 'type') === 'public' ||
+        Reflect.get(address, 'type') === 'random' ||
+        Reflect.get(address, 'type') === 'opaque'))
+  return (
+    Object.keys(value).sort().join(',') === 'address,backendInstanceId,id,scope,stableAcrossRestarts' &&
+    typeof Reflect.get(value, 'id') === 'string' &&
+    typeof Reflect.get(value, 'backendInstanceId') === 'string' &&
+    (Reflect.get(value, 'scope') === 'session' ||
+      Reflect.get(value, 'scope') === 'application' ||
+      Reflect.get(value, 'scope') === 'backend') &&
+    (typeof Reflect.get(value, 'stableAcrossRestarts') === 'boolean' ||
+      Reflect.get(value, 'stableAcrossRestarts') === null) &&
+    addressValid
   )
 }
 
