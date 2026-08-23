@@ -2,7 +2,7 @@
 
 # Getting started
 
-**RC3 candidate under preparation:** `4.0.0-rc.3`. Publication to npm `latest` remains pending the tag-driven trusted-publishing workflow.
+**RC3 candidate under preparation:** `4.0.0-rc.3`. The tag-driven trusted-publishing workflow publishes it to npm `latest` after the exact-main release gates pass.
 
 This page gets you to a first scan, connect, read, notify, and teardown on React Native. Other hosts are linked at the bottom. The root import does not turn Bluetooth on.
 

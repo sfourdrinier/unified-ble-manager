@@ -4,7 +4,7 @@
 
 Use `unified-ble-manager/web` in a secure context (HTTPS or localhost) from a user gesture. There is no background scan and no process-level restoration.
 
-**RC3 candidate under preparation:** `4.0.0-rc.3`. Publication remains pending the tag-driven workflow. The backend is Experimental until artifact-bound physical-hardware validation says otherwise. See [`PLATFORMS.md`](PLATFORMS.md).
+**RC3 candidate under preparation:** `4.0.0-rc.3`. The tag-driven workflow publishes this candidate after the exact-main release gates pass. The backend is Experimental until artifact-bound physical-hardware validation says otherwise. See [`PLATFORMS.md`](PLATFORMS.md).
 
 ## Create the manager
 
