@@ -141,6 +141,7 @@ public final class UnifiedBleProtocolControlModule extends NativeUnifiedBleProto
 
   @Override
   public synchronized void associateCompanionDevice(ReadableMap request, Promise promise) {
+    boolean associationStarted = false;
     try {
       if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O ||
           !reactContext.getPackageManager().hasSystemFeature(PackageManager.FEATURE_COMPANION_DEVICE_SETUP)) {
@@ -171,6 +172,7 @@ public final class UnifiedBleProtocolControlModule extends NativeUnifiedBleProto
           .build();
       pendingAssociation = promise;
       pendingAssociationId = 0;
+      associationStarted = true;
       final CompanionDeviceManager manager =
           (CompanionDeviceManager) reactContext.getSystemService(android.content.Context.COMPANION_DEVICE_SERVICE);
       if (manager == null) throw new IllegalStateException("Companion Device Manager is unavailable.");
@@ -198,7 +200,11 @@ public final class UnifiedBleProtocolControlModule extends NativeUnifiedBleProto
         }
       }, null);
     } catch (RuntimeException error) {
-      rejectAssociationPromise(promise, errorCode(error, "associationFailed"), error.getMessage(), error);
+      final boolean ownsPendingAssociation = pendingAssociation == promise;
+      if (ownsPendingAssociation) clearPendingAssociation(promise);
+      if (!associationStarted || ownsPendingAssociation) {
+        rejectAssociationPromise(promise, errorCode(error, "associationFailed"), error.getMessage(), error);
+      }
     }
   }
 
@@ -243,6 +249,7 @@ public final class UnifiedBleProtocolControlModule extends NativeUnifiedBleProto
     if (pendingAssociation == null) return;
     final Promise promise = pendingAssociation;
     pendingAssociation = null;
+    pendingAssociationId = 0;
     final WritableMap result = Arguments.createMap();
     result.putString("source", "associated");
     result.putInt("associationId", associationId);
@@ -254,7 +261,14 @@ public final class UnifiedBleProtocolControlModule extends NativeUnifiedBleProto
   private void rejectAssociation(String code, String message) {
     final Promise promise = pendingAssociation;
     pendingAssociation = null;
+    pendingAssociationId = 0;
     if (promise != null) promise.reject(code, message);
+  }
+
+  private void clearPendingAssociation(Promise promise) {
+    if (pendingAssociation != promise) return;
+    pendingAssociation = null;
+    pendingAssociationId = 0;
   }
 
   private static void rejectAssociationPromise(Promise promise, String code, String message, Throwable error) {
@@ -409,19 +423,56 @@ public final class UnifiedBleProtocolControlModule extends NativeUnifiedBleProto
 
   @Override
   public synchronized void invalidate() {
+    RuntimeException cleanupFailure = null;
+    try {
+      rejectAssociation(
+          "associationCancelled",
+          "Companion Device Manager association was cancelled because the native module was invalidated.");
+    } catch (RuntimeException error) {
+      cleanupFailure = appendCleanupFailure(cleanupFailure, error);
+      Log.e(TAG, "companion association cleanup failed during invalidation", error);
+    }
     try {
       backgroundLeases.close();
     } catch (RuntimeException error) {
+      cleanupFailure = appendCleanupFailure(cleanupFailure, error);
       Log.e(TAG, "connected-device foreground service cleanup failed during invalidation", error);
     }
-    if (nativeHandle != 0L) {
-      UnifiedBleProtocolJsiBinding.close(nativeHandle);
-      nativeDestroy(nativeHandle);
-      nativeHandle = 0L;
+    final long handle = nativeHandle;
+    if (handle != 0L) {
+      try {
+        UnifiedBleProtocolJsiBinding.close(handle);
+      } catch (RuntimeException error) {
+        cleanupFailure = appendCleanupFailure(cleanupFailure, error);
+        Log.e(TAG, "native protocol dispatcher cleanup failed during invalidation", error);
+      }
+      try {
+        nativeDestroy(handle);
+        nativeHandle = 0L;
+      } catch (RuntimeException error) {
+        cleanupFailure = appendCleanupFailure(cleanupFailure, error);
+        Log.e(TAG, "native protocol runtime cleanup failed during invalidation", error);
+      }
     }
     attachment = null;
     ownerId = null;
-    super.invalidate();
+    try {
+      super.invalidate();
+    } catch (RuntimeException error) {
+      cleanupFailure = appendCleanupFailure(cleanupFailure, error);
+      Log.e(TAG, "native protocol module invalidation failed", error);
+    }
+    if (cleanupFailure != null) {
+      Log.e(TAG, "native protocol invalidation completed with cleanup failures", cleanupFailure);
+    }
+  }
+
+  private static RuntimeException appendCleanupFailure(
+      RuntimeException currentFailure,
+      RuntimeException cleanupFailure) {
+    if (currentFailure == null) return cleanupFailure;
+    currentFailure.addSuppressed(cleanupFailure);
+    return currentFailure;
   }
 
   private void closeOwnedState() {

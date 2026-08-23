@@ -57,8 +57,23 @@ class ConnectedDeviceForegroundServiceLeaseRegistryTest {
     assertFalse(registry.hasLease(lease))
   }
 
+  @Test
+  fun `failed close clears lease ownership while reporting the stop failure`() {
+    val driver = RecordingServiceDriver(failFirstStop = true)
+    val registry = ConnectedDeviceForegroundServiceLeaseRegistry(driver) { "lease-1" }
+    val lease = registry.acquire("active-workout")
+
+    val failure = runCatching { registry.close() }.exceptionOrNull()
+
+    assertTrue(failure is ForegroundServiceControlException)
+    assertEquals("foregroundServiceStopFailed", (failure as ForegroundServiceControlException).code)
+    assertEquals(0, registry.activeLeaseCount())
+    assertFalse(registry.hasLease(lease))
+  }
+
   private class RecordingServiceDriver(
-    private var failFirstStart: Boolean = false
+    private var failFirstStart: Boolean = false,
+    private var failFirstStop: Boolean = false
   ) : ConnectedDeviceForegroundServiceDriver {
     val starts = mutableListOf<String>()
     var stopCount = 0
@@ -76,6 +91,13 @@ class ConnectedDeviceForegroundServiceLeaseRegistryTest {
 
     override fun stop() {
       stopCount += 1
+      if (failFirstStop) {
+        failFirstStop = false
+        throw ForegroundServiceControlException(
+          "foregroundServiceStopFailed",
+          "Android could not stop the connected-device foreground service; retry releasing the lease."
+        )
+      }
     }
   }
 }
