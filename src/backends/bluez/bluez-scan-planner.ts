@@ -1,13 +1,53 @@
 import type { ScanFilter } from '../../backend-contract/advertisement'
 import { canonicalUuid } from '../../backend-contract/primitives'
-import { describeScanPredicates, snapshotScanExecutionPlan } from '../../backend-contract/scan-planning'
+import {
+  describeScanPredicates,
+  snapshotScanExecutionPlan,
+  snapshotScanPlan
+} from '../../backend-contract/scan-planning'
 import type {
   BackendScanExecutionPlan,
   BackendScanPlanner,
+  ScanObservationField,
+  ScanPlan,
+  ScanPlanLimitation,
+  ScanPredicateDescription,
   ScanPlanningContext
 } from '../../backend-contract/scan-planning'
 import type { NormalizedScanQuery } from '../../backend-contract/scan-query'
 import type { Uuid } from '../../backend-contract/primitives'
+
+const bluezScanObservationFields: readonly ScanObservationField[] = Object.freeze([
+  'peerReference',
+  'localName',
+  'rssi',
+  'serviceUuids'
+])
+
+export const bluezScanPlanningContext: ScanPlanningContext = Object.freeze({
+  backendId: 'bluez',
+  platformId: 'bluez',
+  availableObservationFields: bluezScanObservationFields
+})
+
+export function planBluezScan(query: NormalizedScanQuery): BackendScanExecutionPlan<ScanFilter> {
+  return new BluezScanPlanner().plan(query, bluezScanPlanningContext)
+}
+
+export function diagnosticBluezScanPlan(query: NormalizedScanQuery): ScanPlan {
+  const execution = planBluezScan(query)
+  return snapshotScanPlan({
+    sourceQuery: execution.sourceQuery,
+    queryDigest: execution.queryDigest,
+    residualQueryDigest: execution.residualQueryDigest,
+    nativeGuarantee: execution.nativeGuarantee,
+    native: execution.native,
+    residual: execution.residual,
+    unavailable: execution.unavailable,
+    limitations: execution.limitations,
+    estimatedCost: execution.estimatedCost
+  })
+}
 
 export class BluezScanPlanner implements BackendScanPlanner<ScanFilter> {
   plan(query: NormalizedScanQuery, context: ScanPlanningContext): BackendScanExecutionPlan<ScanFilter> {
@@ -17,16 +57,21 @@ export class BluezScanPlanner implements BackendScanPlanner<ScanFilter> {
       manufacturerData: [],
       localNamePrefix: null
     }
+    const predicates = describeScanPredicates(query)
+    const nativePredicates = nativeServicePredicates(predicates, nativeFilter.serviceUuids)
+    const unavailable = predicates.filter(
+      predicate => !context.availableObservationFields.includes(observationField(predicate.field))
+    )
     return snapshotScanExecutionPlan(
       {
         sourceQuery: query,
         queryDigest: query.digest,
         residualQueryDigest: query.digest,
         nativeGuarantee: 'safe-superset',
-        native: { predicates: [], complete: false },
-        residual: { query, predicates: describeScanPredicates(query), complete: true },
-        unavailable: [],
-        limitations: [],
+        native: { predicates: nativePredicates, complete: false },
+        residual: { query, predicates, complete: true },
+        unavailable,
+        limitations: createLimitations(predicates, nativePredicates, unavailable),
         estimatedCost: nativeFilter.serviceUuids.length === 0 ? 'high' : 'moderate',
         nativeFilter
       },
@@ -44,6 +89,59 @@ function commonRequiredServices(query: NormalizedScanQuery): readonly Uuid[] {
   return firstClause
     .filter(service => requiredByEveryClause.every(services => services.includes(service)))
     .map(service => canonicalUuid(service))
+}
+
+function nativeServicePredicates(
+  predicates: readonly ScanPredicateDescription[],
+  serviceUuids: readonly Uuid[]
+): readonly ScanPredicateDescription[] {
+  if (serviceUuids.length === 0) return Object.freeze([])
+  return Object.freeze(
+    predicates.filter(
+      predicate => predicate.clauseSet === 'anyOf' && predicate.field === 'services' && predicate.operator === 'all'
+    )
+  )
+}
+
+function createLimitations(
+  predicates: readonly ScanPredicateDescription[],
+  nativePredicates: readonly ScanPredicateDescription[],
+  unavailable: readonly ScanPredicateDescription[]
+): readonly ScanPlanLimitation[] {
+  return predicates.map(predicate => {
+    if (unavailable.includes(predicate)) {
+      return {
+        code: 'observation-field-unavailable',
+        predicate,
+        explanation: 'required observation field is unavailable on this host',
+        effect: 'field-unavailable'
+      }
+    }
+    if (nativePredicates.includes(predicate)) {
+      return {
+        code: 'native-filter-incomplete',
+        predicate,
+        explanation: 'predicate remains in the canonical residual matcher',
+        effect: 'performance-only'
+      }
+    }
+    return {
+      code: 'host-predicate-restricted',
+      predicate,
+      explanation: 'host restriction prevents native evaluation',
+      effect: 'host-restriction'
+    }
+  })
+}
+
+function observationField(field: ScanPredicateDescription['field']): ScanObservationField {
+  if (field === 'peers') return 'peerReference'
+  if (field === 'names') return 'localName'
+  if (field === 'services') return 'serviceUuids'
+  if (field === 'manufacturerData') return 'manufacturerData'
+  if (field === 'serviceData') return 'serviceData'
+  if (field === 'rssi') return 'rssi'
+  return 'connectable'
 }
 
 function snapshotScanFilter(filter: ScanFilter): ScanFilter {
@@ -69,8 +167,21 @@ function assertPlanningContext(context: ScanPlanningContext): void {
     typeof context.platformId !== 'string' ||
     context.backendId.length === 0 ||
     context.platformId.length === 0 ||
-    !Array.isArray(context.availableObservationFields)
+    !Array.isArray(context.availableObservationFields) ||
+    context.availableObservationFields.some(field => !isScanObservationField(field))
   ) {
     throw new Error('invalid BlueZ scan planning context')
   }
+}
+
+function isScanObservationField(value: ScanObservationField): value is ScanObservationField {
+  return (
+    value === 'peerReference' ||
+    value === 'localName' ||
+    value === 'rssi' ||
+    value === 'connectable' ||
+    value === 'serviceUuids' ||
+    value === 'manufacturerData' ||
+    value === 'serviceData'
+  )
 }

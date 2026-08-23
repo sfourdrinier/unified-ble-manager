@@ -107,6 +107,7 @@ import {
   waitForBluezBoolean
 } from './bluez-property-waiters'
 import { BluezSecurityBackend } from './bluez-security'
+import { diagnosticBluezScanPlan } from './bluez-scan-planner'
 
 const maximumOperationBytes = byteLimit(512 * 1024)
 
@@ -172,6 +173,7 @@ export class BluezBackendRuntime implements BluezObjectStoreObserver {
       watchState: async () => this.watchAdapterState()
     }
     this.scanner = {
+      plan: query => diagnosticBluezScanPlan(query),
       start: async (options, clientId) => startBluezScan(this, options, clientId),
       join: async (leaseId, shareToken, clientId) => joinBluezScan(this, leaseId, shareToken, clientId)
     }
