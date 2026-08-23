@@ -216,6 +216,77 @@ describe('requiredHardware reconciliation', () => {
     ])
   })
 })
+
+describe('legacy location policy reconciliation', () => {
+  const locationPermissionNames = [
+    'android.permission.ACCESS_COARSE_LOCATION',
+    'android.permission.ACCESS_FINE_LOCATION'
+  ]
+
+  function manifestWithHostLocationDeclarations() {
+    return {
+      manifest: {
+        'uses-permission-sdk-23': locationPermissionNames.map(name => ({
+          $: { 'android:name': name, 'android:maxSdkVersion': '29' }
+        })),
+        application: [{ $: { 'android:name': '.MainApplication' }, 'meta-data': [] }]
+      }
+    }
+  }
+
+  function locationPermissions(manifest: ReturnType<typeof manifestWithHostLocationDeclarations>) {
+    return (manifest.manifest['uses-permission-sdk-23'] ?? []).filter(permission =>
+      locationPermissionNames.includes(permission.$['android:name'])
+    )
+  }
+
+  it('removes host location declarations for none while retaining managed Bluetooth permissions', () => {
+    const manifest = manifestWithHostLocationDeclarations()
+
+    reconcileExpoAndroidManifest(manifest, {
+      requiredHardware: false,
+      neverForLocation: false,
+      legacyLocation: 'none'
+    })
+
+    expect(locationPermissions(manifest)).toEqual([])
+    expect(manifest.manifest['uses-permission']).toEqual([
+      { $: { 'android:name': 'android.permission.BLUETOOTH', 'android:maxSdkVersion': '30' } },
+      { $: { 'android:name': 'android.permission.BLUETOOTH_ADMIN', 'android:maxSdkVersion': '30' } },
+      { $: { 'android:name': 'android.permission.BLUETOOTH_SCAN', 'tools:targetApi': '31' } },
+      { $: { 'android:name': 'android.permission.BLUETOOTH_CONNECT', 'tools:targetApi': '31' } }
+    ])
+  })
+
+  it.each([
+    ['required', false, {}],
+    ['auto', true, { 'android:maxSdkVersion': '30' }]
+  ] as const)('projects %s location policy through the host manifest', (policy, neverForLocation, attributes) => {
+    const manifest = manifestWithHostLocationDeclarations()
+
+    reconcileExpoAndroidManifest(manifest, {
+      requiredHardware: false,
+      neverForLocation,
+      legacyLocation: policy
+    })
+
+    expect(locationPermissions(manifest)).toEqual(
+      locationPermissionNames.map(name => ({ $: { 'android:name': name, ...attributes } }))
+    )
+    expect(manifest.manifest['uses-permission']).toEqual([
+      { $: { 'android:name': 'android.permission.BLUETOOTH', 'android:maxSdkVersion': '30' } },
+      { $: { 'android:name': 'android.permission.BLUETOOTH_ADMIN', 'android:maxSdkVersion': '30' } },
+      {
+        $: {
+          'android:name': 'android.permission.BLUETOOTH_SCAN',
+          ...(neverForLocation ? { 'android:usesPermissionFlags': 'neverForLocation' } : {}),
+          'tools:targetApi': '31'
+        }
+      },
+      { $: { 'android:name': 'android.permission.BLUETOOTH_CONNECT', 'tools:targetApi': '31' } }
+    ])
+  })
+})
 jest.mock('expo/config', () => ({
   getNameFromConfig: () => ({ appName: 'App', webName: 'App' }),
   getConfig: () => ({ exp: { name: 'App', slug: 'app', web: {}, ios: {}, android: {} } })

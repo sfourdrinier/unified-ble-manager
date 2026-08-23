@@ -120,6 +120,23 @@ describe('Android RN 0.86 unified protocol boundary', () => {
     expect(fs.existsSync(path.join(root, 'plugin/src/withBLEAndroidForegroundService.ts'))).toBe(true)
   })
 
+  test('keeps legacy location policy in host-owned manifests, not the active AAR manifest', () => {
+    const activeLibraryManifest = read('android/src/main/AndroidManifestNew.xml')
+    const legacyLibraryManifest = read('android/src/main/AndroidManifest.xml')
+    const classicRnHostManifest = read('example/android/app/src/main/AndroidManifest.xml')
+    const buildGradle = read('android/build.gradle')
+
+    expect(buildGradle).toContain('manifest.srcFile "src/main/AndroidManifestNew.xml"')
+    expect(activeLibraryManifest).not.toMatch(/ACCESS_(?:COARSE|FINE)_LOCATION/)
+    expect(activeLibraryManifest).toContain('android.permission.BLUETOOTH_SCAN')
+    expect(activeLibraryManifest).toContain('android.permission.BLUETOOTH_CONNECT')
+
+    expect(legacyLibraryManifest).toContain('android.permission.ACCESS_COARSE_LOCATION')
+    expect(legacyLibraryManifest).toContain('android.permission.ACCESS_FINE_LOCATION')
+    expect(classicRnHostManifest).toContain('android.permission.ACCESS_FINE_LOCATION')
+    expect(classicRnHostManifest).toContain('android:maxSdkVersion="30"')
+  })
+
   test('implements the configured foreground service as an explicit ref-counted native lease', () => {
     const control = read(
       'android/src/main/java/com/sfourdrinier/unifiedblemanager/protocol/UnifiedBleProtocolControlModule.java'

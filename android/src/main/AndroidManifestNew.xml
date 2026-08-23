@@ -6,8 +6,6 @@
   <!-- AGP 8+ active manifest (build.gradle sourceSets.main.manifest.srcFile).
        Namespace is declared in android/build.gradle; keep package off this file. -->
 
-  <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
-  <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
   <uses-permission
     android:name="android.permission.BLUETOOTH"
     android:maxSdkVersion="30" />
