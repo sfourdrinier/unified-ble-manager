@@ -30,10 +30,8 @@ export interface ScanPlanProjection {
 /** The canonical PR4 query retained for the one and only residual matcher. */
 export type ScanPlanningNormalizedQuery = NormalizedScanQuery
 
-export interface ScanPlanResidualProjection<
-  NormalizedQuery extends ScanPlanningNormalizedQuery = ScanPlanningNormalizedQuery
-> extends ScanPlanProjection {
-  readonly query: NormalizedQuery
+export interface ScanPlanResidualProjection extends ScanPlanProjection {
+  readonly query: NormalizedScanQuery
 }
 
 export type ScanPlanLimitationCode =
@@ -55,11 +53,11 @@ export interface ScanPlanLimitation {
   readonly effect: 'performance-only' | 'field-unavailable' | 'host-restriction'
 }
 
-export interface ScanPlan<NormalizedQuery extends ScanPlanningNormalizedQuery = ScanPlanningNormalizedQuery> {
+export interface ScanPlan {
   readonly queryDigest: string
   readonly nativeGuarantee: 'exact' | 'safe-superset'
   readonly native: ScanPlanProjection
-  readonly residual: ScanPlanResidualProjection<NormalizedQuery>
+  readonly residual: ScanPlanResidualProjection
   readonly unavailable: readonly ScanPredicateDescription[]
   readonly limitations: readonly ScanPlanLimitation[]
   readonly estimatedCost: 'native-only' | 'low' | 'moderate' | 'high'
@@ -81,19 +79,12 @@ export interface ScanPlanningContext {
   readonly availableObservationFields: readonly ScanObservationField[]
 }
 
-export interface BackendScanExecutionPlan<
-  NativeFilter,
-  NormalizedQuery extends ScanPlanningNormalizedQuery = ScanPlanningNormalizedQuery
-> extends ScanPlan<NormalizedQuery> {
+export interface BackendScanExecutionPlan<NativeFilter> extends ScanPlan {
   readonly nativeFilter: NativeFilter
 }
 
-export interface BackendScanPlanner<
-  NativeFilter,
-  NormalizedQuery extends ScanPlanningNormalizedQuery = ScanPlanningNormalizedQuery,
-  Context extends ScanPlanningContext = ScanPlanningContext
-> {
-  plan(query: NormalizedQuery, context: Context): BackendScanExecutionPlan<NativeFilter, NormalizedQuery>
+export interface BackendScanPlanner<NativeFilter, Context extends ScanPlanningContext = ScanPlanningContext> {
+  plan(query: NormalizedScanQuery, context: Context): BackendScanExecutionPlan<NativeFilter>
 }
 
 const MAX_PROJECTION_PREDICATES = 64
@@ -104,9 +95,13 @@ const MAX_LIMITATIONS = 32
  * Snapshots plan diagnostics without changing the canonical residual query. The native
  * projection is descriptive only; this helper does not evaluate any predicate.
  */
-export function snapshotScanPlan<NormalizedQuery extends ScanPlanningNormalizedQuery>(
-  plan: ScanPlan<NormalizedQuery>
-): ScanPlan<NormalizedQuery> {
+export function snapshotScanPlan<NativeFilter>(
+  plan: BackendScanExecutionPlan<NativeFilter>
+): BackendScanExecutionPlan<NativeFilter>
+export function snapshotScanPlan(plan: ScanPlan): ScanPlan
+export function snapshotScanPlan<NativeFilter>(
+  plan: ScanPlan | BackendScanExecutionPlan<NativeFilter>
+): ScanPlan | BackendScanExecutionPlan<NativeFilter> {
   const residualQuery = snapshotNormalizedScanQuery(plan.residual.query)
   if (plan.queryDigest !== residualQuery.digest) {
     throw new Error('scan plan residual query digest must match queryDigest')
@@ -126,13 +121,19 @@ export function snapshotScanPlan<NormalizedQuery extends ScanPlanningNormalizedQ
   })
   const unavailable = snapshotPredicates(plan.unavailable, 'unavailable', MAX_UNAVAILABLE_PREDICATES)
   const limitations = snapshotLimitations(plan.limitations)
-  return Object.freeze({
-    ...plan,
+  const snapshot = {
+    queryDigest: plan.queryDigest,
+    nativeGuarantee: plan.nativeGuarantee,
     native,
     residual,
     unavailable,
-    limitations
-  })
+    limitations,
+    estimatedCost: plan.estimatedCost
+  }
+  if ('nativeFilter' in plan) {
+    return Object.freeze({ ...snapshot, nativeFilter: plan.nativeFilter })
+  }
+  return Object.freeze(snapshot)
 }
 
 function snapshotProjection(projection: ScanPlanProjection, name: string): ScanPlanProjection {

@@ -2,7 +2,7 @@ import { canonicalUuid } from '../backend-contract/primitives'
 import { contractError } from '../backend-contract/errors'
 import type { AdvertisementObservation } from '../backend-contract/advertisement'
 import { canonicalScanQueryJson, scanQueryDigest } from '../backend-contract/scan-query'
-import { assertPeerReference, encodePeerReference, snapshotPeerReference } from './peer-reference'
+import { assertPeerReference, encodePeerReference, isPeerReference, snapshotPeerReference } from './peer-reference'
 import type { PeerReference } from './peer-reference'
 import type {
   NormalizedManufacturerDataPattern,
@@ -110,6 +110,7 @@ export function normalizeScanObservation(observation: ScanObservation): Normaliz
       )
     })
   }
+  if (isUnscopedObservation(observation)) throw invalid('scan.observation')
   const peerReference =
     observation.peerReference === undefined
       ? undefined
@@ -494,6 +495,10 @@ function isIpcAdvertisement(value: ScanObservation): value is CompactScanAdverti
   )
 }
 
+function isUnscopedObservation(value: ScanObservation): boolean {
+  return typeof value === 'object' && value !== null && !('device' in value) && !('peerId' in value)
+}
+
 function isNormalizedObservation(value: ScanObservation): value is NormalizedScanObservation {
   if (typeof value !== 'object' || value === null || 'device' in value) return false
   const localName = Reflect.get(value, 'localName')
@@ -504,18 +509,42 @@ function isNormalizedObservation(value: ScanObservation): value is NormalizedSca
   const serviceData = Reflect.get(value, 'serviceData')
   return (
     (typeof localName === 'string' || localName === null) &&
-    (typeof rssi === 'number' || rssi === null) &&
+    (typeof rssi === 'number' ? Number.isFinite(rssi) : rssi === null) &&
     (typeof connectable === 'boolean' || connectable === null) &&
-    (serviceUuids === null || Array.isArray(serviceUuids)) &&
-    (manufacturerData === null || Array.isArray(manufacturerData)) &&
-    (serviceData === null || Array.isArray(serviceData)) &&
+    (serviceUuids === null || (Array.isArray(serviceUuids) && serviceUuids.every(uuid => isCanonicalUuid(uuid)))) &&
     (manufacturerData === null ||
-      manufacturerData.every(
-        (entry: unknown) => typeof entry === 'object' && entry !== null && 'companyId' in entry
-      )) &&
-    (serviceData === null ||
-      serviceData.every((entry: unknown) => typeof entry === 'object' && entry !== null && 'service' in entry))
+      (Array.isArray(manufacturerData) && manufacturerData.every(isNormalizedManufacturerEntry))) &&
+    (serviceData === null || (Array.isArray(serviceData) && serviceData.every(isNormalizedServiceEntry))) &&
+    (value.peerReference === undefined || isPeerReference(value.peerReference))
   )
+}
+
+function isNormalizedManufacturerEntry(
+  entry: { readonly companyId: number; readonly data: Uint8Array } | null
+): boolean {
+  return (
+    entry !== null &&
+    typeof entry === 'object' &&
+    Number.isSafeInteger(entry.companyId) &&
+    entry.companyId >= 0 &&
+    entry.companyId <= 0xffff &&
+    entry.data instanceof Uint8Array
+  )
+}
+
+function isNormalizedServiceEntry(entry: { readonly service: string; readonly data: Uint8Array } | null): boolean {
+  return (
+    entry !== null && typeof entry === 'object' && isCanonicalUuid(entry.service) && entry.data instanceof Uint8Array
+  )
+}
+
+function isCanonicalUuid(value: string): boolean {
+  if (typeof value !== 'string') return false
+  try {
+    return String(canonicalUuid(value)) === value
+  } catch {
+    return false
+  }
 }
 
 function cloneNormalizedObservation(value: NormalizedScanObservation): NormalizedScanObservation {

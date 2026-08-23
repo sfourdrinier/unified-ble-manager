@@ -142,6 +142,30 @@ describe('canonical public ScanQuery v1', () => {
     }
   })
 
+  test('rejects malformed normalized advertisement entries before canonical matching', () => {
+    expect(() =>
+      normalizeScanObservation({
+        localName: 'Malformed',
+        rssi: null,
+        connectable: null,
+        serviceUuids: [],
+        manufacturerData: [{ companyId: '76', data: new Uint8Array([1]) }],
+        serviceData: []
+      })
+    ).toThrow()
+
+    expect(() =>
+      normalizeScanObservation({
+        localName: 'Malformed',
+        rssi: null,
+        connectable: null,
+        serviceUuids: [],
+        manufacturerData: [],
+        serviceData: [{ service: '180d', data: new Uint8Array([1]) }]
+      })
+    ).toThrow()
+  })
+
   test('uses the same normalized query for the public residual stream and find helper', async () => {
     const source = new CoreBoundedStream(
       { itemCapacity: capacity(8), byteCapacity: capacity(4096), reservedControlCapacity: capacity(1) },
