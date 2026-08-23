@@ -53,6 +53,7 @@ export interface BluezScanGroup {
   filterClearRequested: boolean
   filterClear: Promise<void> | null
   stopRequested: boolean
+  resetRequested: boolean
   startupComplete: boolean
   readonly startupSettled: Promise<void>
   readonly settleStartup: () => void

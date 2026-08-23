@@ -9,7 +9,12 @@ import type { BluezScanConsumer, BluezScanGroup } from './bluez-runtime-types'
 import { BLUEZ_ADAPTER_INTERFACE, BLUEZ_DEVICE_INTERFACE } from './bluez-dbus-contract'
 import { BluezScanLease, releasedBluezCleanup } from './bluez-backend-handles'
 import { scanFilterVariant, scanSignature } from './bluez-runtime-models'
-import { awaitBluezNativePromise, BLUEZ_NATIVE_CLEANUP_TIMEOUT_MS, waitForBluezBoolean } from './bluez-property-waiters'
+import {
+  awaitBluezNativePromise,
+  awaitSharedBluezTransition,
+  BLUEZ_NATIVE_CLEANUP_TIMEOUT_MS,
+  waitForBluezBoolean
+} from './bluez-property-waiters'
 
 export async function startBluezScan(
   runtime: BluezBackendRuntime,
@@ -70,6 +75,7 @@ export async function startBluezScan(
     filterClearRequested: false,
     filterClear: null,
     stopRequested: false,
+    resetRequested: false,
     startupComplete: false,
     startupSettled,
     settleStartup
@@ -243,7 +249,19 @@ export async function destroyBluezScan(runtime: BluezBackendRuntime): Promise<Cl
   }
   if (!initialGroup.startupComplete) {
     initialGroup.stopRequested = true
-    await initialGroup.startupSettled
+    try {
+      await awaitSharedBluezTransition(
+        initialGroup.startupSettled,
+        { signal: null, deadline: deadline(runtime.now() + BLUEZ_NATIVE_CLEANUP_TIMEOUT_MS) },
+        runtime.now,
+        'bluez.destroy.scan-start'
+      )
+    } catch (error) {
+      if (isBluezCleanupTimeout(error)) {
+        return pendingBluezScanCleanup('bluez.destroy.scan-start')
+      }
+      throw error
+    }
   }
   const group = runtime.scanGroup
   if (group === null) {
@@ -437,6 +455,9 @@ function scanAdmissionFailure(runtime: BluezBackendRuntime, options: OwnerScanOp
 function scanStartupFailure(runtime: BluezBackendRuntime, group: BluezScanGroup): Error | null {
   if (runtime.isDestroying()) {
     return contractError('operation.cancelled-by-destroy', 'core', 'bluez.scan.start')
+  }
+  if (group.resetRequested) {
+    return contractError('operation.reset', 'core', 'bluez.scan.start')
   }
   if (runtime.scanGroup !== group) {
     return contractError('operation.reset', 'core', 'bluez.scan.start')

@@ -44,7 +44,7 @@ export async function subscribeBluez(
     physical = runtime.physicalSubscriptions.get(objectPath)
   }
   if (physical === undefined) {
-    physical = createBluezPhysicalSubscription(runtime, objectPath, options)
+    physical = createBluezPhysicalSubscription(runtime, objectPath)
     runtime.physicalSubscriptions.set(objectPath, physical)
     const enabling = physical
     enabling.enablement.then(
@@ -251,8 +251,7 @@ async function confirmBluezPhysicalSubscription(
   runtime: BluezBackendRuntime,
   objectPath: string,
   startMethod: Promise<void>,
-  isCurrent: () => boolean,
-  options: SubscriptionOptions
+  isCurrent: () => boolean
 ): Promise<void> {
   await startMethod
   runtime.assertUsable('bluez.gatt.start-notify.after-method')
@@ -261,18 +260,14 @@ async function confirmBluezPhysicalSubscription(
   }
   await waitForBluezBoolean(runtime, objectPath, BLUEZ_GATT_CHARACTERISTIC_INTERFACE, 'Notifying', true, {
     signal: null,
-    deadline: options.deadline
+    deadline: deadline(runtime.now() + BLUEZ_NATIVE_CLEANUP_TIMEOUT_MS)
   })
   if (!isCurrent()) {
     throw contractError('operation.disconnected', 'gatt', 'bluez.gatt.start-notify.after-confirmation')
   }
 }
 
-function createBluezPhysicalSubscription(
-  runtime: BluezBackendRuntime,
-  objectPath: string,
-  options: SubscriptionOptions
-): BluezPhysicalSubscription {
+function createBluezPhysicalSubscription(runtime: BluezBackendRuntime, objectPath: string): BluezPhysicalSubscription {
   const startMethod = runtime.boundary.methods.callVoid(
     objectPath,
     BLUEZ_GATT_CHARACTERISTIC_INTERFACE,
@@ -284,8 +279,7 @@ function createBluezPhysicalSubscription(
     runtime,
     objectPath,
     startMethod,
-    () => physical !== null && runtime.physicalSubscriptions.get(objectPath) === physical,
-    options
+    () => physical !== null && runtime.physicalSubscriptions.get(objectPath) === physical
   )
   const created: BluezPhysicalSubscription = {
     objectPath,

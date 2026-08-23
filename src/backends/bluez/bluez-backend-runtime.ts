@@ -887,8 +887,10 @@ export class BluezBackendRuntime implements BluezObjectStoreObserver {
     this.security.reset()
     this.peerPaths.clear()
     this.peerHandles.clear()
-    if (this.scanGroup !== null) {
-      for (const consumer of this.scanGroup.consumers.values()) {
+    const resettingScanGroup = this.scanGroup
+    if (resettingScanGroup !== null && !resettingScanGroup.startupComplete) {
+      const owner = resettingScanGroup.consumers.get(String(resettingScanGroup.ownerLeaseId))
+      for (const consumer of resettingScanGroup.consumers.values()) {
         if (consumer.abort !== null) {
           consumer.options.signal?.removeEventListener('abort', consumer.abort)
         }
@@ -898,7 +900,20 @@ export class BluezBackendRuntime implements BluezObjectStoreObserver {
         }
         consumer.stream.closeWithReason('source-failed')
       }
-      this.scanGroup.consumers.clear()
+      resettingScanGroup.stopRequested = true
+      resettingScanGroup.resetRequested = true
+      if (owner !== undefined) {
+        resettingScanGroup.startupSettled.then(() => {
+          if (this.scanGroup === resettingScanGroup) {
+            observeBluezCleanup(this.stopScan(owner), '[BluezBackendRuntime.reset] Startup scan cleanup failed:')
+          }
+        })
+      }
+    } else if (resettingScanGroup !== null) {
+      for (const consumer of resettingScanGroup.consumers.values()) {
+        consumer.stream.closeWithReason('source-failed')
+      }
+      resettingScanGroup.consumers.clear()
       this.scanGroup = null
     }
     for (const physical of this.physicalSubscriptions.values()) {
