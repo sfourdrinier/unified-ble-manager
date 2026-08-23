@@ -287,6 +287,64 @@ describe('legacy location policy reconciliation', () => {
     ])
   })
 })
+
+describe('companion setup feature reconciliation', () => {
+  const companionFeature = 'android.software.companion_device_setup'
+  const ownershipMetadata = 'com.sfourdrinier.unifiedblemanager.companion-device-setup-feature-ownership'
+  const ownershipValue = 'feature=companion_device_setup'
+
+  it('preserves a host-authored companion setup feature including required=true', () => {
+    const manifest = {
+      manifest: {
+        'uses-feature': [{ $: { 'android:name': companionFeature, 'android:required': 'true' } }],
+        application: [{ $: { 'android:name': '.MainApplication' }, 'meta-data': [] }]
+      }
+    }
+
+    reconcileExpoAndroidManifest(manifest, {
+      requiredHardware: false,
+      neverForLocation: false,
+      legacyLocation: 'none'
+    })
+
+    expect(manifest.manifest['uses-feature']).toEqual([
+      { $: { 'android:name': companionFeature, 'android:required': 'true' } }
+    ])
+    expect(manifest.manifest.application[0]['meta-data']).toEqual([])
+  })
+
+  it('removes only the plugin-owned entry when a host declaration is added later', () => {
+    const manifest = {
+      manifest: {
+        application: [{ $: { 'android:name': '.MainApplication' }, 'meta-data': [] }]
+      }
+    }
+
+    reconcileExpoAndroidManifest(manifest, {
+      requiredHardware: false,
+      neverForLocation: false,
+      legacyLocation: 'none'
+    })
+    expect(manifest.manifest.application[0]['meta-data']).toEqual([
+      { $: { 'android:name': ownershipMetadata, 'android:value': ownershipValue } }
+    ])
+    manifest.manifest['uses-feature']?.unshift({
+      $: { 'android:name': companionFeature, 'android:required': 'true' }
+    })
+
+    reconcileExpoAndroidManifest(manifest, {
+      requiredHardware: false,
+      neverForLocation: false,
+      legacyLocation: 'none'
+    })
+
+    expect(manifest.manifest['uses-feature']).toEqual([
+      { $: { 'android:name': companionFeature, 'android:required': 'true' } }
+    ])
+    expect(manifest.manifest.application[0]['meta-data']).toBeUndefined()
+  })
+})
+
 jest.mock('expo/config', () => ({
   getNameFromConfig: () => ({ appName: 'App', webName: 'App' }),
   getConfig: () => ({ exp: { name: 'App', slug: 'app', web: {}, ios: {}, android: {} } })

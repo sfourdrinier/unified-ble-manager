@@ -29,6 +29,9 @@ type ManifestApplicationWithExtraTools = Omit<ManifestApplication, 'service'> & 
 
 const BLE_HARDWARE_FEATURE_OWNERSHIP_METADATA_NAME = 'com.sfourdrinier.unifiedblemanager.bluetooth-le-feature-ownership'
 const BLE_HARDWARE_FEATURE_OWNERSHIP_METADATA_VALUE = 'feature=bluetooth_le'
+const COMPANION_SETUP_FEATURE_OWNERSHIP_METADATA_NAME =
+  'com.sfourdrinier.unifiedblemanager.companion-device-setup-feature-ownership'
+const COMPANION_SETUP_FEATURE_OWNERSHIP_METADATA_VALUE = 'feature=companion_device_setup'
 
 export type AndroidManifestWithExtraTools = {
   manifest: Omit<InnerManifest, 'application' | 'uses-permission' | 'uses-permission-sdk-23'> & {
@@ -344,7 +347,11 @@ function reconcileBLEHardwareFeature(androidManifest: AndroidManifestWithExtraTo
     feature => feature.$['android:name'] === 'android.hardware.bluetooth_le'
   )
   const features = existingFeatures.filter(feature => feature.$['android:name'] !== 'android.hardware.bluetooth_le')
-  const owned = hasMetadata(androidManifest, BLE_HARDWARE_FEATURE_OWNERSHIP_METADATA_NAME)
+  const owned = hasMetadata(
+    androidManifest,
+    BLE_HARDWARE_FEATURE_OWNERSHIP_METADATA_NAME,
+    BLE_HARDWARE_FEATURE_OWNERSHIP_METADATA_VALUE
+  )
 
   if (requiredHardware) {
     if (bluetoothFeatures.length === 0) {
@@ -374,15 +381,12 @@ function reconcileBLEHardwareFeature(androidManifest: AndroidManifestWithExtraTo
   else androidManifest.manifest['uses-feature'] = features
 }
 
-function hasMetadata(androidManifest: AndroidManifestWithExtraTools, name: string): boolean {
+function hasMetadata(androidManifest: AndroidManifestWithExtraTools, name: string, value: string): boolean {
   const application = androidManifest.manifest.application?.[0]
   const metadata = application?.['meta-data']
   return (
     Array.isArray(metadata) &&
-    metadata.some(
-      item =>
-        item.$?.['android:name'] === name && item.$?.['android:value'] === BLE_HARDWARE_FEATURE_OWNERSHIP_METADATA_VALUE
-    )
+    metadata.some(item => item.$?.['android:name'] === name && item.$?.['android:value'] === value)
   )
 }
 
@@ -408,16 +412,48 @@ function removeMetadata(androidManifest: AndroidManifestWithExtraTools, name: st
 }
 
 function reconcileCompanionSetupFeature(androidManifest: AndroidManifestWithExtraTools): void {
-  const features = Array.isArray(androidManifest.manifest['uses-feature'])
-    ? androidManifest.manifest['uses-feature'].filter(
-        feature => feature.$['android:name'] !== 'android.software.companion_device_setup'
-      )
+  const existingFeatures = Array.isArray(androidManifest.manifest['uses-feature'])
+    ? androidManifest.manifest['uses-feature']
     : []
-  features.push({
-    $: {
-      'android:name': 'android.software.companion_device_setup',
-      'android:required': 'false'
+  const companionFeatures = existingFeatures.filter(
+    feature => feature.$['android:name'] === 'android.software.companion_device_setup'
+  )
+  const features = existingFeatures.filter(
+    feature => feature.$['android:name'] !== 'android.software.companion_device_setup'
+  )
+  const owned = hasMetadata(
+    androidManifest,
+    COMPANION_SETUP_FEATURE_OWNERSHIP_METADATA_NAME,
+    COMPANION_SETUP_FEATURE_OWNERSHIP_METADATA_VALUE
+  )
+
+  if (companionFeatures.length === 0) {
+    features.push({
+      $: {
+        'android:name': 'android.software.companion_device_setup',
+        'android:required': 'false'
+      }
+    })
+    setMetadata(
+      androidManifest,
+      COMPANION_SETUP_FEATURE_OWNERSHIP_METADATA_NAME,
+      COMPANION_SETUP_FEATURE_OWNERSHIP_METADATA_VALUE
+    )
+  } else if (owned) {
+    const pluginOwnedIndex = companionFeatures.findIndex(
+      feature =>
+        feature.$['android:required'] === 'false' &&
+        Object.keys(feature.$).every(attribute => attribute === 'android:name' || attribute === 'android:required')
+    )
+    if (pluginOwnedIndex < 0) {
+      removeMetadata(androidManifest, COMPANION_SETUP_FEATURE_OWNERSHIP_METADATA_NAME)
+    } else if (companionFeatures.length > 1) {
+      companionFeatures.splice(pluginOwnedIndex, 1)
+      removeMetadata(androidManifest, COMPANION_SETUP_FEATURE_OWNERSHIP_METADATA_NAME)
     }
-  })
-  androidManifest.manifest['uses-feature'] = features
+  }
+
+  features.push(...companionFeatures)
+  if (features.length === 0) delete androidManifest.manifest['uses-feature']
+  else androidManifest.manifest['uses-feature'] = features
 }
