@@ -188,10 +188,10 @@ These receipts are from the post-remediation tip before the next hosted PR run. 
 - Expo SDK 57 typecheck, CNG prebuild, and Android debug APK build passed; generated native directories remain ignored and are not release artifacts.
 - Focused Expo and React Native restoration Jest suites: passed before the aggregate package rebuild.
 
-## Final local verification at `d79248e6`
+## Final local verification at `3950ecb3`
 
 These receipts are from the final local PR10 tip after the React Expo readiness
-policy regression was fixed. They are deterministic or host-build evidence only;
+policy regression was fixed and the closeout ledger was recorded. They are deterministic or host-build evidence only;
 no physical-radio, EAS, or hosted Apple claim is implied.
 
 - `pnpm test:package`: 160 suites / 1,539 tests passed.
@@ -207,10 +207,16 @@ no physical-radio, EAS, or hosted Apple claim is implied.
 - `node scripts/ci/g6a-packed-consumer-proof.js`: deterministic packed Node/Web/third-party TCK proof passed; hardware evidence absent.
 - Expo SDK 57 typecheck, clean CNG prebuild, and Android debug APK build: passed; generated native directories and lockfile remain uncommitted.
 
-## Remaining release gates
+## Post-merge verification and remaining release gates
 
-The PR10 branch has a fresh full local gate run at `d79248e6`. Remaining gates
-are the Apple full-module/Expo host build (the local Swift harness is not that
-proof), the `ci:apple`-labeled GitHub Actions run, fresh adversarial review of
-the post-fix SHA, the required two-round PR review cycle, merge, post-merge
-`main` CI, and RC4 admission. No physical-radio or EAS evidence is claimed.
+PR #44 is merged at `e47d26489bd299c9c646f5e47e4379420e34a109`. Hosted PR CI
+run `32670650219` passed all 13 required jobs, including Apple iOS, Expo iOS,
+Expo Android, classic Android, JS matrices, and all Tauri platforms. Post-merge
+`main` CI run `32671742702` also passed every job. The PR10 code and merge gates
+are complete.
+
+Remaining release-train work is `4.0.0-rc.4`: it has not been tagged or
+published, and npm has no `4.0.0-rc.4` artifact. Cut RC4 only from exact
+current `main` using the tag-driven trusted-publishing procedure in RELEASE.md;
+do not start PR11 until RC4 publication and verification are complete. No
+physical-radio or EAS evidence is claimed.

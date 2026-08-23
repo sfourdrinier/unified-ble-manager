@@ -563,8 +563,8 @@ Update this section in the **same branch** as the work, before opening the GitHu
 | 7 | `feat/4.0-security-pairing` | #40 | recorded in PR | 0 | `dc4390d51295b865ea18fe597898639072ffc70d` | — | **merged** |
 | 8 | `feat/4.0-link-controls` | #41 | fresh local adversarial wave complete | 0 | `c319be30ad8a74b50b1e8ec1f27f4751f797f358` | `v4.0.0-rc.3` (`a423a73`; npm `latest`) | **merged / RC3 published** |
 | 9 | `feat/scan-native-residual-planner` | #43 | recorded in PR | 0 | `a252b5a7d6e09147ccd7fa636facab6ad2996ea6` | `v4.0.0-rc.3` (`a423a73`; npm `latest`) | **merged / RC3 published** |
-| 10 | `feat/expo-first-class-host` | #44 | final local tip `d79248e6`; review finding remediated | 0 | — | `v4.0.0-rc.4` after merge | **ready-for-GitHub-PR; hosted/Apple/review gates pending** |
-| 11 | `feat/distribution-tooling-testkit` | — | 0 | 0 | — | `v4.0.0-rc.5` after merge | blocked on 10 |
+| 10 | `feat/expo-first-class-host` | #44 | local final + hosted Codex clean; second Codex trigger posted; Copilot triggered | 0 | `e47d26489bd299c9c646f5e47e4379420e34a109` | `v4.0.0-rc.4` not yet tagged/published | **merged; post-merge main CI green; debrief complete; RC4 pending** |
+| 11 | `feat/distribution-tooling-testkit` | — | 0 | 0 | — | `v4.0.0-rc.5` after merge | **blocked on RC4 and next-agent start after debrief** |
 | 12 | `release/4.0.0-stable` | — | 0 | 0 | — | `v4.0.0` after merge | blocked on 11 |
 
 The dated baseline below is retained as historical handoff context. This table
@@ -572,6 +572,32 @@ is the current factual tracker; the revised session instructions and
 `docs/superpowers/plans/2026-08-20-next-12-prs.md` remain execution authority.
 
 **Status vocabulary:** `next` | `in-progress` | `pushed-awaiting-adversarial` | `adversarial-round-K` | `ready-for-github-pr` | `github-pr-open` | `coderabbit-round-K` | `ready-to-merge` | `merged` | `publishing-rc` | `done` | `blocked on N`.
+
+### PR10 closeout and next-agent handoff
+
+**Verified state:** PR #44 is merged. The PR head was `3950ecb3102a565d7521a85656e88e8a7e373d4d`; the merge commit is `e47d26489bd299c9c646f5e47e4379420e34a109`. Post-merge `main` CI run `32671742702` completed successfully with every job green, including JS Node 22/24, all Tauri platforms, classic Android, Expo Android, classic iOS, Expo iOS, and tvOS.
+
+**Finished in PR10:**
+
+- Expo v2 plugin schema, deterministic native configuration/marker validation, Android/iOS runtime bridge, permission/settings boundaries, foreground-service/CDM/restoration surfaces, and ownership-safe manifest reconciliation.
+- Public adapter state watches, IPC polling boundary, manager-scoped React external stores, generation-filtered capability hooks, authoritative Expo readiness propagation, and Strict Mode/cleanup regressions.
+- Documentation/API/export repairs, packed consumer proofs, native codegen/build checks, and the final PR10 audit ledger.
+- Local final evidence at the final PR10 line: package 160 suites / 1,539 tests; plugin 44/44; lint/typecheck, prepack/docs/artifacts, native C++/Android/Apple harnesses, performance, packed consumer matrix, G6A, and Expo SDK57 Android build all passed.
+- Review closure: nine historical inline findings were replied to and resolved. Fresh Codex reviewed `3950ecb3` without findings. A second Codex review trigger was posted; the platform did not emit a second review object. Copilot was triggered but emitted no review object.
+
+**Waiting / not done:**
+
+- `4.0.0-rc.4` has not been tagged or published. `v4.0.0-rc.2` and `v4.0.0-rc.3` remain immutable; npm currently returns no `4.0.0-rc.4` version.
+- PR #11 must not start until the next agent confirms this debrief, cuts RC4 from the exact current `main`, pushes the exact `v4.0.0-rc.4` tag, and verifies the publish workflow/npm/GitHub Release according to `RELEASE.md`.
+- No physical-radio or EAS evidence is implied by the deterministic/native build receipts; retain those limitations in release claims.
+
+**Next-agent sequence:**
+
+1. Re-read this handoff, `docs/superpowers/plans/2026-08-20-next-12-prs.md`, `RELEASE.md`, and `docs/audits/2026-08-23-pr10-review-inventory.md`.
+2. Verify clean `main` at `e47d2648`, confirm `package.json` remains `4.0.0-rc.3`, and confirm no `v4.0.0-rc.4` tag/npm artifact exists.
+3. Run the RC4 release checklist from `RELEASE.md` on exact `main`; tag-driven GitHub Actions trusted publishing is the only publish path. Do not publish from a laptop and do not mutate RC2/RC3.
+4. Verify the RC4 npm artifact, `latest` dist-tag, provenance, GitHub prerelease, and exact tag/main identity.
+5. Only then begin PR11 (`feat/distribution-tooling-testkit`), following the same narrow-slice/TDD/adversarial/review-cycle process. RC5 follows PR11; stable 4.0.0 follows PR12.
 
 ### Baseline (handoff)
 
