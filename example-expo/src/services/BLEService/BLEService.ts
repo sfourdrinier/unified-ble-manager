@@ -96,6 +96,36 @@ class CanonicalBleExampleService {
     return this.scan?.plan ?? null
   }
 
+  async redactedSupportBundle() {
+    const manager = await this.ensureManager()
+    const readiness = await manager.readiness()
+    const diagnostics = manager.diagnostics.snapshot()
+    const plan = this.scan?.plan
+    return Object.freeze({
+      schema: 'unified-ble-expo-support-v1',
+      readiness: {
+        state: readiness.state,
+        actions: readiness.actions.map(action => action.kind)
+      },
+      resources: diagnostics.resourceCounters,
+      scan:
+        plan === null || plan === undefined
+          ? null
+          : {
+              queryDigest: plan.queryDigest,
+              nativeGuarantee: plan.nativeGuarantee,
+            nativePredicateCount: plan.native.predicates.length,
+            residualPredicateCount: plan.residual.predicates.length,
+              unavailablePredicateCount: plan.unavailable.length
+            },
+      host: {
+        restoration: 'native-authoritative',
+        background: 'explicit-connected-device-lease',
+        association: 'android-system-ui-only'
+      }
+    })
+  }
+
   async scanForPeers(serviceUuids: readonly string[], onPeer: (peer: ExamplePeer) => void): Promise<void> {
     await this.stopScan()
     const manager = await this.ensureManager()

@@ -21,6 +21,7 @@ export function DashboardScreen({ navigation }: DashboardScreenProps) {
   const [planDigest, setPlanDigest] = useState<string | null>(null)
   const [diagnosticCounters, setDiagnosticCounters] = useState<string | null>(null)
   const [restoration, setRestoration] = useState<string | null>(null)
+  const [supportBundle, setSupportBundle] = useState<string | null>(null)
 
   const inspectReadiness = async () => {
     try {
@@ -43,6 +44,15 @@ export function DashboardScreen({ navigation }: DashboardScreenProps) {
       setRestoration(`${result.outcome}: ${result.replayRecordCount} bounded record(s)`)
     } catch (claimError) {
       setRestoration(messageFor(claimError))
+    }
+  }
+
+  const createSupportBundle = async () => {
+    try {
+      const bundle = await BLEService.redactedSupportBundle()
+      setSupportBundle(JSON.stringify(bundle))
+    } catch (bundleError) {
+      setSupportBundle(messageFor(bundleError))
     }
   }
 
@@ -109,6 +119,7 @@ export function DashboardScreen({ navigation }: DashboardScreenProps) {
       <AppButton label="Check Expo readiness" onPress={() => void inspectReadiness()} />
       <AppButton label="Inspect plan and diagnostics" onPress={inspectDiagnostics} />
       <AppButton label="Claim native restoration" onPress={() => void claimRestoration()} />
+      <AppButton label="Create redacted support bundle" onPress={() => void createSupportBundle()} />
       <AppButton label="Stop scan" onPress={() => void stopScan(work, setError)} />
       <AppButton label="Go to nRF test" onPress={() => navigation.navigate('DEVICE_NRF_TEST_SCREEN')} />
       <AppButton
@@ -125,6 +136,7 @@ export function DashboardScreen({ navigation }: DashboardScreenProps) {
       {planDigest === null ? null : <AppText>Scan plan digest: {planDigest}</AppText>}
       {diagnosticCounters === null ? null : <AppText>Resource counters: {diagnosticCounters}</AppText>}
       {restoration === null ? null : <AppText>Restoration: {restoration}</AppText>}
+      {supportBundle === null ? null : <AppText>Support bundle: {supportBundle}</AppText>}
       <FlatList
         style={{ flex: 1 }}
         data={foundPeers}
