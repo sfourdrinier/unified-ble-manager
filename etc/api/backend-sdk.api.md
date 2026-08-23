@@ -320,6 +320,7 @@ export { createBackendAuthorDefinition, runBackendAuthorTck } from './backend-sd
 - `deadline`
 - `decodePeerReference`
 - `describeFeatureRegistry`
+- `describeScanPredicates`
 - `encodePeerReference`
 - `featureRegistryOf`
 - `findTckScenario`
