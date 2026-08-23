@@ -11,7 +11,12 @@ import type {
 } from '../backend-contract'
 import type { AdvertisementObservation, ScanOptions } from '../backend-contract/advertisement'
 import type { CleanupRecord } from '../backend-contract/errors'
-import type { CharacteristicPath, DescriptorPath, GattDatabaseSnapshot } from '../backend-contract/gatt'
+import type {
+  CharacteristicPath,
+  DescriptorPath,
+  GattDatabaseChangedEvent,
+  GattDatabaseSnapshot
+} from '../backend-contract/gatt'
 import type { AdapterSelection } from '../backend-contract/identity'
 import type { CapabilityDescriptor, FeatureId } from '../backend-contract/capabilities'
 import type {
@@ -32,6 +37,13 @@ import type {
 import type { BoundedAsyncStream } from '../backend-contract/streams'
 import type { RestorationAdoptionRequest, RestorationAdoptionResult } from '../backend-contract/restoration'
 import type { SecurityBackend } from '../backend-contract/security'
+import type {
+  ConnectionPhyObservation,
+  ConnectionPhyRequest,
+  ConnectionPriority,
+  ConnectionWriteReadinessWatch,
+  PhyPreference
+} from '../backend-contract/connection-controls'
 import type { DiagnosticTraceDocument } from '../diagnostics/trace-format'
 import { DEFAULT_CORE_MAXIMUM_VALUE_BYTES, UnifiedBleCore } from '../core/unified-ble-core'
 import type { CoreDeadlineHandle, CoreScanSession, UnifiedBleCoreOptions } from '../core/unified-ble-core'
@@ -636,6 +648,14 @@ export class Connection<Attachment extends string, Identity extends BackendIdent
     return new DiscoveredGattDatabase(database, await database.snapshot())
   }
 
+  async rediscoverGatt(
+    options: PortableOperationOptions,
+    reason: Extract<GattDatabaseChangedEvent['reason'], 'service-changed' | 'manual-rediscovery'>
+  ): Promise<DiscoveredGattDatabase<Attachment, Identity>> {
+    const database = await this.connection.rediscoverGatt(toPublicOperationOptions(options), reason)
+    return new DiscoveredGattDatabase(database, await database.snapshot())
+  }
+
   release(): Promise<CleanupRecord> {
     return this.connection.release()
   }
@@ -650,6 +670,37 @@ export class Connection<Attachment extends string, Identity extends BackendIdent
 
   requestMtu(requestedMtu: number, options: PortableOperationOptions) {
     return this.connection.requestMtu(requestedMtu, toPublicOperationOptions(options))
+  }
+
+  effectiveMtu() {
+    return this.connection.effectiveMtu({ signal: null, deadline: null })
+  }
+
+  requestPriority(priority: ConnectionPriority, options: PortableOperationOptions) {
+    return this.connection.requestPriority(priority, toPublicOperationOptions(options))
+  }
+
+  readPhy(options: PortableOperationOptions): Promise<ConnectionPhyObservation<Attachment, string>> {
+    return this.connection.readPhy(toPublicOperationOptions(options))
+  }
+
+  requestPhy(
+    preference: PhyPreference,
+    options: PortableOperationOptions
+  ): Promise<ConnectionPhyRequest<Attachment, string>> {
+    return this.connection.requestPhy(preference, toPublicOperationOptions(options))
+  }
+
+  maximumWriteLength(mode: WriteMode, options: PortableOperationOptions) {
+    return this.connection.maximumWriteLength(mode, toPublicOperationOptions(options))
+  }
+
+  writeWithoutResponseReadiness(
+    options?: PortableOperationOptions
+  ): Promise<ConnectionWriteReadinessWatch<Attachment>> {
+    return this.connection.writeWithoutResponseReadiness(
+      toPublicOperationOptions(options ?? { signal: null, deadline: null })
+    )
   }
 }
 
@@ -691,6 +742,14 @@ export class DiscoveredGattDatabase<Attachment extends string, Identity extends 
 
   async write(path: PortableCurrentCharacteristicPath, bytes: Readonly<Uint8Array>, options: PortableWritePolicy) {
     return this.database.write(this.resolveCharacteristicPath(path), bytes, toPublicWritePolicy(options))
+  }
+
+  async writeWhenReady(
+    path: PortableCurrentCharacteristicPath,
+    bytes: Readonly<Uint8Array>,
+    options: PortableWritePolicy
+  ) {
+    return this.database.writeWhenReady(this.resolveCharacteristicPath(path), bytes, toPublicWritePolicy(options))
   }
 
   async maximumWriteLength(path: PortableCurrentCharacteristicPath, mode: WriteMode) {

@@ -30,7 +30,7 @@ export async function createExpoBleManager(options: BleManagerCreateOptions = {}
     if (normalized.restoration !== undefined) {
       throw contractError('capability.unsupported', 'restoration', 'expo-manager.restoration')
     }
-    return createReactNativeBleManager(options)
+    return await createReactNativeBleManager(options)
   } catch (error) {
     throw rehydratePublicError(error)
   }
@@ -40,7 +40,7 @@ export async function createExpoBleManagerWithEnvironment(
   environment: ReactNativeBleManagerOptions
 ): Promise<BleManager> {
   const internal = await createReactNativeBleManagerWithEnvironment(environment)
-  return (await import('./public/ble-manager')).createPublicBleManager(internal, environment.now)
+  return (await import('./public/ble-manager.js')).createPublicBleManager(internal, environment.now)
 }
 
 export type { ReactNativeBleManagerOptions as ExpoBleManagerEnvironment }

@@ -33,6 +33,7 @@ import type {
   OwnedBytes,
   PeerId
 } from '../backend-contract/primitives'
+import { deadline as createDeadline } from '../backend-contract/primitives'
 import type { BoundedAsyncStream } from '../backend-contract/streams'
 import type { SecurityBackend } from '../backend-contract/security'
 import type { ConnectionLifecycleTerminalCause } from '../backend-contract/connection-lifecycle'
@@ -48,6 +49,7 @@ import { readCoreAdapterState } from './core-adapter-state'
 import {
   readCoreCharacteristic,
   writeCoreCharacteristic,
+  writeCoreCharacteristicWhenReady,
   writeCoreLongCharacteristic
 } from './core-characteristic-operations'
 import { createCoreFeatureRegistry, observeMaximumWriteLength, planLongWrite } from './core-capabilities'
@@ -73,6 +75,8 @@ import { isConnectionLossCause, lifecycleCauseFromBackendDisconnect } from './co
 import type { DiagnosticTraceDocument } from '../diagnostics/trace-format'
 export { DEFAULT_CORE_MAXIMUM_VALUE_BYTES } from './unified-ble-core-helpers'
 export type { CoreDeadlineHandle, CoreDeadlineScheduler } from './unified-ble-core-helpers'
+
+const QUARANTINE_DRAIN_TIMEOUT_MS = 1_000
 
 export interface UnifiedBleCoreOptions {
   readonly now: () => number
@@ -522,7 +526,54 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
       operation => this.assertReady(operation),
       (value, operation) => this.assertOperationAdmission(value, operation),
       (admissionEpoch, value, operation) => this.assertAdmissionCurrent(admissionEpoch, value, operation),
-      this.admissionEpoch
+      this.admissionEpoch,
+      null,
+      null
+    )
+    this.discoveries.set(key, discovery)
+    try {
+      return await discovery
+    } finally {
+      if (this.discoveries.get(key) === discovery) {
+        this.discoveries.delete(key)
+      }
+    }
+  }
+
+  async rediscoverGatt(
+    connection: CoreConnection<Attachment, Identity>,
+    options: PublicOperationOptions,
+    reason: Extract<
+      import('../backend-contract/gatt').GattDatabaseChangedEvent['reason'],
+      'service-changed' | 'manual-rediscovery'
+    >
+  ): Promise<CoreGattDatabase<Attachment, Identity>> {
+    this.assertReady('rediscover')
+    this.assertOperationAdmission(options, 'rediscover')
+    const key = String(connection.resource.connectionId)
+    const existing = this.discoveries.get(key)
+    if (existing !== undefined) {
+      const database = await awaitWithOperationAdmission(existing, options, this.options.now, 'rediscover')
+      database.assertCurrent()
+    }
+    this.operationCoordinator.cancelQueue(key, 'disconnected')
+    const discovery = discoverCoreGattDatabase(
+      this,
+      this.backend,
+      this.resourceLedger,
+      connection,
+      options,
+      operation => this.assertReady(operation),
+      (value, operation) => this.assertOperationAdmission(value, operation),
+      (admissionEpoch, value, operation) => this.assertAdmissionCurrent(admissionEpoch, value, operation),
+      this.admissionEpoch,
+      reason,
+      () => {
+        const drain = this.operationCoordinator.waitForQuarantineDrainCancellable(key)
+        return awaitWithOperationAdmission(drain.promise, options, this.options.now, 'rediscover').finally(() => {
+          drain.cancel()
+        })
+      }
     )
     this.discoveries.set(key, discovery)
     try {
@@ -556,6 +607,23 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
     options: WritePolicy
   ): Promise<WriteReceipt<Attachment, string>> {
     return writeCoreCharacteristic(
+      this.backend,
+      this.operationCoordinator,
+      this.options.maximumValueBytes,
+      database,
+      path,
+      bytes,
+      options
+    )
+  }
+
+  async writeWhenReady(
+    database: CoreGattDatabase<Attachment, Identity>,
+    path: CurrentCharacteristicPath<Attachment>,
+    bytes: Readonly<Uint8Array>,
+    options: WritePolicy
+  ): Promise<WriteReceipt<Attachment, string>> {
+    return writeCoreCharacteristicWhenReady(
       this.backend,
       this.operationCoordinator,
       this.options.maximumValueBytes,
@@ -634,12 +702,28 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
     connection: CoreConnection<Attachment, Identity>,
     cause: ConnectionLifecycleTerminalCause
   ): Promise<CleanupRecord> {
-    this.operationCoordinator.cancelQueue(String(connection.resource.connectionId), 'disconnected')
+    const key = String(connection.resource.connectionId)
+    this.operationCoordinator.cancelQueue(key, 'disconnected')
+    const quarantine: CleanupRecord = this.operationCoordinator.hasPendingDrain(key)
+      ? await this.awaitQuarantineDrain(key)
+      : { state: 'released', failures: [] }
+    const admissionFailures = [...this.operationCoordinator.takeCleanupFailures(key), ...quarantine.failures]
+    const mergeAdmissionFailures = (record: CleanupRecord): CleanupRecord => {
+      if (admissionFailures.length === 0) return record
+      return {
+        state: 'release-failed',
+        failures: [...admissionFailures, ...record.failures]
+      }
+    }
     const disconnect = cause === 'requested-disconnect'
     const reason = isConnectionLossCause(cause) ? 'connection-lost' : 'owner-released'
     const cleanup = await connection.cleanupChildren(reason)
-    if (cleanup.state === 'release-failed') {
-      return cleanup
+    const mergeChildFailures = (record: CleanupRecord): CleanupRecord => {
+      if (cleanup.state === 'released') return record
+      return {
+        state: 'release-failed',
+        failures: [...cleanup.failures, ...record.failures]
+      }
     }
     let backendResult: CleanupRecord
     try {
@@ -656,19 +740,26 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
         dispatchedOperations: 0,
         quarantinedOperations: 0
       })
-      return cleanupFailure(
-        'connection',
-        contractError('platform.failure', 'cleanup', 'unified-core.connection-release')
+      return mergeAdmissionFailures(
+        mergeChildFailures(
+          cleanupFailure('connection', contractError('platform.failure', 'cleanup', 'unified-core.connection-release'))
+        )
       )
     }
     if (backendResult.state === 'release-failed') {
-      return backendResult
+      return mergeAdmissionFailures(mergeChildFailures(backendResult))
     }
     connection.finishLifecycle(cause, null)
+    if (admissionFailures.length > 0) {
+      return mergeAdmissionFailures(mergeChildFailures(backendResult))
+    }
+    if (cleanup.state === 'release-failed') {
+      return mergeAdmissionFailures({ state: 'release-failed', failures: cleanup.failures })
+    }
     connection.markReleased()
     this.connections.delete(String(connection.resource.connectionId))
     this.resourceLedger.decrement('connectionLeases')
-    return backendResult
+    return mergeAdmissionFailures(backendResult)
   }
 
   async invalidateDatabase(
@@ -801,6 +892,7 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
       for (const connection of this.connections.values()) {
         const database = connection.database
         if (database !== null && database.matchesDatabasePath(event.database)) {
+          this.operationCoordinator.cancelQueue(String(connection.resource.connectionId), 'disconnected')
           this.lifecycleObserver.observeCleanup(
             this.invalidateDatabase(database, 'connection-lost', 'service-changed'),
             'database-changed-cleanup'
@@ -951,12 +1043,49 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
     failures.push(...subscriptions.failures)
     const events = await eventClose
     failures.push(...events.failures)
-    await this.operationCoordinator.waitForQuarantineDrain()
+    if (
+      this.operationCoordinator.hasPendingDrain() &&
+      !failures.some(failure => failure.resourceKind === 'operation-quarantine')
+    ) {
+      const quarantine = await this.awaitQuarantineDrain()
+      if (quarantine.failures.length > 0) {
+        failures.push(...quarantine.failures)
+      }
+    }
+    failures.push(...this.operationCoordinator.takeCleanupFailures())
     const result: CleanupRecord =
       failures.length === 0 ? { state: 'released', failures: [] } : { state: 'release-failed', failures }
     this.syncRetainedByteBuffers()
     this.coreState = result.state === 'released' ? 'destroyed' : 'failed'
     return result
+  }
+
+  private async awaitQuarantineDrain(queueKey?: string): Promise<CleanupRecord> {
+    if (!this.operationCoordinator.hasPendingDrain(queueKey)) {
+      return { state: 'released', failures: [] }
+    }
+    const drainDeadline = createDeadline(this.options.now() + QUARANTINE_DRAIN_TIMEOUT_MS)
+    const drain = this.operationCoordinator.waitForQuarantineDrainCancellable(queueKey)
+    try {
+      await awaitWithOperationAdmission(
+        drain.promise,
+        { signal: null, deadline: drainDeadline },
+        this.options.now,
+        'unified-core.quarantine-drain'
+      )
+    } catch (error) {
+      if (!this.operationCoordinator.hasPendingDrain(queueKey)) {
+        return { state: 'released', failures: [] }
+      }
+      const failure =
+        error instanceof BackendContractError && error.normalized.code === 'operation.timed-out'
+          ? contractError('operation.timed-out', 'cleanup', 'unified-core.quarantine-drain')
+          : contractError('platform.failure', 'cleanup', 'unified-core.quarantine-drain')
+      return cleanupFailure('operation-quarantine', failure)
+    } finally {
+      drain.cancel()
+    }
+    return { state: 'released', failures: [] }
   }
 
   private assertReady(operation: string): void {

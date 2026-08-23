@@ -2,11 +2,10 @@
 
 # Profiles, codecs, and GATT commands
 
-> Status: this page retains advanced/path-oriented authoring reference material.
 > Application code should follow the object-based `GattDatabase` and
-> `GattCharacteristic` recipes in [`HELPERS.md`](HELPERS.md). The older
-> `deadline()`/`capacity()`/`firstNotification()` snippets below are not the
-> application façade and are not a current root-import recipe.
+> `GattCharacteristic` recipes in [`HELPERS.md`](HELPERS.md). The
+> advanced/path-oriented snippets below are not the application façade and are
+> not a current root-import recipe.
 
 Optional helpers for SIG services (Heart Rate, Battery, DIS, thermometer, blood
 pressure). They sit on the public `Connection`, `DiscoveredGattDatabase`, and
@@ -32,6 +31,13 @@ byte views — not Base64.
 The old camel-cased profile modules are not package exports and are not a
 supported 4.0 import surface.
 
+## Advanced/path-oriented reference — not root or ordinary application construction
+
+> **Advanced/path-oriented reference — not root or ordinary application construction.**
+> The following helpers operate on generation-bound paths and branded budgets.
+> Keep them in maintainer, host-authoring, or specialized integration code; use
+> the object-based application recipes for ordinary consumers.
+
 ## Canonical GATT path selection
 
 Bluetooth peripherals may contain repeated services or repeated
@@ -40,7 +46,7 @@ address. Commands operate on the generation-bound path returned by discovery
 and fail with `gatt.ambiguous-path` when the selector is not specific enough.
 
 ```ts
-import { defaultScanDelivery, firstNotification } from 'unified-ble-manager'
+import { defaultScanDelivery, firstNotification } from 'unified-ble-manager/advanced'
 import { resolveCharacteristicPath } from 'unified-ble-manager/profiles/commands'
 import {
   HEART_RATE_SERVICE,
@@ -83,7 +89,7 @@ has completed successfully. It forwards the caller's `AbortSignal`, deadline,
 write mode, and subscription delivery limits without changing them.
 
 ```ts
-import { defaultScanDelivery, firstNotification } from 'unified-ble-manager'
+import { defaultScanDelivery, firstNotification } from 'unified-ble-manager/advanced'
 import {
   readBatteryLevel,
   resetHeartRateEnergyExpended,

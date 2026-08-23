@@ -274,7 +274,7 @@ describe('BlueZ system security backend', () => {
     const active = backend.security.activePairings.get(observedPeerId)
     if (active === undefined) throw new Error('BlueZ active pairing disappeared before physical settlement')
     resolvePair()
-    await active.dispatch.physicalSettled
+    await active.dispatch.physicalSettlement
     expect(backend.security.activePairings.size).toBe(0)
     expect(backend.security.streams.size).toBe(0)
     await expect(backend.destroy()).resolves.toMatchObject({ state: 'released' })
@@ -310,7 +310,7 @@ describe('BlueZ system security backend', () => {
     const active = backend.security.activePairings.get(observedPeerId)
     if (active === undefined) throw new Error('BlueZ active pairing disappeared before physical settlement')
     resolvePair()
-    await active.dispatch.physicalSettled
+    await active.dispatch.physicalSettlement
     expect(backend.security.activePairings.size).toBe(0)
     await expect(backend.destroy()).resolves.toMatchObject({ state: 'released' })
   })

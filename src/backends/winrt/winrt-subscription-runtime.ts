@@ -13,7 +13,12 @@ import {
 } from './winrt-handles'
 import type { WinRtBackend, WinRtConnectionRecord, WinRtPhysicalSubscription } from './winrt-backend'
 import type { WinRtCancellationState, WinRtCharacteristicAddress } from './winrt-boundary'
-import { winRtPlatformError } from './winrt-backend-helpers'
+import {
+  timedOutWinRtCleanup,
+  waitForWinRtValue,
+  WINRT_NATIVE_CLEANUP_TIMEOUT_MS,
+  winRtPlatformError
+} from './winrt-backend-helpers'
 
 const maximumValueBytes = byteLimit(512 * 1024)
 const latestPhysicalCleanupFailure = new WeakMap<WinRtPhysicalSubscription, CleanupRecord>()
@@ -25,6 +30,9 @@ export function stopWinRtPhysicalSubscription(
 ): Promise<CleanupRecord> {
   if (physical.removal !== null) {
     return physical.removal
+  }
+  if (physical.removalSettlement !== null) {
+    return trackBoundedPhysicalRemoval(backend, physical, physical.removalSettlement)
   }
   const removalPhase = physical.enableConfirmed ? 'post-enable' : 'pre-enable'
   physical.state = 'removing'
@@ -38,9 +46,13 @@ export function stopWinRtPhysicalSubscription(
     latestPhysicalCleanupFailure.set(physical, failure)
     return Promise.resolve(failure)
   }
-  const removal: Promise<CleanupRecord> = nativeCompletion.then(
+  const settlement: Promise<CleanupRecord> = nativeCompletion.then(
     () => {
       latestPhysicalCleanupFailure.delete(physical)
+      physical.removalSettlement = null
+      if (removalPhase === 'post-enable') {
+        physical.removalPhase = null
+      }
       if (
         (removalPhase === 'post-enable' || physical.enableOutcome === 'failed') &&
         backend.subscriptions.get(physical.key) === physical
@@ -50,7 +62,8 @@ export function stopWinRtPhysicalSubscription(
       return releasedCleanup
     },
     error => {
-      if (physical.removal === removal) {
+      if (physical.removalSettlement === settlement) {
+        physical.removalSettlement = null
         physical.state = 'cleanup-pending'
         physical.removal = null
         physical.removalPhase = null
@@ -60,8 +73,33 @@ export function stopWinRtPhysicalSubscription(
       return failure
     }
   )
-  physical.removal = removal
+  physical.removalSettlement = settlement
   physical.removalPhase = removalPhase
+  return trackBoundedPhysicalRemoval(backend, physical, settlement)
+}
+
+function trackBoundedPhysicalRemoval(
+  backend: WinRtBackend,
+  physical: WinRtPhysicalSubscription,
+  settlement: Promise<CleanupRecord>
+): Promise<CleanupRecord> {
+  const removal = waitForWinRtValue(settlement, backend.now() + WINRT_NATIVE_CLEANUP_TIMEOUT_MS, backend.now).then(
+    result => {
+      if (result.state === 'timed-out') {
+        physical.state = 'cleanup-pending'
+        const failure = timedOutWinRtCleanup('subscription', 'winrt.gatt.stop-notify')
+        latestPhysicalCleanupFailure.set(physical, failure)
+        return failure
+      }
+      return result.value
+    }
+  )
+  physical.removal = removal
+  removal.then(result => {
+    if (result.state === 'release-failed' && physical.removal === removal) {
+      physical.removal = null
+    }
+  })
   return removal
 }
 
@@ -73,7 +111,10 @@ export async function stopWinRtPhysicalSubscriptionAfterEnable(
   physical.enableConfirmed = true
   const preEnableRemoval = physical.removalPhase === 'pre-enable' ? physical.removal : null
   if (preEnableRemoval !== null) {
-    await preEnableRemoval
+    const cleanup = await preEnableRemoval
+    if (cleanup.state === 'release-failed' && physical.removalSettlement !== null) {
+      return cleanup
+    }
     if (physical.removal === preEnableRemoval) {
       physical.removal = null
       physical.removalPhase = null
@@ -231,6 +272,7 @@ export function createWinRtPhysicalSubscription(
     enableCancellationRequested: false,
     enableCancellation: null,
     removal: null,
+    removalSettlement: null,
     removalPhase: null
   }
   backend.subscriptions.set(physical.key, physical)

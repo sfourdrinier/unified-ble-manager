@@ -59,16 +59,19 @@ export class CoreBluetoothOperationDispatcher {
           ? contractError('operation.timed-out', 'core', operationName)
           : null
     if (admissionError !== null) {
-      return createBackendOperationDispatch(handle, Promise.reject(admissionError), async () => ({
+      return createBackendOperationDispatch(
         handle,
-        state: 'already-terminal'
-      }))
+        Promise.reject(admissionError),
+        async () => ({ handle, state: 'already-terminal' }),
+        Promise.resolve()
+      )
     }
     if (serializationKey !== null && this.activeBySerializationKey.has(serializationKey)) {
       return createBackendOperationDispatch(
         handle,
         Promise.reject(contractError('lifecycle.invalid-state', 'core', operationName)),
-        async () => ({ handle, state: 'already-terminal' })
+        async () => ({ handle, state: 'already-terminal' }),
+        Promise.resolve()
       )
     }
     let resolvePublic: (value: Result) => void = () => undefined
@@ -76,6 +79,10 @@ export class CoreBluetoothOperationDispatcher {
     const completion = new Promise<Result>((resolve, reject) => {
       resolvePublic = resolve
       rejectPublic = reject
+    })
+    let resolvePhysicalSettlement: () => void = () => undefined
+    const physicalSettlement = new Promise<void>(resolve => {
+      resolvePhysicalSettlement = resolve
     })
     let deadlineTimer: ReturnType<typeof setTimeout> | null = null
     let abortListener: (() => void) | null = null
@@ -109,6 +116,9 @@ export class CoreBluetoothOperationDispatcher {
       active.rejectPublic(error)
     }
     const settlePhysical = (): void => {
+      if (active.physicalSettled) {
+        return
+      }
       active.physicalSettled = true
       this.active.delete(String(handle))
       if (active.serializationKey !== null && this.activeBySerializationKey.get(active.serializationKey) === active) {
@@ -120,6 +130,7 @@ export class CoreBluetoothOperationDispatcher {
         }
         this.idleWaiters.clear()
       }
+      resolvePhysicalSettlement()
     }
     const requestCancellation = (): Promise<CancellationAcknowledgement<string>> => {
       if (active.cancellation !== null) {
@@ -156,7 +167,7 @@ export class CoreBluetoothOperationDispatcher {
     } catch (error) {
       settlePhysical()
       failPublic(this.asError(error, operationName))
-      return createBackendOperationDispatch(handle, completion, requestCancellation)
+      return createBackendOperationDispatch(handle, completion, requestCancellation, physicalSettlement)
     }
     source.then(
       value => {
@@ -178,11 +189,14 @@ export class CoreBluetoothOperationDispatcher {
         rejectPublic(this.asError(error, operationName))
       }
     )
-    return createBackendOperationDispatch(handle, completion, requestCancellation)
+    return createBackendOperationDispatch(handle, completion, requestCancellation, physicalSettlement)
   }
 
-  activeCount(): number {
-    return this.active.size
+  activeCount(serializationKey?: string): number {
+    if (serializationKey === undefined) {
+      return this.active.size
+    }
+    return this.activeBySerializationKey.has(serializationKey) ? 1 : 0
   }
 
   waitForIdle(): Promise<void> {

@@ -40,10 +40,19 @@ import type { PeerReference } from './peer-reference'
 import type { ResourceCounters } from '../backend-contract/backend'
 import { createPublicSecurity } from './security'
 import type { BleSecurity } from './security'
+import type { Limitation } from '../backend-contract/capabilities'
+import {
+  MAXIMUM_REQUESTED_ATT_MTU,
+  MINIMUM_ATT_MTU,
+  type ConnectionPriority,
+  type ConnectionWriteReadinessObservation,
+  type ConnectionWriteReadinessWatch
+} from '../backend-contract/connection-controls'
+
+export type { ConnectionPriority } from '../backend-contract/connection-controls'
 
 export type GattSubscriptionValue = GattValueEvent
 export type ConnectionIntent = 'direct' | 'when-available'
-export type BlePhy = 'le-1m' | 'le-2m' | 'le-coded'
 export interface ConnectOptions extends OperationOptions {
   readonly intent?: ConnectionIntent
   readonly transport?: 'le' | 'auto'
@@ -56,6 +65,107 @@ export interface BleConnectionEvent {
   readonly cause: ConnectionLifecycleCause
   readonly connectionGeneration: string
   readonly sequence: number
+}
+
+export type BleControlObservationState = 'measured' | 'unavailable' | 'unsupported'
+export type BleObservationSource = 'backend' | 'platform' | 'core' | 'unknown'
+
+export interface BleControlObservationMetadata {
+  readonly connectionGeneration: string
+  readonly observedAtMonotonicMs: number
+  readonly source: BleObservationSource
+  readonly authority: string
+  readonly limitations: readonly Limitation[]
+}
+
+export interface RssiObservation extends BleControlObservationMetadata {
+  readonly state: BleControlObservationState
+  readonly rssi: number | null
+}
+
+export interface MtuObservation extends BleControlObservationMetadata {
+  readonly state: BleControlObservationState
+  readonly attMtu: number | null
+  readonly payloadBytes: number | null
+  readonly platformPduBytes: number | null
+}
+
+export type MtuNegotiationState = 'accepted' | 'rejected' | 'unavailable' | 'unsupported'
+
+export interface MtuNegotiation extends BleControlObservationMetadata {
+  readonly state: MtuNegotiationState
+  readonly requestedMtu: number
+  readonly observation: MtuObservation | null
+}
+
+export type BlePhy = 'le-1m' | 'le-2m' | 'le-coded'
+export type PhyPreference = Readonly<{
+  readonly tx?: BlePhy
+  readonly rx?: BlePhy
+}>
+export type SubrateMode = 'default' | 'low-latency' | 'low-power'
+export type WriteMode = 'with-response' | 'without-response'
+
+export interface MaximumWriteLengthObservation extends BleControlObservationMetadata {
+  readonly state: BleControlObservationState
+  readonly mode: WriteMode
+  readonly maximumWriteLength: number | null
+}
+
+export interface ConnectionPriorityResult extends BleControlObservationMetadata {
+  readonly state: 'accepted' | 'rejected' | 'unavailable' | 'unsupported'
+  readonly requested: ConnectionPriority
+}
+
+export interface PhyObservation extends BleControlObservationMetadata {
+  readonly state: BleControlObservationState
+  readonly tx: BlePhy | null
+  readonly rx: BlePhy | null
+}
+
+export interface PhyUpdateResult extends BleControlObservationMetadata {
+  readonly state: 'accepted' | 'rejected' | 'unavailable' | 'unsupported'
+  readonly requested: PhyPreference
+  readonly observation: PhyObservation | null
+}
+
+export interface ConnectionParametersObservation extends BleControlObservationMetadata {
+  readonly state: BleControlObservationState
+  readonly intervalMs: number | null
+  readonly peripheralLatency: number | null
+  readonly supervisionTimeoutMs: number | null
+  readonly subrateFactor: number | null
+  readonly connectionEventLengthMs: number | null
+}
+
+export interface SubrateResult extends BleControlObservationMetadata {
+  readonly state: 'accepted' | 'rejected' | 'unavailable' | 'unsupported'
+  readonly requested: SubrateMode
+  readonly observation: ConnectionParametersObservation | null
+}
+
+export interface WriteReadinessEvent extends BleControlObservationMetadata {
+  readonly state: BleControlObservationState
+  readonly mode: 'without-response'
+  readonly ready: boolean | null
+}
+
+export interface BleConnectionControls {
+  readRssi(options?: OperationOptions): Promise<RssiObservation>
+  effectiveMtu(): Promise<MtuObservation>
+  requestMtu(mtu: number, options?: OperationOptions): Promise<MtuNegotiation>
+  maximumWriteLength(mode: WriteMode): Promise<MaximumWriteLengthObservation>
+  requestPriority(priority: ConnectionPriority, options?: OperationOptions): Promise<ConnectionPriorityResult>
+  readPhy(options?: OperationOptions): Promise<PhyObservation>
+  requestPhy(preference: PhyPreference, options?: OperationOptions): Promise<PhyUpdateResult>
+  parameters(): Promise<ConnectionParametersObservation>
+  parameterEvents(): AsyncIterable<ConnectionParametersObservation>
+  requestSubrate(mode: SubrateMode, options?: OperationOptions): Promise<SubrateResult>
+  writeReadiness(mode: 'without-response'): AsyncIterable<WriteReadinessEvent>
+}
+
+export interface RediscoverGattOptions extends OperationOptions {
+  readonly reason: 'service-changed' | 'manual'
 }
 export type {
   GattDatabase,
@@ -150,9 +260,9 @@ export interface BleConnection {
   readonly peer: BlePeer
   readonly connectionGeneration: string
   readonly lifecycleEvents: AsyncIterable<BleConnectionEvent>
+  readonly controls: BleConnectionControls
   readonly discover: (options?: OperationOptions) => Promise<GattDatabase>
-  readonly readRssi: (options?: OperationOptions) => Promise<number>
-  readonly requestMtu: (requestedMtu: number, options?: OperationOptions) => Promise<number>
+  readonly rediscoverGatt: (options: RediscoverGattOptions) => Promise<GattDatabase>
   readonly disconnect: () => Promise<CleanupRecord>
   readonly release: () => Promise<CleanupRecord>
 }
@@ -241,6 +351,465 @@ export interface PublicBleManagerHostOptions {
   readonly peers?: BlePeerDirectory
 }
 
+type InternalPublicConnection = Awaited<ReturnType<InternalBleManager<string, BackendIdentity<string>>['connect']>>
+
+interface OptionalInternalControlConnection {
+  readonly effectiveMtu?: () => Promise<{
+    readonly connectionId: string
+    readonly connectionGeneration: string
+    readonly attMtu: number | null
+    readonly payloadBytes: number | null
+    readonly platformPduBytes: number | null
+    readonly observedAtMonotonicMs?: number
+  }>
+  readonly writeWithoutResponseReadiness?: () => Promise<ConnectionWriteReadinessWatch<string>>
+}
+
+type PublicControlConnection = InternalPublicConnection & OptionalInternalControlConnection
+
+function controlMetadata(
+  generation: string,
+  now: number,
+  descriptor: ReturnType<InternalBleManager<string, BackendIdentity<string>>['capability']>,
+  authority: string
+): BleControlObservationMetadata {
+  return Object.freeze({
+    connectionGeneration: generation,
+    observedAtMonotonicMs: now,
+    source: 'backend',
+    authority,
+    limitations: Object.freeze([...(descriptor?.limitations ?? [])])
+  })
+}
+
+interface PublicConnectionIdentity {
+  readonly connectionId: string
+  readonly connectionGeneration: string
+}
+
+function assertPublicConnectionIdentity(
+  expected: PublicConnectionIdentity,
+  actual: PublicConnectionIdentity,
+  operation: string
+): void {
+  if (
+    String(actual.connectionId) !== String(expected.connectionId) ||
+    String(actual.connectionGeneration) !== String(expected.connectionGeneration)
+  ) {
+    throw contractError('protocol.violation', 'connection', operation)
+  }
+}
+
+function requireControlCapability(
+  internal: Pick<InternalBleManager<string, BackendIdentity<string>>, 'capability'>,
+  id: `${string}:${string}`,
+  operation: string
+) {
+  const descriptor = internal.capability(id)
+  if (descriptor === null || descriptor.state === 'unsupported') {
+    throw contractError('capability.unsupported', 'connection', operation)
+  }
+  if (descriptor.state === 'unavailable') {
+    throw contractError('capability.unavailable', 'connection', operation)
+  }
+  return descriptor
+}
+
+async function runPublicControl<Value>(action: () => Promise<Value>): Promise<Value> {
+  try {
+    return await action()
+  } catch (error) {
+    throw rehydratePublicError(error)
+  }
+}
+
+function unsupportedControlStream<Value>(
+  operation: string,
+  code: 'capability.unsupported' | 'capability.unavailable' = 'capability.unsupported'
+): AsyncIterable<Value> {
+  return new UnsupportedControlStream(operation, code)
+}
+
+function publicWriteReadinessStream(
+  connection: PublicControlConnection,
+  generation: string,
+  descriptor: ReturnType<InternalBleManager<string, BackendIdentity<string>>['capability']>
+): AsyncIterable<WriteReadinessEvent> {
+  return {
+    [Symbol.asyncIterator](): AsyncIterator<WriteReadinessEvent> {
+      let watch: ConnectionWriteReadinessWatch<string> | null = null
+      let iterator: BoundedAsyncStreamIterator<ConnectionWriteReadinessObservation<string>> | null = null
+      let closed = false
+      let iteratorDone = false
+      let teardownAttempted = false
+
+      const open = async (): Promise<void> => {
+        if (watch !== null) return
+        const observe = connection.writeWithoutResponseReadiness
+        if (observe === undefined) {
+          throw contractError('capability.unsupported', 'connection', 'public-connection.controls.write-readiness')
+        }
+        watch = await observe()
+        iterator = watch.events[Symbol.asyncIterator]()
+      }
+
+      const close = async (): Promise<void> => {
+        if (teardownAttempted) return
+        teardownAttempted = true
+        if (watch === null || iterator === null) return
+        await closePublicReadinessWatch(iterator, watch.close, iteratorDone)
+      }
+
+      return {
+        async next(): Promise<IteratorResult<WriteReadinessEvent, undefined>> {
+          if (closed) return { done: true, value: undefined }
+          try {
+            await open()
+            if (iterator === null) {
+              throw contractError(
+                'lifecycle.invariant-violation',
+                'connection',
+                'public-connection.controls.write-readiness'
+              )
+            }
+            const item = await iterator.next()
+            if (item.done) {
+              iteratorDone = true
+              closed = true
+              await close()
+              return { done: true, value: undefined }
+            }
+            const streamItem = item.value
+            if (streamItem.kind === 'value') {
+              assertPublicConnectionIdentity(
+                connection,
+                streamItem.value,
+                'public-connection.controls.write-readiness.identity'
+              )
+              return {
+                done: false,
+                value: Object.freeze({
+                  ...controlMetadata(
+                    generation,
+                    streamItem.value.observedAtMonotonicMs,
+                    descriptor,
+                    'backend-observation'
+                  ),
+                  state: 'measured' as const,
+                  mode: 'without-response' as const,
+                  ready: streamItem.value.ready
+                })
+              }
+            }
+            if (streamItem.kind === 'overflow') {
+              throw contractError('stream.overflow', 'connection', 'public-connection.controls.write-readiness')
+            }
+            closed = true
+            await close()
+            return { done: true, value: undefined }
+          } catch (error) {
+            const sourceError = rehydratePublicError(error)
+            if (closed) throw sourceError
+            closed = true
+            try {
+              await close()
+            } catch (cleanupError) {
+              throw new AggregateError(
+                [sourceError, rehydratePublicError(cleanupError)],
+                'BLE readiness watch operation and cleanup both failed'
+              )
+            }
+            throw sourceError
+          }
+        },
+        async return(): Promise<IteratorResult<WriteReadinessEvent, undefined>> {
+          closed = true
+          try {
+            await close()
+            return { done: true, value: undefined }
+          } catch (error) {
+            throw rehydratePublicError(error)
+          }
+        }
+      }
+    }
+  }
+}
+
+async function closePublicReadinessWatch(
+  iterator: BoundedAsyncStreamIterator<ConnectionWriteReadinessObservation<string>>,
+  close: () => Promise<CleanupRecord>,
+  iteratorDone: boolean
+): Promise<void> {
+  let iteratorError: unknown
+  if (!iteratorDone) {
+    try {
+      if (iterator.return !== undefined) await iterator.return()
+    } catch (error) {
+      iteratorError = error
+    }
+  }
+
+  let closeError: unknown
+  try {
+    const cleanup = await close()
+    if (cleanup.state === 'release-failed') {
+      const error = new Error('BLE readiness watch cleanup failed')
+      Object.defineProperty(error, 'cleanup', { value: cleanup, enumerable: true })
+      closeError = error
+    }
+  } catch (error) {
+    closeError = error
+  }
+
+  if (iteratorError !== undefined && closeError !== undefined) {
+    throw new AggregateError(
+      [rehydratePublicError(iteratorError), rehydratePublicError(closeError)],
+      'BLE readiness watch teardown failed'
+    )
+  }
+  if (iteratorError !== undefined) throw rehydratePublicError(iteratorError)
+  if (closeError !== undefined) throw rehydratePublicError(closeError)
+}
+
+class UnsupportedControlStream<Value> implements AsyncIterable<Value> {
+  constructor(
+    private readonly operation: string,
+    private readonly code: 'capability.unsupported' | 'capability.unavailable'
+  ) {}
+
+  [Symbol.asyncIterator](): AsyncIterator<Value> {
+    return new UnsupportedControlIterator(this.operation, this.code)
+  }
+}
+
+class UnsupportedControlIterator<Value> implements AsyncIterator<Value> {
+  constructor(
+    private readonly operation: string,
+    private readonly code: 'capability.unsupported' | 'capability.unavailable'
+  ) {}
+
+  async next(): Promise<IteratorResult<Value, undefined>> {
+    throw rehydratePublicError(contractError(this.code, 'connection', this.operation))
+  }
+
+  async return(): Promise<IteratorResult<Value, undefined>> {
+    return { done: true, value: undefined }
+  }
+}
+
+function createPublicConnectionControls(
+  internal: Pick<InternalBleManager<string, BackendIdentity<string>>, 'capability'>,
+  connection: PublicControlConnection,
+  generation: string,
+  now: () => number
+): BleConnectionControls {
+  const readRssi = (options: OperationOptions = {}): Promise<RssiObservation> =>
+    runPublicControl(async () => {
+      const descriptor = requireControlCapability(internal, 'connection:rssi', 'public-connection.controls.read-rssi')
+      const normalized = normalizeOperationOptions(options, now)
+      const result = await connection.readRssi({ signal: normalized.signal, deadline: normalized.deadline })
+      return Object.freeze({
+        ...controlMetadata(generation, result.observedAtMonotonicMs, descriptor, 'backend-operation'),
+        state: 'measured' as const,
+        rssi: Number(result.rssi)
+      })
+    })
+
+  const effectiveMtu = (): Promise<MtuObservation> =>
+    runPublicControl(async () => {
+      const descriptor = requireControlCapability(
+        internal,
+        'connection:effective-mtu',
+        'public-connection.controls.effective-mtu'
+      )
+      const observe = connection.effectiveMtu
+      if (observe === undefined) {
+        throw contractError('capability.unsupported', 'connection', 'public-connection.controls.effective-mtu')
+      }
+      const result = await observe()
+      assertPublicConnectionIdentity(connection, result, 'public-connection.controls.effective-mtu.identity')
+      return Object.freeze({
+        ...controlMetadata(generation, result.observedAtMonotonicMs, descriptor, 'backend-observation'),
+        state: result.attMtu === null ? ('unavailable' as const) : ('measured' as const),
+        attMtu: result.attMtu,
+        payloadBytes: result.payloadBytes,
+        platformPduBytes: result.platformPduBytes
+      })
+    })
+
+  const requestMtu = (requestedMtu: number, options: OperationOptions = {}): Promise<MtuNegotiation> =>
+    runPublicControl(async () => {
+      if (
+        !Number.isSafeInteger(requestedMtu) ||
+        requestedMtu < MINIMUM_ATT_MTU ||
+        requestedMtu > MAXIMUM_REQUESTED_ATT_MTU
+      ) {
+        throw contractError('argument.invalid', 'connection', 'public-connection.controls.request-mtu')
+      }
+      const descriptor = requireControlCapability(
+        internal,
+        'connection:request-mtu',
+        'public-connection.controls.request-mtu'
+      )
+      const normalized = normalizeOperationOptions(options, now)
+      const result = await connection.requestMtu(requestedMtu, {
+        signal: normalized.signal,
+        deadline: normalized.deadline
+      })
+      const observation = Object.freeze({
+        ...controlMetadata(generation, result.observedAtMonotonicMs, descriptor, 'backend-operation'),
+        state: 'measured' as const,
+        attMtu: Number(result.negotiatedMtu),
+        payloadBytes: Number(result.negotiatedMtu) - 3,
+        platformPduBytes: null
+      })
+      return Object.freeze({
+        ...controlMetadata(generation, result.observedAtMonotonicMs, descriptor, 'backend-operation'),
+        state: 'accepted' as const,
+        requestedMtu,
+        observation
+      })
+    })
+
+  const maximumWriteLength = (mode: WriteMode): Promise<MaximumWriteLengthObservation> =>
+    runPublicControl(async () => {
+      if (mode !== 'with-response' && mode !== 'without-response') {
+        throw contractError('argument.invalid', 'connection', 'public-connection.controls.maximum-write-length')
+      }
+      const descriptor = requireControlCapability(
+        internal,
+        'gatt:maximum-write-length',
+        'public-connection.controls.maximum-write-length'
+      )
+      const normalized = normalizeOperationOptions({}, now)
+      const result = await connection.maximumWriteLength(mode, {
+        signal: normalized.signal,
+        deadline: normalized.deadline
+      })
+      return Object.freeze({
+        ...controlMetadata(generation, result.observedAtMonotonicMs, descriptor, 'backend-observation'),
+        state: 'measured' as const,
+        mode,
+        maximumWriteLength: result.maximumWriteLength
+      })
+    })
+
+  const requestPriority = (
+    priority: ConnectionPriority,
+    options: OperationOptions = {}
+  ): Promise<ConnectionPriorityResult> =>
+    runPublicControl(async () => {
+      if (priority !== 'low-power' && priority !== 'balanced' && priority !== 'high-throughput') {
+        throw contractError('argument.invalid', 'connection', 'public-connection.controls.request-priority')
+      }
+      const descriptor = requireControlCapability(
+        internal,
+        'connection:priority',
+        'public-connection.controls.request-priority'
+      )
+      const normalized = normalizeOperationOptions(options, now)
+      const result = await connection.requestPriority(priority, {
+        signal: normalized.signal,
+        deadline: normalized.deadline
+      })
+      return Object.freeze({
+        ...controlMetadata(generation, result.observedAtMonotonicMs, descriptor, 'backend-operation'),
+        state: result.accepted ? ('accepted' as const) : ('rejected' as const),
+        requested: priority
+      })
+    })
+
+  const readPhy = (options: OperationOptions = {}): Promise<PhyObservation> =>
+    runPublicControl(async () => {
+      const descriptor = requireControlCapability(internal, 'connection:phy', 'public-connection.controls.read-phy')
+      const normalized = normalizeOperationOptions(options, now)
+      const result = await connection.readPhy({ signal: normalized.signal, deadline: normalized.deadline })
+      return Object.freeze({
+        ...controlMetadata(generation, result.observedAtMonotonicMs, descriptor, 'backend-operation'),
+        state: 'measured' as const,
+        tx: result.txPhy,
+        rx: result.rxPhy
+      })
+    })
+
+  const requestPhy = (preference: PhyPreference, options: OperationOptions = {}): Promise<PhyUpdateResult> =>
+    runPublicControl(async () => {
+      assertPublicPhyPreference(preference)
+      const descriptor = requireControlCapability(internal, 'connection:phy', 'public-connection.controls.request-phy')
+      const normalized = normalizeOperationOptions(options, now)
+      const result = await connection.requestPhy(preference, {
+        signal: normalized.signal,
+        deadline: normalized.deadline
+      })
+      if (result.accepted !== (result.observation !== null)) {
+        throw contractError('protocol.malformed', 'connection', 'public-connection.controls.request-phy.result')
+      }
+      const observation =
+        result.observation === null
+          ? null
+          : Object.freeze({
+              ...controlMetadata(
+                generation,
+                result.observation.observedAtMonotonicMs,
+                descriptor,
+                'backend-observation'
+              ),
+              state: 'measured' as const,
+              tx: result.observation.txPhy,
+              rx: result.observation.rxPhy
+            })
+      return Object.freeze({
+        ...controlMetadata(generation, result.observedAtMonotonicMs, descriptor, 'backend-operation'),
+        state: result.accepted ? ('accepted' as const) : ('rejected' as const),
+        requested: preference,
+        observation
+      })
+    })
+
+  const unsupportedPromise = <Value>(id: `${string}:${string}`, operation: string): Promise<Value> =>
+    runPublicControl(async () => {
+      requireControlCapability(internal, id, operation)
+      throw contractError('capability.unsupported', 'connection', operation)
+    })
+
+  return Object.freeze({
+    readRssi,
+    effectiveMtu,
+    requestMtu,
+    maximumWriteLength,
+    requestPriority,
+    readPhy,
+    requestPhy,
+    parameters: () =>
+      unsupportedPromise<ConnectionParametersObservation>(
+        'connection:parameters',
+        'public-connection.controls.parameters'
+      ),
+    parameterEvents: () =>
+      unsupportedControlStream<ConnectionParametersObservation>('public-connection.controls.parameter-events'),
+    requestSubrate: (_mode: SubrateMode, _options: OperationOptions = {}) =>
+      unsupportedPromise<SubrateResult>('connection:subrate', 'public-connection.controls.request-subrate'),
+    writeReadiness: (_mode: 'without-response') => {
+      const descriptor = internal.capability('gatt:write-without-response-readiness')
+      if (
+        descriptor === null ||
+        descriptor.state === 'unsupported' ||
+        connection.writeWithoutResponseReadiness === undefined
+      ) {
+        return unsupportedControlStream<WriteReadinessEvent>('public-connection.controls.write-readiness')
+      }
+      if (descriptor.state === 'unavailable') {
+        return unsupportedControlStream<WriteReadinessEvent>(
+          'public-connection.controls.write-readiness',
+          'capability.unavailable'
+        )
+      }
+      return publicWriteReadinessStream(connection, generation, descriptor)
+    }
+  })
+}
+
 // Internal factory used by host entrypoints. Hosts derive identity and call this.
 export async function createPublicBleManager(
   internal: InternalBleManager<string, BackendIdentity<string>>,
@@ -290,7 +859,7 @@ class PublicBleManager implements BleManager {
       const normalizedQuery = normalizeScanQuery(options.query)
       const internalOptions: InternalScanOptions<string, string> = {
         filter: { serviceUuids: [], manufacturerData: [], localNamePrefix: null },
-        duplicatePolicy: options.duplicates === 'all' ? 'all' : 'merged',
+        duplicatePolicy: 'all',
         timestampPolicy: 'source-then-receipt',
         delivery: {
           itemCapacity: delivery.itemCapacity,
@@ -321,7 +890,7 @@ class PublicBleManager implements BleManager {
             throw error
           }
         },
-        observations: filterScanObservations(session.observations, normalizedQuery),
+        observations: filterScanObservations(session.observations, normalizedQuery, options.duplicates ?? 'coalesced'),
         state: scanState.stream
       }
     } catch (error) {
@@ -396,30 +965,12 @@ class PublicBleManager implements BleManager {
         peer: publicPeer,
         connectionGeneration: String(internalConnection.connectionGeneration),
         lifecycleEvents: publicConnectionEvents(internalConnection.events),
-        readRssi: async (rssiOptions: OperationOptions = {}) => {
-          try {
-            const normalized = normalizeOperationOptions(rssiOptions, this.now)
-            const result = await internalConnection.readRssi({
-              signal: normalized.signal,
-              deadline: normalized.deadline
-            })
-            return Number(result.rssi)
-          } catch (error) {
-            throw rehydratePublicError(error)
-          }
-        },
-        requestMtu: async (requestedMtu: number, mtuOptions: OperationOptions = {}) => {
-          try {
-            const normalized = normalizeOperationOptions(mtuOptions, this.now)
-            const result = await internalConnection.requestMtu(requestedMtu, {
-              signal: normalized.signal,
-              deadline: normalized.deadline
-            })
-            return Number(result.negotiatedMtu)
-          } catch (error) {
-            throw rehydratePublicError(error)
-          }
-        },
+        controls: createPublicConnectionControls(
+          this.internal,
+          internalConnection,
+          String(internalConnection.connectionGeneration),
+          this.now
+        ),
         discover: async (discoverOptions: OperationOptions = {}) => {
           try {
             const normalized = normalizeOperationOptions(discoverOptions, this.now)
@@ -427,6 +978,24 @@ class PublicBleManager implements BleManager {
               signal: normalized.signal,
               deadline: normalized.deadline
             })
+            return createPublicGattDatabase(source)
+          } catch (error) {
+            throw rehydratePublicError(error)
+          }
+        },
+        rediscoverGatt: async (rediscoverOptions: RediscoverGattOptions) => {
+          try {
+            if (rediscoverOptions.reason !== 'service-changed' && rediscoverOptions.reason !== 'manual') {
+              throw contractError('argument.invalid', 'gatt', 'public-connection.rediscover-gatt.reason')
+            }
+            const normalized = normalizeOperationOptions(rediscoverOptions, this.now)
+            const source = await internalConnection.rediscoverGatt(
+              {
+                signal: normalized.signal,
+                deadline: normalized.deadline
+              },
+              rediscoverOptions.reason === 'manual' ? 'manual-rediscovery' : 'service-changed'
+            )
             return createPublicGattDatabase(source)
           } catch (error) {
             throw rehydratePublicError(error)
@@ -793,10 +1362,17 @@ class PublicConnectionEventBroadcast implements AsyncIterable<BleConnectionEvent
         for (const subscriber of this.subscribers) subscriber.emit(event, 512)
       }
       this.terminalReason = 'closed'
-      for (const subscriber of this.subscribers) subscriber.closeWithReason('closed')
+      this.closeSubscribers('closed')
     } catch {
       this.terminalReason = 'source-failed'
-      for (const subscriber of this.subscribers) subscriber.closeWithReason('source-failed')
+      this.closeSubscribers('source-failed')
+    }
+  }
+
+  private closeSubscribers(reason: 'closed' | 'source-failed'): void {
+    for (const subscriber of this.subscribers) {
+      subscriber.closeWithReason(reason)
+      this.subscribers.delete(subscriber)
     }
   }
 }
@@ -887,6 +1463,24 @@ export function assertPublicConnectOptions(options: ConnectOptions): void {
       throw contractError('argument.invalid', 'connection', 'public-ble-manager.connect.preferred-phy')
     }
   }
+}
+
+function assertPublicPhyPreference(preference: PhyPreference): void {
+  if (
+    typeof preference !== 'object' ||
+    preference === null ||
+    Array.isArray(preference) ||
+    Object.keys(preference).some(key => key !== 'tx' && key !== 'rx') ||
+    (preference.tx === undefined && preference.rx === undefined) ||
+    (preference.tx !== undefined && !isPublicBlePhy(preference.tx)) ||
+    (preference.rx !== undefined && !isPublicBlePhy(preference.rx))
+  ) {
+    throw contractError('argument.invalid', 'connection', 'public-connection.controls.request-phy.preference')
+  }
+}
+
+function isPublicBlePhy(value: string): value is BlePhy {
+  return value === 'le-1m' || value === 'le-2m' || value === 'le-coded'
 }
 
 export function assertPublicChooseOptions(options: ChooseOptions): void {

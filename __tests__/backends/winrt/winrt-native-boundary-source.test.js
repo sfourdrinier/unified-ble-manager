@@ -378,6 +378,13 @@ describe('WinRT native boundary source contract', () => {
     expect(startScan).toContain('ReportWinRtDelegateFailure("watcher Received"')
   })
 
+  test('guards radio state callbacks after native destroy begins', () => {
+    const boundary = read('native/electron/winrt/src/winrt-boundary.inc')
+    const selectAdapter = section(boundary, 'Napi::Value SelectAdapter', 'Napi::Value AdapterSnapshot')
+
+    expect(selectAdapter).toContain('if (live_state->destroyed || live_state->destroying) return;')
+  })
+
   test('reserves the exact connecting owner through rollback, Disconnect, and Destroy', () => {
     const addon = read('native/electron/winrt/src/addon.cpp')
     const boundary = read('native/electron/winrt/src/winrt-boundary.inc')

@@ -2,19 +2,10 @@
 
 # Expo plugin option reference
 
-> PR10 deferral: the RC1 five-field restoration/plugin schema documented below
-> is retained for native/plugin contract tests, but is not the current PR6
-> application configuration recipe. Do not copy `iosNativeProtocolRestoration`
-> or author `clientId`/`hostSessionScope` in application code until the PR10
-> Expo v2 schema and native-authoritative restoration slice lands.
+The plugin writes native project configuration. That is not a live-radio or
+restoration support claim. See [`PLATFORMS.md`](PLATFORMS.md).
 
-Everything below this notice is historical schema/reference material for the
-plugin contract tests. It is intentionally non-copyable application guidance
-until PR10 lands; current PR6 consumers must not treat the table or JSON block
-as a supported release recipe.
-
-Configure the published plugin as `unified-ble-manager`. The plugin's supported
-options are exactly the schema implemented in `plugin/src/withBLE.ts`:
+## Current plugin package setup
 
 ```sh
 pnpm add unified-ble-manager expo@^57.0.0
@@ -25,10 +16,21 @@ pnpm add unified-ble-manager expo@^57.0.0
 `@expo/config-plugins` package directly. Web, bare React Native, and Node
 consumers do not resolve Expo tooling.
 
-The plugin writes native project configuration. That is not a live-radio or
-restoration support claim. See [`PLATFORMS.md`](PLATFORMS.md).
+## Historical contract-test fixture — do not copy
 
-| Option | Type | Effect |
+> **DO NOT COPY: HISTORICAL CONTRACT-TEST FIXTURE ONLY.** The RC1
+> five-field restoration/plugin schema below is retained for native/plugin
+> contract tests. It is not supported application configuration. Do not copy
+> `iosNativeProtocolRestoration` or author `clientId`/`hostSessionScope` in
+> application code until the PR10 Expo v2 schema and native-authoritative
+> restoration slice lands.
+
+The historical contract-test fixture records the schema implemented in
+`plugin/src/withBLE.ts`. Use it only to understand the native contract tests
+until PR10 replaces the five-field restoration identity. The table and JSON
+block below are not a current application recipe.
+
+| Historical fixture option | Type | Contract-test effect |
 | --- | --- | --- |
 | `debug` | `boolean` | Enables plugin diagnostics; `UNIFIED_BLE_MANAGER_PLUGIN_DEBUG=1` also enables them. `BLEPLX_PLUGIN_DEBUG=1` remains a deprecated alias. |
 | `requiresBluetoothLeHardware` | `boolean` | Adds the required Android BLE hardware feature (`android.hardware.bluetooth_le`). It does not create a foreground service or change manager lifecycle. |
@@ -37,7 +39,7 @@ restoration support claim. See [`PLATFORMS.md`](PLATFORMS.md).
 | `bluetoothAlwaysPermission` | `string \| false` | Sets, or suppresses, `NSBluetoothAlwaysUsageDescription`. |
 | `iosNativeProtocolRestoration` | `{ identifier, namespace, epoch, clientId, hostSessionScope }` | Atomically writes the five non-empty native restoration identity values required by `UnifiedBleProtocolControl`. |
 
-For example:
+Historical contract-test fixture shape (do not copy into application config):
 
 ```json
 [
@@ -58,7 +60,7 @@ For example:
 ]
 ```
 
-Every provided plugin property is validated exactly: unknown keys, non-boolean
+The fixture validates every provided plugin property exactly: unknown keys, non-boolean
 flags, invalid or duplicate modes, invalid permission values, and incomplete
 restoration objects fail configuration. `iosNativeProtocolRestoration` writes
 `UnifiedBleProtocolRestoreIdentifier`,

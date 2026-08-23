@@ -4,6 +4,11 @@ const fs = require('node:fs')
 const path = require('node:path')
 const typescript = require('typescript')
 const { WinRtOperationDispatcher } = require('../../../src/backends/winrt/winrt-operation-dispatcher')
+const { opaqueId } = require('../../../src/backend-contract/primitives')
+const { coreDispatch } = require('../../../src/core/unified-ble-core-helpers')
+const { CoreOperationCoordinator } = require('../../../src/core/operation-coordinator')
+const { ResourceLedger } = require('../../../src/core/resource-ledger')
+const { CoreTraceRecorder } = require('../../../src/core/trace-recorder')
 
 function deferred() {
   let resolve = null
@@ -21,6 +26,22 @@ function dispatcher() {
     onLateSuccess: jest.fn(),
     onLateFailure: jest.fn(),
     onCancellationFailure: jest.fn()
+  })
+}
+
+function createCoordinator() {
+  const resourceLedger = new ResourceLedger()
+  const trace = new CoreTraceRecorder(32, 4096)
+  let nextCorrelation = 1
+  return new CoreOperationCoordinator({
+    now: () => 100,
+    createCorrelation: () => {
+      const correlation = opaqueId(`winrt-core-operation-${nextCorrelation}`, 'core-operation', 'winrt')
+      nextCorrelation += 1
+      return correlation
+    },
+    resourceLedger,
+    trace
   })
 }
 
@@ -80,6 +101,25 @@ describe('WinRT operation dispatcher cancellation admission', () => {
     await expect(dispatch.requestCancellation()).resolves.toMatchObject({ state: 'already-terminal' })
     expect(dispatcherInstance.activeCount()).toBe(0)
     await expect(dispatcherInstance.waitForIdle()).resolves.toBeUndefined()
+  })
+
+  test('rejects an unknown native cancellation acknowledgement vocabulary', async () => {
+    const pending = deferred()
+    const controller = new AbortController()
+    const dispatcherInstance = dispatcher()
+    const dispatch = dispatcherInstance.dispatch({ signal: controller.signal, deadline: null }, 'winrt.gatt.read', () => ({
+      completion: pending.promise,
+      cancel: async () => 'cancelled'
+    }))
+
+    controller.abort()
+
+    await expect(dispatch.completion).rejects.toMatchObject({ normalized: { code: 'operation.aborted' } })
+    await expect(dispatch.requestCancellation()).rejects.toMatchObject({
+      normalized: { code: 'protocol.malformed', operation: 'winrt.dispatcher.cancellation-acknowledgement' }
+    })
+    pending.resolve(new Uint8Array([1]))
+    await dispatcherInstance.waitForIdle()
   })
 
   test.each([
@@ -155,7 +195,7 @@ describe('WinRT operation dispatcher cancellation admission', () => {
     await expect(dispatch.completion).rejects.toMatchObject({
       normalized: { code: 'protocol.malformed', operation }
     })
-    await expect(dispatch.physicalCompletion).resolves.toBeUndefined()
+    await expect(dispatch.physicalSettlement).resolves.toBeUndefined()
     await expect(dispatch.requestCancellation()).resolves.toMatchObject({ state: 'already-terminal' })
     expect(dispatcherInstance.activeCount()).toBe(0)
     await expect(dispatcherInstance.waitForIdle()).resolves.toBeUndefined()
@@ -192,13 +232,46 @@ describe('WinRT operation dispatcher cancellation admission', () => {
         }
       })
       pending.reject(new Error('native completion rejected after malformed boundary'))
-      await expect(dispatch.physicalCompletion).resolves.toBeUndefined()
+      await expect(dispatch.physicalSettlement).resolves.toBeUndefined()
       await waitForUnhandledRejections()
       expect(unhandledRejections).toEqual([])
       expect(dispatcherInstance.activeCount()).toBe(0)
     } finally {
       process.removeListener('unhandledRejection', recordUnhandledRejection)
     }
+  })
+
+  test('retains observed native completion as physical settlement when physical-completion shape validation fails', async () => {
+    const pending = deferred()
+    const dispatcherInstance = dispatcher()
+    const dispatch = dispatcherInstance.dispatch({ signal: null, deadline: null }, 'winrt.gatt.read', () =>
+      Object.defineProperties(
+        {},
+        {
+          completion: { value: pending.promise },
+          cancel: { value: async () => 'already-terminal' },
+          physicalCompletion: {
+            get() {
+              throw new Error('physical completion getter failure')
+            }
+          }
+        }
+      )
+    )
+
+    await expect(dispatch.completion).rejects.toMatchObject({
+      normalized: { code: 'protocol.malformed', operation: 'winrt.dispatcher.native-operation.physical-completion' }
+    })
+    let physicalSettled = false
+    dispatch.physicalSettlement.then(() => {
+      physicalSettled = true
+    })
+    await Promise.resolve()
+    expect(physicalSettled).toBe(false)
+
+    pending.resolve(undefined)
+    await expect(dispatch.physicalSettlement).resolves.toBeUndefined()
+    expect(physicalSettled).toBe(true)
   })
 
   test('contains an asynchronously rejecting late-success reporter without delaying retirement', async () => {
@@ -229,7 +302,7 @@ describe('WinRT operation dispatcher cancellation admission', () => {
       controller.abort()
       await expect(dispatch.completion).rejects.toMatchObject({ normalized: { code: 'operation.aborted' } })
       nativeCompletion.resolve(new Uint8Array([1]))
-      await expect(dispatch.physicalCompletion).resolves.toBeUndefined()
+      await expect(dispatch.physicalSettlement).resolves.toBeUndefined()
       await expect(dispatcherInstance.waitForIdle()).resolves.toBeUndefined()
       await waitForUnhandledRejections()
 
@@ -272,7 +345,7 @@ describe('WinRT operation dispatcher cancellation admission', () => {
       controller.abort()
       await expect(dispatch.completion).rejects.toMatchObject({ normalized: { code: 'operation.aborted' } })
       nativeCompletion.reject(new Error('late native write failure'))
-      await expect(dispatch.physicalCompletion).resolves.toBeUndefined()
+      await expect(dispatch.physicalSettlement).resolves.toBeUndefined()
       await expect(dispatcherInstance.waitForIdle()).resolves.toBeUndefined()
       await waitForUnhandledRejections()
 
@@ -328,7 +401,7 @@ describe('WinRT operation dispatcher cancellation admission', () => {
       controller.abort()
       await expect(dispatch.completion).rejects.toMatchObject({ normalized: { code: 'operation.aborted' } })
       nativeCompletion.resolve(undefined)
-      await expect(dispatch.physicalCompletion).resolves.toBeUndefined()
+      await expect(dispatch.physicalSettlement).resolves.toBeUndefined()
       await expect(dispatcherInstance.waitForIdle()).resolves.toBeUndefined()
       await waitForUnhandledRejections()
 
@@ -517,7 +590,7 @@ describe('WinRT operation dispatcher cancellation admission', () => {
 
       await expect(dispatch.completion).rejects.toMatchObject({ normalized: { code: 'operation.aborted' } })
       lateFailure.reject(new Error('late native read failure'))
-      await expect(dispatch.physicalCompletion).resolves.toBeUndefined()
+      await expect(dispatch.physicalSettlement).resolves.toBeUndefined()
       await expect(dispatcherInstance.waitForIdle()).resolves.toBeUndefined()
       expect(dispatcherInstance.activeCount()).toBe(0)
       expect(onLateFailure).toHaveBeenCalledWith(
@@ -575,7 +648,7 @@ describe('WinRT operation dispatcher cancellation admission', () => {
 
       await expect(dispatch.completion).rejects.toMatchObject({ normalized: { code: 'operation.aborted' } })
       nativeCompletion.resolve(undefined)
-      await expect(dispatch.physicalCompletion).resolves.toBeUndefined()
+      await expect(dispatch.physicalSettlement).resolves.toBeUndefined()
       await expect(dispatcherInstance.waitForIdle()).resolves.toBeUndefined()
       expect(dispatcherInstance.activeCount()).toBe(0)
       expect(onCancellationFailure).toHaveBeenCalledWith(
@@ -715,5 +788,45 @@ describe('WinRT operation dispatcher cancellation admission', () => {
     } finally {
       jest.useRealTimers()
     }
+  })
+
+  test('does not release core quarantine before a cancelled native operation settles', async () => {
+    const pending = deferred()
+    const controller = new AbortController()
+    const dispatcherInstance = dispatcher()
+    const coordinator = createCoordinator()
+    let correlation
+    const result = coordinator.run({
+      queueKey: 'connection-1',
+      options: { signal: controller.signal, deadline: null },
+      mayCommit: false,
+      dispatch: operationCorrelation => {
+        correlation = operationCorrelation
+        const dispatch = dispatcherInstance.dispatch(
+          { signal: controller.signal, deadline: null },
+          'winrt.gatt.read',
+          () => ({ completion: pending.promise, cancel: async () => 'cancellation-requested' })
+        )
+        return coreDispatch(dispatch, operationCorrelation, value => value.terminal)
+      }
+    })
+
+    controller.abort()
+
+    await expect(result).resolves.toMatchObject({ outcome: 'aborted' })
+    expect(dispatcherInstance.activeCount()).toBe(1)
+    expect(coordinator.activeCounts()).toMatchObject({ quarantined: 1 })
+
+    let drained = false
+    void coordinator.waitForQuarantineDrain().then(() => {
+      drained = true
+    })
+    await new Promise(resolve => setImmediate(resolve))
+    expect(drained).toBe(false)
+
+    pending.resolve({ terminal: { correlation, outcome: 'succeeded', cause: null } })
+    await coordinator.waitForQuarantineDrain()
+    expect(dispatcherInstance.activeCount()).toBe(0)
+    expect(coordinator.activeCounts()).toMatchObject({ quarantined: 0 })
   })
 })

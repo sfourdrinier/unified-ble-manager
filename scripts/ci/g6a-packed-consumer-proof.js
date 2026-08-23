@@ -141,7 +141,8 @@ const thirdPartyBaseProfile = Object.freeze([
     id: 'gatt.reads-descriptors-write-policy-and-dispatched-cancellation',
     facts: Object.freeze([
       'gatt-read-and-descriptor-return-owned-bytes',
-      'gatt-write-policy-and-uncertain-dispatched-commit-are-exact'
+      'gatt-write-policy-and-uncertain-dispatched-commit-are-exact',
+      'gatt-operation-queue-is-fair-and-bounded'
     ])
   }),
   Object.freeze({
@@ -164,7 +165,8 @@ const thirdPartyBaseProfile = Object.freeze([
     facts: Object.freeze([
       'destroy-closes-admission-and-is-idempotent',
       'destroy-settles-each-operation-once',
-      'resource-counters-return-to-zero-without-underflow'
+      'resource-counters-return-to-zero-without-underflow',
+      'operation-cancellation-and-destroy-leave-zero-residual-resources'
     ])
   }),
   Object.freeze({
@@ -249,6 +251,7 @@ function runG6APackedConsumerProof({
         `G6A ${host.id} consumer installed ${String(installedManifest.name)}@${String(installedManifest.version)} instead of ${packageName}@${packageVersion}`
       )
     }
+    assertInstalledPackageResolution(consumer, packageName)
     const output = run(process.execPath, [path.join(consumer, host.entrypoint)], {
       cwd: consumer,
       timeoutMs: childTimeoutMs
@@ -566,6 +569,21 @@ function validateZeroResourceCounters(counters, label) {
     if (typeof counters[key] !== 'number' || Number.isSafeInteger(counters[key]) === false || counters[key] !== 0) {
       throw new Error(`${label}.${key} must be the numeric zero`)
     }
+  }
+}
+
+function assertInstalledPackageResolution(consumer, packageName) {
+  const packageRoot = fs.realpathSync(path.join(consumer, 'node_modules', packageName))
+  if (!fs.existsSync(path.join(packageRoot, 'package.json'))) {
+    throw new Error(`G6A installed package manifest is missing: ${packageRoot}`)
+  }
+  const consumerRoot = fs.realpathSync(consumer)
+  const expectedRoot = path.join(consumerRoot, 'node_modules', packageName)
+  if (!packageRoot.startsWith(expectedRoot)) {
+    throw new Error(`G6A package resolution escaped the installed tarball: ${packageRoot}`)
+  }
+  if (packageRoot.startsWith(fs.realpathSync(root))) {
+    throw new Error(`G6A package resolution used repository source: ${packageRoot}`)
   }
 }
 

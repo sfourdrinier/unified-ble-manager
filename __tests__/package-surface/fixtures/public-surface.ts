@@ -28,10 +28,45 @@ import type {
   AdapterReadinessOptions,
   BleDiagnostics
 } from 'unified-ble-manager'
-import type { ConnectionIntent, ConnectionSupervisor, ConnectOptions, RetryPolicy } from 'unified-ble-manager'
+import type {
+  BleConnectionControls,
+  BleControlObservationMetadata,
+  BleObservationSource,
+  RssiObservation,
+  MtuObservation,
+  MtuNegotiation,
+  MaximumWriteLengthObservation as PublicMaximumWriteLengthObservation,
+  ConnectionPriority,
+  ConnectionPriorityResult,
+  PhyPreference,
+  PhyObservation,
+  PhyUpdateResult,
+  ConnectionParametersObservation,
+  SubrateMode,
+  SubrateResult,
+  WriteMode,
+  WriteReadinessEvent,
+  RediscoverGattOptions,
+  ConnectionIntent,
+  ConnectionSupervisor,
+  ConnectOptions,
+  RetryPolicy
+} from 'unified-ble-manager'
 // Ensure root types are considered used for TS noUnusedLocals
 type _RootImportCheck = BlePeer &
   BleConnection &
+  BleConnectionControls &
+  RssiObservation &
+  MtuObservation &
+  MtuNegotiation &
+  PublicMaximumWriteLengthObservation &
+  ConnectionPriorityResult &
+  PhyObservation &
+  PhyUpdateResult &
+  ConnectionParametersObservation &
+  SubrateResult &
+  WriteReadinessEvent &
+  BleControlObservationMetadata &
   ScanSession &
   GattDatabase &
   GattService &
@@ -53,10 +88,22 @@ declare const connectionIntent: ConnectionIntent
 declare const connectOptions: ConnectOptions
 declare const retryPolicy: RetryPolicy
 declare const supervisor: ConnectionSupervisor
+declare const observationSource: BleObservationSource
+declare const connectionPriority: ConnectionPriority
+declare const phyPreference: PhyPreference
+declare const subrateMode: SubrateMode
+declare const writeMode: WriteMode
+declare const rediscoverOptions: RediscoverGattOptions
 void connectionIntent
 void connectOptions
 void retryPolicy
 void supervisor
+void observationSource
+void connectionPriority
+void phyPreference
+void subrateMode
+void writeMode
+void rediscoverOptions
 declare const publicDatabase: GattDatabase
 declare const publicService: GattService
 declare const publicCharacteristic: GattCharacteristic
@@ -65,6 +112,7 @@ declare const publicSubscription: GattSubscription
 declare const gattSnapshot: GattDatabaseSnapshot
 declare const gattPathSelector: GattPathSelector
 declare const gattWriteOptions: GattWriteOptions
+declare const writeWhenReadyOptions: OperationOptions
 declare const gattSubscribeOptions: GattSubscribeOptions
 declare const scanQuery: ScanQuery
 declare const scanClause: ScanClause
@@ -80,6 +128,7 @@ void publicService.characteristic('2a19', { occurrence: 0 })
 void publicCharacteristic.descriptor('2901', { occurrence: 0 })
 void publicCharacteristic.read()
 void publicCharacteristic.write(new Uint8Array([1]), gattWriteOptions)
+void publicCharacteristic.writeWhenReady(new Uint8Array([1]), writeWhenReadyOptions)
 void publicCharacteristic.subscribe(gattSubscribeOptions)
 void publicDescriptor.read()
 void publicSubscription.values
@@ -595,6 +644,19 @@ interface PeerConnectionDeclaration {
       readonly cause: never
     }
   }>
+  effectiveMtu(): Promise<{
+    readonly connectionId: string
+    readonly connectionGeneration: string
+    readonly attMtu: number | null
+    readonly payloadBytes: number | null
+    readonly platformPduBytes: number | null
+    readonly observedAtMonotonicMs: number
+    readonly terminal: {
+      readonly correlation: string
+      readonly outcome: 'succeeded' | 'failed' | 'aborted' | 'timed-out' | 'disconnected' | 'reset' | 'adapter-unavailable' | 'destroyed'
+      readonly cause: never
+    }
+  }>
 }
 
 declare class PeerOneManager {
@@ -618,6 +680,7 @@ declare class PeerOneConnection implements PeerConnectionDeclaration {
   disconnect(): Promise<PeerCleanupRecord>
   readRssi(options: PeerOperationOptions): ReturnType<PeerConnectionDeclaration['readRssi']>
   requestMtu(requestedMtu: number, options: PeerOperationOptions): ReturnType<PeerConnectionDeclaration['requestMtu']>
+  effectiveMtu(): ReturnType<PeerConnectionDeclaration['effectiveMtu']>
 }
 declare class PeerTwoConnection implements PeerConnectionDeclaration {
   private readonly peerTwoConnectionBrand: undefined
@@ -630,6 +693,7 @@ declare class PeerTwoConnection implements PeerConnectionDeclaration {
   disconnect(): Promise<PeerCleanupRecord>
   readRssi(options: PeerOperationOptions): ReturnType<PeerConnectionDeclaration['readRssi']>
   requestMtu(requestedMtu: number, options: PeerOperationOptions): ReturnType<PeerConnectionDeclaration['requestMtu']>
+  effectiveMtu(): ReturnType<PeerConnectionDeclaration['effectiveMtu']>
 }
 declare class PeerOneDatabase implements PeerDatabaseDeclaration {
   private readonly peerOneDatabaseBrand: undefined

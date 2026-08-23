@@ -60,6 +60,13 @@ export function optionalString(record: NativeProtocolRecord, id: number): string
   return typeof value === 'string' && value.length > 0 ? value : null
 }
 
+export function optionalUnsigned(record: NativeProtocolRecord, id: number, operation: string): number | null {
+  const value = record.fields.find(candidate => candidate.id === id)?.value
+  if (value === undefined) return null
+  if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) return value
+  throw contractError('protocol.malformed', 'boundary', operation)
+}
+
 export function requiredUnsigned(record: NativeProtocolRecord, id: number, operation: string): number {
   const value = requiredField(record, id, operation)
   if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) {
@@ -157,6 +164,10 @@ export function nativePeerIdForCommand(command: NativeProtocolRecord): string | 
     kind === 'discover' ||
     kind === 'readRssi' ||
     kind === 'requestMtu' ||
+    kind === 'readMtu' ||
+    kind === 'requestPriority' ||
+    kind === 'readPhy' ||
+    kind === 'requestPhy' ||
     kind === 'securityState' ||
     kind === 'securityPair' ||
     kind === 'securityCancelPairing'
@@ -183,6 +194,32 @@ export function nativePeerIdForCommand(command: NativeProtocolRecord): string | 
     )
   }
   return null
+}
+
+export function nativePhyFromPublic(value: string): 'le1m' | 'le2m' | 'leCoded' {
+  switch (value) {
+    case 'le-1m':
+      return 'le1m'
+    case 'le-2m':
+      return 'le2m'
+    case 'le-coded':
+      return 'leCoded'
+    default:
+      throw contractError('protocol.malformed', 'boundary', 'rn-android-boundary.phy.public')
+  }
+}
+
+export function publicPhyFromNative(value: string): 'le-1m' | 'le-2m' | 'le-coded' {
+  switch (value) {
+    case 'le1m':
+      return 'le-1m'
+    case 'le2m':
+      return 'le-2m'
+    case 'leCoded':
+      return 'le-coded'
+    default:
+      throw contractError('protocol.malformed', 'boundary', 'rn-android-boundary.phy.native')
+  }
 }
 
 export function snapshotFromRecord(snapshot: NativeProtocolRecord): CoreBluetoothGattSnapshot {
@@ -425,17 +462,6 @@ function optionalSigned(record: NativeProtocolRecord, id: number, operation: str
     return null
   }
   if (typeof value === 'number' && Number.isSafeInteger(value)) {
-    return value
-  }
-  throw contractError('protocol.malformed', 'boundary', operation)
-}
-
-function optionalUnsigned(record: NativeProtocolRecord, id: number, operation: string): number | null {
-  const value = optionalField(record, id)
-  if (value === null) {
-    return null
-  }
-  if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) {
     return value
   }
   throw contractError('protocol.malformed', 'boundary', operation)

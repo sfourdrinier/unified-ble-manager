@@ -1,20 +1,23 @@
 // src/backends/corebluetooth/corebluetooth-adapter-loss-cleanup.ts
 
 import type { CleanupFailure, CleanupRecord } from '../../backend-contract/errors'
-import type { CoreBluetoothBoundary } from './corebluetooth-boundary'
 import { cleanupFailureDetail, releasedCleanup } from './corebluetooth-handles'
 import type { CoreBluetoothGattOperations } from './corebluetooth-gatt-operations'
 import type { ConnectionRecord, PhysicalSubscription, ScanConsumer, ScanGroup } from './corebluetooth-backend'
 
 export interface CoreBluetoothAdapterLossCleanupState {
-  readonly boundary: CoreBluetoothBoundary
   readonly scanGroup: ScanGroup | null
   readonly subscriptions: Map<string, PhysicalSubscription>
   readonly connections: Map<string, ConnectionRecord>
   readonly gattOperations: CoreBluetoothGattOperations
+  stopNativeScan(group: ScanGroup, operation: string): Promise<CleanupRecord>
+  disconnectNative(
+    record: ConnectionRecord,
+    operation: string,
+    preservePhysicalSubscriptions: boolean
+  ): Promise<CleanupRecord>
   releaseScanConsumerAdmission(consumer: ScanConsumer): void
   clearScanGroup(group: ScanGroup): void
-  invalidateConnection(record: ConnectionRecord): void
 }
 
 /** Releases every native resource while retaining failed ownership for the next adapter-loss retry. */
@@ -30,9 +33,13 @@ export async function releaseCoreBluetoothAdapterLossResources(
       consumer.stream.closeWithReason('source-failed')
     }
     try {
-      await state.boundary.stopScan()
-      group.consumers.clear()
-      state.clearScanGroup(group)
+      const cleanup = await state.stopNativeScan(group, 'corebluetooth.adapter-loss.stop-scan')
+      if (cleanup.state === 'release-failed') {
+        failures.push(...cleanup.failures)
+      } else {
+        group.consumers.clear()
+        state.clearScanGroup(group)
+      }
     } catch (error) {
       failures.push(cleanupFailureDetail('scan', 'corebluetooth.adapter-loss.stop-scan', error))
     }
@@ -49,8 +56,11 @@ export async function releaseCoreBluetoothAdapterLossResources(
   for (const record of [...state.connections.values()]) {
     record.state = 'disconnecting'
     try {
-      await state.boundary.disconnect(record.nativePeerId)
-      state.invalidateConnection(record)
+      const cleanup = await state.disconnectNative(record, 'corebluetooth.adapter-loss.disconnect', true)
+      failures.push(...cleanup.failures)
+      if (cleanup.state === 'release-failed') {
+        record.state = 'connected'
+      }
     } catch (error) {
       record.state = 'connected'
       failures.push(cleanupFailureDetail('connection', 'corebluetooth.adapter-loss.disconnect', error))

@@ -43,6 +43,7 @@ export function createPendingConnectionRecord(devicePath: string, peerId: PeerId
     connection: null,
     leases: new Set(),
     databases: new Set(),
+    pendingOperations: new Map(),
     state: 'connecting',
     active: false,
     physicalLinkMayExist: false,
@@ -51,6 +52,8 @@ export function createPendingConnectionRecord(devicePath: string, peerId: PeerId
     currentDatabase: null,
     transition: null,
     disconnection: null,
+    disconnectRequested: false,
+    disconnectMethod: null,
     pendingConnectors: 0,
     orphanCleanupScheduled: false
   }

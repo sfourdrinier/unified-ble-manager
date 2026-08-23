@@ -218,5 +218,9 @@ internal fun ProtocolWireRecord.optionalRecord(fieldId: Int): ProtocolWireRecord
 
 internal fun ProtocolWireRecord.optionalString(fieldId: Int): String? {
   val value = fields[fieldId]
-  return if (value is ProtocolWireValue.StringValue) value.value else null
+  return when (value) {
+    null -> null
+    is ProtocolWireValue.StringValue -> value.value
+    else -> throw IllegalArgumentException("String field is malformed")
+  }
 }

@@ -82,7 +82,7 @@ function completeCapabilityDescriptors() {
   }
   return BUILT_IN_FEATURE_CATALOG.map(entry => ({
     id: entry.id,
-    state: entry.id === 'connection:direct' ? 'limited' : 'unsupported',
+    state: entry.id === 'connection:direct' || entry.id === 'connection:rssi' ? 'limited' : 'unsupported',
     selectedSchemaRange: schema,
     implementationOrigin: 'backend-native',
     tck: {
@@ -92,7 +92,7 @@ function completeCapabilityDescriptors() {
     },
     evidence: {
       receiptId: `electron-test-${entry.id}`,
-      evidenceLevel: entry.id === 'connection:direct' ? 'deterministic' : 'blocked',
+      evidenceLevel: entry.id === 'connection:direct' || entry.id === 'connection:rssi' ? 'deterministic' : 'blocked',
       implementationVersion: 'test',
       sourceDigest: `electron-test-${entry.id}`,
       scenarioIds: ['capability.truth-limits-evidence-and-binding'],
@@ -384,13 +384,15 @@ function createConnection(
   peerId,
   database,
   disconnect = jest.fn(async () => released()),
-  events = createConnectionLifecycleStream()
+  events = createConnectionLifecycleStream(),
+  rediscoveredDatabase = database
 ) {
   return {
     peerId,
     connectionId: `connection-${peerId}`,
     connectionGeneration: `connection-generation-${peerId}`,
     discover: jest.fn(async () => database),
+    rediscoverGatt: jest.fn(async () => rediscoveredDatabase),
     disconnect,
     events
   }
@@ -1618,6 +1620,43 @@ describe('Electron v4 IPC boundary', () => {
     await current.binding.destroy()
   })
 
+  test('retires the prior main-process database handle on explicit rediscovery', async () => {
+    const firstDatabase = createDatabase()
+    const secondDatabase = createDatabase()
+    const connection = createConnection(
+      'peer-rediscovery',
+      firstDatabase,
+      jest.fn(async () => released()),
+      createConnectionLifecycleStream(),
+      secondDatabase
+    )
+    const current = createMainFixture({ connect: jest.fn(async () => connection) })
+    const sender = createSender('client-rediscovery', 'window-rediscovery', 'session-rediscovery')
+    const renderer = await bootstrap(current, sender)
+
+    const connected = await current.port.handler(
+      { sender },
+      commandRequest(current, renderer, 1, 'connection.connect', { peerId: 'peer-rediscovery' })
+    )
+    const first = await current.port.handler(
+      { sender },
+      commandRequest(current, renderer, 2, 'gatt.discover', { connectionHandle: connected.payload.handle })
+    )
+    const second = await current.port.handler(
+      { sender },
+      commandRequest(current, renderer, 3, 'gatt.discover', {
+        connectionHandle: connected.payload.handle,
+        rediscoveryReason: 'manual-rediscovery'
+      })
+    )
+
+    const resources = current.router.resources.get(String(renderer.rendererLease.leaseId))
+    expect(connection.rediscoverGatt).toHaveBeenCalledWith(expect.any(Object), 'manual-rediscovery')
+    expect(resources.databases.has(first.payload.handle)).toBe(false)
+    expect(resources.databases.has(second.payload.handle)).toBe(true)
+    await current.binding.destroy()
+  })
+
   test.each([
     ['peer-link-loss', 'lost'],
     ['adapter-loss', 'lost'],
@@ -2688,7 +2727,7 @@ describe('Electron v4 IPC boundary', () => {
     await expect(scan.stop()).resolves.toEqual({ state: 'released', failures: [] })
 
     const publicConnection = await manager.connect('peer-public')
-    await expect(publicConnection.readRssi()).resolves.toBe(-42)
+    await expect(publicConnection.controls.readRssi()).resolves.toMatchObject({ rssi: -42, state: 'measured' })
     const publicDatabase = await publicConnection.discover()
     const publicCharacteristic = publicDatabase.characteristic('180d', '2a37')
     await expect(publicCharacteristic.read()).resolves.toEqual(new Uint8Array([1, 2, 3]))

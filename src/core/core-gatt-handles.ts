@@ -34,7 +34,18 @@ import { CoreBoundedStream } from './bounded-stream'
 import { assertBackendLifecycleTransition } from './connection-lifecycle-rules'
 import type { CoreSubscription } from './subscription-registry'
 import type { CoreDeadlineHandle, UnifiedBleCore } from './unified-ble-core'
-import type { MtuNegotiation, RssiMeasurement } from '../backend-contract/connection-controls'
+import type {
+  ConnectionMaximumWriteLengthMeasurement,
+  ConnectionPhyObservation,
+  ConnectionPhyRequest,
+  ConnectionPriority,
+  ConnectionPriorityRequest,
+  ConnectionWriteReadinessWatch,
+  EffectiveMtuMeasurement,
+  MtuNegotiation,
+  PhyPreference,
+  RssiMeasurement
+} from '../backend-contract/connection-controls'
 import type { CoreConnectionControls } from './core-connection-controls'
 import { connectionPathsEqual, databasePathsEqual } from './gatt-path-equality'
 
@@ -102,6 +113,13 @@ export class CoreConnection<Attachment extends string, Identity extends BackendI
     return this.core.discover(this, options)
   }
 
+  rediscoverGatt(
+    options: PublicOperationOptions,
+    reason: Extract<GattDatabaseChangedEvent['reason'], 'service-changed' | 'manual-rediscovery'>
+  ): Promise<CoreGattDatabase<Attachment, Identity>> {
+    return this.core.rediscoverGatt(this, options, reason)
+  }
+
   release(): Promise<CleanupRecord> {
     return this.core.releaseConnection(this, 'released')
   }
@@ -116,6 +134,39 @@ export class CoreConnection<Attachment extends string, Identity extends BackendI
 
   requestMtu(requestedMtu: number, options: PublicOperationOptions): Promise<MtuNegotiation<Attachment, string>> {
     return this.controls.requestMtu(this, requestedMtu, options)
+  }
+
+  effectiveMtu(options: PublicOperationOptions): Promise<EffectiveMtuMeasurement<Attachment, string>> {
+    return this.controls.effectiveMtu(this, options)
+  }
+
+  requestPriority(
+    priority: ConnectionPriority,
+    options: PublicOperationOptions
+  ): Promise<ConnectionPriorityRequest<Attachment, string>> {
+    return this.controls.requestPriority(this, priority, options)
+  }
+
+  readPhy(options: PublicOperationOptions): Promise<ConnectionPhyObservation<Attachment, string>> {
+    return this.controls.readPhy(this, options)
+  }
+
+  requestPhy(
+    preference: PhyPreference,
+    options: PublicOperationOptions
+  ): Promise<ConnectionPhyRequest<Attachment, string>> {
+    return this.controls.requestPhy(this, preference, options)
+  }
+
+  maximumWriteLength(
+    mode: WriteMode,
+    options: PublicOperationOptions
+  ): Promise<ConnectionMaximumWriteLengthMeasurement<Attachment, string>> {
+    return this.controls.maximumWriteLength(this, mode, options)
+  }
+
+  writeWithoutResponseReadiness(options?: PublicOperationOptions): Promise<ConnectionWriteReadinessWatch<Attachment>> {
+    return this.controls.writeWithoutResponseReadiness(this, options)
   }
 
   isCurrent(): boolean {
@@ -145,10 +196,13 @@ export class CoreConnection<Attachment extends string, Identity extends BackendI
     }
   }
 
-  invalidateDatabase(reason: 'connection-lost' | 'owner-released'): Promise<CleanupRecord> {
+  invalidateDatabase(
+    reason: 'connection-lost' | 'owner-released',
+    changeReason: GattDatabaseChangedEvent['reason'] | null = null
+  ): Promise<CleanupRecord> {
     const database = this.database ?? this.pendingDatabaseCleanup
     if (database !== null) {
-      return this.core.invalidateDatabase(database, reason)
+      return this.core.invalidateDatabase(database, reason, changeReason)
     }
     return Promise.resolve({ state: 'released', failures: [] })
   }
@@ -410,6 +464,14 @@ export class CoreGattDatabase<Attachment extends string, Identity extends Backen
     options: WritePolicy
   ): Promise<WriteReceipt<Attachment, string>> {
     return this.core.write(this, path, bytes, options)
+  }
+
+  writeWhenReady(
+    path: CurrentCharacteristicPath<Attachment>,
+    bytes: Readonly<Uint8Array>,
+    options: WritePolicy
+  ): Promise<WriteReceipt<Attachment, string>> {
+    return this.core.writeWhenReady(this, path, bytes, options)
   }
 
   maximumWriteLength(

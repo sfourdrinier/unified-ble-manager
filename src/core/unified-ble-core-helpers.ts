@@ -7,7 +7,7 @@ import type { OperationTerminalRecord, PublicOperationOptions } from '../backend
 import type { CleanupRecord } from '../backend-contract/errors'
 import type { ScanOptions } from '../backend-contract/advertisement'
 import type { ByteLimit, OwnedBytes, OperationCorrelation } from '../backend-contract/primitives'
-import type { BackendOperationDispatch } from '../backend-contract/operations'
+import type { BackendOperationDispatch, BackendOperationPhysicalSettlement } from '../backend-contract/operations'
 import type { CoreOperationDispatch, CoreOperationResult } from './operation-coordinator'
 
 export interface CoreDeadlineHandle {
@@ -39,13 +39,35 @@ export function coreDispatch<Attachment extends string, Value>(
   correlation: OperationCorrelation<Attachment, string>,
   terminalFor: (value: Value) => OperationTerminalRecord<Attachment, string>
 ): CoreOperationDispatch<Value> {
+  const completion = dispatch.completion.then(value => {
+    assertSuccessfulOperationTerminal(terminalFor(value), correlation, 'unified-core.operation-terminal')
+    return value
+  })
   return {
-    completion: dispatch.completion.then(value => {
-      assertSuccessfulOperationTerminal(terminalFor(value), correlation, 'unified-core.operation-terminal')
-      return value
-    }),
+    completion: awaitPhysicalSettlement(completion, dispatch.physicalSettlement),
     requestCancellation: () => dispatch.requestCancellation().then(() => undefined)
   }
+}
+
+function awaitPhysicalSettlement<Value>(
+  completion: Promise<Value>,
+  physicalSettlement?: BackendOperationPhysicalSettlement
+): Promise<Value> {
+  if (physicalSettlement === undefined) {
+    return completion
+  }
+  return completion.then(
+    value =>
+      physicalSettlement.then(
+        () => value,
+        () => value
+      ),
+    error =>
+      physicalSettlement.then(
+        () => Promise.reject(error),
+        () => Promise.reject(error)
+      )
+  )
 }
 
 export function requireOperationValue<Attachment extends string, Value>(

@@ -1,7 +1,7 @@
 {
   "schema": "unified-ble-native-protocol",
   "version": 2,
-  "abiVersion": 2,
+  "abiVersion": 3,
   "abiManifest": "native-protocol-v2-abi.json",
   "maximumControlRecordBytes": 262144,
   "maximumBinaryPayloadBytes": 524288,
@@ -45,11 +45,15 @@
     "destroy",
     "readRssi",
     "requestMtu",
+    "requestPriority",
     "readDescriptor",
     "writeDescriptor",
     "securityState",
     "securityPair",
-    "securityCancelPairing"
+    "securityCancelPairing",
+    "readPhy",
+    "requestPhy",
+    "readMtu"
   ],
   "resultKinds": [
     "accepted",
@@ -65,10 +69,12 @@
     "destroyed",
     "rssi",
     "mtu",
+    "priority",
     "descriptorRead",
     "descriptorWrite",
     "securityState",
-    "securityPair"
+    "securityPair",
+    "phy"
   ],
   "eventKinds": [
     "adapterState",
@@ -85,6 +91,8 @@
   "cancellationStates": ["cancellationRequested", "alreadyTerminal", "notCancellable"],
   "binaryOwnership": ["nativeOwnedCopy", "javascriptOwnedCopy", "transferred"],
   "writeModes": ["withResponse", "withoutResponse"],
+  "connectionPriorities": ["lowPower", "balanced", "highThroughput"],
+  "connectionPhys": ["le1m", "le2m", "leCoded"],
   "adapterAvailability": ["available", "unavailable", "unsupported", "unknown"],
   "adapterAuthorization": ["granted", "denied", "restricted", "notDetermined", "unavailable"],
   "adapterPower": ["on", "off", "resetting", "unsupported", "unknown"],
@@ -239,7 +247,10 @@
         ["scanOptions", "record:scanOptions", false],
         ["writeMode", "enum:writeModes", false],
         ["requestedMtu", "uint64", false],
-        ["peerId", "string", false]
+        ["peerId", "string", false],
+        ["connectionPriority", "enum:connectionPriorities", false],
+        ["phyTx", "enum:connectionPhys", false],
+        ["phyRx", "enum:connectionPhys", false]
       ]
     },
     {
@@ -269,7 +280,12 @@
         ["negotiatedMtu", "uint64", false],
         ["descriptorPath", "record:descriptorPath", false],
         ["peerId", "string", false],
-        ["bondState", "enum:securityBondStates", false]
+        ["bondState", "enum:securityBondStates", false],
+        ["priorityAccepted", "boolean", false],
+        ["phyTx", "enum:connectionPhys", false],
+        ["phyRx", "enum:connectionPhys", false],
+        ["phyAccepted", "boolean", false],
+        ["effectiveMtu", "uint64", false]
       ]
     },
     {

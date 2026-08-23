@@ -6,7 +6,12 @@ import {
   type OwnerScanOptions
 } from '../../backend-contract/advertisement'
 import type { BackendConnection, BackendSubscription, ConnectionLease, ScanLease } from '../../backend-contract/backend'
-import { contractError, type CleanupFailure, type CleanupRecord } from '../../backend-contract/errors'
+import {
+  BackendContractError,
+  contractError,
+  type CleanupFailure,
+  type CleanupRecord
+} from '../../backend-contract/errors'
 import {
   createGattCharacteristicProperties,
   createGattDescriptorProperties,
@@ -513,6 +518,9 @@ export function cleanupFailure(resourceKind: string, operation: string, error: u
 }
 
 export function cleanupFailureDetail(resourceKind: string, operation: string, error: unknown): CleanupFailure {
+  if (error instanceof BackendContractError && error.normalized.domain === 'cleanup') {
+    return Object.freeze({ resourceKind, error: error.normalized })
+  }
   const safeMessage = error instanceof Error ? error.message : 'CoreBluetooth cleanup rejected with a non-Error value'
   return Object.freeze({
     resourceKind,

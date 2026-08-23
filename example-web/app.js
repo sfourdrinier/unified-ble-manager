@@ -1,20 +1,22 @@
 // example-web/app.js
 
 import { createWebBleManager } from 'unified-ble-manager/web'
-import { BATTERY_SERVICE } from 'unified-ble-manager/profiles/battery-service'
+import {
+  BATTERY_LEVEL_CHARACTERISTIC,
+  BATTERY_SERVICE,
+  parseBatteryLevel
+} from 'unified-ble-manager/profiles/battery-service'
 import {
   HEART_RATE_SERVICE,
+  HEART_RATE_MEASUREMENT_CHARACTERISTIC,
   parseHeartRateMeasurement
 } from 'unified-ble-manager/profiles/heart-rate'
-import {
-  readBatteryLevel,
-  subscribeHeartRateMeasurements
-} from 'unified-ble-manager/profiles/standard-commands'
 
 const operationOptions = Object.freeze({})
 const notificationOptions = Object.freeze({
   ...operationOptions,
-  preset: 'balanced'
+  delivery: 'prefer-notification',
+  stream: 'balanced'
 })
 
 const controls = Object.freeze({
@@ -32,14 +34,13 @@ const fields = Object.freeze({
   events: document.getElementById('events')
 })
 
-let session = null
+let manager = null
 let connection = null
 let database = null
 let subscription = null
 let notificationTask = null
 let selectedPeerId = null
 let busy = false
-let nextManagerNumber = 0
 
 controls.choose.addEventListener('click', () => runAction('choose-connect', chooseAndConnect))
 controls.reconnect.addEventListener('click', () => runAction('reconnect', reconnect))
@@ -74,17 +75,17 @@ async function chooseAndConnect() {
   if (connection !== null) {
     throw new Error('Disconnect the current peer before choosing another device.')
   }
-  const activeSession = await ensureSession()
+  await ensureManager()
   setStatus('Opening the Web Bluetooth chooser…')
-  const selection = await activeSession.chooser.choose(
+  const selection = await manager.choose(
     {
-      filters: [{ serviceUuids: [HEART_RATE_SERVICE], manufacturerData: [], localNamePrefix: null }],
+      filters: [{ serviceUuids: [HEART_RATE_SERVICE], manufacturerData: [] }],
       acceptAllDevices: false,
       optionalServices: [HEART_RATE_SERVICE, BATTERY_SERVICE]
     },
     operationOptions
   )
-  selectedPeerId = selection.peerId
+  selectedPeerId = selection.id
   appendEvent('chooser', 'selected a Heart Rate Service peer')
   await connectSelectedPeer('connect')
 }
@@ -92,16 +93,16 @@ async function chooseAndConnect() {
 async function reconnect() {
   if (selectedPeerId === null) throw new Error('Choose a device before reconnecting.')
   if (connection !== null) throw new Error('The selected peer is already connected.')
-  await ensureSession()
+  await ensureManager()
   await connectSelectedPeer('reconnect')
 }
 
 async function connectSelectedPeer(operation) {
-  if (session === null || selectedPeerId === null) {
+  if (manager === null || selectedPeerId === null) {
     throw new Error('The Web Bluetooth manager or selected peer is unavailable.')
   }
   setStatus(operation === 'reconnect' ? 'Reconnecting…' : 'Connecting…')
-  const connected = await session.manager.connect(selectedPeerId, operationOptions)
+  const connected = await manager.connect(selectedPeerId, operationOptions)
   connection = connected
   appendEvent(operation, `connection generation ${String(connected.connectionGeneration)}`)
 
@@ -110,11 +111,16 @@ async function connectSelectedPeer(operation) {
   const snapshot = await database.snapshot()
   appendEvent('discover', `${String(snapshot.services.length)} services`)
 
-  const battery = await readBatteryLevel(database, operationOptions)
+  const batteryCharacteristic = database.characteristic(BATTERY_SERVICE, BATTERY_LEVEL_CHARACTERISTIC)
+  const battery = parseBatteryLevel(await batteryCharacteristic.read(operationOptions))
   fields.battery.textContent = `${String(battery)}%`
   appendEvent('read', `Battery Level ${String(battery)}%`)
 
-  subscription = await subscribeHeartRateMeasurements(database, notificationOptions)
+  const measurementCharacteristic = database.characteristic(
+    HEART_RATE_SERVICE,
+    HEART_RATE_MEASUREMENT_CHARACTERISTIC
+  )
+  subscription = await measurementCharacteristic.subscribe(notificationOptions)
   notificationTask = consumeHeartRateNotifications(subscription)
   appendEvent('notify', 'Heart Rate Measurement subscription active')
   setStatus('Connected, discovered, read, and subscribed.')
@@ -185,11 +191,11 @@ async function destroyManager() {
   } catch (error) {
     failures.push(toError(error))
   }
-  if (session !== null) {
+  if (manager !== null) {
     try {
-      assertReleased(await session.manager.destroy(), 'manager destroy')
-      fields.resources.textContent = JSON.stringify(session.manager.localResourceCounters())
-      session = null
+      assertReleased(await manager.destroy(), 'manager destroy')
+      fields.resources.textContent = JSON.stringify(manager.diagnostics.resourceCounters())
+      manager = null
       selectedPeerId = null
       appendEvent('destroy', 'manager resources released')
     } catch (error) {
@@ -200,13 +206,11 @@ async function destroyManager() {
   setStatus('Manager destroyed. All owned resources were released.')
 }
 
-async function ensureSession() {
-  if (session !== null) return session
-  nextManagerNumber += 1
-  const manager = await createWebBleManager()
-  session = { manager, chooser: manager }
+async function ensureManager() {
+  if (manager !== null) return manager
+  manager = await createWebBleManager()
   appendEvent('bootstrap', 'Web Bluetooth backend attached')
-  return session
+  return manager
 }
 
 function createNavigatorEnvironment() {
@@ -276,11 +280,11 @@ function setStatus(message, error = false) {
 
 function render() {
   controls.choose.disabled = busy || connection !== null
-  controls.reconnect.disabled = busy || session === null || selectedPeerId === null || connection !== null
+  controls.reconnect.disabled = busy || manager === null || selectedPeerId === null || connection !== null
   controls.disconnect.disabled = busy || connection === null
-  controls.destroy.disabled = busy || session === null
+  controls.destroy.disabled = busy || manager === null
   fields.peer.textContent = selectedPeerId ?? '—'
-  if (session !== null) fields.resources.textContent = JSON.stringify(session.manager.localResourceCounters())
+  if (manager !== null) fields.resources.textContent = JSON.stringify(manager.diagnostics.resourceCounters())
 }
 
 function toError(error) {

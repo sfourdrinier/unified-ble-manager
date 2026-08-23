@@ -30,6 +30,7 @@ export async function readCoreDescriptor<Attachment extends string, Identity ext
   database.assertPath(path)
   const result = await operationCoordinator.run({
     queueKey: String(path.connectionId),
+    fairnessKey: 'descriptor',
     options,
     mayCommit: false,
     dispatch: correlation => {
@@ -55,6 +56,7 @@ export async function writeCoreDescriptor<Attachment extends string, Identity ex
   const owned = ownBytes(bytes, maximumValueBytes)
   const result = await operationCoordinator.run({
     queueKey: String(path.connectionId),
+    fairnessKey: 'descriptor',
     options,
     mayCommit: true,
     retainedPayloadBytes: owned.byteLength,

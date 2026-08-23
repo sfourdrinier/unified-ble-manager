@@ -26,7 +26,12 @@ If there is no adapter, the factory throws `adapter.unavailable`. If more than o
 
 On `SIGINT`/`SIGTERM`, await `manager.destroy()`. Then scan/connect/GATT with the same `BleManager` helpers as React Native.
 
-## Advanced: providers and adapter listing (macOS)
+## Advanced provider construction
+
+> **Maintainer/host-authoring reference — not ordinary application construction.**
+> Use the one-call factories above for application code. This provider example
+> is for maintainers implementing a host integration or authors wiring an
+> explicitly selected backend; it is not the normal application recipe.
 
 ```ts
 import { createBleManagerFromProvider, DEFAULT_BLE_MANAGER_OPTIONS } from 'unified-ble-manager/advanced'

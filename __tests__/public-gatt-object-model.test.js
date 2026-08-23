@@ -109,6 +109,21 @@ describe('stable public GATT object model (PR3 TDD)', () => {
     await expect(second.next()).resolves.toMatchObject({ done: true })
   })
 
+  test('removes lifecycle subscribers when the connection event source terminates', async () => {
+    const source = new CoreBoundedStream(
+      { itemCapacity: capacity(2), byteCapacity: capacity(64), reservedControlCapacity: capacity(1) },
+      'drop-oldest'
+    )
+    const events = publicConnectionEvents(source)
+    const iterator = events[Symbol.asyncIterator]()
+
+    source.closeWithReason('closed')
+    await expect(iterator.next()).resolves.toMatchObject({ done: true })
+    expect(events.subscribers.size).toBe(0)
+
+    await iterator.return()
+  })
+
   test('reports failed scan cleanup instead of a false stopped state', async () => {
     const source = new CoreBoundedStream(
       { itemCapacity: capacity(2), byteCapacity: capacity(64), reservedControlCapacity: capacity(1) },

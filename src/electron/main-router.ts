@@ -18,6 +18,7 @@ import type {
   CharacteristicProperties,
   DescriptorPath,
   GattAccessRequirements,
+  GattDatabaseChangedEvent,
   GattDescriptorProperties
 } from '../backend-contract/gatt'
 import type { HostNeutralBackendIdentity } from '../backend-contract/identity'
@@ -477,12 +478,22 @@ export class ElectronMainBleRouter {
     payload: SerializableRecord,
     controller: AbortController
   ): Promise<SerializableRecord> {
-    const connection = requiredResource(
-      resources.connections,
-      requiredString(payload, 'connectionHandle'),
-      'connection'
-    )
-    const database = await connection.discover(operationOptions(payload, controller))
+    const connectionHandle = requiredString(payload, 'connectionHandle')
+    const connection = requiredResource(resources.connections, connectionHandle, 'connection')
+    const reason = optionalRediscoveryReason(payload)
+    if (reason !== null) {
+      const retirement = await this.retireDatabasesForRediscovery(resources, connectionHandle)
+      if (retirement.state === 'release-failed') {
+        throw new BackendContractError(
+          retirement.failures[0]?.error ??
+            contractError('platform.failure', 'cleanup', 'electron-main-router.rediscovery-retirement').normalized
+        )
+      }
+    }
+    const database =
+      reason === null
+        ? await connection.discover(operationOptions(payload, controller))
+        : await connection.rediscoverGatt(operationOptions(payload, controller), reason)
     const snapshot = await database.snapshot()
     const characteristics = new Map<string, MainCharacteristicPath>()
     const descriptors = new Map<string, MainDescriptorPath>()
@@ -539,12 +550,12 @@ export class ElectronMainBleRouter {
     }
     const handle = this.allocateHandle('database')
     resources.databases.set(handle, {
-      connectionHandle: requiredString(payload, 'connectionHandle'),
+      connectionHandle,
       database,
       characteristics,
       descriptors
     })
-    return Object.freeze({
+    const response = Object.freeze({
       schemaVersion: 2,
       handle,
       databaseId: String(database.path?.databaseId ?? ''),
@@ -553,6 +564,7 @@ export class ElectronMainBleRouter {
       characteristics: Object.freeze(serializedCharacteristics),
       descriptors: Object.freeze(serializedDescriptors)
     })
+    return reason === null ? response : Object.freeze({ ...response, rediscoveryReason: reason })
   }
 
   private async read(
@@ -1007,6 +1019,33 @@ export class ElectronMainBleRouter {
     }
   }
 
+  private async retireDatabasesForRediscovery(
+    resources: RendererResources,
+    connectionHandle: string
+  ): Promise<CleanupRecord> {
+    const failures: CleanupFailure[] = []
+    for (const [databaseHandle, database] of resources.databases) {
+      if (database.connectionHandle !== connectionHandle) {
+        continue
+      }
+      let retired = true
+      for (const [subscriptionHandle, subscription] of resources.subscriptions) {
+        if (subscription.databaseHandle !== databaseHandle) {
+          continue
+        }
+        const cleanup = await this.streams.removeSubscription(resources, subscriptionHandle, subscription, true)
+        if (cleanup.state === 'release-failed') {
+          retired = false
+          failures.push(...cleanup.failures)
+        }
+      }
+      if (retired) {
+        resources.databases.delete(databaseHandle)
+      }
+    }
+    return failures.length === 0 ? { state: 'released', failures: [] } : { state: 'release-failed', failures }
+  }
+
   private resourcesFor(rendererLease: RendererLeaseIdentity): RendererResources {
     const key = String(rendererLease.leaseId)
     const existing = this.resources.get(key)
@@ -1299,6 +1338,19 @@ function isDestructiveCleanupCommand(command: string): boolean {
 
 function operationOptions(payload: SerializableRecord, controller: AbortController) {
   return Object.freeze({ signal: controller.signal, deadline: deadlineFromPayload(payload) })
+}
+
+function optionalRediscoveryReason(
+  payload: SerializableRecord
+): Extract<GattDatabaseChangedEvent['reason'], 'service-changed' | 'manual-rediscovery'> | null {
+  const value = payload.rediscoveryReason
+  if (value === undefined) {
+    return null
+  }
+  if (value !== 'service-changed' && value !== 'manual-rediscovery') {
+    throw contractError('protocol.malformed', 'ipc', 'electron-main-router.rediscovery-reason')
+  }
+  return value
 }
 
 function requiredWriteMode(payload: SerializableRecord): 'with-response' | 'without-response' {

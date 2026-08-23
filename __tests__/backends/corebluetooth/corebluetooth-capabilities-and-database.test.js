@@ -1,6 +1,7 @@
 // __tests__/backends/corebluetooth/corebluetooth-capabilities-and-database.test.js
 
 const { attachBackend } = require('../../../src/backend-contract/backend')
+const { BUILT_IN_FEATURE_IDS } = require('../../../src/backend-contract/capabilities')
 const { capacity, opaqueId, version, versionRange } = require('../../../src/backend-contract/primitives')
 const { createCoreBluetoothBackendProvider } = require('../../../src/backends/corebluetooth/corebluetooth-provider')
 const {
@@ -123,6 +124,186 @@ async function flushMicrotasks() {
 }
 
 describe('CoreBluetooth runtime capabilities and database-change semantics', () => {
+  test('advertises write-readiness only when the boundary exposes probe and edge callback', async () => {
+    const { backend } = await backendFixture(currentBoundary => {
+      currentBoundary.canSendWriteWithoutResponse = jest.fn(async nativePeerId => ({
+        nativePeerId,
+        connectionGeneration: '1',
+        ready: true,
+        ordinal: 1
+      }))
+      currentBoundary.onWriteWithoutResponseReadiness = jest.fn(() => () => undefined)
+    })
+    expect(backend.features.registrations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: 'gatt:write-without-response-readiness', state: 'limited' })
+      ])
+    )
+    await backend.destroy()
+  })
+
+  test('emits the initial readiness snapshot before only the latest pending native edge', async () => {
+    const probe = deferred()
+    const readinessListeners = new Set()
+    const { backend, boundary } = await backendFixture(currentBoundary => {
+      currentBoundary.canSendWriteWithoutResponse = jest.fn(() => probe.promise)
+      currentBoundary.onWriteWithoutResponseReadiness = listener => {
+        readinessListeners.add(listener)
+        return () => readinessListeners.delete(listener)
+      }
+    })
+    const { lease } = await connectedDatabase(backend)
+    const watchPromise = backend.connectionControls.writeWithoutResponseReadiness(lease.connection)
+    const nativeGeneration = '1'
+    const connectionGeneration = String(lease.connection.connectionGeneration)
+
+    for (let ordinal = 2; ordinal <= 256; ordinal += 1) {
+      for (const listener of readinessListeners) {
+        listener({
+          nativePeerId: 'native-polar-h10',
+          connectionGeneration: nativeGeneration,
+          ready: ordinal % 2 === 0,
+          ordinal
+        })
+      }
+    }
+
+    probe.resolve({
+      nativePeerId: 'native-polar-h10',
+      connectionGeneration: nativeGeneration,
+      ready: true,
+      ordinal: 1
+    })
+    const watch = await watchPromise
+    const iterator = watch.events[Symbol.asyncIterator]()
+
+    await expect(iterator.next()).resolves.toMatchObject({
+      value: { kind: 'value', value: { connectionGeneration, ready: true, ordinal: 1 } }
+    })
+    await expect(iterator.next()).resolves.toMatchObject({
+      value: { kind: 'value', value: { connectionGeneration, ready: true, ordinal: 256 } }
+    })
+
+    await watch.close()
+    await expect(iterator.next()).resolves.toMatchObject({
+      value: { kind: 'terminal', reason: 'owner-released' }
+    })
+    await backend.destroy()
+  })
+
+  test('closes a readiness watch when its connection lease is released', async () => {
+    const readinessListeners = new Set()
+    const { backend } = await backendFixture(currentBoundary => {
+      currentBoundary.canSendWriteWithoutResponse = jest.fn(async nativePeerId => ({
+        nativePeerId,
+        connectionGeneration: '1',
+        ready: true,
+        ordinal: 1
+      }))
+      currentBoundary.onWriteWithoutResponseReadiness = listener => {
+        readinessListeners.add(listener)
+        return () => readinessListeners.delete(listener)
+      }
+    })
+    const { lease } = await connectedDatabase(backend)
+    const watch = await backend.connectionControls.writeWithoutResponseReadiness(lease.connection)
+
+    expect(readinessListeners.size).toBe(1)
+    await lease.release()
+
+    expect(readinessListeners.size).toBe(0)
+    await expect(watch.events[Symbol.asyncIterator]().next()).resolves.toMatchObject({
+      value: { kind: 'terminal', reason: 'owner-released' }
+    })
+    await backend.destroy()
+  })
+
+  test('does not resolve readiness creation after its connection is released during the initial probe', async () => {
+    const probe = deferred()
+    const readinessListeners = new Set()
+    const { backend } = await backendFixture(currentBoundary => {
+      currentBoundary.canSendWriteWithoutResponse = jest.fn(() => probe.promise)
+      currentBoundary.onWriteWithoutResponseReadiness = listener => {
+        readinessListeners.add(listener)
+        return () => readinessListeners.delete(listener)
+      }
+    })
+    const { lease } = await connectedDatabase(backend)
+    const watchPromise = backend.connectionControls.writeWithoutResponseReadiness(lease.connection)
+    await flushMicrotasks()
+    expect(readinessListeners.size).toBe(1)
+
+    await lease.release()
+    probe.resolve({
+      nativePeerId: 'native-polar-h10',
+      connectionGeneration: '1',
+      ready: true,
+      ordinal: 1
+    })
+
+    await expect(watchPromise).rejects.toMatchObject({ normalized: { code: 'connection.stale' } })
+    expect(readinessListeners.size).toBe(0)
+    await backend.destroy()
+  })
+
+  test('re-probes authoritative readiness after a dropped native ready edge', async () => {
+    const readinessListeners = new Set()
+    const snapshots = [
+      {
+        nativePeerId: 'native-polar-h10',
+        connectionGeneration: '1',
+        ready: false,
+        ordinal: 1
+      },
+      {
+        nativePeerId: 'native-polar-h10',
+        connectionGeneration: '1',
+        ready: true,
+        ordinal: 2
+      }
+    ]
+    let probe
+    let backend
+    let watch
+    try {
+      ;({ backend } = await backendFixture(currentBoundary => {
+        probe = jest.fn(async () => {
+          const snapshot = snapshots.shift()
+          if (snapshot === undefined) {
+            throw new Error('readiness probe called more than expected')
+          }
+          return snapshot
+        })
+        currentBoundary.canSendWriteWithoutResponse = probe
+        currentBoundary.onWriteWithoutResponseReadiness = listener => {
+          readinessListeners.add(listener)
+          return () => readinessListeners.delete(listener)
+        }
+      }))
+      const { lease } = await connectedDatabase(backend)
+      jest.useFakeTimers()
+      watch = await backend.connectionControls.writeWithoutResponseReadiness(lease.connection)
+      const iterator = watch.events[Symbol.asyncIterator]()
+
+      await expect(iterator.next()).resolves.toMatchObject({
+        value: { kind: 'value', value: { ready: false, ordinal: 1 } }
+      })
+      expect(readinessListeners.size).toBe(1)
+
+      // The native true edge is dropped by bounded ingress; no listener receives it.
+      await jest.advanceTimersByTimeAsync(100)
+
+      expect(probe).toHaveBeenCalledTimes(2)
+      await expect(iterator.next()).resolves.toMatchObject({
+        value: { kind: 'value', value: { ready: true, ordinal: 2 } }
+      })
+    } finally {
+      await watch?.close()
+      await backend?.destroy()
+      jest.useRealTimers()
+    }
+  })
+
   test('preserves every rich CoreBluetooth advertisement field as detached owned bytes', async () => {
     const { backend, boundary } = await backendFixture()
     const rawRecord = new Uint8Array([1, 2, 3])
@@ -182,13 +363,20 @@ describe('CoreBluetooth runtime capabilities and database-change semantics', () 
       })
     })
     const registration = backend.features.registrations.find(
-      candidate => candidate.id === 'connection:rssi-measurement'
+      candidate => candidate.id === BUILT_IN_FEATURE_IDS.connectionRssi
     )
-    expect(registration).toMatchObject({ id: 'connection:rssi-measurement', state: 'limited' })
+    expect(
+      backend.features.registrations.filter(candidate => candidate.id === BUILT_IN_FEATURE_IDS.connectionRssi)
+    ).toHaveLength(1)
+    expect(registration).toMatchObject({ id: BUILT_IN_FEATURE_IDS.connectionRssi, state: 'limited' })
 
     const { lease } = await connectedDatabase(backend)
     const dispatch = backend.connections.readRssi(lease.connection, { operation: operationRequest('read-rssi') })
-    await expect(dispatch.completion).resolves.toMatchObject({ rssi: -47, terminal: { outcome: 'succeeded' } })
+    await expect(dispatch.completion).resolves.toMatchObject({
+      rssi: -47,
+      observedAtMonotonicMs: 20,
+      terminal: { outcome: 'succeeded' }
+    })
     expect(boundary.readRssi).toHaveBeenCalledWith('native-polar-h10')
     await backend.destroy()
   })
@@ -203,9 +391,14 @@ describe('CoreBluetooth runtime capabilities and database-change semantics', () 
     const maximumWriteLength = backend.features.registrations.find(
       candidate => candidate.id === 'gatt:maximum-write-length'
     )
-    const requestMtu = backend.features.registrations.find(candidate => candidate.id === 'connection:request-att-mtu')
+    const requestMtu = backend.features.registrations.find(
+      candidate => candidate.id === BUILT_IN_FEATURE_IDS.connectionRequestMtu
+    )
+    expect(
+      backend.features.registrations.filter(candidate => candidate.id === BUILT_IN_FEATURE_IDS.connectionRequestMtu)
+    ).toHaveLength(1)
     expect(maximumWriteLength).toMatchObject({ id: 'gatt:maximum-write-length', state: 'limited' })
-    expect(requestMtu).toMatchObject({ id: 'connection:request-att-mtu', state: 'unsupported' })
+    expect(requestMtu).toMatchObject({ id: BUILT_IN_FEATURE_IDS.connectionRequestMtu, state: 'unsupported' })
     expect(requestMtu.limitations).toEqual(
       expect.arrayContaining([expect.objectContaining({ code: 'corebluetooth-auto-negotiated-mtu' })])
     )
@@ -240,6 +433,51 @@ describe('CoreBluetooth runtime capabilities and database-change semantics', () 
     })
     await expect(mtu.completion).rejects.toMatchObject({ normalized: { code: 'capability.unsupported' } })
     expect(boundary.requestMtu).not.toHaveBeenCalled()
+    await backend.destroy()
+  })
+
+  test('dispatches the canonical connection maximum write length with live identity and backend time', async () => {
+    const { backend, boundary } = await backendFixture(currentBoundary => {
+      currentBoundary.maximumWriteValueLength = jest.fn(async (_nativePeerId, withResponse) => {
+        return withResponse ? 182 : 185
+      })
+    })
+    expect(typeof backend.connections.maximumWriteLength).toBe('function')
+
+    const { lease } = await connectedDatabase(backend)
+    const dispatch = backend.connections.maximumWriteLength(lease.connection, {
+      operation: operationRequest('connection-maximum-write-length'),
+      mode: 'with-response'
+    })
+
+    await expect(dispatch.completion).resolves.toMatchObject({
+      connectionId: String(lease.connection.connectionId),
+      connectionGeneration: String(lease.connection.connectionGeneration),
+      mode: 'with-response',
+      maximumWriteLength: 182,
+      observedAtMonotonicMs: 20,
+      terminal: { outcome: 'succeeded', cause: null }
+    })
+    expect(boundary.maximumWriteValueLength).toHaveBeenCalledWith('native-polar-h10', true)
+    await backend.destroy()
+  })
+
+  test('keeps PHY controls unsupported when a CoreBluetooth boundary has no concrete methods', async () => {
+    const { backend, boundary } = await backendFixture()
+    const { lease } = await connectedDatabase(backend)
+
+    expect(boundary.readPhy).toBeUndefined()
+    expect(boundary.requestPhy).toBeUndefined()
+    await expect(
+      backend.connections.readPhy(lease.connection, { operation: operationRequest('corebluetooth-read-phy') })
+        .completion
+    ).rejects.toMatchObject({ normalized: { code: 'capability.unsupported' } })
+    await expect(
+      backend.connections.requestPhy(lease.connection, {
+        operation: operationRequest('corebluetooth-request-phy'),
+        preference: { tx: 'le-2m' }
+      }).completion
+    ).rejects.toMatchObject({ normalized: { code: 'capability.unsupported' } })
     await backend.destroy()
   })
 

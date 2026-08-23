@@ -51,14 +51,36 @@ export function createCoreBluetoothRuntimeFeatureRegistry(
       })
     )
   }
-  if (!hasRegistration(registrations, 'connection:rssi-measurement')) {
+  if (!hasRegistration(registrations, BUILT_IN_FEATURE_IDS.connectionRssi)) {
     registrations.push(createRssiRegistration(options))
   }
-  if (!hasRegistration(registrations, 'connection:request-att-mtu')) {
+  if (!hasRegistration(registrations, BUILT_IN_FEATURE_IDS.connectionRequestMtu)) {
     registrations.push(createRequestMtuRegistration(options.implementationVersion))
+  }
+  if (!hasRegistration(registrations, BUILT_IN_FEATURE_IDS.connectionEffectiveMtu)) {
+    registrations.push(createEffectiveMtuRegistration(options))
+  }
+  if (!hasRegistration(registrations, BUILT_IN_FEATURE_IDS.connectionPhy)) {
+    registrations.push(createPhyRegistration(options))
   }
   if (!hasRegistration(registrations, BUILT_IN_FEATURE_IDS.maximumWriteLength)) {
     registrations.push(createMaximumWriteLengthRegistration(options))
+  }
+  if (
+    !hasRegistration(registrations, BUILT_IN_FEATURE_IDS.writeWithoutResponseReadiness) &&
+    options.boundary.canSendWriteWithoutResponse !== undefined &&
+    options.boundary.onWriteWithoutResponseReadiness !== undefined
+  ) {
+    registrations.push(
+      createBackendOperationCapabilityRegistration({
+        id: BUILT_IN_FEATURE_IDS.writeWithoutResponseReadiness,
+        implementationVersion: options.implementationVersion,
+        sourceDigest: 'corebluetooth-write-without-response-readiness-v1',
+        tckSuiteId: 'connection-controls',
+        requiredScenarioIds: ['connection.rssi-and-att-mtu-capability-contract'],
+        operation: 'connection:write-without-response-readiness.invoke-without-connection'
+      })
+    )
   }
   return createFeatureRegistry(Object.freeze(registrations))
 }
@@ -79,7 +101,7 @@ function createRssiRegistration(options: CoreBluetoothRuntimeCapabilityOptions) 
         'RSSI measurement'
       )
   return createMetadataRegistration(
-    'connection:rssi-measurement',
+    BUILT_IN_FEATURE_IDS.connectionRssi,
     state,
     options.implementationVersion,
     'corebluetooth-rssi-dispatch-v1',
@@ -98,13 +120,68 @@ function createRequestMtuRegistration(implementationVersion: string) {
     })
   ])
   return createMetadataRegistration(
-    'connection:request-att-mtu',
+    BUILT_IN_FEATURE_IDS.connectionRequestMtu,
     'unsupported',
     implementationVersion,
     'corebluetooth-auto-negotiated-mtu-v1',
     connectionControlScenarioIds,
     limitations,
     Object.freeze({ attMtu: Object.freeze({ minimum: null, maximum: 0, unit: 'bytes' }) })
+  )
+}
+
+function createEffectiveMtuRegistration(options: CoreBluetoothRuntimeCapabilityOptions) {
+  const available =
+    options.boundary.connectionControlCapabilities?.effectiveMtu !== 'unavailable' &&
+    options.boundary.effectiveMtu !== undefined
+  const limitations = available
+    ? liveQualificationLimitation('effective ATT MTU observation')
+    : Object.freeze([
+        Object.freeze({
+          code: 'effective-mtu-boundary-unavailable',
+          explanation: 'This CoreBluetooth boundary exposes no authoritative current ATT MTU observation.',
+          affectedGuarantee: 'current effective ATT MTU observation'
+        })
+      ])
+  return createMetadataRegistration(
+    BUILT_IN_FEATURE_IDS.connectionEffectiveMtu,
+    available ? 'limited' : 'unsupported',
+    options.implementationVersion,
+    available ? 'corebluetooth-effective-mtu-dispatch-v1' : 'corebluetooth-effective-mtu-unavailable-v1',
+    connectionControlScenarioIds,
+    limitations,
+    Object.freeze({
+      attMtu: Object.freeze({
+        minimum: available ? 23 : null,
+        maximum: available ? 517 : 0,
+        unit: 'bytes'
+      })
+    })
+  )
+}
+
+function createPhyRegistration(options: CoreBluetoothRuntimeCapabilityOptions) {
+  const available =
+    options.boundary.connectionControlCapabilities?.phy === 'available' &&
+    options.boundary.readPhy !== undefined &&
+    options.boundary.requestPhy !== undefined
+  const limitations = available
+    ? liveQualificationLimitation('LE PHY read/request')
+    : unavailableLimitation(
+        'corebluetooth-phy-runtime-unavailable',
+        'The instantiated CoreBluetooth boundary did not report an executable LE PHY read/request capability.',
+        'caller-directed LE PHY control'
+      )
+  return createMetadataRegistration(
+    BUILT_IN_FEATURE_IDS.connectionPhy,
+    available ? 'limited' : 'unsupported',
+    options.implementationVersion,
+    available ? 'corebluetooth-phy-dispatch-v2' : 'corebluetooth-phy-unavailable-v2',
+    connectionControlScenarioIds,
+    limitations,
+    Object.freeze({
+      phyModes: Object.freeze({ maximum: available ? 3 : 0, minimum: available ? 1 : null, unit: 'modes' })
+    })
   )
 }
 
@@ -200,7 +277,11 @@ function assertMaximumWriteLengthInput(input: MaximumWriteLengthFeatureInput): v
 }
 
 function createMetadataRegistration(
-  id: 'connection:rssi-measurement' | 'connection:request-att-mtu',
+  id:
+    | typeof BUILT_IN_FEATURE_IDS.connectionRssi
+    | typeof BUILT_IN_FEATURE_IDS.connectionRequestMtu
+    | typeof BUILT_IN_FEATURE_IDS.connectionEffectiveMtu
+    | typeof BUILT_IN_FEATURE_IDS.connectionPhy,
   state: RuntimeFeatureState,
   implementationVersion: string,
   sourceDigest: string,

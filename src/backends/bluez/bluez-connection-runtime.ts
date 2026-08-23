@@ -1,19 +1,22 @@
 // src/backends/bluez/bluez-connection-runtime.ts
 
-import type { CleanupRecord } from '../../backend-contract/errors'
-import { contractError } from '../../backend-contract/errors'
+import { BackendContractError, contractError, type CleanupRecord } from '../../backend-contract/errors'
 import type { PublicOperationOptions } from '../../backend-contract/operations'
-import { opaqueId, type ClientId, type PeerId } from '../../backend-contract/primitives'
+import { deadline, opaqueId, type ClientId, type PeerId } from '../../backend-contract/primitives'
 import { BLUEZ_DEVICE_INTERFACE, BluezDbusMethodError } from './bluez-dbus-contract'
 import { BluezConnection, BluezConnectionLease, releasedBluezCleanup } from './bluez-backend-handles'
 import type { BluezBackendRuntime } from './bluez-backend-runtime'
 import { createPendingConnectionRecord, requireRecordConnection } from './bluez-runtime-models'
 import {
+  awaitBluezNativePromise,
   awaitSharedBluezTransition,
   scheduleOrphanedBluezConnectionCleanup,
   waitForBluezBoolean
 } from './bluez-property-waiters'
 import type { BluezConnectionRecord } from './bluez-runtime-types'
+
+const CONNECTION_OPERATION_DRAIN_TIMEOUT_MS = 1_000
+const DISCONNECT_CONFIRMATION_TIMEOUT_MS = 1_000
 
 export async function connectBluezConnection(
   runtime: BluezBackendRuntime,
@@ -69,7 +72,7 @@ export async function connectBluezConnection(
     })
     record.transition = dispatch.completion
     record.transition.catch(error => {
-      dispatch.physicalSettled.then(() => {
+      dispatch.physicalSettlement.then(() => {
         if (
           !sharedRecord.active &&
           !runtime.isDestroying() &&
@@ -131,17 +134,20 @@ export async function disconnectBluezConnection(
   record: BluezConnectionRecord,
   invalidate: () => void
 ): Promise<CleanupRecord> {
-  if (!record.active && !record.physicalLinkMayExist) {
+  if (!record.active && !record.physicalLinkMayExist && record.disconnectMethod === null) {
     return releasedBluezCleanup
   }
   if (record.disconnection !== null) {
     return record.disconnection
   }
-  record.state = 'disconnecting'
   const disconnect = disconnectBluezPhysicalLink(runtime, record, invalidate)
   record.disconnection = disconnect
   try {
-    return await disconnect
+    const cleanup = await disconnect
+    if (cleanup.state === 'release-failed' && record.disconnection === disconnect) {
+      record.disconnection = null
+    }
+    return cleanup
   } catch (error) {
     if (record.disconnection === disconnect) {
       record.disconnection = null
@@ -155,11 +161,35 @@ async function disconnectBluezPhysicalLink(
   record: BluezConnectionRecord,
   invalidate: () => void
 ): Promise<CleanupRecord> {
+  if (!(await waitForBluezConnectionOperations(runtime, record))) {
+    return pendingBluezConnectionCleanup('bluez.connection.dispatcher-idle')
+  }
+  record.state = 'disconnecting'
   try {
-    await runtime.boundary.methods.callVoid(record.devicePath, BLUEZ_DEVICE_INTERFACE, 'Disconnect', [])
+    if (!record.disconnectRequested) {
+      record.disconnectRequested = true
+      const disconnectMethod = runtime.boundary.methods.callVoid(
+        record.devicePath,
+        BLUEZ_DEVICE_INTERFACE,
+        'Disconnect',
+        []
+      )
+      record.disconnectMethod = disconnectMethod
+      disconnectMethod.catch(() => {
+        if (record.disconnectMethod === disconnectMethod) {
+          record.disconnectMethod = null
+          record.disconnectRequested = false
+        }
+      })
+    }
+    const disconnectMethod = record.disconnectMethod
+    if (disconnectMethod === null) {
+      throw contractError('lifecycle.invariant-violation', 'connection', 'bluez.connection.disconnect-method')
+    }
+    await awaitBluezNativePromise(disconnectMethod, runtime.now, 'bluez.connection.disconnect-method')
     await waitForBluezBoolean(runtime, record.devicePath, BLUEZ_DEVICE_INTERFACE, 'Connected', false, {
       signal: null,
-      deadline: null
+      deadline: deadline(runtime.now() + DISCONNECT_CONFIRMATION_TIMEOUT_MS)
     })
   } catch (error) {
     if (
@@ -168,9 +198,55 @@ async function disconnectBluezPhysicalLink(
     ) {
       return releasedBluezCleanup
     }
-    record.state = record.active ? 'connected' : 'connecting'
+    if (error instanceof BackendContractError && error.normalized.code === 'operation.timed-out') {
+      return pendingBluezConnectionCleanup('bluez.connection.disconnect-confirmation')
+    }
+    record.state = 'disconnecting'
     throw error
   }
+  record.disconnectMethod = null
+  record.disconnectRequested = false
   invalidate()
   return releasedBluezCleanup
+}
+
+async function waitForBluezConnectionOperations(
+  runtime: BluezBackendRuntime,
+  record: BluezConnectionRecord
+): Promise<boolean> {
+  if (record.pendingOperations.size === 0) {
+    return true
+  }
+  const drainDeadline = runtime.now() + CONNECTION_OPERATION_DRAIN_TIMEOUT_MS
+  while (record.pendingOperations.size > 0) {
+    const pending = [...record.pendingOperations.values()]
+    const remaining = Math.max(0, drainDeadline - runtime.now())
+    let timer: ReturnType<typeof setTimeout> | null = null
+    const timeout = new Promise<boolean>(resolve => {
+      timer = setTimeout(() => resolve(false), remaining)
+    })
+    const settled = await Promise.race([
+      Promise.all(pending.map(operation => operation.physicalSettlement)).then(() => true),
+      timeout
+    ])
+    if (timer !== null) {
+      clearTimeout(timer)
+    }
+    if (!settled) {
+      return false
+    }
+  }
+  return true
+}
+
+function pendingBluezConnectionCleanup(operation: string): CleanupRecord {
+  return Object.freeze({
+    state: 'release-failed',
+    failures: Object.freeze([
+      {
+        resourceKind: 'connection',
+        error: contractError('operation.timed-out', 'cleanup', operation).normalized
+      }
+    ])
+  })
 }

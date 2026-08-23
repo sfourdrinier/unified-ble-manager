@@ -28,6 +28,13 @@ The renderer uses the public `BleManager` façade; the low-level
 `ElectronRendererBleClient` remains an implementation seam for the transport
 and advanced boundary tests, not an application API.
 
+## Advanced main-process provider construction
+
+> **Maintainer/host-authoring reference — not ordinary application construction.**
+> The renderer application uses `createElectronRendererBleManager({ transport })`.
+> The provider construction below is only for maintainers implementing the
+> trusted main-process host boundary or authors wiring an explicit backend.
+
 ```ts
 import { createBleManagerFromProvider, DEFAULT_BLE_MANAGER_OPTIONS } from 'unified-ble-manager/advanced'
 import {
@@ -76,7 +83,11 @@ proof, not an Electron host, adapter, or peripheral support claim. Native
 prebuild compilation and runtime loading are L2/L3 evidence only; they do not
 by themselves establish a physical-radio support claim.
 
-## Main-process backend selection
+## Main-process backend selection (maintainer/host-authoring reference)
+
+> **Maintainer/host-authoring reference — not ordinary application construction.**
+> Backend selection belongs to trusted Electron main-process host code; renderer
+> application code must not construct providers or select radios.
 
 Select one concrete backend in main. The native loaders are fail-closed:
 

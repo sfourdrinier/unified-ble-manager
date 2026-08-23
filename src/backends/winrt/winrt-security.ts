@@ -53,6 +53,119 @@ const securityLimitations = Object.freeze([
   })
 ])
 
+function isSecurityRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function securityRecord(value: unknown, operation: string): Record<string, unknown> {
+  if (!isSecurityRecord(value)) {
+    throw contractError('protocol.malformed', 'platform', operation)
+  }
+  return value
+}
+
+function assertSecurityKeys(record: Record<string, unknown>, allowed: readonly string[], operation: string): void {
+  try {
+    for (const key of Reflect.ownKeys(record)) {
+      if (typeof key !== 'string' || !allowed.includes(key)) {
+        throw contractError('protocol.malformed', 'platform', operation)
+      }
+    }
+  } catch (error) {
+    if (error instanceof BackendContractError) throw error
+    throw contractError('protocol.malformed', 'platform', operation)
+  }
+}
+
+function securityField(record: Record<string, unknown>, key: string, operation: string): unknown {
+  try {
+    return Reflect.get(record, key)
+  } catch {
+    throw contractError('protocol.malformed', 'platform', operation)
+  }
+}
+
+function securityState(value: unknown, operation: string): WinRtSecurityState {
+  const record = securityRecord(value, operation)
+  assertSecurityKeys(
+    record,
+    ['bond', 'encryption', 'authentication', 'secureConnections', 'pairingPossible'],
+    operation
+  )
+  const bond = securityField(record, 'bond', operation)
+  const encryption = securityField(record, 'encryption', operation)
+  const authentication = securityField(record, 'authentication', operation)
+  const secureConnections = securityField(record, 'secureConnections', operation)
+  const pairingPossible = securityField(record, 'pairingPossible', operation)
+  if (
+    (bond !== 'bonded' &&
+      bond !== 'not-bonded' &&
+      bond !== 'bonding' &&
+      bond !== 'unknown' &&
+      bond !== 'unsupported') ||
+    (encryption !== 'encrypted' &&
+      encryption !== 'not-encrypted' &&
+      encryption !== 'unknown' &&
+      encryption !== 'unsupported') ||
+    (authentication !== 'authenticated' &&
+      authentication !== 'unauthenticated' &&
+      authentication !== 'unknown' &&
+      authentication !== 'unsupported') ||
+    (secureConnections !== 'yes' &&
+      secureConnections !== 'no' &&
+      secureConnections !== 'unknown' &&
+      secureConnections !== 'unsupported') ||
+    (pairingPossible !== null && typeof pairingPossible !== 'boolean')
+  ) {
+    throw contractError('protocol.malformed', 'platform', operation)
+  }
+  return Object.freeze({ bond, encryption, authentication, secureConnections, pairingPossible })
+}
+
+function pairResult(value: unknown, operation: string): WinRtPairResult {
+  const record = securityRecord(value, operation)
+  assertSecurityKeys(record, ['outcome', 'state', 'reason'], operation)
+  const outcome = securityField(record, 'outcome', operation)
+  const reason = securityField(record, 'reason', operation)
+  const state = securityField(record, 'state', operation)
+  if (outcome !== 'paired' && outcome !== 'already-paired' && outcome !== 'rejected' && outcome !== 'cancelled') {
+    throw contractError('protocol.malformed', 'platform', operation)
+  }
+  if (reason !== null && typeof reason !== 'string') {
+    throw contractError('protocol.malformed', 'platform', operation)
+  }
+  if (outcome === 'rejected' || outcome === 'cancelled') {
+    if (state !== null) throw contractError('protocol.malformed', 'platform', operation)
+    if (outcome === 'cancelled' && reason !== null) {
+      throw contractError('protocol.malformed', 'platform', operation)
+    }
+    return Object.freeze({ outcome, state: null, reason })
+  }
+  if (reason !== null) throw contractError('protocol.malformed', 'platform', operation)
+  const validatedState = securityState(state, operation)
+  if (validatedState.bond !== 'bonded') {
+    throw contractError('protocol.malformed', 'platform', operation)
+  }
+  return Object.freeze({ outcome, state: validatedState, reason: null })
+}
+
+function unpairOutcome(value: unknown, operation: string): SecurityUnpairResult['outcome'] {
+  if (value !== 'unpaired' && value !== 'already-unpaired' && value !== 'unsupported') {
+    throw contractError('protocol.malformed', 'platform', operation)
+  }
+  return value
+}
+
+function securityStateChanged(value: unknown, operation: string): WinRtSecurityStateChangedRecord {
+  const record = securityRecord(value, operation)
+  assertSecurityKeys(record, ['nativePeerId', 'state'], operation)
+  const nativePeerId = securityField(record, 'nativePeerId', operation)
+  if (typeof nativePeerId !== 'string' || nativePeerId.length === 0) {
+    throw contractError('protocol.malformed', 'platform', operation)
+  }
+  return Object.freeze({ nativePeerId, state: securityState(securityField(record, 'state', operation), operation) })
+}
+
 interface ActivePairing {
   readonly operation: WinRtOperationDispatch<WinRtPairResult>
   readonly nativePeerId: string
@@ -89,7 +202,7 @@ export class WinRtSecurityBackend implements SecurityBackend {
     const operation = this.dispatcher.dispatch(options, 'winrt.security.state', () =>
       this.boundary.securityState(nativePeerId)
     )
-    return this.snapshotState(await operation.completion)
+    return this.snapshotState(securityState(await operation.completion, 'winrt.security.state'))
   }
 
   watch(peerId: string): BoundedAsyncStream<PeerSecurityEvent> {
@@ -128,11 +241,11 @@ export class WinRtSecurityBackend implements SecurityBackend {
         this.activePairings.delete(peerId)
       }
     }
-    operation.physicalCompletion.then(settle, settle).catch(() => undefined)
+    operation.physicalSettlement.then(settle, settle).catch(() => undefined)
     const result = operation.completion
       .then(async value => {
         const snapshot = this.snapshotPairResult(value)
-        await operation.physicalCompletion
+        await operation.physicalSettlement
         return snapshot
       })
       .catch(error => {
@@ -148,6 +261,10 @@ export class WinRtSecurityBackend implements SecurityBackend {
     this.assertActive('winrt.security.cancel-pairing')
     const active = this.activePairings.get(peerId)
     if (active === undefined) return { outcome: 'not-pairing' }
+    const acknowledgement = await active.operation.requestCancellation()
+    if (acknowledgement.state !== 'cancellation-requested') {
+      return { outcome: 'not-pairing' }
+    }
     const dispatch = this.dispatcher.dispatch(_options, 'winrt.security.cancel-pairing', () => {
       const nativeCancellation = this.boundary.cancelPairing(active.nativePeerId)
       const completion = Promise.all([active.operation.requestCancellation(), nativeCancellation.completion]).then(
@@ -156,10 +273,13 @@ export class WinRtSecurityBackend implements SecurityBackend {
       return {
         completion,
         cancel: async () => {
-          await nativeCancellation.cancel()
+          const state = await nativeCancellation.cancel()
+          if (state !== 'cancellation-requested' && state !== 'already-terminal' && state !== 'not-cancellable') {
+            throw contractError('protocol.malformed', 'boundary', 'winrt.security.cancel-pairing.acknowledgement')
+          }
           return 'cancellation-requested' as const
         },
-        physicalCompletion: Promise.all([completion, active.operation.physicalCompletion]).then(() => undefined)
+        physicalCompletion: Promise.all([completion, active.operation.physicalSettlement]).then(() => undefined)
       }
     })
     await dispatch.completion
@@ -172,7 +292,7 @@ export class WinRtSecurityBackend implements SecurityBackend {
     const operation = this.dispatcher.dispatch(_options, 'winrt.security.unpair', () =>
       this.boundary.unpair(nativePeerId)
     )
-    return { outcome: await operation.completion }
+    return { outcome: unpairOutcome(await operation.completion, 'winrt.security.unpair-result') }
   }
 
   resetForAdapterLoss(): void {
@@ -207,15 +327,23 @@ export class WinRtSecurityBackend implements SecurityBackend {
   }
 
   private stateChanged(record: WinRtSecurityStateChangedRecord): void {
+    const validated = securityStateChanged(record, 'winrt.security.state-change')
     if (this.lifecycle !== 'active') return
-    const peerId = this.peerIdForNativePeerId(record.nativePeerId)
-    if (peerId !== null) this.emit(peerId, this.snapshotState(record.state))
+    const peerId = this.peerIdForNativePeerId(validated.nativePeerId)
+    if (peerId !== null) this.emit(peerId, this.snapshotState(validated.state))
   }
 
   private registerStateListener(generation: number): () => void {
     return this.boundary.onSecurityState(record => {
       if (generation !== this.stateListenerGeneration || this.lifecycle === 'closed') return
-      this.stateChanged(record)
+      try {
+        this.stateChanged(record)
+      } catch {
+        for (const streams of this.streams.values()) {
+          for (const stream of streams) stream.closeWithReason('source-failed')
+        }
+        this.streams.clear()
+      }
     })
   }
 
@@ -256,6 +384,7 @@ export class WinRtSecurityBackend implements SecurityBackend {
   }
 
   private snapshotPairResult(result: WinRtPairResult): SecurityPairResult {
+    result = pairResult(result, 'winrt.security.pair-result')
     if (result.outcome === 'cancelled') return { outcome: 'cancelled' }
     if (result.outcome === 'rejected') return { outcome: 'rejected', reason: result.reason }
     if (result.state === null) throw contractError('protocol.violation', 'platform', 'winrt.security.pair-result')

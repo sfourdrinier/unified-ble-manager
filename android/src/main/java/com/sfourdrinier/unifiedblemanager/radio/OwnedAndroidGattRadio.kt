@@ -59,6 +59,16 @@ internal data class OwnedAndroidSecurityState(
   val pairingPossible: Boolean?
 )
 
+internal data class OwnedAndroidPhy(
+  val txPhy: String,
+  val rxPhy: String
+)
+
+private data class EffectiveMtuState(
+  val gattGeneration: Long,
+  val mtu: Int
+)
+
 internal data class OwnedAndroidProtocolServiceData(
   val serviceUuid: String,
   val value: ByteArray
@@ -119,7 +129,10 @@ class OwnedAndroidGattRadio(private val context: Context) {
   private val charCache = ConcurrentHashMap<String, BluetoothGattCharacteristic>()
   private val pending = ConcurrentHashMap<String, (Result<ByteArray?>) -> Unit>()
   private val pendingMtu = ConcurrentHashMap<String, (Result<Int>) -> Unit>()
+  private val effectiveMtuByDevice = ConcurrentHashMap<String, EffectiveMtuState>()
   private val pendingRssi = ConcurrentHashMap<String, (Result<Int>) -> Unit>()
+  private val pendingPhyReads = ConcurrentHashMap<String, (Result<OwnedAndroidPhy>) -> Unit>()
+  private val pendingPhyRequests = ConcurrentHashMap<String, (Result<OwnedAndroidPhy?>) -> Unit>()
   private val pendingDesc = ConcurrentHashMap<String, (Result<Unit>) -> Unit>()
   private val pendingDescRead = ConcurrentHashMap<String, (Result<ByteArray?>) -> Unit>()
   /** Stashed write payloads so API-33 callbacks need not read deprecated characteristic.value. */
@@ -640,6 +653,7 @@ class OwnedAndroidGattRadio(private val context: Context) {
       throw IllegalStateException("Android could not open BluetoothGatt for $deviceId", throwable)
     }
     val generation = nextGattGeneration.getAndIncrement()
+    effectiveMtuByDevice.remove(key)
     gatts[key] = gatt
     gattGenerations[key] = generation
     gattGenerationByInstance[gatt] = generation
@@ -677,6 +691,9 @@ class OwnedAndroidGattRadio(private val context: Context) {
     gattGenerations.remove(key, generation)
     gattGenerationByInstance.remove(gatt, generation)
     discovered.remove(key)
+    effectiveMtuByDevice[key]?.let { state ->
+      if (state.gattGeneration == generation) effectiveMtuByDevice.remove(key, state)
+    }
     clearCharCacheForDevice(key)
     deviceQueues.remove(key)?.clear()
     return null
@@ -1099,6 +1116,34 @@ class OwnedAndroidGattRadio(private val context: Context) {
     }
   }
 
+  /**
+   * Reads the MTU measured by the current GATT generation. Android exposes no
+   * synchronous getter for the negotiated ATT MTU, so an unmeasured link is
+   * reported as a successful null observation rather than a guessed default.
+   */
+  fun readEffectiveMtu(deviceId: String, onResult: (Result<Int?>) -> Unit): Long {
+    return enqueue(
+      deviceId,
+      onCancelled = { onResult(Result.failure(IllegalStateException("effective MTU read cancelled"))) },
+      onStartFailure = { error -> onResult(Result.failure(error)) }
+    ) { token, done ->
+      val key = deviceId.uppercase()
+      val gatt = gatts[key]
+      val generation = gattGenerations[key]
+      if (gatt == null || generation == null) {
+        if (token.markPubliclySettled()) {
+          onResult(Result.failure(IllegalStateException("Not connected to $deviceId")))
+        }
+        done()
+        return@enqueue
+      }
+      val state = effectiveMtuByDevice[key]
+      val value = if (state?.gattGeneration == generation) state.mtu else null
+      if (token.markPubliclySettled()) onResult(Result.success(value))
+      done()
+    }
+  }
+
   fun readRemoteRssi(deviceId: String, onResult: (Result<Int>) -> Unit): Long {
     return enqueue(
       deviceId,
@@ -1125,6 +1170,75 @@ class OwnedAndroidGattRadio(private val context: Context) {
         if (!token.isPubliclySettled()) {
           onResult(Result.failure(IllegalStateException("readRemoteRssi failed to start")))
         }
+        done()
+      }
+    }
+  }
+
+  internal fun readPhy(deviceId: String, onResult: (Result<OwnedAndroidPhy>) -> Unit): Long {
+    return enqueue(
+      deviceId,
+      onCancelled = { onResult(Result.failure(IllegalStateException("PHY read cancelled"))) },
+      onStartFailure = { error -> onResult(Result.failure(error)) }
+    ) { token, done ->
+      val gatt = gatts[deviceId.uppercase()]
+      if (gatt == null) {
+        if (!token.isPubliclySettled()) onResult(Result.failure(IllegalStateException("Not connected to $deviceId")))
+        done()
+        return@enqueue
+      }
+      if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+        if (!token.isPubliclySettled()) onResult(Result.failure(IllegalStateException("Android PHY requires API 26")))
+        done()
+        return@enqueue
+      }
+      val key = "phyRead:${deviceId.uppercase()}"
+      pendingPhyReads[key] = { result ->
+        if (!token.isPubliclySettled()) onResult(result)
+        done()
+      }
+      try {
+        gatt.readPhy()
+      } catch (error: Throwable) {
+        pendingPhyReads.remove(key)
+        if (!token.isPubliclySettled()) onResult(Result.failure(error))
+        done()
+      }
+    }
+  }
+
+  internal fun requestPhy(
+    deviceId: String,
+    txPhy: Int,
+    rxPhy: Int,
+    onResult: (Result<OwnedAndroidPhy?>) -> Unit
+  ): Long {
+    return enqueue(
+      deviceId,
+      onCancelled = { onResult(Result.failure(IllegalStateException("PHY request cancelled"))) },
+      onStartFailure = { error -> onResult(Result.failure(error)) }
+    ) { token, done ->
+      val gatt = gatts[deviceId.uppercase()]
+      if (gatt == null) {
+        if (!token.isPubliclySettled()) onResult(Result.failure(IllegalStateException("Not connected to $deviceId")))
+        done()
+        return@enqueue
+      }
+      if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+        if (!token.isPubliclySettled()) onResult(Result.failure(IllegalStateException("Android PHY requires API 26")))
+        done()
+        return@enqueue
+      }
+      val key = "phyRequest:${deviceId.uppercase()}"
+      pendingPhyRequests[key] = { result ->
+        if (!token.isPubliclySettled()) onResult(result)
+        done()
+      }
+      try {
+        gatt.setPreferredPhy(txPhy, rxPhy, android.bluetooth.BluetoothDevice.PHY_OPTION_NO_PREFERRED)
+      } catch (error: Throwable) {
+        pendingPhyRequests.remove(key)
+        if (!token.isPubliclySettled()) onResult(Result.failure(error))
         done()
       }
     }
@@ -1585,28 +1699,32 @@ class OwnedAndroidGattRadio(private val context: Context) {
    * [BluetoothGatt.requestConnectionPriority] — returns false if not connected or call rejected.
    * Priority values match [BluetoothGatt.CONNECTION_PRIORITY_BALANCED]/HIGH/LOW_POWER (0/1/2).
    */
-  fun requestConnectionPriority(deviceId: String, connectionPriority: Int): Boolean {
-    val gatt = gatts[deviceId.uppercase()] ?: return false
-    return try {
-      gatt.requestConnectionPriority(connectionPriority)
-    } catch (t: Throwable) {
-      OwnedAndroidLog.e("requestConnectionPriority", t)
-      false
-    }
-  }
-
-  /**
-   * Hidden [BluetoothGatt.refresh] via reflection (clears local GATT cache).
-   * Best-effort; returns false if method missing or invoke fails.
-   */
-  fun refreshGatt(deviceId: String): Boolean {
-    val gatt = gatts[deviceId.uppercase()] ?: return false
-    return try {
-      val method = gatt.javaClass.getMethod("refresh")
-      (method.invoke(gatt) as? Boolean) == true
-    } catch (t: Throwable) {
-      OwnedAndroidLog.e("refreshGatt", t)
-      false
+  fun requestConnectionPriority(
+    deviceId: String,
+    connectionPriority: Int,
+    onResult: (Result<Boolean>) -> Unit
+  ): Long {
+    return enqueue(
+      deviceId,
+      onCancelled = {
+        onResult(Result.failure(IllegalStateException("connection priority request cancelled")))
+      },
+      onStartFailure = { error -> onResult(Result.failure(error)) }
+    ) { token, done ->
+      val gatt = gatts[deviceId.uppercase()]
+      if (gatt == null) {
+        if (token.markPubliclySettled()) onResult(Result.success(false))
+        done()
+        return@enqueue
+      }
+      val accepted = try {
+        gatt.requestConnectionPriority(connectionPriority)
+      } catch (t: Throwable) {
+        OwnedAndroidLog.e("requestConnectionPriority", t)
+        false
+      }
+      if (token.markPubliclySettled()) onResult(Result.success(accepted))
+      done()
     }
   }
 
@@ -1650,7 +1768,10 @@ class OwnedAndroidGattRadio(private val context: Context) {
       deviceQueues.clear()
       pending.clear()
       pendingMtu.clear()
+      effectiveMtuByDevice.clear()
       pendingRssi.clear()
+      pendingPhyReads.clear()
+      pendingPhyRequests.clear()
       pendingDesc.clear()
       pendingDescRead.clear()
       pendingWriteValues.clear()
@@ -1685,6 +1806,7 @@ class OwnedAndroidGattRadio(private val context: Context) {
   }
 
   private fun failPendingForDevice(deviceKeyUpper: String, reason: String) {
+    effectiveMtuByDevice.remove(deviceKeyUpper)
     deviceQueues.remove(deviceKeyUpper)?.clear(IllegalStateException(reason))
     val failBytes = Result.failure<ByteArray?>(IllegalStateException(reason))
     val failInt = Result.failure<Int>(IllegalStateException(reason))
@@ -1699,6 +1821,12 @@ class OwnedAndroidGattRadio(private val context: Context) {
       .forEach { key -> pending.remove(key)?.invoke(failBytes) }
     pendingMtu.remove("mtu:$deviceKeyUpper")?.invoke(failInt)
     pendingRssi.remove("rssi:$deviceKeyUpper")?.invoke(failInt)
+    pendingPhyReads.remove("phyRead:$deviceKeyUpper")?.invoke(
+      Result.failure(IllegalStateException(reason))
+    )
+    pendingPhyRequests.remove("phyRequest:$deviceKeyUpper")?.invoke(
+      Result.failure(IllegalStateException(reason))
+    )
     pendingDesc.keys
       .filter { key ->
         keyBelongsToDevice(key, "cccd", deviceKeyUpper) ||
@@ -2281,8 +2409,12 @@ class OwnedAndroidGattRadio(private val context: Context) {
       val id = gatt.device.address.uppercase()
       if (!isCurrentGattCallback(gatt)) return
       val key = "mtu:$id"
-      if (status == BluetoothGatt.GATT_SUCCESS) {
+      val generation = gattGenerationByInstance[gatt] ?: return
+      if (status == BluetoothGatt.GATT_SUCCESS && mtu in 23..517) {
+        effectiveMtuByDevice[id] = EffectiveMtuState(generation, mtu)
         pendingMtu.remove(key)?.invoke(Result.success(mtu))
+      } else if (status == BluetoothGatt.GATT_SUCCESS) {
+        pendingMtu.remove(key)?.invoke(Result.failure(IllegalStateException("onMtuChanged returned invalid MTU=$mtu")))
       } else {
         pendingMtu.remove(key)?.invoke(Result.failure(IllegalStateException("onMtuChanged status=$status")))
       }
@@ -2297,6 +2429,38 @@ class OwnedAndroidGattRadio(private val context: Context) {
       } else {
         pendingRssi.remove(key)?.invoke(Result.failure(IllegalStateException("onReadRemoteRssi status=$status")))
       }
+    }
+
+    override fun onPhyRead(gatt: BluetoothGatt, txPhy: Int, rxPhy: Int, status: Int) {
+      if (!isCurrentGattCallback(gatt)) return
+      val key = "phyRead:${gatt.device.address.uppercase()}"
+      if (status != BluetoothGatt.GATT_SUCCESS) {
+        pendingPhyReads.remove(key)?.invoke(Result.failure(IllegalStateException("onPhyRead status=$status")))
+        return
+      }
+      val mappedTx = phyName(txPhy)
+      val mappedRx = phyName(rxPhy)
+      if (mappedTx === null || mappedRx === null) {
+        pendingPhyReads.remove(key)?.invoke(Result.failure(IllegalStateException("onPhyRead returned unknown PHY")))
+        return
+      }
+      pendingPhyReads.remove(key)?.invoke(Result.success(OwnedAndroidPhy(mappedTx, mappedRx)))
+    }
+
+    override fun onPhyUpdate(gatt: BluetoothGatt, txPhy: Int, rxPhy: Int, status: Int) {
+      if (!isCurrentGattCallback(gatt)) return
+      val key = "phyRequest:${gatt.device.address.uppercase()}"
+      if (status != BluetoothGatt.GATT_SUCCESS) {
+        pendingPhyRequests.remove(key)?.invoke(Result.failure(IllegalStateException("onPhyUpdate status=$status")))
+        return
+      }
+      val mappedTx = phyName(txPhy)
+      val mappedRx = phyName(rxPhy)
+      if (mappedTx === null || mappedRx === null) {
+        pendingPhyRequests.remove(key)?.invoke(Result.failure(IllegalStateException("onPhyUpdate returned unknown PHY")))
+        return
+      }
+      pendingPhyRequests.remove(key)?.invoke(Result.success(OwnedAndroidPhy(mappedTx, mappedRx)))
     }
 
     // Android 12 (API 31)+ : ATT Service Changed indication → re-discover required.
@@ -2556,5 +2720,34 @@ class OwnedAndroidGattRadio(private val context: Context) {
 
     @JvmStatic
     fun scanFailMessage(errorCode: Int): String = "scan failed code=$errorCode"
+
+    @JvmStatic
+        fun phyValue(value: String?): Int {
+          return when (value) {
+            null -> ScanSettings.PHY_LE_ALL_SUPPORTED
+            "le1m" -> BluetoothDevice.PHY_LE_1M
+            "le2m" -> BluetoothDevice.PHY_LE_2M
+            "leCoded" -> BluetoothDevice.PHY_LE_CODED
+            else -> throw IllegalArgumentException("Android PHY is unsupported")
+          }
+        }
+
+        @JvmStatic
+        fun phyMaskValue(value: String?): Int {
+          return when (value) {
+            null -> 0
+            "le1m" -> BluetoothDevice.PHY_LE_1M_MASK
+            "le2m" -> BluetoothDevice.PHY_LE_2M_MASK
+            "leCoded" -> BluetoothDevice.PHY_LE_CODED_MASK
+            else -> throw IllegalArgumentException("Android PHY is unsupported")
+          }
+        }
+
+    private fun phyName(value: Int): String? = when (value) {
+      BluetoothDevice.PHY_LE_1M -> "le1m"
+      BluetoothDevice.PHY_LE_2M -> "le2m"
+      BluetoothDevice.PHY_LE_CODED -> "leCoded"
+      else -> null
+    }
   }
 }

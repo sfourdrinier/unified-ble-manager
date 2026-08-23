@@ -19,12 +19,3 @@ toc:
     description: |
       Host-neutral manager, handles, helpers, contracts, and diagnostics exported
       by the package root. Host factories live behind explicit package subpaths.
-  - BleManager
-  - createBleManagerFromProvider
-  - createBleManager
-  - scanUntil
-  - find
-  - connectAndDiscover
-  - firstNotification
-  - collectNotifications
-  - withConnection

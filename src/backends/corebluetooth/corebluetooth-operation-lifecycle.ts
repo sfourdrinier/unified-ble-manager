@@ -6,7 +6,7 @@ import type { PublicOperationOptions } from '../../backend-contract/operations'
 /** Coordinates admission and late native completion handling for CoreBluetooth operations. */
 export class CoreBluetoothOperationLifecycle {
   private readonly now: () => number
-  private readonly activePhysicalOperations = new Set<Promise<void>>()
+  private readonly activePhysicalOperations = new Map<Promise<void>, string | null>()
   private readonly idleWaiters = new Set<() => void>()
 
   constructor(now: () => number) {
@@ -27,7 +27,8 @@ export class CoreBluetoothOperationLifecycle {
     operation: string,
     start: () => Promise<Result>,
     onLateSuccess?: (result: Result) => Promise<void>,
-    onLateFailure?: () => Promise<void>
+    onLateFailure?: () => Promise<void>,
+    serializationKey: string | null = null
   ): Promise<Result> {
     this.assertAdmission(options, operation)
     let settled = false
@@ -104,7 +105,7 @@ export class CoreBluetoothOperationLifecycle {
         rejectPublic(error instanceof Error ? error : contractError('platform.failure', 'platform', operation))
       }
     )
-    this.trackPhysicalOperation(physicalCompletion)
+    this.trackPhysicalOperation(physicalCompletion, serializationKey)
     return publicCompletion
   }
 
@@ -117,8 +118,17 @@ export class CoreBluetoothOperationLifecycle {
     })
   }
 
-  private trackPhysicalOperation(completion: Promise<void>): void {
-    this.activePhysicalOperations.add(completion)
+  activeCount(serializationKey?: string): number {
+    if (serializationKey === undefined) return this.activePhysicalOperations.size
+    let count = 0
+    for (const key of this.activePhysicalOperations.values()) {
+      if (key === serializationKey) count += 1
+    }
+    return count
+  }
+
+  private trackPhysicalOperation(completion: Promise<void>, serializationKey: string | null): void {
+    this.activePhysicalOperations.set(completion, serializationKey)
     completion.then(
       () => this.completePhysicalOperation(completion),
       error => {

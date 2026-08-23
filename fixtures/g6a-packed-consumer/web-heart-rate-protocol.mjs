@@ -1,13 +1,9 @@
 // fixtures/g6a-packed-consumer/web-heart-rate-protocol.mjs
 
 import assert from 'node:assert/strict'
-import { capacity } from 'unified-ble-manager'
-import { createWebBleManager, createWebBluetoothProvider } from 'unified-ble-manager/web'
+import { createWebBleManagerWithEnvironment } from 'unified-ble-manager/web'
 import {
-  resetHeartRateEnergyExpended,
-  subscribeHeartRateMeasurements
-} from 'unified-ble-manager/profiles/standard-commands'
-import {
+  encodeResetEnergyExpended,
   HEART_RATE_CONTROL_POINT_CHARACTERISTIC,
   HEART_RATE_MEASUREMENT_CHARACTERISTIC,
   HEART_RATE_SERVICE,
@@ -15,23 +11,30 @@ import {
 } from 'unified-ble-manager/profiles/heart-rate'
 import { strictNumericCounters } from './resource-counters.mjs'
 
-const operationOptions = Object.freeze({ signal: null, deadline: null })
+const operationOptions = Object.freeze({ signal: null })
+const notificationOptions = Object.freeze({
+  ...operationOptions,
+  delivery: 'prefer-notification',
+  stream: {
+    preset: 'custom',
+    budget: {
+      itemCapacity: 4,
+      byteCapacity: 128,
+      reservedControlCapacity: 1,
+      overflowPolicy: 'drop-oldest'
+    }
+  }
+})
 
 export async function runWebHeartRateProtocol() {
   const { boundary, controls } = createBoundary()
-  const provider = createWebBluetoothProvider(boundary)
-  const session = await createWebBleManager({
-    provider,
-    clientId: 'g6a-packed-web-client',
-    managerId: 'g6a-packed-web-manager',
-    now: boundary.now
-  })
+  const manager = await createWebBleManagerWithEnvironment({ environment: boundary })
   let connection = null
   let subscription = null
   let primaryError = null
   const cleanupErrors = []
   try {
-    const selection = await session.chooser.choose(
+    const selection = await manager.choose(
       {
         filters: [{ serviceUuids: [HEART_RATE_SERVICE], manufacturerData: [], localNamePrefix: 'G6A' }],
         acceptAllDevices: false,
@@ -39,17 +42,17 @@ export async function runWebHeartRateProtocol() {
       },
       operationOptions
     )
-    connection = await session.manager.connect(selection.peerId, operationOptions)
+    connection = await manager.connect(selection.id, operationOptions)
     const database = await connection.discover(operationOptions)
-    subscription = await subscribeHeartRateMeasurements(database, {
-      ...operationOptions,
-      delivery: {
-        itemCapacity: capacity(4),
-        byteCapacity: capacity(128),
-        reservedControlCapacity: capacity(1),
-        overflowPolicy: 'drop-oldest'
-      }
-    })
+    const measurementCharacteristic = database.characteristic(
+      HEART_RATE_SERVICE,
+      HEART_RATE_MEASUREMENT_CHARACTERISTIC
+    )
+    const controlPointCharacteristic = database.characteristic(
+      HEART_RATE_SERVICE,
+      HEART_RATE_CONTROL_POINT_CHARACTERISTIC
+    )
+    subscription = await measurementCharacteristic.subscribe(notificationOptions)
     const measurementPromise = subscription.values[Symbol.asyncIterator]().next()
     controls.emitNotification(new Uint8Array([0x06, 72]))
     const measurementItem = await measurementPromise
@@ -61,7 +64,10 @@ export async function runWebHeartRateProtocol() {
       'packed Web Heart Rate profile decoded the chooser-selected notification'
     )
 
-    const write = await resetHeartRateEnergyExpended(database, { ...operationOptions, mode: 'with-response' })
+    const write = await controlPointCharacteristic.write(encodeResetEnergyExpended(), {
+      ...operationOptions,
+      response: 'required'
+    })
     assert.equal(write.commitState, 'confirmed', 'packed Web Heart Rate command write committed')
     assert.deepEqual(controls.writes, [[1]], 'packed Web Heart Rate profile emitted the reset command')
 
@@ -76,17 +82,13 @@ export async function runWebHeartRateProtocol() {
       'packed Web Heart Rate profile decoded the browser notification'
     )
 
+    assertCleanup(await subscription.remove(), 'packed Web subscription cleanup before cancellation')
+    subscription = null
     controls.holdNextSubscribe()
     const abort = new AbortController()
-    const cancelledSubscribe = subscribeHeartRateMeasurements(database, {
-      signal: abort.signal,
-      deadline: null,
-      delivery: {
-        itemCapacity: capacity(4),
-        byteCapacity: capacity(128),
-        reservedControlCapacity: capacity(1),
-        overflowPolicy: 'drop-oldest'
-      }
+    const cancelledSubscribe = measurementCharacteristic.subscribe({
+      ...notificationOptions,
+      signal: abort.signal
     })
     await flushMicrotasks()
     abort.abort()
@@ -94,8 +96,6 @@ export async function runWebHeartRateProtocol() {
     controls.resolvePendingSubscribe()
     await flushMicrotasks()
 
-    assertCleanup(await subscription.remove(), 'packed Web subscription cleanup')
-    subscription = null
     assertCleanup(await connection.release(), 'packed Web connection cleanup')
     connection = null
   } catch (error) {
@@ -108,7 +108,7 @@ export async function runWebHeartRateProtocol() {
   if (connection !== null) {
     await cleanupStep(cleanupErrors, () => connection.release(), 'packed Web connection cleanup')
   }
-  await cleanupStep(cleanupErrors, () => session.manager.destroy(), 'packed Web manager cleanup')
+  await cleanupStep(cleanupErrors, () => manager.destroy(), 'packed Web manager cleanup')
 
   if (primaryError !== null && cleanupErrors.length > 0) {
     throw new AggregateError([primaryError, ...cleanupErrors], 'packed Web vendor protocol and cleanup failed')
@@ -120,7 +120,7 @@ export async function runWebHeartRateProtocol() {
     throw new AggregateError(cleanupErrors, 'packed Web vendor protocol cleanup failed')
   }
 
-  const counters = strictNumericCounters(session.manager.localResourceCounters(), 'Web')
+  const counters = strictNumericCounters(manager.diagnostics.resourceCounters(), 'Web')
   assert.deepEqual(Object.values(counters), new Array(Object.keys(counters).length).fill(0), 'packed Web resources released')
   return {
     schema: 'unified-ble-g6a-host-proof-v1',
@@ -129,8 +129,8 @@ export async function runWebHeartRateProtocol() {
       family: 'web',
       runtime: 'node-hosted-web-bluetooth-boundary',
       moduleSystem: 'esm',
-      backendHostKind: session.manager.identity.runtime.hostKind,
-      browserEngine: session.manager.identity.runtime.diagnostics.browserEngine,
+      backendHostKind: 'browser',
+      browserEngine: boundary.browserEngine,
       liveBrowserEngine: false
     },
     packageContract: 'public-web-manager-and-profile-subpaths',
@@ -169,6 +169,9 @@ function createBoundary() {
   const measurementCharacteristic = {
     uuid: measurementUuid,
     properties: { read: false, write: false, writeWithoutResponse: false, notify: true, indicate: false },
+    get value() {
+      return measurement
+    },
     getDescriptors: async () => [],
     readValue: async () => {
       throw new Error('Heart Rate Measurement is not readable')
@@ -189,8 +192,14 @@ function createBoundary() {
       })
     },
     stopNotifications: async () => undefined,
-    addNotificationListener: listener => notificationListeners.add(listener),
-    removeNotificationListener: listener => notificationListeners.delete(listener)
+    addEventListener: (type, listener) => {
+      assert.equal(type, 'characteristicvaluechanged', 'packed Web notification event type')
+      notificationListeners.add(listener)
+    },
+    removeEventListener: (type, listener) => {
+      assert.equal(type, 'characteristicvaluechanged', 'packed Web notification removal event type')
+      notificationListeners.delete(listener)
+    }
   }
   const controlPointCharacteristic = {
     uuid: controlPointUuid,
@@ -198,39 +207,47 @@ function createBoundary() {
     getDescriptors: async () => [],
     readValue: async () => new Uint8Array([0]),
     writeValueWithResponse: async value => {
-      writes.push([...value])
+      writes.push([...new Uint8Array(value)])
     },
     writeValueWithoutResponse: async () => {
       throw new Error('Heart Rate Control Point does not support write without response')
     },
     startNotifications: async () => undefined,
     stopNotifications: async () => undefined,
-    addNotificationListener: () => undefined,
-    removeNotificationListener: () => undefined
+    addEventListener: () => undefined,
+    removeEventListener: () => undefined
   }
   const service = {
     uuid: serviceUuid,
     getCharacteristics: async () => [measurementCharacteristic, controlPointCharacteristic]
   }
+  const gatt = {
+    get connected() {
+      return connected
+    },
+    connect: async function () {
+      connected = true
+      return this
+    },
+    disconnect: () => {
+      connected = false
+      for (const listener of disconnectListeners) {
+        listener()
+      }
+    },
+    getPrimaryServices: async () => [service]
+  }
   const device = {
     id: 'g6a-packed-web-heart-rate-device',
-    gatt: {
-      get connected() {
-        return connected
-      },
-      connect: async () => {
-        connected = true
-      },
-      disconnect: () => {
-        connected = false
-        for (const listener of disconnectListeners) {
-          listener()
-        }
-      },
-      getPrimaryServices: async () => [service]
+    gatt,
+    addEventListener: (type, listener) => {
+      assert.equal(type, 'gattserverdisconnected', 'packed Web disconnect event type')
+      disconnectListeners.add(listener)
     },
-    addDisconnectListener: listener => disconnectListeners.add(listener),
-    removeDisconnectListener: listener => disconnectListeners.delete(listener)
+    removeEventListener: (type, listener) => {
+      assert.equal(type, 'gattserverdisconnected', 'packed Web disconnect removal event type')
+      disconnectListeners.delete(listener)
+    }
   }
   const lifecycleListeners = new Set()
   const boundary = {
@@ -238,10 +255,12 @@ function createBoundary() {
     browserEngine: 'deterministic-browser-boundary',
     isSecureContext: () => true,
     hasTransientUserActivation: () => true,
-    bluetoothAvailable: async () => true,
-    requestDevice: async options => {
-      assert.equal(options.filters[0].services[0], serviceUuid, 'packed Web chooser requested Heart Rate service')
-      return { device, grantedServices: [serviceUuid] }
+    bluetooth: {
+      getAvailability: async () => true,
+      requestDevice: async options => {
+        assert.equal(options.filters[0].services[0], serviceUuid, 'packed Web chooser requested Heart Rate service')
+        return device
+      }
     },
     now: () => Date.now(),
     setTimer: (callback, delayMilliseconds) => setTimeout(callback, delayMilliseconds),
@@ -269,7 +288,7 @@ function createBoundary() {
       emitNotification: value => {
         measurement = new Uint8Array(value)
         for (const listener of notificationListeners) {
-          listener(new Uint8Array(value))
+          listener({ target: measurementCharacteristic })
         }
       },
       lifecycleListeners
@@ -297,7 +316,7 @@ async function assertAborted(promise, operation) {
           throw new Error(`packed Web ${operation} unexpectedly resolved`)
         },
         error => {
-          assert.equal(error?.normalized?.code, 'operation.aborted', `packed Web ${operation} abort code`)
+          assert.equal(error?.code ?? error?.normalized?.code, 'operation.aborted', `packed Web ${operation} abort code`)
         }
       ),
       new Promise((_, reject) => {

@@ -1,7 +1,13 @@
 // src/native-protocol/rn-android-boundary.ts
 
 import { contractError } from '../backend-contract/errors'
-import type { ConnectionControlCapabilities } from '../backend-contract/connection-controls'
+import {
+  MAXIMUM_REQUESTED_ATT_MTU,
+  MINIMUM_ATT_MTU,
+  type ConnectionControlCapabilities,
+  type ConnectionPriority,
+  type PhyPreference
+} from '../backend-contract/connection-controls'
 import type {
   NativeAttachmentIdentity,
   NativeProtocolHandshakeResult,
@@ -13,7 +19,9 @@ import type {
   CoreBluetoothBoundary,
   CoreBluetoothCharacteristicAddress,
   CoreBluetoothDescriptorAddress,
-  CoreBluetoothGattSnapshot
+  CoreBluetoothGattSnapshot,
+  CoreBluetoothPhyObservation,
+  CoreBluetoothPhyRequestResult
 } from '../backends/corebluetooth/corebluetooth-boundary'
 import {
   copyNativeProtocolBytes,
@@ -42,18 +50,22 @@ import {
   commandRecord,
   field,
   nativePeerIdForCommand,
+  nativePhyFromPublic,
   operationKey,
   protocolRecord,
+  requiredBoolean,
   requiredRecord,
   requiredSigned,
   requiredString,
   snapshotFromRecord,
   optionalRecord,
   optionalString,
+  optionalUnsigned,
+  publicPhyFromNative,
   parseAdvertisementRecord,
   requiredUnsigned
 } from './rn-android-protocol-records'
-import { NATIVE_PROTOCOL_VERSION } from './generated/native-protocol-v2-schema'
+import { NATIVE_PROTOCOL_ABI_VERSION, NATIVE_PROTOCOL_VERSION } from './generated/native-protocol-v2-schema'
 import type { ParsedNativeAdvertisement } from './rn-android-protocol-records'
 
 export type AndroidSecurityBondState = 'bonded' | 'bonding' | 'not-bonded' | 'unknown' | 'unsupported'
@@ -100,13 +112,20 @@ type NativeSubscription = {
  */
 export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary {
   readonly descriptorOperationsAvailable: boolean = true
-  readonly connectionControlCapabilities: ConnectionControlCapabilities = Object.freeze({
-    rssi: 'available',
-    requestMtu: 'available'
-  })
+  private phyExtensionAvailable = false
   private securityExtensionAvailable = false
   private securityCancellationExtensionAvailable = false
   private readonly securityListeners = new Set<(record: AndroidSecurityStateChangedRecord) => void>()
+
+  get connectionControlCapabilities(): ConnectionControlCapabilities {
+    return Object.freeze({
+      rssi: 'available',
+      requestMtu: 'available',
+      effectiveMtu: 'available',
+      priority: 'available',
+      phy: this.phyExtensionAvailable ? 'available' : 'unavailable'
+    })
+  }
 
   get securityAvailable(): boolean {
     return this.securityExtensionAvailable
@@ -181,7 +200,7 @@ export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary
     try {
       const handshake = await this.control.handshake({
         nativeProtocol: { minimum: protocolVersion, maximum: protocolVersion },
-        abi: { minimum: protocolVersion, maximum: protocolVersion },
+        abi: { minimum: NATIVE_PROTOCOL_ABI_VERSION, maximum: NATIVE_PROTOCOL_ABI_VERSION },
         backendContract: { minimum: contractVersion, maximum: contractVersion },
         capabilitySchema: { minimum: contractVersion, maximum: contractVersion },
         eventSchema: { minimum: contractVersion, maximum: contractVersion },
@@ -193,6 +212,7 @@ export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary
       this.nativeDestroyCompleted = false
       assertHandshakeSelection(handshake)
       this.maximumInputPayloadBytes = Math.min(maximumNativePayloadBytes, handshake.maximumBinaryPayloadBytes)
+      this.phyExtensionAvailable = handshake.phyAvailable === true
       this.securityExtensionAvailable = handshake.securityAvailable === true
       this.securityCancellationExtensionAvailable =
         this.securityExtensionAvailable && handshake.securityCancelPairingAvailable === true
@@ -205,6 +225,7 @@ export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary
       this.opened = true
     } catch (error) {
       this.maximumInputPayloadBytes = 0
+      this.phyExtensionAvailable = false
       let closeFailure: Error | null = null
       if (this.nativeAttachmentOpened) {
         try {
@@ -308,6 +329,89 @@ export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary
     }
     const result = await this.dispatch('requestMtu', [field(10, connection.record), field(14, requestedMtu)])
     return requiredUnsigned(result, 14, 'rn-android-boundary.request-mtu.negotiated')
+  }
+
+  async effectiveMtu(nativePeerId: string): Promise<number | null> {
+    this.requireOpen('effective-mtu')
+    const connection = this.requireConnection(nativePeerId, 'effective-mtu')
+    if (connection.state !== 'connected') {
+      throw contractError('operation.disconnected', 'connection', 'rn-android-boundary.effective-mtu')
+    }
+    const result = await this.dispatch('readMtu', [field(10, connection.record)])
+    if (requiredString(result, 2, 'rn-android-boundary.effective-mtu.kind') !== 'mtu') {
+      throw contractError('protocol.malformed', 'boundary', 'rn-android-boundary.effective-mtu.kind')
+    }
+    const value = optionalUnsigned(result, 22, 'rn-android-boundary.effective-mtu.value')
+    if (value === null) return null
+    if (value < MINIMUM_ATT_MTU || value > MAXIMUM_REQUESTED_ATT_MTU) {
+      throw contractError('protocol.malformed', 'boundary', 'rn-android-boundary.effective-mtu.range')
+    }
+    return value
+  }
+
+  async requestPriority(nativePeerId: string, priority: ConnectionPriority): Promise<boolean> {
+    this.requireOpen('request-priority')
+    const connection = this.requireConnection(nativePeerId, 'request-priority')
+    if (connection.state !== 'connected') {
+      throw contractError('operation.disconnected', 'connection', 'rn-android-boundary.request-priority')
+    }
+    const result = await this.dispatch('requestPriority', [
+      field(10, connection.record),
+      field(16, nativePriorityFromPublic(priority))
+    ])
+    if (requiredString(result, 2, 'rn-android-boundary.request-priority.kind') !== 'priority') {
+      throw contractError('protocol.malformed', 'boundary', 'rn-android-boundary.request-priority.kind')
+    }
+    return requiredBoolean(result, 18, 'rn-android-boundary.request-priority.accepted')
+  }
+
+  async readPhy(nativePeerId: string): Promise<CoreBluetoothPhyObservation> {
+    this.requirePhyExtension('read-phy')
+    this.requireOpen('read-phy')
+    const connection = this.requireConnection(nativePeerId, 'read-phy')
+    if (connection.state !== 'connected') {
+      throw contractError('operation.disconnected', 'connection', 'rn-android-boundary.read-phy')
+    }
+    const result = await this.dispatch('readPhy', [field(10, connection.record)])
+    if (requiredString(result, 2, 'rn-android-boundary.read-phy.kind') !== 'phy') {
+      throw contractError('protocol.malformed', 'boundary', 'rn-android-boundary.read-phy.kind')
+    }
+    return Object.freeze({
+      txPhy: publicPhyFromNative(requiredString(result, 19, 'rn-android-boundary.read-phy.tx')),
+      rxPhy: publicPhyFromNative(requiredString(result, 20, 'rn-android-boundary.read-phy.rx'))
+    })
+  }
+
+  async requestPhy(nativePeerId: string, preference: PhyPreference): Promise<CoreBluetoothPhyRequestResult> {
+    this.requirePhyExtension('request-phy')
+    this.requireOpen('request-phy')
+    const connection = this.requireConnection(nativePeerId, 'request-phy')
+    if (connection.state !== 'connected') {
+      throw contractError('operation.disconnected', 'connection', 'rn-android-boundary.request-phy')
+    }
+    if (preference.tx === undefined && preference.rx === undefined) {
+      throw contractError('argument.invalid', 'connection', 'rn-android-boundary.request-phy.preference')
+    }
+    const fields: NativeProtocolField[] = [field(10, connection.record)]
+    if (preference.tx !== undefined) fields.push(field(17, nativePhyFromPublic(preference.tx)))
+    if (preference.rx !== undefined) fields.push(field(18, nativePhyFromPublic(preference.rx)))
+    const result = await this.dispatch('requestPhy', fields)
+    if (requiredString(result, 2, 'rn-android-boundary.request-phy.kind') !== 'phy') {
+      throw contractError('protocol.malformed', 'boundary', 'rn-android-boundary.request-phy.kind')
+    }
+    const accepted = requiredBoolean(result, 21, 'rn-android-boundary.request-phy.accepted')
+    const tx = optionalString(result, 19)
+    const rx = optionalString(result, 20)
+    if (accepted !== (tx !== null && rx !== null)) {
+      throw contractError('protocol.malformed', 'boundary', 'rn-android-boundary.request-phy.observation')
+    }
+    return Object.freeze({
+      accepted,
+      observation:
+        tx === null || rx === null
+          ? null
+          : Object.freeze({ txPhy: publicPhyFromNative(tx), rxPhy: publicPhyFromNative(rx) })
+    })
   }
 
   async securityState(nativePeerId: string): Promise<AndroidSecurityState> {
@@ -520,6 +624,7 @@ export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary
     }
     this.opened = false
     this.closing = false
+    this.phyExtensionAvailable = false
     this.scanListeners.clear()
     this.scanFailureListeners.clear()
     this.connections.clear()
@@ -979,6 +1084,12 @@ export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary
     }
   }
 
+  private requirePhyExtension(operation: string): void {
+    if (!this.phyExtensionAvailable) {
+      throw contractError('capability.unsupported', 'capability', `rn-android-boundary.${operation}`)
+    }
+  }
+
   private requireSecurityCancellationExtension(operation: string): void {
     if (!this.securityCancellationExtensionAvailable) {
       throw contractError('capability.unsupported', 'capability', `rn-android-boundary.${operation}`)
@@ -1037,6 +1148,13 @@ function isAbortSignalAborted(signal: AbortSignal | null): boolean {
   return signal?.aborted === true
 }
 
+function nativePriorityFromPublic(priority: ConnectionPriority): 'lowPower' | 'balanced' | 'highThroughput' {
+  if (priority === 'low-power') return 'lowPower'
+  if (priority === 'balanced') return 'balanced'
+  if (priority === 'high-throughput') return 'highThroughput'
+  throw contractError('argument.invalid', 'connection', 'rn-android-boundary.request-priority.priority')
+}
+
 /** Preserves native platform details instead of flattening CoreBluetooth failures to plain Error. */
 function nativeOperationFailure(error: NativeProtocolRecord | null, operation: string): Error {
   const safeMessage = error === null ? null : optionalString(error, 7)
@@ -1070,7 +1188,7 @@ function nativeErrorCode(error: NativeProtocolRecord): string {
 function assertHandshakeSelection(handshake: NativeProtocolHandshakeResult): void {
   if (
     handshake.nativeProtocol !== protocolVersion ||
-    handshake.abi !== protocolVersion ||
+    handshake.abi !== NATIVE_PROTOCOL_ABI_VERSION ||
     handshake.backendContract !== contractVersion ||
     handshake.capabilitySchema !== contractVersion ||
     handshake.eventSchema !== contractVersion ||
@@ -1081,7 +1199,8 @@ function assertHandshakeSelection(handshake: NativeProtocolHandshakeResult): voi
     handshake.maximumBinaryPayloadBytes <= 0 ||
     (handshake.securityAvailable !== undefined && typeof handshake.securityAvailable !== 'boolean') ||
     (handshake.securityCancelPairingAvailable !== undefined &&
-      typeof handshake.securityCancelPairingAvailable !== 'boolean')
+      typeof handshake.securityCancelPairingAvailable !== 'boolean') ||
+    (handshake.phyAvailable !== undefined && typeof handshake.phyAvailable !== 'boolean')
   ) {
     throw contractError('protocol.incompatible', 'boundary', 'rn-android-boundary.open.handshake')
   }

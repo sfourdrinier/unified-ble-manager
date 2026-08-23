@@ -193,6 +193,7 @@ export type {
 export { IPC_MAX_ACTIVE_CLIENT_LEASES_PER_IDENTITY, IpcArbiterContext } from './ipc'
 export type {
   BackendOperationDispatch,
+  BackendOperationPhysicalSettlement,
   CancellationAcknowledgement,
   LongWriteChunkProgress,
   LongWriteNotPlannedReceipt,

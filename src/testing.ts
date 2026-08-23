@@ -8,6 +8,11 @@ export {
   createDeterministicTestBackend,
   DeterministicTestBackend
 } from './testing/deterministic/deterministic-test-backend'
+export { createDeterministicTestBleManager } from './testing/deterministic/deterministic-test-manager'
+export type {
+  DeterministicTestBleManager,
+  DeterministicTestBleManagerOptions
+} from './testing/deterministic/deterministic-test-manager'
 export type {
   DeterministicBackendController,
   DeterministicBackendFixture,

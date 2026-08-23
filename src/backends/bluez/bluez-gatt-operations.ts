@@ -24,7 +24,7 @@ export function dispatchBluezCharacteristicRead(
   path: CharacteristicPath<string, string, string, string, string, 'current'>,
   request: ReadRequest<string, string>
 ): BackendOperationDispatch<string, ReadResult<string, string>> {
-  return runtime.dispatcher.dispatch(request.operation, 'bluez.gatt.read', async () => {
+  const dispatch = runtime.dispatcher.dispatch(request.operation, 'bluez.gatt.read', async () => {
     const value = await runtime.boundary.methods.callBytes(
       runtime.resolveCharacteristicPath(path, 'bluez.gatt.read'),
       BLUEZ_GATT_CHARACTERISTIC_INTERFACE,
@@ -34,6 +34,7 @@ export function dispatchBluezCharacteristicRead(
     runtime.resolveCharacteristicPath(path, 'bluez.gatt.read.after-method')
     return { value: ownBytes(value, maximumOperationBytes), terminal: successfulTerminal(request.operation) }
   })
+  return runtime.trackConnectionOperationForPath(path, dispatch, 'bluez.gatt.read')
 }
 
 export function dispatchBluezCharacteristicWrite(
@@ -42,17 +43,26 @@ export function dispatchBluezCharacteristicWrite(
   request: WriteRequest<string, string>
 ): BackendOperationDispatch<string, WriteResult<string, string>> {
   const copied = new Uint8Array(request.bytes)
-  return runtime.dispatcher.dispatch(request.operation, 'bluez.gatt.write', async () => {
-    await writeValueCall(
-      runtime,
-      runtime.resolveCharacteristicPath(path, 'bluez.gatt.write'),
-      BLUEZ_GATT_CHARACTERISTIC_INTERFACE,
-      copied,
-      request.mode
-    )
-    runtime.resolveCharacteristicPath(path, 'bluez.gatt.write.after-method')
-    return { terminal: successfulTerminal(request.operation), commitState: 'confirmed' }
-  })
+  const dispatch = runtime.dispatcher.dispatch<WriteResult<string, string>>(
+    request.operation,
+    'bluez.gatt.write',
+    async () => {
+      await writeValueCall(
+        runtime,
+        runtime.resolveCharacteristicPath(path, 'bluez.gatt.write'),
+        BLUEZ_GATT_CHARACTERISTIC_INTERFACE,
+        copied,
+        request.mode
+      )
+      runtime.resolveCharacteristicPath(path, 'bluez.gatt.write.after-method')
+      const result: WriteResult<string, string> = {
+        terminal: successfulTerminal(request.operation),
+        commitState: 'confirmed'
+      }
+      return result
+    }
+  )
+  return runtime.trackConnectionOperationForPath(path, dispatch, 'bluez.gatt.write')
 }
 
 export function dispatchBluezDescriptorRead(
@@ -60,7 +70,7 @@ export function dispatchBluezDescriptorRead(
   path: DescriptorPath<string, string, string, string, string, string, 'current'>,
   request: ReadRequest<string, string>
 ): BackendOperationDispatch<string, ReadResult<string, string>> {
-  return runtime.dispatcher.dispatch(request.operation, 'bluez.gatt.read-descriptor', async () => {
+  const dispatch = runtime.dispatcher.dispatch(request.operation, 'bluez.gatt.read-descriptor', async () => {
     const value = await runtime.boundary.methods.callBytes(
       runtime.resolveDescriptorPath(path, 'bluez.gatt.read-descriptor'),
       BLUEZ_GATT_DESCRIPTOR_INTERFACE,
@@ -70,6 +80,7 @@ export function dispatchBluezDescriptorRead(
     runtime.resolveDescriptorPath(path, 'bluez.gatt.read-descriptor.after-method')
     return { value: ownBytes(value, maximumOperationBytes), terminal: successfulTerminal(request.operation) }
   })
+  return runtime.trackConnectionOperationForPath(path, dispatch, 'bluez.gatt.read-descriptor')
 }
 
 export function dispatchBluezDescriptorWrite(
@@ -78,17 +89,26 @@ export function dispatchBluezDescriptorWrite(
   request: WriteRequest<string, string>
 ): BackendOperationDispatch<string, WriteResult<string, string>> {
   const copied = new Uint8Array(request.bytes)
-  return runtime.dispatcher.dispatch(request.operation, 'bluez.gatt.write-descriptor', async () => {
-    await writeValueCall(
-      runtime,
-      runtime.resolveDescriptorPath(path, 'bluez.gatt.write-descriptor'),
-      BLUEZ_GATT_DESCRIPTOR_INTERFACE,
-      copied,
-      request.mode
-    )
-    runtime.resolveDescriptorPath(path, 'bluez.gatt.write-descriptor.after-method')
-    return { terminal: successfulTerminal(request.operation), commitState: 'confirmed' }
-  })
+  const dispatch = runtime.dispatcher.dispatch<WriteResult<string, string>>(
+    request.operation,
+    'bluez.gatt.write-descriptor',
+    async () => {
+      await writeValueCall(
+        runtime,
+        runtime.resolveDescriptorPath(path, 'bluez.gatt.write-descriptor'),
+        BLUEZ_GATT_DESCRIPTOR_INTERFACE,
+        copied,
+        request.mode
+      )
+      runtime.resolveDescriptorPath(path, 'bluez.gatt.write-descriptor.after-method')
+      const result: WriteResult<string, string> = {
+        terminal: successfulTerminal(request.operation),
+        commitState: 'confirmed'
+      }
+      return result
+    }
+  )
+  return runtime.trackConnectionOperationForPath(path, dispatch, 'bluez.gatt.write-descriptor')
 }
 
 export async function readBluezValue(
@@ -100,12 +120,13 @@ export async function readBluezValue(
   operation: string
 ): Promise<OwnedBytes> {
   database.assertCurrent(operation)
-  return runtime.dispatcher.dispatch(options, operation, async () =>
+  const dispatch = runtime.dispatcher.dispatch(options, operation, async () =>
     ownBytes(
       await readCurrentBluezValue(runtime, database, objectPath, interfaceName, operation),
       maximumOperationBytes
     )
-  ).completion
+  )
+  return runtime.trackConnectionOperation(database.record, dispatch, operation).completion
 }
 
 export async function writeBluezValue(
@@ -119,7 +140,7 @@ export async function writeBluezValue(
 ): Promise<WriteReceipt<string, string>> {
   database.assertCurrent(operation)
   const copied = new Uint8Array(value)
-  return runtime.dispatcher.dispatch(options, operation, async () => {
+  const dispatch = runtime.dispatcher.dispatch(options, operation, async () => {
     await writeValueCall(runtime, objectPath, interfaceName, copied, options.mode)
     database.assertCurrent(`${operation}.after-method`)
     const receipt: WriteReceipt<string, string> = {
@@ -131,7 +152,8 @@ export async function writeBluezValue(
       commitState: 'confirmed'
     }
     return receipt
-  }).completion
+  })
+  return runtime.trackConnectionOperation(database.record, dispatch, operation).completion
 }
 
 async function readCurrentBluezValue(

@@ -137,17 +137,17 @@ export class SubscriptionRegistry<Attachment extends string, Identity extends Ba
   ): Promise<CoreSubscription<Attachment, Identity>> {
     this.assertCurrent(path)
     this.assertAdmission(options)
+    const key = physicalSubscriptionKey(path, options.deliveryMode)
     const stream = new CoreBoundedStream<NotificationValue>(options.delivery, options.delivery.overflowPolicy)
     this.runtime.aggregateQuota.register(stream)
     const subscription = new CoreSubscription(
       this.runtime.idFactory.subscriptionId(`subscription-${this.nextSubscription}`),
       path,
       stream,
-      current => this.remove(current)
+      current => this.remove(current, key)
     )
     this.nextSubscription += 1
     this.runtime.resourceLedger.increment('subscriptionConsumers')
-    const key = physicalSubscriptionKey(path, options.deliveryMode)
     const existing = this.physicalByPath.get(key)
     if (existing !== undefined) {
       if (existing.closed) {
@@ -174,7 +174,7 @@ export class SubscriptionRegistry<Attachment extends string, Identity extends Ba
             ? error
             : contractError('platform.failure', 'gatt', 'subscription-registry.shared-enable')
         if (this.isOwnAdmissionTerminal(admissionError, options)) {
-          const cleanup = await this.remove(subscription)
+          const cleanup = await this.remove(subscription, key)
           if (cleanup.state === 'release-failed') {
             throw new BackendContractError(
               cleanup.failures[0]?.error ??
@@ -217,8 +217,8 @@ export class SubscriptionRegistry<Attachment extends string, Identity extends Ba
     }
   }
 
-  async remove(subscription: CoreSubscription<Attachment, Identity>): Promise<CleanupRecord> {
-    const physical = [...this.physicalByPath.values()].find(candidate => candidate.consumers.has(subscription))
+  async remove(subscription: CoreSubscription<Attachment, Identity>, physicalKey: string): Promise<CleanupRecord> {
+    const physical = this.physicalByPath.get(physicalKey)
     this.closeConsumer(subscription, 'owner-released')
     if (physical === undefined) {
       return { state: 'released', failures: [] }
@@ -286,6 +286,7 @@ export class SubscriptionRegistry<Attachment extends string, Identity extends Ba
   ): Promise<void> {
     const result = await this.runtime.operationCoordinator.run({
       queueKey: physical.queueKey,
+      fairnessKey: 'subscription',
       options,
       mayCommit: false,
       dispatch: correlation => {
@@ -482,6 +483,7 @@ export class SubscriptionRegistry<Attachment extends string, Identity extends Ba
     const options: PublicOperationOptions = { signal: null, deadline: null }
     const result = await this.runtime.operationCoordinator.runCleanup({
       queueKey: physical.queueKey,
+      fairnessKey: 'subscription',
       options,
       mayCommit: false,
       dispatch: correlation => this.unsubscribeDispatch(backendSubscription, options, correlation)
@@ -533,6 +535,7 @@ export class SubscriptionRegistry<Attachment extends string, Identity extends Ba
     const options: PublicOperationOptions = { signal: null, deadline: null }
     const result = await this.runtime.operationCoordinator.runCleanup({
       queueKey: physical.queueKey,
+      fairnessKey: 'subscription',
       options,
       mayCommit: false,
       dispatch: correlation => this.unsubscribeDispatch(backendSubscription, options, correlation)

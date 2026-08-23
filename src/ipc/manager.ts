@@ -55,6 +55,7 @@ export interface IpcManagerOperationOptions {
   readonly signal?: AbortSignal
   readonly timeoutMs?: number
   readonly deadline?: number | null
+  readonly reason?: Extract<GattDatabaseChangedEvent['reason'], 'service-changed' | 'manual-rediscovery'>
   readonly deliveryMode?: 'prefer-notification' | 'prefer-indication' | 'require-notification' | 'require-indication'
   readonly stream?: {
     readonly itemCapacity: number
@@ -177,7 +178,7 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
     return new IpcBleManager(
       client,
       createPublicBleCapabilities(
-        projectRemoteSecurityCapabilities(client.bootstrap.capabilities),
+        projectRemoteCapabilities(client.bootstrap.capabilities),
         String(client.bootstrap.attachment.backendGeneration),
         true
       )
@@ -547,14 +548,48 @@ const REMOTE_SECURITY_CAPABILITY_IDS = new Set<string>([
   BUILT_IN_FEATURE_IDS.securityCustomCeremony
 ])
 
-function projectRemoteSecurityCapabilities(snapshot: IpcCapabilitySnapshotV2): IpcCapabilitySnapshotV2 {
+const REMOTE_RENDERER_UNSUPPORTED_CAPABILITY_IDS = new Set<string>([
+  BUILT_IN_FEATURE_IDS.connectionEffectiveMtu,
+  BUILT_IN_FEATURE_IDS.connectionRequestMtu,
+  BUILT_IN_FEATURE_IDS.connectionPriority,
+  BUILT_IN_FEATURE_IDS.connectionPhy,
+  BUILT_IN_FEATURE_IDS.connectionParameters,
+  BUILT_IN_FEATURE_IDS.connectionSubrate,
+  BUILT_IN_FEATURE_IDS.writeWithoutResponseReadiness
+])
+
+export function projectRemoteCapabilities(snapshot: IpcCapabilitySnapshotV2): IpcCapabilitySnapshotV2 {
   return Object.freeze({
     ...snapshot,
     descriptors: Object.freeze(
       snapshot.descriptors.map(descriptor =>
-        REMOTE_SECURITY_CAPABILITY_IDS.has(descriptor.id) ? unsupportedRemoteSecurityDescriptor(descriptor) : descriptor
+        REMOTE_SECURITY_CAPABILITY_IDS.has(descriptor.id)
+          ? unsupportedRemoteSecurityDescriptor(descriptor)
+          : REMOTE_RENDERER_UNSUPPORTED_CAPABILITY_IDS.has(descriptor.id)
+            ? unsupportedRemoteRendererDescriptor(descriptor)
+            : descriptor
       )
     )
+  })
+}
+
+function unsupportedRemoteRendererDescriptor(descriptor: CapabilityDescriptor): CapabilityDescriptor {
+  const limitation = Object.freeze({
+    code: 'ipc-renderer-control-unavailable',
+    explanation: 'This renderer IPC projection does not currently route this native control.',
+    affectedGuarantee: 'native control support over renderer IPC'
+  })
+  return Object.freeze({
+    ...descriptor,
+    state: 'unsupported' as const,
+    evidence: Object.freeze({
+      ...descriptor.evidence,
+      receiptId: `ipc-renderer-control-unavailable-${descriptor.id}`,
+      evidenceLevel: 'blocked' as const,
+      sourceDigest: 'ipc-renderer-control-projection-v1',
+      limitations: Object.freeze([limitation])
+    }),
+    limitations: Object.freeze([limitation])
   })
 }
 
@@ -700,19 +735,40 @@ export class IpcConnection {
     this.databases.add(database)
   }
 
-  private invalidateDatabases(): void {
-    for (const database of this.databases) database.invalidate()
+  private invalidateDatabases(reason: GattDatabaseChangedEvent['reason'] | null = null): void {
+    for (const database of this.databases) database.invalidate(reason)
+    this.databases.clear()
   }
 
   async discover(options: IpcManagerOperationOptions = {}): Promise<IpcGattDatabase> {
+    if (options.reason !== undefined) {
+      this.invalidateDatabases(options.reason)
+    }
     await this.awaitLifecycleAdmission(options)
     const payload = await this.manager.route(
       'gatt.discover',
-      Object.freeze({ ...this.identityPayload(), deadline: operationDeadline(options) }),
+      Object.freeze({
+        ...this.identityPayload(),
+        deadline: operationDeadline(options),
+        ...(options.reason === undefined ? {} : { rediscoveryReason: options.reason })
+      }),
       null,
       options.signal
     )
+    if (options.reason !== undefined && payload.rediscoveryReason !== options.reason) {
+      throw contractError('protocol.incompatible', 'ipc', 'ipc-manager.rediscovery-reason')
+    }
     return IpcGattDatabase.fromPayload(this.manager, this, payload)
+  }
+
+  rediscoverGatt(
+    options: IpcManagerOperationOptions,
+    reason: Extract<GattDatabaseChangedEvent['reason'], 'service-changed' | 'manual-rediscovery'>
+  ): Promise<IpcGattDatabase> {
+    if (reason !== 'service-changed' && reason !== 'manual-rediscovery') {
+      throw contractError('argument.invalid', 'gatt', 'ipc-manager.rediscover-gatt.reason')
+    }
+    return this.discover({ ...options, reason })
   }
 
   async readRssi(options: IpcManagerOperationOptions = {}): Promise<number> {
@@ -910,14 +966,14 @@ export class IpcGattDatabase {
     return this.changedStream
   }
 
-  invalidate(reason: 'service-changed' | null = null): void {
+  invalidate(reason: GattDatabaseChangedEvent['reason'] | null = null): void {
     if (!this.valid) return
     this.valid = false
     for (const subscription of this.subscriptions) {
       subscription.closeFromDatabase(reason === 'service-changed' ? 'service-changed' : 'connection-lost')
     }
     this.subscriptions.clear()
-    if (reason === 'service-changed') {
+    if (reason !== null) {
       this.changedStream.emit(
         Object.freeze({
           previousGeneration: this.databaseGeneration,

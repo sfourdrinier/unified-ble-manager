@@ -14,20 +14,24 @@ const descriptorUuid = '00002902-0000-1000-8000-00805f9b34fb'
 function nativeGattSnapshot() {
   return {
     cacheMode: 'uncached',
-    services: [{
-      uuid: serviceUuid,
-      occurrence: 0,
-      characteristics: [{
-        uuid: characteristicUuid,
+    services: [
+      {
+        uuid: serviceUuid,
         occurrence: 0,
-        readable: true,
-        writableWithResponse: true,
-        writableWithoutResponse: true,
-        notifiable: true,
-        indicatable: false,
-        descriptors: [{ uuid: descriptorUuid, occurrence: 0 }]
-      }]
-    }]
+        characteristics: [
+          {
+            uuid: characteristicUuid,
+            occurrence: 0,
+            readable: true,
+            writableWithResponse: true,
+            writableWithoutResponse: true,
+            notifiable: true,
+            indicatable: false,
+            descriptors: [{ uuid: descriptorUuid, occurrence: 0 }]
+          }
+        ]
+      }
+    ]
   }
 }
 
@@ -131,7 +135,7 @@ function trackedAbortSignal() {
 }
 
 async function flushMicrotasks() {
-  for (let ordinal = 0; ordinal < 16; ordinal += 1) {
+  for (let ordinal = 0; ordinal < 64; ordinal += 1) {
     await Promise.resolve()
   }
 }
@@ -332,13 +336,16 @@ class DeterministicWinRtBoundary {
     if (handler === undefined) {
       throw new Error('Deterministic WinRT advertisement emitted for an unknown scan token')
     }
-    handler({ scanToken, ...(advertisement ?? {
-      nativePeerId: 'C0FFEE000001',
-      localName: 'Polar H10',
-      rssi: -47,
-      serviceUuids: [serviceUuid],
-      connectable: true
-    }) })
+    handler({
+      scanToken,
+      ...(advertisement ?? {
+        nativePeerId: 'C0FFEE000001',
+        localName: 'Polar H10',
+        rssi: -47,
+        serviceUuids: [serviceUuid],
+        connectable: true
+      })
+    })
   }
 
   connect(nativePeerId, connectionGeneration) {
@@ -368,14 +375,17 @@ class DeterministicWinRtBoundary {
     }
     if (this.connectGate !== null) {
       return cancellablePending(
-        this.connectGate.then(() => {
-          this.connected.add(nativePeerId)
-        }, error => {
-          if (this.connectionGenerations.get(nativePeerId) === connectionGeneration) {
-            this.connectionGenerations.delete(nativePeerId)
+        this.connectGate.then(
+          () => {
+            this.connected.add(nativePeerId)
+          },
+          error => {
+            if (this.connectionGenerations.get(nativePeerId) === connectionGeneration) {
+              this.connectionGenerations.delete(nativePeerId)
+            }
+            throw error
           }
-          throw error
-        }),
+        ),
         () => {
           this.connectCancelCalls += 1
         }
@@ -424,53 +434,56 @@ class DeterministicWinRtBoundary {
     if (!this.connected.has(nativePeerId)) {
       return pending(Promise.reject(new Error('WinRT discovery requires an active connection')))
     }
-    const snapshot = this.discoverSnapshot === undefined ? {
-      cacheMode: 'uncached',
-      services: [
-        {
-          uuid: serviceUuid,
-          occurrence: 0,
-          characteristics: [
-            {
-              uuid: characteristicUuid,
-              occurrence: 0,
-              readable: true,
-              writableWithResponse: true,
-              writableWithoutResponse: true,
-              notifiable: true,
-              indicatable: false,
-              descriptors: [{ uuid: descriptorUuid, occurrence: 0, readable: true, writable: true }]
-            },
-            {
-              uuid: characteristicUuid,
-              occurrence: 1,
-              readable: true,
-              writableWithResponse: true,
-              writableWithoutResponse: true,
-              notifiable: true,
-              indicatable: false,
-              descriptors: [{ uuid: descriptorUuid, occurrence: 0, readable: true, writable: true }]
-            }
-          ]
-        },
-        {
-          uuid: serviceUuid,
-          occurrence: 1,
-          characteristics: [
-            {
-              uuid: characteristicUuid,
-              occurrence: 0,
-              readable: true,
-              writableWithResponse: true,
-              writableWithoutResponse: false,
-              notifiable: false,
-              indicatable: true,
-              descriptors: [{ uuid: descriptorUuid, occurrence: 0, readable: true, writable: true }]
-            }
-          ]
-        }
-      ]
-    } : this.discoverSnapshot
+    const snapshot =
+      this.discoverSnapshot === undefined
+        ? {
+            cacheMode: 'uncached',
+            services: [
+              {
+                uuid: serviceUuid,
+                occurrence: 0,
+                characteristics: [
+                  {
+                    uuid: characteristicUuid,
+                    occurrence: 0,
+                    readable: true,
+                    writableWithResponse: true,
+                    writableWithoutResponse: true,
+                    notifiable: true,
+                    indicatable: false,
+                    descriptors: [{ uuid: descriptorUuid, occurrence: 0, readable: true, writable: true }]
+                  },
+                  {
+                    uuid: characteristicUuid,
+                    occurrence: 1,
+                    readable: true,
+                    writableWithResponse: true,
+                    writableWithoutResponse: true,
+                    notifiable: true,
+                    indicatable: false,
+                    descriptors: [{ uuid: descriptorUuid, occurrence: 0, readable: true, writable: true }]
+                  }
+                ]
+              },
+              {
+                uuid: serviceUuid,
+                occurrence: 1,
+                characteristics: [
+                  {
+                    uuid: characteristicUuid,
+                    occurrence: 0,
+                    readable: true,
+                    writableWithResponse: true,
+                    writableWithoutResponse: false,
+                    notifiable: false,
+                    indicatable: true,
+                    descriptors: [{ uuid: descriptorUuid, occurrence: 0, readable: true, writable: true }]
+                  }
+                ]
+              }
+            ]
+          }
+        : this.discoverSnapshot
     this.emitAdapterLossDuringNextGattOperation()
     if (this.discoverGate !== null) {
       return pending(this.discoverGate.then(() => snapshot))
@@ -519,7 +532,11 @@ class DeterministicWinRtBoundary {
       this.nextDescriptorReadError = null
       return pending(Promise.reject(error))
     }
-    const value = new Uint8Array([address.serviceOccurrence, address.characteristicOccurrence, address.descriptorOccurrence])
+    const value = new Uint8Array([
+      address.serviceOccurrence,
+      address.characteristicOccurrence,
+      address.descriptorOccurrence
+    ])
     if (this.descriptorReadGate !== null) {
       return pending(this.descriptorReadGate.then(() => value))
     }
@@ -732,10 +749,40 @@ async function observedPeerId(backend, boundary) {
 async function connectedDatabaseFixture(scope) {
   const { backend, boundary } = await backendFixture()
   const peerId = await observedPeerId(backend, boundary)
-  const lease = await backend.connections.connect(peerId, opaqueId(`${scope}-client`, 'client', `winrt:${scope}`), operation())
+  const lease = await backend.connections.connect(
+    peerId,
+    opaqueId(`${scope}-client`, 'client', `winrt:${scope}`),
+    operation()
+  )
   const database = await backend.gatt.discover(lease.connection, operation())
   const snapshot = await database.snapshot()
   return { backend, boundary, lease, database, snapshot }
+}
+
+async function managerFixture() {
+  let boundary = null
+  const provider = createWinRtBackendProvider({
+    boundaryFactory: () => {
+      boundary = new DeterministicWinRtBoundary()
+      return boundary
+    },
+    now: () => 20,
+    hostKind: 'node'
+  })
+  const manager = await createBleManagerFromProvider(
+    {
+      provider,
+      selection: { selectedAdapterId: selectedAdapterId() },
+      coreCompatibility: compatibility(),
+      manager: {
+        clientId: opaqueId('core-quarantine-client', 'client', 'winrt:core-quarantine'),
+        managerId: opaqueId('core-quarantine-manager', 'manager', 'winrt:core-quarantine'),
+        ownerMode: 'owning'
+      }
+    },
+    { ...DEFAULT_BLE_MANAGER_OPTIONS, now: () => 20 }
+  )
+  return { manager, backend: manager.attachedBackend.backend, boundary }
 }
 
 describe('WinRT contract-v2 deterministic native-boundary vertical slice', () => {
@@ -763,7 +810,11 @@ describe('WinRT contract-v2 deterministic native-boundary vertical slice', () =>
     ])
     const { backend, boundary } = await backendFixture()
     const owner = await backend.scanner.start(scanOptions(), opaqueId('owner', 'client', 'winrt:tck'))
-    const joined = await backend.scanner.join(owner.leaseId, owner.shareToken, opaqueId('joined', 'client', 'winrt:tck'))
+    const joined = await backend.scanner.join(
+      owner.leaseId,
+      owner.shareToken,
+      opaqueId('joined', 'client', 'winrt:tck')
+    )
     await expect(joined.stop()).resolves.toEqual({ state: 'released', failures: [] })
     await expect(
       backend.scanner.start(scanOptions(), opaqueId('second-owner', 'client', 'winrt:tck'))
@@ -771,7 +822,11 @@ describe('WinRT contract-v2 deterministic native-boundary vertical slice', () =>
     await owner.stop()
 
     const peerId = await observedPeerId(backend, boundary)
-    const lease = await backend.connections.connect(peerId, opaqueId('first-client', 'client', 'winrt:tck'), operation())
+    const lease = await backend.connections.connect(
+      peerId,
+      opaqueId('first-client', 'client', 'winrt:tck'),
+      operation()
+    )
     await expect(
       backend.connections.connect(peerId, opaqueId('second-client', 'client', 'winrt:tck'), operation())
     ).rejects.toMatchObject({ normalized: { code: 'connection.already-owned' } })
@@ -881,7 +936,10 @@ describe('WinRT contract-v2 deterministic native-boundary vertical slice', () =>
     ['aborted', 'other']
   ])('terminalizes an active matching %s scan without a compensating native stop', async (status, error) => {
     const { backend, boundary } = await backendFixture()
-    const scan = await backend.scanner.start(scanOptions(), opaqueId(`active-${status}`, 'client', 'winrt:scan-terminal'))
+    const scan = await backend.scanner.start(
+      scanOptions(),
+      opaqueId(`active-${status}`, 'client', 'winrt:scan-terminal')
+    )
     const terminal = scan.observations[Symbol.asyncIterator]().next()
 
     boundary.emitScanTerminal({ scanToken: boundary.scanToken, status, error })
@@ -983,7 +1041,10 @@ describe('WinRT contract-v2 deterministic native-boundary vertical slice', () =>
     ['a non-boolean connectable value', { connectable: 'true' }]
   ])('drops %s without terminating the healthy physical scan', async (_description, invalidFields) => {
     const { backend, boundary } = await backendFixture()
-    const scan = await backend.scanner.start(scanOptions(), opaqueId('malformed-advertisement', 'client', 'winrt:ingress'))
+    const scan = await backend.scanner.start(
+      scanOptions(),
+      opaqueId('malformed-advertisement', 'client', 'winrt:ingress')
+    )
 
     expect(() =>
       boundary.emitAdvertisement({
@@ -1051,7 +1112,9 @@ describe('WinRT contract-v2 deterministic native-boundary vertical slice', () =>
     const subscription = await database.subscribe(duplicate, { ...operation(), delivery: delivery() })
     const notification = subscription.values[Symbol.asyncIterator]().next()
     boundary.emitNotification(boundary.writeValues[0].address, new Uint8Array([3, 4]))
-    await expect(notification).resolves.toMatchObject({ value: { kind: 'value', value: { value: new Uint8Array([3, 4]) } } })
+    await expect(notification).resolves.toMatchObject({
+      value: { kind: 'value', value: { value: new Uint8Array([3, 4]) } }
+    })
     await expect(manager.destroy()).resolves.toEqual({ state: 'released', failures: [] })
     expect(Object.values(manager.localResourceCounters()).every(value => Number(value) === 0)).toBe(true)
     expect(boundary.ingressTelemetry()).toEqual({
@@ -1066,7 +1129,11 @@ describe('WinRT contract-v2 deterministic native-boundary vertical slice', () =>
   test('quarantines late not-cancellable reads and retries a failed CCCD cleanup without retained counters', async () => {
     const { backend, boundary } = await backendFixture()
     const peerId = await observedPeerId(backend, boundary)
-    const lease = await backend.connections.connect(peerId, opaqueId('cancel-client', 'client', 'winrt:cancel'), operation())
+    const lease = await backend.connections.connect(
+      peerId,
+      opaqueId('cancel-client', 'client', 'winrt:cancel'),
+      operation()
+    )
     const database = await backend.gatt.discover(lease.connection, operation())
     const snapshot = await database.snapshot()
     const characteristic = snapshot.characteristics[0].path
@@ -1088,7 +1155,10 @@ describe('WinRT contract-v2 deterministic native-boundary vertical slice', () =>
     })
     const controller = new AbortController()
     const dispatch = backend.gatt.read(characteristic, {
-      operation: { ...operation(controller.signal), correlation: opaqueId('late-read', 'core-operation', 'winrt:cancel') }
+      operation: {
+        ...operation(controller.signal),
+        correlation: opaqueId('late-read', 'core-operation', 'winrt:cancel')
+      }
     })
     const aborted = expect(dispatch.completion).rejects.toMatchObject({ normalized: { code: 'operation.aborted' } })
     controller.abort()
@@ -1218,8 +1288,12 @@ describe('WinRT contract-v2 deterministic native-boundary vertical slice', () =>
   })
 
   test('owns a valid Uint8Array notification ingress before delivery', async () => {
-    const { backend, boundary, lease, database, snapshot } = await connectedDatabaseFixture('notification-ingress-owned')
-    const subscription = await database.subscribe(snapshot.characteristics[0].path, { ...operation(), delivery: delivery() })
+    const { backend, boundary, lease, database, snapshot } =
+      await connectedDatabaseFixture('notification-ingress-owned')
+    const subscription = await database.subscribe(snapshot.characteristics[0].path, {
+      ...operation(),
+      delivery: delivery()
+    })
     const physical = [...backend.subscriptions.values()][0]
     const source = new Uint8Array([3, 4])
     const notification = subscription.values[Symbol.asyncIterator]().next()
@@ -1237,16 +1311,28 @@ describe('WinRT contract-v2 deterministic native-boundary vertical slice', () =>
   })
 
   test.each([
-    ['oversized', 'bytes.too-large', (boundary, address) => boundary.emitNotification(address, new Uint8Array(512 * 1024 + 1))],
+    [
+      'oversized',
+      'bytes.too-large',
+      (boundary, address) => boundary.emitNotification(address, new Uint8Array(512 * 1024 + 1))
+    ],
     ['empty object', 'gatt.subscribe-failed', (boundary, address) => boundary.emitRawNotification(address, {})],
-    ['array-like object', 'gatt.subscribe-failed', (boundary, address) =>
-      boundary.emitRawNotification(address, { 0: 7, length: 1 })
+    [
+      'array-like object',
+      'gatt.subscribe-failed',
+      (boundary, address) => boundary.emitRawNotification(address, { 0: 7, length: 1 })
     ],
     ['Array', 'gatt.subscribe-failed', (boundary, address) => boundary.emitRawNotification(address, [7])],
-    ['DataView', 'gatt.subscribe-failed', (boundary, address) =>
-      boundary.emitRawNotification(address, new DataView(new ArrayBuffer(1)))
+    [
+      'DataView',
+      'gatt.subscribe-failed',
+      (boundary, address) => boundary.emitRawNotification(address, new DataView(new ArrayBuffer(1)))
     ],
-    ['ArrayBuffer', 'gatt.subscribe-failed', (boundary, address) => boundary.emitRawNotification(address, new ArrayBuffer(1))],
+    [
+      'ArrayBuffer',
+      'gatt.subscribe-failed',
+      (boundary, address) => boundary.emitRawNotification(address, new ArrayBuffer(1))
+    ],
     ['null', 'gatt.subscribe-failed', (boundary, address) => boundary.emitRawNotification(address, null)]
   ])(
     'terminalizes and retains a %s notification ingress failure until its CCCD disable retry succeeds',
@@ -1254,7 +1340,10 @@ describe('WinRT contract-v2 deterministic native-boundary vertical slice', () =>
       const { backend, boundary, lease, database, snapshot } = await connectedDatabaseFixture(
         `notification-ingress-${_kind}`
       )
-      const subscription = await database.subscribe(snapshot.characteristics[0].path, { ...operation(), delivery: delivery() })
+      const subscription = await database.subscribe(snapshot.characteristics[0].path, {
+        ...operation(),
+        delivery: delivery()
+      })
       const physical = [...backend.subscriptions.values()][0]
       const terminal = subscription.values[Symbol.asyncIterator]().next()
       boundary.failNextStopNotify = true
@@ -1395,7 +1484,10 @@ describe('WinRT contract-v2 deterministic native-boundary vertical slice', () =>
       boundary.setStartNotifyGate(enable.promise)
       boundary[invalidationFlag] = true
 
-      const subscription = database.subscribe(snapshot.characteristics[0].path, { ...operation(), delivery: delivery() })
+      const subscription = database.subscribe(snapshot.characteristics[0].path, {
+        ...operation(),
+        delivery: delivery()
+      })
 
       await expect(subscription).rejects.toMatchObject({ normalized: { code: errorCode } })
       await flushMicrotasks()
@@ -1428,7 +1520,10 @@ describe('WinRT contract-v2 deterministic native-boundary vertical slice', () =>
 
   test('releases the physical CCCD when either public notification stream is closed and shares the retry receipt', async () => {
     const { backend, boundary, lease, database, snapshot } = await connectedDatabaseFixture('notification-stream-close')
-    const subscription = await database.subscribe(snapshot.characteristics[0].path, { ...operation(), delivery: delivery() })
+    const subscription = await database.subscribe(snapshot.characteristics[0].path, {
+      ...operation(),
+      delivery: delivery()
+    })
     boundary.failNextStopNotify = true
 
     const valuesClose = subscription.values.close()
@@ -1450,8 +1545,12 @@ describe('WinRT contract-v2 deterministic native-boundary vertical slice', () =>
   })
 
   test('shares an in-flight notification-stream close cleanup with concurrent connection teardown', async () => {
-    const { backend, boundary, lease, database, snapshot } = await connectedDatabaseFixture('notification-stream-teardown')
-    const subscription = await database.subscribe(snapshot.characteristics[0].path, { ...operation(), delivery: delivery() })
+    const { backend, boundary, lease, database, snapshot } =
+      await connectedDatabaseFixture('notification-stream-teardown')
+    const subscription = await database.subscribe(snapshot.characteristics[0].path, {
+      ...operation(),
+      delivery: delivery()
+    })
     const disable = deferred()
     boundary.setStopNotifyGate(disable.promise)
 
@@ -1586,9 +1685,7 @@ describe('WinRT contract-v2 deterministic native-boundary vertical slice', () =>
   })
 
   test('keeps the ready physical CCCD enabled while a replacement consumer is pending admission', async () => {
-    const { backend, boundary, lease, database, snapshot } = await connectedDatabaseFixture(
-      'ready-pending-consumer'
-    )
+    const { backend, boundary, lease, database, snapshot } = await connectedDatabaseFixture('ready-pending-consumer')
     const characteristic = snapshot.characteristics[0].path
     const first = await database.subscribe(characteristic, { ...operation(), delivery: delivery() })
     const secondAdmission = database.subscribe(characteristic, { ...operation(), delivery: delivery() })
@@ -1800,7 +1897,9 @@ describe('WinRT contract-v2 deterministic native-boundary vertical slice', () =>
   })
 
   test('retains a failed post-enable CCCD disable for a later connection-lease cleanup retry', async () => {
-    const { backend, boundary, lease, database, snapshot } = await connectedDatabaseFixture('release-terminal-disable-retry')
+    const { backend, boundary, lease, database, snapshot } = await connectedDatabaseFixture(
+      'release-terminal-disable-retry'
+    )
     const characteristic = snapshot.characteristics[0].path
     const enable = deferred()
     boundary.setStartNotifyGate(enable.promise)
@@ -1963,7 +2062,11 @@ describe('WinRT contract-v2 deterministic native-boundary vertical slice', () =>
   test('normalizes native WinRT GATT status details instead of leaking raw boundary errors', async () => {
     const { backend, boundary } = await backendFixture()
     const peerId = await observedPeerId(backend, boundary)
-    const lease = await backend.connections.connect(peerId, opaqueId('status-client', 'client', 'winrt:status'), operation())
+    const lease = await backend.connections.connect(
+      peerId,
+      opaqueId('status-client', 'client', 'winrt:status'),
+      operation()
+    )
     const database = await backend.gatt.discover(lease.connection, operation())
     const characteristic = (await database.snapshot()).characteristics[0].path
     const readError = new Error('Windows denied the uncached characteristic read')
@@ -2080,20 +2183,22 @@ describe('WinRT contract-v2 deterministic native-boundary vertical slice', () =>
     boundary.nextStopNotifyError = stopNotifyError
     await expect(subscription.remove()).resolves.toMatchObject({
       state: 'release-failed',
-      failures: [{
-        resourceKind: 'subscription',
-        error: {
-          code: 'platform.failure',
-          domain: 'cleanup',
-          operation: 'winrt.gatt.stop-notify',
-          platform: {
-            domain: 'winrt',
-            code: 'gatt-status',
-            safeMessage: 'Windows CCCD disable failed',
-            metadata: { gattStatus: 'protocol-error' }
+      failures: [
+        {
+          resourceKind: 'subscription',
+          error: {
+            code: 'platform.failure',
+            domain: 'cleanup',
+            operation: 'winrt.gatt.stop-notify',
+            platform: {
+              domain: 'winrt',
+              code: 'gatt-status',
+              safeMessage: 'Windows CCCD disable failed',
+              metadata: { gattStatus: 'protocol-error' }
+            }
           }
         }
-      }]
+      ]
     })
     await expect(subscription.remove()).resolves.toEqual({ state: 'released', failures: [] })
 
@@ -2104,44 +2209,51 @@ describe('WinRT contract-v2 deterministic native-boundary vertical slice', () =>
   test.each([
     ['abort', controller => operation(controller.signal), controller => controller.abort()],
     ['deadline', () => operation(null, 21), () => jest.advanceTimersByTime(1)]
-  ])('removes a %s-cancelled connecting record after its native connect later rejects', async (_name, createOptions, cancel) => {
-    jest.useFakeTimers()
-    try {
-      const { backend, boundary } = await backendFixture()
-      const peerId = await observedPeerId(backend, boundary)
-      const gate = deferred()
-      boundary.setConnectGate(gate.promise)
-      const controller = _name === 'abort' ? new AbortController() : null
-      const connectOptions = createOptions(controller)
-      const first = backend.connections.connect(peerId, opaqueId('first-client', 'client', 'winrt:late-failure'), connectOptions)
+  ])(
+    'removes a %s-cancelled connecting record after its native connect later rejects',
+    async (_name, createOptions, cancel) => {
+      jest.useFakeTimers()
+      try {
+        const { backend, boundary } = await backendFixture()
+        const peerId = await observedPeerId(backend, boundary)
+        const gate = deferred()
+        boundary.setConnectGate(gate.promise)
+        const controller = _name === 'abort' ? new AbortController() : null
+        const connectOptions = createOptions(controller)
+        const first = backend.connections.connect(
+          peerId,
+          opaqueId('first-client', 'client', 'winrt:late-failure'),
+          connectOptions
+        )
 
-      await Promise.resolve()
-      cancel(controller)
-      await expect(first).rejects.toMatchObject({
-        normalized: { code: _name === 'abort' ? 'operation.aborted' : 'operation.timed-out' }
-      })
-      await expect(
-        backend.connections.connect(peerId, opaqueId('blocked-client', 'client', 'winrt:late-failure'), operation())
-      ).rejects.toMatchObject({ normalized: { code: 'connection.already-owned' } })
-      gate.reject(new Error(`late native ${_name} rejection`))
-      await flushMicrotasks()
-      expectConsoleErrorMatching(
-        '[WinRtBackend] Late WinRT completion failed: winrt.connect',
-        expect.objectContaining({ message: `late native ${_name} rejection` })
-      )
-      boundary.setConnectGate(null)
+        await Promise.resolve()
+        cancel(controller)
+        await expect(first).rejects.toMatchObject({
+          normalized: { code: _name === 'abort' ? 'operation.aborted' : 'operation.timed-out' }
+        })
+        await expect(
+          backend.connections.connect(peerId, opaqueId('blocked-client', 'client', 'winrt:late-failure'), operation())
+        ).rejects.toMatchObject({ normalized: { code: 'connection.already-owned' } })
+        gate.reject(new Error(`late native ${_name} rejection`))
+        await flushMicrotasks()
+        expectConsoleErrorMatching(
+          '[WinRtBackend] Late WinRT completion failed: winrt.connect',
+          expect.objectContaining({ message: `late native ${_name} rejection` })
+        )
+        boundary.setConnectGate(null)
 
-      const retry = await backend.connections.connect(
-        peerId,
-        opaqueId('retry-client', 'client', 'winrt:late-failure'),
-        operation()
-      )
-      await expect(retry.release()).resolves.toEqual({ state: 'released', failures: [] })
-      await backend.destroy()
-    } finally {
-      jest.useRealTimers()
+        const retry = await backend.connections.connect(
+          peerId,
+          opaqueId('retry-client', 'client', 'winrt:late-failure'),
+          operation()
+        )
+        await expect(retry.release()).resolves.toEqual({ state: 'released', failures: [] })
+        await backend.destroy()
+      } finally {
+        jest.useRealTimers()
+      }
     }
-  })
+  )
 
   test.each([
     ['abort', controller => operation(controller.signal), controller => controller.abort()],
@@ -2176,7 +2288,9 @@ describe('WinRT contract-v2 deterministic native-boundary vertical slice', () =>
         )
         expectConsoleErrorMatching(
           '[WinRtBackend] Late WinRT completion failed: winrt.connect',
-          expect.objectContaining({ normalized: expect.objectContaining({ operation: 'winrt.connect.late-success-cleanup' }) })
+          expect.objectContaining({
+            normalized: expect.objectContaining({ operation: 'winrt.connect.late-success-cleanup' })
+          })
         )
         boundary.setConnectGate(null)
 
@@ -2238,7 +2352,10 @@ describe('WinRT contract-v2 deterministic native-boundary vertical slice', () =>
     await flushMicrotasks()
 
     expect(Object.values(backend.resourceCounters()).every(value => Number(value) === 0)).toBe(true)
-    const restarted = await backend.scanner.start(scanOptions(), opaqueId('restarted-client', 'client', 'winrt:loss-retry'))
+    const restarted = await backend.scanner.start(
+      scanOptions(),
+      opaqueId('restarted-client', 'client', 'winrt:loss-retry')
+    )
     await expect(restarted.stop()).resolves.toEqual({ state: 'released', failures: [] })
     await expect(scan.stop()).resolves.toEqual({ state: 'released', failures: [] })
     await backend.destroy()
@@ -2268,7 +2385,9 @@ describe('WinRT contract-v2 deterministic native-boundary vertical slice', () =>
     )
     expectConsoleErrorMatching(
       '[WinRtBackend] Late WinRT completion failed: winrt.connect',
-      expect.objectContaining({ normalized: expect.objectContaining({ operation: 'winrt.connect.late-success-cleanup' }) })
+      expect.objectContaining({
+        normalized: expect.objectContaining({ operation: 'winrt.connect.late-success-cleanup' })
+      })
     )
     expect(backend.adapterLossPending).toBe(true)
     expectConsoleErrorMatching(
@@ -2280,7 +2399,10 @@ describe('WinRT contract-v2 deterministic native-boundary vertical slice', () =>
     boundary.setConnectGate(null)
     boundary.emitAdapterReady()
     await expect(
-      backend.scanner.start(scanOptions(), opaqueId('adapter-loss-late-connect-blocked', 'client', 'winrt:adapter-loss-late-connect'))
+      backend.scanner.start(
+        scanOptions(),
+        opaqueId('adapter-loss-late-connect-blocked', 'client', 'winrt:adapter-loss-late-connect')
+      )
     ).rejects.toMatchObject({ normalized: { code: 'lifecycle.invalid-state' } })
     await flushMicrotasks()
 
@@ -2324,7 +2446,10 @@ describe('WinRT contract-v2 deterministic native-boundary vertical slice', () =>
     boundary.setScanStartGate(null)
     boundary.emitAdapterReady()
     await expect(
-      backend.scanner.start(scanOptions(), opaqueId('adapter-loss-late-scan-blocked', 'client', 'winrt:adapter-loss-late-scan'))
+      backend.scanner.start(
+        scanOptions(),
+        opaqueId('adapter-loss-late-scan-blocked', 'client', 'winrt:adapter-loss-late-scan')
+      )
     ).rejects.toMatchObject({ normalized: { code: 'lifecycle.invalid-state' } })
     await flushMicrotasks()
 
@@ -2373,7 +2498,11 @@ describe('WinRT contract-v2 deterministic native-boundary vertical slice', () =>
   test('blocks every public and database GATT admission while adapter-loss cleanup is pending', async () => {
     const { backend, boundary } = await backendFixture()
     const peerId = await observedPeerId(backend, boundary)
-    const lease = await backend.connections.connect(peerId, opaqueId('gatt-gate-client', 'client', 'winrt:gatt-gate'), operation())
+    const lease = await backend.connections.connect(
+      peerId,
+      opaqueId('gatt-gate-client', 'client', 'winrt:gatt-gate'),
+      operation()
+    )
     const database = await backend.gatt.discover(lease.connection, operation())
     const snapshot = await database.snapshot()
     const characteristic = snapshot.characteristics[0].path
@@ -2397,7 +2526,10 @@ describe('WinRT contract-v2 deterministic native-boundary vertical slice', () =>
       operation: { ...operation(), correlation: opaqueId('blocked-subscribe', 'core-operation', 'winrt:gatt-gate') },
       options: { ...operation(), delivery: delivery() }
     }
-    const cleanupOperation = { ...operation(), correlation: opaqueId('blocked-unsubscribe', 'core-operation', 'winrt:gatt-gate') }
+    const cleanupOperation = {
+      ...operation(),
+      correlation: opaqueId('blocked-unsubscribe', 'core-operation', 'winrt:gatt-gate')
+    }
     await expect(backend.gatt.discover(lease.connection, operation())).rejects.toMatchObject({
       normalized: { code: 'lifecycle.invalid-state' }
     })
@@ -2411,7 +2543,9 @@ describe('WinRT contract-v2 deterministic native-boundary vertical slice', () =>
     await expect(database.read(characteristic, operation())).rejects.toMatchObject({
       normalized: { code: 'lifecycle.invalid-state' }
     })
-    await expect(database.write(characteristic, new Uint8Array([1]), { ...operation(), mode: 'with-response' })).rejects.toMatchObject({
+    await expect(
+      database.write(characteristic, new Uint8Array([1]), { ...operation(), mode: 'with-response' })
+    ).rejects.toMatchObject({
       normalized: { code: 'lifecycle.invalid-state' }
     })
     await expect(database.readDescriptor(descriptor, operation())).rejects.toMatchObject({
@@ -2434,7 +2568,11 @@ describe('WinRT contract-v2 deterministic native-boundary vertical slice', () =>
   test('retains a failed CCCD invalidation for connection-lease retry before reconnecting the peer', async () => {
     const { backend, boundary } = await backendFixture()
     const peerId = await observedPeerId(backend, boundary)
-    const lease = await backend.connections.connect(peerId, opaqueId('cccd-retry-client', 'client', 'winrt:cccd-retry'), operation())
+    const lease = await backend.connections.connect(
+      peerId,
+      opaqueId('cccd-retry-client', 'client', 'winrt:cccd-retry'),
+      operation()
+    )
     const database = await backend.gatt.discover(lease.connection, operation())
     const characteristic = (await database.snapshot()).characteristics[0].path
     await database.subscribe(characteristic, { ...operation(), delivery: delivery() })
@@ -2443,7 +2581,11 @@ describe('WinRT contract-v2 deterministic native-boundary vertical slice', () =>
     await expect(lease.release()).resolves.toMatchObject({ state: 'release-failed' })
     expect(backend.resourceCounters()).toMatchObject({ physicalCccdEnablements: 1 })
     await expect(
-      backend.connections.connect(peerId, opaqueId('blocked-reconnect-client', 'client', 'winrt:cccd-retry'), operation())
+      backend.connections.connect(
+        peerId,
+        opaqueId('blocked-reconnect-client', 'client', 'winrt:cccd-retry'),
+        operation()
+      )
     ).rejects.toMatchObject({ normalized: { code: 'connection.already-owned' } })
 
     await expect(lease.release()).resolves.toEqual({ state: 'released', failures: [] })
@@ -2466,9 +2608,7 @@ describe('WinRT contract-v2 deterministic native-boundary vertical slice', () =>
   })
 
   test('blocks reconnect until an aborted non-cancellable write retires from its connection generation', async () => {
-    const { backend, boundary, lease, snapshot } = await connectedDatabaseFixture(
-      'write-generation-retirement'
-    )
+    const { backend, boundary, lease, snapshot } = await connectedDatabaseFixture('write-generation-retirement')
     const peerId = lease.connection.peerId
     const gate = deferred()
     const controller = new AbortController()
@@ -2540,6 +2680,178 @@ describe('WinRT contract-v2 deterministic native-boundary vertical slice', () =>
     expectConsoleInfo('[WinRtBackend] Late WinRT completion quarantined: winrt.gatt.read')
     expect(boundary.destroyed).toBe(true)
     expect(Object.values(backend.resourceCounters()).every(value => Number(value) === 0)).toBe(true)
+  })
+
+  test('bounds native disconnect completion while retaining ownership until a late settlement permits retry', async () => {
+    jest.useFakeTimers()
+    const disconnectGate = deferred()
+    let backend = null
+    let lease = null
+    try {
+      const fixture = await backendFixture()
+      backend = fixture.backend
+      const { boundary } = fixture
+      const peerId = await observedPeerId(backend, boundary)
+      lease = await backend.connections.connect(
+        peerId,
+        opaqueId('disconnect-timeout-client', 'client', 'winrt:disconnect-timeout'),
+        operation()
+      )
+      boundary.setDisconnectGate(disconnectGate.promise)
+
+      let releaseResult = null
+      const release = lease.release()
+      release.then(result => {
+        releaseResult = result
+      })
+      await flushMicrotasks()
+      expect(boundary.disconnectCalls).toBe(1)
+      expect(releaseResult).toBeNull()
+
+      jest.runOnlyPendingTimers()
+      await flushMicrotasks()
+      expect(releaseResult).toMatchObject({
+        state: 'release-failed',
+        failures: [expect.objectContaining({ resourceKind: 'connection' })]
+      })
+      expect(backend.resourceCounters()).toMatchObject({ connectionLeases: 1, physicalLinks: 1 })
+
+      disconnectGate.resolve()
+      await flushMicrotasks()
+      await expect(lease.release()).resolves.toEqual({ state: 'released', failures: [] })
+      expect(boundary.disconnectCalls).toBe(1)
+      expect(Object.values(backend.resourceCounters()).every(value => Number(value) === 0)).toBe(true)
+    } finally {
+      disconnectGate.resolve()
+      if (lease !== null) await lease.release().catch(() => undefined)
+      if (backend !== null) await backend.destroy().catch(() => undefined)
+      jest.useRealTimers()
+    }
+  })
+
+  test('bounds destroy while a physical GATT settlement is pending and retries after late settlement', async () => {
+    jest.useFakeTimers()
+    const readGate = deferred()
+    let backend = null
+    let destroy = null
+    try {
+      const fixture = await connectedDatabaseFixture('destroy-timeout')
+      backend = fixture.backend
+      const { boundary, snapshot } = fixture
+      boundary.readGate = readGate.promise
+      const dispatch = backend.gatt.read(snapshot.characteristics[0].path, {
+        operation: {
+          ...operation(),
+          correlation: opaqueId('destroy-timeout', 'core-operation', 'winrt:destroy-timeout')
+        }
+      })
+      destroy = backend.destroy()
+      let destroyResult = null
+      destroy.then(result => {
+        destroyResult = result
+      })
+
+      await expect(dispatch.completion).rejects.toMatchObject({
+        normalized: { code: 'operation.cancelled-by-destroy' }
+      })
+      await flushMicrotasks()
+      jest.runOnlyPendingTimers()
+      await flushMicrotasks()
+      jest.runOnlyPendingTimers()
+      await flushMicrotasks()
+      expect(destroyResult).toMatchObject({
+        state: 'release-failed',
+        failures: expect.arrayContaining([expect.objectContaining({ resourceKind: 'operation-quarantine' })])
+      })
+      expect(boundary.destroyed).toBe(false)
+      expect(backend.resourceCounters()).toMatchObject({
+        connectionLeases: 1,
+        physicalLinks: 1,
+        dispatchedOperations: 1
+      })
+
+      readGate.resolve(new Uint8Array([7, 7]))
+      await flushMicrotasks()
+      expectConsoleInfo('[WinRtBackend] Late WinRT completion quarantined: winrt.gatt.read')
+      await expect(backend.destroy()).resolves.toEqual({ state: 'released', failures: [] })
+      expect(boundary.destroyed).toBe(true)
+      expect(Object.values(backend.resourceCounters()).every(value => Number(value) === 0)).toBe(true)
+    } finally {
+      readGate.resolve(new Uint8Array([7, 7]))
+      if (destroy !== null) await destroy.catch(() => undefined)
+      if (backend !== null) await backend.destroy().catch(() => undefined)
+      jest.useRealTimers()
+    }
+  })
+
+  test('retains the physical connection when core quarantine times out before native GATT settlement', async () => {
+    jest.useFakeTimers()
+    let manager = null
+    let release = null
+    const readGate = deferred()
+    try {
+      const fixture = await managerFixture()
+      manager = fixture.manager
+      const { backend, boundary } = fixture
+      const peerId = await observedPeerId(backend, boundary)
+      const connection = await manager.connect(peerId, operation())
+      const database = await connection.discover(operation())
+      const characteristic = (await database.snapshot()).characteristics[0].path
+      boundary.readGate = readGate.promise
+
+      const read = database.read(characteristic, operation())
+      await flushMicrotasks()
+      expect(backend.resourceCounters()).toMatchObject({ dispatchedOperations: 1 })
+
+      release = connection.release()
+      await expect(read).rejects.toMatchObject({ normalized: { code: 'operation.disconnected' } })
+      jest.runOnlyPendingTimers()
+      await flushMicrotasks()
+
+      expect(boundary.disconnectCalls).toBe(0)
+      let releaseResult = null
+      release.then(result => {
+        releaseResult = result
+      })
+      await flushMicrotasks()
+      expect(releaseResult).toBeNull()
+      jest.runOnlyPendingTimers()
+      await flushMicrotasks()
+      expect(releaseResult).toMatchObject({
+        state: 'release-failed',
+        failures: expect.arrayContaining([
+          expect.objectContaining({
+            resourceKind: 'operation-quarantine',
+            error: expect.objectContaining({ code: 'operation.timed-out', domain: 'cleanup' })
+          }),
+          expect.objectContaining({
+            resourceKind: 'connection',
+            error: expect.objectContaining({ code: 'operation.timed-out', domain: 'cleanup' })
+          })
+        ])
+      })
+      expect(backend.resourceCounters()).toMatchObject({
+        physicalLinks: 1,
+        connectionLeases: 1,
+        dispatchedOperations: 1
+      })
+
+      readGate.resolve(new Uint8Array([4, 2]))
+      await flushMicrotasks()
+      expectConsoleInfo('[WinRtBackend] Late WinRT completion quarantined: winrt.gatt.read')
+      await expect(connection.release()).resolves.toEqual({ state: 'released', failures: [] })
+      expect(boundary.disconnectCalls).toBe(1)
+      expect(backend.resourceCounters()).toMatchObject({
+        physicalLinks: 0,
+        connectionLeases: 0,
+        dispatchedOperations: 0
+      })
+    } finally {
+      readGate.resolve(new Uint8Array([4, 2]))
+      if (release !== null) await release.catch(() => undefined)
+      if (manager !== null) await manager.destroy()
+      jest.useRealTimers()
+    }
   })
 
   test.each([
@@ -2715,14 +3027,16 @@ describe('WinRT contract-v2 deterministic native-boundary vertical slice', () =>
     boundary.emitConnectionLoss()
     await expect(first).rejects.toMatchObject({ normalized: { code: 'operation.disconnected' } })
     let replacementSettled = false
-    const replacementAdmission = backend.connections.connect(
-      peerId,
-      opaqueId('connection-loss-generation-replacement', 'client', 'winrt:connection-loss-generation'),
-      operation()
-    ).then(replacement => {
-      replacementSettled = true
-      return replacement
-    })
+    const replacementAdmission = backend.connections
+      .connect(
+        peerId,
+        opaqueId('connection-loss-generation-replacement', 'client', 'winrt:connection-loss-generation'),
+        operation()
+      )
+      .then(replacement => {
+        replacementSettled = true
+        return replacement
+      })
     await flushMicrotasks()
     expect(replacementSettled).toBe(false)
 
@@ -2783,13 +3097,16 @@ describe('WinRT contract-v2 deterministic native-boundary vertical slice', () =>
     await expect(first).rejects.toMatchObject({ normalized: { code: 'operation.disconnected' } })
     gate.resolve()
     await flushMicrotasks()
+    await flushMicrotasks()
     expectConsoleErrorMatching(
       '[WinRtBackend.connect] Late native connect cleanup requires retry:',
       expect.arrayContaining([expect.objectContaining({ resourceKind: 'connection' })])
     )
     expectConsoleErrorMatching(
       '[WinRtBackend] Late WinRT completion failed: winrt.connect',
-      expect.objectContaining({ normalized: expect.objectContaining({ operation: 'winrt.connect.late-success-cleanup' }) })
+      expect.objectContaining({
+        normalized: expect.objectContaining({ operation: 'winrt.connect.late-success-cleanup' })
+      })
     )
     expectConsoleErrorMatching(
       '[WinRtBackend.connection-loss] Resource cleanup requires retry:',
@@ -2863,14 +3180,16 @@ describe('WinRT contract-v2 deterministic native-boundary vertical slice', () =>
 
     boundary.emitConnectionLoss()
     let replacementSettled = false
-    const replacementAdmission = backend.connections.connect(
-      peerId,
-      opaqueId('disconnect-loss-replacement', 'client', 'winrt:disconnect-loss-retirement'),
-      operation()
-    ).then(replacement => {
-      replacementSettled = true
-      return replacement
-    })
+    const replacementAdmission = backend.connections
+      .connect(
+        peerId,
+        opaqueId('disconnect-loss-replacement', 'client', 'winrt:disconnect-loss-retirement'),
+        operation()
+      )
+      .then(replacement => {
+        replacementSettled = true
+        return replacement
+      })
     await flushMicrotasks()
     expect(replacementSettled).toBe(false)
 
@@ -2946,7 +3265,9 @@ describe('WinRT contract-v2 deterministic native-boundary vertical slice', () =>
   test.each(['discover', 'read', 'write', 'read-descriptor', 'write-descriptor'])(
     'preserves operation.reset when adapter loss re-enters during native GATT %s start',
     async kind => {
-      const { backend, boundary, lease, database, snapshot } = await connectedDatabaseFixture(`synchronous-adapter-${kind}`)
+      const { backend, boundary, lease, database, snapshot } = await connectedDatabaseFixture(
+        `synchronous-adapter-${kind}`
+      )
       const characteristic = snapshot.characteristics[0].path
       const descriptor = snapshot.descriptors[0].path
       const correlation = opaqueId(`synchronous-adapter-${kind}`, 'core-operation', 'winrt:synchronous-adapter')
@@ -3007,7 +3328,9 @@ describe('WinRT contract-v2 deterministic native-boundary vertical slice', () =>
     expectConsoleInfo('[WinRtBackend] Late WinRT completion quarantined: winrt.gatt.discover')
 
     boundary.discoverGate = null
-    await expect(backend.gatt.discover(lease.connection, operation())).resolves.toMatchObject({ path: expect.any(Object) })
+    await expect(backend.gatt.discover(lease.connection, operation())).resolves.toMatchObject({
+      path: expect.any(Object)
+    })
     await expect(lease.release()).resolves.toEqual({ state: 'released', failures: [] })
     await backend.destroy()
   })
@@ -3040,9 +3363,8 @@ describe('WinRT contract-v2 deterministic native-boundary vertical slice', () =>
   })
 
   test('rejects a read when Services Changed is emitted synchronously by native start', async () => {
-    const { backend, boundary, lease, database, snapshot } = await connectedDatabaseFixture(
-      'synchronous-services-changed'
-    )
+    const { backend, boundary, lease, database, snapshot } =
+      await connectedDatabaseFixture('synchronous-services-changed')
     boundary.emitDatabaseChangedDuringNextRead = true
     const dispatch = backend.gatt.read(snapshot.characteristics[0].path, {
       operation: {
@@ -3057,7 +3379,9 @@ describe('WinRT contract-v2 deterministic native-boundary vertical slice', () =>
     await flushMicrotasks()
     expectConsoleInfo('[WinRtBackend] Late WinRT completion quarantined: winrt.gatt.read')
     await expect(database.snapshot()).rejects.toMatchObject({ normalized: { code: 'gatt.stale-handle' } })
-    await expect(backend.gatt.discover(lease.connection, operation())).resolves.toMatchObject({ path: expect.any(Object) })
+    await expect(backend.gatt.discover(lease.connection, operation())).resolves.toMatchObject({
+      path: expect.any(Object)
+    })
     await expect(lease.release()).resolves.toEqual({ state: 'released', failures: [] })
     await backend.destroy()
   })
@@ -3087,18 +3411,27 @@ describe('WinRT contract-v2 deterministic native-boundary vertical slice', () =>
   })
 
   test.each([
-    ['service', snapshot => {
-      snapshot.services.push({ uuid: serviceUuid, occurrence: 0, characteristics: [] })
-    }],
-    ['characteristic', snapshot => {
-      snapshot.services[0].characteristics.push({
-        ...snapshot.services[0].characteristics[0],
-        descriptors: []
-      })
-    }],
-    ['descriptor', snapshot => {
-      snapshot.services[0].characteristics[0].descriptors.push({ uuid: descriptorUuid, occurrence: 0 })
-    }]
+    [
+      'service',
+      snapshot => {
+        snapshot.services.push({ uuid: serviceUuid, occurrence: 0, characteristics: [] })
+      }
+    ],
+    [
+      'characteristic',
+      snapshot => {
+        snapshot.services[0].characteristics.push({
+          ...snapshot.services[0].characteristics[0],
+          descriptors: []
+        })
+      }
+    ],
+    [
+      'descriptor',
+      snapshot => {
+        snapshot.services[0].characteristics[0].descriptors.push({ uuid: descriptorUuid, occurrence: 0 })
+      }
+    ]
   ])('rejects a duplicate %s UUID and occurrence identity in a native snapshot', async (resource, mutate) => {
     const { backend, boundary, lease } = await connectedDatabaseFixture(`duplicate-${resource}`)
     const initial = await backend.gatt.discover(lease.connection, operation())
@@ -3184,7 +3517,11 @@ describe('WinRT contract-v2 deterministic native-boundary vertical slice', () =>
       'a throwing root cache-mode getter',
       () => {
         const snapshot = nativeGattSnapshot()
-        Object.defineProperty(snapshot, 'cacheMode', { get: () => { throw new Error('root cache mode getter failed') } })
+        Object.defineProperty(snapshot, 'cacheMode', {
+          get: () => {
+            throw new Error('root cache mode getter failed')
+          }
+        })
         return snapshot
       },
       'cache-mode'
@@ -3193,7 +3530,11 @@ describe('WinRT contract-v2 deterministic native-boundary vertical slice', () =>
       'a throwing root services getter',
       () => {
         const snapshot = nativeGattSnapshot()
-        Object.defineProperty(snapshot, 'services', { get: () => { throw new Error('root services getter failed') } })
+        Object.defineProperty(snapshot, 'services', {
+          get: () => {
+            throw new Error('root services getter failed')
+          }
+        })
         return snapshot
       },
       'services'
@@ -3218,7 +3559,11 @@ describe('WinRT contract-v2 deterministic native-boundary vertical slice', () =>
       'a throwing nested service UUID getter',
       () => {
         const snapshot = nativeGattSnapshot()
-        Object.defineProperty(snapshot.services[0], 'uuid', { get: () => { throw new Error('service UUID getter failed') } })
+        Object.defineProperty(snapshot.services[0], 'uuid', {
+          get: () => {
+            throw new Error('service UUID getter failed')
+          }
+        })
         return snapshot
       },
       'service-uuid'
@@ -3244,7 +3589,9 @@ describe('WinRT contract-v2 deterministic native-boundary vertical slice', () =>
       () => {
         const snapshot = nativeGattSnapshot()
         Object.defineProperty(snapshot.services[0].characteristics[0], 'notifiable', {
-          get: () => { throw new Error('characteristic getter failed') }
+          get: () => {
+            throw new Error('characteristic getter failed')
+          }
         })
         return snapshot
       },
@@ -3255,7 +3602,9 @@ describe('WinRT contract-v2 deterministic native-boundary vertical slice', () =>
       () => {
         const snapshot = nativeGattSnapshot()
         Object.defineProperty(snapshot.services[0].characteristics[0].descriptors[0], 'occurrence', {
-          get: () => { throw new Error('descriptor occurrence getter failed') }
+          get: () => {
+            throw new Error('descriptor occurrence getter failed')
+          }
         })
         return snapshot
       },
@@ -3279,15 +3628,36 @@ describe('WinRT contract-v2 deterministic native-boundary vertical slice', () =>
   })
 
   test.each([
-    ['characteristic-readable', snapshot => { snapshot.services[0].characteristics[0].readable = 'yes' }],
-    ['characteristic-writable-with-response', snapshot => {
-      snapshot.services[0].characteristics[0].writableWithResponse = undefined
-    }],
-    ['characteristic-writable-without-response', snapshot => {
-      snapshot.services[0].characteristics[0].writableWithoutResponse = 1
-    }],
-    ['characteristic-notifiable', snapshot => { snapshot.services[0].characteristics[0].notifiable = null }],
-    ['characteristic-indicatable', snapshot => { snapshot.services[0].characteristics[0].indicatable = 'no' }]
+    [
+      'characteristic-readable',
+      snapshot => {
+        snapshot.services[0].characteristics[0].readable = 'yes'
+      }
+    ],
+    [
+      'characteristic-writable-with-response',
+      snapshot => {
+        snapshot.services[0].characteristics[0].writableWithResponse = undefined
+      }
+    ],
+    [
+      'characteristic-writable-without-response',
+      snapshot => {
+        snapshot.services[0].characteristics[0].writableWithoutResponse = 1
+      }
+    ],
+    [
+      'characteristic-notifiable',
+      snapshot => {
+        snapshot.services[0].characteristics[0].notifiable = null
+      }
+    ],
+    [
+      'characteristic-indicatable',
+      snapshot => {
+        snapshot.services[0].characteristics[0].indicatable = 'no'
+      }
+    ]
   ])('rejects malformed native %s capability data', async (field, mutate) => {
     const { backend, boundary } = await backendFixture()
     const peerId = await observedPeerId(backend, boundary)
@@ -3298,20 +3668,24 @@ describe('WinRT contract-v2 deterministic native-boundary vertical slice', () =>
     )
     const snapshot = {
       cacheMode: 'uncached',
-      services: [{
-        uuid: serviceUuid,
-        occurrence: 0,
-        characteristics: [{
-          uuid: characteristicUuid,
+      services: [
+        {
+          uuid: serviceUuid,
           occurrence: 0,
-          readable: true,
-          writableWithResponse: true,
-          writableWithoutResponse: true,
-          notifiable: true,
-          indicatable: false,
-          descriptors: [{ uuid: descriptorUuid, occurrence: 0 }]
-        }]
-      }]
+          characteristics: [
+            {
+              uuid: characteristicUuid,
+              occurrence: 0,
+              readable: true,
+              writableWithResponse: true,
+              writableWithoutResponse: true,
+              notifiable: true,
+              indicatable: false,
+              descriptors: [{ uuid: descriptorUuid, occurrence: 0 }]
+            }
+          ]
+        }
+      ]
     }
     mutate(snapshot)
     boundary.discoverSnapshot = snapshot
@@ -3348,20 +3722,24 @@ describe('WinRT contract-v2 deterministic native-boundary vertical slice', () =>
       'a null descriptors collection',
       () => ({
         cacheMode: 'uncached',
-        services: [{
-          uuid: serviceUuid,
-          occurrence: 0,
-          characteristics: [{
-            uuid: characteristicUuid,
+        services: [
+          {
+            uuid: serviceUuid,
             occurrence: 0,
-            readable: true,
-            writableWithResponse: true,
-            writableWithoutResponse: true,
-            notifiable: true,
-            indicatable: false,
-            descriptors: null
-          }]
-        }]
+            characteristics: [
+              {
+                uuid: characteristicUuid,
+                occurrence: 0,
+                readable: true,
+                writableWithResponse: true,
+                writableWithoutResponse: true,
+                notifiable: true,
+                indicatable: false,
+                descriptors: null
+              }
+            ]
+          }
+        ]
       }),
       'descriptors'
     ],
@@ -3369,20 +3747,24 @@ describe('WinRT contract-v2 deterministic native-boundary vertical slice', () =>
       'a record descriptors collection',
       () => ({
         cacheMode: 'uncached',
-        services: [{
-          uuid: serviceUuid,
-          occurrence: 0,
-          characteristics: [{
-            uuid: characteristicUuid,
+        services: [
+          {
+            uuid: serviceUuid,
             occurrence: 0,
-            readable: true,
-            writableWithResponse: true,
-            writableWithoutResponse: true,
-            notifiable: true,
-            indicatable: false,
-            descriptors: {}
-          }]
-        }]
+            characteristics: [
+              {
+                uuid: characteristicUuid,
+                occurrence: 0,
+                readable: true,
+                writableWithResponse: true,
+                writableWithoutResponse: true,
+                notifiable: true,
+                indicatable: false,
+                descriptors: {}
+              }
+            ]
+          }
+        ]
       }),
       'descriptors'
     ],
@@ -3390,20 +3772,24 @@ describe('WinRT contract-v2 deterministic native-boundary vertical slice', () =>
       'a null descriptor entry',
       () => ({
         cacheMode: 'uncached',
-        services: [{
-          uuid: serviceUuid,
-          occurrence: 0,
-          characteristics: [{
-            uuid: characteristicUuid,
+        services: [
+          {
+            uuid: serviceUuid,
             occurrence: 0,
-            readable: true,
-            writableWithResponse: true,
-            writableWithoutResponse: true,
-            notifiable: true,
-            indicatable: false,
-            descriptors: [null]
-          }]
-        }]
+            characteristics: [
+              {
+                uuid: characteristicUuid,
+                occurrence: 0,
+                readable: true,
+                writableWithResponse: true,
+                writableWithoutResponse: true,
+                notifiable: true,
+                indicatable: false,
+                descriptors: [null]
+              }
+            ]
+          }
+        ]
       }),
       'descriptor'
     ]
@@ -3455,7 +3841,9 @@ describe('WinRT contract-v2 deterministic native-boundary vertical slice', () =>
 
     expect(() => boundary.connect(peerId, 'rollback-generation')).toThrow('connect rollback cleanup failure')
     expect(boundary.cleanupPendingConnections).toEqual(new Set([peerId]))
-    await expect(boundary.connect(peerId, 'replacement-generation').completion).rejects.toThrow('cleanup remains retryable')
+    await expect(boundary.connect(peerId, 'replacement-generation').completion).rejects.toThrow(
+      'cleanup remains retryable'
+    )
 
     await expect(boundary.disconnect(peerId).completion).resolves.toBeUndefined()
     expect(boundary.cleanupPendingConnections).toEqual(new Set())
@@ -3483,7 +3871,9 @@ describe('WinRT contract-v2 deterministic native-boundary vertical slice', () =>
     boundary.throwNextDisconnect = true
     const failedDestroy = await backend.destroy()
     expect(failedDestroy.state).toBe('release-failed')
-    expect(failedDestroy.failures).toEqual(expect.arrayContaining([expect.objectContaining({ resourceKind: 'connection' })]))
+    expect(failedDestroy.failures).toEqual(
+      expect.arrayContaining([expect.objectContaining({ resourceKind: 'connection' })])
+    )
     expect(backend.resourceCounters()).toMatchObject({ connectionLeases: 1, physicalLinks: 1 })
 
     await expect(backend.destroy()).resolves.toEqual({ state: 'released', failures: [] })
@@ -3507,6 +3897,199 @@ describe('WinRT contract-v2 deterministic native-boundary vertical slice', () =>
 
     await expect(backend.destroy()).resolves.toEqual({ state: 'released', failures: [] })
     expect(boundary.destroyed).toBe(true)
+    expect(Object.values(backend.resourceCounters()).every(value => Number(value) === 0)).toBe(true)
+  })
+
+  test('bounds a pending native scan stop and retains the watcher until its retryable settlement', async () => {
+    jest.useFakeTimers()
+    try {
+      const { backend, boundary } = await backendFixture()
+      const scan = await backend.scanner.start(
+        scanOptions(),
+        opaqueId('bounded-scan-stop-client', 'client', 'winrt:bounded-scan-stop')
+      )
+      const stopGate = deferred()
+      boundary.setStopScanGate(stopGate.promise)
+
+      let stopResult
+      scan.stop().then(result => {
+        stopResult = result
+      })
+      await flushMicrotasks()
+      expect(boundary.stopScanCalls).toBe(1)
+      expect(backend.resourceCounters()).toMatchObject({ activeScanControllers: 1, scanConsumers: 1 })
+
+      jest.advanceTimersByTime(1001)
+      await flushMicrotasks()
+      expect(stopResult).toMatchObject({
+        state: 'release-failed',
+        failures: [expect.objectContaining({ resourceKind: 'scan' })]
+      })
+      expect(backend.resourceCounters()).toMatchObject({ activeScanControllers: 1, scanConsumers: 1 })
+
+      stopGate.resolve()
+      boundary.setStopScanGate(null)
+      await flushMicrotasks()
+      await expect(scan.stop()).resolves.toEqual({ state: 'released', failures: [] })
+      expect(boundary.stopScanCalls).toBe(1)
+      expect(Object.values(backend.resourceCounters()).every(value => Number(value) === 0)).toBe(true)
+      await expect(backend.destroy()).resolves.toEqual({ state: 'released', failures: [] })
+    } finally {
+      jest.useRealTimers()
+    }
+  })
+
+  test('bounds a pending native CCCD stop and retains physical ownership until its retryable settlement', async () => {
+    jest.useFakeTimers()
+    try {
+      const { backend, boundary, lease, database, snapshot } = await connectedDatabaseFixture('bounded-cccd-stop')
+      const subscription = await database.subscribe(snapshot.characteristics[0].path, {
+        ...operation(),
+        delivery: delivery()
+      })
+      const stopGate = deferred()
+      boundary.setStopNotifyGate(stopGate.promise)
+
+      let removeResult
+      subscription.remove().then(result => {
+        removeResult = result
+      })
+      await flushMicrotasks()
+      expect(boundary.stopNotifyCalls).toBe(1)
+
+      jest.advanceTimersByTime(1001)
+      await flushMicrotasks()
+      expect(removeResult).toMatchObject({
+        state: 'release-failed',
+        failures: [expect.objectContaining({ resourceKind: 'subscription' })]
+      })
+      expect(backend.resourceCounters()).toMatchObject({ physicalCccdEnablements: 1, subscriptionConsumers: 0 })
+      expect(boundary.notificationHandlers.size).toBe(1)
+
+      stopGate.resolve()
+      boundary.setStopNotifyGate(null)
+      await flushMicrotasks()
+      await expect(subscription.remove()).resolves.toEqual({ state: 'released', failures: [] })
+      expect(boundary.stopNotifyCalls).toBe(1)
+      expect(backend.resourceCounters()).toMatchObject({ physicalCccdEnablements: 0, subscriptionConsumers: 0 })
+      await expect(lease.release()).resolves.toEqual({ state: 'released', failures: [] })
+      expect(Object.values(backend.resourceCounters()).every(value => Number(value) === 0)).toBe(true)
+      await expect(backend.destroy()).resolves.toEqual({ state: 'released', failures: [] })
+    } finally {
+      jest.useRealTimers()
+    }
+  })
+
+  test('retains a connected adapter-loss lease until the native link disconnects and retries cleanup', async () => {
+    const { backend, boundary } = await backendFixture()
+    const peerId = await observedPeerId(backend, boundary)
+    const lease = await backend.connections.connect(
+      peerId,
+      opaqueId('adapter-loss-connected-client', 'client', 'winrt:adapter-loss-connected'),
+      operation()
+    )
+    boundary.failNextDisconnect = true
+
+    boundary.emitAdapterLoss()
+    await flushMicrotasks()
+    expectConsoleErrorMatching(
+      '[WinRtBackend.adapter-state] Adapter loss cleanup requires retry:',
+      expect.arrayContaining([expect.objectContaining({ resourceKind: 'connection' })])
+    )
+    expect(boundary.disconnectCalls).toBe(1)
+    expect(boundary.connected.has('C0FFEE000001')).toBe(true)
+    expect(backend.resourceCounters()).toMatchObject({ connectionLeases: 1, physicalLinks: 1 })
+    await expect(
+      backend.connections.connect(
+        peerId,
+        opaqueId('adapter-loss-connected-replacement', 'client', 'winrt:adapter-loss-connected'),
+        operation()
+      )
+    ).rejects.toMatchObject({ normalized: { code: 'lifecycle.invalid-state' } })
+
+    boundary.emitAdapterReady()
+    await flushMicrotasks()
+    expect(boundary.disconnectCalls).toBe(2)
+    expect(boundary.connected.has('C0FFEE000001')).toBe(false)
+    expect(Object.values(backend.resourceCounters()).every(value => Number(value) === 0)).toBe(true)
+    await expect(lease.release()).resolves.toEqual({ state: 'released', failures: [] })
+    await expect(backend.destroy()).resolves.toEqual({ state: 'released', failures: [] })
+  })
+
+  test('retries adapter-loss scan cleanup automatically after native settlement and adapter recovery', async () => {
+    jest.useFakeTimers()
+    const stopGate = deferred()
+    try {
+      const { backend, boundary } = await backendFixture()
+      await backend.scanner.start(scanOptions(), opaqueId('adapter-loss-auto-retry', 'client', 'winrt:adapter-loss'))
+      boundary.setStopScanGate(stopGate.promise)
+
+      boundary.emitAdapterLoss()
+      await flushMicrotasks()
+      jest.advanceTimersByTime(1_001)
+      await flushMicrotasks()
+      expectConsoleErrorMatching('[WinRtBackend.adapter-state] Adapter loss cleanup requires retry:', expect.any(Array))
+
+      boundary.emitAdapterReady()
+      await flushMicrotasks()
+
+      stopGate.resolve()
+      boundary.setStopScanGate(null)
+      await flushMicrotasks()
+      const scan = await backend.scanner.start(
+        scanOptions(),
+        opaqueId('adapter-loss-auto-retry-scan', 'client', 'winrt:adapter-loss')
+      )
+      await expect(scan.stop()).resolves.toEqual({ state: 'released', failures: [] })
+      await expect(backend.destroy()).resolves.toEqual({ state: 'released', failures: [] })
+    } finally {
+      stopGate.resolve()
+      jest.useRealTimers()
+    }
+  })
+
+  test('ignores retained native callbacks after backend destruction', async () => {
+    const { backend, boundary } = await backendFixture()
+    const callbacks = {
+      connection: [...boundary.connectionListeners][0],
+      database: [...boundary.databaseListeners][0],
+      scanTerminal: [...boundary.scanTerminalListeners][0],
+      adapter: [...boundary.adapterListeners][0]
+    }
+    const before = await backend.adapter.currentState()
+
+    await expect(backend.destroy()).resolves.toEqual({ state: 'released', failures: [] })
+    expect(() =>
+      callbacks.connection({
+        nativePeerId: 'late-peer',
+        connectionGeneration: 'late-generation',
+        safeReason: null
+      })
+    ).not.toThrow()
+    expect(() =>
+      callbacks.database({
+        nativePeerId: 'late-peer',
+        connectionGeneration: 'late-generation'
+      })
+    ).not.toThrow()
+    expect(() =>
+      callbacks.scanTerminal({
+        scanToken: 'late-scan',
+        status: 'stopped',
+        error: 'success'
+      })
+    ).not.toThrow()
+    expect(() =>
+      callbacks.adapter({
+        availability: 'unavailable',
+        authorization: 'unavailable',
+        power: 'off',
+        safeReason: 'late-callback'
+      })
+    ).not.toThrow()
+
+    await flushMicrotasks()
+    await expect(backend.adapter.currentState()).resolves.toEqual(before)
     expect(Object.values(backend.resourceCounters()).every(value => Number(value) === 0)).toBe(true)
   })
 
@@ -3585,7 +4168,9 @@ describe('WinRT contract-v2 deterministic native-boundary vertical slice', () =>
     )
     expectConsoleErrorMatching(
       '[WinRtBackend] Late WinRT completion failed: winrt.connect',
-      expect.objectContaining({ normalized: expect.objectContaining({ operation: 'winrt.connect.late-success-cleanup' }) })
+      expect.objectContaining({
+        normalized: expect.objectContaining({ operation: 'winrt.connect.late-success-cleanup' })
+      })
     )
     boundary.setConnectGate(null)
 

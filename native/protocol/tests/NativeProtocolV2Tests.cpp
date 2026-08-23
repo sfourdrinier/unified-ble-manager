@@ -183,6 +183,11 @@ void testVersionNegotiation() {
   const auto versions = protocol::NativeProtocolV2Codec::negotiate(
       nativeProtocolRange(), abiVersionRange(), {1U, 1U}, {1U, 1U}, {1U, 1U}, {1U, 1U});
   assert(versions.nativeProtocol == protocol::kProtocolVersion);
+  assert(versions.abi == protocol::kAbiVersion);
+  expectFailure(protocol::ProtocolFailure::incompatibleVersion, [] {
+    static_cast<void>(protocol::NativeProtocolV2Codec::negotiate(
+        nativeProtocolRange(), {2U, 2U}, {1U, 1U}, {1U, 1U}, {1U, 1U}, {1U, 1U}));
+  });
   expectFailure(protocol::ProtocolFailure::incompatibleVersion, [] {
     static_cast<void>(protocol::NativeProtocolV2Codec::negotiate(
         {3U, 4U}, abiVersionRange(), {1U, 1U}, {1U, 1U}, {1U, 1U}, {1U, 1U}));

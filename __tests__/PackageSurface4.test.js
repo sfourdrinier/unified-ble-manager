@@ -152,12 +152,23 @@ describe('4.0 public package surface', () => {
   })
 
   test('compiles application, backend-author, and deterministic-testing imports against declared subpaths', () => {
+    const fixture = fs.readFileSync(path.join(__dirname, 'package-surface', 'fixtures', 'host-surface.ts'), 'utf8')
+    for (const subpath of [
+      'unified-ble-manager/expo',
+      'unified-ble-manager/tauri',
+      'unified-ble-manager/node/corebluetooth'
+    ]) {
+      expect(fixture).toContain(`from '${subpath}'`)
+    }
     for (const configFileName of [
       'tsconfig.json',
       'tsconfig.bundler.json',
       'tsconfig.node16.json',
       'tsconfig.nodenext.json'
     ]) {
+      expect(() => compilePublicSurfaceFixture(configFileName)).not.toThrow()
+    }
+    for (const configFileName of ['tsconfig.host.json', 'tsconfig.host.bundler.json']) {
       expect(() => compilePublicSurfaceFixture(configFileName)).not.toThrow()
     }
   })

@@ -4,6 +4,7 @@ import { contractError } from '../../backend-contract/errors'
 import {
   createBackendOperationDispatch,
   type BackendOperationDispatch,
+  type BackendOperationPhysicalSettlement,
   type CancellationAcknowledgement,
   type PublicOperationOptions
 } from '../../backend-contract/operations'
@@ -17,7 +18,7 @@ export interface WinRtTrackedAsyncOperation<Value> extends WinRtAsyncOperation<V
 
 /** Internal dispatch view that exposes when native ownership has actually retired. */
 export interface WinRtOperationDispatch<Result> extends BackendOperationDispatch<string, Result> {
-  readonly physicalCompletion: Promise<void>
+  readonly physicalSettlement: BackendOperationPhysicalSettlement
 }
 
 interface SnapshottedWinRtAsyncOperation<Value> {
@@ -83,7 +84,12 @@ export class WinRtOperationDispatcher {
       if (observedCompletion.completion !== null) {
         this.containPromiseRejection(observedCompletion.completion)
       }
-      return this.rejectedDispatch(handle, this.asError(error, operationName))
+      const physicalSettlement =
+        observedCompletion.completion?.then(
+          () => undefined,
+          () => undefined
+        ) ?? Promise.resolve()
+      return this.rejectedDispatch(handle, this.asError(error, operationName), physicalSettlement)
     }
     let resolvePublic: (value: Result) => void = () => undefined
     let rejectPublic: (reason: Error) => void = () => undefined
@@ -187,25 +193,32 @@ export class WinRtOperationDispatcher {
         await this.retireAfterPhysicalCompletion(active, native.physicalCompletion, operationName)
       }
     )
-    const physicalCompletion = nativeContinuation.catch(error => {
+    const physicalSettlement = nativeContinuation.catch(error => {
       this.reportLateFailure(operationName, this.asError(error, operationName))
     })
-    return {
-      ...createBackendOperationDispatch(handle, completion, () => this.requestCancellation(active)),
-      physicalCompletion
-    }
+    const dispatch = createBackendOperationDispatch(
+      handle,
+      completion,
+      () => this.requestCancellation(active),
+      physicalSettlement
+    )
+    return { ...dispatch, physicalSettlement }
   }
 
   private rejectedDispatch<Result>(
     handle: BackendOperationHandle<string, string>,
-    error: Error
+    error: Error,
+    physicalSettlement: Promise<void> = Promise.resolve()
   ): WinRtOperationDispatch<Result> {
     const completion = Promise.reject<Result>(error)
     this.containPromiseRejection(completion)
-    return {
-      ...createBackendOperationDispatch(handle, completion, async () => ({ handle, state: 'already-terminal' })),
-      physicalCompletion: Promise.resolve()
-    }
+    const dispatch = createBackendOperationDispatch(
+      handle,
+      completion,
+      async () => ({ handle, state: 'already-terminal' }),
+      physicalSettlement
+    )
+    return { ...dispatch, physicalSettlement }
   }
 
   /** Snapshots native members before admission so hostile getters cannot strand an active operation. */
@@ -350,7 +363,12 @@ export class WinRtOperationDispatcher {
     }
     let cancellation: Promise<CancellationAcknowledgement<string>>
     try {
-      cancellation = Promise.resolve(active.native.cancel()).then(state => ({ handle: active.handle, state }))
+      cancellation = Promise.resolve(active.native.cancel()).then(state => {
+        if (state !== 'cancellation-requested' && state !== 'already-terminal' && state !== 'not-cancellable') {
+          throw contractError('protocol.malformed', 'boundary', 'winrt.dispatcher.cancellation-acknowledgement')
+        }
+        return { handle: active.handle, state }
+      })
     } catch (error) {
       cancellation = Promise.reject(error)
     }

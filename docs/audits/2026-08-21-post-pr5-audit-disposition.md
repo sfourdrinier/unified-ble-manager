@@ -306,3 +306,32 @@ Native-authoritative React Native/Expo restoration is an explicit PR10
 deferral tracked by [#34](https://github.com/sfourdrinier/unified-ble-manager/issues/34); PR6 must not claim it is
 implemented. RC3 remains gated for after PR8, and this ledger does not promote
 PR6 to a release claim by itself.
+
+## PR8 current checkpoint
+
+The current PR8 branch is `feat/4.0-link-controls` with implementation source
+tip `99bf789`; the runtime hardening slices are committed separately as
+`4224c0a`/`b7aa1f8`/`59cdb33`/`f31bca6`/`b27b03b` (CoreBluetooth), `1fd13f2`/`56f5492`/`fc1c667`/`2814d2c`/`812ba53`/`b853040` (BlueZ), and `4297f7b`/`8fa029e`/`bbdf891`/`2e2acb4`/`99bf789` (WinRT). The readiness ingress, core
+writeWhenReady lifecycle, packed-consumer validator, public Web consumers,
+Android PHY runtime truth, executable TCK closure slices, connection-scoped
+CoreBluetooth readiness ownership, physical native settlement quarantine across
+native dispatchers, changed-observation preservation, adapter-loss fail-closed
+cleanup, the CoreBluetooth idle barrier, and bounded core cleanup are
+committed through this tip. The last hosted run is recorded separately because
+it ran against the earlier source tip `046b764`.
+
+| Area | Current evidence | Disposition |
+| --- | --- | --- |
+| Public controls and API surface | Required `BleConnection.controls`, required `rediscoverGatt`, generation-bound observations, canonical root exports, and reviewed root API report | Fixed and locally verified |
+| Android priority | Versioned Native Protocol v2 command/result, Android `BluetoothGatt.requestConnectionPriority` through the per-device serial queue, accepted/rejected result without observed-parameter overclaim | Android-only, limited/deterministic; hosted Android and physical evidence remain open |
+| Android PHY | Versioned Native Protocol v2 read/request results, API-26+ `readPhy`/`setPreferredPhy`, callback mismatch/stale-generation rejection, and a handshake-derived API-level capability that fails closed below API 26 | Android-only, limited/deterministic on API 26+; hosted Android and physical evidence remain open |
+| Android effective MTU | Generation-bound `readMtu` probe backed only by successful `onMtuChanged` state; unavailable before measurement | Android-only, limited/deterministic; hosted Android and physical evidence remain open |
+| CoreBluetooth readiness | `canSendWriteWithoutResponse`, `peripheralIsReady(toSendWriteWithoutResponse:)`, native ordinal/generation, bounded stream, connection-scoped release/loss/destroy cleanup, blocked-disconnect ownership | Direct Node/Electron-main only, limited/deterministic; other hosts remain unsupported |
+| Scheduler and recovery | Per-connection bounded round-robin lanes, queue overflow, service-change cancellation, reasoned rediscovery, uncertain-write preservation, hidden-refresh source guard, physical-settlement quarantine, bounded cleanup with retry ownership | Fixed with focused TDD/TCK coverage |
+| TCK and docs | PR8 closure scenarios now execute PHY/readiness probes, keep parameters/subrate explicitly scoped to the absent seam, preserve nullable skipped security observations, and include the corrected advanced-helper imports | Deterministic evidence only; no physical-radio claim |
+| Local package gate | `pnpm test:package`: 142 suites / 1,366 tests; `pnpm test:plugin`: 36 tests; docs/API, native protocol, artifact, smell, lint/typecheck, and diff checks included | Green locally |
+| Native/plugin gates | CoreBluetooth macOS Node-API build, native protocol host, plugin 36/36, release artifacts, typecheck/lint; hosted Android classic/Expo, Windows JS, and Tauri qualification passed in `32592655162` at `046b764` | Local source gates green; hosted rerun required for `99bf789`; Apple compile remains opt-in/skipped |
+| Packed consumer gate | Local npm pack smoke and the new Expo/Tauri packed runner encounter the environment's npm `Exit handler never called!` / pack hang; normal npm subprocesses have a 600-second bound and hosted supported Node remains authoritative | Hosted Node 22/24 generic and G6A proof passed in `32592655162` at `046b764`; packed Expo/Tauri and current-source rerun required for `99bf789` |
+| Performance baselines | Deterministic baseline `unified-ble-pr8-deterministic-performance-v1`: 23 measurements in the focused 3-payload test and 31 measurements / 15 categories in default `performance:check`, including all ten PR8 IDs, bounded cleanup and ownership metadata | Deterministic baseline fixed; live/native comparison remains a PR12 gate |
+| Remaining contract gaps | Parameter/subrate remain unsupported because no truthful pinned API is wired; readiness is unsupported outside the direct CoreBluetooth seam; `writeWhenReady` has a capability-gated public/core implementation with deterministic cleanup and uncertainty semantics | Parameter/subrate/readiness host coverage remain open; no capability is promoted from deterministic evidence to physical support |
+| Review/release | PR #41 is open; first Copilot/Codex findings and current Codex threads are dispositioned through `99bf789`; full CoreBluetooth/BlueZ/WinRT focused sets and release documentation are green, while hosted rerun, external review, merge, and RC3 remain pending | Blocking; RC2 remains immutable |

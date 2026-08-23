@@ -3,8 +3,9 @@
 import type { AdvertisementObservation, OwnerScanOptions } from '../../backend-contract/advertisement'
 import type { CleanupRecord } from '../../backend-contract/errors'
 import type { NotificationValue } from '../../backend-contract/gatt'
-import type { OperationTerminalRecord } from '../../backend-contract/operations'
+import type { BackendOperationPhysicalSettlement, OperationTerminalRecord } from '../../backend-contract/operations'
 import type {
+  BackendOperationHandle,
   ClientId,
   LeaseId,
   PeerId,
@@ -47,7 +48,12 @@ export interface BluezScanGroup {
   readonly consumers: Map<string, BluezScanConsumer>
   state: 'starting' | 'active' | 'stopping'
   physicalStarted: boolean
+  stopDiscoveryRequested: boolean
+  stopDiscovery: Promise<void> | null
+  filterClearRequested: boolean
+  filterClear: Promise<void> | null
   stopRequested: boolean
+  resetRequested: boolean
   startupComplete: boolean
   readonly startupSettled: Promise<void>
   readonly settleStartup: () => void
@@ -59,6 +65,7 @@ export interface BluezConnectionRecord {
   connection: BluezConnection | null
   readonly leases: Set<BluezConnectionLease>
   readonly databases: Set<BluezGattDatabase>
+  readonly pendingOperations: Map<BackendOperationHandle<string, string>, BluezPendingConnectionOperation>
   state: 'connecting' | 'connected' | 'disconnecting' | 'disconnected' | 'lost'
   active: boolean
   /** A Connect call or an existing BlueZ link requires destroy-time Disconnect even before confirmation. */
@@ -68,8 +75,15 @@ export interface BluezConnectionRecord {
   currentDatabase: BluezGattDatabase | null
   transition: Promise<void> | null
   disconnection: Promise<CleanupRecord> | null
+  disconnectRequested: boolean
+  disconnectMethod: Promise<void> | null
   pendingConnectors: number
   orphanCleanupScheduled: boolean
+}
+
+export interface BluezPendingConnectionOperation {
+  readonly operationName: string
+  readonly physicalSettlement: BackendOperationPhysicalSettlement
 }
 
 export interface BluezGattDescriptorRecord {
@@ -99,15 +113,19 @@ export interface BluezGattSnapshotRecord {
 export interface BluezPhysicalSubscription {
   readonly objectPath: string
   readonly consumers: Set<BluezSubscriptionRecord>
+  readonly pendingRemovals: Set<BluezSubscriptionRecord>
   pendingConsumers: number
   state: 'enabling' | 'ready' | 'removing'
   readonly startMethod: Promise<void>
   readonly enablement: Promise<void>
   removal: Promise<CleanupRecord> | null
+  stopMethod: Promise<void> | null
+  stopRequested: boolean
 }
 
 export interface BluezSubscriptionRecord {
   readonly subscriptionId: SubscriptionId<string, string, string, string, string, string>
+  readonly ownerLeaseId: LeaseId<string, string>
   readonly stream: CoreBoundedStream<NotificationValue>
   readonly terminal: OperationTerminalRecord<string, string>
   readonly physical: BluezPhysicalSubscription

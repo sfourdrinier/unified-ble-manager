@@ -6,6 +6,7 @@ const childProcess = require('child_process')
 const fs = require('fs')
 const os = require('os')
 const path = require('path')
+const { encodeNativeProtocolRecord } = require('../../src/native-protocol/v2-codec')
 
 const root = path.resolve(__dirname, '../..')
 const schemaPath = path.join(root, 'native/protocol/schema/native-protocol-v2.json')
@@ -15,6 +16,62 @@ function read(relativePath) {
 }
 
 describe('Native Protocol v2 schema authority', () => {
+  function priorityCommand(priority, extraFields = []) {
+    const attachment = {
+      kind: 'attachment',
+      fields: [
+        { id: 1, value: 'attachment-1' },
+        { id: 2, value: 'backend-1' },
+        { id: 3, value: 'generation-1' },
+        { id: 4, value: 'adapter-1' },
+        { id: 5, value: 'adapter-generation-1' }
+      ]
+    }
+    const correlation = {
+      kind: 'operationCorrelation',
+      fields: [
+        { id: 1, value: attachment },
+        { id: 2, value: 1 },
+        { id: 3, value: 'priority-1' }
+      ]
+    }
+    return {
+      kind: 'command',
+      fields: [
+        { id: 1, value: 2 },
+        { id: 2, value: correlation },
+        { id: 3, value: 'requestPriority' },
+        { id: 16, value: priority },
+        ...extraFields
+      ]
+    }
+  }
+
+  test('declares the Android priority command/result and accepted boolean in the v2 source schema', () => {
+    const schema = JSON.parse(fs.readFileSync(schemaPath, 'utf8'))
+    expect(schema.commandKinds).toContain('requestPriority')
+    expect(schema.resultKinds).toContain('priority')
+    expect(schema.connectionPriorities).toEqual(['lowPower', 'balanced', 'highThroughput'])
+    expect(schema.records.find(record => record.name === 'command').fields).toContainEqual([
+      'connectionPriority',
+      'enum:connectionPriorities',
+      false
+    ])
+    expect(schema.records.find(record => record.name === 'result').fields).toContainEqual([
+      'priorityAccepted',
+      'boolean',
+      false
+    ])
+  })
+
+  test('rejects malformed, duplicate, and unsupported priority command values at the codec boundary', () => {
+    expect(() => encodeNativeProtocolRecord(priorityCommand('highThroughput'))).not.toThrow()
+    expect(() => encodeNativeProtocolRecord(priorityCommand('turbo'))).toThrow('Native protocol enum value is invalid')
+    expect(() =>
+      encodeNativeProtocolRecord(priorityCommand('balanced', [{ id: 16, value: 'lowPower' }]))
+    ).toThrow('Native protocol record has a duplicate field')
+  })
+
   test('locks every record, enum, and field to an explicit immutable v1 ABI wire ID', () => {
     const schema = JSON.parse(fs.readFileSync(schemaPath, 'utf8'))
     const manifest = JSON.parse(fs.readFileSync(path.join(path.dirname(schemaPath), schema.abiManifest), 'utf8'))
@@ -148,6 +205,48 @@ describe('Native Protocol v2 schema authority', () => {
     expect(runtime).toContain('settleResult')
     expect(runtime).toContain('deliverUint8ArrayCopy')
     expect(nativeBinding).not.toMatch(/Base64/)
+  })
+
+  test('keeps Android PHY runtime truth in the versioned handshake extension without changing protocol-v2 records', () => {
+    const control = read('src/NativeUnifiedBleProtocolControl.ts')
+    const androidControl = read(
+      'android/src/main/java/com/sfourdrinier/unifiedblemanager/protocol/UnifiedBleProtocolControlModule.java'
+    )
+    const dispatcher = read(
+      'android/src/main/java/com/sfourdrinier/unifiedblemanager/protocol/UnifiedBleProtocolAndroidDispatcher.kt'
+    )
+    const schema = read('src/native-protocol/generated/native-protocol-v2-schema.ts')
+
+    expect(control).toContain('phyAvailable?: boolean')
+    expect(androidControl).toContain('phyAvailable')
+    expect(dispatcher).toContain('Build.VERSION_CODES.O')
+    expect(schema).toContain('export const NATIVE_PROTOCOL_VERSION = 2')
+    expect(schema).not.toContain('phyAvailable')
+  })
+
+  test('versions Android link-control schema additions with ABI v3 while retaining protocol v2 records', () => {
+    const schema = JSON.parse(fs.readFileSync(schemaPath, 'utf8'))
+    const manifest = JSON.parse(fs.readFileSync(path.join(path.dirname(schemaPath), schema.abiManifest), 'utf8'))
+    const cpp = read('native/protocol/generated/NativeProtocolV2Schema.hpp')
+    const kotlin = read('android/src/main/java/com/sfourdrinier/unifiedblemanager/protocol/generated/NativeProtocolV2Schema.kt')
+    const swift = read('ios/Generated/NativeProtocolV2Schema.swift')
+    const typescript = read('src/native-protocol/generated/native-protocol-v2-schema.ts')
+    const androidControl = read(
+      'android/src/main/java/com/sfourdrinier/unifiedblemanager/protocol/UnifiedBleProtocolControlModule.java'
+    )
+
+    expect(schema.version).toBe(2)
+    expect(schema.abiVersion).toBe(3)
+    expect(manifest.version).toBe(3)
+    expect(cpp).toContain('kProtocolVersion = 2U')
+    expect(cpp).toContain('kAbiVersion = 3U')
+    expect(kotlin).toContain('NATIVE_PROTOCOL_VERSION: Int = 2')
+    expect(kotlin).toContain('NATIVE_PROTOCOL_ABI_VERSION: Int = 3')
+    expect(swift).toContain('nativeProtocolVersion: UInt32 = 2')
+    expect(swift).toContain('nativeProtocolABIVersion: UInt32 = 3')
+    expect(typescript).toContain('export const NATIVE_PROTOCOL_VERSION = 2')
+    expect(typescript).toContain('export const NATIVE_PROTOCOL_ABI_VERSION = 3')
+    expect(androidControl).toContain('NativeProtocolV2SchemaKt.NATIVE_PROTOCOL_ABI_VERSION')
   })
 
   test('keeps Android JNI advertisement bytes and rejected command input under explicit native ownership', () => {

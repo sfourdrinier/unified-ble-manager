@@ -67,6 +67,9 @@ export function createDeterministicBackendTckFactory(
       return {
         backend: fixture.backend,
         controller: createDeterministicTckScenarioController(fixture),
+        featureScenarioAdapters: Object.freeze({
+          connectionControls: Object.freeze({ requestedMtu: 247 })
+        }),
         dispose: () => fixture.backend.destroy()
       }
     }
