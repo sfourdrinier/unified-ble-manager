@@ -68,8 +68,10 @@ public final class UnifiedBleProtocolControlModule extends NativeUnifiedBleProto
   private final ConnectedDeviceForegroundServiceLeaseRegistry backgroundLeases;
   private long nextBackgroundLease = 1L;
   private static final int ASSOCIATION_REQUEST_CODE = 0x5542;
+  private int nextAssociationRequestCodeValue = ASSOCIATION_REQUEST_CODE;
   private Promise pendingAssociation;
   private int pendingAssociationId = 0;
+  private int pendingAssociationRequestCode = 0;
   private boolean associationUiLaunched = false;
 
   public UnifiedBleProtocolControlModule(ReactApplicationContext reactContext) {
@@ -174,42 +176,35 @@ public final class UnifiedBleProtocolControlModule extends NativeUnifiedBleProto
           .build();
       pendingAssociation = promise;
       pendingAssociationId = 0;
+      final int associationRequestCode = nextAssociationRequestCode();
+      pendingAssociationRequestCode = associationRequestCode;
       associationUiLaunched = false;
       associationStarted = true;
       final CompanionDeviceManager manager =
           (CompanionDeviceManager) reactContext.getSystemService(android.content.Context.COMPANION_DEVICE_SERVICE);
       if (manager == null) throw new IllegalStateException("Companion Device Manager is unavailable.");
       manager.associate(associationRequest, new CompanionDeviceManager.Callback() {
+        final Promise associationPromise = promise;
+
         @Override
         public void onDeviceFound(IntentSender intentSender) {
-          launchAssociationUi(activity, intentSender);
+          launchAssociationUi(activity, intentSender, associationPromise, associationRequestCode);
         }
 
         @Override
         public void onAssociationPending(IntentSender intentSender) {
-          launchAssociationUi(activity, intentSender);
+          launchAssociationUi(activity, intentSender, associationPromise, associationRequestCode);
         }
 
         @Override
         public void onAssociationCreated(AssociationInfo associationInfo) {
-          if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
-            rejectAssociation(
-                "unsupportedAssociationMetadata",
-                "Android did not expose a real Companion Device Manager association on this API level.");
-            return;
-          }
-          pendingAssociationId = associationInfo.getId();
-          if (!associationUiLaunched) {
-            resolveAssociation(
-                pendingAssociationId,
-                associationPeerId(associationInfo),
-                associationDisplayName(associationInfo));
-          }
+          handleAssociationCreated(associationPromise, associationInfo);
         }
 
         @Override
         public void onFailure(CharSequence error) {
           rejectAssociation(
+              associationPromise,
               "associationFailed",
               error == null ? "Companion Device Manager association failed." : error.toString());
         }
@@ -230,21 +225,37 @@ public final class UnifiedBleProtocolControlModule extends NativeUnifiedBleProto
         "Android does not provide a native BLE restoration journal.");
   }
 
-  private void launchAssociationUi(Activity activity, IntentSender intentSender) {
+  private synchronized void launchAssociationUi(
+      Activity activity,
+      IntentSender intentSender,
+      Promise associationPromise,
+      int associationRequestCode) {
+    if (pendingAssociation != associationPromise ||
+        pendingAssociationRequestCode != associationRequestCode ||
+        associationUiLaunched) return;
     try {
       associationUiLaunched = true;
       activity.startIntentSenderForResult(
-          intentSender, ASSOCIATION_REQUEST_CODE, null, 0, 0, 0);
+          intentSender, associationRequestCode, null, 0, 0, 0);
     } catch (IntentSender.SendIntentException error) {
-      rejectAssociation("associationUiLaunchFailed", "Companion Device Manager system UI could not be launched.");
+      rejectAssociation(
+          associationPromise,
+          "associationUiLaunchFailed",
+          "Companion Device Manager system UI could not be launched.");
     }
   }
 
   @Override
   public synchronized void onActivityResult(Activity activity, int requestCode, int resultCode, Intent data) {
-    if (requestCode != ASSOCIATION_REQUEST_CODE || pendingAssociation == null) return;
+    if (requestCode != pendingAssociationRequestCode ||
+        pendingAssociation == null ||
+        !associationUiLaunched) return;
+    final Promise associationPromise = pendingAssociation;
     if (resultCode != Activity.RESULT_OK || data == null) {
-      rejectAssociation("associationCancelled", "Companion Device Manager association was cancelled.");
+      rejectAssociation(
+          associationPromise,
+          "associationCancelled",
+          "Companion Device Manager association was cancelled.");
       return;
     }
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -253,6 +264,7 @@ public final class UnifiedBleProtocolControlModule extends NativeUnifiedBleProto
       if (associationInfo != null) {
         pendingAssociationId = associationInfo.getId();
         resolveAssociation(
+            associationPromise,
             pendingAssociationId,
             associationPeerId(associationInfo),
             associationDisplayName(associationInfo));
@@ -265,18 +277,44 @@ public final class UnifiedBleProtocolControlModule extends NativeUnifiedBleProto
     } else {
       device = data.getParcelableExtra(CompanionDeviceManager.EXTRA_DEVICE);
     }
-    final String peerId = device == null ? null : device.getAddress();
+    final String peerId = deviceAddress(device);
     final String displayName = deviceDisplayName(device);
-    resolveAssociation(pendingAssociationId, peerId, displayName);
+    resolveAssociation(associationPromise, pendingAssociationId, peerId, displayName);
   }
 
   @Override
   public void onNewIntent(Intent intent) {}
 
-  private void resolveAssociation(int associationId, String peerId, String displayName) {
-    if (pendingAssociation == null) return;
+  private synchronized void handleAssociationCreated(
+      Promise associationPromise,
+      AssociationInfo associationInfo) {
+    if (pendingAssociation != associationPromise) return;
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU || associationInfo == null) {
+      rejectAssociation(
+          associationPromise,
+          "unsupportedAssociationMetadata",
+          "Android did not expose a real Companion Device Manager association on this API level.");
+      return;
+    }
+    pendingAssociationId = associationInfo.getId();
+    if (!associationUiLaunched) {
+      resolveAssociation(
+          associationPromise,
+          pendingAssociationId,
+          associationPeerId(associationInfo),
+          associationDisplayName(associationInfo));
+    }
+  }
+
+  private synchronized void resolveAssociation(
+      Promise associationPromise,
+      int associationId,
+      String peerId,
+      String displayName) {
+    if (pendingAssociation != associationPromise) return;
     if (associationId <= 0) {
       rejectAssociation(
+          associationPromise,
           "unsupportedAssociationMetadata",
           "Android did not expose a real Companion Device Manager association ID on this API level.");
       return;
@@ -284,6 +322,7 @@ public final class UnifiedBleProtocolControlModule extends NativeUnifiedBleProto
     final Promise promise = pendingAssociation;
     pendingAssociation = null;
     pendingAssociationId = 0;
+    pendingAssociationRequestCode = 0;
     associationUiLaunched = false;
     final WritableMap result = Arguments.createMap();
     result.putString("source", "associated");
@@ -293,19 +332,38 @@ public final class UnifiedBleProtocolControlModule extends NativeUnifiedBleProto
     promise.resolve(result);
   }
 
-  private void rejectAssociation(String code, String message) {
+  private synchronized void rejectAssociation(String code, String message) {
     final Promise promise = pendingAssociation;
     pendingAssociation = null;
     pendingAssociationId = 0;
+    pendingAssociationRequestCode = 0;
     associationUiLaunched = false;
     if (promise != null) promise.reject(code, message);
   }
 
-  private void clearPendingAssociation(Promise promise) {
+  private synchronized void rejectAssociation(Promise associationPromise, String code, String message) {
+    if (pendingAssociation != associationPromise) return;
+    pendingAssociation = null;
+    pendingAssociationId = 0;
+    pendingAssociationRequestCode = 0;
+    associationUiLaunched = false;
+    associationPromise.reject(code, message);
+  }
+
+  private synchronized void clearPendingAssociation(Promise promise) {
     if (pendingAssociation != promise) return;
     pendingAssociation = null;
     pendingAssociationId = 0;
+    pendingAssociationRequestCode = 0;
     associationUiLaunched = false;
+  }
+
+  private int nextAssociationRequestCode() {
+    final int requestCode = nextAssociationRequestCodeValue;
+    nextAssociationRequestCodeValue = requestCode == Integer.MAX_VALUE
+        ? ASSOCIATION_REQUEST_CODE
+        : requestCode + 1;
+    return requestCode;
   }
 
   private static String associationPeerId(AssociationInfo associationInfo) {
@@ -319,6 +377,18 @@ public final class UnifiedBleProtocolControlModule extends NativeUnifiedBleProto
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return null;
     final CharSequence displayName = associationInfo.getDisplayName();
     return displayName == null ? null : displayName.toString();
+  }
+
+  private String deviceAddress(BluetoothDevice device) {
+    if (device == null) return null;
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+        reactContext.checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) return null;
+    try {
+      return device.getAddress();
+    } catch (RuntimeException error) {
+      Log.w(TAG, "Bluetooth device address is unavailable without BLUETOOTH_CONNECT", error);
+      return null;
+    }
   }
 
   private String deviceDisplayName(BluetoothDevice device) {

@@ -64,7 +64,7 @@ class UnifiedBleProtocolAndroidFindingsTest {
 
     assertTrue(
       Regex(
-        """onAssociationCreated\(AssociationInfo associationInfo\) \{[\s\S]*?pendingAssociationId = associationInfo\.getId\(\);"""
+        """onAssociationCreated\(AssociationInfo associationInfo\) \{[\s\S]*?handleAssociationCreated\(associationPromise, associationInfo\);"""
       ).containsMatchIn(association)
     )
     assertTrue(activityResult.contains("CompanionDeviceManager.EXTRA_ASSOCIATION"))
@@ -81,8 +81,8 @@ class UnifiedBleProtocolAndroidFindingsTest {
       "android/src/main/java/com/sfourdrinier/unifiedblemanager/protocol/UnifiedBleProtocolControlModule.java"
     )
     val resolver = source.substring(
-      source.indexOf("private void resolveAssociation"),
-      source.indexOf("private void rejectAssociation")
+      source.indexOf("private synchronized void resolveAssociation"),
+      source.indexOf("private synchronized void rejectAssociation")
     )
 
     assertTrue(resolver.contains("if (associationId <= 0)"))
@@ -98,9 +98,9 @@ class UnifiedBleProtocolAndroidFindingsTest {
     val source = readAndroidSource(
       "android/src/main/java/com/sfourdrinier/unifiedblemanager/protocol/UnifiedBleProtocolControlModule.java"
     )
-    val association = source.substring(
-      source.indexOf("public synchronized void associateCompanionDevice"),
-      source.indexOf("public synchronized void claimRestoration")
+    val associationCreated = source.substring(
+      source.indexOf("private synchronized void handleAssociationCreated"),
+      source.indexOf("private synchronized void resolveAssociation")
     )
     val peerProjection = source.substring(
       source.indexOf("private static String associationPeerId"),
@@ -113,8 +113,8 @@ class UnifiedBleProtocolAndroidFindingsTest {
 
     assertTrue(
       Regex(
-        """onAssociationCreated\(AssociationInfo associationInfo\) \{[\s\S]*?if \(Build\.VERSION\.SDK_INT < Build\.VERSION_CODES\.TIRAMISU\) \{[\s\S]*?unsupportedAssociationMetadata[\s\S]*?associationInfo\.getId\(\)"""
-      ).containsMatchIn(association)
+        """if \(Build\.VERSION\.SDK_INT < Build\.VERSION_CODES\.TIRAMISU \|\| associationInfo == null\) \{[\s\S]*?unsupportedAssociationMetadata[\s\S]*?associationInfo\.getId\(\)"""
+      ).containsMatchIn(associationCreated)
     )
     assertTrue(
       Regex(
@@ -145,6 +145,60 @@ class UnifiedBleProtocolAndroidFindingsTest {
     assertTrue(nameProjection.contains("!= PackageManager.PERMISSION_GRANTED) return null;"))
     assertTrue(nameProjection.contains("catch (SecurityException error)"))
     assertTrue(Regex("getName\\(\\)").containsMatchIn(nameProjection))
+  }
+
+  @Test
+  fun `companion callbacks retain request ownership through synchronized state helpers`() {
+    val source = readAndroidSource(
+      "android/src/main/java/com/sfourdrinier/unifiedblemanager/protocol/UnifiedBleProtocolControlModule.java"
+    )
+    val association = source.substring(
+      source.indexOf("public synchronized void associateCompanionDevice"),
+      source.indexOf("public synchronized void claimRestoration")
+    )
+    val callback = association.substring(
+      association.indexOf("new CompanionDeviceManager.Callback()"),
+      association.indexOf("}, null);")
+    )
+
+    assertTrue(callback.contains("final Promise associationPromise = promise;"))
+    assertTrue(callback.contains("launchAssociationUi(activity, intentSender, associationPromise"))
+    assertTrue(callback.contains("handleAssociationCreated(associationPromise, associationInfo);"))
+    assertTrue(Regex("rejectAssociation\\(\\s*associationPromise,").containsMatchIn(callback))
+    assertTrue(source.contains("private int pendingAssociationRequestCode = 0;"))
+    assertTrue(source.contains("requestCode != pendingAssociationRequestCode"))
+    assertTrue(
+      Regex("private synchronized void (launchAssociationUi|handleAssociationCreated|resolveAssociation|rejectAssociation|clearPendingAssociation)")
+        .findAll(source)
+        .count() >= 5
+    )
+    assertTrue(
+      Regex("pendingAssociation != associationPromise")
+        .findAll(source)
+        .count() >= 4
+    )
+  }
+
+  @Test
+  fun `fallback device address projection fails closed without Bluetooth connect permission or runtime access`() {
+    val source = readAndroidSource(
+      "android/src/main/java/com/sfourdrinier/unifiedblemanager/protocol/UnifiedBleProtocolControlModule.java"
+    )
+    val activityResult = source.substring(
+      source.indexOf("public synchronized void onActivityResult"),
+      source.indexOf("public void onNewIntent")
+    )
+    val addressProjection = source.substring(
+      source.indexOf("private String deviceAddress").also { assertTrue(it >= 0) },
+      source.indexOf("private String deviceDisplayName").also { assertTrue(it >= 0) }
+    )
+
+    assertTrue(activityResult.contains("deviceAddress(device)"))
+    assertTrue(addressProjection.contains("Build.VERSION.SDK_INT >= Build.VERSION_CODES.S"))
+    assertTrue(addressProjection.contains("Manifest.permission.BLUETOOTH_CONNECT"))
+    assertTrue(addressProjection.contains("!= PackageManager.PERMISSION_GRANTED) return null;"))
+    assertTrue(addressProjection.contains("catch (RuntimeException error)"))
+    assertTrue(Regex("return device.getAddress\\(\\)").containsMatchIn(addressProjection))
   }
 
   private fun readAndroidSource(relativePath: String): String {
