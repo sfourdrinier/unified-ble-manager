@@ -355,5 +355,22 @@ describe('PR9 scan planner contract and canonical oracle corpus', () => {
         unexpected: 'payload'
       })
     ).toThrow('unknown key')
+
+    expect(() =>
+      snapshotScanPlan({
+        sourceQuery: residualQuery,
+        queryDigest: residualQuery.digest,
+        residualQueryDigest: residualQuery.digest,
+        nativeGuarantee: 'safe-superset',
+        native: {
+          predicates: [{ clauseSet: 'anyOf', clauseIndex: 999, field: 'names', operator: 'prefixes' }],
+          complete: false
+        },
+        residual: { query: residualQuery, predicates: [], complete: true },
+        unavailable: [],
+        limitations: [],
+        estimatedCost: 'low'
+      })
+    ).toThrow('out-of-range clause index')
   })
 })

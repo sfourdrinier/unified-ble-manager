@@ -89,6 +89,55 @@ export interface BackendScanPlanner<NativeFilter, Context extends ScanPlanningCo
   plan(query: NormalizedScanQuery, context: Context): BackendScanExecutionPlan<NativeFilter>
 }
 
+/** Describes every normalized predicate without evaluating it. */
+export function describeScanPredicates(query: NormalizedScanQuery): readonly ScanPredicateDescription[] {
+  const descriptions: ScanPredicateDescription[] = []
+  for (const [clauseSet, clauses] of [
+    ['anyOf', query.anyOf],
+    ['exclude', query.exclude]
+  ] as const) {
+    if (clauses === null) continue
+    clauses.forEach((clause, clauseIndex) => {
+      if (clause.peers !== null) descriptions.push({ clauseSet, clauseIndex, field: 'peers', operator: 'equals' })
+      if (clause.services !== null) {
+        if (clause.services.any.length > 0)
+          descriptions.push({ clauseSet, clauseIndex, field: 'services', operator: 'any' })
+        if (clause.services.all.length > 0)
+          descriptions.push({ clauseSet, clauseIndex, field: 'services', operator: 'all' })
+      }
+      if (clause.names !== null) {
+        if (clause.names.exact.length > 0)
+          descriptions.push({ clauseSet, clauseIndex, field: 'names', operator: 'exact' })
+        if (clause.names.prefixes.length > 0)
+          descriptions.push({ clauseSet, clauseIndex, field: 'names', operator: 'prefixes' })
+      }
+      if (clause.manufacturerData !== null) {
+        if (clause.manufacturerData.any.length > 0)
+          descriptions.push({ clauseSet, clauseIndex, field: 'manufacturerData', operator: 'any' })
+        if (clause.manufacturerData.all.length > 0)
+          descriptions.push({ clauseSet, clauseIndex, field: 'manufacturerData', operator: 'all' })
+      }
+      if (clause.serviceData !== null) {
+        if (clause.serviceData.any.length > 0)
+          descriptions.push({ clauseSet, clauseIndex, field: 'serviceData', operator: 'any' })
+        if (clause.serviceData.all.length > 0)
+          descriptions.push({ clauseSet, clauseIndex, field: 'serviceData', operator: 'all' })
+      }
+      if (clause.rssi !== null) {
+        if (clause.rssi.minimum !== undefined)
+          descriptions.push({ clauseSet, clauseIndex, field: 'rssi', operator: 'minimum' })
+        if (clause.rssi.maximum !== undefined)
+          descriptions.push({ clauseSet, clauseIndex, field: 'rssi', operator: 'maximum' })
+      }
+      if (clause.connectable !== undefined)
+        descriptions.push({ clauseSet, clauseIndex, field: 'connectable', operator: 'equals' })
+    })
+  }
+  return Object.freeze(
+    descriptions.sort((left, right) => compareCanonical(JSON.stringify(left), JSON.stringify(right)))
+  )
+}
+
 const MAX_PROJECTION_PREDICATES = 64
 const MAX_UNAVAILABLE_PREDICATES = 64
 const MAX_LIMITATIONS = 32
@@ -183,13 +232,13 @@ function snapshotPlanFields(plan: ScanPlan): ScanPlan {
     throw new Error('safe-superset plan must retain the source query as residual')
   }
   assertEstimatedCost(plan.estimatedCost)
-  const native = snapshotProjection(plan.native, 'native')
+  const native = snapshotProjection(plan.native, 'native', sourceQuery)
   const residual = Object.freeze({
-    ...snapshotProjection(plan.residual, 'residual'),
+    ...snapshotProjection(plan.residual, 'residual', residualQuery),
     query: residualQuery
   })
-  const unavailable = snapshotPredicates(plan.unavailable, 'unavailable', MAX_UNAVAILABLE_PREDICATES)
-  const limitations = snapshotLimitations(plan.limitations)
+  const unavailable = snapshotPredicates(plan.unavailable, 'unavailable', MAX_UNAVAILABLE_PREDICATES, sourceQuery)
+  const limitations = snapshotLimitations(plan.limitations, sourceQuery)
   const snapshot = {
     sourceQuery,
     queryDigest: plan.queryDigest,
@@ -208,7 +257,11 @@ function isMatchAllQuery(query: NormalizedScanQuery): boolean {
   return query.anyOf === null && query.exclude === null
 }
 
-function snapshotProjection(projection: ScanPlanProjection, name: string): ScanPlanProjection {
+function snapshotProjection(
+  projection: ScanPlanProjection,
+  name: string,
+  query: NormalizedScanQuery
+): ScanPlanProjection {
   assertExactKeys(
     projection,
     name === 'residual' ? ['predicates', 'complete', 'query'] : ['predicates', 'complete'],
@@ -218,7 +271,7 @@ function snapshotProjection(projection: ScanPlanProjection, name: string): ScanP
     throw new Error(`scan plan ${name} contains an invalid completeness value`)
   }
   return Object.freeze({
-    predicates: snapshotPredicates(projection.predicates, `${name}.predicates`, MAX_PROJECTION_PREDICATES),
+    predicates: snapshotPredicates(projection.predicates, `${name}.predicates`, MAX_PROJECTION_PREDICATES, query),
     complete: projection.complete
   })
 }
@@ -226,7 +279,8 @@ function snapshotProjection(projection: ScanPlanProjection, name: string): ScanP
 function snapshotPredicates(
   predicates: readonly ScanPredicateDescription[],
   name: string,
-  maximum: number
+  maximum: number,
+  query: NormalizedScanQuery
 ): readonly ScanPredicateDescription[] {
   if (predicates.length > maximum) throw new Error(`scan plan ${name} exceeds bounded predicate count`)
   const snapshot = predicates.map(predicate => {
@@ -240,6 +294,7 @@ function snapshotPredicates(
     if (!isPredicateField(predicate.field) || !isPredicateOperator(predicate.operator)) {
       throw new Error(`scan plan ${name} contains an invalid predicate`)
     }
+    assertPredicateReference(predicate, query, name)
     return Object.freeze({
       clauseSet: predicate.clauseSet,
       clauseIndex: predicate.clauseIndex,
@@ -250,12 +305,15 @@ function snapshotPredicates(
   return Object.freeze(snapshot.sort((left, right) => compareCanonical(predicateKey(left), predicateKey(right))))
 }
 
-function snapshotLimitations(limitations: readonly ScanPlanLimitation[]): readonly ScanPlanLimitation[] {
+function snapshotLimitations(
+  limitations: readonly ScanPlanLimitation[],
+  query: NormalizedScanQuery
+): readonly ScanPlanLimitation[] {
   if (limitations.length > MAX_LIMITATIONS) throw new Error('scan plan exceeds bounded limitation count')
   const snapshot = limitations.map(limitation => {
     assertExactKeys(limitation, ['code', 'predicate', 'explanation', 'effect'], 'scan plan limitation')
     assertLimitationCode(limitation.code)
-    const predicate = snapshotPredicates([limitation.predicate], 'limitation.predicate', 1)[0]
+    const predicate = snapshotPredicates([limitation.predicate], 'limitation.predicate', 1, query)[0]
     if (predicate === undefined) throw new Error('scan plan limitation predicate is missing')
     assertLimitationExplanation(limitation.explanation)
     assertLimitationEffect(limitation.effect)
@@ -267,6 +325,31 @@ function snapshotLimitations(limitations: readonly ScanPlanLimitation[]): readon
     })
   })
   return Object.freeze(snapshot.sort((left, right) => compareCanonical(JSON.stringify(left), JSON.stringify(right))))
+}
+
+function assertPredicateReference(predicate: ScanPredicateDescription, query: NormalizedScanQuery, name: string): void {
+  const clauses = predicate.clauseSet === 'anyOf' ? query.anyOf : query.exclude
+  const clause = clauses?.[predicate.clauseIndex]
+  if (clause === undefined) throw new Error(`scan plan ${name} contains an out-of-range clause index`)
+  const supported =
+    (predicate.field === 'peers' && predicate.operator === 'equals' && clause.peers !== null) ||
+    (predicate.field === 'services' &&
+      clause.services !== null &&
+      (predicate.operator === 'any' || predicate.operator === 'all')) ||
+    (predicate.field === 'names' &&
+      clause.names !== null &&
+      (predicate.operator === 'exact' || predicate.operator === 'prefixes')) ||
+    (predicate.field === 'manufacturerData' &&
+      clause.manufacturerData !== null &&
+      (predicate.operator === 'any' || predicate.operator === 'all')) ||
+    (predicate.field === 'serviceData' &&
+      clause.serviceData !== null &&
+      (predicate.operator === 'any' || predicate.operator === 'all')) ||
+    (predicate.field === 'rssi' &&
+      clause.rssi !== null &&
+      (predicate.operator === 'minimum' || predicate.operator === 'maximum')) ||
+    (predicate.field === 'connectable' && clause.connectable !== undefined && predicate.operator === 'equals')
+  if (!supported) throw new Error(`scan plan ${name} contains an unrelated predicate reference`)
 }
 
 function assertLimitationCode(value: ScanPlanLimitationCode): void {
