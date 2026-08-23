@@ -2,6 +2,8 @@ const React = require('react')
 
 const hookHarness = {
   contextValue: null,
+  errorContextValue: null,
+  contexts: [],
   effects: [],
   stateValues: [],
   stateIndex: 0,
@@ -55,9 +57,15 @@ const hookHarness = {
 }
 
 jest.mock('react', () => ({
-  createContext: jest.fn(defaultValue => ({ defaultValue, Provider: Symbol('Provider') })),
+  createContext: jest.fn(defaultValue => {
+    const context = { defaultValue, Provider: Symbol('Provider') }
+    hookHarness.contexts.push(context)
+    return context
+  }),
   createElement: jest.fn((type, props, children) => ({ type, props, children })),
-  useContext: jest.fn(() => hookHarness.contextValue),
+  useContext: jest.fn(context =>
+    context === hookHarness.contexts[1] ? hookHarness.errorContextValue : hookHarness.contextValue
+  ),
   useEffect: jest.fn(effect => hookHarness.nextEffect(effect)),
   useMemo: jest.fn((factory, dependencies) => hookHarness.nextMemo(factory, dependencies)),
   useRef: jest.fn(initialValue => ({ current: initialValue })),
@@ -72,6 +80,7 @@ const {
   useBle,
   useBleCapability,
   useCharacteristicValue,
+  useConnectionState,
   useDiscoveredPeers
 } = require('../src/react')
 
@@ -105,7 +114,7 @@ function scanSession() {
     observations: (async function* () {
       yield { kind: 'terminal' }
     })(),
-    stop: jest.fn().mockResolvedValue(undefined)
+    stop: jest.fn().mockResolvedValue({ state: 'released', failures: [] })
   }
 }
 
@@ -126,6 +135,7 @@ async function flush() {
 describe('React host surface', () => {
   beforeEach(() => {
     hookHarness.contextValue = null
+    hookHarness.errorContextValue = null
     hookHarness.stateValues = []
     hookHarness.reset()
     jest.clearAllMocks()
@@ -262,6 +272,62 @@ describe('React host surface', () => {
 
     thirdCleanup()
     expect(thirdSession.stop).toHaveBeenCalledTimes(1)
+  })
+
+  test('reports a scan stop release failure through the provider error callback', async () => {
+    const cleanup = { state: 'release-failed', failures: [] }
+    const onError = jest.fn()
+    const session = scanSession()
+    session.stop.mockResolvedValue(cleanup)
+    const createdManager = manager({ scan: jest.fn().mockResolvedValue(session) })
+    hookHarness.contextValue = { manager: createdManager, loading: false, error: null }
+    hookHarness.errorContextValue = onError
+
+    useDiscoveredPeers()
+    const unmount = hookHarness.effects[0]()
+    await flush()
+    unmount()
+    await flush()
+
+    expect(onError).toHaveBeenCalledWith(expect.objectContaining({ cleanup }))
+  })
+
+  test('reports a connection iterator cleanup rejection through the provider error callback', async () => {
+    const cleanupError = new Error('iterator cleanup failed')
+    const onError = jest.fn()
+    const iterator = {
+      next: jest.fn(() => new Promise(() => undefined)),
+      return: jest.fn().mockRejectedValue(cleanupError)
+    }
+    const connection = {
+      lifecycleEvents: { [Symbol.asyncIterator]: () => iterator }
+    }
+    hookHarness.errorContextValue = onError
+
+    useConnectionState(connection)
+    const unmount = hookHarness.effects[0]()
+    await flush()
+    unmount()
+    await flush()
+
+    expect(onError).toHaveBeenCalledWith(cleanupError)
+  })
+
+  test('reports a characteristic removal release failure through the provider error callback', async () => {
+    const cleanup = { state: 'release-failed', failures: [] }
+    const onError = jest.fn()
+    const subscription = characteristicSubscription()
+    subscription.remove.mockResolvedValue(cleanup)
+    const characteristic = { subscribe: jest.fn().mockResolvedValue(subscription) }
+    hookHarness.errorContextValue = onError
+
+    useCharacteristicValue(characteristic)
+    const unmount = hookHarness.effects[0]()
+    await flush()
+    unmount()
+    await flush()
+
+    expect(onError).toHaveBeenCalledWith(expect.objectContaining({ cleanup }))
   })
 
   test('restarts characteristic subscriptions when timeout or AbortSignal identity changes', async () => {

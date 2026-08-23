@@ -61,6 +61,7 @@ export interface UseCharacteristicValueResult {
 
 const missingProviderError = new Error('useBle must be used within a BleProvider')
 const BleContext = React.createContext<BleContextValue | null>(null)
+const BleErrorContext = React.createContext<((error: Error) => void) | null>(null)
 
 export function BleProvider({ createManager, onError, children }: BleProviderProps): React.ReactElement {
   const [lease] = React.useState(() => new ManagerLease(createManager))
@@ -93,7 +94,11 @@ export function BleProvider({ createManager, onError, children }: BleProviderPro
     }
   }, [lease, onError])
 
-  return React.createElement(BleContext.Provider, { value }, children)
+  return React.createElement(
+    BleErrorContext.Provider,
+    { value: onError ?? null },
+    React.createElement(BleContext.Provider, { value }, children)
+  )
 }
 
 export function useBle(): BleContextValue {
@@ -195,6 +200,7 @@ export function useBleReadiness(): UseBleReadinessResult {
 
 export function useDiscoveredPeers(options: ScanOptions = {}): UseDiscoveredPeersResult {
   const { manager } = useBle()
+  const reportError = useReactErrorReporter()
   const queryDigest = normalizeScanQuery(options.query).digest
   const signal = options.signal
   const optionsKey = JSON.stringify({
@@ -225,8 +231,9 @@ export function useDiscoveredPeers(options: ScanOptions = {}): UseDiscoveredPeer
     const run = async (): Promise<void> => {
       try {
         session = await manager.scan(stableOptions)
+        const current = session
         if (!active) {
-          await session.stop()
+          await settleCleanup(() => current.stop(), reportError, 'scan session stop')
           return
         }
         setResult({ peers: [], state: 'active', error: null })
@@ -248,14 +255,15 @@ export function useDiscoveredPeers(options: ScanOptions = {}): UseDiscoveredPeer
     return () => {
       active = false
       const current = session
-      if (current !== null) current.stop().catch(() => undefined)
+      if (current !== null) observeCleanup(() => current.stop(), reportError, 'scan session stop')
     }
-  }, [manager, optionsKey, signal, stableOptions])
+  }, [manager, optionsKey, signal, stableOptions, reportError])
 
   return result
 }
 
 export function useConnectionState(connection: BleConnection | null): UseConnectionStateResult {
+  const reportError = useReactErrorReporter()
   const [result, setResult] = React.useState<UseConnectionStateResult>({
     state: null,
     loading: connection !== null,
@@ -267,9 +275,10 @@ export function useConnectionState(connection: BleConnection | null): UseConnect
     if (connection === null) return () => undefined
     const observe = async (): Promise<void> => {
       try {
-        iterator = connection.lifecycleEvents[Symbol.asyncIterator]()
+        const current = connection.lifecycleEvents[Symbol.asyncIterator]()
+        iterator = current
         while (true) {
-          const next = await iterator.next()
+          const next = await current.next()
           if (next.done) break
           const event = next.value
           if (active) setResult({ state: event.current, loading: false, error: null })
@@ -281,9 +290,13 @@ export function useConnectionState(connection: BleConnection | null): UseConnect
     observe().catch(() => undefined)
     return () => {
       active = false
-      if (iterator?.return !== undefined) iterator.return().catch(() => undefined)
+      const current = iterator
+      if (current !== null && current.return !== undefined) {
+        const close = current.return
+        observeRejected(() => close.call(current), reportError)
+      }
     }
-  }, [connection])
+  }, [connection, reportError])
   return connection === null ? { state: null, loading: false, error: null } : result
 }
 
@@ -291,6 +304,7 @@ export function useCharacteristicValue(
   characteristic: GattCharacteristic | null,
   options: GattSubscribeOptions = {}
 ): UseCharacteristicValueResult {
+  const reportError = useReactErrorReporter()
   const [result, setResult] = React.useState<UseCharacteristicValueResult>({
     value: null,
     loading: characteristic !== null,
@@ -316,8 +330,9 @@ export function useCharacteristicValue(
           ...stableOptions,
           stream: stableOptions.stream ?? 'balanced'
         })
+        const current = subscription
         if (!active) {
-          await subscription.remove()
+          await settleCleanup(() => current.remove(), reportError, 'characteristic subscription remove')
           return
         }
         for await (const item of subscription.values) {
@@ -334,10 +349,66 @@ export function useCharacteristicValue(
     return () => {
       active = false
       const current = subscription
-      if (current !== null) current.remove().catch(() => undefined)
+      if (current !== null) observeCleanup(() => current.remove(), reportError, 'characteristic subscription remove')
     }
-  }, [characteristic, optionsKey, signal, stableOptions])
+  }, [characteristic, optionsKey, signal, stableOptions, reportError])
   return characteristic === null ? { value: null, loading: false, error: null } : result
+}
+
+type CleanupResult = Pick<CleanupRecord, 'state'> & { readonly failures: readonly unknown[] }
+
+function useReactErrorReporter(): (error: Error) => void {
+  const callback = React.useContext(BleErrorContext)
+  return React.useMemo(
+    () => error => {
+      if (callback !== null) {
+        callback(error)
+        return
+      }
+      if (process.env.NODE_ENV !== 'production') {
+        queueMicrotask(() => {
+          throw error
+        })
+      }
+    },
+    [callback]
+  )
+}
+
+async function settleCleanup(
+  operation: () => PromiseLike<CleanupResult>,
+  report: (error: Error) => void,
+  resource: string
+): Promise<void> {
+  let cleanup: CleanupResult
+  try {
+    cleanup = await operation()
+  } catch (error) {
+    report(toError(error))
+    return
+  }
+  if (cleanup.state === 'release-failed') {
+    reportCleanupFailure(cleanup, report, resource)
+  }
+}
+
+function observeCleanup(
+  operation: () => PromiseLike<CleanupResult>,
+  report: (error: Error) => void,
+  resource: string
+): void {
+  settleCleanup(operation, report, resource).then(undefined, error => report(toError(error)))
+}
+
+function observeRejected(operation: () => PromiseLike<unknown>, report: (error: Error) => void): void {
+  let pending: PromiseLike<unknown>
+  try {
+    pending = operation()
+  } catch (error) {
+    report(toError(error))
+    return
+  }
+  Promise.resolve(pending).catch(error => report(toError(error)))
 }
 
 function hasReadiness(manager: BleManager): manager is BleManager & Pick<ExpoBleManager, 'readiness'> {
@@ -401,7 +472,7 @@ class ManagerLease {
     try {
       const cleanup = await manager.destroy()
       if (cleanup.state === 'release-failed') {
-        reportCleanupFailure(cleanup, report)
+        reportCleanupFailure(cleanup, report, 'manager destroy')
       }
     } catch (error) {
       report(toError(error))
@@ -409,8 +480,8 @@ class ManagerLease {
   }
 }
 
-function reportCleanupFailure(cleanup: CleanupRecord, report: (error: Error) => void): void {
-  const error = new Error('BLE manager destroy reported release-failed')
+function reportCleanupFailure(cleanup: CleanupResult, report: (error: Error) => void, resource: string): void {
+  const error = new Error(`BLE ${resource} reported release-failed`)
   Object.defineProperty(error, 'cleanup', { value: cleanup, enumerable: true })
   report(error)
 }
