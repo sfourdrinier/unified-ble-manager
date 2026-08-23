@@ -95,10 +95,12 @@ export interface ScanSession {
 export type DiscoveryEvent =
   | { readonly kind: 'observed'; readonly peer: BlePeer }
   | { readonly kind: 'lost'; readonly peer: BlePeer; readonly lastObservedAt: number; readonly derivedAt: number; readonly reason: 'observation-timeout' }
+export type ScanPlatformOptions = AndroidScanPlatformOptions | { readonly kind: 'corebluetooth' } | { readonly kind: 'winrt' } | { readonly kind: 'web' } | { readonly kind: 'electron' } | { readonly kind: 'tauri' }
+export interface AndroidScanPlatformOptions { readonly kind: 'android'; readonly mode?: 'low-power' | 'balanced' | 'low-latency' | 'opportunistic'; readonly callbackType?: 'all-matches' | 'first-match' | 'match-lost'; readonly reportDelayMs?: number; readonly legacy?: boolean; readonly phy?: 'all-supported' | '1m' | 'coded' }
 export interface BleAdapter { readonly id: string | null; state(): Promise<BleAdapterState>; waitUntilReady(options?: AdapterReadinessOptions): Promise<BleAdapterState> }
 export interface BleDiscoveryInfo { readonly kind: 'continuous-scan' | 'system-chooser' | 'hybrid' }
 export interface OperationOptions { readonly signal?: AbortSignal; readonly timeoutMs?: number }
-export interface ScanOptions extends OperationOptions { readonly query?: ScanQuery; readonly duplicates?: 'coalesced' | 'all'; readonly delivery?: StreamPolicy; readonly observation?: { readonly reportLostAfterMs?: number; readonly includeRawAdvertisement?: boolean } }
+export interface ScanOptions extends OperationOptions { readonly query?: ScanQuery; readonly duplicates?: 'coalesced' | 'all'; readonly delivery?: StreamPolicy; readonly observation?: { readonly reportLostAfterMs?: number; readonly includeRawAdvertisement?: boolean }; readonly platform?: ScanPlatformOptions }
 export interface FindOptions extends OperationOptions { readonly query?: ScanQuery; readonly select?: 'first' | ((peer: BlePeer) => boolean) }
 export interface ChooseOptions extends OperationOptions { readonly filters?: readonly ChooseFilter[]; readonly optionalServices?: readonly (string | number)[]; readonly acceptAllDevices?: boolean }
 export type { GattDatabase, GattService, GattCharacteristic, GattDescriptor, GattSubscription, GattValueEvent, GattWriteReceipt, GattSubscribeOptions } from './gatt'
@@ -128,6 +130,10 @@ All BLE payloads are bytes. Application operations use `AbortSignal` and
 <!-- entrypoint: .; source: src/index.ts -->
 
 - `AdapterReadinessOptions`
+- `AndroidScanCallbackType`
+- `AndroidScanMode`
+- `AndroidScanPhy`
+- `AndroidScanPlatformOptions`
 - `BUILT_IN_FEATURE_CATALOG`
 - `BUILT_IN_FEATURE_IDS`
 - `BleAdapter`
@@ -228,6 +234,7 @@ All BLE payloads are bytes. Application operations use `AbortSignal` and
 - `ScanClause`
 - `ScanOptions`
 - `ScanPlan`
+- `ScanPlatformOptions`
 - `ScanQuery`
 - `ScanSession`
 - `ScanStateEvent`

@@ -116,6 +116,9 @@ export class IpcPublicManagerAdapter implements BleManager {
       if (options.observation?.reportLostAfterMs !== undefined) {
         throw contractError('capability.unavailable', 'scan', 'ipc-public-manager.scan.report-lost-after')
       }
+      if (options.platform !== undefined) {
+        throw contractError('capability.unsupported', 'scan', 'ipc-public-manager.scan.platform-options')
+      }
       const normalized = normalizeOperationOptions(options, () => globalThis.performance.now())
       const normalizedQuery = normalizeScanQuery(options.query)
       const session = await this.ipc.scan(toIpcScanOptions(options, normalized.signal, normalizedQuery))

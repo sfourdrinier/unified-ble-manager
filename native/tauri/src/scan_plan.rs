@@ -236,6 +236,7 @@ fn parse_clause(value: &IpcValue) -> Result<Clause, String> {
     let rssi = parse_rssi(clause.get("rssi"))?;
     let connectable = match clause.get("connectable") {
         None => None,
+        Some(IpcValue::Null) => None,
         Some(IpcValue::Bool(value)) => Some(*value),
         Some(_) => return Err("normalized scan clause connectable is invalid".to_owned()),
     };
@@ -715,9 +716,10 @@ fn clause_wire(clause: &Clause) -> IpcValue {
         ),
         ("rssi", clause.rssi.as_ref().map_or(IpcValue::Null, rssi_wire)),
     ];
-    if let Some(connectable) = clause.connectable {
-        entries.push(("connectable", IpcValue::Bool(connectable)));
-    }
+    entries.push((
+        "connectable",
+        clause.connectable.map_or(IpcValue::Null, IpcValue::Bool),
+    ));
     ipc_object(entries)
 }
 

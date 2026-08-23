@@ -290,6 +290,25 @@ export type DiscoveryEvent =
       readonly reason: 'observation-timeout'
     }
 
+export type AndroidScanMode = 'low-power' | 'balanced' | 'low-latency' | 'opportunistic'
+export type AndroidScanCallbackType = 'all-matches' | 'first-match' | 'match-lost'
+export type AndroidScanPhy = 'all-supported' | '1m' | 'coded'
+export interface AndroidScanPlatformOptions {
+  readonly kind: 'android'
+  readonly mode?: AndroidScanMode
+  readonly callbackType?: AndroidScanCallbackType
+  readonly reportDelayMs?: number
+  readonly legacy?: boolean
+  readonly phy?: AndroidScanPhy
+}
+export type ScanPlatformOptions =
+  | AndroidScanPlatformOptions
+  | { readonly kind: 'corebluetooth' }
+  | { readonly kind: 'winrt' }
+  | { readonly kind: 'web' }
+  | { readonly kind: 'electron' }
+  | { readonly kind: 'tauri' }
+
 export interface ScanSession {
   readonly plan: ScanPlan | null
   readonly stop: () => Promise<CleanupRecord>
@@ -339,6 +358,7 @@ export interface ScanOptions extends OperationOptions {
     readonly reportLostAfterMs?: number
     readonly includeRawAdvertisement?: boolean
   }
+  readonly platform?: ScanPlatformOptions
 }
 
 export interface FindOptions extends OperationOptions {
@@ -1201,6 +1221,9 @@ class PublicBleManager implements BleManager {
       if (options.observation?.includeRawAdvertisement === true) {
         throw contractError('capability.unsupported', 'scan', 'public-ble-manager.scan.raw-advertisement')
       }
+      if (options.platform !== undefined) {
+        throw contractError('capability.unsupported', 'scan', 'public-ble-manager.scan.platform-options')
+      }
       if (options.duplicates === 'all' && reportLostAfterMs !== undefined) {
         throw contractError('argument.invalid', 'scan', 'public-ble-manager.scan.duplicates')
       }
@@ -1829,7 +1852,7 @@ function isReferenceLike(value: unknown): value is object {
 }
 
 export function assertPublicScanOptions(options: ScanOptions): void {
-  const allowed = new Set(['signal', 'timeoutMs', 'query', 'duplicates', 'delivery', 'observation'])
+  const allowed = new Set(['signal', 'timeoutMs', 'query', 'duplicates', 'delivery', 'observation', 'platform'])
   if (Object.keys(options).some(key => !allowed.has(key))) {
     throw contractError('argument.invalid', 'scan', 'public-ble-manager.scan.options')
   }
@@ -1877,6 +1900,46 @@ export function assertPublicScanOptions(options: ScanOptions): void {
     typeof options.observation.includeRawAdvertisement !== 'boolean'
   ) {
     throw contractError('argument.invalid', 'scan', 'public-ble-manager.scan.raw-advertisement')
+  }
+  assertPublicScanPlatformOptions(options.platform)
+}
+
+function assertPublicScanPlatformOptions(options: ScanPlatformOptions | undefined): void {
+  if (options === undefined) return
+  if (typeof options !== 'object' || options === null || !('kind' in options)) {
+    throw contractError('argument.invalid', 'scan', 'public-ble-manager.scan.platform-options')
+  }
+  if (options.kind === 'android') {
+    if (
+      Object.keys(options).some(
+        key => !['kind', 'mode', 'callbackType', 'reportDelayMs', 'legacy', 'phy'].includes(key)
+      ) ||
+      (options.mode !== undefined &&
+        !['low-power', 'balanced', 'low-latency', 'opportunistic'].includes(options.mode)) ||
+      (options.callbackType !== undefined &&
+        !['all-matches', 'first-match', 'match-lost'].includes(options.callbackType)) ||
+      (options.reportDelayMs !== undefined &&
+        (!Number.isSafeInteger(options.reportDelayMs) ||
+          options.reportDelayMs < 0 ||
+          options.reportDelayMs > 2_147_483_647)) ||
+      (options.legacy !== undefined && typeof options.legacy !== 'boolean') ||
+      (options.phy !== undefined && !['all-supported', '1m', 'coded'].includes(options.phy))
+    ) {
+      throw contractError('argument.invalid', 'scan', 'public-ble-manager.scan.platform-options')
+    }
+    return
+  }
+  if (
+    options.kind !== 'corebluetooth' &&
+    options.kind !== 'winrt' &&
+    options.kind !== 'web' &&
+    options.kind !== 'electron' &&
+    options.kind !== 'tauri'
+  ) {
+    throw contractError('argument.invalid', 'scan', 'public-ble-manager.scan.platform-options')
+  }
+  if (Object.keys(options).length !== 1) {
+    throw contractError('argument.invalid', 'scan', 'public-ble-manager.scan.platform-options')
   }
 }
 

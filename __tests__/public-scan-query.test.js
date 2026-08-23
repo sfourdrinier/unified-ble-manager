@@ -504,6 +504,28 @@ describe('canonical public ScanQuery v1', () => {
     expect(internal.scan).not.toHaveBeenCalled()
   })
 
+  test('validates typed platform controls and rejects unsupported controls before radio work', async () => {
+    const internal = {
+      identity: null,
+      attachedBackend: undefined,
+      supports: () => true,
+      capability: () => null,
+      capabilities: () => [],
+      scan: jest.fn(),
+      connect: jest.fn(),
+      destroy: jest.fn(async () => ({ state: 'released', failures: [] }))
+    }
+    const manager = await createPublicBleManager(internal, () => 0)
+
+    await expect(
+      manager.scan({ platform: { kind: 'android', mode: 'low-latency', callbackType: 'all-matches' } })
+    ).rejects.toMatchObject({ code: 'capability.unsupported' })
+    await expect(manager.scan({ platform: { kind: 'android', mode: 'invalid' } })).rejects.toMatchObject({
+      code: 'argument.invalid'
+    })
+    expect(internal.scan).not.toHaveBeenCalled()
+  })
+
   test('does not silently ignore lost reporting when the public timer authority is absent', async () => {
     const internal = {
       identity: null,
