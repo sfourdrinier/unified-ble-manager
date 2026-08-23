@@ -114,6 +114,12 @@ The subsequent exact-source native/consumer review found additional ownership an
 - Android association/API/lifecycle/Service Changed and Apple service-change harnesses passed at their focused scopes.
 - Packed Expo/React/Tauri proof, pack-install smoke, and G6A deterministic proof passed from tarball; physical radio/EAS evidence absent.
 
+## Current source tip `34f6f7484931ee41c97f292d029c96752cac141c`
+
+- `pnpm test:package`: 156 suites / 1,512 tests passed.
+- `pnpm test:plugin`: 42 tests passed; typecheck/lint/prepack/release checks passed.
+- Android association API gating, Service Changed subscription cleanup, Apple Service Changed cleanup, and focused native harnesses passed.
+
 ## Final local verification receipts at `707e3c9`
 
 - `pnpm typecheck`, `pnpm lint`, `pnpm test:plugin`: passed; plugin 35/35.
