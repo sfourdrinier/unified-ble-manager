@@ -1336,7 +1336,10 @@ characteristicUUID:(NSString *)characteristicUUID
     NSError *error = nil;
     CBPeripheral *peripheral = [self requireConnected:deviceId error:&error];
     if (!peripheral) {
-      completion(error);
+      // A disconnected link cannot retain a CCCD subscription. Treat the
+      // terminal link loss as physical disablement so cleanup ownership can
+      // retire instead of retrying an impossible native command forever.
+      completion(nil);
       return;
     }
     CBCharacteristic *characteristic = [self findCharacteristic:peripheral
@@ -1682,6 +1685,7 @@ characteristicUUID:(NSString *)characteristicUUID
   NSString *directKey = [self directCharacteristicKey:deviceId characteristic:characteristic];
   UBMVoidBlock directDisableDone = self.pendingNotifyDisableAt[directKey];
   if (directDisableDone) {
+    if (characteristic.isNotifying) return;
     [self.pendingNotifyDisableAt removeObjectForKey:directKey];
     if (error) {
       directDisableDone(error);
@@ -1718,6 +1722,7 @@ characteristicUUID:(NSString *)characteristicUUID
 
   UBMVoidBlock disableDone = self.pendingNotifyDisable[key];
   if (disableDone) {
+    if (characteristic.isNotifying) return;
     [self.pendingNotifyDisable removeObjectForKey:key];
     if (error) {
       disableDone(error);
