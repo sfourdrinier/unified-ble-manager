@@ -304,10 +304,11 @@ adversarial reviews found no actionable source or lifecycle findings, and all
 first- and second-round review findings are replied to and resolved on PR #39.
 Native-authoritative React Native/Expo restoration is an explicit PR10
 deferral tracked by [#34](https://github.com/sfourdrinier/unified-ble-manager/issues/34); PR6 must not claim it is
-implemented. PR41 is merged and the RC3 metadata commit `d075ab4` is complete
-on the release branch. RC3 remains gated on exact-version hosted validation,
-the immutable tag, and successful trusted publication; this ledger does not
-promote PR6 to a release claim by itself.
+implemented. PR41 is merged and RC3 was admitted from exact green main
+`a423a73`, published as immutable tag `v4.0.0-rc.3`, and independently read
+back on npm `latest` with its prerelease GitHub Release and provenance assets.
+PR9 is the next active milestone; this ledger does not promote PR6 to a
+release claim by itself.
 
 ## PR8 completed checkpoint
 
@@ -336,4 +337,4 @@ it ran against the earlier source tip `046b764`.
 | Packed consumer gate | Local npm/pnpm pack smoke remains blocked by the environment's npm `Exit handler never called!` / lifecycle hang; normal npm subprocesses have a 600-second bound and hosted supported Node remains authoritative | Hosted final branch and post-merge CI passed the applicable packed/consumer lanes; RC3 exact-version rerun remains required |
 | Performance baselines | Deterministic baseline `unified-ble-pr8-deterministic-performance-v1`: 23 measurements in the focused 3-payload test and 31 measurements / 15 categories in default `performance:check`, including all ten PR8 IDs, bounded cleanup and ownership metadata | Deterministic baseline fixed; live/native comparison remains a PR12 gate |
 | Remaining contract gaps | Parameter/subrate remain unsupported because no truthful pinned API is wired; readiness is unsupported outside the direct CoreBluetooth seam; `writeWhenReady` has a capability-gated public/core implementation with deterministic cleanup and uncertainty semantics | Parameter/subrate/readiness host coverage remain open; no capability is promoted from deterministic evidence to physical support |
-| Review/release | PR #41 is merged; first Copilot/Codex findings are dispositioned, the second Codex round returned no suggestions, and release documentation is current | RC3 version commit/tag/publication remain; RC2 remains immutable |
+| Review/release | PR #41 is merged; first Copilot/Codex findings are dispositioned, the second Codex round returned no suggestions, and RC3 is published/read back from exact main `a423a73` | PR9 is next; RC2 remains immutable |
