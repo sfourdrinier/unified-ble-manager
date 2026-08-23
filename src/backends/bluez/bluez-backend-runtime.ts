@@ -781,7 +781,9 @@ export class BluezBackendRuntime implements BluezObjectStoreObserver {
       if (objectPath.startsWith(`${record.devicePath}/`)) {
         for (const consumer of physical.consumers) {
           consumer.stream.closeWithReason('connection-lost')
-          consumer.removed = true
+          if (!this.isDestroying()) {
+            consumer.removed = true
+          }
         }
         if (!this.isDestroying()) {
           this.physicalSubscriptions.delete(objectPath)
@@ -991,20 +993,21 @@ export class BluezBackendRuntime implements BluezObjectStoreObserver {
     const failures: CleanupFailure[] = []
     failures.push(...(await captureCleanup(destroyBluezScan(this), 'scan', 'bluez.destroy.scan')).failures)
     for (const physical of [...this.physicalSubscriptions.values()]) {
-      for (const consumer of [...physical.consumers]) {
+      for (const consumer of physical.consumers) {
         consumer.stream.closeWithReason('owner-released')
-        consumer.removed = true
       }
-      physical.consumers.clear()
-      failures.push(
-        ...(
-          await captureCleanup(
-            physical.removal ?? beginBluezPhysicalRemoval(this, physical),
-            'subscription',
-            'bluez.destroy.subscription'
-          )
-        ).failures
+      const cleanup = await captureCleanup(
+        physical.removal ?? beginBluezPhysicalRemoval(this, physical),
+        'subscription',
+        'bluez.destroy.subscription'
       )
+      failures.push(...cleanup.failures)
+      if (cleanup.state === 'released') {
+        for (const consumer of physical.consumers) {
+          consumer.removed = true
+        }
+        physical.consumers.clear()
+      }
     }
     for (const record of this.connectionRecords.values()) {
       if (record.active || record.physicalLinkMayExist) {

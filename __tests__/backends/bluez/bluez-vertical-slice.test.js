@@ -1293,6 +1293,43 @@ describe('BlueZ contract-v1 vertical slice', () => {
     expect(boundary.closed).toBe(true)
   })
 
+  test('retains logical subscription ownership across destroy StopNotify failure for retryable removal', async () => {
+    const { backend, boundary } = await backendFixture()
+    const { database } = await connectedDatabase(backend)
+    const characteristic = (await database.snapshot()).characteristics[0].path
+    const subscription = await database.subscribe(characteristic, { ...operation(), delivery: delivery() })
+    boundary.onCall(
+      String(characteristic.characteristicOccurrence),
+      BLUEZ_GATT_CHARACTERISTIC_INTERFACE,
+      'StopNotify',
+      async () => {
+        throw new Error('persistent destroy notify stop failure')
+      }
+    )
+
+    await expect(backend.destroy()).resolves.toMatchObject({ state: 'release-failed' })
+    expectConsoleErrorMatching(
+      '[beginBluezPhysicalRemoval] BlueZ StopNotify failed:',
+      expect.objectContaining({ message: 'persistent destroy notify stop failure' })
+    )
+    expectConsoleErrorMatching('[BluezBackendRuntime.bluez.destroy.subscription] Cleanup rejected:', expect.anything())
+    expect(Number(backend.resourceCounters().physicalCccdEnablements)).toBe(1)
+    expect(Number(backend.resourceCounters().subscriptionConsumers)).toBe(1)
+
+    await expect(subscription.remove()).rejects.toThrow('persistent destroy notify stop failure')
+    expectConsoleErrorMatching(
+      '[beginBluezPhysicalRemoval] BlueZ StopNotify failed:',
+      expect.objectContaining({ message: 'persistent destroy notify stop failure' })
+    )
+    await expect(subscription.remove()).rejects.toThrow('persistent destroy notify stop failure')
+    expectConsoleErrorMatching(
+      '[beginBluezPhysicalRemoval] BlueZ StopNotify failed:',
+      expect.objectContaining({ message: 'persistent destroy notify stop failure' })
+    )
+    expect(Number(backend.resourceCounters().physicalCccdEnablements)).toBe(1)
+    expect(Number(backend.resourceCounters().subscriptionConsumers)).toBe(1)
+  })
+
   test('retains scan ownership when startup StopDiscovery cleanup fails and retries it during destroy', async () => {
     jest.useFakeTimers()
     try {
