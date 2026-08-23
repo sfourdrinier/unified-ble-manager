@@ -47,6 +47,7 @@ describe('PR9 scan planner contract and canonical oracle corpus', () => {
       const normalizedQuery = normalizeScanQuery(hydrate(vector.query))
       const normalizedObservation = normalizeScanObservation(hydrate(vector.observation))
       const plan = snapshotScanPlan({
+        sourceQuery: normalizedQuery,
         queryDigest: normalizedQuery.digest,
         residualQueryDigest: normalizedQuery.digest,
         nativeGuarantee: 'safe-superset',
@@ -79,6 +80,7 @@ describe('PR9 scan planner contract and canonical oracle corpus', () => {
   test('keeps the canonical residual query and snapshots bounded diagnostic projections', () => {
     const residualQuery = normalizeScanQuery({ anyOf: [{ names: { prefixes: ['Heart'] } }] })
     const plan = snapshotScanPlan({
+      sourceQuery: residualQuery,
       queryDigest: residualQuery.digest,
       residualQueryDigest: residualQuery.digest,
       nativeGuarantee: 'safe-superset',
@@ -121,6 +123,7 @@ describe('PR9 scan planner contract and canonical oracle corpus', () => {
       anyOf: [{ manufacturerData: { any: [{ companyId: 76, dataPrefix: new Uint8Array([2]) }] } }]
     })
     const bytePlan = snapshotScanPlan({
+      sourceQuery: byteQuery,
       queryDigest: byteQuery.digest,
       residualQueryDigest: byteQuery.digest,
       nativeGuarantee: 'safe-superset',
@@ -141,6 +144,7 @@ describe('PR9 scan planner contract and canonical oracle corpus', () => {
     const emptyQuery = normalizeScanQuery()
     expect(() =>
       snapshotScanPlan({
+        sourceQuery: emptyQuery,
         queryDigest: emptyQuery.digest,
         residualQueryDigest: emptyQuery.digest,
         nativeGuarantee: 'safe-superset',
@@ -158,6 +162,7 @@ describe('PR9 scan planner contract and canonical oracle corpus', () => {
     const residualQuery = normalizeScanQuery({ anyOf: [{ names: { prefixes: ['Heart'] } }] })
     expect(() =>
       snapshotScanPlan({
+        sourceQuery: residualQuery,
         queryDigest: residualQuery.digest,
         residualQueryDigest: residualQuery.digest,
         nativeGuarantee: 'safe-superset',
@@ -172,6 +177,7 @@ describe('PR9 scan planner contract and canonical oracle corpus', () => {
     const forgedQuery = Object.freeze({ anyOf: null, exclude: null, digest: residualQuery.digest })
     expect(() =>
       snapshotScanPlan({
+        sourceQuery: residualQuery,
         queryDigest: residualQuery.digest,
         residualQueryDigest: residualQuery.digest,
         nativeGuarantee: 'safe-superset',
@@ -190,6 +196,7 @@ describe('PR9 scan planner contract and canonical oracle corpus', () => {
     })
     expect(() =>
       snapshotScanPlan({
+        sourceQuery: emptyAnyOfQuery,
         queryDigest: emptyAnyOfQuery.digest,
         residualQueryDigest: emptyAnyOfQuery.digest,
         nativeGuarantee: 'safe-superset',
@@ -203,6 +210,7 @@ describe('PR9 scan planner contract and canonical oracle corpus', () => {
 
     expect(() =>
       snapshotScanPlan({
+        sourceQuery: residualQuery,
         queryDigest: residualQuery.digest,
         residualQueryDigest: residualQuery.digest,
         nativeGuarantee: 'safe-superset',
@@ -223,6 +231,7 @@ describe('PR9 scan planner contract and canonical oracle corpus', () => {
 
     expect(() =>
       snapshotScanPlan({
+        sourceQuery: residualQuery,
         queryDigest: residualQuery.digest,
         residualQueryDigest: residualQuery.digest,
         nativeGuarantee: 'safe-superset',
@@ -243,6 +252,7 @@ describe('PR9 scan planner contract and canonical oracle corpus', () => {
 
     expect(() =>
       snapshotScanPlan({
+        sourceQuery: residualQuery,
         queryDigest: residualQuery.digest,
         residualQueryDigest: residualQuery.digest,
         nativeGuarantee: 'exact',
@@ -256,6 +266,7 @@ describe('PR9 scan planner contract and canonical oracle corpus', () => {
 
     expect(() =>
       snapshotScanPlan({
+        sourceQuery: residualQuery,
         queryDigest: residualQuery.digest,
         residualQueryDigest: residualQuery.digest,
         nativeGuarantee: 'exact',
@@ -272,6 +283,7 @@ describe('PR9 scan planner contract and canonical oracle corpus', () => {
 
     expect(() =>
       snapshotScanPlan({
+        sourceQuery: residualQuery,
         queryDigest: residualQuery.digest,
         residualQueryDigest: residualQuery.digest,
         nativeGuarantee: 'exact',
@@ -285,6 +297,7 @@ describe('PR9 scan planner contract and canonical oracle corpus', () => {
 
     expect(() =>
       snapshotScanPlan({
+        sourceQuery: residualQuery,
         queryDigest: residualQuery.digest,
         residualQueryDigest: residualQuery.digest,
         nativeGuarantee: 'safe-superset',
@@ -299,6 +312,7 @@ describe('PR9 scan planner contract and canonical oracle corpus', () => {
     const validEmptyQuery = normalizeScanQuery()
     expect(() =>
       snapshotScanPlan({
+        sourceQuery: validEmptyQuery,
         queryDigest: validEmptyQuery.digest,
         residualQueryDigest: validEmptyQuery.digest,
         nativeGuarantee: 'safe-superset',

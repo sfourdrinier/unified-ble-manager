@@ -54,6 +54,7 @@ export interface ScanPlanLimitation {
 }
 
 export interface ScanPlan {
+  readonly sourceQuery: NormalizedScanQuery
   readonly queryDigest: string
   readonly residualQueryDigest: string
   readonly nativeGuarantee: 'exact' | 'safe-superset'
@@ -101,6 +102,7 @@ export function snapshotScanPlan(plan: ScanPlan): ScanPlan {
     plan,
     [
       'queryDigest',
+      'sourceQuery',
       'residualQueryDigest',
       'nativeGuarantee',
       'native',
@@ -111,7 +113,11 @@ export function snapshotScanPlan(plan: ScanPlan): ScanPlan {
     ],
     'scan plan'
   )
+  const sourceQuery = snapshotNormalizedScanQuery(plan.sourceQuery)
   const residualQuery = snapshotNormalizedScanQuery(plan.residual.query)
+  if (plan.queryDigest !== sourceQuery.digest) {
+    throw new Error('scan plan source query digest must match queryDigest')
+  }
   if (plan.residualQueryDigest !== residualQuery.digest) {
     throw new Error('scan plan residual query digest must match residualQueryDigest')
   }
@@ -137,6 +143,7 @@ export function snapshotScanPlan(plan: ScanPlan): ScanPlan {
   const unavailable = snapshotPredicates(plan.unavailable, 'unavailable', MAX_UNAVAILABLE_PREDICATES)
   const limitations = snapshotLimitations(plan.limitations)
   const snapshot = {
+    sourceQuery,
     queryDigest: plan.queryDigest,
     residualQueryDigest: plan.residualQueryDigest,
     nativeGuarantee: plan.nativeGuarantee,

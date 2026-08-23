@@ -498,6 +498,22 @@
               framework-neutral <code>desktop-native</code> host kind; browser and React Native backends require their
               own host integration and cannot be driven from a Node shell.
             </p>
+            <h2>Scan planning contract</h2>
+            <p>
+              The additive PR9 backend contract exposes <code>ScanPlan</code>, <code>BackendScanPlanner</code>, and the
+              canonical normalized scan-query types. A plan retains the source query and its
+              <code>queryDigest</code> separately from the residual query and <code>residualQueryDigest</code>. Native
+              execution must be declared either <code>exact</code> for the complete source query or
+              <code>safe-superset</code>; residual evaluation remains the frozen PR4 matcher. Plan limitations use
+              structured predicate descriptions and finite redacted diagnostic vocabulary, so raw advertisement bytes,
+              peer identifiers, and host payloads do not belong in plan diagnostics.
+            </p>
+            <p>
+              The current PR9 contract/oracle checkpoint does not itself select a radio or wire platform-specific scan
+              options. First-party planners must consume the shared fixture corpus and prove native/residual equivalence
+              before platform pushdown is enabled. Deterministic planner tests establish contract behavior; they do not
+              promote a backend support label or constitute physical-radio evidence.
+            </p>
           </section>
         </div>
 
