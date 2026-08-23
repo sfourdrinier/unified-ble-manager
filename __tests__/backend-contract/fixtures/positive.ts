@@ -12,7 +12,6 @@ import type {
   BackendScanExecutionPlan,
   BackendScanPlanner,
   ScanPlan,
-  NormalizedScanQuery,
   ScanPlanningContext,
   RestorationAdoptionRequest,
   ScannerBackend,
@@ -42,8 +41,6 @@ declare const scanPlan: ScanPlan
 declare const scanPlanner: BackendScanPlanner<SerializableRecord>
 declare const scanPlanningContext: ScanPlanningContext
 declare const scanExecutionPlan: BackendScanExecutionPlan<SerializableRecord>
-type CustomNormalizedScanQuery = NormalizedScanQuery & { readonly marker: 'custom' }
-declare const customScanPlan: ScanPlan<CustomNormalizedScanQuery>
 declare function observe<Value>(value: Value): void
 
 const exclusiveScan: OwnerScanOptions<'alpha', 'lease-one'> = {
@@ -117,4 +114,4 @@ observe(runtimeScopedLease)
 observe(runtimeCorrelation)
 observe(scanPlanner.plan(scanPlan.residual.query, scanPlanningContext))
 observe(scanExecutionPlan.nativeFilter)
-observe(snapshotScanPlan(customScanPlan).residual.query.marker)
+observe(snapshotScanPlan(scanExecutionPlan).nativeFilter)
