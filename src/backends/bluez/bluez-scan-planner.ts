@@ -17,12 +17,7 @@ import type {
 import type { NormalizedScanQuery } from '../../backend-contract/scan-query'
 import type { Uuid } from '../../backend-contract/primitives'
 
-const bluezScanObservationFields: readonly ScanObservationField[] = Object.freeze([
-  'peerReference',
-  'localName',
-  'rssi',
-  'serviceUuids'
-])
+const bluezScanObservationFields: readonly ScanObservationField[] = Object.freeze(['localName', 'rssi', 'serviceUuids'])
 
 export const bluezScanPlanningContext: ScanPlanningContext = Object.freeze({
   backendId: 'bluez',
@@ -108,7 +103,7 @@ function createLimitations(
   nativePredicates: readonly ScanPredicateDescription[],
   unavailable: readonly ScanPredicateDescription[]
 ): readonly ScanPlanLimitation[] {
-  return predicates.map(predicate => {
+  return predicates.slice(0, 32).map(predicate => {
     if (unavailable.includes(predicate)) {
       return {
         code: 'observation-field-unavailable',

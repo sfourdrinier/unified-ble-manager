@@ -322,6 +322,7 @@ describe('BlueZ contract-v1 vertical slice', () => {
     const scan = await backend.scanner.start(
       {
         ...scanOptions(),
+        query: normalizeScanQuery({ anyOf: [{ services: { all: [serviceUuid] } }] }),
         plan,
         filter: { serviceUuids: [], manufacturerData: [], localNamePrefix: null }
       },
@@ -363,6 +364,7 @@ describe('BlueZ contract-v1 vertical slice', () => {
       signature: 'a{sv}',
       value: {
         DuplicateData: { signature: 'b', value: true },
+        Transport: { signature: 's', value: 'le' },
         Pattern: { signature: 's', value: 'Polar' },
         UUIDs: { signature: 'as', value: [serviceUuid] }
       }

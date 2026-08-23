@@ -87,6 +87,7 @@ describe('BlueZ scan planner', () => {
     const query = normalizeScanQuery({ anyOf: [{ services: { all: ['180d'] } }] })
     const plan = diagnosticBluezScanPlan(query)
     const variant = scanFilterVariant({
+      query,
       plan,
       filter: { serviceUuids: [], manufacturerData: [], localNamePrefix: null },
       duplicatePolicy: 'all'
@@ -96,5 +97,26 @@ describe('BlueZ scan planner', () => {
       signature: 'as',
       value: ['0000180d-0000-1000-8000-00805f9b34fb']
     })
+  })
+
+  test('rejects a plan that is not bound to the actual scan query', () => {
+    const planQuery = normalizeScanQuery({ anyOf: [{ services: { all: ['180d'] } }] })
+    const actualQuery = normalizeScanQuery({ anyOf: [{ services: { all: ['180f'] } }] })
+    expect(() =>
+      scanFilterVariant({
+        query: actualQuery,
+        plan: diagnosticBluezScanPlan(planQuery),
+        filter: { serviceUuids: [], manufacturerData: [], localNamePrefix: null },
+        duplicatePolicy: 'all'
+      })
+    ).toThrow('bluez.scan.plan-query')
+  })
+
+  test('bounds diagnostics for a large valid query', () => {
+    const query = normalizeScanQuery({
+      anyOf: Array.from({ length: 33 }, (_, index) => ({ names: { prefixes: [`name-${index}`] } }))
+    })
+    const execution = new BluezScanPlanner().plan(query, context)
+    expect(execution.limitations).toHaveLength(32)
   })
 })

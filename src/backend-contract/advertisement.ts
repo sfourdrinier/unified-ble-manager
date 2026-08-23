@@ -16,6 +16,7 @@ import type {
 } from './primitives'
 import type { PeerReference } from './peer-reference'
 import type { ScanPlan } from './scan-planning'
+import type { NormalizedScanQuery } from './scan-query'
 
 /** How the backend obtained this observation, independent of individual field provenance. */
 export type ObservationSource = 'platform-raw' | 'platform-derived' | 'core-merged'
@@ -121,6 +122,7 @@ export type ScanSharing<Attachment extends string, Lease extends string> =
   | OwnerScanSharing
   | JoinScanSharing<Attachment, Lease>
 export interface ScanOptions<Attachment extends string, Lease extends string> {
+  readonly query?: NormalizedScanQuery
   readonly plan?: ScanPlan
   readonly filter: ScanFilter
   readonly duplicatePolicy: 'all' | 'first' | 'merged'
