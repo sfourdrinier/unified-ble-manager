@@ -32,6 +32,10 @@ export class DeterministicScanPlanner implements BackendScanPlanner<ScanFilter> 
 
 function assertPlanningContext(context: ScanPlanningContext): void {
   if (
+    typeof context !== 'object' ||
+    context === null ||
+    typeof context.backendId !== 'string' ||
+    typeof context.platformId !== 'string' ||
     context.backendId.length === 0 ||
     context.platformId.length === 0 ||
     !Array.isArray(context.availableObservationFields) ||

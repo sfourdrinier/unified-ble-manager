@@ -50,7 +50,13 @@ describe('deterministic scan planner', () => {
         plan.nativeFilter.localNamePrefix === null
       const optimizedMatch = nativeMatchAll && observationMatchesScanQuery(plan.residual.query, normalizedObservation)
 
-      expect(optimizedMatch).toBe(vector.expectedMatch)
+      expect(nativeMatchAll).toBe(true)
+      if (vector.normalizedQueryDigest !== '') {
+        expect(normalizedQuery.digest).toBe(vector.normalizedQueryDigest)
+      }
+      const referenceMatch = observationMatchesScanQuery(normalizedQuery, normalizedObservation)
+      expect(referenceMatch).toBe(vector.expectedMatch)
+      expect(optimizedMatch).toBe(referenceMatch)
       expect(plan.nativeGuarantee).toBe('safe-superset')
       expect(plan.sourceQuery).toStrictEqual(plan.residual.query)
       expect(plan.queryDigest).toBe(normalizedQuery.digest)
@@ -83,5 +89,8 @@ describe('deterministic scan planner', () => {
         availableObservationFields: ['not-an-observation-field']
       })
     ).toThrow('planning context')
+
+    expect(() => planner.plan(query, { ...context, backendId: 42 })).toThrow('planning context')
+    expect(() => planner.plan(query, null)).toThrow('planning context')
   })
 })
