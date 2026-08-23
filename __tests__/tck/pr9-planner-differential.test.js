@@ -5,6 +5,11 @@ const {
   CoreBluetoothScanPlanner
 } = require('../../src/backends/corebluetooth/corebluetooth-scan-planner')
 const { winRtScanPlanningContext, WinRtScanPlanner } = require('../../src/backends/winrt/winrt-scan-planner')
+const {
+  reactNativeAndroidScanPlanningContext,
+  reactNativeAppleScanPlanningContext,
+  ReactNativeScanPlanner
+} = require('../../src/backends/reactnative/react-native-scan-planner')
 const { runPlannerDifferentialTck, MAX_PLANNER_DIFFERENTIAL_SCENARIOS } = require('../../src/tck/planner-differential')
 const vectors = require('../backend-contract/fixtures/scan-query-pr9-planner.golden.json')
 
@@ -30,7 +35,9 @@ describe('PR9 planner differential TCK', () => {
   test.each([
     ['bluez', new BluezScanPlanner(), bluezScanPlanningContext],
     ['corebluetooth', new CoreBluetoothScanPlanner(), coreBluetoothScanPlanningContext],
-    ['winrt', new WinRtScanPlanner(), winRtScanPlanningContext]
+    ['winrt', new WinRtScanPlanner(), winRtScanPlanningContext],
+    ['react-native-android', new ReactNativeScanPlanner(), reactNativeAndroidScanPlanningContext],
+    ['react-native-apple', new ReactNativeScanPlanner(), reactNativeAppleScanPlanningContext]
   ])(
     '%s proves native superset and residual equivalence for every bounded golden scenario',
     (_id, planner, context) => {
