@@ -117,7 +117,7 @@ jobs:
       - name: Checkout tag
         uses: actions/checkout@v7.0.0
         with:
-          fetch-depth: 0 # Stable tags must prove their commit is current main.
+          fetch-depth: 0 # Initial release tags must prove their commit is current main.
 
       # Trusted publishing: Node ≥22.14.0, npm ≥11.5.1.
       # npm's current GitHub Actions guidance requires an explicit registry URL;
@@ -318,21 +318,21 @@ jobs:
             echo "already_published=false" >> "$GITHUB_OUTPUT"
           fi
 
-      # Stable releases must be cut from the exact current main commit before
-      # their initial npm publication. Once npm contains the immutable version,
-      # reruns reuse that registry tarball solely to finish release creation.
-      - name: Fetch main for stable tag verification
-        if: steps.release_channel.outputs.is_stable == 'true' && steps.npm_status.outputs.package_published != 'true'
+      # Initial release-train and stable tags must be cut from the exact current
+      # main commit. Once npm contains the immutable version, reruns reuse that
+      # registry tarball solely to finish release creation even if main advances.
+      - name: Fetch main for initial tag verification
+        if: steps.npm_status.outputs.package_published != 'true'
         run: git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
 
-      - name: Verify stable tag points at current main
-        if: steps.release_channel.outputs.is_stable == 'true' && steps.npm_status.outputs.package_published != 'true'
+      - name: Verify release tag points at current main
+        if: steps.npm_status.outputs.package_published != 'true'
         run: |
           set -euo pipefail
           TAG_COMMIT="$(git rev-parse "${GITHUB_REF_NAME}^{commit}")"
           MAIN_COMMIT="$(git rev-parse refs/remotes/origin/main)"
           if [ "${TAG_COMMIT}" != "${MAIN_COMMIT}" ]; then
-            echo "Latest-channel tag ${GITHUB_REF_NAME} must point exactly at current main before initial publication"
+            echo "Release tag ${GITHUB_REF_NAME} must point exactly at current main before initial publication"
             echo "tag:  ${TAG_COMMIT}"
             echo "main: ${MAIN_COMMIT}"
             exit 1

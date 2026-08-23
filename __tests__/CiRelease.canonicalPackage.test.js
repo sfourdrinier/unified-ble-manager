@@ -68,6 +68,8 @@ describe('ci-release canonical package (4.0)', () => {
       'npm publish "${PUBLISH_TARBALL}" --provenance --access public --tag "${NPM_DIST_TAG}"'
     )
     expect(w).toContain('4.0.0-rc.*')
+    expect(w).toContain('Fetch main for initial tag verification')
+    expect(w).toContain('Verify release tag points at current main')
     expect(w).toContain('echo "NPM_DIST_TAG=next" >> "$GITHUB_ENV"')
     expect(w).toContain('echo "NPM_DIST_TAG=latest" >> "$GITHUB_ENV"')
     expect(w).toMatch(/ROOT_VER" == 4\.0\.0-rc\.\*[\s\S]*NPM_DIST_TAG=latest/)

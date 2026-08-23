@@ -68,6 +68,9 @@ describe('canonical package modernization', () => {
     expect(workflow).toContain('registry-url: https://registry.npmjs.org')
     expect(workflow).toContain('npm view "unified-ble-manager@${VER}"')
     expect(workflow).toContain('package_published=${PACKAGE_PUBLISHED}')
+    expect(workflow).toContain('Fetch main for initial tag verification')
+    expect(workflow).toContain('Verify release tag points at current main')
+    expect(workflow).toContain("steps.npm_status.outputs.package_published != 'true'")
     expect(workflow).toContain(
       'npm publish "${PUBLISH_TARBALL}" --provenance --access public --tag "${NPM_DIST_TAG}"'
     )
