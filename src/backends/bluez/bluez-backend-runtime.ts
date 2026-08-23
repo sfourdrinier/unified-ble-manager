@@ -99,6 +99,7 @@ import type {
 } from './bluez-runtime-types'
 import { bluezEventLimits, bluezStateLimits } from './bluez-runtime-types'
 import {
+  awaitBluezNativePromise,
   rejectAllBluezWaiters,
   rejectBluezPathTreeWaiters,
   rejectRemovedBluezObjectWaiters,
@@ -989,7 +990,14 @@ export class BluezBackendRuntime implements BluezObjectStoreObserver {
     this.security.close()
     this.dispatcher.cancelAll()
     rejectAllBluezWaiters(this)
-    await this.dispatcher.waitForIdle()
+    try {
+      await awaitBluezNativePromise(this.dispatcher.waitForIdle(), this.now, 'bluez.destroy.dispatcher-idle')
+    } catch {
+      return Object.freeze({
+        state: 'release-failed',
+        failures: Object.freeze([cleanupFailure('operation-quarantine', 'bluez.destroy.dispatcher-idle')])
+      })
+    }
     const failures: CleanupFailure[] = []
     failures.push(...(await captureCleanup(destroyBluezScan(this), 'scan', 'bluez.destroy.scan')).failures)
     for (const physical of [...this.physicalSubscriptions.values()]) {

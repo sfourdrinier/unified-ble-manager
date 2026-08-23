@@ -44,7 +44,7 @@ export async function subscribeBluez(
     physical = runtime.physicalSubscriptions.get(objectPath)
   }
   if (physical === undefined) {
-    physical = createBluezPhysicalSubscription(runtime, objectPath)
+    physical = createBluezPhysicalSubscription(runtime, objectPath, options)
     runtime.physicalSubscriptions.set(objectPath, physical)
     const enabling = physical
     enabling.enablement.then(
@@ -251,7 +251,8 @@ async function confirmBluezPhysicalSubscription(
   runtime: BluezBackendRuntime,
   objectPath: string,
   startMethod: Promise<void>,
-  isCurrent: () => boolean
+  isCurrent: () => boolean,
+  options: SubscriptionOptions
 ): Promise<void> {
   await startMethod
   runtime.assertUsable('bluez.gatt.start-notify.after-method')
@@ -260,14 +261,18 @@ async function confirmBluezPhysicalSubscription(
   }
   await waitForBluezBoolean(runtime, objectPath, BLUEZ_GATT_CHARACTERISTIC_INTERFACE, 'Notifying', true, {
     signal: null,
-    deadline: null
+    deadline: options.deadline
   })
   if (!isCurrent()) {
     throw contractError('operation.disconnected', 'gatt', 'bluez.gatt.start-notify.after-confirmation')
   }
 }
 
-function createBluezPhysicalSubscription(runtime: BluezBackendRuntime, objectPath: string): BluezPhysicalSubscription {
+function createBluezPhysicalSubscription(
+  runtime: BluezBackendRuntime,
+  objectPath: string,
+  options: SubscriptionOptions
+): BluezPhysicalSubscription {
   const startMethod = runtime.boundary.methods.callVoid(
     objectPath,
     BLUEZ_GATT_CHARACTERISTIC_INTERFACE,
@@ -275,9 +280,13 @@ function createBluezPhysicalSubscription(runtime: BluezBackendRuntime, objectPat
     []
   )
   let physical: BluezPhysicalSubscription | null = null
-  const enablement = confirmBluezPhysicalSubscription(runtime, objectPath, startMethod, () => {
-    return physical !== null && runtime.physicalSubscriptions.get(objectPath) === physical
-  })
+  const enablement = confirmBluezPhysicalSubscription(
+    runtime,
+    objectPath,
+    startMethod,
+    () => physical !== null && runtime.physicalSubscriptions.get(objectPath) === physical,
+    options
+  )
   const created: BluezPhysicalSubscription = {
     objectPath,
     consumers: new Set(),

@@ -202,7 +202,6 @@ export async function stopBluezScan(runtime: BluezBackendRuntime, consumer: Blue
   }
   if (!group.physicalStarted && group.state === 'starting') {
     group.stopRequested = true
-    return releasedBluezCleanup
   }
   group.state = 'stopping'
   if (group.physicalStarted) {
