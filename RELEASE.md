@@ -103,7 +103,7 @@ Do not push another commit to `main` between the final verification and the tag 
 
 ## Releasing 4.0.0
 
-The source version is prepared on `main` before the tag. The release workflow verifies that a latest-channel tag points at the exact current `main` commit before initial publication; do not create that tag from a side branch or an older commit.
+The source version is prepared on `main` before the tag. The release workflow verifies that every initial release tag points at the exact current `main` commit before publication; do not create that tag from a side branch or an older commit.
 
 On release day:
 
@@ -132,7 +132,7 @@ For a valid version tag, `.github/workflows/publish.yml`:
 3. assembles and hashes the complete prebuild matrix into `native/PREBUILDS.json`;
 4. verifies tag name and `package.json` version agree;
 5. classifies the npm dist-tag (`4.0.0-rc.*` and later stables to `latest`; other prereleases to `next`);
-6. before an initial stable publication, verifies the tag commit equals the current `main` commit;
+6. before any initial publication, verifies the tag commit equals the current `main` commit;
 7. validates evidence-record syntax/integrity without manufacturing support claims;
 8. runs package, plugin, lint/typecheck, generated-artifact, packed-consumer, and deterministic Electron checks;
 9. runs the required Android/Expo/native-host gates;

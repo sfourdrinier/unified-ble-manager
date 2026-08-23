@@ -12,7 +12,7 @@ const exampleExpoPackage = require('../example-expo/package.json')
 describe('canonical package modernization', () => {
   test('publishes the strict unified-ble-manager package boundary', () => {
     expect(rootPackage.name).toBe('unified-ble-manager')
-    expect(rootPackage.version).toBe('4.0.0-rc.2')
+    expect(rootPackage.version).toBe('4.0.0-rc.3')
     expect(Object.keys(rootPackage.exports).sort()).toEqual([
       '.',
       './advanced',
@@ -68,6 +68,9 @@ describe('canonical package modernization', () => {
     expect(workflow).toContain('registry-url: https://registry.npmjs.org')
     expect(workflow).toContain('npm view "unified-ble-manager@${VER}"')
     expect(workflow).toContain('package_published=${PACKAGE_PUBLISHED}')
+    expect(workflow).toContain('Fetch main for initial tag verification')
+    expect(workflow).toContain('Verify release tag points at current main')
+    expect(workflow).toContain("steps.npm_status.outputs.package_published != 'true'")
     expect(workflow).toContain(
       'npm publish "${PUBLISH_TARBALL}" --provenance --access public --tag "${NPM_DIST_TAG}"'
     )

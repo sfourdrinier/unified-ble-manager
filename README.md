@@ -6,7 +6,7 @@
 
 It is an evolution of `react-native-ble-plx`, rewritten as a **cross-platform unified product**. One bytes-first BLE model and lifecycle semantics across hosts, with host-specific construction and ownership. The root package never picks a radio for you, and it will not quietly fall back to a simulator or a different backend.
 
-**Current package:** `4.0.0-rc.2` on npm `latest`. That is the 4.0 public API. Package SemVer and backend support labels are independent: each radio backend stays Experimental until artifact-bound physical-hardware validation says otherwise. See [`docs/PLATFORMS.md`](docs/PLATFORMS.md).
+**RC3 candidate:** `4.0.0-rc.3` is prepared in this source tree. The tag-driven trusted-publishing workflow publishes it to npm `latest` after the exact-main release gates pass. Package SemVer and backend support labels are independent: each radio backend stays Experimental until artifact-bound physical-hardware validation says otherwise. See [`docs/PLATFORMS.md`](docs/PLATFORMS.md).
 
 > Sponsored by [Imagi Explain](https://imagiexplain.com) — researched, narrated whiteboard explainers from a prompt, a PDF, or your notes.
 
