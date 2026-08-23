@@ -505,7 +505,7 @@ RCT_EXPORT_MODULE(UnifiedBleProtocolControl)
   _execution->receiveAdapterState((__bridge void *)[_radio adapterSnapshot]);
   resolve(@{
     @"nativeProtocol": @2,
-    @"abi": @2,
+    @"abi": @(kAbiVersion),
     @"controlSurface": @(kControlSurfaceVersion),
     @"backendContract": @1,
     @"capabilitySchema": @1,
@@ -688,7 +688,9 @@ RCT_EXPORT_MODULE(UnifiedBleProtocolControl)
     _radio.delegate = nil;
     _radioDelegate.execution = nullptr;
     _execution->detachAttachment();
-    _runtime->close(nativeAttachmentValue);
+    if (_runtime->open()) {
+      _runtime->close(nativeAttachmentValue);
+    }
     _attachment = nil;
     resolve(nil);
   } catch (const std::exception& error) {

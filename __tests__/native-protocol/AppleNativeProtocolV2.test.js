@@ -55,6 +55,36 @@ describe('Apple Native Protocol v2 radio boundary', () => {
     expect(execution).toContain('runtime->settleResult(*terminalResults[index])')
   })
 
+  test('reports the generated ABI while preserving control-surface v2 in the handshake response', () => {
+    const control = read('ios/UnifiedBleProtocolControl.mm')
+    const handshake = control.slice(
+      control.indexOf('- (void)handshake:'),
+      control.indexOf('- (void)installExecutionRuntime:')
+    )
+
+    expect(control).toContain(
+      'constexpr double kAbiVersion = static_cast<double>(unified_ble::native_protocol::v2::kAbiVersion);'
+    )
+    expect(handshake).toContain('@"abi": @(kAbiVersion),')
+    expect(handshake).toContain('@"controlSurface": @(kControlSurfaceVersion),')
+    expect(handshake).not.toContain('@"abi": @2,')
+  })
+
+  test('treats a fatal runtime close as an idempotent attachment close', () => {
+    const control = read('ios/UnifiedBleProtocolControl.mm')
+    const closeAttachment = control.slice(
+      control.indexOf('- (void)closeAttachment:'),
+      control.indexOf('- (void)invalidate')
+    )
+
+    expect(closeAttachment).toMatch(
+      /if \(_runtime->open\(\)\) \{\s+_runtime->close\(nativeAttachmentValue\);\s+\}/
+    )
+    const runtimeClose = closeAttachment.indexOf('_runtime->close(nativeAttachmentValue);')
+    expect(closeAttachment.indexOf('_attachment = nil;', runtimeClose)).toBeGreaterThan(runtimeClose)
+    expect(closeAttachment.indexOf('resolve(nil);', runtimeClose)).toBeGreaterThan(runtimeClose)
+  })
+
   test('fails the pre-JavaScript stream closed with generation-safe sink ownership and observable counters', () => {
     const control = read('ios/UnifiedBleProtocolControl.mm')
     const execution = read('ios/NativeProtocol/UnifiedBleProtocolAppleExecution.mm')
