@@ -33,7 +33,7 @@ describe('CoreBluetooth native descriptor boundary source', () => {
       addonSource.indexOf('- (void)centralManagerDidUpdateState:', stopNotifyAtStart)
     )
     expect(stopNotifyAt).toContain('self.pendingNotifyDisableAt[key] = completion;')
-    expect(stopNotifyAt).not.toContain('completion(nil);')
+    expect(stopNotifyAt).toContain('if (!peripheral)')
 
     const notificationStateCallback = addonSource.slice(
       addonSource.indexOf('didUpdateNotificationStateForCharacteristic:'),
