@@ -4,11 +4,9 @@ import {
   advertisementMatchesFilter,
   deviceIdentity,
   type AdvertisementObservation,
-  type OwnerScanOptions,
-  type ScanFilter
+  type OwnerScanOptions
 } from '../../backend-contract/advertisement'
 import { contractError, type CleanupFailure, type CleanupRecord } from '../../backend-contract/errors'
-import { snapshotScanPlan } from '../../backend-contract/scan-planning'
 import type { OperationOptions, OperationTerminalRecord } from '../../backend-contract/operations'
 import {
   canonicalUuid,
@@ -31,7 +29,7 @@ import {
 import { BluezObjectStore } from './bluez-object-store'
 import type { BluezConnection } from './bluez-backend-handles'
 import { planBluezScan } from './bluez-scan-planner'
-import { snapshotNormalizedScanQuery } from '../../backend-contract/scan-query'
+import { trustedServiceUuidFilter } from '../scan-planning/service-uuid-scan-planner'
 import type {
   BluezGattCharacteristicRecord,
   BluezGattDescriptorRecord,
@@ -82,7 +80,7 @@ export function successfulTerminal(options: OperationOptions<string, string>): O
 }
 
 export function scanFilterVariant(options: OwnerScanOptions<string, string>): BluezVariant {
-  const effectiveFilter = options.plan === undefined ? options.filter : trustedBluezFilter(options)
+  const effectiveFilter = trustedServiceUuidFilter(options, planBluezScan, 'bluez.scan')
   const filter: Record<string, BluezVariant> = {
     DuplicateData: { signature: 'b', value: options.duplicatePolicy === 'all' },
     Transport: { signature: 's', value: 'le' }
@@ -94,20 +92,6 @@ export function scanFilterVariant(options: OwnerScanOptions<string, string>): Bl
     filter.Pattern = { signature: 's', value: effectiveFilter.localNamePrefix }
   }
   return Object.freeze({ signature: 'a{sv}', value: Object.freeze(filter) })
-}
-
-function trustedBluezFilter(options: OwnerScanOptions<string, string>): ScanFilter {
-  const plan = options.plan
-  if (plan === undefined) return options.filter
-  const snapshot = snapshotScanPlan(plan)
-  if (options.query === undefined) {
-    throw contractError('protocol.violation', 'scan', 'bluez.scan.plan-query')
-  }
-  const query = snapshotNormalizedScanQuery(options.query)
-  if (query.digest !== snapshot.queryDigest) {
-    throw contractError('protocol.violation', 'scan', 'bluez.scan.plan-query')
-  }
-  return planBluezScan(query).nativeFilter
 }
 
 export function scanSignature(options: OwnerScanOptions<string, string>): string {
