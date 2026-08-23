@@ -2,6 +2,7 @@
 
 package com.sfourdrinier.unifiedblemanager.protocol;
 
+import android.Manifest;
 import android.os.Build;
 import android.app.Activity;
 import android.bluetooth.BluetoothDevice;
@@ -191,6 +192,12 @@ public final class UnifiedBleProtocolControlModule extends NativeUnifiedBleProto
 
         @Override
         public void onAssociationCreated(AssociationInfo associationInfo) {
+          if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+            rejectAssociation(
+                "unsupportedAssociationMetadata",
+                "Android did not expose a real Companion Device Manager association on this API level.");
+            return;
+          }
           pendingAssociationId = associationInfo.getId();
           if (!associationUiLaunched) {
             resolveAssociation(
@@ -259,7 +266,7 @@ public final class UnifiedBleProtocolControlModule extends NativeUnifiedBleProto
       device = data.getParcelableExtra(CompanionDeviceManager.EXTRA_DEVICE);
     }
     final String peerId = device == null ? null : device.getAddress();
-    final String displayName = device == null ? null : device.getName();
+    final String displayName = deviceDisplayName(device);
     resolveAssociation(pendingAssociationId, peerId, displayName);
   }
 
@@ -302,14 +309,28 @@ public final class UnifiedBleProtocolControlModule extends NativeUnifiedBleProto
   }
 
   private static String associationPeerId(AssociationInfo associationInfo) {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return null;
     return associationInfo.getDeviceMacAddress() == null
         ? null
         : associationInfo.getDeviceMacAddress().toString();
   }
 
   private static String associationDisplayName(AssociationInfo associationInfo) {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return null;
     final CharSequence displayName = associationInfo.getDisplayName();
     return displayName == null ? null : displayName.toString();
+  }
+
+  private String deviceDisplayName(BluetoothDevice device) {
+    if (device == null) return null;
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+        reactContext.checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) return null;
+    try {
+      return device.getName();
+    } catch (SecurityException error) {
+      Log.w(TAG, "Bluetooth device name is unavailable without BLUETOOTH_CONNECT", error);
+      return null;
+    }
   }
 
   private static void rejectAssociationPromise(Promise promise, String code, String message, Throwable error) {

@@ -93,6 +93,60 @@ class UnifiedBleProtocolAndroidFindingsTest {
     )
   }
 
+  @Test
+  fun `AssociationInfo getters are explicitly guarded on API 33`() {
+    val source = readAndroidSource(
+      "android/src/main/java/com/sfourdrinier/unifiedblemanager/protocol/UnifiedBleProtocolControlModule.java"
+    )
+    val association = source.substring(
+      source.indexOf("public synchronized void associateCompanionDevice"),
+      source.indexOf("public synchronized void claimRestoration")
+    )
+    val peerProjection = source.substring(
+      source.indexOf("private static String associationPeerId"),
+      source.indexOf("private static String associationDisplayName")
+    )
+    val displayProjection = source.substring(
+      source.indexOf("private static String associationDisplayName"),
+      source.indexOf("private static void rejectAssociationPromise")
+    )
+
+    assertTrue(
+      Regex(
+        """onAssociationCreated\(AssociationInfo associationInfo\) \{[\s\S]*?if \(Build\.VERSION\.SDK_INT < Build\.VERSION_CODES\.TIRAMISU\) \{[\s\S]*?unsupportedAssociationMetadata[\s\S]*?associationInfo\.getId\(\)"""
+      ).containsMatchIn(association)
+    )
+    assertTrue(
+      Regex(
+        """if \(Build\.VERSION\.SDK_INT < Build\.VERSION_CODES\.TIRAMISU\) return null;[\s\S]*?getDeviceMacAddress\(\)"""
+      ).containsMatchIn(peerProjection)
+    )
+    assertTrue(
+      Regex(
+        """if \(Build\.VERSION\.SDK_INT < Build\.VERSION_CODES\.TIRAMISU\) return null;[\s\S]*?getDisplayName\(\)"""
+      ).containsMatchIn(displayProjection)
+    )
+  }
+
+  @Test
+  fun `fallback device name projection fails closed without Bluetooth connect permission`() {
+    val source = readAndroidSource(
+      "android/src/main/java/com/sfourdrinier/unifiedblemanager/protocol/UnifiedBleProtocolControlModule.java"
+    )
+    val activityResult = source.substring(
+      source.indexOf("public synchronized void onActivityResult"),
+      source.indexOf("public void onNewIntent")
+    )
+    val nameProjection = source
+
+    assertTrue(activityResult.contains("deviceDisplayName(device)"))
+    assertTrue(nameProjection.contains("Build.VERSION.SDK_INT >= Build.VERSION_CODES.S"))
+    assertTrue(nameProjection.contains("Manifest.permission.BLUETOOTH_CONNECT"))
+    assertTrue(nameProjection.contains("!= PackageManager.PERMISSION_GRANTED) return null;"))
+    assertTrue(nameProjection.contains("catch (SecurityException error)"))
+    assertTrue(Regex("getName\\(\\)").containsMatchIn(nameProjection))
+  }
+
   private fun readAndroidSource(relativePath: String): String {
     val candidates = listOf(
       File(relativePath),
