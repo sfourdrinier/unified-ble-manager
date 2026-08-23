@@ -476,7 +476,7 @@ export class WinRtGattOperations {
         const mode = this.backend.databaseForPath(path, 'winrt.gatt.subscribe.mode').notificationModeForPath(path)
         physical = createWinRtPhysicalSubscription(this.backend, address, mode)
         this.registerSubscriptionWaiter(waiter, physical)
-        this.beginPhysicalSubscriptionEnablement(physical)
+        this.beginPhysicalSubscriptionEnablement(physical, resolvePhysicalCompletion)
       } else {
         this.registerSubscriptionWaiter(waiter, physical)
       }
@@ -518,7 +518,10 @@ export class WinRtGattOperations {
     }
   }
 
-  private beginPhysicalSubscriptionEnablement(physical: WinRtPhysicalSubscription): void {
+  private beginPhysicalSubscriptionEnablement(
+    physical: WinRtPhysicalSubscription,
+    resolvePhysicalCompletion: () => void
+  ): void {
     let resolveEnablement: () => void = () => undefined
     let rejectEnablement: (error: unknown) => void = () => undefined
     const enablement = new Promise<void>((resolve, reject) => {
@@ -565,6 +568,7 @@ export class WinRtGattOperations {
             // enablement here lets every waiter publish its already-recorded lifecycle terminal
             // without misclassifying expected invalidation as an unhandled late native failure.
             await stopWinRtPhysicalSubscriptionAfterEnable(this.backend, physical)
+            resolvePhysicalCompletion()
             return
           }
           physical.enableConfirmed = true

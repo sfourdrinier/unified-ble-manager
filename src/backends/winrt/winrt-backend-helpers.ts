@@ -9,6 +9,59 @@ import { CoreBoundedStream } from '../../core/bounded-stream'
 import { resourceCount } from '../../backend-contract/primitives'
 import { releasedCleanup } from './winrt-handles'
 
+export const WINRT_NATIVE_CLEANUP_TIMEOUT_MS = 1_000
+
+export type WinRtSettlementWaitResult = 'settled' | 'timed-out'
+
+export type WinRtTimedValue<Value> =
+  | { readonly state: 'settled'; readonly value: Value }
+  | { readonly state: 'timed-out' }
+
+export function waitForWinRtValue<Value>(
+  completion: Promise<Value>,
+  deadline: number,
+  now: () => number
+): Promise<WinRtTimedValue<Value>> {
+  let timer: ReturnType<typeof setTimeout> | null = null
+  const timeoutToken = Symbol('winrt-timeout')
+  const timeout = new Promise<typeof timeoutToken>(resolve => {
+    timer = setTimeout(() => resolve(timeoutToken), Math.max(0, deadline - now()))
+  })
+  return Promise.race([completion, timeout]).then(result => {
+    if (timer !== null) {
+      clearTimeout(timer)
+    }
+    return result === timeoutToken ? { state: 'timed-out' } : { state: 'settled', value: result }
+  })
+}
+
+export function waitForWinRtSettlement(
+  completion: Promise<unknown>,
+  deadline: number,
+  now: () => number
+): Promise<WinRtSettlementWaitResult> {
+  return waitForWinRtValue(
+    completion.then(
+      () => undefined,
+      () => undefined
+    ),
+    deadline,
+    now
+  ).then(result => result.state)
+}
+
+export function timedOutWinRtCleanup(resourceKind: string, operation: string): CleanupRecord {
+  return Object.freeze({
+    state: 'release-failed',
+    failures: Object.freeze([
+      {
+        resourceKind,
+        error: contractError('operation.timed-out', 'cleanup', operation).normalized
+      }
+    ])
+  })
+}
+
 export function combineWinRtCleanup(left: CleanupRecord, right: CleanupRecord): CleanupRecord {
   if (left.state === 'released' && right.state === 'released') {
     return releasedCleanup
