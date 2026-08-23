@@ -887,13 +887,13 @@ async function watchIpcAdapterState(
       return result
     }
     const abortHandler = () => {
-      void stop().catch(() => undefined)
+      stop().catch(() => undefined)
     }
     const schedulePoll = () => {
       if (!active) return
       timer = globalThis.setTimeout(() => {
         timer = null
-        void poll()
+        poll().catch(() => undefined)
       }, IPC_ADAPTER_STATE_POLL_INTERVAL_MS)
     }
     const poll = async (): Promise<void> => {

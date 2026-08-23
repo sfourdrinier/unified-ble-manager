@@ -216,6 +216,29 @@ describe('Expo factory', () => {
     })
   })
 
+  test('normalizes native settings failures at the Expo boundary', async () => {
+    const manager = {
+      adapter: { state: jest.fn().mockResolvedValue(adapterState()) }
+    }
+    const nativeRuntime = trustedNativeExpoRuntime({
+      openSettings: jest.fn().mockRejectedValue({
+        code: 'settingsUnsupported',
+        message: 'This settings target is unavailable on the current host.'
+      })
+    })
+    getNativeUnifiedBleExpoRuntime.mockReturnValue(nativeRuntime)
+    createReactNativeBleManager.mockResolvedValue(manager)
+
+    const result = await createExpoBleManager()
+
+    await expect(result.openSettings('bluetooth')).rejects.toMatchObject({
+      constructor: BleError,
+      code: 'capability.unsupported',
+      operation: 'expo.open-settings',
+      platform: { code: 'settingsUnsupported' }
+    })
+  })
+
   test('fails closed before RN construction when the native Expo plugin marker is absent', async () => {
     const nativeRuntime = trustedNativeExpoRuntime({
       getRuntimeConfiguration: jest.fn().mockRejectedValue({

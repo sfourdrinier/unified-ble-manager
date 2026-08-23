@@ -186,14 +186,40 @@ describe('requiredHardware reconciliation', () => {
         }
       }
     ])
-    expect(manifest.manifest.application[0]['meta-data']).toEqual([
-      {
-        $: {
-          'android:name': 'com.sfourdrinier.unifiedblemanager.companion-device-setup-feature-ownership',
-          'android:value': 'feature=companion_device_setup'
+    expect(manifest.manifest.application[0]['meta-data']).toEqual(
+      expect.arrayContaining([
+        {
+          $: {
+            'android:name': 'com.sfourdrinier.unifiedblemanager.companion-device-setup-feature-ownership',
+            'android:value': 'feature=companion_device_setup'
+          }
+        },
+        {
+          $: {
+            'android:name': 'com.sfourdrinier.unifiedblemanager.expo.configuration-marker',
+            'android:value': 'unified-ble-expo-v1'
+          }
+        },
+        {
+          $: {
+            'android:name': 'com.sfourdrinier.unifiedblemanager.expo.legacy-location-policy',
+            'android:value': 'none'
+          }
+        },
+        {
+          $: {
+            'android:name': 'com.sfourdrinier.unifiedblemanager.expo.never-for-location',
+            'android:value': 'false'
+          }
+        },
+        {
+          $: {
+            'android:name': 'com.sfourdrinier.unifiedblemanager.expo.required-hardware',
+            'android:value': 'true'
+          }
         }
-      }
-    ])
+      ])
+    )
 
     reconcileExpoAndroidManifest(manifest, {
       requiredHardware: false,
@@ -299,6 +325,32 @@ describe('companion setup feature reconciliation', () => {
   const companionFeature = 'android.software.companion_device_setup'
   const ownershipMetadata = 'com.sfourdrinier.unifiedblemanager.companion-device-setup-feature-ownership'
   const ownershipValue = 'feature=companion_device_setup'
+  const runtimeMetadata = [
+    {
+      $: {
+        'android:name': 'com.sfourdrinier.unifiedblemanager.expo.configuration-marker',
+        'android:value': 'unified-ble-expo-v1'
+      }
+    },
+    {
+      $: {
+        'android:name': 'com.sfourdrinier.unifiedblemanager.expo.legacy-location-policy',
+        'android:value': 'none'
+      }
+    },
+    {
+      $: {
+        'android:name': 'com.sfourdrinier.unifiedblemanager.expo.never-for-location',
+        'android:value': 'false'
+      }
+    },
+    {
+      $: {
+        'android:name': 'com.sfourdrinier.unifiedblemanager.expo.required-hardware',
+        'android:value': 'false'
+      }
+    }
+  ]
 
   it('preserves a host-authored companion setup feature including required=true', () => {
     const manifest = {
@@ -317,7 +369,7 @@ describe('companion setup feature reconciliation', () => {
     expect(manifest.manifest['uses-feature']).toEqual([
       { $: { 'android:name': companionFeature, 'android:required': 'true' } }
     ])
-    expect(manifest.manifest.application[0]['meta-data']).toEqual([])
+    expect(manifest.manifest.application[0]['meta-data']).toEqual(runtimeMetadata)
   })
 
   it('removes only the plugin-owned entry when a host declaration is added later', () => {
@@ -333,7 +385,8 @@ describe('companion setup feature reconciliation', () => {
       legacyLocation: 'none'
     })
     expect(manifest.manifest.application[0]['meta-data']).toEqual([
-      { $: { 'android:name': ownershipMetadata, 'android:value': ownershipValue } }
+      { $: { 'android:name': ownershipMetadata, 'android:value': ownershipValue } },
+      ...runtimeMetadata
     ])
     manifest.manifest['uses-feature']?.unshift({
       $: { 'android:name': companionFeature, 'android:required': 'true' }
@@ -348,7 +401,7 @@ describe('companion setup feature reconciliation', () => {
     expect(manifest.manifest['uses-feature']).toEqual([
       { $: { 'android:name': companionFeature, 'android:required': 'true' } }
     ])
-    expect(manifest.manifest.application[0]['meta-data']).toBeUndefined()
+    expect(manifest.manifest.application[0]['meta-data']).toEqual(runtimeMetadata)
   })
 })
 

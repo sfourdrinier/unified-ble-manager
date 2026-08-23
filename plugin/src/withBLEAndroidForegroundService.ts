@@ -25,18 +25,19 @@ export const FOREGROUND_SERVICE_PERMISSIONS = Object.freeze([
 const FOREGROUND_SERVICE_OWNERSHIP_METADATA_VALUE = 'service=1'
 const FOREGROUND_SERVICE_PERMISSION_OWNERSHIP_METADATA_PREFIX = 'permissions='
 
-const FOREGROUND_SERVICE_PERMISSION_ATTRIBUTES: Readonly<Record<string, Readonly<Record<string, string>>>> = Object.freeze({
-  'android.permission.FOREGROUND_SERVICE': Object.freeze({
-    'android:name': 'android.permission.FOREGROUND_SERVICE'
-  }),
-  'android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE': Object.freeze({
-    'android:name': 'android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE',
-    'tools:targetApi': '34'
-  }),
-  'android.permission.POST_NOTIFICATIONS': Object.freeze({
-    'android:name': 'android.permission.POST_NOTIFICATIONS',
-    'tools:targetApi': '33'
-})
+const FOREGROUND_SERVICE_PERMISSION_ATTRIBUTES: Readonly<Record<string, Readonly<Record<string, string>>>> =
+  Object.freeze({
+    'android.permission.FOREGROUND_SERVICE': Object.freeze({
+      'android:name': 'android.permission.FOREGROUND_SERVICE'
+    }),
+    'android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE': Object.freeze({
+      'android:name': 'android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE',
+      'tools:targetApi': '34'
+    }),
+    'android.permission.POST_NOTIFICATIONS': Object.freeze({
+      'android:name': 'android.permission.POST_NOTIFICATIONS',
+      'tools:targetApi': '33'
+    })
   })
 
 type ManifestApplication = NonNullable<AndroidConfig.Manifest.AndroidManifest['manifest']['application']>[number]

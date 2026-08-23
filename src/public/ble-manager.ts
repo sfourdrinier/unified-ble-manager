@@ -1544,7 +1544,7 @@ async function watchPublicAdapter(
     }
     let stopPromise: Promise<CleanupRecord> | null = null
     const abortHandler = () => {
-      void stop().catch(() => undefined)
+      stop().catch(() => undefined)
     }
     const stop = (): Promise<CleanupRecord> => {
       if (stopPromise !== null) return stopPromise

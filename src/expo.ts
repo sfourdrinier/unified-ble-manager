@@ -489,7 +489,13 @@ async function openExpoSettings(target: ExpoSettingsTarget, settingsBridge?: Exp
   try {
     await settingsBridge(target)
   } catch (error) {
-    throw rehydratePublicError(error)
+    const nativeCode = errorCode(error)
+    throwExpoRuntimeError(
+      normalizedSettingsErrorCode(nativeCode),
+      'expo.open-settings',
+      errorMessage(error),
+      nativeCode
+    )
   }
 }
 
@@ -820,6 +826,17 @@ function normalizedPermissionErrorCode(nativeCode: string): BleErrorCode {
       return 'capability.unavailable'
     case 'permissionDenied':
       return 'permission.denied'
+    default:
+      return 'platform.failure'
+  }
+}
+
+function normalizedSettingsErrorCode(nativeCode: string): BleErrorCode {
+  switch (nativeCode) {
+    case 'settingsUnsupported':
+      return 'capability.unsupported'
+    case 'settingsUnavailable':
+      return 'capability.unavailable'
     default:
       return 'platform.failure'
   }
