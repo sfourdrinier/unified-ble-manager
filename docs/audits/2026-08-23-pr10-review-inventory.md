@@ -1,7 +1,7 @@
 # PR10 review inventory
 
 Target branch: `feat/expo-first-class-host`
-Current verified SHA: `f8c7a48f3f6c9063dda0c412f3ec0e76a8ebe99e`
+Implementation receipts anchor: `f8c7a48f3f6c9063dda0c412f3ec0e76a8ebe99e` (the current tip adds only this ledger correction).
 Base: `a252b5a7d6e09147ccd7fa636facab6ad2996ea6`
 Milestone: first-class Expo host, staged as PR10A–PR10D
 
