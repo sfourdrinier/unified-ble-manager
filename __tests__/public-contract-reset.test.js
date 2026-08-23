@@ -57,25 +57,21 @@ describe('PR1 public contract reset (TDD)', () => {
     ).toThrow()
   })
 
-  test('Restoration identity is deterministic and matches golden vectors', () => {
-    const { deriveRestorationIdentity, createEphemeralHostIdentity } = require('../lib/commonjs/public/host-identity')
+  test('Restoration identity vectors are native bootstrap outputs with explicit generation invalidation', () => {
+    const { createEphemeralHostIdentity } = require('../lib/commonjs/public/host-identity')
     for (const v of vectors) {
-      const result = deriveRestorationIdentity({
-        applicationId: v.applicationId,
-        restorationId: v.restorationId,
-        generation: v.generation
+      expect(v).toMatchObject({
+        applicationId: expect.any(String),
+        restorationId: expect.any(String),
+        generation: expect.any(String),
+        rootSha256: expect.stringMatching(/^[0-9a-f]{64}$/),
+        restoreIdentifier: expect.any(String),
+        namespaceValue: expect.stringMatching(/^ubm-ns:[A-Za-z0-9_-]+$/),
+        clientId: expect.stringMatching(/^ubm-client:[A-Za-z0-9_-]+$/),
+        hostSessionScope: expect.stringMatching(/^ubm-host:[A-Za-z0-9_-]+$/)
       })
-      expect(result.opaqueRestorationId).toBe(v.opaqueRestorationId)
     }
-    // case normalization stability
-    const a = deriveRestorationIdentity({ applicationId: 'com.example.app', restorationId: 'ble', generation: '0' })
-    const b = deriveRestorationIdentity({ applicationId: 'COM.EXAMPLE.APP', restorationId: 'ble', generation: '0' })
-    expect(a.opaqueRestorationId).toBe(b.opaqueRestorationId)
-
-    // changing only generation changes domain deterministically
-    const g0 = deriveRestorationIdentity({ applicationId: 'com.example.app', restorationId: 'ble', generation: '0' })
-    const g1 = deriveRestorationIdentity({ applicationId: 'com.example.app', restorationId: 'ble', generation: '1' })
-    expect(g0.opaqueRestorationId).not.toBe(g1.opaqueRestorationId)
+    expect(vectors.find(v => v.generation === '1').clientId).not.toBe(vectors.find(v => v.generation === '2').clientId)
 
     // ephemeral IDs are unique
     const e1 = createEphemeralHostIdentity({ randomBytes: l => new Uint8Array(l).fill(1) })
@@ -93,27 +89,15 @@ describe('PR1 public contract reset (TDD)', () => {
   })
 
   test('BleManagerCreateOptions validates and instanceId does not affect restoration', () => {
-    const {
-      normalizeBleManagerCreateOptions,
-      deriveRestorationIdentity
-    } = require('../lib/commonjs/public/host-identity')
+    const { normalizeBleManagerCreateOptions } = require('../lib/commonjs/public/host-identity')
     const base = normalizeBleManagerCreateOptions({ instanceId: 'my-instance' })
     expect(base.instanceId).toBe('my-instance')
     expect(() => normalizeBleManagerCreateOptions({ instanceId: 'bad:id' })).toThrow()
-    expect(() => normalizeBleManagerCreateOptions({ restoration: { applicationId: '', restorationId: 'x' } })).toThrow()
-
-    const withInstance = deriveRestorationIdentity({
-      applicationId: 'com.example.app',
-      restorationId: 'ble',
-      generation: '0'
+    expect(normalizeBleManagerCreateOptions({ restoration: { restorationId: 'ble' } })).toMatchObject({
+      restoration: { restorationId: 'ble', generation: '1' }
     })
-    const withoutInstance = deriveRestorationIdentity({
-      applicationId: 'com.example.app',
-      restorationId: 'ble',
-      generation: '0'
-    })
-    // instanceId must not appear in restoration material — same opaque
-    expect(withInstance.opaqueRestorationId).toBe(withoutInstance.opaqueRestorationId)
+    expect(() => normalizeBleManagerCreateOptions({ restoration: { applicationId: 'com.example.app', restorationId: 'x' } })).toThrow()
+    expect(() => normalizeBleManagerCreateOptions({ restoration: { restorationId: 'bad:id' } })).toThrow()
     expect(() => normalizeBleManagerCreateOptions({ unsupported: true })).toThrow()
   })
 
@@ -125,16 +109,17 @@ describe('PR1 public contract reset (TDD)', () => {
     expect(typeof advanced.normalizeOperationOptions).toBe('function')
   })
 
-  test('Expo entrypoint exists and is thin composition (PR10 stub)', () => {
+  test('Expo entrypoint exists and is thin composition', () => {
     const expo = require('../lib/commonjs/expo')
     expect(typeof expo.createExpoBleManager).toBe('function')
     expect(typeof expo.createExpoBleManagerWithEnvironment).toBe('function')
+    expect(typeof expo.mapExpoReadiness).toBe('function')
   })
 
-  test('Expo restoration remains fail-closed until the PR10 native contract lands', async () => {
-    const expo = require('../src/expo')
-    await expect(
-      expo.createExpoBleManager({ restoration: { applicationId: 'com.example.app', restorationId: 'ble' } })
-    ).rejects.toMatchObject({ code: 'capability.unsupported' })
+  test('Expo restoration accepts one application-facing token without a caller application id', () => {
+    const { normalizeBleManagerCreateOptions } = require('../lib/commonjs/public/host-identity')
+    expect(normalizeBleManagerCreateOptions({ restoration: { restorationId: 'ble' } })).toMatchObject({
+      restoration: { restorationId: 'ble', generation: '1' }
+    })
   })
 })

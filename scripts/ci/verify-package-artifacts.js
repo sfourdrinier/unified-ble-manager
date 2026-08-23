@@ -154,6 +154,7 @@ function isPublishedSourceFile(sourceFile) {
     sourceRelative === 'testing.ts' ||
     sourceRelative === 'web.ts' ||
     sourceRelative === 'react-native.ts' ||
+    sourceRelative === 'react.ts' ||
     sourceRelative === 'node-bluez.ts' ||
     sourceRelative === 'node-corebluetooth.ts' ||
     sourceRelative === 'node-winrt.ts' ||

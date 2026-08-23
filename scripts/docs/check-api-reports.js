@@ -26,6 +26,7 @@ const typeScriptEntrypoints = Object.freeze({
   './profiles/ieee-11073': 'src/profiles/ieee-11073.ts',
   './web': 'src/web.ts',
   './react-native': 'src/react-native.ts',
+  './react': 'src/react.ts',
   './node/bluez': 'src/node-bluez.ts',
   './node/corebluetooth': 'src/node-corebluetooth.ts',
   './node/winrt': 'src/node-winrt.ts',

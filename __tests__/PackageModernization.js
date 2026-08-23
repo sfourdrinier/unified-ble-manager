@@ -35,6 +35,7 @@ describe('canonical package modernization', () => {
       './profiles/heart-rate',
       './profiles/ieee-11073',
       './profiles/standard-commands',
+      './react',
       './react-native',
       './tauri',
       './testing',
@@ -71,9 +72,7 @@ describe('canonical package modernization', () => {
     expect(workflow).toContain('Fetch main for initial tag verification')
     expect(workflow).toContain('Verify release tag points at current main')
     expect(workflow).toContain("steps.npm_status.outputs.package_published != 'true'")
-    expect(workflow).toContain(
-      'npm publish "${PUBLISH_TARBALL}" --provenance --access public --tag "${NPM_DIST_TAG}"'
-    )
+    expect(workflow).toContain('npm publish "${PUBLISH_TARBALL}" --provenance --access public --tag "${NPM_DIST_TAG}"')
     expect(workflow).toContain('gh release create')
     expect(workflow).toContain('unified-ble-manager@${VER}')
     expect(workflow).not.toMatch(/@sfourdrinier\/react-native-ble-plx|prepare-shim|dual packages|canonical \+ shim/i)
@@ -131,7 +130,7 @@ describe('canonical package modernization', () => {
     expect(exampleExpoPackage.dependencies).not.toHaveProperty('react-native-ble-plx')
     expect(expoLock).toMatch(/unified-ble-manager:\s*\n\s+specifier:\s+file:\.\./)
     expect(plugin).toContain('createRunOncePlugin(withBLE, pkg.name, pkg.version)')
-    expect(plugin).toContain('iosNativeProtocolRestoration')
+    expect(plugin).toContain('UnifiedBleProtocolRestorationId')
     expect(plugin).not.toContain('withBLERestorationPodfile')
     expect(plugin).not.toContain('@sfourdrinier/react-native-ble-plx')
   })
@@ -153,7 +152,9 @@ describe('canonical package modernization', () => {
     expect(rootPackage.scripts['test:ios']).toContain("-destination 'generic/platform=iOS Simulator'")
     expect(rootPackage.scripts['test:expo']).toContain('NODE_ENV=development npx expo-doctor')
     expect(rootPackage.scripts['test:expo']).toContain('NODE_ENV=development npx expo prebuild --clean --no-install')
-    expect(rootPackage.scripts['build:expo:android']).toContain('NODE_ENV=development npx expo prebuild --clean --no-install')
+    expect(rootPackage.scripts['build:expo:android']).toContain(
+      'NODE_ENV=development npx expo prebuild --clean --no-install'
+    )
     expect(rootPackage.scripts['build:expo:android']).toContain('NODE_ENV=development ./gradlew :app:assembleDebug')
     expect(releaseGate).toContain('NODE_ENV=development npx expo-doctor')
     expect(releaseGate).toContain('NODE_ENV=development npx expo prebuild --clean --no-install')

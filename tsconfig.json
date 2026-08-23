@@ -24,6 +24,7 @@
       "unified-ble-manager/electron/main": ["./src/electron-main"],
       "unified-ble-manager/electron/renderer": ["./src/electron-renderer"],
       "unified-ble-manager/advanced": ["./src/advanced"],
+      "unified-ble-manager/react": ["./src/react"],
       "unified-ble-manager/expo": ["./src/expo"],
       "unified-ble-manager/tauri": ["./src/tauri"]
     },
