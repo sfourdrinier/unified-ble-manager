@@ -14,7 +14,7 @@ const currentMigration = migration => migration.slice(0, migration.indexOf('## H
 
 describe('PR8 documentation contract', () => {
   test('uses the Windows package-manager command when spawning documentation tooling', () => {
-    expect(packageManagerCommand('win32')).toBe('pnpm.cmd')
+    expect(packageManagerCommand('win32')).toBe('pnpm')
     expect(packageManagerCommand('darwin')).toBe('pnpm')
   })
 

@@ -51,13 +51,18 @@ function assertByteIdentical(committed, regenerated) {
 }
 
 function run(command, args) {
-  const result = spawnSync(command, args, { cwd: root, encoding: 'utf8', stdio: 'inherit' })
+  const result = spawnSync(command, args, {
+    cwd: root,
+    encoding: 'utf8',
+    stdio: 'inherit',
+    shell: process.platform === 'win32'
+  })
   if (result.error) throw result.error
   if (result.status !== 0) throw new Error(`${command} ${args.join(' ')} failed with exit code ${String(result.status)}`)
 }
 
 function packageManagerCommand(platform = process.platform) {
-  return platform === 'win32' ? 'pnpm.cmd' : 'pnpm'
+  return 'pnpm'
 }
 
 function checkGeneratedHtml() {
