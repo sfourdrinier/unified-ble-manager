@@ -17,6 +17,15 @@ This is a live disposition ledger. A finding is not closed by a test-only change
 | F10-006 | The supplied `runner-public-scenarios.ts` explicit result annotations were suspected of causing artifact build failures. | Current source contains explicit `SecurityCancelPairingResult`/`SecurityPairResult` annotations for the cancellation scenario.                                                                                                                                                        | Verified; no logic change required.                                                                                                         | Typecheck and `prepack` must remain green.                                                                                         |
 | F10-007 | Android foreground-service/CDM and native restoration execution are not yet implemented by the current partial diff.     | Android now has a metadata-gated `BlePlxForegroundService`, acknowledged promotion, persisted session-intent restart policy, ref-counted leases, a Companion Device Manager system-UI bridge returning `associated` metadata only, and the Expo no-argument native restoration claim. | Partially addressed; physical/native host evidence remains open.                                                                            | Android Gradle/unit gate, Expo association/restoration contract tests, Apple CI/full host build, and explicit support limitations. |
 
+## Supplemental current disposition
+
+F10-005 now has a dedicated public-API diagnostics/restoration screen, a
+redacted support-bundle projection, SDK 57 typecheck, CNG prebuild, and an
+Android debug APK build. F10-007 now has the Android CDM system-UI bridge and
+the no-argument native restoration claim. Their remaining qualification is
+Apple/full-host and physical-evidence scope, not missing deterministic source
+surfaces.
+
 ## Current passing focused gates
 
 - `pnpm test:plugin`: 30 tests passed.
