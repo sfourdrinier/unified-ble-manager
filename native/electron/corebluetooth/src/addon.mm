@@ -1685,7 +1685,7 @@ characteristicUUID:(NSString *)characteristicUUID
   NSString *directKey = [self directCharacteristicKey:deviceId characteristic:characteristic];
   UBMVoidBlock directDisableDone = self.pendingNotifyDisableAt[directKey];
   if (directDisableDone) {
-    if (characteristic.isNotifying) return;
+    if (characteristic.isNotifying && !error) return;
     [self.pendingNotifyDisableAt removeObjectForKey:directKey];
     if (error) {
       directDisableDone(error);
@@ -1722,7 +1722,7 @@ characteristicUUID:(NSString *)characteristicUUID
 
   UBMVoidBlock disableDone = self.pendingNotifyDisable[key];
   if (disableDone) {
-    if (characteristic.isNotifying) return;
+    if (characteristic.isNotifying && !error) return;
     [self.pendingNotifyDisable removeObjectForKey:key];
     if (error) {
       disableDone(error);
