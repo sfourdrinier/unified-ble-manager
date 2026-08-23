@@ -266,7 +266,11 @@ public final class UnifiedBleProtocolControlModule extends NativeUnifiedBleProto
 
   @Override
   public synchronized void invalidate() {
-    backgroundLeases.close();
+    try {
+      backgroundLeases.close();
+    } catch (RuntimeException error) {
+      Log.e(TAG, "connected-device foreground service cleanup failed during invalidation", error);
+    }
     if (nativeHandle != 0L) {
       UnifiedBleProtocolJsiBinding.close(nativeHandle);
       nativeDestroy(nativeHandle);

@@ -260,10 +260,15 @@ export function useConnectionState(connection: BleConnection | null): UseConnect
   })
   React.useEffect(() => {
     let active = true
+    let iterator: AsyncIterator<BleConnectionEvent> | null = null
     if (connection === null) return () => undefined
     const observe = async (): Promise<void> => {
       try {
-        for await (const event of connection.lifecycleEvents) {
+        iterator = connection.lifecycleEvents[Symbol.asyncIterator]()
+        while (true) {
+          const next = await iterator.next()
+          if (next.done) break
+          const event = next.value
           if (active) setResult({ state: event.current, loading: false, error: null })
         }
       } catch (reason) {
@@ -273,6 +278,7 @@ export function useConnectionState(connection: BleConnection | null): UseConnect
     observe().catch(() => undefined)
     return () => {
       active = false
+      if (iterator?.return !== undefined) iterator.return().catch(() => undefined)
     }
   }, [connection])
   return connection === null ? { state: null, loading: false, error: null } : result

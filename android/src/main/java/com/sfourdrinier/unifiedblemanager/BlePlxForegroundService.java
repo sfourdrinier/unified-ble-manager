@@ -29,6 +29,8 @@ public final class BlePlxForegroundService extends Service {
   public static final String EXTRA_ACK = "backgroundStartAcknowledgement";
   public static final int ACK_STARTED = 1;
   public static final int ACK_FAILED = 2;
+  public static final String SESSION_INTENT_PREFERENCE =
+      "unified-ble-manager.background.session-intent-exists";
   private static final String EXTRA_CHANNEL_ID = "channelId";
   private static final String EXTRA_CHANNEL_NAME = "channelName";
   private static final String EXTRA_TITLE = "title";
@@ -55,6 +57,11 @@ public final class BlePlxForegroundService extends Service {
       final ForegroundServiceNotificationConfiguration configuration;
       if (intent == null) {
         configuration = configurationFromMetadata();
+        if (!getSharedPreferences("unified-ble-manager", MODE_PRIVATE)
+            .getBoolean(SESSION_INTENT_PREFERENCE, false)) {
+          stopSelf();
+          return START_NOT_STICKY;
+        }
       } else if (ACTION_START.equals(intent.getAction())) {
         configuration = ForegroundServiceNotificationConfiguration.fromValues(
             required(intent, EXTRA_CHANNEL_ID),
@@ -93,9 +100,17 @@ public final class BlePlxForegroundService extends Service {
         startForeground(ForegroundServiceNotificationConfiguration.NOTIFICATION_ID, notification);
       }
       acknowledge(intent, ACK_STARTED, null);
+      getSharedPreferences("unified-ble-manager", MODE_PRIVATE)
+          .edit()
+          .putBoolean(SESSION_INTENT_PREFERENCE, configuration.restartWhileSessionIntentExists())
+          .apply();
       return configuration.restartWhileSessionIntentExists() ? START_STICKY : START_NOT_STICKY;
     } catch (RuntimeException error) {
       acknowledge(intent, ACK_FAILED, error.getMessage());
+      getSharedPreferences("unified-ble-manager", MODE_PRIVATE)
+          .edit()
+          .putBoolean(SESSION_INTENT_PREFERENCE, false)
+          .apply();
       stopSelf();
       return START_NOT_STICKY;
     }

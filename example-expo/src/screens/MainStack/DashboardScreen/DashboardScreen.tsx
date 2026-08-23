@@ -84,9 +84,7 @@ export function DashboardScreen({ navigation }: DashboardScreenProps) {
         setError(messageFor(connectError))
       }
     } finally {
-      if (work.isActive()) {
-        setIsConnecting(false)
-      }
+      setIsConnecting(false)
     }
   }
 

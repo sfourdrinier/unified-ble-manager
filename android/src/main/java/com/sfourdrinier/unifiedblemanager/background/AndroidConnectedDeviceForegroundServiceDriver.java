@@ -2,6 +2,7 @@ package com.sfourdrinier.unifiedblemanager.background;
 
 import android.Manifest;
 import android.content.ComponentName;
+import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
@@ -56,7 +57,8 @@ public final class AndroidConnectedDeviceForegroundServiceDriver
             "Android could not resolve the configured connected-device foreground service. Rebuild the native app.");
       }
       try {
-        if (!acknowledgement.await(5, TimeUnit.SECONDS)) {
+      if (!acknowledgement.await(5, TimeUnit.SECONDS)) {
+          context.stopService(new Intent(context, BlePlxForegroundService.class));
           throw new ForegroundServiceControlException(
               "foregroundServiceStartTimedOut",
               "Android did not acknowledge foreground-service promotion within five seconds; retry the lease.");
@@ -89,6 +91,10 @@ public final class AndroidConnectedDeviceForegroundServiceDriver
   @Override
   public void stop() {
     try {
+      context.getSharedPreferences("unified-ble-manager", Context.MODE_PRIVATE)
+          .edit()
+          .putBoolean(BlePlxForegroundService.SESSION_INTENT_PREFERENCE, false)
+          .apply();
       context.stopService(new Intent(context, BlePlxForegroundService.class));
     } catch (RuntimeException error) {
       throw new ForegroundServiceControlException(
