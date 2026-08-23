@@ -88,6 +88,15 @@ class CanonicalBleExampleService {
     return (await this.ensureManager()).restoration.claim()
   }
 
+  async associateCompanionDevice(name?: string, serviceUuid?: string) {
+    const manager = await this.ensureManager()
+    if (name === undefined && serviceUuid === undefined) return manager.association.associate()
+    return manager.association.associate({
+      ...(name === undefined ? {} : { name }),
+      ...(serviceUuid === undefined ? {} : { serviceUuid })
+    })
+  }
+
   diagnosticsSnapshot() {
     return this.manager?.diagnostics.snapshot() ?? null
   }
@@ -114,8 +123,8 @@ class CanonicalBleExampleService {
           : {
               queryDigest: plan.queryDigest,
               nativeGuarantee: plan.nativeGuarantee,
-            nativePredicateCount: plan.native.predicates.length,
-            residualPredicateCount: plan.residual.predicates.length,
+              nativePredicateCount: plan.native.predicates.length,
+              residualPredicateCount: plan.residual.predicates.length,
               unavailablePredicateCount: plan.unavailable.length
             },
       host: {

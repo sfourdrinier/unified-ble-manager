@@ -11,6 +11,7 @@ export type MainStackParamList = {
   AUTODISCONNECT_SCREEN: undefined
   INSTANCE_DESTROY_SCREEN: undefined
   DEVICE_ON_DISCONNECT_TEST_SCREEN: undefined
+  EXPO_DIAGNOSTICS_SCREEN: undefined
 }
 
 const MainStack = createNativeStackNavigator<MainStackParamList>()
@@ -61,6 +62,11 @@ export function MainStackComponent() {
         options={{
           headerTitle: 'On disconnect test'
         }}
+      />
+      <MainStack.Screen
+        name="EXPO_DIAGNOSTICS_SCREEN"
+        component={screenComponents.ExpoDiagnosticsScreen}
+        options={{ headerTitle: 'Expo diagnostics' }}
       />
     </MainStack.Navigator>
   )
