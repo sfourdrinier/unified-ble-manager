@@ -10,6 +10,7 @@ const {
   DEFAULT_BLE_MANAGER_OPTIONS
 } = require('../../src/manager/ble-manager')
 const { opaqueId } = require('../../src/backend-contract/primitives')
+const { normalizeScanQuery } = require('../../src/public/scan-query')
 const { InMemoryWebBluetoothTckBoundary } = require('../../test-support/web/in-memory-web-bluetooth-tck-boundary')
 
 const HEART_RATE_SERVICE = '0000180d-0000-1000-8000-00805f9b34fb'
@@ -186,6 +187,101 @@ describe('WebBluetoothBackend', () => {
       )
     ).resolves.toMatchObject({ grantedServices: [HEART_RATE_SERVICE] })
 
+    await expect(backend.destroy()).resolves.toEqual({ state: 'released', failures: [] })
+  })
+
+  test('projects chooser-compatible service predicates without claiming continuous Web scanning', async () => {
+    const mock = createBoundary()
+    const provider = createWebBluetoothProvider(mock.boundary)
+    const [adapter] = await provider.listAdapters()
+    const backend = await provider.create({ selectedAdapterId: adapter.adapterId })
+    await backend.attach({ coreCompatibility: provider.descriptor.compatibility })
+
+    const query = normalizeScanQuery({
+      anyOf: [
+        {
+          services: { all: [HEART_RATE_SERVICE] },
+          names: { prefixes: ['Heart'] },
+          serviceData: { any: [{ service: HEART_RATE_SERVICE, dataPrefix: new Uint8Array([1]) }] },
+          rssi: { minimum: -70 },
+          connectable: true
+        }
+      ]
+    })
+    const plan = backend.scanner.plan(query)
+
+    expect(plan).toMatchObject({
+      nativeGuarantee: 'safe-superset',
+      native: {
+        predicates: [{ clauseSet: 'anyOf', clauseIndex: 0, field: 'services', operator: 'all' }],
+        complete: false
+      },
+      residual: { query, complete: true },
+      unavailable: expect.arrayContaining([
+        { clauseSet: 'anyOf', clauseIndex: 0, field: 'serviceData', operator: 'any' },
+        { clauseSet: 'anyOf', clauseIndex: 0, field: 'rssi', operator: 'minimum' },
+        { clauseSet: 'anyOf', clauseIndex: 0, field: 'connectable', operator: 'equals' }
+      ])
+    })
+    expect(plan.residual.predicates).toEqual(expect.arrayContaining(plan.unavailable))
+    expect(backend.identity.runtime.diagnostics).toMatchObject({ chooserDiscovery: true, continuousScan: false })
+    await expect(backend.scanner.start(scanOptions(null), 'web-scanner-client')).rejects.toMatchObject({
+      normalized: { code: 'capability.unsupported' }
+    })
+
+    await expect(
+      backend.choose(
+        {
+          filters: [{ serviceUuids: [HEART_RATE_SERVICE], manufacturerData: [], localNamePrefix: null }],
+          acceptAllDevices: false,
+          optionalServices: [HEART_RATE_SERVICE]
+        },
+        noDeadline()
+      )
+    ).resolves.toMatchObject({ grantedServices: [HEART_RATE_SERVICE] })
+    expect(mock.requestDevice).toHaveBeenCalledWith(expect.objectContaining({ optionalServices: [HEART_RATE_SERVICE] }))
+
+    await expect(backend.destroy()).resolves.toEqual({ state: 'released', failures: [] })
+  })
+
+  test('marks chooser predicates that Web Bluetooth cannot express as unavailable', async () => {
+    const mock = createBoundary()
+    const provider = createWebBluetoothProvider(mock.boundary)
+    const [adapter] = await provider.listAdapters()
+    const backend = await provider.create({ selectedAdapterId: adapter.adapterId })
+    await backend.attach({ coreCompatibility: provider.descriptor.compatibility })
+
+    const query = normalizeScanQuery({
+      anyOf: [
+        {
+          names: { exact: ['Heart'] },
+          manufacturerData: { any: [{ companyId: 76, dataPrefix: new Uint8Array([1]), mask: new Uint8Array([255]) }] }
+        }
+      ]
+    })
+    const plan = backend.scanner.plan(query)
+
+    expect(plan.unavailable).toEqual(
+      expect.arrayContaining([
+        { clauseSet: 'anyOf', clauseIndex: 0, field: 'names', operator: 'exact' },
+        { clauseSet: 'anyOf', clauseIndex: 0, field: 'manufacturerData', operator: 'any' }
+      ])
+    )
+    expect(plan.limitations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          predicate: { clauseSet: 'anyOf', clauseIndex: 0, field: 'names', operator: 'exact' },
+          code: 'observation-field-unavailable',
+          effect: 'field-unavailable'
+        }),
+        expect.objectContaining({
+          predicate: { clauseSet: 'anyOf', clauseIndex: 0, field: 'manufacturerData', operator: 'any' },
+          code: 'observation-field-unavailable',
+          effect: 'field-unavailable'
+        })
+      ])
+    )
+    expect(plan.residual.predicates).toEqual(expect.arrayContaining(plan.unavailable))
     await expect(backend.destroy()).resolves.toEqual({ state: 'released', failures: [] })
   })
 

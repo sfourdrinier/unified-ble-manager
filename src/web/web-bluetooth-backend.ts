@@ -67,6 +67,7 @@ import type {
 } from './web-bluetooth-boundary'
 import { normalizeWebBluetoothError, validateWebChooserRequest, webCleanupFailure } from './web-bluetooth-errors'
 import { createWebBluetoothFeatureRegistry } from './web-feature-registry'
+import { diagnosticWebBluetoothScanPlan } from './web-bluetooth-scan-planner'
 import { WebBluetoothGattRuntime } from './web-bluetooth-gatt'
 import { WebBackendConnection, WebConnectionLease, WebGattDatabase } from './web-bluetooth-handles'
 import type { WebConnectionRecord, WebPendingConnection, WebSelectedDevice } from './web-bluetooth-handles'
@@ -195,6 +196,7 @@ export class WebBluetoothBackend
       watchState: async () => this.watchAdapterState()
     }
     this.scanner = {
+      plan: query => diagnosticWebBluetoothScanPlan(query),
       start: async () => {
         this.assertAttached('web-scanner.start')
         throw contractError('capability.unsupported', 'scan', 'web-scanner.start')
