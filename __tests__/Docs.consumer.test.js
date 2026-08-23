@@ -320,19 +320,21 @@ describe('consumer documentation matches the published package', () => {
     expect(readme).not.toMatch(/new\s+BleManager\s*\(/)
   })
 
-  test('RC3 documentation preserves release, evidence, and deferral boundaries', () => {
+  test('RC3 candidate documentation preserves release, evidence, and deferral boundaries', () => {
     const readme = read('README.md')
     const release = read('RELEASE.md')
     const platforms = read('docs/PLATFORMS.md')
 
-    expect(readme).toContain('`4.0.0-rc.*` versions publish to npm `latest`')
+    expect(readme).toContain('Publication to npm `latest` remains pending the tag-driven trusted-publishing workflow')
     expect(readme).toContain('npm trusted publishing/OIDC with provenance')
     expect(release).toContain('git tag -a "v$release_candidate"')
     expect(release).toContain('release_candidate=4.0.0-rc.N')
     expect(release).toContain('git tag -a v4.0.0')
     expect(release).toContain('npm trusted publishing/OIDC')
     expect(release).toContain('publishes with provenance')
-    expect(platforms).toContain('`unified-ble-manager@4.0.0-rc.3` is the current **release-candidate package/API**')
+    expect(platforms).toContain(
+      '`unified-ble-manager@4.0.0-rc.3` is the prepared **release-candidate package/API** for the 4.x contract; publication remains pending the RC3 tag workflow'
+    )
     expect(platforms).toContain(
       'WinRT compilation or ABI loading, for example, is not by itself a Windows live-radio claim'
     )

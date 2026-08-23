@@ -304,9 +304,10 @@ adversarial reviews found no actionable source or lifecycle findings, and all
 first- and second-round review findings are replied to and resolved on PR #39.
 Native-authoritative React Native/Expo restoration is an explicit PR10
 deferral tracked by [#34](https://github.com/sfourdrinier/unified-ble-manager/issues/34); PR6 must not claim it is
-implemented. PR41 is merged and RC3 remains gated on the release metadata commit,
-exact-version hosted validation, the immutable tag, and successful trusted
-publication; this ledger does not promote PR6 to a release claim by itself.
+implemented. PR41 is merged and the RC3 metadata commit `d075ab4` is complete
+on the release branch. RC3 remains gated on exact-version hosted validation,
+the immutable tag, and successful trusted publication; this ledger does not
+promote PR6 to a release claim by itself.
 
 ## PR8 completed checkpoint
 
@@ -332,7 +333,7 @@ it ran against the earlier source tip `046b764`.
 | TCK and docs | PR8 closure scenarios now execute PHY/readiness probes, keep parameters/subrate explicitly scoped to the absent seam, preserve nullable skipped security observations, and include the corrected advanced-helper imports | Deterministic evidence only; no physical-radio claim |
 | Local package gate | `pnpm test:package`: 142 suites / 1,367 tests; `pnpm test:plugin`: 36 tests; docs/API, native protocol, artifact, smell, lint/typecheck, and diff checks included | Green locally |
 | Native/plugin gates | CoreBluetooth macOS Node-API build, native protocol host, plugin 36/36, release artifacts, typecheck/lint; final branch run `32611382106` and post-merge `main` run `32612172499` passed Android, Expo, Windows, Tauri, Node, macOS, iOS, and tvOS lanes | Green for merged PR8; physical-radio evidence remains separate |
-| Packed consumer gate | Local npm/ pnpm pack smoke remains blocked by the environment's npm `Exit handler never called!` / lifecycle hang; normal npm subprocesses have a 600-second bound and hosted supported Node remains authoritative | Hosted final branch and post-merge CI passed the applicable packed/consumer lanes; RC3 exact-version rerun remains required |
+| Packed consumer gate | Local npm/pnpm pack smoke remains blocked by the environment's npm `Exit handler never called!` / lifecycle hang; normal npm subprocesses have a 600-second bound and hosted supported Node remains authoritative | Hosted final branch and post-merge CI passed the applicable packed/consumer lanes; RC3 exact-version rerun remains required |
 | Performance baselines | Deterministic baseline `unified-ble-pr8-deterministic-performance-v1`: 23 measurements in the focused 3-payload test and 31 measurements / 15 categories in default `performance:check`, including all ten PR8 IDs, bounded cleanup and ownership metadata | Deterministic baseline fixed; live/native comparison remains a PR12 gate |
 | Remaining contract gaps | Parameter/subrate remain unsupported because no truthful pinned API is wired; readiness is unsupported outside the direct CoreBluetooth seam; `writeWhenReady` has a capability-gated public/core implementation with deterministic cleanup and uncertainty semantics | Parameter/subrate/readiness host coverage remain open; no capability is promoted from deterministic evidence to physical support |
 | Review/release | PR #41 is merged; first Copilot/Codex findings are dispositioned, the second Codex round returned no suggestions, and release documentation is current | RC3 version commit/tag/publication remain; RC2 remains immutable |
