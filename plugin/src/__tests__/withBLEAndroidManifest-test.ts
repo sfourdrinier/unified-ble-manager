@@ -186,7 +186,14 @@ describe('requiredHardware reconciliation', () => {
         }
       }
     ])
-    expect(manifest.manifest.application[0]['meta-data']).toEqual([])
+    expect(manifest.manifest.application[0]['meta-data']).toEqual([
+      {
+        $: {
+          'android:name': 'com.sfourdrinier.unifiedblemanager.companion-device-setup-feature-ownership',
+          'android:value': 'feature=companion_device_setup'
+        }
+      }
+    ])
 
     reconcileExpoAndroidManifest(manifest, {
       requiredHardware: false,
