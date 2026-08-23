@@ -862,6 +862,7 @@ class PublicBleManager implements BleManager {
       const normalizedQuery = normalizeScanQuery(options.query)
       const plan = typeof this.internal.planScan === 'function' ? this.internal.planScan(normalizedQuery) : null
       const internalOptions: InternalScanOptions<string, string> = {
+        plan: plan ?? undefined,
         filter: { serviceUuids: [], manufacturerData: [], localNamePrefix: null },
         duplicatePolicy: 'all',
         timestampPolicy: 'source-then-receipt',
