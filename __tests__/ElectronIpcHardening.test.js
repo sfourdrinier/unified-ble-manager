@@ -6,6 +6,8 @@ const { ElectronRendererBleClient } = require('../src/electron-renderer')
 const { IPC_CLIENT_COMPATIBILITY_OFFER } = require('../src/ipc/protocol')
 const { monotonicTimestamp, opaqueId, version, versionRange } = require('../src/backend-contract/primitives')
 const { snapshotSerializableRecord } = require('../src/backend-contract/serializable')
+const { normalizeScanQuery } = require('../src/public/scan-query')
+const { snapshotScanPlan } = require('../src/backend-contract/scan-planning')
 
 function negotiated(axis) {
   const selected = version(axis, axis === 'ipc-protocol' ? 2 : 1)
@@ -109,6 +111,7 @@ function createRouter(
     attachedBackend: { attachment: { attachment: authority.attachment } },
     identity: { versions: authority.versions },
     capabilities: () => [],
+    planScan: jest.fn(query => diagnosticPlan(query)),
     destroy: jest.fn(async () => ({ state: 'released', failures: [] })),
     ...managerOverrides
   }
@@ -142,12 +145,28 @@ function rendererLease(value) {
   }
 }
 
+function diagnosticPlan(query) {
+  return snapshotScanPlan({
+    sourceQuery: query,
+    queryDigest: query.digest,
+    residualQueryDigest: query.digest,
+    nativeGuarantee: 'safe-superset',
+    native: { predicates: [], complete: false },
+    residual: { query, predicates: [], complete: true },
+    unavailable: [],
+    limitations: [],
+    estimatedCost: 'high'
+  })
+}
+
 async function bootstrap(current, sender) {
   const response = await current.router.dispatch(sender, { kind: 'bootstrap', offer: IPC_CLIENT_COMPATIBILITY_OFFER })
   return response.bootstrap
 }
 
 function route(current, bootstrapValue, ordinal, command, payload, correlation = `operation-${ordinal}`) {
+  const routedPayload =
+    command === 'scan.start' && payload.query === undefined ? { ...payload, query: normalizeScanQuery() } : payload
   return {
     kind: 'route',
     envelope: {
@@ -159,7 +178,7 @@ function route(current, bootstrapValue, ordinal, command, payload, correlation =
       correlation: opaqueId(correlation, 'ipc-operation', `hardening:${correlation}`),
       dispatchEpoch: opaqueId(`dispatch-${ordinal}`, 'ipc-dispatch-epoch', `hardening:dispatch-${ordinal}`),
       command,
-      payload,
+      payload: routedPayload,
       binaryPayload: null
     }
   }
@@ -1288,5 +1307,108 @@ describe('Electron IPC hardening', () => {
     } finally {
       jest.useRealTimers()
     }
+  })
+
+  test('plans Electron scans from the trusted normalized query and never forwards renderer filters', async () => {
+    const scanStream = createControlledStream()
+    const scanStop = jest.fn(async () => {
+      scanStream.close()
+      return released()
+    })
+    const planScan = jest.fn(query =>
+      snapshotScanPlan({
+        sourceQuery: query,
+        queryDigest: query.digest,
+        residualQueryDigest: query.digest,
+        nativeGuarantee: 'safe-superset',
+        native: { predicates: [], complete: false },
+        residual: { query, predicates: [], complete: true },
+        unavailable: [],
+        limitations: [],
+        estimatedCost: 'high'
+      })
+    )
+    const scan = jest.fn(async () => ({ observations: scanStream, stop: scanStop }))
+    const current = createRouter({ planScan, scan })
+    const sender = trusted('trusted-query-planner-client')
+    const bootstrapValue = await bootstrap(current, sender)
+    const query = normalizeScanQuery({ anyOf: [{ names: { prefixes: ['Heart'] } }] })
+    const wireQuery = {
+      anyOf: [
+        {
+          peers: null,
+          services: null,
+          names: { exact: [], prefixes: ['Heart'] },
+          manufacturerData: null,
+          serviceData: null,
+          rssi: null,
+          connectable: null
+        }
+      ],
+      exclude: null,
+      digest: query.digest
+    }
+
+    const response = await current.router.dispatch(
+      sender,
+      route(current, bootstrapValue, 1, 'scan.start', {
+        query: wireQuery,
+        serviceUuids: ['0000180d-0000-1000-8000-00805f9b34fb'],
+        manufacturerData: [{ companyId: 76, dataPrefix: new Uint8Array([1]) }],
+        localNamePrefix: 'renderer-controlled',
+        deadline: null
+      })
+    )
+
+    expect(response.payload.plan).toEqual(expect.objectContaining({ queryDigest: query.digest }))
+    expect(response.payload.plan.nativeFilter).toBeUndefined()
+    expect(response.payload.backendGeneration).toBe(String(current.attachment.backendGeneration))
+    expect(planScan).toHaveBeenCalledWith(expect.objectContaining({ digest: query.digest }))
+    expect(scan).toHaveBeenCalledWith(
+      expect.objectContaining({
+        query: expect.objectContaining({ digest: query.digest }),
+        plan: expect.objectContaining({ queryDigest: query.digest }),
+        filter: { serviceUuids: [], manufacturerData: [], localNamePrefix: null }
+      })
+    )
+
+    await current.router.destroy()
+  })
+
+  test('fails closed for malformed queries, mismatched plan digests, and stale attachment generations', async () => {
+    const current = createRouter()
+    const sender = trusted('fail-closed-scan-planner-client')
+    const bootstrapValue = await bootstrap(current, sender)
+
+    const missingQuery = route(current, bootstrapValue, 1, 'scan.start', { deadline: null })
+    delete missingQuery.envelope.payload.query
+    await expect(current.router.dispatch(sender, missingQuery)).rejects.toMatchObject({
+      normalized: { code: 'protocol.malformed', operation: 'electron-main-router.scan-query' }
+    })
+
+    const mismatchedQuery = normalizeScanQuery({ anyOf: [{ names: { prefixes: ['Other'] } }] })
+    const mismatchCurrent = createRouter({
+      planScan: jest.fn(() => diagnosticPlan(mismatchedQuery)),
+      scan: jest.fn()
+    })
+    const mismatchSender = trusted('mismatched-scan-plan-client')
+    const mismatchBootstrap = await bootstrap(mismatchCurrent, mismatchSender)
+    await expect(
+      mismatchCurrent.router.dispatch(mismatchSender, route(mismatchCurrent, mismatchBootstrap, 1, 'scan.start', {}))
+    ).rejects.toMatchObject({
+      normalized: { code: 'protocol.violation', operation: 'electron-main-router.scan-plan-digest' }
+    })
+
+    const staleGeneration = route(current, bootstrapValue, 2, 'scan.start', { deadline: null })
+    staleGeneration.envelope.attachment = {
+      ...staleGeneration.envelope.attachment,
+      backendGeneration: opaqueId('stale-generation', 'backend-generation', 'hardening')
+    }
+    await expect(current.router.dispatch(sender, staleGeneration)).rejects.toMatchObject({
+      normalized: { code: 'protocol.violation', operation: 'electron-main-arbiter.attachment' }
+    })
+
+    await current.router.destroy()
+    await mismatchCurrent.router.destroy()
   })
 })

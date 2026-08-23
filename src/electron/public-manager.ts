@@ -18,7 +18,7 @@ export async function createElectronRendererBleManager(
   const rendererClient = new ElectronRendererBleClient(environment.transport)
   const transport = new ElectronClientTransport(rendererClient)
   const ipc = await IpcBleManager.create(transport)
-  return new IpcPublicManagerAdapter(ipc)
+  return new IpcPublicManagerAdapter(ipc, { requireScanPlan: true })
 }
 
 /** Explicit injection spelling used by deterministic and packed consumer tests. */
