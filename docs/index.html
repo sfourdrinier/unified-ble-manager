@@ -81,9 +81,16 @@
               </thead>
               <tbody>
                 <tr>
-                  <td>React Native / Expo</td>
+                  <td>Bare React Native</td>
                   <td><code>unified-ble-manager/react-native</code></td>
                   <td>this page</td>
+                </tr>
+                <tr>
+                  <td>Expo / CNG v2</td>
+                  <td><code>unified-ble-manager/expo</code></td>
+                  <td>
+                    <a href="EXPO_PLUGIN.md"><code>EXPO_PLUGIN.md</code></a>
+                  </td>
                 </tr>
                 <tr>
                   <td>React provider / hooks</td>
@@ -122,26 +129,40 @@
                 </tr>
               </tbody>
             </table>
-            <h2>React Native / Expo in one hour</h2>
+            <h2>React Native and Expo in one hour</h2>
             <h3>1. Install</h3>
-            <p>Three native setup paths:</p>
+            <h4>Bare React Native</h4>
+            <p>The immutable published prerelease for bare React Native is explicitly pinned:</p>
             <p>
-              <strong>Expo / CNG.</strong> Install with <code>npx expo install unified-ble-manager</code> (or
-              <code>pnpm add</code> plus Expo 57). Add the plugin, run <code>npx expo prebuild</code>, then a
-              development client or production binary. Config-plugin changes require a native rebuild. The package does
-              not run in Expo Go.
+              Declare Android Bluetooth permissions and the BLE hardware feature yourself, request runtime permissions
+              on Android 12+, add <code>NSBluetoothAlwaysUsageDescription</code> on iOS, run pods, and rebuild.
             </p>
+            <h4>Expo / CNG v2</h4>
             <p>
-              <strong>Bare React Native adopting Expo modules.</strong> Install Expo modules first (<code
-                >npx install-expo-modules@latest</code
-              >), then add this plugin and prebuild.
+              The Expo v2 schema and <code>unified-ble-manager/expo</code> factory are PR10 branch work; they are not in
+              immutable RC3. Use exactly one of these sources:
             </p>
+            <ol>
+              <li>
+                <p><strong>Source checkout:</strong> build this PR10 checkout, then install its directory:</p>
+              </li>
+              <li>
+                <p>
+                  <strong>Local tarball:</strong> pack this PR10 checkout and install the resulting local file. This is
+                  not a request for, or a replacement of, published RC3:
+                </p>
+              </li>
+              <li>
+                <p>
+                  <strong>Published RC4:</strong> after the PR10 release gate publishes it, install the exact version:
+                </p>
+              </li>
+            </ol>
             <p>
-              <strong>Bare React Native without Prebuild.</strong> Declare Android Bluetooth permissions and the BLE
-              hardware feature yourself, request runtime permissions on Android 12+, add
-              <code>NSBluetoothAlwaysUsageDescription</code> on iOS, run pods, and rebuild.
+              Do not use an unpinned package-install command for this v2 recipe: while RC3 is latest, that resolves the
+              immutable RC3 surface, which does not contain Expo v2. The package does not run in Expo Go.
             </p>
-            <p>Expo also needs a native build. The package does not run in Expo Go.</p>
+            <p>Expo also needs a native build and development client:</p>
             <p>
               Add the plugin (full option table: <a href="EXPO_PLUGIN.md"><code>EXPO_PLUGIN.md</code></a
               >):
@@ -162,6 +183,12 @@
               for you.
             </p>
             <h3>3. Create one manager and keep it</h3>
+            <h4>Bare React Native</h4>
+            <h4>Expo</h4>
+            <p>
+              Expo uses its first-class factory, which adds Expo readiness, permission, settings, background,
+              association, and restoration surfaces:
+            </p>
             <p>
               The host factory owns ephemeral identity generation. Restoration-bound identity comes from the trusted
               native host and native configuration; application code does not pass client, manager, or host-session IDs.
@@ -552,7 +579,30 @@
               not recreated or changed; this v2 surface becomes published only at RC4 after the PR10 release gate.
             </p>
             <h2>Installation and development build</h2>
-            <pre><code>bunx expo install unified-ble-manager expo-dev-client
+            <p>
+              The Expo v2 schema is PR10 branch work and is available only from a source checkout, a local tarball built
+              from that checkout, or the exact published RC4 version. Do not use an unpinned package-install command:
+              while RC3 is latest, that installs the immutable RC3 surface, which does not contain Expo v2.
+            </p>
+            <h3>Source checkout</h3>
+            <pre><code>pnpm install --frozen-lockfile
+pnpm prepack
+pnpm --dir /path/to/expo-app add /path/to/unified-ble-manager
+</code></pre>
+            <h3>Local tarball</h3>
+            <pre><code>pnpm pack --pack-destination /tmp/unified-ble-manager-pr10
+pnpm --dir /path/to/expo-app add /tmp/unified-ble-manager-pr10/unified-ble-manager-4.0.0-rc.3.tgz
+</code></pre>
+            <p>
+              The local tarball is built from the PR10 checkout. It does not recreate or replace published RC3, whose
+              exact <code>main</code> commit remains immutable.
+            </p>
+            <h3>Published RC4</h3>
+            <p>After the PR10 release gate publishes RC4, install that exact version:</p>
+            <pre><code>pnpm add unified-ble-manager@4.0.0-rc.4
+</code></pre>
+            <p>Install the Expo host tooling separately:</p>
+            <pre><code>pnpm add expo@^57.0.0 expo-dev-client
 bunx expo prebuild --clean
 bunx expo run:ios
 # or
