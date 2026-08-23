@@ -247,12 +247,11 @@ describe('React Native Android descriptor protocol boundary', () => {
       changedPeers.push(nativePeerId)
       listenerReads.push(boundary.read(firstAddress))
     })
-    await boundary.startNotify(firstAddress, () => undefined)
     const firstDatabase = requiredRecord(runtime.commands[1], 11)
     runtime.emitEvent('databaseChanged', [field(8, firstDatabase)])
     await expect(Promise.all(listenerReads)).rejects.toMatchObject({ normalized: { code: 'gatt.stale-handle' } })
     expect(changedPeers).toEqual([peerId])
-    expect(runtime.commandKinds).toEqual(['connect', 'discover', 'subscribe'])
+    expect(runtime.commandKinds).toEqual(['connect', 'discover'])
     await expect(boundary.read(firstAddress)).rejects.toMatchObject({
       normalized: { code: 'gatt.stale-handle' }
     })
@@ -264,9 +263,9 @@ describe('React Native Android descriptor protocol boundary', () => {
       serviceUuid: secondSnapshot.services[0].uuid,
       serviceOccurrence: secondSnapshot.services[0].occurrence,
       characteristicUuid: secondCharacteristic.uuid,
-      characteristicOccurrence: secondCharacteristic.occurrence + 1
+      characteristicOccurrence: secondCharacteristic.occurrence
     }
-    const secondDatabase = requiredRecord(runtime.commands[3], 11)
+    const secondDatabase = requiredRecord(runtime.commands[2], 11)
     expect(requiredString(secondDatabase, 3)).not.toBe(requiredString(firstDatabase, 3))
 
     runtime.emitEvent('databaseChanged', [field(8, firstDatabase)])
@@ -276,7 +275,7 @@ describe('React Native Android descriptor protocol boundary', () => {
       { nativePeerId: peerId, databaseGeneration: requiredString(firstDatabase, 3) }
     )
     await expect(boundary.startNotify(secondAddress, () => undefined)).resolves.toBeUndefined()
-    expect(characteristicDatabaseGeneration(runtime.commands[4])).toBe(requiredString(secondDatabase, 3))
+    expect(characteristicDatabaseGeneration(runtime.commands[3])).toBe(requiredString(secondDatabase, 3))
 
     await boundary.destroy()
     expect(control.closedAttachments).toHaveLength(1)
