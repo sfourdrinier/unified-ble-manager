@@ -295,6 +295,25 @@ describe('Expo factory', () => {
     expect(control.releaseBackground).toHaveBeenCalledWith({ leaseId: 'background-1' })
   })
 
+  test('coalesces concurrent connected-device background lease releases', async () => {
+    const control = {
+      acquireBackground: jest.fn().mockResolvedValue({ leaseId: 'background-1' }),
+      releaseBackground: jest.fn().mockResolvedValue(undefined)
+    }
+    const manager = { adapter: { state: jest.fn().mockResolvedValue(adapterState()) } }
+    createReactNativeBleManagerWithEnvironment.mockResolvedValue(manager)
+
+    const result = await createExpoBleManagerWithEnvironment(
+      environment({ executionEnvironment: 'development-build', nativeModuleAvailable: true }, control)
+    )
+    const lease = await result.background.acquire({ kind: 'connected-device', reason: 'active workout' })
+
+    await Promise.all([lease.release(), lease.release()])
+
+    expect(control.releaseBackground).toHaveBeenCalledTimes(1)
+    expect(control.releaseBackground).toHaveBeenCalledWith({ leaseId: 'background-1' })
+  })
+
   test('returns an associated peer-directory record from explicit Android system UI', async () => {
     const control = {
       associateCompanionDevice: jest.fn().mockResolvedValue({

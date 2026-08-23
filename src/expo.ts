@@ -309,22 +309,25 @@ async function acquireExpoBackground(
       nativeCode
     )
   }
-  let released = false
+  let releasePromise: Promise<void> | undefined
   return Object.freeze({
-    release: async () => {
-      if (released) return
-      try {
-        await control.releaseBackground({ leaseId: result.leaseId })
-        released = true
-      } catch (error) {
-        const nativeCode = errorCode(error)
-        throwExpoRuntimeError(
-          normalizedBackgroundErrorCode(nativeCode),
-          'expo.background.release',
-          errorMessage(error),
-          nativeCode
-        )
-      }
+    release: () => {
+      if (releasePromise !== undefined) return releasePromise
+      releasePromise = (async () => {
+        try {
+          await control.releaseBackground({ leaseId: result.leaseId })
+        } catch (error) {
+          releasePromise = undefined
+          const nativeCode = errorCode(error)
+          throwExpoRuntimeError(
+            normalizedBackgroundErrorCode(nativeCode),
+            'expo.background.release',
+            errorMessage(error),
+            nativeCode
+          )
+        }
+      })()
+      return releasePromise
     }
   })
 }
