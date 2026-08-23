@@ -249,7 +249,10 @@ export class WinRtSecurityBackend implements SecurityBackend {
       return {
         completion,
         cancel: async () => {
-          await nativeCancellation.cancel()
+          const state = await nativeCancellation.cancel()
+          if (state !== 'cancellation-requested' && state !== 'already-terminal' && state !== 'not-cancellable') {
+            throw contractError('protocol.malformed', 'boundary', 'winrt.security.cancel-pairing.acknowledgement')
+          }
           return 'cancellation-requested' as const
         },
         physicalCompletion: Promise.all([completion, active.operation.physicalSettlement]).then(() => undefined)

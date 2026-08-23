@@ -339,7 +339,11 @@ Napi::Object ToJsSecurityState(Napi::Env env, const SecurityStateView& state) {
 Napi::Object ToJsSecurityPairResult(Napi::Env env, const SecurityPairResultView& result) {
   Napi::Object output = Napi::Object::New(env);
   output.Set("outcome", Napi::String::New(env, result.outcome));
-  if (result.state.has_value()) output.Set("state", ToJsSecurityState(env, *result.state));
+  if (result.state.has_value()) {
+    output.Set("state", ToJsSecurityState(env, *result.state));
+  } else {
+    output.Set("state", env.Null());
+  }
   if (result.reason.has_value()) output.Set("reason", Napi::String::New(env, *result.reason));
   else output.Set("reason", env.Null());
   return output;
