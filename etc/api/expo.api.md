@@ -1,10 +1,10 @@
 # API Report — unified-ble-manager/expo
 
 ```ts
-export function createExpoBleManager(options?: BleManagerCreateOptions): Promise<ExpoBleManager>
+export function createExpoBleManager(options?: BleManagerCreateOptions, runtimeConfiguration?: ExpoRuntimeConfiguration): Promise<ExpoBleManager>
 export function createExpoBleManagerWithEnvironment(environment: ExpoBleManagerEnvironment): Promise<ExpoBleManager>
-export function getExpoBleReadiness(manager: Pick<BleManager, 'adapter'>): Promise<BleReadiness>
-export function mapExpoReadiness(adapter: BleAdapterState): BleReadiness
+export function getExpoBleReadiness(manager: Pick<BleManager, 'adapter'>, configuration?: ExpoRuntimeConfiguration): Promise<BleReadiness>
+export function mapExpoReadiness(adapter: BleAdapterState, configuration?: ExpoRuntimeConfiguration): BleReadiness
 
 export interface ExpoBleManager extends BleManager {
   readonly readiness: () => Promise<BleReadiness>

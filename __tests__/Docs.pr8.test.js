@@ -230,6 +230,15 @@ describe('PR8 documentation contract', () => {
     expect(report).toContain(
       'export function createExpoBleManagerWithEnvironment(environment: ExpoBleManagerEnvironment): Promise<ExpoBleManager>'
     )
+    expect(report).toContain(
+      'export function createExpoBleManager(options?: BleManagerCreateOptions, runtimeConfiguration?: ExpoRuntimeConfiguration): Promise<ExpoBleManager>'
+    )
+    expect(report).toContain(
+      "export function getExpoBleReadiness(manager: Pick<BleManager, 'adapter'>, configuration?: ExpoRuntimeConfiguration): Promise<BleReadiness>"
+    )
+    expect(report).toContain(
+      'export function mapExpoReadiness(adapter: BleAdapterState, configuration?: ExpoRuntimeConfiguration): BleReadiness'
+    )
     expect(report).not.toContain(
       'export function createExpoBleManagerWithEnvironment(environment: unknown, options?: BleManagerCreateOptions): Promise<BleManager>'
     )
