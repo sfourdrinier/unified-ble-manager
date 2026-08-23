@@ -653,6 +653,7 @@ function runInstalledElectronL1Scenario(consumer) {
   const scenarioScript = [
     "const assert = require('assert');",
     "const { attachBleBackend, BleManager, createManagerOwnershipAuthority, DEFAULT_BLE_MANAGER_OPTIONS } = require('unified-ble-manager/advanced');",
+    "const { normalizeScanQuery } = require('unified-ble-manager/advanced');",
     "const { byteLimit, monotonicTimestamp, opaqueId, ownBytes, version, versionRange } = require('unified-ble-manager/backend-sdk');",
     "const { createDeterministicTestBackend } = require('unified-ble-manager/testing');",
     "const { ElectronMainBleBinding, ElectronMainBleRouter } = require('unified-ble-manager/electron/main');",
@@ -755,7 +756,8 @@ function runInstalledElectronL1Scenario(consumer) {
     '    const bootstrap = await client.initialize();',
     '    assert.strictEqual(bootstrap.renderer.clientId, sender.trusted.authenticatedClientId, "packed Electron L1 bootstrap is authenticated");',
     '    const route = (command, payload, binaryPayload = null) => settle(client.request({ command, payload, binaryPayload, signal: null }));',
-    '    const scan = await route("scan.start", { serviceUuids: [], manufacturerData: [], localNamePrefix: null, deadline: null });',
+    '    const scanQuery = normalizeScanQuery({});',
+    '    const scan = await route("scan.start", { query: scanQuery, serviceUuids: [], manufacturerData: [], localNamePrefix: null, deadline: null });',
     '    assert.strictEqual(typeof scan.payload.handle, "string", "packed Electron L1 allocated a scan handle");',
     '    const observation = client.events[Symbol.asyncIterator]().next();',
     '    fixture.controller.emitAdvertisement(advertisement());',
