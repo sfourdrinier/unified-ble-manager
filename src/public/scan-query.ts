@@ -503,16 +503,11 @@ function isIpcAdvertisement(value: ScanObservation): value is CompactScanAdverti
     'peerId' in value &&
     'manufacturerData' in value &&
     !('device' in value) &&
-    hasExactObservationKeys(value, [
-      'peerId',
-      'peerReference',
-      'localName',
-      'rssi',
-      'txPowerLevel',
-      'serviceUuids',
-      'manufacturerData',
-      'serviceData'
-    ]) &&
+    hasExactObservationKeys(
+      value,
+      ['peerId', 'localName', 'rssi', 'serviceUuids', 'manufacturerData', 'serviceData'],
+      ['peerReference', 'txPowerLevel']
+    ) &&
     isIpcAdvertisementValues(value)
   )
 }
@@ -526,7 +521,8 @@ function isIpcAdvertisementValues(value: ScanObservation): boolean {
     (candidate.peerReference === undefined || isPeerReference(candidate.peerReference)) &&
     (candidate.localName === null || typeof candidate.localName === 'string') &&
     (candidate.rssi === null || (typeof candidate.rssi === 'number' && Number.isFinite(candidate.rssi))) &&
-    (candidate.txPowerLevel === null ||
+    (candidate.txPowerLevel === undefined ||
+      candidate.txPowerLevel === null ||
       (typeof candidate.txPowerLevel === 'number' && Number.isFinite(candidate.txPowerLevel))) &&
     isUuidList(candidate.serviceUuids) &&
     isIpcManufacturerDataList(candidate.manufacturerData) &&
@@ -725,15 +721,11 @@ function isDeviceIdentity(value: unknown): boolean {
 function isNormalizedObservation(value: ScanObservation): value is NormalizedScanObservation {
   if (typeof value !== 'object' || value === null || 'device' in value) return false
   if (
-    !hasExactObservationKeys(value, [
-      'peerReference',
-      'localName',
-      'rssi',
-      'connectable',
-      'serviceUuids',
-      'manufacturerData',
-      'serviceData'
-    ])
+    !hasExactObservationKeys(
+      value,
+      ['localName', 'rssi', 'connectable', 'serviceUuids', 'manufacturerData', 'serviceData'],
+      ['peerReference']
+    )
   )
     return false
   const localName = Reflect.get(value, 'localName')
@@ -760,6 +752,7 @@ function isNormalizedManufacturerEntry(
   return (
     entry !== null &&
     typeof entry === 'object' &&
+    hasExactObjectKeys(entry, ['companyId', 'data']) &&
     Number.isSafeInteger(entry.companyId) &&
     entry.companyId >= 0 &&
     entry.companyId <= 0xffff &&
@@ -769,7 +762,11 @@ function isNormalizedManufacturerEntry(
 
 function isNormalizedServiceEntry(entry: { readonly service: string; readonly data: Uint8Array } | null): boolean {
   return (
-    entry !== null && typeof entry === 'object' && isCanonicalUuid(entry.service) && entry.data instanceof Uint8Array
+    entry !== null &&
+    typeof entry === 'object' &&
+    hasExactObjectKeys(entry, ['service', 'data']) &&
+    isCanonicalUuid(entry.service) &&
+    entry.data instanceof Uint8Array
   )
 }
 
@@ -786,12 +783,16 @@ function isUuidValue(value: unknown): boolean {
   return typeof value === 'string' && isCanonicalUuid(value)
 }
 
-function hasExactObservationKeys(value: object, optionalKeys: readonly string[]): boolean {
-  const requiredKeys = optionalKeys.filter(key => key !== 'peerReference')
-  const keys = Object.keys(value)
-    .filter(key => key !== 'peerReference')
-    .sort()
-  return hasExactObjectKeys({ ...Object.fromEntries(keys.map(key => [key, null])) }, requiredKeys)
+function hasExactObservationKeys(
+  value: object,
+  requiredKeys: readonly string[],
+  optionalKeys: readonly string[]
+): boolean {
+  const actualKeys = Object.keys(value)
+  return (
+    requiredKeys.every(key => actualKeys.includes(key)) &&
+    actualKeys.every(key => requiredKeys.includes(key) || optionalKeys.includes(key))
+  )
 }
 
 function hasExactObjectKeys(value: object, expectedKeys: readonly string[]): boolean {
