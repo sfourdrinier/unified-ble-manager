@@ -159,6 +159,7 @@ describe('CoreBluetooth late-operation quarantine', () => {
       stopGate.resolve()
       await flushMicrotasks()
       await expect(subscription.remove()).resolves.toEqual({ state: 'released', failures: [] })
+      expect(stopNotifyCalls).toBe(1)
       expect(backend.resourceCounters()).toMatchObject({ physicalCccdEnablements: 0 })
       await expect(lease.release()).resolves.toEqual({ state: 'released', failures: [] })
       await expect(backend.destroy()).resolves.toEqual({ state: 'released', failures: [] })
@@ -173,7 +174,10 @@ describe('CoreBluetooth late-operation quarantine', () => {
     const stopGate = deferred()
     try {
       const { backend, boundary } = await fixture()
-      const scan = await backend.scanner.start(scanOptions(), opaqueId('stop-scan-timeout', 'client', 'corebluetooth:stop-scan-timeout'))
+      const scan = await backend.scanner.start(
+        scanOptions(),
+        opaqueId('stop-scan-timeout', 'client', 'corebluetooth:stop-scan-timeout')
+      )
       const nativeStopScan = boundary.stopScan.bind(boundary)
       let stopScanCalls = 0
       boundary.stopScan = async () => {
@@ -200,6 +204,7 @@ describe('CoreBluetooth late-operation quarantine', () => {
       stopGate.resolve()
       await flushMicrotasks()
       await expect(scan.stop()).resolves.toEqual({ state: 'released', failures: [] })
+      expect(stopScanCalls).toBe(1)
       expect(backend.resourceCounters()).toMatchObject({ activeScanControllers: 0, scanConsumers: 0 })
       await expect(backend.destroy()).resolves.toEqual({ state: 'released', failures: [] })
     } finally {
@@ -252,6 +257,221 @@ describe('CoreBluetooth late-operation quarantine', () => {
     } finally {
       disconnectGate.resolve()
       jest.useRealTimers()
+    }
+  })
+
+  test('memoizes adapter-loss scan cleanup across retries until native stop settles', async () => {
+    jest.useFakeTimers()
+    const stopGate = deferred()
+    try {
+      const { backend, boundary } = await fixture()
+      await backend.scanner.start(scanOptions(), opaqueId('adapter-loss-scan', 'client', 'corebluetooth:adapter-loss'))
+      const nativeStopScan = boundary.stopScan.bind(boundary)
+      let stopScanCalls = 0
+      boundary.stopScan = async () => {
+        stopScanCalls += 1
+        await stopGate.promise
+        return nativeStopScan()
+      }
+
+      boundary.setAdapterState({
+        availability: 'unavailable',
+        authorization: 'granted',
+        power: 'on',
+        safeReason: 'lost'
+      })
+      await flushMicrotasks()
+      jest.advanceTimersByTime(1_000)
+      await flushMicrotasks()
+      expect(stopScanCalls).toBe(1)
+      expectConsoleErrorMatching(
+        '[CoreBluetoothBackend.handleAdapterState] Native adapter-loss cleanup requires retry:',
+        expect.any(Array)
+      )
+
+      boundary.setAdapterState({
+        availability: 'unavailable',
+        authorization: 'granted',
+        power: 'on',
+        safeReason: 'lost'
+      })
+      await flushMicrotasks()
+      expect(stopScanCalls).toBe(1)
+      expectConsoleErrorMatching(
+        '[CoreBluetoothBackend.handleAdapterState] Native adapter-loss cleanup requires retry:',
+        expect.any(Array)
+      )
+
+      stopGate.resolve()
+      await flushMicrotasks()
+      expect(stopScanCalls).toBe(1)
+      expect(backend.resourceCounters()).toMatchObject({ activeScanControllers: 0, scanConsumers: 0 })
+      await expect(backend.destroy()).resolves.toEqual({ state: 'released', failures: [] })
+    } finally {
+      stopGate.resolve()
+      jest.useRealTimers()
+    }
+  })
+
+  test('memoizes adapter-loss disconnect cleanup across retries until native disconnect settles', async () => {
+    jest.useFakeTimers()
+    const disconnectGate = deferred()
+    try {
+      const { backend, boundary } = await fixture()
+      const peerId = await observedPeerId(backend)
+      await backend.connections.connect(
+        peerId,
+        opaqueId('adapter-loss-disconnect', 'client', 'corebluetooth:adapter-loss'),
+        operation()
+      )
+      const nativeDisconnect = boundary.disconnect.bind(boundary)
+      let disconnectCalls = 0
+      boundary.disconnect = async nativePeerId => {
+        disconnectCalls += 1
+        await disconnectGate.promise
+        return nativeDisconnect(nativePeerId)
+      }
+
+      boundary.setAdapterState({
+        availability: 'unavailable',
+        authorization: 'granted',
+        power: 'on',
+        safeReason: 'lost'
+      })
+      await flushMicrotasks()
+      jest.advanceTimersByTime(1_000)
+      await flushMicrotasks()
+      expect(disconnectCalls).toBe(1)
+      expectConsoleErrorMatching(
+        '[CoreBluetoothBackend.handleAdapterState] Native adapter-loss cleanup requires retry:',
+        expect.any(Array)
+      )
+
+      boundary.setAdapterState({
+        availability: 'unavailable',
+        authorization: 'granted',
+        power: 'on',
+        safeReason: 'lost'
+      })
+      await flushMicrotasks()
+      expect(disconnectCalls).toBe(1)
+      expectConsoleErrorMatching(
+        '[CoreBluetoothBackend.handleAdapterState] Native adapter-loss cleanup requires retry:',
+        expect.any(Array)
+      )
+
+      disconnectGate.resolve()
+      await flushMicrotasks()
+      expect(disconnectCalls).toBe(1)
+      expect(boundary.connected).toBe(false)
+      expect(backend.resourceCounters()).toMatchObject({ physicalLinks: 0, connectionLeases: 0 })
+      await expect(backend.destroy()).resolves.toEqual({ state: 'released', failures: [] })
+    } finally {
+      disconnectGate.resolve()
+      jest.useRealTimers()
+    }
+  })
+
+  test('retries adapter-loss cleanup automatically after native settlement and adapter recovery', async () => {
+    jest.useFakeTimers()
+    const stopGate = deferred()
+    try {
+      const { backend, boundary } = await fixture()
+      await backend.scanner.start(
+        scanOptions(),
+        opaqueId('adapter-loss-auto-retry', 'client', 'corebluetooth:adapter-loss')
+      )
+      const nativeStopScan = boundary.stopScan.bind(boundary)
+      boundary.stopScan = async () => {
+        await stopGate.promise
+        return nativeStopScan()
+      }
+
+      boundary.setAdapterState({
+        availability: 'unavailable',
+        authorization: 'granted',
+        power: 'on',
+        safeReason: 'lost'
+      })
+      await flushMicrotasks()
+      jest.advanceTimersByTime(1_000)
+      await flushMicrotasks()
+      expectConsoleErrorMatching(
+        '[CoreBluetoothBackend.handleAdapterState] Native adapter-loss cleanup requires retry:',
+        expect.any(Array)
+      )
+
+      boundary.setAdapterState({ availability: 'available', authorization: 'granted', power: 'on', safeReason: null })
+      await flushMicrotasks()
+      expectConsoleErrorMatching(
+        '[CoreBluetoothBackend.handleAdapterState] Native adapter-loss cleanup requires retry:',
+        expect.any(Array)
+      )
+
+      stopGate.resolve()
+      await flushMicrotasks()
+      const replacement = await backend.scanner.start(
+        scanOptions(),
+        opaqueId('adapter-loss-auto-retry-replacement', 'client', 'corebluetooth:adapter-loss')
+      )
+      await expect(replacement.stop()).resolves.toEqual({ state: 'released', failures: [] })
+      await expect(backend.destroy()).resolves.toEqual({ state: 'released', failures: [] })
+    } finally {
+      stopGate.resolve()
+      jest.useRealTimers()
+    }
+  })
+
+  test('retains late notification rollback ownership after pre-enable cleanup failure', async () => {
+    const startGate = deferred()
+    try {
+      const { backend, boundary } = await fixture()
+      const peerId = await observedPeerId(backend)
+      const lease = await backend.connections.connect(
+        peerId,
+        opaqueId('late-notify-rollback', 'client', 'corebluetooth:late-notify-rollback'),
+        operation()
+      )
+      const database = await backend.gatt.discover(lease.connection, operation())
+      const characteristic = (await database.snapshot()).characteristics[0].path
+      const nativeStartNotify = boundary.startNotify.bind(boundary)
+      boundary.startNotify = async (address, onValue) => {
+        await startGate.promise
+        return nativeStartNotify(address, onValue)
+      }
+      const nativeStopNotify = boundary.stopNotify.bind(boundary)
+      let stopNotifyCalls = 0
+      boundary.stopNotify = async address => {
+        stopNotifyCalls += 1
+        if (stopNotifyCalls === 1) {
+          return nativeStopNotify(address)
+        }
+        throw new Error('late notification rollback failed')
+      }
+
+      const subscription = backend.gatt.subscribe(characteristic, {
+        operation: operation(),
+        options: { delivery: delivery() }
+      })
+      await flushMicrotasks()
+      boundary.triggerServicesChanged('native-polar-h10')
+      await flushMicrotasks()
+      startGate.resolve()
+      await expect(subscription.completion).rejects.toBeDefined()
+      await flushMicrotasks()
+      expectConsoleErrorMatching(
+        '[CoreBluetoothGattOperations.subscribe] Cancelled notification cleanup failed:',
+        expect.any(Array)
+      )
+
+      expect(stopNotifyCalls).toBe(2)
+      expect(backend.resourceCounters()).toMatchObject({ physicalCccdEnablements: 1 })
+
+      boundary.stopNotify = nativeStopNotify
+      await expect(backend.destroy()).resolves.toEqual({ state: 'released', failures: [] })
+      await expect(lease.release()).resolves.toEqual({ state: 'released', failures: [] })
+    } finally {
+      startGate.resolve()
     }
   })
 

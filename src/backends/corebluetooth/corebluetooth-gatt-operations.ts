@@ -199,7 +199,16 @@ export class CoreBluetoothGattOperations {
         const subscriptionId = identifiers.subscriptionId(`corebluetooth-subscription-${this.backend.nextSubscription}`)
         this.backend.nextSubscription += 1
         if (physical === undefined) {
-          physical = { key, address, consumers: new Set(), state: 'enabling', removal: null, nativeRemoval: null }
+          physical = {
+            key,
+            address,
+            consumers: new Set(),
+            state: 'enabling',
+            nativeStart: null,
+            removalBeforeNativeStart: false,
+            removal: null,
+            nativeRemoval: null
+          }
           this.backend.subscriptions.set(key, physical)
           const enabling = physical
           const subscription = new CoreBluetoothBackendSubscription(
@@ -211,9 +220,18 @@ export class CoreBluetoothGattOperations {
             new CoreBoundedStream(request.options.delivery, request.options.delivery.overflowPolicy)
           )
           enabling.consumers.add(subscription)
+          let nativeStart: Promise<void> | null = null
           try {
-            await this.backend.boundary.startNotify(address, bytes => this.emitNotification(enabling, bytes))
+            nativeStart = this.backend.boundary.startNotify(address, bytes => this.emitNotification(enabling, bytes))
+            enabling.nativeStart = nativeStart
+            await nativeStart
+            if (enabling.nativeStart === nativeStart) {
+              enabling.nativeStart = null
+            }
           } catch (error) {
+            if (nativeStart !== null && enabling.nativeStart === nativeStart) {
+              enabling.nativeStart = null
+            }
             enabling.consumers.delete(subscription)
             subscription.stream.closeWithReason('source-failed')
             if (this.backend.subscriptions.get(key) === enabling) {
@@ -221,15 +239,12 @@ export class CoreBluetoothGattOperations {
             }
             throw error
           }
-          if (this.backend.subscriptions.get(key) !== enabling) {
-            try {
-              await this.backend.boundary.stopNotify(address)
-            } catch (error) {
-              console.error('[CoreBluetoothGattOperations.subscribe] Native notification rollback failed:', error)
-            }
-            throw contractError('operation.cancelled-by-destroy', 'gatt', 'corebluetooth.gatt.subscribe.destroyed')
-          }
-          if (execution.isPublicSettled()) {
+          if (
+            this.backend.subscriptions.get(key) !== enabling ||
+            enabling.state !== 'enabling' ||
+            subscription.removed ||
+            execution.isPublicSettled()
+          ) {
             const cleanup = await this.removeSubscription(subscription)
             if (cleanup.state === 'release-failed') {
               console.error(
@@ -306,6 +321,9 @@ export class CoreBluetoothGattOperations {
   }
 
   stopPhysicalSubscription(physical: PhysicalSubscription): Promise<CleanupRecord> {
+    if (physical.state === 'released') {
+      return Promise.resolve(releasedCleanup)
+    }
     if (physical.removal !== null) {
       return physical.removal
     }
@@ -319,6 +337,7 @@ export class CoreBluetoothGattOperations {
       )
     }
     physical.state = 'removing'
+    physical.removalBeforeNativeStart = physical.nativeStart !== null
     let nativeRemoval: Promise<void>
     try {
       nativeRemoval = this.backend.boundary.stopNotify(physical.address)
@@ -328,8 +347,13 @@ export class CoreBluetoothGattOperations {
     physical.nativeRemoval = nativeRemoval
     const nativeCompletion = nativeRemoval.then(
       () => {
+        if (physical.removalBeforeNativeStart) {
+          physical.state = 'removing'
+        } else {
+          physical.state = 'released'
+        }
         physical.nativeRemoval = null
-        if (this.backend.subscriptions.get(physical.key) === physical) {
+        if (!physical.removalBeforeNativeStart && this.backend.subscriptions.get(physical.key) === physical) {
           this.backend.subscriptions.delete(physical.key)
         }
         return releasedCleanup
