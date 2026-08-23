@@ -397,6 +397,18 @@ export interface NativeBackgroundLeaseReleaseRequest {
   leaseId: string
 }
 
+export interface NativeCompanionAssociationRequest {
+  name?: string
+  serviceUuid?: string
+}
+
+export interface NativeCompanionAssociationResult {
+  source: 'associated'
+  associationId: number
+  peerId: string | null
+  displayName: string | null
+}
+
 export type NativeRestorationOutcome =
   | 'adopted'
   | 'alreadyConsumed'
@@ -455,6 +467,9 @@ export interface Spec extends TurboModule {
   ): Promise<NativeRestorationBootstrapIdentity>
   acquireBackground(request: NativeBackgroundLeaseRequest): Promise<NativeBackgroundLeaseResult>
   releaseBackground(request: NativeBackgroundLeaseReleaseRequest): Promise<void>
+  associateCompanionDevice(
+    request: NativeCompanionAssociationRequest
+  ): Promise<NativeCompanionAssociationResult>
   installExecutionRuntime(): Promise<void>
   cancelOperation(correlation: NativeOperationCorrelation): Promise<NativeCancellationControlResult>
   adoptRestoration(request: NativeRestorationAdoptionRequest): Promise<NativeRestorationAdoptionControlResult>

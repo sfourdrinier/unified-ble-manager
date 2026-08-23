@@ -203,7 +203,8 @@ describe('Expo Android reconciliation', () => {
     expect(configured.manifest['uses-permission-sdk-23']).toBeUndefined()
     expect(configured.manifest['uses-feature']).toEqual([
       { $: { 'android:name': 'android.hardware.camera', 'android:required': 'false' } },
-      { $: { 'android:name': 'android.hardware.bluetooth_le', 'android:required': 'true' } }
+      { $: { 'android:name': 'android.hardware.bluetooth_le', 'android:required': 'true' } },
+      { $: { 'android:name': 'android.software.companion_device_setup', 'android:required': 'false' } }
     ])
 
     const removed = reconcileExpoAndroidManifest(configured, {
@@ -213,7 +214,8 @@ describe('Expo Android reconciliation', () => {
     })
 
     expect(removed.manifest['uses-feature']).toEqual([
-      { $: { 'android:name': 'android.hardware.camera', 'android:required': 'false' } }
+      { $: { 'android:name': 'android.hardware.camera', 'android:required': 'false' } },
+      { $: { 'android:name': 'android.software.companion_device_setup', 'android:required': 'false' } }
     ])
     expect(removed.manifest['uses-permission']).toEqual([
       { $: { 'android:name': 'android.permission.INTERNET' } },

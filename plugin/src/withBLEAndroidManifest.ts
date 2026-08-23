@@ -89,6 +89,7 @@ export function reconcileExpoAndroidManifest(
   reconcileScanPermission(androidManifest, options.neverForLocation)
   reconcileLegacyLocationPermissions(androidManifest, options.legacyLocation, options.neverForLocation)
   reconcileBLEHardwareFeature(androidManifest, options.requiredHardware)
+  reconcileCompanionSetupFeature(androidManifest)
   return androidManifest
 }
 
@@ -348,4 +349,19 @@ function reconcileBLEHardwareFeature(androidManifest: AndroidManifestWithExtraTo
   }
   if (features.length === 0) delete androidManifest.manifest['uses-feature']
   else androidManifest.manifest['uses-feature'] = features
+}
+
+function reconcileCompanionSetupFeature(androidManifest: AndroidManifestWithExtraTools): void {
+  const features = Array.isArray(androidManifest.manifest['uses-feature'])
+    ? androidManifest.manifest['uses-feature'].filter(
+        feature => feature.$['android:name'] !== 'android.software.companion_device_setup'
+      )
+    : []
+  features.push({
+    $: {
+      'android:name': 'android.software.companion_device_setup',
+      'android:required': 'false'
+    }
+  })
+  androidManifest.manifest['uses-feature'] = features
 }

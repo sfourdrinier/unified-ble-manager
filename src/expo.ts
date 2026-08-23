@@ -52,6 +52,18 @@ export interface ExpoBackgroundLease {
   readonly release: () => Promise<void>
 }
 
+export interface ExpoCompanionAssociationRequest {
+  readonly name?: string
+  readonly serviceUuid?: string
+}
+
+export interface ExpoCompanionAssociationResult {
+  readonly source: 'associated'
+  readonly associationId: number
+  readonly peerId: string | null
+  readonly displayName: string | null
+}
+
 export interface ExpoBleManager extends BleManager {
   readonly readiness: () => Promise<BleReadiness>
   readonly permissions: {
@@ -60,6 +72,9 @@ export interface ExpoBleManager extends BleManager {
   readonly openSettings: (target: ExpoSettingsTarget) => Promise<void>
   readonly background: {
     readonly acquire: (request: ExpoBackgroundRequest) => Promise<ExpoBackgroundLease>
+  }
+  readonly association: {
+    readonly associate: (request?: ExpoCompanionAssociationRequest) => Promise<ExpoCompanionAssociationResult>
   }
 }
 
@@ -92,7 +107,13 @@ export async function createExpoBleManager(options: BleManagerCreateOptions = {}
   try {
     normalizeBleManagerCreateOptions(options)
     assertDirectExpoRuntime()
-    return withExpoRuntime(await createReactNativeBleManager(options), undefined, undefined, nativeBackgroundControl())
+    return withExpoRuntime(
+      await createReactNativeBleManager(options),
+      undefined,
+      undefined,
+      nativeBackgroundControl(),
+      nativeAssociationControl()
+    )
   } catch (error) {
     throw rehydratePublicError(error)
   }
@@ -109,6 +130,7 @@ export async function createExpoBleManagerWithEnvironment(
       await createPublicBleManager(internal, environment.now),
       expo?.settingsBridge,
       expo?.permissionBridge,
+      environment.control,
       environment.control
     )
   } catch (error) {
@@ -162,7 +184,8 @@ function withExpoRuntime(
   manager: BleManager,
   settingsBridge?: ExpoSettingsBridge,
   permissionBridge?: ExpoPermissionBridge,
-  backgroundControl?: Pick<import('./NativeUnifiedBleProtocolControl').Spec, 'acquireBackground' | 'releaseBackground'>
+  backgroundControl?: Pick<import('./NativeUnifiedBleProtocolControl').Spec, 'acquireBackground' | 'releaseBackground'>,
+  associationControl?: Pick<import('./NativeUnifiedBleProtocolControl').Spec, 'associateCompanionDevice'>
 ): ExpoBleManager {
   return Object.assign(manager, {
     readiness: () => getExpoBleReadiness(manager),
@@ -172,6 +195,10 @@ function withExpoRuntime(
     openSettings: (target: ExpoSettingsTarget) => openExpoSettings(target, settingsBridge),
     background: Object.freeze({
       acquire: (request: ExpoBackgroundRequest) => acquireExpoBackground(request, backgroundControl)
+    }),
+    association: Object.freeze({
+      associate: (request: ExpoCompanionAssociationRequest = {}) =>
+        associateExpoCompanionDevice(request, associationControl)
     })
   })
 }
@@ -258,6 +285,38 @@ async function openExpoSettings(target: ExpoSettingsTarget, settingsBridge?: Exp
   }
 }
 
+async function associateExpoCompanionDevice(
+  request: ExpoCompanionAssociationRequest,
+  control: Pick<import('./NativeUnifiedBleProtocolControl').Spec, 'associateCompanionDevice'> | undefined
+): Promise<ExpoCompanionAssociationResult> {
+  if (request.name !== undefined && (request.name.trim().length === 0 || request.name.length > 128)) {
+    throwExpoRuntimeError(
+      'argument.invalid',
+      'expo.association.associate',
+      'Association name must be non-empty and bounded.'
+    )
+  }
+  if (request.serviceUuid !== undefined && request.serviceUuid.trim().length === 0) {
+    throwExpoRuntimeError(
+      'argument.invalid',
+      'expo.association.associate',
+      'Association serviceUuid must be non-empty.'
+    )
+  }
+  if (control === undefined) {
+    throwExpoRuntimeError(
+      'capability.unavailable',
+      'expo.association.associate',
+      'Companion Device Manager association is unavailable on this Expo host.'
+    )
+  }
+  try {
+    return await control.associateCompanionDevice(request)
+  } catch (error) {
+    throwExpoRuntimeError('capability.unavailable', 'expo.association.associate', errorMessage(error), errorCode(error))
+  }
+}
+
 function assertDirectExpoRuntime(): void {
   if (typeof getNativeUnifiedBleProtocolControl !== 'function') return
   try {
@@ -273,6 +332,16 @@ function assertDirectExpoRuntime(): void {
 
 function nativeBackgroundControl():
   | Pick<import('./NativeUnifiedBleProtocolControl').Spec, 'acquireBackground' | 'releaseBackground'>
+  | undefined {
+  try {
+    return getNativeUnifiedBleProtocolControl()
+  } catch {
+    return undefined
+  }
+}
+
+function nativeAssociationControl():
+  | Pick<import('./NativeUnifiedBleProtocolControl').Spec, 'associateCompanionDevice'>
   | undefined {
   try {
     return getNativeUnifiedBleProtocolControl()

@@ -3,6 +3,16 @@
 package com.sfourdrinier.unifiedblemanager.protocol;
 
 import android.os.Build;
+import android.app.Activity;
+import android.bluetooth.BluetoothDevice;
+import android.companion.AssociationRequest;
+import android.companion.AssociationInfo;
+import android.companion.CompanionDeviceManager;
+import android.companion.BluetoothDeviceFilter;
+import android.content.IntentSender;
+import android.content.Intent;
+import android.content.pm.PackageManager;
+import android.os.ParcelUuid;
 import android.util.Log;
 
 import androidx.annotation.NonNull;
@@ -13,6 +23,7 @@ import com.facebook.react.bridge.ReactApplicationContext;
 import com.facebook.react.bridge.ReadableMap;
 import com.facebook.react.bridge.RuntimeExecutor;
 import com.facebook.react.bridge.WritableMap;
+import com.facebook.react.bridge.ActivityEventListener;
 import com.facebook.react.module.annotations.ReactModule;
 import com.sfourdrinier.unifiedblemanager.NativeUnifiedBleProtocolControlSpec;
 
@@ -26,7 +37,8 @@ import com.sfourdrinier.unifiedblemanager.background.AndroidConnectedDeviceForeg
 import com.sfourdrinier.unifiedblemanager.background.ConnectedDeviceForegroundServiceLeaseRegistry;
 import com.sfourdrinier.unifiedblemanager.background.ForegroundServiceControlException;
 @ReactModule(name = UnifiedBleProtocolControlModule.NAME)
-public final class UnifiedBleProtocolControlModule extends NativeUnifiedBleProtocolControlSpec {
+public final class UnifiedBleProtocolControlModule extends NativeUnifiedBleProtocolControlSpec
+    implements ActivityEventListener {
   public static final String NAME = "UnifiedBleProtocolControl";
   private static final String TAG = "UnifiedBleProtocol";
   private static final int NATIVE_PROTOCOL_VERSION = 2;
@@ -51,6 +63,9 @@ public final class UnifiedBleProtocolControlModule extends NativeUnifiedBleProto
   private String ownerId;
   private final ConnectedDeviceForegroundServiceLeaseRegistry backgroundLeases;
   private long nextBackgroundLease = 1L;
+  private static final int ASSOCIATION_REQUEST_CODE = 0x5542;
+  private Promise pendingAssociation;
+  private int pendingAssociationId = 0;
 
   public UnifiedBleProtocolControlModule(ReactApplicationContext reactContext) {
     super(reactContext);
@@ -58,6 +73,7 @@ public final class UnifiedBleProtocolControlModule extends NativeUnifiedBleProto
     this.backgroundLeases = new ConnectedDeviceForegroundServiceLeaseRegistry(
         new AndroidConnectedDeviceForegroundServiceDriver(reactContext),
         () -> "background-" + Long.toString(nextBackgroundLease++));
+    reactContext.addActivityEventListener(this);
   }
 
   @Override
@@ -118,6 +134,121 @@ public final class UnifiedBleProtocolControlModule extends NativeUnifiedBleProto
       Log.e(TAG, "releaseBackground failed", error);
       promise.reject(backgroundErrorCode(error, "nativeBackgroundRelease"), error.getMessage(), error);
     }
+  }
+
+  @Override
+  public synchronized void associateCompanionDevice(ReadableMap request, Promise promise) {
+    try {
+      if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O ||
+          !reactContext.getPackageManager().hasSystemFeature(PackageManager.FEATURE_COMPANION_DEVICE_SETUP)) {
+        throw new ForegroundServiceControlException(
+            "unsupportedAssociation",
+            "Companion Device Manager association requires Android API 26 and companion-device setup support.");
+      }
+      if (pendingAssociation != null) {
+        throw new ForegroundServiceControlException(
+            "associationBusy", "A Companion Device Manager association is already in progress.");
+      }
+      final Activity activity = reactContext.getCurrentActivity();
+      if (activity == null) {
+        throw new ForegroundServiceControlException(
+            "associationActivityUnavailable",
+            "A foreground Activity is required to launch Companion Device Manager system UI.");
+      }
+      final String name = optionalBoundedString(request, "name", 128);
+      final String serviceUuid = optionalBoundedString(request, "serviceUuid", 36);
+      final BluetoothDeviceFilter.Builder filter = new BluetoothDeviceFilter.Builder();
+      if (name != null) filter.setNamePattern(Pattern.compile(Pattern.quote(name)));
+      if (serviceUuid != null) {
+        filter.addServiceUuid(ParcelUuid.fromString(normalizeUuid(serviceUuid)), null);
+      }
+      final AssociationRequest associationRequest = new AssociationRequest.Builder()
+          .addDeviceFilter(filter.build())
+          .setSingleDevice(true)
+          .build();
+      pendingAssociation = promise;
+      pendingAssociationId = 0;
+      final CompanionDeviceManager manager =
+          (CompanionDeviceManager) reactContext.getSystemService(android.content.Context.COMPANION_DEVICE_SERVICE);
+      if (manager == null) throw new IllegalStateException("Companion Device Manager is unavailable.");
+      manager.associate(associationRequest, new CompanionDeviceManager.Callback() {
+        @Override
+        public void onDeviceFound(IntentSender intentSender) {
+          launchAssociationUi(activity, intentSender);
+        }
+
+        @Override
+        public void onAssociationPending(IntentSender intentSender) {
+          launchAssociationUi(activity, intentSender);
+        }
+
+        @Override
+        public void onAssociationCreated(AssociationInfo associationInfo) {
+          resolveAssociation(associationInfo.getId(), null, null);
+        }
+
+        @Override
+        public void onFailure(CharSequence error) {
+          rejectAssociation(
+              "associationFailed",
+              error == null ? "Companion Device Manager association failed." : error.toString());
+        }
+      }, null);
+    } catch (RuntimeException error) {
+      rejectAssociationPromise(promise, errorCode(error, "associationFailed"), error.getMessage(), error);
+    }
+  }
+
+  private void launchAssociationUi(Activity activity, IntentSender intentSender) {
+    try {
+      activity.startIntentSenderForResult(
+          intentSender, ASSOCIATION_REQUEST_CODE, null, 0, 0, 0);
+    } catch (IntentSender.SendIntentException error) {
+      rejectAssociation("associationUiLaunchFailed", "Companion Device Manager system UI could not be launched.");
+    }
+  }
+
+  @Override
+  public synchronized void onActivityResult(Activity activity, int requestCode, int resultCode, Intent data) {
+    if (requestCode != ASSOCIATION_REQUEST_CODE || pendingAssociation == null) return;
+    if (resultCode != Activity.RESULT_OK || data == null) {
+      rejectAssociation("associationCancelled", "Companion Device Manager association was cancelled.");
+      return;
+    }
+    final BluetoothDevice device;
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+      device = data.getParcelableExtra(CompanionDeviceManager.EXTRA_DEVICE, BluetoothDevice.class);
+    } else {
+      device = data.getParcelableExtra(CompanionDeviceManager.EXTRA_DEVICE);
+    }
+    final String peerId = device == null ? null : device.getAddress();
+    final String displayName = device == null ? null : device.getName();
+    resolveAssociation(pendingAssociationId, peerId, displayName);
+  }
+
+  @Override
+  public void onNewIntent(Intent intent) {}
+
+  private void resolveAssociation(int associationId, String peerId, String displayName) {
+    if (pendingAssociation == null) return;
+    final Promise promise = pendingAssociation;
+    pendingAssociation = null;
+    final WritableMap result = Arguments.createMap();
+    result.putString("source", "associated");
+    result.putInt("associationId", associationId);
+    if (peerId == null) result.putNull("peerId"); else result.putString("peerId", peerId);
+    if (displayName == null) result.putNull("displayName"); else result.putString("displayName", displayName);
+    promise.resolve(result);
+  }
+
+  private void rejectAssociation(String code, String message) {
+    final Promise promise = pendingAssociation;
+    pendingAssociation = null;
+    if (promise != null) promise.reject(code, message);
+  }
+
+  private static void rejectAssociationPromise(Promise promise, String code, String message, Throwable error) {
+    promise.reject(code, message == null ? "Companion Device Manager association failed." : message, error);
   }
 
   @Override
@@ -332,6 +463,28 @@ public final class UnifiedBleProtocolControlModule extends NativeUnifiedBleProto
       throw new IllegalArgumentException("Required native protocol string is missing: " + key);
     }
     return value;
+  }
+
+  private static String optionalBoundedString(ReadableMap map, String key, int maximumBytes) {
+    if (!map.hasKey(key) || map.isNull(key)) return null;
+    final String value = map.getString(key);
+    if (value == null || value.trim().isEmpty() || value.getBytes(StandardCharsets.UTF_8).length > maximumBytes) {
+      throw new IllegalArgumentException("Invalid association filter: " + key);
+    }
+    return value;
+  }
+
+  private static String normalizeUuid(String value) {
+    if (value.matches("[0-9A-Fa-f]{4}")) return "0000" + value + "-0000-1000-8000-00805F9B34FB";
+    if (value.matches("[0-9A-Fa-f]{8}")) return value + "-0000-1000-8000-00805F9B34FB";
+    if (value.matches("[0-9A-Fa-f]{8}(-[0-9A-Fa-f]{4}){3}-[0-9A-Fa-f]{12}")) return value;
+    throw new IllegalArgumentException("Association serviceUuid must be a valid Bluetooth UUID");
+  }
+
+  private static String errorCode(RuntimeException error, String fallback) {
+    return error instanceof ForegroundServiceControlException
+        ? ((ForegroundServiceControlException) error).code
+        : fallback;
   }
 
   private static String requiredRestorationToken(ReadableMap map, String key, int maximumBytes) {

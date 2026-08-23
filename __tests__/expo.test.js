@@ -239,6 +239,30 @@ describe('Expo factory', () => {
     expect(control.releaseBackground).toHaveBeenCalledWith({ leaseId: 'background-1' })
   })
 
+  test('returns an associated peer-directory record from explicit Android system UI', async () => {
+    const control = {
+      associateCompanionDevice: jest.fn().mockResolvedValue({
+        source: 'associated',
+        associationId: 7,
+        peerId: 'AA:BB:CC:DD:EE:FF',
+        displayName: 'Sensor'
+      })
+    }
+    const manager = { adapter: { state: jest.fn().mockResolvedValue(adapterState()) } }
+    createReactNativeBleManagerWithEnvironment.mockResolvedValue(manager)
+
+    const result = await createExpoBleManagerWithEnvironment(
+      environment({ executionEnvironment: 'development-build', nativeModuleAvailable: true }, control)
+    )
+    await expect(result.association.associate({ name: 'Sensor' })).resolves.toEqual({
+      source: 'associated',
+      associationId: 7,
+      peerId: 'AA:BB:CC:DD:EE:FF',
+      displayName: 'Sensor'
+    })
+    expect(control.associateCompanionDevice).toHaveBeenCalledWith({ name: 'Sensor' })
+  })
+
   test('normalizes actionable native foreground-service failures', async () => {
     const nativeFailure = Object.assign(new Error('Rebuild with configured notification metadata.'), {
       code: 'foregroundServiceNotConfigured'

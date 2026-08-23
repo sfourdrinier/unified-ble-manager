@@ -418,6 +418,12 @@ RCT_EXPORT_MODULE(UnifiedBleProtocolControl)
   rejectControl(reject, @"unsupportedBackground", @"Connected-device foreground service is Android-only");
 }
 
+- (void)associateCompanionDevice:(JS::NativeUnifiedBleProtocolControl::NativeCompanionAssociationRequest &)request
+                          resolve:(RCTPromiseResolveBlock)resolve
+                           reject:(RCTPromiseRejectBlock)reject {
+  rejectControl(reject, @"unsupportedAssociation", @"Companion Device Manager association is Android-only");
+}
+
 - (void)handshake:(JS::NativeUnifiedBleProtocolControl::NativeProtocolHandshakeRequest &)request
           resolve:(RCTPromiseResolveBlock)resolve
            reject:(RCTPromiseRejectBlock)reject {

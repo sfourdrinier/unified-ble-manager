@@ -153,6 +153,7 @@ describe('Native Protocol v2 schema authority', () => {
       expect(android).toContain('bootstrapRestorationIdentity')
       expect(android).toContain('acquireBackground')
       expect(android).toContain('releaseBackground')
+      expect(android).toContain('associateCompanionDevice')
       expect(androidImplementation).toContain('ubm-restoration-v1')
       expect(android).toContain('cancelOperation(ReadableMap correlation')
       expect(android).toContain('closeAttachment(ReadableMap attachment')
@@ -164,6 +165,7 @@ describe('Native Protocol v2 schema authority', () => {
       expect(appleControl).toContain('bootstrapRestorationIdentity')
       expect(appleImplementation).toContain('acquireBackground')
       expect(appleImplementation).toContain('releaseBackground')
+      expect(appleImplementation).toContain('associateCompanionDevice')
       expect(appleImplementation).toContain('ubm-restoration-v1')
       expect(appleControl).not.toMatch(/Uint8Array|ArrayBuffer|Base64/)
     } finally {

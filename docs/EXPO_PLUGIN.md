@@ -75,6 +75,12 @@ false, the plugin does not manage that feature declaration.
 
 The plugin never requests runtime permission during import or prebuild.
 
+The Expo host also exposes an Android-only Companion Device Manager ceremony:
+`ble.association.associate({ name, serviceUuid })`. It launches Android system
+UI and returns an `associated` peer-directory record. Association is not a
+bond, connection, GATT attachment, or broad scan-permission bypass; unsupported
+hosts fail explicitly.
+
 ### background
 
 - ios.mode must be central; peripheral mode is rejected.

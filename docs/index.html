@@ -597,6 +597,12 @@ bunx eas build --profile development --platform android
               </li>
             </ul>
             <p>The plugin never requests runtime permission during import or prebuild.</p>
+            <p>
+              The Expo host also exposes an Android-only Companion Device Manager ceremony:
+              <code>ble.association.associate({ name, serviceUuid })</code>. It launches Android system UI and returns
+              an <code>associated</code> peer-directory record. Association is not a bond, connection, GATT attachment,
+              or broad scan-permission bypass; unsupported hosts fail explicitly.
+            </p>
             <h3>background</h3>
             <ul>
               <li>ios.mode must be central; peripheral mode is rejected.</li>

@@ -93,6 +93,8 @@ import { createExpoBleManager } from 'unified-ble-manager/expo'
 
 const ble = await createExpoBleManager()
 const readiness = await ble.readiness()
+// Android only: system UI association, not bonding or an active connection.
+const associated = await ble.association.associate({ name: 'Sensor' })
 ```
 
 ## One complete loop
