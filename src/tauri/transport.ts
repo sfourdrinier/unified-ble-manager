@@ -19,6 +19,8 @@ import type {
   IpcEventAcknowledgeResponse,
   IpcFailureResponse
 } from '../ipc/protocol'
+import { encodeTauriScanQuery } from './scan-plan'
+import type { NormalizedScanQuery } from '../backend-contract/scan-query'
 
 /** Tauri v2 plugin command registered by the Rust crate. */
 export const TAURI_BLE_PLUGIN_COMMAND = 'plugin:unified-ble-manager|invoke'
@@ -65,6 +67,7 @@ export class TauriBleIpcTransport<Attachment extends string, Client extends stri
   private readonly command: string
   private readonly eventChannel: TauriChannel<unknown>
   private readonly listeners = new Set<(event: IpcBleEvent) => void>()
+  private trustedScanQuery: SerializableRecord | null = null
 
   constructor(options: TauriBleIpcTransportOptions) {
     if (typeof options.invoke !== 'function' || typeof options.Channel !== 'function') {
@@ -90,12 +93,44 @@ export class TauriBleIpcTransport<Attachment extends string, Client extends stri
     if (request.kind === TAURI_ATTACH_REQUEST_KIND && !isIpcBootstrapRequest(request)) {
       throw contractError('protocol.malformed', 'ipc', 'tauri.transport.bootstrap-request')
     }
-    const wireRequest = request.kind === 'route' ? { kind: request.kind, envelope: request.envelope } : request
+    const trustedRequest = this.bindTrustedScanQuery(request)
+    const wireRequest =
+      trustedRequest.kind === 'route'
+        ? { kind: trustedRequest.kind, envelope: trustedRequest.envelope }
+        : trustedRequest
     const response = await this.invokeCore<unknown>(this.command, {
       request: encodeTauriWireValue(wireRequest),
       ...this.eventChannelArgument(request)
     })
     return decodeIpcBleResponse<Attachment, Client>(response)
+  }
+
+  async withTrustedScanQuery<Response>(query: NormalizedScanQuery, action: () => Promise<Response>): Promise<Response> {
+    if (this.trustedScanQuery !== null) {
+      throw contractError('ownership.denied', 'scan', 'tauri.transport.trusted-query')
+    }
+    this.trustedScanQuery = encodeTauriScanQuery(query)
+    try {
+      return await action()
+    } finally {
+      this.trustedScanQuery = null
+    }
+  }
+
+  private bindTrustedScanQuery<Operation extends string>(
+    request: IpcBleRequest<Attachment, Client, Operation>
+  ): IpcBleRequest<Attachment, Client, Operation> {
+    if (request.kind !== 'route' || request.envelope.command !== 'scan.start') return request
+    if (this.trustedScanQuery === null) {
+      throw contractError('protocol.violation', 'scan', 'tauri.transport.trusted-query-required')
+    }
+    return Object.freeze({
+      ...request,
+      envelope: Object.freeze({
+        ...request.envelope,
+        payload: Object.freeze({ ...request.envelope.payload, query: this.trustedScanQuery })
+      })
+    })
   }
 
   /**

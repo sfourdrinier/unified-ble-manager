@@ -2,6 +2,8 @@ mod btleplug_dispatcher;
 mod capabilities;
 mod commands;
 mod security_scope;
+#[cfg(test)]
+mod scan_plan;
 mod wire;
 
 use std::{future::Future, pin::Pin, sync::Arc};
