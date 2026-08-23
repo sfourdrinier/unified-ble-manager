@@ -101,6 +101,12 @@ The subsequent exact-source native/consumer review found additional ownership an
 - `pnpm test:package`: 156 suites / 1,505 tests passed, including the Android Service Changed boundary path.
 - Focused Android boundary/native suites, TypeScript, ESLint, and protocol checks passed; no physical-radio evidence.
 
+## Latest source verification at `2a98a98ddeed693f6dacebd804c7638bd89738ad`
+
+- `pnpm test:package`: 156 suites / 1,507 tests passed.
+- Plugin suite: 40/40; Android manifest guard, classic Android build, and Expo APK build passed.
+- Location-policy proof: active library manifest contributes no coarse/fine location permissions; classic RN manifest ownership remains explicit.
+
 ## Final local verification receipts at `707e3c9`
 
 - `pnpm typecheck`, `pnpm lint`, `pnpm test:plugin`: passed; plugin 35/35.
