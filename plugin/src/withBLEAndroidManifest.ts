@@ -27,6 +27,9 @@ type ManifestApplicationWithExtraTools = Omit<ManifestApplication, 'service'> & 
   service?: ManifestServiceWithExtraTools[]
 }
 
+const BLE_HARDWARE_FEATURE_OWNERSHIP_METADATA_NAME = 'com.sfourdrinier.unifiedblemanager.bluetooth-le-feature-ownership'
+const BLE_HARDWARE_FEATURE_OWNERSHIP_METADATA_VALUE = 'feature=bluetooth_le'
+
 export type AndroidManifestWithExtraTools = {
   manifest: Omit<InnerManifest, 'application' | 'uses-permission' | 'uses-permission-sdk-23'> & {
     application?: ManifestApplicationWithExtraTools[]
@@ -334,21 +337,69 @@ function reconcileLegacyLocationPermissions(
 }
 
 function reconcileBLEHardwareFeature(androidManifest: AndroidManifestWithExtraTools, requiredHardware: boolean): void {
-  const features = Array.isArray(androidManifest.manifest['uses-feature'])
-    ? androidManifest.manifest['uses-feature'].filter(
-        feature => feature.$['android:name'] !== 'android.hardware.bluetooth_le'
-      )
+  const existingFeatures = Array.isArray(androidManifest.manifest['uses-feature'])
+    ? androidManifest.manifest['uses-feature']
     : []
-  if (requiredHardware) {
+  const bluetoothFeatures = existingFeatures.filter(
+    feature => feature.$['android:name'] === 'android.hardware.bluetooth_le'
+  )
+  const features = existingFeatures.filter(feature => feature.$['android:name'] !== 'android.hardware.bluetooth_le')
+  const owned = hasMetadata(androidManifest, BLE_HARDWARE_FEATURE_OWNERSHIP_METADATA_NAME)
+
+  if (requiredHardware && bluetoothFeatures.length === 0) {
     features.push({
       $: {
         'android:name': 'android.hardware.bluetooth_le',
         'android:required': 'true'
       }
     })
+    setMetadata(
+      androidManifest,
+      BLE_HARDWARE_FEATURE_OWNERSHIP_METADATA_NAME,
+      BLE_HARDWARE_FEATURE_OWNERSHIP_METADATA_VALUE
+    )
+  } else if (!requiredHardware && owned) {
+    bluetoothFeatures.shift()
+    removeMetadata(androidManifest, BLE_HARDWARE_FEATURE_OWNERSHIP_METADATA_NAME)
+  } else {
+    features.push(...bluetoothFeatures)
   }
+
   if (features.length === 0) delete androidManifest.manifest['uses-feature']
   else androidManifest.manifest['uses-feature'] = features
+}
+
+function hasMetadata(androidManifest: AndroidManifestWithExtraTools, name: string): boolean {
+  const application = androidManifest.manifest.application?.[0]
+  const metadata = application?.['meta-data']
+  return (
+    Array.isArray(metadata) &&
+    metadata.some(
+      item =>
+        item.$?.['android:name'] === name && item.$?.['android:value'] === BLE_HARDWARE_FEATURE_OWNERSHIP_METADATA_VALUE
+    )
+  )
+}
+
+function setMetadata(androidManifest: AndroidManifestWithExtraTools, name: string, value: string): void {
+  const application = androidManifest.manifest.application?.[0]
+  if (!application) throw new Error('AndroidManifest.xml is missing the required application element')
+  const currentMetadata = application['meta-data']
+  const metadata = Array.isArray(currentMetadata) ? currentMetadata : currentMetadata ? [currentMetadata] : []
+  application['meta-data'] = metadata
+  const existing = metadata.find(item => item.$?.['android:name'] === name)
+  if (existing) existing.$['android:value'] = value
+  else metadata.push({ $: { 'android:name': name, 'android:value': value } })
+}
+
+function removeMetadata(androidManifest: AndroidManifestWithExtraTools, name: string): void {
+  const application = androidManifest.manifest.application?.[0]
+  if (!application) throw new Error('AndroidManifest.xml is missing the required application element')
+  const metadata = application['meta-data']
+  if (!Array.isArray(metadata)) return
+  const remaining = metadata.filter(item => item.$?.['android:name'] !== name)
+  if (remaining.length === 0) delete application['meta-data']
+  else application['meta-data'] = remaining
 }
 
 function reconcileCompanionSetupFeature(androidManifest: AndroidManifestWithExtraTools): void {

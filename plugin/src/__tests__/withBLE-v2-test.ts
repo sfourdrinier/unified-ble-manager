@@ -215,6 +215,7 @@ describe('Expo Android reconciliation', () => {
 
     expect(removed.manifest['uses-feature']).toEqual([
       { $: { 'android:name': 'android.hardware.camera', 'android:required': 'false' } },
+      { $: { 'android:name': 'android.hardware.bluetooth_le', 'android:required': 'true' } },
       { $: { 'android:name': 'android.software.companion_device_setup', 'android:required': 'false' } }
     ])
     expect(removed.manifest['uses-permission']).toEqual([
@@ -223,6 +224,29 @@ describe('Expo Android reconciliation', () => {
       { $: { 'android:name': 'android.permission.BLUETOOTH_ADMIN', 'android:maxSdkVersion': '30' } },
       { $: { 'android:name': 'android.permission.BLUETOOTH_SCAN', 'tools:targetApi': '31' } },
       { $: { 'android:name': 'android.permission.BLUETOOTH_CONNECT', 'tools:targetApi': '31' } }
+    ])
+  })
+
+  it('removes the BLE hardware feature when this plugin inserted and owned it', () => {
+    const manifest = {
+      manifest: {
+        application: [{ $: { 'android:name': '.MainApplication' }, 'meta-data': [] }]
+      }
+    }
+
+    const configured = reconcileExpoAndroidManifest(manifest, {
+      requiredHardware: true,
+      neverForLocation: false,
+      legacyLocation: 'none'
+    })
+    const removed = reconcileExpoAndroidManifest(configured, {
+      requiredHardware: false,
+      neverForLocation: false,
+      legacyLocation: 'none'
+    })
+
+    expect(removed.manifest['uses-feature']).toEqual([
+      { $: { 'android:name': 'android.software.companion_device_setup', 'android:required': 'false' } }
     ])
   })
 })

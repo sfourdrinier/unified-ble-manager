@@ -58,17 +58,38 @@ function removeManagedMetadata(androidManifest: AndroidManifestWithExtraTools): 
   else app['meta-data'] = remaining
 }
 
+function ownedPermissionNames(androidManifest: AndroidManifestWithExtraTools): Set<string> {
+  const metadata = metadataFor(androidManifest)
+  const marker = metadata.find(item => item.$['android:name'] === FOREGROUND_SERVICE_OWNERSHIP_METADATA_NAME)
+  const markerValue = marker?.$['android:value']
+  const markerParts = markerValue?.split(';') ?? []
+  if (!markerParts.includes('service=1')) return new Set()
+  const permissions = markerParts.find(value => value.startsWith('permissions='))?.slice('permissions='.length)
+  return new Set(permissions === undefined || permissions.length === 0 ? [] : permissions.split('|'))
+}
+
+function setForegroundServiceOwnershipMetadata(
+  androidManifest: AndroidManifestWithExtraTools,
+  permissionNames: ReadonlySet<string>
+): void {
+  const permissions = [...permissionNames].join('|')
+  setMetadata(
+    androidManifest,
+    FOREGROUND_SERVICE_OWNERSHIP_METADATA_NAME,
+    permissions.length === 0 ? 'service=1' : `service=1;permissions=${permissions}`
+  )
+}
+
 function addForegroundService(
   androidManifest: AndroidManifestWithExtraTools,
   options: Extract<AndroidBackgroundOptions, { mode: 'connected-device-foreground-service' }>
 ): void {
   const manifest = androidManifest.manifest
   if (!Array.isArray(manifest['uses-permission'])) manifest['uses-permission'] = []
-  const permissions = manifest['uses-permission'].filter(
-    permission => !FOREGROUND_SERVICE_PERMISSIONS.includes(permission.$['android:name'])
-  )
+  const permissions = manifest['uses-permission']
+  const owned = ownedPermissionNames(androidManifest)
   AndroidConfig.Manifest.ensureToolsAvailable(androidManifest)
-  permissions.push(
+  const requiredPermissions = [
     { $: { 'android:name': 'android.permission.FOREGROUND_SERVICE' } },
     {
       $: {
@@ -82,7 +103,13 @@ function addForegroundService(
         'tools:targetApi': '33'
       }
     }
-  )
+  ]
+  for (const permission of requiredPermissions) {
+    const name = permission.$['android:name']
+    if (permissions.some(existing => existing.$['android:name'] === name)) continue
+    permissions.push(permission)
+    owned.add(name)
+  }
   manifest['uses-permission'] = permissions
 
   const app = application(androidManifest)
@@ -98,7 +125,7 @@ function addForegroundService(
     }
   })
 
-  setMetadata(androidManifest, FOREGROUND_SERVICE_OWNERSHIP_METADATA_NAME, 'service=1')
+  setForegroundServiceOwnershipMetadata(androidManifest, owned)
   setMetadata(androidManifest, FOREGROUND_SERVICE_NOTIFICATION_METADATA.channelId, options.notification.channelId)
   setMetadata(androidManifest, FOREGROUND_SERVICE_NOTIFICATION_METADATA.channelName, options.notification.channelName)
   setMetadata(androidManifest, FOREGROUND_SERVICE_NOTIFICATION_METADATA.title, options.notification.title)
@@ -131,9 +158,13 @@ function removeForegroundService(androidManifest: AndroidManifestWithExtraTools)
   const manifest = androidManifest.manifest
   const permissions = manifest['uses-permission']
   if (Array.isArray(permissions)) {
-    manifest['uses-permission'] = permissions.filter(
-      permission => !FOREGROUND_SERVICE_PERMISSIONS.includes(permission.$['android:name'])
-    )
+    const owned = ownedPermissionNames(androidManifest)
+    manifest['uses-permission'] = permissions.filter(permission => {
+      const name = permission.$['android:name']
+      if (!owned.has(name)) return true
+      owned.delete(name)
+      return false
+    })
   }
   const app = application(androidManifest)
   if (Array.isArray(app.service)) {
@@ -142,10 +173,18 @@ function removeForegroundService(androidManifest: AndroidManifestWithExtraTools)
   removeManagedMetadata(androidManifest)
 }
 
+export function reconcileAndroidForegroundService(
+  androidManifest: AndroidManifestWithExtraTools,
+  options: AndroidBackgroundOptions
+): AndroidManifestWithExtraTools {
+  if (options.mode === 'none') removeForegroundService(androidManifest)
+  else addForegroundService(androidManifest, options)
+  return androidManifest
+}
+
 export const withBLEAndroidForegroundService: ConfigPlugin<AndroidBackgroundOptions> = (config, options) =>
   withAndroidManifest(config, config => {
-    if (options.mode === 'none') removeForegroundService(config.modResults)
-    else addForegroundService(config.modResults, options)
+    reconcileAndroidForegroundService(config.modResults, options)
     return config
   })
 
