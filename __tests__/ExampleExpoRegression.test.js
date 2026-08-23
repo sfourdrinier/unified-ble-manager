@@ -61,6 +61,14 @@ describe('Expo example cold-review regressions', () => {
     expect(service).not.toContain('clientId:')
   })
 
+  test('Expo dashboard exposes the registered diagnostics screen', () => {
+    const dashboard = readExampleSource('example-expo', 'screens/MainStack/DashboardScreen/DashboardScreen.tsx')
+
+    expect(dashboard).toMatch(
+      /<AppButton\s+label="Expo diagnostics"\s+onPress=\{\(\) => navigation\.navigate\('EXPO_DIAGNOSTICS_SCREEN'\)\}\s*\/>/
+    )
+  })
+
   test('nRF flow respects Apple-managed MTU and treats Android MTU failure as a failed flow', () => {
     for (const exampleDirectory of ['example', 'example-expo']) {
       const nrf = readExampleSource(exampleDirectory, 'screens/MainStack/DevicenRFTestScreen/DevicenRFTestScreen.tsx')

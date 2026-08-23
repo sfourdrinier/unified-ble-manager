@@ -118,6 +118,7 @@ export function DashboardScreen({ navigation }: DashboardScreenProps) {
       <AppButton label="Scan with canonical manager" onPress={() => void startScan()} />
       <AppButton label="Check Expo readiness" onPress={() => void inspectReadiness()} />
       <AppButton label="Inspect plan and diagnostics" onPress={inspectDiagnostics} />
+      <AppButton label="Expo diagnostics" onPress={() => navigation.navigate('EXPO_DIAGNOSTICS_SCREEN')} />
       <AppButton label="Claim native restoration" onPress={() => void claimRestoration()} />
       <AppButton label="Create redacted support bundle" onPress={() => void createSupportBundle()} />
       <AppButton label="Stop scan" onPress={() => void stopScan(work, setError)} />
