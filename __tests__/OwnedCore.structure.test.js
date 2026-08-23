@@ -42,6 +42,7 @@ describe('Unified Android native protocol structure', () => {
       'background/ConnectedDeviceForegroundServiceLeaseRegistry.java',
       'background/ForegroundServiceControlException.java',
       'background/ForegroundServiceNotificationConfiguration.java',
+      'expo/UnifiedBleExpoRuntimeModule.java',
       'protocol/ProtocolCommandDecoder.kt',
       'protocol/ProtocolWireEncoder.kt',
       'protocol/UnifiedBleProtocolAndroidDispatcher.kt',

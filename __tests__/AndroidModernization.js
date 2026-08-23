@@ -57,7 +57,7 @@ describe('Android RN 0.86 unified protocol boundary', () => {
     expect(buildGradle).not.toContain('prefab true')
   })
 
-  test('registers exactly the generated control-only TurboModule', () => {
+  test('registers only the generated protocol and Expo runtime TurboModules', () => {
     const packageJava = read('android/src/main/java/com/sfourdrinier/unifiedblemanager/BlePlxPackage.java')
     const controlJava = read(
       'android/src/main/java/com/sfourdrinier/unifiedblemanager/protocol/UnifiedBleProtocolControlModule.java'
@@ -68,8 +68,10 @@ describe('Android RN 0.86 unified protocol boundary', () => {
     expect(packageJava).toContain('import com.sfourdrinier.unifiedblemanager.protocol.UnifiedBleProtocolControlModule;')
     expect(packageJava).toContain('if (UnifiedBleProtocolControlModule.NAME.equals(name))')
     expect(packageJava).toContain('UnifiedBleProtocolControlModule.class.getName()')
+    expect(packageJava).toContain('UnifiedBleExpoRuntimeModule.NAME')
+    expect(packageJava).toContain('UnifiedBleExpoRuntimeModule.class.getName()')
     expect(packageJava).not.toMatch(/\bBlePlxModule\b|\bNativeBlePlxSpec\b/)
-    expect(packageJava.match(/moduleInfos\.put\(/g)).toHaveLength(1)
+    expect(packageJava.match(/moduleInfos\.put\(/g)).toHaveLength(2)
     expect(controlJava).toContain('extends NativeUnifiedBleProtocolControlSpec')
     expect(controlJava).toContain('public static final String NAME = "UnifiedBleProtocolControl"')
     expect(controlJava).toContain('UnifiedBleProtocolJsiBinding.install')
@@ -86,6 +88,7 @@ describe('Android RN 0.86 unified protocol boundary', () => {
       'background/ConnectedDeviceForegroundServiceLeaseRegistry.java',
       'background/ForegroundServiceControlException.java',
       'background/ForegroundServiceNotificationConfiguration.java',
+      'expo/UnifiedBleExpoRuntimeModule.java',
       'protocol/ProtocolCommandDecoder.kt',
       'protocol/ProtocolWireEncoder.kt',
       'protocol/UnifiedBleProtocolAndroidDispatcher.kt',
