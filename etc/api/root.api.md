@@ -175,6 +175,7 @@ All BLE payloads are bytes. Application operations use `AbortSignal` and
 - `CustomStreamBudget`
 - `DescriptorWriteOptions`
 - `DiagnosticsOptions`
+- `DiscoveryEvent`
 - `FeatureId`
 - `FindOptions`
 - `GattAccessRequirements`
