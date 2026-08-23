@@ -149,7 +149,11 @@ protocol::ProtocolRecord command(std::uint64_t epoch) {
   };
 }
 
-protocol::ProtocolRecord connectCommand(std::uint64_t epoch, const std::string& peer) {
+protocol::ProtocolRecord connectCommand(
+    std::uint64_t epoch,
+    const std::string& peer,
+    const std::string& connectionGeneration = "connection-generation-1",
+    const std::string& operationPrefix = "apple-immediate-disconnect-operation-") {
   return {
       .kind = protocol::RecordKind::command,
       .fields = {
@@ -159,7 +163,7 @@ protocol::ProtocolRecord connectCommand(std::uint64_t epoch, const std::string& 
               .fields = {
                   harnessField(1U, attachment()),
                   harnessField(2U, epoch),
-                  harnessField(3U, std::string("apple-immediate-disconnect-operation-") + std::to_string(epoch)),
+                  harnessField(3U, operationPrefix + std::to_string(epoch)),
               },
           })),
           harnessField(3U, std::string("connect")),
@@ -170,7 +174,7 @@ protocol::ProtocolRecord connectCommand(std::uint64_t epoch, const std::string& 
                   harnessField(2U, peer),
                   harnessField(3U, std::string("connection-1")),
                   harnessField(4U, std::string("lease-1")),
-                  harnessField(5U, std::string("connection-generation-1")),
+                  harnessField(5U, connectionGeneration),
               },
           })),
       },
@@ -219,6 +223,15 @@ namespace unified_ble::apple_protocol {
 
 int runAppleNativeProtocolExecutionHarness() {
   try {
+    if (!require(parseAppleGattOccurrence("0", "test") == 0, "canonical zero occurrence was rejected")) return 1;
+    for (const auto& invalid : {std::string(" 1"), std::string("+1"), std::string("1 "), std::string("-1"), std::string("1x")}) {
+      try {
+        static_cast<void>(parseAppleGattOccurrence(invalid, "test"));
+        return require(false, "non-canonical Apple GATT occurrence was accepted") ? 0 : 1;
+      } catch (const protocol::ProtocolException&) {
+      }
+    }
+
     const auto runtime = facebook::jsc::makeJSCRuntime();
     std::atomic<std::size_t> delivered{0U};
     const auto sink = std::make_shared<Function>(Function::createFromHostFunction(
@@ -346,6 +359,65 @@ int runAppleNativeProtocolExecutionHarness() {
     if (!require(connectionLostEvents.load(std::memory_order_relaxed) == 1U, "immediate disconnect was lost before JavaScript installed connection ownership")) return 1;
     immediateDisconnectExecution.close();
     while (immediateDisconnectInvoker->pending() != 0U) immediateDisconnectInvoker->flushOne();
+
+    const auto failedConnectControl = openedRuntime();
+    const auto failedConnectInvoker = std::make_shared<ControllableInvoker>(*runtime);
+    std::atomic<std::size_t> staleConnectionLostEvents{0U};
+    const auto failedConnectSink = std::make_shared<Function>(Function::createFromHostFunction(
+        *runtime,
+        PropNameID::forUtf8(*runtime, "appleFailedConnectSink"),
+        1U,
+        [&staleConnectionLostEvents](Runtime& inner, const Value&, const Value* arguments, std::size_t count) {
+          if (count != 1U || !arguments[0].isObject() || !arguments[0].asObject(inner).isUint8Array(inner)) return Value::undefined();
+          auto bytes = arguments[0].asObject(inner).asUint8Array(inner);
+          auto buffer = bytes.buffer(inner);
+          if (buffer.detached(inner) || bytes.byteOffset(inner) > buffer.size(inner) || bytes.byteLength(inner) > buffer.size(inner) - bytes.byteOffset(inner)) return Value::undefined();
+          const auto* source = buffer.data(inner);
+          if (source == nullptr && bytes.byteLength(inner) != 0U) return Value::undefined();
+          const auto record = protocol::NativeProtocolV2Codec{}.decode(
+              bytes.byteLength(inner) == 0U
+                  ? std::vector<std::uint8_t>{}
+                  : std::vector<std::uint8_t>(source + bytes.byteOffset(inner), source + bytes.byteOffset(inner) + bytes.byteLength(inner)));
+          if (record.kind != protocol::RecordKind::event) return Value::undefined();
+          for (const auto& field : record.fields) {
+            if (field.id == 3U && std::holds_alternative<std::string>(field.value) &&
+                std::get<std::string>(field.value) == "connectionLost") {
+              staleConnectionLostEvents.fetch_add(1U, std::memory_order_relaxed);
+              break;
+            }
+          }
+          return Value::undefined();
+        }));
+    const auto failedConnectState = std::make_shared<AppleNativeProtocolExecution::State>(failedConnectControl, nullptr);
+    initializeAttachment(failedConnectState, failedConnectInvoker, failedConnectSink);
+    const auto failedConnect = connectCommand(1U, "peer-failed-connect", "connection-generation-old", "apple-failed-connect-");
+    const auto newConnect = connectCommand(2U, "peer-failed-connect", "connection-generation-new", "apple-new-connect-");
+    failedConnectControl->registerCommand(failedConnect, true);
+    failedConnectControl->registerCommand(newConnect, true);
+    {
+      std::scoped_lock lock(failedConnectState->mutex);
+      failedConnectState->pendingDisconnects.emplace(
+          "peer-failed-connect",
+          AppleNativeProtocolExecution::State::PendingDisconnect{
+              .attachmentGeneration = failedConnectState->attachmentGeneration,
+              .ordinal = 71U,
+              .error = std::nullopt,
+          });
+    }
+    fail(failedConnectState, failedConnect, "connectFailed", nil);
+    {
+      std::scoped_lock lock(failedConnectState->mutex);
+      if (!require(
+              failedConnectState->pendingDisconnects.empty(),
+              "failed connect terminal left a pending pre-ownership disconnect behind")) return 1;
+    }
+    while (failedConnectInvoker->pending() != 0U) failedConnectInvoker->flushOne();
+    static_cast<void>(success(failedConnectState, newConnect));
+    while (failedConnectInvoker->pending() != 0U) failedConnectInvoker->flushOne();
+    if (!require(
+            staleConnectionLostEvents.load(std::memory_order_relaxed) == 0U,
+            "failed connect replayed a stale connectionLost event into a new generation")) return 1;
+    failedConnectState->closed.store(true, std::memory_order_release);
 
     const auto throwingControl = openedRuntime();
     const auto throwingState = std::make_shared<AppleNativeProtocolExecution::State>(throwingControl, nullptr);

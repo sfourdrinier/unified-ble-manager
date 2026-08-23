@@ -84,11 +84,9 @@ describe('Apple Native Protocol v2 radio boundary', () => {
   test('strictly validates Apple GATT occurrence strings before NSInteger conversion', () => {
     const execution = read('ios/NativeProtocol/UnifiedBleProtocolAppleExecution.mm')
 
-    expect(execution).toContain('std::size_t consumed = 0U;')
-    expect(execution).toContain('std::stoll(value, &consumed, 10)')
-    expect(execution).toContain('consumed != value.size()')
-    expect(execution).toContain('parsed < 0')
-    expect(execution).toContain('parsed > std::numeric_limits<NSInteger>::max()')
+    expect(execution).toContain("if (character < '0' || character > '9') return invalid();")
+    expect(execution).toContain('parsed > (maximum - digit) / 10U')
+    expect(execution).not.toContain('std::stoll(value, &consumed, 10)')
     expect(execution).toContain('parseAppleGattOccurrence(serviceOccurrence, "characteristic")')
     expect(execution).toContain('parseAppleGattOccurrence(characteristicOccurrence, "characteristic")')
     expect(execution).toContain('parseAppleGattOccurrence(occurrence, "descriptor")')

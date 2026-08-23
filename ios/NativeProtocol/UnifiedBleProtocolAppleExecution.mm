@@ -17,6 +17,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <cstring>
 #include <functional>
 #include <iterator>
@@ -154,18 +155,22 @@ std::string nsString(NSString* value, const char* name) {
 }
 
 NSInteger parseAppleGattOccurrence(const std::string& value, const char* pathKind) {
-  std::size_t consumed = 0U;
-  try {
-    const auto parsed = std::stoll(value, &consumed, 10);
-    if (consumed != value.size() || parsed < 0 || parsed > std::numeric_limits<NSInteger>::max()) {
-      throw std::out_of_range("Apple GATT occurrence is outside its valid range");
-    }
-    return static_cast<NSInteger>(parsed);
-  } catch (const std::exception&) {
+  const auto invalid = [&]() -> NSInteger {
     throw protocol::ProtocolException(
         protocol::ProtocolFailure::invalidPath,
         std::string("Apple native ") + pathKind + " occurrence is invalid");
+  };
+  if (value.empty()) return invalid();
+
+  const auto maximum = static_cast<std::uintmax_t>(std::numeric_limits<NSInteger>::max());
+  std::uintmax_t parsed = 0U;
+  for (const auto character : value) {
+    if (character < '0' || character > '9') return invalid();
+    const auto digit = static_cast<std::uintmax_t>(character - '0');
+    if (parsed > (maximum - digit) / 10U) return invalid();
+    parsed = parsed * 10U + digit;
   }
+  return static_cast<NSInteger>(parsed);
 }
 
 std::string errorMessage(NSError* error) {
@@ -1016,6 +1021,12 @@ void fail(
     const std::string& code,
     NSError* error) {
   try {
+    if (requiredString(command, 3U) == "connect") {
+      const auto& connection = requiredRecord(command, 10U);
+      const auto peer = requiredString(connection, 2U);
+      std::scoped_lock lock(state->mutex);
+      state->pendingDisconnects.erase(peer);
+    }
     static_cast<void>(deliverResult(state, failureResult(command, code, errorMessage(error), error)));
   } catch (const std::exception& error) {
     logNativeFailure("terminal failure delivery", error);
