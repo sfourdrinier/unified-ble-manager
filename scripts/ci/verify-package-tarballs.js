@@ -247,7 +247,7 @@ function isPublishedSourceFile(sourceFile) {
   if (publicProfileSourceFiles.includes(sourceRelative)) {
     return true
   }
-  return /^(backend-contract|backends\/(?:bluez|corebluetooth|reactnative|winrt)|core|diagnostics|electron|ipc|manager|tauri|tck|testing|web)\/.+\.(?:ts|tsx)$/.test(
+  return /^(backend-contract|backends\/(?:bluez|corebluetooth|reactnative|winrt|scan-planning)|core|diagnostics|electron|ipc|manager|public|tauri|tck|testing|web)\/.+\.(?:ts|tsx)$/.test(
     sourceRelative
   )
 }
@@ -662,7 +662,8 @@ function verifyRootTarball(tarballPath) {
       entryPath.startsWith('package/native/protocol/tests/') ||
       (entryPath.endsWith('.node') && !allowedNativePrebuildEntries.has(entryPath)) ||
       (entryPath.includes('/build/') && !entryPath.startsWith('package/plugin/build/')) ||
-      entryPath.includes('/obj.target/')
+      entryPath.includes('/obj.target/') ||
+      entryPath.includes('/target/')
     ) {
       throw new Error(`Unintended package artifact: ${entryPath}`)
     }
