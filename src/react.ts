@@ -62,6 +62,7 @@ export interface UseCharacteristicValueResult {
 const missingProviderError = new Error('useBle must be used within a BleProvider')
 const BleContext = React.createContext<BleContextValue | null>(null)
 const BleErrorContext = React.createContext<((error: Error) => void) | null>(null)
+let pendingManagerRelease: Promise<void> | null = null
 
 export function BleProvider({ createManager, onError, children }: BleProviderProps): React.ReactElement {
   const [lease] = React.useState(() => new ManagerLease(createManager))
@@ -426,7 +427,9 @@ class ManagerLease {
 
   create(): Promise<BleManager> {
     if (this.managerPromise === null) {
-      this.managerPromise = this.createManager()
+      const pendingRelease = pendingManagerRelease
+      this.managerPromise =
+        pendingRelease === null ? this.createManager() : pendingRelease.then(() => this.createManager())
     }
     return this.managerPromise
   }
@@ -442,10 +445,25 @@ class ManagerLease {
   scheduleRelease(report: (error: Error) => void): void {
     if (this.released || this.releaseScheduled) return
     this.releaseScheduled = true
+
+    let resolveReleaseBarrier: () => void = () => undefined
+    const releaseBarrier = new Promise<void>(resolve => {
+      resolveReleaseBarrier = resolve
+    })
+    const previousRelease = pendingManagerRelease ?? Promise.resolve()
+    const scheduledRelease = previousRelease.then(() => releaseBarrier)
+    pendingManagerRelease = scheduledRelease
+    scheduledRelease.then(() => {
+      if (pendingManagerRelease === scheduledRelease) pendingManagerRelease = null
+    })
+
     queueMicrotask(() => {
-      if (!this.releaseScheduled || this.released) return
+      if (!this.releaseScheduled || this.released) {
+        resolveReleaseBarrier()
+        return
+      }
       this.released = true
-      this.release(report).catch(() => undefined)
+      this.release(report).then(resolveReleaseBarrier, resolveReleaseBarrier)
     })
   }
 

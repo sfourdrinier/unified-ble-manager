@@ -163,6 +163,35 @@ describe('React host surface', () => {
     expect(firstCleanup).not.toBe(secondCleanup)
   })
 
+  test('waits for a replaced provider to release before creating its replacement manager', async () => {
+    const destruction = deferred()
+    const firstManager = manager({ destroy: jest.fn(() => destruction.promise) })
+    const secondManager = manager()
+    const firstCreateManager = jest.fn().mockResolvedValue(firstManager)
+    const secondCreateManager = jest.fn().mockResolvedValue(secondManager)
+
+    BleProvider({ createManager: firstCreateManager, children: null })
+    const firstCleanup = hookHarness.effects[0]()
+    await flush()
+
+    hookHarness.stateValues = []
+    hookHarness.reset()
+    BleProvider({ createManager: secondCreateManager, children: null })
+    const secondEffect = hookHarness.effects[0]
+
+    firstCleanup()
+    secondEffect()
+    expect(secondCreateManager).not.toHaveBeenCalled()
+
+    await flush()
+    expect(firstManager.destroy).toHaveBeenCalledTimes(1)
+    expect(secondCreateManager).not.toHaveBeenCalled()
+
+    destruction.resolve({ state: 'released', failures: [] })
+    await flush()
+    expect(secondCreateManager).toHaveBeenCalledTimes(1)
+  })
+
   test('destroys a manager that resolves after provider unmount and awaits destroy', async () => {
     const creation = deferred()
     const destruction = deferred()
