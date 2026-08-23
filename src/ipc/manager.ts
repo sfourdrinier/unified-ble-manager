@@ -233,15 +233,27 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
       options.signal
     )
     const handle = requiredString(payload, 'handle', 'ipc-manager.scan')
-    const plan =
-      payload.plan === undefined
-        ? null
-        : decodeIpcScanPlan(
-            payload.plan,
-            payload.backendGeneration,
-            String(this.bootstrap.attachment.backendGeneration),
-            options.query?.digest
-          )
+    let plan: ScanPlan | null = null
+    try {
+      plan =
+        payload.plan === undefined
+          ? null
+          : decodeIpcScanPlan(
+              payload.plan,
+              payload.backendGeneration,
+              String(this.bootstrap.attachment.backendGeneration),
+              options.query?.digest
+            )
+    } catch (error) {
+      try {
+        await this.route('scan.stop', Object.freeze({ scanHandle: handle }))
+      } catch (cleanupError) {
+        throw new AggregateError([error, cleanupError], 'IPC scan validation cleanup failed')
+      } finally {
+        this.closeStream(handle)
+      }
+      throw error
+    }
     const observations = this.registerStream<IpcScanObservation>(
       handle,
       isIpcScanObservation,
@@ -1582,7 +1594,39 @@ function isScanPlanWireRecord(value: unknown): value is SerializableRecord {
 }
 
 function isScanPlanRecord(value: unknown): value is ScanPlan {
-  return isScanPlanWireRecord(value)
+  if (!isScanPlanWireRecord(value)) return false
+  const sourceQuery = value.sourceQuery
+  const native = value.native
+  const residual = value.residual
+  return (
+    isNormalizedScanQueryRecord(sourceQuery) &&
+    isScanProjectionRecord(native) &&
+    isSerializableRecord(residual) &&
+    isNormalizedScanQueryRecord(residual.query) &&
+    isScanProjectionRecord(residual) &&
+    Array.isArray(value.unavailable) &&
+    Array.isArray(value.limitations) &&
+    typeof value.queryDigest === 'string' &&
+    typeof value.residualQueryDigest === 'string' &&
+    (value.nativeGuarantee === 'exact' || value.nativeGuarantee === 'safe-superset') &&
+    (value.estimatedCost === 'native-only' ||
+      value.estimatedCost === 'low' ||
+      value.estimatedCost === 'moderate' ||
+      value.estimatedCost === 'high')
+  )
+}
+
+function isNormalizedScanQueryRecord(value: unknown): boolean {
+  return (
+    isSerializableRecord(value) &&
+    (value.anyOf === null || Array.isArray(value.anyOf)) &&
+    (value.exclude === null || Array.isArray(value.exclude)) &&
+    typeof value.digest === 'string'
+  )
+}
+
+function isScanProjectionRecord(value: unknown): boolean {
+  return isSerializableRecord(value) && Array.isArray(value.predicates) && typeof value.complete === 'boolean'
 }
 
 function requiredRecord(record: SerializableRecord, key: string, operation: string): SerializableRecord {

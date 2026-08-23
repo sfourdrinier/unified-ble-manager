@@ -120,6 +120,7 @@ export class IpcPublicManagerAdapter implements BleManager {
       const normalizedQuery = normalizeScanQuery(options.query)
       const session = await this.ipc.scan(toIpcScanOptions(options, normalized.signal, normalizedQuery))
       if (this.requireScanPlan && session.plan === null) {
+        await session.stop().catch(() => undefined)
         throw contractError('protocol.malformed', 'ipc', 'ipc-public-manager.scan-plan')
       }
       const state = createScanState()
