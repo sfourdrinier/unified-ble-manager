@@ -39,6 +39,7 @@ import { createReactNativeConnectionControlFeatureRegistry } from './react-nativ
 import { createReactNativeDescriptorFeatureRegistry } from './react-native-descriptor-features'
 import { withReactNativeProviderCleanup } from './react-native-provider-cleanup'
 import { ReactNativeAndroidSecurityBackend } from './react-native-android-security'
+import { diagnosticReactNativeAndroidScanPlan } from './react-native-scan-planner'
 import {
   combineReactNativeFeatureRegistries,
   createReactNativeRestorationFeatureRegistry,
@@ -125,7 +126,11 @@ export class ReactNativeAndroidBackend implements BleCentralBackend<string, Nati
     private readonly restorationActivation: ReactNativeRestorationActivation | null
   ) {
     this.adapter = delegate.adapter
-    this.scanner = delegate.scanner
+    this.scanner = Object.freeze({
+      plan: diagnosticReactNativeAndroidScanPlan,
+      start: delegate.scanner.start,
+      join: delegate.scanner.join
+    })
     this.connections = delegate.connections
     this.gatt = delegate.gatt
     this.security = boundary.securityAvailable

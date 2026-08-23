@@ -30,6 +30,7 @@ import { coreBluetoothCompatibility } from '../corebluetooth/corebluetooth-provi
 import { ReactNativeAppleProtocolBoundary } from '../../native-protocol/rn-apple-boundary'
 import { createReactNativeConnectionControlFeatureRegistry } from './react-native-connection-control-features'
 import { createReactNativeDescriptorFeatureRegistry } from './react-native-descriptor-features'
+import { diagnosticReactNativeAppleScanPlan } from './react-native-scan-planner'
 import { withReactNativeProviderCleanup } from './react-native-provider-cleanup'
 import {
   combineReactNativeFeatureRegistries,
@@ -104,7 +105,11 @@ class ReactNativeAppleBackend implements BleCentralBackend<string, NativeBackend
     private readonly restorationActivation: ReactNativeRestorationActivation | null
   ) {
     this.adapter = delegate.adapter
-    this.scanner = delegate.scanner
+    this.scanner = Object.freeze({
+      plan: diagnosticReactNativeAppleScanPlan,
+      start: delegate.scanner.start,
+      join: delegate.scanner.join
+    })
     this.connections = delegate.connections
     this.gatt = delegate.gatt
     this.features = delegate.features
