@@ -86,6 +86,16 @@ The subsequent exact-source native/consumer review found additional ownership an
 | F10-LATE-006 | React hooks retained stale replacement state and silently discarded overflow. | Addressed by `6f93d68`; focused React tests and full package gate pass. |
 | F10-LATE-007 | Apple module invalidation omitted native runtime close after execution/radio teardown. | Addressed by `0ed8e54`; idempotent runtime-close guard and Apple harness pass. |
 
+## Latest local verification at `7fee776dd05d53012a17baae015db8159f07d8c8`
+
+- `pnpm test:package`: 156 suites / 1,504 tests passed.
+- `pnpm test:plugin`: 4 suites / 37 tests passed.
+- `pnpm typecheck`, `pnpm lint`, `pnpm prepack`, `pnpm release:artifacts:check`, and `docs:check`: passed.
+- Forbidden TypeScript smell scan and `git diff --check`: passed.
+- C++ native protocol, Android full JVM, and Apple native protocol harnesses: passed; no physical BLE radio.
+- Packed Expo/React/Tauri, pack-install smoke, and G6A deterministic tarball proofs: passed; physical radio/EAS not provided.
+- Expo SDK 57 typecheck and full CNG Android debug build: passed; generated native directories/lockfile remain uncommitted.
+
 ## Final local verification receipts at `707e3c9`
 
 - `pnpm typecheck`, `pnpm lint`, `pnpm test:plugin`: passed; plugin 35/35.
