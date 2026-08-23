@@ -82,7 +82,7 @@ describe('Expo readiness surface', () => {
     })
   })
 
-  test('returns a measured permission breakdown without prompting automatically', async () => {
+  test('fails closed when no trusted permission bridge is available', async () => {
     const manager = managerFor(adapterState({ authorization: 'not-determined' }))
     createReactNativeBleManager.mockResolvedValue(manager)
 
@@ -90,13 +90,11 @@ describe('Expo readiness surface', () => {
     const readiness = await result.readiness()
 
     expect(readiness.actions).toEqual([{ kind: 'request-permission', permission: 'bluetooth' }])
-    await expect(result.permissions.request({ purpose: 'scan-and-connect' })).resolves.toEqual({
-      requested: ['bluetooth'],
-      granted: [],
-      denied: [],
-      recommendedSettingsTarget: null
+    await expect(result.permissions.request({ purpose: 'scan-and-connect' })).rejects.toMatchObject({
+      code: 'capability.unavailable',
+      operation: 'expo.permissions.request'
     })
-    expect(manager.adapter.state).toHaveBeenCalledTimes(2)
+    expect(manager.adapter.state).toHaveBeenCalledTimes(1)
   })
 
   test('openSettings is explicit and fails closed without a trusted native bridge', async () => {

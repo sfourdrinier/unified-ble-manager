@@ -41,7 +41,13 @@ describe('Unified Android native protocol structure', () => {
     const buildGradle = fs.readFileSync(path.join(root, 'android/build.gradle'), 'utf8')
 
     expect(javaAndKotlinFiles(androidRoot)).toEqual([
+      'BlePlxForegroundService.java',
       'BlePlxPackage.java',
+      'background/AndroidConnectedDeviceForegroundServiceDriver.java',
+      'background/ConnectedDeviceForegroundServiceDriver.java',
+      'background/ConnectedDeviceForegroundServiceLeaseRegistry.java',
+      'background/ForegroundServiceControlException.java',
+      'background/ForegroundServiceNotificationConfiguration.java',
       'protocol/ProtocolCommandDecoder.kt',
       'protocol/ProtocolWireEncoder.kt',
       'protocol/UnifiedBleProtocolAndroidDispatcher.kt',

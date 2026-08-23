@@ -22,8 +22,11 @@ export interface ExpoBleManager extends BleManager {
 - `BlePermission`
 - `BleReadiness`
 - `BleReadinessAction`
+- `ExpoBackgroundLease`
+- `ExpoBackgroundRequest`
 - `ExpoBleManager`
 - `ExpoBleManagerEnvironment`
+- `ExpoPermissionBridge`
 - `ExpoPermissionRequest`
 - `ExpoPermissionResult`
 - `ExpoRuntimeConfiguration`

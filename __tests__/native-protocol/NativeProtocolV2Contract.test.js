@@ -67,9 +67,9 @@ describe('Native Protocol v2 schema authority', () => {
   test('rejects malformed, duplicate, and unsupported priority command values at the codec boundary', () => {
     expect(() => encodeNativeProtocolRecord(priorityCommand('highThroughput'))).not.toThrow()
     expect(() => encodeNativeProtocolRecord(priorityCommand('turbo'))).toThrow('Native protocol enum value is invalid')
-    expect(() =>
-      encodeNativeProtocolRecord(priorityCommand('balanced', [{ id: 16, value: 'lowPower' }]))
-    ).toThrow('Native protocol record has a duplicate field')
+    expect(() => encodeNativeProtocolRecord(priorityCommand('balanced', [{ id: 16, value: 'lowPower' }]))).toThrow(
+      'Native protocol record has a duplicate field'
+    )
   })
 
   test('locks every record, enum, and field to an explicit immutable v1 ABI wire ID', () => {
@@ -151,6 +151,8 @@ describe('Native Protocol v2 schema authority', () => {
       expect(android).toContain('NativeUnifiedBleProtocolControlSpec')
       expect(android).toContain('handshake')
       expect(android).toContain('bootstrapRestorationIdentity')
+      expect(android).toContain('acquireBackground')
+      expect(android).toContain('releaseBackground')
       expect(androidImplementation).toContain('ubm-restoration-v1')
       expect(android).toContain('cancelOperation(ReadableMap correlation')
       expect(android).toContain('closeAttachment(ReadableMap attachment')
@@ -160,6 +162,8 @@ describe('Native Protocol v2 schema authority', () => {
       expect(appleControl).toContain('NativeUnifiedBleProtocolControlSpec')
       expect(appleControl).toContain('handshake')
       expect(appleControl).toContain('bootstrapRestorationIdentity')
+      expect(appleImplementation).toContain('acquireBackground')
+      expect(appleImplementation).toContain('releaseBackground')
       expect(appleImplementation).toContain('ubm-restoration-v1')
       expect(appleControl).not.toMatch(/Uint8Array|ArrayBuffer|Base64/)
     } finally {
@@ -236,7 +240,9 @@ describe('Native Protocol v2 schema authority', () => {
     const schema = JSON.parse(fs.readFileSync(schemaPath, 'utf8'))
     const manifest = JSON.parse(fs.readFileSync(path.join(path.dirname(schemaPath), schema.abiManifest), 'utf8'))
     const cpp = read('native/protocol/generated/NativeProtocolV2Schema.hpp')
-    const kotlin = read('android/src/main/java/com/sfourdrinier/unifiedblemanager/protocol/generated/NativeProtocolV2Schema.kt')
+    const kotlin = read(
+      'android/src/main/java/com/sfourdrinier/unifiedblemanager/protocol/generated/NativeProtocolV2Schema.kt'
+    )
     const swift = read('ios/Generated/NativeProtocolV2Schema.swift')
     const typescript = read('src/native-protocol/generated/native-protocol-v2-schema.ts')
     const androidControl = read(
@@ -326,7 +332,9 @@ describe('Native Protocol v2 schema authority', () => {
     expect(dispatcher).toContain('securityEventsEnabled.set(false)\n    radio.onSecurityState = null')
     expect(dispatcher).toContain('bondStateUnknown')
     expect(radio).toContain('catch (error: SecurityException)')
-    expect(radio).toContain('internal var onSecurityState: ((deviceId: String, state: OwnedAndroidSecurityState) -> Unit)?')
+    expect(radio).toContain(
+      'internal var onSecurityState: ((deviceId: String, state: OwnedAndroidSecurityState) -> Unit)?'
+    )
     expect(radio).toContain('else -> "unknown"')
     expect(radio).not.toContain('cancelBondProcess')
     expect(radio).not.toContain('removeBond')

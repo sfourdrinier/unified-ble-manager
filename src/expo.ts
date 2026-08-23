@@ -43,16 +43,32 @@ export interface ExpoPermissionResult {
   readonly recommendedSettingsTarget: ExpoSettingsTarget | null
 }
 
+export interface ExpoBackgroundRequest {
+  readonly kind: 'connected-device'
+  readonly reason: string
+}
+
+export interface ExpoBackgroundLease {
+  readonly release: () => Promise<void>
+}
+
 export interface ExpoBleManager extends BleManager {
   readonly readiness: () => Promise<BleReadiness>
   readonly permissions: {
     readonly request: (request: ExpoPermissionRequest) => Promise<ExpoPermissionResult>
   }
   readonly openSettings: (target: ExpoSettingsTarget) => Promise<void>
+  readonly background: {
+    readonly acquire: (request: ExpoBackgroundRequest) => Promise<ExpoBackgroundLease>
+  }
 }
 
 export interface ExpoSettingsBridge {
   (target: ExpoSettingsTarget): Promise<void>
+}
+
+export interface ExpoPermissionBridge {
+  (request: ExpoPermissionRequest): Promise<ExpoPermissionResult>
 }
 
 export interface ExpoRuntimeConfiguration {
@@ -61,6 +77,7 @@ export interface ExpoRuntimeConfiguration {
   readonly nativeConfiguration?: { readonly digest: string }
   readonly expectedConfiguration?: { readonly digest: string }
   readonly settingsBridge?: ExpoSettingsBridge
+  readonly permissionBridge?: ExpoPermissionBridge
 }
 
 export type ExpoBleManagerEnvironment = ReactNativeBleManagerOptions & {
@@ -75,7 +92,7 @@ export async function createExpoBleManager(options: BleManagerCreateOptions = {}
   try {
     normalizeBleManagerCreateOptions(options)
     assertDirectExpoRuntime()
-    return withExpoRuntime(await createReactNativeBleManager(options))
+    return withExpoRuntime(await createReactNativeBleManager(options), undefined, undefined, nativeBackgroundControl())
   } catch (error) {
     throw rehydratePublicError(error)
   }
@@ -88,7 +105,12 @@ export async function createExpoBleManagerWithEnvironment(
     const expo = environment.expo
     assertExpoRuntimeConfiguration(expo)
     const internal = await createReactNativeBleManagerWithEnvironment(environment)
-    return withExpoRuntime(await createPublicBleManager(internal, environment.now), expo?.settingsBridge)
+    return withExpoRuntime(
+      await createPublicBleManager(internal, environment.now),
+      expo?.settingsBridge,
+      expo?.permissionBridge,
+      environment.control
+    )
   } catch (error) {
     throw rehydratePublicError(error)
   }
@@ -136,33 +158,88 @@ function readiness(
   return Object.freeze({ adapter, state, actions: Object.freeze([...actions]) })
 }
 
-function withExpoRuntime(manager: BleManager, settingsBridge?: ExpoSettingsBridge): ExpoBleManager {
+function withExpoRuntime(
+  manager: BleManager,
+  settingsBridge?: ExpoSettingsBridge,
+  permissionBridge?: ExpoPermissionBridge,
+  backgroundControl?: Pick<import('./NativeUnifiedBleProtocolControl').Spec, 'acquireBackground' | 'releaseBackground'>
+): ExpoBleManager {
   return Object.assign(manager, {
     readiness: () => getExpoBleReadiness(manager),
     permissions: Object.freeze({
-      request: (request: ExpoPermissionRequest) => requestExpoPermissions(manager, request)
+      request: (request: ExpoPermissionRequest) => requestExpoPermissions(request, permissionBridge)
     }),
-    openSettings: (target: ExpoSettingsTarget) => openExpoSettings(target, settingsBridge)
+    openSettings: (target: ExpoSettingsTarget) => openExpoSettings(target, settingsBridge),
+    background: Object.freeze({
+      acquire: (request: ExpoBackgroundRequest) => acquireExpoBackground(request, backgroundControl)
+    })
   })
 }
 
 async function requestExpoPermissions(
-  manager: Pick<BleManager, 'adapter'>,
-  request: ExpoPermissionRequest
+  request: ExpoPermissionRequest,
+  permissionBridge: ExpoPermissionBridge | undefined
 ): Promise<ExpoPermissionResult> {
   if (request.purpose !== 'scan-and-connect') {
     throw rehydratePublicError(contractError('argument.invalid', 'capability', 'expo.permissions.purpose'))
   }
-  const adapter = await manager.adapter.state()
-  const requested: readonly BlePermission[] = ['bluetooth']
-  const granted: readonly BlePermission[] = adapter.authorization === 'granted' ? ['bluetooth'] : []
-  const denied: readonly BlePermission[] =
-    adapter.authorization === 'denied' || adapter.authorization === 'restricted' ? ['bluetooth'] : []
+  if (permissionBridge === undefined) {
+    throwExpoRuntimeError(
+      'capability.unavailable',
+      'expo.permissions.request',
+      'No trusted native permission bridge is available; invoke the host permission flow explicitly.'
+    )
+  }
+  try {
+    return await permissionBridge(request)
+  } catch (error) {
+    throwExpoRuntimeError('platform.failure', 'expo.permissions.request', errorMessage(error))
+  }
+}
+
+async function acquireExpoBackground(
+  request: ExpoBackgroundRequest,
+  control: Pick<import('./NativeUnifiedBleProtocolControl').Spec, 'acquireBackground' | 'releaseBackground'> | undefined
+): Promise<ExpoBackgroundLease> {
+  if (request.kind !== 'connected-device' || request.reason.trim().length === 0) {
+    throwExpoRuntimeError('argument.invalid', 'expo.background.acquire', 'A non-empty background reason is required.')
+  }
+  if (control === undefined) {
+    throwExpoRuntimeError(
+      'capability.unavailable',
+      'expo.background.acquire',
+      'Connected-device background execution is unavailable until the native Expo service is configured and rebuilt.'
+    )
+  }
+  let result: import('./NativeUnifiedBleProtocolControl').NativeBackgroundLeaseResult
+  try {
+    result = await control.acquireBackground({ kind: request.kind, reason: request.reason })
+  } catch (error) {
+    const nativeCode = errorCode(error)
+    throwExpoRuntimeError(
+      normalizedBackgroundErrorCode(nativeCode),
+      'expo.background.acquire',
+      errorMessage(error),
+      nativeCode
+    )
+  }
+  let released = false
   return Object.freeze({
-    requested,
-    granted,
-    denied,
-    recommendedSettingsTarget: recommendedSettingsTarget(adapter)
+    release: async () => {
+      if (released) return
+      try {
+        await control.releaseBackground({ leaseId: result.leaseId })
+        released = true
+      } catch (error) {
+        const nativeCode = errorCode(error)
+        throwExpoRuntimeError(
+          normalizedBackgroundErrorCode(nativeCode),
+          'expo.background.release',
+          errorMessage(error),
+          nativeCode
+        )
+      }
+    }
   })
 }
 
@@ -181,12 +258,6 @@ async function openExpoSettings(target: ExpoSettingsTarget, settingsBridge?: Exp
   }
 }
 
-function recommendedSettingsTarget(adapter: BleAdapterState): ExpoSettingsTarget | null {
-  if (adapter.authorization === 'denied' || adapter.authorization === 'restricted') return 'app'
-  if (adapter.power === 'off') return 'bluetooth'
-  return null
-}
-
 function assertDirectExpoRuntime(): void {
   if (typeof getNativeUnifiedBleProtocolControl !== 'function') return
   try {
@@ -197,6 +268,16 @@ function assertDirectExpoRuntime(): void {
       throwExpoRuntimeError('capability.unavailable', 'expo.runtime.development-build', EXPO_GO_MESSAGE)
     }
     throw error
+  }
+}
+
+function nativeBackgroundControl():
+  | Pick<import('./NativeUnifiedBleProtocolControl').Spec, 'acquireBackground' | 'releaseBackground'>
+  | undefined {
+  try {
+    return getNativeUnifiedBleProtocolControl()
+  } catch {
+    return undefined
   }
 }
 
@@ -225,13 +306,47 @@ function assertExpoRuntimeConfiguration(configuration: ExpoRuntimeConfiguration 
   }
 }
 
-function throwExpoRuntimeError(code: BleErrorCode, operation: string, safeMessage: string): never {
+function throwExpoRuntimeError(
+  code: BleErrorCode,
+  operation: string,
+  safeMessage: string,
+  platformCode = operation
+): never {
   throw rehydratePublicError(
     contractError(code, 'capability', operation, {
       domain: 'expo',
-      code: operation,
+      code: platformCode,
       safeMessage,
       metadata: {}
     })
   )
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : 'The native Expo operation failed.'
+}
+
+function errorCode(error: unknown): string {
+  if (typeof error === 'object' && error !== null) {
+    const code = Reflect.get(error, 'code')
+    if (typeof code === 'string' && code.length > 0) return code
+  }
+  return 'native-failure'
+}
+
+function normalizedBackgroundErrorCode(nativeCode: string): BleErrorCode {
+  switch (nativeCode) {
+    case 'foregroundServiceNotConfigured':
+      return 'capability.unavailable'
+    case 'foregroundServicePermissionDenied':
+      return 'permission.denied'
+    case 'invalidBackgroundRequest':
+      return 'argument.invalid'
+    case 'invalidBackgroundLease':
+      return 'lifecycle.invalid-state'
+    case 'unsupportedBackground':
+      return 'capability.unsupported'
+    default:
+      return 'platform.failure'
+  }
 }

@@ -2,7 +2,10 @@
 
 ```ts
 export function getAdapterState(manager: Pick<BleManager, 'adapter'>): Promise<BleAdapterState>
-export function getBleCapability(manager: Pick<BleManager, 'capabilities'>, id: FeatureId): CapabilityDescriptor | undefined
+export function getBleCapability(
+  manager: Pick<BleManager, 'capabilities'>,
+  id: FeatureId
+): CapabilityDescriptor | undefined
 export function useAdapterState(): UseAdapterStateResult
 export function useBle(): BleContextValue
 export function useBleCapability(id: FeatureId): CapabilityDescriptor | undefined
@@ -21,8 +24,17 @@ export function BleProvider(props: BleProviderProps): React.ReactElement
 - `CapabilityDescriptor`
 - `FeatureId`
 - `UseAdapterStateResult`
+- `UseBleReadinessResult`
+- `UseCharacteristicValueResult`
+- `UseConnectionStateResult`
+- `UseDiscoveredPeersResult`
 - `getAdapterState`
 - `getBleCapability`
+- `getBleReadiness`
 - `useAdapterState`
 - `useBle`
 - `useBleCapability`
+- `useBleReadiness`
+- `useCharacteristicValue`
+- `useConnectionState`
+- `useDiscoveredPeers`

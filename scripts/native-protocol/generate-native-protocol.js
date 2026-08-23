@@ -384,6 +384,19 @@ export interface NativeRestorationBootstrapIdentity {
   hostSessionScope: string
 }
 
+export interface NativeBackgroundLeaseRequest {
+  kind: 'connected-device'
+  reason: string
+}
+
+export interface NativeBackgroundLeaseResult {
+  leaseId: string
+}
+
+export interface NativeBackgroundLeaseReleaseRequest {
+  leaseId: string
+}
+
 export type NativeRestorationOutcome =
   | 'adopted'
   | 'alreadyConsumed'
@@ -440,6 +453,8 @@ export interface Spec extends TurboModule {
   bootstrapRestorationIdentity(
     request: NativeRestorationBootstrapRequest
   ): Promise<NativeRestorationBootstrapIdentity>
+  acquireBackground(request: NativeBackgroundLeaseRequest): Promise<NativeBackgroundLeaseResult>
+  releaseBackground(request: NativeBackgroundLeaseReleaseRequest): Promise<void>
   installExecutionRuntime(): Promise<void>
   cancelOperation(correlation: NativeOperationCorrelation): Promise<NativeCancellationControlResult>
   adoptRestoration(request: NativeRestorationAdoptionRequest): Promise<NativeRestorationAdoptionControlResult>

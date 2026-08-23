@@ -23,6 +23,7 @@
         {
           "requiredHardware": true,
           "permissions": {
+            "bluetoothAlways": "Allow $(PRODUCT_NAME) to connect to Bluetooth devices",
             "android": {
               "legacyLocation": "none"
             }

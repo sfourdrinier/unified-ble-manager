@@ -22,6 +22,9 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.regex.Pattern;
 
+import com.sfourdrinier.unifiedblemanager.background.AndroidConnectedDeviceForegroundServiceDriver;
+import com.sfourdrinier.unifiedblemanager.background.ConnectedDeviceForegroundServiceLeaseRegistry;
+import com.sfourdrinier.unifiedblemanager.background.ForegroundServiceControlException;
 @ReactModule(name = UnifiedBleProtocolControlModule.NAME)
 public final class UnifiedBleProtocolControlModule extends NativeUnifiedBleProtocolControlSpec {
   public static final String NAME = "UnifiedBleProtocolControl";
@@ -46,10 +49,15 @@ public final class UnifiedBleProtocolControlModule extends NativeUnifiedBleProto
   private final ReactApplicationContext reactContext;
   private AttachmentIdentity attachment;
   private String ownerId;
+  private final ConnectedDeviceForegroundServiceLeaseRegistry backgroundLeases;
+  private long nextBackgroundLease = 1L;
 
   public UnifiedBleProtocolControlModule(ReactApplicationContext reactContext) {
     super(reactContext);
     this.reactContext = reactContext;
+    this.backgroundLeases = new ConnectedDeviceForegroundServiceLeaseRegistry(
+        new AndroidConnectedDeviceForegroundServiceDriver(reactContext),
+        () -> "background-" + Long.toString(nextBackgroundLease++));
   }
 
   @Override
@@ -77,6 +85,38 @@ public final class UnifiedBleProtocolControlModule extends NativeUnifiedBleProto
     } catch (RuntimeException error) {
       Log.e(TAG, "bootstrapRestorationIdentity failed", error);
       promise.reject("nativeRestorationBootstrap", error.getMessage(), error);
+    }
+  }
+
+  @Override
+  public synchronized void acquireBackground(ReadableMap request, Promise promise) {
+    try {
+      final String kind = requiredString(request, "kind");
+      if (!"connected-device".equals(kind)) {
+        throw new ForegroundServiceControlException(
+            "invalidBackgroundRequest",
+            "The background lease kind must be connected-device.");
+      }
+      final String reason = requiredString(request, "reason");
+      final String leaseId = backgroundLeases.acquire(reason);
+      final WritableMap result = Arguments.createMap();
+      result.putString("leaseId", leaseId);
+      promise.resolve(result);
+    } catch (RuntimeException error) {
+      Log.e(TAG, "acquireBackground failed", error);
+      promise.reject(backgroundErrorCode(error, "nativeBackgroundAcquire"), error.getMessage(), error);
+    }
+  }
+
+  @Override
+  public synchronized void releaseBackground(ReadableMap request, Promise promise) {
+    try {
+      final String leaseId = requiredString(request, "leaseId");
+      backgroundLeases.release(leaseId);
+      promise.resolve(null);
+    } catch (RuntimeException error) {
+      Log.e(TAG, "releaseBackground failed", error);
+      promise.reject(backgroundErrorCode(error, "nativeBackgroundRelease"), error.getMessage(), error);
     }
   }
 
@@ -226,6 +266,11 @@ public final class UnifiedBleProtocolControlModule extends NativeUnifiedBleProto
 
   @Override
   public synchronized void invalidate() {
+    try {
+      backgroundLeases.close();
+    } catch (RuntimeException error) {
+      Log.e(TAG, "connected-device foreground service cleanup failed", error);
+    }
     if (nativeHandle != 0L) {
       UnifiedBleProtocolJsiBinding.close(nativeHandle);
       nativeDestroy(nativeHandle);
@@ -239,6 +284,12 @@ public final class UnifiedBleProtocolControlModule extends NativeUnifiedBleProto
   private void closeOwnedState() {
     attachment = null;
     ownerId = null;
+  }
+
+  private static String backgroundErrorCode(RuntimeException error, String fallback) {
+    return error instanceof ForegroundServiceControlException
+        ? ((ForegroundServiceControlException) error).code
+        : fallback;
   }
 
   private void requireOpen() {

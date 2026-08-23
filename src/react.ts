@@ -1,9 +1,19 @@
 import * as React from 'react'
 import type { ReactNode } from 'react'
 import type { CleanupRecord } from './backend-contract/errors'
-import type { BleManager } from './public/ble-manager'
+import type {
+  BleConnection,
+  BleConnectionEvent,
+  BleManager,
+  BlePeer,
+  ScanOptions,
+  ScanSession
+} from './public/ble-manager'
 import type { BleAdapterState } from './public/ble-adapter'
+import type { GattCharacteristic, GattSubscribeOptions, GattValueEvent } from './public/gatt'
 import type { BleCapabilities, CapabilityDescriptor, FeatureId } from './public/capabilities'
+import { normalizeScanQuery } from './public/scan-query'
+import type { BleReadiness, ExpoBleManager } from './expo'
 
 export type BleManagerFactory = () => Promise<BleManager>
 
@@ -21,6 +31,30 @@ export interface BleContextValue {
 
 export interface UseAdapterStateResult {
   readonly state: BleAdapterState | null
+  readonly loading: boolean
+  readonly error: Error | null
+}
+
+export interface UseBleReadinessResult {
+  readonly readiness: BleReadiness | null
+  readonly loading: boolean
+  readonly error: Error | null
+}
+
+export interface UseDiscoveredPeersResult {
+  readonly peers: readonly BlePeer[]
+  readonly state: 'idle' | 'starting' | 'active' | 'stopped' | 'failed'
+  readonly error: Error | null
+}
+
+export interface UseConnectionStateResult {
+  readonly state: BleConnectionEvent['current'] | null
+  readonly loading: boolean
+  readonly error: Error | null
+}
+
+export interface UseCharacteristicValueResult {
+  readonly value: GattValueEvent | null
   readonly loading: boolean
   readonly error: Error | null
 }
@@ -115,6 +149,184 @@ export function getBleCapability(
 export function useBleCapability(id: FeatureId): CapabilityDescriptor | undefined {
   const { manager } = useBle()
   return manager === null ? undefined : getBleCapability(manager, id)
+}
+
+export function getBleReadiness(manager: Pick<ExpoBleManager, 'readiness'>): Promise<BleReadiness> {
+  return manager.readiness()
+}
+
+export function useBleReadiness(): UseBleReadinessResult {
+  const { manager, loading, error } = useBle()
+  const [result, setResult] = React.useState<UseBleReadinessResult>({
+    readiness: null,
+    loading: true,
+    error: null
+  })
+
+  React.useEffect(() => {
+    let active = true
+    if (manager === null) return () => undefined
+    if (!hasReadiness(manager)) {
+      return () => undefined
+    }
+    getBleReadiness(manager).then(
+      readiness => {
+        if (active) setResult({ readiness, loading: false, error: null })
+      },
+      reason => {
+        if (active) setResult({ readiness: null, loading: false, error: toError(reason) })
+      }
+    )
+    return () => {
+      active = false
+    }
+  }, [manager])
+
+  if (manager === null) return { readiness: null, loading, error }
+  if (!hasReadiness(manager)) {
+    return {
+      readiness: null,
+      loading: false,
+      error: new Error('BLE readiness is available only from an Expo host manager.')
+    }
+  }
+  return result
+}
+
+export function useDiscoveredPeers(options: ScanOptions = {}): UseDiscoveredPeersResult {
+  const { manager } = useBle()
+  const queryDigest = normalizeScanQuery(options.query).digest
+  const optionsKey = JSON.stringify({
+    queryDigest,
+    duplicates: options.duplicates,
+    delivery: options.delivery,
+    observation: options.observation,
+    platform: options.platform
+  })
+  // The normalized digest is the semantic dependency; object identity must not restart a scan.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const stableOptions = React.useMemo(() => options, [optionsKey])
+  const [result, setResult] = React.useState<UseDiscoveredPeersResult>({
+    peers: [],
+    state: 'idle',
+    error: null
+  })
+
+  React.useEffect(() => {
+    let active = true
+    let session: ScanSession | null = null
+    if (manager === null) {
+      return () => undefined
+    }
+    const peers = new Map<string, BlePeer>()
+    const run = async (): Promise<void> => {
+      try {
+        session = await manager.scan(stableOptions)
+        if (!active) {
+          await session.stop()
+          return
+        }
+        setResult({ peers: [], state: 'active', error: null })
+        for await (const item of session.observations) {
+          if (!active) return
+          if (item.kind === 'terminal') break
+          if (item.kind === 'overflow') continue
+          if (item.kind === 'value') {
+            peers.set(item.value.peer.id, item.value.peer)
+            setResult({ peers: [...peers.values()], state: 'active', error: null })
+          }
+        }
+        if (active) setResult({ peers: [...peers.values()], state: 'stopped', error: null })
+      } catch (reason) {
+        if (active) setResult({ peers: [...peers.values()], state: 'failed', error: toError(reason) })
+      }
+    }
+    run().catch(() => undefined)
+    return () => {
+      active = false
+      const current = session
+      if (current !== null) current.stop().catch(() => undefined)
+    }
+  }, [manager, optionsKey, stableOptions])
+
+  return result
+}
+
+export function useConnectionState(connection: BleConnection | null): UseConnectionStateResult {
+  const [result, setResult] = React.useState<UseConnectionStateResult>({
+    state: null,
+    loading: connection !== null,
+    error: null
+  })
+  React.useEffect(() => {
+    let active = true
+    if (connection === null) return () => undefined
+    const observe = async (): Promise<void> => {
+      try {
+        for await (const event of connection.lifecycleEvents) {
+          if (active) setResult({ state: event.current, loading: false, error: null })
+        }
+      } catch (reason) {
+        if (active) setResult({ state: null, loading: false, error: toError(reason) })
+      }
+    }
+    observe().catch(() => undefined)
+    return () => {
+      active = false
+    }
+  }, [connection])
+  return connection === null ? { state: null, loading: false, error: null } : result
+}
+
+export function useCharacteristicValue(
+  characteristic: GattCharacteristic | null,
+  options: GattSubscribeOptions = {}
+): UseCharacteristicValueResult {
+  const [result, setResult] = React.useState<UseCharacteristicValueResult>({
+    value: null,
+    loading: characteristic !== null,
+    error: null
+  })
+  const optionsKey = JSON.stringify(options)
+  // The serialized subscription policy is the semantic dependency; object identity must not restart it.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const stableOptions = React.useMemo(() => options, [optionsKey])
+  React.useEffect(() => {
+    let active = true
+    let subscription: Awaited<ReturnType<GattCharacteristic['subscribe']>> | null = null
+    if (characteristic === null) return () => undefined
+    const observe = async (): Promise<void> => {
+      try {
+        subscription = await characteristic.subscribe({
+          ...stableOptions,
+          stream: stableOptions.stream ?? 'balanced'
+        })
+        if (!active) {
+          await subscription.remove()
+          return
+        }
+        for await (const item of subscription.values) {
+          if (!active) return
+          if (item.kind === 'terminal') break
+          if (item.kind === 'overflow') continue
+          if (item.kind === 'value') setResult({ value: item.value, loading: false, error: null })
+        }
+      } catch (reason) {
+        if (active) setResult({ value: null, loading: false, error: toError(reason) })
+      }
+    }
+    observe().catch(() => undefined)
+    return () => {
+      active = false
+      const current = subscription
+      if (current !== null) current.remove().catch(() => undefined)
+    }
+  }, [characteristic, optionsKey, stableOptions])
+  return characteristic === null ? { value: null, loading: false, error: null } : result
+}
+
+function hasReadiness(manager: BleManager): manager is BleManager & Pick<ExpoBleManager, 'readiness'> {
+  return 'readiness' in manager && typeof manager.readiness === 'function'
 }
 
 class ManagerLease {

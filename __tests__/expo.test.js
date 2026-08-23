@@ -15,17 +15,13 @@ jest.mock('react-native', () => ({
 
 const { contractError } = require('../src/backend-contract/errors')
 const { BleError } = require('../src/public/errors')
-const {
-  createExpoBleManager,
-  createExpoBleManagerWithEnvironment,
-  mapExpoReadiness
-} = require('../src/expo')
+const { createExpoBleManager, createExpoBleManagerWithEnvironment, mapExpoReadiness } = require('../src/expo')
 const { createReactNativeBleManager, createReactNativeBleManagerWithEnvironment } = require('../src/react-native')
 
-function environment(expo) {
+function environment(expo, control = {}) {
   return {
     platform: 'android',
-    control: {},
+    control,
     now: () => 1,
     clientId: 'client',
     managerId: 'manager',
@@ -114,11 +110,9 @@ describe('Expo factory', () => {
     expect(typeof result.permissions.request).toBe('function')
     expect(typeof result.openSettings).toBe('function')
     await expect(result.readiness()).resolves.toMatchObject({ state: 'ready' })
-    await expect(result.permissions.request({ purpose: 'scan-and-connect' })).resolves.toEqual({
-      requested: ['bluetooth'],
-      granted: ['bluetooth'],
-      denied: [],
-      recommendedSettingsTarget: null
+    await expect(result.permissions.request({ purpose: 'scan-and-connect' })).rejects.toMatchObject({
+      code: 'capability.unavailable',
+      operation: 'expo.permissions.request'
     })
   })
 
@@ -142,7 +136,7 @@ describe('Expo factory', () => {
     expect(mapExpoReadiness(adapterState({ availability: 'unsupported' })).state).toBe('unavailable')
   })
 
-  test('returns permission state without prompting and recommends app settings after denial', async () => {
+  test('fails closed when no trusted permission bridge is available', async () => {
     const manager = {
       adapter: { state: jest.fn().mockResolvedValue(adapterState({ authorization: 'denied' })) }
     }
@@ -152,13 +146,12 @@ describe('Expo factory', () => {
       environment({ executionEnvironment: 'development-build', nativeModuleAvailable: true })
     )
 
-    await expect(result.permissions.request({ purpose: 'scan-and-connect' })).resolves.toEqual({
-      requested: ['bluetooth'],
-      granted: [],
-      denied: ['bluetooth'],
-      recommendedSettingsTarget: 'app'
+    await expect(result.permissions.request({ purpose: 'scan-and-connect' })).rejects.toMatchObject({
+      constructor: BleError,
+      code: 'capability.unavailable',
+      operation: 'expo.permissions.request'
     })
-    expect(manager.adapter.state).toHaveBeenCalledTimes(1)
+    expect(manager.adapter.state).not.toHaveBeenCalled()
   })
 
   test('fails explicitly when no trusted settings bridge is available', async () => {
@@ -188,6 +181,135 @@ describe('Expo factory', () => {
 
     await expect(result.openSettings('bluetooth')).resolves.toBeUndefined()
     expect(settingsBridge).toHaveBeenCalledWith('bluetooth')
+  })
+
+  test('uses an explicitly injected trusted permission bridge', async () => {
+    const permissionBridge = jest.fn().mockResolvedValue({
+      requested: ['bluetooth'],
+      granted: ['bluetooth'],
+      denied: [],
+      recommendedSettingsTarget: null
+    })
+    const manager = { adapter: { state: jest.fn().mockResolvedValue(adapterState()) } }
+    createReactNativeBleManagerWithEnvironment.mockResolvedValue(manager)
+
+    const result = await createExpoBleManagerWithEnvironment(
+      environment({ executionEnvironment: 'development-build', nativeModuleAvailable: true, permissionBridge })
+    )
+
+    await expect(result.permissions.request({ purpose: 'scan-and-connect' })).resolves.toMatchObject({
+      granted: ['bluetooth']
+    })
+    expect(permissionBridge).toHaveBeenCalledWith({ purpose: 'scan-and-connect' })
+  })
+
+  test('normalizes permission bridge failures at the Expo boundary', async () => {
+    const permissionBridge = jest.fn().mockRejectedValue(new Error('Native permission activity is unavailable.'))
+    const manager = { adapter: { state: jest.fn().mockResolvedValue(adapterState()) } }
+    createReactNativeBleManagerWithEnvironment.mockResolvedValue(manager)
+    const result = await createExpoBleManagerWithEnvironment(
+      environment({ executionEnvironment: 'development-build', nativeModuleAvailable: true, permissionBridge })
+    )
+
+    await expect(result.permissions.request({ purpose: 'scan-and-connect' })).rejects.toMatchObject({
+      constructor: BleError,
+      code: 'platform.failure',
+      operation: 'expo.permissions.request',
+      platform: { safeMessage: 'Native permission activity is unavailable.' }
+    })
+  })
+
+  test('acquires and releases one explicit connected-device background lease', async () => {
+    const control = {
+      acquireBackground: jest.fn().mockResolvedValue({ leaseId: 'background-1' }),
+      releaseBackground: jest.fn().mockResolvedValue(undefined)
+    }
+    const manager = { adapter: { state: jest.fn().mockResolvedValue(adapterState()) } }
+    createReactNativeBleManagerWithEnvironment.mockResolvedValue(manager)
+
+    const result = await createExpoBleManagerWithEnvironment(
+      environment({ executionEnvironment: 'development-build', nativeModuleAvailable: true }, control)
+    )
+    const lease = await result.background.acquire({ kind: 'connected-device', reason: 'active workout' })
+    await lease.release()
+    await lease.release()
+
+    expect(control.acquireBackground).toHaveBeenCalledWith({ kind: 'connected-device', reason: 'active workout' })
+    expect(control.releaseBackground).toHaveBeenCalledTimes(1)
+    expect(control.releaseBackground).toHaveBeenCalledWith({ leaseId: 'background-1' })
+  })
+
+  test('normalizes actionable native foreground-service failures', async () => {
+    const nativeFailure = Object.assign(new Error('Rebuild with configured notification metadata.'), {
+      code: 'foregroundServiceNotConfigured'
+    })
+    const control = {
+      acquireBackground: jest.fn().mockRejectedValue(nativeFailure),
+      releaseBackground: jest.fn()
+    }
+    const manager = { adapter: { state: jest.fn().mockResolvedValue(adapterState()) } }
+    createReactNativeBleManagerWithEnvironment.mockResolvedValue(manager)
+    const result = await createExpoBleManagerWithEnvironment(
+      environment({ executionEnvironment: 'development-build', nativeModuleAvailable: true }, control)
+    )
+
+    await expect(
+      result.background.acquire({ kind: 'connected-device', reason: 'active workout' })
+    ).rejects.toMatchObject({
+      constructor: BleError,
+      code: 'capability.unavailable',
+      operation: 'expo.background.acquire',
+      platform: { code: 'foregroundServiceNotConfigured' }
+    })
+  })
+
+  test('preserves permission denial semantics from the native foreground-service boundary', async () => {
+    const nativeFailure = Object.assign(new Error('Grant Bluetooth and notification permissions, then retry.'), {
+      code: 'foregroundServicePermissionDenied'
+    })
+    const manager = { adapter: { state: jest.fn().mockResolvedValue(adapterState()) } }
+    createReactNativeBleManagerWithEnvironment.mockResolvedValue(manager)
+    const result = await createExpoBleManagerWithEnvironment(
+      environment(
+        { executionEnvironment: 'development-build', nativeModuleAvailable: true },
+        { acquireBackground: jest.fn().mockRejectedValue(nativeFailure), releaseBackground: jest.fn() }
+      )
+    )
+
+    await expect(
+      result.background.acquire({ kind: 'connected-device', reason: 'active workout' })
+    ).rejects.toMatchObject({
+      constructor: BleError,
+      code: 'permission.denied',
+      operation: 'expo.background.acquire',
+      platform: { code: 'foregroundServicePermissionDenied' }
+    })
+  })
+
+  test('allows a failed native release to be retried without double-releasing a successful lease', async () => {
+    const control = {
+      acquireBackground: jest.fn().mockResolvedValue({ leaseId: 'background-1' }),
+      releaseBackground: jest
+        .fn()
+        .mockRejectedValueOnce(
+          Object.assign(new Error('Temporary native stop failure.'), { code: 'nativeBackgroundRelease' })
+        )
+        .mockResolvedValue(undefined)
+    }
+    const manager = { adapter: { state: jest.fn().mockResolvedValue(adapterState()) } }
+    createReactNativeBleManagerWithEnvironment.mockResolvedValue(manager)
+    const result = await createExpoBleManagerWithEnvironment(
+      environment({ executionEnvironment: 'development-build', nativeModuleAvailable: true }, control)
+    )
+    const lease = await result.background.acquire({ kind: 'connected-device', reason: 'active workout' })
+
+    await expect(lease.release()).rejects.toMatchObject({
+      constructor: BleError,
+      operation: 'expo.background.release'
+    })
+    await expect(lease.release()).resolves.toBeUndefined()
+    await expect(lease.release()).resolves.toBeUndefined()
+    expect(control.releaseBackground).toHaveBeenCalledTimes(2)
   })
 
   test('rehydrates asynchronous React Native factory failures as public errors', async () => {

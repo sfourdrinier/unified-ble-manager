@@ -79,7 +79,13 @@ describe('Android RN 0.86 unified protocol boundary', () => {
 
   test('ships only the current protocol source graph and no legacy Android bridge', () => {
     expect(sourceFilesBelow(androidJavaRoot)).toEqual([
+      'BlePlxForegroundService.java',
       'BlePlxPackage.java',
+      'background/AndroidConnectedDeviceForegroundServiceDriver.java',
+      'background/ConnectedDeviceForegroundServiceDriver.java',
+      'background/ConnectedDeviceForegroundServiceLeaseRegistry.java',
+      'background/ForegroundServiceControlException.java',
+      'background/ForegroundServiceNotificationConfiguration.java',
       'protocol/ProtocolCommandDecoder.kt',
       'protocol/ProtocolWireEncoder.kt',
       'protocol/UnifiedBleProtocolAndroidDispatcher.kt',
@@ -112,5 +118,29 @@ describe('Android RN 0.86 unified protocol boundary', () => {
     }
     expect(plugin).toContain('withBLEAndroidForegroundService')
     expect(fs.existsSync(path.join(root, 'plugin/src/withBLEAndroidForegroundService.ts'))).toBe(true)
+  })
+
+  test('implements the configured foreground service as an explicit ref-counted native lease', () => {
+    const control = read(
+      'android/src/main/java/com/sfourdrinier/unifiedblemanager/protocol/UnifiedBleProtocolControlModule.java'
+    )
+    const driver = read(
+      'android/src/main/java/com/sfourdrinier/unifiedblemanager/background/AndroidConnectedDeviceForegroundServiceDriver.java'
+    )
+    const registry = read(
+      'android/src/main/java/com/sfourdrinier/unifiedblemanager/background/ConnectedDeviceForegroundServiceLeaseRegistry.java'
+    )
+    const service = read('android/src/main/java/com/sfourdrinier/unifiedblemanager/BlePlxForegroundService.java')
+
+    expect(control).toContain('backgroundLeases.acquire(reason)')
+    expect(control).toContain('backgroundLeases.release(leaseId)')
+    expect(driver).toContain('startForegroundService')
+    expect(driver).toContain('stopService')
+    expect(registry).toContain('if (leases.isEmpty()) driver.start(reason)')
+    expect(registry).toContain('if (leases.size() == 1) driver.stop()')
+    expect(service).toContain('startForeground')
+    expect(service).toContain('START_NOT_STICKY')
+    expect(service).toContain('FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE')
+    expect(`${control}\n${driver}\n${registry}\n${service}`).not.toMatch(/\.startScan\(|\.reconnect\(/)
   })
 })

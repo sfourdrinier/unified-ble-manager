@@ -406,6 +406,18 @@ RCT_EXPORT_MODULE(UnifiedBleProtocolControl)
   resolve(derived);
 }
 
+- (void)acquireBackground:(JS::NativeUnifiedBleProtocolControl::NativeBackgroundLeaseRequest &)request
+                  resolve:(RCTPromiseResolveBlock)resolve
+                   reject:(RCTPromiseRejectBlock)reject {
+  rejectControl(reject, @"unsupportedBackground", @"Connected-device foreground service is Android-only");
+}
+
+- (void)releaseBackground:(JS::NativeUnifiedBleProtocolControl::NativeBackgroundLeaseReleaseRequest &)request
+                  resolve:(RCTPromiseResolveBlock)resolve
+                   reject:(RCTPromiseRejectBlock)reject {
+  rejectControl(reject, @"unsupportedBackground", @"Connected-device foreground service is Android-only");
+}
+
 - (void)handshake:(JS::NativeUnifiedBleProtocolControl::NativeProtocolHandshakeRequest &)request
           resolve:(RCTPromiseResolveBlock)resolve
            reject:(RCTPromiseRejectBlock)reject {
