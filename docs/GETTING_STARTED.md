@@ -10,33 +10,66 @@ This page gets you to a first scan, connect, read, notify, and teardown on React
 
 | You are building | Import | Next page |
 | --- | --- | --- |
-| React Native / Expo | `unified-ble-manager/react-native` | this page |
+| Bare React Native | `unified-ble-manager/react-native` | this page |
+| Expo / CNG v2 | `unified-ble-manager/expo` | [`EXPO_PLUGIN.md`](EXPO_PLUGIN.md) |
 | React provider / hooks | `unified-ble-manager/react` | [`README.md`](../README.md#react-provider-and-hooks) |
 | Browser | `unified-ble-manager/web` | [`WEB.md`](WEB.md) |
 | Electron | `electron/main` + `electron/renderer` | [`ELECTRON.md`](ELECTRON.md) |
 | Node on macOS / Windows / Linux | `node/corebluetooth`, `node/winrt`, or `node/bluez` | [`NODE.md`](NODE.md) |
 | Tauri v2 | `unified-ble-manager/tauri` | [`TAURI.md`](TAURI.md) |
 
-## React Native / Expo in one hour
+## React Native and Expo in one hour
 
 ### 1. Install
 
-Three native setup paths:
+#### Bare React Native
 
-**Expo / CNG.** Install with `npx expo install unified-ble-manager` (or `pnpm add` plus Expo 57). Add the plugin, run `npx expo prebuild`, then a development client or production binary. Config-plugin changes require a native rebuild. The package does not run in Expo Go.
-
-**Bare React Native adopting Expo modules.** Install Expo modules first (`npx install-expo-modules@latest`), then add this plugin and prebuild.
-
-**Bare React Native without Prebuild.** Declare Android Bluetooth permissions and the BLE hardware feature yourself, request runtime permissions on Android 12+, add `NSBluetoothAlwaysUsageDescription` on iOS, run pods, and rebuild.
+The immutable published prerelease for bare React Native is explicitly pinned:
 
 ```sh
-pnpm add unified-ble-manager
+pnpm add unified-ble-manager@4.0.0-rc.3
 ```
 
-Expo also needs a native build. The package does not run in Expo Go.
+Declare Android Bluetooth permissions and the BLE hardware feature yourself,
+request runtime permissions on Android 12+, add
+`NSBluetoothAlwaysUsageDescription` on iOS, run pods, and rebuild.
+
+#### Expo / CNG v2
+
+The Expo v2 schema and `unified-ble-manager/expo` factory are PR10 branch work;
+they are not in immutable RC3. Use exactly one of these sources:
+
+1. **Source checkout:** build this PR10 checkout, then install its directory:
+
+   ```sh
+   pnpm install --frozen-lockfile
+   pnpm prepack
+   pnpm --dir /path/to/expo-app add /path/to/unified-ble-manager
+   ```
+
+2. **Local tarball:** pack this PR10 checkout and install the resulting local
+   file. This is not a request for, or a replacement of, published RC3:
+
+   ```sh
+   pnpm pack --pack-destination /tmp/unified-ble-manager-pr10
+   pnpm --dir /path/to/expo-app add /tmp/unified-ble-manager-pr10/unified-ble-manager-4.0.0-rc.3.tgz
+   ```
+
+3. **Published RC4:** after the PR10 release gate publishes it, install the
+   exact version:
+
+   ```sh
+   pnpm add unified-ble-manager@4.0.0-rc.4
+   ```
+
+Do not use an unpinned package-install command for this v2 recipe: while RC3 is
+latest, that resolves the immutable RC3 surface, which does not contain Expo
+v2. The package does not run in Expo Go.
+
+Expo also needs a native build and development client:
 
 ```sh
-pnpm add expo@^57.0.0
+pnpm add expo@^57.0.0 expo-dev-client
 ```
 
 Add the plugin (full option table: [`EXPO_PLUGIN.md`](EXPO_PLUGIN.md)):
@@ -120,10 +153,23 @@ async function ensureAndroidBluetoothPermission(): Promise<void> {
 
 ### 3. Create one manager and keep it
 
+#### Bare React Native
+
 ```ts
 import { createReactNativeBleManager } from 'unified-ble-manager/react-native'
 
 const manager = await createReactNativeBleManager()
+```
+
+#### Expo
+
+Expo uses its first-class factory, which adds Expo readiness, permission,
+settings, background, association, and restoration surfaces:
+
+```ts
+import { createExpoBleManager } from 'unified-ble-manager/expo'
+
+const manager = await createExpoBleManager()
 ```
 
 The host factory owns ephemeral identity generation. Restoration-bound identity comes from the trusted native host and native configuration; application code does not pass client, manager, or host-session IDs.

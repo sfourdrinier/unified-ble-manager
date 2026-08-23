@@ -13,7 +13,34 @@ published only at RC4 after the PR10 release gate.
 
 ## Installation and development build
 
-    bunx expo install unified-ble-manager expo-dev-client
+The Expo v2 schema is PR10 branch work and is available only from a source
+checkout, a local tarball built from that checkout, or the exact published RC4
+version. Do not use an unpinned package-install command: while RC3 is latest,
+that installs the immutable RC3 surface, which does not contain Expo v2.
+
+### Source checkout
+
+    pnpm install --frozen-lockfile
+    pnpm prepack
+    pnpm --dir /path/to/expo-app add /path/to/unified-ble-manager
+
+### Local tarball
+
+    pnpm pack --pack-destination /tmp/unified-ble-manager-pr10
+    pnpm --dir /path/to/expo-app add /tmp/unified-ble-manager-pr10/unified-ble-manager-4.0.0-rc.3.tgz
+
+The local tarball is built from the PR10 checkout. It does not recreate or
+replace published RC3, whose exact `main` commit remains immutable.
+
+### Published RC4
+
+After the PR10 release gate publishes RC4, install that exact version:
+
+    pnpm add unified-ble-manager@4.0.0-rc.4
+
+Install the Expo host tooling separately:
+
+    pnpm add expo@^57.0.0 expo-dev-client
     bunx expo prebuild --clean
     bunx expo run:ios
     # or

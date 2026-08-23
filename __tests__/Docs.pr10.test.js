@@ -1,0 +1,28 @@
+const fs = require('fs')
+const path = require('path')
+
+const root = path.join(__dirname, '..')
+const read = relativePath => fs.readFileSync(path.join(root, relativePath), 'utf8').replace(/\r\n/g, '\n')
+
+describe('PR10 Expo documentation', () => {
+  test('keeps immutable RC3 separate from the unreleased Expo v2 installation paths', () => {
+    const gettingStarted = read('docs/GETTING_STARTED.md')
+    const expoPlugin = read('docs/EXPO_PLUGIN.md')
+    const documents = `${gettingStarted}\n${expoPlugin}`
+
+    expect(documents).toContain('4.0.0-rc.3')
+    expect(documents).toContain('immutable')
+    expect(documents).toMatch(/source checkout/iu)
+    expect(documents).toMatch(/local tarball/iu)
+    expect(documents).toContain('4.0.0-rc.4')
+    expect(documents).not.toMatch(/(?:expo|bunx|npx)\s+(?:install|add)\s+unified-ble-manager(?:\s|$)/u)
+  })
+
+  test('uses distinct bare React Native and Expo factories', () => {
+    const gettingStarted = read('docs/GETTING_STARTED.md')
+
+    expect(gettingStarted).toContain("import { createReactNativeBleManager } from 'unified-ble-manager/react-native'")
+    expect(gettingStarted).toContain("import { createExpoBleManager } from 'unified-ble-manager/expo'")
+    expect(gettingStarted).toContain('const manager = await createExpoBleManager()')
+  })
+})
