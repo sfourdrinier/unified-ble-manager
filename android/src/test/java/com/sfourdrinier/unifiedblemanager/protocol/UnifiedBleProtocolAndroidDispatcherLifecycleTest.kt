@@ -59,6 +59,58 @@ class UnifiedBleProtocolAndroidDispatcherLifecycleTest {
   }
 
   @Test
+  fun dispatcherForwardsOwnedRadioServiceChangesAsDatabaseChangedEvents() {
+    val dispatcher = readAndroidSource(
+      "android/src/main/java/com/sfourdrinier/unifiedblemanager/protocol/UnifiedBleProtocolAndroidDispatcher.kt"
+    )
+
+    assertTrue(dispatcher.contains("radio.onServicesChanged = { deviceId ->"))
+    assertTrue(dispatcher.contains("activeDatabases"))
+    assertTrue(dispatcher.contains("databaseChangedEvent"))
+  }
+
+  @Test
+  fun databaseChangedEventRetainsTheCurrentAttachmentAndDatabasePath() {
+    val attachment = ProtocolWireRecord(
+      RecordKind.ATTACHMENT,
+      mapOf(
+        1 to ProtocolWireValue.StringValue("attachment-1"),
+        2 to ProtocolWireValue.StringValue("backend-1"),
+        3 to ProtocolWireValue.StringValue("generation-1"),
+        4 to ProtocolWireValue.StringValue("adapter-1"),
+        5 to ProtocolWireValue.StringValue("adapter-generation-1")
+      )
+    )
+    val connection = ProtocolWireRecord(
+      RecordKind.CONNECTION_PATH,
+      mapOf(
+        1 to ProtocolWireValue.RecordValue(attachment),
+        2 to ProtocolWireValue.StringValue("C0FFEE000001"),
+        3 to ProtocolWireValue.StringValue("connection-1"),
+        4 to ProtocolWireValue.StringValue("lease-1"),
+        5 to ProtocolWireValue.StringValue("connection-generation-1")
+      )
+    )
+    val database = ProtocolWireRecord(
+      RecordKind.DATABASE_PATH,
+      mapOf(
+        1 to ProtocolWireValue.RecordValue(connection),
+        2 to ProtocolWireValue.StringValue("database-1"),
+        3 to ProtocolWireValue.StringValue("database-generation-1")
+      )
+    )
+
+    val event = databaseChangedEvent(17L, database, 3L, 99L)
+
+    assertEquals(RecordKind.EVENT, event.kind)
+    assertEquals(ProtocolWireValue.StringValue("databaseChanged"), event.fields[3])
+    assertEquals(ProtocolWireValue.RecordValue(attachment), event.fields[4])
+    assertEquals(ProtocolWireValue.UnsignedIntegerValue(3L), event.fields[5])
+    assertEquals(ProtocolWireValue.UnsignedIntegerValue(99L), event.fields[6])
+    assertEquals(ProtocolWireValue.RecordValue(database), event.fields[8])
+  }
+
+  @Test
   fun androidPhyWireValuesMapToFailClosedPlatformMasks() {
     assertEquals(BluetoothDevice.PHY_LE_1M, OwnedAndroidGattRadio.phyValue("le1m"))
     assertEquals(BluetoothDevice.PHY_LE_2M, OwnedAndroidGattRadio.phyValue("le2m"))

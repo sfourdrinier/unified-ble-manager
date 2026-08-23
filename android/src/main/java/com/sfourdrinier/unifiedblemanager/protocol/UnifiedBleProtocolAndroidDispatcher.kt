@@ -24,6 +24,7 @@ class UnifiedBleProtocolAndroidDispatcher(
   private val pendingCommands = ConcurrentHashMap<String, ProtocolWireRecord>()
   private val pendingConnects = ConcurrentHashMap<String, ProtocolWireRecord>()
   private val establishedConnections = ConcurrentHashMap<String, ProtocolWireRecord>()
+  private val activeDatabases = ConcurrentHashMap<String, ProtocolWireRecord>()
   private val activeSubscriptions = ConcurrentHashMap<String, SubscriptionRoute>()
   private val radioOperationIds = ConcurrentHashMap<String, Long>()
   private val activeScanCommand = AtomicReference<ProtocolWireRecord?>(null)
@@ -48,6 +49,11 @@ class UnifiedBleProtocolAndroidDispatcher(
     radio.onSecurityState = { deviceId, state ->
       if (securityEventsEnabled.get()) emitSecurityStateChanged(deviceId, state.bond)
     }
+    radio.onServicesChanged = { deviceId ->
+      activeDatabases[deviceId.uppercase()]?.let { database ->
+        emitDatabaseChanged(database)
+      }
+    }
     radio.registerBondStateReceiver()
     radio.registerAdapterStateReceiver()
     radio.onConnectionState = { deviceId, connected, status ->
@@ -63,6 +69,7 @@ class UnifiedBleProtocolAndroidDispatcher(
       }
       if (!connected) {
         val established = establishedConnections.remove(deviceKey)
+        activeDatabases.remove(deviceKey)
         failPendingCommandsForDevice(deviceKey, "Android GATT link was lost")
         if (established != null) {
           activeSubscriptions.entries.forEach { entry ->
@@ -230,6 +237,7 @@ class UnifiedBleProtocolAndroidDispatcher(
       }
       pendingConnects.clear()
       establishedConnections.clear()
+      activeDatabases.clear()
       activeSubscriptions.clear()
       activeScanCommand.set(null)
     }
@@ -306,6 +314,7 @@ class UnifiedBleProtocolAndroidDispatcher(
         return@discover
       }
       val snapshot = databaseSnapshot(database, connection.requiredString(2))
+      activeDatabases[connection.requiredString(2).uppercase()] = database
       emitSuccess(command, "database", mapOf(4 to ProtocolWireValue.RecordValue(database), 12 to ProtocolWireValue.RecordValue(snapshot)))
     }
     radioOperationIds[operationKey(command)] = radioOperationId
@@ -603,6 +612,7 @@ class UnifiedBleProtocolAndroidDispatcher(
     }
     pendingConnects.clear()
     establishedConnections.clear()
+    activeDatabases.clear()
     activeSubscriptions.clear()
     if (result.isSuccessful) {
       activeScanCommand.set(null)
@@ -841,6 +851,11 @@ class UnifiedBleProtocolAndroidDispatcher(
 
   private fun emitConnectionLost(connection: ProtocolWireRecord, status: Int) {
     val event = connectionLostEvent(nativeHandle, connection, status, 0L, SystemClock.elapsedRealtime())
+    UnifiedBleProtocolJsiBinding.emitRecord(nativeHandle, ProtocolWireEncoder.encode(event))
+  }
+
+  private fun emitDatabaseChanged(database: ProtocolWireRecord) {
+    val event = databaseChangedEvent(nativeHandle, database, 0L, SystemClock.elapsedRealtime())
     UnifiedBleProtocolJsiBinding.emitRecord(nativeHandle, ProtocolWireEncoder.encode(event))
   }
 
@@ -1094,6 +1109,27 @@ internal fun connectionLostEvent(
       6 to ProtocolWireValue.UnsignedIntegerValue(monotonicTimestamp),
       7 to ProtocolWireValue.RecordValue(connection),
       14 to ProtocolWireValue.RecordValue(error)
+    )
+  )
+}
+
+internal fun databaseChangedEvent(
+  nativeHandle: Long,
+  database: ProtocolWireRecord,
+  ingressOrdinal: Long,
+  monotonicTimestamp: Long
+): ProtocolWireRecord {
+  val attachment = database.requiredRecord(1).requiredRecord(1)
+  return ProtocolWireRecord(
+    RecordKind.EVENT,
+    mapOf(
+      1 to ProtocolWireValue.UnsignedIntegerValue(1),
+      2 to ProtocolWireValue.StringValue("native-database-changed-$nativeHandle-$ingressOrdinal"),
+      3 to ProtocolWireValue.StringValue("databaseChanged"),
+      4 to ProtocolWireValue.RecordValue(attachment),
+      5 to ProtocolWireValue.UnsignedIntegerValue(ingressOrdinal),
+      6 to ProtocolWireValue.UnsignedIntegerValue(monotonicTimestamp),
+      8 to ProtocolWireValue.RecordValue(database)
     )
   )
 }
