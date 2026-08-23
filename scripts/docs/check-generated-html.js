@@ -56,14 +56,18 @@ function run(command, args) {
   if (result.status !== 0) throw new Error(`${command} ${args.join(' ')} failed with exit code ${String(result.status)}`)
 }
 
+function packageManagerCommand(platform = process.platform) {
+  return platform === 'win32' ? 'pnpm.cmd' : 'pnpm'
+}
+
 function checkGeneratedHtml() {
   const input = path.join(root, 'lib/module/index.js')
   if (!fs.existsSync(input)) throw new Error('Generated documentation input is missing; run the package build first')
   const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'unified-ble-manager-docs-'))
   const temporaryOutput = path.join(temporaryRoot, 'docs')
   try {
-    run('pnpm', ['exec', 'documentation', 'build', 'lib/module/index.js', '-o', temporaryOutput, '--config', 'documentation.yml', '-f', 'html', '--shallow'])
-    run('pnpm', [
+    run(packageManagerCommand(), ['exec', 'documentation', 'build', 'lib/module/index.js', '-o', temporaryOutput, '--config', 'documentation.yml', '-f', 'html', '--shallow'])
+    run(packageManagerCommand(), [
       'exec',
       'prettier',
       '--config',
@@ -84,4 +88,4 @@ function checkGeneratedHtml() {
 
 if (require.main === module) checkGeneratedHtml()
 
-module.exports = { assertByteIdentical, assertPublicApiBoundary, extractPublicApiSection, checkGeneratedHtml }
+module.exports = { assertByteIdentical, assertPublicApiBoundary, extractPublicApiSection, packageManagerCommand, checkGeneratedHtml }

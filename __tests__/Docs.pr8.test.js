@@ -1,13 +1,23 @@
 const fs = require('fs')
 const path = require('path')
 const { parseVerifiedSection } = require('../scripts/docs/check-api-reports')
-const { assertByteIdentical, assertPublicApiBoundary, extractPublicApiSection } = require('../scripts/docs/check-generated-html')
+const {
+  assertByteIdentical,
+  assertPublicApiBoundary,
+  extractPublicApiSection,
+  packageManagerCommand
+} = require('../scripts/docs/check-generated-html')
 
 const root = path.join(__dirname, '..')
 const read = relativePath => fs.readFileSync(path.join(root, relativePath), 'utf8').replace(/\r\n/g, '\n')
 const currentMigration = migration => migration.slice(0, migration.indexOf('## Historical RC1'))
 
 describe('PR8 documentation contract', () => {
+  test('uses the Windows package-manager command when spawning documentation tooling', () => {
+    expect(packageManagerCommand('win32')).toBe('pnpm.cmd')
+    expect(packageManagerCommand('darwin')).toBe('pnpm')
+  })
+
   test('rejects stale symbols in the generated API report section', () => {
     const report = [
       '# Reviewed API prose mentions `StaleExport`.',
