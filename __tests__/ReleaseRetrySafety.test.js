@@ -11,16 +11,14 @@ describe('release retry safety', () => {
   test('published reruns bypass current-main publication admission and reuse immutable npm bytes', () => {
     const workflow = read('.github/workflows/publish.yml')
     const npmStatus = workflow.indexOf('- name: Check whether versions are already on npm')
-    const stableGuard = workflow.indexOf('- name: Verify stable tag points at current main')
+    const tagGuard = workflow.indexOf('- name: Verify release tag points at current main')
     const bind = workflow.indexOf('- name: Bind npm tarball to the generated release artifact')
     const restore = workflow.indexOf('Restored exact published npm tarball for release recovery')
 
     expect(npmStatus).toBeGreaterThan(-1)
-    expect(stableGuard).toBeGreaterThan(npmStatus)
-    expect(workflow).toContain(
-      "if: steps.release_channel.outputs.is_stable == 'true' && steps.npm_status.outputs.package_published != 'true'"
-    )
-    expect(bind).toBeGreaterThan(stableGuard)
+    expect(tagGuard).toBeGreaterThan(npmStatus)
+    expect(workflow).toContain("if: steps.npm_status.outputs.package_published != 'true'")
+    expect(bind).toBeGreaterThan(tagGuard)
     expect(restore).toBeGreaterThan(bind)
     expect(workflow).toContain(
       'ALREADY_PUBLISHED: ${{ steps.npm_status.outputs.package_published }}'
