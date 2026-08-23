@@ -3,6 +3,7 @@
 export { runBackendTck } from './runner'
 export { baseTckScenarios, findTckScenario } from './scenarios'
 export { TckAssertionError } from './contracts'
+export { runPlannerDifferentialTck, MAX_PLANNER_DIFFERENTIAL_SCENARIOS } from './planner-differential'
 export type {
   BackendTckFactory,
   BackendTckFixture,
@@ -22,3 +23,12 @@ export type {
   TckScenarioId,
   TckScenarioReceipt
 } from './contracts'
+export type {
+  PlannerDifferentialFact,
+  PlannerDifferentialFactId,
+  PlannerDifferentialNativeMatcher,
+  PlannerDifferentialObservation,
+  PlannerDifferentialScenario,
+  PlannerDifferentialTckOptions,
+  PlannerDifferentialTckReport
+} from './planner-differential'
