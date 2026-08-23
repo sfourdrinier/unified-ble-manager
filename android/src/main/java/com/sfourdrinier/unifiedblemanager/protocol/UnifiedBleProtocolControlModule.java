@@ -147,11 +147,11 @@ public final class UnifiedBleProtocolControlModule extends NativeUnifiedBleProto
   public synchronized void associateCompanionDevice(ReadableMap request, Promise promise) {
     boolean associationStarted = false;
     try {
-      if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O ||
+      if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
           !reactContext.getPackageManager().hasSystemFeature(PackageManager.FEATURE_COMPANION_DEVICE_SETUP)) {
         throw new ForegroundServiceControlException(
             "unsupportedAssociation",
-            "Companion Device Manager association requires Android API 26 and companion-device setup support.");
+            "Companion Device Manager association requires Android API 33 and companion-device setup support.");
       }
       if (pendingAssociation != null) {
         throw new ForegroundServiceControlException(

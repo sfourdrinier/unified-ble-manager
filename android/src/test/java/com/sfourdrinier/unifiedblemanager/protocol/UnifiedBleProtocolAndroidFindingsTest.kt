@@ -94,6 +94,36 @@ class UnifiedBleProtocolAndroidFindingsTest {
   }
 
   @Test
+  fun `companion association is unsupported before UI on pre API 33 hosts`() {
+    val source = readAndroidSource(
+      "android/src/main/java/com/sfourdrinier/unifiedblemanager/protocol/UnifiedBleProtocolControlModule.java"
+    )
+    val association = source.substring(
+      source.indexOf("public synchronized void associateCompanionDevice"),
+      source.indexOf("public synchronized void claimRestoration")
+    )
+
+    assertTrue(
+      Regex(
+        "if \\(Build\\.VERSION\\.SDK_INT < Build\\.VERSION_CODES\\.TIRAMISU \\|\\|[\\s\\S]*?FEATURE_COMPANION_DEVICE_SETUP\\)"
+      ).containsMatchIn(association)
+    )
+    assertTrue(association.contains("requires Android API 33"))
+    assertTrue(
+      association.indexOf("unsupportedAssociation") <
+        association.indexOf("reactContext.getCurrentActivity()")
+    )
+    assertTrue(
+      association.indexOf("unsupportedAssociation") <
+        association.indexOf("manager.associate")
+    )
+    assertTrue(
+      source.indexOf("unsupportedAssociation") <
+        source.indexOf("startIntentSenderForResult")
+    )
+  }
+
+  @Test
   fun `AssociationInfo getters are explicitly guarded on API 33`() {
     val source = readAndroidSource(
       "android/src/main/java/com/sfourdrinier/unifiedblemanager/protocol/UnifiedBleProtocolControlModule.java"
