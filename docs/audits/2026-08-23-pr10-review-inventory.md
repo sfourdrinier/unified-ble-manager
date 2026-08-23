@@ -57,6 +57,21 @@ The following findings came from the independent PR10 plan/documentation and adv
 | F10-REVIEW-011 | The Apple boundary inherited an Android-only effective-MTU operation without an explicit fail-closed capability guard. | Addressed by `ace039f`; Apple boundary regression and focused native suites pass. |
 | F10-REVIEW-012 | The StrictMode regression test did not invoke the first cleanup, so it did not exercise the actual setup/cleanup sequence. | Addressed by `bd6312f`; test now executes setup → first cleanup → setup. |
 
+## Post-final-review remediation wave
+
+These findings were discovered by the fresh exact-SHA adversarial reviews after the `48eef20` receipt. The current source dispositions are pinned to the remediation commits below; the full package/native/host gates must still be rerun at the resulting tip before PR update.
+
+| ID | Finding | Current disposition |
+| --- | --- | --- |
+| F10-POST-001 | Apple native handshake returned ABI 2 while the generated/JS boundary requires ABI 3; fatal teardown could be closed twice. | Addressed by `e54d754`; generated ABI response and idempotent close are covered by Apple guards/harness. |
+| F10-POST-002 | Android JNI handshake allocated 12 version entries while validating/reading 14; invalidation could destroy a retryable runtime; association metadata could return placeholder ID 0. | Addressed by `15c2860`; focused Android tests, CMake, and Android build pass. |
+| F10-POST-003 | Android bonding cancellation could report cancellation while the OS bond operation remained active. | Addressed by `4458423`; unsupported is reported on SDK 36 and native ownership remains until the terminal bond callback. |
+| F10-POST-004 | React hook cleanup failures were swallowed after unmount. | Addressed by `544c781`; provider `onError`/development reporting and focused cleanup tests pass. |
+| F10-POST-005 | Replacement providers could start a new manager before the previous provider released its native owner. | Addressed by `34bac49`; replacement-provider release-barrier regression passes. |
+| F10-POST-006 | Expo plugin could delete host-authored iOS Bluetooth usage text when omitted. | Addressed by `32ba577`; marker-owned removal and host-preservation tests pass. |
+| F10-POST-007 | Android pre-12 readiness could report ready without required legacy location guidance. | Addressed by `06a369f`; explicit legacy-location readiness tests pass. |
+| F10-POST-008 | Apple reconnect/GATT paths did not enforce connection-generation ownership and allowed reconnect overlap during terminal disconnect. | Addressed by `15a3301` with bounded generation validation at native dispatch, disconnect-before-reconnect gating, and generation-bound GATT cache clearing. Apple harness is green; full simulator/host CI remains required. |
+
 ## Fresh local verification at `100a4dbec3324a5508622b615e49b040e246377e`
 
 These receipts are from the post-remediation tip before the next hosted PR run. They are deterministic or host-build evidence only; no physical-radio or EAS claim is implied.
