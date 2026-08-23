@@ -229,6 +229,7 @@ export class IpcPublicManagerAdapter implements BleManager {
 }
 
 class IpcPublicScanSession implements ScanSession {
+  readonly plan = null
   private stopPromise: Promise<CleanupRecord> | null = null
   private readonly timeoutHandle: ReturnType<typeof setTimeout> | null
   private readonly abortSignal: AbortSignal | null

@@ -13,6 +13,8 @@ import {
 } from '../backend-contract/backend'
 import { createAttachmentBoundIdFactory } from '../backend-contract/primitives'
 import type { AdvertisementObservation, OwnerScanOptions, ScanOptions } from '../backend-contract/advertisement'
+import type { NormalizedScanQuery } from '../backend-contract/scan-query'
+import type { ScanPlan } from '../backend-contract/scan-planning'
 import type { CleanupFailure, CleanupRecord } from '../backend-contract/errors'
 import {
   isAuthorizationBlocking,
@@ -418,6 +420,11 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
       'scan-source-pump'
     )
     return tracked
+  }
+
+  planScan(query: NormalizedScanQuery): ScanPlan | null {
+    this.assertReady('scan.plan')
+    return this.backend.scanner.plan?.(query) ?? null
   }
 
   async connect(peerId: PeerId<Attachment>, options: ConnectionOptions): Promise<CoreConnection<Attachment, Identity>> {

@@ -65,6 +65,8 @@ import type { ManagerRestorationCapability } from './restoration'
 import type { PeerReference } from './peer-reference'
 import type { SecurityBackend } from './security'
 import type { DiagnosticTraceDocument } from '../diagnostics/trace-format'
+import type { NormalizedScanQuery } from './scan-query'
+import type { ScanPlan } from './scan-planning'
 
 export type OwnerMode = 'owning' | 'borrowing'
 export type ManagerState = 'new' | 'ready' | 'destroying' | 'destroyed' | 'failed'
@@ -138,6 +140,7 @@ export interface ScanLease<Attachment extends string, _Lease extends string> {
   stop(): Promise<CleanupRecord>
 }
 export interface ScannerBackend<Attachment extends string> {
+  plan?(query: NormalizedScanQuery): ScanPlan
   start(
     options: OwnerScanOptions<Attachment, string>,
     clientId: ClientId<Attachment, string>

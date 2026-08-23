@@ -10,6 +10,8 @@ import type {
   OwnerMode
 } from '../backend-contract'
 import type { AdvertisementObservation, ScanOptions } from '../backend-contract/advertisement'
+import type { NormalizedScanQuery } from '../backend-contract/scan-query'
+import type { ScanPlan } from '../backend-contract/scan-planning'
 import type { CleanupRecord } from '../backend-contract/errors'
 import type {
   CharacteristicPath,
@@ -245,6 +247,10 @@ export class BleManager<Attachment extends string, Identity extends BackendIdent
 
   async scan(options: ScanOptions<Attachment, string>): Promise<ScanSession<Attachment>> {
     return new ScanSession(await this.core.scan(options))
+  }
+
+  planScan(query: NormalizedScanQuery): ScanPlan | null {
+    return this.core.planScan(query)
   }
 
   async connect(peerId: PeerId<Attachment>, options: ConnectionOptions): Promise<Connection<Attachment, Identity>> {

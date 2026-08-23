@@ -38,6 +38,7 @@ import { createPublicPeerDirectory } from './peer-directory'
 import { encodePeerReference, isPeerReference, snapshotPeerReference } from './peer-reference'
 import type { PeerReference } from './peer-reference'
 import type { ResourceCounters } from '../backend-contract/backend'
+import type { ScanPlan } from '../backend-contract/scan-planning'
 import { createPublicSecurity } from './security'
 import type { BleSecurity } from './security'
 import type { Limitation } from '../backend-contract/capabilities'
@@ -276,6 +277,7 @@ export interface PublicScanObservation extends NormalizedScanObservation {
 }
 
 export interface ScanSession {
+  readonly plan: ScanPlan | null
   readonly stop: () => Promise<CleanupRecord>
   readonly observations: BoundedAsyncStream<PublicScanObservation>
   readonly state: AsyncIterable<ScanStateEvent>
@@ -857,6 +859,7 @@ class PublicBleManager implements BleManager {
       const { signal, deadline } = normalizeOperationOptions(options, this.now)
       const delivery = resolveStreamPolicy(options.delivery ?? 'balanced')
       const normalizedQuery = normalizeScanQuery(options.query)
+      const plan = typeof this.internal.planScan === 'function' ? this.internal.planScan(normalizedQuery) : null
       const internalOptions: InternalScanOptions<string, string> = {
         filter: { serviceUuids: [], manufacturerData: [], localNamePrefix: null },
         duplicatePolicy: 'all',
@@ -875,6 +878,7 @@ class PublicBleManager implements BleManager {
       const scanState = createScanState()
       scanState.emit({ state: 'active' })
       return {
+        plan,
         stop: async () => {
           scanState.emit({ state: 'stopping' })
           try {
