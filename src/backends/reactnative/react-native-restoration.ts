@@ -314,7 +314,7 @@ function assertNativeBootstrapIdentity(
     }
   }
   if (
-    !/^[a-z0-9][a-z0-9._-]*$/.test(result.applicationId) ||
+    !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(result.applicationId) ||
     result.restorationId !== expected.restorationId ||
     result.generation !== expected.generation ||
     !result.restoreIdentifier.startsWith(`${result.applicationId}.ubm.`) ||

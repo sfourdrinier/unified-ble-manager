@@ -61,6 +61,25 @@ describe('React Native native-authoritative restoration bootstrap', () => {
     expect(control.bootstrapRestorationIdentity.mock.calls[0][0]).not.toHaveProperty('applicationId')
   })
 
+  test('accepts a native iOS bundle identifier with preserved mixed case', async () => {
+    const nativeIdentity = Object.freeze({
+      applicationId: 'com.intent.BlePlxExample',
+      restorationId: 'primary-ble-central',
+      generation: '1',
+      restoreIdentifier: 'com.intent.BlePlxExample.ubm.native-restore',
+      namespaceValue: 'ubm-ns:native-namespace',
+      clientId: 'ubm-client:native-client',
+      hostSessionScope: 'ubm-host:native-scope'
+    })
+    const control = {
+      bootstrapRestorationIdentity: jest.fn().mockResolvedValue(nativeIdentity)
+    }
+
+    await expect(
+      bootstrapReactNativeRestorationIdentity(control, { restorationId: 'primary-ble-central', generation: '1' })
+    ).resolves.toEqual(nativeIdentity)
+  })
+
   test('rejects a native result that changes the requested generation', async () => {
     const control = {
       bootstrapRestorationIdentity: jest.fn().mockResolvedValue({
