@@ -168,7 +168,7 @@ function isPublishedSourceFile(sourceFile) {
   if (publicProfileSourceFiles.includes(sourceRelative)) {
     return true
   }
-  return /^(backend-contract|backends\/(?:bluez|corebluetooth|reactnative|winrt)|core|diagnostics|electron|ipc|manager|public|tauri|tck|testing|web)\/.+\.(?:ts|tsx)$/.test(
+  return /^(backend-contract|backends\/(?:bluez|corebluetooth|reactnative|winrt|scan-planning)|core|diagnostics|electron|ipc|manager|public|tauri|tck|testing|web)\/.+\.(?:ts|tsx)$/.test(
     sourceRelative
   )
 }
