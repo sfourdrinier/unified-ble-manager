@@ -123,7 +123,7 @@ The subsequent exact-source native/consumer review found additional ownership an
 ## Final local verification receipts at `707e3c9`
 
 - `pnpm typecheck`, `pnpm lint`, `pnpm test:plugin`: passed; plugin 35/35.
-- Forbidden TypeScript smell scan over published `src`/`plugin`: no `as unknown`, `as any`, `as T`, or suppression directives.
+- Forbidden TypeScript smell scan over published `src`/`plugin`: no `as unknown`, `as any`, `as T`, `@ts-ignore`, `@ts-nocheck`, or `@ts-expect-error`; intentional ESLint directives remain documented in source.
 - `pnpm test:package`: 156 suites / 1,497 tests passed.
 - `pnpm prepack`: passed; 232 published source files, 1,940 source-derived artifacts, 16 plugin artifacts, and 125 entrypoint targets verified.
 - `pnpm release:artifacts:check`: passed; 2 dependency-artifact files current.
@@ -153,7 +153,7 @@ These receipts are from the post-remediation tip before the next hosted PR run. 
 - `pnpm validate:evidence`: passed for 3 evidence files.
 - `pnpm typecheck`: passed.
 - `pnpm lint`: passed with zero warnings.
-- Forbidden TypeScript smell scan over `src`/`plugin`: passed with no forbidden casts or suppression directives.
+- Forbidden TypeScript smell scan over `src`/`plugin`: passed with no forbidden casts or TypeScript suppression directives; intentional ESLint directives remain outside that scan.
 - `pnpm test:package`: 155 suites / 1,485 tests passed.
 - `pnpm test:plugin`: 4 suites / 34 tests passed.
 - `pnpm prepack`: passed; 232 published source files, 1,940 source-derived artifacts, 8 plugin source files, 16 plugin artifacts, and 125 entrypoint targets verified.
