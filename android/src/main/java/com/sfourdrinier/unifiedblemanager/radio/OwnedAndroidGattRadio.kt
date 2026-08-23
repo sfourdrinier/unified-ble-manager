@@ -564,8 +564,16 @@ class OwnedAndroidGattRadio(private val context: Context) {
     }
   }
 
+  /**
+   * The public Android API that cancels an in-progress bond was added in API 37.
+   * This project currently supports the API-36 compile/runtime boundary, so
+   * removing this callback would only make the library forget ownership while
+   * the OS continues the asynchronous createBond() ceremony.
+   */
   internal fun clearPendingBondPair(deviceId: String): Boolean =
-    pendingBondPairs.remove(deviceId.uppercase()) !== null
+    throw UnsupportedOperationException(
+      "Android bonding cancellation is unsupported before API 37 for $deviceId"
+    )
 
   private fun hasBluetoothConnectPermission(): Boolean =
     Build.VERSION.SDK_INT < Build.VERSION_CODES.S ||

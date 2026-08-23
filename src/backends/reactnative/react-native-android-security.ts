@@ -118,6 +118,12 @@ export class ReactNativeAndroidSecurityBackend implements SecurityBackend {
       }
       abortListener = (): void => {
         cancellationController.abort()
+        if (!this.boundary.securityCancellationAvailable) {
+          if (publicSettled) return
+          publicSettled = true
+          reject(contractError('capability.unsupported', 'capability', 'android.security.pair.cancellation'))
+          return
+        }
         resolveCancelled()
         this.requestCancellation(peerId)
       }
@@ -129,7 +135,7 @@ export class ReactNativeAndroidSecurityBackend implements SecurityBackend {
             publicSettled = true
             cancellationController.abort()
             reject(contractError('operation.timed-out', 'core', 'android.security.pair'))
-            this.requestCancellation(peerId)
+            if (this.boundary.securityCancellationAvailable) this.requestCancellation(peerId)
           },
           Math.max(0, options.deadline - this.now())
         )
@@ -165,6 +171,9 @@ export class ReactNativeAndroidSecurityBackend implements SecurityBackend {
 
   async cancelPairing(peerId: string, _options: PublicOperationOptions): Promise<SecurityCancelPairingResult> {
     this.assertOpen('android.security.cancel-pairing')
+    if (!this.boundary.securityCancellationAvailable) {
+      throw contractError('capability.unsupported', 'capability', 'android.security.cancel-pairing')
+    }
     if (!this.active.has(peerId)) return { outcome: 'not-pairing' }
     const nativePeerId = this.activeNativeIds.get(peerId)
     if (nativePeerId === undefined) return { outcome: 'not-pairing' }
@@ -199,7 +208,7 @@ export class ReactNativeAndroidSecurityBackend implements SecurityBackend {
   private requestCancellation(peerId: string): void {
     const nativePeerId = this.activeNativeIds.get(peerId)
     if (nativePeerId === undefined) return
-    this.boundary.cleanupPairing(nativePeerId).catch(error => {
+    this.boundary.cancelPairing(nativePeerId).catch(error => {
       console.error('[ReactNativeAndroidSecurityBackend.pair] Pair cancellation was not accepted:', error)
     })
   }

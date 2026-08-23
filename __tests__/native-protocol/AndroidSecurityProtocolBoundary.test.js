@@ -334,7 +334,7 @@ describe('React Native Android security protocol boundary', () => {
     security.close()
   })
 
-  test('settles caller cancellation promptly while retaining peer ownership until native pairing settles', async () => {
+  test('rejects cancellation as unsupported while retaining native pairing ownership', async () => {
     let resolveNative
     let firstPair = true
     const pair = jest.fn(() => {
@@ -344,8 +344,11 @@ describe('React Native Android security protocol boundary', () => {
         resolveNative = resolve
       })
     })
-    const cleanupPairing = jest.fn(async () => undefined)
-    const security = new ReactNativeAndroidSecurityBackend(securityAdapter({ pair, cleanupPairing }), () => 20)
+    const cancelPairing = jest.fn(async () => undefined)
+    const security = new ReactNativeAndroidSecurityBackend(
+      securityAdapter({ pair, cancelPairing, securityCancellationAvailable: false }),
+      () => 20
+    )
     const controller = new AbortController()
     const pending = security.pair(peerId, {
       signal: controller.signal,
@@ -356,8 +359,10 @@ describe('React Native Android security protocol boundary', () => {
     })
 
     controller.abort()
-    await expect(pending).resolves.toEqual({ outcome: 'cancelled' })
-    expect(cleanupPairing).toHaveBeenCalledWith(peerId)
+    await expect(pending).rejects.toMatchObject({
+      normalized: { code: 'capability.unsupported', operation: 'android.security.pair.cancellation' }
+    })
+    expect(cancelPairing).not.toHaveBeenCalled()
     expect([...security.active]).toEqual([peerId])
 
     resolveNative({ outcome: 'paired', state: securityState('bonded') })
@@ -383,7 +388,7 @@ describe('React Native Android security protocol boundary', () => {
       dispatchPair()
       return { outcome: 'paired', state: securityState('bonded') }
     })
-    const cleanupPairing = jest.fn(async () => undefined)
+    const cancelPairing = jest.fn(async () => undefined)
     const securityStateCall = jest.fn(
       () =>
         new Promise(resolve => {
@@ -391,7 +396,7 @@ describe('React Native Android security protocol boundary', () => {
         })
     )
     const security = new ReactNativeAndroidSecurityBackend(
-      securityAdapter({ pair, cleanupPairing, securityState: securityStateCall }),
+      securityAdapter({ pair, cancelPairing, securityState: securityStateCall }),
       () => 20
     )
     const controller = new AbortController()
@@ -410,7 +415,7 @@ describe('React Native Android security protocol boundary', () => {
     await Promise.resolve()
     expect(pair).toHaveBeenCalledTimes(1)
     expect(dispatchPair).not.toHaveBeenCalled()
-    expect(cleanupPairing).toHaveBeenCalledWith(peerId)
+    expect(cancelPairing).toHaveBeenCalledWith(peerId)
     security.close()
   })
 
