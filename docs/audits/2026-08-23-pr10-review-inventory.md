@@ -188,12 +188,29 @@ These receipts are from the post-remediation tip before the next hosted PR run. 
 - Expo SDK 57 typecheck, CNG prebuild, and Android debug APK build passed; generated native directories remain ignored and are not release artifacts.
 - Focused Expo and React Native restoration Jest suites: passed before the aggregate package rebuild.
 
+## Final local verification at `d79248e6`
+
+These receipts are from the final local PR10 tip after the React Expo readiness
+policy regression was fixed. They are deterministic or host-build evidence only;
+no physical-radio, EAS, or hosted Apple claim is implied.
+
+- `pnpm test:package`: 160 suites / 1,539 tests passed.
+- `pnpm test:plugin`: 4 suites / 44 tests passed.
+- `pnpm lint`, `pnpm typecheck`, `pnpm prepack`, `pnpm docs:check`, and `pnpm release:artifacts:check`: passed.
+- Forbidden TypeScript smell scan and `git diff --check`: passed.
+- `pnpm test:native-protocol`: C++ protocol harness passed.
+- Android protocol/codegen and full JVM unit lanes: passed; 29 actionable tasks.
+- `pnpm test:native-protocol:apple`: C++/Apple parser/CallInvoker harness passed; no physical BLE radio.
+- `pnpm performance:check`: passed with 31 JS/core and 5 native-host measurements.
+- `node scripts/ci/packed-host-consumer-check.js`: packed Expo/React/Tauri proof passed; `physicalRadio: not-provided`.
+- `node scripts/ci/pack-install-smoke.js`: canonical packed consumer matrix passed.
+- `node scripts/ci/g6a-packed-consumer-proof.js`: deterministic packed Node/Web/third-party TCK proof passed; hardware evidence absent.
+- Expo SDK 57 typecheck, clean CNG prebuild, and Android debug APK build: passed; generated native directories and lockfile remain uncommitted.
+
 ## Remaining release gates
 
-The PR10 branch is not ready for merge or RC4 until the remediation tip has a
-fresh full local gate run and hosted CI. Remaining gates are the Apple
-full-module/Expo host build (the local Swift harness is not that proof), fresh
-adversarial review of the post-fix SHA, the `ci:apple`-labeled GitHub Actions
-run, the required two-round PR review cycle, merge, post-merge `main` CI, and
-RC4 admission. Existing receipts remain historical until re-run against the
-current tip; no physical-radio or EAS evidence is claimed.
+The PR10 branch has a fresh full local gate run at `d79248e6`. Remaining gates
+are the Apple full-module/Expo host build (the local Swift harness is not that
+proof), the `ci:apple`-labeled GitHub Actions run, fresh adversarial review of
+the post-fix SHA, the required two-round PR review cycle, merge, post-merge
+`main` CI, and RC4 admission. No physical-radio or EAS evidence is claimed.
