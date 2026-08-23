@@ -110,7 +110,7 @@ Run the focused Jest command from Task 1 and confirm all new and existing tests 
 
 - [x] **Step 1: Run the requested canonical checks proportionate to the change**
 
-`pnpm validate:evidence`, `pnpm test:package` (142 suites / 1,359 tests),
+`pnpm validate:evidence`, `pnpm test:package` (142 suites / 1,366 tests),
 `pnpm test:plugin` (36 tests), `pnpm prepack`,
 `pnpm release:artifacts:check`, performance, protocol, Tauri, and the
 CoreBluetooth addon build are green. The local packed-consumer smoke remains
@@ -141,7 +141,9 @@ native ownership and adapter-loss retry), `1fd13f2` (BlueZ confirmation and
 batch-cleanup retry), `b7aa1f8` (CoreBluetooth post-start teardown),
 `56f5492` (BlueZ logical ownership), and `4297f7b` (WinRT bounded teardown, settlement, and
 callback guards). The final source tip for the current local gate is
-`56f5492`; the full package gate is green at 142 suites / 1,359 tests.
+`2c03dd7`; the final host-boundary follow-ups are `59cdb33` (CoreBluetooth),
+`fc1c667` (BlueZ), `8fa029e` (WinRT), and `1bd5060`/`2c03dd7` (release docs/tests).
+The full package gate is green at 142 suites / 1,366 tests.
 
 - [x] **Step 2: Verify scope and report exact evidence**
 
