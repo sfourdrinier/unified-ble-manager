@@ -103,6 +103,25 @@ describe('WinRT operation dispatcher cancellation admission', () => {
     await expect(dispatcherInstance.waitForIdle()).resolves.toBeUndefined()
   })
 
+  test('rejects an unknown native cancellation acknowledgement vocabulary', async () => {
+    const pending = deferred()
+    const controller = new AbortController()
+    const dispatcherInstance = dispatcher()
+    const dispatch = dispatcherInstance.dispatch({ signal: controller.signal, deadline: null }, 'winrt.gatt.read', () => ({
+      completion: pending.promise,
+      cancel: async () => 'cancelled'
+    }))
+
+    controller.abort()
+
+    await expect(dispatch.completion).rejects.toMatchObject({ normalized: { code: 'operation.aborted' } })
+    await expect(dispatch.requestCancellation()).rejects.toMatchObject({
+      normalized: { code: 'protocol.malformed', operation: 'winrt.dispatcher.cancellation-acknowledgement' }
+    })
+    pending.resolve(new Uint8Array([1]))
+    await dispatcherInstance.waitForIdle()
+  })
+
   test.each([
     ['a null native operation', () => null, 'winrt.dispatcher.native-operation'],
     [

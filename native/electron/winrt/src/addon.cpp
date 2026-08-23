@@ -1191,6 +1191,9 @@ struct BoundaryState : public std::enable_shared_from_this<BoundaryState> {
     std::string selected_adapter_id;
     {
       std::lock_guard<std::mutex> guard(mutex);
+      if (destroyed || destroying) {
+        return {"", "", "unavailable", "unavailable", "unknown", "WinRT native boundary is tearing down", AdapterDeployment()};
+      }
       selected_adapter_id = selected_adapter;
     }
     try {

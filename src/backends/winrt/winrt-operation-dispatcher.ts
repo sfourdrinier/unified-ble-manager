@@ -363,7 +363,12 @@ export class WinRtOperationDispatcher {
     }
     let cancellation: Promise<CancellationAcknowledgement<string>>
     try {
-      cancellation = Promise.resolve(active.native.cancel()).then(state => ({ handle: active.handle, state }))
+      cancellation = Promise.resolve(active.native.cancel()).then(state => {
+        if (state !== 'cancellation-requested' && state !== 'already-terminal' && state !== 'not-cancellable') {
+          throw contractError('protocol.malformed', 'boundary', 'winrt.dispatcher.cancellation-acknowledgement')
+        }
+        return { handle: active.handle, state }
+      })
     } catch (error) {
       cancellation = Promise.reject(error)
     }

@@ -689,7 +689,13 @@ class WinRtContractBoundary final : public Napi::ObjectWrap<WinRtContractBoundar
       if (radio.has_value()) {
         const std::weak_ptr<BoundaryState> weak_state = state;
         state->radio_token = radio->StateChanged([weak_state](const Radio&, const winrt::Windows::Foundation::IInspectable&) {
-          if (const std::shared_ptr<BoundaryState> live_state = weak_state.lock()) live_state->EmitAdapterState();
+          if (const std::shared_ptr<BoundaryState> live_state = weak_state.lock()) {
+            {
+              std::lock_guard<std::mutex> guard(live_state->mutex);
+              if (live_state->destroyed || live_state->destroying) return;
+            }
+            live_state->EmitAdapterState();
+          }
         });
         state->radio_handler_registered = true;
       } else {

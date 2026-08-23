@@ -152,6 +152,47 @@ describe('WinRT security backend adapter', () => {
     security.close()
   })
 
+  test('rejects malformed native security state payloads', async () => {
+    const boundary = createBoundary()
+    boundary.securityState = jest.fn(() => ({
+      completion: Promise.resolve({ ...state(), pairingPossible: 'yes' }),
+      cancel: jest.fn(async () => 'already-terminal')
+    }))
+    const security = new WinRtSecurityBackend(boundary, () => 50)
+
+    await expect(security.state('peer-1', options())).rejects.toMatchObject({
+      normalized: { code: 'protocol.malformed', operation: 'winrt.security.state' }
+    })
+    security.close()
+  })
+
+  test('rejects pair results with unknown fields instead of projecting them', async () => {
+    const boundary = createBoundary()
+    boundary.pair = jest.fn(() => ({
+      completion: Promise.resolve({ outcome: 'paired', state: state(), reason: null, unexpected: true }),
+      cancel: jest.fn(async () => 'already-terminal')
+    }))
+    const security = new WinRtSecurityBackend(boundary, () => 50)
+
+    await expect(security.pair('peer-1', options())).rejects.toMatchObject({
+      normalized: { code: 'protocol.malformed', operation: 'winrt.security.pair-result' }
+    })
+    security.close()
+  })
+
+  test('fails closed when a security state-change payload is malformed', async () => {
+    const boundary = createBoundary()
+    const security = new WinRtSecurityBackend(boundary, () => 50)
+    const stream = security.watch('peer-1')
+    const iterator = stream[Symbol.asyncIterator]()
+    await iterator.next()
+    const terminal = iterator.next()
+
+    expect(() => boundary.emitSecurityState({ nativePeerId: 'peer-1', state: { ...state(), bond: 'invalid' } })).not.toThrow()
+    await expect(terminal).resolves.toMatchObject({ value: { kind: 'terminal', reason: 'source-failed' } })
+    security.close()
+  })
+
   test('terminates security watches during adapter loss and ignores retired listener callbacks', async () => {
     const boundary = createBoundary()
     const security = new WinRtSecurityBackend(boundary, () => 50)
