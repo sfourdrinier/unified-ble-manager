@@ -1474,6 +1474,7 @@ class DeterministicAndroidControl {
     return Promise.resolve({
       nativeProtocol: 2,
       abi: 3,
+      controlSurface: 2,
       backendContract: 1,
       capabilitySchema: 1,
       eventSchema: 1,
