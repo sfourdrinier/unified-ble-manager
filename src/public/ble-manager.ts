@@ -39,6 +39,7 @@ import { encodePeerReference, isPeerReference, snapshotPeerReference } from './p
 import type { PeerReference } from './peer-reference'
 import type { ResourceCounters } from '../backend-contract/backend'
 import type { ScanPlan } from '../backend-contract/scan-planning'
+export type { ScanPlan } from '../backend-contract/scan-planning'
 import { createPublicSecurity } from './security'
 import type { BleSecurity } from './security'
 import type { Limitation } from '../backend-contract/capabilities'

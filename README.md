@@ -12,16 +12,16 @@ It is an evolution of `react-native-ble-plx`, rewritten as a **cross-platform un
 
 ## Documentation map
 
-| Start here | What it is |
-| --- | --- |
-| This README | Product, install, one React Native loop, method index |
-| [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md) | Host chooser + first-hour React Native / Expo path |
-| [`docs/TUTORIALS.md`](docs/TUTORIALS.md) | Scan, connect, read, write, subscribe, tear down |
-| [`docs/HELPERS.md`](docs/HELPERS.md) | Public `find`, scoped connection, GATT, and notification recipes |
-| [`MIGRATION_4.0.md`](MIGRATION_4.0.md) | Side-by-side map from `react-native-ble-plx` |
-| [`docs/WEB.md`](docs/WEB.md) · [`docs/ELECTRON.md`](docs/ELECTRON.md) · [`docs/NODE.md`](docs/NODE.md) · [`docs/TAURI.md`](docs/TAURI.md) · [`docs/EXPO_PLUGIN.md`](docs/EXPO_PLUGIN.md) | Host construction |
-| [`docs/PEERS.md`](docs/PEERS.md) | Scoped peer directories, persistence, and reconnect-by-reference |
-| [`docs/PROFILES_AND_COMMANDS.md`](docs/PROFILES_AND_COMMANDS.md) | Heart Rate, Battery, DIS, and path helpers |
+| Start here                                                                                                                                                                               | What it is                                                       |
+| ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- |
+| This README                                                                                                                                                                              | Product, install, one React Native loop, method index            |
+| [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md)                                                                                                                                     | Host chooser + first-hour React Native / Expo path               |
+| [`docs/TUTORIALS.md`](docs/TUTORIALS.md)                                                                                                                                                 | Scan, connect, read, write, subscribe, tear down                 |
+| [`docs/HELPERS.md`](docs/HELPERS.md)                                                                                                                                                     | Public `find`, scoped connection, GATT, and notification recipes |
+| [`MIGRATION_4.0.md`](MIGRATION_4.0.md)                                                                                                                                                   | Side-by-side map from `react-native-ble-plx`                     |
+| [`docs/WEB.md`](docs/WEB.md) · [`docs/ELECTRON.md`](docs/ELECTRON.md) · [`docs/NODE.md`](docs/NODE.md) · [`docs/TAURI.md`](docs/TAURI.md) · [`docs/EXPO_PLUGIN.md`](docs/EXPO_PLUGIN.md) | Host construction                                                |
+| [`docs/PEERS.md`](docs/PEERS.md)                                                                                                                                                         | Scoped peer directories, persistence, and reconnect-by-reference |
+| [`docs/PROFILES_AND_COMMANDS.md`](docs/PROFILES_AND_COMMANDS.md)                                                                                                                         | Heart Rate, Battery, DIS, and path helpers                       |
 
 ## Install
 
@@ -43,21 +43,21 @@ React Native, Web, macOS CoreBluetooth, and Windows WinRT do not need `dbus-next
 
 The root import selects no radio. Import the host you actually run.
 
-| Import | Purpose |
-| --- | --- |
-| `unified-ble-manager` | Host-neutral manager, handles, helpers, and shared types |
-| `unified-ble-manager/react-native` | React Native Android / Apple manager |
-| `unified-ble-manager/web` | Web Bluetooth chooser + matched manager |
-| `unified-ble-manager/electron/main` | Trusted Electron-main radio + IPC router |
-| `unified-ble-manager/electron/renderer` | Public `BleManager` factory over an authenticated IPC transport; never a radio |
-| `unified-ble-manager/tauri` | Tauri v2 zero-plumbing `BleManager` factory |
-| `unified-ble-manager/node/corebluetooth` | macOS CoreBluetooth Node provider |
-| `unified-ble-manager/node/winrt` | Windows WinRT Node provider |
-| `unified-ble-manager/node/bluez` | Linux BlueZ D-Bus provider |
-| `unified-ble-manager/backend-sdk` | Backend authoring contract |
-| `unified-ble-manager/testing` | Deterministic backend and TCK utilities |
-| `unified-ble-manager/codecs` | Byte/`DataView` helpers and IEEE-11073 numbers — not Base64 |
-| `unified-ble-manager/cli` | Node CLI |
+| Import                                   | Purpose                                                                        |
+| ---------------------------------------- | ------------------------------------------------------------------------------ |
+| `unified-ble-manager`                    | Host-neutral manager, handles, helpers, and shared types                       |
+| `unified-ble-manager/react-native`       | React Native Android / Apple manager                                           |
+| `unified-ble-manager/web`                | Web Bluetooth chooser + matched manager                                        |
+| `unified-ble-manager/electron/main`      | Trusted Electron-main radio + IPC router                                       |
+| `unified-ble-manager/electron/renderer`  | Public `BleManager` factory over an authenticated IPC transport; never a radio |
+| `unified-ble-manager/tauri`              | Tauri v2 zero-plumbing `BleManager` factory                                    |
+| `unified-ble-manager/node/corebluetooth` | macOS CoreBluetooth Node provider                                              |
+| `unified-ble-manager/node/winrt`         | Windows WinRT Node provider                                                    |
+| `unified-ble-manager/node/bluez`         | Linux BlueZ D-Bus provider                                                     |
+| `unified-ble-manager/backend-sdk`        | Backend authoring contract                                                     |
+| `unified-ble-manager/testing`            | Deterministic backend and TCK utilities                                        |
+| `unified-ble-manager/codecs`             | Byte/`DataView` helpers and IEEE-11073 numbers — not Base64                    |
+| `unified-ble-manager/cli`                | Node CLI                                                                       |
 
 Profile subpaths: `profiles/commands`, `profiles/standard-commands`, `profiles/heart-rate`, `profiles/battery-service`, `profiles/device-information`, `profiles/health-thermometer`, `profiles/blood-pressure`, `profiles/ieee-11073`.
 
@@ -107,7 +107,10 @@ try {
     select: 'first'
   })
   await manager.withDiscoveredConnection(peer, { timeoutMs: 15_000, signal: abort.signal }, async ({ gatt }) => {
-    const battery = gatt.characteristic('180F', BATTERY_LEVEL_CHARACTERISTIC, { serviceOccurrence: 0, characteristicOccurrence: 0 })
+    const battery = gatt.characteristic('180F', BATTERY_LEVEL_CHARACTERISTIC, {
+      serviceOccurrence: 0,
+      characteristicOccurrence: 0
+    })
     const bytes = await battery.read({ timeoutMs: 10_000, signal: abort.signal })
     consume(parseBatteryLevel(bytes))
   })
@@ -122,51 +125,52 @@ Web Bluetooth replaces the scan with `ble.choose(...)` from a user gesture. Taur
 
 ## Why the API looks like this
 
-| Shape | Benefit |
-| --- | --- |
-| `Uint8Array`, not Base64 | BLE is binary. Encode text at the HTTP boundary yourself. |
-| `AbortSignal` + `timeoutMs` | Cancel the way you cancel `fetch`. The library owns operation correlation. |
-| Observation → `Connection` → snapshot | A peer id is not a live link. After disconnect, old objects would lie. |
-| Paths from `snapshot()` | The same UUID can appear twice. Generations make stale handles fail closed. |
-| Verbose scan `delivery` | Overflow is visible. A second scan is `scan.already-active` unless you join. |
-| Explicit host import | A failed native backend must not become Web Bluetooth or a mock. |
-| Await `destroy()` | The radio and every lease have an owner. Fire-and-forget leaks them. |
+| Shape                                 | Benefit                                                                      |
+| ------------------------------------- | ---------------------------------------------------------------------------- |
+| `Uint8Array`, not Base64              | BLE is binary. Encode text at the HTTP boundary yourself.                    |
+| `AbortSignal` + `timeoutMs`           | Cancel the way you cancel `fetch`. The library owns operation correlation.   |
+| Observation → `Connection` → snapshot | A peer id is not a live link. After disconnect, old objects would lie.       |
+| Paths from `snapshot()`               | The same UUID can appear twice. Generations make stale handles fail closed.  |
+| Verbose scan `delivery`               | Overflow is visible. A second scan is `scan.already-active` unless you join. |
+| Explicit host import                  | A failed native backend must not become Web Bluetooth or a mock.             |
+| Await `destroy()`                     | The radio and every lease have an owner. Fire-and-forget leaks them.         |
 
 ## Method index
 
 ### `BleManager`
 
-| Member | Use |
-| --- | --- |
-| `scan(options)` | Start a bounded `ScanSession`. You must `stop()` it. |
-| `find(options)` | Find one normalized `BlePeer` and stop its scan. |
-| `choose(options)` | Use a system chooser where the backend supports it. |
-| `connect(peer, { signal, timeoutMs })` | Open a connection lease. |
-| `destroy()` | Async teardown. Await it. Inspect `CleanupRecord`. |
-| `adapter.state()` / `adapter.waitUntilReady()` | Readiness of this instantiated backend. |
-| `capabilities` / `discovery` | Runtime feature and discovery truth from the host. |
+| Member                                         | Use                                                  |
+| ---------------------------------------------- | ---------------------------------------------------- |
+| `scan(options)`                                | Start a bounded `ScanSession`. You must `stop()` it. |
+| `find(options)`                                | Find one normalized `BlePeer` and stop its scan.     |
+| `choose(options)`                              | Use a system chooser where the backend supports it.  |
+| `connect(peer, { signal, timeoutMs })`         | Open a connection lease.                             |
+| `destroy()`                                    | Async teardown. Await it. Inspect `CleanupRecord`.   |
+| `adapter.state()` / `adapter.waitUntilReady()` | Readiness of this instantiated backend.              |
+| `capabilities` / `discovery`                   | Runtime feature and discovery truth from the host.   |
 
 ### `ScanSession`
 
-| Member | Use |
-| --- | --- |
-| `observations` | Bounded stream: `value`, `overflow`, or `terminal` |
-| `stop()` | End the scan and return a cleanup receipt. `find` already does this. |
+| Member         | Use                                                                                      |
+| -------------- | ---------------------------------------------------------------------------------------- |
+| `observations` | Bounded stream: `value`, `overflow`, or `terminal`                                       |
+| `plan`         | Host-owned native/residual planning diagnostics, or `null` when this host has no planner |
+| `stop()`       | End the scan and return a cleanup receipt. `find` already does this.                     |
 
 `AdvertisementObservation.device` is identity (`id`, address, stability). The advertised name is `observation.localName`.
 
 ### `Connection`
 
-| Member | Use |
-| --- | --- |
-| `discover({ signal, timeoutMs })` | Discover GATT and return a generation-bound database |
-| `release()` | Drop the lease (happy-path cleanup) |
-| `disconnect()` | Ask the radio to disconnect |
-| `connection.controls.readRssi(options)` | RSSI when the instantiated backend advertises `connection:rssi` |
-| `connection.controls.requestMtu(n, options)` | Request an ATT MTU when `connection:request-mtu` is advertised; inspect the returned observation |
-| `connection.controls.maximumWriteLength(mode)` | Authoritative mode-specific write limit when `gatt:maximum-write-length` is advertised |
+| Member                                                   | Use                                                                                                                   |
+| -------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `discover({ signal, timeoutMs })`                        | Discover GATT and return a generation-bound database                                                                  |
+| `release()`                                              | Drop the lease (happy-path cleanup)                                                                                   |
+| `disconnect()`                                           | Ask the radio to disconnect                                                                                           |
+| `connection.controls.readRssi(options)`                  | RSSI when the instantiated backend advertises `connection:rssi`                                                       |
+| `connection.controls.requestMtu(n, options)`             | Request an ATT MTU when `connection:request-mtu` is advertised; inspect the returned observation                      |
+| `connection.controls.maximumWriteLength(mode)`           | Authoritative mode-specific write limit when `gatt:maximum-write-length` is advertised                                |
 | `connection.controls.writeReadiness('without-response')` | Bounded readiness only when `gatt:write-without-response-readiness` is advertised; otherwise `capability.unsupported` |
-| `events` | Lifecycle stream for this generation |
+| `events`                                                 | Lifecycle stream for this generation                                                                                  |
 
 Controls report the truth of the instantiated host backend, including
 `supported`, `limited`, `unavailable`, or `unsupported`; host family alone is
@@ -195,17 +199,17 @@ automatic write helper.
 
 ### `GattDatabase`
 
-| Member | Use |
-| --- | --- |
-| `snapshot()` | Immutable services / characteristics / descriptors |
-| `service(uuid, selector?)` | Generation-bound `GattService` object |
-| `characteristic(serviceUuid, characteristicUuid, selector?)` | Generation-bound `GattCharacteristic` object |
-| `characteristic.read(options)` | `Uint8Array` |
-| `characteristic.write(value, { response, signal, timeoutMs })` | `response` is `'required'`, `'not-required'`, or `'automatic'` |
-| `characteristic.writeWhenReady(value, { signal, timeoutMs })` | Bounded write-without-response helper when authoritative readiness is advertised |
-| `characteristic.writeLong(value, { response, signal, timeoutMs, chunkSize })` | Chunked write when supported |
-| `characteristic.subscribe({ signal, timeoutMs, stream })` | Notification / indication stream |
-| `characteristic.descriptor(uuid).read/write(...)` | Descriptor bytes through the generation-bound characteristic object |
+| Member                                                                        | Use                                                                              |
+| ----------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| `snapshot()`                                                                  | Immutable services / characteristics / descriptors                               |
+| `service(uuid, selector?)`                                                    | Generation-bound `GattService` object                                            |
+| `characteristic(serviceUuid, characteristicUuid, selector?)`                  | Generation-bound `GattCharacteristic` object                                     |
+| `characteristic.read(options)`                                                | `Uint8Array`                                                                     |
+| `characteristic.write(value, { response, signal, timeoutMs })`                | `response` is `'required'`, `'not-required'`, or `'automatic'`                   |
+| `characteristic.writeWhenReady(value, { signal, timeoutMs })`                 | Bounded write-without-response helper when authoritative readiness is advertised |
+| `characteristic.writeLong(value, { response, signal, timeoutMs, chunkSize })` | Chunked write when supported                                                     |
+| `characteristic.subscribe({ signal, timeoutMs, stream })`                     | Notification / indication stream                                                 |
+| `characteristic.descriptor(uuid).read/write(...)`                             | Descriptor bytes through the generation-bound characteristic object              |
 
 Use the generation-bound service and characteristic objects returned by the
 public database. Do not manufacture advanced portable paths or retain objects
@@ -213,32 +217,32 @@ after disconnect, service change, or rediscovery.
 
 ### `Subscription`
 
-| Member | Use |
-| --- | --- |
-| `values` | Bounded stream of `value` / `overflow` / `terminal` items. A value item carries bytes, delivery, timestamp, and sequence |
-| `remove()` | Always, including after abort; inspect the cleanup receipt |
+| Member     | Use                                                                                                                      |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `values`   | Bounded stream of `value` / `overflow` / `terminal` items. A value item carries bytes, delivery, timestamp, and sequence |
+| `remove()` | Always, including after abort; inspect the cleanup receipt                                                               |
 
 ### Scoped façade methods
 
-| Helper | Use |
-| --- | --- |
-| `withConnection` | Run a function and always `release()` the lease |
-| `withDiscoveredConnection` | Connect, discover, run, then `release()` |
-| `withScan` | Start a scan, run a function, then stop it |
-| `connection.lifecycleEvents` | Observe generation-bound lifecycle transitions |
+| Helper                       | Use                                             |
+| ---------------------------- | ----------------------------------------------- |
+| `withConnection`             | Run a function and always `release()` the lease |
+| `withDiscoveredConnection`   | Connect, discover, run, then `release()`        |
+| `withScan`                   | Start a scan, run a function, then stop it      |
+| `connection.lifecycleEvents` | Observe generation-bound lifecycle transitions  |
 
 ### Host factories
 
-| Factory | Returns |
-| --- | --- |
-| `createReactNativeBleManager` | Zero-plumbing public React Native manager |
-| `createReactNativeBleManagerWithEnvironment` | Injectable RN factory for tests |
-| `createWebBleManager` | Zero-plumbing public Web manager; use `ble.choose()` from a user gesture |
-| `createCoreBluetoothBleManager` / `createWinRtBleManager` / `createBluezBleManager` | One-call Node managers |
-| `createElectronMainCoreBluetoothBackendProvider` / `WinRt` | Main-process provider; you still build a `BleManager` |
+| Factory                                                                                | Returns                                                                                         |
+| -------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| `createReactNativeBleManager`                                                          | Zero-plumbing public React Native manager                                                       |
+| `createReactNativeBleManagerWithEnvironment`                                           | Injectable RN factory for tests                                                                 |
+| `createWebBleManager`                                                                  | Zero-plumbing public Web manager; use `ble.choose()` from a user gesture                        |
+| `createCoreBluetoothBleManager` / `createWinRtBleManager` / `createBluezBleManager`    | One-call Node managers                                                                          |
+| `createElectronMainCoreBluetoothBackendProvider` / `WinRt`                             | Main-process provider; you still build a `BleManager`                                           |
 | `createElectronRendererBleManager` / `createElectronRendererBleManagerWithEnvironment` | Public renderer `BleManager` over a preload transport; the renderer never loads a radio backend |
-| `createTauriBleManager` | Zero-plumbing Tauri `BleManager`; tests use `createTauriBleManagerWithEnvironment` |
-| `createBleManagerFromProvider` | Advanced provider construction |
+| `createTauriBleManager`                                                                | Zero-plumbing Tauri `BleManager`; tests use `createTauriBleManagerWithEnvironment`              |
+| `createBleManagerFromProvider`                                                         | Advanced provider construction                                                                  |
 
 ## Other hosts
 

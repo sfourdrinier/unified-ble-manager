@@ -36,6 +36,7 @@ export type {
   BlePhy,
   ConnectOptions,
   ScanSession,
+  ScanPlan,
   GattDatabase,
   GattService,
   GattCharacteristic,

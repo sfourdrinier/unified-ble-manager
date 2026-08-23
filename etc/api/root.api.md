@@ -221,6 +221,7 @@ All BLE payloads are bytes. Application operations use `AbortSignal` and
 - `RssiObservation`
 - `ScanClause`
 - `ScanOptions`
+- `ScanPlan`
 - `ScanQuery`
 - `ScanSession`
 - `ScanStateEvent`
