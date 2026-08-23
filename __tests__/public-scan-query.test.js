@@ -181,16 +181,17 @@ describe('canonical public ScanQuery v1', () => {
 
     expect(() => normalizeScanObservation({ device: {} })).toThrow()
 
-    const normalized = normalizeScanObservation({
-      localName: 'Scoped',
-      rssi: -40,
-      connectable: true,
-      serviceUuids: [],
-      manufacturerData: [],
-      serviceData: [],
-      peerId: 'must-not-cross-the-boundary'
-    })
-    expect(normalized).not.toHaveProperty('peerId')
+    expect(() =>
+      normalizeScanObservation({
+        localName: 'Scoped',
+        rssi: -40,
+        connectable: true,
+        serviceUuids: [],
+        manufacturerData: [],
+        serviceData: [],
+        peerId: 'must-not-cross-the-boundary'
+      })
+    ).toThrow()
   })
 
   test('uses the same normalized query for the public residual stream and find helper', async () => {
