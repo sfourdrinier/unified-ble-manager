@@ -146,6 +146,7 @@ export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary
   private readonly scanListeners = new Set<(advertisement: CoreBluetoothAdvertisement) => void>()
   private readonly scanFailureListeners = new Set<(safeMessage: string) => void>()
   private readonly disconnectListeners = new Set<(nativePeerId: string, safeMessage: string | null) => void>()
+  private readonly databaseChangedListeners = new Set<(nativePeerId: string) => void>()
   private readonly adapterListeners = new Set<(state: CoreBluetoothAdapterSnapshot) => void>()
   private readonly nativeReleaseRetryLedger = new Map<string, NativeBinaryReference>()
   private latestAdapterState: CoreBluetoothAdapterSnapshot | null = null
@@ -583,6 +584,11 @@ export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary
     return () => this.disconnectListeners.delete(listener)
   }
 
+  onDatabaseChanged(listener: (nativePeerId: string) => void): () => void {
+    this.databaseChangedListeners.add(listener)
+    return () => this.databaseChangedListeners.delete(listener)
+  }
+
   onScanFailure(listener: (safeMessage: string) => void): () => void {
     this.scanFailureListeners.add(listener)
     return () => this.scanFailureListeners.delete(listener)
@@ -637,6 +643,7 @@ export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary
     this.databases.clear()
     this.subscriptionsByAddress.clear()
     this.disconnectListeners.clear()
+    this.databaseChangedListeners.clear()
     this.adapterListeners.clear()
     this.securityListeners.clear()
     this.rejectPending('Native protocol attachment was destroyed')
@@ -765,6 +772,37 @@ export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary
         return
       }
       this.invokeConsumerListener('notification', () => subscription.onValue(bytes))
+      return
+    }
+    if (kind === 'databaseChanged') {
+      this.assertCurrentAttachment(
+        requiredRecord(event, 4, 'rn-android-boundary.event.database-changed-attachment'),
+        'database-changed-event'
+      )
+      const database = requiredRecord(event, 8, 'rn-android-boundary.event.database')
+      const connectionPath = requiredRecord(database, 1, 'rn-android-boundary.event.database-connection')
+      const nativePeerId = requiredString(connectionPath, 2, 'rn-android-boundary.event.database-peer')
+      const connection = this.connections.get(nativePeerId)
+      const currentDatabase = this.databases.get(nativePeerId)
+      if (
+        connection === undefined ||
+        connection.state !== 'connected' ||
+        currentDatabase === undefined ||
+        !sameDatabasePath(currentDatabase, database) ||
+        !sameConnectionPath(connection.record, connectionPath)
+      ) {
+        console.error(
+          '[ReactNativeAndroidProtocolBoundary.receiveEvent] Stale databaseChanged event was quarantined:',
+          { nativePeerId, databaseGeneration: optionalString(database, 3) }
+        )
+        return
+      }
+      for (const listener of this.databaseChangedListeners) {
+        this.invokeConsumerListener('databaseChanged', () => listener(nativePeerId))
+      }
+      if (this.databases.get(nativePeerId) === currentDatabase) {
+        this.databases.delete(nativePeerId)
+      }
       return
     }
     if (kind === 'connectionLost') {
@@ -970,6 +1008,7 @@ export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary
     this.databases.clear()
     this.subscriptionsByAddress.clear()
     this.disconnectListeners.clear()
+    this.databaseChangedListeners.clear()
     this.adapterListeners.clear()
     this.securityListeners.clear()
     this.rejectPending(reason)
@@ -1148,6 +1187,60 @@ export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary
       }
     }
   }
+}
+
+function sameDatabasePath(left: NativeProtocolRecord, right: NativeProtocolRecord): boolean {
+  if (left.kind !== 'databasePath' || right.kind !== 'databasePath') {
+    return false
+  }
+  return (
+    sameConnectionPath(
+      requiredRecord(left, 1, 'rn-android-boundary.database-path.connection'),
+      requiredRecord(right, 1, 'rn-android-boundary.database-path.connection')
+    ) &&
+    requiredString(left, 2, 'rn-android-boundary.database-path.id') ===
+      requiredString(right, 2, 'rn-android-boundary.database-path.id') &&
+    requiredString(left, 3, 'rn-android-boundary.database-path.generation') ===
+      requiredString(right, 3, 'rn-android-boundary.database-path.generation')
+  )
+}
+
+function sameConnectionPath(left: NativeProtocolRecord, right: NativeProtocolRecord): boolean {
+  if (left.kind !== 'connectionPath' || right.kind !== 'connectionPath') {
+    return false
+  }
+  return (
+    sameAttachmentPath(
+      requiredRecord(left, 1, 'rn-android-boundary.connection-path.attachment'),
+      requiredRecord(right, 1, 'rn-android-boundary.connection-path.attachment')
+    ) &&
+    requiredString(left, 2, 'rn-android-boundary.connection-path.peer') ===
+      requiredString(right, 2, 'rn-android-boundary.connection-path.peer') &&
+    requiredString(left, 3, 'rn-android-boundary.connection-path.id') ===
+      requiredString(right, 3, 'rn-android-boundary.connection-path.id') &&
+    requiredString(left, 4, 'rn-android-boundary.connection-path.lease') ===
+      requiredString(right, 4, 'rn-android-boundary.connection-path.lease') &&
+    requiredString(left, 5, 'rn-android-boundary.connection-path.generation') ===
+      requiredString(right, 5, 'rn-android-boundary.connection-path.generation')
+  )
+}
+
+function sameAttachmentPath(left: NativeProtocolRecord, right: NativeProtocolRecord): boolean {
+  if (left.kind !== 'attachment' || right.kind !== 'attachment') {
+    return false
+  }
+  return (
+    requiredString(left, 1, 'rn-android-boundary.attachment.id') ===
+      requiredString(right, 1, 'rn-android-boundary.attachment.id') &&
+    requiredString(left, 2, 'rn-android-boundary.attachment.backend-instance') ===
+      requiredString(right, 2, 'rn-android-boundary.attachment.backend-instance') &&
+    requiredString(left, 3, 'rn-android-boundary.attachment.backend-generation') ===
+      requiredString(right, 3, 'rn-android-boundary.attachment.backend-generation') &&
+    requiredString(left, 4, 'rn-android-boundary.attachment.adapter') ===
+      requiredString(right, 4, 'rn-android-boundary.attachment.adapter') &&
+    requiredString(left, 5, 'rn-android-boundary.attachment.adapter-generation') ===
+      requiredString(right, 5, 'rn-android-boundary.attachment.adapter-generation')
+  )
 }
 
 function isAbortSignalAborted(signal: AbortSignal | null): boolean {

@@ -215,6 +215,72 @@ describe('React Native Android descriptor protocol boundary', () => {
     expect(runtime.buffers.size).toBe(0)
     expect(control.closedAttachments).toHaveLength(1)
   })
+
+  test('routes an active databaseChanged event through generation invalidation and preserves cleanup', async () => {
+    const control = new DescriptorControl()
+    const runtime = new DescriptorRuntime()
+    global.__unifiedBleNativeProtocolV2 = runtime
+    const boundary = new ReactNativeAndroidProtocolBoundary(control, 'database-changed-owner')
+    boundary.bindAttachment({
+      attachmentId: 'database-changed-attachment',
+      backendInstanceId: 'database-changed-backend',
+      backendGeneration: 'database-changed-generation',
+      adapterId: 'database-changed-adapter',
+      adapterGeneration: 'database-changed-adapter-generation'
+    })
+
+    await boundary.open()
+    await boundary.connect(peerId)
+    const firstSnapshot = await boundary.discover(peerId)
+    const firstCharacteristic = firstSnapshot.services[0].characteristics[0]
+    const firstAddress = {
+      nativePeerId: peerId,
+      serviceUuid: firstSnapshot.services[0].uuid,
+      serviceOccurrence: firstSnapshot.services[0].occurrence,
+      characteristicUuid: firstCharacteristic.uuid,
+      characteristicOccurrence: firstCharacteristic.occurrence
+    }
+    const changedPeers = []
+    const cleanup = []
+    expect(typeof boundary.onDatabaseChanged).toBe('function')
+    boundary.onDatabaseChanged(nativePeerId => {
+      changedPeers.push(nativePeerId)
+      cleanup.push(boundary.stopNotify(firstAddress))
+    })
+    await boundary.startNotify(firstAddress, () => undefined)
+
+    const firstDatabase = requiredRecord(runtime.commands[1], 11)
+    runtime.emitEvent('databaseChanged', [field(8, firstDatabase)])
+    await expect(Promise.all(cleanup)).resolves.toEqual([undefined])
+    expect(changedPeers).toEqual([peerId])
+    await expect(boundary.startNotify(firstAddress, () => undefined)).rejects.toMatchObject({
+      normalized: { code: 'gatt.stale-handle' }
+    })
+
+    const secondSnapshot = await boundary.discover(peerId)
+    const secondCharacteristic = secondSnapshot.services[0].characteristics[0]
+    const secondAddress = {
+      nativePeerId: peerId,
+      serviceUuid: secondSnapshot.services[0].uuid,
+      serviceOccurrence: secondSnapshot.services[0].occurrence,
+      characteristicUuid: secondCharacteristic.uuid,
+      characteristicOccurrence: secondCharacteristic.occurrence
+    }
+    const secondDatabase = requiredRecord(runtime.commands[4], 11)
+    expect(requiredString(secondDatabase, 3)).not.toBe(requiredString(firstDatabase, 3))
+
+    runtime.emitEvent('databaseChanged', [field(8, firstDatabase)])
+    expect(changedPeers).toEqual([peerId])
+    expectConsoleErrorMatching(
+      '[ReactNativeAndroidProtocolBoundary.receiveEvent] Stale databaseChanged event was quarantined:',
+      { nativePeerId: peerId, databaseGeneration: requiredString(firstDatabase, 3) }
+    )
+    await expect(boundary.startNotify(secondAddress, () => undefined)).resolves.toBeUndefined()
+    expect(characteristicDatabaseGeneration(runtime.commands[5])).toBe(requiredString(secondDatabase, 3))
+
+    await boundary.destroy()
+    expect(control.closedAttachments).toHaveLength(1)
+  })
 })
 
 class DescriptorControl {
@@ -345,6 +411,10 @@ class DescriptorRuntime {
       ])
       return
     }
+    if (kind === 'unsubscribe') {
+      this.emitResult(command, 'unsubscribed', [field(5, requiredRecord(command, 4))])
+      return
+    }
     if (kind === 'destroy') {
       this.emitResult(command, 'destroyed')
       return
@@ -418,6 +488,12 @@ function commandDescriptorPath(command) {
     characteristicOccurrence: requiredString(characteristic, 3),
     descriptorOccurrence: requiredString(descriptor, 3)
   }
+}
+
+function characteristicDatabaseGeneration(command) {
+  const characteristic = requiredRecord(command, 4)
+  const service = requiredRecord(characteristic, 1)
+  return requiredString(requiredRecord(service, 1), 3)
 }
 
 function binaryReferenceRecord(reference) {
