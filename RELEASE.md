@@ -79,20 +79,24 @@ CI additionally owns the platform-specific native compilation and ABI lanes.
 
 Active `4.0.0-rc.*` release-train candidates publish to npm `latest` so a bare `pnpm add unified-ble-manager` installs the current 4.0 line. The GitHub Release is marked prerelease. Each candidate is cut from the exact current `main` merge commit; the workflow verifies tag/package version equality.
 
-On release day:
+On release day, set `release_candidate` to the exact candidate required by the
+release plan. RC2 is already immutable; the next planned candidate is RC3 after
+PR8 and its gates pass.
 
 ```sh
+release_candidate=4.0.0-rc.N
+
 git fetch origin --tags
 git checkout main
 git pull --ff-only origin main
 
 test "$(git branch --show-current)" = "main"
-test "$(node -p "require('./package.json').version")" = "4.0.0-rc.2"
+test "$(node -p "require('./package.json').version")" = "$release_candidate"
 git diff --exit-code
 git diff --cached --exit-code
 
-git tag -a v4.0.0-rc.2 -m "v4.0.0-rc.2"
-git push origin v4.0.0-rc.2
+git tag -a "v$release_candidate" -m "v$release_candidate"
+git push origin "v$release_candidate"
 ```
 
 Do not push another commit to `main` between the final verification and the tag push.
@@ -145,17 +149,19 @@ Stable versions publish to `latest`. Active `4.0.0-rc.*` candidates also publish
 After the workflow succeeds:
 
 ```sh
-npm view unified-ble-manager@4.0.0-rc.2 version
+release_candidate=4.0.0-rc.N
+
+npm view "unified-ble-manager@$release_candidate" version
 npm view unified-ble-manager dist-tags --json
-npm view unified-ble-manager@4.0.0-rc.2 repository --json
-npm view unified-ble-manager@4.0.0-rc.2 license
+npm view "unified-ble-manager@$release_candidate" repository --json
+npm view "unified-ble-manager@$release_candidate" license
 ```
 
 Then verify:
 
-- npm `latest` resolves to `4.0.0-rc.2`;
+- npm `latest` resolves to the selected release candidate;
 - the npm package page shows provenance for the published artifact;
-- the GitHub Release exists at `v4.0.0-rc.2` and is marked prerelease;
+- the GitHub Release exists at the selected candidate tag and is marked prerelease;
 - its attached tarball/SBOM/license artifacts correspond to the release workflow output;
 - a clean consumer can install `unified-ble-manager` (no version pin) and import the documented host entrypoints.
 
