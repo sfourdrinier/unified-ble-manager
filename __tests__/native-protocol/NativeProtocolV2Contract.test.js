@@ -141,11 +141,17 @@ describe('Native Protocol v2 schema authority', () => {
       expect(appleHeader).toBeDefined()
       const android = fs.readFileSync(androidSpec, 'utf8')
       const apple = fs.readFileSync(appleHeader, 'utf8')
+      const androidImplementation = read(
+        'android/src/main/java/com/sfourdrinier/unifiedblemanager/protocol/UnifiedBleProtocolControlModule.java'
+      )
+      const appleImplementation = read('ios/UnifiedBleProtocolControl.mm')
       const appleControlStart = apple.indexOf('namespace NativeUnifiedBleProtocolControl')
       const appleControlEnd = apple.indexOf('NS_ASSUME_NONNULL_END', appleControlStart)
       const appleControl = apple.slice(appleControlStart, appleControlEnd)
       expect(android).toContain('NativeUnifiedBleProtocolControlSpec')
       expect(android).toContain('handshake')
+      expect(android).toContain('bootstrapRestorationIdentity')
+      expect(androidImplementation).toContain('ubm-restoration-v1')
       expect(android).toContain('cancelOperation(ReadableMap correlation')
       expect(android).toContain('closeAttachment(ReadableMap attachment')
       expect(android).not.toMatch(/Uint8Array|ArrayBuffer|Base64/)
@@ -153,6 +159,8 @@ describe('Native Protocol v2 schema authority', () => {
       expect(appleControlEnd).toBeGreaterThan(appleControlStart)
       expect(appleControl).toContain('NativeUnifiedBleProtocolControlSpec')
       expect(appleControl).toContain('handshake')
+      expect(appleControl).toContain('bootstrapRestorationIdentity')
+      expect(appleImplementation).toContain('ubm-restoration-v1')
       expect(appleControl).not.toMatch(/Uint8Array|ArrayBuffer|Base64/)
     } finally {
       fs.rmSync(output, { recursive: true, force: true })

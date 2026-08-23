@@ -1,4 +1,6 @@
 import { type ConfigPlugin, withAndroidManifest, AndroidConfig } from 'expo/config-plugins'
+import type { LegacyLocationPolicy, NativeLoggingLevel } from './expoPluginSchema'
+import { setUnifiedBleNativeLoggingAndroidManifest } from './withBLEDebugLogging'
 
 type InnerManifest = AndroidConfig.Manifest.AndroidManifest['manifest']
 
@@ -56,18 +58,39 @@ const managedBluetoothPermissions: readonly ManagedBluetoothPermission[] = Objec
 ])
 
 export const withBLEAndroidManifest: ConfigPlugin<{
-  requiresBluetoothLeHardware: boolean
+  requiredHardware: boolean
   neverForLocation: boolean
-}> = (config, { requiresBluetoothLeHardware, neverForLocation }) =>
+  legacyLocation: LegacyLocationPolicy
+  nativeLogging?: NativeLoggingLevel
+}> = (config, { requiredHardware, neverForLocation, legacyLocation, nativeLogging }) =>
   withAndroidManifest(config, config => {
-    config.modResults = reconcileBluetoothPermissions(config.modResults)
-    config.modResults = addLocationPermissionToManifest(config.modResults, neverForLocation)
-    config.modResults = addScanPermissionToManifest(config.modResults, neverForLocation)
-    if (requiresBluetoothLeHardware) {
-      config.modResults = addBLEHardwareFeatureToManifest(config.modResults)
-    }
+    config.modResults = reconcileExpoAndroidManifest(config.modResults, {
+      requiredHardware,
+      neverForLocation,
+      legacyLocation
+    })
+    setUnifiedBleNativeLoggingAndroidManifest(config.modResults, nativeLogging)
     return config
   })
+
+export interface ExpoAndroidManifestOptions {
+  readonly requiredHardware: boolean
+  readonly neverForLocation: boolean
+  readonly legacyLocation: LegacyLocationPolicy
+  readonly nativeLogging?: NativeLoggingLevel
+}
+
+/** Applies the complete managed Android projection with stable ordering and removal. */
+export function reconcileExpoAndroidManifest(
+  androidManifest: AndroidManifestWithExtraTools,
+  options: ExpoAndroidManifestOptions
+): AndroidManifestWithExtraTools {
+  reconcileBluetoothPermissions(androidManifest)
+  reconcileScanPermission(androidManifest, options.neverForLocation)
+  reconcileLegacyLocationPermissions(androidManifest, options.legacyLocation, options.neverForLocation)
+  reconcileBLEHardwareFeature(androidManifest, options.requiredHardware)
+  return androidManifest
+}
 
 /**
  * Keeps one canonical declaration for each permission whose Android platform
@@ -82,7 +105,7 @@ export function reconcileBluetoothPermissions(
     androidManifest.manifest['uses-permission'] = []
   }
 
-  AndroidConfig.Manifest.ensureToolsAvailable(androidManifest)
+  ensureToolsAvailable(androidManifest)
   const existingPermissions = androidManifest.manifest['uses-permission']
   const unmatchedPermissions: ManifestUsesPermissionWithExtraTools[] = []
   const reconciledPermissions = new Map<string, ManifestUsesPermissionWithExtraTools>()
@@ -238,4 +261,91 @@ export function addBLEHardwareFeatureToManifest(
     })
   }
   return androidManifest
+}
+
+function reconcileScanPermission(androidManifest: AndroidManifestWithExtraTools, neverForLocation: boolean): void {
+  if (!Array.isArray(androidManifest.manifest['uses-permission'])) {
+    androidManifest.manifest['uses-permission'] = []
+  }
+  const scanPermissions = androidManifest.manifest['uses-permission'].filter(
+    item => item.$['android:name'] === 'android.permission.BLUETOOTH_SCAN'
+  )
+  androidManifest.manifest['uses-permission'] = androidManifest.manifest['uses-permission'].filter(
+    item => item.$['android:name'] !== 'android.permission.BLUETOOTH_SCAN'
+  )
+  ensureToolsAvailable(androidManifest)
+  const existing = scanPermissions[0]
+  const scanPermission = {
+    $: {
+      ...(existing?.$ ?? {}),
+      'android:name': 'android.permission.BLUETOOTH_SCAN',
+      ...(neverForLocation ? { 'android:usesPermissionFlags': 'neverForLocation' } : {}),
+      'tools:targetApi': '31'
+    }
+  }
+  if (!neverForLocation) delete scanPermission.$['android:usesPermissionFlags']
+
+  const permissions = androidManifest.manifest['uses-permission']
+  const connectIndex = permissions.findIndex(item => item.$['android:name'] === 'android.permission.BLUETOOTH_CONNECT')
+  permissions.splice(connectIndex < 0 ? permissions.length : connectIndex, 0, scanPermission)
+}
+
+function ensureToolsAvailable(androidManifest: AndroidManifestWithExtraTools): void {
+  if (androidManifest.manifest.$ === undefined) {
+    androidManifest.manifest.$ = {
+      'xmlns:android': 'http://schemas.android.com/apk/res/android'
+    }
+  }
+  AndroidConfig.Manifest.ensureToolsAvailable(androidManifest)
+}
+
+function reconcileLegacyLocationPermissions(
+  androidManifest: AndroidManifestWithExtraTools,
+  legacyLocation: LegacyLocationPolicy,
+  neverForLocation: boolean
+): void {
+  const existing = Array.isArray(androidManifest.manifest['uses-permission-sdk-23'])
+    ? androidManifest.manifest['uses-permission-sdk-23']
+    : []
+  const retained = existing.filter(
+    item =>
+      item.$['android:name'] !== 'android.permission.ACCESS_COARSE_LOCATION' &&
+      item.$['android:name'] !== 'android.permission.ACCESS_FINE_LOCATION'
+  )
+  if (legacyLocation === 'none') {
+    if (retained.length === 0) delete androidManifest.manifest['uses-permission-sdk-23']
+    else androidManifest.manifest['uses-permission-sdk-23'] = retained
+    return
+  }
+
+  const maxSdkVersion = legacyLocation === 'auto' && neverForLocation ? '30' : undefined
+  const locationAttributes = (name: string) => ({
+    $: {
+      'android:name': name,
+      ...(maxSdkVersion === undefined ? {} : { 'android:maxSdkVersion': maxSdkVersion })
+    }
+  })
+  androidManifest.manifest['uses-permission-sdk-23'] = [
+    ...retained,
+    locationAttributes('android.permission.ACCESS_COARSE_LOCATION'),
+    locationAttributes('android.permission.ACCESS_FINE_LOCATION')
+  ]
+}
+
+function reconcileBLEHardwareFeature(androidManifest: AndroidManifestWithExtraTools, requiredHardware: boolean): void {
+  const features = Array.isArray(androidManifest.manifest['uses-feature'])
+    ? androidManifest.manifest['uses-feature'].filter(
+        feature => feature.$['android:name'] !== 'android.hardware.bluetooth_le'
+      )
+    : []
+  if (requiredHardware) {
+    features.push({
+      $: {
+        'android:name': 'android.hardware.bluetooth_le',
+        'android:required': 'true'
+      }
+    })
+  }
+  if (features.length === 0) delete androidManifest.manifest['uses-feature']
+  else androidManifest.manifest['uses-feature'] = features
 }

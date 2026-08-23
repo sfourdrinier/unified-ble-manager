@@ -16,6 +16,12 @@ import com.facebook.react.bridge.WritableMap;
 import com.facebook.react.module.annotations.ReactModule;
 import com.sfourdrinier.unifiedblemanager.NativeUnifiedBleProtocolControlSpec;
 
+import java.io.ByteArrayOutputStream;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.regex.Pattern;
+
 @ReactModule(name = UnifiedBleProtocolControlModule.NAME)
 public final class UnifiedBleProtocolControlModule extends NativeUnifiedBleProtocolControlSpec {
   public static final String NAME = "UnifiedBleProtocolControl";
@@ -27,6 +33,10 @@ public final class UnifiedBleProtocolControlModule extends NativeUnifiedBleProto
   private static final int MAXIMUM_CONTROL_RECORD_BYTES = 262144;
   private static final int MAXIMUM_BINARY_PAYLOAD_BYTES = 524288;
   private static final double MAXIMUM_SAFE_INTEGER = 9007199254740991.0;
+  private static final String RESTORATION_DOMAIN = "ubm-restoration-v1";
+  private static final Pattern RESTORATION_TOKEN = Pattern.compile("[A-Za-z0-9][A-Za-z0-9._-]{0,127}");
+  private static final char[] URL_ALPHABET =
+      "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_".toCharArray();
 
   static {
     System.loadLibrary("unified_ble_native_protocol");
@@ -46,6 +56,28 @@ public final class UnifiedBleProtocolControlModule extends NativeUnifiedBleProto
   @NonNull
   public String getName() {
     return NAME;
+  }
+
+  @Override
+  public synchronized void bootstrapRestorationIdentity(ReadableMap request, Promise promise) {
+    try {
+      final String restorationId = requiredRestorationToken(request, "restorationId", 128);
+      final String generation = requiredRestorationToken(request, "generation", 64);
+      final String applicationId = requiredStringValue(reactContext.getPackageName(), "applicationId");
+      final String restore = deriveRestorationValue(applicationId, restorationId, generation, "restore");
+      final WritableMap result = Arguments.createMap();
+      result.putString("applicationId", applicationId);
+      result.putString("restorationId", restorationId);
+      result.putString("generation", generation);
+      result.putString("restoreIdentifier", applicationId + ".ubm." + restore.substring(0, 22));
+      result.putString("namespaceValue", "ubm-ns:" + deriveRestorationValue(applicationId, restorationId, generation, "namespace"));
+      result.putString("clientId", "ubm-client:" + deriveRestorationValue(applicationId, restorationId, generation, "client"));
+      result.putString("hostSessionScope", "ubm-host:" + deriveRestorationValue(applicationId, restorationId, generation, "host"));
+      promise.resolve(result);
+    } catch (RuntimeException error) {
+      Log.e(TAG, "bootstrapRestorationIdentity failed", error);
+      promise.reject("nativeRestorationBootstrap", error.getMessage(), error);
+    }
   }
 
   @Override
@@ -241,10 +273,83 @@ public final class UnifiedBleProtocolControlModule extends NativeUnifiedBleProto
 
   private static String requiredString(ReadableMap map, String key) {
     final String value = map.getString(key);
+    return requiredStringValue(value, key);
+  }
+
+  private static String requiredStringValue(String value, String key) {
     if (value == null || value.isEmpty()) {
       throw new IllegalArgumentException("Required native protocol string is missing: " + key);
     }
     return value;
+  }
+
+  private static String requiredRestorationToken(ReadableMap map, String key, int maximumBytes) {
+    final String value = requiredString(map, key);
+    if (!RESTORATION_TOKEN.matcher(value).matches() || value.getBytes(StandardCharsets.UTF_8).length > maximumBytes) {
+      throw new IllegalArgumentException("Invalid restoration token: " + key);
+    }
+    return value;
+  }
+
+  private static String deriveRestorationValue(
+      String applicationId, String restorationId, String generation, String label) {
+    final byte[] root = sha256(concatenate(
+        utf8(RESTORATION_DOMAIN),
+        lengthPrefixed(applicationId),
+        lengthPrefixed(restorationId),
+        lengthPrefixed(generation)));
+    return base64Url(sha256(concatenate(root, new byte[] {0}, utf8(label))));
+  }
+
+  private static byte[] utf8(String value) {
+    return value.getBytes(StandardCharsets.UTF_8);
+  }
+
+  private static byte[] lengthPrefixed(String value) {
+    final byte[] bytes = utf8(value);
+    final ByteArrayOutputStream output = new ByteArrayOutputStream(4 + bytes.length);
+    output.write((bytes.length >>> 24) & 0xff);
+    output.write((bytes.length >>> 16) & 0xff);
+    output.write((bytes.length >>> 8) & 0xff);
+    output.write(bytes.length & 0xff);
+    output.write(bytes, 0, bytes.length);
+    return output.toByteArray();
+  }
+
+  private static byte[] concatenate(byte[]... values) {
+    final ByteArrayOutputStream output = new ByteArrayOutputStream();
+    for (byte[] value : values) output.write(value, 0, value.length);
+    return output.toByteArray();
+  }
+
+  private static byte[] sha256(byte[] value) {
+    try {
+      return MessageDigest.getInstance("SHA-256").digest(value);
+    } catch (NoSuchAlgorithmException error) {
+      throw new IllegalStateException("SHA-256 is unavailable", error);
+    }
+  }
+
+  private static String base64Url(byte[] value) {
+    final StringBuilder output = new StringBuilder((value.length * 4 + 2) / 3);
+    for (int index = 0; index < value.length; index += 3) {
+      final int first = value[index] & 0xff;
+      output.append(URL_ALPHABET[first >>> 2]);
+      if (index + 1 >= value.length) {
+        output.append(URL_ALPHABET[(first & 0x03) << 4]);
+        break;
+      }
+      final int second = value[index + 1] & 0xff;
+      output.append(URL_ALPHABET[((first & 0x03) << 4) | (second >>> 4)]);
+      if (index + 2 >= value.length) {
+        output.append(URL_ALPHABET[(second & 0x0f) << 2]);
+        break;
+      }
+      final int third = value[index + 2] & 0xff;
+      output.append(URL_ALPHABET[((second & 0x0f) << 2) | (third >>> 6)]);
+      output.append(URL_ALPHABET[third & 0x3f]);
+    }
+    return output.toString();
   }
 
   private static long requiredPositiveInteger(ReadableMap map, String key) {

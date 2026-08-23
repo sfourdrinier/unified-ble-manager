@@ -14,7 +14,7 @@ const legacyBridgePaths = Object.freeze([
   'ios/BlePlxRuntimeDispatch.h',
   'ios/BlePlxTurboModule.mm',
   'ios/Owned/BlePlxRadioQueue.swift',
-  'ios/Owned/OwnedCoreBluetoothAdapter.swift',
+  'ios/Owned/OwnedCoreBluetoothAdapter.swift'
 ])
 
 const retiredSourceDirectories = Object.freeze([
@@ -44,9 +44,7 @@ const requiredProtocolPaths = Object.freeze([
 
 describe('iOS Native Protocol 4.0 source boundary', () => {
   test('ships only the Unified BLE protocol bridge and owned protocol radio', () => {
-    const remainingLegacyPaths = legacyBridgePaths.filter(relativePath =>
-      fs.existsSync(path.join(root, relativePath))
-    )
+    const remainingLegacyPaths = legacyBridgePaths.filter(relativePath => fs.existsSync(path.join(root, relativePath)))
 
     expect(remainingLegacyPaths).toEqual([])
     for (const relativePath of retiredSourceDirectories) {
@@ -70,8 +68,8 @@ describe('iOS Native Protocol 4.0 source boundary', () => {
     expect(podspec).not.toMatch(/BlePlx(?:TurboModule|RuntimeDispatch|Restoration|RadioQueue|DebugLogging)/)
     expect(podspec).not.toContain('MultiplatformBleAdapter')
     expect(podspec).not.toContain('subspec "Restoration"')
-    expect(expoPlugin).toContain('iosNativeProtocolRestoration')
-    expect(expoPlugin).toContain('UnifiedBleProtocolRestoreIdentifier')
+    expect(expoPlugin).toContain('UnifiedBleProtocolRestorationId')
+    expect(expoPlugin).toContain('UnifiedBleProtocolRestorationGeneration')
     expect(expoPlugin).not.toContain('withBLERestorationPodfile')
     expect(expoPlugin).not.toContain('iosEnableRestoration')
     expect(expoPlugin).not.toContain('iosNativeProtocolRestorationIdentifier')

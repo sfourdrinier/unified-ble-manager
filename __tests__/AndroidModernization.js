@@ -99,7 +99,7 @@ describe('Android RN 0.86 unified protocol boundary', () => {
     expect(radio).not.toMatch(/com\.sfourdrinier\.unifiedblemanager\.(adapter|converter)|Base64/)
   })
 
-  test('does not declare a foreground service that the protocol does not own', () => {
+  test('keeps foreground-service declarations explicit to the Expo plugin', () => {
     const manifests = [
       read('android/src/main/AndroidManifest.xml'),
       read('android/src/main/AndroidManifestNew.xml'),
@@ -110,7 +110,7 @@ describe('Android RN 0.86 unified protocol boundary', () => {
     for (const manifest of manifests) {
       expect(manifest).not.toMatch(/BlePlxForegroundService|FOREGROUND_SERVICE|POST_NOTIFICATIONS/)
     }
-    expect(plugin).not.toMatch(/androidEnableForegroundService|withBLEAndroidForegroundService/)
-    expect(fs.existsSync(path.join(root, 'plugin/src/withBLEAndroidForegroundService.ts'))).toBe(false)
+    expect(plugin).toContain('withBLEAndroidForegroundService')
+    expect(fs.existsSync(path.join(root, 'plugin/src/withBLEAndroidForegroundService.ts'))).toBe(true)
   })
 })

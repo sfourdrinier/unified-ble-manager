@@ -369,6 +369,21 @@ export interface NativeOperationCorrelation {
   nonce: string
 }
 
+export interface NativeRestorationBootstrapRequest {
+  restorationId: string
+  generation: string
+}
+
+export interface NativeRestorationBootstrapIdentity {
+  applicationId: string
+  restorationId: string
+  generation: string
+  restoreIdentifier: string
+  namespaceValue: string
+  clientId: string
+  hostSessionScope: string
+}
+
 export type NativeRestorationOutcome =
   | 'adopted'
   | 'alreadyConsumed'
@@ -422,6 +437,9 @@ export interface NativeCancellationControlResult {
 
 export interface Spec extends TurboModule {
   handshake(request: NativeProtocolHandshakeRequest): Promise<NativeProtocolHandshakeResult>
+  bootstrapRestorationIdentity(
+    request: NativeRestorationBootstrapRequest
+  ): Promise<NativeRestorationBootstrapIdentity>
   installExecutionRuntime(): Promise<void>
   cancelOperation(correlation: NativeOperationCorrelation): Promise<NativeCancellationControlResult>
   adoptRestoration(request: NativeRestorationAdoptionRequest): Promise<NativeRestorationAdoptionControlResult>

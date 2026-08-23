@@ -1,12 +1,94 @@
 // __tests__/backends/reactnative/react-native-restoration.test.js
 
+const fs = require('fs')
+const path = require('path')
+const { normalizeRestorationBootstrapRequest } = require('../../../src/backend-contract/restoration')
+const { normalizeBleManagerCreateOptions } = require('../../../src/public/host-identity')
 const { opaqueId, negotiateVersion, version, versionRange } = require('../../../src/backend-contract/primitives')
 const {
   ReactNativeRestorationCoordinator,
-  createReactNativeRestorationFeatureRegistry
+  createReactNativeRestorationFeatureRegistry,
+  bootstrapReactNativeRestorationIdentity
 } = require('../../../src/backends/reactnative/react-native-restoration')
 
 const namespace = 'com.example.restoration'
+
+describe('React Native native-authoritative restoration bootstrap', () => {
+  test('normalizes one application-facing token with generation 1 and rejects RC1 application identity fields', () => {
+    expect(normalizeRestorationBootstrapRequest({ restorationId: 'primary-ble-central' })).toEqual({
+      restorationId: 'primary-ble-central',
+      generation: '1'
+    })
+    expect(normalizeBleManagerCreateOptions({ restoration: { restorationId: 'primary-ble-central' } })).toMatchObject({
+      restoration: { restorationId: 'primary-ble-central', generation: '1' }
+    })
+    expect(() =>
+      normalizeBleManagerCreateOptions({
+        restoration: { applicationId: 'com.example.app', restorationId: 'primary-ble-central' }
+      })
+    ).toThrow()
+  })
+
+  test('the application factory contains no JavaScript restoration derivation path', () => {
+    const source = fs.readFileSync(path.join(__dirname, '../../../src/react-native-app-manager.ts'), 'utf8')
+    expect(source).not.toContain('deriveRestorationIdentity')
+    expect(source).toContain('bootstrapReactNativeRestorationIdentity')
+    expect(source).toContain('nativeIdentity.clientId')
+    expect(source).toContain('nativeIdentity.hostSessionScope')
+  })
+
+  test('sends only the application restoration token and adopts the native identity result', async () => {
+    const nativeIdentity = Object.freeze({
+      applicationId: 'com.example.app',
+      restorationId: 'primary-ble-central',
+      generation: '1',
+      restoreIdentifier: 'com.example.app.ubm.native-restore',
+      namespaceValue: 'ubm-ns:native-namespace',
+      clientId: 'ubm-client:native-client',
+      hostSessionScope: 'ubm-host:native-scope'
+    })
+    const control = {
+      bootstrapRestorationIdentity: jest.fn().mockResolvedValue(nativeIdentity)
+    }
+
+    await expect(
+      bootstrapReactNativeRestorationIdentity(control, { restorationId: 'primary-ble-central', generation: '1' })
+    ).resolves.toEqual(nativeIdentity)
+    expect(control.bootstrapRestorationIdentity).toHaveBeenCalledWith({
+      restorationId: 'primary-ble-central',
+      generation: '1'
+    })
+    expect(control.bootstrapRestorationIdentity.mock.calls[0][0]).not.toHaveProperty('applicationId')
+  })
+
+  test('rejects a native result that changes the requested generation', async () => {
+    const control = {
+      bootstrapRestorationIdentity: jest.fn().mockResolvedValue({
+        applicationId: 'com.example.app',
+        restorationId: 'primary-ble-central',
+        generation: '2',
+        restoreIdentifier: 'com.example.app.ubm.native-restore',
+        namespaceValue: 'ubm-ns:native-namespace',
+        clientId: 'ubm-client:native-client',
+        hostSessionScope: 'ubm-host:native-scope'
+      })
+    }
+
+    await expect(
+      bootstrapReactNativeRestorationIdentity(control, { restorationId: 'primary-ble-central', generation: '1' })
+    ).rejects.toMatchObject({ normalized: { code: 'protocol.violation' } })
+  })
+
+  test('rejects a non-record native bootstrap result as malformed protocol data', async () => {
+    const control = {
+      bootstrapRestorationIdentity: jest.fn().mockResolvedValue(null)
+    }
+
+    await expect(
+      bootstrapReactNativeRestorationIdentity(control, { restorationId: 'primary-ble-central', generation: '1' })
+    ).rejects.toMatchObject({ normalized: { code: 'protocol.malformed' } })
+  })
+})
 
 function versions() {
   const core = {

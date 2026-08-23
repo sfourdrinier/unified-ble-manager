@@ -19,16 +19,20 @@ import {
 } from '../../backend-contract/primitives'
 import type {
   AuthenticatedRestorationClient,
+  NativeRestorationBootstrapIdentity,
   RestorationAdoptionRequest,
   RestorationAdoptionResult,
+  RestorationBootstrapRequest,
   RestorationCoordinator,
   RestorationJournalRecord
 } from '../../backend-contract/restoration'
+import { normalizeRestorationBootstrapRequest } from '../../backend-contract/restoration'
 import {
   MAXIMUM_CONTROL_RECORD_BYTES,
   type RestorationOutcomes
 } from '../../native-protocol/generated/native-protocol-v2-schema'
 import type {
+  NativeRestorationBootstrapRequest,
   NativeRestorationAdoptionControlResult,
   NativeRestorationReplayRecord,
   Spec as NativeProtocolControl
@@ -48,6 +52,33 @@ interface ActiveRestorationBinding {
 /** React Native provider surface with one authority-bound restoration coordinator. */
 export interface ReactNativeRestorationBackendProvider extends BackendProvider<string, NativeBackendIdentity<string>> {
   readonly restoration: ReactNativeRestorationCoordinator
+}
+
+/**
+ * Requests native restoration bootstrap. JavaScript supplies only the one
+ * application-facing token and generation; every internal identity value is
+ * returned by the trusted native host and is validated before use.
+ */
+export async function bootstrapReactNativeRestorationIdentity(
+  control: Pick<NativeProtocolControl, 'bootstrapRestorationIdentity'>,
+  input: { readonly restorationId: string; readonly generation?: string }
+): Promise<NativeRestorationBootstrapIdentity> {
+  const normalized = normalizeRestorationBootstrapRequest(input)
+  const request: NativeRestorationBootstrapRequest = Object.freeze({
+    restorationId: normalized.restorationId,
+    generation: normalized.generation
+  })
+  let result: NativeRestorationBootstrapIdentity
+  try {
+    result = await control.bootstrapRestorationIdentity(request)
+  } catch (error) {
+    if (error instanceof BackendContractError) {
+      throw error
+    }
+    throw contractError('platform.failure', 'restoration', 'react-native-restoration.native-bootstrap')
+  }
+  assertNativeBootstrapIdentity(result, normalized)
+  return Object.freeze({ ...result })
 }
 
 /** Opaque provider-issued binding for one opened React Native native attachment. */
@@ -258,6 +289,40 @@ function restorationLimitation(platform: 'android' | 'apple'): Limitation {
 function assertClient(client: AuthenticatedRestorationClient<string>): void {
   if (String(client.clientId).length === 0 || client.hostSessionScope.length === 0) {
     throw contractError('argument.invalid', 'restoration', 'react-native-restoration.client')
+  }
+}
+
+function assertNativeBootstrapIdentity(
+  result: NativeRestorationBootstrapIdentity,
+  expected: RestorationBootstrapRequest
+): void {
+  if (typeof result !== 'object' || result === null || Array.isArray(result)) {
+    throw contractError('protocol.malformed', 'restoration', 'react-native-restoration.bootstrap-result')
+  }
+  const requiredFields: readonly [keyof NativeRestorationBootstrapIdentity, string][] = [
+    ['applicationId', 'application-id'],
+    ['restorationId', 'restoration-id'],
+    ['generation', 'generation'],
+    ['restoreIdentifier', 'restore-identifier'],
+    ['namespaceValue', 'namespace'],
+    ['clientId', 'client-id'],
+    ['hostSessionScope', 'host-session-scope']
+  ]
+  for (const [field, label] of requiredFields) {
+    if (typeof result[field] !== 'string' || result[field].length === 0) {
+      throw contractError('protocol.malformed', 'restoration', `react-native-restoration.bootstrap-${label}`)
+    }
+  }
+  if (
+    !/^[a-z0-9][a-z0-9._-]*$/.test(result.applicationId) ||
+    result.restorationId !== expected.restorationId ||
+    result.generation !== expected.generation ||
+    !result.restoreIdentifier.startsWith(`${result.applicationId}.ubm.`) ||
+    !result.namespaceValue.startsWith('ubm-ns:') ||
+    !result.clientId.startsWith('ubm-client:') ||
+    !result.hostSessionScope.startsWith('ubm-host:')
+  ) {
+    throw contractError('protocol.violation', 'restoration', 'react-native-restoration.bootstrap-authority')
   }
 }
 

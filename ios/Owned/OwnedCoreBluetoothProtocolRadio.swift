@@ -97,10 +97,17 @@ public final class OwnedCoreBluetoothProtocolRadio: NSObject, CBPeripheralDelega
     var awaitingDescriptors: Int
   }
 
-  @objc public init(restoreIdentifierKey: String?) {
+  @objc public convenience init(restoreIdentifierKey: String?) {
+    self.init(restoreIdentifierKey: restoreIdentifierKey, showPowerAlert: nil)
+  }
+
+  @objc public init(restoreIdentifierKey: String?, showPowerAlert: NSNumber?) {
     queue = Self.radioQueue
     super.init()
     var options = [String: Any]()
+    if let showPowerAlert {
+      options[CBCentralManagerOptionShowPowerAlertKey] = showPowerAlert
+    }
     let configuredCentralDelegate: OwnedCoreBluetoothCentralDelegate
     #if os(iOS)
     if let restoreIdentifierKey, !restoreIdentifierKey.isEmpty {

@@ -1,7 +1,9 @@
 import { AndroidConfig, withAndroidManifest, withInfoPlist, type ConfigPlugin } from 'expo/config-plugins'
+import type { NativeLoggingLevel } from './expoPluginSchema'
 
 export const BLEPLX_DEBUG_LOGGING_PLIST_KEY = 'BlePlxDebugLogging'
 export const BLEPLX_DEBUG_LOGGING_ANDROID_META_DATA_NAME = 'BlePlxDebugLogging'
+export const UNIFIED_BLE_NATIVE_LOGGING_ANDROID_META_DATA_NAME = 'UnifiedBleProtocolNativeLogging'
 
 type ManifestApplication = NonNullable<AndroidConfig.Manifest.AndroidManifest['manifest']['application']>[number]
 
@@ -66,6 +68,45 @@ export function setBlePlxDebugLoggingAndroidManifest(
     })
   }
 
+  return androidManifest
+}
+
+export function setUnifiedBleNativeLoggingAndroidManifest(
+  androidManifest: AndroidConfig.Manifest.AndroidManifest,
+  nativeLogging: NativeLoggingLevel | undefined
+): AndroidConfig.Manifest.AndroidManifest
+export function setUnifiedBleNativeLoggingAndroidManifest(
+  androidManifest: AndroidManifestWithNullableMetadata,
+  nativeLogging: NativeLoggingLevel | undefined
+): AndroidManifestWithNullableMetadata {
+  const applications = androidManifest.manifest.application
+  const mainApplication =
+    applications?.find(application => {
+      const applicationName = application.$?.['android:name']
+      return typeof applicationName === 'string' && applicationName.endsWith('.MainApplication')
+    }) ?? applications?.[0]
+  if (!mainApplication) {
+    throw new Error('AndroidManifest.xml is missing the required application element')
+  }
+
+  const currentMetadata = mainApplication['meta-data']
+  const metadata = Array.isArray(currentMetadata) ? currentMetadata : currentMetadata ? [currentMetadata] : []
+  mainApplication['meta-data'] = metadata
+
+  mainApplication['meta-data'] = metadata.filter(
+    item =>
+      item.$?.['android:name'] !== BLEPLX_DEBUG_LOGGING_ANDROID_META_DATA_NAME &&
+      item.$?.['android:name'] !== UNIFIED_BLE_NATIVE_LOGGING_ANDROID_META_DATA_NAME
+  )
+  if (nativeLogging !== undefined) {
+    mainApplication['meta-data'].push({
+      $: {
+        'android:name': UNIFIED_BLE_NATIVE_LOGGING_ANDROID_META_DATA_NAME,
+        'android:value': nativeLogging
+      }
+    })
+  }
+  if (mainApplication['meta-data'].length === 0) delete mainApplication['meta-data']
   return androidManifest
 }
 

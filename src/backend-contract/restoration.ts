@@ -1,5 +1,6 @@
 // src/backend-contract/restoration.ts
 
+import { contractError } from './errors'
 import type {
   AttachmentId,
   BackendInstanceId,
@@ -9,6 +10,55 @@ import type {
   PeerId,
   SerializableRecord
 } from './primitives'
+
+export const RESTORATION_DERIVATION_DOMAIN = 'ubm-restoration-v1'
+export const DEFAULT_RESTORATION_GENERATION = '1'
+
+const restorationTokenPattern = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/
+
+export interface RestorationBootstrapRequest {
+  readonly restorationId: string
+  readonly generation: string
+}
+
+/** Values derived and returned by the trusted native host before attachment open. */
+export interface NativeRestorationBootstrapIdentity {
+  readonly applicationId: string
+  readonly restorationId: string
+  readonly generation: string
+  readonly restoreIdentifier: string
+  readonly namespaceValue: string
+  readonly clientId: string
+  readonly hostSessionScope: string
+}
+
+export function normalizeRestorationBootstrapRequest(input: {
+  readonly restorationId: string
+  readonly generation?: string
+}): RestorationBootstrapRequest {
+  const keys = Object.keys(input)
+  if (keys.some(key => key !== 'restorationId' && key !== 'generation')) {
+    throw contractError('argument.invalid', 'restoration', 'restoration.bootstrap.unknown-key')
+  }
+  const restorationId = requiredRestorationToken(input.restorationId, 'restoration.bootstrap.restoration-id')
+  const generation =
+    input.generation === undefined
+      ? DEFAULT_RESTORATION_GENERATION
+      : requiredRestorationToken(input.generation, 'restoration.bootstrap.generation', 64)
+  return Object.freeze({ restorationId, generation })
+}
+
+function requiredRestorationToken(value: string, label: string, maximumLength = 128): string {
+  if (
+    typeof value !== 'string' ||
+    value.length === 0 ||
+    value.length > maximumLength ||
+    !restorationTokenPattern.test(value)
+  ) {
+    throw contractError('argument.invalid', 'restoration', label)
+  }
+  return value
+}
 
 export interface RestorationJournalRecord<Attachment extends string> {
   readonly recordVersion: number

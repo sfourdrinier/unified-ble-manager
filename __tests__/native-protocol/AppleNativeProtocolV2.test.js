@@ -40,7 +40,10 @@ describe('Apple Native Protocol v2 radio boundary', () => {
     expect(support).not.toMatch(/BlePlx|Restoration|perform\(/)
     expect(control).toContain('RCTTurboModuleWithJSIBindings')
     expect(control).toContain('installJSIBindingsWithRuntime')
-    expect(control).toContain('UnifiedBleProtocolRestoreIdentifier')
+    expect(control).toContain('UnifiedBleProtocolRestorationId')
+    expect(control).toContain('UnifiedBleProtocolRestorationGeneration')
+    expect(control).toContain('ubm-restoration-v1')
+    expect(control).toContain('bootstrapRestorationIdentity')
     expect(control).toContain('appendRestorationRecords')
     expect(control).not.toContain('Android-only slice')
     expect(execution).toContain('__unifiedBleNativeProtocolV2')
@@ -75,7 +78,7 @@ describe('Apple Native Protocol v2 radio boundary', () => {
     expect(buffer).not.toContain('overflowed_ = false')
   })
 
-  test('requires the complete persisted five-field restoration identity before native append or adoption', () => {
+  test('derives one native restoration identity before append or adoption', () => {
     const control = read('ios/UnifiedBleProtocolControl.mm')
     const configuration = read('native/protocol/include/NativeRestorationConfiguration.hpp')
 
@@ -90,10 +93,12 @@ describe('Apple Native Protocol v2 radio boundary', () => {
       expect(configuration).toContain(`!${field}.empty()`)
     }
     expect(control).toContain('NSString *_restorationRestoreIdentifier;')
-    expect(control).toContain('_restorationRestoreIdentifier = configuredInfoString(@"UnifiedBleProtocolRestoreIdentifier");')
+    expect(control).toContain('_restorationId = configuredInfoString(@"UnifiedBleProtocolRestorationId");')
+    expect(control).toContain('_restorationGeneration = configuredInfoString(@"UnifiedBleProtocolRestorationGeneration");')
+    expect(control).toContain('derivedRestorationIdentity(applicationId, _restorationId, _restorationGeneration)')
     expect(control).toContain('initWithRestoreIdentifierKey:(')
     expect(control).toContain('? _restorationRestoreIdentifier')
-    expect(control).toContain(': nil)];')
+    expect(control).toContain(': nil)\n        showPowerAlert:showPowerAlert];')
     expect(control).toContain('if (hasCompleteRestorationConfiguration(')
     expect(control).toContain('!hasCompleteRestorationConfiguration(')
   })
