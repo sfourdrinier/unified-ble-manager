@@ -96,6 +96,11 @@ const MAX_LIMITATIONS = 32
  * projection is descriptive only; this helper does not evaluate any predicate.
  */
 export function snapshotScanPlan(plan: ScanPlan): ScanPlan {
+  assertExactKeys(
+    plan,
+    ['queryDigest', 'nativeGuarantee', 'native', 'residual', 'unavailable', 'limitations', 'estimatedCost'],
+    'scan plan'
+  )
   const residualQuery = snapshotNormalizedScanQuery(plan.residual.query)
   if (plan.queryDigest !== residualQuery.digest) {
     throw new Error('scan plan residual query digest must match queryDigest')
@@ -103,7 +108,10 @@ export function snapshotScanPlan(plan: ScanPlan): ScanPlan {
   assertNativeGuarantee(plan.nativeGuarantee)
   if (
     plan.nativeGuarantee === 'exact' &&
-    (!plan.native.complete || plan.residual.predicates.length > 0 || !isMatchAllQuery(plan.residual.query))
+    (!plan.native.complete ||
+      !plan.residual.complete ||
+      plan.residual.predicates.length > 0 ||
+      !isMatchAllQuery(plan.residual.query))
   ) {
     throw new Error('exact native projection must be complete for the whole query')
   }
@@ -135,6 +143,11 @@ function isMatchAllQuery(query: NormalizedScanQuery): boolean {
 }
 
 function snapshotProjection(projection: ScanPlanProjection, name: string): ScanPlanProjection {
+  assertExactKeys(
+    projection,
+    name === 'residual' ? ['predicates', 'complete', 'query'] : ['predicates', 'complete'],
+    name
+  )
   if (typeof projection.complete !== 'boolean') {
     throw new Error(`scan plan ${name} contains an invalid completeness value`)
   }
@@ -151,6 +164,7 @@ function snapshotPredicates(
 ): readonly ScanPredicateDescription[] {
   if (predicates.length > maximum) throw new Error(`scan plan ${name} exceeds bounded predicate count`)
   const snapshot = predicates.map(predicate => {
+    assertExactKeys(predicate, ['clauseSet', 'clauseIndex', 'field', 'operator'], `${name}.predicate`)
     if (!Number.isSafeInteger(predicate.clauseIndex) || predicate.clauseIndex < 0) {
       throw new Error(`scan plan ${name} contains an invalid clause index`)
     }
@@ -173,6 +187,7 @@ function snapshotPredicates(
 function snapshotLimitations(limitations: readonly ScanPlanLimitation[]): readonly ScanPlanLimitation[] {
   if (limitations.length > MAX_LIMITATIONS) throw new Error('scan plan exceeds bounded limitation count')
   const snapshot = limitations.map(limitation => {
+    assertExactKeys(limitation, ['code', 'predicate', 'explanation', 'effect'], 'scan plan limitation')
     assertLimitationCode(limitation.code)
     const predicate = snapshotPredicates([limitation.predicate], 'limitation.predicate', 1)[0]
     if (predicate === undefined) throw new Error('scan plan limitation predicate is missing')
@@ -262,4 +277,12 @@ function predicateKey(predicate: ScanPredicateDescription): string {
 
 function compareCanonical(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0
+}
+
+function assertExactKeys(value: object, keys: readonly string[], name: string): void {
+  const actual = Object.keys(value).sort()
+  const expected = [...keys].sort()
+  if (actual.length !== expected.length || actual.some((key, index) => key !== expected[index])) {
+    throw new Error(`${name} contains an unknown key`)
+  }
 }

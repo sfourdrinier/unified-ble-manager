@@ -244,6 +244,18 @@ describe('PR9 scan planner contract and canonical oracle corpus', () => {
     expect(() =>
       snapshotScanPlan({
         queryDigest: residualQuery.digest,
+        nativeGuarantee: 'exact',
+        native: { predicates: [], complete: true },
+        residual: { query: residualQuery, predicates: [], complete: false },
+        unavailable: [],
+        limitations: [],
+        estimatedCost: 'low'
+      })
+    ).toThrow('exact native projection')
+
+    expect(() =>
+      snapshotScanPlan({
+        queryDigest: residualQuery.digest,
         nativeGuarantee: 'safe-superset',
         native: { predicates: [], complete: false },
         residual: { query: residualQuery, predicates: [], complete: false },
@@ -252,5 +264,19 @@ describe('PR9 scan planner contract and canonical oracle corpus', () => {
         estimatedCost: 'low'
       })
     ).toThrow('complete residual')
+
+    const validEmptyQuery = normalizeScanQuery()
+    expect(() =>
+      snapshotScanPlan({
+        queryDigest: validEmptyQuery.digest,
+        nativeGuarantee: 'safe-superset',
+        native: { predicates: [], complete: false },
+        residual: { query: validEmptyQuery, predicates: [], complete: true },
+        unavailable: [],
+        limitations: [],
+        estimatedCost: 'low',
+        unexpected: 'payload'
+      })
+    ).toThrow('unknown key')
   })
 })
