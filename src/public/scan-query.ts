@@ -110,7 +110,7 @@ export function normalizeScanObservation(observation: ScanObservation): Normaliz
       )
     })
   }
-  if (isUnscopedObservation(observation)) throw invalid('scan.observation')
+  if (isUnscopedObservation(observation) || !isNativeObservationShape(observation)) throw invalid('scan.observation')
   const peerReference =
     observation.peerReference === undefined
       ? undefined
@@ -474,7 +474,17 @@ function fieldValue<Value>(
 }
 
 function isStateField<Value>(value: unknown): value is { readonly state: string; readonly value?: Value } {
-  return typeof value === 'object' && value !== null && 'state' in value
+  if (typeof value !== 'object' || value === null || !('state' in value)) return false
+  const state = Reflect.get(value, 'state')
+  if (state === 'present') {
+    if (!('value' in value) || !('provenance' in value)) throw invalid('scan.observation.field-present')
+    return true
+  }
+  if (state === 'absent' || state === 'unavailable') {
+    if (!('reason' in value) || !('provenance' in value)) throw invalid('scan.observation.field-absent')
+    return true
+  }
+  throw invalid('scan.observation.field-state')
 }
 
 function mapField<Value, Result>(
@@ -497,6 +507,39 @@ function isIpcAdvertisement(value: ScanObservation): value is CompactScanAdverti
 
 function isUnscopedObservation(value: ScanObservation): boolean {
   return typeof value === 'object' && value !== null && !('device' in value) && !('peerId' in value)
+}
+
+function isNativeObservationShape(value: ScanObservation): boolean {
+  if (typeof value !== 'object' || value === null || !('device' in value)) return false
+  const required = [
+    'device',
+    'provenance',
+    'sourceTimestamp',
+    'receivedAtMonotonicMs',
+    'ingressOrdinal',
+    'scanSessionId',
+    'localName',
+    'rssi',
+    'txPower',
+    'connectable',
+    'appearance',
+    'serviceUuids',
+    'solicitedServiceUuids',
+    'overflowServiceUuids',
+    'serviceData',
+    'manufacturerData',
+    'rawRecord',
+    'scanResponseRecord'
+  ]
+  const keys = Object.keys(value)
+    .filter(key => key !== 'peerReference')
+    .sort()
+  return (
+    required
+      .slice()
+      .sort()
+      .every((key, index) => keys[index] === key) && keys.length === required.length
+  )
 }
 
 function isNormalizedObservation(value: ScanObservation): value is NormalizedScanObservation {

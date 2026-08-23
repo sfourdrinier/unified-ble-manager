@@ -87,7 +87,9 @@ function assertNormalizedQueryShape(query: NormalizedScanQuery): void {
     typeof query.digest !== 'string' ||
     query.digest.length === 0 ||
     (query.anyOf !== null && !Array.isArray(query.anyOf)) ||
-    (query.exclude !== null && !Array.isArray(query.exclude))
+    (query.exclude !== null && !Array.isArray(query.exclude)) ||
+    (query.anyOf !== null && query.anyOf.length === 0) ||
+    (query.exclude !== null && query.exclude.length === 0)
   ) {
     throw new Error('normalized scan query must be a frozen canonical query')
   }
@@ -125,6 +127,17 @@ function assertNormalizedClause(clause: NormalizedScanClause, path: string): voi
   }
   if (clause.connectable !== undefined && typeof clause.connectable !== 'boolean') {
     throw invalidNormalized(`${path}.connectable`)
+  }
+  if (
+    clause.peers === null &&
+    clause.services === null &&
+    clause.names === null &&
+    clause.manufacturerData === null &&
+    clause.serviceData === null &&
+    clause.rssi === null &&
+    clause.connectable === undefined
+  ) {
+    throw invalidNormalized(`${path}.empty`)
   }
 }
 

@@ -55,6 +55,7 @@ export interface ScanPlanLimitation {
 
 export interface ScanPlan {
   readonly queryDigest: string
+  readonly residualQueryDigest: string
   readonly nativeGuarantee: 'exact' | 'safe-superset'
   readonly native: ScanPlanProjection
   readonly residual: ScanPlanResidualProjection
@@ -98,12 +99,21 @@ const MAX_LIMITATIONS = 32
 export function snapshotScanPlan(plan: ScanPlan): ScanPlan {
   assertExactKeys(
     plan,
-    ['queryDigest', 'nativeGuarantee', 'native', 'residual', 'unavailable', 'limitations', 'estimatedCost'],
+    [
+      'queryDigest',
+      'residualQueryDigest',
+      'nativeGuarantee',
+      'native',
+      'residual',
+      'unavailable',
+      'limitations',
+      'estimatedCost'
+    ],
     'scan plan'
   )
   const residualQuery = snapshotNormalizedScanQuery(plan.residual.query)
-  if (plan.queryDigest !== residualQuery.digest) {
-    throw new Error('scan plan residual query digest must match queryDigest')
+  if (plan.residualQueryDigest !== residualQuery.digest) {
+    throw new Error('scan plan residual query digest must match residualQueryDigest')
   }
   assertNativeGuarantee(plan.nativeGuarantee)
   if (
@@ -128,6 +138,7 @@ export function snapshotScanPlan(plan: ScanPlan): ScanPlan {
   const limitations = snapshotLimitations(plan.limitations)
   const snapshot = {
     queryDigest: plan.queryDigest,
+    residualQueryDigest: plan.residualQueryDigest,
     nativeGuarantee: plan.nativeGuarantee,
     native,
     residual,

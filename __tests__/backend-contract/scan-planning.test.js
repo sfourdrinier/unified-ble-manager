@@ -4,6 +4,7 @@ const {
   observationMatchesScanQuery
 } = require('../../src/public/scan-query')
 const { snapshotScanPlan } = require('../../src/backend-contract/scan-planning')
+const { scanQueryDigest } = require('../../src/backend-contract/scan-query')
 const vectors = require('./fixtures/scan-query-pr9-planner.golden.json')
 
 function hydrate(value, key) {
@@ -47,6 +48,7 @@ describe('PR9 scan planner contract and canonical oracle corpus', () => {
       const normalizedObservation = normalizeScanObservation(hydrate(vector.observation))
       const plan = snapshotScanPlan({
         queryDigest: normalizedQuery.digest,
+        residualQueryDigest: normalizedQuery.digest,
         nativeGuarantee: 'safe-superset',
         native: { predicates: [], complete: false },
         residual: { query: normalizedQuery, predicates: [], complete: true },
@@ -78,6 +80,7 @@ describe('PR9 scan planner contract and canonical oracle corpus', () => {
     const residualQuery = normalizeScanQuery({ anyOf: [{ names: { prefixes: ['Heart'] } }] })
     const plan = snapshotScanPlan({
       queryDigest: residualQuery.digest,
+      residualQueryDigest: residualQuery.digest,
       nativeGuarantee: 'safe-superset',
       native: {
         predicates: [{ clauseSet: 'anyOf', clauseIndex: 0, field: 'names', operator: 'prefixes' }],
@@ -110,7 +113,7 @@ describe('PR9 scan planner contract and canonical oracle corpus', () => {
     expect(Object.isFrozen(plan.residual)).toBe(true)
     expect(Object.isFrozen(plan.limitations)).toBe(true)
     expect(JSON.stringify(plan.limitations)).not.toContain('Heart')
-    expect(() => snapshotScanPlan({ ...plan, queryDigest: 'scan-query-v1:0000000000000000' })).toThrow(
+    expect(() => snapshotScanPlan({ ...plan, residualQueryDigest: 'scan-query-v1:0000000000000000' })).toThrow(
       'residual query digest'
     )
 
@@ -119,6 +122,7 @@ describe('PR9 scan planner contract and canonical oracle corpus', () => {
     })
     const bytePlan = snapshotScanPlan({
       queryDigest: byteQuery.digest,
+      residualQueryDigest: byteQuery.digest,
       nativeGuarantee: 'safe-superset',
       native: { predicates: [], complete: false },
       residual: { query: byteQuery, predicates: [], complete: true },
@@ -138,6 +142,7 @@ describe('PR9 scan planner contract and canonical oracle corpus', () => {
     expect(() =>
       snapshotScanPlan({
         queryDigest: emptyQuery.digest,
+        residualQueryDigest: emptyQuery.digest,
         nativeGuarantee: 'safe-superset',
         native: {
           predicates: [{ clauseSet: 'anyOf', clauseIndex: 0, field: 'not-a-field', operator: 'exact' }],
@@ -154,6 +159,7 @@ describe('PR9 scan planner contract and canonical oracle corpus', () => {
     expect(() =>
       snapshotScanPlan({
         queryDigest: residualQuery.digest,
+        residualQueryDigest: residualQuery.digest,
         nativeGuarantee: 'safe-superset',
         native: { predicates: [], complete: false },
         residual: { query: { digest: residualQuery.digest }, predicates: [], complete: true },
@@ -167,6 +173,7 @@ describe('PR9 scan planner contract and canonical oracle corpus', () => {
     expect(() =>
       snapshotScanPlan({
         queryDigest: residualQuery.digest,
+        residualQueryDigest: residualQuery.digest,
         nativeGuarantee: 'safe-superset',
         native: { predicates: [], complete: false },
         residual: { query: forgedQuery, predicates: [], complete: true },
@@ -176,9 +183,28 @@ describe('PR9 scan planner contract and canonical oracle corpus', () => {
       })
     ).toThrow('digest')
 
+    const emptyAnyOfQuery = Object.freeze({
+      anyOf: Object.freeze([]),
+      exclude: null,
+      digest: scanQueryDigest({ anyOf: [], exclude: null })
+    })
+    expect(() =>
+      snapshotScanPlan({
+        queryDigest: emptyAnyOfQuery.digest,
+        residualQueryDigest: emptyAnyOfQuery.digest,
+        nativeGuarantee: 'safe-superset',
+        native: { predicates: [], complete: false },
+        residual: { query: emptyAnyOfQuery, predicates: [], complete: true },
+        unavailable: [],
+        limitations: [],
+        estimatedCost: 'low'
+      })
+    ).toThrow('normalized scan query')
+
     expect(() =>
       snapshotScanPlan({
         queryDigest: residualQuery.digest,
+        residualQueryDigest: residualQuery.digest,
         nativeGuarantee: 'safe-superset',
         native: { predicates: [], complete: false },
         residual: { query: residualQuery, predicates: [], complete: true },
@@ -198,6 +224,7 @@ describe('PR9 scan planner contract and canonical oracle corpus', () => {
     expect(() =>
       snapshotScanPlan({
         queryDigest: residualQuery.digest,
+        residualQueryDigest: residualQuery.digest,
         nativeGuarantee: 'safe-superset',
         native: { predicates: [], complete: false },
         residual: { query: residualQuery, predicates: [], complete: true },
@@ -217,6 +244,7 @@ describe('PR9 scan planner contract and canonical oracle corpus', () => {
     expect(() =>
       snapshotScanPlan({
         queryDigest: residualQuery.digest,
+        residualQueryDigest: residualQuery.digest,
         nativeGuarantee: 'exact',
         native: { predicates: [], complete: false },
         residual: { query: residualQuery, predicates: [], complete: true },
@@ -229,6 +257,7 @@ describe('PR9 scan planner contract and canonical oracle corpus', () => {
     expect(() =>
       snapshotScanPlan({
         queryDigest: residualQuery.digest,
+        residualQueryDigest: residualQuery.digest,
         nativeGuarantee: 'exact',
         native: {
           predicates: [{ clauseSet: 'anyOf', clauseIndex: 0, field: 'names', operator: 'prefixes' }],
@@ -244,6 +273,7 @@ describe('PR9 scan planner contract and canonical oracle corpus', () => {
     expect(() =>
       snapshotScanPlan({
         queryDigest: residualQuery.digest,
+        residualQueryDigest: residualQuery.digest,
         nativeGuarantee: 'exact',
         native: { predicates: [], complete: true },
         residual: { query: residualQuery, predicates: [], complete: false },
@@ -256,6 +286,7 @@ describe('PR9 scan planner contract and canonical oracle corpus', () => {
     expect(() =>
       snapshotScanPlan({
         queryDigest: residualQuery.digest,
+        residualQueryDigest: residualQuery.digest,
         nativeGuarantee: 'safe-superset',
         native: { predicates: [], complete: false },
         residual: { query: residualQuery, predicates: [], complete: false },
@@ -269,6 +300,7 @@ describe('PR9 scan planner contract and canonical oracle corpus', () => {
     expect(() =>
       snapshotScanPlan({
         queryDigest: validEmptyQuery.digest,
+        residualQueryDigest: validEmptyQuery.digest,
         nativeGuarantee: 'safe-superset',
         native: { predicates: [], complete: false },
         residual: { query: validEmptyQuery, predicates: [], complete: true },

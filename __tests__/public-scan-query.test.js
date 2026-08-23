@@ -145,6 +145,20 @@ describe('canonical public ScanQuery v1', () => {
   test('rejects malformed normalized advertisement entries before canonical matching', () => {
     expect(() =>
       normalizeScanObservation({
+        ...deterministicScenarioAdvertisement(),
+        localName: { state: 'invalid' }
+      })
+    ).toThrow()
+
+    expect(() =>
+      normalizeScanObservation({
+        ...deterministicScenarioAdvertisement(),
+        localName: { state: 'present' }
+      })
+    ).toThrow()
+
+    expect(() =>
+      normalizeScanObservation({
         localName: 'Malformed',
         rssi: null,
         connectable: null,
@@ -164,6 +178,8 @@ describe('canonical public ScanQuery v1', () => {
         serviceData: [{ service: '180d', data: new Uint8Array([1]) }]
       })
     ).toThrow()
+
+    expect(() => normalizeScanObservation({ device: {} })).toThrow()
 
     const normalized = normalizeScanObservation({
       localName: 'Scoped',
