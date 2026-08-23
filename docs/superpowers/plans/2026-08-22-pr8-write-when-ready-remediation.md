@@ -141,9 +141,10 @@ native ownership and adapter-loss retry), `1fd13f2` (BlueZ confirmation and
 batch-cleanup retry), `b7aa1f8` (CoreBluetooth post-start teardown),
 `56f5492` (BlueZ logical ownership), and `4297f7b` (WinRT bounded teardown, settlement, and
 callback guards). The final source tip for the current local gate is
-`2c03dd7`; the final host-boundary follow-ups are `59cdb33` (CoreBluetooth),
-`fc1c667` (BlueZ), `8fa029e` (WinRT), and `1bd5060`/`2c03dd7` (release docs/tests).
-The full package gate is green at 142 suites / 1,366 tests.
+`99bf789`; the final host-boundary follow-ups are `59cdb33`/`f31bca6`/`b27b03b` (CoreBluetooth),
+`fc1c667`/`2814d2c`/`812ba53`/`b853040` (BlueZ), `8fa029e`/`bbdf891`/`2e2acb4`/`99bf789` (WinRT), and `1bd5060`/`2c03dd7`/`8e5f4db` (release docs/tests).
+The evidence-refresh commits are `8e5f4db` plus the current source tip `99bf789`; the full package gate is green at 142
+suites / 1,366 tests at the current source tip.
 
 - [x] **Step 2: Verify scope and report exact evidence**
 
