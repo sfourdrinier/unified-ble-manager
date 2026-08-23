@@ -206,6 +206,7 @@ class ManagerStore {
   private errorReporter: (error: Error) => void = () => undefined
   private adapterSnapshot: UseAdapterStateResult = { state: null, loading: true, error: null }
   private readinessSnapshot: UseBleReadinessResult = { readiness: null, loading: true, error: null }
+  private readinessRequest = 0
 
   readonly subscribe = (listener: StoreListener): (() => void) => {
     this.listeners.add(listener)
@@ -339,23 +340,44 @@ class ManagerStore {
   private applyState(state: BleAdapterState): void {
     this.adapterState = state
     this.adapterSnapshot = { state, loading: false, error: null }
-    this.readinessSnapshot = {
-      readiness: projectExpoReadiness(state),
-      loading: false,
-      error: null
-    }
+    this.readinessRequest += 1
+    this.readinessSnapshot = hasReadiness(this.managerInstance)
+      ? { readiness: null, loading: true, error: null }
+      : { readiness: null, loading: false, error: expoReadinessUnavailableError }
     this.capabilityStores.forEach(store => store.onManagerStateChanged())
     this.notify()
+    this.refreshReadiness(state, this.readinessRequest)
   }
 
   private applyError(error: Error): void {
+    this.readinessRequest += 1
     this.adapterSnapshot = { state: this.adapterState, loading: false, error }
     this.readinessSnapshot = {
-      readiness: this.adapterState === null ? null : projectExpoReadiness(this.adapterState),
+      readiness: null,
       loading: false,
-      error
+      error: hasReadiness(this.managerInstance) ? error : expoReadinessUnavailableError
     }
     this.notify()
+  }
+
+  private refreshReadiness(state: BleAdapterState, request: number): void {
+    if (!hasReadiness(this.managerInstance)) return
+    this.managerInstance.readiness().then(
+      readiness => {
+        if (!this.isCurrentReadiness(state, request)) return
+        this.readinessSnapshot = { readiness, loading: false, error: null }
+        this.notify()
+      },
+      error => {
+        if (!this.isCurrentReadiness(state, request)) return
+        this.readinessSnapshot = { readiness: null, loading: false, error: toError(error) }
+        this.notify()
+      }
+    )
+  }
+
+  private isCurrentReadiness(state: BleAdapterState, request: number): boolean {
+    return this.listeners.size > 0 && this.adapterState === state && this.readinessRequest === request
   }
 
   private notify(): void {
@@ -416,38 +438,6 @@ class CapabilityStore {
     this.snapshot = getBleCapability(this.owner.manager(), this.id)
     this.listeners.forEach(listener => listener())
   }
-}
-
-function projectExpoReadiness(adapter: BleAdapterState): BleReadiness {
-  if (
-    adapter.availability !== 'available' ||
-    adapter.authorization === 'restricted' ||
-    adapter.authorization === 'unavailable' ||
-    adapter.power === 'unsupported'
-  ) {
-    return createReadiness(adapter, 'unavailable', [])
-  }
-  if (adapter.authorization === 'denied') {
-    return createReadiness(adapter, 'action-required', [{ kind: 'open-settings', target: 'app' }])
-  }
-  if (adapter.authorization === 'not-determined') {
-    return createReadiness(adapter, 'action-required', [{ kind: 'request-permission', permission: 'bluetooth' }])
-  }
-  if (adapter.power === 'off') {
-    return createReadiness(adapter, 'action-required', [{ kind: 'enable-bluetooth', systemUiOnly: true }])
-  }
-  if (adapter.power !== 'on' || adapter.authorization !== 'granted') {
-    return createReadiness(adapter, 'action-required', [])
-  }
-  return createReadiness(adapter, 'ready', [])
-}
-
-function createReadiness(
-  adapter: BleAdapterState,
-  state: BleReadiness['state'],
-  actions: BleReadiness['actions']
-): BleReadiness {
-  return Object.freeze({ adapter, state, actions: Object.freeze([...actions]) })
 }
 
 export function useDiscoveredPeers(options: ScanOptions = {}): UseDiscoveredPeersResult {

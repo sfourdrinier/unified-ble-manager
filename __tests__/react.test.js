@@ -466,7 +466,7 @@ describe('React host surface', () => {
 
   test('resets readiness when the provider manager is replaced', async () => {
     const firstManager = manager({
-      readiness: jest.fn(),
+      readiness: jest.fn().mockResolvedValue({ state: 'ready', adapter: adapterState(), actions: [] }),
       adapter: {
         watchState: jest.fn().mockResolvedValue(
           adapterWatch(
@@ -479,7 +479,9 @@ describe('React host surface', () => {
       }
     })
     const secondManager = manager({
-      readiness: jest.fn(),
+      readiness: jest
+        .fn()
+        .mockResolvedValue({ state: 'ready', adapter: adapterState({ backendGeneration: 'backend-2' }), actions: [] }),
       adapter: {
         watchState: jest.fn().mockResolvedValue(
           adapterWatch(
@@ -652,6 +654,7 @@ describe('React host surface', () => {
 
   test('derives Expo readiness from the watched adapter snapshot and rejects non-Expo managers', async () => {
     const initial = adapterState()
+    const updated = adapterState({ power: 'off', updatedAt: 2 })
     const next = deferred()
     const watch = adapterWatch(
       initial,
@@ -659,7 +662,14 @@ describe('React host surface', () => {
         yield { kind: 'value', value: await next.promise }
       })()
     )
-    const readiness = jest.fn()
+    const readiness = jest
+      .fn()
+      .mockResolvedValueOnce({ state: 'ready', adapter: initial, actions: [] })
+      .mockResolvedValueOnce({
+        state: 'action-required',
+        adapter: updated,
+        actions: [{ kind: 'enable-bluetooth', systemUiOnly: true }]
+      })
     const expoManager = manager({
       readiness,
       adapter: { watchState: jest.fn().mockResolvedValue(watch) }
@@ -671,13 +681,13 @@ describe('React host surface', () => {
     const unsubscribe = store.subscribe(jest.fn())
     await flush()
     expect(store.getSnapshot().readiness.adapter).toBe(initial)
-    expect(readiness).not.toHaveBeenCalled()
+    expect(readiness).toHaveBeenCalledTimes(1)
 
-    const updated = adapterState({ power: 'off', updatedAt: 2 })
     next.resolve(updated)
     await flush()
     expect(store.getSnapshot().readiness.adapter).toBe(updated)
     expect(store.getSnapshot().readiness.state).toBe('action-required')
+    expect(readiness).toHaveBeenCalledTimes(2)
     unsubscribe()
 
     hookHarness.rerender()
@@ -689,6 +699,36 @@ describe('React host surface', () => {
       error: new Error('BLE readiness is available only from an Expo host manager.')
     })
     expect(bareManager.adapter.watchState).not.toHaveBeenCalled()
+  })
+
+  test('preserves Expo runtime readiness policy in the external-store hook', async () => {
+    const initial = adapterState()
+    const watch = adapterWatch(
+      initial,
+      (async function* () {
+        await new Promise(() => undefined)
+      })()
+    )
+    const expoManager = manager({
+      readiness: jest.fn().mockResolvedValue({
+        state: 'unavailable',
+        adapter: initial,
+        actions: [{ kind: 'rebuild-native-app', reason: 'legacy location is not configured' }]
+      }),
+      adapter: { watchState: jest.fn().mockResolvedValue(watch) }
+    })
+    hookHarness.contextValue = { manager: expoManager, loading: false, error: null }
+
+    expect(useBleReadiness()).toEqual({ readiness: null, loading: true, error: null })
+    const store = hookHarness.externalStores[0]
+    const unsubscribe = store.subscribe(jest.fn())
+    await flush()
+
+    expect(store.getSnapshot().readiness).toMatchObject({
+      state: 'unavailable',
+      actions: [{ kind: 'rebuild-native-app' }]
+    })
+    unsubscribe()
   })
 
   test('resets connection state when the observed connection is replaced', async () => {
