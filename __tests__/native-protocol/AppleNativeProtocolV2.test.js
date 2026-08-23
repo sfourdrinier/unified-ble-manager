@@ -81,6 +81,21 @@ describe('Apple Native Protocol v2 radio boundary', () => {
     expect(execution).toContain('"staleGeneration"')
   })
 
+  test('strictly validates Apple GATT occurrence strings before NSInteger conversion', () => {
+    const execution = read('ios/NativeProtocol/UnifiedBleProtocolAppleExecution.mm')
+
+    expect(execution).toContain('std::size_t consumed = 0U;')
+    expect(execution).toContain('std::stoll(value, &consumed, 10)')
+    expect(execution).toContain('consumed != value.size()')
+    expect(execution).toContain('parsed < 0')
+    expect(execution).toContain('parsed > std::numeric_limits<NSInteger>::max()')
+    expect(execution).toContain('parseAppleGattOccurrence(serviceOccurrence, "characteristic")')
+    expect(execution).toContain('parseAppleGattOccurrence(characteristicOccurrence, "characteristic")')
+    expect(execution).toContain('parseAppleGattOccurrence(occurrence, "descriptor")')
+    expect(execution).toContain('Apple native characteristic occurrence is invalid')
+    expect(execution).toContain('Apple native descriptor occurrence is invalid')
+  })
+
   test('treats a fatal runtime close as an idempotent attachment close', () => {
     const control = read('ios/UnifiedBleProtocolControl.mm')
     const closeAttachment = control.slice(

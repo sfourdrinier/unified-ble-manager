@@ -153,6 +153,21 @@ std::string nsString(NSString* value, const char* name) {
   return utf8;
 }
 
+NSInteger parseAppleGattOccurrence(const std::string& value, const char* pathKind) {
+  std::size_t consumed = 0U;
+  try {
+    const auto parsed = std::stoll(value, &consumed, 10);
+    if (consumed != value.size() || parsed < 0 || parsed > std::numeric_limits<NSInteger>::max()) {
+      throw std::out_of_range("Apple GATT occurrence is outside its valid range");
+    }
+    return static_cast<NSInteger>(parsed);
+  } catch (const std::exception&) {
+    throw protocol::ProtocolException(
+        protocol::ProtocolFailure::invalidPath,
+        std::string("Apple native ") + pathKind + " occurrence is invalid");
+  }
+}
+
 std::string errorMessage(NSError* error) {
   if (error == nil) return "Apple native operation failed";
   const auto description = error.localizedDescription;
@@ -1106,9 +1121,9 @@ Endpoint endpointFor(const protocol::ProtocolRecord& path) {
         .peer = requiredString(connection, 2U),
         .connectionGeneration = requiredString(connection, 5U),
         .serviceUuid = requiredString(service, 2U),
-        .serviceOccurrence = static_cast<NSInteger>(std::stoll(serviceOccurrence)),
+        .serviceOccurrence = parseAppleGattOccurrence(serviceOccurrence, "characteristic"),
         .characteristicUuid = requiredString(path, 2U),
-        .characteristicOccurrence = static_cast<NSInteger>(std::stoll(characteristicOccurrence)),
+        .characteristicOccurrence = parseAppleGattOccurrence(characteristicOccurrence, "characteristic"),
     };
   } catch (const std::exception&) {
     throw protocol::ProtocolException(protocol::ProtocolFailure::invalidPath, "Apple native characteristic occurrence is invalid");
@@ -1138,7 +1153,7 @@ DescriptorEndpoint descriptorEndpointFor(const protocol::ProtocolRecord& path) {
     return {
         .characteristic = endpointFor(characteristic),
         .descriptorUuid = requiredString(path, 2U),
-        .descriptorOccurrence = static_cast<NSInteger>(std::stoll(occurrence)),
+        .descriptorOccurrence = parseAppleGattOccurrence(occurrence, "descriptor"),
     };
   } catch (const std::exception&) {
     throw protocol::ProtocolException(protocol::ProtocolFailure::invalidPath, "Apple native descriptor occurrence is invalid");
