@@ -9,7 +9,7 @@ import { capacity, canonicalUuid, opaqueId } from '../backend-contract/primitive
 import type { BleManager as InternalBleManager } from '../manager/ble-manager'
 import type { BleManagerOptions } from '../manager/ble-manager'
 import type { BoundedAsyncStream } from '../backend-contract/streams'
-import type { BoundedAsyncStreamIterator, StreamTerminalNotice } from '../backend-contract/streams'
+import type { BoundedAsyncStreamIterator, StreamItem, StreamTerminalNotice } from '../backend-contract/streams'
 import { CoreBoundedStream } from '../core/bounded-stream'
 import { normalizeOperationOptions } from './operation-options'
 import type { OperationOptions } from './operation-options'
@@ -19,7 +19,13 @@ import type { IpcAdvertisement } from '../ipc/manager'
 import { rehydratePublicError, rehydratePublicPromise, runWithCleanup } from './error-bridge'
 import { assertDirectConnectionCapability, PublicBleCapabilities } from './capabilities'
 import type { BleCapabilities } from './capabilities'
-import type { BleAdapter, BleAdapterState, AdapterReadinessOptions } from './ble-adapter'
+import type {
+  BleAdapter,
+  BleAdapterState,
+  AdapterReadinessOptions,
+  AdapterWatchOptions,
+  BleAdapterStateWatch
+} from './ble-adapter'
 import type { BleDiagnostics } from './diagnostics'
 import { snapshotResourceCounters } from './diagnostics'
 import { isAuthorizationBlocking, type AdapterStateSnapshot } from '../backend-contract/identity'
@@ -1519,7 +1525,75 @@ function createPublicAdapter(
   return {
     id: typeof adapterId === 'string' ? adapterId : null,
     state: async () => snapshotPublicAdapterState(await internal.adapterState()),
-    waitUntilReady: options => waitForPublicAdapter(internal, now, options)
+    waitUntilReady: options => waitForPublicAdapter(internal, now, options),
+    watchState: options => watchPublicAdapter(internal, now, options)
+  }
+}
+
+async function watchPublicAdapter(
+  internal: InternalBleManager<string, BackendIdentity<string>>,
+  now: () => number,
+  options: AdapterWatchOptions = {}
+): Promise<BleAdapterStateWatch> {
+  try {
+    const signal = normalizeOperationOptions({ signal: options.signal ?? undefined }, now).signal
+    const watch = await internal.adapterStates({ signal })
+    if (signal?.aborted === true) {
+      await watch.stop()
+      throw contractError('operation.aborted', 'adapter', 'public-adapter.watch-state')
+    }
+    let stopPromise: Promise<CleanupRecord> | null = null
+    const abortHandler = () => {
+      void stop().catch(() => undefined)
+    }
+    const stop = (): Promise<CleanupRecord> => {
+      if (stopPromise !== null) return stopPromise
+      const result = watch.stop().then(
+        cleanup => {
+          signal?.removeEventListener('abort', abortHandler)
+          if (cleanup.state === 'release-failed') stopPromise = null
+          return cleanup
+        },
+        error => {
+          signal?.removeEventListener('abort', abortHandler)
+          stopPromise = null
+          throw error
+        }
+      )
+      stopPromise = result
+      return result
+    }
+    signal?.addEventListener('abort', abortHandler, { once: true })
+    return Object.freeze({
+      initial: snapshotPublicAdapterState(watch.initial),
+      values: mapPublicAdapterStates(watch.values),
+      stop
+    })
+  } catch (error) {
+    throw rehydratePublicError(error)
+  }
+}
+
+function mapPublicAdapterStates(
+  source: BoundedAsyncStream<AdapterStateSnapshot<string>>
+): AsyncIterable<StreamItem<BleAdapterState>> {
+  return {
+    [Symbol.asyncIterator](): BoundedAsyncStreamIterator<BleAdapterState> {
+      const iterator = source[Symbol.asyncIterator]()
+      const mapped: BoundedAsyncStreamIterator<BleAdapterState> = {
+        async next() {
+          const result = await iterator.next()
+          if (result.done) return { done: true, value: undefined }
+          if (result.value.kind !== 'value') return { done: false, value: result.value }
+          return { done: false, value: { kind: 'value', value: snapshotPublicAdapterState(result.value.value) } }
+        },
+        return: () => iterator.return(),
+        [Symbol.asyncIterator]() {
+          return mapped
+        }
+      }
+      return mapped
+    }
   }
 }
 
