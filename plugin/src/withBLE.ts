@@ -37,6 +37,8 @@ const nativeConfigurationKeys = Object.freeze([
   'UnifiedBleProtocolShowPowerAlert',
   'UnifiedBleProtocolNativeLogging'
 ])
+const bluetoothAlwaysUsageDescriptionOwnershipKey = 'UnifiedBlePluginBluetoothAlwaysUsageDescriptionOwnership'
+const bluetoothAlwaysUsageDescriptionOwnershipValue = 'managed'
 
 function uniqueStrings(values: readonly string[]): string[] {
   return [...new Set(values)]
@@ -51,8 +53,16 @@ export function reconcileExpoInfoPlist(
   for (const key of nativeConfigurationKeys) delete infoPlist[key]
 
   const bluetoothAlways = options.permissions?.bluetoothAlways
-  if (typeof bluetoothAlways === 'string') infoPlist.NSBluetoothAlwaysUsageDescription = bluetoothAlways
-  else delete infoPlist.NSBluetoothAlwaysUsageDescription
+  if (typeof bluetoothAlways === 'string') {
+    infoPlist.NSBluetoothAlwaysUsageDescription = bluetoothAlways
+    infoPlist[bluetoothAlwaysUsageDescriptionOwnershipKey] = bluetoothAlwaysUsageDescriptionOwnershipValue
+  } else if (
+    bluetoothAlways === false &&
+    infoPlist[bluetoothAlwaysUsageDescriptionOwnershipKey] === bluetoothAlwaysUsageDescriptionOwnershipValue
+  ) {
+    delete infoPlist.NSBluetoothAlwaysUsageDescription
+    delete infoPlist[bluetoothAlwaysUsageDescriptionOwnershipKey]
+  }
 
   const existingModes = Array.isArray(infoPlist.UIBackgroundModes)
     ? infoPlist.UIBackgroundModes.filter((mode): mode is string => typeof mode === 'string')
