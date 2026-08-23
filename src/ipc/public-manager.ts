@@ -110,6 +110,9 @@ export class IpcPublicManagerAdapter implements BleManager {
   async scan(options: ScanOptions = {}): Promise<ScanSession> {
     try {
       assertPublicScanOptions(options)
+      if (options.reportLostAfterMs !== undefined) {
+        throw contractError('capability.unavailable', 'scan', 'ipc-public-manager.scan.report-lost-after')
+      }
       const normalized = normalizeOperationOptions(options, () => globalThis.performance.now())
       const session = await this.ipc.scan(toIpcScanOptions(options, normalized.signal))
       const state = createScanState()
