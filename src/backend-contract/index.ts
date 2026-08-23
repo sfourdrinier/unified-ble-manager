@@ -335,4 +335,4 @@ export type {
   ScanPredicateField,
   ScanPredicateOperator
 } from './scan-planning'
-export { snapshotScanPlan } from './scan-planning'
+export { snapshotScanExecutionPlan, snapshotScanPlan } from './scan-planning'

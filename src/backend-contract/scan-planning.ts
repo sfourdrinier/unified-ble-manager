@@ -98,6 +98,44 @@ const MAX_LIMITATIONS = 32
  * projection is descriptive only; this helper does not evaluate any predicate.
  */
 export function snapshotScanPlan(plan: ScanPlan): ScanPlan {
+  return snapshotPlanFields(plan)
+}
+
+export function snapshotScanExecutionPlan<NativeFilter>(
+  plan: BackendScanExecutionPlan<NativeFilter>,
+  snapshotNativeFilter: (nativeFilter: NativeFilter) => NativeFilter
+): BackendScanExecutionPlan<NativeFilter> {
+  assertExactKeys(
+    plan,
+    [
+      'sourceQuery',
+      'queryDigest',
+      'residualQueryDigest',
+      'nativeGuarantee',
+      'native',
+      'residual',
+      'unavailable',
+      'limitations',
+      'estimatedCost',
+      'nativeFilter'
+    ],
+    'scan execution plan'
+  )
+  const snapshot = snapshotPlanFields({
+    sourceQuery: plan.sourceQuery,
+    queryDigest: plan.queryDigest,
+    residualQueryDigest: plan.residualQueryDigest,
+    nativeGuarantee: plan.nativeGuarantee,
+    native: plan.native,
+    residual: plan.residual,
+    unavailable: plan.unavailable,
+    limitations: plan.limitations,
+    estimatedCost: plan.estimatedCost
+  })
+  return Object.freeze({ ...snapshot, nativeFilter: snapshotNativeFilter(plan.nativeFilter) })
+}
+
+function snapshotPlanFields(plan: ScanPlan): ScanPlan {
   assertExactKeys(
     plan,
     [

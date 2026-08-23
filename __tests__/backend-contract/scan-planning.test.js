@@ -3,7 +3,7 @@ const {
   normalizeScanQuery,
   observationMatchesScanQuery
 } = require('../../src/public/scan-query')
-const { snapshotScanPlan } = require('../../src/backend-contract/scan-planning')
+const { snapshotScanExecutionPlan, snapshotScanPlan } = require('../../src/backend-contract/scan-planning')
 const { scanQueryDigest } = require('../../src/backend-contract/scan-query')
 const vectors = require('./fixtures/scan-query-pr9-planner.golden.json')
 
@@ -138,6 +138,14 @@ describe('PR9 scan planner contract and canonical oracle corpus', () => {
     if (originalPrefix === undefined || snapshotPrefix === undefined) throw new Error('expected byte prefixes')
     originalPrefix[0] = 9
     expect([...snapshotPrefix]).toEqual([2])
+
+    const nativeFilter = { services: ['0000180d-0000-1000-8000-00805f9b34fb'] }
+    const executionPlan = snapshotScanExecutionPlan({ ...plan, nativeFilter }, filter => ({
+      ...filter,
+      services: [...filter.services]
+    }))
+    expect(executionPlan.nativeFilter).not.toBe(nativeFilter)
+    expect(executionPlan.nativeFilter.services).toEqual(nativeFilter.services)
   })
 
   test('rejects malformed predicate diagnostics before they can cross a host boundary', () => {
