@@ -18,8 +18,13 @@ export class ReactNativeAppleProtocolBoundary extends ReactNativeAndroidProtocol
     return Object.freeze({
       rssi: 'available',
       requestMtu: 'unavailable',
+      effectiveMtu: 'unavailable',
       phy: 'unavailable'
     })
+  }
+
+  override async effectiveMtu(_nativePeerId: string): Promise<number | null> {
+    throw contractError('capability.unsupported', 'connection', 'rn-apple-boundary.effective-mtu')
   }
 
   override adapterSnapshot(): CoreBluetoothAdapterSnapshot {
