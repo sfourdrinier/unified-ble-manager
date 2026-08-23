@@ -110,7 +110,7 @@ Run the focused Jest command from Task 1 and confirm all new and existing tests 
 
 - [x] **Step 1: Run the requested canonical checks proportionate to the change**
 
-`pnpm validate:evidence`, `pnpm test:package` (142 suites / 1,343 tests),
+`pnpm validate:evidence`, `pnpm test:package` (142 suites / 1,359 tests),
 `pnpm test:plugin` (36 tests), `pnpm prepack`,
 `pnpm release:artifacts:check`, performance, protocol, Tauri, and the
 CoreBluetooth addon build are green. The local packed-consumer smoke remains
@@ -136,8 +136,12 @@ runtime hardening commits are `762c00f` (canonical physical settlement),
 connection idle barrier), plus the explicit Expo ESM import fix in `14850ff` and
 the final BlueZ/WinRT barriers in `c864d9d`/`016d269`.
 The hosted run remains bound to `046b764` until the final branch tip is pushed.
-The final source tip for the current local gate is `4ec3298`; F-32 is fixed
-with the memoized native-cleanup transition and focused lifecycle coverage.
+The serialized runtime hardening commits are `4224c0a` (CoreBluetooth late
+native ownership and adapter-loss retry), `1fd13f2` (BlueZ confirmation and
+batch-cleanup retry), `b7aa1f8` (CoreBluetooth post-start teardown),
+`56f5492` (BlueZ logical ownership), and `4297f7b` (WinRT bounded teardown, settlement, and
+callback guards). The final source tip for the current local gate is
+`56f5492`; the full package gate is green at 142 suites / 1,359 tests.
 
 - [x] **Step 2: Verify scope and report exact evidence**
 
