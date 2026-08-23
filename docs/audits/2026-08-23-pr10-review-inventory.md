@@ -72,6 +72,25 @@ These findings were discovered by the fresh exact-SHA adversarial reviews after 
 | F10-POST-007 | Android pre-12 readiness could report ready without required legacy location guidance. | Addressed by `06a369f`; explicit legacy-location readiness tests pass. |
 | F10-POST-008 | Apple reconnect/GATT paths did not enforce connection-generation ownership and allowed reconnect overlap during terminal disconnect. | Addressed by `15a3301` with bounded generation validation at native dispatch, disconnect-before-reconnect gating, and generation-bound GATT cache clearing. Apple harness is green; full simulator/host CI remains required. |
 
+## Final local verification receipts at `707e3c9`
+
+- `pnpm typecheck`, `pnpm lint`, `pnpm test:plugin`: passed; plugin 35/35.
+- Forbidden TypeScript smell scan over published `src`/`plugin`: no `as unknown`, `as any`, `as T`, or suppression directives.
+- `pnpm test:package`: 156 suites / 1,497 tests passed.
+- `pnpm prepack`: passed; 232 published source files, 1,940 source-derived artifacts, 16 plugin artifacts, and 125 entrypoint targets verified.
+- `pnpm release:artifacts:check`: passed; 2 dependency-artifact files current.
+- `node scripts/ci/packed-host-consumer-check.js`: passed for packed Expo/React/Tauri; `physicalRadio: not-provided`.
+- `node scripts/ci/pack-install-smoke.js`: passed across all canonical consumer lanes.
+- `node scripts/ci/g6a-packed-consumer-proof.js`: deterministic packed proof passed; hardware evidence absent.
+- `pnpm performance:check`: passed with 31 JS/core and 5 native-host measurements.
+- `pnpm test:native-protocol`: C++ host harness passed.
+- `pnpm test:native-protocol:android`: Android protocol lane passed.
+- Android library full JVM suite: passed; 29 actionable tasks.
+- `pnpm test:native-protocol:apple`: C++/Apple parser/execution harness passed; no physical BLE radio.
+- Apple Native Protocol Jest suite: 20/20 passed, including ABI, idempotent close, and generation-bound dispatch guards.
+- Expo SDK 57 typecheck and full CNG Android debug build: passed; generated native directories and lockfile remain uncommitted.
+- `git diff --check`: passed.
+
 ## Fresh local verification at `100a4dbec3324a5508622b615e49b040e246377e`
 
 These receipts are from the post-remediation tip before the next hosted PR run. They are deterministic or host-build evidence only; no physical-radio or EAS claim is implied.
