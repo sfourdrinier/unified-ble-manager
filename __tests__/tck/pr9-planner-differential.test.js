@@ -1,4 +1,8 @@
-const { normalizeScanObservation, normalizeScanQuery } = require('../../src/public/scan-query')
+const {
+  normalizeScanObservation,
+  normalizeScanQuery,
+  observationMatchesScanQuery
+} = require('../../src/public/scan-query')
 const { bluezScanPlanningContext, BluezScanPlanner } = require('../../src/backends/bluez/bluez-scan-planner')
 const {
   coreBluetoothScanPlanningContext,
@@ -90,5 +94,51 @@ describe('PR9 planner differential TCK', () => {
         nativeAccepts
       })
     ).toThrow('bounded at')
+  })
+
+  test('covers deterministic generated observations and detects a mutated native matcher', () => {
+    const generated = Array.from({ length: 16 }, (_, seed) => {
+      const query =
+        seed % 2 === 0
+          ? { anyOf: [{ services: { all: ['180d'] }, names: { prefixes: ['Heart'] } }] }
+          : { exclude: [{ services: { any: ['180f'] } }] }
+      const observation = {
+        peerId: `generated-peer-${seed}`,
+        localName: seed % 3 === 0 ? 'Heart Strap' : 'Other Sensor',
+        rssi: -40 - seed,
+        txPowerLevel: null,
+        serviceUuids:
+          seed % 4 === 0 ? ['0000180d-0000-1000-8000-00805f9b34fb'] : ['0000180f-0000-1000-8000-00805f9b34fb'],
+        manufacturerData: [],
+        serviceData: []
+      }
+      const normalizedQuery = normalizeScanQuery(query)
+      const normalizedObservation = normalizeScanObservation(observation)
+      return {
+        id: `generated-${seed}`,
+        query,
+        observation,
+        expectedMatch: observationMatchesScanQuery(normalizedQuery, normalizedObservation)
+      }
+    })
+    const report = runPlannerDifferentialTck({
+      planner: new BluezScanPlanner(),
+      context: bluezScanPlanningContext,
+      scenarios: generated,
+      normalizeQuery: normalizeScanQuery,
+      normalizeObservation: normalizeScanObservation,
+      nativeAccepts
+    })
+    expect(report.facts).toEqual(expect.arrayContaining([expect.objectContaining({ holds: true })]))
+
+    const mutated = runPlannerDifferentialTck({
+      planner: new BluezScanPlanner(),
+      context: bluezScanPlanningContext,
+      scenarios: generated,
+      normalizeQuery: normalizeScanQuery,
+      normalizeObservation: normalizeScanObservation,
+      nativeAccepts: filter => filter.serviceUuids.length === 0
+    })
+    expect(mutated.facts.find(fact => fact.id === 'planner-native-projection-is-safe-superset').holds).toBe(false)
   })
 })

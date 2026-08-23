@@ -23,9 +23,12 @@ limitations use structured predicate descriptions and finite redacted
 diagnostic vocabulary, so raw advertisement bytes, peer identifiers, and host
 payloads do not belong in plan diagnostics.
 
-The current PR9 contract/oracle checkpoint does not itself select a radio or
-wire platform-specific scan options. First-party planners must consume the
-shared fixture corpus and prove native/residual equivalence before platform
-pushdown is enabled. Deterministic planner tests establish contract behavior;
-they do not promote a backend support label or constitute physical-radio
-evidence.
+The public `ScanOptions.platform` contract is discriminated and validated
+before radio work. A platform control that the selected host has not actually
+implemented rejects with a typed capability error; it never silently no-ops.
+Current first-party pushdown is limited to safe common service-UUID filters,
+while names, byte predicates, RSSI, exclusions, and unavailable fields remain
+in the canonical residual path. First-party planners must consume the shared
+fixture corpus and prove native/residual equivalence before expanding pushdown.
+Deterministic planner tests establish contract behavior; they do not promote a
+backend support label or constitute physical-radio evidence.

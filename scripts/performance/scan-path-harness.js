@@ -24,12 +24,12 @@ function positiveInteger(value, name, minimum, maximum) {
   return parsed
 }
 
-function createWorkload(events) {
-  const query = normalizeScanQuery({ anyOf: [{ services: { all: ['180d'] } }] })
+function createWorkload(events, queryInput = { anyOf: [{ services: { all: ['180d'] } }] }, peerCount = 1) {
+  const query = normalizeScanQuery(queryInput)
   const plan = planBluezScan(query)
   const observations = Array.from({ length: events }, (_, index) =>
     normalizeScanObservation({
-      peerId: `scan-path-peer-${String(index)}`,
+      peerId: `scan-path-peer-${String(index % peerCount)}`,
       localName: 'Heart Strap',
       rssi: -42,
       txPowerLevel: null,
@@ -48,8 +48,8 @@ function nativeAccepts(filter, observation) {
   )
 }
 
-function runBatch(events) {
-  const workload = createWorkload(events)
+function runBatch(events, queryInput, peerCount) {
+  const workload = createWorkload(events, queryInput, peerCount)
   const clock = new DeterministicVirtualClock()
   const stream = new CoreBoundedStream(
     {
@@ -110,10 +110,44 @@ function runScanPathHarness(options = {}) {
     }
   }
   if (firstCounters === null) throw new Error('scan-path harness produced no samples')
+  const matrixDefinitions = [
+    { id: 'native-only-1-peer', peerCount: 1, query: { anyOf: [{ services: { all: ['180d'] } }] } },
+    { id: 'residual-only-10-peers', peerCount: 10, query: { anyOf: [{ names: { prefixes: ['Heart'] } }] } },
+    {
+      id: 'mixed-50-peers',
+      peerCount: 50,
+      query: { anyOf: [{ services: { all: ['180d'] }, names: { prefixes: ['Heart'] } }] }
+    }
+  ]
+  const matrix = matrixDefinitions.map(definition => {
+    const durations = []
+    let counters = null
+    for (let index = 0; index < samples; index += 1) {
+      const started = process.hrtime.bigint()
+      const nextCounters = runBatch(events, definition.query, definition.peerCount)
+      durations.push(Number(process.hrtime.bigint() - started) / events)
+      if (counters === null) counters = nextCounters
+      if (JSON.stringify(counters) !== JSON.stringify(nextCounters)) {
+        throw new Error(`scan-path matrix counters changed for ${definition.id}`)
+      }
+    }
+    return Object.freeze({
+      id: definition.id,
+      peerCount: definition.peerCount,
+      metrics: Object.freeze(counters),
+      latency: Object.freeze({
+        p50NanosecondsPerEvent: percentile(durations, 50),
+        p95NanosecondsPerEvent: percentile(durations, 95),
+        samples
+      }),
+      evidence: 'deterministic-model-only'
+    })
+  })
   return Object.freeze({
     schema: 'unified-ble-scan-path-performance/v1',
     proof: Object.freeze({ scope: 'deterministic-scan-path-model', claim: 'model-only' }),
     schedule: Object.freeze({ clock: 'deterministic-virtual-time', eventCount: events }),
+    matrix: Object.freeze(matrix),
     metrics: Object.freeze({
       callbacks: Object.freeze({ status: 'measured', evidence: 'deterministic-model', count: firstCounters.callbacks }),
       residualMatcherEvaluations: Object.freeze({
