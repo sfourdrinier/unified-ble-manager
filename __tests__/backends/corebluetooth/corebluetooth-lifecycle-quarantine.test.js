@@ -117,6 +117,12 @@ async function flushMicrotasks() {
   }
 }
 
+async function flushAdapterLossCleanup() {
+  for (let index = 0; index < 64; index += 1) {
+    await Promise.resolve()
+  }
+}
+
 describe('CoreBluetooth late-operation quarantine', () => {
   test('bounds a never-settling stopNotify and retains the original cleanup for retry', async () => {
     jest.useFakeTimers()
@@ -420,6 +426,104 @@ describe('CoreBluetooth late-operation quarantine', () => {
       stopGate.resolve()
       jest.useRealTimers()
     }
+  })
+
+  test('retries notification stop after native start settles behind pre-start removal', async () => {
+    const startGate = deferred()
+    const stopGate = deferred()
+    try {
+      const { backend, boundary } = await fixture()
+      const peerId = await observedPeerId(backend)
+      const lease = await backend.connections.connect(
+        peerId,
+        opaqueId('late-start-stop', 'client', 'corebluetooth:late-start-stop'),
+        operation()
+      )
+      const database = await backend.gatt.discover(lease.connection, operation())
+      const characteristic = (await database.snapshot()).characteristics[0].path
+      const nativeStartNotify = boundary.startNotify.bind(boundary)
+      boundary.startNotify = async (address, onValue) => {
+        await startGate.promise
+        return nativeStartNotify(address, onValue)
+      }
+      const nativeStopNotify = boundary.stopNotify.bind(boundary)
+      let stopNotifyCalls = 0
+      boundary.stopNotify = async address => {
+        stopNotifyCalls += 1
+        if (stopNotifyCalls === 1) {
+          await stopGate.promise
+        }
+        return nativeStopNotify(address)
+      }
+
+      const dispatch = backend.gatt.subscribe(characteristic, {
+        operation: operation(),
+        options: { ...operation(), delivery: delivery() }
+      })
+      await flushMicrotasks()
+      boundary.triggerServicesChanged('native-polar-h10')
+      await flushMicrotasks()
+
+      startGate.resolve()
+      await flushMicrotasks()
+      expect(stopNotifyCalls).toBe(1)
+
+      stopGate.resolve()
+      await expect(dispatch.completion).rejects.toMatchObject({
+        normalized: { code: 'operation.cancelled-by-destroy' }
+      })
+      await flushAdapterLossCleanup()
+      expect(stopNotifyCalls).toBe(2)
+      expect(backend.resourceCounters()).toMatchObject({ physicalCccdEnablements: 0, subscriptionConsumers: 0 })
+
+      await expect(lease.release()).resolves.toEqual({ state: 'released', failures: [] })
+      await expect(backend.destroy()).resolves.toEqual({ state: 'released', failures: [] })
+    } finally {
+      startGate.resolve()
+      stopGate.resolve()
+    }
+  })
+
+  test('arms adapter-loss retry after synchronous cleanup failure without a hot loop', async () => {
+    const { backend, boundary } = await fixture()
+    const peerId = await observedPeerId(backend)
+    const lease = await backend.connections.connect(
+      peerId,
+      opaqueId('adapter-loss-sync-failure', 'client', 'corebluetooth:adapter-loss'),
+      operation()
+    )
+    const database = await backend.gatt.discover(lease.connection, operation())
+    const characteristic = (await database.snapshot()).characteristics[0].path
+    await database.subscribe(characteristic, { ...operation(), delivery: delivery() })
+    const nativeStopNotify = boundary.stopNotify.bind(boundary)
+    let stopNotifyCalls = 0
+    boundary.stopNotify = async address => {
+      stopNotifyCalls += 1
+      if (stopNotifyCalls === 1) {
+        throw new Error('The synchronous notification cleanup failed')
+      }
+      return nativeStopNotify(address)
+    }
+
+    const lostState = { availability: 'unavailable', authorization: 'granted', power: 'on', safeReason: 'lost' }
+    boundary.setAdapterState(lostState)
+    await flushAdapterLossCleanup()
+    expect(stopNotifyCalls).toBe(1)
+    expectConsoleErrorMatching(
+      '[CoreBluetoothBackend.handleAdapterState] Native adapter-loss cleanup requires retry:',
+      expect.any(Array)
+    )
+
+    await flushMicrotasks()
+    expect(stopNotifyCalls).toBe(1)
+
+    boundary.setAdapterState({ availability: 'available', authorization: 'granted', power: 'on', safeReason: null })
+    await flushMicrotasks()
+    expect(stopNotifyCalls).toBe(2)
+    expect(Object.values(backend.resourceCounters()).every(value => Number(value) === 0)).toBe(true)
+
+    await expect(backend.destroy()).resolves.toEqual({ state: 'released', failures: [] })
+    await expect(lease.release()).resolves.toEqual({ state: 'released', failures: [] })
   })
 
   test('retains late notification rollback ownership after pre-enable cleanup failure', async () => {

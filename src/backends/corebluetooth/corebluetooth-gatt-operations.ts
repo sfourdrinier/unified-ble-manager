@@ -246,10 +246,14 @@ export class CoreBluetoothGattOperations {
             execution.isPublicSettled()
           ) {
             const cleanup = await this.removeSubscription(subscription)
-            if (cleanup.state === 'release-failed') {
+            const postStartCleanup =
+              cleanup.state === 'released' && enabling.removalBeforeNativeStart
+                ? await this.stopPhysicalSubscription(enabling)
+                : cleanup
+            if (postStartCleanup.state === 'release-failed') {
               console.error(
                 '[CoreBluetoothGattOperations.subscribe] Cancelled notification cleanup failed:',
-                cleanup.failures
+                postStartCleanup.failures
               )
             }
             throw contractError('operation.cancelled-by-destroy', 'gatt', 'corebluetooth.gatt.subscribe.cancelled')
