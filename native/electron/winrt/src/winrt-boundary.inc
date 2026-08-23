@@ -1228,7 +1228,11 @@ class WinRtContractBoundary final : public Napi::ObjectWrap<WinRtContractBoundar
           const GattClientCharacteristicConfigurationDescriptorValue cccd = mode == "indicate"
               ? GattClientCharacteristicConfigurationDescriptorValue::Indicate
               : GattClientCharacteristicConfigurationDescriptorValue::Notify;
-          notification_lifecycle->value_token = characteristic.ValueChanged([listener](const GattCharacteristic&, const winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::GattValueChangedEventArgs& event) {
+          notification_lifecycle->value_token = characteristic.ValueChanged([state, listener](const GattCharacteristic&, const winrt::Windows::Devices::Bluetooth::GenericAttributeProfile::GattValueChangedEventArgs& event) {
+            {
+              std::lock_guard<std::mutex> guard(state->mutex);
+              if (state->destroyed || state->destroying) return;
+            }
             listener->Emit(BufferBytes(event.CharacteristicValue()));
           });
           notification_lifecycle->value_handler_registered = true;
