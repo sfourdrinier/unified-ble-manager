@@ -56,6 +56,8 @@ function normalizeServiceSource(source) {
     .replace('// example-expo/', '// example/')
     .replace("from 'unified-ble-manager/expo'", "from 'unified-ble-manager/react-native'")
     .replaceAll('createExpoBleManager', 'createReactNativeBleManager')
+    .replace(/\n  async readiness\(\) \{[\s\S]*?\n  scanPlan\(\) \{[\s\S]*?\n  \}/, '')
+    .replace('\n\n  async scanForPeers', '\n  async scanForPeers')
     .replace('The Expo app owns', 'The bare app owns')
     .replace(
       '// This application identifier is stable across manager recreation and native restoration adoption.\n',
