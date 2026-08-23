@@ -178,7 +178,12 @@ public final class BlePlxForegroundService extends Service {
 
   private void acknowledge(Intent intent, int code, String message) {
     if (intent == null) return;
-    final ResultReceiver receiver = intent.getParcelableExtra(EXTRA_ACK);
+    final ResultReceiver receiver;
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+      receiver = intent.getParcelableExtra(EXTRA_ACK, ResultReceiver.class);
+    } else {
+      receiver = intent.getParcelableExtra(EXTRA_ACK);
+    }
     if (receiver == null) return;
     final Bundle result = new Bundle();
     if (message != null) result.putString("message", message);

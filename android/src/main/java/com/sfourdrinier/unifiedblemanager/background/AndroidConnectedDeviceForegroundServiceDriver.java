@@ -91,10 +91,14 @@ public final class AndroidConnectedDeviceForegroundServiceDriver
   @Override
   public void stop() {
     try {
-      context.getSharedPreferences("unified-ble-manager", Context.MODE_PRIVATE)
+      if (!context.getSharedPreferences("unified-ble-manager", Context.MODE_PRIVATE)
           .edit()
           .putBoolean(BlePlxForegroundService.SESSION_INTENT_PREFERENCE, false)
-          .apply();
+          .commit()) {
+        throw new ForegroundServiceControlException(
+            "foregroundServiceStopFailed",
+            "Android could not persist the connected-device foreground service release; retry releasing the lease.");
+      }
       context.stopService(new Intent(context, BlePlxForegroundService.class));
     } catch (RuntimeException error) {
       throw new ForegroundServiceControlException(
