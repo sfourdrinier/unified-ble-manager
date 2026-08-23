@@ -913,17 +913,31 @@ export class BluezBackendRuntime implements BluezObjectStoreObserver {
       for (const consumer of resettingScanGroup.consumers.values()) {
         consumer.stream.closeWithReason('source-failed')
       }
-      resettingScanGroup.consumers.clear()
-      this.scanGroup = null
+      resettingScanGroup.stopRequested = true
+      resettingScanGroup.resetRequested = true
+      const owner = resettingScanGroup.consumers.get(String(resettingScanGroup.ownerLeaseId))
+      if (owner !== undefined) {
+        observeBluezCleanup(this.stopScan(owner), '[BluezBackendRuntime.reset] Scan cleanup failed:')
+      }
     }
     for (const physical of this.physicalSubscriptions.values()) {
       for (const consumer of physical.consumers) {
         consumer.stream.closeWithReason('source-failed')
-        consumer.removed = true
       }
-      physical.consumers.clear()
+      for (const consumer of physical.pendingRemovals) {
+        consumer.stream.closeWithReason('source-failed')
+      }
+      const cleanup = physical.removal ?? beginBluezPhysicalRemoval(this, physical)
+      observeBluezCleanup(
+        cleanup.then(result => {
+          if (result.state === 'released' && this.physicalSubscriptions.get(physical.objectPath) === physical) {
+            this.physicalSubscriptions.delete(physical.objectPath)
+          }
+          return result
+        }),
+        '[BluezBackendRuntime.reset] Subscription cleanup failed:'
+      )
     }
-    this.physicalSubscriptions.clear()
     for (const waiter of [...this.waiters]) {
       waiter.reject(contractError('operation.reset', 'core', `bluez.restart.${waiter.property}`))
     }

@@ -159,6 +159,7 @@ export function beginBluezPhysicalRemoval(
     cleanup => {
       if (cleanup.state === 'release-failed' && physical.removal === removal) {
         physical.removal = null
+        physical.state = 'ready'
       }
       return cleanup
     },
