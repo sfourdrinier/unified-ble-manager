@@ -268,6 +268,12 @@ public final class UnifiedBleProtocolControlModule extends NativeUnifiedBleProto
 
   private void resolveAssociation(int associationId, String peerId, String displayName) {
     if (pendingAssociation == null) return;
+    if (associationId <= 0) {
+      rejectAssociation(
+          "unsupportedAssociationMetadata",
+          "Android did not expose a real Companion Device Manager association ID on this API level.");
+      return;
+    }
     final Promise promise = pendingAssociation;
     pendingAssociation = null;
     pendingAssociationId = 0;
@@ -493,15 +499,15 @@ public final class UnifiedBleProtocolControlModule extends NativeUnifiedBleProto
         }
       }
     }
-    attachment = null;
-    ownerId = null;
     try {
       super.invalidate();
     } catch (RuntimeException error) {
       cleanupFailure = appendCleanupFailure(cleanupFailure, error);
       Log.e(TAG, "native protocol module invalidation failed", error);
     }
-    if (cleanupFailure != null) {
+    if (cleanupFailure == null) {
+      closeOwnedState();
+    } else {
       Log.e(TAG, "native protocol invalidation completed with cleanup failures", cleanupFailure);
     }
   }

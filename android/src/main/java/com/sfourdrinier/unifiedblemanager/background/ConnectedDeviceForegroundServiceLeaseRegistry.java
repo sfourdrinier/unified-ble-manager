@@ -40,11 +40,8 @@ public final class ConnectedDeviceForegroundServiceLeaseRegistry {
 
   public synchronized void close() {
     if (leases.isEmpty()) return;
-    try {
-      driver.stop();
-    } finally {
-      leases.clear();
-    }
+    driver.stop();
+    leases.clear();
   }
 
   public synchronized int activeLeaseCount() {

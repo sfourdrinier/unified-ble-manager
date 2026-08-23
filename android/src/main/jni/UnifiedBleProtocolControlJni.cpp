@@ -7,6 +7,7 @@
 
 #include <array>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <string>
 #include <vector>
@@ -71,6 +72,15 @@ protocol::NativeAttachmentIdentity attachment(
   };
 }
 
+std::uint32_t checkedVersionValue(jlong value) {
+  if (value < 0 || value > static_cast<jlong>(std::numeric_limits<std::uint32_t>::max())) {
+    throw protocol::ProtocolException(
+        protocol::ProtocolFailure::incompatibleVersion,
+        "Native protocol JNI version range is outside uint32_t");
+  }
+  return static_cast<std::uint32_t>(value);
+}
+
 void throwJava(JNIEnv* environment, const std::exception& error) {
   const auto exceptionClass = environment->FindClass("java/lang/IllegalStateException");
   if (exceptionClass != nullptr) {
@@ -132,8 +142,8 @@ Java_com_sfourdrinier_unifiedblemanager_protocol_UnifiedBleProtocolControlModule
         ranges.data());
     const auto range = [&ranges](std::size_t offset) {
       return protocol::VersionRange{
-          .minimum = static_cast<std::uint32_t>(ranges[offset]),
-          .maximum = static_cast<std::uint32_t>(ranges[offset + 1U]),
+          .minimum = checkedVersionValue(ranges[offset]),
+          .maximum = checkedVersionValue(ranges[offset + 1U]),
       };
     };
     static_cast<void>(runtime(handle).handshake(

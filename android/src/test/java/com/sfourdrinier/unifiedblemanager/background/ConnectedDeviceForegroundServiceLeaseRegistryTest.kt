@@ -58,7 +58,7 @@ class ConnectedDeviceForegroundServiceLeaseRegistryTest {
   }
 
   @Test
-  fun `failed close clears lease ownership while reporting the stop failure`() {
+  fun `failed close retains lease ownership and retries the stop`() {
     val driver = RecordingServiceDriver(failFirstStop = true)
     val registry = ConnectedDeviceForegroundServiceLeaseRegistry(driver) { "lease-1" }
     val lease = registry.acquire("active-workout")
@@ -67,6 +67,12 @@ class ConnectedDeviceForegroundServiceLeaseRegistryTest {
 
     assertTrue(failure is ForegroundServiceControlException)
     assertEquals("foregroundServiceStopFailed", (failure as ForegroundServiceControlException).code)
+    assertEquals(1, registry.activeLeaseCount())
+    assertTrue(registry.hasLease(lease))
+
+    registry.close()
+
+    assertEquals(2, driver.stopCount)
     assertEquals(0, registry.activeLeaseCount())
     assertFalse(registry.hasLease(lease))
   }

@@ -39,6 +39,23 @@ class UnifiedBleProtocolControlModuleLifecycleTest {
   }
 
   @Test
+  fun `invalidation clears attachment ownership only after every cleanup succeeds`() {
+    val source = readAndroidSource(
+      "android/src/main/java/com/sfourdrinier/unifiedblemanager/protocol/UnifiedBleProtocolControlModule.java"
+    )
+    val invalidation = source.substring(
+      source.indexOf("public synchronized void invalidate"),
+      source.indexOf("private void closeOwnedState")
+    )
+
+    assertTrue(
+      Regex(
+        "if \\(cleanupFailure == null\\) \\{[\\s\\S]*?closeOwnedState\\(\\);"
+      ).containsMatchIn(invalidation)
+    )
+  }
+
+  @Test
   fun `control surface remains part of the versioned handshake`() {
     val source = readAndroidSource(
       "android/src/main/java/com/sfourdrinier/unifiedblemanager/protocol/UnifiedBleProtocolControlModule.java"

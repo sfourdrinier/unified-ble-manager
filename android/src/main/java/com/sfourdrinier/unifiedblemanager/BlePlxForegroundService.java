@@ -79,6 +79,12 @@ public final class BlePlxForegroundService extends Service {
       final String channelName = configuration.getChannelName();
       final String title = configuration.getTitle();
       final String body = configuration.getBody();
+      if (!getSharedPreferences("unified-ble-manager", MODE_PRIVATE)
+          .edit()
+          .putBoolean(SESSION_INTENT_PREFERENCE, configuration.restartWhileSessionIntentExists())
+          .commit()) {
+        throw new IllegalStateException("Android could not persist the foreground-service session intent.");
+      }
       ensureChannel(channelId, channelName);
       final Notification.Builder builder =
           Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
@@ -100,10 +106,6 @@ public final class BlePlxForegroundService extends Service {
         startForeground(ForegroundServiceNotificationConfiguration.NOTIFICATION_ID, notification);
       }
       acknowledge(intent, ACK_STARTED, null);
-      getSharedPreferences("unified-ble-manager", MODE_PRIVATE)
-          .edit()
-          .putBoolean(SESSION_INTENT_PREFERENCE, configuration.restartWhileSessionIntentExists())
-          .apply();
       return configuration.restartWhileSessionIntentExists() ? START_STICKY : START_NOT_STICKY;
     } catch (RuntimeException error) {
       acknowledge(intent, ACK_FAILED, error.getMessage());
