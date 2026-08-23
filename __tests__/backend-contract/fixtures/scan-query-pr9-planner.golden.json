@@ -46,7 +46,13 @@
       "serviceData": [{ "service": "0000180d-0000-1000-8000-00805f9b34fb", "data": { "$bytes": [1, 2, 3] } }]
     },
     "normalizedQueryDigest": "scan-query-v1:90c526130e59a330",
-    "expectedMatch": false
+    "expectedMatch": false,
+    "platformPlans": {
+      "deterministic": {
+        "nativeServiceUuids": ["0000180d-0000-1000-8000-00805f9b34fb"],
+        "nativeGuarantee": "safe-superset"
+      }
+    }
   },
   {
     "id": "masked-bytes-match",
