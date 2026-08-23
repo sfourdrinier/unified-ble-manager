@@ -7,6 +7,7 @@ import Foundation
   func protocolRadioDidUpdateAdapterState(_ snapshot: NSDictionary)
   func protocolRadioDidReceiveAdvertisement(_ advertisement: NSDictionary)
   func protocolRadioDidDisconnectPeer(_ peerIdentifier: String, error: NSError?)
+  func protocolRadioDidModifyServices(_ peerIdentifier: String)
   func protocolRadioDidReceiveNotification(_ subscriptionIdentifier: String, value: NSData)
 }
 
@@ -97,10 +98,17 @@ public final class OwnedCoreBluetoothProtocolRadio: NSObject, CBPeripheralDelega
     var awaitingDescriptors: Int
   }
 
-  @objc public init(restoreIdentifierKey: String?) {
+  @objc public convenience init(restoreIdentifierKey: String?) {
+    self.init(restoreIdentifierKey: restoreIdentifierKey, showPowerAlert: nil)
+  }
+
+  @objc public init(restoreIdentifierKey: String?, showPowerAlert: NSNumber?) {
     queue = Self.radioQueue
     super.init()
     var options = [String: Any]()
+    if let showPowerAlert {
+      options[CBCentralManagerOptionShowPowerAlertKey] = showPowerAlert
+    }
     let configuredCentralDelegate: OwnedCoreBluetoothCentralDelegate
     #if os(iOS)
     if let restoreIdentifierKey, !restoreIdentifierKey.isEmpty {
@@ -219,6 +227,10 @@ public final class OwnedCoreBluetoothProtocolRadio: NSObject, CBPeripheralDelega
       }
       guard self.pendingConnect[peerIdentifier] == nil else {
         completion(self.error(code: 1006, message: "A connection is already pending for this peripheral"))
+        return
+      }
+      guard self.pendingDisconnect[peerIdentifier] == nil else {
+        completion(self.error(code: 1025, message: "The previous connection generation is still disconnecting"))
         return
       }
       peripheral.delegate = self
@@ -536,6 +548,18 @@ public final class OwnedCoreBluetoothProtocolRadio: NSObject, CBPeripheralDelega
     delegate?.protocolRadioDidDisconnectPeer(identifier, error: error as NSError?)
   }
 
+  public func peripheral(_ peripheral: CBPeripheral, didModifyServices invalidatedServices: [CBService]) {
+    let identifier = peripheral.identifier.uuidString
+    clearNotificationOwnership(forPeerIdentifier: identifier)
+    servicesByPeer.removeValue(forKey: identifier)
+    pendingDiscovery.removeValue(forKey: identifier)?.completion(
+      nil,
+      self.error(code: 1026, message: "CoreBluetooth services changed during discovery")
+    )
+    failPendingGATT(for: identifier, error: self.error(code: 1027, message: "CoreBluetooth services changed"))
+    delegate?.protocolRadioDidModifyServices(identifier)
+  }
+
   public func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
     let identifier = peripheral.identifier.uuidString
     guard var pending = pendingDiscovery[identifier] else { return }
@@ -772,6 +796,25 @@ public final class OwnedCoreBluetoothProtocolRadio: NSObject, CBPeripheralDelega
       characteristicUUID: OwnedCoreBluetoothProtocolRadioSupport.normalizedUUID(characteristic.uuid.uuidString),
       characteristicOccurrence: characteristicOccurrence
     )
+  }
+  private func clearNotificationOwnership(forPeerIdentifier peerIdentifier: String) {
+    var notificationAddresses = Set(subscriptions.keys.filter { $0.peerIdentifier == peerIdentifier })
+    notificationAddresses.formUnion(pendingNotify.keys.filter { $0.peerIdentifier == peerIdentifier })
+    for cleanup in pendingCancellationCleanup.values {
+      notificationAddresses.formUnion(cleanup.notificationDesiredStates.keys.filter { $0.peerIdentifier == peerIdentifier })
+    }
+    for address in notificationAddresses {
+      if let resolved = resolve(address) { resolved.peripheral.setNotifyValue(false, for: resolved.characteristic) }
+    }
+    subscriptions = subscriptions.filter { $0.key.peerIdentifier != peerIdentifier }
+    for (operationIdentifier, var cleanup) in pendingCancellationCleanup {
+      cleanup.notificationDesiredStates = cleanup.notificationDesiredStates.filter { $0.key.peerIdentifier != peerIdentifier }
+      cleanup.notificationAwaitingCallbacks = cleanup.notificationAwaitingCallbacks.filter { $0.peerIdentifier != peerIdentifier }
+      if cleanup.peerIdentifiers.isEmpty && cleanup.notificationDesiredStates.isEmpty {
+        pendingCancellationCleanup.removeValue(forKey: operationIdentifier)
+        pendingCancellationCleanupRetryScheduled.remove(operationIdentifier)
+      } else { pendingCancellationCleanup[operationIdentifier] = cleanup }
+    }
   }
 
   private func failPendingGATT(for peerIdentifier: String, error: NSError?) {

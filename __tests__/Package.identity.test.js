@@ -39,6 +39,7 @@ describe('package identity (unified-ble-manager)', () => {
       './profiles/heart-rate',
       './profiles/ieee-11073',
       './profiles/standard-commands',
+      './react',
       './react-native',
       './tauri',
       './testing',
@@ -59,9 +60,9 @@ describe('package identity (unified-ble-manager)', () => {
     expect(pod).toContain('ios/UnifiedBleProtocolControl.mm')
     expect(pod).toContain('ios/Owned/OwnedCoreBluetoothProtocolRadio.swift')
     expect(pod).not.toMatch(/default_subspecs|subspec "Restoration"|MultiplatformBleAdapter/)
-    expect(pkg.codegenConfig.ios.modulesProvider).toEqual({
-      UnifiedBleProtocolControl: 'UnifiedBleProtocolControl'
-    })
+    expect(pkg.codegenConfig.ios.modulesProvider).toEqual(
+      expect.objectContaining({ UnifiedBleProtocolControl: 'UnifiedBleProtocolControl' })
+    )
     // Not the old pod name as s.name
     expect(pod).not.toMatch(/s\.name\s*=\s*"react-native-ble-plx"/)
   })
@@ -77,19 +78,19 @@ describe('package identity (unified-ble-manager)', () => {
     )
     expect(fs.existsSync(packageJava)).toBe(true)
     expect(fs.existsSync(controlJava)).toBe(true)
-    expect(fs.existsSync(path.join(root, 'android/src/main/java/com/sfourdrinier/unifiedblemanager/BlePlxModule.java'))).toBe(
-      false
-    )
+    expect(
+      fs.existsSync(path.join(root, 'android/src/main/java/com/sfourdrinier/unifiedblemanager/BlePlxModule.java'))
+    ).toBe(false)
   })
 
-  test('Expo plugin does not expose a retired Android foreground-service configuration', () => {
+  test('Expo plugin exposes the explicit connected-device foreground-service configuration', () => {
     const pluginSource = fs.readFileSync(path.join(root, 'plugin/src/withBLE.ts'), 'utf8')
     const pluginBuild = fs.readFileSync(path.join(root, 'plugin/build/withBLE.js'), 'utf8')
 
-    expect(pluginSource).not.toMatch(/androidEnableForegroundService|withBLEAndroidForegroundService/)
-    expect(pluginBuild).not.toMatch(/androidEnableForegroundService|withBLEAndroidForegroundService/)
-    expect(fs.existsSync(path.join(root, 'plugin/src/withBLEAndroidForegroundService.ts'))).toBe(false)
-    expect(fs.existsSync(path.join(root, 'plugin/build/withBLEAndroidForegroundService.js'))).toBe(false)
+    expect(pluginSource).toContain('withBLEAndroidForegroundService')
+    expect(pluginBuild).toContain('withBLEAndroidForegroundService')
+    expect(fs.existsSync(path.join(root, 'plugin/src/withBLEAndroidForegroundService.ts'))).toBe(true)
+    expect(fs.existsSync(path.join(root, 'plugin/build/withBLEAndroidForegroundService.js'))).toBe(true)
   })
 
   test('Expo plugin entry exists (id follows package name at runtime)', () => {

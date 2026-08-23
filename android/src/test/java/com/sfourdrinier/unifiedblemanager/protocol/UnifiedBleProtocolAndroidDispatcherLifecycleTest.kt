@@ -7,6 +7,7 @@ import com.sfourdrinier.unifiedblemanager.radio.nextUuidOccurrence
 import com.sfourdrinier.unifiedblemanager.radio.resolveUuidOccurrence
 import com.sfourdrinier.unifiedblemanager.radio.OwnedAndroidGattRadio
 import com.sfourdrinier.unifiedblemanager.radio.OwnedAndroidGattRadio.GattSerialQueue
+import com.sfourdrinier.unifiedblemanager.radio.OwnedAndroidSubscriptionOwnership
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertNull
@@ -56,6 +57,94 @@ class UnifiedBleProtocolAndroidDispatcherLifecycleTest {
     assertTrue(radio.contains("ScanSettings.PHY_LE_ALL_SUPPORTED"))
     assertTrue(!radio.contains("BluetoothDevice.PHY_LE_ALL_SUPPORTED"))
     assertTrue(!radio.contains("!not"))
+  }
+
+  @Test
+  fun dispatcherForwardsOwnedRadioServiceChangesAsDatabaseChangedEvents() {
+    val dispatcher = readAndroidSource(
+      "android/src/main/java/com/sfourdrinier/unifiedblemanager/protocol/UnifiedBleProtocolAndroidDispatcher.kt"
+    )
+
+    assertTrue(dispatcher.contains("radio.onServicesChanged = { deviceId ->"))
+    assertTrue(dispatcher.contains("activeDatabases"))
+    assertTrue(dispatcher.contains("databaseChangedEvent"))
+  }
+
+  @Test
+  fun serviceChangedInvalidatesNativeSubscriptionOwnershipAndRoutesBeforeDatabaseChanged() {
+    val dispatcher = readAndroidSource(
+      "android/src/main/java/com/sfourdrinier/unifiedblemanager/protocol/UnifiedBleProtocolAndroidDispatcher.kt"
+    )
+    val radio = readAndroidSource(
+      "android/src/main/java/com/sfourdrinier/unifiedblemanager/radio/OwnedAndroidGattRadio.kt"
+    )
+
+    assertTrue(dispatcher.contains("activeSubscriptions.remove"))
+    assertTrue(dispatcher.contains("clearSubscriptionRoutesForDevice"))
+    assertTrue(radio.contains("activeNativeSubscriptionOwnership"))
+    assertTrue(radio.contains("invalidateForDatabaseChange"))
+    assertTrue(
+      dispatcher.indexOf("clearSubscriptionRoutesForDevice(deviceId)") <
+        dispatcher.indexOf("emitDatabaseChanged(database)")
+    )
+    assertTrue(
+      radio.indexOf("invalidateNativeSubscriptionsForDatabaseChange(key, gatt, generation)") <
+        radio.indexOf("onServicesChanged?.invoke(id)")
+    )
+  }
+
+  @Test
+  fun nativeSubscriptionOwnershipIsBoundToTheGattGenerationAndInvalidatedForThatGeneration() {
+    val ownership = OwnedAndroidSubscriptionOwnership<String>()
+    ownership.activate("AA:BB", 7L, "heart-rate")
+    ownership.activate("CC:DD", 3L, "battery")
+
+    assertTrue(ownership.isActive("AA:BB", 7L, "heart-rate"))
+    assertTrue(!ownership.isActive("AA:BB", 8L, "heart-rate"))
+    assertEquals(listOf("heart-rate"), ownership.invalidateForDatabaseChange("AA:BB", 7L))
+    assertTrue(!ownership.isActive("AA:BB", 7L, "heart-rate"))
+    assertTrue(ownership.isActive("CC:DD", 3L, "battery"))
+  }
+
+  @Test
+  fun databaseChangedEventRetainsTheCurrentAttachmentAndDatabasePath() {
+    val attachment = ProtocolWireRecord(
+      RecordKind.ATTACHMENT,
+      mapOf(
+        1 to ProtocolWireValue.StringValue("attachment-1"),
+        2 to ProtocolWireValue.StringValue("backend-1"),
+        3 to ProtocolWireValue.StringValue("generation-1"),
+        4 to ProtocolWireValue.StringValue("adapter-1"),
+        5 to ProtocolWireValue.StringValue("adapter-generation-1")
+      )
+    )
+    val connection = ProtocolWireRecord(
+      RecordKind.CONNECTION_PATH,
+      mapOf(
+        1 to ProtocolWireValue.RecordValue(attachment),
+        2 to ProtocolWireValue.StringValue("C0FFEE000001"),
+        3 to ProtocolWireValue.StringValue("connection-1"),
+        4 to ProtocolWireValue.StringValue("lease-1"),
+        5 to ProtocolWireValue.StringValue("connection-generation-1")
+      )
+    )
+    val database = ProtocolWireRecord(
+      RecordKind.DATABASE_PATH,
+      mapOf(
+        1 to ProtocolWireValue.RecordValue(connection),
+        2 to ProtocolWireValue.StringValue("database-1"),
+        3 to ProtocolWireValue.StringValue("database-generation-1")
+      )
+    )
+
+    val event = databaseChangedEvent(17L, database, 3L, 99L)
+
+    assertEquals(RecordKind.EVENT, event.kind)
+    assertEquals(ProtocolWireValue.StringValue("databaseChanged"), event.fields[3])
+    assertEquals(ProtocolWireValue.RecordValue(attachment), event.fields[4])
+    assertEquals(ProtocolWireValue.UnsignedIntegerValue(3L), event.fields[5])
+    assertEquals(ProtocolWireValue.UnsignedIntegerValue(99L), event.fields[6])
+    assertEquals(ProtocolWireValue.RecordValue(database), event.fields[8])
   }
 
   @Test

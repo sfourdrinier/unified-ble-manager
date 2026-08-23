@@ -2,6 +2,7 @@
 
 import { createExpoBleManager, createExpoBleManagerWithEnvironment } from 'unified-ble-manager/expo'
 import type { ExpoBleManagerEnvironment } from 'unified-ble-manager/expo'
+import { BleProvider, useAdapterState, useBle, useBleCapability } from 'unified-ble-manager/react'
 import {
   createTauriBleManager,
   createTauriBleManagerWithEnvironment,
@@ -24,6 +25,10 @@ function consume(value: unknown): void {
 
 consume(createExpoBleManager())
 consume(createExpoBleManagerWithEnvironment(expoEnvironment))
+consume(BleProvider)
+consume(useBle)
+consume(useAdapterState)
+consume(useBleCapability)
 consume(createTauriBleManager())
 consume(createTauriBleManagerWithEnvironment(tauriEnvironment))
 consume(createTauriBleProvider())

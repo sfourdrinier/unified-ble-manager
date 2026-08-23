@@ -5,6 +5,7 @@
 #import <React/RCTLog.h>
 #import <ReactCommon/RCTTurboModule.h>
 #import <ReactCommon/RCTTurboModuleWithJSIBindings.h>
+#import <CommonCrypto/CommonDigest.h>
 
 #if __has_include("BlePlx-Swift.h")
 #import "BlePlx-Swift.h"
@@ -23,6 +24,8 @@ namespace {
 
 constexpr double kProtocolVersion = static_cast<double>(unified_ble::native_protocol::v2::kProtocolVersion);
 constexpr double kAbiVersion = static_cast<double>(unified_ble::native_protocol::v2::kAbiVersion);
+constexpr double kControlSurfaceVersion =
+    static_cast<double>(unified_ble::native_protocol::v2::kControlSurfaceVersion);
 constexpr double kContractVersion = 1.0;
 constexpr double kCapabilitySchemaVersion = 1.0;
 constexpr double kEventSchemaVersion = 1.0;
@@ -41,6 +44,84 @@ NSString *configuredInfoString(NSString *key) {
 
   NSString *stringValue = value;
   return validString(stringValue) ? stringValue : nil;
+}
+
+NSNumber *configuredInfoBool(NSString *key) {
+  id value = [[NSBundle mainBundle] objectForInfoDictionaryKey:key];
+  return [value isKindOfClass:[NSNumber class]] ? value : nil;
+}
+
+bool validRestorationToken(NSString *value, NSUInteger maximumBytes) {
+  if (!validString(value)) return false;
+  NSData *bytes = [value dataUsingEncoding:NSUTF8StringEncoding];
+  if (bytes == nil || bytes.length > maximumBytes) return false;
+  NSRange match = [value rangeOfString:@"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+                               options:NSRegularExpressionSearch];
+  return match.location == 0 && match.length == value.length;
+}
+
+NSData *utf8Data(NSString *value) {
+  return [value dataUsingEncoding:NSUTF8StringEncoding];
+}
+
+NSData *lengthPrefixedData(NSString *value) {
+  NSData *bytes = utf8Data(value);
+  const uint32_t length = static_cast<uint32_t>(bytes.length);
+  const uint8_t prefix[] = {
+      static_cast<uint8_t>((length >> 24U) & 0xffU),
+      static_cast<uint8_t>((length >> 16U) & 0xffU),
+      static_cast<uint8_t>((length >> 8U) & 0xffU),
+      static_cast<uint8_t>(length & 0xffU),
+  };
+  NSMutableData *result = [NSMutableData dataWithBytes:prefix length:sizeof(prefix)];
+  [result appendData:bytes];
+  return result;
+}
+
+NSData *concatenateData(NSArray<NSData *> *values) {
+  NSMutableData *result = [NSMutableData data];
+  for (NSData *value in values) [result appendData:value];
+  return result;
+}
+
+NSData *sha256Data(NSData *value) {
+  unsigned char digest[CC_SHA256_DIGEST_LENGTH];
+  CC_SHA256(value.bytes, static_cast<CC_LONG>(value.length), digest);
+  return [NSData dataWithBytes:digest length:sizeof(digest)];
+}
+
+NSString *base64UrlString(NSData *value) {
+  NSString *encoded = [value base64EncodedStringWithOptions:0];
+  encoded = [encoded stringByReplacingOccurrencesOfString:@"+" withString:@"-"];
+  encoded = [encoded stringByReplacingOccurrencesOfString:@"/" withString:@"_"];
+  return [encoded stringByReplacingOccurrencesOfString:@"=" withString:@""];
+}
+
+NSDictionary *derivedRestorationIdentity(NSString *applicationId, NSString *restorationId, NSString *generation) {
+  NSData *root = sha256Data(concatenateData(@[
+    utf8Data(@"ubm-restoration-v1"),
+    lengthPrefixedData(applicationId),
+    lengthPrefixedData(restorationId),
+    lengthPrefixedData(generation),
+  ]));
+  NSString *(^derive)(NSString *) = ^NSString *(NSString *label) {
+    const uint8_t zero = 0;
+    return base64UrlString(sha256Data(concatenateData(@[
+      root,
+      [NSData dataWithBytes:&zero length:1],
+      utf8Data(label),
+    ])));
+  };
+  return @{
+    @"applicationId": applicationId,
+    @"restorationId": restorationId,
+    @"generation": generation,
+    @"restoreIdentifier": [NSString stringWithFormat:@"%@.ubm.%@",
+                           applicationId, [derive(@"restore") substringToIndex:22]],
+    @"namespaceValue": [NSString stringWithFormat:@"ubm-ns:%@", derive(@"namespace")],
+    @"clientId": [NSString stringWithFormat:@"ubm-client:%@", derive(@"client")],
+    @"hostSessionScope": [NSString stringWithFormat:@"ubm-host:%@", derive(@"host")],
+  };
 }
 
 bool validInteger(double value) {
@@ -241,6 +322,8 @@ NSDictionary* structuredRestorationReplayRecord(
   NSString *_restorationEpoch;
   NSString *_restorationClientId;
   NSString *_restorationHostSessionScope;
+  NSString *_restorationId;
+  NSString *_restorationGeneration;
   OwnedCoreBluetoothProtocolRadio *_radio;
   UnifiedBleProtocolAppleRadioDelegate *_radioDelegate;
   BOOL _jsiInstalled;
@@ -252,11 +335,20 @@ RCT_EXPORT_MODULE(UnifiedBleProtocolControl)
   self = [super init];
   if (self != nil) {
     _runtime = std::make_shared<unified_ble::native_protocol::v2::NativeProtocolControlRuntime>();
-    _restorationRestoreIdentifier = configuredInfoString(@"UnifiedBleProtocolRestoreIdentifier");
-    _restorationNamespace = configuredInfoString(@"UnifiedBleProtocolRestorationNamespace");
-    _restorationEpoch = configuredInfoString(@"UnifiedBleProtocolRestorationEpoch");
-    _restorationClientId = configuredInfoString(@"UnifiedBleProtocolRestorationClientId");
-    _restorationHostSessionScope = configuredInfoString(@"UnifiedBleProtocolRestorationHostSessionScope");
+    _restorationId = configuredInfoString(@"UnifiedBleProtocolRestorationId");
+    _restorationGeneration = configuredInfoString(@"UnifiedBleProtocolRestorationGeneration");
+    NSDictionary *derived = nil;
+    NSString *applicationId = [NSBundle mainBundle].bundleIdentifier;
+    if (validString(applicationId) && validRestorationToken(_restorationId, 128) &&
+        validRestorationToken(_restorationGeneration, 64)) {
+      derived = derivedRestorationIdentity(applicationId, _restorationId, _restorationGeneration);
+    }
+    _restorationRestoreIdentifier = derived[@"restoreIdentifier"];
+    _restorationNamespace = derived[@"namespaceValue"];
+    _restorationEpoch = derived[@"generation"];
+    _restorationClientId = derived[@"clientId"];
+    _restorationHostSessionScope = derived[@"hostSessionScope"];
+    NSNumber *showPowerAlert = configuredInfoBool(@"UnifiedBleProtocolShowPowerAlert");
     _radio = [[OwnedCoreBluetoothProtocolRadio alloc]
         initWithRestoreIdentifierKey:(
             hasCompleteRestorationConfiguration(
@@ -266,7 +358,8 @@ RCT_EXPORT_MODULE(UnifiedBleProtocolControl)
                 _restorationClientId,
                 _restorationHostSessionScope)
                 ? _restorationRestoreIdentifier
-                : nil)];
+                : nil)
+        showPowerAlert:showPowerAlert];
     _execution = std::make_shared<unified_ble::apple_protocol::AppleNativeProtocolExecution>(
         _runtime,
         (__bridge void *)_radio);
@@ -294,12 +387,52 @@ RCT_EXPORT_MODULE(UnifiedBleProtocolControl)
   return std::make_shared<facebook::react::NativeUnifiedBleProtocolControlSpecJSI>(params);
 }
 
+- (void)bootstrapRestorationIdentity:(JS::NativeUnifiedBleProtocolControl::NativeRestorationBootstrapRequest &)request
+                             resolve:(RCTPromiseResolveBlock)resolve
+                              reject:(RCTPromiseRejectBlock)reject {
+  NSString *restorationId = request.restorationId();
+  NSString *generation = request.generation();
+  NSString *applicationId = [NSBundle mainBundle].bundleIdentifier;
+  if (!validString(applicationId) || !validRestorationToken(restorationId, 128) ||
+      !validRestorationToken(generation, 64) || _restorationId == nil || _restorationGeneration == nil ||
+      ![_restorationId isEqualToString:restorationId] || ![_restorationGeneration isEqualToString:generation]) {
+    rejectControl(reject, @"nativeRestorationBootstrap",
+                  @"The native restoration configuration does not match the request");
+    return;
+  }
+  NSDictionary *derived = derivedRestorationIdentity(applicationId, restorationId, generation);
+  if (derived == nil || ![derived[@"restoreIdentifier"] isEqualToString:_restorationRestoreIdentifier]) {
+    rejectControl(reject, @"nativeRestorationBootstrap", @"The native restoration identity is unavailable");
+    return;
+  }
+  resolve(derived);
+}
+
+- (void)acquireBackground:(JS::NativeUnifiedBleProtocolControl::NativeBackgroundLeaseRequest &)request
+                  resolve:(RCTPromiseResolveBlock)resolve
+                   reject:(RCTPromiseRejectBlock)reject {
+  rejectControl(reject, @"unsupportedBackground", @"Connected-device foreground service is Android-only");
+}
+
+- (void)releaseBackground:(JS::NativeUnifiedBleProtocolControl::NativeBackgroundLeaseReleaseRequest &)request
+                  resolve:(RCTPromiseResolveBlock)resolve
+                   reject:(RCTPromiseRejectBlock)reject {
+  rejectControl(reject, @"unsupportedBackground", @"Connected-device foreground service is Android-only");
+}
+
+- (void)associateCompanionDevice:(JS::NativeUnifiedBleProtocolControl::NativeCompanionAssociationRequest &)request
+                          resolve:(RCTPromiseResolveBlock)resolve
+                           reject:(RCTPromiseRejectBlock)reject {
+  rejectControl(reject, @"unsupportedAssociation", @"Companion Device Manager association is Android-only");
+}
+
 - (void)handshake:(JS::NativeUnifiedBleProtocolControl::NativeProtocolHandshakeRequest &)request
           resolve:(RCTPromiseResolveBlock)resolve
            reject:(RCTPromiseRejectBlock)reject {
   const auto rangesCompatible =
       compatibleRangeFor(request.nativeProtocol().minimum(), request.nativeProtocol().maximum(), kProtocolVersion) &&
       compatibleRangeFor(request.abi().minimum(), request.abi().maximum(), kAbiVersion) &&
+      compatibleRangeFor(request.controlSurface().minimum(), request.controlSurface().maximum(), kControlSurfaceVersion) &&
       compatibleRangeFor(request.backendContract().minimum(), request.backendContract().maximum(), kContractVersion) &&
       compatibleRangeFor(request.capabilitySchema().minimum(), request.capabilitySchema().maximum(), kCapabilitySchemaVersion) &&
       compatibleRangeFor(request.eventSchema().minimum(), request.eventSchema().maximum(), kEventSchemaVersion) &&
@@ -332,6 +465,7 @@ RCT_EXPORT_MODULE(UnifiedBleProtocolControl)
         nativeString(request.ownerId()),
         range(request.nativeProtocol()),
         range(request.abi()),
+        range(request.controlSurface()),
         range(request.backendContract()),
         range(request.capabilitySchema()),
         range(request.eventSchema()),
@@ -371,7 +505,8 @@ RCT_EXPORT_MODULE(UnifiedBleProtocolControl)
   _execution->receiveAdapterState((__bridge void *)[_radio adapterSnapshot]);
   resolve(@{
     @"nativeProtocol": @2,
-    @"abi": @2,
+    @"abi": @(kAbiVersion),
+    @"controlSurface": @(kControlSurfaceVersion),
     @"backendContract": @1,
     @"capabilitySchema": @1,
     @"eventSchema": @1,
@@ -485,6 +620,51 @@ RCT_EXPORT_MODULE(UnifiedBleProtocolControl)
   }
 }
 
+- (void)claimRestoration:(RCTPromiseResolveBlock)resolve
+                 reject:(RCTPromiseRejectBlock)reject {
+  if (_attachment == nil ||
+      !hasCompleteRestorationConfiguration(
+          _restorationRestoreIdentifier,
+          _restorationNamespace,
+          _restorationEpoch,
+          _restorationClientId,
+          _restorationHostSessionScope)) {
+    rejectControl(reject, @"nativeRestorationAdoption", @"The native restoration authority is not configured");
+    return;
+  }
+  try {
+    const auto receipt = _runtime->adopt({
+      .namespaceValue = nativeString(_restorationNamespace),
+      .attachmentId = nativeString(_attachment[@"attachmentId"]),
+      .expectedBackendInstanceId = nativeString(_attachment[@"backendInstanceId"]),
+      .expectedEpoch = nativeString(_restorationEpoch),
+      .nativeProtocolMinimum = static_cast<std::uint32_t>(kProtocolVersion),
+      .nativeProtocolMaximum = static_cast<std::uint32_t>(kProtocolVersion),
+      .clientId = nativeString(_restorationClientId),
+      .hostSessionScope = nativeString(_restorationHostSessionScope),
+    });
+    if (receipt.outcome == unified_ble::native_protocol::v2::NativeRestorationOutcome::adopted) {
+      [_radio consumeRestorationPeerIdentifiers];
+    }
+    NSMutableArray<NSDictionary*>* replayRecords =
+        [NSMutableArray arrayWithCapacity:receipt.records.size()];
+    for (const auto& entry : receipt.records) {
+      [replayRecords addObject:structuredRestorationReplayRecord(entry.record)];
+    }
+    resolve(@{
+      @"receiptId": [NSString stringWithUTF8String:receipt.receiptId.c_str()],
+      @"outcome": [NSString stringWithUTF8String:
+          unified_ble::native_protocol::v2::restorationOutcomeName(receipt.outcome)],
+      @"boundClientId": [NSString stringWithUTF8String:receipt.boundClientId.c_str()],
+      @"adoptionEpoch": [NSString stringWithUTF8String:receipt.adoptionEpoch.c_str()],
+      @"replayRecordCount": @(receipt.records.size()),
+      @"records": replayRecords,
+    });
+  } catch (const std::exception& error) {
+    rejectControl(reject, @"nativeRestorationAdoption", [NSString stringWithUTF8String:error.what()]);
+  }
+}
+
 - (void)closeAttachment:(JS::NativeUnifiedBleProtocolControl::NativeAttachmentIdentity &)attachment
                 resolve:(RCTPromiseResolveBlock)resolve
                  reject:(RCTPromiseRejectBlock)reject {
@@ -508,7 +688,9 @@ RCT_EXPORT_MODULE(UnifiedBleProtocolControl)
     _radio.delegate = nil;
     _radioDelegate.execution = nullptr;
     _execution->detachAttachment();
-    _runtime->close(nativeAttachmentValue);
+    if (_runtime->open()) {
+      _runtime->close(nativeAttachmentValue);
+    }
     _attachment = nil;
     resolve(nil);
   } catch (const std::exception& error) {
@@ -517,15 +699,32 @@ RCT_EXPORT_MODULE(UnifiedBleProtocolControl)
 }
 
 - (void)invalidate {
+  NSDictionary *attachment = [_attachment copy];
   _radio.delegate = nil;
   _radioDelegate.execution = nullptr;
   _execution->close();
+  BOOL runtimeClosed = !_runtime->open();
+  if (!runtimeClosed && attachment != nil) {
+    try {
+      _runtime->close(nativeAttachment(
+          attachment[@"attachmentId"],
+          attachment[@"backendInstanceId"],
+          attachment[@"backendGeneration"],
+          attachment[@"adapterId"],
+          attachment[@"adapterGeneration"]));
+      runtimeClosed = YES;
+    } catch (const std::exception& error) {
+      NSLog(@"[UnifiedBleProtocolControl] native runtime close during invalidation failed: %s", error.what());
+    } catch (...) {
+      NSLog(@"[UnifiedBleProtocolControl] native runtime close during invalidation failed with an unknown exception");
+    }
+  }
   [_radio destroyWithCompletion:^(NSError *error) {
     if (error != nil) {
       NSLog(@"[UnifiedBleProtocolControl] radio destruction during invalidation failed: %@", error.localizedDescription);
     }
   }];
-  _attachment = nil;
+  if (runtimeClosed) _attachment = nil;
 }
 
 @end
@@ -547,6 +746,12 @@ RCT_EXPORT_MODULE(UnifiedBleProtocolControl)
 - (void)protocolRadioDidDisconnectPeer:(NSString *)peerIdentifier error:(NSError *)error {
   if (_execution != nullptr) {
     _execution->receiveDisconnect((__bridge void *)peerIdentifier, (__bridge void *)error);
+  }
+}
+
+- (void)protocolRadioDidModifyServices:(NSString *)peerIdentifier {
+  if (_execution != nullptr) {
+    _execution->receiveDatabaseChanged((__bridge void *)peerIdentifier);
   }
 }
 

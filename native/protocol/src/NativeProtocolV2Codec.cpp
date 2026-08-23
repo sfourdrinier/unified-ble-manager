@@ -757,6 +757,7 @@ void NativeProtocolV2Codec::validateRecord(const ProtocolRecord& record, std::si
 NegotiatedVersions NativeProtocolV2Codec::negotiate(
     VersionRange nativeProtocol,
     VersionRange abi,
+    VersionRange controlSurface,
     VersionRange backendContract,
     VersionRange capabilitySchema,
     VersionRange eventSchema,
@@ -764,6 +765,7 @@ NegotiatedVersions NativeProtocolV2Codec::negotiate(
   return {
       .nativeProtocol = selectVersion(nativeProtocol, kProtocolVersion, "native-protocol"),
       .abi = selectVersion(abi, kAbiVersion, "abi"),
+      .controlSurface = selectVersion(controlSurface, kControlSurfaceVersion, "control-surface"),
       .backendContract = selectVersion(backendContract, 1U, "backend-contract"),
       .capabilitySchema = selectVersion(capabilitySchema, 1U, "capability-schema"),
       .eventSchema = selectVersion(eventSchema, 1U, "event-schema"),

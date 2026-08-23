@@ -123,6 +123,7 @@ namespace unified_ble::native_protocol::v2 {
 
 inline constexpr std::uint32_t kProtocolVersion = ${String(schema.version)}U;
 inline constexpr std::uint32_t kAbiVersion = ${String(schema.abiVersion)}U;
+inline constexpr std::uint32_t kControlSurfaceVersion = ${String(schema.controlSurfaceVersion)}U;
 inline constexpr std::size_t kMaximumControlRecordBytes = ${String(schema.maximumControlRecordBytes)}U;
 inline constexpr std::size_t kMaximumBinaryPayloadBytes = ${String(schema.maximumBinaryPayloadBytes)}U;
 
@@ -188,6 +189,7 @@ package com.sfourdrinier.unifiedblemanager.protocol.generated
 
 const val NATIVE_PROTOCOL_VERSION: Int = ${String(schema.version)}
 const val NATIVE_PROTOCOL_ABI_VERSION: Int = ${String(schema.abiVersion)}
+const val NATIVE_PROTOCOL_CONTROL_SURFACE_VERSION: Int = ${String(schema.controlSurfaceVersion)}
 const val MAXIMUM_CONTROL_RECORD_BYTES: Int = ${String(schema.maximumControlRecordBytes)}
 const val MAXIMUM_BINARY_PAYLOAD_BYTES: Int = ${String(schema.maximumBinaryPayloadBytes)}
 
@@ -229,6 +231,7 @@ import Foundation
 
 public let nativeProtocolVersion: UInt32 = ${String(schema.version)}
 public let nativeProtocolABIVersion: UInt32 = ${String(schema.abiVersion)}
+public let nativeProtocolControlSurfaceVersion: UInt32 = ${String(schema.controlSurfaceVersion)}
 public let maximumControlRecordBytes: Int = ${String(schema.maximumControlRecordBytes)}
 public let maximumBinaryPayloadBytes: Int = ${String(schema.maximumBinaryPayloadBytes)}
 
@@ -263,6 +266,7 @@ function typescriptSchemaOutput() {
 
 export const NATIVE_PROTOCOL_VERSION = ${String(schema.version)}
 export const NATIVE_PROTOCOL_ABI_VERSION = ${String(schema.abiVersion)}
+export const NATIVE_PROTOCOL_CONTROL_SURFACE_VERSION = ${String(schema.controlSurfaceVersion)}
 export const MAXIMUM_CONTROL_RECORD_BYTES = ${String(schema.maximumControlRecordBytes)}
 export const MAXIMUM_BINARY_PAYLOAD_BYTES = ${String(schema.maximumBinaryPayloadBytes)}
 
@@ -326,6 +330,7 @@ export interface NativeProtocolVersionRange {
 export interface NativeProtocolHandshakeRequest {
   nativeProtocol: NativeProtocolVersionRange
   abi: NativeProtocolVersionRange
+  controlSurface: NativeProtocolVersionRange
   backendContract: NativeProtocolVersionRange
   capabilitySchema: NativeProtocolVersionRange
   eventSchema: NativeProtocolVersionRange
@@ -341,6 +346,7 @@ export interface NativeProtocolHandshakeRequest {
 export interface NativeProtocolHandshakeResult {
   nativeProtocol: number
   abi: number
+  controlSurface: number
   backendContract: number
   capabilitySchema: number
   eventSchema: number
@@ -367,6 +373,46 @@ export interface NativeOperationCorrelation {
   attachment: NativeAttachmentIdentity
   dispatchEpoch: number
   nonce: string
+}
+
+export interface NativeRestorationBootstrapRequest {
+  restorationId: string
+  generation: string
+}
+
+export interface NativeRestorationBootstrapIdentity {
+  applicationId: string
+  restorationId: string
+  generation: string
+  restoreIdentifier: string
+  namespaceValue: string
+  clientId: string
+  hostSessionScope: string
+}
+
+export interface NativeBackgroundLeaseRequest {
+  kind: 'connected-device'
+  reason: string
+}
+
+export interface NativeBackgroundLeaseResult {
+  leaseId: string
+}
+
+export interface NativeBackgroundLeaseReleaseRequest {
+  leaseId: string
+}
+
+export interface NativeCompanionAssociationRequest {
+  name?: string
+  serviceUuid?: string
+}
+
+export interface NativeCompanionAssociationResult {
+  source: 'associated'
+  associationId: number
+  peerId: string | null
+  displayName: string | null
 }
 
 export type NativeRestorationOutcome =
@@ -422,6 +468,15 @@ export interface NativeCancellationControlResult {
 
 export interface Spec extends TurboModule {
   handshake(request: NativeProtocolHandshakeRequest): Promise<NativeProtocolHandshakeResult>
+  bootstrapRestorationIdentity(
+    request: NativeRestorationBootstrapRequest
+  ): Promise<NativeRestorationBootstrapIdentity>
+  acquireBackground(request: NativeBackgroundLeaseRequest): Promise<NativeBackgroundLeaseResult>
+  releaseBackground(request: NativeBackgroundLeaseReleaseRequest): Promise<void>
+  associateCompanionDevice(
+    request: NativeCompanionAssociationRequest
+  ): Promise<NativeCompanionAssociationResult>
+  claimRestoration(): Promise<NativeRestorationAdoptionControlResult>
   installExecutionRuntime(): Promise<void>
   cancelOperation(correlation: NativeOperationCorrelation): Promise<NativeCancellationControlResult>
   adoptRestoration(request: NativeRestorationAdoptionRequest): Promise<NativeRestorationAdoptionControlResult>

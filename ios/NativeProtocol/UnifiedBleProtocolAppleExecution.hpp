@@ -39,6 +39,7 @@ class AppleNativeProtocolExecution final {
   void receiveAdapterState(void* snapshot);
   void receiveAdvertisement(void* advertisement);
   void receiveDisconnect(void* peerIdentifier, void* error);
+  void receiveDatabaseChanged(void* peerIdentifier);
   void receiveNotification(void* subscriptionIdentifier, void* value);
   void close();
 

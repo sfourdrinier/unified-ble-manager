@@ -35,6 +35,7 @@ describe('ci-release canonical package (4.0)', () => {
       './profiles/heart-rate',
       './profiles/ieee-11073',
       './profiles/standard-commands',
+      './react',
       './react-native',
       './tauri',
       './testing',
@@ -64,9 +65,7 @@ describe('ci-release canonical package (4.0)', () => {
     expect(w).toContain('PACK_OUTPUT="$(npm pack --pack-destination .release-package)"')
     expect(w).toContain('test "${TARBALL_NAME}" = "${EXPECTED_TARBALL}"')
     expect(w).toContain('test "${#TARBALLS[@]}" -eq 1')
-    expect(w).toContain(
-      'npm publish "${PUBLISH_TARBALL}" --provenance --access public --tag "${NPM_DIST_TAG}"'
-    )
+    expect(w).toContain('npm publish "${PUBLISH_TARBALL}" --provenance --access public --tag "${NPM_DIST_TAG}"')
     expect(w).toContain('4.0.0-rc.*')
     expect(w).toContain('Fetch main for initial tag verification')
     expect(w).toContain('Verify release tag points at current main')
@@ -284,9 +283,7 @@ describe('ci-release canonical package (4.0)', () => {
     const publishG6AIndex = publishJob.indexOf('- name: G6A packed consumer proof')
     expect(publishSmokeIndex).toBeGreaterThan(-1)
     expect(publishG6AIndex).toBeGreaterThan(publishSmokeIndex)
-    expect(publishJob.slice(publishSmokeIndex, publishG6AIndex)).toContain(
-      'run: node scripts/ci/pack-install-smoke.js'
-    )
+    expect(publishJob.slice(publishSmokeIndex, publishG6AIndex)).toContain('run: node scripts/ci/pack-install-smoke.js')
     expect(publishJob.slice(publishG6AIndex)).toMatch(
       /- name: G6A packed consumer proof\n\s+run: node scripts\/ci\/g6a-packed-consumer-proof\.js/
     )

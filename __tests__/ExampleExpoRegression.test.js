@@ -56,9 +56,17 @@ describe('Expo example cold-review regressions', () => {
 
   test('Expo delegates identity to the public React Native factory', () => {
     const service = readExampleSource('example-expo', 'services/BLEService/BLEService.ts')
-    expect(service).toContain('createReactNativeBleManager({ instanceId:')
+    expect(service).toContain('createExpoBleManager({ instanceId:')
     expect(service).not.toContain('hostSessionScope')
     expect(service).not.toContain('clientId:')
+  })
+
+  test('Expo dashboard exposes the registered diagnostics screen', () => {
+    const dashboard = readExampleSource('example-expo', 'screens/MainStack/DashboardScreen/DashboardScreen.tsx')
+
+    expect(dashboard).toMatch(
+      /<AppButton\s+label="Expo diagnostics"\s+onPress=\{\(\) => navigation\.navigate\('EXPO_DIAGNOSTICS_SCREEN'\)\}\s*\/>/
+    )
   })
 
   test('nRF flow respects Apple-managed MTU and treats Android MTU failure as a failed flow', () => {

@@ -8,7 +8,7 @@ import {
   type PublicScanObservation,
   type ScanSession
 } from 'unified-ble-manager'
-import { createReactNativeBleManager } from 'unified-ble-manager/react-native'
+import { createExpoBleManager } from 'unified-ble-manager/expo'
 import {
   BATTERY_LEVEL_CHARACTERISTIC,
   BATTERY_SERVICE,
@@ -26,7 +26,7 @@ import {
   type DeviceInformationStringField
 } from 'unified-ble-manager/profiles/device-information'
 
-type CanonicalManager = Awaited<ReturnType<typeof createReactNativeBleManager>>
+type CanonicalManager = Awaited<ReturnType<typeof createExpoBleManager>>
 type CanonicalConnection = BleConnection
 type CanonicalDatabase = GattDatabase
 type CanonicalSubscription = GattSubscription
@@ -78,6 +78,61 @@ class CanonicalBleExampleService {
 
   async adapterState() {
     return (await this.ensureManager()).adapter.state()
+  }
+
+  async readiness() {
+    return (await this.ensureManager()).readiness()
+  }
+
+  async claimRestoration() {
+    return (await this.ensureManager()).restoration.claim()
+  }
+
+  async associateCompanionDevice(name?: string, serviceUuid?: string) {
+    const manager = await this.ensureManager()
+    if (name === undefined && serviceUuid === undefined) return manager.association.associate()
+    return manager.association.associate({
+      ...(name === undefined ? {} : { name }),
+      ...(serviceUuid === undefined ? {} : { serviceUuid })
+    })
+  }
+
+  diagnosticsSnapshot() {
+    return this.manager?.diagnostics.snapshot() ?? null
+  }
+
+  scanPlan() {
+    return this.scan?.plan ?? null
+  }
+
+  async redactedSupportBundle() {
+    const manager = await this.ensureManager()
+    const readiness = await manager.readiness()
+    const diagnostics = manager.diagnostics.snapshot()
+    const plan = this.scan?.plan
+    return Object.freeze({
+      schema: 'unified-ble-expo-support-v1',
+      readiness: {
+        state: readiness.state,
+        actions: readiness.actions.map(action => action.kind)
+      },
+      resources: diagnostics.resourceCounters,
+      scan:
+        plan === null || plan === undefined
+          ? null
+          : {
+              queryDigest: plan.queryDigest,
+              nativeGuarantee: plan.nativeGuarantee,
+              nativePredicateCount: plan.native.predicates.length,
+              residualPredicateCount: plan.residual.predicates.length,
+              unavailablePredicateCount: plan.unavailable.length
+            },
+      host: {
+        restoration: 'native-authoritative',
+        background: 'explicit-connected-device-lease',
+        association: 'android-system-ui-only'
+      }
+    })
   }
 
   async scanForPeers(serviceUuids: readonly string[], onPeer: (peer: ExamplePeer) => void): Promise<void> {
@@ -307,7 +362,7 @@ class CanonicalBleExampleService {
   private async createOwnedManager(generation: number): Promise<CanonicalManager> {
     const managerId = nextExampleManagerId
     nextExampleManagerId += 1
-    const manager = await createReactNativeBleManager({ instanceId: `expo-example-${managerId.toString()}` })
+    const manager = await createExpoBleManager({ instanceId: `expo-example-${managerId.toString()}` })
     if (this.destroying || this.ownerGeneration !== generation) {
       await manager.destroy()
       throw new Error('CanonicalBleExampleService is destroying.')

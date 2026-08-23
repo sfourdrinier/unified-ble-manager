@@ -853,10 +853,7 @@ describe('Tauri v2 public manager', () => {
 
     invoke.mockClear()
     await expect(
-      createTauriBleManagerWithEnvironment(
-        { invoke, Channel: FakeChannel },
-        { restoration: { applicationId: 'app', restorationId: 'ble' } }
-      )
+      createTauriBleManagerWithEnvironment({ invoke, Channel: FakeChannel }, { restoration: { restorationId: 'ble' } })
     ).rejects.toMatchObject({ normalized: { code: 'capability.unsupported' } })
     expect(invoke.mock.calls.map(([, args]) => args.request.kind)).toEqual(['bootstrap', 'release'])
   })

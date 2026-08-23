@@ -11,6 +11,7 @@ export interface NativeProtocolVersionRange {
 export interface NativeProtocolHandshakeRequest {
   nativeProtocol: NativeProtocolVersionRange
   abi: NativeProtocolVersionRange
+  controlSurface: NativeProtocolVersionRange
   backendContract: NativeProtocolVersionRange
   capabilitySchema: NativeProtocolVersionRange
   eventSchema: NativeProtocolVersionRange
@@ -26,6 +27,7 @@ export interface NativeProtocolHandshakeRequest {
 export interface NativeProtocolHandshakeResult {
   nativeProtocol: number
   abi: number
+  controlSurface: number
   backendContract: number
   capabilitySchema: number
   eventSchema: number
@@ -52,6 +54,46 @@ export interface NativeOperationCorrelation {
   attachment: NativeAttachmentIdentity
   dispatchEpoch: number
   nonce: string
+}
+
+export interface NativeRestorationBootstrapRequest {
+  restorationId: string
+  generation: string
+}
+
+export interface NativeRestorationBootstrapIdentity {
+  applicationId: string
+  restorationId: string
+  generation: string
+  restoreIdentifier: string
+  namespaceValue: string
+  clientId: string
+  hostSessionScope: string
+}
+
+export interface NativeBackgroundLeaseRequest {
+  kind: 'connected-device'
+  reason: string
+}
+
+export interface NativeBackgroundLeaseResult {
+  leaseId: string
+}
+
+export interface NativeBackgroundLeaseReleaseRequest {
+  leaseId: string
+}
+
+export interface NativeCompanionAssociationRequest {
+  name?: string
+  serviceUuid?: string
+}
+
+export interface NativeCompanionAssociationResult {
+  source: 'associated'
+  associationId: number
+  peerId: string | null
+  displayName: string | null
 }
 
 export type NativeRestorationOutcome =
@@ -107,6 +149,11 @@ export interface NativeCancellationControlResult {
 
 export interface Spec extends TurboModule {
   handshake(request: NativeProtocolHandshakeRequest): Promise<NativeProtocolHandshakeResult>
+  bootstrapRestorationIdentity(request: NativeRestorationBootstrapRequest): Promise<NativeRestorationBootstrapIdentity>
+  acquireBackground(request: NativeBackgroundLeaseRequest): Promise<NativeBackgroundLeaseResult>
+  releaseBackground(request: NativeBackgroundLeaseReleaseRequest): Promise<void>
+  associateCompanionDevice(request: NativeCompanionAssociationRequest): Promise<NativeCompanionAssociationResult>
+  claimRestoration(): Promise<NativeRestorationAdoptionControlResult>
   installExecutionRuntime(): Promise<void>
   cancelOperation(correlation: NativeOperationCorrelation): Promise<NativeCancellationControlResult>
   adoptRestoration(request: NativeRestorationAdoptionRequest): Promise<NativeRestorationAdoptionControlResult>

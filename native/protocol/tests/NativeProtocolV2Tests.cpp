@@ -29,6 +29,10 @@ protocol::VersionRange abiVersionRange() {
   return {.minimum = protocol::kAbiVersion, .maximum = protocol::kAbiVersion};
 }
 
+protocol::VersionRange controlSurfaceVersionRange() {
+  return {.minimum = protocol::kControlSurfaceVersion, .maximum = protocol::kControlSurfaceVersion};
+}
+
 protocol::ProtocolField field(std::uint16_t id, protocol::ProtocolFieldValue value) {
   return {.id = id, .value = std::move(value)};
 }
@@ -181,16 +185,21 @@ void expectFailure(protocol::ProtocolFailure expected, const std::function<void(
 
 void testVersionNegotiation() {
   const auto versions = protocol::NativeProtocolV2Codec::negotiate(
-      nativeProtocolRange(), abiVersionRange(), {1U, 1U}, {1U, 1U}, {1U, 1U}, {1U, 1U});
+      nativeProtocolRange(), abiVersionRange(), controlSurfaceVersionRange(), {1U, 1U}, {1U, 1U}, {1U, 1U}, {1U, 1U});
   assert(versions.nativeProtocol == protocol::kProtocolVersion);
   assert(versions.abi == protocol::kAbiVersion);
+  assert(versions.controlSurface == protocol::kControlSurfaceVersion);
   expectFailure(protocol::ProtocolFailure::incompatibleVersion, [] {
     static_cast<void>(protocol::NativeProtocolV2Codec::negotiate(
-        nativeProtocolRange(), {2U, 2U}, {1U, 1U}, {1U, 1U}, {1U, 1U}, {1U, 1U}));
+        nativeProtocolRange(), {2U, 2U}, controlSurfaceVersionRange(), {1U, 1U}, {1U, 1U}, {1U, 1U}, {1U, 1U}));
   });
   expectFailure(protocol::ProtocolFailure::incompatibleVersion, [] {
     static_cast<void>(protocol::NativeProtocolV2Codec::negotiate(
-        {3U, 4U}, abiVersionRange(), {1U, 1U}, {1U, 1U}, {1U, 1U}, {1U, 1U}));
+        {3U, 4U}, abiVersionRange(), controlSurfaceVersionRange(), {1U, 1U}, {1U, 1U}, {1U, 1U}, {1U, 1U}));
+  });
+  expectFailure(protocol::ProtocolFailure::incompatibleVersion, [] {
+    static_cast<void>(protocol::NativeProtocolV2Codec::negotiate(
+        nativeProtocolRange(), abiVersionRange(), {1U, 1U}, {1U, 1U}, {1U, 1U}, {1U, 1U}, {1U, 1U}));
   });
 }
 
@@ -761,7 +770,7 @@ void testRestorationBootstrapRollbackSupportsHandshakeRetry() {
     static_cast<void>(runtime.handshake(
         identity,
         "owner-rollback",
-        nativeProtocolRange(), abiVersionRange(),
+        nativeProtocolRange(), abiVersionRange(), controlSurfaceVersionRange(),
         {1U, 1U},
         {1U, 1U},
         {1U, 1U},
@@ -828,7 +837,7 @@ void testOperationCapacityRejectsBeforeCommandBinaryCopyAndCallerRelease() {
   static_cast<void>(runtime.handshake(
       identity,
       "owner-1",
-      nativeProtocolRange(), abiVersionRange(),
+      nativeProtocolRange(), abiVersionRange(), controlSurfaceVersionRange(),
       {1U, 1U},
       {1U, 1U},
       {1U, 1U},
@@ -880,7 +889,7 @@ void testRejectedAndroidDispatchReleasesRegisteredCommandBinary() {
   static_cast<void>(runtime.handshake(
       identity,
       "owner-1",
-      nativeProtocolRange(), abiVersionRange(),
+      nativeProtocolRange(), abiVersionRange(), controlSurfaceVersionRange(),
       {1U, 1U},
       {1U, 1U},
       {1U, 1U},
@@ -949,7 +958,7 @@ void testActiveScanOwnerReleasesOnlyAfterPhysicalTeardown() {
   };
   protocol::NativeProtocolControlRuntime runtime;
   static_cast<void>(runtime.handshake(
-      identity, "owner-1", nativeProtocolRange(), abiVersionRange(), {1U, 1U}, {1U, 1U}, {1U, 1U}, {1U, 1U}));
+      identity, "owner-1", nativeProtocolRange(), abiVersionRange(), controlSurfaceVersionRange(), {1U, 1U}, {1U, 1U}, {1U, 1U}, {1U, 1U}));
   const auto scanCommand = [](std::uint64_t epoch, const std::string& kind) {
     std::vector<protocol::ProtocolField> fields{
         field(1U, std::uint64_t{protocol::kProtocolVersion}),
@@ -1044,7 +1053,7 @@ void testPendingSubscriptionRoutingAndLateOutputRelease() {
   };
   protocol::NativeProtocolControlRuntime runtime;
   static_cast<void>(runtime.handshake(
-      identity, "owner-1", nativeProtocolRange(), abiVersionRange(), {1U, 1U}, {1U, 1U}, {1U, 1U}, {1U, 1U}));
+      identity, "owner-1", nativeProtocolRange(), abiVersionRange(), controlSurfaceVersionRange(), {1U, 1U}, {1U, 1U}, {1U, 1U}, {1U, 1U}));
   const protocol::ProtocolRecord command{
       .kind = protocol::RecordKind::command,
       .fields = {
@@ -1086,7 +1095,7 @@ void testRuntimeRestorationAuthorityAppendAndAdoption() {
   static_cast<void>(runtime.handshake(
       identity,
       "owner-1",
-      nativeProtocolRange(), abiVersionRange(),
+      nativeProtocolRange(), abiVersionRange(), controlSurfaceVersionRange(),
       {1U, 1U},
       {1U, 1U},
       {1U, 1U},

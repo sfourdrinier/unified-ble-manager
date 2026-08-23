@@ -2,39 +2,64 @@
   {
     "applicationId": "com.example.app",
     "restorationId": "com.example.app.ble",
-    "generation": "0",
-    "opaqueRestorationId": "ubm-r1:250797b33bc0a0a1865ef51f96c92dfb"
+    "generation": "1",
+    "rootSha256": "ff6de7c27796e3de99f9870f1b0a6c44f67aaabedd2548a02ee45c9131faafc8",
+    "restoreIdentifier": "com.example.app.ubm.udEtUJ0SBT7chINqZyqnV_",
+    "namespaceValue": "ubm-ns:1_9sUTSAvee0XRb7DisU4RBLUomt0lDxG7jelG0Frj0",
+    "clientId": "ubm-client:wc5PeBDUR_gNIShv5Seo6_bV7WTW_2DA7GXvrYnTkCM",
+    "hostSessionScope": "ubm-host:kl3LdF4lFpIAK_EsjYuxt8t4H9A_9lcwfAN5ry4M4ek"
   },
   {
-    "applicationId": "com.example.App",
+    "applicationId": "COM.EXAMPLE.APP",
     "restorationId": "com.example.app.ble",
-    "generation": "0",
-    "opaqueRestorationId": "ubm-r1:250797b33bc0a0a1865ef51f96c92dfb",
-    "note": "applicationId case normalization"
+    "generation": "1",
+    "rootSha256": "ff6de7c27796e3de99f9870f1b0a6c44f67aaabedd2548a02ee45c9131faafc8",
+    "restoreIdentifier": "com.example.app.ubm.udEtUJ0SBT7chINqZyqnV_",
+    "namespaceValue": "ubm-ns:1_9sUTSAvee0XRb7DisU4RBLUomt0lDxG7jelG0Frj0",
+    "clientId": "ubm-client:wc5PeBDUR_gNIShv5Seo6_bV7WTW_2DA7GXvrYnTkCM",
+    "hostSessionScope": "ubm-host:kl3LdF4lFpIAK_EsjYuxt8t4H9A_9lcwfAN5ry4M4ek",
+    "note": "trusted application identifier normalization"
   },
   {
     "applicationId": "com.example.app",
     "restorationId": "com.example.app.ble",
-    "generation": "1",
-    "opaqueRestorationId": "ubm-r1:c5b4b04fc205dad711031246260db158"
+    "generation": "2",
+    "rootSha256": "d49140d52d96160a9f436b3d36f93eae725b05a2d1e19605d80eaad91f36a43e",
+    "restoreIdentifier": "com.example.app.ubm.oOCTZWoyv4eRO8qhAPvc5B",
+    "namespaceValue": "ubm-ns:Sl8oo2w8TOYDwM9HuZU70znuw0MwIhqZxQMAO3zZinU",
+    "clientId": "ubm-client:7ogtV3_TC4tmGBZPD6iIn7CemX_AqmeOrj-vNVAIU64",
+    "hostSessionScope": "ubm-host:cUBFfUFgfCLjx45O6z7csHgnFt4gp_guW5EtEff_vUM",
+    "note": "generation invalidation"
   },
   {
     "applicationId": "com.trackourhealth.ble",
     "restorationId": "ble-main",
-    "generation": "0",
-    "opaqueRestorationId": "ubm-r1:a13e08f66c855d4cfc34376a970d2e69"
+    "generation": "1",
+    "rootSha256": "5523a9b2402218bf051cb8ba8b6c744facd29b4eee3d5879a5373dc90c48697f",
+    "restoreIdentifier": "com.trackourhealth.ble.ubm.EVZ8BPX1I7QTZE89D7CnOL",
+    "namespaceValue": "ubm-ns:pWQjx0jb9rmzX3a_hvm-7nFUzkllX4yWFP488FSxAY8",
+    "clientId": "ubm-client:MfXyxCxSWMi60ct6Gw7mNUmfNE1TNa3LVlFzkZ5B7xM",
+    "hostSessionScope": "ubm-host:8eRQP_NSmPH13jMKQ8L7Aun1YJSZFcB33Ypy5MUBwOQ"
   },
   {
     "applicationId": "com.example.app",
     "restorationId": "ble",
     "generation": "42",
-    "opaqueRestorationId": "ubm-r1:16b01a132ac5bfd443a389535db79d28"
+    "rootSha256": "cdc9afd508ce2bf44e8c859c28b07a9d16b371270ad45ee07361f5c8138d02b2",
+    "restoreIdentifier": "com.example.app.ubm.qxsxy0mXpKX_enpuq-e6ij",
+    "namespaceValue": "ubm-ns:867b9KIlCkO-hJ46mDrLmr3L8isgUI1DSNdgQOhanEo",
+    "clientId": "ubm-client:AA3SVlbGOql75II1sKtr038_RQtmdZBVxWpQb6fkGJs",
+    "hostSessionScope": "ubm-host:N3rGmWsEYv1xnI4XYTEXkZ2Kc0_P2CoFB-iaY4VrJ9A"
   },
   {
     "applicationId": "com.example.app",
     "restorationId": "ble",
-    "generation": "",
-    "opaqueRestorationId": "ubm-r1:658f7aa71c4029b222d591f28877d3e2",
-    "note": "empty generation normalizes to 0"
+    "generation": "1",
+    "rootSha256": "e10304dd09a306149b6149b09c6f37a759771f7630715f9099a8ea4646dd41d5",
+    "restoreIdentifier": "com.example.app.ubm.BJVWVk0_qQGwclYCW9foK1",
+    "namespaceValue": "ubm-ns:1Zsk40WFRiLrzNyaadNriRb5BgJtLERh-nV2-7RJknk",
+    "clientId": "ubm-client:Dfp4hDoZxLygVgm9PO_w20jkfXOwIQt55fsqVAC13Mc",
+    "hostSessionScope": "ubm-host:V6-u_yQjJFlEV-3vAS84rlZvB7cnZOD_pjxZq-1J1SM",
+    "note": "default generation"
   }
 ]

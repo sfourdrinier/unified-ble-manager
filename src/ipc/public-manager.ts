@@ -47,7 +47,13 @@ import {
   findPeerInScan,
   snapshotBlePeer
 } from '../public/ble-manager'
-import type { BleAdapter, BleAdapterState, AdapterReadinessOptions } from '../public/ble-adapter'
+import type {
+  BleAdapter,
+  BleAdapterState,
+  AdapterReadinessOptions,
+  AdapterWatchOptions,
+  BleAdapterStateWatch
+} from '../public/ble-adapter'
 import { assertDirectConnectionCapability } from '../public/capabilities'
 import type { BleCapabilities, CapabilityDescriptor } from '../public/capabilities'
 import { BUILT_IN_FEATURE_IDS } from '../backend-contract/capabilities'
@@ -68,6 +74,8 @@ import { createPublicSecurity } from '../public/security'
 import type { BleSecurity } from '../public/security'
 import { rehydratePublicError, rehydratePublicPromise, runWithCleanup } from '../public/error-bridge'
 import { resolveStreamPolicy } from '../public/stream-presets'
+import { CoreBoundedStream } from '../core/bounded-stream'
+import { capacity } from '../backend-contract/primitives'
 import {
   IpcBleManager,
   type IpcConnection,
@@ -76,6 +84,13 @@ import {
   type IpcSubscription,
   type IpcWriteReceipt
 } from './manager'
+
+const IPC_ADAPTER_STATE_POLL_INTERVAL_MS = 25
+const IPC_ADAPTER_STATE_STREAM_LIMITS = Object.freeze({
+  itemCapacity: capacity(128),
+  byteCapacity: capacity(512 * 1024),
+  reservedControlCapacity: capacity(1)
+})
 
 export interface IpcPublicManagerOptions {
   readonly requireScanPlan?: boolean
@@ -799,6 +814,7 @@ function createIpcAdapter(ipc: IpcBleManager): BleAdapter {
   return {
     id: String(ipc.bootstrap.attachment.adapter.adapterId),
     state: () => readState(),
+    watchState: options => watchIpcAdapterState(readState, options),
     waitUntilReady: async (options: AdapterReadinessOptions = {}) => {
       const normalized = normalizeOperationOptions(options, () => globalThis.performance.now())
       const deadline = normalized.deadline === null ? globalThis.performance.now() + 10_000 : normalized.deadline
@@ -821,6 +837,109 @@ function createIpcAdapter(ipc: IpcBleManager): BleAdapter {
       }
     }
   }
+}
+
+async function watchIpcAdapterState(
+  readState: (options?: import('./manager').IpcManagerOperationOptions) => Promise<BleAdapterState>,
+  options: AdapterWatchOptions = {}
+): Promise<BleAdapterStateWatch> {
+  try {
+    const signal = options.signal ?? null
+    if (signal !== null && !(signal instanceof AbortSignal)) {
+      throw contractError('argument.invalid', 'adapter', 'ipc-public-manager.watch-state.signal')
+    }
+    if (adapterWatchAborted(signal)) {
+      throw contractError('operation.aborted', 'adapter', 'ipc-public-manager.watch-state')
+    }
+    const initial = await readState({ signal: signal ?? undefined })
+    if (adapterWatchAborted(signal)) {
+      throw contractError('operation.aborted', 'adapter', 'ipc-public-manager.watch-state')
+    }
+    const stream = new CoreBoundedStream<BleAdapterState>(IPC_ADAPTER_STATE_STREAM_LIMITS, 'drop-oldest')
+    let current = initial
+    let active = true
+    let timer: ReturnType<typeof setTimeout> | null = null
+    let stopPromise: Promise<CleanupRecord> | null = null
+
+    const clearTimer = () => {
+      if (timer !== null) {
+        globalThis.clearTimeout(timer)
+        timer = null
+      }
+    }
+    const removeAbortHandler = () => signal?.removeEventListener('abort', abortHandler)
+    const stop = (): Promise<CleanupRecord> => {
+      if (stopPromise !== null) return stopPromise
+      active = false
+      clearTimer()
+      removeAbortHandler()
+      const result = stream.close().then(
+        cleanup => {
+          if (cleanup.state === 'release-failed') stopPromise = null
+          return cleanup
+        },
+        error => {
+          stopPromise = null
+          throw error
+        }
+      )
+      stopPromise = result
+      return result
+    }
+    const abortHandler = () => {
+      stop().catch(() => undefined)
+    }
+    const schedulePoll = () => {
+      if (!active) return
+      timer = globalThis.setTimeout(() => {
+        timer = null
+        poll().catch(() => undefined)
+      }, IPC_ADAPTER_STATE_POLL_INTERVAL_MS)
+    }
+    const poll = async (): Promise<void> => {
+      if (!active) return
+      try {
+        const next = await readState({ signal: signal ?? undefined })
+        if (!active) return
+        if (!sameAdapterState(current, next)) {
+          current = next
+          stream.emit(next, adapterStateByteLength(next))
+        }
+        schedulePoll()
+      } catch {
+        if (!active) return
+        active = false
+        clearTimer()
+        removeAbortHandler()
+        stream.finishWithReason('source-failed')
+      }
+    }
+    signal?.addEventListener('abort', abortHandler, { once: true })
+    schedulePoll()
+    return Object.freeze({ initial, values: stream, stop })
+  } catch (error) {
+    throw rehydratePublicError(error)
+  }
+}
+
+function sameAdapterState(left: BleAdapterState, right: BleAdapterState): boolean {
+  return (
+    left.availability === right.availability &&
+    left.authorization === right.authorization &&
+    left.power === right.power &&
+    left.backendGeneration === right.backendGeneration &&
+    left.updatedAt === right.updatedAt &&
+    left.safeReason === right.safeReason
+  )
+}
+
+function adapterStateByteLength(state: BleAdapterState): number {
+  const serialized = JSON.stringify(state)
+  return serialized === undefined ? 0 : serialized.length
+}
+
+function adapterWatchAborted(signal: AbortSignal | null): boolean {
+  return signal?.aborted === true
 }
 
 function isBleErrorCode(value: string | null): value is import('../backend-contract/errors').BleErrorCode {

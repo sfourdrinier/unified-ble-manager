@@ -57,7 +57,7 @@ describe('Android RN 0.86 unified protocol boundary', () => {
     expect(buildGradle).not.toContain('prefab true')
   })
 
-  test('registers exactly the generated control-only TurboModule', () => {
+  test('registers only the generated protocol and Expo runtime TurboModules', () => {
     const packageJava = read('android/src/main/java/com/sfourdrinier/unifiedblemanager/BlePlxPackage.java')
     const controlJava = read(
       'android/src/main/java/com/sfourdrinier/unifiedblemanager/protocol/UnifiedBleProtocolControlModule.java'
@@ -68,8 +68,10 @@ describe('Android RN 0.86 unified protocol boundary', () => {
     expect(packageJava).toContain('import com.sfourdrinier.unifiedblemanager.protocol.UnifiedBleProtocolControlModule;')
     expect(packageJava).toContain('if (UnifiedBleProtocolControlModule.NAME.equals(name))')
     expect(packageJava).toContain('UnifiedBleProtocolControlModule.class.getName()')
+    expect(packageJava).toContain('UnifiedBleExpoRuntimeModule.NAME')
+    expect(packageJava).toContain('UnifiedBleExpoRuntimeModule.class.getName()')
     expect(packageJava).not.toMatch(/\bBlePlxModule\b|\bNativeBlePlxSpec\b/)
-    expect(packageJava.match(/moduleInfos\.put\(/g)).toHaveLength(1)
+    expect(packageJava.match(/moduleInfos\.put\(/g)).toHaveLength(2)
     expect(controlJava).toContain('extends NativeUnifiedBleProtocolControlSpec')
     expect(controlJava).toContain('public static final String NAME = "UnifiedBleProtocolControl"')
     expect(controlJava).toContain('UnifiedBleProtocolJsiBinding.install')
@@ -79,7 +81,14 @@ describe('Android RN 0.86 unified protocol boundary', () => {
 
   test('ships only the current protocol source graph and no legacy Android bridge', () => {
     expect(sourceFilesBelow(androidJavaRoot)).toEqual([
+      'BlePlxForegroundService.java',
       'BlePlxPackage.java',
+      'background/AndroidConnectedDeviceForegroundServiceDriver.java',
+      'background/ConnectedDeviceForegroundServiceDriver.java',
+      'background/ConnectedDeviceForegroundServiceLeaseRegistry.java',
+      'background/ForegroundServiceControlException.java',
+      'background/ForegroundServiceNotificationConfiguration.java',
+      'expo/UnifiedBleExpoRuntimeModule.java',
       'protocol/ProtocolCommandDecoder.kt',
       'protocol/ProtocolWireEncoder.kt',
       'protocol/UnifiedBleProtocolAndroidDispatcher.kt',
@@ -99,7 +108,7 @@ describe('Android RN 0.86 unified protocol boundary', () => {
     expect(radio).not.toMatch(/com\.sfourdrinier\.unifiedblemanager\.(adapter|converter)|Base64/)
   })
 
-  test('does not declare a foreground service that the protocol does not own', () => {
+  test('keeps foreground-service declarations explicit to the Expo plugin', () => {
     const manifests = [
       read('android/src/main/AndroidManifest.xml'),
       read('android/src/main/AndroidManifestNew.xml'),
@@ -110,7 +119,48 @@ describe('Android RN 0.86 unified protocol boundary', () => {
     for (const manifest of manifests) {
       expect(manifest).not.toMatch(/BlePlxForegroundService|FOREGROUND_SERVICE|POST_NOTIFICATIONS/)
     }
-    expect(plugin).not.toMatch(/androidEnableForegroundService|withBLEAndroidForegroundService/)
-    expect(fs.existsSync(path.join(root, 'plugin/src/withBLEAndroidForegroundService.ts'))).toBe(false)
+    expect(plugin).toContain('withBLEAndroidForegroundService')
+    expect(fs.existsSync(path.join(root, 'plugin/src/withBLEAndroidForegroundService.ts'))).toBe(true)
+  })
+
+  test('keeps legacy location policy in host-owned manifests, not the active AAR manifest', () => {
+    const activeLibraryManifest = read('android/src/main/AndroidManifestNew.xml')
+    const legacyLibraryManifest = read('android/src/main/AndroidManifest.xml')
+    const classicRnHostManifest = read('example/android/app/src/main/AndroidManifest.xml')
+    const buildGradle = read('android/build.gradle')
+
+    expect(buildGradle).toContain('manifest.srcFile "src/main/AndroidManifestNew.xml"')
+    expect(activeLibraryManifest).not.toMatch(/ACCESS_(?:COARSE|FINE)_LOCATION/)
+    expect(activeLibraryManifest).toContain('android.permission.BLUETOOTH_SCAN')
+    expect(activeLibraryManifest).toContain('android.permission.BLUETOOTH_CONNECT')
+
+    expect(legacyLibraryManifest).toContain('android.permission.ACCESS_COARSE_LOCATION')
+    expect(legacyLibraryManifest).toContain('android.permission.ACCESS_FINE_LOCATION')
+    expect(classicRnHostManifest).toContain('android.permission.ACCESS_FINE_LOCATION')
+    expect(classicRnHostManifest).toContain('android:maxSdkVersion="30"')
+  })
+
+  test('implements the configured foreground service as an explicit ref-counted native lease', () => {
+    const control = read(
+      'android/src/main/java/com/sfourdrinier/unifiedblemanager/protocol/UnifiedBleProtocolControlModule.java'
+    )
+    const driver = read(
+      'android/src/main/java/com/sfourdrinier/unifiedblemanager/background/AndroidConnectedDeviceForegroundServiceDriver.java'
+    )
+    const registry = read(
+      'android/src/main/java/com/sfourdrinier/unifiedblemanager/background/ConnectedDeviceForegroundServiceLeaseRegistry.java'
+    )
+    const service = read('android/src/main/java/com/sfourdrinier/unifiedblemanager/BlePlxForegroundService.java')
+
+    expect(control).toContain('backgroundLeases.acquire(reason)')
+    expect(control).toContain('backgroundLeases.release(leaseId)')
+    expect(driver).toContain('startForegroundService')
+    expect(driver).toContain('stopService')
+    expect(registry).toContain('if (leases.isEmpty()) driver.start(reason)')
+    expect(registry).toContain('if (leases.size() == 1) driver.stop()')
+    expect(service).toContain('startForeground')
+    expect(service).toContain('START_NOT_STICKY')
+    expect(service).toContain('FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE')
+    expect(`${control}\n${driver}\n${registry}\n${service}`).not.toMatch(/\.startScan\(|\.reconnect\(/)
   })
 })

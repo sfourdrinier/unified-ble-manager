@@ -27,6 +27,7 @@ class NativeProtocolControlRuntime final {
       const std::string& ownerId,
       VersionRange nativeProtocol,
       VersionRange abi,
+      VersionRange controlSurface,
       VersionRange backendContract,
       VersionRange capabilitySchema,
       VersionRange eventSchema,

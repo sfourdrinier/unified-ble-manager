@@ -10,6 +10,7 @@ import com.facebook.react.bridge.NativeModule;
 import com.facebook.react.bridge.ReactApplicationContext;
 import com.facebook.react.module.model.ReactModuleInfo;
 import com.facebook.react.module.model.ReactModuleInfoProvider;
+import com.sfourdrinier.unifiedblemanager.expo.UnifiedBleExpoRuntimeModule;
 import com.sfourdrinier.unifiedblemanager.protocol.UnifiedBleProtocolControlModule;
 
 import java.util.HashMap;
@@ -21,6 +22,9 @@ public class BlePlxPackage extends BaseReactPackage {
   public NativeModule getModule(String name, ReactApplicationContext reactContext) {
     if (UnifiedBleProtocolControlModule.NAME.equals(name)) {
       return new UnifiedBleProtocolControlModule(reactContext);
+    }
+    if (UnifiedBleExpoRuntimeModule.NAME.equals(name)) {
+      return new UnifiedBleExpoRuntimeModule(reactContext);
     }
 
     return null;
@@ -36,6 +40,17 @@ public class BlePlxPackage extends BaseReactPackage {
         new ReactModuleInfo(
           UnifiedBleProtocolControlModule.NAME,
           UnifiedBleProtocolControlModule.class.getName(),
+          false,
+          false,
+          false,
+          true
+        )
+      );
+      moduleInfos.put(
+        UnifiedBleExpoRuntimeModule.NAME,
+        new ReactModuleInfo(
+          UnifiedBleExpoRuntimeModule.NAME,
+          UnifiedBleExpoRuntimeModule.class.getName(),
           false,
           false,
           false,

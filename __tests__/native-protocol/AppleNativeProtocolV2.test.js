@@ -40,7 +40,10 @@ describe('Apple Native Protocol v2 radio boundary', () => {
     expect(support).not.toMatch(/BlePlx|Restoration|perform\(/)
     expect(control).toContain('RCTTurboModuleWithJSIBindings')
     expect(control).toContain('installJSIBindingsWithRuntime')
-    expect(control).toContain('UnifiedBleProtocolRestoreIdentifier')
+    expect(control).toContain('UnifiedBleProtocolRestorationId')
+    expect(control).toContain('UnifiedBleProtocolRestorationGeneration')
+    expect(control).toContain('ubm-restoration-v1')
+    expect(control).toContain('bootstrapRestorationIdentity')
     expect(control).toContain('appendRestorationRecords')
     expect(control).not.toContain('Android-only slice')
     expect(execution).toContain('__unifiedBleNativeProtocolV2')
@@ -50,6 +53,100 @@ describe('Apple Native Protocol v2 radio boundary', () => {
     expect(execution).toContain('receiveNotification')
     expect(execution).toContain('recordsAwaitingSink')
     expect(execution).toContain('runtime->settleResult(*terminalResults[index])')
+  })
+
+  test('reports the generated ABI while preserving control-surface v2 in the handshake response', () => {
+    const control = read('ios/UnifiedBleProtocolControl.mm')
+    const handshake = control.slice(
+      control.indexOf('- (void)handshake:'),
+      control.indexOf('- (void)installExecutionRuntime:')
+    )
+
+    expect(control).toContain(
+      'constexpr double kAbiVersion = static_cast<double>(unified_ble::native_protocol::v2::kAbiVersion);'
+    )
+    expect(handshake).toContain('@"abi": @(kAbiVersion),')
+    expect(handshake).toContain('@"controlSurface": @(kControlSurfaceVersion),')
+    expect(handshake).not.toContain('@"abi": @2,')
+  })
+
+  test('blocks reconnect overlap and validates generation-bound Apple dispatch paths', () => {
+    const radio = read('ios/Owned/OwnedCoreBluetoothProtocolRadio.swift')
+    const execution = read('ios/NativeProtocol/UnifiedBleProtocolAppleExecution.mm')
+
+    expect(radio).toContain('guard self.pendingDisconnect[peerIdentifier] == nil else')
+    expect(radio).toContain('servicesByPeer.removeValue(forKey: identifier)')
+    expect(execution).toContain('connectionGeneration')
+    expect(execution).toContain('currentConnectionGenerationMatches')
+    expect(execution).toContain('"staleGeneration"')
+  })
+
+  test('strictly validates Apple GATT occurrence strings before NSInteger conversion', () => {
+    const execution = read('ios/NativeProtocol/UnifiedBleProtocolAppleExecution.mm')
+
+    expect(execution).toContain("if (character < '0' || character > '9') return invalid();")
+    expect(execution).toContain('parsed > (maximum - digit) / 10U')
+    expect(execution).not.toContain('std::stoll(value, &consumed, 10)')
+    expect(execution).toContain('parseAppleGattOccurrence(serviceOccurrence, "characteristic")')
+    expect(execution).toContain('parseAppleGattOccurrence(characteristicOccurrence, "characteristic")')
+    expect(execution).toContain('parseAppleGattOccurrence(occurrence, "descriptor")')
+    expect(execution).toContain('Apple native characteristic occurrence is invalid')
+    expect(execution).toContain('Apple native descriptor occurrence is invalid')
+  })
+
+  test('forwards CoreBluetooth service changes through the generation-bound database event', () => {
+    const radio = read('ios/Owned/OwnedCoreBluetoothProtocolRadio.swift')
+    const control = read('ios/UnifiedBleProtocolControl.mm')
+    const execution = read('ios/NativeProtocol/UnifiedBleProtocolAppleExecution.mm')
+    const executionHeader = read('ios/NativeProtocol/UnifiedBleProtocolAppleExecution.hpp')
+    const state = read('ios/NativeProtocol/UnifiedBleProtocolAppleExecutionState.hpp')
+
+    expect(radio).toContain('didModifyServices invalidatedServices')
+    expect(radio).toContain('protocolRadioDidModifyServices')
+    expect(control).toContain('protocolRadioDidModifyServices')
+    expect(executionHeader).toContain('receiveDatabaseChanged')
+    expect(execution).toContain('databaseChanged')
+    expect(state).toContain('databases')
+  })
+
+  test('treats a fatal runtime close as an idempotent attachment close', () => {
+    const control = read('ios/UnifiedBleProtocolControl.mm')
+    const closeAttachment = control.slice(
+      control.indexOf('- (void)closeAttachment:'),
+      control.indexOf('- (void)invalidate')
+    )
+
+    expect(closeAttachment).toMatch(
+      /if \(_runtime->open\(\)\) \{\s+_runtime->close\(nativeAttachmentValue\);\s+\}/
+    )
+    const runtimeClose = closeAttachment.indexOf('_runtime->close(nativeAttachmentValue);')
+    expect(closeAttachment.indexOf('_attachment = nil;', runtimeClose)).toBeGreaterThan(runtimeClose)
+    expect(closeAttachment.indexOf('resolve(nil);', runtimeClose)).toBeGreaterThan(runtimeClose)
+  })
+
+  test('invalidates Apple execution, runtime, and radio ownership in a retry-safe order', () => {
+    const control = read('ios/UnifiedBleProtocolControl.mm')
+    const invalidate = control.slice(control.indexOf('- (void)invalidate'))
+
+    expect(invalidate).toContain('NSDictionary *attachment = [_attachment copy];')
+    expect(invalidate).toContain('_execution->close();')
+    expect(invalidate).toContain('_runtime->open()')
+    expect(invalidate).toContain('_runtime->close(nativeAttachment(')
+    expect(invalidate).toContain('catch (const std::exception& error)')
+    expect(invalidate).toContain('catch (...)')
+    expect(invalidate).toContain('if (runtimeClosed) _attachment = nil;')
+
+    const executionClose = invalidate.indexOf('_execution->close();')
+    const runtimeGuard = invalidate.indexOf('_runtime->open()', executionClose)
+    const runtimeClose = invalidate.indexOf('_runtime->close(nativeAttachment(', runtimeGuard)
+    const radioDestroy = invalidate.indexOf('[_radio destroyWithCompletion:', runtimeClose)
+    const attachmentClear = invalidate.indexOf('if (runtimeClosed) _attachment = nil;', radioDestroy)
+
+    expect(executionClose).toBeGreaterThanOrEqual(0)
+    expect(runtimeGuard).toBeGreaterThan(executionClose)
+    expect(runtimeClose).toBeGreaterThan(runtimeGuard)
+    expect(radioDestroy).toBeGreaterThan(runtimeClose)
+    expect(attachmentClear).toBeGreaterThan(radioDestroy)
   })
 
   test('fails the pre-JavaScript stream closed with generation-safe sink ownership and observable counters', () => {
@@ -75,7 +172,7 @@ describe('Apple Native Protocol v2 radio boundary', () => {
     expect(buffer).not.toContain('overflowed_ = false')
   })
 
-  test('requires the complete persisted five-field restoration identity before native append or adoption', () => {
+  test('derives one native restoration identity before append or adoption', () => {
     const control = read('ios/UnifiedBleProtocolControl.mm')
     const configuration = read('native/protocol/include/NativeRestorationConfiguration.hpp')
 
@@ -90,10 +187,12 @@ describe('Apple Native Protocol v2 radio boundary', () => {
       expect(configuration).toContain(`!${field}.empty()`)
     }
     expect(control).toContain('NSString *_restorationRestoreIdentifier;')
-    expect(control).toContain('_restorationRestoreIdentifier = configuredInfoString(@"UnifiedBleProtocolRestoreIdentifier");')
+    expect(control).toContain('_restorationId = configuredInfoString(@"UnifiedBleProtocolRestorationId");')
+    expect(control).toContain('_restorationGeneration = configuredInfoString(@"UnifiedBleProtocolRestorationGeneration");')
+    expect(control).toContain('derivedRestorationIdentity(applicationId, _restorationId, _restorationGeneration)')
     expect(control).toContain('initWithRestoreIdentifierKey:(')
     expect(control).toContain('? _restorationRestoreIdentifier')
-    expect(control).toContain(': nil)];')
+    expect(control).toContain(': nil)\n        showPowerAlert:showPowerAlert];')
     expect(control).toContain('if (hasCompleteRestorationConfiguration(')
     expect(control).toContain('!hasCompleteRestorationConfiguration(')
   })

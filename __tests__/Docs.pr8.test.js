@@ -195,7 +195,8 @@ describe('PR8 documentation contract', () => {
   })
 
   test('scopes the root API boundary to the Public API section', () => {
-    const explanatoryHtml = '<h2 id="public-api">Public API</h2><p>Host-neutral manager exported by the package root.</p></section><p>Backend authors can use <code>/advanced</code> and normalizeOperationOptions.</p>'
+    const explanatoryHtml =
+      '<h2 id="public-api">Public API</h2><p>Host-neutral manager exported by the package root.</p></section><p>Backend authors can use <code>/advanced</code> and normalizeOperationOptions.</p>'
     expect(extractPublicApiSection(explanatoryHtml)).toContain('Public API')
     expect(() => assertPublicApiBoundary(explanatoryHtml)).not.toThrow()
     const leakedHtml = explanatoryHtml.replace('Host-neutral manager', 'normalizeOperationOptions Host-neutral manager')
@@ -223,11 +224,20 @@ describe('PR8 documentation contract', () => {
     expect(profiles).toContain("from 'unified-ble-manager/advanced'")
   })
 
-  test('Expo API report prose matches the current environment-only overload', () => {
+  test('Expo API report prose matches the current host environment contract', () => {
     const report = read('etc/api/expo.api.md')
 
     expect(report).toContain(
-      'export function createExpoBleManagerWithEnvironment(environment: ReactNativeBleManagerOptions): Promise<BleManager>'
+      'export function createExpoBleManagerWithEnvironment(environment: ExpoBleManagerEnvironment): Promise<ExpoBleManager>'
+    )
+    expect(report).toContain(
+      'export function createExpoBleManager(options?: BleManagerCreateOptions, runtimeConfiguration?: ExpoRuntimeConfiguration): Promise<ExpoBleManager>'
+    )
+    expect(report).toContain(
+      "export function getExpoBleReadiness(manager: Pick<BleManager, 'adapter'>, configuration?: ExpoRuntimeConfiguration): Promise<BleReadiness>"
+    )
+    expect(report).toContain(
+      'export function mapExpoReadiness(adapter: BleAdapterState, configuration?: ExpoRuntimeConfiguration): BleReadiness'
     )
     expect(report).not.toContain(
       'export function createExpoBleManagerWithEnvironment(environment: unknown, options?: BleManagerCreateOptions): Promise<BleManager>'

@@ -1,49 +1,16 @@
-// plugin/src/withBLE.ts
-
 import { type ConfigPlugin, createRunOncePlugin, withInfoPlist } from 'expo/config-plugins'
 
-// Path is ../../package.json because this file is compiled to plugin/build/withBLE.js
-const pkg = require('../../package.json')
-import { withBLEAndroidManifest } from './withBLEAndroidManifest'
-import { BackgroundMode, withBLEBackgroundModes } from './withBLEBackgroundModes'
-import { withBluetoothPermissions } from './withBluetoothPermissions'
-import { withBLEDebugLogging } from './withBLEDebugLogging'
+import { validateUnifiedBleExpoPluginOptions, type UnifiedBleExpoPluginOptions } from './expoPluginSchema'
 import { isUnifiedBlePluginDebugEnabled, unifiedBlePluginDebugLog } from './debugLog'
+import { withBLEAndroidForegroundService } from './withBLEAndroidForegroundService'
+import { withBLEAndroidManifest } from './withBLEAndroidManifest'
 
-export interface IosNativeProtocolRestorationConfig {
-  /** The one CoreBluetooth restoration identifier owned by this app host. */
-  readonly identifier: string
-  /** The restoration journal namespace accepted by the native provider. */
-  readonly namespace: string
-  /** The restoration generation expected by the JavaScript adoption request. */
-  readonly epoch: string
-  /** The only client identity allowed to adopt the configured restoration journal. */
-  readonly clientId: string
-  /** The stable host scope bound to the configured client identity. */
-  readonly hostSessionScope: string
-}
+type PackageMetadata = { readonly name: string; readonly version: string }
+const pkg: PackageMetadata = require('../../package.json')
 
-export interface UnifiedBlePluginOptions {
-  /** Enable debug logging for this config plugin (also controllable via UNIFIED_BLE_MANAGER_PLUGIN_DEBUG=1). */
-  readonly debug?: boolean
-  readonly requiresBluetoothLeHardware?: boolean
-  readonly neverForLocation?: boolean
-  readonly modes?: readonly BackgroundMode[]
-  readonly bluetoothAlwaysPermission?: string | false
-  /** Complete native restoration identity. Partial restoration configuration is rejected. */
-  readonly iosNativeProtocolRestoration?: IosNativeProtocolRestorationConfig
-}
-
-const pluginOptionNames = Object.freeze([
-  'debug',
-  'requiresBluetoothLeHardware',
-  'neverForLocation',
-  'modes',
-  'bluetoothAlwaysPermission',
-  'iosNativeProtocolRestoration'
-])
-
-const restorationPropertyNames = Object.freeze(['identifier', 'namespace', 'epoch', 'clientId', 'hostSessionScope'])
+export { validateUnifiedBleExpoPluginOptions } from './expoPluginSchema'
+export type { UnifiedBleExpoPluginOptions } from './expoPluginSchema'
+export { validateUnifiedBleExpoPluginOptions as validateBlePluginOptions } from './expoPluginSchema'
 
 const restorationInfoPlistKeys = Object.freeze([
   'UnifiedBleProtocolRestoreIdentifier',
@@ -52,151 +19,90 @@ const restorationInfoPlistKeys = Object.freeze([
   'UnifiedBleProtocolRestorationClientId',
   'UnifiedBleProtocolRestorationHostSessionScope'
 ])
+const appRestorationInfoPlistKeys = Object.freeze([
+  'UnifiedBleProtocolRestorationId',
+  'UnifiedBleProtocolRestorationGeneration'
+])
+const retiredInfoPlistKeys = Object.freeze([
+  'BlePlxRestoreIdentifier',
+  'BlePlxRestorationNamespace',
+  'BlePlxRestorationEpoch',
+  'BlePlxRestorationClientId',
+  'BlePlxRestorationHostSessionScope',
+  'BlePlxDebugLogging'
+])
+const nativeConfigurationKeys = Object.freeze([
+  'UnifiedBlePluginConfigurationMarker',
+  ...restorationInfoPlistKeys,
+  ...appRestorationInfoPlistKeys,
+  'UnifiedBleProtocolShowPowerAlert',
+  'UnifiedBleProtocolNativeLogging'
+])
+const bluetoothAlwaysUsageDescriptionOwnershipKey = 'UnifiedBlePluginBluetoothAlwaysUsageDescriptionOwnership'
+const nativeConfigurationMarkerKey = 'UnifiedBlePluginConfigurationMarker'
+const nativeConfigurationMarkerValue = 'unified-ble-expo-v1'
 
-function isConfigurationObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
+function uniqueStrings(values: readonly string[]): string[] {
+  return [...new Set(values)]
 }
 
-function rejectUnknownProperties(value: Record<string, unknown>, expected: readonly string[], label: string): void {
-  const actual = Object.keys(value).sort()
-  const expectedSorted = [...expected].sort()
-  const unknown = actual.filter(property => !expectedSorted.includes(property))
-  if (unknown.length > 0) {
-    throw new Error(`${label} contains unsupported properties: ${unknown.join(', ')}`)
-  }
-}
-
-function requireExactProperties(value: Record<string, unknown>, expected: readonly string[], label: string): void {
-  rejectUnknownProperties(value, expected, label)
-  const actual = Object.keys(value)
-  if (actual.length !== expected.length) {
-    throw new Error(`${label} must contain exactly these properties: ${[...expected].sort().join(', ')}`)
-  }
-}
-
-function optionalBoolean(value: unknown, label: string): boolean | undefined {
-  if (value === undefined) return undefined
-  if (typeof value !== 'boolean') {
-    throw new Error(`${label} must be a boolean when configured`)
-  }
-  return value
-}
-
-function requiredNonEmptyString(value: unknown, label: string): string {
-  if (typeof value !== 'string' || value.trim().length === 0) {
-    throw new Error(`${label} must be a non-empty string`)
-  }
-  return value
-}
-
-function optionalBackgroundModes(value: unknown): readonly BackgroundMode[] | undefined {
-  if (value === undefined) return undefined
-  if (!Array.isArray(value)) {
-    throw new Error('modes must be an array when configured')
-  }
-  const modes: BackgroundMode[] = []
-  for (const mode of value) {
-    if (mode !== BackgroundMode.Central) {
-      throw new Error(`modes contains an unsupported background mode: ${String(mode)}`)
-    }
-    if (modes.includes(mode)) {
-      throw new Error(`modes must not contain a duplicate background mode: ${mode}`)
-    }
-    modes.push(mode)
-  }
-  return Object.freeze(modes)
-}
-
-function optionalBluetoothAlwaysPermission(value: unknown): string | false | undefined {
-  if (value === undefined || value === false) return value
-  return requiredNonEmptyString(value, 'bluetoothAlwaysPermission')
-}
-
-function optionalNativeProtocolRestoration(value: unknown): IosNativeProtocolRestorationConfig | undefined {
-  if (value === undefined) return undefined
-  if (!isConfigurationObject(value)) {
-    throw new Error('iosNativeProtocolRestoration must be an object when configured')
-  }
-  requireExactProperties(value, restorationPropertyNames, 'iosNativeProtocolRestoration')
-  return Object.freeze({
-    identifier: requiredNonEmptyString(value.identifier, 'iosNativeProtocolRestoration.identifier'),
-    namespace: requiredNonEmptyString(value.namespace, 'iosNativeProtocolRestoration.namespace'),
-    epoch: requiredNonEmptyString(value.epoch, 'iosNativeProtocolRestoration.epoch'),
-    clientId: requiredNonEmptyString(value.clientId, 'iosNativeProtocolRestoration.clientId'),
-    hostSessionScope: requiredNonEmptyString(value.hostSessionScope, 'iosNativeProtocolRestoration.hostSessionScope')
-  })
-}
-
-/** Rejects incomplete, retired, and type-coerced plugin configuration before any native mods run. */
-export function validateBlePluginOptions(value: unknown): UnifiedBlePluginOptions {
-  if (value === undefined) return Object.freeze({})
-  if (!isConfigurationObject(value)) {
-    throw new Error('unified-ble-manager Expo plugin options must be an object when configured')
-  }
-  rejectUnknownProperties(value, pluginOptionNames, 'unified-ble-manager Expo plugin options')
-  return Object.freeze({
-    debug: optionalBoolean(value.debug, 'debug'),
-    requiresBluetoothLeHardware: optionalBoolean(value.requiresBluetoothLeHardware, 'requiresBluetoothLeHardware'),
-    neverForLocation: optionalBoolean(value.neverForLocation, 'neverForLocation'),
-    modes: optionalBackgroundModes(value.modes),
-    bluetoothAlwaysPermission: optionalBluetoothAlwaysPermission(value.bluetoothAlwaysPermission),
-    iosNativeProtocolRestoration: optionalNativeProtocolRestoration(value.iosNativeProtocolRestoration)
-  })
-}
-
-/** Writes or clears every native restoration identity value as one validated configuration unit. */
-export function applyNativeProtocolRestorationInfoPlist(
+export function reconcileExpoInfoPlist(
   infoPlist: Record<string, unknown>,
-  restoration: IosNativeProtocolRestorationConfig | undefined = undefined
+  options: UnifiedBleExpoPluginOptions,
+  _applicationId?: string
 ): Record<string, unknown> {
-  delete infoPlist.BlePlxRestoreIdentifier
-  for (const key of restorationInfoPlistKeys) {
-    delete infoPlist[key]
+  for (const key of retiredInfoPlistKeys) delete infoPlist[key]
+  for (const key of nativeConfigurationKeys) delete infoPlist[key]
+  infoPlist[nativeConfigurationMarkerKey] = nativeConfigurationMarkerValue
+
+  const bluetoothAlways = options.permissions?.bluetoothAlways
+  if (typeof bluetoothAlways === 'string') {
+    infoPlist.NSBluetoothAlwaysUsageDescription = bluetoothAlways
+    infoPlist[bluetoothAlwaysUsageDescriptionOwnershipKey] = bluetoothAlways
+  } else if (bluetoothAlways === false) {
+    if (infoPlist[bluetoothAlwaysUsageDescriptionOwnershipKey] === infoPlist.NSBluetoothAlwaysUsageDescription) {
+      delete infoPlist.NSBluetoothAlwaysUsageDescription
+    }
+    delete infoPlist[bluetoothAlwaysUsageDescriptionOwnershipKey]
   }
-  if (restoration === undefined) return infoPlist
-  infoPlist.UnifiedBleProtocolRestoreIdentifier = restoration.identifier
-  infoPlist.UnifiedBleProtocolRestorationNamespace = restoration.namespace
-  infoPlist.UnifiedBleProtocolRestorationEpoch = restoration.epoch
-  infoPlist.UnifiedBleProtocolRestorationClientId = restoration.clientId
-  infoPlist.UnifiedBleProtocolRestorationHostSessionScope = restoration.hostSessionScope
+
+  const existingModes = Array.isArray(infoPlist.UIBackgroundModes)
+    ? infoPlist.UIBackgroundModes.filter((mode): mode is string => typeof mode === 'string')
+    : []
+  const backgroundModes = uniqueStrings(existingModes.filter(mode => mode !== 'bluetooth-central'))
+  if (options.background?.ios?.mode === 'central') backgroundModes.push('bluetooth-central')
+  if (backgroundModes.length > 0) infoPlist.UIBackgroundModes = backgroundModes
+  else delete infoPlist.UIBackgroundModes
+
+  const restoration = options.background?.ios?.restoration
+  if (restoration !== undefined) {
+    infoPlist.UnifiedBleProtocolRestorationId = restoration.id
+    infoPlist.UnifiedBleProtocolRestorationGeneration = restoration.generation ?? '1'
+  }
+
+  const showPowerAlert = options.background?.ios?.showPowerAlert
+  if (showPowerAlert !== undefined) infoPlist.UnifiedBleProtocolShowPowerAlert = showPowerAlert
+  const nativeLogging = options.diagnostics?.nativeLogging
+  if (nativeLogging !== undefined) infoPlist.UnifiedBleProtocolNativeLogging = nativeLogging
   return infoPlist
 }
 
-/**
- * Apply BLE native configuration.
- */
-const withBLE: ConfigPlugin<UnifiedBlePluginOptions | void> = (config, props) => {
-  const validatedProps = validateBlePluginOptions(props)
-  const debugEnabled = isUnifiedBlePluginDebugEnabled(validatedProps.debug)
-  unifiedBlePluginDebugLog(debugEnabled, 'Plugin running with props:', JSON.stringify(props))
-  unifiedBlePluginDebugLog(debugEnabled, 'Package name from pkg.json:', pkg.name)
-
-  config = withBLEDebugLogging(config, { debugEnabled })
-
-  unifiedBlePluginDebugLog(
-    debugEnabled,
-    'iosNativeProtocolRestoration configured:',
-    validatedProps.iosNativeProtocolRestoration !== undefined
-  )
-
-  // iOS
-  config = withBluetoothPermissions(config, validatedProps)
-  config = withBLEBackgroundModes(config, [...(validatedProps.modes ?? [])])
-
-  config = withInfoPlist(config, conf => {
-    applyNativeProtocolRestorationInfoPlist(conf.modResults, validatedProps.iosNativeProtocolRestoration)
-    return conf
+const withBLE: ConfigPlugin<UnifiedBleExpoPluginOptions | void> = (config, props) => {
+  const options = validateUnifiedBleExpoPluginOptions(props)
+  const debugEnabled = isUnifiedBlePluginDebugEnabled()
+  unifiedBlePluginDebugLog(debugEnabled, 'Plugin normalized options:', JSON.stringify(options))
+  config = withInfoPlist(config, infoPlistConfig => {
+    reconcileExpoInfoPlist(infoPlistConfig.modResults, options)
+    return infoPlistConfig
   })
-
-  // Android
   config = withBLEAndroidManifest(config, {
-    requiresBluetoothLeHardware: validatedProps.requiresBluetoothLeHardware ?? false,
-    neverForLocation: validatedProps.neverForLocation ?? false
+    requiredHardware: options.requiredHardware ?? false,
+    neverForLocation: options.permissions?.android?.neverForLocation ?? false,
+    legacyLocation: options.permissions?.android?.legacyLocation ?? 'none',
+    nativeLogging: options.diagnostics?.nativeLogging
   })
-
+  config = withBLEAndroidForegroundService(config, options.background?.android ?? { mode: 'none' })
   return config
 }
-
-export { BackgroundMode }
 
 export default createRunOncePlugin(withBLE, pkg.name, pkg.version)

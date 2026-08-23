@@ -229,7 +229,8 @@
     },
     "ios": {
       "modulesProvider": {
-        "UnifiedBleProtocolControl": "UnifiedBleProtocolControl"
+        "UnifiedBleProtocolControl": "UnifiedBleProtocolControl",
+        "UnifiedBleExpoRuntime": "UnifiedBleExpoRuntime"
       }
     }
   },
@@ -457,6 +458,17 @@
         "default": "./lib/commonjs/react-native.js"
       },
       "default": "./lib/commonjs/react-native.js"
+    },
+    "./react": {
+      "import": {
+        "types": "./lib/typescript/module/src/react.d.ts",
+        "default": "./lib/module/react.js"
+      },
+      "require": {
+        "types": "./lib/typescript/commonjs/src/react.d.ts",
+        "default": "./lib/commonjs/react.js"
+      },
+      "default": "./lib/commonjs/react.js"
     },
     "./node/bluez": {
       "import": {

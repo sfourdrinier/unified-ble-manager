@@ -3,9 +3,10 @@
 # Expo SDK 57 CNG fixture
 
 This repository fixture validates the Expo SDK 57 continuous-native-generation
-path for `unified-ble-manager`. It uses `unified-ble-manager: file:..` and the
-`unified-ble-manager` config plugin, so it is not a published-package install
-recipe.
+path for the PR10 branch work. It uses `unified-ble-manager: file:..` and the
+`unified-ble-manager` v2 config plugin, so it is not a published-package
+install recipe. The v2 Expo surface becomes published only at RC4; the
+immutable RC3 package must not be recreated or changed.
 
 The BLE host includes native code and cannot run in Expo Go. Generate and build
 the native project from the repository root:
@@ -24,9 +25,13 @@ Bluetooth journey.
 The fixture exercises the current source-tree CNG/plugin contract for the
 PR10 integration gate; its native configuration is not an application recipe
 for PR6 and must not be copied as a restoration contract. It tears the manager
-down with `destroy()`. A successful CNG prebuild or native
-assembly is package/compile proof only. Physical-device permissions, background
-behavior, restoration, and radio reliability require separate evidence for the
-specific host and hardware. See the root [README](../README.md),
+down with `destroy()`. A successful CNG prebuild and Android debug
+APK/assembly are source-tree/plugin and Android compile proof only. The packed
+host gate separately proves the installed tarball's conditional `./expo`,
+`./react`, and `./tauri` exports through CJS/ESM runtime import/loadability and
+TypeScript Bundler/NodeNext imports; neither proof is a full Expo app build.
+Apple/Xcode, EAS, and physical-device permissions, background behavior,
+restoration, and radio reliability require separate evidence for the specific
+host and hardware. See the root [README](../README.md),
 [Expo plugin reference](../docs/EXPO_PLUGIN.md), and
 [platform evidence page](../docs/PLATFORMS.md).

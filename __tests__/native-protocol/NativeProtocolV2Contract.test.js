@@ -67,9 +67,9 @@ describe('Native Protocol v2 schema authority', () => {
   test('rejects malformed, duplicate, and unsupported priority command values at the codec boundary', () => {
     expect(() => encodeNativeProtocolRecord(priorityCommand('highThroughput'))).not.toThrow()
     expect(() => encodeNativeProtocolRecord(priorityCommand('turbo'))).toThrow('Native protocol enum value is invalid')
-    expect(() =>
-      encodeNativeProtocolRecord(priorityCommand('balanced', [{ id: 16, value: 'lowPower' }]))
-    ).toThrow('Native protocol record has a duplicate field')
+    expect(() => encodeNativeProtocolRecord(priorityCommand('balanced', [{ id: 16, value: 'lowPower' }]))).toThrow(
+      'Native protocol record has a duplicate field'
+    )
   })
 
   test('locks every record, enum, and field to an explicit immutable v1 ABI wire ID', () => {
@@ -141,11 +141,21 @@ describe('Native Protocol v2 schema authority', () => {
       expect(appleHeader).toBeDefined()
       const android = fs.readFileSync(androidSpec, 'utf8')
       const apple = fs.readFileSync(appleHeader, 'utf8')
+      const androidImplementation = read(
+        'android/src/main/java/com/sfourdrinier/unifiedblemanager/protocol/UnifiedBleProtocolControlModule.java'
+      )
+      const appleImplementation = read('ios/UnifiedBleProtocolControl.mm')
       const appleControlStart = apple.indexOf('namespace NativeUnifiedBleProtocolControl')
       const appleControlEnd = apple.indexOf('NS_ASSUME_NONNULL_END', appleControlStart)
       const appleControl = apple.slice(appleControlStart, appleControlEnd)
       expect(android).toContain('NativeUnifiedBleProtocolControlSpec')
       expect(android).toContain('handshake')
+      expect(android).toContain('bootstrapRestorationIdentity')
+      expect(android).toContain('acquireBackground')
+      expect(android).toContain('releaseBackground')
+      expect(android).toContain('associateCompanionDevice')
+      expect(androidImplementation).toContain('ubm-restoration-v1')
+      expect(androidImplementation).toContain('controlSurface')
       expect(android).toContain('cancelOperation(ReadableMap correlation')
       expect(android).toContain('closeAttachment(ReadableMap attachment')
       expect(android).not.toMatch(/Uint8Array|ArrayBuffer|Base64/)
@@ -153,6 +163,13 @@ describe('Native Protocol v2 schema authority', () => {
       expect(appleControlEnd).toBeGreaterThan(appleControlStart)
       expect(appleControl).toContain('NativeUnifiedBleProtocolControlSpec')
       expect(appleControl).toContain('handshake')
+      expect(appleControl).toContain('controlSurface')
+      expect(appleControl).toContain('bootstrapRestorationIdentity')
+      expect(appleImplementation).toContain('acquireBackground')
+      expect(appleImplementation).toContain('releaseBackground')
+      expect(appleImplementation).toContain('associateCompanionDevice')
+      expect(appleImplementation).toContain('controlSurface')
+      expect(appleImplementation).toContain('ubm-restoration-v1')
       expect(appleControl).not.toMatch(/Uint8Array|ArrayBuffer|Base64/)
     } finally {
       fs.rmSync(output, { recursive: true, force: true })
@@ -192,6 +209,7 @@ describe('Native Protocol v2 schema authority', () => {
     const runtime = read('native/protocol/src/NativeProtocolControlRuntime.cpp')
 
     expect(control).toContain('installExecutionRuntime')
+    expect(control).toContain('controlSurface: NativeProtocolVersionRange')
     expect(androidControl).toContain('UnifiedBleProtocolJsiBinding.install')
     expect(androidBinding).toContain('RuntimeExecutor')
     expect(nativeBinding).toContain('retainUint8Array')
@@ -221,6 +239,7 @@ describe('Native Protocol v2 schema authority', () => {
     expect(androidControl).toContain('phyAvailable')
     expect(dispatcher).toContain('Build.VERSION_CODES.O')
     expect(schema).toContain('export const NATIVE_PROTOCOL_VERSION = 2')
+    expect(schema).toContain('export const NATIVE_PROTOCOL_CONTROL_SURFACE_VERSION = 2')
     expect(schema).not.toContain('phyAvailable')
   })
 
@@ -228,7 +247,9 @@ describe('Native Protocol v2 schema authority', () => {
     const schema = JSON.parse(fs.readFileSync(schemaPath, 'utf8'))
     const manifest = JSON.parse(fs.readFileSync(path.join(path.dirname(schemaPath), schema.abiManifest), 'utf8'))
     const cpp = read('native/protocol/generated/NativeProtocolV2Schema.hpp')
-    const kotlin = read('android/src/main/java/com/sfourdrinier/unifiedblemanager/protocol/generated/NativeProtocolV2Schema.kt')
+    const kotlin = read(
+      'android/src/main/java/com/sfourdrinier/unifiedblemanager/protocol/generated/NativeProtocolV2Schema.kt'
+    )
     const swift = read('ios/Generated/NativeProtocolV2Schema.swift')
     const typescript = read('src/native-protocol/generated/native-protocol-v2-schema.ts')
     const androidControl = read(
@@ -237,16 +258,22 @@ describe('Native Protocol v2 schema authority', () => {
 
     expect(schema.version).toBe(2)
     expect(schema.abiVersion).toBe(3)
+    expect(schema.controlSurfaceVersion).toBe(2)
     expect(manifest.version).toBe(3)
     expect(cpp).toContain('kProtocolVersion = 2U')
     expect(cpp).toContain('kAbiVersion = 3U')
+    expect(cpp).toContain('kControlSurfaceVersion = 2U')
     expect(kotlin).toContain('NATIVE_PROTOCOL_VERSION: Int = 2')
     expect(kotlin).toContain('NATIVE_PROTOCOL_ABI_VERSION: Int = 3')
+    expect(kotlin).toContain('NATIVE_PROTOCOL_CONTROL_SURFACE_VERSION: Int = 2')
     expect(swift).toContain('nativeProtocolVersion: UInt32 = 2')
     expect(swift).toContain('nativeProtocolABIVersion: UInt32 = 3')
+    expect(swift).toContain('nativeProtocolControlSurfaceVersion: UInt32 = 2')
     expect(typescript).toContain('export const NATIVE_PROTOCOL_VERSION = 2')
     expect(typescript).toContain('export const NATIVE_PROTOCOL_ABI_VERSION = 3')
+    expect(typescript).toContain('export const NATIVE_PROTOCOL_CONTROL_SURFACE_VERSION = 2')
     expect(androidControl).toContain('NativeProtocolV2SchemaKt.NATIVE_PROTOCOL_ABI_VERSION')
+    expect(androidControl).toContain('NativeProtocolV2SchemaKt.NATIVE_PROTOCOL_CONTROL_SURFACE_VERSION')
   })
 
   test('keeps Android JNI advertisement bytes and rejected command input under explicit native ownership', () => {
@@ -318,7 +345,9 @@ describe('Native Protocol v2 schema authority', () => {
     expect(dispatcher).toContain('securityEventsEnabled.set(false)\n    radio.onSecurityState = null')
     expect(dispatcher).toContain('bondStateUnknown')
     expect(radio).toContain('catch (error: SecurityException)')
-    expect(radio).toContain('internal var onSecurityState: ((deviceId: String, state: OwnedAndroidSecurityState) -> Unit)?')
+    expect(radio).toContain(
+      'internal var onSecurityState: ((deviceId: String, state: OwnedAndroidSecurityState) -> Unit)?'
+    )
     expect(radio).toContain('else -> "unknown"')
     expect(radio).not.toContain('cancelBondProcess')
     expect(radio).not.toContain('removeBond')

@@ -7,7 +7,7 @@ const {
 
 const root = path.join(__dirname, '..')
 
-describe('packed Expo/Tauri consumer release gate', () => {
+describe('packed Expo/Tauri/React consumer release gate', () => {
   test('derives host coverage from conditional package export targets', () => {
     const exportsMap = {
       './renamed-expo-entry': {
@@ -35,9 +35,31 @@ describe('packed Expo/Tauri consumer release gate', () => {
 
     expect(derivePackedHostConsumerExports(packageJson.exports)).toEqual([
       { exportPath: './expo', host: 'expo' },
+      { exportPath: './react', host: 'react' },
       { exportPath: './tauri', host: 'tauri' }
     ])
-    expect(Object.keys(PACKED_HOST_CONSUMER_CONTRACTS).sort()).toEqual(['expo', 'tauri'])
+    expect(Object.keys(PACKED_HOST_CONSUMER_CONTRACTS).sort()).toEqual(['expo', 'react', 'tauri'])
+  })
+
+  test('covers the packed React subpath for runtime loadability and TypeScript consumers', () => {
+    const runner = fs.readFileSync(path.join(root, 'scripts/ci/packed-host-consumer-check.js'), 'utf8')
+
+    expect(PACKED_HOST_CONSUMER_CONTRACTS.react.runtimeExports).toEqual([
+      'BleProvider',
+      'getAdapterState',
+      'getBleCapability',
+      'getBleReadiness',
+      'useAdapterState',
+      'useBle',
+      'useBleCapability',
+      'useBleReadiness',
+      'useCharacteristicValue',
+      'useConnectionState',
+      'useDiscoveredPeers'
+    ])
+    expect(runner).toContain("from 'unified-ble-manager/react'")
+    expect(runner).toContain('const ${entry.host} = require(${JSON.stringify(specifier)})')
+    expect(runner).toContain('reactEnvironment')
   })
 
   test('does not accept a default fallback when a conditional branch is missing', () => {

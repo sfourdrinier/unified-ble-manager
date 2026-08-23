@@ -29,6 +29,13 @@ class AppleNativeProtocolExecution::State final : public std::enable_shared_from
   static constexpr std::size_t kMaximumPreJavaScriptBytes = 256U * 1024U;
   static constexpr std::size_t kMaximumJavaScriptRecords = 64U;
   static constexpr std::size_t kMaximumJavaScriptBytes = 256U * 1024U;
+  static constexpr std::size_t kMaximumPendingDisconnects = 64U;
+
+  struct PendingDisconnect final {
+    std::uint64_t attachmentGeneration;
+    std::uint64_t ordinal;
+    std::optional<native_protocol::v2::ProtocolRecord> error;
+  };
 
   State(std::shared_ptr<native_protocol::v2::NativeProtocolControlRuntime> runtimeValue, void* radioValue);
   ~State();
@@ -62,6 +69,8 @@ class AppleNativeProtocolExecution::State final : public std::enable_shared_from
   bool attachmentFatal = false;
   bool restorationAppended = false;
   std::unordered_map<std::string, native_protocol::v2::ProtocolRecord> connections;
+  std::unordered_map<std::string, native_protocol::v2::ProtocolRecord> databases;
+  std::unordered_map<std::string, PendingDisconnect> pendingDisconnects;
 };
 
 } // namespace unified_ble::apple_protocol

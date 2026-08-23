@@ -35,6 +35,7 @@ class LegacyAbiV2Control {
     return Promise.resolve({
       nativeProtocol: 2,
       abi: 2,
+      controlSurface: 2,
       backendContract: 1,
       capabilitySchema: 1,
       eventSchema: 1,

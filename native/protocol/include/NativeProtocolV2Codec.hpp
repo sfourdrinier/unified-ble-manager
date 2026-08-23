@@ -72,6 +72,7 @@ struct VersionRange {
 struct NegotiatedVersions {
   std::uint32_t nativeProtocol;
   std::uint32_t abi;
+  std::uint32_t controlSurface;
   std::uint32_t backendContract;
   std::uint32_t capabilitySchema;
   std::uint32_t eventSchema;
@@ -87,6 +88,7 @@ class NativeProtocolV2Codec final {
   static NegotiatedVersions negotiate(
       VersionRange nativeProtocol,
       VersionRange abi,
+      VersionRange controlSurface,
       VersionRange backendContract,
       VersionRange capabilitySchema,
       VersionRange eventSchema,

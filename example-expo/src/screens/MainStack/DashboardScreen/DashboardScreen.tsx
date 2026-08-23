@@ -17,6 +17,44 @@ export function DashboardScreen({ navigation }: DashboardScreenProps) {
   const [isConnecting, setIsConnecting] = useState(false)
   const [foundPeers, setFoundPeers] = useState<readonly ExamplePeer[]>([])
   const [error, setError] = useState<string | null>(null)
+  const [readiness, setReadiness] = useState<string | null>(null)
+  const [planDigest, setPlanDigest] = useState<string | null>(null)
+  const [diagnosticCounters, setDiagnosticCounters] = useState<string | null>(null)
+  const [restoration, setRestoration] = useState<string | null>(null)
+  const [supportBundle, setSupportBundle] = useState<string | null>(null)
+
+  const inspectReadiness = async () => {
+    try {
+      const snapshot = await BLEService.readiness()
+      setReadiness(`${snapshot.state} (${snapshot.actions.length} action${snapshot.actions.length === 1 ? '' : 's'})`)
+    } catch (readinessError) {
+      setReadiness(messageFor(readinessError))
+    }
+  }
+
+  const inspectDiagnostics = () => {
+    const snapshot = BLEService.diagnosticsSnapshot()
+    setDiagnosticCounters(snapshot === null ? 'manager not created' : JSON.stringify(snapshot.resourceCounters))
+    setPlanDigest(BLEService.scanPlan()?.queryDigest ?? null)
+  }
+
+  const claimRestoration = async () => {
+    try {
+      const result = await BLEService.claimRestoration()
+      setRestoration(`${result.outcome}: ${result.replayRecordCount} bounded record(s)`)
+    } catch (claimError) {
+      setRestoration(messageFor(claimError))
+    }
+  }
+
+  const createSupportBundle = async () => {
+    try {
+      const bundle = await BLEService.redactedSupportBundle()
+      setSupportBundle(JSON.stringify(bundle))
+    } catch (bundleError) {
+      setSupportBundle(messageFor(bundleError))
+    }
+  }
 
   const startScan = async () => {
     if (!work.isActive()) {
@@ -66,9 +104,7 @@ export function DashboardScreen({ navigation }: DashboardScreenProps) {
         setError(messageFor(connectError))
       }
     } finally {
-      if (work.isActive()) {
-        setIsConnecting(false)
-      }
+      setIsConnecting(false)
     }
   }
 
@@ -80,6 +116,11 @@ export function DashboardScreen({ navigation }: DashboardScreenProps) {
         </DropDown>
       ) : null}
       <AppButton label="Scan with canonical manager" onPress={() => void startScan()} />
+      <AppButton label="Check Expo readiness" onPress={() => void inspectReadiness()} />
+      <AppButton label="Inspect plan and diagnostics" onPress={inspectDiagnostics} />
+      <AppButton label="Expo diagnostics" onPress={() => navigation.navigate('EXPO_DIAGNOSTICS_SCREEN')} />
+      <AppButton label="Claim native restoration" onPress={() => void claimRestoration()} />
+      <AppButton label="Create redacted support bundle" onPress={() => void createSupportBundle()} />
       <AppButton label="Stop scan" onPress={() => void stopScan(work, setError)} />
       <AppButton label="Go to nRF test" onPress={() => navigation.navigate('DEVICE_NRF_TEST_SCREEN')} />
       <AppButton
@@ -92,6 +133,11 @@ export function DashboardScreen({ navigation }: DashboardScreenProps) {
         onPress={() => navigation.navigate('DEVICE_ON_DISCONNECT_TEST_SCREEN')}
       />
       {error === null ? null : <AppText>BLE error: {error}</AppText>}
+      {readiness === null ? null : <AppText>Readiness: {readiness}</AppText>}
+      {planDigest === null ? null : <AppText>Scan plan digest: {planDigest}</AppText>}
+      {diagnosticCounters === null ? null : <AppText>Resource counters: {diagnosticCounters}</AppText>}
+      {restoration === null ? null : <AppText>Restoration: {restoration}</AppText>}
+      {supportBundle === null ? null : <AppText>Support bundle: {supportBundle}</AppText>}
       <FlatList
         style={{ flex: 1 }}
         data={foundPeers}

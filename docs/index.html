@@ -62,7 +62,9 @@
             <h1>Getting started</h1>
             <p>
               <strong>Current prerelease:</strong> <code>4.0.0-rc.3</code> is published from exact <code>main</code> and
-              is immutable. Stable <code>4.0.0</code> remains reserved for the post-PR12 release gate.
+              is immutable. The Expo plugin v2 surface described in this PR10 branch is unreleased branch work and
+              becomes published only at RC4; do not change the package version or recreate RC3. RC4 remains reserved for
+              the post-PR10 release gate.
             </p>
             <p>
               This page gets you to a first scan, connect, read, notify, and teardown on React Native. Other hosts are
@@ -79,9 +81,23 @@
               </thead>
               <tbody>
                 <tr>
-                  <td>React Native / Expo</td>
+                  <td>Bare React Native</td>
                   <td><code>unified-ble-manager/react-native</code></td>
                   <td>this page</td>
+                </tr>
+                <tr>
+                  <td>Expo / CNG v2</td>
+                  <td><code>unified-ble-manager/expo</code></td>
+                  <td>
+                    <a href="EXPO_PLUGIN.md"><code>EXPO_PLUGIN.md</code></a>
+                  </td>
+                </tr>
+                <tr>
+                  <td>React provider / hooks</td>
+                  <td><code>unified-ble-manager/react</code></td>
+                  <td>
+                    <a href="../README.md#react-provider-and-hooks"><code>README.md</code></a>
+                  </td>
                 </tr>
                 <tr>
                   <td>Browser</td>
@@ -113,37 +129,66 @@
                 </tr>
               </tbody>
             </table>
-            <h2>React Native / Expo in one hour</h2>
+            <h2>React Native and Expo in one hour</h2>
             <h3>1. Install</h3>
-            <p>Three native setup paths:</p>
+            <h4>Bare React Native</h4>
+            <p>The immutable published prerelease for bare React Native is explicitly pinned:</p>
             <p>
-              <strong>Expo / CNG.</strong> Install with <code>npx expo install unified-ble-manager</code> (or
-              <code>pnpm add</code> plus Expo 57). Add the plugin, run <code>npx expo prebuild</code>, then a
-              development client or production binary. Config-plugin changes require a native rebuild. The package does
-              not run in Expo Go.
+              Declare Android Bluetooth permissions and the BLE hardware feature yourself, request runtime permissions
+              on Android 12+, add <code>NSBluetoothAlwaysUsageDescription</code> on iOS, run pods, and rebuild.
             </p>
+            <h4>Expo / CNG v2</h4>
             <p>
-              <strong>Bare React Native adopting Expo modules.</strong> Install Expo modules first (<code
-                >npx install-expo-modules@latest</code
-              >), then add this plugin and prebuild.
+              The Expo v2 schema and <code>unified-ble-manager/expo</code> factory are PR10 branch work; they are not in
+              immutable RC3. Use exactly one of these sources:
             </p>
+            <ol>
+              <li>
+                <p><strong>Source checkout:</strong> build this PR10 checkout, then install its directory:</p>
+              </li>
+              <li>
+                <p>
+                  <strong>Local tarball:</strong> pack this PR10 checkout and install the resulting local file. This is
+                  not a request for, or a replacement of, published RC3:
+                </p>
+              </li>
+              <li>
+                <p>
+                  <strong>Published RC4:</strong> after the PR10 release gate publishes it, install the exact version:
+                </p>
+              </li>
+            </ol>
             <p>
-              <strong>Bare React Native without Prebuild.</strong> Declare Android Bluetooth permissions and the BLE
-              hardware feature yourself, request runtime permissions on Android 12+, add
-              <code>NSBluetoothAlwaysUsageDescription</code> on iOS, run pods, and rebuild.
+              Do not use an unpinned package-install command for this v2 recipe: while RC3 is latest, that resolves the
+              immutable RC3 surface, which does not contain Expo v2. The package does not run in Expo Go.
             </p>
-            <p>Expo also needs a native build. The package does not run in Expo Go.</p>
+            <p>Expo also needs a native build and development client:</p>
             <p>
               Add the plugin (full option table: <a href="EXPO_PLUGIN.md"><code>EXPO_PLUGIN.md</code></a
               >):
             </p>
             <p>Then generate native projects and run a development build:</p>
+            <p>
+              The packed-host proof is narrower than a full Expo app build. After <code>prepack</code>,
+              <code>node scripts/ci/packed-host-consumer-check.js</code> installs the tarball (not the source tree) and
+              checks the conditional <code>./expo</code>, <code>./react</code>, and <code>./tauri</code> exports through
+              CJS and ESM runtime imports/loadability, with TypeScript imports compiled under Bundler and NodeNext
+              resolution. The source-tree CNG prebuild and Android debug APK/assembly are separate package/plugin and
+              Android compile evidence; Apple/Xcode, EAS, and physical-device proof are not implied and require their
+              own host- or device-specific runs.
+            </p>
             <h3>2. Ask Android for runtime permission</h3>
             <p>
               The plugin writes the manifest. Android 12+ still needs a runtime request. The library will not do this
               for you.
             </p>
             <h3>3. Create one manager and keep it</h3>
+            <h4>Bare React Native</h4>
+            <h4>Expo</h4>
+            <p>
+              Expo uses its first-class factory, which adds Expo readiness, permission, settings, background,
+              association, and restoration surfaces:
+            </p>
             <p>
               The host factory owns ephemeral identity generation. Restoration-bound identity comes from the trusted
               native host and native configuration; application code does not pass client, manager, or host-session IDs.
@@ -185,8 +230,8 @@
                 the session ends.
               </li>
               <li>
-                <code>requiresBluetoothLeHardware: true</code> only marks the Android BLE hardware feature. It does not
-                start a foreground service.
+                <code>requiredHardware: true</code> only marks the Android BLE hardware feature. It does not start a
+                foreground service.
               </li>
             </ul>
             <h2>Coming from react-native-ble-plx</h2>
@@ -525,136 +570,184 @@
 
             <h1>Expo plugin option reference</h1>
             <p>
-              The plugin writes native project configuration. That is not a live-radio or restoration support claim. See
-              <a href="PLATFORMS.md"><code>PLATFORMS.md</code></a
-              >.
-            </p>
-            <h2>Current plugin package setup</h2>
-            <p>
-              <code>expo</code> is an optional host peer. The plugin imports Expo's supported
-              <code>expo/config-plugins</code> subpath; applications must not install the internal
-              <code>@expo/config-plugins</code> package directly. Web, bare React Native, and Node consumers do not
-              resolve Expo tooling.
-            </p>
-            <h2>Historical contract-test fixture — do not copy</h2>
-            <blockquote>
-              <p>
-                <strong>DO NOT COPY: HISTORICAL CONTRACT-TEST FIXTURE ONLY.</strong> The RC1 five-field
-                restoration/plugin schema below is retained for native/plugin contract tests. It is not supported
-                application configuration. Do not copy <code>iosNativeProtocolRestoration</code> or author
-                <code>clientId</code>/<code>hostSessionScope</code> in application code until the PR10 Expo v2 schema
-                and native-authoritative restoration slice lands.
-              </p>
-            </blockquote>
-            <p>
-              The historical contract-test fixture records the schema implemented in <code>plugin/src/withBLE.ts</code>.
-              Use it only to understand the native contract tests until PR10 replaces the five-field restoration
-              identity. The table and JSON block below are not a current application recipe.
-            </p>
-            <table>
-              <thead>
-                <tr>
-                  <th>Historical fixture option</th>
-                  <th>Type</th>
-                  <th>Contract-test effect</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr>
-                  <td><code>debug</code></td>
-                  <td><code>boolean</code></td>
-                  <td>
-                    Enables plugin diagnostics; <code>UNIFIED_BLE_MANAGER_PLUGIN_DEBUG=1</code> also enables them.
-                    <code>BLEPLX_PLUGIN_DEBUG=1</code> remains a deprecated alias.
-                  </td>
-                </tr>
-                <tr>
-                  <td><code>requiresBluetoothLeHardware</code></td>
-                  <td><code>boolean</code></td>
-                  <td>
-                    Adds the required Android BLE hardware feature (<code>android.hardware.bluetooth_le</code>). It does
-                    not create a foreground service or change manager lifecycle.
-                  </td>
-                </tr>
-                <tr>
-                  <td><code>neverForLocation</code></td>
-                  <td><code>boolean</code></td>
-                  <td>
-                    Adds Android's <code>neverForLocation</code> scan flag and caps legacy location permissions at API
-                    30. Android treats this as a strong assertion and may filter some BLE beacons. Set it only when the
-                    product makes that assertion.
-                  </td>
-                </tr>
-                <tr>
-                  <td><code>modes</code></td>
-                  <td><code>('central')[]</code></td>
-                  <td>
-                    Adds iOS <code>bluetooth-central</code> background mode. Peripheral mode is rejected; this library
-                    is a BLE central.
-                  </td>
-                </tr>
-                <tr>
-                  <td><code>bluetoothAlwaysPermission</code></td>
-                  <td><code>string | false</code></td>
-                  <td>Sets, or suppresses, <code>NSBluetoothAlwaysUsageDescription</code>.</td>
-                </tr>
-                <tr>
-                  <td><code>iosNativeProtocolRestoration</code></td>
-                  <td><code>{ identifier, namespace, epoch, clientId, hostSessionScope }</code></td>
-                  <td>
-                    Atomically writes the five non-empty native restoration identity values required by
-                    <code>UnifiedBleProtocolControl</code>.
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-            <p>Historical contract-test fixture shape (do not copy into application config):</p>
-            <p>
-              The fixture validates every provided plugin property exactly: unknown keys, non-boolean flags, invalid or
-              duplicate modes, invalid permission values, and incomplete restoration objects fail configuration.
-              <code>iosNativeProtocolRestoration</code> writes <code>UnifiedBleProtocolRestoreIdentifier</code>,
-              <code>UnifiedBleProtocolRestorationNamespace</code>, <code>UnifiedBleProtocolRestorationEpoch</code>,
-              <code>UnifiedBleProtocolRestorationClientId</code>, and
-              <code>UnifiedBleProtocolRestorationHostSessionScope</code> as one unit. When absent, the plugin removes
-              all five values rather than leaving a partial native identity.
+              The plugin configures native projects for Expo development builds. It does not start a radio, request
+              runtime permissions during prebuild, or prove physical radio/restoration reliability. Expo Go is not a
+              supported BLE execution environment because it cannot contain this native module.
             </p>
             <p>
-              This configuration does not create a second CoreBluetooth central, restore a connection, reconnect a
-              peripheral, or define a product restoration policy. Use it only with the explicit manager-owned adoption
-              flow in <a href="../MIGRATION_4.0.md"><code>MIGRATION_4.0.md</code></a
-              >, and ensure <code>clientId</code> and <code>hostSessionScope</code> exactly match the app's host-owned
-              manager/adoption values. Do not claim restoration support from plugin configuration alone.
+              The v2 Expo surface documented here is PR10 branch work. The immutable <code>4.0.0-rc.3</code> package is
+              not recreated or changed; this v2 surface becomes published only at RC4 after the PR10 release gate.
             </p>
-            <p>These <code>react-native-ble-plx</code> plugin keys are not accepted:</p>
+            <h2>Installation and development build</h2>
+            <p>
+              The Expo v2 schema is PR10 branch work and is available only from a source checkout, a local tarball built
+              from that checkout, or the exact published RC4 version. Do not use an unpinned package-install command:
+              while RC3 is latest, that installs the immutable RC3 surface, which does not contain Expo v2.
+            </p>
+            <h3>Source checkout</h3>
+            <pre><code>pnpm install --frozen-lockfile
+pnpm prepack
+pnpm --dir /path/to/expo-app add /path/to/unified-ble-manager
+</code></pre>
+            <h3>Local tarball</h3>
+            <pre><code>pnpm pack --pack-destination /tmp/unified-ble-manager-pr10
+pnpm --dir /path/to/expo-app add /tmp/unified-ble-manager-pr10/unified-ble-manager-4.0.0-rc.3.tgz
+</code></pre>
+            <p>
+              The local tarball is built from the PR10 checkout. It does not recreate or replace published RC3, whose
+              exact <code>main</code> commit remains immutable.
+            </p>
+            <h3>Published RC4</h3>
+            <p>After the PR10 release gate publishes RC4, install that exact version:</p>
+            <pre><code>pnpm add unified-ble-manager@4.0.0-rc.4
+</code></pre>
+            <p>Install the Expo host tooling separately:</p>
+            <pre><code>pnpm add expo@^57.0.0 expo-dev-client
+bunx expo prebuild --clean
+bunx expo run:ios
+# or
+bunx expo run:android
+</code></pre>
+            <p>For EAS development builds:</p>
+            <pre><code>bunx eas build --profile development --platform ios
+bunx eas build --profile development --platform android
+</code></pre>
+            <p>
+              These commands are build recipes, not evidence by themselves. The packed-host gate (<code
+                >pnpm prepack &#x26;&#x26; node scripts/ci/packed-host-consumer-check.js</code
+              >) proves the installed tarball's conditional <code>./expo</code>, <code>./react</code>, and
+              <code>./tauri</code> exports by CJS and ESM runtime import/loadability checks and TypeScript imports under
+              Bundler and NodeNext resolution. That exact packed export/type/import proof does not prove a full Expo
+              application build.
+            </p>
+            <p>
+              expo is an optional host peer. Bare React Native, Web, Node, Electron, and Tauri consumers do not resolve
+              Expo tooling.
+            </p>
+            <h2>Current v2 schema</h2>
+            <pre><code>[
+  "unified-ble-manager",
+  {
+    "requiredHardware": true,
+    "permissions": {
+      "bluetoothAlways": "Allow $(PRODUCT_NAME) to connect to Bluetooth devices",
+      "android": {
+        "neverForLocation": true,
+        "legacyLocation": "none"
+      }
+    },
+    "background": {
+      "ios": {
+        "mode": "central",
+        "restoration": {
+          "id": "primary-ble-central",
+          "generation": "1"
+        },
+        "showPowerAlert": true
+      },
+      "android": {
+        "mode": "none"
+      }
+    },
+    "diagnostics": {
+      "nativeLogging": "errors"
+    }
+  }
+]
+</code></pre>
+            <p>
+              The TypeScript contract is UnifiedBleExpoPluginOptions in plugin/src/expoPluginSchema.ts. That module is
+              the single runtime/type definition source for validation and normalization.
+            </p>
+            <h3>requiredHardware</h3>
+            <p>
+              When true, declares android.hardware.bluetooth_le as required. When omitted or false, the plugin does not
+              manage that feature declaration.
+            </p>
+            <h3>permissions</h3>
             <ul>
-              <li><code>iosEnableRestoration</code></li>
-              <li><code>iosRestorationIdentifier</code></li>
-              <li><code>iosNativeProtocolRestorationIdentifier</code></li>
-              <li><code>androidEnableForegroundService</code></li>
+              <li>bluetoothAlways: a non-empty iOS Bluetooth usage description, or false to remove the managed key.</li>
+              <li>
+                android.neverForLocation: the explicit Android scan assertion. It is never inferred from product
+                behavior.
+              </li>
+              <li>
+                android.legacyLocation: auto, required, or none. Location permission declarations are managed only
+                according to this policy and target-SDK rules.
+              </li>
+            </ul>
+            <p>The plugin never requests runtime permission during import or prebuild.</p>
+            <p>
+              The Expo host also exposes an Android-only Companion Device Manager ceremony:
+              <code>ble.association.associate({ name, serviceUuid })</code>. It launches Android system UI and returns
+              an <code>associated</code> peer-directory record. Association is not a bond, connection, GATT attachment,
+              or broad scan-permission bypass; unsupported hosts fail explicitly.
+            </p>
+            <h3>background</h3>
+            <ul>
+              <li>ios.mode must be central; peripheral mode is rejected.</li>
+              <li>
+                ios.restoration accepts one application-facing id and an optional generation. The plugin writes only
+                UnifiedBleProtocolRestorationId and UnifiedBleProtocolRestorationGeneration. The trusted native host
+                derives the restore identifier, namespace, client identity, and host scope from its bundle identifier
+                plus these values.
+              </li>
+              <li>
+                android.mode is none or connected-device-foreground-service. The latter requires a complete notification
+                (channelId, channelName, and title) and may set body, icon, and an explicit restart policy.
+              </li>
             </ul>
             <p>
-              Do not add aliases or compatibility transforms for those names. A host that needs an Android foreground
-              service must own and validate that platform policy; the plugin does not silently provide it.
+              Foreground-service declarations do not acquire a runtime lease or guarantee background reliability. The
+              application must explicitly acquire and release the runtime background lease exposed by the host when that
+              surface is available.
+            </p>
+            <h3>diagnostics</h3>
+            <p>
+              nativeLogging is off, errors, or events. The normalized configuration is deterministic and managed values
+              are removed when the option is removed.
+            </p>
+            <h2>Validation and reconciliation</h2>
+            <p>
+              Unknown keys, empty strings, malformed restoration tokens, invalid discriminated-union combinations, and
+              incomplete foreground-service notifications fail closed. Consecutive prebuilds are idempotent; duplicate
+              managed declarations are reconciled; unrelated Info.plist and manifest configuration is preserved; stale
+              RC1 managed keys are removed.
+            </p>
+            <p>The old flat keys are intentionally rejected:</p>
+            <ul>
+              <li>requiresBluetoothLeHardware</li>
+              <li>neverForLocation</li>
+              <li>modes</li>
+              <li>bluetoothAlwaysPermission</li>
+              <li>iosNativeProtocolRestoration</li>
+              <li>androidEnableForegroundService</li>
+            </ul>
+            <p>
+              The example's source-tree CNG prebuild and Android debug APK/assembly are separate source/plugin and
+              Android compile evidence. Apple/Xcode and EAS build evidence require successful platform-specific runs,
+              while physical-device permissions, restoration, background behavior, and radio reliability require
+              separate device evidence.
             </p>
             <p>
-              <a href="../example-expo/"><code>../example-expo/</code></a> is the repository CNG fixture and uses a
-              <code>file:..</code> dependency. It demonstrates the source-tree integration path only; pin the published
-              package version in a consumer and validate that consumer's native build separately.
+              Do not author clientId, hostSessionScope, namespace, or protocol epoch values in application
+              configuration. Those are native protocol identities, not application policy.
+            </p>
+            <h2>Retired RC1 migration note</h2>
+            <blockquote>
+              <p><strong>DO NOT COPY: HISTORICAL CONTRACT-TEST FIXTURE ONLY.</strong></p>
+            </blockquote>
+            <p>
+              The RC1 five-field restoration shape is not supported application configuration. It is retained only in
+              historical native-contract evidence so the migration boundary remains auditable. Use the v2 one-token
+              schema above.
             </p>
             <h2>Related records</h2>
             <ul>
-              <li>
-                <a href="../MIGRATION_4.0.md"><code>MIGRATION_4.0.md</code></a>
-              </li>
-              <li>
-                <a href="BACKGROUND.md"><code>BACKGROUND.md</code></a>
-              </li>
-              <li>
-                <a href="PLATFORMS.md"><code>PLATFORMS.md</code></a>
-              </li>
-              <li>
-                <a href="UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md"><code>UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md</code></a>
-              </li>
+              <li>MIGRATION_4.0.md</li>
+              <li>BACKGROUND.md</li>
+              <li>PLATFORMS.md</li>
+              <li>UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md</li>
             </ul>
           </section>
         </div>

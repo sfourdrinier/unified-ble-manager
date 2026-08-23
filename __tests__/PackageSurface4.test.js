@@ -56,6 +56,7 @@ describe('4.0 public package surface', () => {
     const ieee11073 = require('unified-ble-manager/profiles/ieee-11073')
     const web = require('unified-ble-manager/web')
     const reactNative = require('unified-ble-manager/react-native')
+    const react = require('unified-ble-manager/react')
     const bluez = require('unified-ble-manager/node/bluez')
     const winrt = require('unified-ble-manager/node/winrt')
     const electronMain = require('unified-ble-manager/electron/main')
@@ -102,6 +103,8 @@ describe('4.0 public package surface', () => {
     expect(typeof reactNative.createReactNativeAndroidBackendProvider).toBe('function')
     expect(typeof reactNative.createReactNativeBleManager).toBe('function')
     expect(typeof reactNative.createReactNativeBleManagerWithEnvironment).toBe('function')
+    expect(typeof react.BleProvider).toBe('function')
+    expect(typeof react.useBle).toBe('function')
     // PR1: low-level helpers moved to advanced; root is application-only
     expect(publicRoot.normalizeOperationOptions).toBeUndefined()
     expect(publicRoot.resolveStreamPreset).toBeUndefined()
@@ -142,6 +145,7 @@ describe('4.0 public package surface', () => {
     expect(packageJson.exports['./profiles/commands']).toBeDefined()
     expect(packageJson.exports['./profiles/heart-rate']).toBeDefined()
     expect(packageJson.exports['./react-native']).toBeDefined()
+    expect(packageJson.exports['./react']).toBeDefined()
     expect(packageJson.exports['./node/bluez']).toBeDefined()
     expect(packageJson.exports['./node/winrt']).toBeDefined()
     expect(packageJson.exports['./electron/renderer']).toBeDefined()
@@ -235,6 +239,7 @@ describe('4.0 public package surface', () => {
       './profiles/ieee-11073',
       './web',
       './react-native',
+      './react',
       './node/bluez',
       './node/corebluetooth',
       './node/winrt',

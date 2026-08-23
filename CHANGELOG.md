@@ -57,11 +57,11 @@ Documentation correctness and pre-stable API fixes on the 4.0 contract. This doe
 
 ## [4.0.0-rc.0] - 2026-08-17
 
-First publication from `sfourdrinier/unified-ble-manager`. This is the 4.0 package/API contract as a release candidate on npm `latest`, so `pnpm add unified-ble-manager` installs this build. It does not promote backend support labels.
+First publication from `sfourdrinier/unified-ble-manager`. This is the 4.0 package/API contract as a release candidate on npm `latest`, so `pnpm add unified-ble-manager` installs this build. It does not promote backend support labels or represent the stable 4.0.0 release.
 
 ### Stable package and public contract
 
-- Promoted the Unified BLE Manager 4.0 package/API contract to its first stable release.
+- Established the Unified BLE Manager 4.0 package/API contract as its first release-candidate baseline.
 - Established `sfourdrinier/unified-ble-manager` and `main` as the canonical repository and release branch.
 - Preserved the Git ancestry of the 4.0 work while leaving `sfourdrinier/react-native-ble-plx` as the historical and 3.x home.
 - Kept platform support qualification independent from package SemVer: stable `4.0.0` does not promote a backend beyond the support label justified by retained evidence.

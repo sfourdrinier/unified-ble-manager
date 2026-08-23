@@ -17,6 +17,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <cstring>
 #include <functional>
 #include <iterator>
@@ -151,6 +152,25 @@ std::string nsString(NSString* value, const char* name) {
     throw protocol::ProtocolException(protocol::ProtocolFailure::detachedPayload, std::string("Apple native ") + name + " is unavailable");
   }
   return utf8;
+}
+
+NSInteger parseAppleGattOccurrence(const std::string& value, const char* pathKind) {
+  const auto invalid = [&]() -> NSInteger {
+    throw protocol::ProtocolException(
+        protocol::ProtocolFailure::invalidPath,
+        std::string("Apple native ") + pathKind + " occurrence is invalid");
+  };
+  if (value.empty()) return invalid();
+
+  const auto maximum = static_cast<std::uintmax_t>(std::numeric_limits<NSInteger>::max());
+  std::uintmax_t parsed = 0U;
+  for (const auto character : value) {
+    if (character < '0' || character > '9') return invalid();
+    const auto digit = static_cast<std::uintmax_t>(character - '0');
+    if (parsed > (maximum - digit) / 10U) return invalid();
+    parsed = parsed * 10U + digit;
+  }
+  return static_cast<NSInteger>(parsed);
 }
 
 std::string errorMessage(NSError* error) {
@@ -430,6 +450,8 @@ void failAttachmentAfterTerminalAdmissionFailure(
       state->recordsAwaitingJavaScript.reset();
       state->drainScheduled = false;
       state->connections.clear();
+      state->databases.clear();
+      state->pendingDisconnects.clear();
       releaseRadio = state->radio != nullptr;
     }
     try {
@@ -1000,23 +1022,85 @@ void fail(
     const std::string& code,
     NSError* error) {
   try {
+    if (requiredString(command, 3U) == "connect") {
+      const auto& connection = requiredRecord(command, 10U);
+      const auto peer = requiredString(connection, 2U);
+      std::scoped_lock lock(state->mutex);
+      state->pendingDisconnects.erase(peer);
+    }
     static_cast<void>(deliverResult(state, failureResult(command, code, errorMessage(error), error)));
   } catch (const std::exception& error) {
     logNativeFailure("terminal failure delivery", error);
   }
 }
 
+protocol::ProtocolRecord connectionLostEvent(
+    const std::shared_ptr<AppleNativeProtocolExecution::State>& state,
+    const protocol::ProtocolRecord& connection,
+    std::uint64_t ordinal,
+    const std::optional<protocol::ProtocolRecord>& eventError) {
+  std::vector<protocol::ProtocolField> fields{
+      field(1U, std::uint64_t{protocol::kProtocolVersion}),
+      field(2U, std::string("apple-connection-lost:") + std::to_string(ordinal)),
+      field(3U, std::string("connectionLost")),
+      field(4U, reference(attachmentRecord(state->runtime->attachmentIdentity()))),
+      field(5U, ordinal),
+      field(6U, monotonicMilliseconds()),
+      field(7U, reference(connection)),
+  };
+  if (eventError.has_value()) fields.push_back(field(14U, reference(*eventError)));
+  return {.kind = protocol::RecordKind::event, .fields = std::move(fields)};
+}
+
 void connectionOwnershipAfterSettlement(
     const std::shared_ptr<AppleNativeProtocolExecution::State>& state,
     const protocol::ProtocolRecord& command) {
   const auto kind = requiredString(command, 3U);
+  if (kind == "discover") {
+    const auto& connection = requiredRecord(command, 10U);
+    const auto& database = requiredRecord(command, 11U);
+    const auto peer = requiredString(connection, 2U);
+    std::scoped_lock lock(state->mutex);
+    const auto current = state->connections.find(peer);
+    if (current == state->connections.end() || requiredString(current->second, 5U) != requiredString(connection, 5U)) {
+      return;
+    }
+    state->databases.insert_or_assign(peer, database);
+    return;
+  }
   if (kind != "connect" && kind != "disconnect") return;
-  const auto peer = requiredString(requiredRecord(command, 10U), 2U);
-  std::scoped_lock lock(state->mutex);
+  const auto connection = requiredRecord(command, 10U);
+  const auto peer = requiredString(connection, 2U);
+  std::optional<AppleNativeProtocolExecution::State::PendingDisconnect> pendingDisconnect;
+  {
+    std::scoped_lock lock(state->mutex);
+    if (kind == "connect") {
+      state->connections.insert_or_assign(peer, connection);
+      state->databases.erase(peer);
+      const auto pending = state->pendingDisconnects.find(peer);
+      if (pending != state->pendingDisconnects.end()) {
+        if (pending->second.attachmentGeneration == state->attachmentGeneration) {
+          pendingDisconnect = std::move(pending->second);
+        }
+        state->pendingDisconnects.erase(pending);
+      }
+    } else {
+      state->connections.erase(peer);
+      state->databases.erase(peer);
+      state->pendingDisconnects.erase(peer);
+    }
+  }
   if (kind == "connect") {
-    state->connections.insert_or_assign(peer, requiredRecord(command, 10U));
-  } else {
-    state->connections.erase(peer);
+    if (pendingDisconnect.has_value()) {
+      static_cast<void>(deliverEvent(
+          state,
+          connectionLostEvent(
+              state,
+              connection,
+              pendingDisconnect->ordinal,
+              pendingDisconnect->error),
+          pendingDisconnect->attachmentGeneration));
+    }
   }
 }
 
@@ -1045,6 +1129,7 @@ bool success(
 
 struct Endpoint {
   std::string peer;
+  std::string connectionGeneration;
   std::string serviceUuid;
   NSInteger serviceOccurrence;
   std::string characteristicUuid;
@@ -1060,14 +1145,25 @@ Endpoint endpointFor(const protocol::ProtocolRecord& path) {
   try {
     return {
         .peer = requiredString(connection, 2U),
+        .connectionGeneration = requiredString(connection, 5U),
         .serviceUuid = requiredString(service, 2U),
-        .serviceOccurrence = static_cast<NSInteger>(std::stoll(serviceOccurrence)),
+        .serviceOccurrence = parseAppleGattOccurrence(serviceOccurrence, "characteristic"),
         .characteristicUuid = requiredString(path, 2U),
-        .characteristicOccurrence = static_cast<NSInteger>(std::stoll(characteristicOccurrence)),
+        .characteristicOccurrence = parseAppleGattOccurrence(characteristicOccurrence, "characteristic"),
     };
   } catch (const std::exception&) {
     throw protocol::ProtocolException(protocol::ProtocolFailure::invalidPath, "Apple native characteristic occurrence is invalid");
   }
+}
+
+bool currentConnectionGenerationMatches(
+    const std::shared_ptr<AppleNativeProtocolExecution::State>& state,
+    const std::string& peer,
+    const std::string& generation) {
+  std::scoped_lock lock(state->mutex);
+  const auto found = state->connections.find(peer);
+  if (found == state->connections.end()) return false;
+  return requiredString(found->second, 5U) == generation;
 }
 
 struct DescriptorEndpoint {
@@ -1083,7 +1179,7 @@ DescriptorEndpoint descriptorEndpointFor(const protocol::ProtocolRecord& path) {
     return {
         .characteristic = endpointFor(characteristic),
         .descriptorUuid = requiredString(path, 2U),
-        .descriptorOccurrence = static_cast<NSInteger>(std::stoll(occurrence)),
+        .descriptorOccurrence = parseAppleGattOccurrence(occurrence, "descriptor"),
     };
   } catch (const std::exception&) {
     throw protocol::ProtocolException(protocol::ProtocolFailure::invalidPath, "Apple native descriptor occurrence is invalid");
@@ -1120,9 +1216,14 @@ void dispatchCommand(
     return;
   }
   if (kind == "connect" || kind == "disconnect") {
-    const auto peer = requiredString(requiredRecord(command, 10U), 2U);
+    const auto& connection = requiredRecord(command, 10U);
+    const auto peer = requiredString(connection, 2U);
     const auto identifier = [NSString stringWithUTF8String:peer.c_str()];
     const auto operation = [NSString stringWithUTF8String:nonce.c_str()];
+    if (kind == "disconnect" && !currentConnectionGenerationMatches(state, peer, requiredString(connection, 5U))) {
+      fail(state, command, "staleGeneration", nil);
+      return;
+    }
     void (^completion)(NSError*) = ^(NSError* error) {
       if (error == nil) static_cast<void>(success(state, command));
       else fail(state, command, kind == "connect" ? "connectFailed" : "disconnectFailed", error);
@@ -1132,7 +1233,12 @@ void dispatchCommand(
     return;
   }
   if (kind == "discover") {
-    const auto peer = requiredString(requiredRecord(command, 10U), 2U);
+    const auto& connection = requiredRecord(command, 10U);
+    const auto peer = requiredString(connection, 2U);
+    if (!currentConnectionGenerationMatches(state, peer, requiredString(connection, 5U))) {
+      fail(state, command, "staleGeneration", nil);
+      return;
+    }
     const auto database = requiredRecord(command, 11U);
     [radio discoverWithPeerIdentifier:[NSString stringWithUTF8String:peer.c_str()] operationIdentifier:[NSString stringWithUTF8String:nonce.c_str()] completion:^(NSDictionary* snapshot, NSError* error) {
       if (error != nil || snapshot == nil) {
@@ -1179,7 +1285,12 @@ void dispatchCommand(
     return;
   }
   if (kind == "readRssi") {
-    const auto peer = requiredString(requiredRecord(command, 10U), 2U);
+    const auto& connection = requiredRecord(command, 10U);
+    const auto peer = requiredString(connection, 2U);
+    if (!currentConnectionGenerationMatches(state, peer, requiredString(connection, 5U))) {
+      fail(state, command, "staleGeneration", nil);
+      return;
+    }
     [radio readRssiWithPeerIdentifier:[NSString stringWithUTF8String:peer.c_str()] operationIdentifier:[NSString stringWithUTF8String:nonce.c_str()] completion:^(NSNumber* value, NSError* error) {
       if (error != nil || value == nil) {
         fail(state, command, "readRssiFailed", error);
@@ -1196,6 +1307,10 @@ void dispatchCommand(
   if (kind == "readDescriptor" || kind == "writeDescriptor") {
     const auto& descriptorPath = requiredRecord(command, 5U);
     const auto endpoint = descriptorEndpointFor(descriptorPath);
+    if (!currentConnectionGenerationMatches(state, endpoint.characteristic.peer, endpoint.characteristic.connectionGeneration)) {
+      fail(state, command, "staleGeneration", nil);
+      return;
+    }
     const auto peer = [NSString stringWithUTF8String:endpoint.characteristic.peer.c_str()];
     const auto service = [NSString stringWithUTF8String:endpoint.characteristic.serviceUuid.c_str()];
     const auto characteristic = [NSString stringWithUTF8String:endpoint.characteristic.characteristicUuid.c_str()];
@@ -1237,6 +1352,10 @@ void dispatchCommand(
   }
   const auto path = requiredRecord(command, 4U);
   const auto endpoint = endpointFor(path);
+  if (!currentConnectionGenerationMatches(state, endpoint.peer, endpoint.connectionGeneration)) {
+    fail(state, command, "staleGeneration", nil);
+    return;
+  }
   const auto peer = [NSString stringWithUTF8String:endpoint.peer.c_str()];
   const auto service = [NSString stringWithUTF8String:endpoint.serviceUuid.c_str()];
   const auto characteristic = [NSString stringWithUTF8String:endpoint.characteristicUuid.c_str()];
@@ -1664,6 +1783,8 @@ void AppleNativeProtocolExecution::beginAttachment() {
   state_->recordsAwaitingSink.reset();
   state_->recordsAwaitingJavaScript.reset();
   state_->drainScheduled = false;
+  state_->databases.clear();
+  state_->pendingDisconnects.clear();
 }
 
 void AppleNativeProtocolExecution::cancel(const protocol::NativeOperationIdentity& operation) {
@@ -1749,6 +1870,8 @@ void AppleNativeProtocolExecution::rollbackRestorationBootstrap() noexcept {
   state_->recordsAwaitingSink.reset();
   state_->recordsAwaitingJavaScript.reset();
   state_->drainScheduled = false;
+  state_->databases.clear();
+  state_->pendingDisconnects.clear();
 }
 
 void AppleNativeProtocolExecution::detachAttachment() {
@@ -1782,6 +1905,8 @@ void AppleNativeProtocolExecution::detachAttachment() {
     state->sinksAwaitingJavaScriptRelease.push_back(std::move(state->fatalSink));
   }
   state->connections.clear();
+  state->databases.clear();
+  state->pendingDisconnects.clear();
   state->restorationAppended = false;
   state->ingressOrdinalAllocator.reset(state->mutex);
 }
@@ -1835,34 +1960,94 @@ void AppleNativeProtocolExecution::receiveDisconnect(void* peerIdentifier, void*
   if (peer == nil) return;
   try {
     const auto peerValue = nsString(peer, "disconnect peer");
-    std::optional<protocol::ProtocolRecord> connection;
-    {
-      std::scoped_lock lock(state_->mutex);
-      const auto found = state_->connections.find(peerValue);
-      if (found == state_->connections.end()) return;
-      connection = found->second;
-      state_->connections.erase(found);
-    }
-    const auto ingress = reserveNativeIngressOrdinal(state_);
-    if (!ingress.has_value()) return;
-    const auto ordinal = ingress->ordinal;
-    std::vector<protocol::ProtocolField> fields{
-        field(1U, std::uint64_t{protocol::kProtocolVersion}), field(2U, std::string("apple-connection-lost:") + std::to_string(ordinal)),
-        field(3U, std::string("connectionLost")), field(4U, reference(attachmentRecord(state_->runtime->attachmentIdentity()))),
-        field(5U, ordinal), field(6U, monotonicMilliseconds()), field(7U, reference(*connection))};
+    std::optional<protocol::ProtocolRecord> eventError;
     if (nativeError != nil) {
-      const auto eventError = protocol::ProtocolRecord{.kind = protocol::RecordKind::error, .fields = {
+      eventError = protocol::ProtocolRecord{.kind = protocol::RecordKind::error, .fields = {
           field(1U, std::string("connectionLost")), field(2U, std::string("corebluetooth")), field(3U, std::string("connectionLost")),
           field(4U, std::string("notRetryable")), field(7U, errorMessage(nativeError)), field(9U, nsString(nativeError.domain, "error domain")),
           field(10U, static_cast<std::int64_t>(nativeError.code))}};
-      fields.push_back(field(14U, reference(eventError)));
     }
+    std::optional<protocol::ProtocolRecord> connection;
+    std::optional<AppleNativeIngressReservation> immediateIngress;
+    bool pendingDisconnectAdmissionFailed = false;
+    std::optional<std::uint64_t> pendingDisconnectAdmissionGeneration;
+    {
+      std::scoped_lock lock(state_->mutex);
+      if (state_->pendingDisconnects.find(peerValue) != state_->pendingDisconnects.end()) return;
+      const auto found = state_->connections.find(peerValue);
+      if (found == state_->connections.end()) {
+        if (state_->pendingDisconnects.size() >= State::kMaximumPendingDisconnects) {
+          pendingDisconnectAdmissionFailed = true;
+          pendingDisconnectAdmissionGeneration = state_->attachmentGeneration;
+        } else {
+          const auto ingress = reserveNativeIngressOrdinal(state_);
+          if (!ingress.has_value()) return;
+          state_->pendingDisconnects.emplace(
+              peerValue,
+              State::PendingDisconnect{
+                  .attachmentGeneration = ingress->attachmentGeneration,
+                  .ordinal = ingress->ordinal,
+                  .error = std::move(eventError),
+              });
+          return;
+        }
+      } else {
+        immediateIngress = reserveNativeIngressOrdinal(state_);
+        if (!immediateIngress.has_value()) return;
+        connection = found->second;
+        state_->connections.erase(found);
+        state_->databases.erase(peerValue);
+      }
+    }
+    if (pendingDisconnectAdmissionFailed) {
+      failAttachmentAfterTerminalAdmissionFailure(
+          state_,
+          "Apple pending disconnect admission overflow",
+          pendingDisconnectAdmissionGeneration);
+      return;
+    }
+    if (!connection.has_value() || !immediateIngress.has_value()) return;
     static_cast<void>(deliverEvent(
         state_,
-        {.kind = protocol::RecordKind::event, .fields = std::move(fields)},
-        ingress->attachmentGeneration));
+        connectionLostEvent(state_, *connection, immediateIngress->ordinal, eventError),
+        immediateIngress->attachmentGeneration));
   } catch (const std::exception& error) {
     logNativeFailure("disconnect serialization", error);
+  }
+}
+
+void AppleNativeProtocolExecution::receiveDatabaseChanged(void* peerIdentifier) {
+  if (state_->closed.load(std::memory_order_acquire)) return;
+  NSString* peer = (__bridge NSString*)peerIdentifier;
+  if (peer == nil) return;
+  try {
+    const auto peerValue = nsString(peer, "database changed peer");
+    std::optional<protocol::ProtocolRecord> database;
+    std::optional<AppleNativeIngressReservation> ingress;
+    {
+      std::scoped_lock lock(state_->mutex);
+      const auto connection = state_->connections.find(peerValue);
+      const auto retainedDatabase = state_->databases.find(peerValue);
+      if (connection == state_->connections.end() || retainedDatabase == state_->databases.end()) return;
+      const auto& databaseConnection = requiredRecord(retainedDatabase->second, 1U);
+      if (requiredString(databaseConnection, 2U) != requiredString(connection->second, 2U) ||
+          requiredString(databaseConnection, 5U) != requiredString(connection->second, 5U)) return;
+      ingress = reserveNativeIngressOrdinal(state_);
+      if (!ingress.has_value()) return;
+      database = retainedDatabase->second;
+    }
+    const auto event = protocol::ProtocolRecord{.kind = protocol::RecordKind::event, .fields = {
+        field(1U, std::uint64_t{protocol::kProtocolVersion}),
+        field(2U, std::string("apple-database-changed:") + std::to_string(ingress->ordinal)),
+        field(3U, std::string("databaseChanged")),
+        field(4U, reference(attachmentRecord(state_->runtime->attachmentIdentity()))),
+        field(5U, ingress->ordinal),
+        field(6U, monotonicMilliseconds()),
+        field(8U, reference(*database)),
+    }};
+    static_cast<void>(deliverEvent(state_, event, ingress->attachmentGeneration));
+  } catch (const std::exception& error) {
+    logNativeFailure("database changed serialization", error);
   }
 }
 
@@ -1921,6 +2106,8 @@ void AppleNativeProtocolExecution::close() {
         "Apple execution close JavaScript discard");
     state->terminalResultsAwaitingJavaScript.clear();
     state->terminalConnectionCommandsAwaitingJavaScript.clear();
+    state->databases.clear();
+    state->pendingDisconnects.clear();
     retryBinaryCleanupLedger(state, "Apple execution close binary cleanup retry");
     state->recordsAwaitingSink.reset();
     state->recordsAwaitingJavaScript.reset();
