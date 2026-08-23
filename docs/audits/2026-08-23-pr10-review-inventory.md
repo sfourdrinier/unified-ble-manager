@@ -96,6 +96,11 @@ The subsequent exact-source native/consumer review found additional ownership an
 - Packed Expo/React/Tauri, pack-install smoke, and G6A deterministic tarball proofs: passed; physical radio/EAS not provided.
 - Expo SDK 57 typecheck and full CNG Android debug build: passed; generated native directories/lockfile remain uncommitted.
 
+## Latest source verification at `ef35e12d380a513406290b6ba9eda2abcd7792bd`
+
+- `pnpm test:package`: 156 suites / 1,505 tests passed, including the Android Service Changed boundary path.
+- Focused Android boundary/native suites, TypeScript, ESLint, and protocol checks passed; no physical-radio evidence.
+
 ## Final local verification receipts at `707e3c9`
 
 - `pnpm typecheck`, `pnpm lint`, `pnpm test:plugin`: passed; plugin 35/35.
