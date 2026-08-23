@@ -461,7 +461,11 @@ function hasReadiness(manager: BleManager): manager is BleManager & Pick<ExpoBle
 class ManagerLease {
   private managerPromise: Promise<BleManager> | null = null
   private releaseScheduled = false
+  private releaseInFlight = false
+  private releaseAttempted = false
   private released = false
+  private releaseBarrier: Promise<void> | null = null
+  private resolveReleaseBarrier: (() => void) | null = null
   private createFailureReported = false
   private destroyFailureReported = false
 
@@ -481,31 +485,48 @@ class ManagerLease {
   }
 
   cancelScheduledRelease(): void {
-    if (!this.released) this.releaseScheduled = false
+    if (!this.released && !this.releaseInFlight) this.releaseScheduled = false
   }
 
   scheduleRelease(report: (error: Error) => void): void {
-    if (this.released || this.releaseScheduled) return
+    if (this.released || this.releaseScheduled || this.releaseInFlight) return
     this.releaseScheduled = true
 
-    let resolveReleaseBarrier: () => void = () => undefined
-    const releaseBarrier = new Promise<void>(resolve => {
-      resolveReleaseBarrier = resolve
-    })
-    const previousRelease = pendingManagerRelease ?? Promise.resolve()
-    const scheduledRelease = previousRelease.then(() => releaseBarrier)
-    pendingManagerRelease = scheduledRelease
-    scheduledRelease.then(() => {
-      if (pendingManagerRelease === scheduledRelease) pendingManagerRelease = null
-    })
+    if (this.releaseBarrier === null) {
+      const releaseBarrier = new Promise<void>(resolve => {
+        this.resolveReleaseBarrier = resolve
+      })
+      this.releaseBarrier = releaseBarrier
+      const previousRelease = pendingManagerRelease ?? Promise.resolve()
+      const scheduledRelease = previousRelease.then(() => releaseBarrier)
+      pendingManagerRelease = scheduledRelease
+      scheduledRelease.then(() => {
+        if (pendingManagerRelease === scheduledRelease) pendingManagerRelease = null
+        this.releaseBarrier = null
+        this.resolveReleaseBarrier = null
+      })
+    }
 
     queueMicrotask(() => {
       if (!this.releaseScheduled || this.released) {
-        resolveReleaseBarrier()
+        if (!this.releaseAttempted) this.resolveReleaseBarrier?.()
         return
       }
-      this.released = true
-      this.release(report).then(resolveReleaseBarrier, resolveReleaseBarrier)
+      this.releaseScheduled = false
+      this.releaseInFlight = true
+      this.releaseAttempted = true
+      this.release(report).then(
+        succeeded => {
+          this.releaseInFlight = false
+          if (succeeded) {
+            this.released = true
+            this.resolveReleaseBarrier?.()
+          }
+        },
+        () => {
+          this.releaseInFlight = false
+        }
+      )
     })
   }
 
@@ -521,21 +542,24 @@ class ManagerLease {
     callback?.(error)
   }
 
-  private async release(report: (error: Error) => void): Promise<void> {
+  private async release(report: (error: Error) => void): Promise<boolean> {
     let manager: BleManager
     try {
       manager = await this.create()
     } catch {
-      return
+      return true
     }
 
     try {
       const cleanup = await manager.destroy()
       if (cleanup.state === 'release-failed') {
         reportCleanupFailure(cleanup, report, 'manager destroy')
+        return false
       }
+      return true
     } catch (error) {
       report(toError(error))
+      return false
     }
   }
 }

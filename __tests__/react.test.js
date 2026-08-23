@@ -239,6 +239,77 @@ describe('React host surface', () => {
     expect(secondCreateManager).toHaveBeenCalledTimes(1)
   })
 
+  test('keeps a replacement blocked after release-failed cleanup until an explicit retry succeeds', async () => {
+    const firstManager = manager({
+      destroy: jest
+        .fn()
+        .mockResolvedValueOnce({ state: 'release-failed', failures: [{ resourceKind: 'manager' }] })
+        .mockResolvedValueOnce({ state: 'released', failures: [] })
+    })
+    const secondManager = manager()
+    const firstCreateManager = jest.fn().mockResolvedValue(firstManager)
+    const secondCreateManager = jest.fn().mockResolvedValue(secondManager)
+    const onError = jest.fn()
+
+    BleProvider({ createManager: firstCreateManager, onError, children: null })
+    const firstCleanup = hookHarness.effects[0]()
+    await flush()
+
+    hookHarness.stateValues = []
+    hookHarness.reset()
+    BleProvider({ createManager: secondCreateManager, children: null })
+    const secondEffect = hookHarness.effects[0]
+
+    firstCleanup()
+    secondEffect()
+    await flush()
+    const replacementCallsBeforeRetry = secondCreateManager.mock.calls.length
+
+    firstCleanup()
+    await flush()
+
+    expect(replacementCallsBeforeRetry).toBe(0)
+    expect(firstManager.destroy).toHaveBeenCalledTimes(2)
+    expect(onError).toHaveBeenCalledWith(expect.objectContaining({ cleanup: expect.any(Object) }))
+    expect(secondCreateManager).toHaveBeenCalledTimes(1)
+  })
+
+  test('keeps a replacement blocked after rejected cleanup until an explicit retry succeeds', async () => {
+    const destructionError = new Error('destroy failed')
+    const firstManager = manager({
+      destroy: jest
+        .fn()
+        .mockRejectedValueOnce(destructionError)
+        .mockResolvedValueOnce({ state: 'released', failures: [] })
+    })
+    const secondManager = manager()
+    const firstCreateManager = jest.fn().mockResolvedValue(firstManager)
+    const secondCreateManager = jest.fn().mockResolvedValue(secondManager)
+    const onError = jest.fn()
+
+    BleProvider({ createManager: firstCreateManager, onError, children: null })
+    const firstCleanup = hookHarness.effects[0]()
+    await flush()
+
+    hookHarness.stateValues = []
+    hookHarness.reset()
+    BleProvider({ createManager: secondCreateManager, children: null })
+    const secondEffect = hookHarness.effects[0]
+
+    firstCleanup()
+    secondEffect()
+    await flush()
+    const replacementCallsBeforeRetry = secondCreateManager.mock.calls.length
+
+    firstCleanup()
+    await flush()
+
+    expect(replacementCallsBeforeRetry).toBe(0)
+    expect(firstManager.destroy).toHaveBeenCalledTimes(2)
+    expect(onError).toHaveBeenCalledWith(destructionError)
+    expect(secondCreateManager).toHaveBeenCalledTimes(1)
+  })
+
   test('destroys a manager that resolves after provider unmount and awaits destroy', async () => {
     const creation = deferred()
     const destruction = deferred()
