@@ -450,6 +450,77 @@ describe('Expo factory', () => {
     })
   })
 
+  test('rejects malformed permission results at the Expo boundary', async () => {
+    const manager = { adapter: { state: jest.fn().mockResolvedValue(adapterState()) } }
+    createReactNativeBleManagerWithEnvironment.mockResolvedValue(manager)
+    const permissionBridge = jest.fn().mockResolvedValue({
+      requested: ['bluetooth'],
+      granted: ['not-bluetooth'],
+      denied: [],
+      recommendedSettingsTarget: null
+    })
+    const result = await createExpoBleManagerWithEnvironment(
+      environment({ executionEnvironment: 'development-build', nativeModuleAvailable: true, permissionBridge })
+    )
+
+    await expect(result.permissions.request({ purpose: 'scan-and-connect' })).rejects.toMatchObject({
+      constructor: BleError,
+      code: 'protocol.malformed',
+      operation: 'expo.permissions.result'
+    })
+  })
+
+  test('rejects malformed background lease results at the Expo boundary', async () => {
+    const manager = { adapter: { state: jest.fn().mockResolvedValue(adapterState()) } }
+    createReactNativeBleManagerWithEnvironment.mockResolvedValue(manager)
+    const result = await createExpoBleManagerWithEnvironment(
+      environment(
+        { executionEnvironment: 'development-build', nativeModuleAvailable: true },
+        { acquireBackground: jest.fn().mockResolvedValue({ leaseId: '' }) }
+      )
+    )
+
+    await expect(result.background.acquire({ kind: 'connected-device', reason: 'active workout' })).rejects.toMatchObject({
+      constructor: BleError,
+      code: 'protocol.malformed',
+      operation: 'expo.background.acquire.result'
+    })
+  })
+
+  test('rejects malformed association and restoration results at the Expo boundary', async () => {
+    const manager = { adapter: { state: jest.fn().mockResolvedValue(adapterState()) } }
+    createReactNativeBleManagerWithEnvironment.mockResolvedValue(manager)
+    const result = await createExpoBleManagerWithEnvironment(
+      environment(
+        { executionEnvironment: 'development-build', nativeModuleAvailable: true },
+        {
+          associateCompanionDevice: jest.fn().mockResolvedValue({
+            source: 'associated',
+            associationId: 0,
+            peerId: null,
+            displayName: null
+          }),
+          claimRestoration: jest.fn().mockResolvedValue({
+            outcome: 'adopted',
+            replayRecordCount: 1,
+            records: []
+          })
+        }
+      )
+    )
+
+    await expect(result.association.associate()).rejects.toMatchObject({
+      constructor: BleError,
+      code: 'protocol.malformed',
+      operation: 'expo.association.result'
+    })
+    await expect(result.restoration.claim()).rejects.toMatchObject({
+      constructor: BleError,
+      code: 'protocol.malformed',
+      operation: 'expo.restoration.result'
+    })
+  })
+
   test('allows a failed native release to be retried without double-releasing a successful lease', async () => {
     const control = {
       acquireBackground: jest.fn().mockResolvedValue({ leaseId: 'background-1' }),

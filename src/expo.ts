@@ -319,8 +319,9 @@ async function requestExpoPermissions(
     )
   }
   try {
-    return await permissionBridge(request)
+    return parseExpoPermissionResult(await permissionBridge(request))
   } catch (error) {
+    if (isExpoBoundaryError(error, 'expo.permissions.result')) throw error
     throwExpoRuntimeError('platform.failure', 'expo.permissions.request', errorMessage(error))
   }
 }
@@ -339,10 +340,13 @@ async function acquireExpoBackground(
       'Connected-device background execution is unavailable until the native Expo service is configured and rebuilt.'
     )
   }
-  let result: import('./NativeUnifiedBleProtocolControl').NativeBackgroundLeaseResult
   try {
-    result = await control.acquireBackground({ kind: request.kind, reason: request.reason })
+    const result = parseNativeBackgroundLeaseResult(
+      await control.acquireBackground({ kind: request.kind, reason: request.reason })
+    )
+    return backgroundLease(control, result)
   } catch (error) {
+    if (isExpoBoundaryError(error, 'expo.background.acquire.result')) throw error
     const nativeCode = errorCode(error)
     throwExpoRuntimeError(
       normalizedBackgroundErrorCode(nativeCode),
@@ -351,6 +355,12 @@ async function acquireExpoBackground(
       nativeCode
     )
   }
+}
+
+function backgroundLease(
+  control: Pick<import('./NativeUnifiedBleProtocolControl').Spec, 'acquireBackground' | 'releaseBackground'>,
+  result: import('./NativeUnifiedBleProtocolControl').NativeBackgroundLeaseResult
+): ExpoBackgroundLease {
   let releasePromise: Promise<void> | undefined
   return Object.freeze({
     release: () => {
@@ -375,6 +385,9 @@ async function acquireExpoBackground(
 }
 
 async function openExpoSettings(target: ExpoSettingsTarget, settingsBridge?: ExpoSettingsBridge): Promise<void> {
+  if (!isExpoSettingsTarget(target)) {
+    throw rehydratePublicError(contractError('argument.invalid', 'capability', 'expo.open-settings.target'))
+  }
   if (settingsBridge === undefined) {
     throwExpoRuntimeError(
       'capability.unavailable',
@@ -415,8 +428,9 @@ async function associateExpoCompanionDevice(
     )
   }
   try {
-    return await control.associateCompanionDevice(request)
+    return parseExpoAssociationResult(await control.associateCompanionDevice(request))
   } catch (error) {
+    if (isExpoBoundaryError(error, 'expo.association.result')) throw error
     throwExpoRuntimeError('capability.unavailable', 'expo.association.associate', errorMessage(error), errorCode(error))
   }
 }
@@ -431,23 +445,18 @@ async function claimExpoRestoration(
       'Native restoration adoption is unavailable on this Expo host.'
     )
   }
-  let result: import('./NativeUnifiedBleProtocolControl').NativeRestorationAdoptionControlResult
   try {
-    result = await control.claimRestoration()
+    return parseExpoRestorationClaimResult(await control.claimRestoration())
   } catch (error) {
+    if (isExpoBoundaryError(error, 'expo.restoration.result') || isExpoBoundaryError(error, 'expo.restoration.native-outcome')) {
+      throw error
+    }
     throwExpoRuntimeError('capability.unavailable', 'expo.restoration.claim', errorMessage(error), errorCode(error))
   }
-  return Object.freeze({
-    outcome: restorationOutcome(result.outcome),
-    replayRecordCount: result.replayRecordCount,
-    records: Object.freeze(
-      result.records.map(record => Object.freeze({ kind: record.kind, ordinal: record.ordinal, peerId: record.peerId }))
-    )
-  })
 }
 
 function restorationOutcome(
-  outcome: import('./NativeUnifiedBleProtocolControl').NativeRestorationOutcome
+  outcome: unknown
 ): ExpoRestorationClaimResult['outcome'] {
   switch (outcome) {
     case 'alreadyConsumed':
@@ -465,6 +474,127 @@ function restorationOutcome(
     default:
       throw rehydratePublicError(contractError('protocol.malformed', 'restoration', 'expo.restoration.native-outcome'))
   }
+}
+
+function parseExpoPermissionResult(value: unknown): ExpoPermissionResult {
+  const result = expoRecord(value, 'expo.permissions.result')
+  const requested = expoPermissionList(result.requested, 'expo.permissions.result')
+  const granted = expoPermissionList(result.granted, 'expo.permissions.result')
+  const denied = expoPermissionList(result.denied, 'expo.permissions.result')
+  const recommendedSettingsTarget = result.recommendedSettingsTarget
+  if (recommendedSettingsTarget !== null && !isExpoSettingsTarget(recommendedSettingsTarget)) {
+    throwExpoMalformedResult('expo.permissions.result')
+  }
+  return Object.freeze({
+    requested: Object.freeze(requested),
+    granted: Object.freeze(granted),
+    denied: Object.freeze(denied),
+    recommendedSettingsTarget
+  })
+}
+
+function parseNativeBackgroundLeaseResult(
+  value: unknown
+): import('./NativeUnifiedBleProtocolControl').NativeBackgroundLeaseResult {
+  const result = expoRecord(value, 'expo.background.acquire.result')
+  if (!nonEmptyString(result.leaseId)) throwExpoMalformedResult('expo.background.acquire.result')
+  return Object.freeze({ leaseId: result.leaseId })
+}
+
+function parseExpoAssociationResult(value: unknown): ExpoCompanionAssociationResult {
+  const result = expoRecord(value, 'expo.association.result')
+  if (
+    result.source !== 'associated' ||
+    !isSafePositiveInteger(result.associationId) ||
+    !nullableString(result.peerId) ||
+    !nullableString(result.displayName)
+  ) {
+    throwExpoMalformedResult('expo.association.result')
+  }
+  return Object.freeze({
+    source: 'associated',
+    associationId: result.associationId,
+    peerId: result.peerId,
+    displayName: result.displayName
+  })
+}
+
+function parseExpoRestorationClaimResult(value: unknown): ExpoRestorationClaimResult {
+  const result = expoRecord(value, 'expo.restoration.result')
+  const outcome = restorationOutcome(result.outcome)
+  const replayRecordCount = result.replayRecordCount
+  if (!isSafeNonNegativeInteger(replayRecordCount) || !Array.isArray(result.records)) {
+    throwExpoMalformedResult('expo.restoration.result')
+  }
+  if (replayRecordCount !== result.records.length) throwExpoMalformedResult('expo.restoration.result')
+  const records = result.records.map(record => parseExpoRestoredRecord(record))
+  return Object.freeze({
+    outcome,
+    replayRecordCount,
+    records: Object.freeze(records)
+  })
+}
+
+function parseExpoRestoredRecord(value: unknown): ExpoRestoredRecord {
+  const record = expoRecord(value, 'expo.restoration.result')
+  if (
+    (record.kind !== 'adapter' && record.kind !== 'connection') ||
+    !isSafeNonNegativeInteger(record.ordinal) ||
+    !nullableString(record.peerId)
+  ) {
+    throwExpoMalformedResult('expo.restoration.result')
+  }
+  return Object.freeze({ kind: record.kind, ordinal: record.ordinal, peerId: record.peerId })
+}
+
+function expoPermissionList(value: unknown, operation: string): BlePermission[] {
+  if (!Array.isArray(value)) throwExpoMalformedResult(operation)
+  const permissions: BlePermission[] = []
+  for (const permission of value) {
+    if (permission !== 'bluetooth' || permissions.includes(permission)) throwExpoMalformedResult(operation)
+    permissions.push(permission)
+  }
+  return permissions
+}
+
+function expoRecord(value: unknown, operation: string): Record<string, unknown> {
+  if (!isRecord(value)) throwExpoMalformedResult(operation)
+  return value
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function nonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0
+}
+
+function nullableString(value: unknown): value is string | null {
+  return value === null || nonEmptyString(value)
+}
+
+function isSafeNonNegativeInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
+}
+
+function isSafePositiveInteger(value: unknown): value is number {
+  return isSafeNonNegativeInteger(value) && value > 0
+}
+
+function isExpoSettingsTarget(value: unknown): value is ExpoSettingsTarget {
+  return value === 'app' || value === 'bluetooth' || value === 'location-services'
+}
+
+function throwExpoMalformedResult(operation: string): never {
+  throw rehydratePublicError(contractError('protocol.malformed', 'capability', operation))
+}
+
+function isExpoBoundaryError(error: unknown, operation: string): boolean {
+  if (typeof error !== 'object' || error === null) return false
+  if ('operation' in error && typeof error.operation === 'string') return error.operation === operation
+  if (!('normalized' in error) || typeof error.normalized !== 'object' || error.normalized === null) return false
+  return 'operation' in error.normalized && error.normalized.operation === operation
 }
 
 function assertDirectExpoRuntime(): void {
