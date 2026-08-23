@@ -37,6 +37,7 @@ import type { AttachmentRecord } from '../backend-contract/identity'
 import type { PeerReference } from '../backend-contract/peer-reference'
 import { snapshotScanPlan } from '../backend-contract/scan-planning'
 import type { ScanPlan } from '../backend-contract/scan-planning'
+import { normalizeScanQuery } from '../public/scan-query'
 import { IpcBleClient } from './client'
 import { IPC_GATT_DATABASE_SCHEMA_VERSION } from './protocol'
 import type { IpcCapabilitySnapshotV2, IpcClientTransport } from './protocol'
@@ -205,7 +206,7 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
   }
 
   async scan(options: IpcScanOptions = {}): Promise<IpcScanSession> {
-    const query = options.query === undefined ? undefined : encodeIpcScanQuery(options.query)
+    const query = encodeIpcScanQuery(options.query ?? normalizeScanQuery())
     const manufacturerData = (options.manufacturerData ?? []).map(filter => ({
       companyId: filter.companyId,
       dataPrefix:
@@ -214,7 +215,7 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
     const payload = await this.route(
       'scan.start',
       Object.freeze({
-        ...(query === undefined ? {} : { query }),
+        query,
         serviceUuids: Object.freeze([...(options.serviceUuids ?? [])]),
         manufacturerData: Object.freeze(manufacturerData),
         localNamePrefix: options.localNamePrefix ?? null,

@@ -22,6 +22,7 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use crate::capabilities;
+use crate::scan_plan::{decode_normalized_scan_query, diagnostic_scan_plan};
 use crate::ATTACH_REQUEST_KIND;
 use crate::{AuthenticatedCaller, DispatchFuture, IpcDispatcher, IpcEventSink, IpcValue};
 
@@ -800,13 +801,21 @@ impl BtleplugDispatcher {
         caller: &AuthenticatedCaller,
         payload: BTreeMap<String, IpcValue>,
     ) -> Result<IpcValue, DispatchError> {
-        let service_uuids = optional_string_array(&payload, "serviceUuids", "tauri.scan-services")?
-            .into_iter()
-            .map(|value| parse_uuid(&value, "tauri.scan-services"))
+        let query_value = payload.get("query").ok_or_else(|| {
+            DispatchError::new("protocol.violation", "scan", "tauri.scan-query-required")
+        })?;
+        let decoded_query = decode_normalized_scan_query(query_value).map_err(|error| {
+            DispatchError::new("protocol.malformed", "scan", "tauri.scan-query").platform(error)
+        })?;
+        let service_uuids = decoded_query
+            .native_service_uuids
+            .iter()
+            .map(|value| parse_uuid(value, "tauri.scan-services"))
             .collect::<Result<Vec<_>, _>>()?;
-        let local_name_prefix =
-            optional_nullable_string(&payload, "localNamePrefix", "tauri.scan-name")?;
-        let manufacturer_filters = manufacturer_filters(&payload)?;
+        let local_name_prefix: Option<String> = None;
+        let manufacturer_filters: Vec<ManufacturerFilter> = Vec::new();
+        let diagnostic_plan = diagnostic_scan_plan(&decoded_query);
+        let attachment = self.ensure_adapter().await?;
         let adapter = self.adapter().await?;
         let key = caller_key(caller);
         let expected_lease_id = required_string(&payload, "__expectedLeaseId", "tauri.scan-lease")?;
@@ -1023,7 +1032,11 @@ impl BtleplugDispatcher {
             handle: handle.clone(),
             task,
         });
-        Ok(object([("handle", string(handle))]))
+        Ok(object([
+            ("handle", string(handle)),
+            ("backendGeneration", string(attachment.backend_generation)),
+            ("plan", diagnostic_plan),
+        ]))
     }
 
     async fn stop_scan(
@@ -3017,67 +3030,6 @@ struct ManufacturerFilter {
     data_prefix: Option<Vec<u8>>,
 }
 
-fn manufacturer_filters(
-    payload: &BTreeMap<String, IpcValue>,
-) -> Result<Vec<ManufacturerFilter>, DispatchError> {
-    let Some(value) = payload.get("manufacturerData") else {
-        return Ok(Vec::new());
-    };
-    let IpcValue::Array(filters) = value else {
-        return Err(DispatchError::new(
-            "scan.filter-invalid",
-            "scan",
-            "tauri.scan-manufacturer-filter",
-        ));
-    };
-    filters
-        .iter()
-        .map(|filter| {
-            let IpcValue::Object(filter) = filter else {
-                return Err(DispatchError::new(
-                    "scan.filter-invalid",
-                    "scan",
-                    "tauri.scan-manufacturer-filter",
-                ));
-            };
-            let company_id = match filter.get("companyId") {
-                Some(IpcValue::Number(value)) => value
-                    .as_u64()
-                    .and_then(|value| u16::try_from(value).ok())
-                    .ok_or_else(|| {
-                        DispatchError::new(
-                            "scan.filter-invalid",
-                            "scan",
-                            "tauri.scan-manufacturer-company",
-                        )
-                    })?,
-                _ => {
-                    return Err(DispatchError::new(
-                        "scan.filter-invalid",
-                        "scan",
-                        "tauri.scan-manufacturer-company",
-                    ))
-                }
-            };
-            let data_prefix = match filter.get("dataPrefix") {
-                None | Some(IpcValue::Null) => None,
-                Some(IpcValue::Bytes(bytes)) => Some(bytes.clone()),
-                _ => {
-                    return Err(DispatchError::new(
-                        "scan.filter-invalid",
-                        "scan",
-                        "tauri.scan-manufacturer-prefix",
-                    ))
-                }
-            };
-            Ok(ManufacturerFilter {
-                company_id,
-                data_prefix,
-            })
-        })
-        .collect()
-}
-
 fn attachment_record(attachment: &Attachment) -> IpcValue {
     object([
         ("attachmentId", string(attachment.attachment_id.clone())),
@@ -3709,41 +3661,6 @@ fn required_string(
 ) -> Result<String, DispatchError> {
     match object.get(key) {
         Some(IpcValue::String(value)) if !value.is_empty() => Ok(value.clone()),
-        _ => Err(DispatchError::new("protocol.malformed", "ipc", operation)),
-    }
-}
-
-fn optional_string_array(
-    object: &BTreeMap<String, IpcValue>,
-    key: &str,
-    operation: impl Into<String>,
-) -> Result<Vec<String>, DispatchError> {
-    let operation = operation.into();
-    match object.get(key) {
-        None => Ok(Vec::new()),
-        Some(IpcValue::Array(values)) => values
-            .iter()
-            .map(|value| match value {
-                IpcValue::String(value) => Ok(value.clone()),
-                _ => Err(DispatchError::new(
-                    "protocol.malformed",
-                    "ipc",
-                    operation.clone(),
-                )),
-            })
-            .collect(),
-        _ => Err(DispatchError::new("protocol.malformed", "ipc", operation)),
-    }
-}
-
-fn optional_nullable_string(
-    object: &BTreeMap<String, IpcValue>,
-    key: &str,
-    operation: impl Into<String>,
-) -> Result<Option<String>, DispatchError> {
-    match object.get(key) {
-        None | Some(IpcValue::Null) => Ok(None),
-        Some(IpcValue::String(value)) => Ok(Some(value.clone())),
         _ => Err(DispatchError::new("protocol.malformed", "ipc", operation)),
     }
 }

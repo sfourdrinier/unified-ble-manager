@@ -121,6 +121,7 @@ export class TauriBleIpcTransport<Attachment extends string, Client extends stri
     request: IpcBleRequest<Attachment, Client, Operation>
   ): IpcBleRequest<Attachment, Client, Operation> {
     if (request.kind !== 'route' || request.envelope.command !== 'scan.start') return request
+    if ('query' in request.envelope.payload) return request
     if (this.trustedScanQuery === null) {
       throw contractError('protocol.violation', 'scan', 'tauri.transport.trusted-query-required')
     }
