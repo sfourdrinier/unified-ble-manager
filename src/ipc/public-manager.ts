@@ -78,6 +78,7 @@ import {
 } from './manager'
 
 export interface IpcPublicManagerOptions {
+  readonly requireScanPlan?: boolean
   readonly discoveryKind?: BleManager['discovery']['kind']
   readonly capabilities?: BleCapabilities
   readonly adapter?: BleAdapter
@@ -92,11 +93,13 @@ export class IpcPublicManagerAdapter implements BleManager {
   readonly peers: BlePeerDirectory
   readonly security: BleSecurity
   readonly discovery: BleManager['discovery']
+  private readonly requireScanPlan: boolean
 
   constructor(
     private readonly ipc: IpcBleManager,
     options: IpcPublicManagerOptions = {}
   ) {
+    this.requireScanPlan = options.requireScanPlan ?? false
     this.capabilities = options.capabilities ?? ipc.capabilities
     this.adapter = options.adapter ?? createIpcAdapter(ipc)
     this.diagnostics = options.diagnostics ?? diagnosticsUnavailable()
@@ -110,17 +113,24 @@ export class IpcPublicManagerAdapter implements BleManager {
   async scan(options: ScanOptions = {}): Promise<ScanSession> {
     try {
       assertPublicScanOptions(options)
+      if (options.observation?.reportLostAfterMs !== undefined) {
+        throw contractError('capability.unavailable', 'scan', 'ipc-public-manager.scan.report-lost-after')
+      }
+      if (options.platform !== undefined) {
+        throw contractError('capability.unsupported', 'scan', 'ipc-public-manager.scan.platform-options')
+      }
       const normalized = normalizeOperationOptions(options, () => globalThis.performance.now())
-      const session = await this.ipc.scan(toIpcScanOptions(options, normalized.signal))
+      const normalizedQuery = normalizeScanQuery(options.query)
+      const session = await this.ipc.scan(toIpcScanOptions(options, normalized.signal, normalizedQuery))
+      if (this.requireScanPlan && session.plan === null) {
+        await session.stop().catch(() => undefined)
+        throw contractError('protocol.malformed', 'ipc', 'ipc-public-manager.scan-plan')
+      }
       const state = createScanState()
       state.emit({ state: 'active' })
       return new IpcPublicScanSession(
         session,
-        filterScanObservations(
-          session.observations,
-          normalizeScanQuery(options.query),
-          options.duplicates ?? 'coalesced'
-        ),
+        filterScanObservations(session.observations, normalizedQuery, options.duplicates ?? 'coalesced'),
         state,
         options
       )
@@ -229,6 +239,7 @@ export class IpcPublicManagerAdapter implements BleManager {
 }
 
 class IpcPublicScanSession implements ScanSession {
+  readonly plan: import('../backend-contract/scan-planning').ScanPlan | null
   private stopPromise: Promise<CleanupRecord> | null = null
   private readonly timeoutHandle: ReturnType<typeof setTimeout> | null
   private readonly abortSignal: AbortSignal | null
@@ -240,6 +251,7 @@ class IpcPublicScanSession implements ScanSession {
     private readonly scanState: ScanStateController,
     options: ScanOptions
   ) {
+    this.plan = inner.plan
     const stopAutomatically = () => {
       this.stop().catch(() => undefined)
     }
@@ -621,9 +633,14 @@ function toPortableNotificationStream(
   }
 }
 
-function toIpcScanOptions(options: ScanOptions, signal: AbortSignal | null) {
+function toIpcScanOptions(
+  options: ScanOptions,
+  signal: AbortSignal | null,
+  query: import('../backend-contract/scan-query').NormalizedScanQuery
+) {
   const delivery = resolveStreamPolicy(options.delivery ?? 'balanced')
   return {
+    query,
     signal: signal ?? undefined,
     timeoutMs: options.timeoutMs,
     stream: {

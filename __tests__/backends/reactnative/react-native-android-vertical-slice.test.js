@@ -3,6 +3,7 @@
 const { capacity, opaqueId, version, versionRange } = require('../../../src/backend-contract/primitives')
 const { BUILT_IN_FEATURE_IDS } = require('../../../src/backend-contract/capabilities')
 const { contractError } = require('../../../src/backend-contract/errors')
+const { normalizeScanQuery } = require('../../../src/public/scan-query')
 const { createBleManagerFromProvider, DEFAULT_BLE_MANAGER_OPTIONS } = require('../../../src/manager/ble-manager')
 const {
   createReactNativeAndroidBackendProvider,
@@ -18,6 +19,14 @@ const {
   createReactNativeAppleFirstPartyTckRegistration
 } = require('../../../src/tck/first-party/react-native-tck-registration')
 const { runBackendTck } = require('../../../src/tck/runner')
+const {
+  planReactNativeAndroidScan,
+  planReactNativeAppleScan,
+  diagnosticReactNativeAndroidScanPlan,
+  diagnosticReactNativeAppleScanPlan,
+  reactNativeAndroidScanPlanningContext,
+  reactNativeAppleScanPlanningContext
+} = require('../../../src/backends/reactnative/react-native-scan-planner')
 
 const serviceUuid = '0000180d-0000-1000-8000-00805f9b34fb'
 const characteristicUuid = '00002a37-0000-1000-8000-00805f9b34fb'
@@ -91,6 +100,90 @@ describe('React Native Android canonical protocol vertical slice', () => {
     } else {
       global.__unifiedBleNativeProtocolV2 = previousRuntime
     }
+  })
+
+  test.each([
+    {
+      name: 'Android',
+      createProvider: createReactNativeAndroidBackendProvider,
+      adapterId: 'android-default-adapter',
+      ownerId: 'deterministic-react-native-android-scan-planner',
+      execution: planReactNativeAndroidScan,
+      plan: diagnosticReactNativeAndroidScanPlan,
+      context: reactNativeAndroidScanPlanningContext
+    },
+    {
+      name: 'Apple',
+      createProvider: createReactNativeAppleBackendProvider,
+      adapterId: 'apple-corebluetooth-default-adapter',
+      ownerId: 'deterministic-react-native-apple-scan-planner',
+      execution: planReactNativeAppleScan,
+      plan: diagnosticReactNativeAppleScanPlan,
+      context: reactNativeAppleScanPlanningContext
+    }
+  ])('$name provider wires its truthful native scan planner and retains the complete residual', async fixture => {
+    const control = new DeterministicAndroidControl()
+    const runtime = new DeterministicAndroidProtocolRuntime(control)
+    global.__unifiedBleNativeProtocolV2 = runtime
+    const provider = fixture.createProvider({ control, now: () => 20, createOwnerId: () => fixture.ownerId })
+    const backend = await provider.create({ selectedAdapterId: fixture.adapterId })
+    const query = normalizeScanQuery({
+      anyOf: [
+        {
+          services: { all: [serviceUuid] },
+          names: { prefixes: ['Polar'] },
+          manufacturerData: { any: [{ companyId: 76, dataPrefix: new Uint8Array([1]) }] },
+          serviceData: { any: [{ service: serviceUuid, dataPrefix: new Uint8Array([2]) }] },
+          rssi: { minimum: -70 },
+          connectable: true,
+          peers: [{ version: 1, backendId: fixture.name.toLowerCase(), scope: 'system', opaqueId: 'peer-1' }]
+        }
+      ]
+    })
+
+    expect(backend.scanner.plan).toBe(fixture.plan)
+    expect(fixture.context).toEqual({
+      backendId: fixture.name === 'Android' ? 'unified-ble:react-native-android' : 'unified-ble:react-native-apple',
+      platformId: fixture.name === 'Android' ? 'unified-ble:android-gatt' : 'unified-ble:apple-corebluetooth',
+      availableObservationFields: [
+        'localName',
+        'rssi',
+        'connectable',
+        'serviceUuids',
+        'manufacturerData',
+        'serviceData'
+      ]
+    })
+    expect(backend.scanner.plan(query)).toMatchObject({
+      nativeGuarantee: 'safe-superset',
+      native: {
+        predicates: [{ clauseSet: 'anyOf', clauseIndex: 0, field: 'services', operator: 'all' }],
+        complete: false
+      },
+      residual: { query, complete: true },
+      unavailable: [{ clauseSet: 'anyOf', clauseIndex: 0, field: 'peers', operator: 'equals' }]
+    })
+    const broadExecution = fixture.execution(
+      normalizeScanQuery({
+        anyOf: [
+          {
+            names: { prefixes: ['Polar'] },
+            peers: [{ version: 1, backendId: fixture.name.toLowerCase(), scope: 'system', opaqueId: 'peer-1' }]
+          }
+        ]
+      })
+    )
+    expect(broadExecution.nativeFilter).toEqual({
+      serviceUuids: [],
+      manufacturerData: [],
+      localNamePrefix: null
+    })
+    expect(broadExecution.native.predicates).toEqual([])
+    expect(broadExecution.residual.complete).toBe(true)
+    expect(broadExecution.unavailable).toEqual([
+      { clauseSet: 'anyOf', clauseIndex: 0, field: 'peers', operator: 'equals' }
+    ])
+    await expect(backend.destroy()).resolves.toMatchObject({ state: 'released', failures: [] })
   })
 
   test('opens the public provider with native-reported state and runs scan, connect, discovery, bytes, notify, and cleanup', async () => {
@@ -278,7 +371,9 @@ describe('React Native Android canonical protocol vertical slice', () => {
     })
     const controller = new AbortController()
     controller.abort()
-    await expect(connection.requestPriority('low-power', { signal: controller.signal, deadline: null })).rejects.toMatchObject({
+    await expect(
+      connection.requestPriority('low-power', { signal: controller.signal, deadline: null })
+    ).rejects.toMatchObject({
       normalized: { code: 'operation.aborted' }
     })
     expect(runtime.commandKinds.filter(kind => kind === 'requestPriority')).toHaveLength(1)
@@ -711,7 +806,9 @@ describe('React Native Android canonical protocol vertical slice', () => {
     )
     expectConsoleErrorMatching(
       '[ReactNativeAndroidProtocolBoundary.receiveRecord] Native record was rejected:',
-      expect.objectContaining({ normalized: expect.objectContaining({ operation: 'rn-android-boundary.advertisement' }) })
+      expect.objectContaining({
+        normalized: expect.objectContaining({ operation: 'rn-android-boundary.advertisement' })
+      })
     )
 
     runtime.emitDiagnostic('scanFailed', 'Android scanner rejected its active scan')
@@ -719,7 +816,10 @@ describe('React Native Android canonical protocol vertical slice', () => {
       done: false,
       value: { kind: 'terminal', reason: 'source-failed' }
     })
-    expectConsoleError('[CoreBluetoothBackend.handleScanFailure] Native scan failed:', 'Android scanner rejected its active scan')
+    expectConsoleError(
+      '[CoreBluetoothBackend.handleScanFailure] Native scan failed:',
+      'Android scanner rejected its active scan'
+    )
     await scan.stop()
 
     const restartedScan = await manager.scan(scanOptions())
@@ -749,7 +849,10 @@ describe('React Native Android canonical protocol vertical slice', () => {
       done: false,
       value: { kind: 'terminal', reason: 'connection-lost' }
     })
-    expectConsoleError('[CoreBluetoothBackend.handleDisconnect] Native link loss:', 'Android GATT connection lost with status 133')
+    expectConsoleError(
+      '[CoreBluetoothBackend.handleDisconnect] Native link loss:',
+      'Android GATT connection lost with status 133'
+    )
     await connection.release()
 
     const reconnected = await manager.connect(restartedObservation.value.value.device.id, operation())
@@ -809,16 +912,16 @@ describe('React Native Android canonical protocol vertical slice', () => {
     expect(openFailure.errors).toHaveLength(2)
     expect(openFailure.errors[0]).toMatchObject({
       normalized: {
-          code: 'stream.overflow',
-          operation: 'rn-android-boundary.open.pre-js-event-buffer'
+        code: 'stream.overflow',
+        operation: 'rn-android-boundary.open.pre-js-event-buffer'
       }
     })
     expect(openFailure.errors[1]).toMatchObject({ message: 'Native attachment close failed' })
 
-    expectConsoleErrorMatching(
-      '[ReactNativeAndroidProtocolBoundary.receiveEvent] Native event buffer overflowed:',
-      { operation: 'pre-js-event-buffer', safeMessage: nativeOverflowMessage }
-    )
+    expectConsoleErrorMatching('[ReactNativeAndroidProtocolBoundary.receiveEvent] Native event buffer overflowed:', {
+      operation: 'pre-js-event-buffer',
+      safeMessage: nativeOverflowMessage
+    })
     expectConsoleErrorMatching(
       '[ReactNativeAndroidProtocolBoundary.open] Handshake-open cleanup failed:',
       expect.objectContaining({ message: 'Native attachment close failed' })
@@ -861,196 +964,208 @@ describe('React Native Android canonical protocol vertical slice', () => {
   test.each([
     ['Android', createReactNativeAndroidBackendProvider, 'deterministic-react-native-android-probe-cleanup'],
     ['Apple', createReactNativeAppleBackendProvider, 'deterministic-react-native-apple-probe-cleanup']
-  ])('%s provider rejects adapter enumeration and retains cleanup retry ownership after release-failed destroy', async (
-    _name,
-    createProvider,
-    ownerId
-  ) => {
-    const control = new DeterministicAndroidControl()
-    const runtime = new DeterministicAndroidProtocolRuntime(control)
-    runtime.destroyFailuresRemaining = 1
-    global.__unifiedBleNativeProtocolV2 = runtime
-    const provider = createProvider({ control, now: () => 20, createOwnerId: () => ownerId })
+  ])(
+    '%s provider rejects adapter enumeration and retains cleanup retry ownership after release-failed destroy',
+    async (_name, createProvider, ownerId) => {
+      const control = new DeterministicAndroidControl()
+      const runtime = new DeterministicAndroidProtocolRuntime(control)
+      runtime.destroyFailuresRemaining = 1
+      global.__unifiedBleNativeProtocolV2 = runtime
+      const provider = createProvider({ control, now: () => 20, createOwnerId: () => ownerId })
 
-    const failure = await rejectedError(() => provider.listAdapters())
-    expectConsoleErrorMatching(
-      '[ReactNativeAndroidProtocolBoundary.destroy] Native protocol destroy failed:',
-      expect.objectContaining({ normalized: expect.objectContaining({ operation: 'rn-android-boundary.destroy' }) })
-    )
-    expectConsoleErrorMatching(
-      '[releaseReactNativeProviderResource] Provider cleanup did not complete:',
-      expect.objectContaining({ platform: _name.toLowerCase(), cleanup: expect.objectContaining({ state: 'release-failed' }) })
-    )
+      const failure = await rejectedError(() => provider.listAdapters())
+      expectConsoleErrorMatching(
+        '[ReactNativeAndroidProtocolBoundary.destroy] Native protocol destroy failed:',
+        expect.objectContaining({ normalized: expect.objectContaining({ operation: 'rn-android-boundary.destroy' }) })
+      )
+      expectConsoleErrorMatching(
+        '[releaseReactNativeProviderResource] Provider cleanup did not complete:',
+        expect.objectContaining({
+          platform: _name.toLowerCase(),
+          cleanup: expect.objectContaining({ state: 'release-failed' })
+        })
+      )
 
-    expectCleanupRetryFailure(failure, 'release-failed')
-    expect(runtime.commandKinds.filter(kind => kind === 'destroy')).toHaveLength(1)
-    expect(control.closedAttachments).toHaveLength(0)
+      expectCleanupRetryFailure(failure, 'release-failed')
+      expect(runtime.commandKinds.filter(kind => kind === 'destroy')).toHaveLength(1)
+      expect(control.closedAttachments).toHaveLength(0)
 
-    await expect(failure.retryCleanup()).resolves.toBeUndefined()
-    expect(runtime.commandKinds.filter(kind => kind === 'destroy')).toHaveLength(2)
-    expect(control.closedAttachments).toHaveLength(1)
-  })
+      await expect(failure.retryCleanup()).resolves.toBeUndefined()
+      expect(runtime.commandKinds.filter(kind => kind === 'destroy')).toHaveLength(2)
+      expect(control.closedAttachments).toHaveLength(1)
+    }
+  )
 
   test.each([
     ['Android', createReactNativeAndroidBackendProvider, 'deterministic-react-native-android-malformed-cleanup'],
     ['Apple', createReactNativeAppleBackendProvider, 'deterministic-react-native-apple-malformed-cleanup']
-  ])('%s provider retries a released cleanup record that still reports failures', async (_name, createProvider, ownerId) => {
-    const control = new DeterministicAndroidControl()
-    const runtime = new DeterministicAndroidProtocolRuntime(control)
-    global.__unifiedBleNativeProtocolV2 = runtime
-    const malformedCleanup = {
-      state: 'released',
-      failures: [
-        {
-          resourceKind: 'native-backend',
-          error: contractError('platform.failure', 'cleanup', 'deterministic.malformed-cleanup').normalized
-        }
-      ]
+  ])(
+    '%s provider retries a released cleanup record that still reports failures',
+    async (_name, createProvider, ownerId) => {
+      const control = new DeterministicAndroidControl()
+      const runtime = new DeterministicAndroidProtocolRuntime(control)
+      global.__unifiedBleNativeProtocolV2 = runtime
+      const malformedCleanup = {
+        state: 'released',
+        failures: [
+          {
+            resourceKind: 'native-backend',
+            error: contractError('platform.failure', 'cleanup', 'deterministic.malformed-cleanup').normalized
+          }
+        ]
+      }
+      const destroySpy = jest.spyOn(CoreBluetoothBackend.prototype, 'destroy').mockResolvedValueOnce(malformedCleanup)
+      const provider = createProvider({ control, now: () => 20, createOwnerId: () => ownerId })
+
+      let failure
+      try {
+        failure = await rejectedError(() => provider.listAdapters())
+      } finally {
+        destroySpy.mockRestore()
+      }
+      expectConsoleErrorMatching(
+        '[releaseReactNativeProviderResource] Provider cleanup did not complete:',
+        expect.objectContaining({
+          platform: _name.toLowerCase(),
+          cleanup: expect.objectContaining({ state: 'released' })
+        })
+      )
+
+      expectCleanupRetryFailure(failure, 'released-with-failures')
+      expect(runtime.commandKinds.filter(kind => kind === 'destroy')).toHaveLength(0)
+      expect(control.closedAttachments).toHaveLength(0)
+
+      await expect(failure.retryCleanup()).resolves.toBeUndefined()
+      expect(runtime.commandKinds.filter(kind => kind === 'destroy')).toHaveLength(1)
+      expect(control.closedAttachments).toHaveLength(1)
     }
-    const destroySpy = jest.spyOn(CoreBluetoothBackend.prototype, 'destroy').mockResolvedValueOnce(malformedCleanup)
-    const provider = createProvider({ control, now: () => 20, createOwnerId: () => ownerId })
-
-    let failure
-    try {
-      failure = await rejectedError(() => provider.listAdapters())
-    } finally {
-      destroySpy.mockRestore()
-    }
-    expectConsoleErrorMatching(
-      '[releaseReactNativeProviderResource] Provider cleanup did not complete:',
-      expect.objectContaining({ platform: _name.toLowerCase(), cleanup: expect.objectContaining({ state: 'released' }) })
-    )
-
-    expectCleanupRetryFailure(failure, 'released-with-failures')
-    expect(runtime.commandKinds.filter(kind => kind === 'destroy')).toHaveLength(0)
-    expect(control.closedAttachments).toHaveLength(0)
-
-    await expect(failure.retryCleanup()).resolves.toBeUndefined()
-    expect(runtime.commandKinds.filter(kind => kind === 'destroy')).toHaveLength(1)
-    expect(control.closedAttachments).toHaveLength(1)
-  })
+  )
 
   test.each([
     ['Android', createReactNativeAndroidBackendProvider, 'deterministic-react-native-android-probe-rejection'],
     ['Apple', createReactNativeAppleBackendProvider, 'deterministic-react-native-apple-probe-rejection']
-  ])('%s provider rejects adapter enumeration and retains cleanup retry ownership after destroy rejection', async (
-    _name,
-    createProvider,
-    ownerId
-  ) => {
-    const control = new DeterministicAndroidControl()
-    const runtime = new DeterministicAndroidProtocolRuntime(control)
-    const cleanupRejection = new Error('deterministic provider probe cleanup rejected')
-    global.__unifiedBleNativeProtocolV2 = runtime
-    const destroySpy = jest
-      .spyOn(CoreBluetoothBackend.prototype, 'destroy')
-      .mockImplementationOnce(() => Promise.reject(cleanupRejection))
-    const provider = createProvider({ control, now: () => 20, createOwnerId: () => ownerId })
+  ])(
+    '%s provider rejects adapter enumeration and retains cleanup retry ownership after destroy rejection',
+    async (_name, createProvider, ownerId) => {
+      const control = new DeterministicAndroidControl()
+      const runtime = new DeterministicAndroidProtocolRuntime(control)
+      const cleanupRejection = new Error('deterministic provider probe cleanup rejected')
+      global.__unifiedBleNativeProtocolV2 = runtime
+      const destroySpy = jest
+        .spyOn(CoreBluetoothBackend.prototype, 'destroy')
+        .mockImplementationOnce(() => Promise.reject(cleanupRejection))
+      const provider = createProvider({ control, now: () => 20, createOwnerId: () => ownerId })
 
-    let failure
-    try {
-      failure = await rejectedError(() => provider.listAdapters())
-    } finally {
-      destroySpy.mockRestore()
+      let failure
+      try {
+        failure = await rejectedError(() => provider.listAdapters())
+      } finally {
+        destroySpy.mockRestore()
+      }
+      expectConsoleErrorMatching(
+        '[releaseReactNativeProviderResource] Provider cleanup rejected:',
+        expect.objectContaining({ platform: _name.toLowerCase(), error: cleanupRejection })
+      )
+
+      expectCleanupRetryFailure(failure, 'rejected')
+      expect(failure.cleanup).toBe(cleanupRejection)
+      expect(control.closedAttachments).toHaveLength(0)
+
+      await expect(failure.retryCleanup()).resolves.toBeUndefined()
+      expect(control.closedAttachments).toHaveLength(1)
     }
-    expectConsoleErrorMatching(
-      '[releaseReactNativeProviderResource] Provider cleanup rejected:',
-      expect.objectContaining({ platform: _name.toLowerCase(), error: cleanupRejection })
-    )
-
-    expectCleanupRetryFailure(failure, 'rejected')
-    expect(failure.cleanup).toBe(cleanupRejection)
-    expect(control.closedAttachments).toHaveLength(0)
-
-    await expect(failure.retryCleanup()).resolves.toBeUndefined()
-    expect(control.closedAttachments).toHaveLength(1)
-  })
+  )
 
   test.each([
     ['Android', createReactNativeAndroidBackendProvider, 'deterministic-react-native-android-open-cleanup'],
     ['Apple', createReactNativeAppleBackendProvider, 'deterministic-react-native-apple-open-cleanup']
-  ])('%s provider aggregates initialization and retained release-failed cleanup errors', async (
-    _name,
-    createProvider,
-    ownerId
-  ) => {
-    const initializationFailure = new Error('deterministic provider initialization failed')
-    const control = new DeterministicAndroidControl(initializationFailure, 2)
-    const runtime = new DeterministicAndroidProtocolRuntime(control)
-    global.__unifiedBleNativeProtocolV2 = runtime
-    const provider = createProvider({ control, now: () => 20, createOwnerId: () => ownerId })
+  ])(
+    '%s provider aggregates initialization and retained release-failed cleanup errors',
+    async (_name, createProvider, ownerId) => {
+      const initializationFailure = new Error('deterministic provider initialization failed')
+      const control = new DeterministicAndroidControl(initializationFailure, 2)
+      const runtime = new DeterministicAndroidProtocolRuntime(control)
+      global.__unifiedBleNativeProtocolV2 = runtime
+      const provider = createProvider({ control, now: () => 20, createOwnerId: () => ownerId })
 
-    const failure = await rejectedError(() => provider.listAdapters())
-    expectConsoleErrorMatching(
-      '[ReactNativeAndroidProtocolBoundary.open] Handshake-open cleanup failed:',
-      expect.objectContaining({ message: 'Native attachment close failed' })
-    )
-    expectConsoleErrorMatching(
-      '[ReactNativeAndroidProtocolBoundary.destroy] Native attachment close failed:',
-      expect.objectContaining({ message: 'Native attachment close failed' })
-    )
-    expectConsoleErrorMatching(
-      '[releaseReactNativeProviderResource] Provider cleanup did not complete:',
-      expect.objectContaining({ platform: _name.toLowerCase(), cleanup: expect.objectContaining({ state: 'release-failed' }) })
-    )
+      const failure = await rejectedError(() => provider.listAdapters())
+      expectConsoleErrorMatching(
+        '[ReactNativeAndroidProtocolBoundary.open] Handshake-open cleanup failed:',
+        expect.objectContaining({ message: 'Native attachment close failed' })
+      )
+      expectConsoleErrorMatching(
+        '[ReactNativeAndroidProtocolBoundary.destroy] Native attachment close failed:',
+        expect.objectContaining({ message: 'Native attachment close failed' })
+      )
+      expectConsoleErrorMatching(
+        '[releaseReactNativeProviderResource] Provider cleanup did not complete:',
+        expect.objectContaining({
+          platform: _name.toLowerCase(),
+          cleanup: expect.objectContaining({ state: 'release-failed' })
+        })
+      )
 
-    expect(failure).toBeInstanceOf(AggregateError)
-    expect(failure.errors).toHaveLength(2)
-    const openFailure = failure.errors[0]
-    expect(openFailure).toBeInstanceOf(AggregateError)
-    expect(openFailure.errors).toEqual([
-      initializationFailure,
-      expect.objectContaining({ message: 'Native attachment close failed' })
-    ])
-    const cleanupFailure = failure.errors[1]
-    expectCleanupRetryFailure(cleanupFailure, 'release-failed')
-    expect(control.closedAttachments).toHaveLength(0)
+      expect(failure).toBeInstanceOf(AggregateError)
+      expect(failure.errors).toHaveLength(2)
+      const openFailure = failure.errors[0]
+      expect(openFailure).toBeInstanceOf(AggregateError)
+      expect(openFailure.errors).toEqual([
+        initializationFailure,
+        expect.objectContaining({ message: 'Native attachment close failed' })
+      ])
+      const cleanupFailure = failure.errors[1]
+      expectCleanupRetryFailure(cleanupFailure, 'release-failed')
+      expect(control.closedAttachments).toHaveLength(0)
 
-    await expect(cleanupFailure.retryCleanup()).resolves.toBeUndefined()
-    expect(control.closedAttachments).toHaveLength(1)
-  })
+      await expect(cleanupFailure.retryCleanup()).resolves.toBeUndefined()
+      expect(control.closedAttachments).toHaveLength(1)
+    }
+  )
 
   test.each([
     ['Android', createReactNativeAndroidBackendProvider, 'deterministic-react-native-android-open-rejection'],
     ['Apple', createReactNativeAppleBackendProvider, 'deterministic-react-native-apple-open-rejection']
-  ])('%s provider aggregates initialization and retained rejected cleanup errors', async (_name, createProvider, ownerId) => {
-    const initializationFailure = new Error('deterministic provider initialization failed')
-    const cleanupRejection = new Error('deterministic provider setup cleanup rejected')
-    const control = new DeterministicAndroidControl()
-    const runtime = new DeterministicAndroidProtocolRuntime(control)
-    global.__unifiedBleNativeProtocolV2 = runtime
-    const refreshSpy = jest
-      .spyOn(CoreBluetoothBackend.prototype, 'refreshAttachmentState')
-      .mockImplementationOnce(() => {
-        throw initializationFailure
-      })
-    const destroySpy = jest
-      .spyOn(CoreBluetoothBackend.prototype, 'destroy')
-      .mockImplementationOnce(() => Promise.reject(cleanupRejection))
-    const provider = createProvider({ control, now: () => 20, createOwnerId: () => ownerId })
+  ])(
+    '%s provider aggregates initialization and retained rejected cleanup errors',
+    async (_name, createProvider, ownerId) => {
+      const initializationFailure = new Error('deterministic provider initialization failed')
+      const cleanupRejection = new Error('deterministic provider setup cleanup rejected')
+      const control = new DeterministicAndroidControl()
+      const runtime = new DeterministicAndroidProtocolRuntime(control)
+      global.__unifiedBleNativeProtocolV2 = runtime
+      const refreshSpy = jest
+        .spyOn(CoreBluetoothBackend.prototype, 'refreshAttachmentState')
+        .mockImplementationOnce(() => {
+          throw initializationFailure
+        })
+      const destroySpy = jest
+        .spyOn(CoreBluetoothBackend.prototype, 'destroy')
+        .mockImplementationOnce(() => Promise.reject(cleanupRejection))
+      const provider = createProvider({ control, now: () => 20, createOwnerId: () => ownerId })
 
-    let failure
-    try {
-      failure = await rejectedError(() => provider.listAdapters())
-    } finally {
-      destroySpy.mockRestore()
-      refreshSpy.mockRestore()
+      let failure
+      try {
+        failure = await rejectedError(() => provider.listAdapters())
+      } finally {
+        destroySpy.mockRestore()
+        refreshSpy.mockRestore()
+      }
+      expectConsoleErrorMatching(
+        '[releaseReactNativeProviderResource] Provider cleanup rejected:',
+        expect.objectContaining({ platform: _name.toLowerCase(), error: cleanupRejection })
+      )
+
+      expect(failure).toBeInstanceOf(AggregateError)
+      expect(failure.errors).toEqual([initializationFailure, expect.any(Error)])
+      const cleanupFailure = failure.errors[1]
+      expectCleanupRetryFailure(cleanupFailure, 'rejected')
+      expect(cleanupFailure.cleanup).toBe(cleanupRejection)
+      expect(control.closedAttachments).toHaveLength(0)
+
+      await expect(cleanupFailure.retryCleanup()).resolves.toBeUndefined()
+      expect(control.closedAttachments).toHaveLength(1)
     }
-    expectConsoleErrorMatching(
-      '[releaseReactNativeProviderResource] Provider cleanup rejected:',
-      expect.objectContaining({ platform: _name.toLowerCase(), error: cleanupRejection })
-    )
-
-    expect(failure).toBeInstanceOf(AggregateError)
-    expect(failure.errors).toEqual([initializationFailure, expect.any(Error)])
-    const cleanupFailure = failure.errors[1]
-    expectCleanupRetryFailure(cleanupFailure, 'rejected')
-    expect(cleanupFailure.cleanup).toBe(cleanupRejection)
-    expect(control.closedAttachments).toHaveLength(0)
-
-    await expect(cleanupFailure.retryCleanup()).resolves.toBeUndefined()
-    expect(control.closedAttachments).toHaveLength(1)
-  })
+  )
 
   test.each([
     ['Android', ReactNativeAndroidProtocolBoundary],
@@ -1263,7 +1378,9 @@ describe('React Native first-party standard TCK registrations', () => {
       ])
     )
     expect(registration.capabilityExclusions).toEqual(
-      expect.arrayContaining([expect.objectContaining({ featureId: 'state:restoration-adoption', state: 'unsupported' })])
+      expect.arrayContaining([
+        expect.objectContaining({ featureId: 'state:restoration-adoption', state: 'unsupported' })
+      ])
     )
   })
 
@@ -1596,11 +1713,7 @@ class DeterministicAndroidProtocolRuntime {
       return
     }
     if (kind === 'readMtu') {
-      this.emitResult(
-        command,
-        'mtu',
-        this.effectiveMtu === null ? [] : [field(22, this.effectiveMtu)]
-      )
+      this.emitResult(command, 'mtu', this.effectiveMtu === null ? [] : [field(22, this.effectiveMtu)])
       return
     }
     if (kind === 'requestPriority') {
@@ -1617,9 +1730,7 @@ class DeterministicAndroidProtocolRuntime {
       this.emitResult(
         command,
         'phy',
-        this.phyAccepted
-          ? [field(19, 'le2m'), field(20, 'leCoded'), field(21, true)]
-          : [field(21, false)]
+        this.phyAccepted ? [field(19, 'le2m'), field(20, 'leCoded'), field(21, true)] : [field(21, false)]
       )
       return
     }

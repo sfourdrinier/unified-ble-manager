@@ -9,11 +9,12 @@ import { capacity, canonicalUuid, opaqueId } from '../backend-contract/primitive
 import type { BleManager as InternalBleManager } from '../manager/ble-manager'
 import type { BleManagerOptions } from '../manager/ble-manager'
 import type { BoundedAsyncStream } from '../backend-contract/streams'
+import type { BoundedAsyncStreamIterator, StreamTerminalNotice } from '../backend-contract/streams'
 import { CoreBoundedStream } from '../core/bounded-stream'
 import { normalizeOperationOptions } from './operation-options'
 import type { OperationOptions } from './operation-options'
 import { resolveStreamPolicy } from './stream-presets'
-import type { StreamPolicy } from './stream-presets'
+import type { StreamBudget, StreamPolicy } from './stream-presets'
 import type { IpcAdvertisement } from '../ipc/manager'
 import { rehydratePublicError, rehydratePublicPromise, runWithCleanup } from './error-bridge'
 import { assertDirectConnectionCapability, PublicBleCapabilities } from './capabilities'
@@ -31,13 +32,14 @@ import {
   type NormalizedScanObservation,
   type ScanQuery
 } from './scan-query'
-import type { BoundedAsyncStreamIterator } from '../backend-contract/streams'
 import { createScanState } from './scan-state'
 import type { BlePeerDirectory, BlePeerState, PeerSource } from './peer-directory'
 import { createPublicPeerDirectory } from './peer-directory'
 import { encodePeerReference, isPeerReference, snapshotPeerReference } from './peer-reference'
 import type { PeerReference } from './peer-reference'
 import type { ResourceCounters } from '../backend-contract/backend'
+import type { ScanPlan } from '../backend-contract/scan-planning'
+export type { ScanPlan } from '../backend-contract/scan-planning'
 import { createPublicSecurity } from './security'
 import type { BleSecurity } from './security'
 import type { Limitation } from '../backend-contract/capabilities'
@@ -275,9 +277,43 @@ export interface PublicScanObservation extends NormalizedScanObservation {
   readonly observedAtMonotonicMs: number | null
 }
 
+export type DiscoveryEvent =
+  | {
+      readonly kind: 'observed'
+      readonly peer: BlePeer
+    }
+  | {
+      readonly kind: 'lost'
+      readonly peer: BlePeer
+      readonly lastObservedAt: number
+      readonly derivedAt: number
+      readonly reason: 'observation-timeout'
+    }
+
+export type AndroidScanMode = 'low-power' | 'balanced' | 'low-latency' | 'opportunistic'
+export type AndroidScanCallbackType = 'all-matches' | 'first-match' | 'match-lost'
+export type AndroidScanPhy = 'all-supported' | '1m' | 'coded'
+export interface AndroidScanPlatformOptions {
+  readonly kind: 'android'
+  readonly mode?: AndroidScanMode
+  readonly callbackType?: AndroidScanCallbackType
+  readonly reportDelayMs?: number
+  readonly legacy?: boolean
+  readonly phy?: AndroidScanPhy
+}
+export type ScanPlatformOptions =
+  | AndroidScanPlatformOptions
+  | { readonly kind: 'corebluetooth' }
+  | { readonly kind: 'winrt' }
+  | { readonly kind: 'web' }
+  | { readonly kind: 'electron' }
+  | { readonly kind: 'tauri' }
+
 export interface ScanSession {
+  readonly plan: ScanPlan | null
   readonly stop: () => Promise<CleanupRecord>
   readonly observations: BoundedAsyncStream<PublicScanObservation>
+  readonly events?: AsyncIterable<DiscoveryEvent>
   readonly state: AsyncIterable<ScanStateEvent>
 }
 
@@ -318,6 +354,11 @@ export interface ScanOptions extends OperationOptions {
   readonly query?: ScanQuery
   readonly duplicates?: 'coalesced' | 'all'
   readonly delivery?: StreamPolicy
+  readonly observation?: {
+    readonly reportLostAfterMs?: number
+    readonly includeRawAdvertisement?: boolean
+  }
+  readonly platform?: ScanPlatformOptions
 }
 
 export interface FindOptions extends OperationOptions {
@@ -349,6 +390,321 @@ export interface PublicBleManagerHostOptions {
   readonly discoveryKind?: BleDiscoveryInfo['kind']
   readonly choose?: (options: ChooseOptions) => Promise<BlePeer>
   readonly peers?: BlePeerDirectory
+}
+
+interface PublicScanDeadlineHandle {
+  cancel(): void
+}
+
+type InternalScanScheduler = (deadline: number, action: () => void) => PublicScanDeadlineHandle
+
+function scheduleInternalScanDeadline(
+  internal: InternalBleManager<string, BackendIdentity<string>>,
+  deadline: number,
+  action: () => void
+): PublicScanDeadlineHandle {
+  const scheduler: InternalScanScheduler = (deadlineAt, callback) => internal.scheduleDeadline(deadlineAt, callback)
+  return scheduler(deadline, action)
+}
+
+interface PublicScanPresence {
+  readonly observation: PublicScanObservation
+  lastSeenAtMonotonicMs: number
+  timer: PublicScanDeadlineHandle | null
+  readonly bytes: number
+}
+
+interface PublicScanFingerprint {
+  readonly value: string
+  readonly bytes: number
+}
+
+const MAX_PUBLIC_SCAN_STATE_ENTRIES = 256
+const MAX_PUBLIC_SCAN_STATE_BYTES = 256 * 1024
+
+type PublicScanEventTerminalReason = 'closed' | 'source-failed' | 'overflow' | 'owner-released'
+
+class PublicScanEventBroadcast implements AsyncIterable<DiscoveryEvent> {
+  private readonly subscribers = new Set<CoreBoundedStream<DiscoveryEvent>>()
+  private terminalReason: PublicScanEventTerminalReason | null = null
+
+  constructor(
+    private readonly startPump: () => void,
+    private readonly delivery: StreamBudget
+  ) {}
+
+  [Symbol.asyncIterator](): AsyncIterableIterator<DiscoveryEvent> {
+    const stream = new CoreBoundedStream<DiscoveryEvent>(this.delivery, this.delivery.overflowPolicy)
+    if (this.terminalReason === null) {
+      this.subscribers.add(stream)
+      this.startPump()
+    } else {
+      stream.closeWithReason(this.terminalReason)
+    }
+    const iterator = stream[Symbol.asyncIterator]()
+    return {
+      next: async () => {
+        const item = await iterator.next()
+        if (item.done) return { done: true, value: undefined }
+        if (item.value.kind === 'value') return { done: false, value: item.value.value }
+        if (item.value.kind === 'overflow') {
+          throw rehydratePublicError(contractError('stream.overflow', 'scan', 'public-scan.events'))
+        }
+        if (item.value.reason === 'overflow') {
+          throw rehydratePublicError(contractError('stream.overflow', 'scan', 'public-scan.events'))
+        }
+        return { done: true, value: undefined }
+      },
+      return: async () => {
+        this.subscribers.delete(stream)
+        await iterator.return()
+        return { done: true, value: undefined }
+      },
+      [Symbol.asyncIterator]() {
+        return this
+      }
+    }
+  }
+
+  emit(event: DiscoveryEvent, byteLength: number): void {
+    for (const subscriber of this.subscribers) subscriber.emit(event, byteLength)
+  }
+
+  close(reason: PublicScanEventTerminalReason): void {
+    if (this.terminalReason !== null) return
+    this.terminalReason = reason
+    for (const subscriber of this.subscribers) {
+      subscriber.finishWithReason(reason)
+      this.subscribers.delete(subscriber)
+    }
+  }
+}
+
+class PublicScanSessionController {
+  readonly observations: BoundedAsyncStream<PublicScanObservation>
+  readonly events: AsyncIterable<DiscoveryEvent>
+  private readonly observationStream: CoreBoundedStream<PublicScanObservation>
+  private readonly eventBroadcast: PublicScanEventBroadcast
+  private readonly presence = new Map<string, PublicScanPresence>()
+  private presenceBytes = 0
+  private readonly lastObservationFingerprints = new Map<string, PublicScanFingerprint>()
+  private fingerprintBytes = 0
+  private sourceIterator: BoundedAsyncStreamIterator<AdvertisementObservation<string> | IpcAdvertisement> | null = null
+  private pumpStarted = false
+  private closed = false
+
+  constructor(
+    private readonly source: BoundedAsyncStream<AdvertisementObservation<string> | IpcAdvertisement>,
+    private readonly query: ReturnType<typeof normalizeScanQuery>,
+    private readonly duplicates: 'coalesced' | 'all',
+    delivery: StreamBudget,
+    private readonly now: () => number,
+    private readonly scheduleDeadline: InternalScanScheduler,
+    private readonly reportLostAfterMs: number | undefined
+  ) {
+    this.observationStream = new CoreBoundedStream(source.limits, source.overflowPolicy)
+    this.observations = {
+      limits: this.observationStream.limits,
+      overflowPolicy: this.observationStream.overflowPolicy,
+      [Symbol.asyncIterator]: () => {
+        this.start()
+        return this.observationStream[Symbol.asyncIterator]()
+      },
+      close: () => this.close('closed')
+    }
+    this.eventBroadcast = new PublicScanEventBroadcast(() => this.start(), delivery)
+    this.events = this.eventBroadcast
+  }
+
+  async close(reason: PublicScanEventTerminalReason = 'owner-released'): Promise<CleanupRecord> {
+    if (this.closed) return { state: 'released', failures: [] }
+    this.closed = true
+    this.cancelPresenceTimers()
+    const iterator = this.sourceIterator
+    this.sourceIterator = null
+    let iteratorError: unknown = null
+    if (iterator !== null) {
+      try {
+        await iterator.return()
+      } catch (error) {
+        iteratorError = error
+      }
+    }
+    this.observationStream.finishWithReason(reason)
+    this.eventBroadcast.close(reason)
+    if (iteratorError !== null) throw iteratorError
+    return { state: 'released', failures: [] }
+  }
+
+  private start(): void {
+    if (this.pumpStarted || this.closed) return
+    this.pumpStarted = true
+    const iterator = this.source[Symbol.asyncIterator]()
+    this.sourceIterator = iterator
+    this.pump(iterator).catch(() => undefined)
+  }
+
+  private async pump(
+    iterator: BoundedAsyncStreamIterator<AdvertisementObservation<string> | IpcAdvertisement>
+  ): Promise<void> {
+    try {
+      while (!this.closed) {
+        const item = await iterator.next()
+        if (item.done) {
+          await this.finish('closed')
+          return
+        }
+        if (item.value.kind === 'overflow') {
+          this.observationStream.observeSourceOverflow(item.value)
+          this.eventBroadcast.close('overflow')
+          continue
+        }
+        if (item.value.kind === 'terminal') {
+          await this.finish(item.value.reason)
+          return
+        }
+        this.accept(item.value.value)
+      }
+    } catch {
+      await this.finish('source-failed')
+    }
+  }
+
+  private accept(raw: AdvertisementObservation<string> | IpcAdvertisement): void {
+    const observation = projectPublicScanObservation(raw)
+    if (!observationMatchesScanQuery(this.query, observation)) return
+
+    this.observePresence(observation)
+    if (this.duplicates === 'coalesced') {
+      const fingerprint = publicObservationFingerprint(observation)
+      const previous = this.lastObservationFingerprints.get(observation.peer.id)
+      if (previous?.value === fingerprint) return
+      this.rememberObservationFingerprint(observation.peer.id, fingerprint)
+    }
+    this.observationStream.emit(observation, estimatePublicScanObservationBytes(observation))
+    this.eventBroadcast.emit(
+      Object.freeze({ kind: 'observed', peer: observation.peer }),
+      estimatePublicDiscoveryEventBytes({ kind: 'observed', peer: observation.peer })
+    )
+  }
+
+  private observePresence(observation: PublicScanObservation): void {
+    if (this.reportLostAfterMs === undefined) return
+    const observedAt = observation.observedAtMonotonicMs ?? this.now()
+    const current = this.presence.get(observation.peer.id)
+    if (current !== undefined && observedAt < current.lastSeenAtMonotonicMs) {
+      return
+    }
+    if (current !== undefined) {
+      current.timer?.cancel()
+      this.presence.delete(observation.peer.id)
+      this.presenceBytes -= current.bytes
+    }
+    const presence: PublicScanPresence = {
+      observation,
+      lastSeenAtMonotonicMs: observedAt,
+      timer: null,
+      bytes: estimatePublicScanObservationBytes(observation)
+    }
+    this.presence.set(observation.peer.id, presence)
+    this.presenceBytes += presence.bytes
+    this.evictPresenceState()
+    presence.timer = this.scheduleDeadline(observedAt + this.reportLostAfterMs, () => {
+      this.reportLost(observation.peer.id, observedAt)
+    })
+  }
+
+  private reportLost(peerId: string, expectedLastSeenAtMonotonicMs: number): void {
+    if (this.closed || this.reportLostAfterMs === undefined) return
+    const current = this.presence.get(peerId)
+    if (current === undefined || current.lastSeenAtMonotonicMs !== expectedLastSeenAtMonotonicMs) return
+    const dueAt = expectedLastSeenAtMonotonicMs + this.reportLostAfterMs
+    const now = this.now()
+    if (now < dueAt) {
+      current.timer = this.scheduleDeadline(dueAt, () => this.reportLost(peerId, expectedLastSeenAtMonotonicMs))
+      return
+    }
+    this.presence.delete(peerId)
+    this.presenceBytes -= current.bytes
+    this.lastObservationFingerprints.delete(peerId)
+    current.timer = null
+    this.eventBroadcast.emit(
+      Object.freeze({
+        kind: 'lost',
+        peer: current.observation.peer,
+        lastObservedAt: expectedLastSeenAtMonotonicMs,
+        derivedAt: now,
+        reason: 'observation-timeout'
+      }),
+      estimatePublicDiscoveryEventBytes({
+        kind: 'lost',
+        peer: current.observation.peer,
+        lastObservedAt: expectedLastSeenAtMonotonicMs,
+        derivedAt: now,
+        reason: 'observation-timeout'
+      })
+    )
+  }
+
+  private cancelPresenceTimers(): void {
+    for (const current of this.presence.values()) {
+      current.timer?.cancel()
+      current.timer = null
+    }
+    this.presence.clear()
+    this.presenceBytes = 0
+    this.lastObservationFingerprints.clear()
+    this.fingerprintBytes = 0
+  }
+
+  private rememberObservationFingerprint(peerId: string, value: string): void {
+    const existing = this.lastObservationFingerprints.get(peerId)
+    if (existing !== undefined) {
+      this.fingerprintBytes -= existing.bytes
+      this.lastObservationFingerprints.delete(peerId)
+    }
+    const fingerprint = { value, bytes: value.length * 2 }
+    this.lastObservationFingerprints.set(peerId, fingerprint)
+    this.fingerprintBytes += fingerprint.bytes
+    while (
+      this.lastObservationFingerprints.size > MAX_PUBLIC_SCAN_STATE_ENTRIES ||
+      this.fingerprintBytes > MAX_PUBLIC_SCAN_STATE_BYTES
+    ) {
+      const oldest = this.lastObservationFingerprints.entries().next().value
+      if (oldest === undefined) return
+      const [oldestPeerId, oldestFingerprint] = oldest
+      this.lastObservationFingerprints.delete(oldestPeerId)
+      this.fingerprintBytes -= oldestFingerprint.bytes
+    }
+  }
+
+  private evictPresenceState(): void {
+    while (this.presence.size > MAX_PUBLIC_SCAN_STATE_ENTRIES || this.presenceBytes > MAX_PUBLIC_SCAN_STATE_BYTES) {
+      const oldest = this.presence.entries().next().value
+      if (oldest === undefined) return
+      const [peerId, presence] = oldest
+      presence.timer?.cancel()
+      this.presence.delete(peerId)
+      this.presenceBytes -= presence.bytes
+      this.lastObservationFingerprints.delete(peerId)
+    }
+  }
+
+  private async finish(reason: StreamTerminalNotice['reason']): Promise<void> {
+    if (this.closed) return
+    this.closed = true
+    this.cancelPresenceTimers()
+    this.observationStream.finishWithReason(reason)
+    this.eventBroadcast.close(
+      reason === 'source-failed'
+        ? 'source-failed'
+        : reason === 'overflow'
+          ? 'overflow'
+          : reason === 'owner-released'
+            ? 'owner-released'
+            : 'closed'
+    )
+  }
 }
 
 type InternalPublicConnection = Awaited<ReturnType<InternalBleManager<string, BackendIdentity<string>>['connect']>>
@@ -825,6 +1181,10 @@ class PublicBleManager implements BleManager {
   readonly diagnostics: BleDiagnostics
   readonly peers: BlePeerDirectory
   readonly security: BleSecurity
+  private readonly activeScanSessions = new Set<{
+    readonly controller: PublicScanSessionController
+    readonly closeState: () => void
+  }>()
 
   constructor(
     private readonly internal: InternalBleManager<string, BackendIdentity<string>>,
@@ -857,7 +1217,23 @@ class PublicBleManager implements BleManager {
       const { signal, deadline } = normalizeOperationOptions(options, this.now)
       const delivery = resolveStreamPolicy(options.delivery ?? 'balanced')
       const normalizedQuery = normalizeScanQuery(options.query)
+      const reportLostAfterMs = options.observation?.reportLostAfterMs
+      if (options.observation?.includeRawAdvertisement === true) {
+        throw contractError('capability.unsupported', 'scan', 'public-ble-manager.scan.raw-advertisement')
+      }
+      if (options.platform !== undefined) {
+        throw contractError('capability.unsupported', 'scan', 'public-ble-manager.scan.platform-options')
+      }
+      if (options.duplicates === 'all' && reportLostAfterMs !== undefined) {
+        throw contractError('argument.invalid', 'scan', 'public-ble-manager.scan.duplicates')
+      }
+      if (reportLostAfterMs !== undefined && typeof this.internal.scheduleDeadline !== 'function') {
+        throw contractError('capability.unavailable', 'scan', 'public-ble-manager.scan.report-lost-after')
+      }
+      const plan = typeof this.internal.planScan === 'function' ? this.internal.planScan(normalizedQuery) : null
       const internalOptions: InternalScanOptions<string, string> = {
+        query: normalizedQuery,
+        plan: plan ?? undefined,
         filter: { serviceUuids: [], manufacturerData: [], localNamePrefix: null },
         duplicatePolicy: 'all',
         timestampPolicy: 'source-then-receipt',
@@ -874,23 +1250,48 @@ class PublicBleManager implements BleManager {
       const session = await this.internal.scan(internalOptions)
       const scanState = createScanState()
       scanState.emit({ state: 'active' })
+      const controller = new PublicScanSessionController(
+        session.observations,
+        normalizedQuery,
+        options.duplicates ?? 'coalesced',
+        delivery,
+        this.now,
+        (deadlineAt, action) => scheduleInternalScanDeadline(this.internal, deadlineAt, action),
+        reportLostAfterMs
+      )
+      const activeScan = { controller, closeState: scanState.close }
+      this.activeScanSessions.add(activeScan)
       return {
+        plan,
         stop: async () => {
           scanState.emit({ state: 'stopping' })
+          let controllerError: Error | null = null
+          try {
+            await controller.close()
+          } catch (error) {
+            controllerError = error instanceof Error ? error : new Error(String(error))
+          }
           try {
             const cleanup = await rehydratePublicPromise(session.stop())
             scanState.emit(
               cleanup.state === 'released' ? { state: 'stopped' } : { state: 'failed', reason: 'scan-stop-failed' }
             )
             scanState.close()
+            this.activeScanSessions.delete(activeScan)
+            if (controllerError !== null) throw new AggregateError([controllerError], 'BLE scan view cleanup failed')
             return cleanup
           } catch (error) {
             scanState.emit({ state: 'failed', reason: 'scan-stop-failed' })
             scanState.close()
+            this.activeScanSessions.delete(activeScan)
+            if (controllerError !== null && error !== controllerError) {
+              throw new AggregateError([controllerError, error], 'BLE scan cleanup failed')
+            }
             throw error
           }
         },
-        observations: filterScanObservations(session.observations, normalizedQuery, options.duplicates ?? 'coalesced'),
+        observations: controller.observations,
+        events: controller.events,
         state: scanState.stream
       }
     } catch (error) {
@@ -1040,10 +1441,33 @@ class PublicBleManager implements BleManager {
     })
   }
 
-  destroy(): Promise<CleanupRecord> {
-    return this.internal.destroy().catch(error => {
+  async destroy(): Promise<CleanupRecord> {
+    try {
+      const active = [...this.activeScanSessions]
+      this.activeScanSessions.clear()
+      const failures: Error[] = []
+      await Promise.all(
+        active.map(async scan => {
+          scan.closeState()
+          try {
+            await scan.controller.close()
+          } catch (error) {
+            failures.push(error instanceof Error ? error : new Error(String(error)))
+          }
+        })
+      )
+      let cleanup: CleanupRecord
+      try {
+        cleanup = await this.internal.destroy()
+      } catch (error) {
+        failures.push(error instanceof Error ? error : new Error(String(error)))
+        throw new AggregateError(failures, 'BLE manager cleanup failed')
+      }
+      if (failures.length > 0) throw new AggregateError(failures, 'BLE manager cleanup failed')
+      return cleanup
+    } catch (error) {
       throw rehydratePublicError(error)
-    })
+    }
   }
 }
 
@@ -1260,6 +1684,18 @@ function publicObservationFingerprint(observation: PublicScanObservation): strin
   })
 }
 
+function estimatePublicScanObservationBytes(observation: PublicScanObservation): number {
+  let bytes = 128
+  for (const entry of observation.manufacturerData ?? []) bytes += entry.data.byteLength
+  for (const entry of observation.serviceData ?? []) bytes += entry.data.byteLength
+  return bytes
+}
+
+function estimatePublicDiscoveryEventBytes(event: DiscoveryEvent): number {
+  const peerBytes = event.peer.id.length * 2 + (event.peer.name?.length ?? 0) * 2
+  return event.kind === 'observed' ? 32 + peerBytes : 96 + peerBytes
+}
+
 export function publicConnectionEvents(
   source: BoundedAsyncStream<ConnectionLifecycleEvent<string>>
 ): AsyncIterable<BleConnectionEvent> {
@@ -1416,7 +1852,7 @@ function isReferenceLike(value: unknown): value is object {
 }
 
 export function assertPublicScanOptions(options: ScanOptions): void {
-  const allowed = new Set(['signal', 'timeoutMs', 'query', 'duplicates', 'delivery'])
+  const allowed = new Set(['signal', 'timeoutMs', 'query', 'duplicates', 'delivery', 'observation', 'platform'])
   if (Object.keys(options).some(key => !allowed.has(key))) {
     throw contractError('argument.invalid', 'scan', 'public-ble-manager.scan.options')
   }
@@ -1440,6 +1876,70 @@ export function assertPublicScanOptions(options: ScanOptions): void {
       options.delivery.budget.byteCapacity <= 0)
   ) {
     throw contractError('argument.invalid', 'scan', 'public-ble-manager.scan.delivery.budget')
+  }
+  if (
+    options.observation !== undefined &&
+    (typeof options.observation !== 'object' ||
+      options.observation === null ||
+      Array.isArray(options.observation) ||
+      Object.keys(options.observation).some(key => key !== 'reportLostAfterMs' && key !== 'includeRawAdvertisement'))
+  ) {
+    throw contractError('argument.invalid', 'scan', 'public-ble-manager.scan.observation')
+  }
+  if (
+    options.observation?.reportLostAfterMs !== undefined &&
+    (typeof options.observation.reportLostAfterMs !== 'number' ||
+      !Number.isSafeInteger(options.observation.reportLostAfterMs) ||
+      options.observation.reportLostAfterMs <= 0 ||
+      options.observation.reportLostAfterMs > 2_147_483_647)
+  ) {
+    throw contractError('argument.invalid', 'scan', 'public-ble-manager.scan.report-lost-after')
+  }
+  if (
+    options.observation?.includeRawAdvertisement !== undefined &&
+    typeof options.observation.includeRawAdvertisement !== 'boolean'
+  ) {
+    throw contractError('argument.invalid', 'scan', 'public-ble-manager.scan.raw-advertisement')
+  }
+  assertPublicScanPlatformOptions(options.platform)
+}
+
+function assertPublicScanPlatformOptions(options: ScanPlatformOptions | undefined): void {
+  if (options === undefined) return
+  if (typeof options !== 'object' || options === null || !('kind' in options)) {
+    throw contractError('argument.invalid', 'scan', 'public-ble-manager.scan.platform-options')
+  }
+  if (options.kind === 'android') {
+    if (
+      Object.keys(options).some(
+        key => !['kind', 'mode', 'callbackType', 'reportDelayMs', 'legacy', 'phy'].includes(key)
+      ) ||
+      (options.mode !== undefined &&
+        !['low-power', 'balanced', 'low-latency', 'opportunistic'].includes(options.mode)) ||
+      (options.callbackType !== undefined &&
+        !['all-matches', 'first-match', 'match-lost'].includes(options.callbackType)) ||
+      (options.reportDelayMs !== undefined &&
+        (!Number.isSafeInteger(options.reportDelayMs) ||
+          options.reportDelayMs < 0 ||
+          options.reportDelayMs > 2_147_483_647)) ||
+      (options.legacy !== undefined && typeof options.legacy !== 'boolean') ||
+      (options.phy !== undefined && !['all-supported', '1m', 'coded'].includes(options.phy))
+    ) {
+      throw contractError('argument.invalid', 'scan', 'public-ble-manager.scan.platform-options')
+    }
+    return
+  }
+  if (
+    options.kind !== 'corebluetooth' &&
+    options.kind !== 'winrt' &&
+    options.kind !== 'web' &&
+    options.kind !== 'electron' &&
+    options.kind !== 'tauri'
+  ) {
+    throw contractError('argument.invalid', 'scan', 'public-ble-manager.scan.platform-options')
+  }
+  if (Object.keys(options).length !== 1) {
+    throw contractError('argument.invalid', 'scan', 'public-ble-manager.scan.platform-options')
   }
 }
 

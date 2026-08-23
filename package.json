@@ -45,6 +45,7 @@
     "!android/gradlew.bat",
     "!android/local.properties",
     "!native/**/build",
+    "!native/**/target",
     "!native/**/obj.target",
     "!native/protocol/tests/**",
     "!**/__tests__",

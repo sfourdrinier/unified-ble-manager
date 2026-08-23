@@ -61,9 +61,8 @@
 
             <h1>Getting started</h1>
             <p>
-              <strong>RC3 candidate under preparation:</strong> <code>4.0.0-rc.3</code>. The tag-driven
-              trusted-publishing workflow publishes it to npm <code>latest</code> after the exact-main release gates
-              pass.
+              <strong>Current prerelease:</strong> <code>4.0.0-rc.3</code> is published from exact <code>main</code> and
+              is immutable. Stable <code>4.0.0</code> remains reserved for the post-PR12 release gate.
             </p>
             <p>
               This page gets you to a first scan, connect, read, notify, and teardown on React Native. Other hosts are
@@ -498,6 +497,25 @@
               framework-neutral <code>desktop-native</code> host kind; browser and React Native backends require their
               own host integration and cannot be driven from a Node shell.
             </p>
+            <h2>Scan planning contract</h2>
+            <p>
+              The additive PR9 backend contract exposes <code>ScanPlan</code>, <code>BackendScanPlanner</code>, and the
+              canonical normalized scan-query types. A plan retains the source query and its
+              <code>queryDigest</code> separately from the residual query and <code>residualQueryDigest</code>. Native
+              execution must be declared either <code>exact</code> for the complete source query or
+              <code>safe-superset</code>; residual evaluation remains the frozen PR4 matcher. Plan limitations use
+              structured predicate descriptions and finite redacted diagnostic vocabulary, so raw advertisement bytes,
+              peer identifiers, and host payloads do not belong in plan diagnostics.
+            </p>
+            <p>
+              The public <code>ScanOptions.platform</code> contract is discriminated and validated before radio work. A
+              platform control that the selected host has not actually implemented rejects with a typed capability
+              error; it never silently no-ops. Current first-party pushdown is limited to safe common service-UUID
+              filters, while names, byte predicates, RSSI, exclusions, and unavailable fields remain in the canonical
+              residual path. First-party planners must consume the shared fixture corpus and prove native/residual
+              equivalence before expanding pushdown. Deterministic planner tests establish contract behavior; they do
+              not promote a backend support label or constitute physical-radio evidence.
+            </p>
           </section>
         </div>
 
@@ -648,9 +666,11 @@
             <h1>Electron</h1>
             <p>Main owns the radio. The renderer uses a versioned IPC client and never loads a native addon.</p>
             <p>
-              <strong>RC3 candidate under preparation:</strong> <code>4.0.0-rc.3</code>. The tag-driven release
-              publishes Node-API v8 prebuilds covering macOS and Windows <code>arm64</code>/<code>x64</code> for both
-              Node and modern Electron.
+              <strong>Current prerelease:</strong> <code>4.0.0-rc.3</code> is published from exact <code>main</code> and
+              is immutable. The release ships Node-API v8 prebuilds covering macOS and Windows <code>arm64</code>/<code
+                >x64</code
+              >
+              for both Node and modern Electron.
             </p>
             <p>
               <code>unified-ble-manager/electron/main</code> and <code>unified-ble-manager/electron/renderer</code> are
@@ -861,10 +881,9 @@
             </p>
             <h2>Package stability and backend support are separate</h2>
             <p>
-              <code>unified-ble-manager@4.0.0-rc.3</code> is the prepared
-              <strong>release-candidate package/API</strong> for the 4.x contract; the RC3 tag workflow publishes this
-              candidate after the exact-main release gates pass. Stable <code>4.0.0</code> is reserved for the post-PR12
-              release gate.
+              <code>unified-ble-manager@4.0.0-rc.3</code> is the published
+              <strong>release-candidate package/API</strong> for the 4.x contract; it is immutable and stable
+              <code>4.0.0</code> remains reserved for the post-PR12 release gate.
             </p>
             <p>
               This release candidate is the portable API/semantics freeze candidate; it does <strong>not</strong> mean

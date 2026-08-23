@@ -1,6 +1,6 @@
 // __tests__/backend-contract/fixtures/positive.ts
 
-import { createAttachmentBoundIdFactory } from '../../../src/backend-contract'
+import { createAttachmentBoundIdFactory, snapshotScanExecutionPlan } from '../../../src/backend-contract'
 import type {
   AttachmentBinding,
   Capacity,
@@ -9,6 +9,10 @@ import type {
   FeatureRegistration,
   GattDatabase,
   OwnerScanOptions,
+  BackendScanExecutionPlan,
+  BackendScanPlanner,
+  ScanPlan,
+  ScanPlanningContext,
   RestorationAdoptionRequest,
   ScannerBackend,
   SerializableRecord
@@ -33,6 +37,10 @@ declare const currentPath: CharacteristicPath<
 >
 declare const schemaRange: import('../../../src/backend-contract').VersionRange<'capability-schema'>
 declare const alphaBinding: AttachmentBinding<'alpha'>
+declare const scanPlan: ScanPlan
+declare const scanPlanner: BackendScanPlanner<SerializableRecord>
+declare const scanPlanningContext: ScanPlanningContext
+declare const scanExecutionPlan: BackendScanExecutionPlan<SerializableRecord>
 declare function observe<Value>(value: Value): void
 
 const exclusiveScan: OwnerScanOptions<'alpha', 'lease-one'> = {
@@ -104,3 +112,6 @@ const runtimeScopedLease = createAttachmentBoundIdFactory(alphaBinding).leaseId(
 const runtimeCorrelation = createAttachmentBoundIdFactory(alphaBinding).operationCorrelation('operation')
 observe(runtimeScopedLease)
 observe(runtimeCorrelation)
+observe(scanPlanner.plan(scanPlan.residual.query, scanPlanningContext))
+observe(scanExecutionPlan.nativeFilter)
+observe(snapshotScanExecutionPlan(scanExecutionPlan, filter => filter).nativeFilter)

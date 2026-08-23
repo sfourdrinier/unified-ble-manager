@@ -1,6 +1,7 @@
 mod btleplug_dispatcher;
 mod capabilities;
 mod commands;
+mod scan_plan;
 mod security_scope;
 mod wire;
 

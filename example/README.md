@@ -32,7 +32,7 @@ or local fixture run is not physical-radio, background, restoration, or
 reliability evidence.
 
 For a consuming application, install
-`unified-ble-manager` (the `4.0.0-rc.3` candidate is prepared in this checkout; the tag-driven workflow publishes it to `latest` after the release gates pass), configure native permissions and lifecycle
+`unified-ble-manager` (the published, immutable `4.0.0-rc.3` prerelease; stable `4.0.0` follows the post-PR12 release gate), configure native permissions and lifecycle
 ownership in that application, and follow the root [README](../README.md) and
 [Expo plugin reference](../docs/EXPO_PLUGIN.md). The 4.0 package is Experimental;
 do not use this fixture to infer Preview-or-higher support.

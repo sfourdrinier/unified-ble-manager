@@ -2,6 +2,7 @@
 
 const { attachBackend } = require('../../../src/backend-contract/backend')
 const { capacity, opaqueId, version, versionRange } = require('../../../src/backend-contract/primitives')
+const { normalizeScanQuery } = require('../../../src/public/scan-query')
 const { createWinRtBackendProvider } = require('../../../src/backends/winrt/winrt-provider')
 const { stopWinRtPhysicalSubscription } = require('../../../src/backends/winrt/winrt-subscription-runtime')
 const { createBleManagerFromProvider, DEFAULT_BLE_MANAGER_OPTIONS } = require('../../../src/manager/ble-manager')
@@ -786,6 +787,64 @@ async function managerFixture() {
 }
 
 describe('WinRT contract-v2 deterministic native-boundary vertical slice', () => {
+  test('forwards the trusted plan service projection and preserves legacy low-level filters', async () => {
+    const { backend, boundary } = await backendFixture()
+    const startScan = jest.spyOn(boundary, 'startScan')
+    const query = normalizeScanQuery({ anyOf: [{ services: { all: [serviceUuid] } }] })
+    const plan = backend.scanner.plan(query)
+
+    const plannedScan = await backend.scanner.start(
+      {
+        ...scanOptions(),
+        query,
+        plan,
+        filter: { serviceUuids: [], manufacturerData: [], localNamePrefix: null }
+      },
+      opaqueId('planned-scan', 'client', 'winrt:scan-plan')
+    )
+    expect(startScan).toHaveBeenLastCalledWith(expect.any(String), [serviceUuid], expect.any(Function))
+    await expect(plannedScan.stop()).resolves.toEqual({ state: 'released', failures: [] })
+
+    startScan.mockClear()
+    const legacyScan = await backend.scanner.start(scanOptions(), opaqueId('legacy-scan', 'client', 'winrt:scan-plan'))
+    expect(startScan).toHaveBeenLastCalledWith(expect.any(String), [serviceUuid], expect.any(Function))
+    await expect(legacyScan.stop()).resolves.toEqual({ state: 'released', failures: [] })
+    await expect(backend.destroy()).resolves.toEqual({ state: 'released', failures: [] })
+  })
+
+  test('fails closed when a plan is not bound to its authoritative normalized query', async () => {
+    const { backend, boundary } = await backendFixture()
+    const startScan = jest.spyOn(boundary, 'startScan')
+    const query = normalizeScanQuery({ anyOf: [{ services: { all: [serviceUuid] } }] })
+    const plan = backend.scanner.plan(query)
+
+    await expect(
+      backend.scanner.start(
+        {
+          ...scanOptions(),
+          plan,
+          filter: { serviceUuids: [], manufacturerData: [], localNamePrefix: null }
+        },
+        opaqueId('missing-query', 'client', 'winrt:scan-plan')
+      )
+    ).rejects.toMatchObject({ normalized: { code: 'protocol.violation' } })
+    expect(startScan).not.toHaveBeenCalled()
+
+    await expect(
+      backend.scanner.start(
+        {
+          ...scanOptions(),
+          query: normalizeScanQuery({ anyOf: [{ services: { all: ['180f'] } }] }),
+          plan,
+          filter: { serviceUuids: [], manufacturerData: [], localNamePrefix: null }
+        },
+        opaqueId('mismatched-query', 'client', 'winrt:scan-plan')
+      )
+    ).rejects.toMatchObject({ normalized: { code: 'protocol.violation' } })
+    expect(startScan).not.toHaveBeenCalled()
+    await expect(backend.destroy()).resolves.toEqual({ state: 'released', failures: [] })
+  })
+
   test('releases closed backend-event and adapter-watch streams from native fan-out ownership', async () => {
     const { backend } = await backendFixture()
     const events = backend.events()

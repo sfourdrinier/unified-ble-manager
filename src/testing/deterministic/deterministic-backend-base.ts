@@ -67,6 +67,8 @@ import {
   type SerializableRecord
 } from '../../backend-contract/primitives'
 import type { BoundedAsyncStream, OverflowPolicy } from '../../backend-contract/streams'
+import { snapshotScanPlan } from '../../backend-contract/scan-planning'
+import { DeterministicScanPlanner } from './deterministic-scan-planner'
 import { DeterministicBoundedStream, streamLimits } from './deterministic-stream'
 import {
   defaultCompletion,
@@ -248,6 +250,7 @@ export abstract class DeterministicBackendBase {
   protected readonly traceRecords: DeterministicBackendTraceRecord[] = []
   protected traceTruncated = false
   protected readonly operations: DeterministicOperationRuntime
+  protected readonly scanPlanner = new DeterministicScanPlanner()
   protected adapterState: AdapterStateSnapshot<string>
   protected backendGeneration = 1
   protected backendInstance: number
@@ -305,6 +308,32 @@ export abstract class DeterministicBackendBase {
       watchState: async () => this.createStateWatch()
     }
     this.scanner = {
+      plan: query => {
+        const execution = this.scanPlanner.plan(query, {
+          backendId: 'deterministic',
+          platformId: 'deterministic-test',
+          availableObservationFields: [
+            'peerReference',
+            'localName',
+            'rssi',
+            'connectable',
+            'serviceUuids',
+            'manufacturerData',
+            'serviceData'
+          ]
+        })
+        return snapshotScanPlan({
+          sourceQuery: execution.sourceQuery,
+          queryDigest: execution.queryDigest,
+          residualQueryDigest: execution.residualQueryDigest,
+          nativeGuarantee: execution.nativeGuarantee,
+          native: execution.native,
+          residual: execution.residual,
+          unavailable: execution.unavailable,
+          limitations: execution.limitations,
+          estimatedCost: execution.estimatedCost
+        })
+      },
       start: async (optionsValue, clientId) => this.startScan(optionsValue, clientId),
       join: async (leaseId, token, clientId) => this.joinScan(leaseId, token, clientId)
     }

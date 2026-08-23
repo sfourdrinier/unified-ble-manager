@@ -11,6 +11,7 @@ import type {
   ResourceCounters,
   ScannerBackend
 } from '../../backend-contract/backend'
+import type { OwnerScanOptions } from '../../backend-contract/advertisement'
 import {
   BUILT_IN_FEATURE_IDS,
   createBackendOperationCapabilityRegistration,
@@ -31,6 +32,7 @@ import {
   type NativeCompatibilityOffer,
   type NativeVersionAxes
 } from '../../backend-contract/primitives'
+import type { ClientId } from '../../backend-contract/primitives'
 import type { BoundedAsyncStream } from '../../backend-contract/streams'
 import { CoreBluetoothBackend, type DirectGattBackendIdentityOptions } from '../corebluetooth/corebluetooth-backend'
 import { coreBluetoothCompatibility } from '../corebluetooth/corebluetooth-provider'
@@ -39,6 +41,9 @@ import { createReactNativeConnectionControlFeatureRegistry } from './react-nativ
 import { createReactNativeDescriptorFeatureRegistry } from './react-native-descriptor-features'
 import { withReactNativeProviderCleanup } from './react-native-provider-cleanup'
 import { ReactNativeAndroidSecurityBackend } from './react-native-android-security'
+import { diagnosticReactNativeAndroidScanPlan } from './react-native-scan-planner'
+import { planReactNativeAndroidScan } from './react-native-scan-planner'
+import { trustedServiceUuidFilter } from '../scan-planning/service-uuid-scan-planner'
 import {
   combineReactNativeFeatureRegistries,
   createReactNativeRestorationFeatureRegistry,
@@ -125,7 +130,18 @@ export class ReactNativeAndroidBackend implements BleCentralBackend<string, Nati
     private readonly restorationActivation: ReactNativeRestorationActivation | null
   ) {
     this.adapter = delegate.adapter
-    this.scanner = delegate.scanner
+    this.scanner = Object.freeze({
+      plan: diagnosticReactNativeAndroidScanPlan,
+      start: (options: OwnerScanOptions<string, string>, clientId: ClientId<string, string>) =>
+        delegate.scanner.start(
+          {
+            ...options,
+            filter: trustedServiceUuidFilter(options, planReactNativeAndroidScan, 'rn-android.scan')
+          },
+          clientId
+        ),
+      join: delegate.scanner.join
+    })
     this.connections = delegate.connections
     this.gatt = delegate.gatt
     this.security = boundary.securityAvailable

@@ -35,9 +35,14 @@ import type {
 import type { AdvertisementObservation } from '../backend-contract/advertisement'
 import type { AttachmentRecord } from '../backend-contract/identity'
 import type { PeerReference } from '../backend-contract/peer-reference'
+import { snapshotScanPlan } from '../backend-contract/scan-planning'
+import type { ScanPlan } from '../backend-contract/scan-planning'
+import { normalizeScanQuery } from '../public/scan-query'
 import { IpcBleClient } from './client'
 import { IPC_GATT_DATABASE_SCHEMA_VERSION } from './protocol'
 import type { IpcCapabilitySnapshotV2, IpcClientTransport } from './protocol'
+import { decodeIpcScanQuery, encodeIpcScanQuery } from './scan-planning'
+import type { NormalizedScanQuery } from '../backend-contract/scan-query'
 
 export {
   advertisementPassesViewFilter,
@@ -66,6 +71,7 @@ export interface IpcManagerOperationOptions {
 }
 
 export interface IpcScanOptions extends IpcManagerOperationOptions {
+  readonly query?: NormalizedScanQuery
   readonly serviceUuids?: readonly string[]
   readonly manufacturerData?: readonly { readonly companyId: number; readonly dataPrefix?: Readonly<Uint8Array> }[]
   readonly localNamePrefix?: string | null
@@ -200,6 +206,7 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
   }
 
   async scan(options: IpcScanOptions = {}): Promise<IpcScanSession> {
+    const query = encodeIpcScanQuery(options.query ?? normalizeScanQuery())
     const manufacturerData = (options.manufacturerData ?? []).map(filter => ({
       companyId: filter.companyId,
       dataPrefix:
@@ -208,6 +215,7 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
     const payload = await this.route(
       'scan.start',
       Object.freeze({
+        query,
         serviceUuids: Object.freeze([...(options.serviceUuids ?? [])]),
         manufacturerData: Object.freeze(manufacturerData),
         localNamePrefix: options.localNamePrefix ?? null,
@@ -225,13 +233,34 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
       options.signal
     )
     const handle = requiredString(payload, 'handle', 'ipc-manager.scan')
+    let plan: ScanPlan | null = null
+    try {
+      plan =
+        payload.plan === undefined
+          ? null
+          : decodeIpcScanPlan(
+              payload.plan,
+              payload.backendGeneration,
+              String(this.bootstrap.attachment.backendGeneration),
+              options.query?.digest
+            )
+    } catch (error) {
+      try {
+        await this.route('scan.stop', Object.freeze({ scanHandle: handle }))
+      } catch (cleanupError) {
+        throw new AggregateError([error, cleanupError], 'IPC scan validation cleanup failed')
+      } finally {
+        this.closeStream(handle)
+      }
+      throw error
+    }
     const observations = this.registerStream<IpcScanObservation>(
       handle,
       isIpcScanObservation,
       toRemoteStreamLimits(options.stream),
       options.stream?.overflowPolicy
     )
-    return new IpcScanSession(this, handle, observations)
+    return new IpcScanSession(this, handle, observations, plan)
   }
 
   async connect(peerId: string, options: IpcManagerOperationOptions = {}): Promise<IpcConnection> {
@@ -619,7 +648,8 @@ export class IpcScanSession {
   constructor(
     private readonly manager: IpcBleManager,
     readonly handle: string,
-    readonly observations: BoundedAsyncStream<IpcScanObservation>
+    readonly observations: BoundedAsyncStream<IpcScanObservation>,
+    readonly plan: ScanPlan | null
   ) {}
 
   stop(): Promise<CleanupRecord> {
@@ -1507,6 +1537,96 @@ function requiredTerminalReason(
 
 function isSerializableRecord(value: unknown): value is SerializableRecord {
   return typeof value === 'object' && value !== null && !Array.isArray(value) && !(value instanceof Uint8Array)
+}
+
+function decodeIpcScanPlan(
+  value: unknown,
+  backendGeneration: unknown,
+  expectedGeneration: string,
+  expectedQueryDigest: string | undefined
+): ScanPlan {
+  if (
+    typeof backendGeneration !== 'string' ||
+    backendGeneration.length === 0 ||
+    backendGeneration !== expectedGeneration
+  ) {
+    throw contractError('protocol.violation', 'ipc', 'ipc-manager.scan-plan-generation')
+  }
+  if (!isScanPlanWireRecord(value)) {
+    throw contractError('protocol.malformed', 'ipc', 'ipc-manager.scan-plan')
+  }
+  try {
+    const sourceQuery = decodeIpcScanQuery(value.sourceQuery, 'ipc-manager.scan-plan.source-query')
+    const residual = requiredRecord(value, 'residual', 'ipc-manager.scan-plan.residual')
+    const residualQuery = decodeIpcScanQuery(residual.query, 'ipc-manager.scan-plan.residual-query')
+    const candidate = {
+      ...value,
+      sourceQuery,
+      residual: { ...residual, query: residualQuery }
+    }
+    if (!isScanPlanRecord(candidate)) {
+      throw contractError('protocol.malformed', 'ipc', 'ipc-manager.scan-plan')
+    }
+    const plan = snapshotScanPlan(candidate)
+    if (expectedQueryDigest === undefined || plan.queryDigest !== expectedQueryDigest) {
+      throw contractError('protocol.violation', 'ipc', 'ipc-manager.scan-plan-digest')
+    }
+    return plan
+  } catch (error) {
+    if (error instanceof BackendContractError) throw error
+    throw contractError('protocol.malformed', 'ipc', 'ipc-manager.scan-plan')
+  }
+}
+
+function isScanPlanWireRecord(value: unknown): value is SerializableRecord {
+  if (!isSerializableRecord(value)) return false
+  return (
+    'sourceQuery' in value &&
+    'queryDigest' in value &&
+    'residualQueryDigest' in value &&
+    'nativeGuarantee' in value &&
+    'native' in value &&
+    'residual' in value &&
+    'unavailable' in value &&
+    'limitations' in value &&
+    'estimatedCost' in value
+  )
+}
+
+function isScanPlanRecord(value: unknown): value is ScanPlan {
+  if (!isScanPlanWireRecord(value)) return false
+  const sourceQuery = value.sourceQuery
+  const native = value.native
+  const residual = value.residual
+  return (
+    isNormalizedScanQueryRecord(sourceQuery) &&
+    isScanProjectionRecord(native) &&
+    isSerializableRecord(residual) &&
+    isNormalizedScanQueryRecord(residual.query) &&
+    isScanProjectionRecord(residual) &&
+    Array.isArray(value.unavailable) &&
+    Array.isArray(value.limitations) &&
+    typeof value.queryDigest === 'string' &&
+    typeof value.residualQueryDigest === 'string' &&
+    (value.nativeGuarantee === 'exact' || value.nativeGuarantee === 'safe-superset') &&
+    (value.estimatedCost === 'native-only' ||
+      value.estimatedCost === 'low' ||
+      value.estimatedCost === 'moderate' ||
+      value.estimatedCost === 'high')
+  )
+}
+
+function isNormalizedScanQueryRecord(value: unknown): boolean {
+  return (
+    isSerializableRecord(value) &&
+    (value.anyOf === null || Array.isArray(value.anyOf)) &&
+    (value.exclude === null || Array.isArray(value.exclude)) &&
+    typeof value.digest === 'string'
+  )
+}
+
+function isScanProjectionRecord(value: unknown): boolean {
+  return isSerializableRecord(value) && Array.isArray(value.predicates) && typeof value.complete === 'boolean'
 }
 
 function requiredRecord(record: SerializableRecord, key: string, operation: string): SerializableRecord {

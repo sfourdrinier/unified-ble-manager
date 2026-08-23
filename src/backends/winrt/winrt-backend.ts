@@ -33,6 +33,7 @@ import {
 } from '../../backend-contract/errors'
 import type { CharacteristicPath, DescriptorPath } from '../../backend-contract/gatt'
 import { attachmentRecordsEqual } from '../../backend-contract/identity'
+import type { NormalizedScanQuery } from '../../backend-contract/scan-query'
 import type {
   AdapterStateSnapshot,
   AdapterStateWatch,
@@ -110,6 +111,8 @@ import type {
   WinRtScanTerminalRecord
 } from './winrt-boundary'
 import { invalidateWinRtPhysicalSubscription } from './winrt-subscription-runtime'
+import { diagnosticWinRtScanPlan, planWinRtScan } from './winrt-scan-planner'
+import { trustedServiceUuidFilter } from '../scan-planning/service-uuid-scan-planner'
 
 const eventLimits = Object.freeze({
   itemCapacity: capacity(64),
@@ -463,6 +466,7 @@ export class WinRtBackend implements BleCentralBackend<string, HostNeutralBacken
       watchState: async () => this.watchAdapterState()
     })
     this.scanner = Object.freeze({
+      plan: (query: NormalizedScanQuery) => diagnosticWinRtScanPlan(query),
       start: this.startScan.bind(this),
       join: this.joinScan.bind(this)
     })
@@ -966,6 +970,7 @@ export class WinRtBackend implements BleCentralBackend<string, HostNeutralBacken
     this.assertUsable('winrt.scan.start')
     assertWinRtAdapterReady(this.adapterStateSnapshot, 'winrt.scan.start')
     assertWinRtOperationAdmission(options, this.now, 'winrt.scan.start')
+    const serviceUuids = trustedServiceUuidFilter(options, planWinRtScan, 'winrt.scan').serviceUuids
     await this.reconcilePendingScanGroup()
     this.assertUsable('winrt.scan.start')
     assertWinRtAdapterReady(this.adapterStateSnapshot, 'winrt.scan.start')
@@ -1009,7 +1014,7 @@ export class WinRtBackend implements BleCentralBackend<string, HostNeutralBacken
         options,
         'winrt.scan.start',
         () =>
-          this.boundary.startScan(group.scanToken, options.filter.serviceUuids, advertisement =>
+          this.boundary.startScan(group.scanToken, serviceUuids, advertisement =>
             this.handleAdvertisement(advertisement)
           ),
         async () => {

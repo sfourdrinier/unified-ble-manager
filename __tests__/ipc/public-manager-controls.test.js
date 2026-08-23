@@ -134,6 +134,14 @@ function setup(readinessState) {
 }
 
 describe('IPC public connection controls', () => {
+  test('rejects derived lost-peer events instead of silently ignoring them', async () => {
+    const { manager } = setup()
+
+    await expect(manager.scan({ observation: { reportLostAfterMs: 100 } })).rejects.toMatchObject({
+      code: 'capability.unavailable'
+    })
+  })
+
   test('projects typed observations and removes naked numeric control methods', async () => {
     const { manager, calls } = setup()
     const connection = await manager.connect('peer-1')
@@ -192,7 +200,9 @@ describe('IPC public connection controls', () => {
     const { manager } = setup('unavailable')
     const connection = await manager.connect('peer-1')
 
-    await expect(connection.controls.writeReadiness('without-response')[Symbol.asyncIterator]().next()).rejects.toMatchObject({
+    await expect(
+      connection.controls.writeReadiness('without-response')[Symbol.asyncIterator]().next()
+    ).rejects.toMatchObject({
       code: 'capability.unavailable'
     })
   })

@@ -6,7 +6,7 @@
 
 It is an evolution of `react-native-ble-plx`, rewritten as a **cross-platform unified product**. One bytes-first BLE model and lifecycle semantics across hosts, with host-specific construction and ownership. The root package never picks a radio for you, and it will not quietly fall back to a simulator or a different backend.
 
-**RC3 candidate:** `4.0.0-rc.3` is prepared in this source tree. The tag-driven trusted-publishing workflow publishes it to npm `latest` after the exact-main release gates pass. Package SemVer and backend support labels are independent: each radio backend stays Experimental until artifact-bound physical-hardware validation says otherwise. See [`docs/PLATFORMS.md`](docs/PLATFORMS.md).
+**Current prerelease:** `4.0.0-rc.3` is published from exact `main` and is immutable. Package SemVer and backend support labels are independent: each radio backend stays Experimental until artifact-bound physical-hardware validation says otherwise. RC4 remains reserved for the post-PR10 release gate. See [`docs/PLATFORMS.md`](docs/PLATFORMS.md).
 
 > Sponsored by [Imagi Explain](https://imagiexplain.com) — researched, narrated whiteboard explainers from a prompt, a PDF, or your notes.
 
@@ -151,9 +151,13 @@ Web Bluetooth replaces the scan with `ble.choose(...)` from a user gesture. Taur
 | Member | Use |
 | --- | --- |
 | `observations` | Bounded stream: `value`, `overflow`, or `terminal` |
+| `events` | Optional derived current-view events: `observed` and monotonic `lost` (`observation.reportLostAfterMs`); unsupported host façades reject this option |
+| `plan` | Host-owned native/residual planning diagnostics, or `null` when this host has no planner |
 | `stop()` | End the scan and return a cleanup receipt. `find` already does this. |
 
 `AdvertisementObservation.device` is identity (`id`, address, stability). The advertised name is `observation.localName`.
+
+`scan({ observation: { reportLostAfterMs } })` derives timeout events from the same coalesced current view. The timeout is monotonic and bounded; RF absence, OS throttling, filtering, process suspension, or a stopped scan can all produce a derived `lost` event. Raw advertisement inclusion is capability-gated and unsupported by the normal public façade. Typed `platform` controls are validated at the public boundary; controls not implemented by the selected host reject before radio work rather than silently no-op.
 
 ### `Connection`
 

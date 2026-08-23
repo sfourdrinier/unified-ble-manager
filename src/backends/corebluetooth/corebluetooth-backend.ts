@@ -84,6 +84,8 @@ import { releaseCoreBluetoothAdapterLossResources } from './corebluetooth-adapte
 import { withCoreBluetoothCleanupTimeout } from './corebluetooth-cleanup'
 import { releaseLateCoreBluetoothConnection } from './corebluetooth-late-connect-cleanup'
 import { createCoreBluetoothRuntimeFeatureRegistry } from './corebluetooth-runtime-capabilities'
+import { diagnosticCoreBluetoothScanPlan, planCoreBluetoothScan } from './corebluetooth-scan-planner'
+import { trustedServiceUuidFilter } from '../scan-planning/service-uuid-scan-planner'
 export type { DirectGattBackendIdentityOptions } from './corebluetooth-identity'
 export interface ScanConsumer {
   readonly scanSessionId: ScanSessionId<string, string>
@@ -350,6 +352,7 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
       watchState: async () => this.watchAdapterState()
     }
     this.scanner = {
+      plan: query => diagnosticCoreBluetoothScanPlan(query),
       start: (options, clientId) => this.startScan(options, clientId),
       join: (leaseId, token, clientId) => this.joinScan(leaseId, token, clientId)
     }
@@ -525,6 +528,7 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
   ): Promise<ScanLease<string, string>> {
     this.assertOperational('corebluetooth.scan.start')
     assertScanFilter(options.filter, 'corebluetooth.scan.start')
+    const serviceUuids = trustedServiceUuidFilter(options, planCoreBluetoothScan, 'corebluetooth.scan').serviceUuids
     const failedScanGroup = this.scanGroup
     if (failedScanGroup?.state === 'failed') {
       try {
@@ -591,10 +595,7 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
       consumer.deadlineTimer = setTimeout(deadline, Math.max(0, options.deadline - this.now()))
     }
     try {
-      await this.boundary.startScan(
-        advertisement => this.handleAdvertisement(advertisement),
-        options.filter.serviceUuids
-      )
+      await this.boundary.startScan(advertisement => this.handleAdvertisement(advertisement), serviceUuids)
     } catch (error) {
       this.releaseScanConsumerAdmission(consumer)
       this.scanGroup = null

@@ -4,6 +4,7 @@ const { attachBackend } = require('../../../src/backend-contract/backend')
 const { capacity, opaqueId, version, versionRange } = require('../../../src/backend-contract/primitives')
 const { createBluezBackendProvider } = require('../../../src/backends/bluez/bluez-backend-provider')
 const { createBleManagerFromProvider, DEFAULT_BLE_MANAGER_OPTIONS } = require('../../../src/manager/ble-manager')
+const { normalizeScanQuery } = require('../../../src/public/scan-query')
 const { findTckScenario } = require('../../../src/tck')
 const {
   BLUEZ_ADAPTER_INTERFACE,
@@ -315,6 +316,33 @@ describe('BlueZ contract-v1 vertical slice', () => {
     expect(boundary.closed).toBe(true)
   })
 
+  test('publishes the diagnostic plan and applies its trusted native projection', async () => {
+    const { backend, boundary } = await backendFixture()
+    const plan = backend.scanner.plan(normalizeScanQuery({ anyOf: [{ services: { all: [serviceUuid] } }] }))
+    const scan = await backend.scanner.start(
+      {
+        ...scanOptions(),
+        query: normalizeScanQuery({ anyOf: [{ services: { all: [serviceUuid] } }] }),
+        plan,
+        filter: { serviceUuids: [], manufacturerData: [], localNamePrefix: null }
+      },
+      opaqueId('scan-plan-client', 'client', 'bluez:scan-plan')
+    )
+
+    expect(plan).toMatchObject({
+      nativeGuarantee: 'safe-superset',
+      residual: { query: { digest: expect.any(String) } }
+    })
+    expect(boundary.calls[0].argumentsValue[0]).toMatchObject({
+      value: {
+        UUIDs: { signature: 'as', value: [serviceUuid] }
+      }
+    })
+
+    await scan.stop()
+    await expect(backend.destroy()).resolves.toEqual({ state: 'released', failures: [] })
+  })
+
   test('composes the physical discovery filter, enforces one owner, and emits copied observations', async () => {
     const { backend, boundary } = await backendFixture()
     const clientId = opaqueId('scan-client', 'client', 'bluez:scan')
@@ -336,6 +364,7 @@ describe('BlueZ contract-v1 vertical slice', () => {
       signature: 'a{sv}',
       value: {
         DuplicateData: { signature: 'b', value: true },
+        Transport: { signature: 's', value: 'le' },
         Pattern: { signature: 's', value: 'Polar' },
         UUIDs: { signature: 'as', value: [serviceUuid] }
       }

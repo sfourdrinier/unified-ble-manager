@@ -28,6 +28,8 @@ import {
 } from './bluez-dbus-contract'
 import { BluezObjectStore } from './bluez-object-store'
 import type { BluezConnection } from './bluez-backend-handles'
+import { planBluezScan } from './bluez-scan-planner'
+import { trustedServiceUuidFilter } from '../scan-planning/service-uuid-scan-planner'
 import type {
   BluezGattCharacteristicRecord,
   BluezGattDescriptorRecord,
@@ -78,20 +80,24 @@ export function successfulTerminal(options: OperationOptions<string, string>): O
 }
 
 export function scanFilterVariant(options: OwnerScanOptions<string, string>): BluezVariant {
+  const effectiveFilter = trustedServiceUuidFilter(options, planBluezScan, 'bluez.scan')
   const filter: Record<string, BluezVariant> = {
-    DuplicateData: { signature: 'b', value: options.duplicatePolicy === 'all' }
+    DuplicateData: { signature: 'b', value: options.duplicatePolicy === 'all' },
+    Transport: { signature: 's', value: 'le' }
   }
-  if (options.filter.serviceUuids.length > 0) {
-    filter.UUIDs = { signature: 'as', value: Object.freeze(options.filter.serviceUuids.map(String)) }
+  if (effectiveFilter.serviceUuids.length > 0) {
+    filter.UUIDs = { signature: 'as', value: Object.freeze(effectiveFilter.serviceUuids.map(String)) }
   }
-  if (options.filter.localNamePrefix !== null) {
-    filter.Pattern = { signature: 's', value: options.filter.localNamePrefix }
+  if (effectiveFilter.localNamePrefix !== null) {
+    filter.Pattern = { signature: 's', value: effectiveFilter.localNamePrefix }
   }
   return Object.freeze({ signature: 'a{sv}', value: Object.freeze(filter) })
 }
 
 export function scanSignature(options: OwnerScanOptions<string, string>): string {
   return JSON.stringify({
+    queryDigest: options.query?.digest ?? null,
+    planDigest: options.plan?.queryDigest ?? null,
     serviceUuids: options.filter.serviceUuids.map(String),
     localNamePrefix: options.filter.localNamePrefix,
     duplicatePolicy: options.duplicatePolicy,

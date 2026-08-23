@@ -7,6 +7,8 @@ const { BackendContractError } = require('../src/backend-contract/errors')
 const { IPC_CLIENT_COMPATIBILITY_OFFER } = require('../src/ipc/protocol')
 const { monotonicTimestamp, opaqueId, version, versionRange } = require('../src/backend-contract/primitives')
 const { BUILT_IN_FEATURE_CATALOG } = require('../src/backend-contract/capabilities')
+const { normalizeScanQuery } = require('../src/public/scan-query')
+const { snapshotScanPlan } = require('../src/backend-contract/scan-planning')
 
 function negotiated(axis) {
   const selected = version(axis, axis === 'ipc-protocol' ? 2 : 1)
@@ -342,6 +344,20 @@ function released() {
   return { state: 'released', failures: [] }
 }
 
+function diagnosticPlan(query) {
+  return snapshotScanPlan({
+    sourceQuery: query,
+    queryDigest: query.digest,
+    residualQueryDigest: query.digest,
+    nativeGuarantee: 'safe-superset',
+    native: { predicates: [], complete: false },
+    residual: { query, predicates: [], complete: true },
+    unavailable: [],
+    limitations: [],
+    estimatedCost: 'high'
+  })
+}
+
 function failed(resourceKind) {
   return {
     state: 'release-failed',
@@ -421,6 +437,7 @@ function createMainFixture(managerOverrides = {}) {
     attachedBackend: { attachment: { attachment: currentAttachment } },
     identity: { versions: versions() },
     capabilities: () => [],
+    planScan: jest.fn(query => diagnosticPlan(query)),
     destroy: jest.fn(async () => ({ state: 'released', failures: [] })),
     ...managerOverrides
   }
@@ -481,12 +498,14 @@ function routeRequest(current, bootstrapValue, ordinal) {
 }
 
 function commandRequest(current, renderer, ordinal, command, payload, binaryPayload = null) {
+  const routedPayload =
+    command === 'scan.start' && payload.query === undefined ? { ...payload, query: normalizeScanQuery() } : payload
   return {
     kind: 'route',
     envelope: {
       ...routeRequest(current, renderer, ordinal).envelope,
       command,
-      payload,
+      payload: routedPayload,
       binaryPayload
     }
   }
@@ -3423,7 +3442,7 @@ describe('Electron v4 IPC boundary', () => {
     })
     await client.request({
       command: 'scan.start',
-      payload: { serviceUuids: [], manufacturerData: [], localNamePrefix: null, deadline: null },
+      payload: { query: normalizeScanQuery(), serviceUuids: [], manufacturerData: [], localNamePrefix: null, deadline: null },
       binaryPayload: null,
       signal: null
     })

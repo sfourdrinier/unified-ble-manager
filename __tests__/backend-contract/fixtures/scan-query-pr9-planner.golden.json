@@ -1,0 +1,150 @@
+[
+  {
+    "id": "match-all",
+    "query": {},
+    "observation": {
+      "localName": "Heart Strap",
+      "rssi": -42,
+      "connectable": true,
+      "serviceUuids": ["0000180d-0000-1000-8000-00805f9b34fb", "0000180f-0000-1000-8000-00805f9b34fb"],
+      "manufacturerData": [
+        { "companyId": 76, "data": { "$bytes": [2, 21, 1, 2] } },
+        { "companyId": 123, "data": { "$bytes": [9, 8] } }
+      ],
+      "serviceData": [{ "service": "0000180d-0000-1000-8000-00805f9b34fb", "data": { "$bytes": [1, 2, 3] } }]
+    },
+    "normalizedQueryDigest": "scan-query-v1:1820a704cc811a0a",
+    "expectedMatch": true
+  },
+  {
+    "id": "compound-exclusion-wins",
+    "query": {
+      "anyOf": [
+        {
+          "services": { "all": ["180d", "180f"] },
+          "names": { "prefixes": ["Heart"] },
+          "manufacturerData": {
+            "all": [{ "companyId": 76, "dataPrefix": { "$bytes": [2] } }, { "companyId": 123 }]
+          },
+          "serviceData": { "any": [{ "service": "180d", "dataPrefix": { "$bytes": [1, 2] } }] },
+          "rssi": { "minimum": -50, "maximum": -30 },
+          "connectable": true
+        },
+        { "names": { "exact": ["Other"] } }
+      ],
+      "exclude": [{ "services": { "any": ["180f"] } }]
+    },
+    "observation": {
+      "localName": "Heart Strap",
+      "rssi": -42,
+      "connectable": true,
+      "serviceUuids": ["0000180d-0000-1000-8000-00805f9b34fb", "0000180f-0000-1000-8000-00805f9b34fb"],
+      "manufacturerData": [
+        { "companyId": 76, "data": { "$bytes": [2, 21, 1, 2] } },
+        { "companyId": 123, "data": { "$bytes": [9, 8] } }
+      ],
+      "serviceData": [{ "service": "0000180d-0000-1000-8000-00805f9b34fb", "data": { "$bytes": [1, 2, 3] } }]
+    },
+    "normalizedQueryDigest": "scan-query-v1:90c526130e59a330",
+    "expectedMatch": false,
+    "platformPlans": {
+      "deterministic": {
+        "nativeServiceUuids": ["0000180d-0000-1000-8000-00805f9b34fb"],
+        "nativeGuarantee": "safe-superset"
+      }
+    }
+  },
+  {
+    "id": "masked-bytes-match",
+    "query": {
+      "anyOf": [
+        {
+          "manufacturerData": {
+            "any": [
+              {
+                "companyId": 76,
+                "dataPrefix": { "$bytes": [2, 16] },
+                "mask": { "$bytes": [255, 240] }
+              }
+            ]
+          },
+          "serviceData": {
+            "all": [
+              {
+                "service": "180d",
+                "dataPrefix": { "$bytes": [1, 2] },
+                "mask": { "$bytes": [255, 15] }
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "observation": {
+      "localName": "Heart Strap",
+      "rssi": -42,
+      "connectable": true,
+      "serviceUuids": ["0000180d-0000-1000-8000-00805f9b34fb", "0000180f-0000-1000-8000-00805f9b34fb"],
+      "manufacturerData": [
+        { "companyId": 76, "data": { "$bytes": [2, 21, 1, 2] } },
+        { "companyId": 123, "data": { "$bytes": [9, 8] } }
+      ],
+      "serviceData": [{ "service": "0000180d-0000-1000-8000-00805f9b34fb", "data": { "$bytes": [1, 2, 3] } }]
+    },
+    "normalizedQueryDigest": "scan-query-v1:ce5efa70f733c264",
+    "expectedMatch": true
+  },
+  {
+    "id": "masked-bytes-missing-fields-do-not-match",
+    "query": {
+      "anyOf": [
+        {
+          "manufacturerData": {
+            "any": [
+              {
+                "companyId": 76,
+                "dataPrefix": { "$bytes": [2, 16] },
+                "mask": { "$bytes": [255, 240] }
+              }
+            ]
+          },
+          "serviceData": {
+            "all": [
+              {
+                "service": "180d",
+                "dataPrefix": { "$bytes": [1, 2] },
+                "mask": { "$bytes": [255, 15] }
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "observation": {
+      "localName": "Heart Strap",
+      "rssi": -42,
+      "connectable": true,
+      "serviceUuids": ["0000180d-0000-1000-8000-00805f9b34fb", "0000180f-0000-1000-8000-00805f9b34fb"],
+      "manufacturerData": null,
+      "serviceData": null
+    },
+    "normalizedQueryDigest": "scan-query-v1:ce5efa70f733c264",
+    "expectedMatch": false
+  },
+  {
+    "id": "canonical-order-digest",
+    "query": {
+      "anyOf": [{ "services": { "any": ["180F", "180D", "180D"] }, "names": { "exact": ["A", "B"] } }]
+    },
+    "observation": {
+      "localName": "A",
+      "rssi": -42,
+      "connectable": true,
+      "serviceUuids": ["0000180d-0000-1000-8000-00805f9b34fb", "0000180f-0000-1000-8000-00805f9b34fb"],
+      "manufacturerData": [],
+      "serviceData": []
+    },
+    "normalizedQueryDigest": "scan-query-v1:5945951ada5b525a",
+    "expectedMatch": true
+  }
+]

@@ -24,7 +24,6 @@ import type {
 import type { HostNeutralBackendIdentity } from '../backend-contract/identity'
 import {
   byteLimit,
-  canonicalUuid,
   capacity,
   deadline,
   negotiateVersion,
@@ -42,6 +41,9 @@ import {
 import type { SubscriptionOptions } from '../backend-contract/operations'
 import { snapshotCapabilityDescriptors } from '../backend-contract/capabilities'
 import { snapshotSerializableRecord } from '../backend-contract/serializable'
+import { snapshotScanPlan } from '../backend-contract/scan-planning'
+import type { ScanPlan } from '../backend-contract/scan-planning'
+import { decodeIpcScanQuery, encodeIpcScanPlan } from '../ipc/scan-planning'
 import { BleManager, Connection, DiscoveredGattDatabase } from '../manager/ble-manager'
 import type {
   ElectronBleIpcEvent,
@@ -410,11 +412,28 @@ export class ElectronMainBleRouter {
     envelope: IpcEnvelope<string, Renderer, Operation>,
     controller: AbortController
   ): Promise<SerializableRecord> {
-    const serviceUuids = requiredStringArray(envelope.payload, 'serviceUuids').map(canonicalUuid)
-    const manufacturerData = requiredManufacturerFilters(envelope.payload)
-    const localNamePrefix = nullableString(envelope.payload, 'localNamePrefix')
+    const query = decodeIpcScanQuery(envelope.payload.query, 'electron-main-router.scan-query')
+    if (typeof this.manager.planScan !== 'function') {
+      throw contractError('capability.unavailable', 'scan', 'electron-main-router.scan-planner')
+    }
+    let plan: ScanPlan
+    try {
+      const planned = this.manager.planScan(query)
+      if (planned === null) {
+        throw contractError('capability.unavailable', 'scan', 'electron-main-router.scan-planner')
+      }
+      plan = snapshotScanPlan(planned)
+    } catch (error) {
+      if (error instanceof BackendContractError) throw error
+      throw contractError('protocol.violation', 'scan', 'electron-main-router.scan-plan')
+    }
+    if (plan.queryDigest !== query.digest || plan.sourceQuery.digest !== query.digest) {
+      throw contractError('protocol.violation', 'scan', 'electron-main-router.scan-plan-digest')
+    }
     const scan = await this.manager.scan({
-      filter: { serviceUuids, manufacturerData, localNamePrefix },
+      query,
+      plan,
+      filter: { serviceUuids: [], manufacturerData: [], localNamePrefix: null },
       duplicatePolicy: 'all',
       timestampPolicy: 'receipt-monotonic',
       delivery: deliveryFromPayload(envelope.payload),
@@ -424,7 +443,11 @@ export class ElectronMainBleRouter {
     })
     const handle = this.allocateHandle('scan')
     this.streams.registerScan(resources, envelope.rendererLease, handle, scan)
-    return Object.freeze({ handle })
+    return Object.freeze({
+      handle,
+      backendGeneration: String(this.manager.attachedBackend.attachment.attachment.backendGeneration),
+      plan: encodeIpcScanPlan(plan)
+    })
   }
 
   private async connect(
@@ -1203,65 +1226,6 @@ function requiredString(payload: SerializableRecord, key: string): string {
     throw contractError('protocol.malformed', 'ipc', `electron-main-router.${key}`)
   }
   return value
-}
-
-function nullableString(payload: SerializableRecord, key: string): string | null {
-  const value = payload[key]
-  if (value === null) {
-    return null
-  }
-  if (typeof value !== 'string') {
-    throw contractError('protocol.malformed', 'ipc', `electron-main-router.${key}`)
-  }
-  return value
-}
-
-function requiredStringArray(payload: SerializableRecord, key: string): readonly string[] {
-  const value = payload[key]
-  if (!Array.isArray(value)) {
-    throw contractError('protocol.malformed', 'ipc', `electron-main-router.${key}`)
-  }
-  const strings: string[] = []
-  for (const item of value) {
-    if (typeof item !== 'string') {
-      throw contractError('protocol.malformed', 'ipc', `electron-main-router.${key}`)
-    }
-    strings.push(item)
-  }
-  return Object.freeze(strings)
-}
-
-function requiredManufacturerFilters(
-  payload: SerializableRecord
-): readonly { readonly companyIdentifier: number; readonly dataPrefix: Uint8Array | null }[] {
-  const value = payload.manufacturerData
-  if (!Array.isArray(value)) {
-    throw contractError('protocol.malformed', 'ipc', 'electron-main-router.manufacturerData')
-  }
-  const filters: { readonly companyIdentifier: number; readonly dataPrefix: Uint8Array | null }[] = []
-  for (const entry of value) {
-    if (entry === null || typeof entry !== 'object' || Array.isArray(entry) || entry instanceof Uint8Array) {
-      throw contractError('protocol.malformed', 'ipc', 'electron-main-router.manufacturerData')
-    }
-    const companyIdentifier = entry.companyId
-    const dataPrefix = entry.dataPrefix
-    if (
-      typeof companyIdentifier !== 'number' ||
-      !Number.isSafeInteger(companyIdentifier) ||
-      companyIdentifier < 0 ||
-      companyIdentifier > 0xffff ||
-      (dataPrefix !== null && !(dataPrefix instanceof Uint8Array))
-    ) {
-      throw contractError('protocol.malformed', 'ipc', 'electron-main-router.manufacturerData')
-    }
-    filters.push(
-      Object.freeze({
-        companyIdentifier,
-        dataPrefix: dataPrefix === null ? null : new Uint8Array(dataPrefix)
-      })
-    )
-  }
-  return Object.freeze(filters)
 }
 
 function deliveryFromPayload(payload: SerializableRecord): SubscriptionOptions['delivery'] {
