@@ -112,6 +112,8 @@ export interface ExpoRuntimeConfiguration {
   readonly nativeModuleAvailable?: boolean
   readonly nativeConfiguration?: { readonly digest: string }
   readonly expectedConfiguration?: { readonly digest: string }
+  /** Trusted Android API level used to project pre-Android-12 scan prerequisites. */
+  readonly androidApiLevel?: number
   readonly permissions?: {
     readonly android?: {
       readonly legacyLocation?: 'auto' | 'required' | 'none'
@@ -205,6 +207,18 @@ export function mapExpoReadiness(adapter: BleAdapterState, configuration?: ExpoR
   }
   if (adapter.power !== 'on' || adapter.authorization !== 'granted') {
     return readiness(adapter, 'action-required', [])
+  }
+  if (configuration?.androidApiLevel !== undefined && configuration.androidApiLevel < 31) {
+    const legacyLocation = configuration.permissions?.android?.legacyLocation ?? 'none'
+    if (legacyLocation === 'none') {
+      return readiness(adapter, 'unavailable', [
+        {
+          kind: 'rebuild-native-app',
+          reason: 'Android API 24-30 BLE scanning requires legacy location permission, but legacyLocation is none.'
+        }
+      ])
+    }
+    return readiness(adapter, 'action-required', [{ kind: 'open-settings', target: 'location-services' }])
   }
   if (configuration?.permissions?.android?.legacyLocation === 'required') {
     return readiness(adapter, 'action-required', [{ kind: 'open-settings', target: 'location-services' }])

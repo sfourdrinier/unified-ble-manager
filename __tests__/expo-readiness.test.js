@@ -3,7 +3,7 @@ jest.mock('../src/react-native', () => ({
   createReactNativeBleManagerWithEnvironment: jest.fn()
 }))
 
-const { createExpoBleManager } = require('../src/expo')
+const { createExpoBleManager, mapExpoReadiness } = require('../src/expo')
 const { createReactNativeBleManager } = require('../src/react-native')
 
 function adapterState(overrides = {}) {
@@ -95,6 +95,37 @@ describe('Expo readiness surface', () => {
       operation: 'expo.permissions.request'
     })
     expect(manager.adapter.state).toHaveBeenCalledTimes(1)
+  })
+
+  test.each(['auto', 'required'])(
+    'does not report Android API 24-30 ready when legacyLocation is %s',
+    policy => {
+      expect(
+        mapExpoReadiness(adapterState(), {
+          androidApiLevel: 30,
+          permissions: { android: { legacyLocation: policy } }
+        })
+      ).toMatchObject({
+        state: 'action-required',
+        actions: [{ kind: 'open-settings', target: 'location-services' }]
+      })
+    }
+  )
+
+  test('does not report Android API 24-30 ready when the plugin default is explicit legacyLocation none', () => {
+    expect(mapExpoReadiness(adapterState(), { androidApiLevel: 30 })).toMatchObject({
+      state: 'unavailable',
+      actions: [{ kind: 'rebuild-native-app' }]
+    })
+  })
+
+  test('preserves the explicit legacyLocation none policy on Android 12 and later', () => {
+    expect(
+      mapExpoReadiness(adapterState(), {
+        androidApiLevel: 31,
+        permissions: { android: { legacyLocation: 'none' } }
+      })
+    ).toMatchObject({ state: 'ready', actions: [] })
   })
 
   test('openSettings is explicit and fails closed without a trusted native bridge', async () => {
