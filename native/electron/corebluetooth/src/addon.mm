@@ -210,12 +210,14 @@ typedef void (^UBMNotifyBlock)(NSData *value);
 @property(nonatomic, strong) NSMutableDictionary<NSString *, UBMNumberBlock> *pendingReadRssi;
 /** Completions for setNotifyValue:YES — resolved only in didUpdateNotificationStateFor. */
 @property(nonatomic, strong) NSMutableDictionary<NSString *, UBMVoidBlock> *pendingNotifyEnable;
+@property(nonatomic, strong) NSMutableDictionary<NSString *, UBMVoidBlock> *pendingNotifyDisable;
 @property(nonatomic, strong) NSMutableDictionary<NSString *, UBMNotifyBlock> *notifyHandlers;
 @property(nonatomic, strong) NSMutableDictionary<NSString *, UBMDataBlock> *pendingReadAt;
 @property(nonatomic, strong) NSMutableDictionary<NSString *, UBMVoidBlock> *pendingWriteAt;
 @property(nonatomic, strong) NSMutableDictionary<NSString *, UBMDataBlock> *pendingReadDescriptorAt;
 @property(nonatomic, strong) NSMutableDictionary<NSString *, UBMVoidBlock> *pendingWriteDescriptorAt;
 @property(nonatomic, strong) NSMutableDictionary<NSString *, UBMVoidBlock> *pendingNotifyEnableAt;
+@property(nonatomic, strong) NSMutableDictionary<NSString *, UBMVoidBlock> *pendingNotifyDisableAt;
 @property(nonatomic, strong) NSMutableDictionary<NSString *, UBMNotifyBlock> *notifyHandlersAt;
 /** Fired on unexpected or intentional link loss after pending ops are failed. */
 @property(nonatomic, copy, nullable) void (^disconnectHandler)(NSString *deviceId, NSError *_Nullable error);
@@ -337,12 +339,14 @@ characteristicUUID:(NSString *)characteristicUUID
     _pendingWrite = [NSMutableDictionary dictionary];
     _pendingReadRssi = [NSMutableDictionary dictionary];
     _pendingNotifyEnable = [NSMutableDictionary dictionary];
+    _pendingNotifyDisable = [NSMutableDictionary dictionary];
     _notifyHandlers = [NSMutableDictionary dictionary];
     _pendingReadAt = [NSMutableDictionary dictionary];
     _pendingWriteAt = [NSMutableDictionary dictionary];
     _pendingReadDescriptorAt = [NSMutableDictionary dictionary];
     _pendingWriteDescriptorAt = [NSMutableDictionary dictionary];
     _pendingNotifyEnableAt = [NSMutableDictionary dictionary];
+    _pendingNotifyDisableAt = [NSMutableDictionary dictionary];
     _notifyHandlersAt = [NSMutableDictionary dictionary];
     _central = [[CBCentralManager alloc] initWithDelegate:self queue:_queue options:nil];
   }
@@ -404,6 +408,14 @@ characteristicUUID:(NSString *)characteristicUUID
       if (done) done(error);
     }
   }
+  NSArray<NSString *> *disableKeys = [self.pendingNotifyDisable.allKeys copy];
+  for (NSString *key in disableKeys) {
+    if ([key hasPrefix:prefix]) {
+      UBMVoidBlock done = self.pendingNotifyDisable[key];
+      [self.pendingNotifyDisable removeObjectForKey:key];
+      if (done) done(error);
+    }
+  }
   NSArray<NSString *> *directReadKeys = [self.pendingReadAt.allKeys copy];
   for (NSString *key in directReadKeys) {
     if ([key hasPrefix:prefix]) {
@@ -447,6 +459,14 @@ characteristicUUID:(NSString *)characteristicUUID
     if ([key hasPrefix:prefix]) {
       UBMVoidBlock done = self.pendingNotifyEnableAt[key];
       [self.pendingNotifyEnableAt removeObjectForKey:key];
+      if (done) done(error);
+    }
+  }
+  NSArray<NSString *> *directDisableKeys = [self.pendingNotifyDisableAt.allKeys copy];
+  for (NSString *key in directDisableKeys) {
+    if ([key hasPrefix:prefix]) {
+      UBMVoidBlock done = self.pendingNotifyDisableAt[key];
+      [self.pendingNotifyDisableAt removeObjectForKey:key];
       if (done) done(error);
     }
   }
@@ -497,6 +517,11 @@ characteristicUUID:(NSString *)characteristicUUID
     completion(error);
   }
   [self.notifyHandlers removeAllObjects];
+  NSDictionary<NSString *, UBMVoidBlock> *notifyDisables = [self.pendingNotifyDisable copy];
+  [self.pendingNotifyDisable removeAllObjects];
+  for (UBMVoidBlock completion in notifyDisables.allValues) {
+    completion(error);
+  }
 
   NSDictionary<NSString *, UBMDataBlock> *directReads = [self.pendingReadAt copy];
   [self.pendingReadAt removeAllObjects];
@@ -528,6 +553,11 @@ characteristicUUID:(NSString *)characteristicUUID
     completion(error);
   }
   [self.notifyHandlersAt removeAllObjects];
+  NSDictionary<NSString *, UBMVoidBlock> *directNotifyDisables = [self.pendingNotifyDisableAt copy];
+  [self.pendingNotifyDisableAt removeAllObjects];
+  for (UBMVoidBlock completion in directNotifyDisables.allValues) {
+    completion(error);
+  }
 
   NSArray<UBMVoidBlock> *waiters = [self.powerWaiters copy];
   [self.powerWaiters removeAllObjects];
@@ -1280,7 +1310,17 @@ characteristicUUID:(NSString *)characteristicUUID
     }
     if (p) {
       CBCharacteristic *ch = [self findChar:p serviceUUID:serviceUUID charUUID:characteristicUUID];
-      if (ch) [p setNotifyValue:NO forCharacteristic:ch];
+      if (ch) {
+        UBMVoidBlock priorDisable = self.pendingNotifyDisable[key];
+        if (priorDisable) {
+          priorDisable([NSError errorWithDomain:@"UBMCoreBluetooth"
+                                             code:409
+                                         userInfo:@{NSLocalizedDescriptionKey : @"Notify disable superseded by a new stopNotify"}]);
+        }
+        self.pendingNotifyDisable[key] = completion;
+        [p setNotifyValue:NO forCharacteristic:ch];
+        return;
+      }
     }
     completion(nil);
   });
@@ -1319,8 +1359,14 @@ characteristicUUID:(NSString *)characteristicUUID
                                   code:410
                               userInfo:@{NSLocalizedDescriptionKey : @"Notify enable cancelled by stopNotify"}]);
     }
+    UBMVoidBlock priorDisable = self.pendingNotifyDisableAt[key];
+    if (priorDisable) {
+      priorDisable([NSError errorWithDomain:@"UBMCoreBluetooth"
+                                         code:409
+                                     userInfo:@{NSLocalizedDescriptionKey : @"Notify disable superseded by a new stopNotify"}]);
+    }
+    self.pendingNotifyDisableAt[key] = completion;
     [peripheral setNotifyValue:NO forCharacteristic:characteristic];
-    completion(nil);
   });
 }
 
@@ -1634,6 +1680,20 @@ characteristicUUID:(NSString *)characteristicUUID
                                           error:(NSError *)error {
   NSString *deviceId = peripheral.identifier.UUIDString;
   NSString *directKey = [self directCharacteristicKey:deviceId characteristic:characteristic];
+  UBMVoidBlock directDisableDone = self.pendingNotifyDisableAt[directKey];
+  if (directDisableDone) {
+    [self.pendingNotifyDisableAt removeObjectForKey:directKey];
+    if (error) {
+      directDisableDone(error);
+    } else if (characteristic.isNotifying) {
+      directDisableDone([NSError errorWithDomain:@"UBMCoreBluetooth"
+                                              code:412
+                                          userInfo:@{NSLocalizedDescriptionKey : @"CCCD disable did not settle"}]);
+    } else {
+      directDisableDone(nil);
+    }
+    return;
+  }
   UBMVoidBlock directEnableDone = self.pendingNotifyEnableAt[directKey];
   if (directEnableDone) {
     [self.pendingNotifyEnableAt removeObjectForKey:directKey];
@@ -1655,6 +1715,21 @@ characteristicUUID:(NSString *)characteristicUUID
   NSString *sUUID = NormalizeUUID(characteristic.service.UUID.UUIDString);
   NSString *cUUID = NormalizeUUID(characteristic.UUID.UUIDString);
   NSString *key = [self notifyKey:deviceId service:sUUID char:cUUID];
+
+  UBMVoidBlock disableDone = self.pendingNotifyDisable[key];
+  if (disableDone) {
+    [self.pendingNotifyDisable removeObjectForKey:key];
+    if (error) {
+      disableDone(error);
+    } else if (characteristic.isNotifying) {
+      disableDone([NSError errorWithDomain:@"UBMCoreBluetooth"
+                                     code:412
+                                 userInfo:@{NSLocalizedDescriptionKey : @"CCCD disable did not settle"}]);
+    } else {
+      disableDone(nil);
+    }
+    return;
+  }
 
   UBMVoidBlock enableDone = self.pendingNotifyEnable[key];
   if (!enableDone) return;

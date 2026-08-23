@@ -378,6 +378,50 @@ describe('CoreBluetooth late-operation quarantine', () => {
     }
   })
 
+  test('retains and schedules failed notification cleanup after unexpected disconnect', async () => {
+    jest.useFakeTimers()
+    try {
+      const { backend, boundary } = await fixture()
+      const peerId = await observedPeerId(backend)
+      const lease = await backend.connections.connect(
+        peerId,
+        opaqueId('disconnect-notify-retry', 'client', 'corebluetooth:disconnect-notify-retry'),
+        operation()
+      )
+      const database = await backend.gatt.discover(lease.connection, operation())
+      const characteristic = (await database.snapshot()).characteristics[0].path
+      await database.subscribe(characteristic, { ...operation(), delivery: delivery() })
+      const nativeStopNotify = boundary.stopNotify.bind(boundary)
+      let stopNotifyCalls = 0
+      boundary.stopNotify = async address => {
+        stopNotifyCalls += 1
+        if (stopNotifyCalls === 1) {
+          throw new Error('The disconnect notification cleanup failed')
+        }
+        return nativeStopNotify(address)
+      }
+
+      boundary.forceDisconnect('native-polar-h10')
+      await flushMicrotasks()
+      expect(stopNotifyCalls).toBe(1)
+      expect(backend.resourceCounters()).toMatchObject({ physicalCccdEnablements: 1, subscriptionConsumers: 0 })
+      expectConsoleErrorMatching(
+        '[CoreBluetoothBackend.handleDisconnect] Subscription cleanup requires retry:',
+        expect.any(Array)
+      )
+
+      jest.advanceTimersByTime(100)
+      await flushMicrotasks()
+      expect(stopNotifyCalls).toBe(2)
+      expect(backend.resourceCounters()).toMatchObject({ physicalCccdEnablements: 0, subscriptionConsumers: 0 })
+
+      await expect(lease.release()).resolves.toEqual({ state: 'released', failures: [] })
+      await expect(backend.destroy()).resolves.toEqual({ state: 'released', failures: [] })
+    } finally {
+      jest.useRealTimers()
+    }
+  })
+
   test('retries adapter-loss cleanup automatically after native settlement and adapter recovery', async () => {
     jest.useFakeTimers()
     const stopGate = deferred()

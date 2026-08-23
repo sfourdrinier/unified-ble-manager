@@ -307,6 +307,7 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
   private adapterLossPending = false
   private adapterLossActive = false
   private adapterLossRetryScheduled = false
+  private readonly connectionLossRetryTimers = new WeakMap<ConnectionRecord, ReturnType<typeof setTimeout>>()
   private scanGroup: ScanGroup | null = null
   private nextPeer = 1
   private nextScan = 1
@@ -938,9 +939,13 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
             '[CoreBluetoothBackend.handleDisconnect] Subscription cleanup requires retry:',
             cleanup.failures
           )
+          this.scheduleConnectionLossSubscriptionRetry(record)
         }
       },
-      error => console.error('[CoreBluetoothBackend.handleDisconnect] Subscription cleanup rejected:', error)
+      error => {
+        console.error('[CoreBluetoothBackend.handleDisconnect] Subscription cleanup rejected:', error)
+        this.scheduleConnectionLossSubscriptionRetry(record)
+      }
     )
     const attachment = this.attachment()
     this.broadcastEvent({
@@ -1165,6 +1170,26 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
       })
     }
     record.readinessWatchClosures.clear()
+  }
+  private scheduleConnectionLossSubscriptionRetry(record: ConnectionRecord): void {
+    if (this.destroyed || this.admissionClosed || this.connectionLossRetryTimers.has(record)) {
+      return
+    }
+    const retry = setTimeout(() => {
+      this.connectionLossRetryTimers.delete(record)
+      this.removeConnectionSubscriptions(record, 'connection-lost').then(
+        cleanup => {
+          if (cleanup.state === 'release-failed') {
+            console.error(
+              '[CoreBluetoothBackend.handleDisconnect] Subscription cleanup retry requires retry:',
+              cleanup.failures
+            )
+          }
+        },
+        error => console.error('[CoreBluetoothBackend.handleDisconnect] Subscription cleanup retry rejected:', error)
+      )
+    }, 100)
+    this.connectionLossRetryTimers.set(record, retry)
   }
   private async removeConnectionSubscriptions(
     record: ConnectionRecord,

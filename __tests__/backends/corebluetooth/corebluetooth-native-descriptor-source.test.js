@@ -23,4 +23,23 @@ describe('CoreBluetooth native descriptor boundary source', () => {
     expect(bridgeSource).toContain('readDescriptor: address =>')
     expect(bridgeSource).toContain('writeDescriptor: (address, bytes) =>')
   })
+
+  test('settles occurrence-addressed notification disable only from the CoreBluetooth state callback', () => {
+    expect(addonSource).toContain('pendingNotifyDisableAt')
+    const radioImplementation = addonSource.indexOf('@implementation UBMRadio')
+    const stopNotifyAtStart = addonSource.indexOf('- (void)stopNotifyAt:', radioImplementation)
+    const stopNotifyAt = addonSource.slice(
+      stopNotifyAtStart,
+      addonSource.indexOf('- (void)centralManagerDidUpdateState:', stopNotifyAtStart)
+    )
+    expect(stopNotifyAt).toContain('self.pendingNotifyDisableAt[key] = completion;')
+    expect(stopNotifyAt).not.toContain('completion(nil);')
+
+    const notificationStateCallback = addonSource.slice(
+      addonSource.indexOf('didUpdateNotificationStateForCharacteristic:'),
+      addonSource.indexOf('\n@end', addonSource.indexOf('didUpdateNotificationStateForCharacteristic:'))
+    )
+    expect(notificationStateCallback).toContain('UBMVoidBlock directDisableDone = self.pendingNotifyDisableAt[directKey];')
+    expect(notificationStateCallback).toContain('directDisableDone(error);')
+  })
 })
