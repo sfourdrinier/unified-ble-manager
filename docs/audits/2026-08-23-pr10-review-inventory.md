@@ -1,7 +1,7 @@
 # PR10 review inventory
 
 Target branch: `feat/expo-first-class-host`
-Implementation receipts anchor: `f8c7a48f3f6c9063dda0c412f3ec0e76a8ebe99e` (the current tip adds only this ledger correction).
+Implementation receipts anchor: `f8c7a48f3f6c9063dda0c412f3ec0e76a8ebe99e` (historical implementation receipt; remediation commits are listed below).
 Base: `a252b5a7d6e09147ccd7fa636facab6ad2996ea6`
 Milestone: first-class Expo host, staged as PR10A–PR10D
 
@@ -13,7 +13,7 @@ This is a live disposition ledger. A finding is not closed by a test-only change
 | F10-002 | Expo plugin accepted the RC1 flat/five-field configuration and did not reconcile removals safely.                        | `plugin/src/expoPluginSchema.ts` is the canonical v2 validator; `plugin/src/withBLE.ts` stores app-facing restoration id/generation and removes stale managed keys.                                                                                                                   | Addressed in source; focused plugin tests 30/30 and plugin build pass.                                                                      | Full package gate, prebuild snapshots, and native manifest/Info.plist verification.                                                |
 | F10-003 | Expo factory was a fail-closed stub with no readiness surface.                                                           | `src/expo.ts` delegates to RN, exposes additive readiness/permission/settings surfaces, checks development-build/native configuration inputs, and fails permission requests closed without a trusted bridge.                                                                          | Addressed as a deterministic host surface; runtime permission/settings bridges remain explicit injection points and never fabricate grants. | Packed Expo consumer proof, native module runtime checks, and no fabricated permission claims.                                     |
 | F10-004 | No Strict-Mode-safe React provider/hooks subpath existed.                                                                | `src/react.ts`, `./react`, provider-scoped lease tests, readiness/discovery/connection/characteristic hooks, and API report now exist.                                                                                                                                                | Addressed in the current hook surface; physical-radio behavior and hook integration remain host evidence, not deterministic proof.          | React lifecycle and hook teardown tests, API report, packed type/loadability proof.                                                |
-| F10-005 | The Expo example did not consume the Expo factory or expose plan/readiness/diagnostics flows.                            | `example-expo` now uses `unified-ble-manager/expo`, v2 plugin configuration, dashboard readiness/plan/resource diagnostics, restoration claim, and redacted support-bundle projection. SDK 57 typecheck, CNG prebuild, and Android debug APK build pass.                              | Partially addressed; full multi-screen diagnostics/restoration harness remains open.                                                        | Example typecheck, CNG prebuild, Android/iOS build, and packed tarball consumer proof.                                             |
+| F10-005 | The Expo example did not consume the Expo factory or expose plan/readiness/diagnostics flows.                            | `example-expo` now uses `unified-ble-manager/expo`, v2 plugin configuration, dashboard readiness/plan/resource diagnostics, a dashboard path to the diagnostics/restoration screen, and redacted support-bundle projection. SDK 57 typecheck, CNG prebuild, and Android debug APK build pass. | Addressed for deterministic source/example surfaces; iOS/native and physical-radio qualification remains explicitly open. | Example typecheck, CNG prebuild, Android/iOS build, and packed tarball consumer proof. |
 | F10-006 | The supplied `runner-public-scenarios.ts` explicit result annotations were suspected of causing artifact build failures. | Current source contains explicit `SecurityCancelPairingResult`/`SecurityPairResult` annotations for the cancellation scenario.                                                                                                                                                        | Verified; no logic change required.                                                                                                         | Typecheck and `prepack` must remain green.                                                                                         |
 | F10-007 | Android foreground-service/CDM and native restoration execution are not yet implemented by the current partial diff.     | Android now has a metadata-gated `BlePlxForegroundService`, acknowledged promotion, persisted session-intent restart policy, ref-counted leases, a Companion Device Manager system-UI bridge returning `associated` metadata only, and the Expo no-argument native restoration claim. | Partially addressed; physical/native host evidence remains open.                                                                            | Android Gradle/unit gate, Expo association/restoration contract tests, Apple CI/full host build, and explicit support limitations. |
 
@@ -26,9 +26,40 @@ the no-argument native restoration claim. Their remaining qualification is
 Apple/full-host and physical-evidence scope, not missing deterministic source
 surfaces.
 
-## Current passing focused gates
+## Frozen Codex round-1 findings at `a0ac1a0255553982719ae0bfc1dc4dec3e969f62`
 
-- `pnpm test:plugin`: 30 tests passed.
+These entries are pinned to the reviewed commit and remain open until current-source verification, focused regression evidence, and the relevant package/native gate agree. The inline comment IDs are retained so every disposition can be replied to and resolved on the PR.
+
+| ID | Inline comment | Finding | Current disposition |
+| --- | --- | --- | --- |
+| F10-CODEX-001 | `3838605160` | Foreground-service reconciliation removes generic `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_CONNECTED_DEVICE`, and `POST_NOTIFICATIONS` declarations that may belong to other plugins when BLE background mode is disabled. | Addressed by `ebd5c3d`; ownership regression tests pass in the focused plugin lane. |
+| F10-CODEX-002 | `3838605162` | The expanded native control surface still negotiates native protocol v2, so an older v2 development build may handshake and fail later on newly added methods. | Addressed by `000af50`: native record protocol remains v2, while `controlSurface: 2` is required before execution-runtime installation. |
+| F10-CODEX-003 | `3838605165` | Lowercase-only application-ID validation rejects valid mixed-case iOS bundle identifiers returned unchanged by the native host. | Addressed by `e235528`; mixed-case regression and restoration suite pass. |
+| F10-CODEX-004 | `3838605170` | The React scan dependency key omits `timeoutMs` and `AbortSignal` identity, allowing stale operation controls after rerender. | Addressed by `c80c0f9` and `bd6312f`; scan and characteristic operation-control regressions pass. |
+| F10-CODEX-005 | `3838605175` | BLE hardware-feature reconciliation removes host-authored `android.hardware.bluetooth_le` declarations when `requiredHardware` is false or omitted. | Addressed by `ebd5c3d`; host-authored feature preservation regression passes. |
+
+## Frozen follow-up review findings
+
+The following findings came from the independent PR10 plan/documentation and adversarial reviews against the pre-remediation source. They remain tracked until current-source verification proves a fix or records a reasoned exclusion.
+
+| ID | Finding | Current disposition |
+| --- | --- | --- |
+| F10-REVIEW-001 | The ledger overstated PR10 readiness and did not distinguish hosted CI, local gates, skipped Apple compile, and post-merge/RC4 gates. | Addressed in this ledger update; the new remediation SHA still requires a fresh hosted run, Apple label gate, merge, post-merge main CI, and RC4 admission. |
+| F10-REVIEW-002 | Packed proof covered tarball exports/types but not a packed Expo app or EAS build. | Addressed by `3ee21a7`; claims are narrowed to packed export/type/loadability proof and source-tree CNG/Android evidence, with EAS/iOS/physical limits explicit. |
+| F10-REVIEW-003 | The diagnostics screen was routed but lacked a normal dashboard navigation path. | Addressed by `51d4a7511730ad8cbbd18cbce6c76edf0e0fc96a`; recheck current example regression and typecheck. |
+| F10-REVIEW-004 | Expo v2 onboarding was presented as current while the immutable package identity remained `4.0.0-rc.3`. | Addressed by `3ee21a7`; docs bind v2 onboarding to PR10/RC4 and do not mutate RC3. |
+| F10-REVIEW-005 | The public `unified-ble-manager/react` subpath was absent from the main onboarding/API navigation and packed consumer proof. | Addressed by `3ee21a7`; public docs and packed React loadability/type coverage now exist. |
+| F10-REVIEW-006 | `useCharacteristicValue` serialized options with `JSON.stringify`, losing `AbortSignal` identity and retaining stale operation controls. | Addressed by `bd6312f`; identity-aware regression coverage passes. |
+| F10-REVIEW-007 | Android foreground-service invalidation could abandon cleanup ownership if registry close failed. | Addressed by `2fafb73`; Android failure-path tests and full JVM suite pass. |
+| F10-REVIEW-008 | Expo native configuration digest validation was fail-open when one side was absent, and the direct factory path lacked the required pre-radio check. | Addressed by `c06f82c`; fail-closed and location-policy regressions pass. |
+| F10-REVIEW-009 | Companion association could leave a stale pending promise after synchronous failure. | Addressed by `2fafb73`; association failure-path regression passes. |
+| F10-REVIEW-010 | Expo readiness could report ready despite `legacyLocation: 'required'` because the model exposed only Bluetooth permission state. | Addressed by `c06f82c`; readiness returns truthful location-settings guidance without fabricating grants. |
+| F10-REVIEW-011 | The Apple boundary inherited an Android-only effective-MTU operation without an explicit fail-closed capability guard. | Addressed by `ace039f`; Apple boundary regression and focused native suites pass. |
+| F10-REVIEW-012 | The StrictMode regression test did not invoke the first cleanup, so it did not exercise the actual setup/cleanup sequence. | Addressed by `bd6312f`; test now executes setup → first cleanup → setup. |
+
+## Previously retained receipts
+
+- `pnpm test:plugin`: 30 tests passed before the review-remediation commits (the remediation lane separately passed 34 tests).
 - `pnpm build:plugin`: passed.
 - `pnpm native-protocol:check`: passed.
 - `pnpm lint`: passed after formatting and the restoration-factory const fix.
@@ -47,9 +78,10 @@ surfaces.
 
 ## Remaining release gates
 
-The PR10 branch is not ready for review or RC4. Remaining gates are the Apple
+The PR10 branch is not ready for merge or RC4 until the remediation tip has a
+fresh full local gate run and hosted CI. Remaining gates are the Apple
 full-module/Expo host build (the local Swift harness is not that proof), fresh
-adversarial review of the post-fix SHA, GitHub Actions, and the required
-two-round PR review cycle. Local deterministic package, artifact, packed,
-performance, Android, CDM, Expo CNG, and protocol gates are passing at their
-verified scopes.
+adversarial review of the post-fix SHA, the `ci:apple`-labeled GitHub Actions
+run, the required two-round PR review cycle, merge, post-merge `main` CI, and
+RC4 admission. Existing receipts remain historical until re-run against the
+current tip; no physical-radio or EAS evidence is claimed.
