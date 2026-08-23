@@ -1,11 +1,31 @@
-const { normalizeScanQuery } = require('../../../src/public/scan-query')
-const { BluezScanPlanner, diagnosticBluezScanPlan } = require('../../../src/backends/bluez/bluez-scan-planner')
+const {
+  normalizeScanObservation,
+  normalizeScanQuery,
+  observationMatchesScanQuery
+} = require('../../../src/public/scan-query')
+const {
+  BluezScanPlanner,
+  bluezScanPlanningContext,
+  diagnosticBluezScanPlan
+} = require('../../../src/backends/bluez/bluez-scan-planner')
 const { scanFilterVariant } = require('../../../src/backends/bluez/bluez-runtime-models')
+const vectors = require('../../backend-contract/fixtures/scan-query-pr9-planner.golden.json')
 
 const context = {
   backendId: 'bluez',
   platformId: 'bluez-test',
   availableObservationFields: ['peerReference', 'localName', 'rssi', 'connectable', 'serviceUuids']
+}
+
+function hydrate(value) {
+  if (value !== null && typeof value === 'object' && value.$bytes !== undefined) {
+    return new Uint8Array(value.$bytes)
+  }
+  if (Array.isArray(value)) return value.map(item => hydrate(item))
+  if (value !== null && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, hydrate(entry)]))
+  }
+  return value
 }
 
 describe('BlueZ scan planner', () => {
@@ -73,6 +93,24 @@ describe('BlueZ scan planner', () => {
     ).toThrow('invalid BlueZ scan planning context')
   })
 
+  test('reports peer predicates unavailable for the actual BlueZ observation shape', () => {
+    const query = normalizeScanQuery({
+      anyOf: [
+        {
+          peers: [{ version: 1, backendId: 'bluez', scope: 'system', opaqueId: 'peer-1' }]
+        }
+      ]
+    })
+    const execution = new BluezScanPlanner().plan(query, bluezScanPlanningContext)
+
+    expect(execution.unavailable).toContainEqual({
+      clauseSet: 'anyOf',
+      clauseIndex: 0,
+      field: 'peers',
+      operator: 'equals'
+    })
+  })
+
   test.each([
     ['no positive clauses', {}],
     ['services.any', { anyOf: [{ services: { any: ['180d'] } }] }],
@@ -118,5 +156,21 @@ describe('BlueZ scan planner', () => {
     })
     const execution = new BluezScanPlanner().plan(query, context)
     expect(execution.limitations).toHaveLength(32)
+  })
+
+  test('keeps every canonical match in the BlueZ native superset', () => {
+    for (const vector of vectors) {
+      const query = normalizeScanQuery(hydrate(vector.query))
+      const observation = normalizeScanObservation(hydrate(vector.observation))
+      const execution = new BluezScanPlanner().plan(query, context)
+      const nativeAccepts =
+        execution.nativeFilter.serviceUuids.length === 0 ||
+        (observation.serviceUuids !== null &&
+          execution.nativeFilter.serviceUuids.every(uuid => observation.serviceUuids.includes(uuid)))
+      const optimizedMatch = nativeAccepts && observationMatchesScanQuery(execution.residual.query, observation)
+
+      expect(optimizedMatch).toBe(vector.expectedMatch)
+      if (vector.expectedMatch) expect(nativeAccepts).toBe(true)
+    }
   })
 })
