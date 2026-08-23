@@ -107,6 +107,13 @@ The subsequent exact-source native/consumer review found additional ownership an
 - Plugin suite: 40/40; Android manifest guard, classic Android build, and Expo APK build passed.
 - Location-policy proof: active library manifest contributes no coarse/fine location permissions; classic RN manifest ownership remains explicit.
 
+## Current integrated source tip `98a5fd98a904cabcf28c142771ca0aa6f7abac9a`
+
+- `pnpm test:package`: 156 suites / 1,512 tests passed.
+- Plugin suite: 42 tests passed; typecheck/lint/prepack/release-artifact checks passed.
+- Android association/API/lifecycle/Service Changed and Apple service-change harnesses passed at their focused scopes.
+- Packed Expo/React/Tauri proof, pack-install smoke, and G6A deterministic proof passed from tarball; physical radio/EAS evidence absent.
+
 ## Final local verification receipts at `707e3c9`
 
 - `pnpm typecheck`, `pnpm lint`, `pnpm test:plugin`: passed; plugin 35/35.
