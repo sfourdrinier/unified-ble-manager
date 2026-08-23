@@ -550,6 +550,7 @@ public final class OwnedCoreBluetoothProtocolRadio: NSObject, CBPeripheralDelega
 
   public func peripheral(_ peripheral: CBPeripheral, didModifyServices invalidatedServices: [CBService]) {
     let identifier = peripheral.identifier.uuidString
+    clearNotificationOwnership(forPeerIdentifier: identifier)
     servicesByPeer.removeValue(forKey: identifier)
     pendingDiscovery.removeValue(forKey: identifier)?.completion(
       nil,
@@ -795,6 +796,25 @@ public final class OwnedCoreBluetoothProtocolRadio: NSObject, CBPeripheralDelega
       characteristicUUID: OwnedCoreBluetoothProtocolRadioSupport.normalizedUUID(characteristic.uuid.uuidString),
       characteristicOccurrence: characteristicOccurrence
     )
+  }
+  private func clearNotificationOwnership(forPeerIdentifier peerIdentifier: String) {
+    var notificationAddresses = Set(subscriptions.keys.filter { $0.peerIdentifier == peerIdentifier })
+    notificationAddresses.formUnion(pendingNotify.keys.filter { $0.peerIdentifier == peerIdentifier })
+    for cleanup in pendingCancellationCleanup.values {
+      notificationAddresses.formUnion(cleanup.notificationDesiredStates.keys.filter { $0.peerIdentifier == peerIdentifier })
+    }
+    for address in notificationAddresses {
+      if let resolved = resolve(address) { resolved.peripheral.setNotifyValue(false, for: resolved.characteristic) }
+    }
+    subscriptions = subscriptions.filter { $0.key.peerIdentifier != peerIdentifier }
+    for (operationIdentifier, var cleanup) in pendingCancellationCleanup {
+      cleanup.notificationDesiredStates = cleanup.notificationDesiredStates.filter { $0.key.peerIdentifier != peerIdentifier }
+      cleanup.notificationAwaitingCallbacks = cleanup.notificationAwaitingCallbacks.filter { $0.peerIdentifier != peerIdentifier }
+      if cleanup.peerIdentifiers.isEmpty && cleanup.notificationDesiredStates.isEmpty {
+        pendingCancellationCleanup.removeValue(forKey: operationIdentifier)
+        pendingCancellationCleanupRetryScheduled.remove(operationIdentifier)
+      } else { pendingCancellationCleanup[operationIdentifier] = cleanup }
+    }
   }
 
   private func failPendingGATT(for peerIdentifier: String, error: NSError?) {
