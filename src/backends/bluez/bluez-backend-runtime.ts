@@ -1016,7 +1016,8 @@ export class BluezBackendRuntime implements BluezObjectStoreObserver {
     const failures: CleanupFailure[] = []
     failures.push(...(await captureCleanup(destroyBluezScan(this), 'scan', 'bluez.destroy.scan')).failures)
     for (const physical of [...this.physicalSubscriptions.values()]) {
-      for (const consumer of physical.consumers) {
+      const records = [...new Set([...physical.consumers, ...physical.pendingRemovals])]
+      for (const consumer of records) {
         consumer.stream.closeWithReason('owner-released')
       }
       const cleanup = await captureCleanup(
@@ -1026,10 +1027,11 @@ export class BluezBackendRuntime implements BluezObjectStoreObserver {
       )
       failures.push(...cleanup.failures)
       if (cleanup.state === 'released') {
-        for (const consumer of physical.consumers) {
+        for (const consumer of records) {
           consumer.removed = true
         }
         physical.consumers.clear()
+        physical.pendingRemovals.clear()
       }
     }
     for (const record of this.connectionRecords.values()) {
