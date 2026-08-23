@@ -263,6 +263,48 @@ describe('Expo factory', () => {
     expect(control.associateCompanionDevice).toHaveBeenCalledWith({ name: 'Sensor' })
   })
 
+  test('claims native restoration through the app-facing no-argument surface', async () => {
+    const control = {
+      claimRestoration: jest.fn().mockResolvedValue({
+        receiptId: 'receipt-1',
+        outcome: 'adopted',
+        boundClientId: 'opaque-client',
+        adoptionEpoch: 'epoch-1',
+        replayRecordCount: 1,
+        records: [
+          {
+            recordVersion: 1,
+            namespaceValue: 'opaque-namespace',
+            attachmentId: 'attachment',
+            backendInstanceId: 'backend',
+            backendGeneration: 'generation',
+            adapterId: 'adapter',
+            adapterGeneration: 'adapter-generation',
+            ordinal: 1,
+            adoptionEpoch: 'epoch-1',
+            kind: 'connection',
+            peerId: 'peer',
+            connectionId: 'connection',
+            ownerLeaseId: 'owner',
+            connectionGeneration: 'connection-generation'
+          }
+        ]
+      })
+    }
+    const manager = { adapter: { state: jest.fn().mockResolvedValue(adapterState()) } }
+    createReactNativeBleManagerWithEnvironment.mockResolvedValue(manager)
+
+    const result = await createExpoBleManagerWithEnvironment(
+      environment({ executionEnvironment: 'development-build', nativeModuleAvailable: true }, control)
+    )
+    await expect(result.restoration.claim()).resolves.toEqual({
+      outcome: 'adopted',
+      replayRecordCount: 1,
+      records: [{ kind: 'connection', ordinal: 1, peerId: 'peer' }]
+    })
+    expect(control.claimRestoration).toHaveBeenCalledTimes(1)
+  })
+
   test('normalizes actionable native foreground-service failures', async () => {
     const nativeFailure = Object.assign(new Error('Rebuild with configured notification metadata.'), {
       code: 'foregroundServiceNotConfigured'

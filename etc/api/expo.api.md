@@ -15,6 +15,12 @@ export interface ExpoBleManager extends BleManager {
   readonly background: {
     readonly acquire: (request: ExpoBackgroundRequest) => Promise<ExpoBackgroundLease>
   }
+  readonly association: {
+    readonly associate: (request?: ExpoCompanionAssociationRequest) => Promise<ExpoCompanionAssociationResult>
+  }
+  readonly restoration: {
+    readonly claim: () => Promise<ExpoRestorationClaimResult>
+  }
 }
 ```
 ## Verified exported symbols
@@ -34,6 +40,8 @@ export interface ExpoBleManager extends BleManager {
 - `ExpoPermissionBridge`
 - `ExpoPermissionRequest`
 - `ExpoPermissionResult`
+- `ExpoRestorationClaimResult`
+- `ExpoRestoredRecord`
 - `ExpoRuntimeConfiguration`
 - `ExpoSettingsBridge`
 - `ExpoSettingsTarget`

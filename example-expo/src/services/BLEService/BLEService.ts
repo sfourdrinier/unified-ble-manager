@@ -84,6 +84,10 @@ class CanonicalBleExampleService {
     return (await this.ensureManager()).readiness()
   }
 
+  async claimRestoration() {
+    return (await this.ensureManager()).restoration.claim()
+  }
+
   diagnosticsSnapshot() {
     return this.manager?.diagnostics.snapshot() ?? null
   }

@@ -64,6 +64,24 @@ export interface ExpoCompanionAssociationResult {
   readonly displayName: string | null
 }
 
+export interface ExpoRestoredRecord {
+  readonly kind: 'adapter' | 'connection'
+  readonly ordinal: number
+  readonly peerId: string | null
+}
+
+export interface ExpoRestorationClaimResult {
+  readonly outcome:
+    | 'adopted'
+    | 'already-consumed'
+    | 'attachment-mismatch'
+    | 'backend-mismatch'
+    | 'namespace-mismatch'
+    | 'epoch-mismatch'
+  readonly replayRecordCount: number
+  readonly records: readonly ExpoRestoredRecord[]
+}
+
 export interface ExpoBleManager extends BleManager {
   readonly readiness: () => Promise<BleReadiness>
   readonly permissions: {
@@ -75,6 +93,9 @@ export interface ExpoBleManager extends BleManager {
   }
   readonly association: {
     readonly associate: (request?: ExpoCompanionAssociationRequest) => Promise<ExpoCompanionAssociationResult>
+  }
+  readonly restoration: {
+    readonly claim: () => Promise<ExpoRestorationClaimResult>
   }
 }
 
@@ -112,7 +133,8 @@ export async function createExpoBleManager(options: BleManagerCreateOptions = {}
       undefined,
       undefined,
       nativeBackgroundControl(),
-      nativeAssociationControl()
+      nativeAssociationControl(),
+      nativeRestorationControl()
     )
   } catch (error) {
     throw rehydratePublicError(error)
@@ -130,6 +152,7 @@ export async function createExpoBleManagerWithEnvironment(
       await createPublicBleManager(internal, environment.now),
       expo?.settingsBridge,
       expo?.permissionBridge,
+      environment.control,
       environment.control,
       environment.control
     )
@@ -185,7 +208,8 @@ function withExpoRuntime(
   settingsBridge?: ExpoSettingsBridge,
   permissionBridge?: ExpoPermissionBridge,
   backgroundControl?: Pick<import('./NativeUnifiedBleProtocolControl').Spec, 'acquireBackground' | 'releaseBackground'>,
-  associationControl?: Pick<import('./NativeUnifiedBleProtocolControl').Spec, 'associateCompanionDevice'>
+  associationControl?: Pick<import('./NativeUnifiedBleProtocolControl').Spec, 'associateCompanionDevice'>,
+  restorationControl?: Pick<import('./NativeUnifiedBleProtocolControl').Spec, 'claimRestoration'>
 ): ExpoBleManager {
   return Object.assign(manager, {
     readiness: () => getExpoBleReadiness(manager),
@@ -199,6 +223,9 @@ function withExpoRuntime(
     association: Object.freeze({
       associate: (request: ExpoCompanionAssociationRequest = {}) =>
         associateExpoCompanionDevice(request, associationControl)
+    }),
+    restoration: Object.freeze({
+      claim: () => claimExpoRestoration(restorationControl)
     })
   })
 }
@@ -317,6 +344,51 @@ async function associateExpoCompanionDevice(
   }
 }
 
+async function claimExpoRestoration(
+  control: Pick<import('./NativeUnifiedBleProtocolControl').Spec, 'claimRestoration'> | undefined
+): Promise<ExpoRestorationClaimResult> {
+  if (control === undefined) {
+    throwExpoRuntimeError(
+      'capability.unavailable',
+      'expo.restoration.claim',
+      'Native restoration adoption is unavailable on this Expo host.'
+    )
+  }
+  try {
+    const result = await control.claimRestoration()
+    return Object.freeze({
+      outcome: restorationOutcome(result.outcome),
+      replayRecordCount: result.replayRecordCount,
+      records: Object.freeze(
+        result.records.map(record =>
+          Object.freeze({ kind: record.kind, ordinal: record.ordinal, peerId: record.peerId })
+        )
+      )
+    })
+  } catch (error) {
+    throwExpoRuntimeError('capability.unavailable', 'expo.restoration.claim', errorMessage(error), errorCode(error))
+  }
+}
+
+function restorationOutcome(
+  outcome: import('./NativeUnifiedBleProtocolControl').NativeRestorationOutcome
+): ExpoRestorationClaimResult['outcome'] {
+  switch (outcome) {
+    case 'alreadyConsumed':
+      return 'already-consumed'
+    case 'attachmentMismatch':
+      return 'attachment-mismatch'
+    case 'backendMismatch':
+      return 'backend-mismatch'
+    case 'namespaceMismatch':
+      return 'namespace-mismatch'
+    case 'epochMismatch':
+      return 'epoch-mismatch'
+    case 'adopted':
+      return 'adopted'
+  }
+}
+
 function assertDirectExpoRuntime(): void {
   if (typeof getNativeUnifiedBleProtocolControl !== 'function') return
   try {
@@ -342,6 +414,16 @@ function nativeBackgroundControl():
 
 function nativeAssociationControl():
   | Pick<import('./NativeUnifiedBleProtocolControl').Spec, 'associateCompanionDevice'>
+  | undefined {
+  try {
+    return getNativeUnifiedBleProtocolControl()
+  } catch {
+    return undefined
+  }
+}
+
+function nativeRestorationControl():
+  | Pick<import('./NativeUnifiedBleProtocolControl').Spec, 'claimRestoration'>
   | undefined {
   try {
     return getNativeUnifiedBleProtocolControl()

@@ -199,6 +199,13 @@ public final class UnifiedBleProtocolControlModule extends NativeUnifiedBleProto
     }
   }
 
+  @Override
+  public synchronized void claimRestoration(Promise promise) {
+    promise.reject(
+        "unsupportedRestoration",
+        "Android does not provide a native BLE restoration journal.");
+  }
+
   private void launchAssociationUi(Activity activity, IntentSender intentSender) {
     try {
       activity.startIntentSenderForResult(

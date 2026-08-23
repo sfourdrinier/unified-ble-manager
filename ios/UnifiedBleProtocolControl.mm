@@ -615,6 +615,51 @@ RCT_EXPORT_MODULE(UnifiedBleProtocolControl)
   }
 }
 
+- (void)claimRestoration:(RCTPromiseResolveBlock)resolve
+                 reject:(RCTPromiseRejectBlock)reject {
+  if (_attachment == nil ||
+      !hasCompleteRestorationConfiguration(
+          _restorationRestoreIdentifier,
+          _restorationNamespace,
+          _restorationEpoch,
+          _restorationClientId,
+          _restorationHostSessionScope)) {
+    rejectControl(reject, @"nativeRestorationAdoption", @"The native restoration authority is not configured");
+    return;
+  }
+  try {
+    const auto receipt = _runtime->adopt({
+      .namespaceValue = nativeString(_restorationNamespace),
+      .attachmentId = nativeString(_attachment[@"attachmentId"]),
+      .expectedBackendInstanceId = nativeString(_attachment[@"backendInstanceId"]),
+      .expectedEpoch = nativeString(_restorationEpoch),
+      .nativeProtocolMinimum = static_cast<std::uint32_t>(kProtocolVersion),
+      .nativeProtocolMaximum = static_cast<std::uint32_t>(kProtocolVersion),
+      .clientId = nativeString(_restorationClientId),
+      .hostSessionScope = nativeString(_restorationHostSessionScope),
+    });
+    if (receipt.outcome == unified_ble::native_protocol::v2::NativeRestorationOutcome::adopted) {
+      [_radio consumeRestorationPeerIdentifiers];
+    }
+    NSMutableArray<NSDictionary*>* replayRecords =
+        [NSMutableArray arrayWithCapacity:receipt.records.size()];
+    for (const auto& entry : receipt.records) {
+      [replayRecords addObject:structuredRestorationReplayRecord(entry.record)];
+    }
+    resolve(@{
+      @"receiptId": [NSString stringWithUTF8String:receipt.receiptId.c_str()],
+      @"outcome": [NSString stringWithUTF8String:
+          unified_ble::native_protocol::v2::restorationOutcomeName(receipt.outcome)],
+      @"boundClientId": [NSString stringWithUTF8String:receipt.boundClientId.c_str()],
+      @"adoptionEpoch": [NSString stringWithUTF8String:receipt.adoptionEpoch.c_str()],
+      @"replayRecordCount": @(receipt.records.size()),
+      @"records": replayRecords,
+    });
+  } catch (const std::exception& error) {
+    rejectControl(reject, @"nativeRestorationAdoption", [NSString stringWithUTF8String:error.what()]);
+  }
+}
+
 - (void)closeAttachment:(JS::NativeUnifiedBleProtocolControl::NativeAttachmentIdentity &)attachment
                 resolve:(RCTPromiseResolveBlock)resolve
                  reject:(RCTPromiseRejectBlock)reject {

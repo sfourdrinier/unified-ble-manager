@@ -470,6 +470,7 @@ export interface Spec extends TurboModule {
   associateCompanionDevice(
     request: NativeCompanionAssociationRequest
   ): Promise<NativeCompanionAssociationResult>
+  claimRestoration(): Promise<NativeRestorationAdoptionControlResult>
   installExecutionRuntime(): Promise<void>
   cancelOperation(correlation: NativeOperationCorrelation): Promise<NativeCancellationControlResult>
   adoptRestoration(request: NativeRestorationAdoptionRequest): Promise<NativeRestorationAdoptionControlResult>
