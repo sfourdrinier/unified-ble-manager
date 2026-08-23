@@ -561,7 +561,7 @@ Update this section in the **same branch** as the work, before opening the GitHu
 | 5 | `feat/4.0-known-peers` | #31 | recorded in PR | 0 | `bc4a347c496e994e97cec9da06e2c0a6223a72f8` | — | **merged** |
 | 6 | `feat/4.0-connection-intents-reconnect` | #39 | recorded in PR | 0 | `f90032ea9696444d0f66dd7acf25680626e25526` | — | **merged** |
 | 7 | `feat/4.0-security-pairing` | #40 | recorded in PR | 0 | `dc4390d51295b865ea18fe597898639072ffc70d` | — | **merged** |
-| 8 | `feat/4.0-link-controls` | #41 | fresh local adversarial wave complete | 0 | — | `v4.0.0-rc.3` after merge | **github-pr-open / current-SHA CI and review pending** |
+| 8 | `feat/4.0-link-controls` | #41 | fresh local adversarial wave complete | 0 | `c319be30ad8a74b50b1e8ec1f27f4751f797f358` | `v4.0.0-rc.3` after release commit | **merged / RC3 release pending** |
 | 9 | `feat/scan-native-residual-planner` | — | 0 | 0 | — | — | blocked on 8 |
 | 10 | `feat/expo-first-class-host` | — | 0 | 0 | — | `v4.0.0-rc.4` after merge | blocked on 9 |
 | 11 | `feat/distribution-tooling-testkit` | — | 0 | 0 | — | `v4.0.0-rc.5` after merge | blocked on 10 |

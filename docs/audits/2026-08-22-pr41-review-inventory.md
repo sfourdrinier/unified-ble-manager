@@ -22,10 +22,10 @@ consumer proof remain separate gates.
 
 ## Follow-up inventory — current PR41 source
 
-Verified against implementation source tip
-`99bf789`; the serialized runtime hardening slices are `4224c0a`/`b7aa1f8`/`59cdb33`/`f31bca6`/`b27b03b` (CoreBluetooth),
+Verified against the merged implementation source at
+`c319be30ad8a74b50b1e8ec1f27f4751f797f358` (source tip `4104872`); the serialized runtime hardening slices are `4224c0a`/`b7aa1f8`/`59cdb33`/`f31bca6`/`b27b03b` (CoreBluetooth),
 `1fd13f2`/`56f5492`/`fc1c667`/`2814d2c`/`812ba53`/`b853040` (BlueZ), and `4297f7b`/`8fa029e`/`bbdf891`/`2e2acb4`/`99bf789` (WinRT). The full package gate is 142 suites /
-1,366 tests. Focused CoreBluetooth, BlueZ, WinRT, settlement, scan, and
+1,367 tests. Focused CoreBluetooth, BlueZ, WinRT, settlement, scan, and
 package-surface gates are green. Plugin is 36/36.
 
 | ID | Source/reviewer | Finding | Disposition |
@@ -95,4 +95,4 @@ Verified against the integrated source through current HEAD `f07ac04`.
 | D-3 | Final packed-consumer review | Published Expo/Tauri entrypoints were absent from packed CJS/ESM/TypeScript consumer proof. | Confirmed and fixed in `95b7cae`; export-derived Expo/Tauri tarball consumers are wired into CI and publish before G6A; local execution remains environment-blocked by npm packing. |
 | D-4 | Final generated-docs review | Generated HTML could drift from the tracked artifact without a CI failure. | Confirmed and fixed in `95b7cae`; temporary supported regeneration, repository-configured formatting, byte comparison, and root Public API boundary validation are part of `docs:check` and prepack. |
 
-Remaining release gates at this checkpoint: push the final source tree at `99bf789`, hosted Node 22/24 generic, G6A, and Expo/Tauri packed proofs at that exact source SHA, final exact-SHA adversarial review, the required external review rounds, merge PR41, then proceed to the plan’s RC3 checkpoint. Physical-radio qualification and the opt-in Apple compile lane remain separately labeled; RC2 remains immutable.
+PR41 is merged at `c319be30ad8a74b50b1e8ec1f27f4751f797f358` from source tip `4104872`. Hosted branch CI at `32611382106` and post-merge `main` CI at `32612172499` passed; the latter includes the Apple iOS/tvOS lanes. Fresh local and external review rounds are closed with no unresolved findings. Remaining release gates are the RC3 version/docs commit, exact-version hosted validation, the immutable `v4.0.0-rc.3` tag, and successful trusted publication. Physical-radio qualification remains separately labeled; RC2 remains immutable.

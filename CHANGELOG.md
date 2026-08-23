@@ -4,6 +4,21 @@ All notable changes to `unified-ble-manager` are documented here.
 
 ## [Unreleased]
 
+## [4.0.0-rc.3] - 2026-08-22
+
+Advanced central release candidate after PR8. This candidate includes known-peer directories, connection intents and reconnect supervision, pairing/security semantics, advanced link controls, write readiness, and bounded GATT recovery. Backend support labels remain evidence-derived and are not promoted by this release.
+
+### Public API and semantics
+
+- Completed the additive PR5–PR8 central features while preserving the RC2 manager, GATT, error, capability, lifecycle, and scan-query contracts.
+- Added explicit link-control observations and requests, connection-intent supervision, pairing/security result vocabulary, and safe service-change/cache-recovery behavior.
+- Preserved bytes-first payloads, `AbortSignal` cancellation, generation-bound resources, and explicit ownership/cleanup semantics across native and host boundaries.
+
+### Release integrity
+
+- Cut from the exact post-PR8 `main` merge commit through the tag-driven trusted-publishing workflow.
+- Intended for publication as a prerelease candidate on the `latest` channel; this does not promote backend support labels or claim physical-radio evidence.
+
 ## [4.0.0-rc.2] - 2026-08-21
 
 Catch-up release candidate for the frozen 4.0 portable runtime contract. This candidate is cut from the exact post-PR5 `main` commit because the planned RC2 publication was delayed; it includes the PR1–PR5 contract and peer-directory work. Backend support labels remain evidence-derived and are not promoted by this release.

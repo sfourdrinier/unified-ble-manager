@@ -8,7 +8,7 @@ This page is an evidence index, not a static compatibility matrix. An applicatio
 
 ## Package stability and backend support are separate
 
-`unified-ble-manager@4.0.0-rc.2` is the current **release-candidate package/API** for the 4.x contract. Stable
+`unified-ble-manager@4.0.0-rc.3` is the current **release-candidate package/API** for the 4.x contract. Stable
 `4.0.0` is reserved for the post-PR12 release gate.
 
 This release candidate is the portable API/semantics freeze candidate; it does **not** mean every first-party backend is
