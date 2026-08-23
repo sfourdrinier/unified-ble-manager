@@ -3,6 +3,10 @@ jest.mock('../src/react-native', () => ({
   createReactNativeBleManagerWithEnvironment: jest.fn()
 }))
 
+jest.mock('../src/expo-native-runtime', () => ({
+  getNativeUnifiedBleExpoRuntime: jest.fn()
+}))
+
 jest.mock('../src/public/ble-manager', () => ({
   createPublicBleManager: jest.fn(internal => internal)
 }))
@@ -17,6 +21,7 @@ const { contractError } = require('../src/backend-contract/errors')
 const { BleError } = require('../src/public/errors')
 const { createExpoBleManager, createExpoBleManagerWithEnvironment, mapExpoReadiness } = require('../src/expo')
 const { createReactNativeBleManager, createReactNativeBleManagerWithEnvironment } = require('../src/react-native')
+const { getNativeUnifiedBleExpoRuntime } = require('../src/expo-native-runtime')
 
 function environment(expo, control = {}) {
   return {
@@ -42,9 +47,28 @@ function adapterState(overrides = {}) {
   }
 }
 
+function trustedNativeExpoRuntime(overrides = {}) {
+  return {
+    getRuntimeConfiguration: jest.fn().mockResolvedValue({
+      platform: 'android',
+      configurationDigest: 'native-digest',
+      legacyLocationPolicy: 'none'
+    }),
+    requestPermissions: jest.fn().mockResolvedValue({
+      requested: ['bluetooth'],
+      granted: ['bluetooth'],
+      denied: [],
+      recommendedSettingsTarget: null
+    }),
+    openSettings: jest.fn().mockResolvedValue(undefined),
+    ...overrides
+  }
+}
+
 describe('Expo factory', () => {
   beforeEach(() => {
     jest.clearAllMocks()
+    getNativeUnifiedBleExpoRuntime.mockReturnValue(trustedNativeExpoRuntime())
   })
 
   test('fails in Expo Go with an actionable development-build error before RN construction', async () => {
@@ -125,6 +149,89 @@ describe('Expo factory', () => {
       constructor: BleError,
       code: 'protocol.incompatible',
       operation: 'expo.runtime.configuration'
+    })
+    expect(createReactNativeBleManager).not.toHaveBeenCalled()
+  })
+
+  test('zero-argument factory resolves the trusted native Expo runtime for Android operations', async () => {
+    const manager = {
+      adapter: { state: jest.fn().mockResolvedValue(adapterState()) }
+    }
+    const nativeRuntime = trustedNativeExpoRuntime({
+      getRuntimeConfiguration: jest.fn().mockResolvedValue({
+        platform: 'android',
+        configurationDigest: 'native-digest',
+        legacyLocationPolicy: 'none'
+      }),
+      requestPermissions: jest.fn().mockResolvedValue({
+        requested: ['bluetooth'],
+        granted: ['bluetooth'],
+        denied: [],
+        recommendedSettingsTarget: null
+      }),
+      openSettings: jest.fn().mockResolvedValue(undefined)
+    })
+    getNativeUnifiedBleExpoRuntime.mockReturnValue(nativeRuntime)
+    createReactNativeBleManager.mockResolvedValue(manager)
+
+    const result = await createExpoBleManager()
+
+    await expect(result.permissions.request({ purpose: 'scan-and-connect' })).resolves.toMatchObject({
+      granted: ['bluetooth']
+    })
+    await expect(result.openSettings('bluetooth')).resolves.toBeUndefined()
+    await expect(result.readiness()).resolves.toMatchObject({ state: 'ready' })
+    expect(nativeRuntime.getRuntimeConfiguration).toHaveBeenCalledTimes(1)
+    expect(nativeRuntime.requestPermissions).toHaveBeenCalledWith({ purpose: 'scan-and-connect' })
+    expect(nativeRuntime.openSettings).toHaveBeenCalledWith({ target: 'bluetooth' })
+  })
+
+  test('fails closed with an actionable normalized error when iOS cannot issue a standalone permission prompt', async () => {
+    const manager = {
+      adapter: { state: jest.fn().mockResolvedValue(adapterState()) }
+    }
+    const nativeRuntime = trustedNativeExpoRuntime({
+      getRuntimeConfiguration: jest.fn().mockResolvedValue({
+        platform: 'apple',
+        configurationDigest: 'native-digest'
+      }),
+      requestPermissions: jest.fn().mockRejectedValue({
+        code: 'unsupportedPermissionPrompt',
+        message: 'iOS has no standalone Bluetooth permission prompt; invoke a Bluetooth action first.'
+      }),
+      openSettings: jest.fn().mockResolvedValue(undefined)
+    })
+    getNativeUnifiedBleExpoRuntime.mockReturnValue(nativeRuntime)
+    createReactNativeBleManager.mockResolvedValue(manager)
+
+    const result = await createExpoBleManager()
+
+    await expect(result.permissions.request({ purpose: 'scan-and-connect' })).rejects.toMatchObject({
+      constructor: BleError,
+      code: 'capability.unsupported',
+      operation: 'expo.permissions.request',
+      platform: {
+        safeMessage: expect.stringContaining('standalone Bluetooth permission prompt')
+      }
+    })
+  })
+
+  test('fails closed before RN construction when the native Expo plugin marker is absent', async () => {
+    const nativeRuntime = trustedNativeExpoRuntime({
+      getRuntimeConfiguration: jest.fn().mockRejectedValue({
+        code: 'nativeConfigurationMissing',
+        message: 'The Unified BLE Expo plugin configuration marker is absent; rebuild the native app.'
+      })
+    })
+    getNativeUnifiedBleExpoRuntime.mockReturnValue(nativeRuntime)
+
+    await expect(createExpoBleManager()).rejects.toMatchObject({
+      constructor: BleError,
+      code: 'capability.unavailable',
+      operation: 'expo.runtime.configuration',
+      platform: {
+        safeMessage: expect.stringContaining('plugin configuration marker is absent')
+      }
     })
     expect(createReactNativeBleManager).not.toHaveBeenCalled()
   })
@@ -480,7 +587,9 @@ describe('Expo factory', () => {
       )
     )
 
-    await expect(result.background.acquire({ kind: 'connected-device', reason: 'active workout' })).rejects.toMatchObject({
+    await expect(
+      result.background.acquire({ kind: 'connected-device', reason: 'active workout' })
+    ).rejects.toMatchObject({
       constructor: BleError,
       code: 'protocol.malformed',
       operation: 'expo.background.acquire.result'
@@ -582,12 +691,15 @@ describe('Expo factory', () => {
     const manager = { adapter: { state: jest.fn().mockResolvedValue(adapterState()) } }
     createReactNativeBleManager.mockResolvedValue(manager)
 
-    const result = await createExpoBleManager({}, {
-      executionEnvironment: 'development-build',
-      nativeModuleAvailable: true,
-      settingsBridge,
-      permissionBridge
-    })
+    const result = await createExpoBleManager(
+      {},
+      {
+        executionEnvironment: 'development-build',
+        nativeModuleAvailable: true,
+        settingsBridge,
+        permissionBridge
+      }
+    )
 
     await result.openSettings('bluetooth')
     await result.permissions.request({ purpose: 'scan-and-connect' })

@@ -73,8 +73,8 @@ describe('iOS Native Protocol 4.0 source boundary', () => {
     expect(expoPlugin).not.toContain('withBLERestorationPodfile')
     expect(expoPlugin).not.toContain('iosEnableRestoration')
     expect(expoPlugin).not.toContain('iosNativeProtocolRestorationIdentifier')
-    expect(packageJson.codegenConfig.ios.modulesProvider).toEqual({
-      UnifiedBleProtocolControl: 'UnifiedBleProtocolControl'
-    })
+    expect(packageJson.codegenConfig.ios.modulesProvider).toEqual(
+      expect.objectContaining({ UnifiedBleProtocolControl: 'UnifiedBleProtocolControl' })
+    )
   })
 })

@@ -32,6 +32,13 @@ const BLE_HARDWARE_FEATURE_OWNERSHIP_METADATA_VALUE = 'feature=bluetooth_le'
 const COMPANION_SETUP_FEATURE_OWNERSHIP_METADATA_NAME =
   'com.sfourdrinier.unifiedblemanager.companion-device-setup-feature-ownership'
 const COMPANION_SETUP_FEATURE_OWNERSHIP_METADATA_VALUE = 'feature=companion_device_setup'
+export const EXPO_RUNTIME_CONFIGURATION_METADATA = Object.freeze({
+  marker: 'com.sfourdrinier.unifiedblemanager.expo.configuration-marker',
+  legacyLocationPolicy: 'com.sfourdrinier.unifiedblemanager.expo.legacy-location-policy',
+  neverForLocation: 'com.sfourdrinier.unifiedblemanager.expo.never-for-location',
+  requiredHardware: 'com.sfourdrinier.unifiedblemanager.expo.required-hardware'
+})
+export const EXPO_RUNTIME_CONFIGURATION_MARKER = 'unified-ble-expo-v1'
 
 export type AndroidManifestWithExtraTools = {
   manifest: Omit<InnerManifest, 'application' | 'uses-permission' | 'uses-permission-sdk-23'> & {
@@ -96,6 +103,7 @@ export function reconcileExpoAndroidManifest(
   reconcileLegacyLocationPermissions(androidManifest, options.legacyLocation, options.neverForLocation)
   reconcileBLEHardwareFeature(androidManifest, options.requiredHardware)
   reconcileCompanionSetupFeature(androidManifest)
+  reconcileRuntimeConfigurationMetadata(androidManifest, options)
   return androidManifest
 }
 
@@ -409,6 +417,16 @@ function removeMetadata(androidManifest: AndroidManifestWithExtraTools, name: st
   const remaining = metadata.filter(item => item.$?.['android:name'] !== name)
   if (remaining.length === 0) delete application['meta-data']
   else application['meta-data'] = remaining
+}
+
+function reconcileRuntimeConfigurationMetadata(
+  androidManifest: AndroidManifestWithExtraTools,
+  options: ExpoAndroidManifestOptions
+): void {
+  setMetadata(androidManifest, EXPO_RUNTIME_CONFIGURATION_METADATA.marker, EXPO_RUNTIME_CONFIGURATION_MARKER)
+  setMetadata(androidManifest, EXPO_RUNTIME_CONFIGURATION_METADATA.legacyLocationPolicy, options.legacyLocation)
+  setMetadata(androidManifest, EXPO_RUNTIME_CONFIGURATION_METADATA.neverForLocation, String(options.neverForLocation))
+  setMetadata(androidManifest, EXPO_RUNTIME_CONFIGURATION_METADATA.requiredHardware, String(options.requiredHardware))
 }
 
 function reconcileCompanionSetupFeature(androidManifest: AndroidManifestWithExtraTools): void {

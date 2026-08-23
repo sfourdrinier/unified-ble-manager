@@ -167,6 +167,7 @@ describe('Expo iOS reconciliation', () => {
     expect(configured.UnifiedBlePluginBluetoothAlwaysUsageDescriptionOwnership).toBe(
       validOptions.permissions.bluetoothAlways
     )
+    expect(configured.UnifiedBlePluginConfigurationMarker).toBe('unified-ble-expo-v1')
     expect(configured.BlePlxRestoreIdentifier).toBeUndefined()
     expect(configured.UnifiedBleProtocolRestoreIdentifier).toBeUndefined()
     expect(configured.UnifiedBleProtocolRestorationId).toBe('primary')
@@ -176,7 +177,8 @@ describe('Expo iOS reconciliation', () => {
 
     expect(removed).toEqual({
       unrelated: 'preserve',
-      UIBackgroundModes: ['audio']
+      UIBackgroundModes: ['audio'],
+      UnifiedBlePluginConfigurationMarker: 'unified-ble-expo-v1'
     })
     expect(removed.UnifiedBlePluginBluetoothAlwaysUsageDescriptionOwnership).toBeUndefined()
   })
@@ -236,6 +238,12 @@ describe('Expo Android reconciliation', () => {
       { $: { 'android:name': 'android.hardware.bluetooth_le', 'android:required': 'true' } },
       { $: { 'android:name': 'android.software.companion_device_setup', 'android:required': 'false' } }
     ])
+    expect(configured.manifest.application[0]['meta-data']).toContainEqual({
+      $: {
+        'android:name': 'com.sfourdrinier.unifiedblemanager.expo.configuration-marker',
+        'android:value': 'unified-ble-expo-v1'
+      }
+    })
 
     const removed = reconcileExpoAndroidManifest(configured, {
       requiredHardware: false,

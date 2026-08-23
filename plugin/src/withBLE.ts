@@ -32,12 +32,15 @@ const retiredInfoPlistKeys = Object.freeze([
   'BlePlxDebugLogging'
 ])
 const nativeConfigurationKeys = Object.freeze([
+  'UnifiedBlePluginConfigurationMarker',
   ...restorationInfoPlistKeys,
   ...appRestorationInfoPlistKeys,
   'UnifiedBleProtocolShowPowerAlert',
   'UnifiedBleProtocolNativeLogging'
 ])
 const bluetoothAlwaysUsageDescriptionOwnershipKey = 'UnifiedBlePluginBluetoothAlwaysUsageDescriptionOwnership'
+const nativeConfigurationMarkerKey = 'UnifiedBlePluginConfigurationMarker'
+const nativeConfigurationMarkerValue = 'unified-ble-expo-v1'
 
 function uniqueStrings(values: readonly string[]): string[] {
   return [...new Set(values)]
@@ -50,6 +53,7 @@ export function reconcileExpoInfoPlist(
 ): Record<string, unknown> {
   for (const key of retiredInfoPlistKeys) delete infoPlist[key]
   for (const key of nativeConfigurationKeys) delete infoPlist[key]
+  infoPlist[nativeConfigurationMarkerKey] = nativeConfigurationMarkerValue
 
   const bluetoothAlways = options.permissions?.bluetoothAlways
   if (typeof bluetoothAlways === 'string') {

@@ -229,7 +229,8 @@
     },
     "ios": {
       "modulesProvider": {
-        "UnifiedBleProtocolControl": "UnifiedBleProtocolControl"
+        "UnifiedBleProtocolControl": "UnifiedBleProtocolControl",
+        "UnifiedBleExpoRuntime": "UnifiedBleExpoRuntime"
       }
     }
   },

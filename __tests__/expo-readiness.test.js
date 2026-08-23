@@ -3,12 +3,17 @@ jest.mock('../src/react-native', () => ({
   createReactNativeBleManagerWithEnvironment: jest.fn()
 }))
 
+jest.mock('../src/expo-native-runtime', () => ({
+  getNativeUnifiedBleExpoRuntime: jest.fn()
+}))
+
 jest.mock('react-native', () => ({
   Platform: { OS: 'android', Version: 35 }
 }))
 
 const { createExpoBleManager, mapExpoReadiness } = require('../src/expo')
 const { createReactNativeBleManager } = require('../src/react-native')
+const { getNativeUnifiedBleExpoRuntime } = require('../src/expo-native-runtime')
 const { Platform } = require('react-native')
 
 function adapterState(overrides = {}) {
@@ -31,9 +36,27 @@ function managerFor(state) {
   }
 }
 
+function trustedNativeExpoRuntime() {
+  return {
+    getRuntimeConfiguration: jest.fn().mockResolvedValue({
+      platform: 'android',
+      configurationDigest: 'native-digest',
+      legacyLocationPolicy: 'none'
+    }),
+    requestPermissions: jest.fn().mockResolvedValue({
+      requested: ['bluetooth'],
+      granted: ['bluetooth'],
+      denied: [],
+      recommendedSettingsTarget: null
+    }),
+    openSettings: jest.fn().mockResolvedValue(undefined)
+  }
+}
+
 describe('Expo readiness surface', () => {
   beforeEach(() => {
     jest.clearAllMocks()
+    getNativeUnifiedBleExpoRuntime.mockReturnValue(trustedNativeExpoRuntime())
   })
 
   test('returns the delegated React Native manager with additive readiness', async () => {
@@ -87,7 +110,7 @@ describe('Expo readiness surface', () => {
     })
   })
 
-  test('fails closed when no trusted permission bridge is available', async () => {
+  test('uses the trusted native permission bridge for a pending adapter permission action', async () => {
     const manager = managerFor(adapterState({ authorization: 'not-determined' }))
     createReactNativeBleManager.mockResolvedValue(manager)
 
@@ -95,9 +118,10 @@ describe('Expo readiness surface', () => {
     const readiness = await result.readiness()
 
     expect(readiness.actions).toEqual([{ kind: 'request-permission', permission: 'bluetooth' }])
-    await expect(result.permissions.request({ purpose: 'scan-and-connect' })).rejects.toMatchObject({
-      code: 'capability.unavailable',
-      operation: 'expo.permissions.request'
+    await expect(result.permissions.request({ purpose: 'scan-and-connect' })).resolves.toMatchObject({
+      requested: ['bluetooth'],
+      granted: ['bluetooth'],
+      denied: []
     })
     expect(manager.adapter.state).toHaveBeenCalledTimes(1)
   })
@@ -127,20 +151,17 @@ describe('Expo readiness surface', () => {
     }
   })
 
-  test.each(['auto', 'required'])(
-    'does not report Android API 24-30 ready when legacyLocation is %s',
-    policy => {
-      expect(
-        mapExpoReadiness(adapterState(), {
-          androidApiLevel: 30,
-          permissions: { android: { legacyLocation: policy } }
-        })
-      ).toMatchObject({
-        state: 'action-required',
-        actions: [{ kind: 'open-settings', target: 'location-services' }]
+  test.each(['auto', 'required'])('does not report Android API 24-30 ready when legacyLocation is %s', policy => {
+    expect(
+      mapExpoReadiness(adapterState(), {
+        androidApiLevel: 30,
+        permissions: { android: { legacyLocation: policy } }
       })
-    }
-  )
+    ).toMatchObject({
+      state: 'action-required',
+      actions: [{ kind: 'open-settings', target: 'location-services' }]
+    })
+  })
 
   test('does not report Android API 24-30 ready when the plugin default is explicit legacyLocation none', () => {
     expect(mapExpoReadiness(adapterState(), { androidApiLevel: 30 })).toMatchObject({
@@ -158,16 +179,12 @@ describe('Expo readiness surface', () => {
     ).toMatchObject({ state: 'ready', actions: [] })
   })
 
-  test('openSettings is explicit and fails closed without a trusted native bridge', async () => {
+  test('openSettings uses the trusted native settings bridge explicitly', async () => {
     const manager = managerFor(adapterState())
     createReactNativeBleManager.mockResolvedValue(manager)
 
     const result = await createExpoBleManager()
 
-    await expect(result.openSettings('bluetooth')).rejects.toMatchObject({
-      code: 'capability.unavailable',
-      operation: 'expo.open-settings',
-      platform: { safeMessage: expect.stringContaining('settings bridge') }
-    })
+    await expect(result.openSettings('bluetooth')).resolves.toBeUndefined()
   })
 })

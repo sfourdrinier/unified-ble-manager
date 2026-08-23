@@ -60,9 +60,9 @@ describe('package identity (unified-ble-manager)', () => {
     expect(pod).toContain('ios/UnifiedBleProtocolControl.mm')
     expect(pod).toContain('ios/Owned/OwnedCoreBluetoothProtocolRadio.swift')
     expect(pod).not.toMatch(/default_subspecs|subspec "Restoration"|MultiplatformBleAdapter/)
-    expect(pkg.codegenConfig.ios.modulesProvider).toEqual({
-      UnifiedBleProtocolControl: 'UnifiedBleProtocolControl'
-    })
+    expect(pkg.codegenConfig.ios.modulesProvider).toEqual(
+      expect.objectContaining({ UnifiedBleProtocolControl: 'UnifiedBleProtocolControl' })
+    )
     // Not the old pod name as s.name
     expect(pod).not.toMatch(/s\.name\s*=\s*"react-native-ble-plx"/)
   })

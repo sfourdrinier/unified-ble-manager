@@ -12,6 +12,13 @@ import {
   createReactNativeBleManagerWithEnvironment,
   getNativeUnifiedBleProtocolControl
 } from './react-native'
+import { getNativeUnifiedBleExpoRuntime } from './expo-native-runtime'
+import type {
+  NativeExpoPermissionRequest,
+  NativeExpoRuntimeConfiguration,
+  NativeExpoSettingsRequest,
+  Spec as NativeExpoRuntime
+} from './NativeUnifiedBleExpoRuntime'
 import type { ReactNativeBleManagerOptions } from './react-native-manager'
 
 export type { BleManagerCreateOptions } from './public/host-identity'
@@ -142,11 +149,26 @@ export async function createExpoBleManager(
     normalizeBleManagerCreateOptions(options)
     assertExpoRuntimeConfiguration(runtimeConfiguration)
     assertDirectExpoRuntime()
-    const readinessConfiguration = directExpoRuntimeConfiguration(runtimeConfiguration)
+    const nativeRuntime = resolveNativeExpoRuntime()
+    const nativeConfiguration = await readNativeExpoRuntimeConfiguration(nativeRuntime)
+    const readinessConfiguration = directExpoRuntimeConfiguration({
+      ...runtimeConfiguration,
+      ...nativeConfiguration,
+      ...(runtimeConfiguration?.expectedConfiguration === undefined
+        ? {}
+        : { expectedConfiguration: runtimeConfiguration.expectedConfiguration }),
+      ...(runtimeConfiguration?.settingsBridge === undefined
+        ? {}
+        : { settingsBridge: runtimeConfiguration.settingsBridge }),
+      ...(runtimeConfiguration?.permissionBridge === undefined
+        ? {}
+        : { permissionBridge: runtimeConfiguration.permissionBridge })
+    })
+    assertExpoRuntimeConfiguration(readinessConfiguration)
     return withExpoRuntime(
       await createReactNativeBleManager(options),
-      readinessConfiguration?.settingsBridge,
-      readinessConfiguration?.permissionBridge,
+      readinessConfiguration?.settingsBridge ?? nativeSettingsBridge(nativeRuntime),
+      readinessConfiguration?.permissionBridge ?? nativePermissionBridge(nativeRuntime),
       nativeBackgroundControl(),
       nativeAssociationControl(),
       nativeRestorationControl(),
@@ -255,6 +277,69 @@ function directExpoRuntimeConfiguration(
   }
 }
 
+function resolveNativeExpoRuntime(): NativeExpoRuntime {
+  try {
+    return getNativeUnifiedBleExpoRuntime()
+  } catch (error) {
+    const message = errorMessage(error)
+    if (/UnifiedBleExpoRuntime|TurboModuleRegistry|NativeModules/.test(message)) {
+      throwExpoRuntimeError('capability.unavailable', 'expo.runtime.native-module', EXPO_GO_MESSAGE)
+    }
+    throw error
+  }
+}
+
+async function readNativeExpoRuntimeConfiguration(runtime: NativeExpoRuntime): Promise<ExpoRuntimeConfiguration> {
+  let value: NativeExpoRuntimeConfiguration
+  try {
+    value = await runtime.getRuntimeConfiguration()
+  } catch (error) {
+    throwExpoRuntimeError('capability.unavailable', 'expo.runtime.configuration', errorMessage(error), errorCode(error))
+  }
+  const result = parseNativeExpoRuntimeConfiguration(value)
+  return {
+    platform: result.platform,
+    nativeModuleAvailable: true,
+    nativeConfiguration: { digest: result.configurationDigest },
+    ...(result.legacyLocationPolicy === undefined
+      ? {}
+      : { permissions: { android: { legacyLocation: result.legacyLocationPolicy } } })
+  }
+}
+
+function parseNativeExpoRuntimeConfiguration(value: unknown): NativeExpoRuntimeConfiguration {
+  const result = expoRecord(value, 'expo.runtime.configuration.result')
+  if (
+    (result.platform !== 'android' && result.platform !== 'apple') ||
+    !nonEmptyString(result.configurationDigest) ||
+    (result.legacyLocationPolicy !== undefined &&
+      result.legacyLocationPolicy !== 'auto' &&
+      result.legacyLocationPolicy !== 'required' &&
+      result.legacyLocationPolicy !== 'none')
+  ) {
+    throwExpoMalformedResult('expo.runtime.configuration.result')
+  }
+  return {
+    platform: result.platform,
+    configurationDigest: result.configurationDigest,
+    ...(result.legacyLocationPolicy === undefined ? {} : { legacyLocationPolicy: result.legacyLocationPolicy })
+  }
+}
+
+function nativePermissionBridge(runtime: NativeExpoRuntime): ExpoPermissionBridge {
+  return (request: ExpoPermissionRequest) => {
+    const nativeRequest: NativeExpoPermissionRequest = { purpose: request.purpose }
+    return runtime.requestPermissions(nativeRequest).then(value => parseExpoPermissionResult(value))
+  }
+}
+
+function nativeSettingsBridge(runtime: NativeExpoRuntime): ExpoSettingsBridge {
+  return (target: ExpoSettingsTarget) => {
+    const request: NativeExpoSettingsRequest = { target }
+    return runtime.openSettings(request)
+  }
+}
+
 function environmentExpoRuntimeConfiguration(
   platform: ReactNativeBleManagerOptions['platform'],
   configuration: ExpoRuntimeConfiguration | undefined
@@ -322,7 +407,13 @@ async function requestExpoPermissions(
     return parseExpoPermissionResult(await permissionBridge(request))
   } catch (error) {
     if (isExpoBoundaryError(error, 'expo.permissions.result')) throw error
-    throwExpoRuntimeError('platform.failure', 'expo.permissions.request', errorMessage(error))
+    const nativeCode = errorCode(error)
+    throwExpoRuntimeError(
+      normalizedPermissionErrorCode(nativeCode),
+      'expo.permissions.request',
+      errorMessage(error),
+      nativeCode
+    )
   }
 }
 
@@ -448,16 +539,17 @@ async function claimExpoRestoration(
   try {
     return parseExpoRestorationClaimResult(await control.claimRestoration())
   } catch (error) {
-    if (isExpoBoundaryError(error, 'expo.restoration.result') || isExpoBoundaryError(error, 'expo.restoration.native-outcome')) {
+    if (
+      isExpoBoundaryError(error, 'expo.restoration.result') ||
+      isExpoBoundaryError(error, 'expo.restoration.native-outcome')
+    ) {
       throw error
     }
     throwExpoRuntimeError('capability.unavailable', 'expo.restoration.claim', errorMessage(error), errorCode(error))
   }
 }
 
-function restorationOutcome(
-  outcome: unknown
-): ExpoRestorationClaimResult['outcome'] {
+function restorationOutcome(outcome: unknown): ExpoRestorationClaimResult['outcome'] {
   switch (outcome) {
     case 'alreadyConsumed':
       return 'already-consumed'
@@ -687,7 +779,12 @@ function throwExpoRuntimeError(
 }
 
 function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : 'The native Expo operation failed.'
+  if (error instanceof Error) return error.message
+  if (typeof error === 'object' && error !== null) {
+    const message = Reflect.get(error, 'message')
+    if (typeof message === 'string' && message.length > 0) return message
+  }
+  return 'The native Expo operation failed.'
 }
 
 function errorCode(error: unknown): string {
@@ -710,6 +807,19 @@ function normalizedBackgroundErrorCode(nativeCode: string): BleErrorCode {
       return 'lifecycle.invalid-state'
     case 'unsupportedBackground':
       return 'capability.unsupported'
+    default:
+      return 'platform.failure'
+  }
+}
+
+function normalizedPermissionErrorCode(nativeCode: string): BleErrorCode {
+  switch (nativeCode) {
+    case 'unsupportedPermissionPrompt':
+      return 'capability.unsupported'
+    case 'permissionNotDeclared':
+      return 'capability.unavailable'
+    case 'permissionDenied':
+      return 'permission.denied'
     default:
       return 'platform.failure'
   }

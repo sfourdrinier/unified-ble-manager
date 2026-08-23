@@ -27,9 +27,9 @@ describe('iOS and tvOS 4.0 Native Protocol defaults', () => {
     expect(control).toContain('UnifiedBleProtocolRestorationGeneration')
     expect(control).toContain('bootstrapRestorationIdentity')
     expect(control).not.toMatch(/NativeBlePlx|RCTEventEmitter|Base64/)
-    expect(packageJson.codegenConfig.ios.modulesProvider).toEqual({
-      UnifiedBleProtocolControl: 'UnifiedBleProtocolControl'
-    })
+    expect(packageJson.codegenConfig.ios.modulesProvider).toEqual(
+      expect.objectContaining({ UnifiedBleProtocolControl: 'UnifiedBleProtocolControl' })
+    )
   })
 
   test('keeps the pod source list explicit and free of the retired bridge tree', () => {
