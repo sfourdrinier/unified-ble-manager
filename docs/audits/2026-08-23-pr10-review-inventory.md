@@ -72,6 +72,20 @@ These findings were discovered by the fresh exact-SHA adversarial reviews after 
 | F10-POST-007 | Android pre-12 readiness could report ready without required legacy location guidance. | Addressed by `06a369f`; explicit legacy-location readiness tests pass. |
 | F10-POST-008 | Apple reconnect/GATT paths did not enforce connection-generation ownership and allowed reconnect overlap during terminal disconnect. | Addressed by `15a3301` with bounded generation validation at native dispatch, disconnect-before-reconnect gating, and generation-bound GATT cache clearing. Apple harness is green; full simulator/host CI remains required. |
 
+## Late review remediation wave
+
+The subsequent exact-source native/consumer review found additional ownership and truthfulness defects. They are addressed by the current commits below; no item is closed by a source assertion alone—the final package/native/host gates remain required.
+
+| ID | Finding | Current disposition |
+| --- | --- | --- |
+| F10-LATE-001 | Android foreground-service metadata did not match the native parser, and `requiredHardware: true` did not upgrade an existing optional BLE feature. | Addressed by `c5bdcfb`; plugin tests 37/37 and build/lint pass. |
+| F10-LATE-002 | Android Service Changed cleared radio cache but was not wired to the dispatcher/public database invalidation path. | Addressed by `34e91e6`; focused dispatcher/event tests pass. |
+| F10-LATE-003 | Apple could drop an immediate disconnect before JavaScript installed connection ownership. | Addressed by `a8ff38a`; generation-tagged pending disconnect admission and Apple harness regression pass. |
+| F10-LATE-004 | Android invalidation could lose retryable dispatcher/native-handle ownership; service intent and lease retention were not failure-atomic; JNI values could truncate; pre-API-33 association could return ID 0. | Addressed by `9ceca10`; 36 Android JVM tests, ARM64/JNI build, and CMake/CTest pass. |
+| F10-LATE-005 | Apple GATT occurrence parsing accepted trailing garbage such as `1junk`. | Addressed by `ef63ef8`; strict parser and Apple harness pass. |
+| F10-LATE-006 | React hooks retained stale replacement state and silently discarded overflow. | Addressed by `6f93d68`; focused React tests and full package gate pass. |
+| F10-LATE-007 | Apple module invalidation omitted native runtime close after execution/radio teardown. | Addressed by `0ed8e54`; idempotent runtime-close guard and Apple harness pass. |
+
 ## Final local verification receipts at `707e3c9`
 
 - `pnpm typecheck`, `pnpm lint`, `pnpm test:plugin`: passed; plugin 35/35.
