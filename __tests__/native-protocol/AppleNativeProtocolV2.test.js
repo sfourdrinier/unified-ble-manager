@@ -96,6 +96,31 @@ describe('Apple Native Protocol v2 radio boundary', () => {
     expect(closeAttachment.indexOf('resolve(nil);', runtimeClose)).toBeGreaterThan(runtimeClose)
   })
 
+  test('invalidates Apple execution, runtime, and radio ownership in a retry-safe order', () => {
+    const control = read('ios/UnifiedBleProtocolControl.mm')
+    const invalidate = control.slice(control.indexOf('- (void)invalidate'))
+
+    expect(invalidate).toContain('NSDictionary *attachment = [_attachment copy];')
+    expect(invalidate).toContain('_execution->close();')
+    expect(invalidate).toContain('_runtime->open()')
+    expect(invalidate).toContain('_runtime->close(nativeAttachment(')
+    expect(invalidate).toContain('catch (const std::exception& error)')
+    expect(invalidate).toContain('catch (...)')
+    expect(invalidate).toContain('if (runtimeClosed) _attachment = nil;')
+
+    const executionClose = invalidate.indexOf('_execution->close();')
+    const runtimeGuard = invalidate.indexOf('_runtime->open()', executionClose)
+    const runtimeClose = invalidate.indexOf('_runtime->close(nativeAttachment(', runtimeGuard)
+    const radioDestroy = invalidate.indexOf('[_radio destroyWithCompletion:', runtimeClose)
+    const attachmentClear = invalidate.indexOf('if (runtimeClosed) _attachment = nil;', radioDestroy)
+
+    expect(executionClose).toBeGreaterThanOrEqual(0)
+    expect(runtimeGuard).toBeGreaterThan(executionClose)
+    expect(runtimeClose).toBeGreaterThan(runtimeGuard)
+    expect(radioDestroy).toBeGreaterThan(runtimeClose)
+    expect(attachmentClear).toBeGreaterThan(radioDestroy)
+  })
+
   test('fails the pre-JavaScript stream closed with generation-safe sink ownership and observable counters', () => {
     const control = read('ios/UnifiedBleProtocolControl.mm')
     const execution = read('ios/NativeProtocol/UnifiedBleProtocolAppleExecution.mm')

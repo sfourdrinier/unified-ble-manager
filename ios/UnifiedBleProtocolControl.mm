@@ -699,15 +699,32 @@ RCT_EXPORT_MODULE(UnifiedBleProtocolControl)
 }
 
 - (void)invalidate {
+  NSDictionary *attachment = [_attachment copy];
   _radio.delegate = nil;
   _radioDelegate.execution = nullptr;
   _execution->close();
+  BOOL runtimeClosed = !_runtime->open();
+  if (!runtimeClosed && attachment != nil) {
+    try {
+      _runtime->close(nativeAttachment(
+          attachment[@"attachmentId"],
+          attachment[@"backendInstanceId"],
+          attachment[@"backendGeneration"],
+          attachment[@"adapterId"],
+          attachment[@"adapterGeneration"]));
+      runtimeClosed = YES;
+    } catch (const std::exception& error) {
+      NSLog(@"[UnifiedBleProtocolControl] native runtime close during invalidation failed: %s", error.what());
+    } catch (...) {
+      NSLog(@"[UnifiedBleProtocolControl] native runtime close during invalidation failed with an unknown exception");
+    }
+  }
   [_radio destroyWithCompletion:^(NSError *error) {
     if (error != nil) {
       NSLog(@"[UnifiedBleProtocolControl] radio destruction during invalidation failed: %@", error.localizedDescription);
     }
   }];
-  _attachment = nil;
+  if (runtimeClosed) _attachment = nil;
 }
 
 @end
