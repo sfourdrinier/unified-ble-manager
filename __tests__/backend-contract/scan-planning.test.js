@@ -149,6 +149,11 @@ describe('PR9 scan planner contract and canonical oracle corpus', () => {
     expect(() => snapshotScanExecutionPlan({ ...plan, nativeFilter }, filter => filter)).toThrow(
       'defensive native-filter snapshot'
     )
+    const primitiveExecutionPlan = snapshotScanExecutionPlan(
+      { ...plan, nativeFilter: 'service-filter' },
+      filter => filter
+    )
+    expect(primitiveExecutionPlan.nativeFilter).toBe('service-filter')
   })
 
   test('rejects malformed predicate diagnostics before they can cross a host boundary', () => {

@@ -133,7 +133,10 @@ export function snapshotScanExecutionPlan<NativeFilter>(
     estimatedCost: plan.estimatedCost
   })
   const nativeFilter = snapshotNativeFilter(plan.nativeFilter)
-  if (nativeFilter === plan.nativeFilter) {
+  if (
+    nativeFilter === plan.nativeFilter &&
+    ((typeof nativeFilter === 'object' && nativeFilter !== null) || typeof nativeFilter === 'function')
+  ) {
     throw new Error('defensive native-filter snapshot must not preserve identity')
   }
   return Object.freeze({ ...snapshot, nativeFilter })
