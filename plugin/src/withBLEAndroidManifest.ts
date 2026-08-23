@@ -346,18 +346,23 @@ function reconcileBLEHardwareFeature(androidManifest: AndroidManifestWithExtraTo
   const features = existingFeatures.filter(feature => feature.$['android:name'] !== 'android.hardware.bluetooth_le')
   const owned = hasMetadata(androidManifest, BLE_HARDWARE_FEATURE_OWNERSHIP_METADATA_NAME)
 
-  if (requiredHardware && bluetoothFeatures.length === 0) {
-    features.push({
-      $: {
-        'android:name': 'android.hardware.bluetooth_le',
-        'android:required': 'true'
-      }
-    })
-    setMetadata(
-      androidManifest,
-      BLE_HARDWARE_FEATURE_OWNERSHIP_METADATA_NAME,
-      BLE_HARDWARE_FEATURE_OWNERSHIP_METADATA_VALUE
-    )
+  if (requiredHardware) {
+    if (bluetoothFeatures.length === 0) {
+      features.push({
+        $: {
+          'android:name': 'android.hardware.bluetooth_le',
+          'android:required': 'true'
+        }
+      })
+      setMetadata(
+        androidManifest,
+        BLE_HARDWARE_FEATURE_OWNERSHIP_METADATA_NAME,
+        BLE_HARDWARE_FEATURE_OWNERSHIP_METADATA_VALUE
+      )
+    } else {
+      for (const feature of bluetoothFeatures) feature.$['android:required'] = 'true'
+      features.push(...bluetoothFeatures)
+    }
   } else if (!requiredHardware && owned) {
     bluetoothFeatures.shift()
     removeMetadata(androidManifest, BLE_HARDWARE_FEATURE_OWNERSHIP_METADATA_NAME)

@@ -5,6 +5,8 @@ import type { AndroidManifestWithExtraTools } from './withBLEAndroidManifest'
 export const BLE_FOREGROUND_SERVICE_NAME = 'com.sfourdrinier.unifiedblemanager.BlePlxForegroundService'
 export const FOREGROUND_SERVICE_OWNERSHIP_METADATA_NAME =
   'com.sfourdrinier.unifiedblemanager.foreground-service-ownership'
+export const FOREGROUND_SERVICE_PERMISSION_OWNERSHIP_METADATA_NAME =
+  'com.sfourdrinier.unifiedblemanager.foreground-service-permission-ownership'
 export const FOREGROUND_SERVICE_NOTIFICATION_METADATA = Object.freeze({
   channelId: 'com.sfourdrinier.unifiedblemanager.foreground-service.channel-id',
   channelName: 'com.sfourdrinier.unifiedblemanager.foreground-service.channel-name',
@@ -19,6 +21,9 @@ export const FOREGROUND_SERVICE_PERMISSIONS = Object.freeze([
   'android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE',
   'android.permission.POST_NOTIFICATIONS'
 ])
+
+const FOREGROUND_SERVICE_OWNERSHIP_METADATA_VALUE = 'service=1'
+const FOREGROUND_SERVICE_PERMISSION_OWNERSHIP_METADATA_PREFIX = 'permissions='
 
 type ManifestApplication = NonNullable<AndroidConfig.Manifest.AndroidManifest['manifest']['application']>[number]
 type ManagedMetadata = NonNullable<ManifestApplication['meta-data']>[number]
@@ -51,6 +56,7 @@ function removeManagedMetadata(androidManifest: AndroidManifestWithExtraTools): 
   if (!Array.isArray(app['meta-data'])) return
   const names = new Set([
     FOREGROUND_SERVICE_OWNERSHIP_METADATA_NAME,
+    FOREGROUND_SERVICE_PERMISSION_OWNERSHIP_METADATA_NAME,
     ...Object.values(FOREGROUND_SERVICE_NOTIFICATION_METADATA)
   ])
   const remaining = app['meta-data'].filter(item => !names.has(item.$['android:name']))
@@ -60,12 +66,13 @@ function removeManagedMetadata(androidManifest: AndroidManifestWithExtraTools): 
 
 function ownedPermissionNames(androidManifest: AndroidManifestWithExtraTools): Set<string> {
   const metadata = metadataFor(androidManifest)
-  const marker = metadata.find(item => item.$['android:name'] === FOREGROUND_SERVICE_OWNERSHIP_METADATA_NAME)
+  const marker = metadata.find(item => item.$['android:name'] === FOREGROUND_SERVICE_PERMISSION_OWNERSHIP_METADATA_NAME)
   const markerValue = marker?.$['android:value']
-  const markerParts = markerValue?.split(';') ?? []
-  if (!markerParts.includes('service=1')) return new Set()
-  const permissions = markerParts.find(value => value.startsWith('permissions='))?.slice('permissions='.length)
-  return new Set(permissions === undefined || permissions.length === 0 ? [] : permissions.split('|'))
+  if (markerValue === undefined || !markerValue.startsWith(FOREGROUND_SERVICE_PERMISSION_OWNERSHIP_METADATA_PREFIX)) {
+    return new Set()
+  }
+  const permissions = markerValue.slice(FOREGROUND_SERVICE_PERMISSION_OWNERSHIP_METADATA_PREFIX.length)
+  return new Set(permissions.length === 0 ? [] : permissions.split('|'))
 }
 
 function setForegroundServiceOwnershipMetadata(
@@ -73,10 +80,11 @@ function setForegroundServiceOwnershipMetadata(
   permissionNames: ReadonlySet<string>
 ): void {
   const permissions = [...permissionNames].join('|')
+  setMetadata(androidManifest, FOREGROUND_SERVICE_OWNERSHIP_METADATA_NAME, FOREGROUND_SERVICE_OWNERSHIP_METADATA_VALUE)
   setMetadata(
     androidManifest,
-    FOREGROUND_SERVICE_OWNERSHIP_METADATA_NAME,
-    permissions.length === 0 ? 'service=1' : `service=1;permissions=${permissions}`
+    FOREGROUND_SERVICE_PERMISSION_OWNERSHIP_METADATA_NAME,
+    `${FOREGROUND_SERVICE_PERMISSION_OWNERSHIP_METADATA_PREFIX}${permissions}`
   )
 }
 

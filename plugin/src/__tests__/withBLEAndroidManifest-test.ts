@@ -5,7 +5,8 @@ import {
   addLocationPermissionToManifest,
   addScanPermissionToManifest,
   addBLEHardwareFeatureToManifest,
-  reconcileBluetoothPermissions
+  reconcileBluetoothPermissions,
+  reconcileExpoAndroidManifest
 } from '../withBLEAndroidManifest'
 
 const { readAndroidManifestAsync } = AndroidConfig.Manifest
@@ -144,6 +145,75 @@ describe('addBLEHardwareFeatureToManifest', () => {
     expect(XML.format(androidManifest)).toMatch(
       /<uses-feature android:name="android\.hardware\.bluetooth_le" android:required="true"\/>/
     )
+  })
+})
+
+describe('requiredHardware reconciliation', () => {
+  it('upgrades every existing BLE feature while preserving host ownership when disabled', () => {
+    const manifest = {
+      manifest: {
+        'uses-feature': [
+          { $: { 'android:name': 'android.hardware.bluetooth_le', 'android:required': 'false' } },
+          { $: { 'android:name': 'android.hardware.bluetooth_le' } }
+        ],
+        application: [{ $: { 'android:name': '.MainApplication' }, 'meta-data': [] }]
+      }
+    }
+
+    reconcileExpoAndroidManifest(manifest, {
+      requiredHardware: true,
+      neverForLocation: false,
+      legacyLocation: 'none'
+    })
+
+    expect(manifest.manifest['uses-feature']).toEqual([
+      {
+        $: {
+          'android:name': 'android.hardware.bluetooth_le',
+          'android:required': 'true'
+        }
+      },
+      {
+        $: {
+          'android:name': 'android.hardware.bluetooth_le',
+          'android:required': 'true'
+        }
+      },
+      {
+        $: {
+          'android:name': 'android.software.companion_device_setup',
+          'android:required': 'false'
+        }
+      }
+    ])
+    expect(manifest.manifest.application[0]['meta-data']).toEqual([])
+
+    reconcileExpoAndroidManifest(manifest, {
+      requiredHardware: false,
+      neverForLocation: false,
+      legacyLocation: 'none'
+    })
+
+    expect(manifest.manifest['uses-feature']).toEqual([
+      {
+        $: {
+          'android:name': 'android.hardware.bluetooth_le',
+          'android:required': 'true'
+        }
+      },
+      {
+        $: {
+          'android:name': 'android.hardware.bluetooth_le',
+          'android:required': 'true'
+        }
+      },
+      {
+        $: {
+          'android:name': 'android.software.companion_device_setup',
+          'android:required': 'false'
+        }
+      }
+    ])
   })
 })
 jest.mock('expo/config', () => ({

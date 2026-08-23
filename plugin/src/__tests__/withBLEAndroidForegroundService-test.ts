@@ -1,7 +1,10 @@
 import {
+  FOREGROUND_SERVICE_PERMISSION_OWNERSHIP_METADATA_NAME,
   FOREGROUND_SERVICE_OWNERSHIP_METADATA_NAME,
   reconcileAndroidForegroundService
 } from '../withBLEAndroidForegroundService'
+import { readFileSync } from 'fs'
+import { resolve } from 'path'
 
 const foregroundServiceOptions = {
   mode: 'connected-device-foreground-service' as const,
@@ -70,7 +73,7 @@ describe('withBLEAndroidForegroundService ownership', () => {
     expect(removed.manifest.application[0]['meta-data']).toBeUndefined()
   })
 
-  it('records permission ownership only for declarations it inserts', () => {
+  it('emits the exact native service marker and a separate permission ownership marker', () => {
     const manifest = {
       manifest: {
         $: { 'xmlns:android': 'http://schemas.android.com/apk/res/android' },
@@ -87,9 +90,42 @@ describe('withBLEAndroidForegroundService ownership', () => {
     expect(marker).toEqual({
       $: {
         'android:name': FOREGROUND_SERVICE_OWNERSHIP_METADATA_NAME,
-        'android:value':
-          'service=1;permissions=android.permission.FOREGROUND_SERVICE|android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE'
+        'android:value': 'service=1'
       }
     })
+
+    expect(configured.manifest.application[0]['meta-data']).toContainEqual({
+      $: {
+        'android:name': FOREGROUND_SERVICE_PERMISSION_OWNERSHIP_METADATA_NAME,
+        'android:value':
+          'permissions=android.permission.FOREGROUND_SERVICE|android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE'
+      }
+    })
+  })
+
+  it('guards the plugin marker against the native exact-value parser contract', () => {
+    const nativeSource = readFileSync(
+      resolve(
+        __dirname,
+        '../../../android/src/main/java/com/sfourdrinier/unifiedblemanager/background/ForegroundServiceNotificationConfiguration.java'
+      ),
+      'utf8'
+    )
+
+    expect(nativeSource).toContain('if (!"service=1".equals(metadata.get(OWNERSHIP_METADATA)))')
+
+    const manifest = {
+      manifest: {
+        $: { 'xmlns:android': 'http://schemas.android.com/apk/res/android' },
+        application: [{ $: { 'android:name': '.MainApplication' } }]
+      }
+    }
+
+    const configured = applyForegroundService(manifest, foregroundServiceOptions)
+    const serviceMarker = configured.manifest.application[0]['meta-data']?.find(
+      item => item.$['android:name'] === FOREGROUND_SERVICE_OWNERSHIP_METADATA_NAME
+    )
+
+    expect(serviceMarker?.$['android:value']).toBe('service=1')
   })
 })
