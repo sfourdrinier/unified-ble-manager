@@ -136,7 +136,7 @@ describe('Expo factory', () => {
     createReactNativeBleManagerWithEnvironment.mockResolvedValue(manager)
 
     const result = await createExpoBleManagerWithEnvironment(
-      environment({ executionEnvironment: 'development-build', nativeModuleAvailable: true })
+      environment({ executionEnvironment: 'development-build', nativeModuleAvailable: true, androidApiLevel: 35 })
     )
 
     expect(result).toBe(manager)

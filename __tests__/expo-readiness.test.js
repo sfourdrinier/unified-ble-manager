@@ -3,8 +3,13 @@ jest.mock('../src/react-native', () => ({
   createReactNativeBleManagerWithEnvironment: jest.fn()
 }))
 
+jest.mock('react-native', () => ({
+  Platform: { OS: 'android', Version: 35 }
+}))
+
 const { createExpoBleManager, mapExpoReadiness } = require('../src/expo')
 const { createReactNativeBleManager } = require('../src/react-native')
+const { Platform } = require('react-native')
 
 function adapterState(overrides = {}) {
   return {
@@ -95,6 +100,31 @@ describe('Expo readiness surface', () => {
       operation: 'expo.permissions.request'
     })
     expect(manager.adapter.state).toHaveBeenCalledTimes(1)
+  })
+
+  test('does not claim Android readiness when the trusted API level is unavailable', () => {
+    expect(mapExpoReadiness(adapterState(), { platform: 'android' })).toMatchObject({
+      state: 'action-required',
+      actions: [{ kind: 'open-settings', target: 'location-services' }]
+    })
+  })
+
+  test('direct Android factory does not report API 24-30 ready when runtime config omits legacy location policy', async () => {
+    const manager = managerFor(adapterState())
+    createReactNativeBleManager.mockResolvedValue(manager)
+    const originalVersion = Platform.Version
+    Platform.Version = 30
+
+    try {
+      const result = await createExpoBleManager()
+
+      await expect(result.readiness()).resolves.toMatchObject({
+        state: 'unavailable',
+        actions: [{ kind: 'rebuild-native-app' }]
+      })
+    } finally {
+      Platform.Version = originalVersion
+    }
   })
 
   test.each(['auto', 'required'])(

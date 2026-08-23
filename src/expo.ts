@@ -2,6 +2,7 @@
 
 import { contractError } from './backend-contract/errors'
 import type { BleErrorCode } from './backend-contract/errors'
+import { Platform } from 'react-native'
 import { rehydratePublicError } from './public/error-bridge'
 import type { BleAdapterState } from './public/ble-adapter'
 import { createPublicBleManager, type BleManager } from './public/ble-manager'
@@ -108,6 +109,8 @@ export interface ExpoPermissionBridge {
 }
 
 export interface ExpoRuntimeConfiguration {
+  /** Trusted host platform used to project platform-specific readiness prerequisites. */
+  readonly platform?: 'android' | 'apple'
   readonly executionEnvironment?: 'expo-go' | 'development-build' | 'production'
   readonly nativeModuleAvailable?: boolean
   readonly nativeConfiguration?: { readonly digest: string }
@@ -139,14 +142,15 @@ export async function createExpoBleManager(
     normalizeBleManagerCreateOptions(options)
     assertExpoRuntimeConfiguration(runtimeConfiguration)
     assertDirectExpoRuntime()
+    const readinessConfiguration = directExpoRuntimeConfiguration(runtimeConfiguration)
     return withExpoRuntime(
       await createReactNativeBleManager(options),
-      runtimeConfiguration?.settingsBridge,
-      runtimeConfiguration?.permissionBridge,
+      readinessConfiguration?.settingsBridge,
+      readinessConfiguration?.permissionBridge,
       nativeBackgroundControl(),
       nativeAssociationControl(),
       nativeRestorationControl(),
-      runtimeConfiguration
+      readinessConfiguration
     )
   } catch (error) {
     throw rehydratePublicError(error)
@@ -159,6 +163,7 @@ export async function createExpoBleManagerWithEnvironment(
   try {
     const expo = environment.expo
     assertExpoRuntimeConfiguration(expo)
+    const readinessConfiguration = environmentExpoRuntimeConfiguration(environment.platform, expo)
     const internal = await createReactNativeBleManagerWithEnvironment(environment)
     return withExpoRuntime(
       await createPublicBleManager(internal, environment.now),
@@ -167,7 +172,7 @@ export async function createExpoBleManagerWithEnvironment(
       environment.control,
       environment.control,
       environment.control,
-      expo
+      readinessConfiguration
     )
   } catch (error) {
     throw rehydratePublicError(error)
@@ -208,9 +213,17 @@ export function mapExpoReadiness(adapter: BleAdapterState, configuration?: ExpoR
   if (adapter.power !== 'on' || adapter.authorization !== 'granted') {
     return readiness(adapter, 'action-required', [])
   }
+  const legacyLocation = configuration?.permissions?.android?.legacyLocation
+  const androidPath =
+    configuration?.platform === 'android' ||
+    configuration?.androidApiLevel !== undefined ||
+    legacyLocation !== undefined
+  if (androidPath && configuration?.androidApiLevel === undefined) {
+    return readiness(adapter, 'action-required', [{ kind: 'open-settings', target: 'location-services' }])
+  }
   if (configuration?.androidApiLevel !== undefined && configuration.androidApiLevel < 31) {
-    const legacyLocation = configuration.permissions?.android?.legacyLocation ?? 'none'
-    if (legacyLocation === 'none') {
+    const legacyPolicy = legacyLocation ?? 'none'
+    if (legacyPolicy === 'none') {
       return readiness(adapter, 'unavailable', [
         {
           kind: 'rebuild-native-app',
@@ -220,10 +233,39 @@ export function mapExpoReadiness(adapter: BleAdapterState, configuration?: ExpoR
     }
     return readiness(adapter, 'action-required', [{ kind: 'open-settings', target: 'location-services' }])
   }
-  if (configuration?.permissions?.android?.legacyLocation === 'required') {
+  if (legacyLocation === 'required') {
     return readiness(adapter, 'action-required', [{ kind: 'open-settings', target: 'location-services' }])
   }
   return readiness(adapter, 'ready', [])
+}
+
+function directExpoRuntimeConfiguration(
+  configuration: ExpoRuntimeConfiguration | undefined
+): ExpoRuntimeConfiguration | undefined {
+  const platform = expoPlatform(Platform.OS)
+  if (platform === undefined) return configuration
+  const androidApiLevel =
+    platform === 'android' && configuration?.androidApiLevel === undefined && typeof Platform.Version === 'number'
+      ? Platform.Version
+      : configuration?.androidApiLevel
+  return {
+    ...configuration,
+    platform,
+    ...(androidApiLevel === undefined ? {} : { androidApiLevel })
+  }
+}
+
+function environmentExpoRuntimeConfiguration(
+  platform: ReactNativeBleManagerOptions['platform'],
+  configuration: ExpoRuntimeConfiguration | undefined
+): ExpoRuntimeConfiguration {
+  return { ...configuration, platform }
+}
+
+function expoPlatform(platform: string): ExpoRuntimeConfiguration['platform'] {
+  if (platform === 'android') return 'android'
+  if (platform === 'ios') return 'apple'
+  return undefined
 }
 
 function readiness(
