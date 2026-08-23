@@ -69,6 +69,7 @@ public final class UnifiedBleProtocolControlModule extends NativeUnifiedBleProto
   private static final int ASSOCIATION_REQUEST_CODE = 0x5542;
   private Promise pendingAssociation;
   private int pendingAssociationId = 0;
+  private boolean associationUiLaunched = false;
 
   public UnifiedBleProtocolControlModule(ReactApplicationContext reactContext) {
     super(reactContext);
@@ -172,6 +173,7 @@ public final class UnifiedBleProtocolControlModule extends NativeUnifiedBleProto
           .build();
       pendingAssociation = promise;
       pendingAssociationId = 0;
+      associationUiLaunched = false;
       associationStarted = true;
       final CompanionDeviceManager manager =
           (CompanionDeviceManager) reactContext.getSystemService(android.content.Context.COMPANION_DEVICE_SERVICE);
@@ -189,7 +191,13 @@ public final class UnifiedBleProtocolControlModule extends NativeUnifiedBleProto
 
         @Override
         public void onAssociationCreated(AssociationInfo associationInfo) {
-          resolveAssociation(associationInfo.getId(), null, null);
+          pendingAssociationId = associationInfo.getId();
+          if (!associationUiLaunched) {
+            resolveAssociation(
+                pendingAssociationId,
+                associationPeerId(associationInfo),
+                associationDisplayName(associationInfo));
+          }
         }
 
         @Override
@@ -217,6 +225,7 @@ public final class UnifiedBleProtocolControlModule extends NativeUnifiedBleProto
 
   private void launchAssociationUi(Activity activity, IntentSender intentSender) {
     try {
+      associationUiLaunched = true;
       activity.startIntentSenderForResult(
           intentSender, ASSOCIATION_REQUEST_CODE, null, 0, 0, 0);
     } catch (IntentSender.SendIntentException error) {
@@ -230,6 +239,18 @@ public final class UnifiedBleProtocolControlModule extends NativeUnifiedBleProto
     if (resultCode != Activity.RESULT_OK || data == null) {
       rejectAssociation("associationCancelled", "Companion Device Manager association was cancelled.");
       return;
+    }
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+      final AssociationInfo associationInfo = data.getParcelableExtra(
+          CompanionDeviceManager.EXTRA_ASSOCIATION, AssociationInfo.class);
+      if (associationInfo != null) {
+        pendingAssociationId = associationInfo.getId();
+        resolveAssociation(
+            pendingAssociationId,
+            associationPeerId(associationInfo),
+            associationDisplayName(associationInfo));
+        return;
+      }
     }
     final BluetoothDevice device;
     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -250,6 +271,7 @@ public final class UnifiedBleProtocolControlModule extends NativeUnifiedBleProto
     final Promise promise = pendingAssociation;
     pendingAssociation = null;
     pendingAssociationId = 0;
+    associationUiLaunched = false;
     final WritableMap result = Arguments.createMap();
     result.putString("source", "associated");
     result.putInt("associationId", associationId);
@@ -262,6 +284,7 @@ public final class UnifiedBleProtocolControlModule extends NativeUnifiedBleProto
     final Promise promise = pendingAssociation;
     pendingAssociation = null;
     pendingAssociationId = 0;
+    associationUiLaunched = false;
     if (promise != null) promise.reject(code, message);
   }
 
@@ -269,6 +292,18 @@ public final class UnifiedBleProtocolControlModule extends NativeUnifiedBleProto
     if (pendingAssociation != promise) return;
     pendingAssociation = null;
     pendingAssociationId = 0;
+    associationUiLaunched = false;
+  }
+
+  private static String associationPeerId(AssociationInfo associationInfo) {
+    return associationInfo.getDeviceMacAddress() == null
+        ? null
+        : associationInfo.getDeviceMacAddress().toString();
+  }
+
+  private static String associationDisplayName(AssociationInfo associationInfo) {
+    final CharSequence displayName = associationInfo.getDisplayName();
+    return displayName == null ? null : displayName.toString();
   }
 
   private static void rejectAssociationPromise(Promise promise, String code, String message, Throwable error) {
@@ -440,18 +475,22 @@ public final class UnifiedBleProtocolControlModule extends NativeUnifiedBleProto
     }
     final long handle = nativeHandle;
     if (handle != 0L) {
+      boolean dispatcherClosed = false;
       try {
         UnifiedBleProtocolJsiBinding.close(handle);
+        dispatcherClosed = true;
       } catch (RuntimeException error) {
         cleanupFailure = appendCleanupFailure(cleanupFailure, error);
         Log.e(TAG, "native protocol dispatcher cleanup failed during invalidation", error);
       }
-      try {
-        nativeDestroy(handle);
-        nativeHandle = 0L;
-      } catch (RuntimeException error) {
-        cleanupFailure = appendCleanupFailure(cleanupFailure, error);
-        Log.e(TAG, "native protocol runtime cleanup failed during invalidation", error);
+      if (dispatcherClosed) {
+        try {
+          nativeDestroy(handle);
+          nativeHandle = 0L;
+        } catch (RuntimeException error) {
+          cleanupFailure = appendCleanupFailure(cleanupFailure, error);
+          Log.e(TAG, "native protocol runtime cleanup failed during invalidation", error);
+        }
       }
     }
     attachment = null;

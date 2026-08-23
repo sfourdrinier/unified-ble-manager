@@ -124,7 +124,7 @@ Java_com_sfourdrinier_unifiedblemanager_protocol_UnifiedBleProtocolControlModule
           protocol::ProtocolFailure::incompatibleVersion,
           "Native protocol JNI version ranges are malformed");
     }
-    std::array<jlong, 12> ranges{};
+    std::array<jlong, 14> ranges{};
     environment->GetLongArrayRegion(
         versionRanges,
         0,
