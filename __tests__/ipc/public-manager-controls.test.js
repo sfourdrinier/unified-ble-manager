@@ -137,7 +137,7 @@ describe('IPC public connection controls', () => {
   test('rejects derived lost-peer events instead of silently ignoring them', async () => {
     const { manager } = setup()
 
-    await expect(manager.scan({ reportLostAfterMs: 100 })).rejects.toMatchObject({
+    await expect(manager.scan({ observation: { reportLostAfterMs: 100 } })).rejects.toMatchObject({
       code: 'capability.unavailable'
     })
   })

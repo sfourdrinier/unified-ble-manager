@@ -279,14 +279,15 @@ export interface PublicScanObservation extends NormalizedScanObservation {
 
 export type DiscoveryEvent =
   | {
-      readonly kind: 'discovered'
-      readonly observation: PublicScanObservation
+      readonly kind: 'observed'
+      readonly peer: BlePeer
     }
   | {
       readonly kind: 'lost'
       readonly peer: BlePeer
-      readonly lastSeenAtMonotonicMs: number
-      readonly lostAtMonotonicMs: number
+      readonly lastObservedAt: number
+      readonly derivedAt: number
+      readonly reason: 'observation-timeout'
     }
 
 export interface ScanSession {
@@ -334,7 +335,10 @@ export interface ScanOptions extends OperationOptions {
   readonly query?: ScanQuery
   readonly duplicates?: 'coalesced' | 'all'
   readonly delivery?: StreamPolicy
-  readonly reportLostAfterMs?: number
+  readonly observation?: {
+    readonly reportLostAfterMs?: number
+    readonly includeRawAdvertisement?: boolean
+  }
 }
 
 export interface FindOptions extends OperationOptions {
@@ -384,10 +388,19 @@ function scheduleInternalScanDeadline(
 }
 
 interface PublicScanPresence {
-  observation: PublicScanObservation
+  readonly observation: PublicScanObservation
   lastSeenAtMonotonicMs: number
   timer: PublicScanDeadlineHandle | null
+  readonly bytes: number
 }
+
+interface PublicScanFingerprint {
+  readonly value: string
+  readonly bytes: number
+}
+
+const MAX_PUBLIC_SCAN_STATE_ENTRIES = 256
+const MAX_PUBLIC_SCAN_STATE_BYTES = 256 * 1024
 
 type PublicScanEventTerminalReason = 'closed' | 'source-failed' | 'overflow' | 'owner-released'
 
@@ -433,15 +446,15 @@ class PublicScanEventBroadcast implements AsyncIterable<DiscoveryEvent> {
     }
   }
 
-  emit(event: DiscoveryEvent): void {
-    for (const subscriber of this.subscribers) subscriber.emit(event, 512)
+  emit(event: DiscoveryEvent, byteLength: number): void {
+    for (const subscriber of this.subscribers) subscriber.emit(event, byteLength)
   }
 
   close(reason: PublicScanEventTerminalReason): void {
     if (this.terminalReason !== null) return
     this.terminalReason = reason
     for (const subscriber of this.subscribers) {
-      subscriber.closeWithReason(reason)
+      subscriber.finishWithReason(reason)
       this.subscribers.delete(subscriber)
     }
   }
@@ -453,6 +466,9 @@ class PublicScanSessionController {
   private readonly observationStream: CoreBoundedStream<PublicScanObservation>
   private readonly eventBroadcast: PublicScanEventBroadcast
   private readonly presence = new Map<string, PublicScanPresence>()
+  private presenceBytes = 0
+  private readonly lastObservationFingerprints = new Map<string, PublicScanFingerprint>()
+  private fingerprintBytes = 0
   private sourceIterator: BoundedAsyncStreamIterator<AdvertisementObservation<string> | IpcAdvertisement> | null = null
   private pumpStarted = false
   private closed = false
@@ -486,15 +502,17 @@ class PublicScanSessionController {
     this.cancelPresenceTimers()
     const iterator = this.sourceIterator
     this.sourceIterator = null
+    let iteratorError: unknown = null
     if (iterator !== null) {
       try {
         await iterator.return()
-      } catch {
-        // The owning scan session reports source cleanup failures.
+      } catch (error) {
+        iteratorError = error
       }
     }
-    this.observationStream.closeWithReason(reason)
+    this.observationStream.finishWithReason(reason)
     this.eventBroadcast.close(reason)
+    if (iteratorError !== null) throw iteratorError
     return { state: 'released', failures: [] }
   }
 
@@ -540,30 +558,37 @@ class PublicScanSessionController {
     if (this.duplicates === 'coalesced') {
       const fingerprint = publicObservationFingerprint(observation)
       const previous = this.lastObservationFingerprints.get(observation.peer.id)
-      if (previous === fingerprint) return
-      this.lastObservationFingerprints.set(observation.peer.id, fingerprint)
+      if (previous?.value === fingerprint) return
+      this.rememberObservationFingerprint(observation.peer.id, fingerprint)
     }
     this.observationStream.emit(observation, estimatePublicScanObservationBytes(observation))
-    this.eventBroadcast.emit(Object.freeze({ kind: 'discovered', observation }))
+    this.eventBroadcast.emit(
+      Object.freeze({ kind: 'observed', peer: observation.peer }),
+      estimatePublicDiscoveryEventBytes({ kind: 'observed', peer: observation.peer })
+    )
   }
-
-  private readonly lastObservationFingerprints = new Map<string, string>()
 
   private observePresence(observation: PublicScanObservation): void {
     if (this.reportLostAfterMs === undefined) return
     const observedAt = observation.observedAtMonotonicMs ?? this.now()
     const current = this.presence.get(observation.peer.id)
-    if (current !== undefined && observedAt <= current.lastSeenAtMonotonicMs) {
-      current.observation = observation
+    if (current !== undefined && observedAt < current.lastSeenAtMonotonicMs) {
       return
     }
-    if (current?.timer !== null && current?.timer !== undefined) current.timer.cancel()
+    if (current !== undefined) {
+      current.timer?.cancel()
+      this.presence.delete(observation.peer.id)
+      this.presenceBytes -= current.bytes
+    }
     const presence: PublicScanPresence = {
       observation,
       lastSeenAtMonotonicMs: observedAt,
-      timer: null
+      timer: null,
+      bytes: estimatePublicScanObservationBytes(observation)
     }
     this.presence.set(observation.peer.id, presence)
+    this.presenceBytes += presence.bytes
+    this.evictPresenceState()
     presence.timer = this.scheduleDeadline(observedAt + this.reportLostAfterMs, () => {
       this.reportLost(observation.peer.id, observedAt)
     })
@@ -580,13 +605,23 @@ class PublicScanSessionController {
       return
     }
     this.presence.delete(peerId)
+    this.presenceBytes -= current.bytes
+    this.lastObservationFingerprints.delete(peerId)
     current.timer = null
     this.eventBroadcast.emit(
       Object.freeze({
         kind: 'lost',
         peer: current.observation.peer,
-        lastSeenAtMonotonicMs: expectedLastSeenAtMonotonicMs,
-        lostAtMonotonicMs: now
+        lastObservedAt: expectedLastSeenAtMonotonicMs,
+        derivedAt: now,
+        reason: 'observation-timeout'
+      }),
+      estimatePublicDiscoveryEventBytes({
+        kind: 'lost',
+        peer: current.observation.peer,
+        lastObservedAt: expectedLastSeenAtMonotonicMs,
+        derivedAt: now,
+        reason: 'observation-timeout'
       })
     )
   }
@@ -597,13 +632,49 @@ class PublicScanSessionController {
       current.timer = null
     }
     this.presence.clear()
+    this.presenceBytes = 0
+    this.lastObservationFingerprints.clear()
+    this.fingerprintBytes = 0
+  }
+
+  private rememberObservationFingerprint(peerId: string, value: string): void {
+    const existing = this.lastObservationFingerprints.get(peerId)
+    if (existing !== undefined) {
+      this.fingerprintBytes -= existing.bytes
+      this.lastObservationFingerprints.delete(peerId)
+    }
+    const fingerprint = { value, bytes: value.length * 2 }
+    this.lastObservationFingerprints.set(peerId, fingerprint)
+    this.fingerprintBytes += fingerprint.bytes
+    while (
+      this.lastObservationFingerprints.size > MAX_PUBLIC_SCAN_STATE_ENTRIES ||
+      this.fingerprintBytes > MAX_PUBLIC_SCAN_STATE_BYTES
+    ) {
+      const oldest = this.lastObservationFingerprints.entries().next().value
+      if (oldest === undefined) return
+      const [oldestPeerId, oldestFingerprint] = oldest
+      this.lastObservationFingerprints.delete(oldestPeerId)
+      this.fingerprintBytes -= oldestFingerprint.bytes
+    }
+  }
+
+  private evictPresenceState(): void {
+    while (this.presence.size > MAX_PUBLIC_SCAN_STATE_ENTRIES || this.presenceBytes > MAX_PUBLIC_SCAN_STATE_BYTES) {
+      const oldest = this.presence.entries().next().value
+      if (oldest === undefined) return
+      const [peerId, presence] = oldest
+      presence.timer?.cancel()
+      this.presence.delete(peerId)
+      this.presenceBytes -= presence.bytes
+      this.lastObservationFingerprints.delete(peerId)
+    }
   }
 
   private async finish(reason: StreamTerminalNotice['reason']): Promise<void> {
     if (this.closed) return
     this.closed = true
     this.cancelPresenceTimers()
-    this.observationStream.closeWithReason(reason)
+    this.observationStream.finishWithReason(reason)
     this.eventBroadcast.close(
       reason === 'source-failed'
         ? 'source-failed'
@@ -1126,7 +1197,14 @@ class PublicBleManager implements BleManager {
       const { signal, deadline } = normalizeOperationOptions(options, this.now)
       const delivery = resolveStreamPolicy(options.delivery ?? 'balanced')
       const normalizedQuery = normalizeScanQuery(options.query)
-      if (options.reportLostAfterMs !== undefined && typeof this.internal.scheduleDeadline !== 'function') {
+      const reportLostAfterMs = options.observation?.reportLostAfterMs
+      if (options.observation?.includeRawAdvertisement === true) {
+        throw contractError('capability.unsupported', 'scan', 'public-ble-manager.scan.raw-advertisement')
+      }
+      if (options.duplicates === 'all' && reportLostAfterMs !== undefined) {
+        throw contractError('argument.invalid', 'scan', 'public-ble-manager.scan.duplicates')
+      }
+      if (reportLostAfterMs !== undefined && typeof this.internal.scheduleDeadline !== 'function') {
         throw contractError('capability.unavailable', 'scan', 'public-ble-manager.scan.report-lost-after')
       }
       const plan = typeof this.internal.planScan === 'function' ? this.internal.planScan(normalizedQuery) : null
@@ -1156,7 +1234,7 @@ class PublicBleManager implements BleManager {
         delivery,
         this.now,
         (deadlineAt, action) => scheduleInternalScanDeadline(this.internal, deadlineAt, action),
-        options.reportLostAfterMs
+        reportLostAfterMs
       )
       const activeScan = { controller, closeState: scanState.close }
       this.activeScanSessions.add(activeScan)
@@ -1164,20 +1242,28 @@ class PublicBleManager implements BleManager {
         plan,
         stop: async () => {
           scanState.emit({ state: 'stopping' })
+          let controllerError: Error | null = null
+          try {
+            await controller.close()
+          } catch (error) {
+            controllerError = error instanceof Error ? error : new Error(String(error))
+          }
           try {
             const cleanup = await rehydratePublicPromise(session.stop())
             scanState.emit(
               cleanup.state === 'released' ? { state: 'stopped' } : { state: 'failed', reason: 'scan-stop-failed' }
             )
             scanState.close()
-            await controller.close()
             this.activeScanSessions.delete(activeScan)
+            if (controllerError !== null) throw new AggregateError([controllerError], 'BLE scan view cleanup failed')
             return cleanup
           } catch (error) {
             scanState.emit({ state: 'failed', reason: 'scan-stop-failed' })
             scanState.close()
-            await controller.close()
             this.activeScanSessions.delete(activeScan)
+            if (controllerError !== null && error !== controllerError) {
+              throw new AggregateError([controllerError, error], 'BLE scan cleanup failed')
+            }
             throw error
           }
         },
@@ -1336,13 +1422,26 @@ class PublicBleManager implements BleManager {
     try {
       const active = [...this.activeScanSessions]
       this.activeScanSessions.clear()
+      const failures: Error[] = []
       await Promise.all(
         active.map(async scan => {
           scan.closeState()
-          await scan.controller.close()
+          try {
+            await scan.controller.close()
+          } catch (error) {
+            failures.push(error instanceof Error ? error : new Error(String(error)))
+          }
         })
       )
-      return await this.internal.destroy()
+      let cleanup: CleanupRecord
+      try {
+        cleanup = await this.internal.destroy()
+      } catch (error) {
+        failures.push(error instanceof Error ? error : new Error(String(error)))
+        throw new AggregateError(failures, 'BLE manager cleanup failed')
+      }
+      if (failures.length > 0) throw new AggregateError(failures, 'BLE manager cleanup failed')
+      return cleanup
     } catch (error) {
       throw rehydratePublicError(error)
     }
@@ -1569,6 +1668,11 @@ function estimatePublicScanObservationBytes(observation: PublicScanObservation):
   return bytes
 }
 
+function estimatePublicDiscoveryEventBytes(event: DiscoveryEvent): number {
+  const peerBytes = event.peer.id.length * 2 + (event.peer.name?.length ?? 0) * 2
+  return event.kind === 'observed' ? 32 + peerBytes : 96 + peerBytes
+}
+
 export function publicConnectionEvents(
   source: BoundedAsyncStream<ConnectionLifecycleEvent<string>>
 ): AsyncIterable<BleConnectionEvent> {
@@ -1725,7 +1829,7 @@ function isReferenceLike(value: unknown): value is object {
 }
 
 export function assertPublicScanOptions(options: ScanOptions): void {
-  const allowed = new Set(['signal', 'timeoutMs', 'query', 'duplicates', 'delivery', 'reportLostAfterMs'])
+  const allowed = new Set(['signal', 'timeoutMs', 'query', 'duplicates', 'delivery', 'observation'])
   if (Object.keys(options).some(key => !allowed.has(key))) {
     throw contractError('argument.invalid', 'scan', 'public-ble-manager.scan.options')
   }
@@ -1751,13 +1855,28 @@ export function assertPublicScanOptions(options: ScanOptions): void {
     throw contractError('argument.invalid', 'scan', 'public-ble-manager.scan.delivery.budget')
   }
   if (
-    options.reportLostAfterMs !== undefined &&
-    (typeof options.reportLostAfterMs !== 'number' ||
-      !Number.isSafeInteger(options.reportLostAfterMs) ||
-      options.reportLostAfterMs <= 0 ||
-      options.reportLostAfterMs > 2_147_483_647)
+    options.observation !== undefined &&
+    (typeof options.observation !== 'object' ||
+      options.observation === null ||
+      Array.isArray(options.observation) ||
+      Object.keys(options.observation).some(key => key !== 'reportLostAfterMs' && key !== 'includeRawAdvertisement'))
+  ) {
+    throw contractError('argument.invalid', 'scan', 'public-ble-manager.scan.observation')
+  }
+  if (
+    options.observation?.reportLostAfterMs !== undefined &&
+    (typeof options.observation.reportLostAfterMs !== 'number' ||
+      !Number.isSafeInteger(options.observation.reportLostAfterMs) ||
+      options.observation.reportLostAfterMs <= 0 ||
+      options.observation.reportLostAfterMs > 2_147_483_647)
   ) {
     throw contractError('argument.invalid', 'scan', 'public-ble-manager.scan.report-lost-after')
+  }
+  if (
+    options.observation?.includeRawAdvertisement !== undefined &&
+    typeof options.observation.includeRawAdvertisement !== 'boolean'
+  ) {
+    throw contractError('argument.invalid', 'scan', 'public-ble-manager.scan.raw-advertisement')
   }
 }
 
