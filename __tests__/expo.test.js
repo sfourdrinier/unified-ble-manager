@@ -380,6 +380,29 @@ describe('Expo factory', () => {
     expect(control.claimRestoration).toHaveBeenCalledTimes(1)
   })
 
+  test('fails closed with a normalized protocol error for an unknown native restoration outcome', async () => {
+    const control = {
+      claimRestoration: jest.fn().mockResolvedValue({
+        outcome: 'futureNativeOutcome',
+        replayRecordCount: 0,
+        records: []
+      })
+    }
+    const manager = { adapter: { state: jest.fn().mockResolvedValue(adapterState()) } }
+    createReactNativeBleManagerWithEnvironment.mockResolvedValue(manager)
+
+    const result = await createExpoBleManagerWithEnvironment(
+      environment({ executionEnvironment: 'development-build', nativeModuleAvailable: true }, control)
+    )
+
+    await expect(result.restoration.claim()).rejects.toMatchObject({
+      constructor: BleError,
+      code: 'protocol.malformed',
+      domain: 'restoration',
+      operation: 'expo.restoration.native-outcome'
+    })
+  })
+
   test('normalizes actionable native foreground-service failures', async () => {
     const nativeFailure = Object.assign(new Error('Rebuild with configured notification metadata.'), {
       code: 'foregroundServiceNotConfigured'
@@ -475,5 +498,30 @@ describe('Expo factory', () => {
 
     await expect(createExpoBleManager(options)).resolves.toBe(manager)
     expect(createReactNativeBleManager).toHaveBeenCalledWith(options)
+  })
+
+  test('passes direct Expo runtime bridges into the Expo surfaces', async () => {
+    const settingsBridge = jest.fn().mockResolvedValue(undefined)
+    const permissionBridge = jest.fn().mockResolvedValue({
+      requested: ['bluetooth'],
+      granted: ['bluetooth'],
+      denied: [],
+      recommendedSettingsTarget: null
+    })
+    const manager = { adapter: { state: jest.fn().mockResolvedValue(adapterState()) } }
+    createReactNativeBleManager.mockResolvedValue(manager)
+
+    const result = await createExpoBleManager({}, {
+      executionEnvironment: 'development-build',
+      nativeModuleAvailable: true,
+      settingsBridge,
+      permissionBridge
+    })
+
+    await result.openSettings('bluetooth')
+    await result.permissions.request({ purpose: 'scan-and-connect' })
+
+    expect(settingsBridge).toHaveBeenCalledWith('bluetooth')
+    expect(permissionBridge).toHaveBeenCalledWith({ purpose: 'scan-and-connect' })
   })
 })

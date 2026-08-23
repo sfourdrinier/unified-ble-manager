@@ -141,8 +141,8 @@ export async function createExpoBleManager(
     assertDirectExpoRuntime()
     return withExpoRuntime(
       await createReactNativeBleManager(options),
-      undefined,
-      undefined,
+      runtimeConfiguration?.settingsBridge,
+      runtimeConfiguration?.permissionBridge,
       nativeBackgroundControl(),
       nativeAssociationControl(),
       nativeRestorationControl(),
@@ -389,20 +389,19 @@ async function claimExpoRestoration(
       'Native restoration adoption is unavailable on this Expo host.'
     )
   }
+  let result: import('./NativeUnifiedBleProtocolControl').NativeRestorationAdoptionControlResult
   try {
-    const result = await control.claimRestoration()
-    return Object.freeze({
-      outcome: restorationOutcome(result.outcome),
-      replayRecordCount: result.replayRecordCount,
-      records: Object.freeze(
-        result.records.map(record =>
-          Object.freeze({ kind: record.kind, ordinal: record.ordinal, peerId: record.peerId })
-        )
-      )
-    })
+    result = await control.claimRestoration()
   } catch (error) {
     throwExpoRuntimeError('capability.unavailable', 'expo.restoration.claim', errorMessage(error), errorCode(error))
   }
+  return Object.freeze({
+    outcome: restorationOutcome(result.outcome),
+    replayRecordCount: result.replayRecordCount,
+    records: Object.freeze(
+      result.records.map(record => Object.freeze({ kind: record.kind, ordinal: record.ordinal, peerId: record.peerId }))
+    )
+  })
 }
 
 function restorationOutcome(
@@ -421,6 +420,8 @@ function restorationOutcome(
       return 'epoch-mismatch'
     case 'adopted':
       return 'adopted'
+    default:
+      throw rehydratePublicError(contractError('protocol.malformed', 'restoration', 'expo.restoration.native-outcome'))
   }
 }
 

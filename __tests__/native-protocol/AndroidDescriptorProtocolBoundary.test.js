@@ -216,7 +216,7 @@ describe('React Native Android descriptor protocol boundary', () => {
     expect(control.closedAttachments).toHaveLength(1)
   })
 
-  test('routes an active databaseChanged event through generation invalidation and preserves cleanup', async () => {
+  test('invalidates an active database before synchronous databaseChanged listeners run', async () => {
     const control = new DescriptorControl()
     const runtime = new DescriptorRuntime()
     global.__unifiedBleNativeProtocolV2 = runtime
@@ -241,19 +241,19 @@ describe('React Native Android descriptor protocol boundary', () => {
       characteristicOccurrence: firstCharacteristic.occurrence
     }
     const changedPeers = []
-    const cleanup = []
+    const listenerReads = []
     expect(typeof boundary.onDatabaseChanged).toBe('function')
     boundary.onDatabaseChanged(nativePeerId => {
       changedPeers.push(nativePeerId)
-      cleanup.push(boundary.stopNotify(firstAddress))
+      listenerReads.push(boundary.read(firstAddress))
     })
     await boundary.startNotify(firstAddress, () => undefined)
-
     const firstDatabase = requiredRecord(runtime.commands[1], 11)
     runtime.emitEvent('databaseChanged', [field(8, firstDatabase)])
-    await expect(Promise.all(cleanup)).resolves.toEqual([undefined])
+    await expect(Promise.all(listenerReads)).rejects.toMatchObject({ normalized: { code: 'gatt.stale-handle' } })
     expect(changedPeers).toEqual([peerId])
-    await expect(boundary.startNotify(firstAddress, () => undefined)).rejects.toMatchObject({
+    expect(runtime.commandKinds).toEqual(['connect', 'discover', 'subscribe'])
+    await expect(boundary.read(firstAddress)).rejects.toMatchObject({
       normalized: { code: 'gatt.stale-handle' }
     })
 
@@ -264,9 +264,9 @@ describe('React Native Android descriptor protocol boundary', () => {
       serviceUuid: secondSnapshot.services[0].uuid,
       serviceOccurrence: secondSnapshot.services[0].occurrence,
       characteristicUuid: secondCharacteristic.uuid,
-      characteristicOccurrence: secondCharacteristic.occurrence
+      characteristicOccurrence: secondCharacteristic.occurrence + 1
     }
-    const secondDatabase = requiredRecord(runtime.commands[4], 11)
+    const secondDatabase = requiredRecord(runtime.commands[3], 11)
     expect(requiredString(secondDatabase, 3)).not.toBe(requiredString(firstDatabase, 3))
 
     runtime.emitEvent('databaseChanged', [field(8, firstDatabase)])
@@ -276,7 +276,7 @@ describe('React Native Android descriptor protocol boundary', () => {
       { nativePeerId: peerId, databaseGeneration: requiredString(firstDatabase, 3) }
     )
     await expect(boundary.startNotify(secondAddress, () => undefined)).resolves.toBeUndefined()
-    expect(characteristicDatabaseGeneration(runtime.commands[5])).toBe(requiredString(secondDatabase, 3))
+    expect(characteristicDatabaseGeneration(runtime.commands[4])).toBe(requiredString(secondDatabase, 3))
 
     await boundary.destroy()
     expect(control.closedAttachments).toHaveLength(1)

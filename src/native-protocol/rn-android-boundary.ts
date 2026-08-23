@@ -797,11 +797,11 @@ export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary
         )
         return
       }
-      for (const listener of this.databaseChangedListeners) {
-        this.invokeConsumerListener('databaseChanged', () => listener(nativePeerId))
-      }
       if (this.databases.get(nativePeerId) === currentDatabase) {
         this.databases.delete(nativePeerId)
+      }
+      for (const listener of this.databaseChangedListeners) {
+        this.invokeConsumerListener('databaseChanged', () => listener(nativePeerId))
       }
       return
     }
