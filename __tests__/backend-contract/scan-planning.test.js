@@ -62,6 +62,18 @@ describe('PR9 scan planner contract and canonical oracle corpus', () => {
     }
   })
 
+  test('proves a representative native service projection is a safe superset', () => {
+    const vector = vectors.find(candidate => candidate.id === 'compound-exclusion-wins')
+    const plan = vector.platformPlans.deterministic
+    const normalizedObservation = normalizeScanObservation(hydrate(vector.observation))
+    const nativeAccepts = plan.nativeServiceUuids.every(uuid => normalizedObservation.serviceUuids.includes(uuid))
+    const residualMatch = observationMatchesScanQuery(normalizeScanQuery(hydrate(vector.query)), normalizedObservation)
+
+    expect(plan.nativeGuarantee).toBe('safe-superset')
+    expect(nativeAccepts).toBe(true)
+    expect(nativeAccepts && residualMatch).toBe(vector.expectedMatch)
+  })
+
   test('keeps the canonical residual query and snapshots bounded diagnostic projections', () => {
     const residualQuery = normalizeScanQuery({ anyOf: [{ names: { prefixes: ['Heart'] } }] })
     const plan = snapshotScanPlan({
@@ -207,6 +219,21 @@ describe('PR9 scan planner contract and canonical oracle corpus', () => {
         queryDigest: residualQuery.digest,
         nativeGuarantee: 'exact',
         native: { predicates: [], complete: false },
+        residual: { query: residualQuery, predicates: [], complete: true },
+        unavailable: [],
+        limitations: [],
+        estimatedCost: 'low'
+      })
+    ).toThrow('exact native projection')
+
+    expect(() =>
+      snapshotScanPlan({
+        queryDigest: residualQuery.digest,
+        nativeGuarantee: 'exact',
+        native: {
+          predicates: [{ clauseSet: 'anyOf', clauseIndex: 0, field: 'names', operator: 'prefixes' }],
+          complete: true
+        },
         residual: { query: residualQuery, predicates: [], complete: true },
         unavailable: [],
         limitations: [],

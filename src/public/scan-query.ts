@@ -553,8 +553,10 @@ function cloneNormalizedObservation(value: NormalizedScanObservation): Normalize
       ? undefined
       : snapshotPeerReference(value.peerReference, 'scan.observation.peer-reference')
   return Object.freeze({
-    ...value,
     ...(peerReference === undefined ? {} : { peerReference }),
+    localName: value.localName,
+    rssi: value.rssi,
+    connectable: value.connectable,
     serviceUuids: value.serviceUuids === null ? null : Object.freeze([...value.serviceUuids]),
     manufacturerData:
       value.manufacturerData === null

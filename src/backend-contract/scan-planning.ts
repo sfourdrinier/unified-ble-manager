@@ -95,20 +95,17 @@ const MAX_LIMITATIONS = 32
  * Snapshots plan diagnostics without changing the canonical residual query. The native
  * projection is descriptive only; this helper does not evaluate any predicate.
  */
-export function snapshotScanPlan<NativeFilter>(
-  plan: BackendScanExecutionPlan<NativeFilter>
-): BackendScanExecutionPlan<NativeFilter>
-export function snapshotScanPlan(plan: ScanPlan): ScanPlan
-export function snapshotScanPlan<NativeFilter>(
-  plan: ScanPlan | BackendScanExecutionPlan<NativeFilter>
-): ScanPlan | BackendScanExecutionPlan<NativeFilter> {
+export function snapshotScanPlan(plan: ScanPlan): ScanPlan {
   const residualQuery = snapshotNormalizedScanQuery(plan.residual.query)
   if (plan.queryDigest !== residualQuery.digest) {
     throw new Error('scan plan residual query digest must match queryDigest')
   }
   assertNativeGuarantee(plan.nativeGuarantee)
-  if (plan.nativeGuarantee === 'exact' && !plan.native.complete) {
-    throw new Error('exact native projection must be complete')
+  if (
+    plan.nativeGuarantee === 'exact' &&
+    (!plan.native.complete || plan.residual.predicates.length > 0 || !isMatchAllQuery(plan.residual.query))
+  ) {
+    throw new Error('exact native projection must be complete for the whole query')
   }
   if (plan.nativeGuarantee === 'safe-superset' && !plan.residual.complete) {
     throw new Error('safe-superset plan requires a complete residual')
@@ -130,10 +127,11 @@ export function snapshotScanPlan<NativeFilter>(
     limitations,
     estimatedCost: plan.estimatedCost
   }
-  if ('nativeFilter' in plan) {
-    return Object.freeze({ ...snapshot, nativeFilter: plan.nativeFilter })
-  }
   return Object.freeze(snapshot)
+}
+
+function isMatchAllQuery(query: NormalizedScanQuery): boolean {
+  return query.anyOf === null && query.exclude === null
 }
 
 function snapshotProjection(projection: ScanPlanProjection, name: string): ScanPlanProjection {

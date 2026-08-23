@@ -164,6 +164,17 @@ describe('canonical public ScanQuery v1', () => {
         serviceData: [{ service: '180d', data: new Uint8Array([1]) }]
       })
     ).toThrow()
+
+    const normalized = normalizeScanObservation({
+      localName: 'Scoped',
+      rssi: -40,
+      connectable: true,
+      serviceUuids: [],
+      manufacturerData: [],
+      serviceData: [],
+      peerId: 'must-not-cross-the-boundary'
+    })
+    expect(normalized).not.toHaveProperty('peerId')
   })
 
   test('uses the same normalized query for the public residual stream and find helper', async () => {

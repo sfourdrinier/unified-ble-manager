@@ -1,6 +1,6 @@
 // __tests__/backend-contract/fixtures/positive.ts
 
-import { createAttachmentBoundIdFactory, snapshotScanPlan } from '../../../src/backend-contract'
+import { createAttachmentBoundIdFactory } from '../../../src/backend-contract'
 import type {
   AttachmentBinding,
   Capacity,
@@ -114,4 +114,3 @@ observe(runtimeScopedLease)
 observe(runtimeCorrelation)
 observe(scanPlanner.plan(scanPlan.residual.query, scanPlanningContext))
 observe(scanExecutionPlan.nativeFilter)
-observe(snapshotScanPlan(scanExecutionPlan).nativeFilter)
