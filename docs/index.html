@@ -62,7 +62,9 @@
             <h1>Getting started</h1>
             <p>
               <strong>Current prerelease:</strong> <code>4.0.0-rc.3</code> is published from exact <code>main</code> and
-              is immutable. Stable <code>4.0.0</code> remains reserved for the post-PR12 release gate.
+              is immutable. The Expo plugin v2 surface described in this PR10 branch is unreleased branch work and
+              becomes published only at RC4; do not change the package version or recreate RC3. RC4 remains reserved for
+              the post-PR10 release gate.
             </p>
             <p>
               This page gets you to a first scan, connect, read, notify, and teardown on React Native. Other hosts are
@@ -82,6 +84,13 @@
                   <td>React Native / Expo</td>
                   <td><code>unified-ble-manager/react-native</code></td>
                   <td>this page</td>
+                </tr>
+                <tr>
+                  <td>React provider / hooks</td>
+                  <td><code>unified-ble-manager/react</code></td>
+                  <td>
+                    <a href="../README.md#react-provider-and-hooks"><code>README.md</code></a>
+                  </td>
                 </tr>
                 <tr>
                   <td>Browser</td>
@@ -138,6 +147,15 @@
               >):
             </p>
             <p>Then generate native projects and run a development build:</p>
+            <p>
+              The packed-host proof is narrower than a full Expo app build. After <code>prepack</code>,
+              <code>node scripts/ci/packed-host-consumer-check.js</code> installs the tarball (not the source tree) and
+              checks the conditional <code>./expo</code>, <code>./react</code>, and <code>./tauri</code> exports through
+              CJS and ESM runtime imports/loadability, with TypeScript imports compiled under Bundler and NodeNext
+              resolution. The source-tree CNG prebuild and Android debug APK/assembly are separate package/plugin and
+              Android compile evidence; Apple/Xcode, EAS, and physical-device proof are not implied and require their
+              own host- or device-specific runs.
+            </p>
             <h3>2. Ask Android for runtime permission</h3>
             <p>
               The plugin writes the manifest. Android 12+ still needs a runtime request. The library will not do this
@@ -529,6 +547,10 @@
               runtime permissions during prebuild, or prove physical radio/restoration reliability. Expo Go is not a
               supported BLE execution environment because it cannot contain this native module.
             </p>
+            <p>
+              The v2 Expo surface documented here is PR10 branch work. The immutable <code>4.0.0-rc.3</code> package is
+              not recreated or changed; this v2 surface becomes published only at RC4 after the PR10 release gate.
+            </p>
             <h2>Installation and development build</h2>
             <pre><code>bunx expo install unified-ble-manager expo-dev-client
 bunx expo prebuild --clean
@@ -540,6 +562,14 @@ bunx expo run:android
             <pre><code>bunx eas build --profile development --platform ios
 bunx eas build --profile development --platform android
 </code></pre>
+            <p>
+              These commands are build recipes, not evidence by themselves. The packed-host gate (<code
+                >pnpm prepack &#x26;&#x26; node scripts/ci/packed-host-consumer-check.js</code
+              >) proves the installed tarball's conditional <code>./expo</code>, <code>./react</code>, and
+              <code>./tauri</code> exports by CJS and ESM runtime import/loadability checks and TypeScript imports under
+              Bundler and NodeNext resolution. That exact packed export/type/import proof does not prove a full Expo
+              application build.
+            </p>
             <p>
               expo is an optional host peer. Bare React Native, Web, Node, Electron, and Tauri consumers do not resolve
               Expo tooling.
@@ -643,6 +673,12 @@ bunx eas build --profile development --platform android
               <li>iosNativeProtocolRestoration</li>
               <li>androidEnableForegroundService</li>
             </ul>
+            <p>
+              The example's source-tree CNG prebuild and Android debug APK/assembly are separate source/plugin and
+              Android compile evidence. Apple/Xcode and EAS build evidence require successful platform-specific runs,
+              while physical-device permissions, restoration, background behavior, and radio reliability require
+              separate device evidence.
+            </p>
             <p>
               Do not author clientId, hostSessionScope, namespace, or protocol epoch values in application
               configuration. Those are native protocol identities, not application policy.
