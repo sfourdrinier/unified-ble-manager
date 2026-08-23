@@ -88,13 +88,17 @@ export type BleObservationSource = 'backend' | 'platform' | 'core' | 'unknown'
 export interface ScanSession {
   readonly plan: ScanPlan | null
   readonly observations: BoundedAsyncStream<PublicScanObservation>
+  readonly events?: AsyncIterable<DiscoveryEvent>
   readonly state: AsyncIterable<ScanStateEvent>
   stop(): Promise<CleanupRecord>
 }
+export type DiscoveryEvent =
+  | { readonly kind: 'observed'; readonly peer: BlePeer }
+  | { readonly kind: 'lost'; readonly peer: BlePeer; readonly lastObservedAt: number; readonly derivedAt: number; readonly reason: 'observation-timeout' }
 export interface BleAdapter { readonly id: string | null; state(): Promise<BleAdapterState>; waitUntilReady(options?: AdapterReadinessOptions): Promise<BleAdapterState> }
 export interface BleDiscoveryInfo { readonly kind: 'continuous-scan' | 'system-chooser' | 'hybrid' }
 export interface OperationOptions { readonly signal?: AbortSignal; readonly timeoutMs?: number }
-export interface ScanOptions extends OperationOptions { readonly query?: ScanQuery; readonly duplicates?: 'coalesced' | 'all'; readonly delivery?: StreamPolicy }
+export interface ScanOptions extends OperationOptions { readonly query?: ScanQuery; readonly duplicates?: 'coalesced' | 'all'; readonly delivery?: StreamPolicy; readonly observation?: { readonly reportLostAfterMs?: number; readonly includeRawAdvertisement?: boolean } }
 export interface FindOptions extends OperationOptions { readonly query?: ScanQuery; readonly select?: 'first' | ((peer: BlePeer) => boolean) }
 export interface ChooseOptions extends OperationOptions { readonly filters?: readonly ChooseFilter[]; readonly optionalServices?: readonly (string | number)[]; readonly acceptAllDevices?: boolean }
 export type { GattDatabase, GattService, GattCharacteristic, GattDescriptor, GattSubscription, GattValueEvent, GattWriteReceipt, GattSubscribeOptions } from './gatt'

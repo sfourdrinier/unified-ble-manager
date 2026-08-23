@@ -151,10 +151,13 @@ Web Bluetooth replaces the scan with `ble.choose(...)` from a user gesture. Taur
 | Member | Use |
 | --- | --- |
 | `observations` | Bounded stream: `value`, `overflow`, or `terminal` |
+| `events` | Optional derived current-view events: `observed` and monotonic `lost` (`observation.reportLostAfterMs`); unsupported host façades reject this option |
 | `plan` | Host-owned native/residual planning diagnostics, or `null` when this host has no planner |
 | `stop()` | End the scan and return a cleanup receipt. `find` already does this. |
 
 `AdvertisementObservation.device` is identity (`id`, address, stability). The advertised name is `observation.localName`.
+
+`scan({ observation: { reportLostAfterMs } })` derives timeout events from the same coalesced current view. The timeout is monotonic and bounded; RF absence, OS throttling, filtering, process suspension, or a stopped scan can all produce a derived `lost` event. Raw advertisement inclusion is capability-gated and unsupported by the normal public façade.
 
 ### `Connection`
 
