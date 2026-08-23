@@ -296,10 +296,16 @@ export function useCharacteristicValue(
     loading: characteristic !== null,
     error: null
   })
-  const optionsKey = JSON.stringify(options)
+  const signal = options.signal
+  const optionsKey = JSON.stringify({
+    timeoutMs: options.timeoutMs,
+    delivery: options.delivery,
+    stream: options.stream
+  })
   // The serialized subscription policy is the semantic dependency; object identity must not restart it.
+  // AbortSignal identity is compared directly so mutable signal state does not restart an active subscription.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  const stableOptions = React.useMemo(() => options, [optionsKey])
+  const stableOptions = React.useMemo(() => options, [optionsKey, signal])
   React.useEffect(() => {
     let active = true
     let subscription: Awaited<ReturnType<GattCharacteristic['subscribe']>> | null = null
@@ -330,7 +336,7 @@ export function useCharacteristicValue(
       const current = subscription
       if (current !== null) current.remove().catch(() => undefined)
     }
-  }, [characteristic, optionsKey, stableOptions])
+  }, [characteristic, optionsKey, signal, stableOptions])
   return characteristic === null ? { value: null, loading: false, error: null } : result
 }
 

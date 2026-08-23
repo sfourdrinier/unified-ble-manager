@@ -71,6 +71,7 @@ const {
   useAdapterState,
   useBle,
   useBleCapability,
+  useCharacteristicValue,
   useDiscoveredPeers
 } = require('../src/react')
 
@@ -108,6 +109,15 @@ function scanSession() {
   }
 }
 
+function characteristicSubscription() {
+  return {
+    values: (async function* () {
+      yield { kind: 'terminal' }
+    })(),
+    remove: jest.fn().mockResolvedValue({ state: 'released', failures: [] })
+  }
+}
+
 async function flush() {
   for (let index = 0; index < 5; index += 1) await Promise.resolve()
   await new Promise(resolve => setImmediate(resolve))
@@ -128,6 +138,7 @@ describe('React host surface', () => {
 
     BleProvider({ createManager, children: null })
     const firstCleanup = hookHarness.effects[0]()
+    firstCleanup()
     const secondCleanup = hookHarness.effects[0]()
 
     expect(createManager).toHaveBeenCalledTimes(1)
@@ -251,5 +262,62 @@ describe('React host surface', () => {
 
     thirdCleanup()
     expect(thirdSession.stop).toHaveBeenCalledTimes(1)
+  })
+
+  test('restarts characteristic subscriptions when timeout or AbortSignal identity changes', async () => {
+    const firstSignal = new AbortController().signal
+    const secondSignal = new AbortController().signal
+    const firstSubscription = characteristicSubscription()
+    const secondSubscription = characteristicSubscription()
+    const thirdSubscription = characteristicSubscription()
+    const characteristic = {
+      subscribe: jest
+        .fn()
+        .mockResolvedValueOnce(firstSubscription)
+        .mockResolvedValueOnce(secondSubscription)
+        .mockResolvedValueOnce(thirdSubscription)
+    }
+
+    const firstOptions = { timeoutMs: 1_000, signal: firstSignal }
+    useCharacteristicValue(characteristic, firstOptions)
+    const firstCleanup = hookHarness.effects[0]()
+    await flush()
+    expect(characteristic.subscribe).toHaveBeenNthCalledWith(1, {
+      timeoutMs: firstOptions.timeoutMs,
+      stream: 'balanced',
+      signal: expect.any(AbortSignal)
+    })
+    expect(Object.is(characteristic.subscribe.mock.calls[0][0].signal, firstSignal)).toBe(true)
+
+    firstCleanup()
+    hookHarness.rerender()
+    const secondOptions = { timeoutMs: 2_000, signal: firstSignal }
+    useCharacteristicValue(characteristic, secondOptions)
+    const secondCleanup = hookHarness.effects[0]()
+    await flush()
+    expect(firstSubscription.remove).toHaveBeenCalledTimes(1)
+    expect(characteristic.subscribe).toHaveBeenNthCalledWith(2, {
+      timeoutMs: secondOptions.timeoutMs,
+      stream: 'balanced',
+      signal: expect.any(AbortSignal)
+    })
+    expect(Object.is(characteristic.subscribe.mock.calls[1][0].signal, firstSignal)).toBe(true)
+
+    secondCleanup()
+    hookHarness.rerender()
+    const thirdOptions = { timeoutMs: 2_000, signal: secondSignal }
+    useCharacteristicValue(characteristic, thirdOptions)
+    const thirdCleanup = hookHarness.effects[0]()
+    await flush()
+    expect(secondSubscription.remove).toHaveBeenCalledTimes(1)
+    expect(characteristic.subscribe).toHaveBeenNthCalledWith(3, {
+      timeoutMs: thirdOptions.timeoutMs,
+      stream: 'balanced',
+      signal: expect.any(AbortSignal)
+    })
+    expect(Object.is(characteristic.subscribe.mock.calls[2][0].signal, secondSignal)).toBe(true)
+
+    thirdCleanup()
+    expect(thirdSubscription.remove).toHaveBeenCalledTimes(1)
   })
 })
