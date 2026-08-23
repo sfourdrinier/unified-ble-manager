@@ -146,6 +146,9 @@ describe('PR9 scan planner contract and canonical oracle corpus', () => {
     }))
     expect(executionPlan.nativeFilter).not.toBe(nativeFilter)
     expect(executionPlan.nativeFilter.services).toEqual(nativeFilter.services)
+    expect(() => snapshotScanExecutionPlan({ ...plan, nativeFilter }, filter => filter)).toThrow(
+      'defensive native-filter snapshot'
+    )
   })
 
   test('rejects malformed predicate diagnostics before they can cross a host boundary', () => {
@@ -196,6 +199,21 @@ describe('PR9 scan planner contract and canonical oracle corpus', () => {
         estimatedCost: 'low'
       })
     ).toThrow('digest')
+
+    const matchAll = normalizeScanQuery()
+    expect(() =>
+      snapshotScanPlan({
+        sourceQuery: residualQuery,
+        queryDigest: residualQuery.digest,
+        residualQueryDigest: matchAll.digest,
+        nativeGuarantee: 'safe-superset',
+        native: { predicates: [], complete: false },
+        residual: { query: matchAll, predicates: [], complete: true },
+        unavailable: [],
+        limitations: [],
+        estimatedCost: 'low'
+      })
+    ).toThrow('retain the source query')
 
     const emptyAnyOfQuery = Object.freeze({
       anyOf: Object.freeze([]),

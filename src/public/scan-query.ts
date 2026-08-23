@@ -66,6 +66,7 @@ interface CompactScanAdvertisement {
   readonly peerReference?: PeerReference
   readonly localName: string | null
   readonly rssi: number | null
+  readonly txPowerLevel: number | null
   readonly serviceUuids: readonly string[]
   readonly manufacturerData: readonly { readonly companyId: number; readonly data: Uint8Array }[]
   readonly serviceData: readonly { readonly uuid: string; readonly data: Uint8Array }[]
@@ -501,7 +502,65 @@ function isIpcAdvertisement(value: ScanObservation): value is CompactScanAdverti
     value !== null &&
     'peerId' in value &&
     'manufacturerData' in value &&
-    !('device' in value)
+    !('device' in value) &&
+    hasExactObservationKeys(value, [
+      'peerId',
+      'peerReference',
+      'localName',
+      'rssi',
+      'txPowerLevel',
+      'serviceUuids',
+      'manufacturerData',
+      'serviceData'
+    ]) &&
+    isIpcAdvertisementValues(value)
+  )
+}
+
+function isIpcAdvertisementValues(value: ScanObservation): boolean {
+  if (typeof value !== 'object' || value === null || !('peerId' in value)) return false
+  const candidate = value
+  return (
+    typeof candidate.peerId === 'string' &&
+    candidate.peerId.length > 0 &&
+    (candidate.peerReference === undefined || isPeerReference(candidate.peerReference)) &&
+    (candidate.localName === null || typeof candidate.localName === 'string') &&
+    (candidate.rssi === null || (typeof candidate.rssi === 'number' && Number.isFinite(candidate.rssi))) &&
+    (candidate.txPowerLevel === null ||
+      (typeof candidate.txPowerLevel === 'number' && Number.isFinite(candidate.txPowerLevel))) &&
+    isUuidList(candidate.serviceUuids) &&
+    isIpcManufacturerDataList(candidate.manufacturerData) &&
+    isIpcServiceDataList(candidate.serviceData)
+  )
+}
+
+function isIpcManufacturerDataList(value: unknown): boolean {
+  return (
+    Array.isArray(value) &&
+    value.every(
+      entry =>
+        typeof entry === 'object' &&
+        entry !== null &&
+        hasExactObjectKeys(entry, ['companyId', 'data']) &&
+        Number.isSafeInteger(Reflect.get(entry, 'companyId')) &&
+        Reflect.get(entry, 'companyId') >= 0 &&
+        Reflect.get(entry, 'companyId') <= 0xffff &&
+        Reflect.get(entry, 'data') instanceof Uint8Array
+    )
+  )
+}
+
+function isIpcServiceDataList(value: unknown): boolean {
+  return (
+    Array.isArray(value) &&
+    value.every(
+      entry =>
+        typeof entry === 'object' &&
+        entry !== null &&
+        hasExactObjectKeys(entry, ['uuid', 'data']) &&
+        isUuidValue(Reflect.get(entry, 'uuid')) &&
+        Reflect.get(entry, 'data') instanceof Uint8Array
+    )
   )
 }
 
@@ -615,9 +674,9 @@ function isServiceDataList(value: unknown): boolean {
       entry =>
         typeof entry === 'object' &&
         entry !== null &&
-        Object.keys(entry).sort().join(',') === 'data,serviceUuid' &&
+        Object.keys(entry).sort().join(',') === 'serviceUuid,value' &&
         isCanonicalUuid(Reflect.get(entry, 'serviceUuid')) &&
-        Reflect.get(entry, 'data') instanceof Uint8Array
+        Reflect.get(entry, 'value') instanceof Uint8Array
     )
   )
 }
@@ -665,6 +724,18 @@ function isDeviceIdentity(value: unknown): boolean {
 
 function isNormalizedObservation(value: ScanObservation): value is NormalizedScanObservation {
   if (typeof value !== 'object' || value === null || 'device' in value) return false
+  if (
+    !hasExactObservationKeys(value, [
+      'peerReference',
+      'localName',
+      'rssi',
+      'connectable',
+      'serviceUuids',
+      'manufacturerData',
+      'serviceData'
+    ])
+  )
+    return false
   const localName = Reflect.get(value, 'localName')
   const rssi = Reflect.get(value, 'rssi')
   const connectable = Reflect.get(value, 'connectable')
@@ -709,6 +780,24 @@ function isCanonicalUuid(value: string): boolean {
   } catch {
     return false
   }
+}
+
+function isUuidValue(value: unknown): boolean {
+  return typeof value === 'string' && isCanonicalUuid(value)
+}
+
+function hasExactObservationKeys(value: object, optionalKeys: readonly string[]): boolean {
+  const requiredKeys = optionalKeys.filter(key => key !== 'peerReference')
+  const keys = Object.keys(value)
+    .filter(key => key !== 'peerReference')
+    .sort()
+  return hasExactObjectKeys({ ...Object.fromEntries(keys.map(key => [key, null])) }, requiredKeys)
+}
+
+function hasExactObjectKeys(value: object, expectedKeys: readonly string[]): boolean {
+  const actualKeys = Object.keys(value).sort()
+  const sortedExpected = [...expectedKeys].sort()
+  return actualKeys.length === sortedExpected.length && actualKeys.every((key, index) => key === sortedExpected[index])
 }
 
 function cloneNormalizedObservation(value: NormalizedScanObservation): NormalizedScanObservation {

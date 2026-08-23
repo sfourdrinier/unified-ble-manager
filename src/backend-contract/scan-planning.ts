@@ -132,7 +132,11 @@ export function snapshotScanExecutionPlan<NativeFilter>(
     limitations: plan.limitations,
     estimatedCost: plan.estimatedCost
   })
-  return Object.freeze({ ...snapshot, nativeFilter: snapshotNativeFilter(plan.nativeFilter) })
+  const nativeFilter = snapshotNativeFilter(plan.nativeFilter)
+  if (nativeFilter === plan.nativeFilter) {
+    throw new Error('defensive native-filter snapshot must not preserve identity')
+  }
+  return Object.freeze({ ...snapshot, nativeFilter })
 }
 
 function snapshotPlanFields(plan: ScanPlan): ScanPlan {
@@ -171,6 +175,9 @@ function snapshotPlanFields(plan: ScanPlan): ScanPlan {
   }
   if (plan.nativeGuarantee === 'safe-superset' && !plan.residual.complete) {
     throw new Error('safe-superset plan requires a complete residual')
+  }
+  if (plan.nativeGuarantee === 'safe-superset' && plan.queryDigest !== plan.residualQueryDigest) {
+    throw new Error('safe-superset plan must retain the source query as residual')
   }
   assertEstimatedCost(plan.estimatedCost)
   const native = snapshotProjection(plan.native, 'native')
