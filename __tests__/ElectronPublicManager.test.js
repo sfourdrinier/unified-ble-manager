@@ -219,6 +219,71 @@ describe('Electron public manager façade', () => {
     expect(listeners.size).toBeGreaterThanOrEqual(0)
   })
 
+  test('still routes connection.disconnect when lifecycle unsubscribe rejects', async () => {
+    const current = bootstrap()
+    const commands = []
+    const invoke = jest.fn(async request => {
+      if (request.kind === 'bootstrap') return { kind: 'bootstrap', bootstrap: current }
+      if (request.kind === 'release') return { kind: 'release', cleanup: { state: 'released', failures: [] } }
+      const command = request.envelope.command
+      commands.push(command)
+      if (command === 'connection.connect') {
+        return {
+          kind: 'route',
+          payload: {
+            handle: 'connection-1',
+            connectionId: 'connection-id-1',
+            ownerLeaseId: current.rendererLease.leaseId,
+            peerId: 'peer-1',
+            connectionGeneration: 'connection-generation-1'
+          }
+        }
+      }
+      if (command === 'connection.events.subscribe') {
+        return {
+          kind: 'route',
+          payload: {
+            handle: request.envelope.payload.connectionEventsHandle,
+            connectionId: request.envelope.payload.connectionId,
+            connectionGeneration: request.envelope.payload.connectionGeneration,
+            eventSchemaVersion: 2
+          }
+        }
+      }
+      if (command === 'connection.events.ready') return { kind: 'route', payload: { state: 'ready' } }
+      if (command === 'connection.events.unsubscribe') {
+        return {
+          kind: 'failure',
+          error: {
+            code: 'platform.transport',
+            domain: 'connection',
+            operation: 'electron.connection-events-unsubscribe',
+            platform: null,
+            retryability: 'caller-decides'
+          }
+        }
+      }
+      if (command === 'connection.disconnect') return { kind: 'route', payload: { state: 'released', failures: [] } }
+      throw new Error(`unexpected command ${command}`)
+    })
+    const manager = await createElectronRendererBleManager({
+      transport: {
+        invoke,
+        subscribe: () => () => undefined,
+        acknowledge: async () => ({ kind: 'event.ack' })
+      }
+    })
+    const connection = await manager.connect('peer-1', { timeoutMs: 1_000 })
+    void connection.events
+    for (let attempt = 0; attempt < 30 && !commands.includes('connection.events.ready'); attempt += 1) {
+      await new Promise(resolve => setImmediate(resolve))
+    }
+    const result = await connection.release()
+    expect(commands).toEqual(expect.arrayContaining(['connection.events.unsubscribe', 'connection.disconnect']))
+    expect(result.state).toBe('release-failed')
+    await expect(manager.destroy()).resolves.toMatchObject({ state: 'released' })
+  })
+
   test('invalidates the prior renderer database before explicit rediscovery', async () => {
     const current = bootstrap()
     const commands = []

@@ -323,6 +323,22 @@ export interface ScanSession {
   readonly state: AsyncIterable<ScanStateEvent>
 }
 
+export interface PublicScanFingerprintAccounting {
+  readonly fingerprintCount: number
+  readonly fingerprintBytes: number
+  readonly summedEntryBytes: number
+}
+
+const publicScanFingerprintInspectors = new WeakMap<ScanSession, () => PublicScanFingerprintAccounting>()
+
+export function inspectPublicScanFingerprintAccountingForTests(session: ScanSession): PublicScanFingerprintAccounting {
+  const inspect = publicScanFingerprintInspectors.get(session)
+  if (inspect === undefined) {
+    throw contractError('argument.invalid', 'scan', 'public-scan.fingerprint-inspect')
+  }
+  return inspect()
+}
+
 export type ScanStateEvent = {
   readonly state: 'starting' | 'active' | 'stopping' | 'stopped' | 'failed'
   readonly reason?: string
@@ -632,7 +648,7 @@ class PublicScanSessionController {
     }
     this.presence.delete(peerId)
     this.presenceBytes -= current.bytes
-    this.lastObservationFingerprints.delete(peerId)
+    this.forgetObservationFingerprint(peerId)
     current.timer = null
     this.eventBroadcast.emit(
       Object.freeze({
@@ -661,26 +677,43 @@ class PublicScanSessionController {
     this.presenceBytes = 0
     this.lastObservationFingerprints.clear()
     this.fingerprintBytes = 0
+    this.assertFingerprintAccounting()
+  }
+
+  fingerprintAccounting(): PublicScanFingerprintAccounting {
+    let summedEntryBytes = 0
+    for (const entry of this.lastObservationFingerprints.values()) {
+      summedEntryBytes += entry.bytes
+    }
+    return {
+      fingerprintCount: this.lastObservationFingerprints.size,
+      fingerprintBytes: this.fingerprintBytes,
+      summedEntryBytes
+    }
+  }
+
+  private forgetObservationFingerprint(peerId: string): void {
+    const existing = this.lastObservationFingerprints.get(peerId)
+    if (existing === undefined) return
+    this.lastObservationFingerprints.delete(peerId)
+    this.fingerprintBytes -= existing.bytes
+    this.assertFingerprintAccounting()
   }
 
   private rememberObservationFingerprint(peerId: string, value: string): void {
-    const existing = this.lastObservationFingerprints.get(peerId)
-    if (existing !== undefined) {
-      this.fingerprintBytes -= existing.bytes
-      this.lastObservationFingerprints.delete(peerId)
-    }
+    this.forgetObservationFingerprint(peerId)
     const fingerprint = { value, bytes: value.length * 2 }
     this.lastObservationFingerprints.set(peerId, fingerprint)
     this.fingerprintBytes += fingerprint.bytes
+    this.assertFingerprintAccounting()
     while (
       this.lastObservationFingerprints.size > MAX_PUBLIC_SCAN_STATE_ENTRIES ||
       this.fingerprintBytes > MAX_PUBLIC_SCAN_STATE_BYTES
     ) {
       const oldest = this.lastObservationFingerprints.entries().next().value
       if (oldest === undefined) return
-      const [oldestPeerId, oldestFingerprint] = oldest
-      this.lastObservationFingerprints.delete(oldestPeerId)
-      this.fingerprintBytes -= oldestFingerprint.bytes
+      const [oldestPeerId] = oldest
+      this.forgetObservationFingerprint(oldestPeerId)
     }
   }
 
@@ -692,7 +725,14 @@ class PublicScanSessionController {
       presence.timer?.cancel()
       this.presence.delete(peerId)
       this.presenceBytes -= presence.bytes
-      this.lastObservationFingerprints.delete(peerId)
+      this.forgetObservationFingerprint(peerId)
+    }
+  }
+
+  private assertFingerprintAccounting(): void {
+    const accounting = this.fingerprintAccounting()
+    if (accounting.fingerprintBytes !== accounting.summedEntryBytes || accounting.fingerprintBytes < 0) {
+      throw contractError('protocol.violation', 'scan', 'public-scan.fingerprint-accounting')
     }
   }
 
@@ -1308,7 +1348,7 @@ class PublicBleManager implements BleManager {
       )
       const activeScan = { controller, closeState: scanState.close }
       this.activeScanSessions.add(activeScan)
-      return {
+      const publicSession: ScanSession = {
         plan,
         stop: async () => {
           scanState.emit({ state: 'stopping' })
@@ -1341,6 +1381,8 @@ class PublicBleManager implements BleManager {
         events: controller.events,
         state: scanState.stream
       }
+      publicScanFingerprintInspectors.set(publicSession, () => controller.fingerprintAccounting())
+      return publicSession
     } catch (error) {
       throw rehydratePublicError(error)
     }

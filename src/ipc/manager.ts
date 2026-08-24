@@ -1,4 +1,10 @@
-import { BackendContractError, BLE_ERROR_CODES, contractError, type CleanupRecord } from '../backend-contract/errors'
+import {
+  BackendContractError,
+  BLE_ERROR_CODES,
+  contractError,
+  type CleanupFailure,
+  type CleanupRecord
+} from '../backend-contract/errors'
 import type {
   BoundedAsyncStream,
   OverflowPolicy,
@@ -55,6 +61,45 @@ const REMOTE_STREAM_LIMITS = Object.freeze({
   byteCapacity: capacity(512 * 1024),
   reservedControlCapacity: capacity(1)
 })
+
+const MAX_PENDING_STREAM_IDS = 256
+const MAX_PENDING_STREAM_ITEMS = 512
+const MAX_PENDING_STREAM_BYTES = 2 * 1024 * 1024
+const MAX_PENDING_STREAM_AGE_MS = 5_000
+const MAX_PENDING_TOMBSTONES = 256
+const MAX_PENDING_TOMBSTONE_AGE_MS = 5_000
+
+export interface IpcBleManagerCreateOptions {
+  readonly now?: () => number
+}
+
+export interface IpcPendingStreamAccounting {
+  readonly pendingIdCount: number
+  readonly pendingItemCount: number
+  readonly pendingByteCount: number
+  readonly tombstoneCount: number
+}
+
+interface PendingStreamRecord {
+  readonly items: SerializableRecord[]
+  bytes: number
+  readonly createdAt: number
+}
+
+interface PendingStreamTombstone {
+  readonly reason: 'overflow' | 'source-failed'
+  readonly createdAt: number
+}
+
+const ipcPendingInspectors = new WeakMap<IpcBleManager, () => IpcPendingStreamAccounting>()
+
+export function inspectIpcPendingStreamAccountingForTests(manager: IpcBleManager): IpcPendingStreamAccounting {
+  const inspect = ipcPendingInspectors.get(manager)
+  if (inspect === undefined) {
+    throw contractError('argument.invalid', 'ipc', 'ipc-manager.pending-inspect')
+  }
+  return inspect()
+}
 
 export interface IpcManagerOperationOptions {
   readonly signal?: AbortSignal
@@ -162,9 +207,11 @@ interface StreamSink {
  */
 export class IpcBleManager<Attachment extends string = string, Client extends string = string> {
   private readonly streams = new Map<string, StreamSink>()
-  private readonly pendingStreamItems = new Map<string, SerializableRecord[]>()
-  private readonly pendingStreamBytes = new Map<string, number>()
+  private readonly pendingStreams = new Map<string, PendingStreamRecord>()
   private readonly pendingStreamOverflows = new Map<string, { droppedItems: number; droppedBytes: number }>()
+  private readonly pendingTombstones = new Map<string, PendingStreamTombstone>()
+  private aggregatePendingItems = 0
+  private aggregatePendingBytes = 0
   private readonly eventPump: Promise<void>
   private nextConnectionEventHandle = 1
   private lifecycle: 'active' | 'releasing' | 'released' = 'active'
@@ -172,13 +219,16 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
 
   private constructor(
     private readonly client: IpcBleClient<Attachment, Client>,
-    readonly capabilities: BleCapabilities
+    readonly capabilities: BleCapabilities,
+    private readonly now: () => number
   ) {
     this.eventPump = this.pumpEvents()
+    ipcPendingInspectors.set(this, () => this.pendingAccounting())
   }
 
   static async create<Attachment extends string, Client extends string>(
-    transport: IpcClientTransport<Attachment, Client>
+    transport: IpcClientTransport<Attachment, Client>,
+    options: IpcBleManagerCreateOptions = {}
   ): Promise<IpcBleManager<Attachment, Client>> {
     const client = new IpcBleClient(transport)
     await client.initialize()
@@ -188,7 +238,8 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
         projectRemoteCapabilities(client.bootstrap.capabilities),
         String(client.bootstrap.attachment.backendGeneration),
         true
-      )
+      ),
+      options.now ?? (() => Date.now())
     )
   }
 
@@ -305,9 +356,7 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
           this.lifecycle = 'released'
           for (const sink of this.streams.values()) sink.closeWithReason('owner-released')
           this.streams.clear()
-          this.pendingStreamItems.clear()
-          this.pendingStreamBytes.clear()
-          this.pendingStreamOverflows.clear()
+          this.clearPendingAccounting()
           await this.eventPump
         } else {
           this.lifecycle = 'active'
@@ -373,6 +422,8 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
     onTerminal?: (reason: StreamTerminalNotice['reason']) => void
   ): BoundedAsyncStream<Value> {
     if (this.streams.has(handle)) throw new TypeError(`Duplicate remote stream handle: ${handle}`)
+    this.expirePendingState()
+    const tombstone = this.pendingTombstones.get(handle)
     const source = new CoreBoundedStream<Value>(limits, overflowPolicy)
     const deliver = (streamId: string, item: SerializableRecord): void => {
       if (item.kind === 'value') {
@@ -405,9 +456,7 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
         source.finishWithReason(reason)
         onTerminal?.(reason)
         this.streams.delete(streamId)
-        this.pendingStreamItems.delete(streamId)
-        this.pendingStreamBytes.delete(streamId)
-        this.pendingStreamOverflows.delete(streamId)
+        this.discardPendingStream(streamId)
       }
     }
     const sink: StreamSink = {
@@ -418,10 +467,14 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
       }
     }
     this.streams.set(handle, sink)
-    const pending = this.pendingStreamItems.get(handle)
+    if (tombstone !== undefined) {
+      this.pendingTombstones.delete(handle)
+      source.finishWithReason(tombstone.reason)
+      onTerminal?.(tombstone.reason)
+      return source
+    }
+    const pending = this.takePendingStream(handle)
     const pendingOverflow = this.pendingStreamOverflows.get(handle)
-    this.pendingStreamItems.delete(handle)
-    this.pendingStreamBytes.delete(handle)
     this.pendingStreamOverflows.delete(handle)
     if (pendingOverflow !== undefined) {
       deliver(handle, {
@@ -433,7 +486,7 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
       })
     }
     if (pending !== undefined) {
-      for (const item of pending) {
+      for (const item of pending.items) {
         deliver(handle, item)
       }
     }
@@ -501,9 +554,8 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
     handle: string,
     reason: 'owner-released' | 'source-failed' | 'connection-lost' | 'service-changed' = 'owner-released'
   ): void {
-    this.pendingStreamItems.delete(handle)
-    this.pendingStreamBytes.delete(handle)
-    this.pendingStreamOverflows.delete(handle)
+    this.discardPendingStream(handle)
+    this.pendingTombstones.delete(handle)
     const sink = this.streams.get(handle)
     if (sink === undefined) return
     this.streams.delete(handle)
@@ -534,20 +586,30 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
           affected.closeWithReason('source-failed')
           affected.notifyOwnerTerminal('source-failed')
           this.streams.delete(streamId)
-          this.pendingStreamItems.delete(streamId)
-          this.pendingStreamBytes.delete(streamId)
-          this.pendingStreamOverflows.delete(streamId)
+          this.discardPendingStream(streamId)
         }
       }
     }
   }
 
   private bufferPendingStreamItem(streamId: string, item: SerializableRecord): void {
-    const pending = this.pendingStreamItems.get(streamId) ?? []
-    let pendingBytes = this.pendingStreamBytes.get(streamId) ?? 0
+    this.expirePendingState()
+    if (this.pendingTombstones.has(streamId)) return
+    const existing = this.pendingStreams.get(streamId)
+    if (existing === undefined) {
+      while (this.pendingStreams.size >= MAX_PENDING_STREAM_IDS) {
+        const oldestId = this.oldestPendingStreamId()
+        if (oldestId === null) break
+        this.evictPendingStream(oldestId, 'overflow')
+      }
+    }
+    const pending = existing ?? { items: [], bytes: 0, createdAt: this.now() }
+    if (existing === undefined) this.pendingStreams.set(streamId, pending)
     if (item.kind === 'terminal') {
-      pending.length = 0
-      pendingBytes = 0
+      this.aggregatePendingItems -= pending.items.length
+      this.aggregatePendingBytes -= pending.bytes
+      pending.items.length = 0
+      pending.bytes = 0
     }
     const itemCapacity = Number(REMOTE_STREAM_LIMITS.itemCapacity)
     const byteCapacity = Number(REMOTE_STREAM_LIMITS.byteCapacity)
@@ -555,39 +617,153 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
     let droppedItems = 0
     let droppedBytes = 0
     if (itemBytes > byteCapacity && item.kind !== 'terminal') {
-      pending.length = 0
-      pendingBytes = 0
+      this.aggregatePendingItems -= pending.items.length
+      this.aggregatePendingBytes -= pending.bytes
+      pending.items.length = 0
+      pending.bytes = 0
       droppedItems = 1
       droppedBytes = itemBytes
-      pending.push({ kind: 'terminal', reason: 'overflow' })
-      pendingBytes = estimateByteLength(pending[0])
-      this.pendingStreamItems.set(streamId, pending)
-      this.pendingStreamBytes.set(streamId, pendingBytes)
-      const previous = this.pendingStreamOverflows.get(streamId)
-      this.pendingStreamOverflows.set(streamId, {
-        droppedItems: (previous?.droppedItems ?? 0) + droppedItems,
-        droppedBytes: (previous?.droppedBytes ?? 0) + droppedBytes
-      })
+      const overflowTerminal = { kind: 'terminal', reason: 'overflow' }
+      const overflowBytes = estimateByteLength(overflowTerminal)
+      pending.items.push(overflowTerminal)
+      pending.bytes = overflowBytes
+      this.aggregatePendingItems += 1
+      this.aggregatePendingBytes += overflowBytes
+      this.recordPendingOverflow(streamId, droppedItems, droppedBytes)
+      this.enforceAggregatePendingBudget()
+      this.assertPendingAccounting()
       return
     }
-    while (pending.length >= itemCapacity || (pending.length > 0 && pendingBytes + itemBytes > byteCapacity)) {
-      const removed = pending.shift()
+    while (
+      pending.items.length >= itemCapacity ||
+      (pending.items.length > 0 && pending.bytes + itemBytes > byteCapacity)
+    ) {
+      const removed = pending.items.shift()
       if (removed === undefined) break
       const removedBytes = estimateByteLength(removed)
-      pendingBytes -= removedBytes
+      pending.bytes -= removedBytes
+      this.aggregatePendingItems -= 1
+      this.aggregatePendingBytes -= removedBytes
       droppedItems += 1
       droppedBytes += removedBytes
     }
-    pending.push(item)
-    pendingBytes += itemBytes
-    this.pendingStreamItems.set(streamId, pending)
-    this.pendingStreamBytes.set(streamId, pendingBytes)
-    if (droppedItems > 0) {
-      const previous = this.pendingStreamOverflows.get(streamId)
-      this.pendingStreamOverflows.set(streamId, {
-        droppedItems: (previous?.droppedItems ?? 0) + droppedItems,
-        droppedBytes: (previous?.droppedBytes ?? 0) + droppedBytes
-      })
+    pending.items.push(item)
+    pending.bytes += itemBytes
+    this.aggregatePendingItems += 1
+    this.aggregatePendingBytes += itemBytes
+    if (droppedItems > 0) this.recordPendingOverflow(streamId, droppedItems, droppedBytes)
+    this.enforceAggregatePendingBudget()
+    this.assertPendingAccounting()
+  }
+
+  private pendingAccounting(): IpcPendingStreamAccounting {
+    let pendingItemCount = 0
+    let pendingByteCount = 0
+    for (const record of this.pendingStreams.values()) {
+      pendingItemCount += record.items.length
+      pendingByteCount += record.bytes
+    }
+    return {
+      pendingIdCount: this.pendingStreams.size,
+      pendingItemCount,
+      pendingByteCount,
+      tombstoneCount: this.pendingTombstones.size
+    }
+  }
+
+  private expirePendingState(): void {
+    const now = this.now()
+    for (const streamId of [...this.pendingStreams.keys()]) {
+      const record = this.pendingStreams.get(streamId)
+      if (record === undefined) continue
+      if (now - record.createdAt >= MAX_PENDING_STREAM_AGE_MS) {
+        this.evictPendingStream(streamId, 'source-failed')
+      }
+    }
+    for (const streamId of [...this.pendingTombstones.keys()]) {
+      const tombstone = this.pendingTombstones.get(streamId)
+      if (tombstone === undefined) continue
+      if (now - tombstone.createdAt >= MAX_PENDING_TOMBSTONE_AGE_MS) {
+        this.pendingTombstones.delete(streamId)
+      }
+    }
+  }
+
+  private enforceAggregatePendingBudget(): void {
+    while (
+      this.aggregatePendingItems > MAX_PENDING_STREAM_ITEMS ||
+      this.aggregatePendingBytes > MAX_PENDING_STREAM_BYTES
+    ) {
+      const oldestId = this.oldestPendingStreamId()
+      if (oldestId === null) return
+      this.evictPendingStream(oldestId, 'overflow')
+    }
+  }
+
+  private oldestPendingStreamId(): string | null {
+    const oldest = this.pendingStreams.keys().next()
+    return oldest.done === true ? null : oldest.value
+  }
+
+  private evictPendingStream(streamId: string, reason: 'overflow' | 'source-failed'): void {
+    this.discardPendingStream(streamId)
+    this.rememberTombstone(streamId, reason)
+  }
+
+  private takePendingStream(streamId: string): PendingStreamRecord | undefined {
+    const pending = this.pendingStreams.get(streamId)
+    if (pending === undefined) return undefined
+    this.pendingStreams.delete(streamId)
+    this.aggregatePendingItems -= pending.items.length
+    this.aggregatePendingBytes -= pending.bytes
+    this.assertPendingAccounting()
+    return pending
+  }
+
+  private discardPendingStream(streamId: string): void {
+    const pending = this.pendingStreams.get(streamId)
+    this.pendingStreamOverflows.delete(streamId)
+    if (pending === undefined) return
+    this.pendingStreams.delete(streamId)
+    this.aggregatePendingItems -= pending.items.length
+    this.aggregatePendingBytes -= pending.bytes
+    this.assertPendingAccounting()
+  }
+
+  private rememberTombstone(streamId: string, reason: 'overflow' | 'source-failed'): void {
+    while (this.pendingTombstones.size >= MAX_PENDING_TOMBSTONES) {
+      const oldest = this.pendingTombstones.keys().next()
+      if (oldest.done === true) break
+      this.pendingTombstones.delete(oldest.value)
+    }
+    this.pendingTombstones.set(streamId, { reason, createdAt: this.now() })
+  }
+
+  private recordPendingOverflow(streamId: string, droppedItems: number, droppedBytes: number): void {
+    const previous = this.pendingStreamOverflows.get(streamId)
+    this.pendingStreamOverflows.set(streamId, {
+      droppedItems: (previous?.droppedItems ?? 0) + droppedItems,
+      droppedBytes: (previous?.droppedBytes ?? 0) + droppedBytes
+    })
+  }
+
+  private clearPendingAccounting(): void {
+    this.pendingStreams.clear()
+    this.pendingStreamOverflows.clear()
+    this.pendingTombstones.clear()
+    this.aggregatePendingItems = 0
+    this.aggregatePendingBytes = 0
+  }
+
+  private assertPendingAccounting(): void {
+    const accounting = this.pendingAccounting()
+    if (
+      accounting.pendingItemCount !== this.aggregatePendingItems ||
+      accounting.pendingByteCount !== this.aggregatePendingBytes ||
+      this.aggregatePendingItems < 0 ||
+      this.aggregatePendingBytes < 0
+    ) {
+      throw contractError('protocol.violation', 'ipc', 'ipc-manager.pending-accounting')
     }
   }
 
@@ -710,6 +886,8 @@ export class IpcConnection {
   private readonly _ownerLeaseId: string
   private readonly _connectionGeneration: string
   private disconnectResult: Promise<CleanupRecord> | null = null
+  private lifecycleReleased = false
+  private connectionReleased = false
 
   constructor(
     private readonly manager: IpcBleManager,
@@ -859,17 +1037,53 @@ export class IpcConnection {
     if (this.lifecycleAdmission !== null) {
       await this.lifecycleAdmission.catch(() => undefined)
     }
-    if (this.lifecycleSubscription !== null) {
-      await this.lifecycleSubscription.unsubscribe()
-      this.lifecycleSubscription = null
+    if (this.lifecycleSubscription === null) {
+      this.lifecycleReleased = true
     }
-    const cleanup = cleanupRecord(
-      await this.manager.route('connection.disconnect', Object.freeze(this.identityPayload()))
-    )
-    if (cleanup.state === 'release-failed') {
-      this.disconnectResult = null
+    const failures: CleanupFailure[] = []
+    let disconnectError: unknown = null
+    if (!this.lifecycleReleased && this.lifecycleSubscription !== null) {
+      try {
+        const cleanup = await this.lifecycleSubscription.unsubscribe()
+        if (cleanup.state === 'released') {
+          this.lifecycleReleased = true
+          this.lifecycleSubscription = null
+        } else {
+          failures.push(...cleanup.failures)
+        }
+      } catch (error) {
+        failures.push(cleanupFailureFromUnknown('connection-events', error))
+      }
     }
-    return cleanup
+    if (!this.connectionReleased) {
+      try {
+        const cleanup = cleanupRecord(
+          await this.manager.route('connection.disconnect', Object.freeze(this.identityPayload()))
+        )
+        if (cleanup.state === 'released') {
+          this.connectionReleased = true
+        } else {
+          failures.push(...cleanup.failures)
+        }
+      } catch (error) {
+        disconnectError = error
+        failures.push(cleanupFailureFromUnknown('connection', error))
+      }
+    }
+    if (this.lifecycleReleased && this.connectionReleased) {
+      return { state: 'released', failures: [] }
+    }
+    this.disconnectResult = null
+    if (disconnectError !== undefined && disconnectError !== null && this.lifecycleReleased && failures.length === 1) {
+      throw disconnectError
+    }
+    if (disconnectError !== undefined && disconnectError !== null && failures.length > 1) {
+      throw new AggregateError(
+        failures.map(failure => new BackendContractError(failure.error)),
+        'IPC connection cleanup failed'
+      )
+    }
+    return { state: 'release-failed', failures: Object.freeze(failures) }
   }
 
   release(): Promise<CleanupRecord> {
@@ -1538,6 +1752,22 @@ function cleanupRecord(value: SerializableRecord): CleanupRecord {
     throw contractError('protocol.malformed', 'ipc', 'ipc-manager.cleanup-record')
   }
   return value
+}
+
+function cleanupFailureFromUnknown(resourceKind: string, error: unknown): CleanupFailure {
+  if (error instanceof BackendContractError) {
+    return { resourceKind, error: error.normalized }
+  }
+  return {
+    resourceKind,
+    error: {
+      code: 'platform.failure',
+      domain: 'connection',
+      operation: `ipc-manager.${resourceKind}.cleanup`,
+      platform: null,
+      retryability: 'caller-decides'
+    }
+  }
 }
 
 function requiredOverflowPolicy(value: SerializableValue | undefined, operation: string): OverflowPolicy {

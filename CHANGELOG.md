@@ -4,6 +4,14 @@ All notable changes to `unified-ble-manager` are documented here.
 
 ## [Unreleased]
 
+Public coalesced scans no longer lose duplicate suppression after lost-peer or presence-cap churn: fingerprint deletions now decrement the retained-byte counter. IPC pre-registration buffering is globally bounded (ID/item/byte/age) with fail-visible tombstones. Connection release attempts `connection.disconnect` even when lifecycle unsubscribe rejects or returns `release-failed`, and preserves both cleanup failures. Does not retag `v4.0.1`.
+
+### Fixes
+
+- Coalesced public scans keep exact fingerprint byte accounting across `reportLost` and presence eviction (#53).
+- IPC pending streams for unknown IDs are aggregate-bounded; quota/TTL loss is visible when the ID later registers (#54).
+- IPC connection release no longer skips physical `connection.disconnect` after a lifecycle unsubscribe failure (#56).
+
 ## [4.0.1] - 2026-08-24
 
 Tauri JS transport now accepts the adapter-state snapshot the Rust plugin emits (`heard: null` on unsampled bootstrap, non-negative integer on live `adapter.state`). Extra or missing adapter-state keys stay fail-closed and are named in the decode error. Teaching docs describe the current stable 4.x install instead of RC-as-current. Does not retag `v4.0.0`.

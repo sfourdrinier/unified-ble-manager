@@ -3,7 +3,12 @@ const {
   normalizeScanObservation,
   observationMatchesScanQuery
 } = require('../src/public/scan-query')
-const { createPublicBleManager, filterScanObservations, findPeerInScan } = require('../src/public/ble-manager')
+const {
+  createPublicBleManager,
+  filterScanObservations,
+  findPeerInScan,
+  inspectPublicScanFingerprintAccountingForTests
+} = require('../src/public/ble-manager')
 const { CoreBoundedStream } = require('../src/core/bounded-stream')
 const { capacity } = require('../src/backend-contract/primitives')
 const { createDeterministicTestBleManager } = require('../src/testing/deterministic/deterministic-test-manager')
@@ -796,5 +801,161 @@ describe('canonical public ScanQuery v1', () => {
       if (scan !== undefined) await settleDeterministic(fixture, scan.stop())
       await settleDeterministic(fixture, manager.destroy())
     }
+  })
+
+  function createCoalescedLostScan() {
+    const source = new CoreBoundedStream(
+      { itemCapacity: capacity(8), byteCapacity: capacity(65536), reservedControlCapacity: capacity(1) },
+      'drop-oldest'
+    )
+    let now = 0
+    const scheduled = []
+    const internal = {
+      identity: null,
+      attachedBackend: undefined,
+      supports: () => true,
+      capability: () => null,
+      capabilities: () => [],
+      scan: jest.fn(async () => ({
+        observations: source,
+        stop: async () => ({ state: 'released', failures: [] })
+      })),
+      scheduleDeadline: jest.fn((deadline, action) => {
+        const handle = { deadline, action, cancel: jest.fn() }
+        scheduled.push(handle)
+        return handle
+      }),
+      connect: jest.fn(),
+      destroy: jest.fn(async () => ({ state: 'released', failures: [] }))
+    }
+    return {
+      source,
+      scheduled,
+      internal,
+      now: () => now,
+      advance(ms) {
+        now += ms
+      }
+    }
+  }
+
+  function advertisement(peerId, overrides = {}) {
+    return {
+      peerId,
+      localName: overrides.localName ?? null,
+      rssi: overrides.rssi ?? -40,
+      serviceUuids: [],
+      manufacturerData: overrides.manufacturerData ?? [],
+      serviceData: []
+    }
+  }
+
+  async function expectAccounting(scan) {
+    const accounting = inspectPublicScanFingerprintAccountingForTests(scan)
+    expect(accounting.fingerprintBytes).toBe(accounting.summedEntryBytes)
+    expect(accounting.fingerprintBytes).toBeGreaterThanOrEqual(0)
+    expect(accounting.fingerprintCount).toBeGreaterThanOrEqual(0)
+    return accounting
+  }
+
+  test('lost-peer fingerprint churn keeps coalescing a later stable peer', async () => {
+    const fixture = createCoalescedLostScan()
+    const manager = await createPublicBleManager(fixture.internal, fixture.now)
+    const scan = await manager.scan({ duplicates: 'coalesced', observation: { reportLostAfterMs: 10 } })
+    const observations = scan.observations[Symbol.asyncIterator]()
+    const manufacturerData = [{ companyId: 1, data: new Uint8Array(256).fill(9) }]
+
+    for (let index = 0; index < 400; index += 1) {
+      const next = observations.next()
+      fixture.source.emit(advertisement(`lost-${index}`, { manufacturerData }), 320)
+      await expect(next).resolves.toMatchObject({
+        value: { kind: 'value', value: { peer: { id: `lost-${index}` } } }
+      })
+      await expectAccounting(scan)
+      fixture.advance(10)
+      fixture.scheduled[fixture.scheduled.length - 1].action()
+      await expectAccounting(scan)
+    }
+
+    const first = observations.next()
+    fixture.source.emit(advertisement('stable', { localName: 'Stable', manufacturerData }), 320)
+    await expect(first).resolves.toMatchObject({
+      value: { kind: 'value', value: { peer: { id: 'stable' } } }
+    })
+    expect((await expectAccounting(scan)).fingerprintCount).toBe(1)
+    const second = observations.next()
+    fixture.source.emit(advertisement('stable', { localName: 'Stable', manufacturerData }), 320)
+    for (let attempt = 0; attempt < 10; attempt += 1) await Promise.resolve()
+    await scan.stop()
+    await expect(second).resolves.toMatchObject({ value: { kind: 'terminal' } })
+    expect(inspectPublicScanFingerprintAccountingForTests(scan)).toEqual({
+      fingerprintCount: 0,
+      fingerprintBytes: 0,
+      summedEntryBytes: 0
+    })
+    await observations.return()
+    await manager.destroy()
+  })
+
+  test('presence-cap eviction churn keeps coalescing a later stable peer', async () => {
+    const fixture = createCoalescedLostScan()
+    const manager = await createPublicBleManager(fixture.internal, fixture.now)
+    const scan = await manager.scan({ duplicates: 'coalesced', observation: { reportLostAfterMs: 10 } })
+    const observations = scan.observations[Symbol.asyncIterator]()
+
+    for (let index = 0; index < 256 + 1100; index += 1) {
+      const next = observations.next()
+      fixture.source.emit(advertisement(`present-${index}`), 32)
+      await expect(next).resolves.toMatchObject({
+        value: { kind: 'value', value: { peer: { id: `present-${index}` } } }
+      })
+      await expectAccounting(scan)
+    }
+
+    const first = observations.next()
+    fixture.source.emit(advertisement('stable'), 32)
+    await expect(first).resolves.toMatchObject({
+      value: { kind: 'value', value: { peer: { id: 'stable' } } }
+    })
+    expect((await expectAccounting(scan)).fingerprintCount).toBeGreaterThan(0)
+    const second = observations.next()
+    fixture.source.emit(advertisement('stable'), 32)
+    for (let attempt = 0; attempt < 10; attempt += 1) await Promise.resolve()
+    await scan.stop()
+    await expect(second).resolves.toMatchObject({ value: { kind: 'terminal' } })
+    expect(inspectPublicScanFingerprintAccountingForTests(scan)).toEqual({
+      fingerprintCount: 0,
+      fingerprintBytes: 0,
+      summedEntryBytes: 0
+    })
+    await observations.return()
+    await manager.destroy()
+    expect(fixture.scheduled.some(handle => handle.cancel.mock.calls.length > 0)).toBe(true)
+  })
+
+  test('fingerprint replacement and source terminal keep exact byte accounting', async () => {
+    const fixture = createCoalescedLostScan()
+    const manager = await createPublicBleManager(fixture.internal, fixture.now)
+    const scan = await manager.scan({ duplicates: 'coalesced', observation: { reportLostAfterMs: 10 } })
+    const observations = scan.observations[Symbol.asyncIterator]()
+    const first = observations.next()
+    fixture.source.emit(advertisement('peer-1', { rssi: -40 }), 32)
+    await first
+    const afterFirst = await expectAccounting(scan)
+    expect(afterFirst.fingerprintCount).toBe(1)
+    expect(afterFirst.fingerprintBytes).toBeGreaterThan(0)
+    const second = observations.next()
+    fixture.source.emit(advertisement('peer-1', { rssi: -39 }), 32)
+    await second
+    const afterReplace = await expectAccounting(scan)
+    expect(afterReplace.fingerprintCount).toBe(1)
+    fixture.source.closeWithReason('closed')
+    await expect(observations.next()).resolves.toMatchObject({ value: { kind: 'terminal' } })
+    expect(inspectPublicScanFingerprintAccountingForTests(scan)).toEqual({
+      fingerprintCount: 0,
+      fingerprintBytes: 0,
+      summedEntryBytes: 0
+    })
+    await manager.destroy()
   })
 })
