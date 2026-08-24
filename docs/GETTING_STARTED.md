@@ -2,7 +2,7 @@
 
 # Getting started
 
-**Current prerelease:** `4.0.0-rc.5` is published from exact `main` and is immutable. Do not recreate RC5. Immutable `4.0.0-rc.4` and `4.0.0-rc.4.1` remain published history. Stable `4.0.0` remains reserved for the post-PR12 release gate.
+**Current release:** `4.0.0` is published from exact `main` and is immutable. Do not recreate `v4.0.0`. Immutable `4.0.0-rc.4`, `4.0.0-rc.4.1`, and `4.0.0-rc.5` remain published history.
 
 This page gets you to a first scan, connect, read, notify, and teardown on React Native. Other hosts are linked at the bottom. The root import does not turn Bluetooth on.
 
@@ -27,7 +27,7 @@ This page gets you to a first scan, connect, read, notify, and teardown on React
 The immutable published prerelease for bare React Native is explicitly pinned:
 
 ```sh
-pnpm add unified-ble-manager@4.0.0-rc.5
+pnpm add unified-ble-manager@4.0.0
 ```
 
 Declare Android Bluetooth permissions and the BLE hardware feature yourself,
@@ -37,10 +37,10 @@ request runtime permissions on Android 12+, add
 #### Expo / CNG v2
 
 The Expo v2 schema and `unified-ble-manager/expo` factory are in the published
-`4.0.0-rc.5` package. Pin that exact version:
+`4.0.0` package. Pin that exact version:
 
 ```sh
-pnpm add unified-ble-manager@4.0.0-rc.5
+pnpm add unified-ble-manager@4.0.0
 ```
 
 The package does not run in Expo Go.

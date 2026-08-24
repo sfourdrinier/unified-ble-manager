@@ -4,7 +4,7 @@
 <!-- entrypoint: ./node/bluez; source: src/node-bluez.ts -->
 
 - `BLUEZ_BACKEND_ID :: "unified-ble:bluez-dbus"`
-- `BLUEZ_IMPLEMENTATION_VERSION :: "4.0.0-rc.5"`
+- `BLUEZ_IMPLEMENTATION_VERSION :: "4.0.0"`
 - `BLUEZ_PLATFORM_ID :: "unified-ble:linux-bluez"`
 - `BluezBackendProviderOptions :: { readonly busKind: BluezBusKind; readonly boundaryFactory: BluezDbusBoundaryFactory; readonly now: () => number }`
 - `BluezBleManagerAppOptions :: { readonly busKind?: BluezBusKind | undefined; readonly now?: (() => number) | undefined; readonly instanceId?: string | undefined; readonly adapterId?: string | undefined; readonly diagnostics?: DiagnosticsOptions | undefined; readonly restoration?: { readonly restorationId: string; readonly generation?: string | undefined; } | undefined }`

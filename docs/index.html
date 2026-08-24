@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <title>unified-ble-manager 4.0.0-rc.5 | Documentation</title>
+    <title>unified-ble-manager 4.0.0 | Documentation</title>
     <meta
       name="description"
       content="Unified Bluetooth Low Energy manager for React Native, Electron, Tauri, Web, and desktop"
@@ -18,7 +18,7 @@
       <div id="split-left" class="overflow-auto fs0 height-viewport-100">
         <div class="py1 px2">
           <h3 class="mb0 no-anchor">unified-ble-manager</h3>
-          <div class="mb1"><code>4.0.0-rc.5</code></div>
+          <div class="mb1"><code>4.0.0</code></div>
           <input
             placeholder="Filter"
             id="filter-input"
@@ -61,9 +61,9 @@
 
             <h1>Getting started</h1>
             <p>
-              <strong>Current prerelease:</strong> <code>4.0.0-rc.5</code> is published from exact <code>main</code> and
-              is immutable. Do not recreate RC5. Immutable <code>4.0.0-rc.4</code> and <code>4.0.0-rc.4.1</code> remain
-              published history. Stable <code>4.0.0</code> remains reserved for the post-PR12 release gate.
+              <strong>Current release:</strong> <code>4.0.0</code> is published from exact <code>main</code> and is
+              immutable. Do not recreate <code>v4.0.0</code>. Immutable <code>4.0.0-rc.4</code>,
+              <code>4.0.0-rc.4.1</code>, and <code>4.0.0-rc.5</code> remain published history.
             </p>
             <p>
               This page gets you to a first scan, connect, read, notify, and teardown on React Native. Other hosts are
@@ -139,7 +139,7 @@
             <h4>Expo / CNG v2</h4>
             <p>
               The Expo v2 schema and <code>unified-ble-manager/expo</code> factory are in the published
-              <code>4.0.0-rc.5</code> package. Pin that exact version:
+              <code>4.0.0</code> package. Pin that exact version:
             </p>
             <p>The package does not run in Expo Go.</p>
             <p>Expo also needs a native build and development client:</p>
@@ -555,16 +555,16 @@
               supported BLE execution environment because it cannot contain this native module.
             </p>
             <p>
-              The v2 Expo surface documented here is published in <code>4.0.0-rc.5</code>. The Expo config-plugin schema
+              The v2 Expo surface documented here is published in <code>4.0.0</code>. The Expo config-plugin schema
               froze at <code>4.0.0-rc.4</code> and is unchanged. Do not recreate or change that candidate.
             </p>
             <h2>Installation and development build</h2>
             <p>
-              Pin the published RC5 package. Do not use an unpinned package-install command for this recipe: later
+              Pin the published 4.0.0 package. Do not use an unpinned package-install command for this recipe: later
               <code>latest</code> movement must not silently change the frozen Expo v2 schema consumed by a development
               build.
             </p>
-            <pre><code>pnpm add unified-ble-manager@4.0.0-rc.5
+            <pre><code>pnpm add unified-ble-manager@4.0.0
 pnpm add expo@^57.0.0 expo-dev-client
 bunx expo prebuild --clean
 bunx expo run:ios
@@ -722,8 +722,8 @@ bunx eas build --profile development --platform android
             <h1>Electron</h1>
             <p>Main owns the radio. The renderer uses a versioned IPC client and never loads a native addon.</p>
             <p>
-              <strong>Current prerelease:</strong> <code>4.0.0-rc.5</code> is published from exact <code>main</code> and
-              is immutable. The release ships Node-API v8 prebuilds covering macOS and Windows <code>arm64</code>/<code
+              <strong>Current release:</strong> <code>4.0.0</code> is published from exact <code>main</code> and is
+              immutable. The release ships Node-API v8 prebuilds covering macOS and Windows <code>arm64</code>/<code
                 >x64</code
               >
               for both Node and modern Electron.
@@ -937,9 +937,8 @@ bunx eas build --profile development --platform android
             </p>
             <h2>Package stability and backend support are separate</h2>
             <p>
-              <code>unified-ble-manager@4.0.0-rc.5</code> is the published
-              <strong>release-candidate package/API</strong> for the 4.x contract; it is immutable and stable
-              <code>4.0.0</code> remains reserved for the post-PR12 release gate.
+              <code>unified-ble-manager@4.0.0</code> is the published <strong>stable package/API</strong> for the 4.x
+              contract; it is immutable. Backend support labels remain evidence-derived and independent of this SemVer.
             </p>
             <p>
               This release candidate is the portable API/semantics freeze candidate; it does <strong>not</strong> mean

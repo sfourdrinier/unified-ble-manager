@@ -81,7 +81,7 @@ Active `4.0.0-rc.*` release-train candidates publish to npm `latest` so a bare `
 
 On release day, set `release_candidate` to the exact candidate required by the
 release plan. RC2, RC3, RC4, `4.0.0-rc.4.1`, and RC5 are already immutable
-once tagged; the next planned train candidate is stable `4.0.0` after PR12.
+once tagged. Stable `4.0.0` is the current train head after PR12.
 
 ```sh
 release_candidate=4.0.0-rc.N
