@@ -81,7 +81,7 @@ Active `4.0.0-rc.*` release-train candidates publish to npm `latest` so a bare `
 
 On release day, set `release_candidate` to the exact candidate required by the
 release plan. RC2, RC3, RC4, `4.0.0-rc.4.1`, and RC5 are already immutable
-once tagged. Stable `4.0.0` is immutable. `4.0.1` is the current train head.
+once tagged. Stable `4.0.0` and `4.0.1` are immutable. `4.0.2` is the current train head.
 
 ```sh
 release_candidate=4.0.0-rc.N
@@ -111,7 +111,15 @@ git tag -a v4.0.0 -m "v4.0.0"
 
 ## Releasing 4.0.1
 
-The source version is prepared on `main` before the tag. The release workflow verifies that every initial release tag points at the exact current `main` commit before publication; do not create that tag from a side branch or an older commit. Do not retag immutable `v4.0.0`.
+The `v4.0.1` tag is immutable published history. Do not recreate or move it.
+
+```sh
+git tag -a v4.0.1 -m "v4.0.1"
+```
+
+## Releasing 4.0.2
+
+The source version is prepared on `main` before the tag. The release workflow verifies that every initial release tag points at the exact current `main` commit before publication; do not create that tag from a side branch or an older commit. Do not retag immutable `v4.0.0` or `v4.0.1`.
 
 On release day:
 
@@ -121,12 +129,12 @@ git checkout main
 git pull --ff-only origin main
 
 test "$(git branch --show-current)" = "main"
-test "$(node -p "require('./package.json').version")" = "4.0.1"
+test "$(node -p "require('./package.json').version")" = "4.0.2"
 git diff --exit-code
 git diff --cached --exit-code
 
-git tag -a v4.0.1 -m "v4.0.1"
-git push origin v4.0.1
+git tag -a v4.0.2 -m "v4.0.2"
+git push origin v4.0.2
 ```
 
 Do not push another commit to `main` between the final verification and the tag push.
@@ -181,7 +189,7 @@ Never move or recreate a published version tag to hide a failed release.
 
 - If the workflow fails **before npm publication**, fix the source on `main`, increment/version as appropriate, and create the correct new tag.
 - If npm publication succeeds but a later GitHub-release step fails, preserve the immutable npm version and rerun the workflow. The recovery path skips the current-`main` admission check and attaches the exact npm registry tarball rather than newly linked native binaries.
-- If a defect is discovered after `4.0.0` is published, fix it and release `4.0.1`; do not replace `4.0.0`.
+- If a defect is discovered after a stable tag is published, fix it and release a new patch; do not replace the published tag.
 
 ## Prereleases after 4.0.0
 

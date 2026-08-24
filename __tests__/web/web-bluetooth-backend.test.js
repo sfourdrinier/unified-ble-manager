@@ -873,7 +873,7 @@ describe('WebBluetoothBackend', () => {
     const { createWebBleManagerWithEnvironment } = require('../../src/web')
     const manager = await createWebBleManagerWithEnvironment({
       environment: {
-        implementationVersion: '4.0.1',
+        implementationVersion: '4.0.2',
         browserEngine: 'test',
         bluetooth: {
           getAvailability: async () => true,
