@@ -1300,9 +1300,21 @@ export class WinRtBackend implements BleCentralBackend<string, HostNeutralBacken
       scanResponseRecord: absent('winrt-scan-response-not-provided')
     })
     this.nextIngressOrdinal += 1
-    for (const consumer of group.consumers.values()) {
-      if (!consumer.released && matchesScan(consumer.options, observation)) {
-        consumer.stream.emit(observation, advertisementByteLength(observation), String(peerId))
+    for (const consumer of [...group.consumers.values()]) {
+      if (consumer.released || consumer.stream.isTerminal() || !matchesScan(consumer.options, observation)) {
+        continue
+      }
+      const push = consumer.stream.emit(observation, advertisementByteLength(observation), String(peerId))
+      if (push.terminated) {
+        this.stopScanConsumer(consumer)
+          .then(result => {
+            if (result.state === 'release-failed') {
+              console.error('[WinRtBackend.handleAdvertisement] Overflow scan cleanup requires retry:', result.failures)
+            }
+          })
+          .catch(error => {
+            console.error('[WinRtBackend.handleAdvertisement] Overflow scan cleanup rejected:', error)
+          })
       }
     }
   }
