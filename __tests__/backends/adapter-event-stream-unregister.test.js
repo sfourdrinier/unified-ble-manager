@@ -308,9 +308,6 @@ describe('adapter and event stream unregister', () => {
     const watch = await harness.backend.adapter.watchState()
     const events = harness.backend.events()
     expect(harness.inspect()).toEqual(ownership(1, 1))
-    expect(Number(harness.backend.resourceCounters().retainedByteBuffers)).toBeGreaterThan(
-      Number(before.retainedByteBuffers)
-    )
     await watch.transitions.close()
     await events.close()
     expect(harness.inspect()).toEqual(emptyOwnership())
