@@ -152,6 +152,7 @@ export interface IpcDescriptorRecord extends SerializableRecord {
 interface StreamSink {
   readonly closeWithReason: (reason: 'owner-released' | 'source-failed' | 'connection-lost' | 'service-changed') => void
   readonly deliver: (streamId: string, item: SerializableRecord) => void
+  readonly notifyOwnerTerminal: (reason: StreamTerminalNotice['reason']) => void
 }
 
 /**
@@ -258,7 +259,12 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
       handle,
       isIpcScanObservation,
       toRemoteStreamLimits(options.stream),
-      options.stream?.overflowPolicy
+      options.stream?.overflowPolicy,
+      reason => {
+        if (reason === 'overflow' || reason === 'source-failed') {
+          this.route('scan.stop', Object.freeze({ scanHandle: handle })).catch(() => undefined)
+        }
+      }
     )
     return new IpcScanSession(this, handle, observations, plan)
   }
@@ -371,7 +377,12 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
     const deliver = (streamId: string, item: SerializableRecord): void => {
       if (item.kind === 'value') {
         const rawValue: unknown = item.value
-        if (!isValue(rawValue)) throw contractError('protocol.malformed', 'ipc', 'ipc-manager.stream-value')
+        if (!isValue(rawValue)) {
+          this.streams.delete(handle)
+          source.closeWithReason('source-failed')
+          onTerminal?.('source-failed')
+          throw contractError('protocol.malformed', 'ipc', 'ipc-manager.stream-value')
+        }
         const push = source.emit(rawValue, estimateByteLength(rawValue))
         if (push.terminated) {
           this.streams.delete(handle)
@@ -401,7 +412,10 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
     }
     const sink: StreamSink = {
       closeWithReason: reason => source.closeWithReason(reason),
-      deliver
+      deliver,
+      notifyOwnerTerminal: reason => {
+        onTerminal?.(reason)
+      }
     }
     this.streams.set(handle, sink)
     const pending = this.pendingStreamItems.get(handle)
@@ -452,7 +466,13 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
       )
       throw validation
     }
-    const events = this.registerStream(handle, isIpcConnectionLifecycleEvent)
+    const events = this.registerStream(handle, isIpcConnectionLifecycleEvent, undefined, undefined, reason => {
+      if (reason === 'overflow' || reason === 'source-failed') {
+        this.route('connection.events.unsubscribe', Object.freeze({ connectionEventsHandle: handle })).catch(
+          () => undefined
+        )
+      }
+    })
     try {
       const ready = await this.route('connection.events.ready', Object.freeze({ connectionEventsHandle: handle }))
       if (ready.state !== 'ready') {
@@ -512,6 +532,7 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
         const affected = this.streams.get(streamId)
         if (affected !== undefined) {
           affected.closeWithReason('source-failed')
+          affected.notifyOwnerTerminal('source-failed')
           this.streams.delete(streamId)
           this.pendingStreamItems.delete(streamId)
           this.pendingStreamBytes.delete(streamId)
@@ -1300,6 +1321,11 @@ export class IpcCharacteristic {
         options.stream?.overflowPolicy,
         reason => {
           if (reason === 'service-changed') this.database.invalidate('service-changed')
+          if (reason === 'overflow' || reason === 'source-failed') {
+            this.database
+              .route('gatt.unsubscribe', Object.freeze({ subscriptionHandle: handle }), null)
+              .catch(() => undefined)
+          }
         }
       )
     )

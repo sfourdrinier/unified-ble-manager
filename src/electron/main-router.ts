@@ -696,16 +696,11 @@ export class ElectronMainBleRouter {
   ): Promise<SerializableRecord> {
     const database = this.database(resources, envelope.payload)
     const path = this.characteristic(database, envelope.payload)
-    const deliveryMode = envelope.payload.deliveryMode
+    const deliveryMode = requiredDeliveryMode(envelope.payload.deliveryMode)
     const subscription = await database.database.subscribe(path, {
       ...operationOptions(envelope.payload, controller),
       delivery: deliveryFromPayload(envelope.payload),
-      ...(deliveryMode === 'prefer-notification' ||
-      deliveryMode === 'prefer-indication' ||
-      deliveryMode === 'require-notification' ||
-      deliveryMode === 'require-indication'
-        ? { deliveryMode }
-        : {})
+      ...(deliveryMode === undefined ? {} : { deliveryMode })
     } satisfies SubscriptionOptions)
     const handle = this.allocateHandle('subscription')
     this.streams.registerSubscription(
@@ -1271,6 +1266,21 @@ function requiredString(payload: SerializableRecord, key: string): string {
   const value = payload[key]
   if (typeof value !== 'string' || value.length === 0) {
     throw contractError('protocol.malformed', 'ipc', `electron-main-router.${key}`)
+  }
+  return value
+}
+
+function requiredDeliveryMode(
+  value: SerializableRecord[string] | undefined
+): 'prefer-notification' | 'prefer-indication' | 'require-notification' | 'require-indication' | undefined {
+  if (value === undefined) return undefined
+  if (
+    value !== 'prefer-notification' &&
+    value !== 'prefer-indication' &&
+    value !== 'require-notification' &&
+    value !== 'require-indication'
+  ) {
+    throw contractError('argument.invalid', 'gatt', 'electron-main-router.delivery-mode')
   }
   return value
 }

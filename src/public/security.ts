@@ -13,7 +13,7 @@ import type {
 } from '../backend-contract/security'
 import type { FeatureId, Limitation } from '../backend-contract/capabilities'
 import type { BoundedAsyncStream, BoundedAsyncStreamIterator } from '../backend-contract/streams'
-import { rehydratePublicError } from './error-bridge'
+import { BleCleanupError, rehydratePublicError } from './error-bridge'
 import type { OperationOptions } from './operation-options'
 import { normalizeOperationOptions } from './operation-options'
 import { snapshotBlePeer, type BlePeer } from './ble-manager'
@@ -589,9 +589,7 @@ async function closeSecurityIterator(
 
 function assertSecurityStreamCleanup(cleanup: CleanupRecord): void {
   if (cleanup.state === 'release-failed') {
-    const error = new Error('BLE security watch cleanup failed')
-    Object.defineProperty(error, 'cleanup', { value: cleanup, enumerable: true })
-    throw error
+    throw new BleCleanupError(cleanup, 'BLE security watch cleanup failed')
   }
 }
 

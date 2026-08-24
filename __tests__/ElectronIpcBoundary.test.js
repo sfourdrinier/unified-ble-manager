@@ -1639,6 +1639,34 @@ describe('Electron v4 IPC boundary', () => {
     await current.binding.destroy()
   })
 
+  test('P1-05 rejects an invalid GATT deliveryMode instead of silently dropping it', async () => {
+    const subscription = { values: createControlledStream(), remove: jest.fn(async () => released()) }
+    const current = createMainFixture({
+      connect: jest.fn(async () => createConnection('peer-delivery', createDatabase(subscription)))
+    })
+    const sender = createSender('client-delivery', 'window-delivery', 'session-delivery')
+    const renderer = await bootstrap(current, sender)
+    const connected = await current.port.handler(
+      { sender },
+      commandRequest(current, renderer, 1, 'connection.connect', { peerId: 'peer-delivery' })
+    )
+    const discovered = await current.port.handler(
+      { sender },
+      commandRequest(current, renderer, 2, 'gatt.discover', { connectionHandle: connected.payload.handle })
+    )
+    await expect(
+      current.port.handler(
+        { sender },
+        commandRequest(current, renderer, 3, 'gatt.subscribe', {
+          databaseHandle: discovered.payload.handle,
+          characteristicHandle: discovered.payload.characteristics[0].handle,
+          deliveryMode: 'typo'
+        })
+      )
+    ).resolves.toMatchObject({ kind: 'failure', error: { code: 'argument.invalid' } })
+    await current.binding.destroy()
+  })
+
   test('retires the prior main-process database handle on explicit rediscovery', async () => {
     const firstDatabase = createDatabase()
     const secondDatabase = createDatabase()

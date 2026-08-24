@@ -319,8 +319,10 @@ describe('public connection supervisor', () => {
     })
     configureSupervisor.start()
     await wait(5)
-    await expect(configureSupervisor.stop()).resolves.toMatchObject({ state: 'released' })
+    await expect(configureSupervisor.stop()).resolves.toMatchObject({ state: 'release-failed' })
     configurePending.resolve('late-session')
+    await wait(5)
+    await expect(configureSupervisor.stop()).resolves.toMatchObject({ state: 'released' })
   })
 
   test('pausing a pending gate keeps the supervisor resumable after the gate settles', async () => {
@@ -452,7 +454,7 @@ describe('public connection supervisor', () => {
     })
     supervisor.start()
     await wait(5)
-    await expect(supervisor.stop()).resolves.toMatchObject({ state: 'released' })
+    await expect(supervisor.stop()).resolves.toMatchObject({ state: 'release-failed' })
     configurePending.resolve('late-session')
     await wait(5)
     expect(supervisor.snapshot.state).toBe('cleanup-failed')

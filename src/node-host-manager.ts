@@ -5,6 +5,7 @@ import type { AdapterDescriptor, BackendProvider, HostNeutralBackendIdentity } f
 import { byteLimit, opaqueId, type BackendCompatibilityOffer } from './backend-contract/primitives'
 import { createEphemeralHostIdentity, normalizeBleManagerCreateOptions } from './public/host-identity'
 import type { BleManagerCreateOptions } from './public/host-identity'
+import { rehydratePublicPromise } from './public/error-bridge'
 import { createBleManagerFromProvider, DEFAULT_BLE_MANAGER_OPTIONS, type BleManager } from './manager/ble-manager'
 
 export interface NodeBleManagerAppOptions extends BleManagerCreateOptions {
@@ -12,6 +13,14 @@ export interface NodeBleManagerAppOptions extends BleManagerCreateOptions {
 }
 
 export async function createNodeBleManagerFromProvider(
+  provider: BackendProvider<string, HostNeutralBackendIdentity<string>>,
+  compatibility: BackendCompatibilityOffer,
+  options: NodeBleManagerAppOptions
+): Promise<BleManager<string, HostNeutralBackendIdentity<string>>> {
+  return rehydratePublicPromise(createNodeBleManagerFromProviderInternal(provider, compatibility, options))
+}
+
+async function createNodeBleManagerFromProviderInternal(
   provider: BackendProvider<string, HostNeutralBackendIdentity<string>>,
   compatibility: BackendCompatibilityOffer,
   options: NodeBleManagerAppOptions

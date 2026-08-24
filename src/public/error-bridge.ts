@@ -3,6 +3,21 @@
 import { BackendContractError } from '../backend-contract/errors'
 import { BleError } from './errors'
 
+export interface PublicCleanupRecord {
+  readonly state: 'released' | 'release-failed'
+  readonly failures: readonly unknown[]
+}
+
+export class BleCleanupError extends Error {
+  readonly cleanup: PublicCleanupRecord
+
+  constructor(cleanup: PublicCleanupRecord, message = 'BLE cleanup failed') {
+    super(message)
+    this.name = 'BleCleanupError'
+    this.cleanup = cleanup
+  }
+}
+
 /** Converts backend errors only at an application façade boundary. */
 export function rehydratePublicError(error: unknown): unknown {
   if (error instanceof BleError || !(error instanceof BackendContractError)) {
@@ -22,7 +37,7 @@ export function rehydratePublicPromise<Value>(operation: Promise<Value>): Promis
 
 interface CleanupResultLike {
   readonly state: 'released' | 'release-failed'
-  readonly failures: readonly object[]
+  readonly failures: readonly unknown[]
 }
 
 export async function runWithCleanup<Value>(
@@ -59,7 +74,8 @@ function resolvedCleanupFailure(value: CleanupResultLike | void): Error | null {
   if (value === undefined || value.state !== 'release-failed') {
     return null
   }
-  const error = new Error('BLE cleanup failed')
-  Object.defineProperty(error, 'cleanup', { value, enumerable: true })
-  return error
+  return new BleCleanupError({
+    state: 'release-failed',
+    failures: value.failures
+  })
 }

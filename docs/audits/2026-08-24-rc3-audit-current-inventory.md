@@ -51,12 +51,24 @@ Addressed in this branch (with tests where they are unit-reproducible):
 - RB-02, P1-02, P1-03, P1-05 (mode/delivery/write-response), P1-06 Electron controllable delivery, P1-08, P1-09 helper/IPC deadline, P1-10 local overflow teardown, P1-11 subscriber prune, P1-12 helper-map bound, P1-14 factory rehydrate
 - P1-01 sibling path occurrences, P1-04 RSSI/identity coercion, P2-01 create/scan/connect records, P2-02 notification metadata, P2-03 diagnostics, P2-04 randomBytes, P2-05 stream presets, P2-06 peer order/RSSI, P2-09 paths-filter pin, P2-10 RC3 changelog SHA, P2-12 Tauri option rejection
 
-Still open on this branch:
+Closed on this branch after the remaining TDD pass:
 
-- RB-03 signature-aware API report gate
-- P1-07 `ConnectionSupervisor.stop()` released-while-late-configure (existing tests currently lock the old receipt)
-- P1-13 remaining included-service/property schema validation
-- P1-04 remaining MTU/PHY/write-length echo validation
-- P2-07 unified cleanup-error type
-- P2-08 GitHub `main` protection (repo settings)
-- P2-11 stale `agent/*` remotes (operator deletion)
+- RB-03 signature-aware API report gate (`scripts/docs/check-api-reports.js` compares `name :: signature`; `etc/api/*.api.md` regenerated)
+- P1-07 `ConnectionSupervisor.stop()` returns `release-failed` while late configure still owns the session; a later `stop()` after late work succeeds returns `released`
+- P1-13 included-service resolve + boolean characteristic property schema
+- P1-04 remaining MTU integer, write-length identity/mode, and PHY enum echo validation
+- P2-07 `BleCleanupError` retains the exact cleanup record from `runWithCleanup`, adapter watch, and security watch
+- P2-08 GitHub `main` ruleset `protect-main` (id `21260202`): PR-only updates, no deletion/force-push, required `JS tests (ubuntu-latest, Node 22/24)`
+- P2-11 deleted all origin `agent/*` heads; unique +1 tips archived as `archive/agent/{bootstrap-main-ci,native-prebuild-distribution,release-4.0.0-native-check,release-4.0.0-prep}`
+- P1-05 remainder: Electron `gatt.subscribe` rejects unknown `deliveryMode` instead of dropping it
+- P1-10 remainder: local IPC stream overflow/malformed issues `scan.stop` / `gatt.unsubscribe` / connection-events unsubscribe
+- P1-14 remainder: Node host factories rehydrate through `createNodeBleManagerFromProvider`
+
+P2-11 archived SHAs (obsolete workflow/prebuild slices, not current product WIP):
+
+| Tag | SHA | Unique commit |
+|---|---|---|
+| `archive/agent/bootstrap-main-ci` | `eefe0eb9` | restore-ci-semantics workflow |
+| `archive/agent/native-prebuild-distribution` | `0933ba70` | native Node-API prebuild scaffolding |
+| `archive/agent/release-4.0.0-native-check` | `16cd3829` | release-native-check workflow |
+| `archive/agent/release-4.0.0-prep` | `e6dbf75e` | release-prep-automation workflow |
