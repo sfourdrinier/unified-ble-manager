@@ -87,6 +87,14 @@ const LOCAL_COMPATIBILITY: BackendCompatibilityOffer = {
 }
 const RELEASED: CleanupRecord = { state: 'released', failures: [] }
 
+function mergeWebCleanupPhases(phases: readonly CleanupRecord[]): CleanupRecord {
+  const failures: CleanupFailure[] = []
+  for (const phase of phases) {
+    if (phase.state === 'release-failed') failures.push(...phase.failures)
+  }
+  return failures.length === 0 ? RELEASED : { state: 'release-failed', failures }
+}
+
 let nextBackendInstance = 1
 
 interface AbortableOperation {
@@ -422,37 +430,59 @@ export class WebBluetoothBackend
   }
 
   async disconnectConnection(connection: WebBackendConnection): Promise<CleanupRecord> {
-    const record = this.connectionsByPeer.get(String(connection.peerId))
-    if (record === undefined || record.connection !== connection) {
+    const active = this.connectionsByPeer.get(String(connection.peerId))
+    const retained = [...this.retainedConnections].find(record => record.connection === connection)
+    const record = active !== undefined && active.connection === connection ? active : retained
+    if (record === undefined) {
       return RELEASED
     }
     return this.disconnectRecord(record)
   }
 
-  async disconnectRecord(record: WebConnectionRecord): Promise<CleanupRecord> {
-    if (!record.valid) {
-      return RELEASED
+  async disconnectRecord(
+    record: WebConnectionRecord,
+    reason: 'connection-lost' | 'owner-released' = 'owner-released'
+  ): Promise<CleanupRecord> {
+    if (record.disconnectPromise !== null) return record.disconnectPromise
+    const run = this.runDisconnectRecord(record, reason)
+    record.disconnectPromise = run.then(result => {
+      if (result.state !== 'released') record.disconnectPromise = null
+      return result
+    })
+    return record.disconnectPromise
+  }
+
+  private async runDisconnectRecord(
+    record: WebConnectionRecord,
+    reason: 'connection-lost' | 'owner-released'
+  ): Promise<CleanupRecord> {
+    this.invalidateConnectionGenerations(record, reason)
+    const phases: CleanupRecord[] = []
+    if (!record.subscriptionReleased) {
+      const subscriptionCleanup = await this.gattRuntime.stopConnectionSubscriptions(record)
+      if (subscriptionCleanup.state === 'released') record.subscriptionReleased = true
+      phases.push(subscriptionCleanup)
     }
-    const subscriptionCleanup = await this.gattRuntime.stopConnectionSubscriptions(record)
-    if (subscriptionCleanup.state === 'release-failed') {
-      return subscriptionCleanup
-    }
-    let disconnectListenerRemoved = false
-    try {
-      if (record.device.gatt.connected) {
-        record.device.removeDisconnectListener(record.disconnectListener)
-        disconnectListenerRemoved = true
-        record.device.gatt.disconnect()
+    if (!record.physicalReleased) {
+      try {
+        if (record.device.gatt.connected) {
+          record.device.gatt.disconnect()
+        }
+        record.physicalReleased = true
+        phases.push(RELEASED)
+      } catch (error) {
+        console.error('[WebBluetoothBackend.disconnectRecord] Browser disconnect failed:', error)
+        this.retainedConnections.add(record)
+        this.connectionsByPeer.delete(String(record.peerId))
+        phases.push(webCleanupFailure('connection', 'web-connection.disconnect'))
       }
-      this.invalidateConnection(record, 'owner-released')
-      return RELEASED
-    } catch (error) {
-      if (disconnectListenerRemoved && record.valid) {
-        record.device.addDisconnectListener(record.disconnectListener)
-      }
-      console.error('[WebBluetoothBackend.disconnectRecord] Browser disconnect failed:', error)
-      return webCleanupFailure('connection', 'web-connection.disconnect')
     }
+    const merged = mergeWebCleanupPhases(phases)
+    if (record.subscriptionReleased && record.physicalReleased) {
+      this.gattRuntime.invalidateConnection(record, reason)
+      this.unbindConnectionRecord(record, reason)
+    }
+    return merged
   }
 
   staleGattError(operation: string): BackendContractError {
@@ -559,16 +589,7 @@ export class WebBluetoothBackend
       this.deletePendingConnectionIfOwned(pending)
     }
     for (const record of [...this.connectionsByPeer.values()]) {
-      this.invalidateConnection(record, 'connection-lost')
-      try {
-        if (record.device.gatt.connected) {
-          record.device.gatt.disconnect()
-        }
-      } catch (error) {
-        console.error('[WebBluetoothBackend.invalidateUnavailableSession] Browser disconnect failed:', error)
-        this.retainedConnections.add(record)
-        continue
-      }
+      this.disconnectRecord(record, 'connection-lost').catch(() => undefined)
     }
     this.selectedDevices.clear()
     this.peerByBrowserDeviceId.clear()
@@ -587,23 +608,10 @@ export class WebBluetoothBackend
       failures.push(...cleanup.failures)
     }
     for (const record of [...this.retainedConnections]) {
-      const cleanup = await this.releaseRetainedConnection(record)
+      const cleanup = await this.disconnectRecord(record)
       failures.push(...cleanup.failures)
     }
     return failures.length === 0 ? RELEASED : { state: 'release-failed', failures }
-  }
-
-  private async releaseRetainedConnection(record: WebConnectionRecord): Promise<CleanupRecord> {
-    try {
-      if (record.device.gatt.connected) {
-        record.device.gatt.disconnect()
-      }
-      this.retainedConnections.delete(record)
-      return RELEASED
-    } catch (error) {
-      console.error('[WebBluetoothBackend.releaseRetainedConnection] Browser disconnect retry failed:', error)
-      return webCleanupFailure('connection', 'web-connection.retained-disconnect')
-    }
   }
 
   private createAttachmentRecord(available: boolean): AttachmentRecord<string> {
@@ -767,7 +775,7 @@ export class WebBluetoothBackend
     let record: WebConnectionRecord | null = null
     const disconnectListener = () => {
       if (record !== null) {
-        this.invalidateConnection(record, 'connection-lost')
+        this.disconnectRecord(record, 'connection-lost').catch(() => undefined)
       }
     }
     record = {
@@ -779,7 +787,10 @@ export class WebBluetoothBackend
       disconnectListener,
       disconnectWaiters: new Set(),
       database: null,
-      valid: true
+      valid: true,
+      subscriptionReleased: false,
+      physicalReleased: false,
+      disconnectPromise: null
     }
     selected.device.addDisconnectListener(disconnectListener)
     this.deletePendingConnectionIfOwned(pending)
@@ -811,20 +822,20 @@ export class WebBluetoothBackend
     }
   }
 
-  private invalidateConnection(record: WebConnectionRecord, reason: 'connection-lost' | 'owner-released'): void {
+  private invalidateConnectionGenerations(
+    record: WebConnectionRecord,
+    reason: 'connection-lost' | 'owner-released'
+  ): void {
     if (!record.valid) {
       return
     }
     record.valid = false
     record.connection.transition(reason === 'connection-lost' ? 'lost' : 'disconnected')
-    record.device.removeDisconnectListener(record.disconnectListener)
     record.database?.invalidate()
     for (const waiter of [...record.disconnectWaiters]) {
       waiter()
     }
     record.disconnectWaiters.clear()
-    this.gattRuntime.invalidateConnection(record, reason)
-    this.connectionsByPeer.delete(String(record.peerId))
     if (reason === 'connection-lost') {
       this.emitBackendEvent({
         attachment: this.attachmentRecord,
@@ -842,6 +853,12 @@ export class WebBluetoothBackend
       })
       this.ingressOrdinal += 1
     }
+  }
+
+  private unbindConnectionRecord(record: WebConnectionRecord, _reason: 'connection-lost' | 'owner-released'): void {
+    record.device.removeDisconnectListener(record.disconnectListener)
+    this.connectionsByPeer.delete(String(record.peerId))
+    this.retainedConnections.delete(record)
   }
 
   requireConnection(connection: BackendConnection<string, string>, operation: string): WebConnectionRecord {
@@ -1046,15 +1063,15 @@ export class WebBluetoothBackend
       this.removePageLifecycleListener()
       this.removePageLifecycleListener = null
     }
-    failures.push(...(await this.gattRuntime.destroySubscriptions()))
     for (const record of [...this.connectionsByPeer.values()]) {
       const cleanup = await this.disconnectRecord(record)
       failures.push(...cleanup.failures)
     }
     for (const record of [...this.retainedConnections]) {
-      const cleanup = await this.releaseRetainedConnection(record)
+      const cleanup = await this.disconnectRecord(record)
       failures.push(...cleanup.failures)
     }
+    failures.push(...(await this.gattRuntime.destroySubscriptions()))
     for (const stream of this.eventStreams) {
       await stream.close()
     }

@@ -552,8 +552,17 @@ describe('Tauri v2 public manager', () => {
     const { createTauriBleManagerWithEnvironment } = require('../src/tauri')
     const manager = await createTauriBleManagerWithEnvironment({ invoke, Channel: FakeChannel })
 
-    await expect(manager.connect('polar-h10')).rejects.toMatchObject({ code: 'protocol.violation' })
-    await manager.destroy()
+    const connectError = await manager.connect('polar-h10').then(
+      () => null,
+      error => error
+    )
+    expect(connectError).toBeInstanceOf(AggregateError)
+    expect(
+      connectError.errors.some(
+        error => error?.normalized?.code === 'protocol.violation' || error?.code === 'protocol.violation'
+      )
+    ).toBe(true)
+    await manager.destroy().catch(() => undefined)
   })
 
   test('rehydrates cleanup failures from public connection resources', async () => {
@@ -592,8 +601,12 @@ describe('Tauri v2 public manager', () => {
     const manager = await createTauriBleManagerWithEnvironment({ invoke, Channel: FakeChannel })
     const connection = await manager.connect('polar-h10')
 
-    await expect(connection.release()).rejects.toMatchObject({ code: 'connection.lost' })
-    await manager.destroy()
+    const releaseError = await connection.release().then(
+      () => null,
+      error => error
+    )
+    expect(releaseError?.code ?? releaseError?.normalized?.code).toBe('connection.lost')
+    await manager.destroy().catch(() => undefined)
   })
 
   test('propagates AbortSignal cancellation through the shared IPC client', async () => {

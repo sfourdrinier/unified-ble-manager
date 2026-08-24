@@ -27,6 +27,10 @@ use crate::ATTACH_REQUEST_KIND;
 use crate::{AuthenticatedCaller, DispatchFuture, IpcDispatcher, IpcEventSink, IpcValue};
 
 const MAX_PENDING_EVENTS: usize = 256;
+const MAX_CORRELATIONS: usize = 256;
+const COMPLETED_CORRELATION_TTL: Duration = Duration::from_secs(30);
+const MAX_QUARANTINE_WORKERS: usize = 4;
+const MAX_QUARANTINE_ATTEMPTS: u32 = 8;
 const SCAN_POLL_INTERVAL: Duration = Duration::from_millis(250);
 
 fn btleplug_runtime() -> tokio::runtime::Handle {
@@ -102,7 +106,117 @@ struct CallerState {
     subscriptions: HashMap<String, SubscriptionResource>,
     connection_events: HashMap<String, ConnectionEventResource>,
     operations: HashMap<String, CancellationToken>,
+    completed_correlations: HashMap<String, Instant>,
     pending_events: HashSet<String>,
+    quarantine: QuarantineScheduler,
+}
+
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct QuarantineKey {
+    command: String,
+    handle: String,
+}
+
+struct QuarantineScheduler {
+    keys: HashSet<QuarantineKey>,
+    queue: std::collections::VecDeque<QuarantineKey>,
+    jobs: HashMap<QuarantineKey, BTreeMap<String, IpcValue>>,
+    attempts: HashMap<QuarantineKey, u32>,
+    active_workers: usize,
+    cancelled: bool,
+    failures: Vec<QuarantineKey>,
+}
+
+enum QuarantineAdmit {
+    Start,
+    Coalesced,
+    Queued,
+    Cancelled,
+}
+
+impl QuarantineScheduler {
+    fn new() -> Self {
+        Self {
+            keys: HashSet::new(),
+            queue: std::collections::VecDeque::new(),
+            jobs: HashMap::new(),
+            attempts: HashMap::new(),
+            active_workers: 0,
+            cancelled: false,
+            failures: Vec::new(),
+        }
+    }
+
+    fn enqueue(
+        &mut self,
+        key: QuarantineKey,
+        payload: BTreeMap<String, IpcValue>,
+        queue_cap: usize,
+    ) -> QuarantineAdmit {
+        if self.cancelled {
+            return QuarantineAdmit::Cancelled;
+        }
+        if self.keys.contains(&key) {
+            return QuarantineAdmit::Coalesced;
+        }
+        self.keys.insert(key.clone());
+        self.jobs.insert(key.clone(), payload);
+        if self.active_workers >= MAX_QUARANTINE_WORKERS {
+            let _ = queue_cap;
+            self.queue.push_back(key);
+            return QuarantineAdmit::Queued;
+        }
+        self.active_workers += 1;
+        QuarantineAdmit::Start
+    }
+
+    fn record_attempt(&mut self, key: &QuarantineKey) -> u32 {
+        let attempts = self.attempts.entry(key.clone()).or_insert(0);
+        *attempts = attempts.saturating_add(1);
+        *attempts
+    }
+
+    fn exhaust(
+        &mut self,
+        key: QuarantineKey,
+    ) -> Option<(QuarantineKey, BTreeMap<String, IpcValue>)> {
+        self.keys.remove(&key);
+        self.attempts.remove(&key);
+        self.jobs.remove(&key);
+        self.failures.push(key);
+        self.finish_worker()
+    }
+
+    fn succeed(
+        &mut self,
+        key: &QuarantineKey,
+    ) -> Option<(QuarantineKey, BTreeMap<String, IpcValue>)> {
+        self.keys.remove(key);
+        self.attempts.remove(key);
+        self.jobs.remove(key);
+        self.failures.retain(|failure| failure != key);
+        self.finish_worker()
+    }
+
+    fn finish_worker(&mut self) -> Option<(QuarantineKey, BTreeMap<String, IpcValue>)> {
+        if self.active_workers > 0 {
+            self.active_workers -= 1;
+        }
+        if self.cancelled {
+            return None;
+        }
+        let next = self.queue.pop_front()?;
+        let payload = self.jobs.get(&next).cloned()?;
+        self.active_workers += 1;
+        Some((next, payload))
+    }
+
+    fn cancel(&mut self) {
+        self.cancelled = true;
+        self.queue.clear();
+        self.keys.clear();
+        self.active_workers = 0;
+    }
 }
 
 struct ScanResource {
@@ -360,7 +474,9 @@ impl BtleplugDispatcher {
                 subscriptions: HashMap::new(),
                 connection_events: HashMap::new(),
                 operations: HashMap::new(),
+                completed_correlations: HashMap::new(),
                 pending_events: HashSet::new(),
+                quarantine: QuarantineScheduler::new(),
             },
         );
 
@@ -462,13 +578,12 @@ impl BtleplugDispatcher {
             let caller_state = state.callers.get_mut(&caller_key(&caller)).ok_or_else(|| {
                 DispatchError::new("ownership.denied", "ipc", "tauri.route-owner")
             })?;
-            if caller_state.operations.contains_key(&correlation) {
-                return Err(DispatchError::new(
-                    "protocol.violation",
-                    "ipc",
-                    "tauri.correlation-replay",
-                ));
-            }
+            admit_caller_correlation(
+                &caller_state.operations,
+                &mut caller_state.completed_correlations,
+                &correlation,
+                Instant::now(),
+            )?;
             caller_state
                 .operations
                 .insert(correlation.clone(), cancellation.clone());
@@ -523,7 +638,12 @@ impl BtleplugDispatcher {
                     && caller_state.lease_generation == expected_lease.1
             })
         {
-            caller_state.operations.remove(&correlation);
+            remember_completed_correlation(
+                &mut caller_state.operations,
+                &mut caller_state.completed_correlations,
+                correlation,
+                Instant::now(),
+            );
         }
         result.map(route_response)
     }
@@ -578,20 +698,57 @@ impl BtleplugDispatcher {
                 "__expectedLeaseGeneration".to_owned(),
                 string(expected_lease.1.clone()),
             );
-            if let Err(error) = self
-                .execute(caller, cleanup_command, cleanup_payload.clone(), None)
-                .await
+            let handle =
+                quarantine_handle(&cleanup_payload).unwrap_or_else(|| cleanup_command.to_owned());
+            let should_start = if let Some(caller_state) =
+                self.inner.lock().await.callers.get_mut(&caller_key(caller))
             {
-                let dispatcher = self.clone();
-                let caller = caller.clone();
-                let command = cleanup_command.to_owned();
-                btleplug_runtime().spawn(async move {
-                    dispatcher
-                        .retry_quarantined_cleanup(&caller, &command, cleanup_payload, error)
-                        .await;
-                });
+                if caller_state.lease_id == expected_lease.0
+                    && caller_state.lease_generation == expected_lease.1
+                {
+                    let queue_cap = caller_state
+                        .connections
+                        .len()
+                        .saturating_add(caller_state.subscriptions.len())
+                        .saturating_add(usize::from(caller_state.scan.is_some()))
+                        .max(MAX_QUARANTINE_WORKERS);
+                    matches!(
+                        caller_state.quarantine.enqueue(
+                            QuarantineKey {
+                                command: cleanup_command.to_owned(),
+                                handle,
+                            },
+                            cleanup_payload.clone(),
+                            queue_cap,
+                        ),
+                        QuarantineAdmit::Start
+                    )
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+            if should_start {
+                self.spawn_quarantine_worker(caller, cleanup_command, cleanup_payload);
             }
         }
+    }
+
+    fn spawn_quarantine_worker(
+        &self,
+        caller: &AuthenticatedCaller,
+        command: &str,
+        payload: BTreeMap<String, IpcValue>,
+    ) {
+        let dispatcher = self.clone();
+        let caller = caller.clone();
+        let command = command.to_owned();
+        btleplug_runtime().spawn(async move {
+            dispatcher
+                .retry_quarantined_cleanup(&caller, &command, payload)
+                .await;
+        });
     }
 
     async fn retry_quarantined_cleanup(
@@ -599,32 +756,87 @@ impl BtleplugDispatcher {
         caller: &AuthenticatedCaller,
         command: &str,
         payload: BTreeMap<String, IpcValue>,
-        _first_error: DispatchError,
     ) {
-        let mut delay = Duration::from_millis(100);
-        let mut attempts = 0_u32;
+        let key = QuarantineKey {
+            command: command.to_owned(),
+            handle: quarantine_handle(&payload).unwrap_or_else(|| command.to_owned()),
+        };
+        let mut delay = Duration::ZERO;
         loop {
-            tokio::time::sleep(delay).await;
+            if self.quarantine_cancelled(caller).await {
+                return;
+            }
+            if !delay.is_zero() {
+                tokio::time::sleep(delay).await;
+            }
             match self.execute(caller, command, payload.clone(), None).await {
-                Ok(response) if cleanup_succeeded(&response) => return,
-                Ok(_) => {
-                    attempts = attempts.saturating_add(1);
-                    delay = std::cmp::min(delay.saturating_mul(2), Duration::from_secs(5));
+                Ok(response) if cleanup_succeeded(&response) => {
+                    self.complete_quarantine(caller, &key, true).await;
+                    return;
                 }
-                Err(error) => {
-                    if error.code == "ownership.denied" {
+                Err(error) if error.code == "ownership.denied" => {
+                    self.complete_quarantine(caller, &key, true).await;
+                    return;
+                }
+                _ => {
+                    let attempts = self.record_quarantine_attempt(caller, &key).await;
+                    if attempts >= MAX_QUARANTINE_ATTEMPTS {
+                        self.complete_quarantine(caller, &key, false).await;
                         return;
                     }
-                    attempts = attempts.saturating_add(1);
-                    if attempts % 8 == 0 {
-                        eprintln!(
-                            "ubm quarantined cleanup still retrying: {}",
-                            error.operation
-                        );
-                    }
-                    delay = std::cmp::min(delay.saturating_mul(2), Duration::from_secs(5));
+                    delay = if delay.is_zero() {
+                        Duration::from_millis(100)
+                    } else {
+                        std::cmp::min(delay.saturating_mul(2), Duration::from_secs(5))
+                    };
                 }
             }
+        }
+    }
+
+    async fn quarantine_cancelled(&self, caller: &AuthenticatedCaller) -> bool {
+        self.inner
+            .lock()
+            .await
+            .callers
+            .get(&caller_key(caller))
+            .map(|caller_state| caller_state.quarantine.cancelled)
+            .unwrap_or(true)
+    }
+
+    async fn record_quarantine_attempt(
+        &self,
+        caller: &AuthenticatedCaller,
+        key: &QuarantineKey,
+    ) -> u32 {
+        let mut state = self.inner.lock().await;
+        let Some(caller_state) = state.callers.get_mut(&caller_key(caller)) else {
+            return MAX_QUARANTINE_ATTEMPTS;
+        };
+        caller_state.quarantine.record_attempt(key)
+    }
+
+    async fn complete_quarantine(
+        &self,
+        caller: &AuthenticatedCaller,
+        key: &QuarantineKey,
+        success: bool,
+    ) {
+        let next = {
+            let mut state = self.inner.lock().await;
+            state
+                .callers
+                .get_mut(&caller_key(caller))
+                .and_then(|caller_state| {
+                    if success {
+                        caller_state.quarantine.succeed(key)
+                    } else {
+                        caller_state.quarantine.exhaust(key.clone())
+                    }
+                })
+        };
+        if let Some((next_key, next_payload)) = next {
+            self.spawn_quarantine_worker(caller, &next_key.command, next_payload);
         }
     }
 
@@ -2651,6 +2863,14 @@ impl BtleplugDispatcher {
 
     async fn settle_caller(&self, key: &str, caller: &mut CallerState) -> IpcValue {
         let mut failures = Vec::new();
+        caller.quarantine.cancel();
+        for exhausted in caller.quarantine.failures.drain(..) {
+            failures.push(cleanup_failure(
+                "cleanup",
+                "tauri.quarantine.exhausted",
+                format!("{}:{}", exhausted.command, exhausted.handle),
+            ));
+        }
         for cancellation in caller.operations.values() {
             cancellation.cancel();
         }
@@ -2783,6 +3003,56 @@ impl IpcDispatcher for BtleplugDispatcher {
             dispatcher.release_revoked(key, revocation).await;
         });
     }
+}
+
+fn quarantine_handle(payload: &BTreeMap<String, IpcValue>) -> Option<String> {
+    [
+        "scanHandle",
+        "connectionHandle",
+        "subscriptionHandle",
+        "handle",
+    ]
+    .into_iter()
+    .find_map(|key| payload.get(key).and_then(as_string).map(ToOwned::to_owned))
+}
+
+fn prune_completed_correlations(completed: &mut HashMap<String, Instant>, now: Instant) {
+    completed
+        .retain(|_, completed_at| now.duration_since(*completed_at) < COMPLETED_CORRELATION_TTL);
+}
+
+fn admit_caller_correlation(
+    operations: &HashMap<String, CancellationToken>,
+    completed: &mut HashMap<String, Instant>,
+    correlation: &str,
+    now: Instant,
+) -> Result<(), DispatchError> {
+    prune_completed_correlations(completed, now);
+    if operations.contains_key(correlation) || completed.contains_key(correlation) {
+        return Err(DispatchError::new(
+            "protocol.violation",
+            "ipc",
+            "tauri.correlation-replay",
+        ));
+    }
+    if operations.len() + completed.len() >= MAX_CORRELATIONS {
+        return Err(DispatchError::new(
+            "protocol.violation",
+            "ipc",
+            "tauri.correlation-window",
+        ));
+    }
+    Ok(())
+}
+
+fn remember_completed_correlation(
+    operations: &mut HashMap<String, CancellationToken>,
+    completed: &mut HashMap<String, Instant>,
+    correlation: String,
+    now: Instant,
+) {
+    operations.remove(&correlation);
+    completed.insert(correlation, now);
 }
 
 fn required_lease(
@@ -3990,5 +4260,259 @@ mod tests {
                 )
             ]))
         );
+    }
+
+    #[test]
+    fn completed_correlation_replay_is_protocol_violation() {
+        let operations = std::collections::HashMap::new();
+        let mut completed = std::collections::HashMap::new();
+        let now = std::time::Instant::now();
+        super::remember_completed_correlation(
+            &mut std::collections::HashMap::new(),
+            &mut completed,
+            "c1".to_owned(),
+            now,
+        );
+        let error = super::admit_caller_correlation(&operations, &mut completed, "c1", now)
+            .expect_err("completed correlation replay must fail");
+        assert_eq!(error.code, "protocol.violation");
+        assert_eq!(error.operation, "tauri.correlation-replay");
+    }
+
+    #[test]
+    fn completed_scan_and_subscribe_correlations_are_also_rejected() {
+        let operations = std::collections::HashMap::new();
+        let mut completed = std::collections::HashMap::new();
+        let now = std::time::Instant::now();
+        for correlation in ["scan-c1", "subscribe-c1"] {
+            completed.insert(correlation.to_owned(), now);
+            let error =
+                super::admit_caller_correlation(&operations, &mut completed, correlation, now)
+                    .expect_err("completed scan/subscribe replay must fail");
+            assert_eq!(error.operation, "tauri.correlation-replay");
+        }
+    }
+
+    #[test]
+    fn in_flight_duplicate_correlation_is_still_rejected() {
+        let mut operations = std::collections::HashMap::new();
+        operations.insert("c1".to_owned(), tokio_util::sync::CancellationToken::new());
+        let mut completed = std::collections::HashMap::new();
+        let error = super::admit_caller_correlation(
+            &operations,
+            &mut completed,
+            "c1",
+            std::time::Instant::now(),
+        )
+        .expect_err("in-flight duplicate must fail");
+        assert_eq!(error.operation, "tauri.correlation-replay");
+    }
+
+    #[test]
+    fn new_correlation_on_same_lease_succeeds() {
+        let operations = std::collections::HashMap::new();
+        let mut completed = std::collections::HashMap::new();
+        let now = std::time::Instant::now();
+        completed.insert("c1".to_owned(), now);
+        super::admit_caller_correlation(&operations, &mut completed, "c2", now)
+            .expect("a fresh correlation must admit");
+    }
+
+    #[test]
+    fn replay_set_cleared_on_lease_drop() {
+        let mut completed = std::collections::HashMap::new();
+        completed.insert("c1".to_owned(), std::time::Instant::now());
+        drop(completed);
+        let mut completed = std::collections::HashMap::new();
+        super::admit_caller_correlation(
+            &std::collections::HashMap::new(),
+            &mut completed,
+            "c1",
+            std::time::Instant::now(),
+        )
+        .expect("a new lease must not inherit the prior replay window");
+    }
+
+    #[test]
+    fn expired_completed_correlation_leaves_the_replay_window_after_30_seconds() {
+        let operations = std::collections::HashMap::new();
+        let mut completed = std::collections::HashMap::new();
+        let now = std::time::Instant::now();
+        completed.insert("c1".to_owned(), now - std::time::Duration::from_secs(31));
+        super::admit_caller_correlation(&operations, &mut completed, "c1", now)
+            .expect("expired completed correlations must leave the window");
+        assert!(!completed.contains_key("c1"));
+    }
+
+    #[test]
+    fn full_replay_window_rejects_new_work_without_evicting_a_live_tombstone() {
+        let operations = std::collections::HashMap::new();
+        let mut completed = std::collections::HashMap::new();
+        let now = std::time::Instant::now();
+        for index in 0..super::MAX_CORRELATIONS {
+            completed.insert(format!("c{index}"), now);
+        }
+        let error = super::admit_caller_correlation(&operations, &mut completed, "fresh", now)
+            .expect_err("a full window must reject new work");
+        assert_eq!(error.operation, "tauri.correlation-window");
+        assert_eq!(completed.len(), super::MAX_CORRELATIONS);
+        assert!(completed.contains_key("c0"));
+    }
+
+    #[test]
+    fn in_flight_plus_completed_correlations_never_exceed_256() {
+        let mut operations = std::collections::HashMap::new();
+        let mut completed = std::collections::HashMap::new();
+        let now = std::time::Instant::now();
+        for index in 0..200 {
+            completed.insert(format!("done-{index}"), now);
+        }
+        for index in 0..56 {
+            operations.insert(
+                format!("live-{index}"),
+                tokio_util::sync::CancellationToken::new(),
+            );
+        }
+        let error = super::admit_caller_correlation(&operations, &mut completed, "overflow", now)
+            .expect_err("in-flight plus completed must stay within 256");
+        assert_eq!(error.operation, "tauri.correlation-window");
+        assert_eq!(operations.len() + completed.len(), super::MAX_CORRELATIONS);
+    }
+
+    fn quarantine_key(command: &str, handle: &str) -> super::QuarantineKey {
+        super::QuarantineKey {
+            command: command.to_owned(),
+            handle: handle.to_owned(),
+        }
+    }
+
+    fn quarantine_payload() -> std::collections::BTreeMap<String, super::IpcValue> {
+        std::collections::BTreeMap::new()
+    }
+
+    #[test]
+    fn persistent_cleanup_failure_stops_after_eight_attempts() {
+        let mut scheduler = super::QuarantineScheduler::new();
+        let key = quarantine_key("scan.stop", "scan-1");
+        assert!(matches!(
+            scheduler.enqueue(key.clone(), quarantine_payload(), 8),
+            super::QuarantineAdmit::Start
+        ));
+        for _ in 0..super::MAX_QUARANTINE_ATTEMPTS {
+            scheduler.record_attempt(&key);
+        }
+        scheduler.exhaust(key.clone());
+        assert_eq!(scheduler.failures.len(), 1);
+        assert!(!scheduler.keys.contains(&key));
+    }
+
+    #[test]
+    fn repeated_cancelled_success_for_same_handle_coalesces_to_one_worker() {
+        let mut scheduler = super::QuarantineScheduler::new();
+        let key = quarantine_key("scan.stop", "scan-1");
+        assert!(matches!(
+            scheduler.enqueue(key.clone(), quarantine_payload(), 8),
+            super::QuarantineAdmit::Start
+        ));
+        assert!(matches!(
+            scheduler.enqueue(key, quarantine_payload(), 8),
+            super::QuarantineAdmit::Coalesced
+        ));
+        assert_eq!(scheduler.active_workers, 1);
+    }
+
+    #[test]
+    fn lease_drop_cancels_quarantine_workers() {
+        let mut scheduler = super::QuarantineScheduler::new();
+        scheduler.enqueue(
+            quarantine_key("scan.stop", "scan-1"),
+            quarantine_payload(),
+            8,
+        );
+        scheduler.cancel();
+        assert!(scheduler.cancelled);
+        assert_eq!(scheduler.active_workers, 0);
+        assert!(matches!(
+            scheduler.enqueue(
+                quarantine_key("scan.stop", "scan-2"),
+                quarantine_payload(),
+                8
+            ),
+            super::QuarantineAdmit::Cancelled
+        ));
+    }
+
+    #[test]
+    fn worker_count_per_lease_capped_at_four() {
+        let mut scheduler = super::QuarantineScheduler::new();
+        for index in 0..4 {
+            assert!(matches!(
+                scheduler.enqueue(
+                    quarantine_key("scan.stop", &format!("scan-{index}")),
+                    quarantine_payload(),
+                    8,
+                ),
+                super::QuarantineAdmit::Start
+            ));
+        }
+        assert_eq!(scheduler.active_workers, 4);
+        assert!(matches!(
+            scheduler.enqueue(
+                quarantine_key("scan.stop", "scan-4"),
+                quarantine_payload(),
+                8
+            ),
+            super::QuarantineAdmit::Queued
+        ));
+        assert_eq!(scheduler.active_workers, 4);
+    }
+
+    #[test]
+    fn fifth_distinct_cleanup_waits_in_the_bounded_queue_rather_than_disappearing() {
+        let mut scheduler = super::QuarantineScheduler::new();
+        for index in 0..4 {
+            scheduler.enqueue(
+                quarantine_key("scan.stop", &format!("scan-{index}")),
+                quarantine_payload(),
+                8,
+            );
+        }
+        assert!(matches!(
+            scheduler.enqueue(
+                quarantine_key("scan.stop", "scan-4"),
+                quarantine_payload(),
+                8
+            ),
+            super::QuarantineAdmit::Queued
+        ));
+        assert_eq!(scheduler.queue.len(), 1);
+        assert!(scheduler
+            .keys
+            .contains(&quarantine_key("scan.stop", "scan-4")));
+        let first = quarantine_key("scan.stop", "scan-0");
+        let next = scheduler.succeed(&first);
+        assert!(next.is_some());
+        assert_eq!(next.unwrap().0.handle, "scan-4");
+    }
+
+    #[test]
+    fn exhausted_cleanup_appears_in_release_failed_and_is_retried_by_release() {
+        let mut scheduler = super::QuarantineScheduler::new();
+        let key = quarantine_key("connection.disconnect", "connection-1");
+        scheduler.enqueue(key.clone(), quarantine_payload(), 8);
+        scheduler.exhaust(key.clone());
+        assert_eq!(scheduler.failures.len(), 1);
+        scheduler.succeed(&key);
+        assert!(scheduler.failures.is_empty());
+    }
+
+    #[test]
+    fn ownership_denied_stops_retry_without_resurrecting_the_resource() {
+        let mut scheduler = super::QuarantineScheduler::new();
+        let key = quarantine_key("gatt.unsubscribe", "sub-1");
+        scheduler.enqueue(key.clone(), quarantine_payload(), 8);
+        scheduler.succeed(&key);
+        assert!(!scheduler.keys.contains(&key));
+        assert!(scheduler.failures.is_empty());
     }
 }

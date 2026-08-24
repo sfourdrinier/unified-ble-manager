@@ -135,7 +135,8 @@ describe('IPC pre-registration stream buffering', () => {
       pendingIdCount: 0,
       pendingItemCount: 0,
       pendingByteCount: 0,
-      tombstoneCount: 0
+      tombstoneCount: 0,
+      activeStreamHandles: ['early-1']
     })
     await ipc.destroy()
   })
@@ -218,7 +219,109 @@ describe('IPC pre-registration stream buffering', () => {
       pendingIdCount: 0,
       pendingItemCount: 0,
       pendingByteCount: 0,
-      tombstoneCount: 0
+      tombstoneCount: 0,
+      activeStreamHandles: []
     })
+  })
+
+  test('tombstone registration does not retain the sink in the active map', async () => {
+    let now = 0
+    const { ipc, emit } = await createIpcHarness({ now: () => now })
+    emit('tomb-1', { kind: 'value', value: { seq: 1 } }, 'tomb-event')
+    await flushPump()
+    now = 5_001
+    const stream = ipc.registerStream('tomb-1', isRecord)
+    const accounting = inspectIpcPendingStreamAccountingForTests(ipc)
+    expect(accounting.activeStreamHandles).not.toContain('tomb-1')
+    expect(accounting.tombstoneCount).toBe(0)
+    const iterator = stream[Symbol.asyncIterator]()
+    await expect(iterator.next()).resolves.toMatchObject({
+      value: { kind: 'terminal', reason: 'source-failed' }
+    })
+    emit('tomb-1', { kind: 'value', value: { seq: 2 } }, 'tomb-late')
+    await flushPump()
+    await expect(iterator.next()).resolves.toMatchObject({ done: true })
+    await iterator.return()
+    await ipc.destroy()
+  })
+
+  test('repeated tombstone registration keeps active pending item and byte counts bounded', async () => {
+    let now = 0
+    const { ipc, emit } = await createIpcHarness({ now: () => now })
+    const count = 400
+    for (let index = 0; index < count; index += 1) {
+      emit(`tomb-repeat-${index}`, { kind: 'value', value: { index } }, `tomb-repeat-event-${index}`)
+      await new Promise(resolve => setImmediate(resolve))
+    }
+    now = 5_001
+    for (let index = 0; index < count; index += 1) {
+      const stream = ipc.registerStream(`tomb-repeat-${index}`, isRecord)
+      const iterator = stream[Symbol.asyncIterator]()
+      await iterator.return()
+    }
+    const accounting = inspectIpcPendingStreamAccountingForTests(ipc)
+    expect(accounting.pendingIdCount).toBeLessThanOrEqual(256)
+    expect(accounting.pendingItemCount).toBeLessThanOrEqual(512)
+    expect(accounting.pendingByteCount).toBeLessThanOrEqual(2 * 1024 * 1024)
+    expect(accounting.tombstoneCount).toBeLessThanOrEqual(256)
+    expect(accounting.activeStreamHandles.length).toBeLessThanOrEqual(256)
+    await ipc.destroy()
+  })
+
+  test('tombstone owner cleanup runs once and retains release failure for destroy', async () => {
+    let now = 0
+    const { ipc, emit } = await createIpcHarness({ now: () => now })
+    emit('tomb-owner', { kind: 'value', value: { seq: 1 } }, 'tomb-owner-event')
+    await flushPump()
+    now = 5_001
+    const ownerError = new Error('tombstone-owner-cleanup-failed')
+    const onTerminal = jest.fn(() => {
+      throw ownerError
+    })
+    const stream = ipc.registerStream('tomb-owner', isRecord, undefined, undefined, onTerminal)
+    expect(onTerminal).toHaveBeenCalledTimes(1)
+    emit('tomb-owner', { kind: 'value', value: { seq: 2 } }, 'tomb-owner-late')
+    await flushPump()
+    expect(onTerminal).toHaveBeenCalledTimes(1)
+    expect(inspectIpcPendingStreamAccountingForTests(ipc).activeStreamHandles).not.toContain('tomb-owner')
+    await stream[Symbol.asyncIterator]().return()
+    await expect(ipc.destroy()).rejects.toMatchObject({
+      errors: expect.arrayContaining([ownerError])
+    })
+  })
+
+  test('destroy after tombstone returns all IPC stream accounting to zero', async () => {
+    let now = 0
+    const { ipc, emit } = await createIpcHarness({ now: () => now })
+    emit('tomb-destroy', { kind: 'value', value: { seq: 1 } }, 'tomb-destroy-event')
+    await flushPump()
+    now = 5_001
+    const stream = ipc.registerStream('tomb-destroy', isRecord)
+    await stream[Symbol.asyncIterator]().return()
+    await ipc.destroy()
+    expect(inspectIpcPendingStreamAccountingForTests(ipc)).toEqual({
+      pendingIdCount: 0,
+      pendingItemCount: 0,
+      pendingByteCount: 0,
+      tombstoneCount: 0,
+      activeStreamHandles: []
+    })
+  })
+
+  test('non-evicted early events remain ordered and lossless', async () => {
+    const { ipc, emit } = await createIpcHarness()
+    emit('kept-1', { kind: 'value', value: { seq: 1 } }, 'kept-a')
+    emit('kept-1', { kind: 'value', value: { seq: 2 } }, 'kept-b')
+    emit('kept-1', { kind: 'value', value: { seq: 3 } }, 'kept-c')
+    await flushPump()
+    const stream = ipc.registerStream('kept-1', isRecord)
+    const iterator = stream[Symbol.asyncIterator]()
+    await expect(iterator.next()).resolves.toMatchObject({ value: { kind: 'value', value: { seq: 1 } } })
+    await expect(iterator.next()).resolves.toMatchObject({ value: { kind: 'value', value: { seq: 2 } } })
+    await expect(iterator.next()).resolves.toMatchObject({ value: { kind: 'value', value: { seq: 3 } } })
+    await iterator.return()
+    expect(inspectIpcPendingStreamAccountingForTests(ipc).activeStreamHandles).toEqual(['kept-1'])
+    ipc.closeStream('kept-1')
+    await ipc.destroy()
   })
 })

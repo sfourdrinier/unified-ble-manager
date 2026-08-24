@@ -86,6 +86,9 @@ export interface WebConnectionRecord {
   readonly disconnectWaiters: Set<() => void>
   database: WebGattDatabase | null
   valid: boolean
+  subscriptionReleased: boolean
+  physicalReleased: boolean
+  disconnectPromise: Promise<CleanupRecord> | null
 }
 
 export interface WebPendingConnection {

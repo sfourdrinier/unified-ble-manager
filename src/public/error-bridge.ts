@@ -1,6 +1,6 @@
 // src/public/error-bridge.ts — internal boundary between backend and application errors
 
-import { BackendContractError } from '../backend-contract/errors'
+import { BackendContractError, type CleanupFailure, type CleanupRecord } from '../backend-contract/errors'
 import { BleError } from './errors'
 
 export interface PublicCleanupRecord {
@@ -37,7 +37,26 @@ export function rehydratePublicPromise<Value>(operation: Promise<Value>): Promis
 
 interface CleanupResultLike {
   readonly state: 'released' | 'release-failed'
-  readonly failures: readonly unknown[]
+  readonly failures: PublicCleanupRecord['failures']
+}
+
+export function collectCleanupPhases(
+  results: readonly { readonly error?: unknown; readonly cleanup?: Pick<CleanupRecord, 'state' | 'failures'> }[]
+): CleanupRecord {
+  const thrown: unknown[] = []
+  const cleanupFailures: CleanupFailure[] = []
+  for (const result of results) {
+    if (result.error instanceof AggregateError) thrown.push(...result.error.errors)
+    else if (result.error !== undefined) thrown.push(result.error)
+    if (result.cleanup?.state === 'release-failed') cleanupFailures.push(...result.cleanup.failures)
+  }
+  const cleanup: CleanupRecord =
+    cleanupFailures.length === 0
+      ? { state: 'released', failures: [] }
+      : { state: 'release-failed', failures: cleanupFailures }
+  if (thrown.length === 0) return cleanup
+  const cleanupError = resolvedCleanupFailure(cleanup)
+  throw new AggregateError(cleanupError === null ? thrown : [...thrown, cleanupError], 'BLE cleanup failed')
 }
 
 export async function runWithCleanup<Value>(

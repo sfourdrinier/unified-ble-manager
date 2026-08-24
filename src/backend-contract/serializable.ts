@@ -15,6 +15,36 @@ interface SerializableValueSnapshot {
 }
 
 const textEncoder = new TextEncoder()
+const FORBIDDEN_SERIALIZABLE_KEYS = new Set<string>(['__proto__', 'constructor', 'prototype'])
+
+export function assertAllowedSerializableKey(key: string, domain: 'boundary' | 'ipc', operation: string): void {
+  if (FORBIDDEN_SERIALIZABLE_KEYS.has(key)) {
+    throw contractError('protocol.malformed', domain, operation)
+  }
+}
+
+export function assertSafeSerializablePrototype(value: object, domain: 'boundary' | 'ipc', operation: string): void {
+  const prototype = Object.getPrototypeOf(value)
+  if (prototype !== Object.prototype && prototype !== null) {
+    throw contractError('protocol.malformed', domain, operation)
+  }
+}
+
+export function createOwnedSerializableRecord<Value>(): Record<string, Value> {
+  const record: Record<string, Value> = Object.create(null)
+  return record
+}
+
+export function setOwnedSerializableEntry<Value>(
+  target: Record<string, Value>,
+  key: string,
+  value: Value,
+  domain: 'boundary' | 'ipc',
+  operation: string
+): void {
+  assertAllowedSerializableKey(key, domain, operation)
+  target[key] = value
+}
 
 /** Deep-copies a serializable record while measuring its deterministic wire-size budget. */
 export function snapshotSerializableRecord(record: SerializableRecord): SerializableSnapshot {
@@ -133,9 +163,10 @@ function snapshotRecord(record: SerializableRecord, activeObjects: WeakSet<objec
   if (activeObjects.has(record)) {
     throw contractError('protocol.malformed', 'boundary', 'serializable.snapshot.cycle')
   }
+  assertSafeSerializablePrototype(record, 'boundary', 'serializable.snapshot.prototype')
   activeObjects.add(record)
   try {
-    const result: { [key: string]: SerializableValue } = {}
+    const result = createOwnedSerializableRecord<SerializableValue>()
     let byteLength = 2
     let entryCount = 0
     for (const [key, value] of Object.entries(record)) {
@@ -143,7 +174,7 @@ function snapshotRecord(record: SerializableRecord, activeObjects: WeakSet<objec
       if (entryCount > 0) {
         byteLength += 1
       }
-      result[key] = valueSnapshot.value
+      setOwnedSerializableEntry(result, key, valueSnapshot.value, 'boundary', 'serializable.forbidden-key')
       byteLength += quotedStringByteLength(key) + 1 + valueSnapshot.byteLength
       entryCount += 1
     }

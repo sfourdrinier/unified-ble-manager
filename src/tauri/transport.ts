@@ -11,6 +11,11 @@ import type {
 import type { IpcClientLeaseIdentity } from '../backend-contract/ipc'
 import type { IpcClientBootstrap } from '../ipc/protocol'
 import type { SerializableRecord, SerializableValue } from '../backend-contract/primitives'
+import {
+  assertSafeSerializablePrototype,
+  createOwnedSerializableRecord,
+  setOwnedSerializableEntry
+} from '../backend-contract/serializable'
 import type {
   IpcBleEvent,
   IpcBleRequest,
@@ -183,9 +188,10 @@ export function encodeTauriWireValue(value: unknown): unknown {
     return value.map(item => encodeTauriWireValue(item))
   }
   if (isWireRecord(value)) {
-    const encoded: Record<string, unknown> = {}
+    assertSafeSerializablePrototype(value, 'ipc', 'tauri.transport.prototype')
+    const encoded = createOwnedSerializableRecord<unknown>()
     for (const [key, item] of Object.entries(value)) {
-      encoded[key] = encodeTauriWireValue(item)
+      setOwnedSerializableEntry(encoded, key, encodeTauriWireValue(item), 'ipc', 'tauri.transport.forbidden-key')
     }
     return encoded
   }
@@ -217,9 +223,10 @@ export function decodeTauriWireValue(value: unknown): unknown {
     }
     return new Uint8Array(bytes)
   }
-  const decoded: Record<string, unknown> = {}
+  assertSafeSerializablePrototype(value, 'ipc', 'tauri.transport.prototype')
+  const decoded = createOwnedSerializableRecord<unknown>()
   for (const [key, item] of Object.entries(value)) {
-    decoded[key] = decodeTauriWireValue(item)
+    setOwnedSerializableEntry(decoded, key, decodeTauriWireValue(item), 'ipc', 'tauri.transport.forbidden-key')
   }
   return decoded
 }
