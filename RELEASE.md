@@ -81,7 +81,7 @@ Active `4.0.0-rc.*` release-train candidates publish to npm `latest` so a bare `
 
 On release day, set `release_candidate` to the exact candidate required by the
 release plan. RC2, RC3, RC4, `4.0.0-rc.4.1`, and RC5 are already immutable
-once tagged. Stable `4.0.0` is the current train head after PR12.
+once tagged. Stable `4.0.0` is immutable. `4.0.1` is the current train head.
 
 ```sh
 release_candidate=4.0.0-rc.N
@@ -103,7 +103,15 @@ Do not push another commit to `main` between the final verification and the tag 
 
 ## Releasing 4.0.0
 
-The source version is prepared on `main` before the tag. The release workflow verifies that every initial release tag points at the exact current `main` commit before publication; do not create that tag from a side branch or an older commit.
+The first stable tag `v4.0.0` is immutable published history. Do not recreate or move it.
+
+```sh
+git tag -a v4.0.0 -m "v4.0.0"
+```
+
+## Releasing 4.0.1
+
+The source version is prepared on `main` before the tag. The release workflow verifies that every initial release tag points at the exact current `main` commit before publication; do not create that tag from a side branch or an older commit. Do not retag immutable `v4.0.0`.
 
 On release day:
 
@@ -113,12 +121,12 @@ git checkout main
 git pull --ff-only origin main
 
 test "$(git branch --show-current)" = "main"
-test "$(node -p "require('./package.json').version")" = "4.0.0"
+test "$(node -p "require('./package.json').version")" = "4.0.1"
 git diff --exit-code
 git diff --cached --exit-code
 
-git tag -a v4.0.0 -m "v4.0.0"
-git push origin v4.0.0
+git tag -a v4.0.1 -m "v4.0.1"
+git push origin v4.0.1
 ```
 
 Do not push another commit to `main` between the final verification and the tag push.
