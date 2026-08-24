@@ -27,6 +27,8 @@ use crate::ATTACH_REQUEST_KIND;
 use crate::{AuthenticatedCaller, DispatchFuture, IpcDispatcher, IpcEventSink, IpcValue};
 
 const MAX_PENDING_EVENTS: usize = 256;
+const MAX_CORRELATIONS: usize = 256;
+const COMPLETED_CORRELATION_TTL: Duration = Duration::from_secs(30);
 const SCAN_POLL_INTERVAL: Duration = Duration::from_millis(250);
 
 fn btleplug_runtime() -> tokio::runtime::Handle {
@@ -102,6 +104,7 @@ struct CallerState {
     subscriptions: HashMap<String, SubscriptionResource>,
     connection_events: HashMap<String, ConnectionEventResource>,
     operations: HashMap<String, CancellationToken>,
+    completed_correlations: HashMap<String, Instant>,
     pending_events: HashSet<String>,
 }
 
@@ -360,6 +363,7 @@ impl BtleplugDispatcher {
                 subscriptions: HashMap::new(),
                 connection_events: HashMap::new(),
                 operations: HashMap::new(),
+                completed_correlations: HashMap::new(),
                 pending_events: HashSet::new(),
             },
         );
@@ -462,13 +466,12 @@ impl BtleplugDispatcher {
             let caller_state = state.callers.get_mut(&caller_key(&caller)).ok_or_else(|| {
                 DispatchError::new("ownership.denied", "ipc", "tauri.route-owner")
             })?;
-            if caller_state.operations.contains_key(&correlation) {
-                return Err(DispatchError::new(
-                    "protocol.violation",
-                    "ipc",
-                    "tauri.correlation-replay",
-                ));
-            }
+            admit_caller_correlation(
+                &caller_state.operations,
+                &mut caller_state.completed_correlations,
+                &correlation,
+                Instant::now(),
+            )?;
             caller_state
                 .operations
                 .insert(correlation.clone(), cancellation.clone());
@@ -523,7 +526,12 @@ impl BtleplugDispatcher {
                     && caller_state.lease_generation == expected_lease.1
             })
         {
-            caller_state.operations.remove(&correlation);
+            remember_completed_correlation(
+                &mut caller_state.operations,
+                &mut caller_state.completed_correlations,
+                correlation,
+                Instant::now(),
+            );
         }
         result.map(route_response)
     }
@@ -2785,6 +2793,45 @@ impl IpcDispatcher for BtleplugDispatcher {
     }
 }
 
+fn prune_completed_correlations(completed: &mut HashMap<String, Instant>, now: Instant) {
+    completed
+        .retain(|_, completed_at| now.duration_since(*completed_at) < COMPLETED_CORRELATION_TTL);
+}
+
+fn admit_caller_correlation(
+    operations: &HashMap<String, CancellationToken>,
+    completed: &mut HashMap<String, Instant>,
+    correlation: &str,
+    now: Instant,
+) -> Result<(), DispatchError> {
+    prune_completed_correlations(completed, now);
+    if operations.contains_key(correlation) || completed.contains_key(correlation) {
+        return Err(DispatchError::new(
+            "protocol.violation",
+            "ipc",
+            "tauri.correlation-replay",
+        ));
+    }
+    if operations.len() + completed.len() >= MAX_CORRELATIONS {
+        return Err(DispatchError::new(
+            "protocol.violation",
+            "ipc",
+            "tauri.correlation-window",
+        ));
+    }
+    Ok(())
+}
+
+fn remember_completed_correlation(
+    operations: &mut HashMap<String, CancellationToken>,
+    completed: &mut HashMap<String, Instant>,
+    correlation: String,
+    now: Instant,
+) {
+    operations.remove(&correlation);
+    completed.insert(correlation, now);
+}
+
 fn required_lease(
     request: &BTreeMap<String, IpcValue>,
     operation: &'static str,
@@ -3990,5 +4037,122 @@ mod tests {
                 )
             ]))
         );
+    }
+
+    #[test]
+    fn completed_correlation_replay_is_protocol_violation() {
+        let operations = std::collections::HashMap::new();
+        let mut completed = std::collections::HashMap::new();
+        let now = std::time::Instant::now();
+        super::remember_completed_correlation(
+            &mut std::collections::HashMap::new(),
+            &mut completed,
+            "c1".to_owned(),
+            now,
+        );
+        let error = super::admit_caller_correlation(&operations, &mut completed, "c1", now)
+            .expect_err("completed correlation replay must fail");
+        assert_eq!(error.code, "protocol.violation");
+        assert_eq!(error.operation, "tauri.correlation-replay");
+    }
+
+    #[test]
+    fn completed_scan_and_subscribe_correlations_are_also_rejected() {
+        let operations = std::collections::HashMap::new();
+        let mut completed = std::collections::HashMap::new();
+        let now = std::time::Instant::now();
+        for correlation in ["scan-c1", "subscribe-c1"] {
+            completed.insert(correlation.to_owned(), now);
+            let error =
+                super::admit_caller_correlation(&operations, &mut completed, correlation, now)
+                    .expect_err("completed scan/subscribe replay must fail");
+            assert_eq!(error.operation, "tauri.correlation-replay");
+        }
+    }
+
+    #[test]
+    fn in_flight_duplicate_correlation_is_still_rejected() {
+        let mut operations = std::collections::HashMap::new();
+        operations.insert("c1".to_owned(), tokio_util::sync::CancellationToken::new());
+        let mut completed = std::collections::HashMap::new();
+        let error = super::admit_caller_correlation(
+            &operations,
+            &mut completed,
+            "c1",
+            std::time::Instant::now(),
+        )
+        .expect_err("in-flight duplicate must fail");
+        assert_eq!(error.operation, "tauri.correlation-replay");
+    }
+
+    #[test]
+    fn new_correlation_on_same_lease_succeeds() {
+        let operations = std::collections::HashMap::new();
+        let mut completed = std::collections::HashMap::new();
+        let now = std::time::Instant::now();
+        completed.insert("c1".to_owned(), now);
+        super::admit_caller_correlation(&operations, &mut completed, "c2", now)
+            .expect("a fresh correlation must admit");
+    }
+
+    #[test]
+    fn replay_set_cleared_on_lease_drop() {
+        let mut completed = std::collections::HashMap::new();
+        completed.insert("c1".to_owned(), std::time::Instant::now());
+        drop(completed);
+        let mut completed = std::collections::HashMap::new();
+        super::admit_caller_correlation(
+            &std::collections::HashMap::new(),
+            &mut completed,
+            "c1",
+            std::time::Instant::now(),
+        )
+        .expect("a new lease must not inherit the prior replay window");
+    }
+
+    #[test]
+    fn expired_completed_correlation_leaves_the_replay_window_after_30_seconds() {
+        let operations = std::collections::HashMap::new();
+        let mut completed = std::collections::HashMap::new();
+        let now = std::time::Instant::now();
+        completed.insert("c1".to_owned(), now - std::time::Duration::from_secs(31));
+        super::admit_caller_correlation(&operations, &mut completed, "c1", now)
+            .expect("expired completed correlations must leave the window");
+        assert!(!completed.contains_key("c1"));
+    }
+
+    #[test]
+    fn full_replay_window_rejects_new_work_without_evicting_a_live_tombstone() {
+        let operations = std::collections::HashMap::new();
+        let mut completed = std::collections::HashMap::new();
+        let now = std::time::Instant::now();
+        for index in 0..super::MAX_CORRELATIONS {
+            completed.insert(format!("c{index}"), now);
+        }
+        let error = super::admit_caller_correlation(&operations, &mut completed, "fresh", now)
+            .expect_err("a full window must reject new work");
+        assert_eq!(error.operation, "tauri.correlation-window");
+        assert_eq!(completed.len(), super::MAX_CORRELATIONS);
+        assert!(completed.contains_key("c0"));
+    }
+
+    #[test]
+    fn in_flight_plus_completed_correlations_never_exceed_256() {
+        let mut operations = std::collections::HashMap::new();
+        let mut completed = std::collections::HashMap::new();
+        let now = std::time::Instant::now();
+        for index in 0..200 {
+            completed.insert(format!("done-{index}"), now);
+        }
+        for index in 0..56 {
+            operations.insert(
+                format!("live-{index}"),
+                tokio_util::sync::CancellationToken::new(),
+            );
+        }
+        let error = super::admit_caller_correlation(&operations, &mut completed, "overflow", now)
+            .expect_err("in-flight plus completed must stay within 256");
+        assert_eq!(error.operation, "tauri.correlation-window");
+        assert_eq!(operations.len() + completed.len(), super::MAX_CORRELATIONS);
     }
 }
