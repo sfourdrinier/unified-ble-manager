@@ -10,11 +10,11 @@ const path = require('path')
 const root = path.join(__dirname, '..')
 const read = relativePath => fs.readFileSync(path.join(root, relativePath), 'utf8').replace(/\r\n/g, '\n')
 const packageVersion = JSON.parse(read('package.json')).version
-const stable40 = packageVersion === '4.0.0'
+const stable40 = /^4\.0\.\d+$/u.test(packageVersion)
 const rcVersionMatch = /^4\.0\.0-rc\.\d+(?:\.\d+)?$/u.exec(packageVersion)
 const alphaVersionMatch = /^4\.0\.0-alpha\.(\d+)$/u.exec(packageVersion)
 if (!stable40 && rcVersionMatch === null && alphaVersionMatch === null) {
-  throw new Error(`Expected 4.0.0, a 4.0 RC, or a 4.0 alpha package version, received ${packageVersion}`)
+  throw new Error(`Expected a 4.0.x stable, a 4.0 RC, or a 4.0 alpha package version, received ${packageVersion}`)
 }
 const currentAlpha = alphaVersionMatch === null ? null : Number(alphaVersionMatch[1])
 const previousAlphaVersion = currentAlpha === null ? null : `v4.0.0-alpha.${String(currentAlpha - 1)}`
@@ -71,7 +71,7 @@ const deletedTransitionalAdrs = [
 describe('consumer documentation matches the published package', () => {
   test('current public documentation follows the package release channel', () => {
     if (stable40 || rcVersionMatch) {
-      expect(packageVersion).toMatch(/^4\.0\.0(?:-rc\.\d+(?:\.\d+)?)?$/u)
+      expect(packageVersion).toMatch(/^4\.0\.\d+(?:-rc\.\d+(?:\.\d+)?)?$/u)
       return
     }
     for (const document of architectureAuthorityDocuments) {
@@ -337,7 +337,7 @@ describe('consumer documentation matches the published package', () => {
     expect(readme).toContain(packageVersion)
     expect(readme).not.toContain('4.0.0 is the first stable release')
     expect(readme).toContain('pnpm add unified-ble-manager')
-    expect(readme).not.toContain('pnpm add unified-ble-manager@4.0.0')
+    expect(readme).not.toContain(`pnpm add unified-ble-manager@${packageVersion}`)
     expect(changelog).toContain('## [4.0.0-rc.0]')
     expect(history).toContain('## [4.0.0-alpha.40]')
     expect(readme).toContain('createReactNativeBleManager')
@@ -365,7 +365,7 @@ describe('consumer documentation matches the published package', () => {
     expect(release).toContain('npm trusted publishing/OIDC')
     expect(release).toContain('publishes with provenance')
     expect(platforms).toContain(
-      '`unified-ble-manager@4.0.0` is the published **stable package/API** for the 4.x contract; it is immutable. Backend support labels remain evidence-derived and independent of this SemVer'
+      `\`unified-ble-manager@${packageVersion}\` is the published **stable package/API** for the 4.x contract; it is immutable. Backend support labels remain evidence-derived and independent of this SemVer`
     )
     expect(platforms).toContain(
       'WinRT compilation or ABI loading, for example, is not by itself a Windows live-radio claim'

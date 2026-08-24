@@ -8,9 +8,9 @@ This page is an evidence index, not a static compatibility matrix. An applicatio
 
 ## Package stability and backend support are separate
 
-`unified-ble-manager@4.0.0` is the published **stable package/API** for the 4.x contract; it is immutable. Backend support labels remain evidence-derived and independent of this SemVer.
+`unified-ble-manager@4.0.1` is the published **stable package/API** for the 4.x contract; it is immutable. Backend support labels remain evidence-derived and independent of this SemVer. Immutable `4.0.0` remains published history.
 
-This release candidate is the portable API/semantics freeze candidate; it does **not** mean every first-party backend is
+This package is the portable API/semantics freeze; it does **not** mean every first-party backend is
 automatically Preview, Supported, or Reliability-qualified.
 
 Backend support labels remain derived from retained evidence. A backend can therefore be Experimental while the host-neutral package is stable. Conversely, deterministic, compile, ABI, or package proof cannot be relabeled as live-radio evidence merely because the package version no longer has a prerelease suffix.
