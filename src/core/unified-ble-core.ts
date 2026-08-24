@@ -158,7 +158,6 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
       backend: construction.attachedBackend.backend,
       attachmentId: construction.attachedBackend.attachment.attachment.attachmentId,
       idFactory: {
-        peerId: value => this.requireIdFactory().peerId(value),
         clientId: value => this.requireIdFactory().clientId(value),
         managerId: value => this.requireIdFactory().managerId(value),
         connectionId: value => this.requireIdFactory().connectionId(value),

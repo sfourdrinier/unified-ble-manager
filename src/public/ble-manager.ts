@@ -5,7 +5,7 @@ import type { ScanOptions as InternalScanOptions } from '../backend-contract/adv
 import type { ConnectionLifecycleCause, ConnectionLifecycleEvent } from '../backend-contract/connection-lifecycle'
 import { contractError, type CleanupRecord } from '../backend-contract/errors'
 import type { BackendIdentity } from '../backend-contract/identity'
-import { capacity, canonicalUuid, createAttachmentBoundIdFactory } from '../backend-contract/primitives'
+import { capacity, canonicalUuid, createAttachmentBoundPeerId } from '../backend-contract/primitives'
 import type { PeerId } from '../backend-contract/primitives'
 import type { BleManager as InternalBleManager } from '../manager/ble-manager'
 import type { BleManagerOptions } from '../manager/ble-manager'
@@ -1281,14 +1281,14 @@ function createInternalPeerIdAuthority<Attachment extends string, Identity exten
 ): ((value: string) => PeerId<Attachment>) | null {
   if (!('identity' in internal) || internal.identity === undefined || internal.identity === null) return null
   const attachment = internal.identity.attachment
-  const identifiers = createAttachmentBoundIdFactory({
+  const binding = {
     attachmentId: attachment.attachmentId,
     backendInstanceId: attachment.backendInstanceId,
     backendGeneration: attachment.backendGeneration,
     adapterId: attachment.adapter.adapterId,
     adapterGeneration: attachment.adapter.adapterGeneration
-  })
-  return value => identifiers.peerId(value)
+  }
+  return value => createAttachmentBoundPeerId(binding, value)
 }
 
 class PublicBleManager<Attachment extends string, Identity extends BackendIdentity<Attachment>> implements BleManager {

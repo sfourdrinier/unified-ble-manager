@@ -20,9 +20,26 @@ test('projects a lightweight manager with an explicit peer-id authority', async 
     scan: jest.fn()
   }
   const manager = await createPublicBleManager(internal, () => 0, {
-    peerId: value => opaqueId(value, 'peer', 'public-manager-test')
+    peerId: () => opaqueId('sentinel-peer-id', 'peer', 'public-manager-test')
   })
 
   await expect(manager.connect('peer-1')).resolves.toMatchObject({ peer: { id: 'peer-1' } })
   expect(connect).toHaveBeenCalledTimes(1)
+  expect(connect.mock.calls[0][0]).toBe('sentinel-peer-id')
+})
+
+test('fails closed when a supported direct manager has no peer-id authority', async () => {
+  const connect = jest.fn()
+  const internal = {
+    supports: id => id === 'connection:direct',
+    capability: id => (id === 'connection:direct' ? { id, state: 'supported' } : null),
+    capabilities: () => [],
+    connect,
+    destroy: async () => ({ state: 'released', failures: [] }),
+    scan: jest.fn()
+  }
+  const manager = await createPublicBleManager(internal, () => 0)
+
+  await expect(manager.connect('peer-1')).rejects.toMatchObject({ code: 'capability.unavailable' })
+  expect(connect).not.toHaveBeenCalled()
 })

@@ -146,7 +146,6 @@ export interface AttachmentBinding<Attachment extends string> {
   readonly adapterGeneration: GenerationId<'adapter-generation', Attachment>
 }
 export interface AttachmentBoundIdFactory<Attachment extends string> {
-  peerId(value: string): PeerId<Attachment>
   clientId(value: string): ClientId<Attachment, string>
   managerId(value: string): ManagerId<Attachment, string>
   connectionId(value: string): ConnectionId<Attachment, string>
@@ -210,12 +209,20 @@ function attachmentScope<Attachment extends string>(binding: AttachmentBinding<A
   }
   return values.map(value => String(value)).join(':')
 }
+
+/** Creates a peer identifier using the same attachment-bound scope as other runtime identifiers. */
+export function createAttachmentBoundPeerId<Attachment extends string>(
+  binding: AttachmentBinding<Attachment>,
+  value: string
+): PeerId<Attachment> {
+  return runtimeScopedOpaqueId<'peer', Attachment>(value, 'peer', attachmentScope(binding))
+}
+
 export function createAttachmentBoundIdFactory<Attachment extends string>(
   binding: AttachmentBinding<Attachment>
 ): AttachmentBoundIdFactory<Attachment> {
   const scope = attachmentScope(binding)
   return {
-    peerId: value => runtimeScopedOpaqueId<'peer', Attachment>(value, 'peer', scope),
     clientId: value => runtimeScopedOpaqueId<'client', `${Attachment}:${string}`>(value, 'client', scope),
     managerId: value => runtimeScopedOpaqueId<'manager', `${Attachment}:${string}`>(value, 'manager', scope),
     connectionId: value => runtimeScopedOpaqueId<'connection', `${Attachment}:${string}`>(value, 'connection', scope),

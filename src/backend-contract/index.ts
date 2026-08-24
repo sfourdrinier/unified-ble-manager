@@ -282,6 +282,7 @@ export {
   byteLimit,
   assertCoreVersionsAccepted,
   canonicalUuid,
+  createAttachmentBoundPeerId,
   capacity,
   createAttachmentBoundIdFactory,
   createIpcOperationIdFactory,
