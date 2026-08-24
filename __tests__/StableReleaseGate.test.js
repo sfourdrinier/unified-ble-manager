@@ -8,7 +8,7 @@ const path = require('path')
 const crypto = require('crypto')
 const zlib = require('zlib')
 const { spawnSync } = require('child_process')
-const { canonicalJson } = require('../scripts/evidence/evidence-command-receipt')
+const { canonicalJson, receiptDigest } = require('../scripts/evidence/evidence-command-receipt')
 
 const repositoryRoot = path.resolve(__dirname, '..')
 const evidenceFixtureDirectory = path.join(repositoryRoot, 'evidence', 'v1', 'fixtures')
@@ -38,6 +38,49 @@ function clone(value) {
 
 function sha256(bytes) {
   return crypto.createHash('sha256').update(bytes).digest('hex')
+}
+
+function shiftIsoTimestamp(value, deltaMs) {
+  if (typeof value !== 'string') return value
+  const parsed = Date.parse(value)
+  if (Number.isNaN(parsed)) return value
+  return new Date(parsed + deltaMs).toISOString()
+}
+
+function shiftTimestampFields(value, deltaMs) {
+  if (Array.isArray(value)) {
+    value.forEach(entry => shiftTimestampFields(entry, deltaMs))
+    return
+  }
+  if (value === null || typeof value !== 'object') return
+  for (const [key, entry] of Object.entries(value)) {
+    if (typeof entry === 'string' && /At$/u.test(key)) value[key] = shiftIsoTimestamp(entry, deltaMs)
+    else shiftTimestampFields(entry, deltaMs)
+  }
+}
+
+function refreshSyntheticEvidenceWindow(records, root, now = Date.now()) {
+  if (records.length === 0) return
+  const capturedAt = Date.parse(records[0].execution.capturedAt)
+  const targetCapturedAt = now - 60_000
+  const deltaMs = targetCapturedAt - capturedAt
+  if (deltaMs === 0) return
+  const rewrittenReceipts = new Set()
+  for (const record of records) {
+    shiftTimestampFields(record, deltaMs)
+    for (const artifact of record.artifacts) {
+      if (artifact.artifactType !== 'command-receipt') continue
+      const file = path.join(root, artifact.path)
+      if (!rewrittenReceipts.has(file)) {
+        const receipt = JSON.parse(fs.readFileSync(file, 'utf8'))
+        shiftTimestampFields(receipt, deltaMs)
+        receipt.receiptSha256 = receiptDigest(receipt)
+        fs.writeFileSync(file, `${JSON.stringify(receipt, null, 2)}\n`)
+        rewrittenReceipts.add(file)
+      }
+      artifact.sha256 = sha256(fs.readFileSync(file))
+    }
+  }
 }
 
 function writeJson(file, value) {
@@ -180,6 +223,7 @@ function createCompleteStableFixture() {
     record.source.commit = sourceCommit
     return record
   })
+  refreshSyntheticEvidenceWindow(records, root)
   const release = {
     $schema: 'evidence/v1/schema/stable-release.schema.json',
     schema: { id: 'unified-ble-manager/stable-release', version: '1.0.0' },
@@ -352,6 +396,14 @@ describe('stable release evidence gate', () => {
   test('accepts only a complete, source-bound synthetic stable release collection', () => {
     const fixture = createCompleteStableFixture()
     try {
+      const fixtureDueAt = Date.parse(
+        readJson('evidence/v1/fixtures/valid-live-preview-l4.json').ownership.revalidation.nextDueAt
+      )
+      expect(Date.parse(fixture.records[0].ownership.revalidation.nextDueAt)).toBeGreaterThan(Date.now())
+      expect(Date.parse(fixture.records[0].execution.capturedAt)).toBeLessThanOrEqual(Date.now())
+      if (fixtureDueAt < Date.now()) {
+        expect(Date.parse(fixture.records[0].ownership.revalidation.nextDueAt)).toBeGreaterThan(fixtureDueAt)
+      }
       expect(
         validateStableRelease(fixture.release, fixture.records, fixture.root, verificationContext(fixture))
       ).toEqual([])
