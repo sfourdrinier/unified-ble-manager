@@ -148,9 +148,7 @@ export function deterministicResourceCounters(input: {
   readonly connections: ReadonlyMap<string, ConnectionRecord>
   readonly physicalSubscriptions: ReadonlyMap<string, PhysicalSubscription>
   readonly operation: DeterministicOperationRuntimeSnapshot
-  readonly eventStreams: ReadonlySet<
-    DeterministicBoundedStream<import('../../backend-contract/backend').BackendEvent<string>>
-  >
+  readonly eventStreams: ReadonlySet<{ retainedBytes(): number }>
   readonly retainedOperationBytes: number
   readonly securityReservedBytes: number
 }): ResourceCounters {

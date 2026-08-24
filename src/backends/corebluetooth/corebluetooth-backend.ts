@@ -286,10 +286,7 @@ export interface BackendStreamOwnershipSnapshot {
   readonly eventStreams: number
 }
 
-const coreBluetoothStreamOwnershipInspectors = new WeakMap<
-  CoreBluetoothBackend,
-  () => BackendStreamOwnershipSnapshot
->()
+const coreBluetoothStreamOwnershipInspectors = new WeakMap<CoreBluetoothBackend, () => BackendStreamOwnershipSnapshot>()
 
 export function inspectCoreBluetoothStreamOwnershipForTests(
   backend: CoreBluetoothBackend

@@ -58,7 +58,7 @@ import {
   type ScanShareToken,
   type Uuid
 } from '../../backend-contract/primitives'
-import type { BoundedAsyncStream, OverflowPolicy, StreamLimits } from '../../backend-contract/streams'
+import type { BoundedAsyncStream } from '../../backend-contract/streams'
 import { CoreBoundedStream, type CoreStreamTerminalReason } from '../../core/bounded-stream'
 import { OwnedCoreBoundedStream } from '../../core/owned-bounded-stream'
 import {
@@ -165,8 +165,6 @@ function pendingWinRtConnectionCleanup(operation = 'winrt.connection.dispatcher-
 function pendingWinRtOperationCleanup(operation: string): CleanupRecord {
   return timedOutWinRtCleanup('operation-quarantine', operation)
 }
-
-
 
 export interface WinRtScanConsumer {
   readonly scanSessionId: ScanSessionId<string, string>
