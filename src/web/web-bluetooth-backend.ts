@@ -614,19 +614,6 @@ export class WebBluetoothBackend
     return failures.length === 0 ? RELEASED : { state: 'release-failed', failures }
   }
 
-  private async releaseRetainedConnection(record: WebConnectionRecord): Promise<CleanupRecord> {
-    try {
-      if (record.device.gatt.connected) {
-        record.device.gatt.disconnect()
-      }
-      this.retainedConnections.delete(record)
-      return RELEASED
-    } catch (error) {
-      console.error('[WebBluetoothBackend.releaseRetainedConnection] Browser disconnect retry failed:', error)
-      return webCleanupFailure('connection', 'web-connection.retained-disconnect')
-    }
-  }
-
   private createAttachmentRecord(available: boolean): AttachmentRecord<string> {
     const generation = opaqueId(
       `web-backend-generation-${this.backendInstance}-${this.attachmentGeneration}`,
