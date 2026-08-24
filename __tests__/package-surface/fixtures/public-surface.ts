@@ -145,6 +145,7 @@ import {
   capacity,
   createBleManager,
   createManagerOwnershipAuthority,
+  createPublicBleManagerFacade,
   deadline,
   defaultScanDelivery,
   scanForServices,
@@ -276,6 +277,7 @@ declare const backendAuthor: BackendAuthoringDefinition<
   BleCentralBackend<string, HostNeutralBackendIdentity<string>>
 >
 declare const deterministicFixture: DeterministicBackendFixture
+declare const customAdvancedManager: BleManager<'custom-backend', HostNeutralBackendIdentity<'custom-backend'>>
 declare const firstPartyRegistry: FirstPartyBackendTckRegistry
 declare const bluezFirstPartyTckOptions: BluezFirstPartyTckRegistrationOptions
 declare const deterministicBluezTckBoundary: DeterministicBluezTckBoundary
@@ -853,6 +855,7 @@ observe(scopedLongWriteTerminal.correlation)
 observe(normalizedError)
 observe(backendAuthor)
 observe(deterministicFixture)
+observe(createPublicBleManagerFacade(customAdvancedManager, () => 0))
 observe(firstPartyRegistry)
 observe(deterministicBluezTckBoundary)
 observe(bluezNotificationInput)

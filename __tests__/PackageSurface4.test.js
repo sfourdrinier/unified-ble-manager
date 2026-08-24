@@ -71,6 +71,7 @@ describe('4.0 public package surface', () => {
     expect(typeof advanced.BleManager).toBe('function')
     expect(typeof advanced.createBleManager).toBe('function')
     expect(typeof advanced.attachBleBackend).toBe('function')
+    expect(typeof advanced.createPublicBleManagerFacade).toBe('function')
     // Both resolve to same underlying implementation (source vs built); check name/type not strict identity across build boundary.
     expect(typeof manager.BleManager).toBe('function')
     expect(manager.BleManager.name).toBe(advanced.BleManager.name)

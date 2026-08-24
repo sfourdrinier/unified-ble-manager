@@ -5,7 +5,7 @@ import type { ScanOptions as InternalScanOptions } from '../backend-contract/adv
 import type { ConnectionLifecycleCause, ConnectionLifecycleEvent } from '../backend-contract/connection-lifecycle'
 import { contractError, type CleanupRecord } from '../backend-contract/errors'
 import type { BackendIdentity } from '../backend-contract/identity'
-import { capacity, canonicalUuid, opaqueId } from '../backend-contract/primitives'
+import { capacity, canonicalUuid, createAttachmentBoundIdFactory } from '../backend-contract/primitives'
 import type { BleManager as InternalBleManager } from '../manager/ble-manager'
 import type { BleManagerOptions } from '../manager/ble-manager'
 import type { BoundedAsyncStream } from '../backend-contract/streams'
@@ -58,6 +58,11 @@ import {
 } from '../backend-contract/connection-controls'
 
 export type { ConnectionPriority } from '../backend-contract/connection-controls'
+
+type PublicInternalManager<
+  Attachment extends string,
+  Identity extends BackendIdentity<Attachment>
+> = InternalBleManager<Attachment, Identity>
 
 export type GattSubscriptionValue = GattValueEvent
 export type ConnectionIntent = 'direct' | 'when-available'
@@ -420,8 +425,8 @@ interface PublicScanDeadlineHandle {
 
 type InternalScanScheduler = (deadline: number, action: () => void) => PublicScanDeadlineHandle
 
-function scheduleInternalScanDeadline(
-  internal: InternalBleManager<string, BackendIdentity<string>>,
+function scheduleInternalScanDeadline<Attachment extends string, Identity extends BackendIdentity<Attachment>>(
+  internal: PublicInternalManager<Attachment, Identity>,
   deadline: number,
   action: () => void
 ): PublicScanDeadlineHandle {
@@ -502,7 +507,7 @@ class PublicScanEventBroadcast implements AsyncIterable<DiscoveryEvent> {
   }
 }
 
-class PublicScanSessionController {
+class PublicScanSessionController<Attachment extends string> {
   readonly observations: BoundedAsyncStream<PublicScanObservation>
   readonly events: AsyncIterable<DiscoveryEvent>
   private readonly observationStream: CoreBoundedStream<PublicScanObservation>
@@ -511,12 +516,13 @@ class PublicScanSessionController {
   private presenceBytes = 0
   private readonly lastObservationFingerprints = new Map<string, PublicScanFingerprint>()
   private fingerprintBytes = 0
-  private sourceIterator: BoundedAsyncStreamIterator<AdvertisementObservation<string> | IpcAdvertisement> | null = null
+  private sourceIterator: BoundedAsyncStreamIterator<AdvertisementObservation<Attachment> | IpcAdvertisement> | null =
+    null
   private pumpStarted = false
   private closed = false
 
   constructor(
-    private readonly source: BoundedAsyncStream<AdvertisementObservation<string> | IpcAdvertisement>,
+    private readonly source: BoundedAsyncStream<AdvertisementObservation<Attachment> | IpcAdvertisement>,
     private readonly query: ReturnType<typeof normalizeScanQuery>,
     private readonly duplicates: 'coalesced' | 'all',
     delivery: StreamBudget,
@@ -567,7 +573,7 @@ class PublicScanSessionController {
   }
 
   private async pump(
-    iterator: BoundedAsyncStreamIterator<AdvertisementObservation<string> | IpcAdvertisement>
+    iterator: BoundedAsyncStreamIterator<AdvertisementObservation<Attachment> | IpcAdvertisement>
   ): Promise<void> {
     try {
       while (!this.closed) {
@@ -592,7 +598,7 @@ class PublicScanSessionController {
     }
   }
 
-  private accept(raw: AdvertisementObservation<string> | IpcAdvertisement): void {
+  private accept(raw: AdvertisementObservation<Attachment> | IpcAdvertisement): void {
     const observation = projectPublicScanObservation(raw)
     if (!observationMatchesScanQuery(this.query, observation)) return
 
@@ -753,9 +759,11 @@ class PublicScanSessionController {
   }
 }
 
-type InternalPublicConnection = Awaited<ReturnType<InternalBleManager<string, BackendIdentity<string>>['connect']>>
+type InternalPublicConnection<Attachment extends string, Identity extends BackendIdentity<Attachment>> = Awaited<
+  ReturnType<PublicInternalManager<Attachment, Identity>['connect']>
+>
 
-interface OptionalInternalControlConnection {
+interface OptionalInternalControlConnection<Attachment extends string> {
   readonly effectiveMtu?: () => Promise<{
     readonly connectionId: string
     readonly connectionGeneration: string
@@ -764,15 +772,18 @@ interface OptionalInternalControlConnection {
     readonly platformPduBytes: number | null
     readonly observedAtMonotonicMs?: number
   }>
-  readonly writeWithoutResponseReadiness?: () => Promise<ConnectionWriteReadinessWatch<string>>
+  readonly writeWithoutResponseReadiness?: () => Promise<ConnectionWriteReadinessWatch<Attachment>>
 }
 
-type PublicControlConnection = InternalPublicConnection & OptionalInternalControlConnection
+type PublicControlConnection<
+  Attachment extends string,
+  Identity extends BackendIdentity<Attachment>
+> = InternalPublicConnection<Attachment, Identity> & OptionalInternalControlConnection<Attachment>
 
-function controlMetadata(
+function controlMetadata<Attachment extends string, Identity extends BackendIdentity<Attachment>>(
   generation: string,
   now: number,
-  descriptor: ReturnType<InternalBleManager<string, BackendIdentity<string>>['capability']>,
+  descriptor: ReturnType<PublicInternalManager<Attachment, Identity>['capability']>,
   authority: string
 ): BleControlObservationMetadata {
   return Object.freeze({
@@ -804,8 +815,8 @@ function assertPublicConnectionIdentity(
   }
 }
 
-function requireControlCapability(
-  internal: Pick<InternalBleManager<string, BackendIdentity<string>>, 'capability'>,
+function requireControlCapability<Attachment extends string, Identity extends BackendIdentity<Attachment>>(
+  internal: Pick<PublicInternalManager<Attachment, Identity>, 'capability'>,
   id: `${string}:${string}`,
   operation: string
 ) {
@@ -834,15 +845,15 @@ function unsupportedControlStream<Value>(
   return new UnsupportedControlStream(operation, code)
 }
 
-function publicWriteReadinessStream(
-  connection: PublicControlConnection,
+function publicWriteReadinessStream<Attachment extends string, Identity extends BackendIdentity<Attachment>>(
+  connection: PublicControlConnection<Attachment, Identity>,
   generation: string,
-  descriptor: ReturnType<InternalBleManager<string, BackendIdentity<string>>['capability']>
+  descriptor: ReturnType<PublicInternalManager<Attachment, Identity>['capability']>
 ): AsyncIterable<WriteReadinessEvent> {
   return {
     [Symbol.asyncIterator](): AsyncIterator<WriteReadinessEvent> {
-      let watch: ConnectionWriteReadinessWatch<string> | null = null
-      let iterator: BoundedAsyncStreamIterator<ConnectionWriteReadinessObservation<string>> | null = null
+      let watch: ConnectionWriteReadinessWatch<Attachment> | null = null
+      let iterator: BoundedAsyncStreamIterator<ConnectionWriteReadinessObservation<Attachment>> | null = null
       let closed = false
       let iteratorDone = false
       let teardownAttempted = false
@@ -940,8 +951,8 @@ function publicWriteReadinessStream(
   }
 }
 
-async function closePublicReadinessWatch(
-  iterator: BoundedAsyncStreamIterator<ConnectionWriteReadinessObservation<string>>,
+async function closePublicReadinessWatch<Attachment extends string>(
+  iterator: BoundedAsyncStreamIterator<ConnectionWriteReadinessObservation<Attachment>>,
   close: () => Promise<CleanupRecord>,
   iteratorDone: boolean
 ): Promise<void> {
@@ -1000,9 +1011,9 @@ class UnsupportedControlIterator<Value> implements AsyncIterator<Value> {
   }
 }
 
-function createPublicConnectionControls(
-  internal: Pick<InternalBleManager<string, BackendIdentity<string>>, 'capability'>,
-  connection: PublicControlConnection,
+function createPublicConnectionControls<Attachment extends string, Identity extends BackendIdentity<Attachment>>(
+  internal: Pick<PublicInternalManager<Attachment, Identity>, 'capability'>,
+  connection: PublicControlConnection<Attachment, Identity>,
   generation: string,
   now: () => number
 ): BleConnectionControls {
@@ -1254,27 +1265,27 @@ function createPublicConnectionControls(
 }
 
 // Internal factory used by host entrypoints. Hosts derive identity and call this.
-export async function createPublicBleManager(
-  internal: InternalBleManager<string, BackendIdentity<string>>,
+export async function createPublicBleManager<Attachment extends string, Identity extends BackendIdentity<Attachment>>(
+  internal: PublicInternalManager<Attachment, Identity>,
   now: () => number,
   hostOptions: PublicBleManagerHostOptions = {}
 ): Promise<BleManager> {
   return new PublicBleManager(internal, now, hostOptions)
 }
 
-class PublicBleManager implements BleManager {
+class PublicBleManager<Attachment extends string, Identity extends BackendIdentity<Attachment>> implements BleManager {
   readonly capabilities: BleCapabilities
   readonly adapter: BleAdapter
   readonly diagnostics: BleDiagnostics
   readonly peers: BlePeerDirectory
   readonly security: BleSecurity
   private readonly activeScanSessions = new Set<{
-    readonly controller: PublicScanSessionController
+    readonly controller: PublicScanSessionController<Attachment>
     readonly closeState: () => void
   }>()
 
   constructor(
-    private readonly internal: InternalBleManager<string, BackendIdentity<string>>,
+    private readonly internal: PublicInternalManager<Attachment, Identity>,
     private readonly now: () => number,
     hostOptions: PublicBleManagerHostOptions
   ) {
@@ -1318,7 +1329,7 @@ class PublicBleManager implements BleManager {
         throw contractError('capability.unavailable', 'scan', 'public-ble-manager.scan.report-lost-after')
       }
       const plan = typeof this.internal.planScan === 'function' ? this.internal.planScan(normalizedQuery) : null
-      const internalOptions: InternalScanOptions<string, string> = {
+      const internalOptions: InternalScanOptions<Attachment, string> = {
         query: normalizedQuery,
         plan: plan ?? undefined,
         filter: { serviceUuids: [], manufacturerData: [], localNamePrefix: null },
@@ -1337,7 +1348,7 @@ class PublicBleManager implements BleManager {
       const session = await this.internal.scan(internalOptions)
       const scanState = createScanState()
       scanState.emit({ state: 'active' })
-      const controller = new PublicScanSessionController(
+      const controller = new PublicScanSessionController<Attachment>(
         session.observations,
         normalizedQuery,
         options.duplicates ?? 'coalesced',
@@ -1439,7 +1450,14 @@ class PublicBleManager implements BleManager {
           contractError('peer.not-found', 'connection', 'public-ble-manager.connect-reference')
         )
       const peerIdString = typeof resolvedPeer === 'string' ? resolvedPeer : resolvedPeer.id
-      const peerId = opaqueId<'peer', string>(peerIdString, 'peer', 'public-ble-manager')
+      const attachment = this.internal.identity.attachment
+      const peerId = createAttachmentBoundIdFactory({
+        attachmentId: attachment.attachmentId,
+        backendInstanceId: attachment.backendInstanceId,
+        backendGeneration: attachment.backendGeneration,
+        adapterId: attachment.adapter.adapterId,
+        adapterGeneration: attachment.adapter.adapterGeneration
+      }).peerId(peerIdString)
       const internalConnection = await this.internal.connect(peerId, {
         signal,
         deadline,
@@ -1569,21 +1587,21 @@ class PublicBleManager implements BleManager {
   }
 }
 
-function publicTraceDocument(
-  internal: InternalBleManager<string, BackendIdentity<string>>
-): ReturnType<InternalBleManager<string, BackendIdentity<string>>['traceDocument']> {
+function publicTraceDocument<Attachment extends string, Identity extends BackendIdentity<Attachment>>(
+  internal: PublicInternalManager<Attachment, Identity>
+): ReturnType<PublicInternalManager<Attachment, Identity>['traceDocument']> {
   return internal.attachedBackend?.backend.traceDocument?.() ?? internal.traceDocument()
 }
 
-function resolveSecurityBackend(
-  internal: InternalBleManager<string, BackendIdentity<string>>
+function resolveSecurityBackend<Attachment extends string, Identity extends BackendIdentity<Attachment>>(
+  internal: PublicInternalManager<Attachment, Identity>
 ): import('../backend-contract/security').SecurityBackend | undefined {
   if (typeof internal.securityBackend === 'function') return internal.securityBackend()
   return internal.attachedBackend?.backend?.security
 }
 
-function publicResourceCounters(
-  internal: InternalBleManager<string, BackendIdentity<string>>
+function publicResourceCounters<Attachment extends string, Identity extends BackendIdentity<Attachment>>(
+  internal: PublicInternalManager<Attachment, Identity>
 ): Record<keyof ResourceCounters, number> {
   const core = internal.localResourceCounters()
   const backend = internal.attachedBackend?.backend.resourceCounters()
@@ -1608,8 +1626,8 @@ function publicResourceCounters(
 // Re-export for host factories that need the internal type.
 export type { BleManagerOptions }
 
-function createPublicAdapter(
-  internal: InternalBleManager<string, BackendIdentity<string>>,
+function createPublicAdapter<Attachment extends string, Identity extends BackendIdentity<Attachment>>(
+  internal: PublicInternalManager<Attachment, Identity>,
   now: () => number
 ): BleAdapter {
   const identity = internal.identity
@@ -1622,8 +1640,8 @@ function createPublicAdapter(
   }
 }
 
-async function watchPublicAdapter(
-  internal: InternalBleManager<string, BackendIdentity<string>>,
+async function watchPublicAdapter<Attachment extends string, Identity extends BackendIdentity<Attachment>>(
+  internal: PublicInternalManager<Attachment, Identity>,
   now: () => number,
   options: AdapterWatchOptions = {}
 ): Promise<BleAdapterStateWatch> {
@@ -1666,8 +1684,8 @@ async function watchPublicAdapter(
   }
 }
 
-function mapPublicAdapterStates(
-  source: BoundedAsyncStream<AdapterStateSnapshot<string>>
+function mapPublicAdapterStates<Attachment extends string>(
+  source: BoundedAsyncStream<AdapterStateSnapshot<Attachment>>
 ): AsyncIterable<StreamItem<BleAdapterState>> {
   return {
     [Symbol.asyncIterator](): BoundedAsyncStreamIterator<BleAdapterState> {
@@ -1689,8 +1707,8 @@ function mapPublicAdapterStates(
   }
 }
 
-async function waitForPublicAdapter(
-  internal: InternalBleManager<string, BackendIdentity<string>>,
+async function waitForPublicAdapter<Attachment extends string, Identity extends BackendIdentity<Attachment>>(
+  internal: PublicInternalManager<Attachment, Identity>,
   now: () => number,
   options: AdapterReadinessOptions = {}
 ): Promise<BleAdapterState> {
@@ -1746,11 +1764,14 @@ async function stopAdapterWatch(
   return cleanup
 }
 
-function adapterIsReady(state: AdapterStateSnapshot<string>): boolean {
+function adapterIsReady<Attachment extends string>(state: AdapterStateSnapshot<Attachment>): boolean {
   return state.availability === 'available' && state.power === 'on' && !isAuthorizationBlocking(state.authorization)
 }
 
-function assertAdapterCanBecomeReady(state: AdapterStateSnapshot<string>, operation: string): void {
+function assertAdapterCanBecomeReady<Attachment extends string>(
+  state: AdapterStateSnapshot<Attachment>,
+  operation: string
+): void {
   if (state.availability === 'unsupported' || state.power === 'unsupported') {
     throw contractError('capability.unsupported', 'adapter', `public-adapter.${operation}`)
   }
@@ -1762,10 +1783,12 @@ function assertAdapterCanBecomeReady(state: AdapterStateSnapshot<string>, operat
     throw contractError('permission.denied', 'adapter', `public-adapter.${operation}`)
 }
 
-async function nextAdapterState(
-  iterator: import('../backend-contract/streams').BoundedAsyncStreamIterator<AdapterStateSnapshot<string>>,
+async function nextAdapterState<Attachment extends string>(
+  iterator: import('../backend-contract/streams').BoundedAsyncStreamIterator<AdapterStateSnapshot<Attachment>>,
   timeoutMs: number
-): Promise<IteratorResult<import('../backend-contract/streams').StreamItem<AdapterStateSnapshot<string>>, undefined>> {
+): Promise<
+  IteratorResult<import('../backend-contract/streams').StreamItem<AdapterStateSnapshot<Attachment>>, undefined>
+> {
   let timer: ReturnType<typeof setTimeout> | undefined
   try {
     return await Promise.race([
@@ -1782,7 +1805,9 @@ async function nextAdapterState(
   }
 }
 
-function snapshotPublicAdapterState(state: AdapterStateSnapshot<string>): BleAdapterState {
+function snapshotPublicAdapterState<Attachment extends string>(
+  state: AdapterStateSnapshot<Attachment>
+): BleAdapterState {
   return Object.freeze({
     availability: state.availability,
     authorization: state.authorization,
@@ -1996,8 +2021,8 @@ export function peerFromPublicObservation(
   return 'peer' in observation ? observation.peer : projectPublicScanObservation(observation).peer
 }
 
-function projectPublicScanObservation(
-  observation: AdvertisementObservation<string> | IpcAdvertisement
+function projectPublicScanObservation<Attachment extends string>(
+  observation: AdvertisementObservation<Attachment> | IpcAdvertisement
 ): PublicScanObservation {
   const normalized = normalizeScanObservation(observation)
   const isCompact = 'peerId' in observation
