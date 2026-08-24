@@ -366,12 +366,20 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
     if (typeof peerId !== 'string' || peerId.length === 0) {
       throw contractError('argument.invalid', 'connection', 'ipc-manager.connect.peer-id')
     }
+    const deadline = operationDeadline(options)
     const payload = await this.route(
       'connection.connect',
-      Object.freeze({ peerId, deadline: operationDeadline(options) }),
+      Object.freeze({ peerId, deadline }),
       null,
       options.signal
     )
+    if (deadline !== null && deadline <= globalThis.performance.now()) {
+      const expired = decodeProvisionalConnectIdentity(payload)
+      await this.compensateFailedConnect(
+        expired,
+        contractError('operation.timed-out', 'ipc', 'ipc-manager.connection.connect')
+      )
+    }
     const provisional = decodeProvisionalConnectIdentity(payload)
     const admissionError = validateProvisionalConnectIdentity(
       provisional,
@@ -447,6 +455,9 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
     signal: AbortSignal | null | undefined = null
   ): Promise<SerializableRecord> {
     this.assertActive()
+    if (signal?.aborted === true) {
+      throw contractError('operation.aborted', 'ipc', `ipc-manager.${command}`)
+    }
     const deadline = payload.deadline
     if (deadline === null || deadline === undefined) {
       const receipt = await this.client.request({ command, payload, binaryPayload, signal: signal ?? null })
@@ -456,17 +467,19 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
       throw new TypeError('Malformed IPC operation deadline')
     }
     if (globalThis.performance === undefined) throw new TypeError('A monotonic performance clock is required')
+    if (deadline <= globalThis.performance.now()) {
+      throw contractError('operation.timed-out', 'ipc', `ipc-manager.${command}`)
+    }
     const controller = new AbortController()
     const forwardAbort = () => controller.abort()
     signal?.addEventListener('abort', forwardAbort, { once: true })
-    if (signal?.aborted === true) forwardAbort()
     let timedOut = false
     const timer = globalThis.setTimeout(
       () => {
         timedOut = true
         controller.abort()
       },
-      Math.max(0, deadline - globalThis.performance.now())
+      deadline - globalThis.performance.now()
     )
     try {
       const receipt = await this.client.request({ command, payload, binaryPayload, signal: controller.signal })

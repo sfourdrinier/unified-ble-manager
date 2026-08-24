@@ -102,7 +102,10 @@ async function createAdmissionHarness(options = {}) {
       const command = request.envelope.command
       const payload = request.envelope.payload
       commands.push(command)
-      if (command === 'connection.connect') return { kind: 'route', payload: connectPayload }
+      if (command === 'connection.connect') {
+        if (typeof options.onConnect === 'function') options.onConnect()
+        return { kind: 'route', payload: connectPayload }
+      }
       if (command === 'connection.disconnect') {
         disconnectPayloads.push(payload)
         return disconnectImpl()
@@ -306,6 +309,93 @@ describe('IPC provisional admission', () => {
       unresolvedEventSubscriptionCount: 0
     })
   })
+
+  test('expired connect deadline does not invoke the transport', async () => {
+    const harness = await createAdmissionHarness()
+    await expect(harness.ipc.connect('peer-1', { deadline: globalThis.performance.now() - 1 })).rejects.toMatchObject({
+      normalized: { code: 'operation.timed-out' }
+    })
+    expect(harness.commands).not.toContain('connection.connect')
+    await harness.ipc.destroy()
+  })
+
+  test('expired scan.start deadline does not invoke the transport', async () => {
+    const harness = await createAdmissionHarness()
+    await expect(harness.ipc.scan({ deadline: globalThis.performance.now() - 1 })).rejects.toMatchObject({
+      normalized: { code: 'operation.timed-out' }
+    })
+    expect(harness.commands).not.toContain('scan.start')
+    await harness.ipc.destroy()
+  })
+
+  test('expired gatt.discover and gatt.subscribe deadlines do not invoke the transport', async () => {
+    const harness = await createAdmissionHarness()
+    const expired = { deadline: globalThis.performance.now() - 1 }
+    await expect(harness.ipc.route('gatt.discover', expired)).rejects.toMatchObject({
+      normalized: { code: 'operation.timed-out' }
+    })
+    await expect(harness.ipc.route('gatt.subscribe', expired)).rejects.toMatchObject({
+      normalized: { code: 'operation.timed-out' }
+    })
+    expect(harness.commands).not.toContain('gatt.discover')
+    expect(harness.commands).not.toContain('gatt.subscribe')
+    await harness.ipc.destroy()
+  })
+
+  test('already-aborted signal does not invoke the transport', async () => {
+    const harness = await createAdmissionHarness()
+    const controller = new AbortController()
+    controller.abort()
+    await expect(harness.ipc.connect('peer-1', { signal: controller.signal })).rejects.toMatchObject({
+      normalized: { code: 'operation.aborted' }
+    })
+    expect(harness.commands).not.toContain('connection.connect')
+    await harness.ipc.destroy()
+  })
+
+  test('future deadline still dispatches', async () => {
+    const harness = await createAdmissionHarness()
+    const connection = await harness.ipc.connect('peer-1', { deadline: globalThis.performance.now() + 10_000 })
+    expect(harness.commands).toContain('connection.connect')
+    expect(connection.handle).toBe('connection-1')
+    await connection.release()
+    await harness.ipc.destroy()
+  })
+
+  test('deadline expiring after dispatch compensates a resource-bearing success', async () => {
+    let now = 1_000
+    const originalNow = globalThis.performance.now.bind(globalThis.performance)
+    globalThis.performance.now = () => now
+    try {
+      const harness = await createAdmissionHarness({
+        onConnect() {
+          now = 2_000
+        }
+      })
+      await expect(harness.ipc.connect('peer-1', { deadline: 1_500 })).rejects.toMatchObject({
+        normalized: { code: 'operation.timed-out' }
+      })
+      expect(harness.commands).toContain('connection.connect')
+      expect(harness.commands).toContain('connection.disconnect')
+      await harness.ipc.destroy()
+    } finally {
+      globalThis.performance.now = originalNow
+    }
+  })
+
+  test.each(['electron', 'tauri'])(
+    '%s transport doubles share the pre-dispatch deadline guard',
+    async () => {
+      const harness = await createAdmissionHarness()
+      await expect(
+        harness.ipc.connect('peer-1', { deadline: globalThis.performance.now() - 1 })
+      ).rejects.toMatchObject({
+        normalized: { code: 'operation.timed-out' }
+      })
+      expect(harness.commands).not.toContain('connection.connect')
+      await harness.ipc.destroy()
+    }
+  )
 
   test.each(['electron', 'tauri'])(
     '%s transport doubles exercise the same admission helper',
