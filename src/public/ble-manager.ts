@@ -6,6 +6,7 @@ import type { ConnectionLifecycleCause, ConnectionLifecycleEvent } from '../back
 import { contractError, type CleanupRecord } from '../backend-contract/errors'
 import type { BackendIdentity } from '../backend-contract/identity'
 import { capacity, canonicalUuid, createAttachmentBoundIdFactory } from '../backend-contract/primitives'
+import type { PeerId } from '../backend-contract/primitives'
 import type { BleManager as InternalBleManager } from '../manager/ble-manager'
 import type { BleManagerOptions } from '../manager/ble-manager'
 import type { BoundedAsyncStream } from '../backend-contract/streams'
@@ -413,10 +414,12 @@ export interface BleDiscoveryInfo {
   readonly kind: 'continuous-scan' | 'system-chooser' | 'hybrid'
 }
 
-export interface PublicBleManagerHostOptions {
+export interface PublicBleManagerHostOptions<Attachment extends string = string> {
   readonly discoveryKind?: BleDiscoveryInfo['kind']
   readonly choose?: (options: ChooseOptions) => Promise<BlePeer>
   readonly peers?: BlePeerDirectory
+  /** Explicit test seam for lightweight manager doubles without backend identity. */
+  readonly peerId?: (value: string) => PeerId<Attachment>
 }
 
 interface PublicScanDeadlineHandle {
@@ -1268,9 +1271,24 @@ function createPublicConnectionControls<Attachment extends string, Identity exte
 export async function createPublicBleManager<Attachment extends string, Identity extends BackendIdentity<Attachment>>(
   internal: PublicInternalManager<Attachment, Identity>,
   now: () => number,
-  hostOptions: PublicBleManagerHostOptions = {}
+  hostOptions: PublicBleManagerHostOptions<Attachment> = {}
 ): Promise<BleManager> {
   return new PublicBleManager(internal, now, hostOptions)
+}
+
+function createInternalPeerIdAuthority<Attachment extends string, Identity extends BackendIdentity<Attachment>>(
+  internal: PublicInternalManager<Attachment, Identity>
+): ((value: string) => PeerId<Attachment>) | null {
+  if (!('identity' in internal) || internal.identity === undefined || internal.identity === null) return null
+  const attachment = internal.identity.attachment
+  const identifiers = createAttachmentBoundIdFactory({
+    attachmentId: attachment.attachmentId,
+    backendInstanceId: attachment.backendInstanceId,
+    backendGeneration: attachment.backendGeneration,
+    adapterId: attachment.adapter.adapterId,
+    adapterGeneration: attachment.adapter.adapterGeneration
+  })
+  return value => identifiers.peerId(value)
 }
 
 class PublicBleManager<Attachment extends string, Identity extends BackendIdentity<Attachment>> implements BleManager {
@@ -1279,6 +1297,7 @@ class PublicBleManager<Attachment extends string, Identity extends BackendIdenti
   readonly diagnostics: BleDiagnostics
   readonly peers: BlePeerDirectory
   readonly security: BleSecurity
+  private readonly peerIdAuthority: ((value: string) => PeerId<Attachment>) | null
   private readonly activeScanSessions = new Set<{
     readonly controller: PublicScanSessionController<Attachment>
     readonly closeState: () => void
@@ -1287,7 +1306,7 @@ class PublicBleManager<Attachment extends string, Identity extends BackendIdenti
   constructor(
     private readonly internal: PublicInternalManager<Attachment, Identity>,
     private readonly now: () => number,
-    hostOptions: PublicBleManagerHostOptions
+    hostOptions: PublicBleManagerHostOptions<Attachment>
   ) {
     this.capabilities = new PublicBleCapabilities(internal)
     this.adapter = createPublicAdapter(internal, now)
@@ -1299,6 +1318,7 @@ class PublicBleManager<Attachment extends string, Identity extends BackendIdenti
     }
     this.peers = hostOptions.peers ?? createPublicPeerDirectory(internal.attachedBackend?.backend?.peers, now)
     this.security = createPublicSecurity(resolveSecurityBackend(internal), this.peers, internal, now)
+    this.peerIdAuthority = hostOptions.peerId ?? createInternalPeerIdAuthority(internal)
     const supportsContinuous = typeof internal.supports === 'function' && internal.supports('discovery:continuous-scan')
     this.discovery = Object.freeze({
       kind: hostOptions.discoveryKind ?? (supportsContinuous ? 'continuous-scan' : 'system-chooser')
@@ -1450,14 +1470,10 @@ class PublicBleManager<Attachment extends string, Identity extends BackendIdenti
           contractError('peer.not-found', 'connection', 'public-ble-manager.connect-reference')
         )
       const peerIdString = typeof resolvedPeer === 'string' ? resolvedPeer : resolvedPeer.id
-      const attachment = this.internal.identity.attachment
-      const peerId = createAttachmentBoundIdFactory({
-        attachmentId: attachment.attachmentId,
-        backendInstanceId: attachment.backendInstanceId,
-        backendGeneration: attachment.backendGeneration,
-        adapterId: attachment.adapter.adapterId,
-        adapterGeneration: attachment.adapter.adapterGeneration
-      }).peerId(peerIdString)
+      const peerId = this.peerIdAuthority?.(peerIdString)
+      if (peerId === undefined) {
+        throw contractError('capability.unavailable', 'connection', 'public-ble-manager.connect.peer-id-authority')
+      }
       const internalConnection = await this.internal.connect(peerId, {
         signal,
         deadline,

@@ -1,7 +1,11 @@
 const { createPublicBleManager } = require('../src/public/ble-manager')
 const { createReactNativeConnectionControlFeatureRegistry } = require('../src/backends/reactnative/react-native-connection-control-features')
 const { CoreBoundedStream } = require('../src/core/bounded-stream')
-const { capacity } = require('../src/backend-contract/primitives')
+const { capacity, opaqueId } = require('../src/backend-contract/primitives')
+
+function testManagerHostOptions() {
+  return { peerId: value => opaqueId(value, 'peer', 'public-link-controls-test') }
+}
 
 function terminal() {
   return { correlation: 'operation-1', outcome: 'succeeded', cause: null }
@@ -211,7 +215,7 @@ function failedReadinessCleanup() {
 describe('PR8A public link controls', () => {
   test('projects typed observations, separates requests from observations, and exposes recovery under controls', async () => {
     const internal = fakeInternalManager()
-    const manager = await createPublicBleManager(internal, () => 1234)
+    const manager = await createPublicBleManager(internal, () => 1234, testManagerHostOptions())
     const connection = await manager.connect('peer-1')
 
     expect(connection).not.toHaveProperty('readRssi')
@@ -316,7 +320,7 @@ describe('PR8A public link controls', () => {
         ...mismatch
       }
     })
-    const manager = await createPublicBleManager(internal, () => 1234)
+    const manager = await createPublicBleManager(internal, () => 1234, testManagerHostOptions())
     const connection = await manager.connect('peer-1')
     const iterator = connection.controls.writeReadiness('without-response')[Symbol.asyncIterator]()
 
@@ -337,7 +341,7 @@ describe('PR8A public link controls', () => {
         ...mismatch
       }
     })
-    const manager = await createPublicBleManager(internal, () => 1234)
+    const manager = await createPublicBleManager(internal, () => 1234, testManagerHostOptions())
     const connection = await manager.connect('peer-1')
 
     await expect(connection.controls.effectiveMtu()).rejects.toMatchObject({ code: 'protocol.violation' })
@@ -352,7 +356,7 @@ describe('PR8A public link controls', () => {
         terminal: terminal()
       })
     })
-    const nanManager = await createPublicBleManager(nanMtu, () => 1234)
+    const nanManager = await createPublicBleManager(nanMtu, () => 1234, testManagerHostOptions())
     const nanConnection = await nanManager.connect('peer-1')
     await expect(nanConnection.controls.requestMtu(185)).rejects.toMatchObject({ code: 'protocol.violation' })
 
@@ -366,7 +370,7 @@ describe('PR8A public link controls', () => {
         terminal: terminal()
       })
     })
-    const staleManager = await createPublicBleManager(staleWrite, () => 1234)
+    const staleManager = await createPublicBleManager(staleWrite, () => 1234, testManagerHostOptions())
     const staleConnection = await staleManager.connect('peer-1')
     await expect(staleConnection.controls.maximumWriteLength('with-response')).rejects.toMatchObject({
       code: 'protocol.violation'
@@ -380,7 +384,7 @@ describe('PR8A public link controls', () => {
         terminal: terminal()
       })
     })
-    const phyManager = await createPublicBleManager(badPhy, () => 1234)
+    const phyManager = await createPublicBleManager(badPhy, () => 1234, testManagerHostOptions())
     const phyConnection = await phyManager.connect('peer-1')
     await expect(phyConnection.controls.readPhy()).rejects.toMatchObject({ code: 'protocol.violation' })
 
@@ -394,7 +398,7 @@ describe('PR8A public link controls', () => {
         connectionGeneration: 'generation-1'
       }
     })
-    const nanEffectiveManager = await createPublicBleManager(nanEffective, () => 1234)
+    const nanEffectiveManager = await createPublicBleManager(nanEffective, () => 1234, testManagerHostOptions())
     const nanEffectiveConnection = await nanEffectiveManager.connect('peer-1')
     await expect(nanEffectiveConnection.controls.effectiveMtu()).rejects.toMatchObject({
       code: 'protocol.violation'
@@ -410,7 +414,7 @@ describe('PR8A public link controls', () => {
         terminal: terminal()
       })
     })
-    const modeManager = await createPublicBleManager(mismatchedMode, () => 1234)
+    const modeManager = await createPublicBleManager(mismatchedMode, () => 1234, testManagerHostOptions())
     const modeConnection = await modeManager.connect('peer-1')
     await expect(modeConnection.controls.maximumWriteLength('with-response')).rejects.toMatchObject({
       code: 'protocol.violation'
@@ -430,7 +434,7 @@ describe('PR8A public link controls', () => {
         terminal: terminal()
       })
     })
-    const requestPhyManager = await createPublicBleManager(badRequestPhy, () => 1234)
+    const requestPhyManager = await createPublicBleManager(badRequestPhy, () => 1234, testManagerHostOptions())
     const requestPhyConnection = await requestPhyManager.connect('peer-1')
     await expect(requestPhyConnection.controls.requestPhy({ tx: 'le-1m', rx: 'le-coded' })).rejects.toMatchObject({
       code: 'protocol.violation'
@@ -439,7 +443,7 @@ describe('PR8A public link controls', () => {
 
   test('rejects a runtime-invalid maximum-write mode before dispatch', async () => {
     const internal = fakeInternalManager()
-    const manager = await createPublicBleManager(internal, () => 1234)
+    const manager = await createPublicBleManager(internal, () => 1234, testManagerHostOptions())
     const connection = await manager.connect('peer-1')
 
     await expect(connection.controls.maximumWriteLength('without-respons')).rejects.toMatchObject({
@@ -459,7 +463,7 @@ describe('PR8A public link controls', () => {
 
   test('delivers a current readiness snapshot, ordered edge, and owned cleanup', async () => {
     const internal = fakeInternalManager({ readinessEnabled: true })
-    const manager = await createPublicBleManager(internal, () => 1234)
+    const manager = await createPublicBleManager(internal, () => 1234, testManagerHostOptions())
     const connection = await manager.connect('peer-1')
     const iterator = connection.controls.writeReadiness('without-response')[Symbol.asyncIterator]()
 
@@ -555,7 +559,7 @@ describe('PR8A public link controls', () => {
         close: jest.fn(async () => failedReadinessCleanup())
       }
     })
-    const manager = await createPublicBleManager(internal, () => 1234)
+    const manager = await createPublicBleManager(internal, () => 1234, testManagerHostOptions())
     const connection = await manager.connect('peer-1')
     await assertFailure(connection.controls.writeReadiness('without-response')[Symbol.asyncIterator]())
   })
