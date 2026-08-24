@@ -101,6 +101,7 @@ export interface ScanConsumer {
 export interface ScanGroup {
   readonly ownerLeaseId: LeaseId<string, string>
   readonly shareToken: ScanShareToken<string, string> | null
+  readonly scanSessionId: ScanSessionId<string, string>
   readonly consumers: Map<string, ScanConsumer>
   state: 'starting' | 'active' | 'stopping' | 'failed' | 'released'
   nativeStop: Promise<void> | null
@@ -592,6 +593,7 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
     const group: ScanGroup = {
       ownerLeaseId: consumer.leaseId,
       shareToken: consumer.shareToken,
+      scanSessionId: consumer.scanSessionId,
       consumers: new Map([[String(consumer.leaseId), consumer]]),
       state: 'starting',
       nativeStop: null
@@ -691,18 +693,25 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
     const group = this.scanGroup
     if (group === null || !group.consumers.has(String(consumer.leaseId))) {
       this.releaseScanConsumerAdmission(consumer)
-      consumer.stream.closeWithReason('owner-released')
+      if (!consumer.stream.isTerminal()) {
+        consumer.stream.closeWithReason('owner-released')
+      }
       return releasedCleanup
     }
     if (consumer.leaseId !== group.ownerLeaseId) {
       group.consumers.delete(String(consumer.leaseId))
-      consumer.stream.closeWithReason('owner-released')
+      this.releaseScanConsumerAdmission(consumer)
+      if (!consumer.stream.isTerminal()) {
+        consumer.stream.closeWithReason('owner-released')
+      }
       return releasedCleanup
     }
     group.state = 'stopping'
-    for (const current of group.consumers.values()) {
+    for (const current of [...group.consumers.values()]) {
       this.releaseScanConsumerAdmission(current)
-      current.stream.closeWithReason('owner-released')
+      if (!current.stream.isTerminal()) {
+        current.stream.closeWithReason('owner-released')
+      }
     }
     try {
       const cleanup = await this.stopNativeScan(group, 'corebluetooth.scan.stop')
@@ -772,14 +781,10 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
       return
     }
     const peerId = this.peerIdForNativeId(advertisement.nativePeerId)
-    const owner = group.consumers.get(String(group.ownerLeaseId))
-    if (owner === undefined) {
-      throw contractError('lifecycle.invariant-violation', 'scan', 'corebluetooth.advertisement.scan-owner')
-    }
     const observation = createCoreBluetoothObservation(
       advertisement,
       deviceIdentity(peerId, this.attachment().backendInstanceId, null),
-      owner.scanSessionId,
+      group.scanSessionId,
       this.now(),
       this.nextIngressOrdinal
     )
@@ -790,18 +795,23 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
       }
       const push = consumer.stream.emit(observation, advertisementByteLength(observation), String(peerId))
       if (push.terminated) {
-        this.stopScanConsumer(consumer)
-          .then(result => {
-            if (result.state === 'release-failed') {
-              console.error(
-                '[CoreBluetoothBackend.handleAdvertisement] Overflow scan cleanup requires retry:',
-                result.failures
-              )
-            }
-          })
-          .catch(error => {
-            console.error('[CoreBluetoothBackend.handleAdvertisement] Overflow scan cleanup rejected:', error)
-          })
+        if (consumer.leaseId === group.ownerLeaseId && group.consumers.size > 1) {
+          group.consumers.delete(String(consumer.leaseId))
+          this.releaseScanConsumerAdmission(consumer)
+        } else {
+          this.stopScanConsumer(consumer)
+            .then(result => {
+              if (result.state === 'release-failed') {
+                console.error(
+                  '[CoreBluetoothBackend.handleAdvertisement] Overflow scan cleanup requires retry:',
+                  result.failures
+                )
+              }
+            })
+            .catch(error => {
+              console.error('[CoreBluetoothBackend.handleAdvertisement] Overflow scan cleanup rejected:', error)
+            })
+        }
       }
     }
   }

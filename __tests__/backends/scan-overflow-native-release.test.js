@@ -321,6 +321,35 @@ describe.each(['corebluetooth', 'winrt', 'bluez'])('%s scan overflow native rele
     await owner.stop()
   })
 
+  test('owner overflow keeps a sibling consumer and the native scan', async () => {
+    if (backendId === 'bluez') {
+      return
+    }
+    const harness = await factories[backendId]()
+    const owner = await harness.backend.scanner.start(
+      scanOptions({ itemCapacity: 8, overflowPolicy: 'error', allowSharing: true }),
+      opaqueId(`${backendId}-owner-overflow`, 'client', `${backendId}:overflow`)
+    )
+    const joiner = await harness.backend.scanner.join(
+      owner.leaseId,
+      owner.shareToken,
+      opaqueId(`${backendId}-owner-overflow-joiner`, 'client', `${backendId}:overflow`)
+    )
+    const joinerIterator = joiner.observations[Symbol.asyncIterator]()
+    for (let index = 0; index < 8; index += 1) {
+      harness.emitAd()
+      await joinerIterator.next()
+    }
+    harness.emitAd()
+    await flush()
+    const ownerTerminal = await owner.observations[Symbol.asyncIterator]().next()
+    expect(ownerTerminal.value).toMatchObject({ kind: 'terminal', reason: 'overflow' })
+    harness.emitAd()
+    await expect(joinerIterator.next()).resolves.toMatchObject({ done: false, value: { kind: 'value' } })
+    expect(harness.nativeScanActive()).toBe(true)
+    await joiner.stop()
+  })
+
   test('last consumer overflow stops the native scan or notify owner', async () => {
     const harness = await factories[backendId]()
     const before = harness.backend.resourceCounters()
