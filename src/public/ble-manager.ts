@@ -502,15 +502,23 @@ class PublicScanEventBroadcast implements AsyncIterable<DiscoveryEvent> {
     }
   }
 
-  emit(event: DiscoveryEvent, byteLength: number): void {
-    for (const subscriber of this.subscribers) subscriber.emit(event, byteLength)
+  emit(event: DiscoveryEvent, byteLength: number): boolean {
+    let terminated = false
+    for (const subscriber of [...this.subscribers]) {
+      const result = subscriber.emit(event, byteLength)
+      if (result.terminated) {
+        terminated = true
+        this.subscribers.delete(subscriber)
+      }
+    }
+    return terminated
   }
 
   close(reason: PublicScanEventTerminalReason): void {
     if (this.terminalReason !== null) return
     this.terminalReason = reason
     for (const subscriber of this.subscribers) {
-      subscriber.finishWithReason(reason)
+      subscriber.closeWithReason(reason)
       this.subscribers.delete(subscriber)
     }
   }
@@ -537,9 +545,10 @@ class PublicScanSessionController<Attachment extends string> {
     delivery: StreamBudget,
     private readonly now: () => number,
     private readonly scheduleDeadline: InternalScanScheduler,
-    private readonly reportLostAfterMs: number | undefined
+    private readonly reportLostAfterMs: number | undefined,
+    private readonly requestStop: (reason: PublicScanEventTerminalReason) => void
   ) {
-    this.observationStream = new CoreBoundedStream(source.limits, source.overflowPolicy)
+    this.observationStream = new CoreBoundedStream(delivery, delivery.overflowPolicy)
     this.observations = {
       limits: this.observationStream.limits,
       overflowPolicy: this.observationStream.overflowPolicy,
@@ -554,23 +563,30 @@ class PublicScanSessionController<Attachment extends string> {
   }
 
   async close(reason: PublicScanEventTerminalReason = 'owner-released'): Promise<CleanupRecord> {
-    if (this.closed) return { state: 'released', failures: [] }
+    return this.closeView(reason)
+  }
+
+  async closeView(reason: PublicScanEventTerminalReason = 'owner-released'): Promise<CleanupRecord> {
     this.closed = true
     this.cancelPresenceTimers()
-    const iterator = this.sourceIterator
-    this.sourceIterator = null
-    let iteratorError: unknown = null
-    if (iterator !== null) {
-      try {
-        await iterator.return()
-      } catch (error) {
-        iteratorError = error
-      }
-    }
-    this.observationStream.finishWithReason(reason)
+    this.observationStream.closeWithReason(reason)
     this.eventBroadcast.close(reason)
-    if (iteratorError !== null) throw iteratorError
+    if (this.sourceIterator === null) return { state: 'released', failures: [] }
+    await this.sourceIterator.return()
+    this.sourceIterator = null
     return { state: 'released', failures: [] }
+  }
+
+  private terminateFromOverflow(): void {
+    if (this.closed) {
+      this.requestStop('overflow')
+      return
+    }
+    this.closed = true
+    this.cancelPresenceTimers()
+    this.observationStream.closeWithReason('overflow')
+    this.eventBroadcast.close('overflow')
+    this.requestStop('overflow')
   }
 
   private start(): void {
@@ -618,11 +634,15 @@ class PublicScanSessionController<Attachment extends string> {
       if (previous?.value === fingerprint) return
       this.rememberObservationFingerprint(observation.peer.id, fingerprint)
     }
-    this.observationStream.emit(observation, estimatePublicScanObservationBytes(observation))
-    this.eventBroadcast.emit(
+    const observationPush = this.observationStream.emit(
+      observation,
+      estimatePublicScanObservationBytes(observation)
+    )
+    const eventTerminated = this.eventBroadcast.emit(
       Object.freeze({ kind: 'observed', peer: observation.peer }),
       estimatePublicDiscoveryEventBytes({ kind: 'observed', peer: observation.peer })
     )
+    if (observationPush.terminated || eventTerminated) this.terminateFromOverflow()
   }
 
   private observePresence(observation: PublicScanObservation): void {
@@ -1307,6 +1327,7 @@ class PublicBleManager<Attachment extends string, Identity extends BackendIdenti
   private readonly activeScanSessions = new Set<{
     readonly controller: PublicScanSessionController<Attachment>
     readonly closeState: () => void
+    readonly stop: () => Promise<CleanupRecord>
   }>()
 
   constructor(
@@ -1374,6 +1395,21 @@ class PublicBleManager<Attachment extends string, Identity extends BackendIdenti
       const session = await this.internal.scan(internalOptions)
       const scanState = createScanState()
       scanState.emit({ state: 'active' })
+      const stopState: {
+        viewReleased: boolean
+        nativeReleased: boolean
+        stopPromise: Promise<CleanupRecord> | null
+        pendingCleanupError: unknown | null
+      } = {
+        viewReleased: false,
+        nativeReleased: false,
+        stopPromise: null,
+        pendingCleanupError: null
+      }
+      let stopScan: (reason: PublicScanEventTerminalReason) => Promise<CleanupRecord> = async () => ({
+        state: 'released',
+        failures: []
+      })
       const controller = new PublicScanSessionController<Attachment>(
         session.observations,
         normalizedQuery,
@@ -1381,40 +1417,66 @@ class PublicBleManager<Attachment extends string, Identity extends BackendIdenti
         delivery,
         this.now,
         (deadlineAt, action) => scheduleInternalScanDeadline(this.internal, deadlineAt, action),
-        reportLostAfterMs
+        reportLostAfterMs,
+        reason => {
+          void stopScan(reason).catch(error => {
+            stopState.pendingCleanupError = error
+            scanState.emit({ state: 'failed', reason: 'scan-stop-failed' })
+          })
+        }
       )
-      const activeScan = { controller, closeState: scanState.close }
+      stopScan = async (reason: PublicScanEventTerminalReason): Promise<CleanupRecord> => {
+        if (stopState.stopPromise !== null) return stopState.stopPromise
+        scanState.emit({ state: 'stopping' })
+        const run = (async () => {
+          const phases: { readonly error?: unknown; readonly cleanup?: CleanupRecord }[] = []
+          if (stopState.pendingCleanupError !== null) {
+            phases.push({ error: stopState.pendingCleanupError })
+          }
+          if (!stopState.viewReleased) {
+            try {
+              const view = await controller.closeView(reason)
+              if (view.state === 'released') stopState.viewReleased = true
+              phases.push({ cleanup: view })
+            } catch (error) {
+              phases.push({ error })
+            }
+          }
+          if (!stopState.nativeReleased) {
+            try {
+              const native = await rehydratePublicPromise(session.stop())
+              if (native.state === 'released') stopState.nativeReleased = true
+              phases.push({ cleanup: native })
+            } catch (error) {
+              phases.push({ error })
+            }
+          }
+          try {
+            const combined = collectCleanupPhases(phases)
+            if (stopState.viewReleased && stopState.nativeReleased) {
+              scanState.emit({ state: 'stopped' })
+              scanState.close()
+              this.activeScanSessions.delete(activeScan)
+              stopState.pendingCleanupError = null
+            } else {
+              scanState.emit({ state: 'failed', reason: 'scan-stop-failed' })
+              stopState.stopPromise = null
+            }
+            return combined
+          } catch (error) {
+            scanState.emit({ state: 'failed', reason: 'scan-stop-failed' })
+            stopState.stopPromise = null
+            throw error
+          }
+        })()
+        stopState.stopPromise = run
+        return run
+      }
+      const activeScan = { controller, closeState: scanState.close, stop: () => stopScan('owner-released') }
       this.activeScanSessions.add(activeScan)
       const publicSession: ScanSession = {
         plan,
-        stop: async () => {
-          scanState.emit({ state: 'stopping' })
-          let controllerError: unknown
-          try {
-            await controller.close()
-          } catch (error) {
-            controllerError = error
-          }
-          let cleanup: CleanupRecord | undefined
-          let nativeError: unknown
-          try {
-            cleanup = await rehydratePublicPromise(session.stop())
-          } catch (error) {
-            nativeError = error
-          }
-          scanState.emit(
-            cleanup?.state === 'released' && controllerError === undefined
-              ? { state: 'stopped' }
-              : { state: 'failed', reason: 'scan-stop-failed' }
-          )
-          scanState.close()
-          this.activeScanSessions.delete(activeScan)
-          return collectCleanupPhases([
-            ...(controllerError === undefined ? [] : [{ error: controllerError }]),
-            ...(nativeError === undefined ? [] : [{ error: nativeError }]),
-            ...(cleanup === undefined ? [] : [{ cleanup }])
-          ])
-        },
+        stop: () => stopScan('owner-released'),
         observations: controller.observations,
         events: controller.events,
         state: scanState.stream
@@ -1589,7 +1651,8 @@ class PublicBleManager<Attachment extends string, Identity extends BackendIdenti
         active.map(async scan => {
           scan.closeState()
           try {
-            await scan.controller.close()
+            const cleanup = await scan.stop()
+            viewResults.push({ cleanup })
           } catch (error) {
             viewResults.push({ error })
           }

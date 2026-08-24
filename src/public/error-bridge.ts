@@ -46,7 +46,8 @@ export function collectCleanupPhases(
   const thrown: unknown[] = []
   const cleanupFailures: CleanupFailure[] = []
   for (const result of results) {
-    if (result.error !== undefined) thrown.push(result.error)
+    if (result.error instanceof AggregateError) thrown.push(...result.error.errors)
+    else if (result.error !== undefined) thrown.push(result.error)
     if (result.cleanup?.state === 'release-failed') cleanupFailures.push(...result.cleanup.failures)
   }
   const cleanup: CleanupRecord =

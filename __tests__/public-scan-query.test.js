@@ -1158,4 +1158,286 @@ describe('canonical public ScanQuery v1', () => {
     await expect(scan.stop()).resolves.toEqual({ state: 'released', failures: [] })
     await expect(manager.destroy()).resolves.toEqual({ state: 'released', failures: [] })
   })
+
+  const tinyErrorDelivery = {
+    preset: 'custom',
+    budget: {
+      itemCapacity: 1,
+      byteCapacity: 4096,
+      reservedControlCapacity: 1,
+      overflowPolicy: 'error'
+    }
+  }
+
+  function scanAdvertisement(peerId, overrides = {}) {
+    return {
+      peerId,
+      localName: overrides.localName ?? peerId,
+      rssi: overrides.rssi ?? -40,
+      serviceUuids: [],
+      manufacturerData: overrides.manufacturerData ?? [],
+      serviceData: []
+    }
+  }
+
+  async function flushMicrotasks(times = 20) {
+    for (let attempt = 0; attempt < times; attempt += 1) await Promise.resolve()
+  }
+
+  function createStopOverflowFixture(options = {}) {
+    const inner = new CoreBoundedStream(
+      { itemCapacity: capacity(8), byteCapacity: capacity(4096), reservedControlCapacity: capacity(1) },
+      'drop-oldest'
+    )
+    let sourceNextCalls = 0
+    let iteratorReturnCalls = 0
+    const nativeStop = options.nativeStop ?? jest.fn(async () => ({ state: 'released', failures: [] }))
+    const iteratorReturn =
+      options.iteratorReturn ??
+      (async () => {
+        iteratorReturnCalls += 1
+        return { done: true, value: undefined }
+      })
+    const source = {
+      limits: inner.limits,
+      overflowPolicy: inner.overflowPolicy,
+      emit: (value, bytes) => inner.emit(value, bytes),
+      [Symbol.asyncIterator]: () => {
+        const iterator = inner[Symbol.asyncIterator]()
+        return {
+          next: async () => {
+            sourceNextCalls += 1
+            return iterator.next()
+          },
+          return: iteratorReturn,
+          [Symbol.asyncIterator]() {
+            return this
+          }
+        }
+      }
+    }
+    const scheduled = []
+    const internal = {
+      identity: null,
+      attachedBackend: undefined,
+      supports: () => true,
+      capability: () => null,
+      capabilities: () => [],
+      scan: jest.fn(async () => ({
+        observations: source,
+        stop: nativeStop
+      })),
+      scheduleDeadline: jest.fn((deadline, action) => {
+        const handle = { deadline, action, cancel: jest.fn() }
+        scheduled.push(handle)
+        return handle
+      }),
+      connect: jest.fn(),
+      destroy: jest.fn(async () => ({ state: 'released', failures: [] }))
+    }
+    return {
+      source,
+      nativeStop,
+      scheduled,
+      internal,
+      sourceNextCalls: () => sourceNextCalls,
+      iteratorReturnCalls: () => iteratorReturnCalls
+    }
+  }
+
+  async function overflowLocalScan(fixture, scan) {
+    const observations = scan.observations[Symbol.asyncIterator]()
+    fixture.source.emit(scanAdvertisement('overflow-peer-1'), 32)
+    fixture.source.emit(scanAdvertisement('overflow-peer-2'), 32)
+    await flushMicrotasks()
+    return observations
+  }
+
+  test('explicit stop does not deliver queued observations or discovery events after it resolves', async () => {
+    const fixture = createStopOverflowFixture()
+    const manager = await createPublicBleManager(fixture.internal, () => 0)
+    const scan = await manager.scan()
+    const observations = scan.observations[Symbol.asyncIterator]()
+    const events = scan.events[Symbol.asyncIterator]()
+    fixture.source.emit(scanAdvertisement('queued-peer-1'), 32)
+    fixture.source.emit(scanAdvertisement('queued-peer-2'), 32)
+    await flushMicrotasks()
+    await scan.stop()
+    await expect(observations.next()).resolves.toMatchObject({
+      value: { kind: 'terminal', reason: 'owner-released' }
+    })
+    await expect(events.next()).resolves.toEqual({ done: true, value: undefined })
+  })
+
+  test('local observation overflow stops source consumption', async () => {
+    const fixture = createStopOverflowFixture()
+    const manager = await createPublicBleManager(fixture.internal, () => 0)
+    const scan = await manager.scan({ delivery: tinyErrorDelivery })
+    await overflowLocalScan(fixture, scan)
+    const nextCallsAfterOverflow = fixture.sourceNextCalls()
+    fixture.source.emit(scanAdvertisement('overflow-peer-3'), 32)
+    await flushMicrotasks()
+    expect(fixture.sourceNextCalls()).toBe(nextCallsAfterOverflow)
+    await scan.stop()
+  })
+
+  test('overflow stops the native scan session exactly once', async () => {
+    const fixture = createStopOverflowFixture()
+    const manager = await createPublicBleManager(fixture.internal, () => 0)
+    const scan = await manager.scan({ delivery: tinyErrorDelivery })
+    await overflowLocalScan(fixture, scan)
+    await waitForNativeStop(fixture, 1)
+    fixture.source.emit(scanAdvertisement('overflow-peer-3'), 32)
+    await flushMicrotasks()
+    await scan.stop()
+    expect(fixture.nativeStop).toHaveBeenCalledTimes(1)
+  })
+
+  test('observation and discovery streams terminate together on overflow', async () => {
+    const fixture = createStopOverflowFixture()
+    const manager = await createPublicBleManager(fixture.internal, () => 0)
+    const scan = await manager.scan({ delivery: tinyErrorDelivery })
+    const observations = scan.observations[Symbol.asyncIterator]()
+    const events = scan.events[Symbol.asyncIterator]()
+    fixture.source.emit(scanAdvertisement('overflow-peer-1'), 32)
+    fixture.source.emit(scanAdvertisement('overflow-peer-2'), 32)
+    await flushMicrotasks()
+    await expect(observations.next()).resolves.toMatchObject({
+      value: { kind: 'terminal', reason: 'overflow' }
+    })
+    await expect(events.next()).rejects.toMatchObject({ code: 'stream.overflow' })
+    await scan.stop()
+  })
+
+  test('overflow clears timers, fingerprints, presence, iterator, and manager ownership', async () => {
+    const fixture = createStopOverflowFixture()
+    const manager = await createPublicBleManager(fixture.internal, () => 0)
+    const scan = await manager.scan({
+      delivery: tinyErrorDelivery,
+      duplicates: 'coalesced',
+      observation: { reportLostAfterMs: 10 }
+    })
+    await overflowLocalScan(fixture, scan)
+    await waitForNativeStop(fixture, 1)
+    expect(inspectPublicScanFingerprintAccountingForTests(scan)).toEqual({
+      fingerprintCount: 0,
+      fingerprintBytes: 0,
+      summedEntryBytes: 0
+    })
+    expect(fixture.scheduled.every(handle => handle.cancel.mock.calls.length > 0)).toBe(true)
+    await expect(scan.stop()).resolves.toEqual({ state: 'released', failures: [] })
+    await expect(manager.destroy()).resolves.toEqual({ state: 'released', failures: [] })
+  })
+
+  test('overflow native stop release-failed remains retryable through a later stop/destroy', async () => {
+    const nativeCleanup = {
+      state: 'release-failed',
+      failures: [
+        {
+          resourceKind: 'scan',
+          error: {
+            code: 'scan.stop-failed',
+            domain: 'scan',
+            operation: 'fixture.scan-stop',
+            platform: null,
+            retryability: 'caller-decides'
+          }
+        }
+      ]
+    }
+    let nativeCalls = 0
+    const nativeStop = jest.fn(async () => {
+      nativeCalls += 1
+      if (nativeCalls === 1) return nativeCleanup
+      return { state: 'released', failures: [] }
+    })
+    const fixture = createStopOverflowFixture({ nativeStop })
+    const manager = await createPublicBleManager(fixture.internal, () => 0)
+    const scan = await manager.scan({ delivery: tinyErrorDelivery })
+    await overflowLocalScan(fixture, scan)
+    await waitForNativeStop(fixture, 1)
+    await expect(scan.stop()).resolves.toEqual({ state: 'released', failures: [] })
+    expect(nativeStop).toHaveBeenCalledTimes(2)
+    await expect(manager.destroy()).resolves.toEqual({ state: 'released', failures: [] })
+    expect(nativeStop).toHaveBeenCalledTimes(2)
+  })
+
+  test('concurrent explicit stop and overflow share one native stop attempt', async () => {
+    let releaseNative
+    const nativeStop = jest.fn(
+      () =>
+        new Promise(resolve => {
+          releaseNative = () => resolve({ state: 'released', failures: [] })
+        })
+    )
+    const fixture = createStopOverflowFixture({ nativeStop })
+    const manager = await createPublicBleManager(fixture.internal, () => 0)
+    const scan = await manager.scan({ delivery: tinyErrorDelivery })
+    const observations = scan.observations[Symbol.asyncIterator]()
+    fixture.source.emit(scanAdvertisement('overflow-peer-1'), 32)
+    fixture.source.emit(scanAdvertisement('overflow-peer-2'), 32)
+    const explicitStop = scan.stop()
+    await waitForNativeStop(fixture, 1)
+    expect(typeof releaseNative).toBe('function')
+    releaseNative()
+    await explicitStop
+    await observations.next()
+    expect(nativeStop).toHaveBeenCalledTimes(1)
+  })
+
+  test('iterator return failure remains owned and is retried without repeating native success', async () => {
+    const viewError = new Error('iterator-return-failed')
+    let returnCalls = 0
+    const fixture = createStopOverflowFixture({
+      iteratorReturn: async () => {
+        returnCalls += 1
+        if (returnCalls === 1) throw viewError
+        return { done: true, value: undefined }
+      }
+    })
+    const manager = await createPublicBleManager(fixture.internal, () => 0)
+    const scan = await manager.scan()
+    void scan.observations[Symbol.asyncIterator]()
+    await flushMicrotasks()
+    await expect(scan.stop()).rejects.toMatchObject({
+      errors: expect.arrayContaining([viewError])
+    })
+    expect(fixture.nativeStop).toHaveBeenCalledTimes(1)
+    await expect(scan.stop()).resolves.toEqual({ state: 'released', failures: [] })
+    expect(returnCalls).toBe(2)
+    expect(fixture.nativeStop).toHaveBeenCalledTimes(1)
+  })
+
+  test('native stop success is not repeated when view cleanup needs retry', async () => {
+    const viewError = new Error('view-retry-required')
+    let returnCalls = 0
+    const fixture = createStopOverflowFixture({
+      iteratorReturn: async () => {
+        returnCalls += 1
+        if (returnCalls < 3) throw viewError
+        return { done: true, value: undefined }
+      }
+    })
+    const manager = await createPublicBleManager(fixture.internal, () => 0)
+    const scan = await manager.scan()
+    void scan.observations[Symbol.asyncIterator]()
+    await flushMicrotasks()
+    await expect(scan.stop()).rejects.toMatchObject({
+      errors: expect.arrayContaining([viewError])
+    })
+    await expect(scan.stop()).rejects.toMatchObject({
+      errors: expect.arrayContaining([viewError])
+    })
+    await expect(scan.stop()).resolves.toEqual({ state: 'released', failures: [] })
+    expect(returnCalls).toBe(3)
+    expect(fixture.nativeStop).toHaveBeenCalledTimes(1)
+  })
+
+  async function waitForNativeStop(fixture, count) {
+    for (let attempt = 0; attempt < 50; attempt += 1) {
+      if (fixture.nativeStop.mock.calls.length >= count) return
+      await Promise.resolve()
+    }
+    expect(fixture.nativeStop).toHaveBeenCalledTimes(count)
+  }
 })
