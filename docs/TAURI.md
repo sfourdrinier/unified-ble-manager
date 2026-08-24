@@ -10,12 +10,13 @@ The Rust plugin owns the radio (btleplug: CoreBluetooth, WinRT, or BlueZ). The w
 
 ```sh
 pnpm add unified-ble-manager @tauri-apps/api
+cargo add tauri-plugin-unified-ble-manager@4.0.0
 ```
 
-The paired npm/Cargo registry distribution is a PR11 gate. Until that release
-slice lands, repository consumers may use the checked-out plugin path only as
-an explicitly interim development setup; do not present it as the published
-installation recipe or as independent Cargo distribution proof.
+The documented consumer recipe is crates.io plus the npm package. The crate is
+not yet published. Until the crate is published, keep the repository
+`path = "../../native/tauri"` checkout/development fallback. `ubm init --host tauri`
+writes the crates.io fragment.
 
 ## Frontend
 

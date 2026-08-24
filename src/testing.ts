@@ -9,9 +9,11 @@ export {
   DeterministicTestBackend
 } from './testing/deterministic/deterministic-test-backend'
 export { createDeterministicTestBleManager } from './testing/deterministic/deterministic-test-manager'
+export { createTestBleEnvironment } from './testing/deterministic/deterministic-test-manager'
 export type {
   DeterministicTestBleManager,
-  DeterministicTestBleManagerOptions
+  DeterministicTestBleManagerOptions,
+  TestBleEnvironment
 } from './testing/deterministic/deterministic-test-manager'
 export type {
   DeterministicBackendController,

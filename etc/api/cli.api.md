@@ -6,10 +6,10 @@
 - `CliBackendDefinition :: { readonly metadata: BackendAuthorMetadata; readonly factory: BackendTckFactory<string, BackendIdentity<string>, BleCentralBackend<string, BackendIdentity<string>>>; readonly featureSuites: readonly TckFeatureSuite[] }`
 - `DiagnosticTraceDocument :: { readonly format: "unified-ble-trace-v1"; readonly truncated: boolean; readonly records: readonly DiagnosticTraceRecord[] }`
 - `TraceValidationResult :: { readonly valid: boolean; readonly failures: readonly TraceValidationFailure[] }`
-- `UnifiedBleCliCommand :: "doctor" | "capabilities" | "trace" | "tck" | "scenario"`
+- `UnifiedBleCliCommand :: "doctor" | "capabilities" | "trace" | "tck" | "scenario" | "init" | "inspect" | "support-bundle"`
 - `UnifiedBleCliFailure :: { readonly code: "cli.argument-invalid" | "cli.backend-load-failed" | "cli.backend-invalid" | "cli.host-unsupported" | "cli.trace-invalid" | "cli.execution-failed"; readonly message: string }`
 - `UnifiedBleCliResult :: { readonly ok: boolean; readonly command: UnifiedBleCliCommand | null; readonly data: SerializableRecord | null; readonly failures: readonly UnifiedBleCliFailure[] }`
-- `UnifiedBleCliRuntime :: { readTextFile(path: string): Promise<string>; loadBackendModule(moduleSpecifier: string): Promise<CliBackendDefinition> }`
+- `UnifiedBleCliRuntime :: { readTextFile(path: string): Promise<string>; loadBackendModule(moduleSpecifier: string): Promise<CliBackendDefinition>; writeTextFile?: ((path: string, contents: string) => Promise<void>) | undefined; cwd?: (() => string) | undefined }`
 - `extractRedactedTrace :: (result: UnifiedBleCliResult) => DiagnosticTraceDocument | null`
 - `formatUnifiedBleCliResult :: (result: UnifiedBleCliResult) => string`
 - `redactTraceDocument :: (input: SerializableValue) => DiagnosticTraceDocument`
