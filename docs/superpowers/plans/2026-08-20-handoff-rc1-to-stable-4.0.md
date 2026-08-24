@@ -563,8 +563,8 @@ Update this section in the **same branch** as the work, before opening the GitHu
 | 7 | `feat/4.0-security-pairing` | #40 | recorded in PR | 0 | `dc4390d51295b865ea18fe597898639072ffc70d` | — | **merged** |
 | 8 | `feat/4.0-link-controls` | #41 | fresh local adversarial wave complete | 0 | `c319be30ad8a74b50b1e8ec1f27f4751f797f358` | `v4.0.0-rc.3` (`a423a73`; npm `latest`) | **merged / RC3 published** |
 | 9 | `feat/scan-native-residual-planner` | #43 | recorded in PR | 0 | `a252b5a7d6e09147ccd7fa636facab6ad2996ea6` | `v4.0.0-rc.3` (`a423a73`; npm `latest`) | **merged / RC3 published** |
-| 10 | `feat/expo-first-class-host` | #44 | local final + hosted Codex clean; second Codex trigger posted; Copilot triggered | 0 | `e47d26489bd299c9c646f5e47e4379420e34a109` | `v4.0.0-rc.4` not yet tagged/published | **merged; post-merge main CI green; debrief complete; RC4 pending** |
-| 11 | `feat/distribution-tooling-testkit` | — | 0 | 0 | — | `v4.0.0-rc.5` after merge | **blocked on RC4 and next-agent start after debrief** |
+| 10 | `feat/expo-first-class-host` | #44 | local final + hosted Codex clean; second Codex trigger posted; Copilot triggered | 0 | `e47d26489bd299c9c646f5e47e4379420e34a109` | `v4.0.0-rc.4` prepared; tag from exact main after this merge | **merged; RC4 version prepared** |
+| 11 | `feat/distribution-tooling-testkit` | — | 0 | 0 | — | `v4.0.0-rc.5` after merge | **blocked on RC4 publish** |
 | 12 | `release/4.0.0-stable` | — | 0 | 0 | — | `v4.0.0` after merge | blocked on 11 |
 
 The dated baseline below is retained as historical handoff context. This table
@@ -587,17 +587,16 @@ is the current factual tracker; the revised session instructions and
 
 **Waiting / not done:**
 
-- `4.0.0-rc.4` has not been tagged or published. `v4.0.0-rc.2` and `v4.0.0-rc.3` remain immutable; npm currently returns no `4.0.0-rc.4` version.
-- PR #11 must not start until the next agent confirms this debrief, cuts RC4 from the exact current `main`, pushes the exact `v4.0.0-rc.4` tag, and verifies the publish workflow/npm/GitHub Release according to `RELEASE.md`.
+- `4.0.0-rc.4` is version-bumped on `release/4.0.0-rc.4`. Tag and publish only after this branch merges to exact `main`. `v4.0.0-rc.2` and `v4.0.0-rc.3` remain immutable.
+- PR #11 must not start until RC4 is tagged from exact `main` and the publish workflow, npm `latest` dist-tag, provenance, and GitHub prerelease are verified according to `RELEASE.md`.
 - No physical-radio or EAS evidence is implied by the deterministic/native build receipts; retain those limitations in release claims.
 
 **Next-agent sequence:**
 
-1. Re-read this handoff, `docs/superpowers/plans/2026-08-20-next-12-prs.md`, `RELEASE.md`, and `docs/audits/2026-08-23-pr10-review-inventory.md`.
-2. Verify clean `main` at `23579ba4` (with code merge base `e47d2648`), confirm `package.json` remains `4.0.0-rc.3`, and confirm no `v4.0.0-rc.4` tag/npm artifact exists.
-3. Run the RC4 release checklist from `RELEASE.md` on exact `main`; tag-driven GitHub Actions trusted publishing is the only publish path. Do not publish from a laptop and do not mutate RC2/RC3.
-4. Verify the RC4 npm artifact, `latest` dist-tag, provenance, GitHub prerelease, and exact tag/main identity.
-5. Only then begin PR11 (`feat/distribution-tooling-testkit`), following the same narrow-slice/TDD/adversarial/review-cycle process. RC5 follows PR11; stable 4.0.0 follows PR12.
+1. Merge this RC4 version bump to `main` with a merge commit.
+2. Tag `v4.0.0-rc.4` on that exact `main` commit and push the tag. Do not publish from a laptop and do not mutate RC2/RC3.
+3. Verify the RC4 npm artifact, `latest` dist-tag, provenance, GitHub prerelease, and exact tag/main identity.
+4. Only then begin PR11 (`feat/distribution-tooling-testkit`), following the same narrow-slice/TDD/adversarial/review-cycle process. RC5 follows PR11; stable 4.0.0 follows PR12.
 
 ### Baseline (handoff)
 

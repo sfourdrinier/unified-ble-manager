@@ -3,10 +3,9 @@
 # Expo SDK 57 CNG fixture
 
 This repository fixture validates the Expo SDK 57 continuous-native-generation
-path for the PR10 branch work. It uses `unified-ble-manager: file:..` and the
-`unified-ble-manager` v2 config plugin, so it is not a published-package
-install recipe. The v2 Expo surface becomes published only at RC4; the
-immutable RC3 package must not be recreated or changed.
+path. It uses `unified-ble-manager: file:..` and the `unified-ble-manager` v2
+config plugin, so it is not a published-package install recipe. The v2 Expo
+surface is published in immutable `4.0.0-rc.4`.
 
 The BLE host includes native code and cannot run in Expo Go. Generate and build
 the native project from the repository root:

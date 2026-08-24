@@ -6,15 +6,15 @@
   "metadata": {
     "component": {
       "type": "library",
-      "bom-ref": "pkg:npm/unified-ble-manager@4.0.0-rc.3",
+      "bom-ref": "pkg:npm/unified-ble-manager@4.0.0-rc.4",
       "name": "unified-ble-manager",
-      "version": "4.0.0-rc.3",
+      "version": "4.0.0-rc.4",
       "licenses": [
         {
           "expression": "Apache-2.0"
         }
       ],
-      "purl": "pkg:npm/unified-ble-manager@4.0.0-rc.3"
+      "purl": "pkg:npm/unified-ble-manager@4.0.0-rc.4"
     },
     "properties": [
       {
@@ -537,7 +537,7 @@
       "dependsOn": []
     },
     {
-      "ref": "pkg:npm/unified-ble-manager@4.0.0-rc.3",
+      "ref": "pkg:npm/unified-ble-manager@4.0.0-rc.4",
       "dependsOn": [
         "pkg:npm/%40tauri-apps/api@2.11.1",
         "pkg:npm/node-addon-api@8.9.0",
