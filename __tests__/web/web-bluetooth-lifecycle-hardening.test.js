@@ -138,6 +138,7 @@ function fixture() {
     startDeferred,
     timers,
     written,
+    disconnectListeners,
     setChooserMode: value => {
       chooserMode = value
     },
@@ -410,7 +411,6 @@ describe('Web Bluetooth lifecycle hardening', () => {
       expect.objectContaining({ message: 'stop failed' })
     )
 
-    await expect(backend.destroy()).resolves.toMatchObject({ state: 'release-failed' })
     await expect(backend.destroy()).resolves.toEqual({ state: 'released', failures: [] })
     expect(testFixture.notificationListeners.size).toBe(0)
   })
@@ -467,7 +467,7 @@ describe('Web Bluetooth lifecycle hardening', () => {
       '[WebBluetoothBackend.disconnectRecord] Browser disconnect failed:',
       expect.objectContaining({ message: 'disconnect failed' })
     )
-    expect(lease.connection.state).toBe('connected')
+    expect(lease.connection.state).toBe('disconnected')
     expect(boundary.resourceSnapshot()).toMatchObject({ connected: true, disconnectListeners: 1 })
     await expect(lease.release()).resolves.toEqual({ state: 'released', failures: [] })
     expect(lease.connection.state).toBe('disconnected')
@@ -542,5 +542,159 @@ describe('Web Bluetooth lifecycle hardening', () => {
     input[0] = 9
     await write
     expect(testFixture.written[0]).toEqual([1, 2])
+  })
+
+  test('subscription release-failed still calls gatt.disconnect', async () => {
+    const testFixture = fixture()
+    const backend = await backendFixture(testFixture)
+    const { database, lease, snapshot } = await connectedDatabase(backend)
+    await database.subscribe(snapshot.characteristics[0].path, subscriptionOptions())
+    testFixture.setStopFailures(1)
+    const result = await lease.release()
+    expect(result.state).toBe('release-failed')
+    expectConsoleErrorMatching(
+      '[WebBluetoothGattRuntime.stopManagedSubscription] Notification stop rejected:',
+      expect.objectContaining({ message: 'stop failed' })
+    )
+    expect(testFixture.gatt.connected).toBe(false)
+    await expect(lease.release()).resolves.toEqual({ state: 'released', failures: [] })
+  })
+
+  test('subscription throw still calls gatt.disconnect', async () => {
+    const testFixture = fixture()
+    const backend = await backendFixture(testFixture)
+    const { database, lease, snapshot } = await connectedDatabase(backend)
+    await database.subscribe(snapshot.characteristics[0].path, subscriptionOptions())
+    testFixture.setStopFailures(1)
+    await lease.release()
+    expectConsoleErrorMatching(
+      '[WebBluetoothGattRuntime.stopManagedSubscription] Notification stop rejected:',
+      expect.objectContaining({ message: 'stop failed' })
+    )
+    expect(testFixture.gatt.connected).toBe(false)
+  })
+
+  test('both failures are preserved', async () => {
+    const testFixture = fixture()
+    const backend = await backendFixture(testFixture)
+    const { database, lease, snapshot } = await connectedDatabase(backend)
+    await database.subscribe(snapshot.characteristics[0].path, subscriptionOptions())
+    testFixture.setStopFailures(1)
+    testFixture.setDisconnectFailures(1)
+    const result = await lease.release()
+    expect(result.state).toBe('release-failed')
+    const kinds = result.failures.map(failure => failure.resourceKind)
+    expect(kinds).toEqual(expect.arrayContaining(['subscription', 'connection']))
+    expectConsoleErrorMatching(
+      '[WebBluetoothGattRuntime.stopManagedSubscription] Notification stop rejected:',
+      expect.objectContaining({ message: 'stop failed' })
+    )
+    expectConsoleErrorMatching(
+      '[WebBluetoothBackend.disconnectRecord] Browser disconnect failed:',
+      expect.objectContaining({ message: 'disconnect failed' })
+    )
+  })
+
+  test('gatt.disconnect failure after successful subscription cleanup is still reported', async () => {
+    const testFixture = fixture()
+    const backend = await backendFixture(testFixture)
+    const { database, lease, snapshot } = await connectedDatabase(backend)
+    const subscription = await database.subscribe(snapshot.characteristics[0].path, subscriptionOptions())
+    await expect(subscription.remove()).resolves.toEqual({ state: 'released', failures: [] })
+    testFixture.setDisconnectFailures(1)
+    const result = await lease.release()
+    expect(result.state).toBe('release-failed')
+    expect(result.failures.some(failure => failure.resourceKind === 'connection')).toBe(true)
+    expectConsoleErrorMatching(
+      '[WebBluetoothBackend.disconnectRecord] Browser disconnect failed:',
+      expect.objectContaining({ message: 'disconnect failed' })
+    )
+  })
+
+  test('every subscription cleanup is attempted before the result is assembled', async () => {
+    const testFixture = fixture()
+    const backend = await backendFixture(testFixture)
+    const { database, lease, snapshot } = await connectedDatabase(backend)
+    await database.subscribe(snapshot.characteristics[0].path, subscriptionOptions())
+    await database.subscribe(snapshot.characteristics[1].path, subscriptionOptions())
+    testFixture.setStopFailures(2)
+    const result = await lease.release()
+    expect(result.state).toBe('release-failed')
+    expect(result.failures.filter(failure => failure.resourceKind === 'subscription').length).toBe(2)
+    expect(testFixture.gatt.connected).toBe(false)
+    expectConsoleErrorMatching(
+      '[WebBluetoothGattRuntime.stopManagedSubscription] Notification stop rejected:',
+      expect.objectContaining({ message: 'stop failed' })
+    )
+    expectConsoleErrorMatching(
+      '[WebBluetoothGattRuntime.stopManagedSubscription] Notification stop rejected:',
+      expect.objectContaining({ message: 'stop failed' })
+    )
+  })
+
+  test('retry repeats only unresolved subscription or physical-disconnect phases', async () => {
+    const testFixture = fixture()
+    const backend = await backendFixture(testFixture)
+    const { database, lease, snapshot } = await connectedDatabase(backend)
+    await database.subscribe(snapshot.characteristics[0].path, subscriptionOptions())
+    testFixture.setStopFailures(1)
+    testFixture.setDisconnectFailures(1)
+    await expect(lease.release()).resolves.toMatchObject({ state: 'release-failed' })
+    expectConsoleErrorMatching(
+      '[WebBluetoothGattRuntime.stopManagedSubscription] Notification stop rejected:',
+      expect.objectContaining({ message: 'stop failed' })
+    )
+    expectConsoleErrorMatching(
+      '[WebBluetoothBackend.disconnectRecord] Browser disconnect failed:',
+      expect.objectContaining({ message: 'disconnect failed' })
+    )
+    const disconnectsBeforeRetry = testFixture.gatt.connected
+    await expect(lease.release()).resolves.toEqual({ state: 'released', failures: [] })
+    expect(disconnectsBeforeRetry).toBe(true)
+    expect(testFixture.gatt.connected).toBe(false)
+  })
+
+  test('local connection and database generations invalidate at terminal disconnect', async () => {
+    const testFixture = fixture()
+    const backend = await backendFixture(testFixture)
+    const { database, lease } = await connectedDatabase(backend)
+    const generation = lease.connection.connectionGeneration
+    await lease.release()
+    expect(lease.connection.state).toBe('disconnected')
+    expect(lease.connection.connectionGeneration).toBe(generation)
+    await expect(database.snapshot()).rejects.toMatchObject({ normalized: { code: 'gatt.stale-handle' } })
+  })
+
+  test('concurrent release and remote disconnect share one terminal outcome', async () => {
+    const testFixture = fixture()
+    const backend = await backendFixture(testFixture)
+    const { lease } = await connectedDatabase(backend)
+    const remote = Promise.resolve().then(() => {
+      for (const listener of testFixture.disconnectListeners) listener()
+    })
+    const [releaseResult] = await Promise.all([lease.release(), remote])
+    expect(releaseResult.state).toBe('released')
+    expect(lease.connection.state === 'disconnected' || lease.connection.state === 'lost').toBe(true)
+  })
+
+  test('backend destroy retries unresolved phases and removes listeners and counters', async () => {
+    const testFixture = fixture()
+    const backend = await backendFixture(testFixture)
+    const { database, lease, snapshot } = await connectedDatabase(backend)
+    await database.subscribe(snapshot.characteristics[0].path, subscriptionOptions())
+    testFixture.setStopFailures(1)
+    testFixture.setDisconnectFailures(1)
+    await expect(lease.release()).resolves.toMatchObject({ state: 'release-failed' })
+    expectConsoleErrorMatching(
+      '[WebBluetoothGattRuntime.stopManagedSubscription] Notification stop rejected:',
+      expect.objectContaining({ message: 'stop failed' })
+    )
+    expectConsoleErrorMatching(
+      '[WebBluetoothBackend.disconnectRecord] Browser disconnect failed:',
+      expect.objectContaining({ message: 'disconnect failed' })
+    )
+    await expect(backend.destroy()).resolves.toEqual({ state: 'released', failures: [] })
+    expect(testFixture.disconnectListeners.size).toBe(0)
+    expect(backend.resourceCounters().connectionLeases).toBe(0)
   })
 })
