@@ -109,6 +109,15 @@ interface TrackedScan<Attachment extends string> extends CoreScanSession<Attachm
   activeDeadline: CoreDeadlineHandle | null
 }
 
+interface TrackedAdapterStateWatch<Attachment extends string> {
+  readonly initial: AdapterStateSnapshot<Attachment>
+  readonly values: BoundedAsyncStream<AdapterStateSnapshot<Attachment>>
+  stop(): Promise<CleanupRecord>
+  stopAttempt: Promise<CleanupRecord> | null
+  released: CleanupRecord | null
+  readonly onAbort: () => void
+}
+
 /**
  * One attached core owns the portable policy for one manager. It delegates only
  * radio mechanics to the negotiated backend and never imports a host runtime.
@@ -133,7 +142,7 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
   private resourceReleaseResult: Promise<CleanupRecord> | null = null
   private backendDestroyResult: Promise<CleanupRecord> | null = null
   private readonly discoveries = new Map<string, Promise<CoreGattDatabase<Attachment, Identity>>>()
-  private readonly adapterStateWatches = new Set<{ stop(): Promise<CleanupRecord> }>()
+  private readonly adapterStateWatches = new Set<TrackedAdapterStateWatch<Attachment>>()
   private admissionEpoch = 1
   private nextOperation = 1
 
@@ -281,22 +290,41 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
       await closeAdapterStateStream(watch.transitions)
       throw contractError('operation.aborted', 'adapter', 'adapter-states')
     }
-    const session = {
+    const session: TrackedAdapterStateWatch<Attachment> = {
       initial: watch.initial,
       values: watch.transitions,
-      stop: async (): Promise<CleanupRecord> => {
-        this.adapterStateWatches.delete(session)
-        return closeAdapterStateStream(watch.transitions)
+      stopAttempt: null,
+      released: null,
+      onAbort: () => {
+        this.lifecycleObserver.observeCleanup(session.stop(), 'adapter-states-abort-stop')
+      },
+      stop: (): Promise<CleanupRecord> => {
+        if (session.released !== null) {
+          return Promise.resolve(session.released)
+        }
+        if (session.stopAttempt !== null) {
+          return session.stopAttempt
+        }
+        const attempt = closeAdapterStateStream(watch.transitions)
+          .then(cleanup => {
+            if (cleanup.state === 'released') {
+              this.adapterStateWatches.delete(session)
+              session.released = cleanup
+            }
+            return cleanup
+          })
+          .finally(() => {
+            options.signal?.removeEventListener('abort', session.onAbort)
+            if (session.stopAttempt === attempt) {
+              session.stopAttempt = null
+            }
+          })
+        session.stopAttempt = attempt
+        return attempt
       }
     }
     this.adapterStateWatches.add(session)
-    options.signal?.addEventListener(
-      'abort',
-      () => {
-        this.lifecycleObserver.observeCleanup(session.stop(), 'adapter-states-abort-stop')
-      },
-      { once: true }
-    )
+    options.signal?.addEventListener('abort', session.onAbort, { once: true })
     return session
   }
 
