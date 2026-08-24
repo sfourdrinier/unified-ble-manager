@@ -37,11 +37,11 @@ export function rehydratePublicPromise<Value>(operation: Promise<Value>): Promis
 
 interface CleanupResultLike {
   readonly state: 'released' | 'release-failed'
-  readonly failures: CleanupRecord['failures']
+  readonly failures: PublicCleanupRecord['failures']
 }
 
 export function collectCleanupPhases(
-  results: readonly { readonly error?: unknown; readonly cleanup?: CleanupResultLike }[]
+  results: readonly { readonly error?: unknown; readonly cleanup?: Pick<CleanupRecord, 'state' | 'failures'> }[]
 ): CleanupRecord {
   const thrown: unknown[] = []
   const cleanupFailures: CleanupFailure[] = []

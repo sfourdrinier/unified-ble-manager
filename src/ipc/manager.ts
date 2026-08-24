@@ -225,7 +225,7 @@ export interface IpcDescriptorRecord extends SerializableRecord {
 }
 
 interface StreamSink {
-  readonly closeWithReason: (reason: 'owner-released' | 'source-failed' | 'connection-lost' | 'service-changed') => void
+  readonly closeWithReason: (reason: StreamTerminalNotice['reason']) => void
   readonly deliver: (streamId: string, item: SerializableRecord) => void
   readonly notifyOwnerTerminal: (reason: StreamTerminalNotice['reason']) => void
 }
@@ -471,7 +471,11 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
       throw contractError('operation.timed-out', 'ipc', `ipc-manager.${command}`)
     }
     const controller = new AbortController()
-    const forwardAbort = () => controller.abort()
+    let callerAborted = false
+    const forwardAbort = () => {
+      callerAborted = true
+      controller.abort()
+    }
     signal?.addEventListener('abort', forwardAbort, { once: true })
     let timedOut = false
     const timer = globalThis.setTimeout(
@@ -485,7 +489,7 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
       const receipt = await this.client.request({ command, payload, binaryPayload, signal: controller.signal })
       return receipt.payload
     } catch (error) {
-      if (timedOut && signal?.aborted !== true && error instanceof BackendContractError) {
+      if (timedOut && !callerAborted && error instanceof BackendContractError) {
         throw contractError('operation.timed-out', 'ipc', `ipc-manager.${command}`)
       }
       throw error
@@ -1158,13 +1162,13 @@ export class IpcConnection {
     if (this.lifecycleAdmission !== null) return this.lifecycleAdmission
     const admission = this.manager
       .subscribeConnectionEvents(this.handle, this.identityPayload(), this.admissionAbort.signal)
-      .then(subscription => {
+      .then(async subscription => {
         if (this.admissionAbort.signal.aborted || this.connectionReleased) {
-          return subscription.unsubscribe().then(cleanup => {
-            if (cleanup.state !== 'released') {
-              throw new BleCleanupError(cleanup)
-            }
-          })
+          const cleanup = await subscription.unsubscribe()
+          if (cleanup.state !== 'released') {
+            throw new BleCleanupError(cleanup)
+          }
+          return
         }
         this.lifecycleSubscription = subscription
         this.pumpLifecycleEvents(subscription).catch(() => {
