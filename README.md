@@ -279,6 +279,7 @@ after disconnect, service change, or rediscovery.
 | `createElectronRendererBleManager` / `createElectronRendererBleManagerWithEnvironment` | Public renderer `BleManager` over a preload transport; the renderer never loads a radio backend |
 | `createTauriBleManager`                                                                | Zero-plumbing Tauri `BleManager`; tests use `createTauriBleManagerWithEnvironment`              |
 | `createBleManagerFromProvider`                                                         | Advanced provider construction                                                                  |
+| `createPublicBleManagerFacade`                                                         | Projects an already-owned `/advanced` manager into the root public `BleManager`; creates no advanced manager, backend, or radio |
 
 ## Other hosts
 

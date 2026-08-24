@@ -209,6 +209,15 @@ function attachmentScope<Attachment extends string>(binding: AttachmentBinding<A
   }
   return values.map(value => String(value)).join(':')
 }
+
+/** Creates a peer identifier using the same attachment-bound scope as other runtime identifiers. */
+export function createAttachmentBoundPeerId<Attachment extends string>(
+  binding: AttachmentBinding<Attachment>,
+  value: string
+): PeerId<Attachment> {
+  return runtimeScopedOpaqueId<'peer', Attachment>(value, 'peer', attachmentScope(binding))
+}
+
 export function createAttachmentBoundIdFactory<Attachment extends string>(
   binding: AttachmentBinding<Attachment>
 ): AttachmentBoundIdFactory<Attachment> {

@@ -145,6 +145,7 @@ import {
   capacity,
   createBleManager,
   createManagerOwnershipAuthority,
+  createPublicBleManagerFacade,
   deadline,
   defaultScanDelivery,
   scanForServices,
@@ -177,6 +178,7 @@ import type {
 } from 'unified-ble-manager/advanced'
 import { createFeatureRegistry, runBackendTck } from 'unified-ble-manager/backend-sdk'
 import type {
+  AttachmentBoundIdFactory,
   BackendAuthoringDefinition,
   BleCentralBackend,
   CharacteristicPath,
@@ -276,6 +278,12 @@ declare const backendAuthor: BackendAuthoringDefinition<
   BleCentralBackend<string, HostNeutralBackendIdentity<string>>
 >
 declare const deterministicFixture: DeterministicBackendFixture
+declare const customAdvancedManager: BleManager<'custom-backend', HostNeutralBackendIdentity<'custom-backend'>>
+type ExistingThirdPartyIdFactoryShape<Attachment extends string> = {
+  [Key in Exclude<keyof AttachmentBoundIdFactory<Attachment>, 'peerId'>]: AttachmentBoundIdFactory<Attachment>[Key]
+}
+declare const thirdPartyIdFactory: ExistingThirdPartyIdFactoryShape<'custom-backend'>
+const acceptedThirdPartyIdFactory: AttachmentBoundIdFactory<'custom-backend'> = thirdPartyIdFactory
 declare const firstPartyRegistry: FirstPartyBackendTckRegistry
 declare const bluezFirstPartyTckOptions: BluezFirstPartyTckRegistrationOptions
 declare const deterministicBluezTckBoundary: DeterministicBluezTckBoundary
@@ -853,6 +861,8 @@ observe(scopedLongWriteTerminal.correlation)
 observe(normalizedError)
 observe(backendAuthor)
 observe(deterministicFixture)
+observe(acceptedThirdPartyIdFactory)
+observe(createPublicBleManagerFacade(customAdvancedManager, () => 0))
 observe(firstPartyRegistry)
 observe(deterministicBluezTckBoundary)
 observe(bluezNotificationInput)

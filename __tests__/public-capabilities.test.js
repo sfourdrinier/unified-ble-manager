@@ -1,4 +1,9 @@
 const { createPublicBleManager } = require('../src/public/ble-manager')
+const { opaqueId } = require('../src/backend-contract/primitives')
+
+function testManagerHostOptions() {
+  return { peerId: value => opaqueId(value, 'peer', 'public-capabilities-test') }
+}
 
 describe('public BleCapabilities', () => {
   test('rejects direct connections when the backend omits the direct capability descriptor', async () => {
@@ -55,7 +60,7 @@ describe('public BleCapabilities', () => {
       connect: jest.fn()
     }
 
-    const manager = await createPublicBleManager(internal, () => 0)
+    const manager = await createPublicBleManager(internal, () => 0, testManagerHostOptions())
 
     expect(manager.capabilities.supports('gatt:descriptors')).toBe(true)
     expect(manager.capabilities.supports('gatt:indications')).toBe(false)

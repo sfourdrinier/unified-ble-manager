@@ -158,6 +158,7 @@ export type { NormalizedBleError, FeatureRegistry, MaximumWriteLengthObservation
 - `createBleManagerFromProvider :: <Attachment extends string, Identity extends BackendIdentity<Attachment>>(construction: ProviderBleManagerConstruction<Attachment, Identity>, options: BleManagerOptions) => Promise<BleManager<Attachment, Identity>>`
 - `createEphemeralHostIdentity :: (input?: EphemeralIdentityInput) => EphemeralHostIdentity`
 - `createManagerOwnershipAuthority :: <Attachment extends string, Identity extends BackendIdentity<Attachment>>(attachedBackend: AttachedBackend<Attachment, Identity>) => ManagerOwnershipAuthority<Attachment, Identity>`
+- `createPublicBleManagerFacade :: <Attachment extends string, Identity extends BackendIdentity<Attachment>>(internal: BleManager<Attachment, Identity>, now: () => number) => Promise<BleManager>`
 - `deadline :: (value: number) => Deadline`
 - `decodePeerReference :: (value: string) => PeerReference`
 - `defaultScanDelivery :: () => Readonly<{ itemCapacity: Capacity; byteCapacity: Capacity; reservedControlCapacity: Capacity; overflowPolicy: "drop-oldest"; }>`

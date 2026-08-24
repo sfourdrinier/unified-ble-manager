@@ -4,6 +4,19 @@
 // ownership, and trace controls. Wraps the same implementation; does not fork
 // behavior from the application façade.
 
+import { createPublicBleManager } from './public/ble-manager'
+import type { BleManager as PublicBleManager } from './public/ble-manager'
+import type { BackendIdentity } from './backend-contract/identity'
+import type { BleManager as AdvancedBleManager } from './manager/ble-manager'
+
+/** Projects an already-owned advanced manager into the stable public façade. */
+export function createPublicBleManagerFacade<Attachment extends string, Identity extends BackendIdentity<Attachment>>(
+  internal: AdvancedBleManager<Attachment, Identity>,
+  now: () => number
+): Promise<PublicBleManager> {
+  return createPublicBleManager(internal, now)
+}
+
 export { deadline, capacity, byteLimit, canonicalUuid } from './backend-contract/primitives'
 export type {
   Deadline,

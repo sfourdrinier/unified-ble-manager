@@ -1,4 +1,9 @@
 const { createPublicBleManager } = require('../src/public/ble-manager')
+const { opaqueId } = require('../src/backend-contract/primitives')
+
+function testManagerHostOptions() {
+  return { peerId: value => opaqueId(value, 'peer', 'public-effective-mtu-test') }
+}
 
 function capability(state) {
   return { state, limitations: [{ code: 'test', explanation: 'test', affectedGuarantee: 'test' }] }
@@ -48,7 +53,7 @@ function createInternal() {
 describe('public effective MTU control', () => {
   test('returns unavailable before measurement and measured values after Android observation', async () => {
     const internal = createInternal()
-    const manager = await createPublicBleManager(internal.manager, () => 100)
+    const manager = await createPublicBleManager(internal.manager, () => 100, testManagerHostOptions())
     const connection = await manager.connect('peer-1')
 
     await expect(connection.controls.effectiveMtu()).resolves.toMatchObject({
