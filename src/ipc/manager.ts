@@ -44,6 +44,7 @@ import type { PeerReference } from '../backend-contract/peer-reference'
 import { snapshotScanPlan } from '../backend-contract/scan-planning'
 import type { ScanPlan } from '../backend-contract/scan-planning'
 import { normalizeScanQuery } from '../public/scan-query'
+import { collectCleanupPhases } from '../public/error-bridge'
 import { IpcBleClient } from './client'
 import { IPC_GATT_DATABASE_SCHEMA_VERSION } from './protocol'
 import type { IpcCapabilitySnapshotV2, IpcClientTransport } from './protocol'
@@ -78,6 +79,7 @@ export interface IpcPendingStreamAccounting {
   readonly pendingItemCount: number
   readonly pendingByteCount: number
   readonly tombstoneCount: number
+  readonly activeStreamHandles: readonly string[]
 }
 
 interface PendingStreamRecord {
@@ -216,6 +218,7 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
   private nextConnectionEventHandle = 1
   private lifecycle: 'active' | 'releasing' | 'released' = 'active'
   private releaseResult: Promise<CleanupRecord> | null = null
+  private readonly ownerCleanupFailures: unknown[] = []
 
   private constructor(
     private readonly client: IpcBleClient<Attachment, Client>,
@@ -352,21 +355,38 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
     this.releaseResult = this.client
       .destroy()
       .then(async cleanup => {
+        const ownerErrors = this.ownerCleanupFailures.splice(0)
         if (cleanup.state === 'released') {
-          this.lifecycle = 'released'
           for (const sink of this.streams.values()) sink.closeWithReason('owner-released')
           this.streams.clear()
           this.clearPendingAccounting()
           await this.eventPump
-        } else {
+        }
+        try {
+          const combined = collectCleanupPhases([
+            { cleanup },
+            ...ownerErrors.map(error => ({ error }))
+          ])
+          if (combined.state === 'released') {
+            this.lifecycle = 'released'
+          } else {
+            this.lifecycle = 'active'
+            this.releaseResult = null
+            this.ownerCleanupFailures.push(...ownerErrors)
+          }
+          return combined
+        } catch (error) {
+          this.lifecycle = 'active'
+          this.releaseResult = null
+          if (cleanup.state !== 'released') this.ownerCleanupFailures.push(...ownerErrors)
+          throw error
+        }
+      })
+      .catch(error => {
+        if (this.releaseResult !== null && this.lifecycle === 'releasing') {
           this.lifecycle = 'active'
           this.releaseResult = null
         }
-        return cleanup
-      })
-      .catch(error => {
-        this.lifecycle = 'active'
-        this.releaseResult = null
         throw error
       })
     return this.releaseResult
@@ -466,13 +486,17 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
         onTerminal?.(reason)
       }
     }
-    this.streams.set(handle, sink)
     if (tombstone !== undefined) {
       this.pendingTombstones.delete(handle)
-      source.finishWithReason(tombstone.reason)
-      onTerminal?.(tombstone.reason)
+      source.closeWithReason(tombstone.reason)
+      try {
+        onTerminal?.(tombstone.reason)
+      } catch (error) {
+        this.ownerCleanupFailures.push(error)
+      }
       return source
     }
+    this.streams.set(handle, sink)
     const pending = this.takePendingStream(handle)
     const pendingOverflow = this.pendingStreamOverflows.get(handle)
     this.pendingStreamOverflows.delete(handle)
@@ -667,7 +691,8 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
       pendingIdCount: this.pendingStreams.size,
       pendingItemCount,
       pendingByteCount,
-      tombstoneCount: this.pendingTombstones.size
+      tombstoneCount: this.pendingTombstones.size,
+      activeStreamHandles: Object.freeze([...this.streams.keys()])
     }
   }
 
