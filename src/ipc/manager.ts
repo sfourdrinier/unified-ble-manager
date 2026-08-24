@@ -44,7 +44,7 @@ import type { PeerReference } from '../backend-contract/peer-reference'
 import { snapshotScanPlan } from '../backend-contract/scan-planning'
 import type { ScanPlan } from '../backend-contract/scan-planning'
 import { normalizeScanQuery } from '../public/scan-query'
-import { collectCleanupPhases } from '../public/error-bridge'
+import { BleCleanupError, collectCleanupPhases } from '../public/error-bridge'
 import { IpcBleClient } from './client'
 import { IPC_GATT_DATABASE_SCHEMA_VERSION } from './protocol'
 import type { IpcCapabilitySnapshotV2, IpcClientTransport } from './protocol'
@@ -94,6 +94,7 @@ interface PendingStreamTombstone {
 }
 
 const ipcPendingInspectors = new WeakMap<IpcBleManager, () => IpcPendingStreamAccounting>()
+const ipcProvisionalInspectors = new WeakMap<IpcBleManager, () => IpcProvisionalAdmissionAccounting>()
 
 export function inspectIpcPendingStreamAccountingForTests(manager: IpcBleManager): IpcPendingStreamAccounting {
   const inspect = ipcPendingInspectors.get(manager)
@@ -101,6 +102,33 @@ export function inspectIpcPendingStreamAccountingForTests(manager: IpcBleManager
     throw contractError('argument.invalid', 'ipc', 'ipc-manager.pending-inspect')
   }
   return inspect()
+}
+
+export interface IpcProvisionalAdmissionAccounting {
+  readonly unresolvedConnectionCount: number
+  readonly unresolvedEventSubscriptionCount: number
+}
+
+export function inspectIpcProvisionalAdmissionForTests(manager: IpcBleManager): IpcProvisionalAdmissionAccounting {
+  const inspect = ipcProvisionalInspectors.get(manager)
+  if (inspect === undefined) {
+    throw contractError('argument.invalid', 'ipc', 'ipc-manager.provisional-inspect')
+  }
+  return inspect()
+}
+
+interface ProvisionalConnectIdentity {
+  readonly handle: string | null
+  readonly peerId: string | null
+  readonly ownerLeaseId: string | null
+  readonly connectionId: string | null
+  readonly connectionGeneration: string | null
+}
+
+interface UnresolvedProvisional {
+  readonly kind: 'connection' | 'connection-events'
+  retry: () => Promise<CleanupRecord>
+  error: unknown | null
 }
 
 export interface IpcManagerOperationOptions {
@@ -221,6 +249,7 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
   private readonly ownerCleanupLedger: { run: () => void; error: unknown | null }[] = []
   private pumpDead = false
   private pumpFailure: unknown | null = null
+  private readonly unresolvedProvisionals: UnresolvedProvisional[] = []
 
   private constructor(
     private readonly client: IpcBleClient<Attachment, Client>,
@@ -236,6 +265,7 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
       }
     )
     ipcPendingInspectors.set(this, () => this.pendingAccounting())
+    ipcProvisionalInspectors.set(this, () => this.provisionalAdmissionAccounting())
   }
 
   static async create<Attachment extends string, Client extends string>(
@@ -342,63 +372,72 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
       null,
       options.signal
     )
-    const returnedPeerId = requiredString(payload, 'peerId', 'ipc-manager.connect')
-    const returnedOwnerLeaseId = requiredString(payload, 'ownerLeaseId', 'ipc-manager.connect')
-    if (returnedPeerId !== peerId || returnedOwnerLeaseId !== String(this.bootstrap.rendererLease.leaseId)) {
-      throw contractError('protocol.violation', 'ipc', 'ipc-manager.connect-identity')
+    const provisional = decodeProvisionalConnectIdentity(payload)
+    const admissionError = validateProvisionalConnectIdentity(
+      provisional,
+      peerId,
+      String(this.bootstrap.rendererLease.leaseId)
+    )
+    if (admissionError !== null) {
+      await this.compensateFailedConnect(provisional, admissionError)
+    }
+    if (
+      provisional.handle === null ||
+      provisional.peerId === null ||
+      provisional.ownerLeaseId === null ||
+      provisional.connectionId === null ||
+      provisional.connectionGeneration === null
+    ) {
+      throw contractError('protocol.malformed', 'ipc', 'ipc-manager.connect')
     }
     return new IpcConnection(
       this,
-      requiredString(payload, 'handle', 'ipc-manager.connect'),
-      returnedPeerId,
-      requiredString(payload, 'connectionId', 'ipc-manager.connect'),
-      returnedOwnerLeaseId,
-      requiredString(payload, 'connectionGeneration', 'ipc-manager.connect')
+      provisional.handle,
+      provisional.peerId,
+      provisional.connectionId,
+      provisional.ownerLeaseId,
+      provisional.connectionGeneration
     )
   }
 
   destroy(): Promise<CleanupRecord> {
     if (this.lifecycle === 'released') return Promise.resolve({ state: 'released', failures: [] })
     if (this.releaseResult !== null) return this.releaseResult
-    this.lifecycle = 'releasing'
-    this.releaseResult = this.client
-      .destroy()
-      .then(async cleanup => {
-        if (cleanup.state === 'released') {
-          for (const sink of this.streams.values()) sink.closeWithReason('owner-released')
-          this.streams.clear()
-          this.clearPendingAccounting()
-          await this.eventPump.catch(() => undefined)
-        }
-        const ownerPhases = this.flushOwnerCleanupLedger()
-        try {
-          const combined = collectCleanupPhases([
-            { cleanup },
-            ...(this.pumpFailure === null ? [] : [{ error: this.pumpFailure }]),
-            ...ownerPhases
-          ])
-          if (combined.state === 'released' && ownerPhases.length === 0 && this.pumpFailure === null) {
-            this.lifecycle = 'released'
-            this.pumpFailure = null
-          } else {
-            this.lifecycle = 'active'
-            this.releaseResult = null
-          }
-          return combined
-        } catch (error) {
-          this.lifecycle = 'active'
-          this.releaseResult = null
-          throw error
-        }
-      })
-      .catch(error => {
-        if (this.releaseResult !== null && this.lifecycle === 'releasing') {
-          this.lifecycle = 'active'
-          this.releaseResult = null
-        }
-        throw error
-      })
+    this.releaseResult = this.runDestroy()
     return this.releaseResult
+  }
+
+  private async runDestroy(): Promise<CleanupRecord> {
+    const provisionalPhases = await this.flushUnresolvedProvisionals()
+    this.lifecycle = 'releasing'
+    try {
+      const cleanup = await this.client.destroy()
+      if (cleanup.state === 'released') {
+        for (const sink of this.streams.values()) sink.closeWithReason('owner-released')
+        this.streams.clear()
+        this.clearPendingAccounting()
+        await this.eventPump.catch(() => undefined)
+      }
+      const ownerPhases = this.flushOwnerCleanupLedger()
+      const combined = collectCleanupPhases([
+        { cleanup },
+        ...(this.pumpFailure === null ? [] : [{ error: this.pumpFailure }]),
+        ...ownerPhases,
+        ...provisionalPhases
+      ])
+      if (combined.state === 'released' && ownerPhases.length === 0 && this.pumpFailure === null) {
+        this.lifecycle = 'released'
+        this.pumpFailure = null
+      } else {
+        this.lifecycle = 'active'
+        this.releaseResult = null
+      }
+      return combined
+    } catch (error) {
+      this.lifecycle = 'active'
+      this.releaseResult = null
+      throw error
+    }
   }
 
   async route(
@@ -545,10 +584,7 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
     const response = await this.route('connection.events.subscribe', payload)
     const validation = validateConnectionEventResponse(response, handle, identity)
     if (validation !== null) {
-      await this.route('connection.events.unsubscribe', Object.freeze({ connectionEventsHandle: handle })).catch(
-        () => undefined
-      )
-      throw validation
+      await this.compensateFailedEventAdmission(handle, validation)
     }
     const events = this.registerStream(handle, isIpcConnectionLifecycleEvent, undefined, undefined, reason => {
       if (reason === 'overflow' || reason === 'source-failed') {
@@ -564,10 +600,7 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
       }
     } catch (error) {
       this.closeStream(handle, 'source-failed')
-      await this.route('connection.events.unsubscribe', Object.freeze({ connectionEventsHandle: handle })).catch(
-        () => undefined
-      )
-      throw error
+      await this.compensateFailedEventAdmission(handle, error)
     }
     return {
       events,
@@ -852,6 +885,100 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
       throw new TypeError('Tauri BLE manager has been released')
     }
   }
+
+  async retryUnresolvedAdmissionCleanup(): Promise<{ readonly error?: unknown; readonly cleanup?: CleanupRecord }[]> {
+    return this.flushUnresolvedProvisionals()
+  }
+
+  private provisionalAdmissionAccounting(): IpcProvisionalAdmissionAccounting {
+    let unresolvedConnectionCount = 0
+    let unresolvedEventSubscriptionCount = 0
+    for (const entry of this.unresolvedProvisionals) {
+      if (entry.error === null) continue
+      if (entry.kind === 'connection') unresolvedConnectionCount += 1
+      else unresolvedEventSubscriptionCount += 1
+    }
+    return { unresolvedConnectionCount, unresolvedEventSubscriptionCount }
+  }
+
+  private async compensateFailedConnect(
+    provisional: ProvisionalConnectIdentity,
+    admissionError: unknown
+  ): Promise<never> {
+    if (provisional.handle === null) {
+      this.unresolvedProvisionals.push({
+        kind: 'connection',
+        retry: async () => ({ state: 'released', failures: [] }),
+        error: admissionError
+      })
+      throw admissionError
+    }
+    const disconnectPayload = Object.freeze({
+      connectionHandle: provisional.handle,
+      ...(provisional.peerId === null ? {} : { peerId: provisional.peerId }),
+      ...(provisional.ownerLeaseId === null ? {} : { ownerLeaseId: provisional.ownerLeaseId }),
+      ...(provisional.connectionId === null ? {} : { connectionId: provisional.connectionId }),
+      ...(provisional.connectionGeneration === null ? {} : { connectionGeneration: provisional.connectionGeneration })
+    })
+    const retry = async (): Promise<CleanupRecord> =>
+      cleanupRecord(await this.route('connection.disconnect', disconnectPayload))
+    try {
+      const cleanup = await retry()
+      if (cleanup.state === 'released') throw admissionError
+      this.unresolvedProvisionals.push({ kind: 'connection', retry, error: new BleCleanupError(cleanup) })
+      throw new AggregateError([admissionError, new BleCleanupError(cleanup)], 'BLE cleanup failed')
+    } catch (error) {
+      if (error === admissionError) throw admissionError
+      if (error instanceof AggregateError) throw error
+      this.unresolvedProvisionals.push({ kind: 'connection', retry, error })
+      throw new AggregateError([admissionError, error], 'BLE cleanup failed')
+    }
+  }
+
+  private async compensateFailedEventAdmission(handle: string, admissionError: unknown): Promise<never> {
+    const retry = async (): Promise<CleanupRecord> =>
+      cleanupRecord(
+        await this.route('connection.events.unsubscribe', Object.freeze({ connectionEventsHandle: handle }))
+      )
+    try {
+      const cleanup = await retry()
+      if (cleanup.state === 'released') throw admissionError
+      this.unresolvedProvisionals.push({
+        kind: 'connection-events',
+        retry,
+        error: new BleCleanupError(cleanup)
+      })
+      throw new AggregateError([admissionError, new BleCleanupError(cleanup)], 'BLE cleanup failed')
+    } catch (error) {
+      if (error === admissionError) throw admissionError
+      if (error instanceof AggregateError) throw error
+      this.unresolvedProvisionals.push({ kind: 'connection-events', retry, error })
+      throw new AggregateError([admissionError, error], 'BLE cleanup failed')
+    }
+  }
+
+  private async flushUnresolvedProvisionals(): Promise<
+    { readonly error?: unknown; readonly cleanup?: CleanupRecord }[]
+  > {
+    const phases: { readonly error?: unknown; readonly cleanup?: CleanupRecord }[] = []
+    for (const entry of this.unresolvedProvisionals) {
+      if (entry.error === null) continue
+      try {
+        const cleanup = await entry.retry()
+        if (cleanup.state === 'released') {
+          entry.error = null
+          phases.push({ cleanup })
+        } else {
+          entry.error = new BleCleanupError(cleanup)
+          phases.push({ cleanup })
+        }
+      } catch (error) {
+        entry.error = error
+        phases.push({ error })
+      }
+    }
+    return phases
+  }
 }
 
 const REMOTE_SECURITY_CAPABILITY_IDS = new Set<string>([
@@ -1124,6 +1251,11 @@ export class IpcConnection {
     }
     const failures: CleanupFailure[] = []
     let disconnectError: unknown = null
+    const provisionalPhases = await this.manager.retryUnresolvedAdmissionCleanup()
+    for (const phase of provisionalPhases) {
+      if (phase.error !== undefined) failures.push(cleanupFailureFromUnknown('connection-events', phase.error))
+      else if (phase.cleanup?.state === 'release-failed') failures.push(...phase.cleanup.failures)
+    }
     if (!this.lifecycleReleased && this.lifecycleSubscription !== null) {
       try {
         const cleanup = await this.lifecycleSubscription.unsubscribe()
@@ -2072,6 +2204,42 @@ function lifecycleEventValue(value: unknown): SerializableRecord {
     throw contractError('protocol.malformed', 'ipc', 'ipc-manager.connection-lifecycle')
   }
   return value
+}
+
+function optionalNonEmptyString(value: unknown): string | null {
+  return typeof value === 'string' && value.length > 0 ? value : null
+}
+
+function decodeProvisionalConnectIdentity(payload: SerializableRecord): ProvisionalConnectIdentity {
+  return {
+    handle: optionalNonEmptyString(payload.handle),
+    peerId: optionalNonEmptyString(payload.peerId),
+    ownerLeaseId: optionalNonEmptyString(payload.ownerLeaseId),
+    connectionId: optionalNonEmptyString(payload.connectionId),
+    connectionGeneration: optionalNonEmptyString(payload.connectionGeneration)
+  }
+}
+
+function validateProvisionalConnectIdentity(
+  provisional: ProvisionalConnectIdentity,
+  requestedPeerId: string,
+  ownerLeaseId: string
+): BackendContractError | null {
+  if (provisional.handle === null) {
+    return contractError('protocol.malformed', 'ipc', 'ipc-manager.connect-handle')
+  }
+  if (
+    provisional.peerId === null ||
+    provisional.ownerLeaseId === null ||
+    provisional.connectionId === null ||
+    provisional.connectionGeneration === null
+  ) {
+    return contractError('protocol.malformed', 'ipc', 'ipc-manager.connect-identity')
+  }
+  if (provisional.peerId !== requestedPeerId || provisional.ownerLeaseId !== ownerLeaseId) {
+    return contractError('protocol.violation', 'ipc', 'ipc-manager.connect-identity')
+  }
+  return null
 }
 
 function validateConnectionEventResponse(
