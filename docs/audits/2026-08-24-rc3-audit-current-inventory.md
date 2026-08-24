@@ -53,7 +53,7 @@ Addressed in this branch (with tests where they are unit-reproducible):
 
 Closed on this branch after the remaining TDD pass:
 
-- RB-03 signature-aware API report gate (`scripts/docs/check-api-reports.js` compares `name :: signature`; `etc/api/*.api.md` regenerated)
+- RB-03 signature-aware API report gate (`scripts/docs/check-api-reports.js` resolves type-only aliases and compares `name :: signature` including interface members; `etc/api/*.api.md` regenerated)
 - P1-07 `ConnectionSupervisor.stop()` returns `release-failed` while late configure still owns the session; a later `stop()` after late work succeeds returns `released`
 - P1-13 included-service resolve + boolean characteristic property schema
 - P1-04 remaining MTU integer, write-length identity/mode, and PHY enum echo validation

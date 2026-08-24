@@ -16,33 +16,33 @@ export function isElectronConnectionEventsStreamHandle(handle: string): boolean
 - `ELECTRON_BLE_IPC_CHANNEL :: "unified-ble-manager:v2"`
 - `ELECTRON_CONNECTION_EVENTS_STREAM_HANDLE_PREFIX :: "connection-events-"`
 - `ELECTRON_CONNECTION_LIFECYCLE_EVENT_SCHEMA_VERSION :: 2`
-- `ElectronAdapterRecordV2 :: any`
-- `ElectronAdapterStateV2 :: any`
-- `ElectronAttachmentRecordV2 :: any`
-- `ElectronBleIpcEvent :: any`
-- `ElectronBleIpcRequest :: any`
-- `ElectronBleIpcResponse :: any`
-- `ElectronBleIpcSuccessResponse :: any`
-- `ElectronBootstrapRequest :: any`
-- `ElectronBootstrapResponse :: any`
-- `ElectronConnectionEventCleanupReceipt :: any`
-- `ElectronConnectionEventSubscription :: any`
-- `ElectronConnectionEventsSubscribeResponseV2 :: any`
-- `ElectronConnectionLifecycleEventV2 :: any`
-- `ElectronDiscoveryDescriptor :: any`
-- `ElectronEventAcknowledgeRequest :: any`
-- `ElectronEventAcknowledgeResponse :: any`
-- `ElectronFailureResponse :: any`
-- `ElectronIpcOperationReceipt :: any`
-- `ElectronIpcOperationRequest :: any`
-- `ElectronReleaseRequest :: any`
-- `ElectronReleaseResponse :: any`
+- `ElectronAdapterRecordV2 :: { readonly adapterId: string; readonly displayName: string | null; readonly state: IpcAdapterStateV2; readonly adapterGeneration: string; readonly limitations: readonly string[] }`
+- `ElectronAdapterStateV2 :: { readonly availability: "unknown" | "unavailable" | "unsupported" | "available"; readonly authorization: "unknown" | "unavailable" | "granted" | "denied" | "restricted" | "not-determined"; readonly power: "unknown" | "unsupported" | "on" | "off" | "resetting"; readonly backendGeneration: string; readonly updatedAt: number; readonly safeReason: string | null }`
+- `ElectronAttachmentRecordV2 :: { readonly attachmentId: string; readonly backendInstanceId: string; readonly backendGeneration: string; readonly adapter: IpcAdapterRecordV2 }`
+- `ElectronBleIpcEvent :: { readonly rendererLease: RendererLeaseIdentity; readonly eventId: string; readonly streamId: string; readonly item: SerializableRecord }`
+- `ElectronBleIpcRequest :: IpcBootstrapRequest | IpcRouteRequest<Attachment, Client, Operation> | IpcReleaseRequest | IpcEventAcknowledgeRequest`
+- `ElectronBleIpcResponse :: IpcBleSuccessResponse<Attachment, Client> | IpcFailureResponse`
+- `ElectronBleIpcSuccessResponse :: IpcBootstrapResponse<Attachment, Client> | IpcRouteResponse | IpcReleaseResponse | IpcEventAcknowledgeResponse`
+- `ElectronBootstrapRequest :: { readonly kind: "bootstrap"; readonly offer: IpcCompatibilityOffer }`
+- `ElectronBootstrapResponse :: { readonly kind: "bootstrap"; readonly bootstrap: IpcClientBootstrap<Attachment, Client> }`
+- `ElectronConnectionEventCleanupReceipt :: { readonly state: "released" | "release-failed"; readonly failureCount: number }`
+- `ElectronConnectionEventSubscription :: { readonly handle: string; readonly events: BoundedAsyncStream<IpcConnectionLifecycleEventV2>; unsubscribe(): Promise<ElectronConnectionEventCleanupReceipt> }`
+- `ElectronConnectionEventsSubscribeResponseV2 :: { readonly handle: string; readonly connectionId: string; readonly connectionGeneration: string; readonly eventSchemaVersion: 2 }`
+- `ElectronConnectionLifecycleEventV2 :: { readonly kind: "connection-lifecycle"; readonly schemaVersion: 2; readonly attachment: IpcAttachmentRecordV2; readonly attachmentId: string; readonly peerId: string; readonly connectionId: string; readonly connectionGeneration: string; readonly ownerLeaseId: string; readonly sequence: number; readonly backendIngressOrdinal: number | null; readonly previous: ConnectionState; readonly current: ConnectionState; readonly cause: ConnectionLifecycleCause }`
+- `ElectronDiscoveryDescriptor :: { readonly kind: "continuous-scan" | "system-chooser" | "hybrid" }`
+- `ElectronEventAcknowledgeRequest :: { readonly kind: "event.ack"; readonly rendererLease: RendererLeaseIdentity; readonly eventId: string }`
+- `ElectronEventAcknowledgeResponse :: { readonly kind: "event.ack" }`
+- `ElectronFailureResponse :: { readonly kind: "failure"; readonly error: NormalizedBleError }`
+- `ElectronIpcOperationReceipt :: { readonly correlation: IpcOperationCorrelation<string, string>; readonly payload: SerializableRecord }`
+- `ElectronIpcOperationRequest :: { readonly command: string; readonly payload: SerializableRecord; readonly binaryPayload: Uint8Array<ArrayBufferLike> | null; readonly signal: AbortSignal | null }`
+- `ElectronReleaseRequest :: { readonly kind: "release"; readonly rendererLease: RendererLeaseIdentity }`
+- `ElectronReleaseResponse :: { readonly kind: "release"; readonly cleanup: CleanupRecord }`
 - `ElectronRendererBleClient :: typeof ElectronRendererBleClient`
-- `ElectronRendererBleManagerEnvironment :: any`
-- `ElectronRendererBootstrap :: any`
-- `ElectronRendererIpcTransport :: any`
-- `ElectronRouteRequest :: any`
-- `ElectronRouteResponse :: any`
+- `ElectronRendererBleManagerEnvironment :: { readonly transport: IpcClientTransport<string, string> }`
+- `ElectronRendererBootstrap :: { readonly attachment: AttachmentRecord<Attachment>; readonly attachmentId: AttachmentId<Attachment>; readonly versions: IpcVersionAxes; readonly capabilities: CapabilitySnapshot; readonly discovery?: IpcDiscoveryDescriptor | undefined; readonly renderer: IpcClientIdentity<Attachment, Client>; readonly rendererLease: RendererLeaseIdentity }`
+- `ElectronRendererIpcTransport :: { invoke<Operation extends string>(request: IpcBleRequest<Attachment, Client, Operation>): Promise<IpcBleResponse<Attachment, Client>>; subscribe(listener: (event: IpcBleEvent) => void): () => void; acknowledge(rendererLease: RendererLeaseIdentity, eventId: string): Promise<IpcEventAcknowledgeResponse | IpcFailureResponse> }`
+- `ElectronRouteRequest :: { readonly kind: "route"; readonly envelope: IpcEnvelope<Attachment, Client, Operation>; readonly signal?: AbortSignal | null | undefined }`
+- `ElectronRouteResponse :: { readonly kind: "route"; readonly payload: SerializableRecord }`
 - `assertElectronAdvertisementObservation :: (value: unknown) => asserts value is AdvertisementObservation<string>`
 - `createElectronRendererBleManager :: (environment: ElectronRendererBleManagerEnvironment) => Promise<BleManager>`
 - `createElectronRendererBleManagerWithEnvironment :: (environment: ElectronRendererBleManagerEnvironment) => Promise<BleManager>`

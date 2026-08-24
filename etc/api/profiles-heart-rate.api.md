@@ -7,8 +7,8 @@
 - `HEART_RATE_CONTROL_POINT_CHARACTERISTIC :: Uuid`
 - `HEART_RATE_MEASUREMENT_CHARACTERISTIC :: Uuid`
 - `HEART_RATE_SERVICE :: Uuid`
-- `HeartRateContact :: HeartRateContact`
-- `HeartRateMeasurement :: HeartRateMeasurement`
+- `HeartRateContact :: "unsupported" | "not-detected" | "detected"`
+- `HeartRateMeasurement :: { readonly beatsPerMinute: number; readonly contact: HeartRateContact; readonly energyExpendedKilojoules: number | null; readonly rrIntervalsSeconds: readonly number[] }`
 - `bodySensorLocationSelector :: (options?: CharacteristicSelectorOptions) => CharacteristicSelector`
 - `encodeResetEnergyExpended :: () => Uint8Array<ArrayBufferLike>`
 - `heartRateControlPointSelector :: (options?: CharacteristicSelectorOptions) => CharacteristicSelector`

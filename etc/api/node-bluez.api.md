@@ -6,24 +6,24 @@
 - `BLUEZ_BACKEND_ID :: "unified-ble:bluez-dbus"`
 - `BLUEZ_IMPLEMENTATION_VERSION :: "4.0.0-rc.4"`
 - `BLUEZ_PLATFORM_ID :: "unified-ble:linux-bluez"`
-- `BluezBackendProviderOptions :: any`
-- `BluezBleManagerAppOptions :: BluezBleManagerAppOptions`
-- `BluezBusKind :: any`
-- `BluezDbusBoundary :: any`
-- `BluezDbusBoundaryFactory :: any`
-- `BluezDbusErrorDetail :: any`
-- `BluezInterfacesAdded :: any`
-- `BluezInterfacesRemoved :: any`
-- `BluezManagedInterface :: any`
-- `BluezManagedObject :: any`
-- `BluezMethodBoundary :: any`
-- `BluezObjectManagerBoundary :: any`
-- `BluezProperties :: any`
-- `BluezPropertiesChanged :: any`
-- `BluezVariant :: any`
+- `BluezBackendProviderOptions :: { readonly busKind: BluezBusKind; readonly boundaryFactory: BluezDbusBoundaryFactory; readonly now: () => number }`
+- `BluezBleManagerAppOptions :: { readonly busKind?: BluezBusKind | undefined; readonly now?: (() => number) | undefined; readonly instanceId?: string | undefined; readonly adapterId?: string | undefined; readonly diagnostics?: DiagnosticsOptions | undefined; readonly restoration?: { readonly restorationId: string; readonly generation?: string | undefined; } | undefined }`
+- `BluezBusKind :: "system" | "session"`
+- `BluezDbusBoundary :: { readonly busKind: BluezBusKind; readonly objectManager: BluezObjectManagerBoundary; readonly methods: BluezMethodBoundary; onReset(listener: (reason: string) => void): BluezListener; close(): Promise<void> }`
+- `BluezDbusBoundaryFactory :: { open(busKind: BluezBusKind): Promise<BluezDbusBoundary> }`
+- `BluezDbusErrorDetail :: { readonly name: string; readonly message: string; readonly safeDetails: BluezProperties }`
+- `BluezInterfacesAdded :: { readonly ordinal: number; readonly path: string; readonly interfaces: readonly BluezManagedInterface[] }`
+- `BluezInterfacesRemoved :: { readonly ordinal: number; readonly path: string; readonly interfaces: readonly string[] }`
+- `BluezManagedInterface :: { readonly name: string; readonly properties: BluezProperties }`
+- `BluezManagedObject :: { readonly path: string; readonly interfaces: readonly BluezManagedInterface[] }`
+- `BluezMethodBoundary :: { callVoid(path: string, interfaceName: string, method: string, argumentsValue: readonly BluezVariant[]): Promise<void>; callBytes(path: string, interfaceName: string, method: string, options: BluezMethodOptions): Promise<Uint8Array<ArrayBufferLike>> }`
+- `BluezObjectManagerBoundary :: { getManagedObjects(): Promise<readonly BluezManagedObject[]>; onInterfacesAdded(listener: (event: BluezInterfacesAdded) => void): BluezListener; onInterfacesRemoved(listener: (event: BluezInterfacesRemoved) => void): BluezListener; onPropertiesChanged(listener: (event: BluezPropertiesChanged) => void): BluezListener }`
+- `BluezProperties :: { }`
+- `BluezPropertiesChanged :: { readonly ordinal: number; readonly path: string; readonly interfaceName: string; readonly changed: BluezProperties; readonly invalidated: readonly string[] }`
+- `BluezVariant :: { readonly signature: "s" | "o"; readonly value: string; } | { readonly signature: "b"; readonly value: boolean; } | { readonly signature: "n" | "q" | "i" | "u" | "x" | "t" | "d"; readonly value: number; } | { readonly signature: "ay"; readonly value: Uint8Array<ArrayBufferLike>; } | { readonly signature: "as" | "ao"; readonly value: readonly string[]; } | { readonly signature: "a{sv}"; readonly value: BluezProperties; }`
 - `DbusNextBluezBoundaryFactory :: typeof DbusNextBluezBoundaryFactory`
-- `DbusNextBluezProviderOptions :: DbusNextBluezProviderOptions`
-- `NodeBleManagerAppOptions :: any`
+- `DbusNextBluezProviderOptions :: { readonly busKind: BluezBusKind; readonly now: () => number }`
+- `NodeBleManagerAppOptions :: { readonly now?: (() => number) | undefined; readonly instanceId?: string | undefined; readonly adapterId?: string | undefined; readonly diagnostics?: DiagnosticsOptions | undefined; readonly restoration?: { readonly restorationId: string; readonly generation?: string | undefined; } | undefined }`
 - `bluezCompatibility :: BackendCompatibilityOffer`
 - `createBluezBackendProvider :: (options: BluezBackendProviderOptions) => BackendProvider<string, HostNeutralBackendIdentity<string>>`
 - `createBluezBleManager :: (options?: BluezBleManagerAppOptions) => Promise<BleManager>`

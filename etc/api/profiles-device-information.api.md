@@ -4,17 +4,17 @@
 <!-- entrypoint: ./profiles/device-information; source: src/profiles/device-information.ts -->
 
 - `DEVICE_INFORMATION_SERVICE :: Uuid`
-- `DeviceInformationStringField :: DeviceInformationStringField`
+- `DeviceInformationStringField :: "manufacturer-name" | "model-number" | "serial-number" | "hardware-revision" | "firmware-revision" | "software-revision"`
 - `FIRMWARE_REVISION_CHARACTERISTIC :: Uuid`
 - `HARDWARE_REVISION_CHARACTERISTIC :: Uuid`
 - `MANUFACTURER_NAME_CHARACTERISTIC :: Uuid`
 - `MODEL_NUMBER_CHARACTERISTIC :: Uuid`
 - `PNP_ID_CHARACTERISTIC :: Uuid`
-- `PnpId :: PnpId`
+- `PnpId :: { readonly vendorIdSource: "bluetooth-sig" | "usb-implementers-forum"; readonly vendorId: number; readonly productId: number; readonly productVersion: number }`
 - `SERIAL_NUMBER_CHARACTERISTIC :: Uuid`
 - `SOFTWARE_REVISION_CHARACTERISTIC :: Uuid`
 - `SYSTEM_ID_CHARACTERISTIC :: Uuid`
-- `SystemId :: SystemId`
+- `SystemId :: { readonly manufacturerIdentifier: bigint; readonly organizationallyUniqueIdentifier: number }`
 - `decodeDeviceInformationString :: (bytes: Readonly<Uint8Array<ArrayBufferLike>>) => string`
 - `deviceInformationStringSelector :: (field: DeviceInformationStringField, options?: CharacteristicSelectorOptions) => CharacteristicSelector`
 - `parsePnpId :: (bytes: Readonly<Uint8Array<ArrayBufferLike>>) => PnpId`

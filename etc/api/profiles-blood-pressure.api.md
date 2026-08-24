@@ -6,7 +6,7 @@
 - `BLOOD_PRESSURE_FEATURE_CHARACTERISTIC :: Uuid`
 - `BLOOD_PRESSURE_MEASUREMENT_CHARACTERISTIC :: Uuid`
 - `BLOOD_PRESSURE_SERVICE :: Uuid`
-- `BloodPressureMeasurement :: BloodPressureMeasurement`
+- `BloodPressureMeasurement :: { readonly unit: "millimetres-of-mercury" | "kilopascals"; readonly systolic: Ieee11073Value; readonly diastolic: Ieee11073Value; readonly meanArterialPressure: Ieee11073Value; readonly timestamp: BluetoothDateTime | null; readonly pulseRate: Ieee11073Value | null; readonly userId: number | null; readonly userIdIsUnknown: boolean; readonly measurementStatus: number | null }`
 - `INTERMEDIATE_CUFF_PRESSURE_CHARACTERISTIC :: Uuid`
 - `bloodPressureMeasurementSelector :: (options?: CharacteristicSelectorOptions) => CharacteristicSelector`
 - `intermediateCuffPressureSelector :: (options?: CharacteristicSelectorOptions) => CharacteristicSelector`

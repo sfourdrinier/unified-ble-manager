@@ -68,13 +68,74 @@ function moduleExports(sourcePaths) {
   return result
 }
 
+function canonicalizeSignature(text) {
+  return text.replace(/\s+/g, ' ').replaceAll('`', "'")
+}
+
+function resolvedExportSymbol(checker, exported) {
+  return exported.flags & ts.SymbolFlags.Alias ? checker.getAliasedSymbol(exported) : exported
+}
+
+function isReadonlyProperty(symbol) {
+  return (symbol.getDeclarations() ?? []).some(declaration => {
+    if (
+      !ts.isPropertySignature(declaration) &&
+      !ts.isPropertyDeclaration(declaration) &&
+      !ts.isMethodSignature(declaration)
+    ) {
+      return false
+    }
+    return (ts.getCombinedModifierFlags(declaration) & ts.ModifierFlags.Readonly) !== 0
+  })
+}
+
+function propertySignature(checker, property, flags) {
+  const optional = property.flags & ts.SymbolFlags.Optional ? '?' : ''
+  const readonly = isReadonlyProperty(property) ? 'readonly ' : ''
+  const name = property.getName()
+  const propertyType = checker.getTypeOfSymbol(property)
+  const methodSignatures = checker.getSignaturesOfType(propertyType, ts.SignatureKind.Call)
+  if ((property.flags & ts.SymbolFlags.Method) !== 0 && methodSignatures.length > 0) {
+    const methodFlags = ts.TypeFormatFlags.NoTruncation
+    return methodSignatures
+      .map(
+        signature => `${readonly}${name}${optional}${checker.signatureToString(signature, undefined, methodFlags)}`
+      )
+      .join('; ')
+  }
+  return `${readonly}${name}${optional}: ${checker.typeToString(propertyType, undefined, flags)}`
+}
+
+function objectTypeSignature(checker, type, flags) {
+  const members = []
+  for (const signature of checker.getSignaturesOfType(type, ts.SignatureKind.Call)) {
+    members.push(checker.signatureToString(signature, undefined, flags))
+  }
+  for (const signature of checker.getSignaturesOfType(type, ts.SignatureKind.Construct)) {
+    members.push(`new ${checker.signatureToString(signature, undefined, flags)}`)
+  }
+  for (const property of checker.getPropertiesOfType(type)) {
+    members.push(propertySignature(checker, property, flags))
+  }
+  return `{ ${members.join('; ')} }`
+}
+
 function signatureForSymbol(checker, exported) {
   const flags = ts.TypeFormatFlags.NoTruncation | ts.TypeFormatFlags.WriteArrowStyleSignature
-  const type =
-    exported.flags & ts.SymbolFlags.Interface || exported.flags & ts.SymbolFlags.TypeAlias
-      ? checker.getDeclaredTypeOfSymbol(exported)
-      : checker.getTypeOfSymbol(exported)
-  return checker.typeToString(type, undefined, flags).replace(/\s+/g, ' ').replaceAll('`', "'")
+  const symbol = resolvedExportSymbol(checker, exported)
+  if (symbol.flags & ts.SymbolFlags.Interface) {
+    return canonicalizeSignature(objectTypeSignature(checker, checker.getDeclaredTypeOfSymbol(symbol), flags))
+  }
+  if (symbol.flags & ts.SymbolFlags.TypeAlias) {
+    const type = checker.getDeclaredTypeOfSymbol(symbol)
+    if ((type.flags & ts.TypeFlags.Object) !== 0) {
+      return canonicalizeSignature(objectTypeSignature(checker, type, flags))
+    }
+    return canonicalizeSignature(
+      checker.typeToString(type, undefined, flags | ts.TypeFormatFlags.InTypeAlias)
+    )
+  }
+  return canonicalizeSignature(checker.typeToString(checker.getTypeOfSymbol(symbol), undefined, flags))
 }
 
 function collectExportEntries(sourcePaths) {

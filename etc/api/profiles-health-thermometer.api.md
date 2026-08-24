@@ -6,8 +6,8 @@
 - `HEALTH_THERMOMETER_SERVICE :: Uuid`
 - `INTERMEDIATE_TEMPERATURE_CHARACTERISTIC :: Uuid`
 - `TEMPERATURE_MEASUREMENT_CHARACTERISTIC :: Uuid`
-- `TemperatureMeasurement :: TemperatureMeasurement`
-- `TemperatureType :: TemperatureType`
+- `TemperatureMeasurement :: { readonly unit: "celsius" | "fahrenheit"; readonly temperature: Ieee11073Value; readonly timestamp: BluetoothDateTime | null; readonly type: TemperatureType | null }`
+- `TemperatureType :: "armpit" | "body" | "ear" | "finger" | "gastro-intestinal-tract" | "mouth" | "rectum" | "toe" | "tympanum"`
 - `intermediateTemperatureSelector :: (options?: CharacteristicSelectorOptions) => CharacteristicSelector`
 - `parseTemperatureMeasurement :: (bytes: Readonly<Uint8Array<ArrayBufferLike>>) => TemperatureMeasurement`
 - `temperatureMeasurementSelector :: (options?: CharacteristicSelectorOptions) => CharacteristicSelector`
