@@ -5,7 +5,7 @@
 This repository fixture validates the Expo SDK 57 continuous-native-generation
 path. It uses `unified-ble-manager: file:..` and the `unified-ble-manager` v2
 config plugin, so it is not a published-package install recipe. The v2 Expo
-surface is published in immutable `4.0.0-rc.4`.
+surface is published in immutable `4.0.0-rc.4.1`.
 
 The BLE host includes native code and cannot run in Expo Go. Generate and build
 the native project from the repository root:

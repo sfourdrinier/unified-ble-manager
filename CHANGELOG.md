@@ -4,9 +4,19 @@ All notable changes to `unified-ble-manager` are documented here.
 
 ## [Unreleased]
 
-Fail-closed and IPC/governance closure from the RC3 audit, intended for a `4.0.0-rc.4.1` candidate after this branch merges. This does not bump package SemVer in this commit and does not start PR11 / `4.0.0-rc.5`.
+## [4.0.0-rc.4.1] - 2026-08-23
+
+Fail-closed and IPC/governance closure from the RC3 audit on the post-PR10 `4.0.0-rc.4` line. PR11 / `4.0.0-rc.5` remains paused. Backend support labels remain evidence-derived and are not promoted by this release. Immutable `v4.0.0-rc.4` is not retagged.
+
+### Public API and semantics
 
 - Signature-aware API report checking; GATT included-service and property schema validation; connection-control echo validation; supervisor `stop()` no longer returns `released` while late configure owns the session; `BleCleanupError` retains the exact cleanup record; IPC local stream overflow tears down the remote producer; invalid Electron `deliveryMode` is rejected; Node host factories rehydrate to `BleError`.
+- Preserved bytes-first payloads, `AbortSignal` cancellation, generation-bound resources, and explicit ownership/cleanup semantics.
+
+### Release integrity
+
+- Cut from the exact post-PR #46 `main` merge commit through the tag-driven trusted-publishing workflow.
+- Intended for publication as a prerelease candidate on the `latest` channel; this does not promote backend support labels or claim physical-radio evidence.
 - Repository: `main` is protected by ruleset `protect-main`; stale `agent/*` remotes were archived/deleted.
 
 ## [4.0.0-rc.4] - 2026-08-23

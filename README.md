@@ -6,7 +6,7 @@
 
 It is an evolution of `react-native-ble-plx`, rewritten as a **cross-platform unified product**. One bytes-first BLE model and lifecycle semantics across hosts, with host-specific construction and ownership. The root package never picks a radio for you, and it will not quietly fall back to a simulator or a different backend.
 
-**Current prerelease:** `4.0.0-rc.4` is published from exact `main` and is immutable. Do not change the package version or recreate RC4. Package SemVer and backend support labels are independent: each radio backend stays Experimental until artifact-bound physical-hardware validation says otherwise. RC5 remains reserved for the post-PR11 release gate. See [`docs/PLATFORMS.md`](docs/PLATFORMS.md).
+**Current prerelease:** `4.0.0-rc.4.1` is published from exact `main` and is immutable. Do not change the package version or recreate RC4.1. Immutable `4.0.0-rc.4` remains published history. Package SemVer and backend support labels are independent: each radio backend stays Experimental until artifact-bound physical-hardware validation says otherwise. RC5 remains reserved for the post-PR11 release gate. See [`docs/PLATFORMS.md`](docs/PLATFORMS.md).
 
 > Sponsored by [Imagi Explain](https://imagiexplain.com) — researched, narrated whiteboard explainers from a prompt, a PDF, or your notes.
 
