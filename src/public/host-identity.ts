@@ -80,9 +80,17 @@ export function deriveRestorationIdentity(_input: {
   throw contractError('capability.unsupported', 'restoration', 'host-identity.native-authority-required')
 }
 
+function requireRandomBytes(random: (length: number) => Uint8Array, length: number): Uint8Array {
+  const bytes = random(length)
+  if (!(bytes instanceof Uint8Array) || bytes.byteLength !== length) {
+    throw contractError('argument.invalid', 'core', 'host-identity.random-bytes')
+  }
+  return bytes
+}
+
 export function createEphemeralHostIdentity(input: EphemeralIdentityInput = {}): EphemeralHostIdentity {
   const random = input.randomBytes ?? ((length: number) => getRandomValues(length))
-  const bytes = (length: number) => bytesToHex(random(length))
+  const bytes = (length: number) => bytesToHex(requireRandomBytes(random, length))
   return Object.freeze({
     kind: 'ephemeral',
     attachmentNonce: bytes(16),
@@ -110,12 +118,19 @@ export interface DiagnosticsOptions {
   readonly maximumValueBytes?: number
 }
 
+function assertPlainRecord(value: unknown, operation: string): void {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw contractError('argument.invalid', 'core', operation)
+  }
+}
+
 export function normalizeBleManagerCreateOptions(
   options: BleManagerCreateOptions | undefined
 ): BleManagerCreateOptions {
   if (options === undefined) {
     return Object.freeze({})
   }
+  assertPlainRecord(options, 'options')
   const allowedKeys = new Set(['instanceId', 'adapterId', 'diagnostics', 'restoration'])
   if (Object.keys(options).some(key => !allowedKeys.has(key))) {
     throw contractError('argument.invalid', 'core', 'options.unknown-key')
@@ -130,6 +145,7 @@ export function normalizeBleManagerCreateOptions(
     assertNonEmptyString(options.adapterId, 'options.adapterId')
   }
   if (options.diagnostics !== undefined) {
+    assertPlainRecord(options.diagnostics, 'options.diagnostics')
     const d = options.diagnostics
     if (
       d.traceMaximumRecords !== undefined &&

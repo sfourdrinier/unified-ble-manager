@@ -755,8 +755,10 @@ function assertPublicConnectionIdentity(
   operation: string
 ): void {
   if (
-    String(actual.connectionId) !== String(expected.connectionId) ||
-    String(actual.connectionGeneration) !== String(expected.connectionGeneration)
+    typeof actual.connectionId !== 'string' ||
+    typeof actual.connectionGeneration !== 'string' ||
+    actual.connectionId !== expected.connectionId ||
+    actual.connectionGeneration !== expected.connectionGeneration
   ) {
     throw contractError('protocol.violation', 'connection', operation)
   }
@@ -971,10 +973,13 @@ function createPublicConnectionControls(
       const descriptor = requireControlCapability(internal, 'connection:rssi', 'public-connection.controls.read-rssi')
       const normalized = normalizeOperationOptions(options, now)
       const result = await connection.readRssi({ signal: normalized.signal, deadline: normalized.deadline })
+      if (!Number.isSafeInteger(result.rssi)) {
+        throw contractError('protocol.violation', 'connection', 'public-connection.controls.read-rssi')
+      }
       return Object.freeze({
         ...controlMetadata(generation, result.observedAtMonotonicMs, descriptor, 'backend-operation'),
         state: 'measured' as const,
-        rssi: Number(result.rssi)
+        rssi: result.rssi
       })
     })
 
@@ -1152,7 +1157,10 @@ function createPublicConnectionControls(
       unsupportedControlStream<ConnectionParametersObservation>('public-connection.controls.parameter-events'),
     requestSubrate: (_mode: SubrateMode, _options: OperationOptions = {}) =>
       unsupportedPromise<SubrateResult>('connection:subrate', 'public-connection.controls.request-subrate'),
-    writeReadiness: (_mode: 'without-response') => {
+    writeReadiness: (mode: 'without-response') => {
+      if (mode !== 'without-response') {
+        throw contractError('argument.invalid', 'connection', 'public-connection.controls.write-readiness.mode')
+      }
       const descriptor = internal.capability('gatt:write-without-response-readiness')
       if (
         descriptor === null ||
@@ -1441,8 +1449,17 @@ class PublicBleManager implements BleManager {
     options: ConnectOptions,
     action: (scope: { readonly connection: BleConnection; readonly gatt: GattDatabase }) => Promise<T>
   ): Promise<T> {
+    const normalized = normalizeOperationOptions(options, this.now)
     return this.withConnection(peer, options, async connection => {
-      const gatt = await connection.discover(options)
+      if (normalized.deadline !== null && this.now() >= normalized.deadline) {
+        throw contractError('operation.timed-out', 'connection', 'public-ble-manager.with-discovered-connection')
+      }
+      const remainingMs =
+        normalized.deadline === null ? undefined : Math.max(1, Math.trunc(normalized.deadline - this.now()))
+      const gatt = await connection.discover({
+        signal: options.signal,
+        ...(remainingMs === undefined ? {} : { timeoutMs: remainingMs })
+      })
       return action(Object.freeze({ connection, gatt }))
     })
   }
@@ -1706,17 +1723,20 @@ export function filterScanObservations(
   query: ReturnType<typeof normalizeScanQuery>,
   duplicates: 'coalesced' | 'all' = 'all'
 ): BoundedAsyncStream<PublicScanObservation> {
-  const lastObservations = new Map<string, string>()
   return {
     limits: source.limits,
     overflowPolicy: source.overflowPolicy,
     [Symbol.asyncIterator](): BoundedAsyncStreamIterator<PublicScanObservation> {
       const iterator = source[Symbol.asyncIterator]()
+      const lastObservations = new Map<string, string>()
       return {
         async next() {
           while (true) {
             const item = await iterator.next()
-            if (item.done) return item
+            if (item.done) {
+              lastObservations.clear()
+              return item
+            }
             if (item.value.kind === 'overflow' || item.value.kind === 'terminal') {
               return { done: false, value: item.value }
             }
@@ -1725,6 +1745,10 @@ export function filterScanObservations(
               if (duplicates === 'coalesced') {
                 const fingerprint = publicObservationFingerprint(observation)
                 if (lastObservations.get(observation.peer.id) === fingerprint) continue
+                if (lastObservations.size >= 256) {
+                  const oldest = lastObservations.keys().next().value
+                  if (oldest !== undefined) lastObservations.delete(oldest)
+                }
                 lastObservations.set(observation.peer.id, fingerprint)
               }
               return { done: false, value: { kind: 'value', value: observation } }
@@ -1732,6 +1756,7 @@ export function filterScanObservations(
           }
         },
         return: async () => {
+          lastObservations.clear()
           await iterator.return()
           return { done: true, value: undefined }
         },
@@ -1869,7 +1894,10 @@ class PublicConnectionEventBroadcast implements AsyncIterable<BleConnectionEvent
   private async pump(): Promise<void> {
     try {
       for await (const event of this.source) {
-        for (const subscriber of this.subscribers) subscriber.emit(event, 512)
+        for (const subscriber of [...this.subscribers]) {
+          const result = subscriber.emit(event, 512)
+          if (result.terminated) this.subscribers.delete(subscriber)
+        }
       }
       this.terminalReason = 'closed'
       this.closeSubscribers('closed')
@@ -1926,6 +1954,9 @@ function isReferenceLike(value: unknown): value is object {
 }
 
 export function assertPublicScanOptions(options: ScanOptions): void {
+  if (typeof options !== 'object' || options === null || Array.isArray(options)) {
+    throw contractError('argument.invalid', 'scan', 'public-ble-manager.scan.options')
+  }
   const allowed = new Set(['signal', 'timeoutMs', 'query', 'duplicates', 'delivery', 'observation', 'platform'])
   if (Object.keys(options).some(key => !allowed.has(key))) {
     throw contractError('argument.invalid', 'scan', 'public-ble-manager.scan.options')
@@ -2018,6 +2049,9 @@ function assertPublicScanPlatformOptions(options: ScanPlatformOptions | undefine
 }
 
 export function assertPublicConnectOptions(options: ConnectOptions): void {
+  if (typeof options !== 'object' || options === null || Array.isArray(options)) {
+    throw contractError('argument.invalid', 'connection', 'public-ble-manager.connect.options')
+  }
   const allowed = new Set(['signal', 'timeoutMs', 'intent', 'transport', 'preferredPhy'])
   if (Object.keys(options).some(key => !allowed.has(key))) {
     throw contractError('argument.invalid', 'connection', 'public-ble-manager.connect.options')

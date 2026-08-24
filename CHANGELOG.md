@@ -31,7 +31,7 @@ Advanced central release candidate after PR8. This candidate includes known-peer
 
 ### Release integrity
 
-- Cut from the exact post-PR8 `main` merge commit through the tag-driven trusted-publishing workflow.
+- Cut from the exact RC3 release commit `a423a73` on `main` through the tag-driven trusted-publishing workflow.
 - Intended for publication as a prerelease candidate on the `latest` channel; this does not promote backend support labels or claim physical-radio evidence.
 
 ## [4.0.0-rc.2] - 2026-08-21

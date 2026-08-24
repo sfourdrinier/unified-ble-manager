@@ -264,7 +264,9 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
   }
 
   async connect(peerId: string, options: IpcManagerOperationOptions = {}): Promise<IpcConnection> {
-    if (peerId.length === 0) throw new TypeError('peerId must not be empty')
+    if (typeof peerId !== 'string' || peerId.length === 0) {
+      throw contractError('argument.invalid', 'connection', 'ipc-manager.connect.peer-id')
+    }
     const payload = await this.route(
       'connection.connect',
       Object.freeze({ peerId, deadline: operationDeadline(options) }),
@@ -370,7 +372,11 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
       if (item.kind === 'value') {
         const rawValue: unknown = item.value
         if (!isValue(rawValue)) throw contractError('protocol.malformed', 'ipc', 'ipc-manager.stream-value')
-        source.emit(rawValue, estimateByteLength(rawValue))
+        const push = source.emit(rawValue, estimateByteLength(rawValue))
+        if (push.terminated) {
+          this.streams.delete(handle)
+          onTerminal?.('overflow')
+        }
         return
       }
       if (item.kind === 'overflow') {
@@ -771,9 +777,7 @@ export class IpcConnection {
   }
 
   async discover(options: IpcManagerOperationOptions = {}): Promise<IpcGattDatabase> {
-    if (options.reason !== undefined) {
-      this.invalidateDatabases(options.reason)
-    }
+    this.invalidateDatabases(options.reason ?? null)
     await this.awaitLifecycleAdmission(options)
     const payload = await this.manager.route(
       'gatt.discover',
@@ -1408,15 +1412,16 @@ function ipcDatabasePath(
 }
 
 function toIpcOptions(options: PortableOperationOptions | PortableSubscriptionOptions): IpcManagerOperationOptions {
-  const timeoutMs =
-    typeof options.deadline === 'number' && globalThis.performance !== undefined
-      ? Math.max(1, options.deadline - globalThis.performance.now())
-      : undefined
+  if (typeof options.deadline === 'number') {
+    if (globalThis.performance !== undefined && options.deadline <= globalThis.performance.now()) {
+      throw contractError('operation.timed-out', 'ipc', 'ipc-manager.deadline-expired')
+    }
+  }
   const subscriptionOptions = isPortableSubscriptionOptions(options) ? options : null
   const delivery = subscriptionOptions?.delivery
   return {
     signal: options.signal ?? undefined,
-    timeoutMs,
+    deadline: typeof options.deadline === 'number' ? options.deadline : undefined,
     deliveryMode: subscriptionOptions?.deliveryMode,
     stream:
       delivery === undefined
