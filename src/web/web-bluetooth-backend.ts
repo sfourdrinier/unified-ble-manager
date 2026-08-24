@@ -430,8 +430,10 @@ export class WebBluetoothBackend
   }
 
   async disconnectConnection(connection: WebBackendConnection): Promise<CleanupRecord> {
-    const record = this.connectionsByPeer.get(String(connection.peerId))
-    if (record === undefined || record.connection !== connection) {
+    const active = this.connectionsByPeer.get(String(connection.peerId))
+    const retained = [...this.retainedConnections].find(record => record.connection === connection)
+    const record = active !== undefined && active.connection === connection ? active : retained
+    if (record === undefined) {
       return RELEASED
     }
     return this.disconnectRecord(record)
@@ -470,6 +472,8 @@ export class WebBluetoothBackend
         phases.push(RELEASED)
       } catch (error) {
         console.error('[WebBluetoothBackend.disconnectRecord] Browser disconnect failed:', error)
+        this.retainedConnections.add(record)
+        this.connectionsByPeer.delete(String(record.peerId))
         phases.push(webCleanupFailure('connection', 'web-connection.disconnect'))
       }
     }
@@ -604,7 +608,7 @@ export class WebBluetoothBackend
       failures.push(...cleanup.failures)
     }
     for (const record of [...this.retainedConnections]) {
-      const cleanup = await this.releaseRetainedConnection(record)
+      const cleanup = await this.disconnectRecord(record)
       failures.push(...cleanup.failures)
     }
     return failures.length === 0 ? RELEASED : { state: 'release-failed', failures }
@@ -1079,11 +1083,11 @@ export class WebBluetoothBackend
       const cleanup = await this.disconnectRecord(record)
       failures.push(...cleanup.failures)
     }
-    failures.push(...(await this.gattRuntime.destroySubscriptions()))
     for (const record of [...this.retainedConnections]) {
-      const cleanup = await this.releaseRetainedConnection(record)
+      const cleanup = await this.disconnectRecord(record)
       failures.push(...cleanup.failures)
     }
+    failures.push(...(await this.gattRuntime.destroySubscriptions()))
     for (const stream of this.eventStreams) {
       await stream.close()
     }

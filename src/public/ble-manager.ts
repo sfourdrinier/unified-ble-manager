@@ -1460,6 +1460,7 @@ class PublicBleManager<Attachment extends string, Identity extends BackendIdenti
               stopState.pendingCleanupError = null
             } else {
               scanState.emit({ state: 'failed', reason: 'scan-stop-failed' })
+              scanState.close()
               stopState.stopPromise = null
             }
             return combined

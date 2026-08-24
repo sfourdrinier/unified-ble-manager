@@ -340,7 +340,7 @@ describe('WebBluetoothBackend availability and attachment lifecycle', () => {
     await backend.adapter.currentState()
     await expect(inFlightRead).rejects.toMatchObject({ normalized: { code: 'operation.disconnected' } })
     expectConsoleErrorMatching(
-      '[WebBluetoothBackend.invalidateUnavailableSession] Browser disconnect failed:',
+      '[WebBluetoothBackend.disconnectRecord] Browser disconnect failed:',
       expect.objectContaining({ message: 'The browser refused disconnect cleanup' })
     )
     resolveRead(new Uint8Array([0, 72]))
@@ -352,7 +352,7 @@ describe('WebBluetoothBackend availability and attachment lifecycle', () => {
       normalized: { code: 'lifecycle.invalid-state' }
     })
     expectConsoleErrorMatching(
-      '[WebBluetoothBackend.releaseRetainedConnection] Browser disconnect retry failed:',
+      '[WebBluetoothBackend.disconnectRecord] Browser disconnect failed:',
       expect.objectContaining({ message: 'The browser refused disconnect cleanup' })
     )
     expect(backend.resourceCounters()).toMatchObject({ connectionLeases: 0, physicalLinks: 1, databaseSnapshots: 0 })
