@@ -269,14 +269,12 @@ export class DeterministicTestBackend
     for (const record of [...this.connectionsByPeer.values()]) {
       this.invalidateConnection(record, 'operation.cancelled-by-destroy')
     }
-    for (const watcher of this.stateWatchers) {
+    for (const watcher of [...this.stateWatchers]) {
       watcher.closeWithReason('owner-released')
-      watcher.dispose()
     }
     this.stateWatchers.clear()
-    for (const stream of this.eventStreams) {
+    for (const stream of [...this.eventStreams]) {
       stream.closeWithReason('owner-released')
-      stream.dispose()
     }
     this.eventStreams.clear()
     this.clock.runUntilIdle()

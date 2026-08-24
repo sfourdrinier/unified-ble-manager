@@ -60,6 +60,7 @@ import {
 } from '../../backend-contract/primitives'
 import type { BoundedAsyncStream, OverflowPolicy, StreamLimits } from '../../backend-contract/streams'
 import { CoreBoundedStream, type CoreStreamTerminalReason } from '../../core/bounded-stream'
+import { OwnedCoreBoundedStream } from '../../core/owned-bounded-stream'
 import {
   WinRtConnection,
   WinRtConnectionLease,
@@ -165,42 +166,7 @@ function pendingWinRtOperationCleanup(operation: string): CleanupRecord {
   return timedOutWinRtCleanup('operation-quarantine', operation)
 }
 
-/** Removes backend-owned fan-out streams as soon as their consumer closes or they terminalize. */
-class WinRtOwnedStream<Value> extends CoreBoundedStream<Value> {
-  private ownershipReleased = false
 
-  constructor(
-    limits: StreamLimits,
-    overflowPolicy: OverflowPolicy,
-    private readonly releaseOwnership: () => void
-  ) {
-    super(limits, overflowPolicy)
-  }
-
-  override close(): Promise<CleanupRecord> {
-    const cleanup = super.close()
-    this.release()
-    return cleanup
-  }
-
-  override closeWithReason(reason: CoreStreamTerminalReason): void {
-    super.closeWithReason(reason)
-    this.release()
-  }
-
-  override finishWithReason(reason: CoreStreamTerminalReason): void {
-    super.finishWithReason(reason)
-    this.release()
-  }
-
-  private release(): void {
-    if (this.ownershipReleased) {
-      return
-    }
-    this.ownershipReleased = true
-    this.releaseOwnership()
-  }
-}
 
 export interface WinRtScanConsumer {
   readonly scanSessionId: ScanSessionId<string, string>
@@ -406,6 +372,21 @@ function allocateBackendInstance(): number {
  * retains native operation ownership until cancellation is acknowledged or a
  * late native completion has been quarantined.
  */
+export interface BackendStreamOwnershipSnapshot {
+  readonly stateWatchers: number
+  readonly eventStreams: number
+}
+
+const winRtStreamOwnershipInspectors = new WeakMap<WinRtBackend, () => BackendStreamOwnershipSnapshot>()
+
+export function inspectWinRtStreamOwnershipForTests(backend: WinRtBackend): BackendStreamOwnershipSnapshot {
+  const inspect = winRtStreamOwnershipInspectors.get(backend)
+  if (inspect === undefined) {
+    throw new Error('winrt stream ownership inspector is missing')
+  }
+  return inspect()
+}
+
 export class WinRtBackend implements BleCentralBackend<string, HostNeutralBackendIdentity<string>> {
   readonly features: FeatureRegistry
   readonly adapter: AdapterBackend<string>
@@ -516,6 +497,10 @@ export class WinRtBackend implements BleCentralBackend<string, HostNeutralBacken
         console.error('[WinRtBackend.onAdapterState] Dropped malformed native adapter-state record:', error)
       }
     })
+    winRtStreamOwnershipInspectors.set(this, () => ({
+      stateWatchers: this.stateStreams.size,
+      eventStreams: this.eventStreams.size
+    }))
   }
 
   get identity(): HostNeutralBackendIdentity<string> {
@@ -552,7 +537,7 @@ export class WinRtBackend implements BleCentralBackend<string, HostNeutralBacken
 
   events(): BoundedAsyncStream<BackendEvent<string>> {
     this.assertUsable('winrt.events')
-    const stream = new WinRtOwnedStream<BackendEvent<string>>(eventLimits, 'error', () =>
+    const stream = new OwnedCoreBoundedStream<BackendEvent<string>>(eventLimits, 'error', () =>
       this.eventStreams.delete(stream)
     )
     this.eventStreams.add(stream)
@@ -953,7 +938,7 @@ export class WinRtBackend implements BleCentralBackend<string, HostNeutralBacken
   }
 
   private watchAdapterState(): AdapterStateWatch<string> {
-    const stream = new WinRtOwnedStream<AdapterStateSnapshot<string>>(adapterStateLimits, 'latest', () =>
+    const stream = new OwnedCoreBoundedStream<AdapterStateSnapshot<string>>(adapterStateLimits, 'latest', () =>
       this.stateStreams.delete(stream)
     )
     this.stateStreams.add(stream)
@@ -2088,11 +2073,11 @@ export class WinRtBackend implements BleCentralBackend<string, HostNeutralBacken
     this.removeDatabaseListener()
     this.removeScanTerminalListener()
     this.removeAdapterStateListener()
-    for (const stream of this.eventStreams) {
+    for (const stream of [...this.eventStreams]) {
       stream.closeWithReason('owner-released')
     }
     this.eventStreams.clear()
-    for (const stream of this.stateStreams) {
+    for (const stream of [...this.stateStreams]) {
       stream.closeWithReason('owner-released')
     }
     this.stateStreams.clear()

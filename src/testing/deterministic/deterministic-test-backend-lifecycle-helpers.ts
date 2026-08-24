@@ -92,9 +92,7 @@ export function requireCurrentDeterministicDatabase(
   return database
 }
 
-export function eventRetainedBytes(
-  streams: ReadonlySet<DeterministicBoundedStream<import('../../backend-contract/backend').BackendEvent<string>>>
-): number {
+export function eventRetainedBytes(streams: ReadonlySet<{ retainedBytes(): number }>): number {
   let retained = 0
   for (const stream of streams) {
     retained += stream.retainedBytes()

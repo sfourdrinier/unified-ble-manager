@@ -17,7 +17,21 @@ import {
   BLUEZ_PLATFORM_ID,
   bluezCompatibility
 } from './bluez-backend-provider'
-import { BluezBackendRuntime } from './bluez-backend-runtime'
+import {
+  BluezBackendRuntime,
+  inspectBluezRuntimeStreamOwnershipForTests,
+  type BackendStreamOwnershipSnapshot
+} from './bluez-backend-runtime'
+
+const bluezBackendStreamOwnershipInspectors = new WeakMap<BluezBackend, () => BackendStreamOwnershipSnapshot>()
+
+export function inspectBluezStreamOwnershipForTests(backend: BluezBackend): BackendStreamOwnershipSnapshot {
+  const inspect = bluezBackendStreamOwnershipInspectors.get(backend)
+  if (inspect === undefined) {
+    throw new Error('bluez stream ownership inspector is missing')
+  }
+  return inspect()
+}
 
 export interface BluezBackendConstruction {
   readonly boundary: BluezDbusBoundary
@@ -83,6 +97,7 @@ export class BluezBackend implements BleCentralBackend<string, HostNeutralBacken
     this.connections = this.runtime.connections
     this.gatt = this.runtime.gatt
     this.security = this.runtime.security
+    bluezBackendStreamOwnershipInspectors.set(this, () => inspectBluezRuntimeStreamOwnershipForTests(this.runtime))
   }
 
   get identity(): HostNeutralBackendIdentity<string> {

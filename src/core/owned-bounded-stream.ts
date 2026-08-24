@@ -19,9 +19,12 @@ export class OwnedCoreBoundedStream<Value> extends CoreBoundedStream<Value> {
   }
 
   override close(): Promise<CleanupRecord> {
-    const cleanup = super.close()
-    this.release()
-    return cleanup
+    return Promise.resolve(super.close()).then(cleanup => {
+      if (cleanup.state === 'released') {
+        this.release()
+      }
+      return cleanup
+    })
   }
 
   override closeWithReason(reason: CoreStreamTerminalReason): void {

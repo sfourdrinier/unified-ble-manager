@@ -80,6 +80,7 @@ import { CoreBluetoothConnectionControls } from './corebluetooth-connection-cont
 import { coreBluetoothCompatibility } from './corebluetooth-provider'
 import { coreBluetoothIdentityOptions, type DirectGattBackendIdentityOptions } from './corebluetooth-identity'
 import { adapterStateLimits, backendEventLimits } from './corebluetooth-stream-limits'
+import { OwnedCoreBoundedStream } from '../../core/owned-bounded-stream'
 import { releaseCoreBluetoothAdapterLossResources } from './corebluetooth-adapter-loss-cleanup'
 import { withCoreBluetoothCleanupTimeout } from './corebluetooth-cleanup'
 import { releaseLateCoreBluetoothConnection } from './corebluetooth-late-connect-cleanup'
@@ -280,6 +281,26 @@ function assertCoreBluetoothGattIdentity(
  * First-party CoreBluetooth backend for explicitly selected macOS Node or
  * Electron-main hosts. It uses only the typed direct addon boundary.
  */
+export interface BackendStreamOwnershipSnapshot {
+  readonly stateWatchers: number
+  readonly eventStreams: number
+}
+
+const coreBluetoothStreamOwnershipInspectors = new WeakMap<
+  CoreBluetoothBackend,
+  () => BackendStreamOwnershipSnapshot
+>()
+
+export function inspectCoreBluetoothStreamOwnershipForTests(
+  backend: CoreBluetoothBackend
+): BackendStreamOwnershipSnapshot {
+  const inspect = coreBluetoothStreamOwnershipInspectors.get(backend)
+  if (inspect === undefined) {
+    throw new Error('corebluetooth stream ownership inspector is missing')
+  }
+  return inspect()
+}
+
 export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutralBackendIdentity<string>> {
   private runtimeFeatures: FeatureRegistry
   readonly adapter: AdapterBackend<string>
@@ -391,6 +412,10 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
     this.adapterStateListener = boundary.onAdapterState(state => {
       this.handleAdapterState(state)
     })
+    coreBluetoothStreamOwnershipInspectors.set(this, () => ({
+      stateWatchers: this.stateStreams.size,
+      eventStreams: this.eventStreams.size
+    }))
   }
   get features(): FeatureRegistry {
     return this.runtimeFeatures
@@ -435,7 +460,9 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
   }
   events(): BoundedAsyncStream<BackendEvent<string>> {
     this.assertUsable('corebluetooth.events')
-    const stream = new CoreBoundedStream<BackendEvent<string>>(backendEventLimits, 'error')
+    const stream = new OwnedCoreBoundedStream<BackendEvent<string>>(backendEventLimits, 'error', () => {
+      this.eventStreams.delete(stream)
+    })
     this.eventStreams.add(stream)
     return stream
   }
@@ -515,7 +542,9 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
     return () => record.readinessWatchClosures.delete(close)
   }
   private watchAdapterState(): AdapterStateWatch<string> {
-    const stream = new CoreBoundedStream<AdapterStateSnapshot<string>>(adapterStateLimits, 'latest')
+    const stream = new OwnedCoreBoundedStream<AdapterStateSnapshot<string>>(adapterStateLimits, 'latest', () => {
+      this.stateStreams.delete(stream)
+    })
     this.stateStreams.add(stream)
     return Object.freeze({ initial: this.attachmentLifecycle.adapterState(), transitions: stream })
   }
@@ -1006,8 +1035,10 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
       this.adapterLossActive = false
     }
     const snapshot = this.attachmentLifecycle.adapterState()
-    for (const stream of this.stateStreams) {
-      stream.emit(snapshot, 96, String(snapshot.backendGeneration))
+    for (const stream of [...this.stateStreams]) {
+      if (stream.emit(snapshot, 96, String(snapshot.backendGeneration)).terminated) {
+        this.stateStreams.delete(stream)
+      }
     }
     const attachment = this.attachment()
     this.broadcastEvent({
@@ -1132,8 +1163,10 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
     this.peerIdsByNativeId.clear()
     this.nativeIdsByPeerId.clear()
     const snapshot = this.attachmentLifecycle.adapterState()
-    for (const stream of this.stateStreams) {
-      stream.emit(snapshot, 96, String(snapshot.backendGeneration))
+    for (const stream of [...this.stateStreams]) {
+      if (stream.emit(snapshot, 96, String(snapshot.backendGeneration)).terminated) {
+        this.stateStreams.delete(stream)
+      }
     }
     const attachment = this.attachment()
     this.broadcastEvent({
@@ -1393,8 +1426,10 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
     }
   }
   private broadcastEvent(event: BackendEvent<string>): void {
-    for (const stream of this.eventStreams) {
-      stream.emit(event, 128)
+    for (const stream of [...this.eventStreams]) {
+      if (stream.emit(event, 128).terminated) {
+        this.eventStreams.delete(stream)
+      }
     }
   }
   private async destroyInternal(): Promise<CleanupRecord> {
@@ -1451,11 +1486,11 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
       return cleanupFailure('boundary', 'corebluetooth.destroy.boundary', error)
     }
     this.destroyed = true
-    for (const stream of this.eventStreams) {
+    for (const stream of [...this.eventStreams]) {
       stream.closeWithReason('owner-released')
     }
     this.eventStreams.clear()
-    for (const stream of this.stateStreams) {
+    for (const stream of [...this.stateStreams]) {
       stream.closeWithReason('owner-released')
     }
     this.stateStreams.clear()

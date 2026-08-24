@@ -43,6 +43,7 @@ import {
   type PeerId
 } from '../../backend-contract/primitives'
 import { CoreBoundedStream } from '../../core/bounded-stream'
+import { OwnedCoreBoundedStream } from '../../core/owned-bounded-stream'
 import {
   BLUEZ_ADAPTER_INTERFACE,
   BLUEZ_DEVICE_INTERFACE,
@@ -120,6 +121,23 @@ export interface BluezBackendRuntimeConstruction {
   readonly backendInstanceId: BackendInstanceId<string>
 }
 
+export interface BackendStreamOwnershipSnapshot {
+  readonly stateWatchers: number
+  readonly eventStreams: number
+}
+
+const bluezStreamOwnershipInspectors = new WeakMap<BluezBackendRuntime, () => BackendStreamOwnershipSnapshot>()
+
+export function inspectBluezRuntimeStreamOwnershipForTests(
+  backend: BluezBackendRuntime
+): BackendStreamOwnershipSnapshot {
+  const inspect = bluezStreamOwnershipInspectors.get(backend)
+  if (inspect === undefined) {
+    throw new Error('bluez stream ownership inspector is missing')
+  }
+  return inspect()
+}
+
 /** BlueZ mechanics behind the contract-v1 backend. */
 export class BluezBackendRuntime implements BluezObjectStoreObserver {
   readonly busKind
@@ -190,6 +208,10 @@ export class BluezBackendRuntime implements BluezObjectStoreObserver {
       unsubscribe: (subscription, operation) => this.unsubscribeDispatch(subscription, operation)
     }
     this.security = new BluezSecurityBackend(this)
+    bluezStreamOwnershipInspectors.set(this, () => ({
+      stateWatchers: this.stateStreams.size,
+      eventStreams: this.eventStreams.size
+    }))
   }
 
   attachment(): AttachmentRecord<string> {
@@ -244,7 +266,9 @@ export class BluezBackendRuntime implements BluezObjectStoreObserver {
 
   events(): CoreBoundedStream<BackendEvent<string>> {
     this.assertUsable('bluez.events')
-    const stream = new CoreBoundedStream<BackendEvent<string>>(bluezEventLimits, 'error')
+    const stream = new OwnedCoreBoundedStream<BackendEvent<string>>(bluezEventLimits, 'error', () => {
+      this.eventStreams.delete(stream)
+    })
     this.eventStreams.add(stream)
     return stream
   }
@@ -593,7 +617,9 @@ export class BluezBackendRuntime implements BluezObjectStoreObserver {
   }
 
   private async watchAdapterState(): Promise<AdapterStateWatch<string>> {
-    const stream = new CoreBoundedStream<AdapterStateSnapshot<string>>(bluezStateLimits, 'latest')
+    const stream = new OwnedCoreBoundedStream<AdapterStateSnapshot<string>>(bluezStateLimits, 'latest', () => {
+      this.stateStreams.delete(stream)
+    })
     this.stateStreams.add(stream)
     return { initial: this.adapterState(), transitions: stream }
   }
@@ -993,8 +1019,10 @@ export class BluezBackendRuntime implements BluezObjectStoreObserver {
 
   private broadcastAdapterState(): void {
     const state = this.adapterState()
-    for (const stream of this.stateStreams) {
-      stream.emit(state, 64, String(state.backendGeneration))
+    for (const stream of [...this.stateStreams]) {
+      if (stream.emit(state, 64, String(state.backendGeneration)).terminated) {
+        this.stateStreams.delete(stream)
+      }
     }
     const attachment = this.attachment()
     this.broadcastEvent({
@@ -1011,8 +1039,10 @@ export class BluezBackendRuntime implements BluezObjectStoreObserver {
   }
 
   private broadcastEvent(event: BackendEvent<string>): void {
-    for (const stream of this.eventStreams) {
-      stream.emit(event, 128)
+    for (const stream of [...this.eventStreams]) {
+      if (stream.emit(event, 128).terminated) {
+        this.eventStreams.delete(stream)
+      }
     }
   }
 
@@ -1063,11 +1093,11 @@ export class BluezBackendRuntime implements BluezObjectStoreObserver {
     for (const waiter of [...this.waiters]) {
       waiter.reject(contractError('operation.cancelled-by-destroy', 'core', `bluez.destroy.${waiter.property}`))
     }
-    for (const stream of this.eventStreams) {
+    for (const stream of [...this.eventStreams]) {
       stream.closeWithReason('owner-released')
     }
     this.eventStreams.clear()
-    for (const stream of this.stateStreams) {
+    for (const stream of [...this.stateStreams]) {
       stream.closeWithReason('owner-released')
     }
     this.stateStreams.clear()
