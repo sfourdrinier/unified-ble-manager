@@ -126,6 +126,31 @@ describe('public security façade', () => {
     expect(await stream[Symbol.asyncIterator]().return()).toEqual({ done: true, value: undefined })
   })
 
+  test('P1-08 rejects a security watch event for the wrong peer or a non-monotonic sequence', async () => {
+    const stream = securityStream()
+    const security = {
+      state: jest.fn(async () => measuredState()),
+      watch: jest.fn(() => stream),
+      pair: jest.fn(),
+      cancelPairing: jest.fn(),
+      unpair: jest.fn()
+    }
+    const manager = await createPublicBleManager(internalWithSecurity(security), () => 100)
+    const events = manager.security.watch({ id: 'peer-1', name: null, rssi: null })
+    const iterator = events[Symbol.asyncIterator]()
+    const next = iterator.next()
+    stream.emit(
+      {
+        kind: 'state',
+        peerId: 'peer-other',
+        sequence: 1,
+        state: measuredState({ bond: 'bonded' })
+      },
+      1
+    )
+    await expect(next).rejects.toMatchObject({ code: 'protocol.violation' })
+  })
+
   test('rehydrates deferred security watch source and iterator failures', async () => {
     const backendError = contractError('protocol.violation', 'platform', 'public-security.watch-source')
     const sourceFailureSecurity = {

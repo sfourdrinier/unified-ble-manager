@@ -994,6 +994,15 @@ function createPublicConnectionControls(
       }
       const result = await observe()
       assertPublicConnectionIdentity(connection, result, 'public-connection.controls.effective-mtu.identity')
+      if (result.attMtu !== null) {
+        if (
+          !Number.isSafeInteger(result.attMtu) ||
+          result.attMtu < MINIMUM_ATT_MTU ||
+          result.attMtu > MAXIMUM_REQUESTED_ATT_MTU
+        ) {
+          throw contractError('protocol.violation', 'connection', 'public-connection.controls.effective-mtu.result')
+        }
+      }
       return Object.freeze({
         ...controlMetadata(generation, result.observedAtMonotonicMs, descriptor, 'backend-observation'),
         state: result.attMtu === null ? ('unavailable' as const) : ('measured' as const),

@@ -62,7 +62,11 @@ Closed on this branch after the remaining TDD pass:
 - P2-11 deleted all origin `agent/*` heads; unique +1 tips archived as `archive/agent/{bootstrap-main-ci,native-prebuild-distribution,release-4.0.0-native-check,release-4.0.0-prep}`
 - P1-05 remainder: Electron `gatt.subscribe` rejects unknown `deliveryMode` instead of dropping it
 - P1-10 remainder: local IPC stream overflow/malformed issues `scan.stop` / `gatt.unsubscribe` / connection-events unsubscribe
-- P1-14 remainder: Node host factories rehydrate through `createNodeBleManagerFromProvider`
+- P1-14 remainder: Node host factories rehydrate through `createNodeBleManagerFromProvider`; RN `createReactNativeBleManagerWithEnvironment` also rehydrates
+- P1-09 IPC `connect`/`scan` forward the normalized `deadline` instead of restarting `timeoutMs`
+- P1-01 public `occurrence` is the path occurrence, including sparse ids; unparsable occurrences fail closed
+- P1-04 effective MTU NaN/non-integer fails closed
+- P1-08 security watch wrong-peer events fail closed (locked by test)
 
 P2-11 archived SHAs (obsolete workflow/prebuild slices, not current product WIP):
 

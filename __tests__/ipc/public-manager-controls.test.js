@@ -134,6 +134,43 @@ function setup(readinessState) {
 }
 
 describe('IPC public connection controls', () => {
+  test('P1-09 connect forwards the normalized deadline instead of restarting timeoutMs', async () => {
+    const captured = []
+    const capabilitySnapshot = capabilities()
+    const base = {
+      handle: 'connection-handle-1',
+      peerId: 'peer-1',
+      attachmentId: 'attachment-1',
+      connectionId: 'connection-1',
+      ownerLeaseId: 'lease-1',
+      connectionGeneration: 'connection-generation-1',
+      events: emptyEvents(),
+      discover: async () => database('generation-1'),
+      disconnect: async () => ({ state: 'released', failures: [] }),
+      release: async () => ({ state: 'released', failures: [] })
+    }
+    const ipc = {
+      capabilities: capabilitySnapshot,
+      bootstrap: { discovery: { kind: 'continuous-scan' } },
+      connect: async (_peerId, options) => {
+        captured.push(options)
+        return base
+      },
+      adapterState: async () => ({})
+    }
+    const publicManager = new IpcPublicManagerAdapter(ipc, {
+      capabilities: capabilitySnapshot,
+      adapter: { id: 'adapter-1', state: async () => ({}), waitUntilReady: async () => ({}) }
+    })
+    const started = globalThis.performance.now()
+    await publicManager.connect('peer-1', { timeoutMs: 5_000 })
+    expect(captured).toHaveLength(1)
+    expect(captured[0]).not.toHaveProperty('timeoutMs')
+    expect(captured[0].deadline).toEqual(expect.any(Number))
+    expect(captured[0].deadline).toBeGreaterThanOrEqual(started)
+    expect(captured[0].deadline).toBeLessThanOrEqual(started + 5_000 + 50)
+  })
+
   test('rejects derived lost-peer events instead of silently ignoring them', async () => {
     const { manager } = setup()
 

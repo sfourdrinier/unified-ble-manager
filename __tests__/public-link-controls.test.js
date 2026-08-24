@@ -384,6 +384,22 @@ describe('PR8A public link controls', () => {
     const phyConnection = await phyManager.connect('peer-1')
     await expect(phyConnection.controls.readPhy()).rejects.toMatchObject({ code: 'protocol.violation' })
 
+    const nanEffective = fakeInternalManager({
+      effectiveMtuObservation: {
+        attMtu: Number.NaN,
+        payloadBytes: Number.NaN,
+        platformPduBytes: null,
+        observedAtMonotonicMs: 1,
+        connectionId: 'connection-1',
+        connectionGeneration: 'generation-1'
+      }
+    })
+    const nanEffectiveManager = await createPublicBleManager(nanEffective, () => 1234)
+    const nanEffectiveConnection = await nanEffectiveManager.connect('peer-1')
+    await expect(nanEffectiveConnection.controls.effectiveMtu()).rejects.toMatchObject({
+      code: 'protocol.violation'
+    })
+
     const mismatchedMode = fakeInternalManager({
       maximumWriteLengthResult: () => ({
         connectionId: 'connection-1',

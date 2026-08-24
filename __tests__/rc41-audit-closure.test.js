@@ -135,6 +135,34 @@ describe('rc.4.1 fail-closed audit closure', () => {
     expect(() => parseVerifiedSection(report, '.', 'src/index.ts', entries)).toThrow(/signature/)
   })
 
+  test('P1-01 public occurrence is the path occurrence, including sparse ids', async () => {
+    const path = {
+      attachment: {},
+      attachmentId: 'attachment-1',
+      peerId: 'peer-1',
+      connectionId: 'connection-1',
+      ownerLeaseId: 'lease-1',
+      connectionGeneration: 'generation-1',
+      databaseId: 'database-1',
+      databaseGeneration: '1'
+    }
+    const first = {
+      path: { ...path, serviceUuid: '180f', serviceOccurrence: '0' },
+      primary: true,
+      includedServices: []
+    }
+    const third = {
+      path: { ...path, serviceUuid: '180f', serviceOccurrence: '2' },
+      primary: true,
+      includedServices: []
+    }
+    const database = await createPublicGattDatabase(
+      gattSource({ path, services: [first, third], characteristics: [], descriptors: [] })
+    )
+    expect(database.service('180f', { occurrence: 2 }).occurrence).toBe(2)
+    expect(database.servicesByUuid('180f').map(service => service.occurrence)).toEqual([0, 2])
+  })
+
   test('P1-13 rejects unresolved included-service refs and non-boolean characteristic properties', async () => {
     const path = {
       attachment: {},
@@ -282,6 +310,20 @@ describe('rc.4.1 fail-closed audit closure', () => {
         })
       )
     ).rejects.toMatchObject({ code: 'protocol.violation' })
+  })
+
+  test('P1-14 React Native environment factory rehydrates BackendContractError to BleError', async () => {
+    const { createReactNativeBleManagerWithEnvironment } = require('../src/react-native-manager')
+    await expect(
+      createReactNativeBleManagerWithEnvironment({
+        platform: 'apple',
+        control: {},
+        now: () => 1,
+        clientId: 'client-1',
+        managerId: 'manager-1',
+        hostSessionScope: ''
+      })
+    ).rejects.toBeInstanceOf(BleError)
   })
 
   test('P1-14 Node host factories rehydrate BackendContractError to BleError', async () => {

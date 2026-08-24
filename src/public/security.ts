@@ -385,6 +385,7 @@ function snapshotSecurityState(value: InternalPeerSecurityState, operation: stri
     !isSecurityStateValue(value.secureConnections, ['yes', 'no', 'unknown', 'unsupported']) ||
     (value.pairingPossible !== null && typeof value.pairingPossible !== 'boolean') ||
     !Number.isFinite(value.measuredAtMonotonicMs) ||
+    value.measuredAtMonotonicMs < 0 ||
     !Array.isArray(value.limitations) ||
     value.limitations.some(limitation => !isLimitation(limitation))
   ) {

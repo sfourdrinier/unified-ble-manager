@@ -514,28 +514,19 @@ function recordsWithOccurrence<
     const rawOccurrence = pathOccurrence(record)
     return { record, value, numeric: rawOccurrence === undefined ? null : tryNumericOccurrence(rawOccurrence) }
   })
-  const allNumeric = parsed.every(entry => entry.numeric !== null)
-  if (allNumeric) {
-    const seen = new Map<string, Set<number>>()
-    return parsed.map(entry => {
-      const occurrence = entry.numeric
-      if (occurrence === null) {
-        throw rehydratePublicError(contractError('protocol.violation', 'gatt', 'public-gatt.occurrence'))
-      }
-      const used = seen.get(entry.value) ?? new Set<number>()
-      if (used.has(occurrence)) {
-        throw rehydratePublicError(contractError('protocol.violation', 'gatt', 'public-gatt.duplicate-occurrence'))
-      }
-      used.add(occurrence)
-      seen.set(entry.value, used)
-      return Object.freeze({ record: entry.record, occurrence })
-    })
-  }
-  const counts = new Map<string, number>()
+  const seen = new Map<string, Set<number>>()
   return parsed.map(entry => {
-    const count = counts.get(entry.value) ?? 0
-    counts.set(entry.value, count + 1)
-    return Object.freeze({ record: entry.record, occurrence: count })
+    const occurrence = entry.numeric
+    if (occurrence === null) {
+      throw rehydratePublicError(contractError('protocol.violation', 'gatt', 'public-gatt.occurrence'))
+    }
+    const used = seen.get(entry.value) ?? new Set<number>()
+    if (used.has(occurrence)) {
+      throw rehydratePublicError(contractError('protocol.violation', 'gatt', 'public-gatt.duplicate-occurrence'))
+    }
+    used.add(occurrence)
+    seen.set(entry.value, used)
+    return Object.freeze({ record: entry.record, occurrence })
   })
 }
 
@@ -558,15 +549,19 @@ function createLookup<Value>(
   return new Map([...lookup.entries()].map(([entryKey, entryValues]) => [entryKey, Object.freeze(entryValues)]))
 }
 
-function selectOne<Value>(values: readonly Value[], selector: OccurrenceSelector, operation: string): Value {
+function selectOne<Value extends { readonly occurrence: number }>(
+  values: readonly Value[],
+  selector: OccurrenceSelector,
+  operation: string
+): Value {
   if (selector.occurrence !== undefined && (!Number.isSafeInteger(selector.occurrence) || selector.occurrence < 0)) {
     throw rehydratePublicError(contractError('argument.invalid', 'gatt', `${operation}.occurrence`))
   }
-  if (values.length === 0 || (selector.occurrence !== undefined && values[selector.occurrence] === undefined)) {
+  if (values.length === 0) {
     throw rehydratePublicError(contractError('gatt.not-found', 'gatt', operation))
   }
   if (selector.occurrence !== undefined) {
-    const selected = values[selector.occurrence]
+    const selected = values.find(value => value.occurrence === selector.occurrence)
     if (selected === undefined) throw rehydratePublicError(contractError('gatt.not-found', 'gatt', operation))
     return selected
   }

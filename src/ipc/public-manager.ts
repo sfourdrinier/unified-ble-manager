@@ -139,7 +139,9 @@ export class IpcPublicManagerAdapter implements BleManager {
       }
       const normalized = normalizeOperationOptions(options, () => globalThis.performance.now())
       const normalizedQuery = normalizeScanQuery(options.query)
-      const session = await this.ipc.scan(toIpcScanOptions(options, normalized.signal, normalizedQuery))
+      const session = await this.ipc.scan(
+        toIpcScanOptions(options, normalized.signal, normalizedQuery, normalized.deadline)
+      )
       if (this.requireScanPlan && session.plan === null) {
         await session.stop().catch(() => undefined)
         throw contractError('protocol.malformed', 'ipc', 'ipc-public-manager.scan-plan')
@@ -204,7 +206,7 @@ export class IpcPublicManagerAdapter implements BleManager {
       const peerId = typeof peer === 'string' ? peer : peer.id
       const base = await this.ipc.connect(peerId, {
         signal: normalized.signal ?? undefined,
-        timeoutMs: options.timeoutMs
+        deadline: normalized.deadline
       })
       return new IpcPublicConnection(base, peer, this.capabilities, this.gattDeliverySelection)
     } catch (error) {
@@ -661,13 +663,14 @@ function toPortableNotificationStream(
 function toIpcScanOptions(
   options: ScanOptions,
   signal: AbortSignal | null,
-  query: import('../backend-contract/scan-query').NormalizedScanQuery
+  query: import('../backend-contract/scan-query').NormalizedScanQuery,
+  deadline: number | null
 ) {
   const delivery = resolveStreamPolicy(options.delivery ?? 'balanced')
   return {
     query,
     signal: signal ?? undefined,
-    timeoutMs: options.timeoutMs,
+    deadline,
     stream: {
       itemCapacity: Number(delivery.itemCapacity),
       byteCapacity: Number(delivery.byteCapacity),
