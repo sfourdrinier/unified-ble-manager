@@ -257,7 +257,7 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
     private readonly now: () => number
   ) {
     this.eventPump = this.pumpEvents()
-    void this.eventPump.then(
+    this.eventPump.then(
       () => undefined,
       error => {
         this.pumpFailure = error
@@ -367,12 +367,7 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
       throw contractError('argument.invalid', 'connection', 'ipc-manager.connect.peer-id')
     }
     const deadline = operationDeadline(options)
-    const payload = await this.route(
-      'connection.connect',
-      Object.freeze({ peerId, deadline }),
-      null,
-      options.signal
-    )
+    const payload = await this.route('connection.connect', Object.freeze({ peerId, deadline }), null, options.signal)
     if (deadline !== null && deadline <= globalThis.performance.now()) {
       const expired = decodeProvisionalConnectIdentity(payload)
       await this.compensateFailedConnect(
@@ -478,13 +473,10 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
     }
     signal?.addEventListener('abort', forwardAbort, { once: true })
     let timedOut = false
-    const timer = globalThis.setTimeout(
-      () => {
-        timedOut = true
-        controller.abort()
-      },
-      deadline - globalThis.performance.now()
-    )
+    const timer = globalThis.setTimeout(() => {
+      timedOut = true
+      controller.abort()
+    }, deadline - globalThis.performance.now())
     try {
       const receipt = await this.client.request({ command, payload, binaryPayload, signal: controller.signal })
       return receipt.payload

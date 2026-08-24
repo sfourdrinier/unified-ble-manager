@@ -634,10 +634,7 @@ class PublicScanSessionController<Attachment extends string> {
       if (previous?.value === fingerprint) return
       this.rememberObservationFingerprint(observation.peer.id, fingerprint)
     }
-    const observationPush = this.observationStream.emit(
-      observation,
-      estimatePublicScanObservationBytes(observation)
-    )
+    const observationPush = this.observationStream.emit(observation, estimatePublicScanObservationBytes(observation))
     const eventTerminated = this.eventBroadcast.emit(
       Object.freeze({ kind: 'observed', peer: observation.peer }),
       estimatePublicDiscoveryEventBytes({ kind: 'observed', peer: observation.peer })
@@ -1419,7 +1416,7 @@ class PublicBleManager<Attachment extends string, Identity extends BackendIdenti
         (deadlineAt, action) => scheduleInternalScanDeadline(this.internal, deadlineAt, action),
         reportLostAfterMs,
         reason => {
-          void stopScan(reason).catch(error => {
+          stopScan(reason).catch(error => {
             stopState.pendingCleanupError = error
             scanState.emit({ state: 'failed', reason: 'scan-stop-failed' })
           })

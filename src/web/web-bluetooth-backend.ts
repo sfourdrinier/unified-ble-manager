@@ -589,7 +589,7 @@ export class WebBluetoothBackend
       this.deletePendingConnectionIfOwned(pending)
     }
     for (const record of [...this.connectionsByPeer.values()]) {
-      void this.disconnectRecord(record, 'connection-lost')
+      this.disconnectRecord(record, 'connection-lost').catch(() => undefined)
     }
     this.selectedDevices.clear()
     this.peerByBrowserDeviceId.clear()
@@ -775,7 +775,7 @@ export class WebBluetoothBackend
     let record: WebConnectionRecord | null = null
     const disconnectListener = () => {
       if (record !== null) {
-        void this.disconnectRecord(record, 'connection-lost')
+        this.disconnectRecord(record, 'connection-lost').catch(() => undefined)
       }
     }
     record = {
@@ -855,10 +855,7 @@ export class WebBluetoothBackend
     }
   }
 
-  private unbindConnectionRecord(
-    record: WebConnectionRecord,
-    _reason: 'connection-lost' | 'owner-released'
-  ): void {
+  private unbindConnectionRecord(record: WebConnectionRecord, _reason: 'connection-lost' | 'owner-released'): void {
     record.device.removeDisconnectListener(record.disconnectListener)
     this.connectionsByPeer.delete(String(record.peerId))
     this.retainedConnections.delete(record)
