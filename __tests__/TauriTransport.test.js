@@ -288,6 +288,31 @@ describe('Tauri v2 IPC transport', () => {
     expect(() => encodeTauriWireValue(new Map())).toThrow('protocol.malformed')
   })
 
+  test('rejects forbidden keys on encode and decode instead of mutating Object.prototype', () => {
+    const { encodeTauriWireValue, decodeTauriWireValue } = require('../src/tauri/transport')
+    const poisoned = JSON.parse('{"__proto__":{"polluted":true}}')
+    const before = Object.prototype.polluted
+    expect(() => encodeTauriWireValue(poisoned)).toThrow(/protocol\.malformed/)
+    expect(() => decodeTauriWireValue(poisoned)).toThrow(/protocol\.malformed/)
+    expect(Object.prototype.polluted).toBe(before)
+  })
+
+  test('round-trips nested route envelopes through encode then decode with null prototypes', () => {
+    const { encodeTauriWireValue, decodeTauriWireValue } = require('../src/tauri/transport')
+    const envelope = {
+      command: 'connection.connect',
+      payload: { peerId: 'peer-1', nested: { ok: true } }
+    }
+    const encoded = encodeTauriWireValue(envelope)
+    expect(Object.getPrototypeOf(encoded)).toBe(null)
+    expect(Object.getPrototypeOf(encoded.payload)).toBe(null)
+    const decoded = decodeTauriWireValue(encoded)
+    expect(Object.getPrototypeOf(decoded)).toBe(null)
+    expect(decoded.command).toBe('connection.connect')
+    expect(decoded.payload.peerId).toBe('peer-1')
+    expect(decoded.payload.nested.ok).toBe(true)
+  })
+
   test('publishes an explicit Tauri entrypoint without importing a radio backend', () => {
     const packageJson = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'))
     const entrypoint = fs.readFileSync(path.join(root, 'src', 'tauri.ts'), 'utf8')
