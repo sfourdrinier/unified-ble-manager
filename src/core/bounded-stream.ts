@@ -50,6 +50,7 @@ export class CoreBoundedStream<Value> implements BoundedAsyncStream<Value> {
   private overflowNotice: StreamOverflowNotice | null = null
   private terminalNotice: StreamTerminalNotice | null = null
   private terminalDelivered = false
+  private ownerClosed = false
   private retainedValueBytes = 0
   private retainedPayloadByteCount = 0
   private droppedItems = 0
@@ -127,7 +128,7 @@ export class CoreBoundedStream<Value> implements BoundedAsyncStream<Value> {
   }
 
   private closeWithTerminal(reason: CoreStreamTerminalReason, zeroOverflowCounters: boolean): void {
-    if (this.isTerminal()) {
+    if (this.ownerClosed || this.terminalDelivered) {
       return
     }
     this.values.length = 0
@@ -137,13 +138,14 @@ export class CoreBoundedStream<Value> implements BoundedAsyncStream<Value> {
     if (zeroOverflowCounters) {
       this.clearOverflowCounters()
     }
+    this.ownerClosed = true
     this.terminalNotice = this.makeTerminal(reason)
     this.flushPendingConsumers()
   }
 
   /** Appends a terminal control record after already accepted values drain. */
   finishWithReason(reason: CoreStreamTerminalReason): void {
-    if (this.isTerminal()) {
+    if (this.ownerClosed || this.terminalNotice !== null || this.terminalDelivered) {
       return
     }
     this.terminalNotice = this.makeTerminal(reason)
