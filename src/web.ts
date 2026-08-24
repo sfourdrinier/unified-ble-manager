@@ -22,6 +22,7 @@ import { canonicalUuid } from './backend-contract/primitives'
 import type { Uuid } from './backend-contract/primitives'
 import { normalizeOperationOptions } from './public/operation-options'
 import { contractError } from './backend-contract/errors'
+import { rehydratePublicPromise } from './public/error-bridge'
 
 export {
   createWebBluetoothProvider,
@@ -58,9 +59,13 @@ export type {
 
 // Zero-plumbing Web factory — returns one BleManager. No provider/clientId tuple.
 export async function createWebBleManager(options: BleManagerCreateOptions = {}): Promise<BleManager> {
-  const normalized = normalizeWebCreateOptions(options)
-  const env = createDefaultNavigatorWebBluetoothEnvironment()
-  return createWebManager(env, normalized)
+  return rehydratePublicPromise(
+    (async () => {
+      const normalized = normalizeWebCreateOptions(options)
+      const env = createDefaultNavigatorWebBluetoothEnvironment()
+      return createWebManager(env, normalized)
+    })()
+  )
 }
 
 // Explicit provider injection for tests and unusual hosts.
@@ -72,9 +77,13 @@ export interface WebBleManagerWithEnvironmentOptions {
 export async function createWebBleManagerWithEnvironment(
   options: WebBleManagerWithEnvironmentOptions
 ): Promise<BleManager> {
-  const env = options.environment
-  const normalized = normalizeWebCreateOptions(options.createOptions)
-  return createWebManager(env, normalized)
+  return rehydratePublicPromise(
+    (async () => {
+      const env = options.environment
+      const normalized = normalizeWebCreateOptions(options.createOptions)
+      return createWebManager(env, normalized)
+    })()
+  )
 }
 
 async function createWebManager(

@@ -345,9 +345,11 @@ export class ElectronMainBleRouter {
       } else if (envelope.command === 'connection.connect') {
         response = await this.connect(resources, envelope.payload, controller)
       } else if (envelope.command === 'adapter.state') {
-        response = await this.adapterState()
+        response = await this.adapterState(controller)
       } else if (envelope.command === 'connection.rssi') {
         response = await this.readRssi(resources, envelope.payload, controller)
+      } else if (envelope.command === 'connection.maximum-write-length') {
+        response = await this.maximumWriteLength(resources, envelope.payload, controller)
       } else if (envelope.command === 'connection.disconnect') {
         response = await this.disconnect(resources, envelope.payload)
       } else if (envelope.command === 'connection.events.subscribe') {
@@ -468,17 +470,57 @@ export class ElectronMainBleRouter {
     })
   }
 
-  private async adapterState(): Promise<SerializableRecord> {
-    const state = await this.manager.adapterState()
-    return Object.freeze({
-      state: Object.freeze({
-        availability: state.availability,
-        authorization: state.authorization,
-        power: state.power,
-        backendGeneration: String(state.backendGeneration),
-        updatedAt: state.updatedAt,
-        safeReason: state.safeReason
+  private async adapterState(controller: AbortController): Promise<SerializableRecord> {
+    const pending = this.manager.adapterState()
+    const aborted = new Promise<never>((_, reject) => {
+      const fail = (): void => {
+        reject(contractError('operation.aborted', 'adapter', 'electron-main-router.adapter-state'))
+      }
+      if (controller.signal.aborted) {
+        fail()
+        return
+      }
+      controller.signal.addEventListener('abort', fail, { once: true })
+    })
+    try {
+      const state = await Promise.race([pending, aborted])
+      return Object.freeze({
+        state: Object.freeze({
+          availability: state.availability,
+          authorization: state.authorization,
+          power: state.power,
+          backendGeneration: String(state.backendGeneration),
+          updatedAt: state.updatedAt,
+          safeReason: state.safeReason
+        })
       })
+    } finally {
+      pending.then(
+        () => undefined,
+        () => undefined
+      )
+    }
+  }
+
+  private async maximumWriteLength(
+    resources: RendererResources,
+    payload: SerializableRecord,
+    controller: AbortController
+  ): Promise<SerializableRecord> {
+    const mode = payload.mode
+    if (mode !== 'with-response' && mode !== 'without-response') {
+      throw contractError('argument.invalid', 'ipc', 'electron-main-router.maximum-write-length.mode')
+    }
+    const connection = requiredResource(
+      resources.connections,
+      requiredString(payload, 'connectionHandle'),
+      'connection'
+    )
+    const result = await connection.maximumWriteLength(mode, operationOptions(payload, controller))
+    return Object.freeze({
+      bytes: result.maximumWriteLength,
+      mode,
+      observedAtMonotonicMs: result.observedAtMonotonicMs
     })
   }
 
@@ -504,14 +546,12 @@ export class ElectronMainBleRouter {
     const connectionHandle = requiredString(payload, 'connectionHandle')
     const connection = requiredResource(resources.connections, connectionHandle, 'connection')
     const reason = optionalRediscoveryReason(payload)
-    if (reason !== null) {
-      const retirement = await this.retireDatabasesForRediscovery(resources, connectionHandle)
-      if (retirement.state === 'release-failed') {
-        throw new BackendContractError(
-          retirement.failures[0]?.error ??
-            contractError('platform.failure', 'cleanup', 'electron-main-router.rediscovery-retirement').normalized
-        )
-      }
+    const retirement = await this.retireDatabasesForRediscovery(resources, connectionHandle)
+    if (retirement.state === 'release-failed') {
+      throw new BackendContractError(
+        retirement.failures[0]?.error ??
+          contractError('platform.failure', 'cleanup', 'electron-main-router.rediscovery-retirement').normalized
+      )
     }
     const database =
       reason === null
@@ -656,9 +696,11 @@ export class ElectronMainBleRouter {
   ): Promise<SerializableRecord> {
     const database = this.database(resources, envelope.payload)
     const path = this.characteristic(database, envelope.payload)
+    const deliveryMode = requiredDeliveryMode(envelope.payload.deliveryMode)
     const subscription = await database.database.subscribe(path, {
       ...operationOptions(envelope.payload, controller),
-      delivery: deliveryFromPayload(envelope.payload)
+      delivery: deliveryFromPayload(envelope.payload),
+      ...(deliveryMode === undefined ? {} : { deliveryMode })
     } satisfies SubscriptionOptions)
     const handle = this.allocateHandle('subscription')
     this.streams.registerSubscription(
@@ -1224,6 +1266,21 @@ function requiredString(payload: SerializableRecord, key: string): string {
   const value = payload[key]
   if (typeof value !== 'string' || value.length === 0) {
     throw contractError('protocol.malformed', 'ipc', `electron-main-router.${key}`)
+  }
+  return value
+}
+
+function requiredDeliveryMode(
+  value: SerializableRecord[string] | undefined
+): 'prefer-notification' | 'prefer-indication' | 'require-notification' | 'require-indication' | undefined {
+  if (value === undefined) return undefined
+  if (
+    value !== 'prefer-notification' &&
+    value !== 'prefer-indication' &&
+    value !== 'require-notification' &&
+    value !== 'require-indication'
+  ) {
+    throw contractError('argument.invalid', 'gatt', 'electron-main-router.delivery-mode')
   }
   return value
 }

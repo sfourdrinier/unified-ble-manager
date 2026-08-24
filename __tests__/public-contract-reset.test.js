@@ -80,10 +80,10 @@ describe('PR1 public contract reset (TDD)', () => {
 
     // deterministic ephemeral injection stable
     const d1 = createEphemeralHostIdentity({
-      randomBytes: () => new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16])
+      randomBytes: length => new Uint8Array(length).fill(1)
     })
     const d2 = createEphemeralHostIdentity({
-      randomBytes: () => new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16])
+      randomBytes: length => new Uint8Array(length).fill(1)
     })
     expect(d1.attachmentNonce).toBe(d2.attachmentNonce)
   })

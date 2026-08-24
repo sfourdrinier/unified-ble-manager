@@ -8,6 +8,7 @@ import { IpcPublicManagerAdapter } from './ipc/public-manager'
 import { TauriBleIpcTransport } from './tauri/transport'
 import type { TauriChannel, TauriInvoke } from './tauri/transport'
 import type { BleManager } from './public/ble-manager'
+import { rehydratePublicPromise } from './public/error-bridge'
 
 // Tauri and Electron deliberately share the same public IPC projection. The
 // host-specific module owns only transport loading and host-option admission;
@@ -18,6 +19,10 @@ const createTauriPublicManager = (ipc: IpcBleManager): BleManager => new IpcPubl
 // Normal Tauri factory — imports invoke/Channel from @tauri-apps/api/core internally.
 // No transport plumbing from application code.
 export async function createTauriBleManager(options: BleManagerCreateOptions = {}): Promise<BleManager> {
+  return rehydratePublicPromise(createTauriBleManagerInternal(options))
+}
+
+async function createTauriBleManagerInternal(options: BleManagerCreateOptions): Promise<BleManager> {
   normalizeBleManagerCreateOptions(options)
   let tauriCore: { invoke: TauriInvoke; Channel: new <T>() => TauriChannel<T> }
   try {
@@ -50,6 +55,13 @@ export async function createTauriBleManagerWithEnvironment(
   environment: TauriBleManagerEnvironment,
   options: BleManagerCreateOptions = {}
 ): Promise<BleManager> {
+  return rehydratePublicPromise(createTauriBleManagerWithEnvironmentInternal(environment, options))
+}
+
+async function createTauriBleManagerWithEnvironmentInternal(
+  environment: TauriBleManagerEnvironment,
+  options: BleManagerCreateOptions
+): Promise<BleManager> {
   normalizeBleManagerCreateOptions(options)
   const transport = new TauriBleIpcTransport(environment)
   const ipcManager = await IpcBleManager.create(transport)
@@ -63,6 +75,12 @@ function assertTauriCreateOptions(options: BleManagerCreateOptions, ipc: IpcBleM
   }
   if (options.restoration !== undefined) {
     throw contractError('capability.unsupported', 'restoration', 'tauri-manager.restoration')
+  }
+  if (options.instanceId !== undefined) {
+    throw contractError('capability.unsupported', 'core', 'tauri-manager.instance-id')
+  }
+  if (options.diagnostics !== undefined) {
+    throw contractError('capability.unsupported', 'core', 'tauri-manager.diagnostics')
   }
 }
 

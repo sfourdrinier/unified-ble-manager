@@ -45,7 +45,11 @@ function fakeInternalManager({
     ordinal: 1
   },
   readinessWatchOverride,
-  effectiveMtuObservation
+  effectiveMtuObservation,
+  requestMtuResult,
+  maximumWriteLengthResult,
+  readPhyResult,
+  requestPhyResult
 } = {}) {
   const descriptors = new Map([
     ['connection:direct', capability('supported')],
@@ -80,14 +84,18 @@ function fakeInternalManager({
     connectionGeneration: 'generation-1',
     events: { [Symbol.asyncIterator]: () => ({ next: async () => ({ done: true, value: undefined }), return: async () => ({ done: true, value: undefined }) }) },
     readRssi: async () => ({ rssi: -42, observedAtMonotonicMs: 5678, terminal: terminal() }),
-    requestMtu: async requestedMtu => ({
-      requestedMtu,
-      negotiatedMtu: 185,
-      observedAtMonotonicMs: 6789,
-      terminal: terminal()
-    }),
+    requestMtu: async requestedMtu =>
+      requestMtuResult === undefined
+        ? {
+            requestedMtu,
+            negotiatedMtu: 185,
+            observedAtMonotonicMs: 6789,
+            terminal: terminal()
+          }
+        : requestMtuResult(requestedMtu),
     maximumWriteLength: async (mode, options) => {
       maximumWriteLengthRequests.push({ mode, options })
+      if (maximumWriteLengthResult !== undefined) return maximumWriteLengthResult(mode)
       return {
         connectionId: 'connection-1',
         connectionGeneration: 'generation-1',
@@ -116,24 +124,30 @@ function fakeInternalManager({
         terminal: terminal()
       }
     },
-    readPhy: async () => ({
-      txPhy: 'le-2m',
-      rxPhy: 'le-coded',
-      observedAtMonotonicMs: 8123,
-      terminal: terminal()
-    }),
-    requestPhy: async (requested, options) => ({
-      requested,
-      accepted: true,
-      observation: {
-        txPhy: 'le-2m',
-        rxPhy: 'le-coded',
-        observedAtMonotonicMs: 8124,
-        terminal: terminal()
-      },
-      observedAtMonotonicMs: 8124,
-      terminal: terminal()
-    }),
+    readPhy: async () =>
+      readPhyResult === undefined
+        ? {
+            txPhy: 'le-2m',
+            rxPhy: 'le-coded',
+            observedAtMonotonicMs: 8123,
+            terminal: terminal()
+          }
+        : readPhyResult(),
+    requestPhy: async (requested, options) =>
+      requestPhyResult === undefined
+        ? {
+            requested,
+            accepted: true,
+            observation: {
+              txPhy: 'le-2m',
+              rxPhy: 'le-coded',
+              observedAtMonotonicMs: 8124,
+              terminal: terminal()
+            },
+            observedAtMonotonicMs: 8124,
+            terminal: terminal()
+          }
+        : requestPhyResult(requested, options),
     ...(readinessEnabled
       ? {
           writeWithoutResponseReadiness: async () => {
@@ -327,6 +341,100 @@ describe('PR8A public link controls', () => {
     const connection = await manager.connect('peer-1')
 
     await expect(connection.controls.effectiveMtu()).rejects.toMatchObject({ code: 'protocol.violation' })
+  })
+
+  test('P1-04 rejects non-integer MTU, mismatched write-length identity, and invalid PHY enums', async () => {
+    const nanMtu = fakeInternalManager({
+      requestMtuResult: () => ({
+        requestedMtu: 185,
+        negotiatedMtu: Number.NaN,
+        observedAtMonotonicMs: 1,
+        terminal: terminal()
+      })
+    })
+    const nanManager = await createPublicBleManager(nanMtu, () => 1234)
+    const nanConnection = await nanManager.connect('peer-1')
+    await expect(nanConnection.controls.requestMtu(185)).rejects.toMatchObject({ code: 'protocol.violation' })
+
+    const staleWrite = fakeInternalManager({
+      maximumWriteLengthResult: mode => ({
+        connectionId: 'stale-connection',
+        connectionGeneration: 'generation-1',
+        mode,
+        maximumWriteLength: 20,
+        observedAtMonotonicMs: 1,
+        terminal: terminal()
+      })
+    })
+    const staleManager = await createPublicBleManager(staleWrite, () => 1234)
+    const staleConnection = await staleManager.connect('peer-1')
+    await expect(staleConnection.controls.maximumWriteLength('with-response')).rejects.toMatchObject({
+      code: 'protocol.violation'
+    })
+
+    const badPhy = fakeInternalManager({
+      readPhyResult: () => ({
+        txPhy: 'le-coded-s2',
+        rxPhy: 'le-2m',
+        observedAtMonotonicMs: 1,
+        terminal: terminal()
+      })
+    })
+    const phyManager = await createPublicBleManager(badPhy, () => 1234)
+    const phyConnection = await phyManager.connect('peer-1')
+    await expect(phyConnection.controls.readPhy()).rejects.toMatchObject({ code: 'protocol.violation' })
+
+    const nanEffective = fakeInternalManager({
+      effectiveMtuObservation: {
+        attMtu: Number.NaN,
+        payloadBytes: Number.NaN,
+        platformPduBytes: null,
+        observedAtMonotonicMs: 1,
+        connectionId: 'connection-1',
+        connectionGeneration: 'generation-1'
+      }
+    })
+    const nanEffectiveManager = await createPublicBleManager(nanEffective, () => 1234)
+    const nanEffectiveConnection = await nanEffectiveManager.connect('peer-1')
+    await expect(nanEffectiveConnection.controls.effectiveMtu()).rejects.toMatchObject({
+      code: 'protocol.violation'
+    })
+
+    const mismatchedMode = fakeInternalManager({
+      maximumWriteLengthResult: () => ({
+        connectionId: 'connection-1',
+        connectionGeneration: 'generation-1',
+        mode: 'without-response',
+        maximumWriteLength: 20,
+        observedAtMonotonicMs: 1,
+        terminal: terminal()
+      })
+    })
+    const modeManager = await createPublicBleManager(mismatchedMode, () => 1234)
+    const modeConnection = await modeManager.connect('peer-1')
+    await expect(modeConnection.controls.maximumWriteLength('with-response')).rejects.toMatchObject({
+      code: 'protocol.violation'
+    })
+
+    const badRequestPhy = fakeInternalManager({
+      requestPhyResult: () => ({
+        requested: { tx: 'le-1m', rx: 'le-coded' },
+        accepted: true,
+        observation: {
+          txPhy: 'le-coded-s2',
+          rxPhy: 'le-2m',
+          observedAtMonotonicMs: 1,
+          terminal: terminal()
+        },
+        observedAtMonotonicMs: 1,
+        terminal: terminal()
+      })
+    })
+    const requestPhyManager = await createPublicBleManager(badRequestPhy, () => 1234)
+    const requestPhyConnection = await requestPhyManager.connect('peer-1')
+    await expect(requestPhyConnection.controls.requestPhy({ tx: 'le-1m', rx: 'le-coded' })).rejects.toMatchObject({
+      code: 'protocol.violation'
+    })
   })
 
   test('rejects a runtime-invalid maximum-write mode before dispatch', async () => {

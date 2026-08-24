@@ -99,6 +99,7 @@ export interface IpcPublicManagerOptions {
   readonly adapter?: BleAdapter
   readonly diagnostics?: BleDiagnostics
   readonly peers?: BlePeerDirectory
+  readonly gattDeliverySelection?: 'unknown' | 'controllable'
 }
 
 export class IpcPublicManagerAdapter implements BleManager {
@@ -109,12 +110,14 @@ export class IpcPublicManagerAdapter implements BleManager {
   readonly security: BleSecurity
   readonly discovery: BleManager['discovery']
   private readonly requireScanPlan: boolean
+  private readonly gattDeliverySelection: 'unknown' | 'controllable'
 
   constructor(
     private readonly ipc: IpcBleManager,
     options: IpcPublicManagerOptions = {}
   ) {
     this.requireScanPlan = options.requireScanPlan ?? false
+    this.gattDeliverySelection = options.gattDeliverySelection ?? 'unknown'
     this.capabilities = options.capabilities ?? ipc.capabilities
     this.adapter = options.adapter ?? createIpcAdapter(ipc)
     this.diagnostics = options.diagnostics ?? diagnosticsUnavailable()
@@ -136,7 +139,9 @@ export class IpcPublicManagerAdapter implements BleManager {
       }
       const normalized = normalizeOperationOptions(options, () => globalThis.performance.now())
       const normalizedQuery = normalizeScanQuery(options.query)
-      const session = await this.ipc.scan(toIpcScanOptions(options, normalized.signal, normalizedQuery))
+      const session = await this.ipc.scan(
+        toIpcScanOptions(options, normalized.signal, normalizedQuery, normalized.deadline)
+      )
       if (this.requireScanPlan && session.plan === null) {
         await session.stop().catch(() => undefined)
         throw contractError('protocol.malformed', 'ipc', 'ipc-public-manager.scan-plan')
@@ -201,9 +206,9 @@ export class IpcPublicManagerAdapter implements BleManager {
       const peerId = typeof peer === 'string' ? peer : peer.id
       const base = await this.ipc.connect(peerId, {
         signal: normalized.signal ?? undefined,
-        timeoutMs: options.timeoutMs
+        deadline: normalized.deadline
       })
-      return new IpcPublicConnection(base, peer, this.capabilities)
+      return new IpcPublicConnection(base, peer, this.capabilities, this.gattDeliverySelection)
     } catch (error) {
       throw rehydratePublicError(error)
     }
@@ -323,7 +328,8 @@ class IpcPublicConnection implements BleConnection {
   constructor(
     private readonly base: IpcConnection,
     peer: BlePeer | string,
-    capabilities: BleCapabilities
+    capabilities: BleCapabilities,
+    private readonly gattDeliverySelection: 'unknown' | 'controllable'
   ) {
     this.peer = typeof peer === 'string' ? snapshotBlePeer({ id: peer, name: null, rssi: null }) : snapshotBlePeer(peer)
     this.handle = base.handle
@@ -353,7 +359,7 @@ class IpcPublicConnection implements BleConnection {
         signal: normalized.signal ?? undefined,
         deadline: normalized.deadline
       })
-      return createPublicGattDatabase(createIpcGattSource(database))
+      return createPublicGattDatabase(createIpcGattSource(database, this.gattDeliverySelection))
     } catch (error) {
       throw rehydratePublicError(error)
     }
@@ -376,7 +382,7 @@ class IpcPublicConnection implements BleConnection {
         },
         options.reason === 'manual' ? 'manual-rediscovery' : 'service-changed'
       )
-      return createPublicGattDatabase(createIpcGattSource(database))
+      return createPublicGattDatabase(createIpcGattSource(database, this.gattDeliverySelection))
     } catch (error) {
       throw rehydratePublicError(error)
     }
@@ -500,6 +506,9 @@ function createIpcConnectionControls(
         BUILT_IN_FEATURE_IDS.maximumWriteLength,
         'ipc-public-manager.controls.maximum-write-length'
       )
+      if (mode !== 'with-response' && mode !== 'without-response') {
+        throw contractError('argument.invalid', 'connection', 'ipc-public-manager.controls.maximum-write-length')
+      }
       const maximumWriteLengthValue = await connection.maximumWriteLength(mode)
       const observation: MaximumWriteLengthObservation = Object.freeze({
         ...ipcControlMetadata(generation, descriptor, globalThis.performance.now()),
@@ -547,10 +556,13 @@ function createIpcConnectionControls(
   })
 }
 
-function createIpcGattSource(database: IpcGattDatabase): PublicGattDatabaseSource {
+function createIpcGattSource(
+  database: IpcGattDatabase,
+  deliverySelection: 'unknown' | 'controllable'
+): PublicGattDatabaseSource {
   return {
     path: database.path,
-    deliverySelection: 'unknown',
+    deliverySelection,
     changed: database.changed,
     assertCurrent: () => database.assertCurrent(),
     monotonicNow: () => database.monotonicNow(),
@@ -651,13 +663,14 @@ function toPortableNotificationStream(
 function toIpcScanOptions(
   options: ScanOptions,
   signal: AbortSignal | null,
-  query: import('../backend-contract/scan-query').NormalizedScanQuery
+  query: import('../backend-contract/scan-query').NormalizedScanQuery,
+  deadline: number | null
 ) {
   const delivery = resolveStreamPolicy(options.delivery ?? 'balanced')
   return {
     query,
     signal: signal ?? undefined,
-    timeoutMs: options.timeoutMs,
+    deadline,
     stream: {
       itemCapacity: Number(delivery.itemCapacity),
       byteCapacity: Number(delivery.byteCapacity),

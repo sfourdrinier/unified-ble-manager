@@ -767,7 +767,7 @@ describe('Tauri v2 public manager', () => {
     const { createTauriBleManagerWithEnvironment } = require('../src/tauri')
 
     await expect(createTauriBleManagerWithEnvironment({ invoke, Channel: FakeChannel })).rejects.toMatchObject({
-      normalized: { code: 'protocol.malformed' }
+      code: 'protocol.malformed'
     })
 
     const invalidStateBootstrap = bootstrap()
@@ -776,7 +776,7 @@ describe('Tauri v2 public manager', () => {
 
     await expect(
       createTauriBleManagerWithEnvironment({ invoke: invalidStateInvoke, Channel: FakeChannel })
-    ).rejects.toMatchObject({ normalized: { code: 'protocol.malformed' } })
+    ).rejects.toMatchObject({ code: 'protocol.malformed' })
 
     const invalidCapabilityBootstrap = bootstrap()
     invalidCapabilityBootstrap.capabilities.descriptors[0].evidence.sourceDigest = ''
@@ -786,7 +786,7 @@ describe('Tauri v2 public manager', () => {
     }))
     await expect(
       createTauriBleManagerWithEnvironment({ invoke: invalidCapabilityInvoke, Channel: FakeChannel })
-    ).rejects.toMatchObject({ normalized: { code: 'protocol.malformed' } })
+    ).rejects.toMatchObject({ code: 'protocol.malformed' })
 
     const mismatchedGenerationBootstrap = bootstrap()
     mismatchedGenerationBootstrap.attachment.adapter.state.backendGeneration = 'other-generation'
@@ -796,14 +796,14 @@ describe('Tauri v2 public manager', () => {
     }))
     await expect(
       createTauriBleManagerWithEnvironment({ invoke: mismatchedGenerationInvoke, Channel: FakeChannel })
-    ).rejects.toMatchObject({ normalized: { code: 'protocol.malformed' } })
+    ).rejects.toMatchObject({ code: 'protocol.malformed' })
 
     const outOfRangeVersionBootstrap = bootstrap()
     outOfRangeVersionBootstrap.versions.ipcProtocol.selected = { axis: 'ipc-protocol', value: 3 }
     const outOfRangeVersionInvoke = jest.fn(async () => ({ kind: 'bootstrap', bootstrap: outOfRangeVersionBootstrap }))
     await expect(
       createTauriBleManagerWithEnvironment({ invoke: outOfRangeVersionInvoke, Channel: FakeChannel })
-    ).rejects.toMatchObject({ normalized: { code: 'protocol.malformed' } })
+    ).rejects.toMatchObject({ code: 'protocol.malformed' })
   })
 
   test('rejects malformed public filters instead of silently scanning without them', async () => {
@@ -848,13 +848,28 @@ describe('Tauri v2 public manager', () => {
 
     await expect(
       createTauriBleManagerWithEnvironment({ invoke, Channel: FakeChannel }, { adapterId: 'wrong-adapter' })
-    ).rejects.toMatchObject({ normalized: { code: 'adapter.unavailable' } })
+    ).rejects.toMatchObject({ code: 'adapter.unavailable' })
     expect(invoke.mock.calls.map(([, args]) => args.request.kind)).toEqual(['bootstrap', 'release'])
 
     invoke.mockClear()
     await expect(
       createTauriBleManagerWithEnvironment({ invoke, Channel: FakeChannel }, { restoration: { restorationId: 'ble' } })
-    ).rejects.toMatchObject({ normalized: { code: 'capability.unsupported' } })
+    ).rejects.toMatchObject({ code: 'capability.unsupported' })
+    expect(invoke.mock.calls.map(([, args]) => args.request.kind)).toEqual(['bootstrap', 'release'])
+
+    invoke.mockClear()
+    await expect(
+      createTauriBleManagerWithEnvironment({ invoke, Channel: FakeChannel }, { instanceId: 'named' })
+    ).rejects.toMatchObject({ code: 'capability.unsupported' })
+    expect(invoke.mock.calls.map(([, args]) => args.request.kind)).toEqual(['bootstrap', 'release'])
+
+    invoke.mockClear()
+    await expect(
+      createTauriBleManagerWithEnvironment(
+        { invoke, Channel: FakeChannel },
+        { diagnostics: { traceMaximumRecords: 8 } }
+      )
+    ).rejects.toMatchObject({ code: 'capability.unsupported' })
     expect(invoke.mock.calls.map(([, args]) => args.request.kind)).toEqual(['bootstrap', 'release'])
   })
 })

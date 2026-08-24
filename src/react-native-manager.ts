@@ -16,6 +16,7 @@ import {
   type ReactNativeAppleBackendProviderOptions
 } from './backends/reactnative/react-native-apple-provider'
 import { createBleManagerFromProvider, DEFAULT_BLE_MANAGER_OPTIONS, type BleManager } from './manager/ble-manager'
+import { rehydratePublicPromise } from './public/error-bridge'
 import type { Spec as NativeUnifiedBleProtocolControl } from './NativeUnifiedBleProtocolControl'
 import type { ReactNativeRestorationBackendProvider } from './backends/reactnative/react-native-restoration'
 import type { DiagnosticsOptions } from './public/host-identity'
@@ -44,6 +45,12 @@ export interface ReactNativeBleManagerOptions {
  * UnifiedBleProtocolRestorationClientId, and UnifiedBleProtocolRestorationHostSessionScope.
  */
 export async function createReactNativeBleManagerWithEnvironment(
+  options: ReactNativeBleManagerOptions
+): Promise<BleManager<string, NativeBackendIdentity<string>>> {
+  return rehydratePublicPromise(createReactNativeBleManagerWithEnvironmentInternal(options))
+}
+
+async function createReactNativeBleManagerWithEnvironmentInternal(
   options: ReactNativeBleManagerOptions
 ): Promise<BleManager<string, NativeBackendIdentity<string>>> {
   if (options.hostSessionScope.length === 0) {

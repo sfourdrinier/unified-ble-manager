@@ -226,6 +226,9 @@ class ConnectionSupervisorImpl<Session> implements ConnectionSupervisor<Session>
       })
       return this.stopPromise
     }
+    if (this.ownershipReleased) {
+      return this.lastCleanup ?? { state: 'released', failures: [] }
+    }
     this.stopRequested = true
     this.supervisorAbort.abort()
     this.activeAbort?.abort()
@@ -233,6 +236,19 @@ class ConnectionSupervisorImpl<Session> implements ConnectionSupervisor<Session>
     this.wake()
     const stopOperation = (this.runPromise ?? Promise.resolve()).then(async () => {
       const cleanup = await this.cleanupCurrentConnection()
+      if (this.lateConfigureBarrier !== null || this.lateSessionRetry !== null) {
+        const pending = {
+          state: 'release-failed' as const,
+          failures: cleanupFailure(
+            'session',
+            contractError('lifecycle.invalid-state', 'cleanup', 'connection-supervisor.late-configure-pending'),
+            'connection-supervisor.late-configure-pending'
+          )
+        }
+        this.lastCleanup = pending
+        this.transition('cleanup-failed', null, null, pending)
+        return pending
+      }
       this.finalize(cleanup)
       return cleanup
     })
@@ -453,6 +469,7 @@ class ConnectionSupervisorImpl<Session> implements ConnectionSupervisor<Session>
           this.lateConfigureBarrier = lateBarrier
           lateBarrier
             .then(cleanup => {
+              this.lastCleanup = cleanup
               if (!this.stopRequested || this.activeConnection !== null) return
               if (cleanup.state === 'release-failed') {
                 this.stopPromise = null
@@ -626,6 +643,7 @@ class ConnectionSupervisorImpl<Session> implements ConnectionSupervisor<Session>
   }
 
   private finalize(cleanup: CleanupRecord): void {
+    this.lastCleanup = cleanup
     if (cleanup.state === 'released' && (this.lateConfigureBarrier !== null || this.lateSessionRetry !== null)) {
       this.transition('stopped', null, null, cleanup)
       return

@@ -64,7 +64,7 @@ export function resolveStreamPreset(input: StreamPresetInput = {}): StreamBudget
     case 'custom': {
       const custom = input.custom
       if (custom === undefined || custom.itemCapacity === undefined || custom.byteCapacity === undefined) {
-        throw new Error('custom stream preset requires itemCapacity and byteCapacity')
+        throw contractError('argument.invalid', 'stream', 'stream-preset.custom')
       }
       const reservedControlCapacity = custom.reservedControlCapacity ?? capacity(2)
       if (Number(custom.byteCapacity) <= Number(reservedControlCapacity)) {
@@ -78,7 +78,7 @@ export function resolveStreamPreset(input: StreamPresetInput = {}): StreamBudget
       })
     }
     default:
-      throw new Error(`unknown stream preset: ${String(preset)}`)
+      throw contractError('argument.invalid', 'stream', 'stream-preset.unknown')
   }
 }
 

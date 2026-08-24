@@ -16,7 +16,7 @@ import type { OperationOptions } from './operation-options'
 import { resolveStreamPolicy } from './stream-presets'
 import type { StreamBudget, StreamPolicy } from './stream-presets'
 import type { IpcAdvertisement } from '../ipc/manager'
-import { rehydratePublicError, rehydratePublicPromise, runWithCleanup } from './error-bridge'
+import { BleCleanupError, rehydratePublicError, rehydratePublicPromise, runWithCleanup } from './error-bridge'
 import { assertDirectConnectionCapability, PublicBleCapabilities } from './capabilities'
 import type { BleCapabilities } from './capabilities'
 import type {
@@ -755,8 +755,10 @@ function assertPublicConnectionIdentity(
   operation: string
 ): void {
   if (
-    String(actual.connectionId) !== String(expected.connectionId) ||
-    String(actual.connectionGeneration) !== String(expected.connectionGeneration)
+    typeof actual.connectionId !== 'string' ||
+    typeof actual.connectionGeneration !== 'string' ||
+    actual.connectionId !== expected.connectionId ||
+    actual.connectionGeneration !== expected.connectionGeneration
   ) {
     throw contractError('protocol.violation', 'connection', operation)
   }
@@ -916,9 +918,7 @@ async function closePublicReadinessWatch(
   try {
     const cleanup = await close()
     if (cleanup.state === 'release-failed') {
-      const error = new Error('BLE readiness watch cleanup failed')
-      Object.defineProperty(error, 'cleanup', { value: cleanup, enumerable: true })
-      closeError = error
+      closeError = new BleCleanupError(cleanup, 'BLE readiness watch cleanup failed')
     }
   } catch (error) {
     closeError = error
@@ -971,10 +971,13 @@ function createPublicConnectionControls(
       const descriptor = requireControlCapability(internal, 'connection:rssi', 'public-connection.controls.read-rssi')
       const normalized = normalizeOperationOptions(options, now)
       const result = await connection.readRssi({ signal: normalized.signal, deadline: normalized.deadline })
+      if (!Number.isSafeInteger(result.rssi)) {
+        throw contractError('protocol.violation', 'connection', 'public-connection.controls.read-rssi')
+      }
       return Object.freeze({
         ...controlMetadata(generation, result.observedAtMonotonicMs, descriptor, 'backend-operation'),
         state: 'measured' as const,
-        rssi: Number(result.rssi)
+        rssi: result.rssi
       })
     })
 
@@ -991,6 +994,15 @@ function createPublicConnectionControls(
       }
       const result = await observe()
       assertPublicConnectionIdentity(connection, result, 'public-connection.controls.effective-mtu.identity')
+      if (result.attMtu !== null) {
+        if (
+          !Number.isSafeInteger(result.attMtu) ||
+          result.attMtu < MINIMUM_ATT_MTU ||
+          result.attMtu > MAXIMUM_REQUESTED_ATT_MTU
+        ) {
+          throw contractError('protocol.violation', 'connection', 'public-connection.controls.effective-mtu.result')
+        }
+      }
       return Object.freeze({
         ...controlMetadata(generation, result.observedAtMonotonicMs, descriptor, 'backend-observation'),
         state: result.attMtu === null ? ('unavailable' as const) : ('measured' as const),
@@ -1019,11 +1031,18 @@ function createPublicConnectionControls(
         signal: normalized.signal,
         deadline: normalized.deadline
       })
+      if (
+        !Number.isSafeInteger(result.negotiatedMtu) ||
+        result.negotiatedMtu < MINIMUM_ATT_MTU ||
+        result.negotiatedMtu > MAXIMUM_REQUESTED_ATT_MTU
+      ) {
+        throw contractError('protocol.violation', 'connection', 'public-connection.controls.request-mtu.result')
+      }
       const observation = Object.freeze({
         ...controlMetadata(generation, result.observedAtMonotonicMs, descriptor, 'backend-operation'),
         state: 'measured' as const,
-        attMtu: Number(result.negotiatedMtu),
-        payloadBytes: Number(result.negotiatedMtu) - 3,
+        attMtu: result.negotiatedMtu,
+        payloadBytes: result.negotiatedMtu - 3,
         platformPduBytes: null
       })
       return Object.freeze({
@@ -1049,6 +1068,19 @@ function createPublicConnectionControls(
         signal: normalized.signal,
         deadline: normalized.deadline
       })
+      if ('connectionId' in result) {
+        assertPublicConnectionIdentity(connection, result, 'public-connection.controls.maximum-write-length.identity')
+      }
+      if (result.mode !== undefined && result.mode !== mode) {
+        throw contractError('protocol.violation', 'connection', 'public-connection.controls.maximum-write-length.mode')
+      }
+      if (!Number.isSafeInteger(result.maximumWriteLength) || result.maximumWriteLength <= 0) {
+        throw contractError(
+          'protocol.violation',
+          'connection',
+          'public-connection.controls.maximum-write-length.result'
+        )
+      }
       return Object.freeze({
         ...controlMetadata(generation, result.observedAtMonotonicMs, descriptor, 'backend-observation'),
         state: 'measured' as const,
@@ -1087,6 +1119,8 @@ function createPublicConnectionControls(
       const descriptor = requireControlCapability(internal, 'connection:phy', 'public-connection.controls.read-phy')
       const normalized = normalizeOperationOptions(options, now)
       const result = await connection.readPhy({ signal: normalized.signal, deadline: normalized.deadline })
+      assertBlePhy(result.txPhy, 'public-connection.controls.read-phy.tx')
+      assertBlePhy(result.rxPhy, 'public-connection.controls.read-phy.rx')
       return Object.freeze({
         ...controlMetadata(generation, result.observedAtMonotonicMs, descriptor, 'backend-operation'),
         state: 'measured' as const,
@@ -1106,6 +1140,10 @@ function createPublicConnectionControls(
       })
       if (result.accepted !== (result.observation !== null)) {
         throw contractError('protocol.malformed', 'connection', 'public-connection.controls.request-phy.result')
+      }
+      if (result.observation !== null) {
+        assertBlePhy(result.observation.txPhy, 'public-connection.controls.request-phy.tx')
+        assertBlePhy(result.observation.rxPhy, 'public-connection.controls.request-phy.rx')
       }
       const observation =
         result.observation === null
@@ -1152,7 +1190,10 @@ function createPublicConnectionControls(
       unsupportedControlStream<ConnectionParametersObservation>('public-connection.controls.parameter-events'),
     requestSubrate: (_mode: SubrateMode, _options: OperationOptions = {}) =>
       unsupportedPromise<SubrateResult>('connection:subrate', 'public-connection.controls.request-subrate'),
-    writeReadiness: (_mode: 'without-response') => {
+    writeReadiness: (mode: 'without-response') => {
+      if (mode !== 'without-response') {
+        throw contractError('argument.invalid', 'connection', 'public-connection.controls.write-readiness.mode')
+      }
       const descriptor = internal.capability('gatt:write-without-response-readiness')
       if (
         descriptor === null ||
@@ -1441,8 +1482,17 @@ class PublicBleManager implements BleManager {
     options: ConnectOptions,
     action: (scope: { readonly connection: BleConnection; readonly gatt: GattDatabase }) => Promise<T>
   ): Promise<T> {
+    const normalized = normalizeOperationOptions(options, this.now)
     return this.withConnection(peer, options, async connection => {
-      const gatt = await connection.discover(options)
+      if (normalized.deadline !== null && this.now() >= normalized.deadline) {
+        throw contractError('operation.timed-out', 'connection', 'public-ble-manager.with-discovered-connection')
+      }
+      const remainingMs =
+        normalized.deadline === null ? undefined : Math.max(1, Math.trunc(normalized.deadline - this.now()))
+      const gatt = await connection.discover({
+        signal: options.signal,
+        ...(remainingMs === undefined ? {} : { timeoutMs: remainingMs })
+      })
       return action(Object.freeze({ connection, gatt }))
     })
   }
@@ -1649,7 +1699,7 @@ async function stopAdapterWatch(
     failures.push(error)
     throw new AggregateError(failures, 'BLE adapter watch cleanup failed')
   }
-  if (cleanup.state === 'release-failed') failures.push(new Error('BLE adapter watch cleanup failed'))
+  if (cleanup.state === 'release-failed') failures.push(new BleCleanupError(cleanup))
   if (failures.length > 0) throw new AggregateError(failures, 'BLE adapter watch cleanup failed')
   return cleanup
 }
@@ -1706,17 +1756,20 @@ export function filterScanObservations(
   query: ReturnType<typeof normalizeScanQuery>,
   duplicates: 'coalesced' | 'all' = 'all'
 ): BoundedAsyncStream<PublicScanObservation> {
-  const lastObservations = new Map<string, string>()
   return {
     limits: source.limits,
     overflowPolicy: source.overflowPolicy,
     [Symbol.asyncIterator](): BoundedAsyncStreamIterator<PublicScanObservation> {
       const iterator = source[Symbol.asyncIterator]()
+      const lastObservations = new Map<string, string>()
       return {
         async next() {
           while (true) {
             const item = await iterator.next()
-            if (item.done) return item
+            if (item.done) {
+              lastObservations.clear()
+              return item
+            }
             if (item.value.kind === 'overflow' || item.value.kind === 'terminal') {
               return { done: false, value: item.value }
             }
@@ -1725,6 +1778,10 @@ export function filterScanObservations(
               if (duplicates === 'coalesced') {
                 const fingerprint = publicObservationFingerprint(observation)
                 if (lastObservations.get(observation.peer.id) === fingerprint) continue
+                if (lastObservations.size >= 256) {
+                  const oldest = lastObservations.keys().next().value
+                  if (oldest !== undefined) lastObservations.delete(oldest)
+                }
                 lastObservations.set(observation.peer.id, fingerprint)
               }
               return { done: false, value: { kind: 'value', value: observation } }
@@ -1732,6 +1789,7 @@ export function filterScanObservations(
           }
         },
         return: async () => {
+          lastObservations.clear()
           await iterator.return()
           return { done: true, value: undefined }
         },
@@ -1869,7 +1927,10 @@ class PublicConnectionEventBroadcast implements AsyncIterable<BleConnectionEvent
   private async pump(): Promise<void> {
     try {
       for await (const event of this.source) {
-        for (const subscriber of this.subscribers) subscriber.emit(event, 512)
+        for (const subscriber of [...this.subscribers]) {
+          const result = subscriber.emit(event, 512)
+          if (result.terminated) this.subscribers.delete(subscriber)
+        }
       }
       this.terminalReason = 'closed'
       this.closeSubscribers('closed')
@@ -1926,6 +1987,9 @@ function isReferenceLike(value: unknown): value is object {
 }
 
 export function assertPublicScanOptions(options: ScanOptions): void {
+  if (typeof options !== 'object' || options === null || Array.isArray(options)) {
+    throw contractError('argument.invalid', 'scan', 'public-ble-manager.scan.options')
+  }
   const allowed = new Set(['signal', 'timeoutMs', 'query', 'duplicates', 'delivery', 'observation', 'platform'])
   if (Object.keys(options).some(key => !allowed.has(key))) {
     throw contractError('argument.invalid', 'scan', 'public-ble-manager.scan.options')
@@ -2018,6 +2082,9 @@ function assertPublicScanPlatformOptions(options: ScanPlatformOptions | undefine
 }
 
 export function assertPublicConnectOptions(options: ConnectOptions): void {
+  if (typeof options !== 'object' || options === null || Array.isArray(options)) {
+    throw contractError('argument.invalid', 'connection', 'public-ble-manager.connect.options')
+  }
   const allowed = new Set(['signal', 'timeoutMs', 'intent', 'transport', 'preferredPhy'])
   if (Object.keys(options).some(key => !allowed.has(key))) {
     throw contractError('argument.invalid', 'connection', 'public-ble-manager.connect.options')
@@ -2055,6 +2122,12 @@ function assertPublicPhyPreference(preference: PhyPreference): void {
 
 function isPublicBlePhy(value: string): value is BlePhy {
   return value === 'le-1m' || value === 'le-2m' || value === 'le-coded'
+}
+
+function assertBlePhy(value: unknown, operation: string): asserts value is BlePhy | null {
+  if (value !== null && (typeof value !== 'string' || !isPublicBlePhy(value))) {
+    throw contractError('protocol.violation', 'connection', operation)
+  }
 }
 
 export function assertPublicChooseOptions(options: ChooseOptions): void {

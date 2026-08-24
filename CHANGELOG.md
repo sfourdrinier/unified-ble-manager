@@ -4,6 +4,11 @@ All notable changes to `unified-ble-manager` are documented here.
 
 ## [Unreleased]
 
+Fail-closed and IPC/governance closure from the RC3 audit, intended for a `4.0.0-rc.4.1` candidate after this branch merges. This does not bump package SemVer in this commit and does not start PR11 / `4.0.0-rc.5`.
+
+- Signature-aware API report checking; GATT included-service and property schema validation; connection-control echo validation; supervisor `stop()` no longer returns `released` while late configure owns the session; `BleCleanupError` retains the exact cleanup record; IPC local stream overflow tears down the remote producer; invalid Electron `deliveryMode` is rejected; Node host factories rehydrate to `BleError`.
+- Repository: `main` is protected by ruleset `protect-main`; stale `agent/*` remotes were archived/deleted.
+
 ## [4.0.0-rc.4] - 2026-08-23
 
 Expo host and native/residual scan-planning release candidate after PR10. This candidate includes the Expo config-plugin v2 schema, thin Expo factory and React lifecycle integration, optional Android foreground-service and companion association surfaces, iOS restoration identity, and the PR9 native/residual scan planner. Backend support labels remain evidence-derived and are not promoted by this release.
@@ -31,7 +36,7 @@ Advanced central release candidate after PR8. This candidate includes known-peer
 
 ### Release integrity
 
-- Cut from the exact post-PR8 `main` merge commit through the tag-driven trusted-publishing workflow.
+- Cut from the exact RC3 release commit `a423a73` on `main` through the tag-driven trusted-publishing workflow.
 - Intended for publication as a prerelease candidate on the `latest` channel; this does not promote backend support labels or claim physical-radio evidence.
 
 ## [4.0.0-rc.2] - 2026-08-21

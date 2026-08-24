@@ -131,10 +131,10 @@ export function mergePeerDirectoryRecords(records: readonly PeerDirectoryRecord[
   }
   const orderedRecords = [...records].sort(
     (left, right) =>
-      referenceKey(left.reference).localeCompare(referenceKey(right.reference)) ||
+      compareCanonical(referenceKey(left.reference), referenceKey(right.reference)) ||
       sourcePriority(left.source) - sourcePriority(right.source) ||
-      left.source.localeCompare(right.source) ||
-      recordTieKey(left).localeCompare(recordTieKey(right))
+      compareCanonical(left.source, right.source) ||
+      compareCanonical(recordTieKey(left), recordTieKey(right))
   )
   for (const record of orderedRecords) {
     const key = referenceKey(record.reference)
@@ -211,7 +211,7 @@ function assertPeerDirectoryRecord(record: PeerDirectoryRecord): void {
     typeof record.peer.id !== 'string' ||
     record.peer.id.length === 0 ||
     !(typeof record.peer.name === 'string' || record.peer.name === null) ||
-    !(typeof record.peer.rssi === 'number' || record.peer.rssi === null)
+    !(record.peer.rssi === null || (typeof record.peer.rssi === 'number' && Number.isFinite(record.peer.rssi)))
   ) {
     throw contractError('peer.reference-invalid', 'connection', 'peer-directory.peer')
   }
@@ -249,13 +249,17 @@ function strongest<Value extends string>(left: Value, right: Value, order: reado
   return order.indexOf(left) >= order.indexOf(right) ? left : right
 }
 
+function compareCanonical(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0
+}
+
 function referenceKey(reference: PeerReference): string {
   return encodePeerReference(reference)
 }
 
 function sourceOrder(sources: readonly PeerSource[]): readonly PeerSource[] {
   return Object.freeze(
-    [...sources].sort((left, right) => sourcePriority(left) - sourcePriority(right) || left.localeCompare(right))
+    [...sources].sort((left, right) => sourcePriority(left) - sourcePriority(right) || compareCanonical(left, right))
   )
 }
 
@@ -284,9 +288,9 @@ function compareMergedPeers(
   const rightSource = sourceOrder([...right.sources])[0] ?? 'backend-cache'
   return (
     sourcePriority(leftSource) - sourcePriority(rightSource) ||
-    leftSource.localeCompare(rightSource) ||
-    (left.peer.reference?.backendId ?? '').localeCompare(right.peer.reference?.backendId ?? '') ||
-    (left.peer.reference?.opaqueId ?? left.peer.id).localeCompare(right.peer.reference?.opaqueId ?? right.peer.id)
+    compareCanonical(leftSource, rightSource) ||
+    compareCanonical(left.peer.reference?.backendId ?? '', right.peer.reference?.backendId ?? '') ||
+    compareCanonical(left.peer.reference?.opaqueId ?? left.peer.id, right.peer.reference?.opaqueId ?? right.peer.id)
   )
 }
 

@@ -177,23 +177,14 @@ class PublicGattDatabase implements GattDatabase {
     validateTopology(snapshot)
     this.generation = snapshot.path.databaseGeneration
     const serviceRecords = recordsWithOccurrence(snapshot.services, record => record.path.serviceUuid)
-    const characteristicRecords = recordsWithOccurrence(
-      snapshot.characteristics,
-      record => record.path.characteristicUuid
-    )
-    const descriptorRecords = recordsWithOccurrence(snapshot.descriptors, record => record.path.descriptorUuid)
     const serviceObjects = serviceRecords.map(record => {
       const characteristics = recordsWithOccurrence(
-        characteristicRecords
-          .filter(characteristic => sameService(characteristic.record.path, record.record.path))
-          .map(characteristic => characteristic.record),
+        snapshot.characteristics.filter(characteristic => sameService(characteristic.path, record.record.path)),
         characteristic => characteristic.path.characteristicUuid
       )
       const characteristicObjects = characteristics.map(characteristic => {
         const descriptors = recordsWithOccurrence(
-          descriptorRecords
-            .filter(descriptor => sameCharacteristic(descriptor.record.path, characteristic.record.path))
-            .map(descriptor => descriptor.record),
+          snapshot.descriptors.filter(descriptor => sameCharacteristic(descriptor.path, characteristic.record.path)),
           descriptor => descriptor.path.descriptorUuid
         )
         return { characteristic, descriptors }
@@ -256,7 +247,7 @@ class PublicGattService implements GattService {
   ) {
     this.uuid = normalizeUuid(indexedRecord.record.path.serviceUuid)
     this.occurrence = indexedRecord.occurrence
-    this.primary = indexedRecord.record.primary ?? true
+    this.primary = optionalBoolean(indexedRecord.record.primary, true, 'public-gatt.service.primary')
     this.includedServices = Object.freeze(
       (indexedRecord.record.includedServices ?? []).map(reference =>
         Object.freeze({ uuid: normalizeUuid(reference.uuid), occurrence: occurrenceNumber(reference.occurrence) })
@@ -297,7 +288,7 @@ class PublicGattCharacteristic implements GattCharacteristic {
     this.uuid = normalizeUuid(indexedRecord.record.path.characteristicUuid)
     this.occurrence = indexedRecord.occurrence
     this.properties = normalizeCharacteristicProperties(indexedRecord.record)
-    this.access = Object.freeze(indexedRecord.record.access ?? { read: 'unknown', write: 'unknown' })
+    this.access = normalizeAccess(indexedRecord.record.access, 'public-gatt.characteristic.access')
     this.descriptors = Object.freeze(
       descriptorRecords.map(recordValue => new PublicGattDescriptor(this, source, recordValue))
     )
@@ -352,7 +343,11 @@ class PublicGattCharacteristic implements GattCharacteristic {
   async subscribe(options: GattSubscribeOptions = {}): Promise<GattSubscription> {
     return this.run(async () => {
       const selectedDelivery = resolveDelivery(this.properties, options.delivery)
-      if (this.source.deliverySelection === 'unknown' && options.delivery?.startsWith('require-')) {
+      if (
+        this.source.deliverySelection === 'unknown' &&
+        typeof options.delivery === 'string' &&
+        options.delivery.startsWith('require-')
+      ) {
         throw contractError('capability.limited', 'gatt', 'public-gatt.subscribe.delivery-selection')
       }
       const effectiveDelivery = this.source.deliverySelection === 'unknown' ? 'unknown' : selectedDelivery
@@ -420,18 +415,7 @@ class PublicGattDescriptor implements GattDescriptor {
     this.characteristic = characteristic
     this.uuid = normalizeUuid(indexedRecord.record.path.descriptorUuid)
     this.occurrence = indexedRecord.occurrence
-    const properties: GattDescriptorProperties = indexedRecord.record.properties ?? {
-      read: false,
-      write: false,
-      availability: { read: 'unknown', write: 'unknown' },
-      access: { read: 'unknown', write: 'unknown' }
-    }
-    this.properties = Object.freeze({
-      read: properties.read,
-      write: properties.write,
-      availability: Object.freeze({ ...properties.availability }),
-      access: Object.freeze({ ...properties.access })
-    })
+    this.properties = normalizeDescriptorProperties(indexedRecord.record.properties)
     Object.freeze(this)
   }
 
@@ -482,14 +466,31 @@ function normalizeUuid(value: UuidInput): string {
 }
 
 function occurrenceNumber(value: string): number {
+  if (typeof value !== 'string' || !/^(0|[1-9][0-9]*)$/.test(value)) {
+    throw rehydratePublicError(contractError('protocol.violation', 'gatt', 'public-gatt.occurrence'))
+  }
   const occurrence = Number(value)
-  if (Number.isSafeInteger(occurrence) && occurrence >= 0) return occurrence
-  return 0
+  if (!Number.isSafeInteger(occurrence) || occurrence < 0) {
+    throw rehydratePublicError(contractError('protocol.violation', 'gatt', 'public-gatt.occurrence'))
+  }
+  return occurrence
 }
 
 interface OccurrenceRecord<RecordValue> {
   readonly record: RecordValue
   readonly occurrence: number
+}
+
+function pathOccurrence(record: {
+  readonly path: {
+    readonly serviceOccurrence?: string
+    readonly characteristicOccurrence?: string
+    readonly descriptorOccurrence?: string
+  }
+}): string | undefined {
+  if (record.path.descriptorOccurrence !== undefined) return record.path.descriptorOccurrence
+  if (record.path.characteristicOccurrence !== undefined) return record.path.characteristicOccurrence
+  return record.path.serviceOccurrence
 }
 
 function recordsWithOccurrence<
@@ -498,20 +499,41 @@ function recordsWithOccurrence<
       readonly serviceUuid?: string
       readonly characteristicUuid?: string
       readonly descriptorUuid?: string
+      readonly serviceOccurrence?: string
+      readonly characteristicOccurrence?: string
+      readonly descriptorOccurrence?: string
     }
   }
 >(
   records: readonly RecordValue[],
   key: (record: RecordValue) => string | undefined
 ): readonly OccurrenceRecord<RecordValue>[] {
-  const counts = new Map<string, number>()
-  return records.map(record => {
+  const parsed = records.map(record => {
     const rawValue = key(record)
     const value = rawValue === undefined ? '' : normalizeUuid(rawValue)
-    const count = counts.get(value) ?? 0
-    counts.set(value, count + 1)
-    return Object.freeze({ record, occurrence: count })
+    const rawOccurrence = pathOccurrence(record)
+    return { record, value, numeric: rawOccurrence === undefined ? null : tryNumericOccurrence(rawOccurrence) }
   })
+  const seen = new Map<string, Set<number>>()
+  return parsed.map(entry => {
+    const occurrence = entry.numeric
+    if (occurrence === null) {
+      throw rehydratePublicError(contractError('protocol.violation', 'gatt', 'public-gatt.occurrence'))
+    }
+    const used = seen.get(entry.value) ?? new Set<number>()
+    if (used.has(occurrence)) {
+      throw rehydratePublicError(contractError('protocol.violation', 'gatt', 'public-gatt.duplicate-occurrence'))
+    }
+    used.add(occurrence)
+    seen.set(entry.value, used)
+    return Object.freeze({ record: entry.record, occurrence })
+  })
+}
+
+function tryNumericOccurrence(value: string): number | null {
+  if (!/^(0|[1-9][0-9]*)$/.test(value)) return null
+  const occurrence = Number(value)
+  return Number.isSafeInteger(occurrence) && occurrence >= 0 ? occurrence : null
 }
 
 function createLookup<Value>(
@@ -527,15 +549,19 @@ function createLookup<Value>(
   return new Map([...lookup.entries()].map(([entryKey, entryValues]) => [entryKey, Object.freeze(entryValues)]))
 }
 
-function selectOne<Value>(values: readonly Value[], selector: OccurrenceSelector, operation: string): Value {
+function selectOne<Value extends { readonly occurrence: number }>(
+  values: readonly Value[],
+  selector: OccurrenceSelector,
+  operation: string
+): Value {
   if (selector.occurrence !== undefined && (!Number.isSafeInteger(selector.occurrence) || selector.occurrence < 0)) {
     throw rehydratePublicError(contractError('argument.invalid', 'gatt', `${operation}.occurrence`))
   }
-  if (values.length === 0 || (selector.occurrence !== undefined && values[selector.occurrence] === undefined)) {
+  if (values.length === 0) {
     throw rehydratePublicError(contractError('gatt.not-found', 'gatt', operation))
   }
   if (selector.occurrence !== undefined) {
-    const selected = values[selector.occurrence]
+    const selected = values.find(value => value.occurrence === selector.occurrence)
     if (selected === undefined) throw rehydratePublicError(contractError('gatt.not-found', 'gatt', operation))
     return selected
   }
@@ -608,6 +634,16 @@ function validateTopology(snapshot: PortableGattDatabaseSnapshot): void {
     }
     descriptorKeys.add(key)
   }
+  for (const service of snapshot.services) {
+    for (const included of service.includedServices ?? []) {
+      const includedKey = `${normalizeUuid(included.uuid)}|${included.occurrence}`
+      if (!serviceKeys.has(includedKey)) {
+        throw rehydratePublicError(
+          contractError('protocol.violation', 'gatt', 'public-gatt.included-service-unresolved')
+        )
+      }
+    }
+  }
 }
 
 function assertDatabasePath(
@@ -631,33 +667,201 @@ function assertDatabasePath(
   }
 }
 
+function assertBooleanProperty(value: unknown, operation: string): asserts value is boolean {
+  if (typeof value !== 'boolean') {
+    throw rehydratePublicError(contractError('protocol.violation', 'gatt', operation))
+  }
+}
+
+function optionalBoolean(value: unknown, fallback: boolean, operation: string): boolean {
+  if (value === undefined) return fallback
+  assertBooleanProperty(value, operation)
+  return value
+}
+
+function assertAvailabilityToken(value: unknown, operation: string): asserts value is 'known' | 'unknown' {
+  if (value !== 'known' && value !== 'unknown') {
+    throw rehydratePublicError(contractError('protocol.violation', 'gatt', operation))
+  }
+}
+
+function optionalAvailabilityToken(
+  value: unknown,
+  fallback: 'known' | 'unknown',
+  operation: string
+): 'known' | 'unknown' {
+  if (value === undefined) return fallback
+  assertAvailabilityToken(value, operation)
+  return value
+}
+
+function assertAccessToken(value: unknown, operation: string): asserts value is GattAccessRequirements['read'] {
+  if (
+    value !== 'none' &&
+    value !== 'encrypted' &&
+    value !== 'authenticated' &&
+    value !== 'authorized' &&
+    value !== 'unknown'
+  ) {
+    throw rehydratePublicError(contractError('protocol.violation', 'gatt', operation))
+  }
+}
+
+function assertPlainRecord(value: unknown, operation: string): asserts value is Record<string, unknown> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw rehydratePublicError(contractError('protocol.violation', 'gatt', operation))
+  }
+}
+
+function normalizeAccess(access: unknown, operation: string): GattAccessRequirements {
+  if (access === undefined) return Object.freeze({ read: 'unknown', write: 'unknown' })
+  assertPlainRecord(access, operation)
+  const read = Reflect.get(access, 'read')
+  const write = Reflect.get(access, 'write')
+  assertAccessToken(read, `${operation}.read`)
+  assertAccessToken(write, `${operation}.write`)
+  return Object.freeze({ read, write })
+}
+
 function normalizeCharacteristicProperties(
   record: PortableGattDatabaseSnapshot['characteristics'][number]
 ): GattCharacteristicProperties {
-  const availability: GattCharacteristicPropertyAvailability = record.properties.availability ?? {
-    broadcast: 'unknown',
-    read: 'known',
-    writeWithResponse: 'known',
-    writeWithoutResponse: 'known',
-    authenticatedSignedWrites: 'unknown',
-    notify: 'known',
-    indicate: record.properties.indicate === undefined ? 'unknown' : 'known',
-    extendedProperties: 'unknown',
-    reliableWrite: 'unknown',
-    writableAuxiliaries: 'unknown'
-  }
+  assertBooleanProperty(record.properties.read, 'public-gatt.characteristic.properties.read')
+  assertBooleanProperty(record.properties.writeWithResponse, 'public-gatt.characteristic.properties.writeWithResponse')
+  assertBooleanProperty(
+    record.properties.writeWithoutResponse,
+    'public-gatt.characteristic.properties.writeWithoutResponse'
+  )
+  assertBooleanProperty(record.properties.notify, 'public-gatt.characteristic.properties.notify')
+  const broadcast = optionalBoolean(
+    record.properties.broadcast,
+    false,
+    'public-gatt.characteristic.properties.broadcast'
+  )
+  const authenticatedSignedWrites = optionalBoolean(
+    record.properties.authenticatedSignedWrites,
+    false,
+    'public-gatt.characteristic.properties.authenticatedSignedWrites'
+  )
+  const indicate = optionalBoolean(record.properties.indicate, false, 'public-gatt.characteristic.properties.indicate')
+  const extendedProperties = optionalBoolean(
+    record.properties.extendedProperties,
+    false,
+    'public-gatt.characteristic.properties.extendedProperties'
+  )
+  const reliableWrite = optionalBoolean(
+    record.properties.reliableWrite,
+    false,
+    'public-gatt.characteristic.properties.reliableWrite'
+  )
+  const writableAuxiliaries = optionalBoolean(
+    record.properties.writableAuxiliaries,
+    false,
+    'public-gatt.characteristic.properties.writableAuxiliaries'
+  )
+  const availabilityInput = record.properties.availability
+  if (availabilityInput !== undefined) assertPlainRecord(availabilityInput, 'public-gatt.characteristic.availability')
+  const availability: GattCharacteristicPropertyAvailability = Object.freeze({
+    broadcast: optionalAvailabilityToken(
+      availabilityInput === undefined ? undefined : Reflect.get(availabilityInput, 'broadcast'),
+      record.properties.broadcast === undefined ? 'unknown' : 'known',
+      'public-gatt.characteristic.availability.broadcast'
+    ),
+    read: optionalAvailabilityToken(
+      availabilityInput === undefined ? undefined : Reflect.get(availabilityInput, 'read'),
+      'known',
+      'public-gatt.characteristic.availability.read'
+    ),
+    writeWithResponse: optionalAvailabilityToken(
+      availabilityInput === undefined ? undefined : Reflect.get(availabilityInput, 'writeWithResponse'),
+      'known',
+      'public-gatt.characteristic.availability.writeWithResponse'
+    ),
+    writeWithoutResponse: optionalAvailabilityToken(
+      availabilityInput === undefined ? undefined : Reflect.get(availabilityInput, 'writeWithoutResponse'),
+      'known',
+      'public-gatt.characteristic.availability.writeWithoutResponse'
+    ),
+    authenticatedSignedWrites: optionalAvailabilityToken(
+      availabilityInput === undefined ? undefined : Reflect.get(availabilityInput, 'authenticatedSignedWrites'),
+      record.properties.authenticatedSignedWrites === undefined ? 'unknown' : 'known',
+      'public-gatt.characteristic.availability.authenticatedSignedWrites'
+    ),
+    notify: optionalAvailabilityToken(
+      availabilityInput === undefined ? undefined : Reflect.get(availabilityInput, 'notify'),
+      'known',
+      'public-gatt.characteristic.availability.notify'
+    ),
+    indicate: optionalAvailabilityToken(
+      availabilityInput === undefined ? undefined : Reflect.get(availabilityInput, 'indicate'),
+      record.properties.indicate === undefined ? 'unknown' : 'known',
+      'public-gatt.characteristic.availability.indicate'
+    ),
+    extendedProperties: optionalAvailabilityToken(
+      availabilityInput === undefined ? undefined : Reflect.get(availabilityInput, 'extendedProperties'),
+      record.properties.extendedProperties === undefined ? 'unknown' : 'known',
+      'public-gatt.characteristic.availability.extendedProperties'
+    ),
+    reliableWrite: optionalAvailabilityToken(
+      availabilityInput === undefined ? undefined : Reflect.get(availabilityInput, 'reliableWrite'),
+      record.properties.reliableWrite === undefined ? 'unknown' : 'known',
+      'public-gatt.characteristic.availability.reliableWrite'
+    ),
+    writableAuxiliaries: optionalAvailabilityToken(
+      availabilityInput === undefined ? undefined : Reflect.get(availabilityInput, 'writableAuxiliaries'),
+      record.properties.writableAuxiliaries === undefined ? 'unknown' : 'known',
+      'public-gatt.characteristic.availability.writableAuxiliaries'
+    )
+  })
   return Object.freeze({
-    broadcast: record.properties.broadcast ?? false,
+    broadcast,
     read: record.properties.read,
     writeWithResponse: record.properties.writeWithResponse,
     writeWithoutResponse: record.properties.writeWithoutResponse,
-    authenticatedSignedWrites: record.properties.authenticatedSignedWrites ?? false,
+    authenticatedSignedWrites,
     notify: record.properties.notify,
-    indicate: record.properties.indicate ?? false,
-    extendedProperties: record.properties.extendedProperties ?? false,
-    reliableWrite: record.properties.reliableWrite ?? false,
-    writableAuxiliaries: record.properties.writableAuxiliaries ?? false,
-    availability: Object.freeze(availability)
+    indicate,
+    extendedProperties,
+    reliableWrite,
+    writableAuxiliaries,
+    availability
+  })
+}
+
+function normalizeDescriptorProperties(properties: unknown): GattDescriptorProperties {
+  if (properties === undefined) {
+    return Object.freeze({
+      read: false,
+      write: false,
+      availability: Object.freeze({ read: 'unknown', write: 'unknown' }),
+      access: Object.freeze({ read: 'unknown', write: 'unknown' })
+    })
+  }
+  assertPlainRecord(properties, 'public-gatt.descriptor.properties')
+  const read = Reflect.get(properties, 'read')
+  const write = Reflect.get(properties, 'write')
+  assertBooleanProperty(read, 'public-gatt.descriptor.properties.read')
+  assertBooleanProperty(write, 'public-gatt.descriptor.properties.write')
+  const availabilityInput = Reflect.get(properties, 'availability')
+  if (availabilityInput !== undefined) {
+    assertPlainRecord(availabilityInput, 'public-gatt.descriptor.availability')
+  }
+  return Object.freeze({
+    read,
+    write,
+    availability: Object.freeze({
+      read: optionalAvailabilityToken(
+        availabilityInput === undefined ? undefined : Reflect.get(availabilityInput, 'read'),
+        'unknown',
+        'public-gatt.descriptor.availability.read'
+      ),
+      write: optionalAvailabilityToken(
+        availabilityInput === undefined ? undefined : Reflect.get(availabilityInput, 'write'),
+        'unknown',
+        'public-gatt.descriptor.availability.write'
+      )
+    }),
+    access: normalizeAccess(Reflect.get(properties, 'access'), 'public-gatt.descriptor.access')
   })
 }
 
@@ -679,6 +883,9 @@ function resolveWriteMode(
       )
     return 'without-response'
   }
+  if (response !== 'automatic' && response !== undefined) {
+    throw rehydratePublicError(contractError('argument.invalid', 'gatt', 'public-gatt.characteristic.write-response'))
+  }
   if (properties.writeWithResponse) return 'with-response'
   if (properties.writeWithoutResponse) return 'without-response'
   throw rehydratePublicError(contractError('gatt.property-not-supported', 'gatt', 'public-gatt.characteristic.write'))
@@ -699,6 +906,9 @@ function resolveDelivery(
   if (requested === 'require-notification') return 'notification'
   if (requested === 'require-indication') return 'indication'
   if (requested === 'prefer-indication' && properties.indicate) return 'indication'
+  if (requested !== undefined && requested !== 'prefer-notification' && requested !== 'prefer-indication') {
+    throw rehydratePublicError(contractError('argument.invalid', 'gatt', 'public-gatt.subscribe.delivery'))
+  }
   if (properties.notify) return 'notification'
   if (properties.indicate) return 'indication'
   throw rehydratePublicError(contractError('gatt.property-not-supported', 'gatt', 'public-gatt.subscribe'))
@@ -769,15 +979,27 @@ function mapStreamItem(
     }
   }
   const value = result.value.value
+  const delivery = value.delivery ?? (value.indication ? 'indication' : 'notification')
+  if (delivery !== 'notification' && delivery !== 'indication' && delivery !== 'unknown') {
+    throw rehydratePublicError(contractError('protocol.violation', 'gatt', 'public-gatt.notification.delivery'))
+  }
+  const observedAtMonotonicMs = value.observedAtMonotonicMs ?? now()
+  if (!Number.isFinite(observedAtMonotonicMs) || observedAtMonotonicMs < 0) {
+    throw rehydratePublicError(contractError('protocol.violation', 'gatt', 'public-gatt.notification.timestamp'))
+  }
+  const sequence = value.sequence ?? nextSequence()
+  if (!Number.isSafeInteger(sequence) || sequence < 1) {
+    throw rehydratePublicError(contractError('protocol.violation', 'gatt', 'public-gatt.notification.sequence'))
+  }
   return {
     done: false,
     value: {
       kind: 'value',
       value: Object.freeze({
         value: new Uint8Array(value.value),
-        delivery: value.delivery ?? (value.indication ? 'indication' : 'notification'),
-        observedAtMonotonicMs: value.observedAtMonotonicMs ?? now(),
-        sequence: value.sequence ?? nextSequence()
+        delivery,
+        observedAtMonotonicMs,
+        sequence
       })
     }
   }

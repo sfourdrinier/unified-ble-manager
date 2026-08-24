@@ -6,6 +6,7 @@ import { ElectronRendererBleClient } from './renderer'
 import { IpcBleManager } from '../ipc/manager'
 import { IpcPublicManagerAdapter } from '../ipc/public-manager'
 import type { BleManager } from '../public/ble-manager'
+import { rehydratePublicPromise } from '../public/error-bridge'
 
 export interface ElectronRendererBleManagerEnvironment {
   readonly transport: ElectronRendererIpcTransport<string, string>
@@ -15,10 +16,14 @@ export interface ElectronRendererBleManagerEnvironment {
 export async function createElectronRendererBleManager(
   environment: ElectronRendererBleManagerEnvironment
 ): Promise<BleManager> {
-  const rendererClient = new ElectronRendererBleClient(environment.transport)
-  const transport = new ElectronClientTransport(rendererClient)
-  const ipc = await IpcBleManager.create(transport)
-  return new IpcPublicManagerAdapter(ipc, { requireScanPlan: true })
+  return rehydratePublicPromise(
+    (async () => {
+      const rendererClient = new ElectronRendererBleClient(environment.transport)
+      const transport = new ElectronClientTransport(rendererClient)
+      const ipc = await IpcBleManager.create(transport)
+      return new IpcPublicManagerAdapter(ipc, { requireScanPlan: true, gattDeliverySelection: 'controllable' })
+    })()
+  )
 }
 
 /** Explicit injection spelling used by deterministic and packed consumer tests. */

@@ -152,6 +152,7 @@ export interface IpcDescriptorRecord extends SerializableRecord {
 interface StreamSink {
   readonly closeWithReason: (reason: 'owner-released' | 'source-failed' | 'connection-lost' | 'service-changed') => void
   readonly deliver: (streamId: string, item: SerializableRecord) => void
+  readonly notifyOwnerTerminal: (reason: StreamTerminalNotice['reason']) => void
 }
 
 /**
@@ -258,13 +259,20 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
       handle,
       isIpcScanObservation,
       toRemoteStreamLimits(options.stream),
-      options.stream?.overflowPolicy
+      options.stream?.overflowPolicy,
+      reason => {
+        if (reason === 'overflow' || reason === 'source-failed') {
+          this.route('scan.stop', Object.freeze({ scanHandle: handle })).catch(() => undefined)
+        }
+      }
     )
     return new IpcScanSession(this, handle, observations, plan)
   }
 
   async connect(peerId: string, options: IpcManagerOperationOptions = {}): Promise<IpcConnection> {
-    if (peerId.length === 0) throw new TypeError('peerId must not be empty')
+    if (typeof peerId !== 'string' || peerId.length === 0) {
+      throw contractError('argument.invalid', 'connection', 'ipc-manager.connect.peer-id')
+    }
     const payload = await this.route(
       'connection.connect',
       Object.freeze({ peerId, deadline: operationDeadline(options) }),
@@ -369,8 +377,17 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
     const deliver = (streamId: string, item: SerializableRecord): void => {
       if (item.kind === 'value') {
         const rawValue: unknown = item.value
-        if (!isValue(rawValue)) throw contractError('protocol.malformed', 'ipc', 'ipc-manager.stream-value')
-        source.emit(rawValue, estimateByteLength(rawValue))
+        if (!isValue(rawValue)) {
+          this.streams.delete(handle)
+          source.closeWithReason('source-failed')
+          onTerminal?.('source-failed')
+          throw contractError('protocol.malformed', 'ipc', 'ipc-manager.stream-value')
+        }
+        const push = source.emit(rawValue, estimateByteLength(rawValue))
+        if (push.terminated) {
+          this.streams.delete(handle)
+          onTerminal?.('overflow')
+        }
         return
       }
       if (item.kind === 'overflow') {
@@ -395,7 +412,10 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
     }
     const sink: StreamSink = {
       closeWithReason: reason => source.closeWithReason(reason),
-      deliver
+      deliver,
+      notifyOwnerTerminal: reason => {
+        onTerminal?.(reason)
+      }
     }
     this.streams.set(handle, sink)
     const pending = this.pendingStreamItems.get(handle)
@@ -446,7 +466,13 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
       )
       throw validation
     }
-    const events = this.registerStream(handle, isIpcConnectionLifecycleEvent)
+    const events = this.registerStream(handle, isIpcConnectionLifecycleEvent, undefined, undefined, reason => {
+      if (reason === 'overflow' || reason === 'source-failed') {
+        this.route('connection.events.unsubscribe', Object.freeze({ connectionEventsHandle: handle })).catch(
+          () => undefined
+        )
+      }
+    })
     try {
       const ready = await this.route('connection.events.ready', Object.freeze({ connectionEventsHandle: handle }))
       if (ready.state !== 'ready') {
@@ -506,6 +532,7 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
         const affected = this.streams.get(streamId)
         if (affected !== undefined) {
           affected.closeWithReason('source-failed')
+          affected.notifyOwnerTerminal('source-failed')
           this.streams.delete(streamId)
           this.pendingStreamItems.delete(streamId)
           this.pendingStreamBytes.delete(streamId)
@@ -771,9 +798,7 @@ export class IpcConnection {
   }
 
   async discover(options: IpcManagerOperationOptions = {}): Promise<IpcGattDatabase> {
-    if (options.reason !== undefined) {
-      this.invalidateDatabases(options.reason)
-    }
+    this.invalidateDatabases(options.reason ?? null)
     await this.awaitLifecycleAdmission(options)
     const payload = await this.manager.route(
       'gatt.discover',
@@ -1296,6 +1321,11 @@ export class IpcCharacteristic {
         options.stream?.overflowPolicy,
         reason => {
           if (reason === 'service-changed') this.database.invalidate('service-changed')
+          if (reason === 'overflow' || reason === 'source-failed') {
+            this.database
+              .route('gatt.unsubscribe', Object.freeze({ subscriptionHandle: handle }), null)
+              .catch(() => undefined)
+          }
         }
       )
     )
@@ -1408,15 +1438,16 @@ function ipcDatabasePath(
 }
 
 function toIpcOptions(options: PortableOperationOptions | PortableSubscriptionOptions): IpcManagerOperationOptions {
-  const timeoutMs =
-    typeof options.deadline === 'number' && globalThis.performance !== undefined
-      ? Math.max(1, options.deadline - globalThis.performance.now())
-      : undefined
+  if (typeof options.deadline === 'number') {
+    if (globalThis.performance !== undefined && options.deadline <= globalThis.performance.now()) {
+      throw contractError('operation.timed-out', 'ipc', 'ipc-manager.deadline-expired')
+    }
+  }
   const subscriptionOptions = isPortableSubscriptionOptions(options) ? options : null
   const delivery = subscriptionOptions?.delivery
   return {
     signal: options.signal ?? undefined,
-    timeoutMs,
+    deadline: typeof options.deadline === 'number' ? options.deadline : undefined,
     deliveryMode: subscriptionOptions?.deliveryMode,
     stream:
       delivery === undefined

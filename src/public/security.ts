@@ -13,7 +13,7 @@ import type {
 } from '../backend-contract/security'
 import type { FeatureId, Limitation } from '../backend-contract/capabilities'
 import type { BoundedAsyncStream, BoundedAsyncStreamIterator } from '../backend-contract/streams'
-import { rehydratePublicError } from './error-bridge'
+import { BleCleanupError, rehydratePublicError } from './error-bridge'
 import type { OperationOptions } from './operation-options'
 import { normalizeOperationOptions } from './operation-options'
 import { snapshotBlePeer, type BlePeer } from './ble-manager'
@@ -211,7 +211,11 @@ export function createPublicSecurity(
     watch: peer => {
       try {
         const security = requireBackend('security:state', 'public-security.watch')
-        return mapSecurityEvents(resolvePeer(peer, {}).then(resolved => security.watch(resolved.id)))
+        const resolved = resolvePeer(peer, {})
+        return mapSecurityEvents(
+          resolved.then(value => security.watch(value.id)),
+          resolved.then(value => value.id)
+        )
       } catch (error) {
         throw rehydratePublicError(error)
       }
@@ -223,6 +227,17 @@ export function createPublicSecurity(
         const resolved = await resolvePeer(peer, options)
         if (options.ceremony !== undefined && options.ceremony !== 'system') {
           requireBackend('security:custom-ceremony', 'public-security.pair.custom-ceremony')
+        }
+        if (options.transport !== undefined && options.transport !== 'le' && options.transport !== 'auto') {
+          throw contractError('argument.invalid', 'platform', 'public-security.pair.transport')
+        }
+        if (
+          options.protection !== undefined &&
+          options.protection !== 'system-default' &&
+          options.protection !== 'encrypted' &&
+          options.protection !== 'authenticated'
+        ) {
+          throw contractError('argument.invalid', 'platform', 'public-security.pair.protection')
         }
         const ceremony = toInternalCeremony(options.ceremony, resolved.peer)
         const pairOptions: InternalSecurityPairOptions = {
@@ -370,6 +385,7 @@ function snapshotSecurityState(value: InternalPeerSecurityState, operation: stri
     !isSecurityStateValue(value.secureConnections, ['yes', 'no', 'unknown', 'unsupported']) ||
     (value.pairingPossible !== null && typeof value.pairingPossible !== 'boolean') ||
     !Number.isFinite(value.measuredAtMonotonicMs) ||
+    value.measuredAtMonotonicMs < 0 ||
     !Array.isArray(value.limitations) ||
     value.limitations.some(limitation => !isLimitation(limitation))
   ) {
@@ -415,7 +431,8 @@ function snapshotUnpairResult(value: InternalSecurityUnpairResult, operation: st
 }
 
 function mapSecurityEvents(
-  source: BoundedAsyncStream<InternalPeerSecurityEvent> | Promise<BoundedAsyncStream<InternalPeerSecurityEvent>>
+  source: BoundedAsyncStream<InternalPeerSecurityEvent> | Promise<BoundedAsyncStream<InternalPeerSecurityEvent>>,
+  expectedPeerId: string | Promise<string>
 ): AsyncIterable<PeerSecurityEvent> {
   let sourceResolved = false
   const sourcePromise = Promise.resolve(source).then(value => {
@@ -436,6 +453,7 @@ function mapSecurityEvents(
     [Symbol.asyncIterator]() {
       const iteratorPromise = sourcePromise.then(value => value[Symbol.asyncIterator]())
       let teardownAttempted = false
+      let lastSequence = 0
       return {
         async next(): Promise<IteratorResult<PeerSecurityEvent, undefined>> {
           let iterator: BoundedAsyncStreamIterator<InternalPeerSecurityEvent> | null = null
@@ -466,9 +484,17 @@ function mapSecurityEvents(
               throw overflowError
             }
             const event = item.value.value
-            if (event.kind !== 'state' || typeof event.peerId !== 'string' || !Number.isSafeInteger(event.sequence)) {
+            const expectedId = await expectedPeerId
+            if (
+              event.kind !== 'state' ||
+              event.peerId !== expectedId ||
+              !Number.isSafeInteger(event.sequence) ||
+              event.sequence < 1 ||
+              event.sequence <= lastSequence
+            ) {
               throw contractError('protocol.violation', 'platform', 'public-security.watch-event')
             }
+            lastSequence = event.sequence
             return {
               done: false,
               value: Object.freeze({
@@ -564,9 +590,7 @@ async function closeSecurityIterator(
 
 function assertSecurityStreamCleanup(cleanup: CleanupRecord): void {
   if (cleanup.state === 'release-failed') {
-    const error = new Error('BLE security watch cleanup failed')
-    Object.defineProperty(error, 'cleanup', { value: cleanup, enumerable: true })
-    throw error
+    throw new BleCleanupError(cleanup, 'BLE security watch cleanup failed')
   }
 }
 

@@ -343,7 +343,7 @@ jobs:
 
       - name: Filter paths
         # Latest: https://github.com/dorny/paths-filter/releases (v4 = Node 24 runtime)
-        uses: dorny/paths-filter@v4.0.2
+        uses: dorny/paths-filter@v4.0.3
         id: filter
         with:
           filters: |
