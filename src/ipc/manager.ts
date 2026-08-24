@@ -578,14 +578,16 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
 
   subscribeConnectionEvents(
     connectionHandle: string,
-    identity: SerializableRecord
+    identity: SerializableRecord,
+    signal?: AbortSignal
   ): Promise<IpcConnectionEventSubscription> {
-    return this.admitConnectionEvents(connectionHandle, identity)
+    return this.admitConnectionEvents(connectionHandle, identity, signal)
   }
 
   private async admitConnectionEvents(
     connectionHandle: string,
-    identity: SerializableRecord
+    identity: SerializableRecord,
+    signal?: AbortSignal
   ): Promise<IpcConnectionEventSubscription> {
     const handle = `connection-events-ipc-${this.nextConnectionEventHandle++}`
     const payload = Object.freeze({
@@ -594,7 +596,13 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
       connectionEventsHandle: handle,
       deadline: null
     })
-    const response = await this.route('connection.events.subscribe', payload)
+    const response = await this.route('connection.events.subscribe', payload, null, signal)
+    if (signal?.aborted === true) {
+      await this.compensateFailedEventAdmission(
+        handle,
+        contractError('operation.aborted', 'ipc', 'ipc-manager.connection-events-subscribe')
+      )
+    }
     const validation = validateConnectionEventResponse(response, handle, identity)
     if (validation !== null) {
       await this.compensateFailedEventAdmission(handle, validation)
@@ -1102,6 +1110,7 @@ export class IpcScanSession {
 export class IpcConnection {
   private readonly lifecycleEvents = new CoreBoundedStream<SerializableRecord>(REMOTE_STREAM_LIMITS, 'drop-oldest')
   private lifecycleAdmission: Promise<void> | null = null
+  private readonly admissionAbort = new AbortController()
   private lifecycleSubscription: IpcConnectionEventSubscription | null = null
   private readonly databases = new Set<IpcGattDatabase>()
   private readonly _connectionId: string
@@ -1148,8 +1157,15 @@ export class IpcConnection {
   private ensureLifecycleAdmission(): Promise<void> {
     if (this.lifecycleAdmission !== null) return this.lifecycleAdmission
     const admission = this.manager
-      .subscribeConnectionEvents(this.handle, this.identityPayload())
+      .subscribeConnectionEvents(this.handle, this.identityPayload(), this.admissionAbort.signal)
       .then(subscription => {
+        if (this.admissionAbort.signal.aborted || this.connectionReleased) {
+          return subscription.unsubscribe().then(cleanup => {
+            if (cleanup.state !== 'released') {
+              throw new BleCleanupError(cleanup)
+            }
+          })
+        }
         this.lifecycleSubscription = subscription
         this.pumpLifecycleEvents(subscription).catch(() => {
           this.lifecycleEvents.closeWithReason('source-failed')
@@ -1256,9 +1272,7 @@ export class IpcConnection {
 
   private async disconnectInternal(): Promise<CleanupRecord> {
     this.invalidateDatabases()
-    if (this.lifecycleAdmission !== null) {
-      await this.lifecycleAdmission.catch(() => undefined)
-    }
+    this.admissionAbort.abort()
     if (this.lifecycleSubscription === null) {
       this.lifecycleReleased = true
     }
