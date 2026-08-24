@@ -8,9 +8,8 @@ discover, read, notify, and destroy journey through the packed package. It does
 not create an Electron application, load a native addon, or validate a physical
 adapter/peripheral.
 
-The smoke imports only these public entrypoints:
+The smoke imports these public entrypoints:
 
-- `unified-ble-manager` for `BleManager`
 - `unified-ble-manager/testing` for the deterministic scenario factory
 - `unified-ble-manager/electron/main` for `ElectronMainBleRouter`
 

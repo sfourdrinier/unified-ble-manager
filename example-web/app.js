@@ -213,54 +213,6 @@ async function ensureManager() {
   return manager
 }
 
-function createNavigatorEnvironment() {
-  if (navigator.bluetooth === undefined) {
-    throw new Error('Web Bluetooth is unavailable. Use a current Chrome installation on localhost or HTTPS.')
-  }
-  const timers = new Map()
-  const bluetooth = navigator.bluetooth
-  return {
-    implementationVersion: 'unified-ble-manager-web-example-4.0',
-    browserEngine: navigator.userAgent,
-    bluetooth: {
-      getAvailability: typeof bluetooth.getAvailability === 'function'
-        ? () => bluetooth.getAvailability()
-        : undefined,
-      requestDevice: options => bluetooth.requestDevice(options)
-    },
-    isSecureContext: () => window.isSecureContext,
-    hasTransientUserActivation: () => navigator.userActivation?.isActive ?? false,
-    now: () => performance.now(),
-    setTimer: (callback, delayMilliseconds) => {
-      const handle = Object.freeze({})
-      const timer = window.setTimeout(() => {
-        timers.delete(handle)
-        callback()
-      }, delayMilliseconds)
-      timers.set(handle, timer)
-      return handle
-    },
-    clearTimer: handle => {
-      const timer = timers.get(handle)
-      if (timer === undefined) return
-      timers.delete(handle)
-      window.clearTimeout(timer)
-    },
-    addPageLifecycleListener: listener => {
-      const onVisibilityChange = () => {
-        if (document.visibilityState === 'hidden') listener('page-hidden')
-      }
-      const onPageHide = () => listener('page-unloaded')
-      document.addEventListener('visibilitychange', onVisibilityChange)
-      window.addEventListener('pagehide', onPageHide)
-      return () => {
-        document.removeEventListener('visibilitychange', onVisibilityChange)
-        window.removeEventListener('pagehide', onPageHide)
-      }
-    }
-  }
-}
-
 function assertReleased(cleanup, operation) {
   if (cleanup.state !== 'released' || cleanup.failures.length !== 0) {
     throw new Error(`${operation} did not release every owned resource.`)

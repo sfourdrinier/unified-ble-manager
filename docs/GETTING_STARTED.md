@@ -2,9 +2,9 @@
 
 # Getting started
 
-**Current release:** `4.0.0` is published from exact `main` and is immutable. Do not recreate `v4.0.0`. Immutable `4.0.0-rc.4`, `4.0.0-rc.4.1`, and `4.0.0-rc.5` remain published history.
-
 This page gets you to a first scan, connect, read, notify, and teardown on React Native. Other hosts are linked at the bottom. The root import does not turn Bluetooth on.
+
+The current package is `4.0.0`.
 
 ## Pick a host
 
@@ -14,8 +14,8 @@ This page gets you to a first scan, connect, read, notify, and teardown on React
 | Expo / CNG v2 | `unified-ble-manager/expo` | [`EXPO_PLUGIN.md`](EXPO_PLUGIN.md) |
 | React provider / hooks | `unified-ble-manager/react` | [`README.md`](../README.md#react-provider-and-hooks) |
 | Browser | `unified-ble-manager/web` | [`WEB.md`](WEB.md) |
-| Electron | `electron/main` + `electron/renderer` | [`ELECTRON.md`](ELECTRON.md) |
-| Node on macOS / Windows / Linux | `node/corebluetooth`, `node/winrt`, or `node/bluez` | [`NODE.md`](NODE.md) |
+| Electron | `unified-ble-manager/electron/main` + `unified-ble-manager/electron/renderer` | [`ELECTRON.md`](ELECTRON.md) |
+| Node on macOS / Windows / Linux | `unified-ble-manager/node/corebluetooth`, `node/winrt`, or `node/bluez` | [`NODE.md`](NODE.md) |
 | Tauri v2 | `unified-ble-manager/tauri` | [`TAURI.md`](TAURI.md) |
 
 ## React Native and Expo in one hour
@@ -24,7 +24,7 @@ This page gets you to a first scan, connect, read, notify, and teardown on React
 
 #### Bare React Native
 
-The immutable published prerelease for bare React Native is explicitly pinned:
+Pin the current package for a known native rebuild:
 
 ```sh
 pnpm add unified-ble-manager@4.0.0

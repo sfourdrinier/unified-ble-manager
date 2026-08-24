@@ -254,7 +254,7 @@ describe('PR11 Tauri crate and testkit contracts', () => {
     const exampleReadme = fs.readFileSync(path.join(__dirname, '../example-tauri/README.md'), 'utf8')
     for (const text of [docs, crateReadme, exampleReadme]) {
       expect(text).toContain('tauri-plugin-unified-ble-manager@4.0.0')
-      expect(text).toMatch(/not yet published|until the crate is published/i)
+      expect(text).toMatch(/not (yet )?published|until the crate is (published|on crates\.io)|once the crate exists/i)
     }
   })
 })

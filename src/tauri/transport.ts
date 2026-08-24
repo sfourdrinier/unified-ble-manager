@@ -265,9 +265,35 @@ function decodeIpcBleResponse<Attachment extends string, Client extends string>(
 ): IpcBleResponse<Attachment, Client> {
   const decoded = decodeTauriWireValue(value)
   if (!isIpcBleResponse<Attachment, Client>(decoded)) {
-    throw contractError('protocol.malformed', 'ipc', 'tauri.transport.response')
+    throw contractError('protocol.malformed', 'ipc', adapterStateMismatchOperation(decoded))
   }
   return decoded
+}
+
+const adapterStateKeys = Object.freeze([
+  'availability',
+  'authorization',
+  'power',
+  'heard',
+  'backendGeneration',
+  'updatedAt',
+  'safeReason'
+])
+
+function adapterStateMismatchOperation(value: unknown): string {
+  const bootstrap = wireRecord(wireRecord(value)?.bootstrap)
+  const attachment = wireRecord(bootstrap?.attachment)
+  const adapter = wireRecord(attachment?.adapter)
+  const state = wireRecord(adapter?.state)
+  if (state === null) return 'tauri.transport.response'
+  const actual = Object.keys(state)
+  const extra = actual.filter(key => !adapterStateKeys.includes(key)).sort()
+  const missing = adapterStateKeys.filter(key => !actual.includes(key)).sort()
+  if (extra.length === 0 && missing.length === 0) return 'tauri.transport.response'
+  const parts = []
+  if (extra.length > 0) parts.push(`extra=${extra.join(',')}`)
+  if (missing.length > 0) parts.push(`missing=${missing.join(',')}`)
+  return `tauri.transport.response ${parts.join(' ')}`
 }
 
 function isIpcBleEvent(value: unknown): value is IpcBleEvent {
@@ -600,14 +626,19 @@ function isAdapterState(value: unknown): boolean {
   const record = wireRecord(value)
   return (
     record !== null &&
-    exactKeys(record, ['availability', 'authorization', 'power', 'backendGeneration', 'updatedAt', 'safeReason']) &&
+    exactKeys(record, adapterStateKeys) &&
     isAdapterAvailability(record.availability) &&
     isAdapterAuthorization(record.authorization) &&
     isAdapterPower(record.power) &&
+    isHeardCount(record.heard) &&
     nonEmptyString(record.backendGeneration) &&
     finiteNumber(record.updatedAt) &&
     (record.safeReason === null || typeof record.safeReason === 'string')
   )
+}
+
+function isHeardCount(value: unknown): boolean {
+  return value === null || (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0)
 }
 
 function isAdapterAvailability(value: unknown): boolean {

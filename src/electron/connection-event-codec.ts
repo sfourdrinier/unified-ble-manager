@@ -173,7 +173,8 @@ function decodeElectronAttachment(value: SerializableValue | undefined): Electro
     typeof state.backendGeneration !== 'string' ||
     state.backendGeneration.length === 0 ||
     !isFiniteNumber(state.updatedAt) ||
-    !isNullableString(state.safeReason)
+    !isNullableString(state.safeReason) ||
+    !isHeardCount(state.heard)
   ) {
     throw contractError('protocol.malformed', 'ipc', 'electron-renderer.connection-lifecycle-adapter-state')
   }
@@ -201,6 +202,7 @@ function decodeElectronAttachment(value: SerializableValue | undefined): Electro
         availability: state.availability,
         authorization: state.authorization,
         power: state.power,
+        heard: state.heard,
         backendGeneration: state.backendGeneration,
         updatedAt: state.updatedAt,
         safeReason: state.safeReason
@@ -315,6 +317,10 @@ function isStreamTerminalReason(
     value === 'operation-aborted' ||
     value === 'operation-timed-out'
   )
+}
+
+function isHeardCount(value: SerializableValue | undefined): value is number | null {
+  return value === null || (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0)
 }
 
 function isAdapterAvailability(value: SerializableValue | undefined): value is ElectronAdapterStateV2['availability'] {

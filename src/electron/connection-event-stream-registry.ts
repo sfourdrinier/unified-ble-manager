@@ -410,6 +410,7 @@ function snapshotConnectionLifecycleEvent(event: ConnectionLifecycleEvent<string
           availability: event.attachment.adapter.state.availability,
           authorization: event.attachment.adapter.state.authorization,
           power: event.attachment.adapter.state.power,
+          heard: null,
           backendGeneration: String(event.attachment.adapter.state.backendGeneration),
           updatedAt: Number(event.attachment.adapter.state.updatedAt),
           safeReason: event.attachment.adapter.state.safeReason

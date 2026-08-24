@@ -12,6 +12,7 @@ button.addEventListener('click', async () => {
   const manager = await createTauriBleManager()
   let scan: Awaited<ReturnType<typeof manager.scan>> | null = null
   try {
+    log(await manager.adapter.state())
     log(manager.capabilities.list())
     scan = await manager.scan()
     const first = await scan.observations[Symbol.asyncIterator]().next()

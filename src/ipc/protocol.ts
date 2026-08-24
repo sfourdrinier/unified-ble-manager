@@ -75,6 +75,12 @@ export interface IpcAdapterStateV2 extends SerializableRecord {
    */
   readonly authorization: 'granted' | 'denied' | 'restricted' | 'not-determined' | 'unavailable' | 'unknown'
   readonly power: 'on' | 'off' | 'resetting' | 'unsupported' | 'unknown'
+  /**
+   * Unsampled bootstrap snapshots are `null`. Live `adapter.state` is a
+   * non-negative peripheral count from the host adapter. Absence of a
+   * measurement is never `0`.
+   */
+  readonly heard: number | null
   readonly backendGeneration: string
   readonly updatedAt: number
   readonly safeReason: string | null

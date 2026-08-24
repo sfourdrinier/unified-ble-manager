@@ -489,6 +489,7 @@ export class ElectronMainBleRouter {
           availability: state.availability,
           authorization: state.authorization,
           power: state.power,
+          heard: null,
           backendGeneration: String(state.backendGeneration),
           updatedAt: state.updatedAt,
           safeReason: state.safeReason

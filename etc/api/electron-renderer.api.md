@@ -17,7 +17,7 @@ export function isElectronConnectionEventsStreamHandle(handle: string): boolean
 - `ELECTRON_CONNECTION_EVENTS_STREAM_HANDLE_PREFIX :: "connection-events-"`
 - `ELECTRON_CONNECTION_LIFECYCLE_EVENT_SCHEMA_VERSION :: 2`
 - `ElectronAdapterRecordV2 :: { readonly adapterId: string; readonly displayName: string | null; readonly state: IpcAdapterStateV2; readonly adapterGeneration: string; readonly limitations: readonly string[] }`
-- `ElectronAdapterStateV2 :: { readonly availability: "unknown" | "unavailable" | "unsupported" | "available"; readonly authorization: "unknown" | "unavailable" | "granted" | "denied" | "restricted" | "not-determined"; readonly power: "unknown" | "unsupported" | "on" | "off" | "resetting"; readonly backendGeneration: string; readonly updatedAt: number; readonly safeReason: string | null }`
+- `ElectronAdapterStateV2 :: { readonly availability: "unknown" | "unavailable" | "unsupported" | "available"; readonly authorization: "unknown" | "unavailable" | "granted" | "denied" | "restricted" | "not-determined"; readonly power: "unknown" | "unsupported" | "on" | "off" | "resetting"; readonly heard: number | null; readonly backendGeneration: string; readonly updatedAt: number; readonly safeReason: string | null }`
 - `ElectronAttachmentRecordV2 :: { readonly attachmentId: string; readonly backendInstanceId: string; readonly backendGeneration: string; readonly adapter: IpcAdapterRecordV2 }`
 - `ElectronBleIpcEvent :: { readonly rendererLease: RendererLeaseIdentity; readonly eventId: string; readonly streamId: string; readonly item: SerializableRecord }`
 - `ElectronBleIpcRequest :: IpcBootstrapRequest | IpcRouteRequest<Attachment, Client, Operation> | IpcReleaseRequest | IpcEventAcknowledgeRequest`

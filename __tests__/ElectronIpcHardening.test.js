@@ -47,6 +47,7 @@ function createAuthority() {
         availability: 'available',
         authorization: 'granted',
         power: 'on',
+        heard: null,
         backendGeneration,
         updatedAt: monotonicTimestamp(1),
         safeReason: null

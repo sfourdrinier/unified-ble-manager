@@ -52,6 +52,7 @@ function bootstrap() {
         availability: 'available',
         authorization: 'granted',
         power: 'on',
+        heard: null,
         backendGeneration: 'electron-generation-1',
         updatedAt: 1,
         safeReason: null

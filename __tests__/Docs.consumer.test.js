@@ -297,6 +297,38 @@ describe('consumer documentation matches the published package', () => {
     expect(release).not.toMatch(/publishes the \*\*4\.0 dual identity\*\*/i)
   })
 
+  test('teaching pages describe the current stable package, not an RC install or 3.x constructor', () => {
+    const teachingPages = [
+      'README.md',
+      'docs/GETTING_STARTED.md',
+      'docs/TAURI.md',
+      'docs/ELECTRON.md',
+      'docs/NODE.md',
+      'docs/WEB.md',
+      'docs/EXPO_PLUGIN.md',
+      'example/README.md',
+      'example-expo/README.md',
+      'example-tauri/README.md',
+      'example-web/README.md',
+      'example-electron/README.md'
+    ]
+    for (const document of teachingPages) {
+      const text = read(document)
+      expect(text).not.toMatch(/Current prerelease/i)
+      expect(text).not.toMatch(/immutable published prerelease/i)
+      expect(text).not.toMatch(/4\.0\.0-rc\.\* versions publish to npm `latest`/)
+      expect(text).not.toMatch(/RC5 remains reserved/)
+      expect(text).not.toMatch(/Do not recreate `v4\.0\.0`/)
+      expect(text).not.toMatch(/const\s+\w+\s*=\s*new\s+BleManager\s*\(/)
+      expect(text).not.toMatch(/writeCharacteristicWithResponseForDevice/)
+      expect(text).not.toMatch(/transactionId/)
+    }
+    expect(read('README.md')).toContain(packageVersion)
+    expect(read('README.md')).toContain('createTauriBleManager')
+    expect(read('docs/TAURI.md')).toContain('createTauriBleManager')
+    expect(read('example-tauri/README.md')).toContain('createTauriBleManager')
+  })
+
   test('public README provides current construction and plugin guidance without frozen slogans', () => {
     const readme = read('README.md')
     const changelog = read('CHANGELOG.md')
@@ -325,7 +357,7 @@ describe('consumer documentation matches the published package', () => {
     const release = read('RELEASE.md')
     const platforms = read('docs/PLATFORMS.md')
 
-    expect(readme).toContain('`4.0.0` is published from exact `main`')
+    expect(readme).toContain(packageVersion)
     expect(readme).toContain('npm trusted publishing/OIDC with provenance')
     expect(release).toContain('git tag -a "v$release_candidate"')
     expect(release).toContain('release_candidate=4.0.0-rc.N')

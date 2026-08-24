@@ -18,7 +18,7 @@ describe('PR12 stable 4.0.0 qualification', () => {
     const changelog = read('CHANGELOG.md')
     const support = read('docs/generated/PLATFORM_SUPPORT.md')
 
-    expect(readme).toContain('`4.0.0` is published from exact `main`')
+    expect(readme).toContain(pkg.version)
     expect(readme).toContain('Package SemVer and backend support labels are independent')
     expect(platforms).toContain('`unified-ble-manager@4.0.0` is the published **stable package/API**')
     expect(changelog).toContain('## [4.0.0]')

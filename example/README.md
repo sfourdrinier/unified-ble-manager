@@ -5,7 +5,7 @@
 This is a repository fixture for the 4.0 React Native host. It constructs the
 manager through `createReactNativeBleManager` with bytes, `AbortSignal`, and
 snapshot-derived objects. Restoration identity is native-owned by the planned
-PR10 integration; the fixture does not author a host restoration scope. Its dependency is
+native restoration integration; the fixture does not author a host restoration scope. Its dependency is
 `unified-ble-manager: file:..`, so it exercises this checkout; it is not a
 published-package install recipe.
 
@@ -32,7 +32,7 @@ or local fixture run is not physical-radio, background, restoration, or
 reliability evidence.
 
 For a consuming application, install
-`unified-ble-manager` (the published, immutable `4.0.0` package), configure native permissions and lifecycle
+`unified-ble-manager` (`4.0.0` on npm `latest`), configure native permissions and lifecycle
 ownership in that application, and follow the root [README](../README.md) and
 [Expo plugin reference](../docs/EXPO_PLUGIN.md). The 4.0 package is Experimental;
 do not use this fixture to infer Preview-or-higher support.

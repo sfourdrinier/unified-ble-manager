@@ -4,6 +4,12 @@ All notable changes to `unified-ble-manager` are documented here.
 
 ## [Unreleased]
 
+Tauri JS transport now accepts the adapter-state snapshot the Rust plugin emits (`heard: null` on unsampled bootstrap, non-negative integer on live `adapter.state`). Extra or missing adapter-state keys stay fail-closed and are named in the decode error. Teaching docs describe the current stable 4.x install instead of RC-as-current. Does not retag `v4.0.0`.
+
+### Fixes
+
+- `createTauriBleManager()` no longer throws `protocol.malformed: tauri.transport.response` because Rust included `heard` on `adapter.state` (#50).
+
 ## [4.0.0] - 2026-08-24
 
 Stable package/API contract after PR11/RC5. Package SemVer `4.0.0` does not promote backend support labels or claim physical-radio evidence. Live-radio vertical slices, soak, and crates.io crate publication remain unverifiable in this environment and are recorded as blocked rather than mocked. Immutable `v4.0.0-rc.5` is not retagged.
