@@ -3,6 +3,7 @@ import type { PublicOperationOptions } from '../../backend-contract/operations'
 import { capacity } from '../../backend-contract/primitives'
 import type { BoundedAsyncStream } from '../../backend-contract/streams'
 import { CoreBoundedStream } from '../../core/bounded-stream'
+import { OwnedCoreBoundedStream } from '../../core/owned-bounded-stream'
 import type {
   PeerSecurityEvent,
   PeerSecurityState,
@@ -31,6 +32,36 @@ const limitations = Object.freeze([
   })
 ])
 
+export interface SecurityStreamOwnershipSnapshot {
+  readonly peerCount: number
+  readonly streamCount: number
+}
+
+const androidSecurityOwnershipInspectors = new WeakMap<
+  ReactNativeAndroidSecurityBackend,
+  () => SecurityStreamOwnershipSnapshot
+>()
+
+export function inspectAndroidSecurityStreamOwnershipForTests(
+  backend: ReactNativeAndroidSecurityBackend
+): SecurityStreamOwnershipSnapshot {
+  const inspect = androidSecurityOwnershipInspectors.get(backend)
+  if (inspect === undefined) {
+    throw new Error('android security ownership inspector is missing')
+  }
+  return inspect()
+}
+
+function securityStreamOwnershipSnapshot(
+  streams: ReadonlyMap<string, ReadonlySet<unknown>>
+): SecurityStreamOwnershipSnapshot {
+  let streamCount = 0
+  for (const peerStreams of streams.values()) {
+    streamCount += peerStreams.size
+  }
+  return { peerCount: streams.size, streamCount }
+}
+
 export class ReactNativeAndroidSecurityBackend implements SecurityBackend {
   private readonly streams = new Map<string, Set<CoreBoundedStream<PeerSecurityEvent>>>()
   private readonly active = new Set<string>()
@@ -49,6 +80,7 @@ export class ReactNativeAndroidSecurityBackend implements SecurityBackend {
       const peerId = this.peerIdForNativePeerId(record.nativePeerId)
       if (peerId !== null) this.emit(peerId, this.snapshot(record.state))
     })
+    androidSecurityOwnershipInspectors.set(this, () => securityStreamOwnershipSnapshot(this.streams))
   }
 
   async state(peerId: string, options: PublicOperationOptions): Promise<PeerSecurityState> {
@@ -66,7 +98,9 @@ export class ReactNativeAndroidSecurityBackend implements SecurityBackend {
 
   watch(peerId: string): BoundedAsyncStream<PeerSecurityEvent> {
     this.assertOpen('android.security.watch')
-    const stream = new CoreBoundedStream<PeerSecurityEvent>(limits, 'error')
+    const stream = new OwnedCoreBoundedStream<PeerSecurityEvent>(limits, 'error', () => {
+      this.removeStream(peerId, stream)
+    })
     const streams = this.streams.get(peerId) ?? new Set<CoreBoundedStream<PeerSecurityEvent>>()
     streams.add(stream)
     this.streams.set(peerId, streams)
@@ -193,7 +227,9 @@ export class ReactNativeAndroidSecurityBackend implements SecurityBackend {
     this.removeListener()
     this.active.clear()
     this.activeNativeIds.clear()
-    for (const streams of this.streams.values()) for (const stream of streams) stream.closeWithReason('owner-released')
+    for (const streams of [...this.streams.values()]) {
+      for (const stream of [...streams]) stream.closeWithReason('owner-released')
+    }
     this.streams.clear()
   }
 

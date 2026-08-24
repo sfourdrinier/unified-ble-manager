@@ -75,13 +75,42 @@ class BluezSecurityStream implements BoundedAsyncStream<PeerSecurityEvent> {
   }
 }
 
+export interface SecurityStreamOwnershipSnapshot {
+  readonly peerCount: number
+  readonly streamCount: number
+}
+
+const bluezSecurityOwnershipInspectors = new WeakMap<BluezSecurityBackend, () => SecurityStreamOwnershipSnapshot>()
+
+export function inspectBluezSecurityStreamOwnershipForTests(
+  backend: BluezSecurityBackend
+): SecurityStreamOwnershipSnapshot {
+  const inspect = bluezSecurityOwnershipInspectors.get(backend)
+  if (inspect === undefined) {
+    throw new Error('bluez security ownership inspector is missing')
+  }
+  return inspect()
+}
+
+function securityStreamOwnershipSnapshot(
+  streams: ReadonlyMap<string, ReadonlySet<unknown>>
+): SecurityStreamOwnershipSnapshot {
+  let streamCount = 0
+  for (const peerStreams of streams.values()) {
+    streamCount += peerStreams.size
+  }
+  return { peerCount: streams.size, streamCount }
+}
+
 /** BlueZ system-mediated pairing only; Agent1/custom ceremonies are intentionally unsupported. */
 export class BluezSecurityBackend implements SecurityBackend {
   private readonly streams = new Map<string, Set<CoreBoundedStream<PeerSecurityEvent>>>()
   private readonly activePairings = new Map<string, ActivePairing>()
   private readonly sequenceByPeer = new Map<string, number>()
 
-  constructor(private readonly runtime: BluezBackendRuntime) {}
+  constructor(private readonly runtime: BluezBackendRuntime) {
+    bluezSecurityOwnershipInspectors.set(this, () => securityStreamOwnershipSnapshot(this.streams))
+  }
 
   state(peerId: string, _options: PublicOperationOptions): Promise<PeerSecurityState> {
     this.runtime.assertUsable('bluez.security.state')
