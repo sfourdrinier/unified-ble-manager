@@ -575,7 +575,7 @@ is the current factual tracker; the revised session instructions and
 
 ### PR10 closeout and next-agent handoff
 
-**Verified state:** PR #44 is merged. The PR head was `3950ecb3102a565d7521a85656e88e8a7e373d4d`; the merge commit is `e47d26489bd299c9c646f5e47e4379420e34a109`. Post-merge `main` CI run `32671742702` completed successfully with every job green, including JS Node 22/24, all Tauri platforms, classic Android, Expo Android, classic iOS, Expo iOS, and tvOS.
+**Verified state:** PR #44 is merged. The PR head was `3950ecb3102a565d7521a85656e88e8a7e373d4d`; the merge commit is `e47d26489bd299c9c646f5e47e4379420e34a109`. Post-merge `main` CI run `32671742702` completed successfully with every job green, including JS Node 22/24, all Tauri platforms, classic Android, Expo Android, classic iOS, Expo iOS, and tvOS. The current `main` documentation closeout commit is `23579ba44c09001cdcb663ce98dfc3bb15ad51e2`; its docs-only verification run `32674922519` also completed successfully, with native jobs skipped by path filtering.
 
 **Finished in PR10:**
 
@@ -594,7 +594,7 @@ is the current factual tracker; the revised session instructions and
 **Next-agent sequence:**
 
 1. Re-read this handoff, `docs/superpowers/plans/2026-08-20-next-12-prs.md`, `RELEASE.md`, and `docs/audits/2026-08-23-pr10-review-inventory.md`.
-2. Verify clean `main` at `e47d2648`, confirm `package.json` remains `4.0.0-rc.3`, and confirm no `v4.0.0-rc.4` tag/npm artifact exists.
+2. Verify clean `main` at `23579ba4` (with code merge base `e47d2648`), confirm `package.json` remains `4.0.0-rc.3`, and confirm no `v4.0.0-rc.4` tag/npm artifact exists.
 3. Run the RC4 release checklist from `RELEASE.md` on exact `main`; tag-driven GitHub Actions trusted publishing is the only publish path. Do not publish from a laptop and do not mutate RC2/RC3.
 4. Verify the RC4 npm artifact, `latest` dist-tag, provenance, GitHub prerelease, and exact tag/main identity.
 5. Only then begin PR11 (`feat/distribution-tooling-testkit`), following the same narrow-slice/TDD/adversarial/review-cycle process. RC5 follows PR11; stable 4.0.0 follows PR12.

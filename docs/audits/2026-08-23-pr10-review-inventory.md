@@ -212,8 +212,10 @@ no physical-radio, EAS, or hosted Apple claim is implied.
 PR #44 is merged at `e47d26489bd299c9c646f5e47e4379420e34a109`. Hosted PR CI
 run `32670650219` passed all 13 required jobs, including Apple iOS, Expo iOS,
 Expo Android, classic Android, JS matrices, and all Tauri platforms. Post-merge
-`main` CI run `32671742702` also passed every job. The PR10 code and merge gates
-are complete.
+`main` CI run `32671742702` also passed every job. The handoff documentation
+closeout commit `23579ba4` was then verified by docs-only `main` CI run
+`32674922519`, which also completed successfully with native jobs skipped by
+path filtering. The PR10 code and merge gates are complete.
 
 Remaining release-train work is `4.0.0-rc.4`: it has not been tagged or
 published, and npm has no `4.0.0-rc.4` artifact. Cut RC4 only from exact
