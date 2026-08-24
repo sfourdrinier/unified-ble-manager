@@ -9,6 +9,9 @@ import { TauriBleIpcTransport } from './tauri/transport'
 import type { TauriChannel, TauriInvoke } from './tauri/transport'
 import type { BleManager } from './public/ble-manager'
 import { rehydratePublicPromise } from './public/error-bridge'
+import { TAURI_PLUGIN_COMPATIBILITY } from './tauri/compatibility'
+
+export { TAURI_PLUGIN_COMPATIBILITY }
 
 // Tauri and Electron deliberately share the same public IPC projection. The
 // host-specific module owns only transport loading and host-option admission;
@@ -41,6 +44,7 @@ async function createTauriBleManagerInternal(options: BleManagerCreateOptions): 
     Channel: tauriCore.Channel
   })
   const ipcManager = await IpcBleManager.create(transport)
+  await admitTauriCompatibility(ipcManager)
   await admitTauriCreateOptions(options, ipcManager)
   return createTauriPublicManager(ipcManager)
 }
@@ -65,6 +69,7 @@ async function createTauriBleManagerWithEnvironmentInternal(
   normalizeBleManagerCreateOptions(options)
   const transport = new TauriBleIpcTransport(environment)
   const ipcManager = await IpcBleManager.create(transport)
+  await admitTauriCompatibility(ipcManager)
   await admitTauriCreateOptions(options, ipcManager)
   return createTauriPublicManager(ipcManager)
 }
@@ -82,6 +87,26 @@ function assertTauriCreateOptions(options: BleManagerCreateOptions, ipc: IpcBleM
   if (options.diagnostics !== undefined) {
     throw contractError('capability.unsupported', 'core', 'tauri-manager.diagnostics')
   }
+}
+
+async function admitTauriCompatibility(ipc: IpcBleManager): Promise<void> {
+  const selected = ipc.bootstrap.versions.ipcProtocol.selected.value
+  if (selected === TAURI_PLUGIN_COMPATIBILITY.ipcProtocol) {
+    return
+  }
+  const error = new Error(
+    `[unified-ble-manager/tauri] incompatible IPC protocol: host selected ${String(selected)}, npm package requires ${String(TAURI_PLUGIN_COMPATIBILITY.ipcProtocol)}`
+  )
+  try {
+    const cleanup = await ipc.destroy()
+    if (cleanup.state === 'release-failed') {
+      throw new AggregateError([error, new Error('Tauri compatibility cleanup failed')], 'BLE manager admission failed')
+    }
+  } catch (cleanupError) {
+    if (cleanupError instanceof AggregateError) throw cleanupError
+    throw new AggregateError([error, cleanupError], 'BLE manager admission cleanup failed')
+  }
+  throw error
 }
 
 async function admitTauriCreateOptions(options: BleManagerCreateOptions, ipc: IpcBleManager): Promise<void> {

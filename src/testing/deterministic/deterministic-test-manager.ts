@@ -32,6 +32,21 @@ export interface DeterministicTestBleManager {
   readonly attachment: AttachmentRecord<string>
 }
 
+export interface TestBleEnvironment {
+  readonly manager: BleManager
+  destroy(): ReturnType<BleManager['destroy']>
+}
+
+export async function createTestBleEnvironment(
+  options: DeterministicTestBleManagerOptions = {}
+): Promise<TestBleEnvironment> {
+  const created = await createDeterministicTestBleManager(options)
+  return Object.freeze({
+    manager: created.manager,
+    destroy: () => created.manager.destroy()
+  })
+}
+
 export async function createDeterministicTestBleManager(
   options: DeterministicTestBleManagerOptions = {}
 ): Promise<DeterministicTestBleManager> {

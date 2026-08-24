@@ -4,6 +4,14 @@ All notable changes to `unified-ble-manager` are documented here.
 
 ## [Unreleased]
 
+Distribution and consumer-tooling freeze for PR11 / `4.0.0-rc.5`. Documented Tauri install is crates.io (`tauri-plugin-unified-ble-manager@4.0.0`); the crate is not yet published and `path` remains the checkout fallback until it is. Public CLI taxonomy is `doctor`/`inspect`/`init`/`support-bundle` plus `backend tck`/`backend scenario` routing. `TAURI_PLUGIN_COMPATIBILITY` and `createTestBleEnvironment` are exported from `/tauri` and `/testing`. This does not mint live-radio evidence or change RC2 portable BLE semantics or the RC4 Expo schema.
+
+### Packaging and CLI
+
+- `ubm doctor` without `--backend` reports package/runtime identity and labels `proofBoundary: compile-config-loadability`.
+- `ubm init --host tauri` writes a crates.io Cargo fragment; other hosts write stable public-API factory fragments and refuse overwrite without `--force`.
+- `ubm inspect config|capabilities --host` and `ubm support-bundle create` do not load a radio or upload data.
+
 ## [4.0.0-rc.4.1] - 2026-08-23
 
 Fail-closed and IPC/governance closure from the RC3 audit on the post-PR10 `4.0.0-rc.4` line. PR11 / `4.0.0-rc.5` remains paused. Backend support labels remain evidence-derived and are not promoted by this release. Immutable `v4.0.0-rc.4` is not retagged.

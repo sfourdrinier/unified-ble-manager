@@ -4,9 +4,9 @@ This deliberately small, vendor-neutral app exercises the public Tauri surface:
 
 `adapter state -> scan -> connect -> discover -> read -> subscribe -> unsubscribe -> disconnect -> destroy`
 
-The source checkout uses an explicitly interim relative Rust dependency. Paired
-published npm/Cargo installation is a PR11 release gate and is not claimed by
-this example; see [`../docs/TAURI.md`](../docs/TAURI.md).
+The documented consumer recipe is `cargo add tauri-plugin-unified-ble-manager@4.0.0`.
+The crate is not yet published. Until the crate is published, this example keeps
+the interim relative Rust path dependency. See [`../docs/TAURI.md`](../docs/TAURI.md).
 
 `src/main.ts` is the public API proof source. `frontend/index.html` is a minimal,
 dedicated static asset root for the cross-platform Rust compile gate. Keeping it

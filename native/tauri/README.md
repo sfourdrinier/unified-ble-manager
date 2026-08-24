@@ -4,12 +4,19 @@ Cross-platform Tauri v2 BLE plugin for Unified BLE Manager 4.0. It authenticates
 the invoking webview/window in Rust, exposes one permission-gated command, and
 ships a production `btleplug` dispatcher for CoreBluetooth, WinRT, and BlueZ.
 
-During the 4.0 release stack the crate is consumed directly from the npm package:
+The documented consumer install is crates.io:
 
 ```toml
 [dependencies]
-tauri-plugin-unified-ble-manager = { path = "../node_modules/unified-ble-manager/native/tauri" }
+tauri-plugin-unified-ble-manager = "4.0.0"
 ```
+
+```sh
+cargo add tauri-plugin-unified-ble-manager@4.0.0
+```
+
+The crate is not yet published. Until the crate is published, a repository
+checkout may still use a path dependency for local plugin development.
 
 Register the production dispatcher:
 
