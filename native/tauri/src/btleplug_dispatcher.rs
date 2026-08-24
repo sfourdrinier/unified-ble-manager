@@ -29,6 +29,8 @@ use crate::{AuthenticatedCaller, DispatchFuture, IpcDispatcher, IpcEventSink, Ip
 const MAX_PENDING_EVENTS: usize = 256;
 const MAX_CORRELATIONS: usize = 256;
 const COMPLETED_CORRELATION_TTL: Duration = Duration::from_secs(30);
+const MAX_QUARANTINE_WORKERS: usize = 4;
+const MAX_QUARANTINE_ATTEMPTS: u32 = 8;
 const SCAN_POLL_INTERVAL: Duration = Duration::from_millis(250);
 
 fn btleplug_runtime() -> tokio::runtime::Handle {
@@ -106,6 +108,98 @@ struct CallerState {
     operations: HashMap<String, CancellationToken>,
     completed_correlations: HashMap<String, Instant>,
     pending_events: HashSet<String>,
+    quarantine: QuarantineScheduler,
+}
+
+#[derive(Clone, PartialEq, Eq, Hash)]
+struct QuarantineKey {
+    command: String,
+    handle: String,
+}
+
+struct QuarantineScheduler {
+    keys: HashSet<QuarantineKey>,
+    queue: std::collections::VecDeque<QuarantineKey>,
+    attempts: HashMap<QuarantineKey, u32>,
+    active_workers: usize,
+    cancelled: bool,
+    failures: Vec<QuarantineKey>,
+}
+
+enum QuarantineAdmit {
+    Start,
+    Coalesced,
+    Queued,
+    Cancelled,
+}
+
+impl QuarantineScheduler {
+    fn new() -> Self {
+        Self {
+            keys: HashSet::new(),
+            queue: std::collections::VecDeque::new(),
+            attempts: HashMap::new(),
+            active_workers: 0,
+            cancelled: false,
+            failures: Vec::new(),
+        }
+    }
+
+    fn enqueue(&mut self, key: QuarantineKey, queue_cap: usize) -> QuarantineAdmit {
+        if self.cancelled {
+            return QuarantineAdmit::Cancelled;
+        }
+        if self.keys.contains(&key) {
+            return QuarantineAdmit::Coalesced;
+        }
+        self.keys.insert(key.clone());
+        let _queue_cap = queue_cap;
+        if self.active_workers >= MAX_QUARANTINE_WORKERS {
+            self.queue.push_back(key);
+            return QuarantineAdmit::Queued;
+        }
+        self.active_workers += 1;
+        QuarantineAdmit::Start
+    }
+
+    fn record_attempt(&mut self, key: &QuarantineKey) -> u32 {
+        let attempts = self.attempts.entry(key.clone()).or_insert(0);
+        *attempts = attempts.saturating_add(1);
+        *attempts
+    }
+
+    fn exhaust(&mut self, key: QuarantineKey) {
+        self.keys.remove(&key);
+        self.attempts.remove(&key);
+        self.failures.push(key);
+        let _next = self.finish_worker();
+    }
+
+    fn succeed(&mut self, key: &QuarantineKey) {
+        self.keys.remove(key);
+        self.attempts.remove(key);
+        self.failures.retain(|failure| failure != key);
+        let _next = self.finish_worker();
+    }
+
+    fn finish_worker(&mut self) -> Option<QuarantineKey> {
+        if self.active_workers > 0 {
+            self.active_workers -= 1;
+        }
+        if self.cancelled {
+            return None;
+        }
+        let next = self.queue.pop_front()?;
+        self.active_workers += 1;
+        Some(next)
+    }
+
+    fn cancel(&mut self) {
+        self.cancelled = true;
+        self.queue.clear();
+        self.keys.clear();
+        self.active_workers = 0;
+    }
 }
 
 struct ScanResource {
@@ -365,6 +459,7 @@ impl BtleplugDispatcher {
                 operations: HashMap::new(),
                 completed_correlations: HashMap::new(),
                 pending_events: HashSet::new(),
+                quarantine: QuarantineScheduler::new(),
             },
         );
 
@@ -586,10 +681,42 @@ impl BtleplugDispatcher {
                 "__expectedLeaseGeneration".to_owned(),
                 string(expected_lease.1.clone()),
             );
+            let handle = quarantine_handle(&cleanup_payload);
+            let should_start = if let Some(caller_state) =
+                self.inner.lock().await.callers.get_mut(&caller_key(caller))
+            {
+                if caller_state.lease_id == expected_lease.0
+                    && caller_state.lease_generation == expected_lease.1
+                {
+                    let queue_cap = caller_state
+                        .connections
+                        .len()
+                        .saturating_add(caller_state.subscriptions.len())
+                        .saturating_add(usize::from(caller_state.scan.is_some()))
+                        .max(MAX_QUARANTINE_WORKERS);
+                    matches!(
+                        caller_state.quarantine.enqueue(
+                            QuarantineKey {
+                                command: cleanup_command.to_owned(),
+                                handle: handle.unwrap_or_else(|| cleanup_command.to_owned()),
+                            },
+                            queue_cap,
+                        ),
+                        QuarantineAdmit::Start
+                    )
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
             if let Err(error) = self
                 .execute(caller, cleanup_command, cleanup_payload.clone(), None)
                 .await
             {
+                if !should_start {
+                    return;
+                }
                 let dispatcher = self.clone();
                 let caller = caller.clone();
                 let command = cleanup_command.to_owned();
@@ -609,30 +736,77 @@ impl BtleplugDispatcher {
         payload: BTreeMap<String, IpcValue>,
         _first_error: DispatchError,
     ) {
+        let key = QuarantineKey {
+            command: command.to_owned(),
+            handle: quarantine_handle(&payload).unwrap_or_else(|| command.to_owned()),
+        };
         let mut delay = Duration::from_millis(100);
-        let mut attempts = 0_u32;
         loop {
+            if self.quarantine_cancelled(caller).await {
+                return;
+            }
             tokio::time::sleep(delay).await;
             match self.execute(caller, command, payload.clone(), None).await {
-                Ok(response) if cleanup_succeeded(&response) => return,
-                Ok(_) => {
-                    attempts = attempts.saturating_add(1);
-                    delay = std::cmp::min(delay.saturating_mul(2), Duration::from_secs(5));
+                Ok(response) if cleanup_succeeded(&response) => {
+                    self.finish_quarantine(caller, &key, true).await;
+                    return;
                 }
-                Err(error) => {
-                    if error.code == "ownership.denied" {
+                Err(error) if error.code == "ownership.denied" => {
+                    self.finish_quarantine(caller, &key, true).await;
+                    return;
+                }
+                _ => {
+                    let attempts = self.record_quarantine_attempt(caller, &key).await;
+                    if attempts >= MAX_QUARANTINE_ATTEMPTS {
+                        self.exhaust_quarantine(caller, key).await;
                         return;
-                    }
-                    attempts = attempts.saturating_add(1);
-                    if attempts % 8 == 0 {
-                        eprintln!(
-                            "ubm quarantined cleanup still retrying: {}",
-                            error.operation
-                        );
                     }
                     delay = std::cmp::min(delay.saturating_mul(2), Duration::from_secs(5));
                 }
             }
+        }
+    }
+
+    async fn quarantine_cancelled(&self, caller: &AuthenticatedCaller) -> bool {
+        self.inner
+            .lock()
+            .await
+            .callers
+            .get(&caller_key(caller))
+            .map(|caller_state| caller_state.quarantine.cancelled)
+            .unwrap_or(true)
+    }
+
+    async fn record_quarantine_attempt(
+        &self,
+        caller: &AuthenticatedCaller,
+        key: &QuarantineKey,
+    ) -> u32 {
+        let mut state = self.inner.lock().await;
+        let Some(caller_state) = state.callers.get_mut(&caller_key(caller)) else {
+            return MAX_QUARANTINE_ATTEMPTS;
+        };
+        caller_state.quarantine.record_attempt(key)
+    }
+
+    async fn finish_quarantine(
+        &self,
+        caller: &AuthenticatedCaller,
+        key: &QuarantineKey,
+        success: bool,
+    ) {
+        let mut state = self.inner.lock().await;
+        if let Some(caller_state) = state.callers.get_mut(&caller_key(caller)) {
+            if success {
+                caller_state.quarantine.succeed(key);
+            }
+        }
+    }
+
+    async fn exhaust_quarantine(&self, caller: &AuthenticatedCaller, key: QuarantineKey) {
+        let mut state = self.inner.lock().await;
+        if let Some(caller_state) = state.callers.get_mut(&caller_key(caller)) {
+            caller_state.quarantine.exhaust(key);
         }
     }
 
@@ -2659,6 +2833,14 @@ impl BtleplugDispatcher {
 
     async fn settle_caller(&self, key: &str, caller: &mut CallerState) -> IpcValue {
         let mut failures = Vec::new();
+        caller.quarantine.cancel();
+        for exhausted in caller.quarantine.failures.drain(..) {
+            failures.push(cleanup_failure(
+                "cleanup",
+                "tauri.quarantine.exhausted",
+                format!("{}:{}", exhausted.command, exhausted.handle),
+            ));
+        }
         for cancellation in caller.operations.values() {
             cancellation.cancel();
         }
@@ -2791,6 +2973,17 @@ impl IpcDispatcher for BtleplugDispatcher {
             dispatcher.release_revoked(key, revocation).await;
         });
     }
+}
+
+fn quarantine_handle(payload: &BTreeMap<String, IpcValue>) -> Option<String> {
+    [
+        "scanHandle",
+        "connectionHandle",
+        "subscriptionHandle",
+        "handle",
+    ]
+    .into_iter()
+    .find_map(|key| payload.get(key).and_then(as_string).map(ToOwned::to_owned))
 }
 
 fn prune_completed_correlations(completed: &mut HashMap<String, Instant>, now: Instant) {
@@ -4154,5 +4347,110 @@ mod tests {
             .expect_err("in-flight plus completed must stay within 256");
         assert_eq!(error.operation, "tauri.correlation-window");
         assert_eq!(operations.len() + completed.len(), super::MAX_CORRELATIONS);
+    }
+
+    fn quarantine_key(command: &str, handle: &str) -> super::QuarantineKey {
+        super::QuarantineKey {
+            command: command.to_owned(),
+            handle: handle.to_owned(),
+        }
+    }
+
+    #[test]
+    fn persistent_cleanup_failure_stops_after_eight_attempts() {
+        let mut scheduler = super::QuarantineScheduler::new();
+        let key = quarantine_key("scan.stop", "scan-1");
+        assert!(matches!(
+            scheduler.enqueue(key.clone(), 8),
+            super::QuarantineAdmit::Start
+        ));
+        for _ in 0..super::MAX_QUARANTINE_ATTEMPTS {
+            scheduler.record_attempt(&key);
+        }
+        scheduler.exhaust(key.clone());
+        assert_eq!(scheduler.failures.len(), 1);
+        assert!(!scheduler.keys.contains(&key));
+    }
+
+    #[test]
+    fn repeated_cancelled_success_for_same_handle_coalesces_to_one_worker() {
+        let mut scheduler = super::QuarantineScheduler::new();
+        let key = quarantine_key("scan.stop", "scan-1");
+        assert!(matches!(
+            scheduler.enqueue(key.clone(), 8),
+            super::QuarantineAdmit::Start
+        ));
+        assert!(matches!(
+            scheduler.enqueue(key, 8),
+            super::QuarantineAdmit::Coalesced
+        ));
+        assert_eq!(scheduler.active_workers, 1);
+    }
+
+    #[test]
+    fn lease_drop_cancels_quarantine_workers() {
+        let mut scheduler = super::QuarantineScheduler::new();
+        scheduler.enqueue(quarantine_key("scan.stop", "scan-1"), 8);
+        scheduler.cancel();
+        assert!(scheduler.cancelled);
+        assert_eq!(scheduler.active_workers, 0);
+        assert!(matches!(
+            scheduler.enqueue(quarantine_key("scan.stop", "scan-2"), 8),
+            super::QuarantineAdmit::Cancelled
+        ));
+    }
+
+    #[test]
+    fn worker_count_per_lease_capped_at_four() {
+        let mut scheduler = super::QuarantineScheduler::new();
+        for index in 0..4 {
+            assert!(matches!(
+                scheduler.enqueue(quarantine_key("scan.stop", &format!("scan-{index}")), 8),
+                super::QuarantineAdmit::Start
+            ));
+        }
+        assert_eq!(scheduler.active_workers, 4);
+        assert!(matches!(
+            scheduler.enqueue(quarantine_key("scan.stop", "scan-4"), 8),
+            super::QuarantineAdmit::Queued
+        ));
+        assert_eq!(scheduler.active_workers, 4);
+    }
+
+    #[test]
+    fn fifth_distinct_cleanup_waits_in_the_bounded_queue_rather_than_disappearing() {
+        let mut scheduler = super::QuarantineScheduler::new();
+        for index in 0..4 {
+            scheduler.enqueue(quarantine_key("scan.stop", &format!("scan-{index}")), 8);
+        }
+        assert!(matches!(
+            scheduler.enqueue(quarantine_key("scan.stop", "scan-4"), 8),
+            super::QuarantineAdmit::Queued
+        ));
+        assert_eq!(scheduler.queue.len(), 1);
+        assert!(scheduler
+            .keys
+            .contains(&quarantine_key("scan.stop", "scan-4")));
+    }
+
+    #[test]
+    fn exhausted_cleanup_appears_in_release_failed_and_is_retried_by_release() {
+        let mut scheduler = super::QuarantineScheduler::new();
+        let key = quarantine_key("connection.disconnect", "connection-1");
+        scheduler.enqueue(key.clone(), 8);
+        scheduler.exhaust(key.clone());
+        assert_eq!(scheduler.failures.len(), 1);
+        scheduler.succeed(&key);
+        assert!(scheduler.failures.is_empty());
+    }
+
+    #[test]
+    fn ownership_denied_stops_retry_without_resurrecting_the_resource() {
+        let mut scheduler = super::QuarantineScheduler::new();
+        let key = quarantine_key("gatt.unsubscribe", "sub-1");
+        scheduler.enqueue(key.clone(), 8);
+        scheduler.succeed(&key);
+        assert!(!scheduler.keys.contains(&key));
+        assert!(scheduler.failures.is_empty());
     }
 }
