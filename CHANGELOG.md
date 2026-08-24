@@ -4,6 +4,21 @@ All notable changes to `unified-ble-manager` are documented here.
 
 ## [Unreleased]
 
+## [4.0.0-rc.4] - 2026-08-23
+
+Expo host and native/residual scan-planning release candidate after PR10. This candidate includes the Expo config-plugin v2 schema, thin Expo factory and React lifecycle integration, optional Android foreground-service and companion association surfaces, iOS restoration identity, and the PR9 native/residual scan planner. Backend support labels remain evidence-derived and are not promoted by this release.
+
+### Public API and host integration
+
+- Completed the additive PR9–PR10 host surfaces while preserving the RC2 manager, GATT, error, capability, lifecycle, and scan-query contracts.
+- Froze the Expo config-plugin and restoration configuration schema at this candidate. `createExpoBleManager()` remains a thin composition over the React Native factory/native provider.
+- Preserved bytes-first payloads, `AbortSignal` cancellation, generation-bound resources, and explicit ownership/cleanup semantics across native and host boundaries.
+
+### Release integrity
+
+- Cut from the exact post-PR10 `main` merge commit through the tag-driven trusted-publishing workflow.
+- Intended for publication as a prerelease candidate on the `latest` channel; this does not promote backend support labels or claim physical-radio evidence.
+
 ## [4.0.0-rc.3] - 2026-08-22
 
 Advanced central release candidate after PR8. This candidate includes known-peer directories, connection intents and reconnect supervision, pairing/security semantics, advanced link controls, write readiness, and bounded GATT recovery. Backend support labels remain evidence-derived and are not promoted by this release.

@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <title>unified-ble-manager 4.0.0-rc.3 | Documentation</title>
+    <title>unified-ble-manager 4.0.0-rc.4 | Documentation</title>
     <meta
       name="description"
       content="Unified Bluetooth Low Energy manager for React Native, Electron, Tauri, Web, and desktop"
@@ -18,7 +18,7 @@
       <div id="split-left" class="overflow-auto fs0 height-viewport-100">
         <div class="py1 px2">
           <h3 class="mb0 no-anchor">unified-ble-manager</h3>
-          <div class="mb1"><code>4.0.0-rc.3</code></div>
+          <div class="mb1"><code>4.0.0-rc.4</code></div>
           <input
             placeholder="Filter"
             id="filter-input"
@@ -61,10 +61,9 @@
 
             <h1>Getting started</h1>
             <p>
-              <strong>Current prerelease:</strong> <code>4.0.0-rc.3</code> is published from exact <code>main</code> and
-              is immutable. The Expo plugin v2 surface described in this PR10 branch is unreleased branch work and
-              becomes published only at RC4; do not change the package version or recreate RC3. RC4 remains reserved for
-              the post-PR10 release gate.
+              <strong>Current prerelease:</strong> <code>4.0.0-rc.4</code> is published from exact <code>main</code> and
+              is immutable. Do not change the package version or recreate RC4. RC5 remains reserved for the post-PR11
+              release gate.
             </p>
             <p>
               This page gets you to a first scan, connect, read, notify, and teardown on React Native. Other hosts are
@@ -139,29 +138,10 @@
             </p>
             <h4>Expo / CNG v2</h4>
             <p>
-              The Expo v2 schema and <code>unified-ble-manager/expo</code> factory are PR10 branch work; they are not in
-              immutable RC3. Use exactly one of these sources:
+              The Expo v2 schema and <code>unified-ble-manager/expo</code> factory are in the published
+              <code>4.0.0-rc.4</code> package. Pin that exact version:
             </p>
-            <ol>
-              <li>
-                <p><strong>Source checkout:</strong> build this PR10 checkout, then install its directory:</p>
-              </li>
-              <li>
-                <p>
-                  <strong>Local tarball:</strong> pack this PR10 checkout and install the resulting local file. This is
-                  not a request for, or a replacement of, published RC3:
-                </p>
-              </li>
-              <li>
-                <p>
-                  <strong>Published RC4:</strong> after the PR10 release gate publishes it, install the exact version:
-                </p>
-              </li>
-            </ol>
-            <p>
-              Do not use an unpinned package-install command for this v2 recipe: while RC3 is latest, that resolves the
-              immutable RC3 surface, which does not contain Expo v2. The package does not run in Expo Go.
-            </p>
+            <p>The package does not run in Expo Go.</p>
             <p>Expo also needs a native build and development client:</p>
             <p>
               Add the plugin (full option table: <a href="EXPO_PLUGIN.md"><code>EXPO_PLUGIN.md</code></a
@@ -575,34 +555,17 @@
               supported BLE execution environment because it cannot contain this native module.
             </p>
             <p>
-              The v2 Expo surface documented here is PR10 branch work. The immutable <code>4.0.0-rc.3</code> package is
-              not recreated or changed; this v2 surface becomes published only at RC4 after the PR10 release gate.
+              The v2 Expo surface documented here is published in immutable <code>4.0.0-rc.4</code>. Do not recreate or
+              change that candidate.
             </p>
             <h2>Installation and development build</h2>
             <p>
-              The Expo v2 schema is PR10 branch work and is available only from a source checkout, a local tarball built
-              from that checkout, or the exact published RC4 version. Do not use an unpinned package-install command:
-              while RC3 is latest, that installs the immutable RC3 surface, which does not contain Expo v2.
+              Pin the published RC4 package. Do not use an unpinned package-install command for this recipe: later
+              <code>latest</code> movement must not silently change the frozen Expo v2 schema consumed by a development
+              build.
             </p>
-            <h3>Source checkout</h3>
-            <pre><code>pnpm install --frozen-lockfile
-pnpm prepack
-pnpm --dir /path/to/expo-app add /path/to/unified-ble-manager
-</code></pre>
-            <h3>Local tarball</h3>
-            <pre><code>pnpm pack --pack-destination /tmp/unified-ble-manager-pr10
-pnpm --dir /path/to/expo-app add /tmp/unified-ble-manager-pr10/unified-ble-manager-4.0.0-rc.3.tgz
-</code></pre>
-            <p>
-              The local tarball is built from the PR10 checkout. It does not recreate or replace published RC3, whose
-              exact <code>main</code> commit remains immutable.
-            </p>
-            <h3>Published RC4</h3>
-            <p>After the PR10 release gate publishes RC4, install that exact version:</p>
             <pre><code>pnpm add unified-ble-manager@4.0.0-rc.4
-</code></pre>
-            <p>Install the Expo host tooling separately:</p>
-            <pre><code>pnpm add expo@^57.0.0 expo-dev-client
+pnpm add expo@^57.0.0 expo-dev-client
 bunx expo prebuild --clean
 bunx expo run:ios
 # or
@@ -759,7 +722,7 @@ bunx eas build --profile development --platform android
             <h1>Electron</h1>
             <p>Main owns the radio. The renderer uses a versioned IPC client and never loads a native addon.</p>
             <p>
-              <strong>Current prerelease:</strong> <code>4.0.0-rc.3</code> is published from exact <code>main</code> and
+              <strong>Current prerelease:</strong> <code>4.0.0-rc.4</code> is published from exact <code>main</code> and
               is immutable. The release ships Node-API v8 prebuilds covering macOS and Windows <code>arm64</code>/<code
                 >x64</code
               >
@@ -974,7 +937,7 @@ bunx eas build --profile development --platform android
             </p>
             <h2>Package stability and backend support are separate</h2>
             <p>
-              <code>unified-ble-manager@4.0.0-rc.3</code> is the published
+              <code>unified-ble-manager@4.0.0-rc.4</code> is the published
               <strong>release-candidate package/API</strong> for the 4.x contract; it is immutable and stable
               <code>4.0.0</code> remains reserved for the post-PR12 release gate.
             </p>

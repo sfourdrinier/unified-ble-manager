@@ -2,7 +2,7 @@
 
 # Getting started
 
-**Current prerelease:** `4.0.0-rc.3` is published from exact `main` and is immutable. The Expo plugin v2 surface described in this PR10 branch is unreleased branch work and becomes published only at RC4; do not change the package version or recreate RC3. RC4 remains reserved for the post-PR10 release gate.
+**Current prerelease:** `4.0.0-rc.4` is published from exact `main` and is immutable. Do not change the package version or recreate RC4. RC5 remains reserved for the post-PR11 release gate.
 
 This page gets you to a first scan, connect, read, notify, and teardown on React Native. Other hosts are linked at the bottom. The root import does not turn Bluetooth on.
 
@@ -27,7 +27,7 @@ This page gets you to a first scan, connect, read, notify, and teardown on React
 The immutable published prerelease for bare React Native is explicitly pinned:
 
 ```sh
-pnpm add unified-ble-manager@4.0.0-rc.3
+pnpm add unified-ble-manager@4.0.0-rc.4
 ```
 
 Declare Android Bluetooth permissions and the BLE hardware feature yourself,
@@ -36,35 +36,14 @@ request runtime permissions on Android 12+, add
 
 #### Expo / CNG v2
 
-The Expo v2 schema and `unified-ble-manager/expo` factory are PR10 branch work;
-they are not in immutable RC3. Use exactly one of these sources:
+The Expo v2 schema and `unified-ble-manager/expo` factory are in the published
+`4.0.0-rc.4` package. Pin that exact version:
 
-1. **Source checkout:** build this PR10 checkout, then install its directory:
+```sh
+pnpm add unified-ble-manager@4.0.0-rc.4
+```
 
-   ```sh
-   pnpm install --frozen-lockfile
-   pnpm prepack
-   pnpm --dir /path/to/expo-app add /path/to/unified-ble-manager
-   ```
-
-2. **Local tarball:** pack this PR10 checkout and install the resulting local
-   file. This is not a request for, or a replacement of, published RC3:
-
-   ```sh
-   pnpm pack --pack-destination /tmp/unified-ble-manager-pr10
-   pnpm --dir /path/to/expo-app add /tmp/unified-ble-manager-pr10/unified-ble-manager-4.0.0-rc.3.tgz
-   ```
-
-3. **Published RC4:** after the PR10 release gate publishes it, install the
-   exact version:
-
-   ```sh
-   pnpm add unified-ble-manager@4.0.0-rc.4
-   ```
-
-Do not use an unpinned package-install command for this v2 recipe: while RC3 is
-latest, that resolves the immutable RC3 surface, which does not contain Expo
-v2. The package does not run in Expo Go.
+The package does not run in Expo Go.
 
 Expo also needs a native build and development client:
 
