@@ -4,6 +4,21 @@ All notable changes to `unified-ble-manager` are documented here.
 
 ## [Unreleased]
 
+## [4.0.0] - 2026-08-24
+
+Stable package/API contract after PR11/RC5. Package SemVer `4.0.0` does not promote backend support labels or claim physical-radio evidence. Live-radio vertical slices, soak, and crates.io crate publication remain unverifiable in this environment and are recorded as blocked rather than mocked. Immutable `v4.0.0-rc.5` is not retagged.
+
+### Qualification
+
+- Deterministic, package, plugin, lint, and generated-artifact gates pass on the exact `main` candidate.
+- Generated platform-support evidence stays Experimental / not bound to this artifact; compile/ABI/deterministic proof is not relabeled as live-radio.
+- Tauri documented install remains crates.io (`tauri-plugin-unified-ble-manager@4.0.0`) with checkout `path` fallback until the crate is published.
+
+### Release integrity
+
+- Cut from the exact post-PR12 `main` merge commit through the tag-driven trusted-publishing workflow.
+- Intended for publication as the stable `latest` package; this does not promote backend support labels.
+
 ## [4.0.0-rc.5] - 2026-08-24
 
 Distribution and consumer-tooling freeze after PR11. Documented Tauri install is crates.io (`tauri-plugin-unified-ble-manager@4.0.0`); the crate is not yet published and `path` remains the checkout fallback until it is. Public CLI taxonomy is `doctor`/`inspect`/`init`/`support-bundle` plus `backend tck`/`backend scenario` routing. `TAURI_PLUGIN_COMPATIBILITY` and `createTestBleEnvironment` are exported from `/tauri` and `/testing`. This does not mint live-radio evidence or change RC2 portable BLE semantics or the RC4 Expo schema. Immutable `v4.0.0-rc.4.1` is not retagged.
