@@ -10,9 +10,10 @@ describe('PR10 Expo documentation', () => {
     const expoPlugin = read('docs/EXPO_PLUGIN.md')
     const documents = `${gettingStarted}\n${expoPlugin}`
 
-    expect(documents).toContain('4.0.0-rc.4.1')
+    expect(documents).toContain('4.0.0-rc.5')
+    expect(documents).toContain('4.0.0-rc.4')
     expect(documents).toContain('immutable')
-    expect(documents).toContain('pnpm add unified-ble-manager@4.0.0-rc.4.1')
+    expect(documents).toContain('pnpm add unified-ble-manager@4.0.0-rc.5')
     expect(documents).not.toContain('PR10 branch work')
     expect(documents).not.toContain('unreleased')
     expect(documents).not.toMatch(/(?:expo|bunx|npx)\s+(?:install|add)\s+unified-ble-manager(?:\s|$)/u)
