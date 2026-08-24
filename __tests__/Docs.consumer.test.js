@@ -11,7 +11,7 @@ const root = path.join(__dirname, '..')
 const read = relativePath => fs.readFileSync(path.join(root, relativePath), 'utf8').replace(/\r\n/g, '\n')
 const packageVersion = JSON.parse(read('package.json')).version
 const stable40 = packageVersion === '4.0.0'
-const rcVersionMatch = /^4\.0\.0-rc\.(\d+)$/u.exec(packageVersion)
+const rcVersionMatch = /^4\.0\.0-rc\.\d+(?:\.\d+)?$/u.exec(packageVersion)
 const alphaVersionMatch = /^4\.0\.0-alpha\.(\d+)$/u.exec(packageVersion)
 if (!stable40 && rcVersionMatch === null && alphaVersionMatch === null) {
   throw new Error(`Expected 4.0.0, a 4.0 RC, or a 4.0 alpha package version, received ${packageVersion}`)
@@ -71,7 +71,7 @@ const deletedTransitionalAdrs = [
 describe('consumer documentation matches the published package', () => {
   test('current public documentation follows the package release channel', () => {
     if (stable40 || rcVersionMatch) {
-      expect(packageVersion).toMatch(/^4\.0\.0(?:-rc\.\d+)?$/u)
+      expect(packageVersion).toMatch(/^4\.0\.0(?:-rc\.\d+(?:\.\d+)?)?$/u)
       return
     }
     for (const document of architectureAuthorityDocuments) {
@@ -325,7 +325,7 @@ describe('consumer documentation matches the published package', () => {
     const release = read('RELEASE.md')
     const platforms = read('docs/PLATFORMS.md')
 
-    expect(readme).toContain('`4.0.0-rc.4` is published from exact `main`')
+    expect(readme).toContain('`4.0.0-rc.4.1` is published from exact `main`')
     expect(readme).toContain('npm trusted publishing/OIDC with provenance')
     expect(release).toContain('git tag -a "v$release_candidate"')
     expect(release).toContain('release_candidate=4.0.0-rc.N')
@@ -333,7 +333,7 @@ describe('consumer documentation matches the published package', () => {
     expect(release).toContain('npm trusted publishing/OIDC')
     expect(release).toContain('publishes with provenance')
     expect(platforms).toContain(
-      '`unified-ble-manager@4.0.0-rc.4` is the published **release-candidate package/API** for the 4.x contract; it is immutable and stable `4.0.0` remains reserved for the post-PR12 release gate'
+      '`unified-ble-manager@4.0.0-rc.4.1` is the published **release-candidate package/API** for the 4.x contract; it is immutable and stable `4.0.0` remains reserved for the post-PR12 release gate'
     )
     expect(platforms).toContain(
       'WinRT compilation or ABI loading, for example, is not by itself a Windows live-radio claim'
