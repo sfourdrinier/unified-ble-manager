@@ -63,7 +63,11 @@ manager.onStateChange((state) => {
 // unified-ble-manager — state and readiness belong to the selected backend
 const abort = new AbortController()
 const state = await manager.adapter.state()
-if (state.power !== 'on' || state.authorization !== 'granted' || state.availability !== 'available') {
+if (
+  state.power !== 'on' ||
+  state.availability !== 'available' ||
+  ['denied', 'restricted', 'unavailable'].includes(state.authorization)
+) {
   // request OS permissions / ask the user to enable Bluetooth
 }
 await manager.adapter.waitUntilReady({ signal: abort.signal, timeoutMs: 20_000, operation: 'scan' })
@@ -357,13 +361,13 @@ if (gone.state === 'release-failed') {
 | `checkBluetoothPermissions` helpers | `manager.adapter.state().authorization` + OS APIs. |
 | `setLogLevel` | `manager.traces()` / `traceDocument()` if you need diagnostics. |
 | Android `scanMode` / `callbackType` | `duplicatePolicy`, `filter`, `delivery`. |
-| Expo `iosEnableRestoration` / `iosRestorationIdentifier` | `iosNativeProtocolRestoration` with five fields. |
+| Expo `iosEnableRestoration` / `iosRestorationIdentifier` | v2 `background.ios.restoration` in the Expo plugin. |
 | Expo `androidEnableForegroundService` | The app owns any FGS. |
 | Static `supports()` matrix | `manager.supports(id)` after the backend exists. |
 
-Restoration identity (`applicationId`, `restorationId`, `generation`, and Expo
-`iosNativeProtocolRestoration`) does **not** auto-reconnect peripherals. You
-still connect.
+Restoration identity from the trusted native host does **not** auto-reconnect
+peripherals. You still connect. Expo uses the v2 `background.ios.restoration`
+token, not the retired five-field `iosNativeProtocolRestoration` key.
 
 ## Suggested order
 

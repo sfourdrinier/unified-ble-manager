@@ -2,9 +2,9 @@
 
 # 4.0 clean-baseline Web Bluetooth example
 
-This browser example imports only the public `unified-ble-manager` package
-entrypoints. It exercises the real Web Bluetooth chooser and the shared 4.0
-manager/core path:
+This browser example constructs the host with `createWebBleManager()` from
+`unified-ble-manager/web`. It exercises the real Web Bluetooth chooser and the
+shared 4.0 manager path:
 
 `choose → connect → discover → battery read → heart-rate notify → disconnect → reconnect → destroy`
 

@@ -61,14 +61,10 @@
 
             <h1>Getting started</h1>
             <p>
-              <strong>Current release:</strong> <code>4.0.0</code> is published from exact <code>main</code> and is
-              immutable. Do not recreate <code>v4.0.0</code>. Immutable <code>4.0.0-rc.4</code>,
-              <code>4.0.0-rc.4.1</code>, and <code>4.0.0-rc.5</code> remain published history.
-            </p>
-            <p>
               This page gets you to a first scan, connect, read, notify, and teardown on React Native. Other hosts are
               linked at the bottom. The root import does not turn Bluetooth on.
             </p>
+            <p>The current package is <code>4.0.0</code>.</p>
             <h2>Pick a host</h2>
             <table>
               <thead>
@@ -107,14 +103,19 @@
                 </tr>
                 <tr>
                   <td>Electron</td>
-                  <td><code>electron/main</code> + <code>electron/renderer</code></td>
+                  <td>
+                    <code>unified-ble-manager/electron/main</code> + <code>unified-ble-manager/electron/renderer</code>
+                  </td>
                   <td>
                     <a href="ELECTRON.md"><code>ELECTRON.md</code></a>
                   </td>
                 </tr>
                 <tr>
                   <td>Node on macOS / Windows / Linux</td>
-                  <td><code>node/corebluetooth</code>, <code>node/winrt</code>, or <code>node/bluez</code></td>
+                  <td>
+                    <code>unified-ble-manager/node/corebluetooth</code>, <code>node/winrt</code>, or
+                    <code>node/bluez</code>
+                  </td>
                   <td>
                     <a href="NODE.md"><code>NODE.md</code></a>
                   </td>
@@ -131,7 +132,7 @@
             <h2>React Native and Expo in one hour</h2>
             <h3>1. Install</h3>
             <h4>Bare React Native</h4>
-            <p>The immutable published prerelease for bare React Native is explicitly pinned:</p>
+            <p>Pin the current package for a known native rebuild:</p>
             <p>
               Declare Android Bluetooth permissions and the BLE hardware feature yourself, request runtime permissions
               on Android 12+, add <code>NSBluetoothAlwaysUsageDescription</code> on iOS, run pods, and rebuild.
@@ -555,21 +556,20 @@
               supported BLE execution environment because it cannot contain this native module.
             </p>
             <p>
-              The v2 Expo surface documented here is published in <code>4.0.0</code>. The Expo config-plugin schema
-              froze at <code>4.0.0-rc.4</code> and is unchanged. Do not recreate or change that candidate.
+              Use the v2 plugin options in the published <code>4.0.0</code> package. Those options match the schema
+              introduced at <code>4.0.0-rc.4</code>. Expo Go cannot load this native module.
             </p>
             <h2>Installation and development build</h2>
             <p>
-              Pin the published 4.0.0 package. Do not use an unpinned package-install command for this recipe: later
-              <code>latest</code> movement must not silently change the frozen Expo v2 schema consumed by a development
-              build.
+              Pin the package so a later <code>latest</code> bump does not change native plugin options without a
+              rebuild:
             </p>
             <pre><code>pnpm add unified-ble-manager@4.0.0
 pnpm add expo@^57.0.0 expo-dev-client
-bunx expo prebuild --clean
-bunx expo run:ios
+npx expo prebuild --clean
+npx expo run:ios
 # or
-bunx expo run:android
+npx expo run:android
 </code></pre>
             <p>For EAS development builds:</p>
             <pre><code>bunx eas build --profile development --platform ios
@@ -722,11 +722,8 @@ bunx eas build --profile development --platform android
             <h1>Electron</h1>
             <p>Main owns the radio. The renderer uses a versioned IPC client and never loads a native addon.</p>
             <p>
-              <strong>Current release:</strong> <code>4.0.0</code> is published from exact <code>main</code> and is
-              immutable. The release ships Node-API v8 prebuilds covering macOS and Windows <code>arm64</code>/<code
-                >x64</code
-              >
-              for both Node and modern Electron.
+              The current package is <code>4.0.0</code>. The release ships Node-API v8 prebuilds covering macOS and
+              Windows <code>arm64</code>/<code>x64</code> for both Node and modern Electron.
             </p>
             <p>
               <code>unified-ble-manager/electron/main</code> and <code>unified-ble-manager/electron/renderer</code> are
@@ -757,10 +754,10 @@ bunx eas build --profile development --platform android
               Security internals live in <a href="ELECTRON_SECURITY_MODEL.md"><code>ELECTRON_SECURITY_MODEL.md</code></a
               >.
             </p>
+            <p>In the renderer, after preload hands you an authenticated transport:</p>
             <p>
-              In main, build the host-owned generic manager from a provider, then bind IPC. The renderer uses the public
-              <code>BleManager</code> façade; the low-level <code>ElectronRendererBleClient</code> remains an
-              implementation seam for the transport and advanced boundary tests, not an application API.
+              The low-level <code>ElectronRendererBleClient</code> is an implementation seam for the transport and
+              tests, not an application API.
             </p>
             <h2>Advanced main-process provider construction</h2>
             <blockquote>
@@ -771,7 +768,7 @@ bunx eas build --profile development --platform android
                 authors wiring an explicit backend.
               </p>
             </blockquote>
-            <p>They deliberately split physical-radio ownership from renderer use:</p>
+            <p>Main and renderer stay split:</p>
             <ul>
               <li>
                 the Electron <strong>main</strong> process creates one selected owned backend and owns the generic

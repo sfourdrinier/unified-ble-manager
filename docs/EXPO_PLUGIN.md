@@ -7,22 +7,20 @@ start a radio, request runtime permissions during prebuild, or prove physical
 radio/restoration reliability. Expo Go is not a supported BLE execution
 environment because it cannot contain this native module.
 
-The v2 Expo surface documented here is published in `4.0.0`.
-The Expo config-plugin schema froze at `4.0.0-rc.4` and is unchanged. Do not
-recreate or change that candidate.
+Use the v2 plugin options in the published `4.0.0` package. Those options match
+the schema introduced at `4.0.0-rc.4`. Expo Go cannot load this native module.
 
 ## Installation and development build
 
-Pin the published 4.0.0 package. Do not use an unpinned package-install command
-for this recipe: later `latest` movement must not silently change the frozen
-Expo v2 schema consumed by a development build.
+Pin the package so a later `latest` bump does not change native plugin options
+without a rebuild:
 
     pnpm add unified-ble-manager@4.0.0
     pnpm add expo@^57.0.0 expo-dev-client
-    bunx expo prebuild --clean
-    bunx expo run:ios
+    npx expo prebuild --clean
+    npx expo run:ios
     # or
-    bunx expo run:android
+    npx expo run:android
 
 For EAS development builds:
 

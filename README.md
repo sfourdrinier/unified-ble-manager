@@ -6,7 +6,7 @@
 
 It is an evolution of `react-native-ble-plx`, rewritten as a **cross-platform unified product**. One bytes-first BLE model and lifecycle semantics across hosts, with host-specific construction and ownership. The root package never picks a radio for you, and it will not quietly fall back to a simulator or a different backend.
 
-**Current release:** `4.0.0` is published from exact `main` and is immutable. Do not recreate `v4.0.0`. Immutable `4.0.0-rc.4`, `4.0.0-rc.4.1`, and `4.0.0-rc.5` remain published history. Package SemVer and backend support labels are independent: each radio backend stays Experimental until artifact-bound physical-hardware validation says otherwise. See [`docs/PLATFORMS.md`](docs/PLATFORMS.md).
+Install `unified-ble-manager` from npm (`4.0.0` on `latest`). The root import does not pick a radio. Package SemVer and backend support labels are independent: each radio backend stays Experimental until live-radio evidence says otherwise. See [`docs/PLATFORMS.md`](docs/PLATFORMS.md).
 
 > Sponsored by [Imagi Explain](https://imagiexplain.com) — researched, narrated whiteboard explainers from a prompt, a PDF, or your notes.
 
@@ -87,10 +87,8 @@ On Android 12+ the app must request `BLUETOOTH_SCAN` and `BLUETOOTH_CONNECT` its
 
 ### Expo plugin
 
-Expo plugin v2 configuration and native restoration wiring are intentionally
-tracked for PR10. Do not copy the retired RC1 keys from older examples. Use an
-Expo development build, never Expo Go, and follow [`docs/EXPO_PLUGIN.md`](docs/EXPO_PLUGIN.md)
-for the current release-train status.
+Use an Expo development build, never Expo Go. Plugin options live in
+[`docs/EXPO_PLUGIN.md`](docs/EXPO_PLUGIN.md).
 
 For an Expo development build, use the Expo host factory and inspect readiness
 before starting a user action:
@@ -104,7 +102,7 @@ const readiness = await ble.readiness()
 const associated = await ble.association.associate({ name: 'Sensor' })
 ```
 
-### PR10 Expo proof boundary
+### Packed Expo / Tauri export proof
 
 The packed-host gate (`pnpm prepack && node scripts/ci/packed-host-consumer-check.js`)
 installs the generated tarball into an isolated consumer and proves the
@@ -215,7 +213,7 @@ not evidence of support. Readiness is unsupported until the backend advertises
 the readiness capability, and a readiness event does not prove a later payload
 was retained.
 
-Current PR8 host truth is detailed in the [semantics host matrix](docs/UNIFIED_SEMANTICS.md#172-current-pr8-host-matrix). In
+Runtime capability truth for each host is in the [semantics host matrix](docs/UNIFIED_SEMANTICS.md#172-current-pr8-host-matrix). In
 particular, React Native Android exposes MTU request/effective observation and
 PHY read/request as `limited` / deterministic controls: effective MTU is
 unavailable before a successful `onMtuChanged` callback, and PHY request
@@ -289,7 +287,7 @@ after disconnect, service change, or rediscovery.
 - **Node:** `createCoreBluetoothBleManager` / `createWinRtBleManager` / `createBluezBleManager`, or list adapters and `createBleManagerFromProvider`. Published releases ship Node-API v8 prebuilds for macOS and Windows `arm64`/`x64`. [`docs/NODE.md`](docs/NODE.md)
 - **Tauri:** `createTauriBleManager()` returns the public `BleManager`; test transports use `createTauriBleManagerWithEnvironment`. [`docs/TAURI.md`](docs/TAURI.md)
 
-`4.0.0-rc.*` versions publish to npm `latest` so a bare install gets the current 4.0 line. After the first stable `4.0.0`, later prereleases publish to `next`. Publication uses npm trusted publishing/OIDC with provenance.
+Stable 4.x versions publish to npm `latest`. Later prereleases, if any, publish to `next`. Publication uses npm trusted publishing/OIDC with provenance.
 
 ## Migrating from react-native-ble-plx
 

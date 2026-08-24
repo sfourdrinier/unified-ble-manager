@@ -4,7 +4,7 @@
 
 Main owns the radio. The renderer uses a versioned IPC client and never loads a native addon.
 
-**Current release:** `4.0.0` is published from exact `main` and is immutable. The release ships Node-API v8 prebuilds covering macOS and Windows `arm64`/`x64` for both Node and modern Electron.
+The current package is `4.0.0`. The release ships Node-API v8 prebuilds covering macOS and Windows `arm64`/`x64` for both Node and modern Electron.
 
 `unified-ble-manager/electron/main` and
 `unified-ble-manager/electron/renderer` are the only Electron entrypoints.
@@ -23,10 +23,24 @@ Runnable composition lives in [`example-electron/`](../example-electron/)
 BrowserWindow must use `contextIsolation: true` and `nodeIntegration: false`.
 Security internals live in [`ELECTRON_SECURITY_MODEL.md`](ELECTRON_SECURITY_MODEL.md).
 
-In main, build the host-owned generic manager from a provider, then bind IPC.
-The renderer uses the public `BleManager` façade; the low-level
-`ElectronRendererBleClient` remains an implementation seam for the transport
-and advanced boundary tests, not an application API.
+In the renderer, after preload hands you an authenticated transport:
+
+```ts
+import { createElectronRendererBleManager } from 'unified-ble-manager/electron/renderer'
+
+const abort = new AbortController()
+const manager = await createElectronRendererBleManager({ transport })
+const scan = await manager.scan({
+  query: { anyOf: [{ services: { any: ['180d'] } }] },
+  signal: abort.signal,
+  timeoutMs: 15_000
+})
+await scan.stop()
+await manager.destroy()
+```
+
+The low-level `ElectronRendererBleClient` is an implementation seam for the
+transport and tests, not an application API.
 
 ## Advanced main-process provider construction
 
@@ -63,7 +77,7 @@ const manager = await createBleManagerFromProvider(
 )
 ```
 
-They deliberately split physical-radio ownership from renderer use:
+Main and renderer stay split:
 
 - the Electron **main** process creates one selected owned backend and owns the
   generic manager/radio lifecycle;

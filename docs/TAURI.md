@@ -10,28 +10,52 @@ The Rust plugin owns the radio (btleplug: CoreBluetooth, WinRT, or BlueZ). The w
 
 ```sh
 pnpm add unified-ble-manager @tauri-apps/api
-cargo add tauri-plugin-unified-ble-manager@4.0.0
 ```
 
-The documented consumer recipe is crates.io plus the npm package. The crate is
-not yet published. Until the crate is published, keep the repository
-`path = "../../native/tauri"` checkout/development fallback. `ubm init --host tauri`
-writes the crates.io fragment.
+Until the crate is on crates.io, point Cargo at the plugin in this repository:
+
+```toml
+[dependencies]
+tauri-plugin-unified-ble-manager = { path = "../../native/tauri" }
+```
+
+The intended published recipe is `cargo add tauri-plugin-unified-ble-manager@4.0.0`.
+That command fails today because the crate is not published. `ubm init --host tauri`
+writes the crates.io fragment so you can switch when it is.
 
 ## Frontend
 
 ```ts
 import { createTauriBleManager } from 'unified-ble-manager/tauri'
 
+const abort = new AbortController()
 const manager = await createTauriBleManager()
 const scan = await manager.scan({
   query: { anyOf: [{ services: { any: ['180d'] } }] },
   duplicates: 'coalesced',
-  delivery: 'balanced'
+  delivery: 'balanced',
+  signal: abort.signal,
+  timeoutMs: 15_000
 })
-// consume scan.observations (value / overflow / terminal), then:
+const first = await scan.observations[Symbol.asyncIterator]().next()
 await scan.stop()
-await manager.destroy()
+if (first.done || first.value.kind !== 'value') {
+  await manager.destroy()
+  throw new Error('No peer observed')
+}
+const connection = await manager.connect(first.value.peer, { signal: abort.signal, timeoutMs: 10_000 })
+try {
+  const gatt = await connection.discover({ signal: abort.signal, timeoutMs: 10_000 })
+  const battery = gatt.services.find(service => service.uuid === '180f')
+  const level = battery?.characteristics.find(characteristic => characteristic.uuid === '2a19')
+  if (level !== undefined) {
+    const bytes = await level.read({ signal: abort.signal, timeoutMs: 5_000 })
+    void bytes
+  }
+} finally {
+  await connection.release()
+  await manager.destroy()
+}
 ```
 
 `BleManager.scan` accepts the frozen `ScanQuery` Boolean algebra plus `signal`, `timeoutMs`, duplicate policy, and a stream preset. Query matching is performed by the shared portable matcher; native projections are only safe broad prefilters.

@@ -88,6 +88,7 @@ function bootstrap() {
         availability: 'available',
         authorization: 'granted',
         power: 'on',
+        heard: null,
         backendGeneration,
         updatedAt: 1,
         safeReason: null

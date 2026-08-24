@@ -3,9 +3,10 @@
 # Expo SDK 57 CNG fixture
 
 This repository fixture validates the Expo SDK 57 continuous-native-generation
-path. It uses `unified-ble-manager: file:..` and the `unified-ble-manager` v2
+path. The app constructs the host with `createExpoBleManager()` from
+`unified-ble-manager/expo`. It uses `unified-ble-manager: file:..` and the v2
 config plugin, so it is not a published-package install recipe. The v2 Expo
-surface is published in immutable `4.0.0`.
+surface is in the published `4.0.0` package.
 
 The BLE host includes native code and cannot run in Expo Go. Generate and build
 the native project from the repository root:
@@ -21,9 +22,8 @@ On macOS with the required Xcode and CocoaPods environment, use
 the fixture's ignored native project directories; it does not validate a live
 Bluetooth journey.
 
-The fixture exercises the current source-tree CNG/plugin contract for the
-PR10 integration gate; its native configuration is not an application recipe
-for PR6 and must not be copied as a restoration contract. It tears the manager
+The fixture exercises the current source-tree CNG/plugin contract; its native
+configuration is not an application restoration recipe. It tears the manager
 down with `destroy()`. A successful CNG prebuild and Android debug
 APK/assembly are source-tree/plugin and Android compile proof only. The packed
 host gate separately proves the installed tarball's conditional `./expo`,
