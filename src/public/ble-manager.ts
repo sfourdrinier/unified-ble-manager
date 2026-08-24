@@ -17,7 +17,13 @@ import type { OperationOptions } from './operation-options'
 import { resolveStreamPolicy } from './stream-presets'
 import type { StreamBudget, StreamPolicy } from './stream-presets'
 import type { IpcAdvertisement } from '../ipc/manager'
-import { BleCleanupError, rehydratePublicError, rehydratePublicPromise, runWithCleanup } from './error-bridge'
+import {
+  BleCleanupError,
+  collectCleanupPhases,
+  rehydratePublicError,
+  rehydratePublicPromise,
+  runWithCleanup
+} from './error-bridge'
 import { assertDirectConnectionCapability, PublicBleCapabilities } from './capabilities'
 import type { BleCapabilities } from './capabilities'
 import type {
@@ -1383,30 +1389,31 @@ class PublicBleManager<Attachment extends string, Identity extends BackendIdenti
         plan,
         stop: async () => {
           scanState.emit({ state: 'stopping' })
-          let controllerError: Error | null = null
+          let controllerError: unknown
           try {
             await controller.close()
           } catch (error) {
-            controllerError = error instanceof Error ? error : new Error(String(error))
+            controllerError = error
           }
+          let cleanup: CleanupRecord | undefined
+          let nativeError: unknown
           try {
-            const cleanup = await rehydratePublicPromise(session.stop())
-            scanState.emit(
-              cleanup.state === 'released' ? { state: 'stopped' } : { state: 'failed', reason: 'scan-stop-failed' }
-            )
-            scanState.close()
-            this.activeScanSessions.delete(activeScan)
-            if (controllerError !== null) throw new AggregateError([controllerError], 'BLE scan view cleanup failed')
-            return cleanup
+            cleanup = await rehydratePublicPromise(session.stop())
           } catch (error) {
-            scanState.emit({ state: 'failed', reason: 'scan-stop-failed' })
-            scanState.close()
-            this.activeScanSessions.delete(activeScan)
-            if (controllerError !== null && error !== controllerError) {
-              throw new AggregateError([controllerError, error], 'BLE scan cleanup failed')
-            }
-            throw error
+            nativeError = error
           }
+          scanState.emit(
+            cleanup?.state === 'released' && controllerError === undefined
+              ? { state: 'stopped' }
+              : { state: 'failed', reason: 'scan-stop-failed' }
+          )
+          scanState.close()
+          this.activeScanSessions.delete(activeScan)
+          return collectCleanupPhases([
+            ...(controllerError === undefined ? [] : [{ error: controllerError }]),
+            ...(nativeError === undefined ? [] : [{ error: nativeError }]),
+            ...(cleanup === undefined ? [] : [{ cleanup }])
+          ])
         },
         observations: controller.observations,
         events: controller.events,
@@ -1577,26 +1584,29 @@ class PublicBleManager<Attachment extends string, Identity extends BackendIdenti
     try {
       const active = [...this.activeScanSessions]
       this.activeScanSessions.clear()
-      const failures: Error[] = []
+      const viewResults: { readonly error?: unknown; readonly cleanup?: CleanupRecord }[] = []
       await Promise.all(
         active.map(async scan => {
           scan.closeState()
           try {
             await scan.controller.close()
           } catch (error) {
-            failures.push(error instanceof Error ? error : new Error(String(error)))
+            viewResults.push({ error })
           }
         })
       )
-      let cleanup: CleanupRecord
+      let cleanup: CleanupRecord | undefined
+      let nativeError: unknown
       try {
         cleanup = await this.internal.destroy()
       } catch (error) {
-        failures.push(error instanceof Error ? error : new Error(String(error)))
-        throw new AggregateError(failures, 'BLE manager cleanup failed')
+        nativeError = error
       }
-      if (failures.length > 0) throw new AggregateError(failures, 'BLE manager cleanup failed')
-      return cleanup
+      return collectCleanupPhases([
+        ...viewResults,
+        ...(nativeError === undefined ? [] : [{ error: nativeError }]),
+        ...(cleanup === undefined ? [] : [{ cleanup }])
+      ])
     } catch (error) {
       throw rehydratePublicError(error)
     }

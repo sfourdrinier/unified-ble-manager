@@ -958,4 +958,204 @@ describe('canonical public ScanQuery v1', () => {
     })
     await manager.destroy()
   })
+
+  test('scan stop preserves native release-failed when view close throws', async () => {
+    const inner = new CoreBoundedStream(
+      { itemCapacity: capacity(8), byteCapacity: capacity(4096), reservedControlCapacity: capacity(1) },
+      'drop-oldest'
+    )
+    const viewError = new Error('view-close-failed')
+    const source = {
+      limits: inner.limits,
+      overflowPolicy: inner.overflowPolicy,
+      emit: (value, bytes) => inner.emit(value, bytes),
+      [Symbol.asyncIterator]: () => {
+        const iterator = inner[Symbol.asyncIterator]()
+        return {
+          next: () => iterator.next(),
+          return: async () => {
+            throw viewError
+          },
+          [Symbol.asyncIterator]() {
+            return this
+          }
+        }
+      }
+    }
+    const nativeCleanup = {
+      state: 'release-failed',
+      failures: [
+        {
+          resourceKind: 'scan',
+          error: {
+            code: 'scan.stop-failed',
+            domain: 'scan',
+            operation: 'fixture.scan-stop',
+            platform: null,
+            retryability: 'caller-decides'
+          }
+        }
+      ]
+    }
+    const internal = {
+      identity: null,
+      attachedBackend: undefined,
+      supports: () => true,
+      capability: () => null,
+      capabilities: () => [],
+      scan: jest.fn(async () => ({
+        observations: source,
+        stop: async () => nativeCleanup
+      })),
+      connect: jest.fn(),
+      destroy: jest.fn(async () => ({ state: 'released', failures: [] }))
+    }
+    const manager = await createPublicBleManager(internal, () => 0)
+    const scan = await manager.scan()
+    const iterator = scan.observations[Symbol.asyncIterator]()
+    const pending = iterator.next()
+    source.emit(
+      {
+        peerId: 'cleanup-peer',
+        localName: 'Cleanup',
+        rssi: -40,
+        txPowerLevel: null,
+        serviceUuids: [],
+        manufacturerData: [],
+        serviceData: []
+      },
+      32
+    )
+    await pending
+    await expect(scan.stop()).rejects.toMatchObject({
+      errors: expect.arrayContaining([
+        viewError,
+        expect.objectContaining({ name: 'BleCleanupError', cleanup: nativeCleanup })
+      ])
+    })
+  })
+
+  test('manager destroy preserves native release-failed when scan-view close throws', async () => {
+    const inner = new CoreBoundedStream(
+      { itemCapacity: capacity(8), byteCapacity: capacity(4096), reservedControlCapacity: capacity(1) },
+      'drop-oldest'
+    )
+    const viewError = new Error('destroy-view-close-failed')
+    const source = {
+      limits: inner.limits,
+      overflowPolicy: inner.overflowPolicy,
+      emit: (value, bytes) => inner.emit(value, bytes),
+      [Symbol.asyncIterator]: () => {
+        const iterator = inner[Symbol.asyncIterator]()
+        return {
+          next: () => iterator.next(),
+          return: async () => {
+            throw viewError
+          },
+          [Symbol.asyncIterator]() {
+            return this
+          }
+        }
+      }
+    }
+    const nativeCleanup = {
+      state: 'release-failed',
+      failures: [
+        {
+          resourceKind: 'manager',
+          error: {
+            code: 'lifecycle.destroyed',
+            domain: 'cleanup',
+            operation: 'fixture.destroy',
+            platform: null,
+            retryability: 'caller-decides'
+          }
+        }
+      ]
+    }
+    const internal = {
+      identity: null,
+      attachedBackend: undefined,
+      supports: () => true,
+      capability: () => null,
+      capabilities: () => [],
+      scan: jest.fn(async () => ({
+        observations: source,
+        stop: async () => ({ state: 'released', failures: [] })
+      })),
+      connect: jest.fn(),
+      destroy: jest.fn(async () => nativeCleanup)
+    }
+    const manager = await createPublicBleManager(internal, () => 0)
+    const scan = await manager.scan()
+    void scan.observations[Symbol.asyncIterator]()
+    await expect(manager.destroy()).rejects.toMatchObject({
+      errors: expect.arrayContaining([
+        viewError,
+        expect.objectContaining({ name: 'BleCleanupError', cleanup: nativeCleanup })
+      ])
+    })
+  })
+
+  test('native release-failed without a thrown local phase is returned unchanged', async () => {
+    const source = new CoreBoundedStream(
+      { itemCapacity: capacity(8), byteCapacity: capacity(4096), reservedControlCapacity: capacity(1) },
+      'drop-oldest'
+    )
+    const nativeCleanup = {
+      state: 'release-failed',
+      failures: [
+        {
+          resourceKind: 'scan',
+          error: {
+            code: 'scan.stop-failed',
+            domain: 'scan',
+            operation: 'fixture.scan-stop',
+            platform: null,
+            retryability: 'caller-decides'
+          }
+        }
+      ]
+    }
+    const internal = {
+      identity: null,
+      attachedBackend: undefined,
+      supports: () => true,
+      capability: () => null,
+      capabilities: () => [],
+      scan: jest.fn(async () => ({
+        observations: source,
+        stop: async () => nativeCleanup
+      })),
+      connect: jest.fn(),
+      destroy: jest.fn(async () => ({ state: 'released', failures: [] }))
+    }
+    const manager = await createPublicBleManager(internal, () => 0)
+    const scan = await manager.scan()
+    await expect(scan.stop()).resolves.toEqual(nativeCleanup)
+  })
+
+  test('all released phases return released without an AggregateError', async () => {
+    const source = new CoreBoundedStream(
+      { itemCapacity: capacity(8), byteCapacity: capacity(4096), reservedControlCapacity: capacity(1) },
+      'drop-oldest'
+    )
+    const internal = {
+      identity: null,
+      attachedBackend: undefined,
+      supports: () => true,
+      capability: () => null,
+      capabilities: () => [],
+      scan: jest.fn(async () => ({
+        observations: source,
+        stop: async () => ({ state: 'released', failures: [] })
+      })),
+      connect: jest.fn(),
+      destroy: jest.fn(async () => ({ state: 'released', failures: [] }))
+    }
+    const manager = await createPublicBleManager(internal, () => 0)
+    const scan = await manager.scan()
+    await expect(scan.stop()).resolves.toEqual({ state: 'released', failures: [] })
+    await expect(manager.destroy()).resolves.toEqual({ state: 'released', failures: [] })
+  })
 })
