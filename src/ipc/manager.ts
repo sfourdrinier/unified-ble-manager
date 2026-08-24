@@ -218,7 +218,9 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
   private nextConnectionEventHandle = 1
   private lifecycle: 'active' | 'releasing' | 'released' = 'active'
   private releaseResult: Promise<CleanupRecord> | null = null
-  private readonly ownerCleanupFailures: unknown[] = []
+  private readonly ownerCleanupLedger: { run: () => void; error: unknown | null }[] = []
+  private pumpDead = false
+  private pumpFailure: unknown | null = null
 
   private constructor(
     private readonly client: IpcBleClient<Attachment, Client>,
@@ -226,6 +228,13 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
     private readonly now: () => number
   ) {
     this.eventPump = this.pumpEvents()
+    void this.eventPump.then(
+      () => undefined,
+      error => {
+        this.pumpFailure = error
+        this.terminalizeEventPump('source-failed')
+      }
+    )
     ipcPendingInspectors.set(this, () => this.pendingAccounting())
   }
 
@@ -355,30 +364,30 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
     this.releaseResult = this.client
       .destroy()
       .then(async cleanup => {
-        const ownerErrors = this.ownerCleanupFailures.splice(0)
         if (cleanup.state === 'released') {
           for (const sink of this.streams.values()) sink.closeWithReason('owner-released')
           this.streams.clear()
           this.clearPendingAccounting()
-          await this.eventPump
+          await this.eventPump.catch(() => undefined)
         }
+        const ownerPhases = this.flushOwnerCleanupLedger()
         try {
           const combined = collectCleanupPhases([
             { cleanup },
-            ...ownerErrors.map(error => ({ error }))
+            ...(this.pumpFailure === null ? [] : [{ error: this.pumpFailure }]),
+            ...ownerPhases
           ])
-          if (combined.state === 'released') {
+          if (combined.state === 'released' && ownerPhases.length === 0 && this.pumpFailure === null) {
             this.lifecycle = 'released'
+            this.pumpFailure = null
           } else {
             this.lifecycle = 'active'
             this.releaseResult = null
-            this.ownerCleanupFailures.push(...ownerErrors)
           }
           return combined
         } catch (error) {
           this.lifecycle = 'active'
           this.releaseResult = null
-          if (cleanup.state !== 'released') this.ownerCleanupFailures.push(...ownerErrors)
           throw error
         }
       })
@@ -489,11 +498,9 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
     if (tombstone !== undefined) {
       this.pendingTombstones.delete(handle)
       source.closeWithReason(tombstone.reason)
-      try {
+      this.captureOwnerCleanup(() => {
         onTerminal?.(tombstone.reason)
-      } catch (error) {
-        this.ownerCleanupFailures.push(error)
-      }
+      })
       return source
     }
     this.streams.set(handle, sink)
@@ -587,33 +594,81 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
   }
 
   private async pumpEvents(): Promise<void> {
-    for await (const event of this.client.events) {
-      if (event.kind !== 'value') continue
-      const eventValue = event.value
-      // ElectronRendererBleClient validates the attachment lease before it
-      // projects an event into this host-neutral stream; Tauri uses that same
-      // client implementation over its Channel transport.
-      const streamId = requiredString(eventValue, 'streamId', 'ipc-manager.event')
-      const item = requiredRecord(eventValue, 'item', 'ipc-manager.event')
-      const sink = this.streams.get(streamId)
-      if (sink === undefined) {
-        this.bufferPendingStreamItem(streamId, item)
-        continue
-      }
-      try {
-        sink.deliver(streamId, item)
-      } catch {
-        // A malformed stream item must not terminate the global pump. Close
-        // only the affected stream so all other subscriptions keep running.
-        const affected = this.streams.get(streamId)
-        if (affected !== undefined) {
-          affected.closeWithReason('source-failed')
-          affected.notifyOwnerTerminal('source-failed')
-          this.streams.delete(streamId)
-          this.discardPendingStream(streamId)
+    let cause: StreamTerminalNotice['reason'] = 'source-failed'
+    try {
+      for await (const event of this.client.events) {
+        if (event.kind === 'terminal') {
+          cause = event.reason === 'overflow' ? 'overflow' : 'source-failed'
+          break
+        }
+        if (event.kind !== 'value') continue
+        try {
+          const eventValue = event.value
+          const streamId = requiredString(eventValue, 'streamId', 'ipc-manager.event')
+          const item = requiredRecord(eventValue, 'item', 'ipc-manager.event')
+          const sink = this.streams.get(streamId)
+          if (sink === undefined) {
+            this.bufferPendingStreamItem(streamId, item)
+            continue
+          }
+          try {
+            sink.deliver(streamId, item)
+          } catch {
+            const affected = this.streams.get(streamId)
+            if (affected !== undefined) {
+              affected.closeWithReason('source-failed')
+              this.captureOwnerCleanup(() => affected.notifyOwnerTerminal('source-failed'))
+              this.streams.delete(streamId)
+              this.discardPendingStream(streamId)
+            }
+          }
+        } catch (error) {
+          this.pumpFailure = error
+          cause = 'source-failed'
+          break
         }
       }
+    } catch (error) {
+      this.pumpFailure = error
+      cause = 'source-failed'
+    } finally {
+      this.terminalizeEventPump(cause)
     }
+  }
+
+  private terminalizeEventPump(cause: StreamTerminalNotice['reason']): void {
+    if (this.pumpDead) return
+    this.pumpDead = true
+    const sinks = [...this.streams.values()]
+    this.streams.clear()
+    this.clearPendingAccounting()
+    for (const sink of sinks) {
+      sink.closeWithReason(cause)
+      this.captureOwnerCleanup(() => sink.notifyOwnerTerminal(cause))
+    }
+  }
+
+  private captureOwnerCleanup(run: () => void): void {
+    try {
+      run()
+    } catch (error) {
+      this.ownerCleanupLedger.push({ run, error })
+    }
+  }
+
+  private flushOwnerCleanupLedger(): { readonly error: unknown }[] {
+    const failures: { readonly error: unknown }[] = []
+    for (const entry of this.ownerCleanupLedger) {
+      if (entry.error === null) continue
+      try {
+        entry.run()
+        entry.error = null
+      } catch (error) {
+        entry.error = error
+        failures.push({ error })
+      }
+    }
+    return failures
   }
 
   private bufferPendingStreamItem(streamId: string, item: SerializableRecord): void {
@@ -793,7 +848,9 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
   }
 
   private assertActive(): void {
-    if (this.lifecycle !== 'active') throw new TypeError('Tauri BLE manager has been released')
+    if (this.lifecycle !== 'active' || this.pumpDead) {
+      throw new TypeError('Tauri BLE manager has been released')
+    }
   }
 }
 
