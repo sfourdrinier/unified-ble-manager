@@ -80,8 +80,8 @@ CI additionally owns the platform-specific native compilation and ABI lanes.
 Active `4.0.0-rc.*` release-train candidates publish to npm `latest` so a bare `pnpm add unified-ble-manager` installs the current 4.0 line. The GitHub Release is marked prerelease. Each candidate is cut from the exact current `main` merge commit; the workflow verifies tag/package version equality.
 
 On release day, set `release_candidate` to the exact candidate required by the
-release plan. RC2, RC3, RC4, and `4.0.0-rc.4.1` are already immutable; the
-next planned train candidate is RC5 after PR11 and its gates pass.
+release plan. RC2, RC3, RC4, `4.0.0-rc.4.1`, and RC5 are already immutable
+once tagged; the next planned train candidate is stable `4.0.0` after PR12.
 
 ```sh
 release_candidate=4.0.0-rc.N
