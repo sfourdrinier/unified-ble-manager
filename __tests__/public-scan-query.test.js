@@ -1362,6 +1362,39 @@ describe('canonical public ScanQuery v1', () => {
     expect(nativeStop).toHaveBeenCalledTimes(2)
   })
 
+  test('manager destroy retries unresolved native scan stop without dropping ownership', async () => {
+    const nativeCleanup = {
+      state: 'release-failed',
+      failures: [
+        {
+          resourceKind: 'scan',
+          error: {
+            code: 'scan.stop-failed',
+            domain: 'scan',
+            operation: 'fixture.scan-stop',
+            platform: null,
+            retryability: 'caller-decides'
+          }
+        }
+      ]
+    }
+    let nativeCalls = 0
+    const nativeStop = jest.fn(async () => {
+      nativeCalls += 1
+      if (nativeCalls < 3) return nativeCleanup
+      return { state: 'released', failures: [] }
+    })
+    const fixture = createStopOverflowFixture({ nativeStop })
+    const manager = await createPublicBleManager(fixture.internal, () => 0)
+    const scan = await manager.scan({ delivery: tinyErrorDelivery })
+    await overflowLocalScan(fixture, scan)
+    await waitForNativeStop(fixture, 1)
+    await expect(manager.destroy()).resolves.toEqual(nativeCleanup)
+    expect(nativeStop).toHaveBeenCalledTimes(2)
+    await expect(manager.destroy()).resolves.toEqual({ state: 'released', failures: [] })
+    expect(nativeStop).toHaveBeenCalledTimes(3)
+  })
+
   test('concurrent explicit stop and overflow share one native stop attempt', async () => {
     let releaseNative
     const nativeStop = jest.fn(

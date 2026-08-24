@@ -1645,11 +1645,9 @@ class PublicBleManager<Attachment extends string, Identity extends BackendIdenti
   async destroy(): Promise<CleanupRecord> {
     try {
       const active = [...this.activeScanSessions]
-      this.activeScanSessions.clear()
       const viewResults: { readonly error?: unknown; readonly cleanup?: CleanupRecord }[] = []
       await Promise.all(
         active.map(async scan => {
-          scan.closeState()
           try {
             const cleanup = await scan.stop()
             viewResults.push({ cleanup })
