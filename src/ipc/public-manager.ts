@@ -331,7 +331,6 @@ class IpcPublicConnection implements BleConnection {
   readonly ownerLeaseId: string
   readonly connectionGeneration: string
   readonly lifecycleEvents: AsyncIterable<BleConnectionEvent>
-  readonly events: PublicBoundedAsyncStream<import('../backend-contract/primitives').SerializableRecord>
   readonly controls: BleConnectionControls
 
   constructor(
@@ -354,16 +353,6 @@ class IpcPublicConnection implements BleConnection {
         connectionGeneration: base.connectionGeneration
       })
     )
-    const eventSource =
-      base.events.limits === undefined
-        ? {
-            limits: IPC_ADAPTER_STATE_STREAM_LIMITS,
-            overflowPolicy: 'error' as const,
-            [Symbol.asyncIterator]: () => base.events[Symbol.asyncIterator](),
-            close: async () => ({ state: 'released' as const, failures: [] })
-          }
-        : base.events
-    this.events = mapPublicBoundedAsyncStream(eventSource, value => value)
     this.controls = createIpcConnectionControls(this.base, capabilities, this.connectionGeneration)
   }
 

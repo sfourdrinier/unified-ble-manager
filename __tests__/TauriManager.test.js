@@ -348,15 +348,21 @@ describe('Tauri v2 public manager', () => {
 
     const connection = await manager.connect('polar-h10')
     expect(connection.connectionId).toBe('connection-id-1')
-    const lifecycle = connection.events[Symbol.asyncIterator]().next()
+    expect(connection.events).toBeUndefined()
+    const lifecycle = connection.lifecycleEvents[Symbol.asyncIterator]().next()
+    const secondLifecycle = connection.lifecycleEvents[Symbol.asyncIterator]().next()
     await expect(lifecycle).resolves.toMatchObject({
       value: {
-        kind: 'value',
-        value: {
-          kind: 'connection-lifecycle',
-          current: 'connected',
-          connectionId: 'connection-id-1'
-        }
+        kind: 'connection-lifecycle',
+        current: 'connected',
+        connectionGeneration: 'generation-1'
+      }
+    })
+    await expect(secondLifecycle).resolves.toMatchObject({
+      value: {
+        kind: 'connection-lifecycle',
+        current: 'connected',
+        connectionGeneration: 'generation-1'
       }
     })
     const database = await connection.discover()
