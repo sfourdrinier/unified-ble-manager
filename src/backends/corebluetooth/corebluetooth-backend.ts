@@ -656,7 +656,8 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
       await this.boundary.startScan(
         advertisement => this.handleAdvertisement(advertisement),
         serviceUuids,
-        deviceAddresses
+        deviceAddresses,
+        options.platform
       )
     } catch (error) {
       this.releaseScanConsumerAdmission(consumer)

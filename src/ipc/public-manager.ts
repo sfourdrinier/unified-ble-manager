@@ -126,12 +126,17 @@ export class IpcPublicManagerAdapter implements BleManager {
     this.requireScanPlan = options.requireScanPlan ?? false
     this.gattDeliverySelection = options.gattDeliverySelection ?? 'unknown'
     // The renderer inherits the main process's capability snapshot, where a
-    // BlueZ backend may well advertise peer:address-targeting. The versioned
-    // IPC surface carries no radio address, so nothing here can honour it -
-    // advertising it would tell a renderer the feature exists and then fail
-    // every call. Report it as unsupported instead, which is what fail-closed
-    // means for a capability the transport cannot express.
-    this.capabilities = withAddressTargetingUnsupported(options.capabilities ?? ipc.capabilities)
+    // BlueZ backend may well advertise peer:address-targeting and an Android
+    // backend may advertise scan:platform-options. The versioned IPC surface
+    // carries no radio address and does not serialize ScanOptions.platform -
+    // scan() below rejects both before IPC - so advertising either capability
+    // would tell a renderer the feature exists and then fail every call.
+    // Project them as unsupported instead, which is what fail-closed means
+    // for a capability the transport cannot express.
+    this.capabilities = withIpcInexpressibleCapabilitiesUnsupported(
+      options.capabilities ?? ipc.capabilities,
+      Object.freeze(['peer:address-targeting', 'scan:platform-options'])
+    )
     this.adapter = options.adapter ?? createIpcAdapter(ipc)
     this.diagnostics = options.diagnostics ?? diagnosticsUnavailable()
     this.peers = options.peers ?? unsupportedPeerDirectory()
@@ -1129,25 +1134,27 @@ function discoveryKindFromCapabilities(capabilities: BleCapabilities): BleManage
   return 'continuous-scan'
 }
 
-/** Reports peer:address-targeting as unsupported without touching the rest. */
-function withAddressTargetingUnsupported(capabilities: BleCapabilities): BleCapabilities {
-  const hidden: FeatureId = 'peer:address-targeting'
+/** Reports capabilities the versioned IPC surface cannot express as unsupported, leaving the rest untouched. */
+function withIpcInexpressibleCapabilitiesUnsupported(
+  capabilities: BleCapabilities,
+  hidden: readonly FeatureId[]
+): BleCapabilities {
   const asUnsupported = (descriptor: CapabilityDescriptor): CapabilityDescriptor =>
     Object.freeze({ ...descriptor, state: 'unsupported' as const, limits: descriptor.limits })
   return {
-    supports: id => (id === hidden ? false : capabilities.supports(id)),
+    supports: id => (hidden.includes(id) ? false : capabilities.supports(id)),
     get: id => {
       const descriptor = capabilities.get(id)
-      if (id !== hidden || descriptor === undefined) return descriptor
+      if (!hidden.includes(id) || descriptor === undefined) return descriptor
       return asUnsupported(descriptor)
     },
     require: id => {
       const descriptor = capabilities.require(id)
-      return id === hidden ? asUnsupported(descriptor) : descriptor
+      return hidden.includes(id) ? asUnsupported(descriptor) : descriptor
     },
     list: () =>
       Object.freeze(
-        capabilities.list().map(descriptor => (descriptor.id === hidden ? asUnsupported(descriptor) : descriptor))
+        capabilities.list().map(descriptor => (hidden.includes(descriptor.id) ? asUnsupported(descriptor) : descriptor))
       )
   }
 }

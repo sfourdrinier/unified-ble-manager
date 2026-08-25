@@ -105,7 +105,7 @@ describe('CoreBluetooth contract-v1 vertical slice', () => {
       },
       opaqueId('planned-scan', 'client', 'corebluetooth:scan-plan')
     )
-    expect(startScan).toHaveBeenLastCalledWith(expect.any(Function), [serviceUuid], [])
+    expect(startScan).toHaveBeenLastCalledWith(expect.any(Function), [serviceUuid], [], undefined)
     await expect(plannedScan.stop()).resolves.toEqual({ state: 'released', failures: [] })
 
     startScan.mockClear()
@@ -113,7 +113,7 @@ describe('CoreBluetooth contract-v1 vertical slice', () => {
       scanOptions(),
       opaqueId('legacy-scan', 'client', 'corebluetooth:scan-plan')
     )
-    expect(startScan).toHaveBeenLastCalledWith(expect.any(Function), [serviceUuid], [])
+    expect(startScan).toHaveBeenLastCalledWith(expect.any(Function), [serviceUuid], [], undefined)
     await expect(legacyScan.stop()).resolves.toEqual({ state: 'released', failures: [] })
     await expect(backend.destroy()).resolves.toEqual({ state: 'released', failures: [] })
   })

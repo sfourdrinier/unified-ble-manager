@@ -37,6 +37,7 @@ import type {
 } from '../backend-contract/primitives'
 import { deadline as createDeadline } from '../backend-contract/primitives'
 import type { BoundedAsyncStream } from '../backend-contract/streams'
+import type { FeatureId } from '../backend-contract/capabilities'
 import type { SecurityBackend } from '../backend-contract/security'
 import type { ConnectionLifecycleTerminalCause } from '../backend-contract/connection-lifecycle'
 import { AggregateStreamQuota } from './aggregate-stream-quota'
@@ -217,6 +218,12 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
     return this.featureRegistry
   }
 
+  /** True only where the instantiated backend registry exposes an invocable implementation. */
+  private supportsCapability(id: FeatureId): boolean {
+    const descriptor = this.featureRegistry.descriptors.find(candidate => candidate.id === id)
+    return descriptor !== undefined && (descriptor.state === 'supported' || descriptor.state === 'limited')
+  }
+
   /** Manager-admitted security operations; backend ownership remains behind this lifecycle gate. */
   securityBackend(): SecurityBackend | undefined {
     this.assertReady('security.backend')
@@ -381,6 +388,12 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
   async scan(options: ScanOptions<Attachment, string>): Promise<CoreScanSession<Attachment>> {
     this.assertReady('scan')
     this.assertOperationAdmission(options, 'scan')
+    if (options.platform !== undefined && !this.supportsCapability('scan:platform-options')) {
+      // Backends that do not register scan:platform-options (deterministic
+      // included) would silently scan with their defaults; the host-neutral
+      // path fails closed for every caller, not only the public manager.
+      throw contractError('capability.unsupported', 'scan', 'unified-core.scan.platform-options')
+    }
     const admissionEpoch = this.admissionEpoch
     const stream = new CoreBoundedStream<AdvertisementObservation<Attachment>>(
       options.delivery,

@@ -138,6 +138,14 @@ export interface ScanOptions<Attachment extends string, Lease extends string> {
   readonly deadline: Deadline | null
   readonly signal: AbortSignal | null
   readonly sharing: ScanSharing<Attachment, Lease>
+  readonly platform?: {
+    readonly kind: 'android' | 'corebluetooth' | 'winrt' | 'web' | 'electron' | 'tauri'
+    readonly mode?: 'low-power' | 'balanced' | 'low-latency' | 'opportunistic'
+    readonly callbackType?: 'all-matches' | 'first-match' | 'match-lost'
+    readonly reportDelayMs?: number
+    readonly legacy?: boolean
+    readonly phy?: 'all-supported' | '1m' | 'coded'
+  }
 }
 export type OwnerScanOptions<Attachment extends string, Lease extends string> = Omit<
   ScanOptions<Attachment, Lease>,
