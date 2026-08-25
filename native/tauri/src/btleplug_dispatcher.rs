@@ -959,6 +959,7 @@ impl BtleplugDispatcher {
             "connection.rssi" => self.read_rssi(caller, payload).await,
             "connection.maximum-write-length" => self.maximum_write_length(caller, payload).await,
             "gatt.discover" => self.discover(caller, payload).await,
+            "gatt.database.release" => self.release_database(caller, payload).await,
             "gatt.read" => self.read(caller, payload).await,
             "gatt.write" => self.write(caller, payload, binary_payload).await,
             "gatt.subscribe" => self.subscribe(caller, payload).await,
@@ -1880,6 +1881,21 @@ impl BtleplugDispatcher {
             ("characteristics", IpcValue::Array(characteristic_records)),
             ("descriptors", IpcValue::Array(descriptor_records)),
         ]))
+    }
+
+    async fn release_database(
+        &self,
+        caller: &AuthenticatedCaller,
+        payload: BTreeMap<String, IpcValue>,
+    ) -> Result<IpcValue, DispatchError> {
+        let handle = required_string(&payload, "databaseHandle", "tauri.database-release")?;
+        let key = caller_key(caller);
+        let mut state = self.inner.lock().await;
+        let caller_state = state.callers.get_mut(&key).ok_or_else(|| {
+            DispatchError::new("ownership.denied", "gatt", "tauri.database-release-owner")
+        })?;
+        caller_state.databases.remove(&handle);
+        Ok(released())
     }
 
     async fn read(

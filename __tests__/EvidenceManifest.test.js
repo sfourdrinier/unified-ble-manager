@@ -510,6 +510,18 @@ describe('evidence manifest validation', () => {
     expectInvalid(staleCadence, 'must not exceed the declared revalidation cadence')
   })
 
+  test('blocked non-gate records may expire without failing the package evidence gate', () => {
+    const blocked = fixture('valid-reported-unverified.json')
+    expect(blocked.proof.supportGate).toBe(false)
+    expect(blocked.proof.status).toBe('blocked')
+    expect(
+      validateManifest(blocked, repositoryRoot, Date.parse('2026-08-25T12:00:00.000Z'))
+    ).toEqual([])
+
+    const live = fixture('valid-live-preview-l4.json')
+    expectInvalid(live, 'evidence is stale and must be revalidated before publication', Date.parse('2026-12-01T00:00:00.000Z'))
+  })
+
   test('rejects symbolic-link directory components before reading an artifact', () => {
     const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'evidence-symlink-'))
     const linkParent = path.join(temporaryRoot, 'evidence', 'v1')

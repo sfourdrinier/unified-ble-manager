@@ -543,4 +543,38 @@ describe('CoreBluetooth runtime capabilities and database-change semantics', () 
     expect(databaseChanged.listeners.size).toBe(0)
     expect(boundary.destroyed).toBe(true)
   })
+
+  test('Services Changed stopNotify failure schedules a bounded CCCD retry', async () => {
+    jest.useFakeTimers()
+    try {
+      let databaseChanged = null
+      const { backend, boundary } = await backendFixture(currentBoundary => {
+        databaseChanged = installDatabaseChangedBoundary(currentBoundary)
+      })
+      const { database, characteristic } = await connectedDatabase(backend)
+      await database.subscribe(characteristic, { ...operation(), delivery: delivery() })
+      const nativeStopNotify = boundary.stopNotify.bind(boundary)
+      let stopNotifyCalls = 0
+      boundary.stopNotify = async address => {
+        stopNotifyCalls += 1
+        if (stopNotifyCalls === 1) {
+          throw new Error('stop-notify-failed')
+        }
+        return nativeStopNotify(address)
+      }
+
+      databaseChanged.emit()
+      await flushMicrotasks()
+      expect(stopNotifyCalls).toBe(1)
+      expect(backend.resourceCounters()).toMatchObject({ physicalCccdEnablements: 1 })
+
+      jest.advanceTimersByTime(100)
+      await flushMicrotasks()
+      expect(stopNotifyCalls).toBe(2)
+      expect(backend.resourceCounters()).toMatchObject({ physicalCccdEnablements: 0 })
+      await backend.destroy()
+    } finally {
+      jest.useRealTimers()
+    }
+  })
 })

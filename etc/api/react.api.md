@@ -24,8 +24,8 @@ export function BleProvider(props: BleProviderProps): React.ReactElement
 - `BleCapabilities :: { supports(id: BuiltInFeatureId): boolean; get(id: '${string}:${string}'): CapabilityDescriptor | undefined; require(id: BuiltInFeatureId): CapabilityDescriptor; list(): readonly CapabilityDescriptor[] }`
 - `BleContextValue :: { readonly manager: BleManager | null; readonly loading: boolean; readonly error: Error | null }`
 - `BleManagerFactory :: { () => Promise<BleManager> }`
-- `BleProvider :: ({ createManager, onError, children }: BleProviderProps) => ReactElement<unknown, string | JSXElementConstructor<any>>`
-- `BleProviderProps :: { readonly createManager: BleManagerFactory; readonly onError?: ((error: Error) => void) | undefined; readonly children?: ReactNode }`
+- `BleProvider :: ({ createManager, managerKey, ownershipScope, onError, children }: BleProviderProps) => ReactElement<unknown, string | JSXElementConstructor<any>>`
+- `BleProviderProps :: { readonly createManager: BleManagerFactory; readonly managerKey?: string | symbol | undefined; readonly ownershipScope?: string | symbol | undefined; readonly onError?: ((error: Error) => void) | undefined; readonly children?: ReactNode }`
 - `CapabilityDescriptor :: { readonly id: '${string}:${string}'; readonly state: FeatureState; readonly selectedSchemaRange: VersionRange<"capability-schema">; readonly implementationOrigin: "backend-native" | "core-emulated"; readonly tck: TckBinding; readonly evidence: EvidenceReceipt; readonly limitations: readonly Limitation[]; readonly limits: Readonly<Record<string, CapabilityLimit>> }`
 - `FeatureId :: '${Namespace}:${Name}'`
 - `UseAdapterStateResult :: { readonly state: BleAdapterState | null; readonly loading: boolean; readonly error: Error | null }`

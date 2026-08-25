@@ -360,6 +360,8 @@ export class ElectronMainBleRouter {
         response = await this.unsubscribeConnectionEvents(resources, envelope.payload)
       } else if (envelope.command === 'gatt.discover') {
         response = await this.discover(resources, envelope.payload, controller)
+      } else if (envelope.command === 'gatt.database.release') {
+        response = this.releaseDatabase(resources, envelope.payload)
       } else if (envelope.command === 'gatt.read') {
         response = await this.read(resources, envelope.payload, controller)
       } else if (envelope.command === 'gatt.write') {
@@ -779,6 +781,20 @@ export class ElectronMainBleRouter {
     const resource = requiredResource(resources.subscriptions, handle, 'subscription')
     const cleanup = await this.streams.removeSubscription(resources, handle, resource, true)
     return cleanupRecord(cleanup)
+  }
+
+  private releaseDatabase(resources: RendererResources, payload: SerializableRecord): SerializableRecord {
+    const handle = requiredString(payload, 'databaseHandle')
+    const database = resources.databases.get(handle)
+    if (database === undefined) return Object.freeze({ state: 'released', failures: [] })
+    if (
+      payload.connectionHandle !== undefined &&
+      database.connectionHandle !== requiredString(payload, 'connectionHandle')
+    ) {
+      throw contractError('protocol.violation', 'ipc', 'electron-main-router.database-release-connection')
+    }
+    resources.databases.delete(handle)
+    return Object.freeze({ state: 'released', failures: [] })
   }
 
   private cancel(resources: RendererResources, payload: SerializableRecord): SerializableRecord {
@@ -1354,7 +1370,8 @@ function isDestructiveCleanupCommand(command: string): boolean {
     command === 'scan.stop' ||
     command === 'connection.disconnect' ||
     command === 'connection.events.unsubscribe' ||
-    command === 'gatt.unsubscribe'
+    command === 'gatt.unsubscribe' ||
+    command === 'gatt.database.release'
   )
 }
 

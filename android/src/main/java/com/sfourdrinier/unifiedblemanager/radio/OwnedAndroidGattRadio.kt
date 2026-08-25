@@ -349,7 +349,6 @@ class OwnedAndroidGattRadio(private val context: Context) {
           onAdapterState?.invoke(mapAdapterState(state))
         }
       }
-    adapterStateReceiver = receiver
     val filter = IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED)
     // System broadcast (ACTION_STATE_CHANGED) requires RECEIVER_EXPORTED on API 33+.
     if (Build.VERSION.SDK_INT >= 33) {
@@ -358,6 +357,7 @@ class OwnedAndroidGattRadio(private val context: Context) {
       @Suppress("UnspecifiedRegisterReceiverFlag")
       context.registerReceiver(receiver, filter)
     }
+    adapterStateReceiver = receiver
   }
 
   internal fun unregisterAdapterStateReceiver(): OwnedRadioTeardownFailure? {
@@ -444,11 +444,30 @@ class OwnedAndroidGattRadio(private val context: Context) {
         onScanFailed?.invoke(errorCode)
       }
     }
-    scanCallback = cb
-    if (filters.isEmpty()) {
-      scanner?.startScan(null, settings, cb)
-    } else {
-      scanner?.startScan(filters, settings, cb)
+    try {
+      if (filters.isEmpty()) {
+        scanner?.startScan(null, settings, cb)
+      } else {
+        scanner?.startScan(filters, settings, cb)
+      }
+      scanCallback = cb
+    } catch (error: Throwable) {
+      val cleanupFailure =
+        try {
+          scanner?.stopScan(cb)
+          null
+        } catch (stopError: Throwable) {
+          OwnedAndroidLog.e("startScan compensating stopScan", stopError)
+          stopError
+        }
+      if (cleanupFailure == null) {
+        scanCallback = null
+        scanner = null
+        scanSeenDeviceIds.clear()
+      } else {
+        scanCallback = cb
+      }
+      throw error
     }
   }
 
@@ -612,13 +631,13 @@ class OwnedAndroidGattRadio(private val context: Context) {
         }
       }
     }
-    bondStateReceiver = receiver
     val filter = IntentFilter(BluetoothDevice.ACTION_BOND_STATE_CHANGED)
     if (Build.VERSION.SDK_INT >= 33) context.registerReceiver(receiver, filter, Context.RECEIVER_EXPORTED)
     else {
       @Suppress("UnspecifiedRegisterReceiverFlag")
       context.registerReceiver(receiver, filter)
     }
+    bondStateReceiver = receiver
   }
 
   internal fun unregisterBondStateReceiver(): OwnedRadioTeardownFailure? {

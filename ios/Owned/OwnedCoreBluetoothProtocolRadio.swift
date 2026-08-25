@@ -56,9 +56,9 @@ public final class OwnedCoreBluetoothProtocolRadio: NSObject, CBPeripheralDelega
   /// retained cleanup entry, rather than an unbounded timer fan-out, is the
   /// source of truth for the physical CCCD transition still in flight.
   var pendingCancellationCleanupRetryScheduled = Set<String>()
-  private var subscriptions = [CharacteristicAddress: String]()
+  var subscriptions = [CharacteristicAddress: String]()
   var activeScanOperationIdentifier: String?
-  private var restoredPeerIdentifiers = [String]()
+  var restoredPeerIdentifiers = [String]()
   var destroyed = false
 
   struct CharacteristicAddress: Hashable {
@@ -158,17 +158,14 @@ public final class OwnedCoreBluetoothProtocolRadio: NSObject, CBPeripheralDelega
       self.failAllPendingOperationsOnDestroy()
       self.pendingCancellationCleanup.removeAll()
       self.pendingCancellationCleanupRetryScheduled.removeAll()
+      self.disableActiveNotifications()
       self.subscriptions.removeAll()
       let restoredIdentifiers = Set(self.restoredPeerIdentifiers)
-      for (identifier, peripheral) in self.peripheralByIdentifier where !restoredIdentifiers.contains(identifier) {
-        if peripheral.state == .connected || peripheral.state == .connecting {
-          self.central.cancelPeripheralConnection(peripheral)
-        }
-        peripheral.delegate = nil
-      }
-      self.peripheralByIdentifier = self.peripheralByIdentifier.filter { restoredIdentifiers.contains($0.key) }
-      self.servicesByPeer = self.servicesByPeer.filter { restoredIdentifiers.contains($0.key) }
-      completion(nil)
+      self.completeAfterPendingDisconnects(
+        preserving: restoredIdentifiers,
+        destroyRadio: false,
+        completion: completion
+      )
     }
   }
 
@@ -450,17 +447,14 @@ public final class OwnedCoreBluetoothProtocolRadio: NSObject, CBPeripheralDelega
       self.destroyed = true
       self.central.stopScan()
       self.activeScanOperationIdentifier = nil
-      for peripheral in self.peripheralByIdentifier.values where peripheral.state == .connected || peripheral.state == .connecting {
-        self.central.cancelPeripheralConnection(peripheral)
-        peripheral.delegate = nil
-      }
       self.failAllPendingOperationsOnDestroy()
+      self.disableActiveNotifications()
       self.subscriptions.removeAll()
-      self.servicesByPeer.removeAll()
-      self.peripheralByIdentifier.removeAll()
-      self.restoredPeerIdentifiers.removeAll()
-      self.central.delegate = nil
-      completion(nil)
+      self.completeAfterPendingDisconnects(
+        preserving: [],
+        destroyRadio: true,
+        completion: completion
+      )
     }
   }
 

@@ -86,11 +86,20 @@ export function normalizeOperationOptions(
   })
 }
 
+const composedAbortDisposers = new WeakMap<AbortSignal, () => void>()
+
+export function disposeComposedAbortSignal(signal: AbortSignal | null | undefined): void {
+  if (signal === null || signal === undefined) return
+  const dispose = composedAbortDisposers.get(signal)
+  if (dispose === undefined) return
+  composedAbortDisposers.delete(signal)
+  dispose()
+}
+
 export function composeAbortSignal(outer: AbortSignal | null, inner: AbortSignal | null): AbortSignal | null {
   if (outer === null) return inner
   if (inner === null) return outer
   if (outer === inner) return outer
-  // AnySignal-like composition without introducing a dependency.
   const controller = new AbortController()
   const getReason = (signal: AbortSignal): unknown => Reflect.get(signal, 'reason')
   const abortWithReason = (target: AbortController, reason: unknown): void => {
@@ -105,7 +114,13 @@ export function composeAbortSignal(outer: AbortSignal | null, inner: AbortSignal
     }
     target.abort()
   }
+  const dispose = (): void => {
+    outer.removeEventListener('abort', onAbort)
+    inner.removeEventListener('abort', onAbort)
+  }
   const onAbort = () => {
+    dispose()
+    composedAbortDisposers.delete(controller.signal)
     const reason = getReason(outer) ?? getReason(inner)
     abortWithReason(controller, reason)
   }
@@ -114,7 +129,8 @@ export function composeAbortSignal(outer: AbortSignal | null, inner: AbortSignal
     abortWithReason(controller, reason)
     return controller.signal
   }
-  outer.addEventListener('abort', onAbort, { once: true })
-  inner.addEventListener('abort', onAbort, { once: true })
+  outer.addEventListener('abort', onAbort)
+  inner.addEventListener('abort', onAbort)
+  composedAbortDisposers.set(controller.signal, dispose)
   return controller.signal
 }

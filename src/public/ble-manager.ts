@@ -308,6 +308,12 @@ export type DiscoveryEvent =
       readonly derivedAt: number
       readonly reason: 'observation-timeout'
     }
+  | {
+      readonly kind: 'presence-tracking-overflow'
+      readonly guarantee: 'reportLostAfterMs-completeness'
+      readonly droppedEntries: number
+      readonly droppedBytes: number
+    }
 
 export type AndroidScanMode = 'low-power' | 'balanced' | 'low-latency' | 'opportunistic'
 export type AndroidScanCallbackType = 'all-matches' | 'first-match' | 'match-lost'
@@ -748,15 +754,29 @@ class PublicScanSessionController<Attachment extends string> {
   }
 
   private evictPresenceState(): void {
+    let droppedEntries = 0
+    let droppedBytes = 0
     while (this.presence.size > MAX_PUBLIC_SCAN_STATE_ENTRIES || this.presenceBytes > MAX_PUBLIC_SCAN_STATE_BYTES) {
       const oldest = this.presence.entries().next().value
       if (oldest === undefined) return
       const [peerId, presence] = oldest
       presence.timer?.cancel()
+      presence.timer = null
       this.presence.delete(peerId)
       this.presenceBytes -= presence.bytes
       this.forgetObservationFingerprint(peerId)
+      droppedEntries += 1
+      droppedBytes += presence.bytes
     }
+    if (droppedEntries === 0) return
+    const overflow: DiscoveryEvent = Object.freeze({
+      kind: 'presence-tracking-overflow',
+      guarantee: 'reportLostAfterMs-completeness',
+      droppedEntries,
+      droppedBytes
+    })
+    const eventTerminated = this.eventBroadcast.emit(overflow, estimatePublicDiscoveryEventBytes(overflow))
+    if (eventTerminated) this.terminateFromOverflow()
   }
 
   private assertFingerprintAccounting(): void {
@@ -1974,6 +1994,9 @@ function estimatePublicScanObservationBytes(observation: PublicScanObservation):
 }
 
 function estimatePublicDiscoveryEventBytes(event: DiscoveryEvent): number {
+  if (event.kind === 'presence-tracking-overflow') {
+    return 64
+  }
   const peerBytes = event.peer.id.length * 2 + (event.peer.name?.length ?? 0) * 2
   return event.kind === 'observed' ? 32 + peerBytes : 96 + peerBytes
 }

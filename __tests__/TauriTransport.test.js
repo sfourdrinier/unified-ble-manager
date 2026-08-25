@@ -322,3 +322,210 @@ describe('Tauri v2 IPC transport', () => {
     expect(entrypoint).not.toMatch(/native\/electron/)
   })
 })
+
+function nestRecords(depth, leaf = { leaf: true }) {
+  let value = leaf
+  for (let remaining = depth; remaining > 1; remaining -= 1) {
+    value = { nested: value }
+  }
+  return value
+}
+
+function assertProtocolMalformed(error) {
+  expect(error).toMatchObject({
+    normalized: { code: 'protocol.malformed', domain: 'ipc' }
+  })
+  expect(error).not.toBeInstanceOf(RangeError)
+  expect(String(error)).not.toMatch(/Maximum call stack/i)
+}
+
+describe('Tauri wire codec budgets', () => {
+  const {
+    encodeTauriWireValue,
+    decodeTauriWireValue,
+    TauriBleIpcTransport,
+    TAURI_WIRE_MAX_DEPTH,
+    TAURI_WIRE_MAX_NODES,
+    TAURI_WIRE_MAX_ARRAY_LENGTH,
+    TAURI_WIRE_MAX_KEY_BYTES,
+    TAURI_WIRE_MAX_TEXT_BYTES,
+    TAURI_WIRE_MAX_BINARY_BYTES
+  } = require('../src/tauri/transport')
+
+  test('documents IPC-aligned traversal budgets', () => {
+    expect(TAURI_WIRE_MAX_DEPTH).toBe(32)
+    expect(TAURI_WIRE_MAX_NODES).toBe(16384)
+    expect(TAURI_WIRE_MAX_ARRAY_LENGTH).toBe(65536)
+    expect(TAURI_WIRE_MAX_KEY_BYTES).toBe(1024)
+    expect(TAURI_WIRE_MAX_TEXT_BYTES).toBe(2 * 1024 * 1024)
+    expect(TAURI_WIRE_MAX_BINARY_BYTES).toBe(2 * 1024 * 1024)
+  })
+
+  test('decodes the maximum inbound depth and rejects one extra nesting with protocol.malformed', () => {
+    const atLimit = nestRecords(TAURI_WIRE_MAX_DEPTH)
+    expect(decodeTauriWireValue(atLimit)).toEqual(atLimit)
+    expect(encodeTauriWireValue(atLimit)).toEqual(atLimit)
+
+    try {
+      decodeTauriWireValue(nestRecords(TAURI_WIRE_MAX_DEPTH + 1))
+      throw new Error('expected over-depth decode to fail')
+    } catch (error) {
+      assertProtocolMalformed(error)
+    }
+    try {
+      encodeTauriWireValue(nestRecords(TAURI_WIRE_MAX_DEPTH + 1))
+      throw new Error('expected over-depth encode to fail')
+    } catch (error) {
+      assertProtocolMalformed(error)
+    }
+  })
+
+  test('rejects outbound object and array cycles with protocol.malformed', () => {
+    const objectCycle = {}
+    objectCycle.self = objectCycle
+    const arrayCycle = []
+    arrayCycle.push(arrayCycle)
+
+    try {
+      encodeTauriWireValue(objectCycle)
+      throw new Error('expected cyclic object encode to fail')
+    } catch (error) {
+      assertProtocolMalformed(error)
+    }
+    try {
+      encodeTauriWireValue(arrayCycle)
+      throw new Error('expected cyclic array encode to fail')
+    } catch (error) {
+      assertProtocolMalformed(error)
+    }
+    try {
+      decodeTauriWireValue(objectCycle)
+      throw new Error('expected cyclic object decode to fail')
+    } catch (error) {
+      assertProtocolMalformed(error)
+    }
+  })
+
+  test('rejects a shallow graph that exceeds the node budget', () => {
+    const overBudget = {}
+    for (let index = 0; index < TAURI_WIRE_MAX_NODES; index += 1) {
+      overBudget[`k${index}`] = index
+    }
+    try {
+      decodeTauriWireValue(overBudget)
+      throw new Error('expected over-node decode to fail')
+    } catch (error) {
+      assertProtocolMalformed(error)
+    }
+
+    const atLimit = {}
+    for (let index = 0; index < TAURI_WIRE_MAX_NODES - 1; index += 1) {
+      atLimit[`k${index}`] = index
+    }
+    const decoded = decodeTauriWireValue(atLimit)
+    expect(Object.keys(decoded)).toHaveLength(TAURI_WIRE_MAX_NODES - 1)
+  })
+
+  test('rejects aggregate tagged-byte payloads beyond the binary budget and accepts the exact limit', () => {
+    const exact = { $__unifiedBleBytesV2: Array.from({ length: TAURI_WIRE_MAX_BINARY_BYTES }, () => 1) }
+    const decodedExact = decodeTauriWireValue(exact)
+    expect(decodedExact).toBeInstanceOf(Uint8Array)
+    expect(decodedExact.byteLength).toBe(TAURI_WIRE_MAX_BINARY_BYTES)
+
+    const overOne = { $__unifiedBleBytesV2: Array.from({ length: TAURI_WIRE_MAX_BINARY_BYTES + 1 }, () => 1) }
+    try {
+      decodeTauriWireValue(overOne)
+      throw new Error('expected over-size tagged bytes to fail')
+    } catch (error) {
+      assertProtocolMalformed(error)
+    }
+
+    const manySmall = {
+      a: { $__unifiedBleBytesV2: Array.from({ length: TAURI_WIRE_MAX_BINARY_BYTES / 2 }, () => 2) },
+      b: { $__unifiedBleBytesV2: Array.from({ length: TAURI_WIRE_MAX_BINARY_BYTES / 2 }, () => 3) },
+      c: { $__unifiedBleBytesV2: [4] }
+    }
+    try {
+      decodeTauriWireValue(manySmall)
+      throw new Error('expected cumulative tagged bytes to fail')
+    } catch (error) {
+      assertProtocolMalformed(error)
+    }
+  })
+
+  test('rejects oversized strings, object keys, and arrays before schema validation', () => {
+    try {
+      decodeTauriWireValue({ text: 'x'.repeat(TAURI_WIRE_MAX_TEXT_BYTES + 1) })
+      throw new Error('expected oversized string to fail')
+    } catch (error) {
+      assertProtocolMalformed(error)
+    }
+    try {
+      decodeTauriWireValue({ ['k'.repeat(TAURI_WIRE_MAX_KEY_BYTES + 1)]: true })
+      throw new Error('expected oversized key to fail')
+    } catch (error) {
+      assertProtocolMalformed(error)
+    }
+    try {
+      decodeTauriWireValue(Array.from({ length: TAURI_WIRE_MAX_ARRAY_LENGTH + 1 }, () => 0))
+      throw new Error('expected oversized array to fail')
+    } catch (error) {
+      assertProtocolMalformed(error)
+    }
+    expect(decodeTauriWireValue(Array.from({ length: 8 }, (_, index) => index))).toEqual([0, 1, 2, 3, 4, 5, 6, 7])
+  })
+
+  test('invoke responses, Channel events, and outbound routes share one budget authority', async () => {
+    const channels = []
+    class CapturedChannel extends FakeChannel {
+      constructor() {
+        super()
+        channels.push(this)
+      }
+    }
+    const overNested = nestRecords(TAURI_WIRE_MAX_DEPTH + 1, {
+      kind: 'route',
+      payload: {}
+    })
+    const invoke = jest.fn(async () => overNested)
+    const transport = new TauriBleIpcTransport({ invoke, Channel: CapturedChannel })
+    await expect(transport.invoke({ kind: 'route', envelope: { command: 'adapter.state' } })).rejects.toMatchObject({
+      normalized: { code: 'protocol.malformed', domain: 'ipc' }
+    })
+
+    const received = []
+    transport.subscribe(event => received.push(event))
+    expect(() => channels[0].emit(nestRecords(TAURI_WIRE_MAX_DEPTH + 1, { item: { ok: true } }))).toThrow(
+      /protocol\.malformed/
+    )
+    expect(received).toEqual([])
+
+    await expect(
+      transport.invoke({ kind: 'route', envelope: nestRecords(TAURI_WIRE_MAX_DEPTH + 1, { command: 'adapter.state' }) })
+    ).rejects.toMatchObject({
+      normalized: { code: 'protocol.malformed', domain: 'ipc' }
+    })
+  })
+
+  test('package protocol fixtures still round-trip under the declared limits', () => {
+    const request = createIpcBootstrapRequest()
+    const encoded = encodeTauriWireValue(request)
+    expect(decodeTauriWireValue(encoded)).toEqual(request)
+
+    const notification = {
+      kind: 'route',
+      payload: {
+        handle: 'subscription-1',
+        value: { $__unifiedBleBytesV2: [1, 2, 3, 4] }
+      }
+    }
+    expect(decodeTauriWireValue(encodeTauriWireValue(notification))).toEqual({
+      kind: 'route',
+      payload: {
+        handle: 'subscription-1',
+        value: new Uint8Array([1, 2, 3, 4])
+      }
+    })
+  })
+})
+

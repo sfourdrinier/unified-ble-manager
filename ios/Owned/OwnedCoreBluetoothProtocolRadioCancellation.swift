@@ -209,4 +209,91 @@ extension OwnedCoreBluetoothProtocolRadio {
       _ = self.retryCancellationCleanupOnQueue(operationIdentifier)
     }
   }
+
+  func disableActiveNotifications() {
+    for address in subscriptions.keys {
+      if let resolved = resolve(address) {
+        resolved.peripheral.setNotifyValue(false, for: resolved.characteristic)
+      }
+    }
+  }
+
+  func completeAfterPendingDisconnects(
+    preserving restoredIdentifiers: Set<String>,
+    destroyRadio: Bool,
+    completion: @escaping (NSError?) -> Void
+  ) {
+    final class DisconnectWaiter {
+      var remaining: Int
+      var finished = false
+      let finish: (NSError?) -> Void
+      init(remaining: Int, finish: @escaping (NSError?) -> Void) {
+        self.remaining = remaining
+        self.finish = finish
+      }
+      func decrement() {
+        remaining -= 1
+        if remaining <= 0 { complete(nil) }
+      }
+      func complete(_ error: NSError?) {
+        guard !finished else { return }
+        finished = true
+        finish(error)
+      }
+    }
+
+    let waited: [(identifier: String, peripheral: CBPeripheral)] = peripheralByIdentifier.compactMap { identifier, peripheral in
+      guard !restoredIdentifiers.contains(identifier) else { return nil }
+      if peripheral.state == .connected || peripheral.state == .connecting || peripheral.state == .disconnecting {
+        return (identifier, peripheral)
+      }
+      peripheral.delegate = nil
+      return nil
+    }
+    let waiter = DisconnectWaiter(remaining: waited.count) { [weak self] error in
+      guard let self else {
+        completion(error)
+        return
+      }
+      for (identifier, peripheral) in self.peripheralByIdentifier where !restoredIdentifiers.contains(identifier) {
+        peripheral.delegate = nil
+      }
+      if destroyRadio {
+        for peripheral in self.peripheralByIdentifier.values {
+          peripheral.delegate = nil
+        }
+        self.peripheralByIdentifier.removeAll()
+        self.servicesByPeer.removeAll()
+        self.restoredPeerIdentifiers.removeAll()
+        self.central.delegate = nil
+      } else {
+        self.peripheralByIdentifier = self.peripheralByIdentifier.filter { restoredIdentifiers.contains($0.key) }
+        self.servicesByPeer = self.servicesByPeer.filter { restoredIdentifiers.contains($0.key) }
+      }
+      completion(error)
+    }
+    if waited.isEmpty {
+      waiter.complete(nil)
+      return
+    }
+    queue.asyncAfter(deadline: .now() + .seconds(5)) { [weak self] in
+      guard let self else { return }
+      waiter.complete(self.error(code: 1026, message: "CoreBluetooth disconnect confirmation timed out"))
+    }
+    for entry in waited {
+      let previous = pendingDisconnect[entry.identifier]
+      pendingDisconnect[entry.identifier] = PendingVoid(operationIdentifier: "teardown-\(entry.identifier)") { error in
+        previous?.completion(error)
+        waiter.decrement()
+      }
+      if entry.peripheral.state == .disconnected {
+        pendingDisconnect.removeValue(forKey: entry.identifier)?.completion(nil)
+        continue
+      }
+      central.cancelPeripheralConnection(entry.peripheral)
+      if entry.peripheral.state == .disconnected {
+        pendingDisconnect.removeValue(forKey: entry.identifier)?.completion(nil)
+      }
+    }
+  }
 }

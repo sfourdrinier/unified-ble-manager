@@ -886,4 +886,39 @@ describe('Tauri v2 public manager', () => {
     ).rejects.toMatchObject({ code: 'capability.unsupported' })
     expect(invoke.mock.calls.map(([, args]) => args.request.kind)).toEqual(['bootstrap', 'release'])
   })
+
+  test('use after destroy rejects with a public lifecycle BleError without Tauri wording', async () => {
+    const invoke = jest.fn(async (_command, args) => {
+      if (args.request.kind === 'bootstrap') return { kind: 'bootstrap', bootstrap: bootstrap() }
+      if (args.request.kind === 'event.ack') return { kind: 'event.ack' }
+      if (args.request.kind === 'release') return { kind: 'release', cleanup: { state: 'released', failures: [] } }
+      return { kind: 'route', payload: {} }
+    })
+    const { createTauriBleManagerWithEnvironment } = require('../src/tauri')
+    const manager = await createTauriBleManagerWithEnvironment({ invoke, Channel: FakeChannel })
+    await manager.destroy()
+
+    await expect(manager.adapter.state()).rejects.toMatchObject({
+      name: 'BleError',
+      code: 'lifecycle.destroyed',
+      domain: 'ipc'
+    })
+    await expect(manager.scan()).rejects.toMatchObject({
+      name: 'BleError',
+      code: 'lifecycle.destroyed',
+      domain: 'ipc'
+    })
+    await expect(manager.connect('peer-1')).rejects.toMatchObject({
+      name: 'BleError',
+      code: 'lifecycle.destroyed',
+      domain: 'ipc'
+    })
+    await expect(manager.adapter.state()).rejects.toEqual(
+      expect.not.objectContaining({ name: 'TypeError' })
+    )
+    await manager.adapter.state().catch(error => {
+      expect(String(error)).not.toMatch(/Tauri/i)
+      expect(error).not.toBeInstanceOf(TypeError)
+    })
+  })
 })

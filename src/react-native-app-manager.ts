@@ -7,6 +7,7 @@ import { rehydratePublicPromise } from './public/error-bridge'
 import { createEphemeralHostIdentity, normalizeBleManagerCreateOptions } from './public/host-identity'
 import type { BleManagerCreateOptions } from './public/host-identity'
 import { bootstrapReactNativeRestorationIdentity } from './backends/reactnative/react-native-restoration'
+import { createNativeRandomBytesSource } from './react-native-entropy'
 import { createReactNativeBleManagerWithEnvironment } from './react-native-manager'
 
 /**
@@ -20,8 +21,10 @@ export async function createReactNativeBleManager(options: BleManagerCreateOptio
 
 async function createReactNativeBleManagerInternal(options: BleManagerCreateOptions): Promise<BleManager> {
   const normalized = normalizeBleManagerCreateOptions(options)
-  const ephemeral = createEphemeralHostIdentity()
   const control = requireNativeControl()
+  const randomBytes =
+    normalized.randomBytes ?? (await createNativeRandomBytesSource(length => control.getRandomBytes(length)))
+  const ephemeral = createEphemeralHostIdentity({ randomBytes })
   let hostSessionScope = `ephemeral:${ephemeral.operationNonce}`
   let clientId = ephemeral.managerNonce
   const managerId = ephemeral.attachmentNonce

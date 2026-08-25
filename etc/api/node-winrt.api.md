@@ -4,7 +4,7 @@
 <!-- entrypoint: ./node/winrt; source: src/node-winrt.ts -->
 
 - `NativeWinRtProviderOptions :: { readonly now: () => number }`
-- `NodeBleManagerAppOptions :: { readonly now?: (() => number) | undefined; readonly instanceId?: string | undefined; readonly adapterId?: string | undefined; readonly diagnostics?: DiagnosticsOptions | undefined; readonly restoration?: { readonly restorationId: string; readonly generation?: string | undefined; } | undefined }`
+- `NodeBleManagerAppOptions :: { readonly now?: (() => number) | undefined; readonly instanceId?: string | undefined; readonly adapterId?: string | undefined; readonly diagnostics?: DiagnosticsOptions | undefined; readonly randomBytes?: ((length: number) => Uint8Array<ArrayBufferLike>) | undefined; readonly restoration?: { readonly restorationId: string; readonly generation?: string | undefined; } | undefined }`
 - `WINRT_BACKEND_ID :: "unified-ble:winrt"`
 - `WINRT_IMPLEMENTATION_VERSION :: "4.0.3"`
 - `WINRT_PLATFORM_ID :: "unified-ble:windows-winrt"`

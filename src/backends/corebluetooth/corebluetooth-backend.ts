@@ -1026,13 +1026,13 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
     this.removeConnectionSubscriptions(record, 'connection-lost').then(
       cleanup => {
         if (cleanup.state === 'release-failed') {
-          console.error(
-            '[CoreBluetoothBackend.database-changed] Subscription cleanup requires retry:',
-            cleanup.failures
-          )
+          this.scheduleConnectionLossSubscriptionRetry(record)
         }
       },
-      error => console.error('[CoreBluetoothBackend.database-changed] Subscription cleanup rejected:', error)
+      error => {
+        console.error('[CoreBluetoothBackend.database-changed] Subscription cleanup rejected:', error)
+        this.scheduleConnectionLossSubscriptionRetry(record)
+      }
     )
     const attachment = this.attachment()
     this.broadcastEvent({

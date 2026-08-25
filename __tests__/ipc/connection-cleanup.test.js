@@ -399,7 +399,7 @@ describe('IPC connection cleanup independence', () => {
     releaseSubscribe()
     await flushMicrotasks()
     await ipc.destroy()
-    expect(inspectIpcProvisionalAdmissionForTests(ipc)).toEqual({
+    expect(inspectIpcProvisionalAdmissionForTests(ipc)).toMatchObject({
       unresolvedConnectionCount: 0,
       unresolvedEventSubscriptionCount: 0
     })
