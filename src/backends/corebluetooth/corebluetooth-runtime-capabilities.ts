@@ -237,7 +237,7 @@ function maximumWriteLengthImplementation(
   return Object.freeze({
     async invoke(input: MaximumWriteLengthFeatureInput): Promise<MaximumWriteLengthFeatureOutput> {
       assertMaximumWriteLengthInput(input)
-      const operation = 'corebluetooth.gatt.maximum-write-length'
+      const operation = 'direct-gatt.gatt.maximum-write-length'
       const nativePeerId = options.resolveNativePeerId(input.connectionId, input.connectionGeneration, operation)
       const observed = await maximumWriteValueLength.call(
         options.boundary,
@@ -261,7 +261,7 @@ function maximumWriteLengthImplementation(
 function unavailableMaximumWriteLengthImplementation(): MaximumWriteLengthFeatureImplementation {
   return Object.freeze({
     async invoke(_input: MaximumWriteLengthFeatureInput): Promise<MaximumWriteLengthFeatureOutput> {
-      throw contractError('capability.unavailable', 'gatt', 'corebluetooth.gatt.maximum-write-length')
+      throw contractError('capability.unavailable', 'gatt', 'direct-gatt.gatt.maximum-write-length')
     }
   })
 }
@@ -272,7 +272,7 @@ function assertMaximumWriteLengthInput(input: MaximumWriteLengthFeatureInput): v
     input.connectionGeneration.length === 0 ||
     (input.mode !== 'with-response' && input.mode !== 'without-response')
   ) {
-    throw contractError('argument.invalid', 'gatt', 'corebluetooth.gatt.maximum-write-length')
+    throw contractError('argument.invalid', 'gatt', 'direct-gatt.gatt.maximum-write-length')
   }
 }
 

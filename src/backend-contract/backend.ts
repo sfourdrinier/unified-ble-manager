@@ -166,6 +166,15 @@ export interface BackendConnection<Attachment extends string, _Connection extend
   disconnect(): Promise<CleanupRecord>
 }
 export type ConnectionIntent = 'direct' | 'when-available'
+/**
+ * A canonical out-of-band radio address accepted by the optional `peer:address-targeting`
+ * capability. Only public/static addresses are expressible; resolvable private addresses
+ * must re-enter through a durable `PeerReference`.
+ */
+export interface PeerAddressDescriptor {
+  readonly address: string
+  readonly addressType: 'public' | 'random'
+}
 export type BlePhy = 'le-1m' | 'le-2m' | 'le-coded'
 export interface ConnectionOptions extends PublicOperationOptions {
   readonly intent?: ConnectionIntent
@@ -178,6 +187,12 @@ export interface ConnectionBackend<Attachment extends string> {
     clientId: ClientId<Attachment, string>,
     options: ConnectionOptions
   ): Promise<ConnectionLease<Attachment, string, string>>
+  /**
+   * Optional `peer:address-targeting` seam: mints a connectable peer handle for a canonical
+   * radio address known out of band, without requiring a prior scan observation. Backends
+   * that do not register the capability leave this undefined and callers fail closed.
+   */
+  peerFromAddress?(descriptor: PeerAddressDescriptor): PeerId<Attachment>
   readRssi?<Operation extends string>(
     connection: BackendConnection<Attachment, string>,
     request: ReadRssiRequest<Attachment, Operation>

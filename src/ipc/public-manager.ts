@@ -27,6 +27,7 @@ import type {
   MaximumWriteLengthObservation,
   MtuNegotiation,
   MtuObservation,
+  PeerAddress,
   PhyObservation,
   PhyPreference,
   PhyUpdateResult,
@@ -48,6 +49,7 @@ import {
   publicConnectionTerminalError,
   filterScanObservations,
   findPeerInScan,
+  isPeerAddressTarget,
   snapshotBlePeer
 } from '../public/ble-manager'
 import type {
@@ -66,7 +68,7 @@ import type { BleDiagnostics } from '../public/diagnostics'
 import { diagnosticsUnavailable } from '../public/diagnostics'
 import { normalizeOperationOptions } from '../public/operation-options'
 import type { OperationOptions } from '../public/operation-options'
-import { normalizeScanQuery } from '../public/scan-query'
+import { normalizeScanQuery, scanQueryTargetsAddresses } from '../public/scan-query'
 import { createScanState } from '../public/scan-state'
 import type { ScanStateController } from '../public/scan-state'
 import { unsupportedPeerDirectory } from '../public/peer-directory'
@@ -144,6 +146,11 @@ export class IpcPublicManagerAdapter implements BleManager {
       }
       const normalized = normalizeOperationOptions(options, () => globalThis.performance.now())
       const normalizedQuery = normalizeScanQuery(options.query)
+      if (scanQueryTargetsAddresses(normalizedQuery)) {
+        // The versioned IPC advertisement schema carries no radio address, so an addresses
+        // clause can never match here; fail closed instead of silently observing nothing.
+        throw contractError('capability.unsupported', 'scan', 'ipc-public-manager.scan.addresses')
+      }
       const session = await this.ipc.scan(
         toIpcScanOptions(options, normalized.signal, normalizedQuery, normalized.deadline)
       )
@@ -197,7 +204,7 @@ export class IpcPublicManagerAdapter implements BleManager {
   }
 
   async connect(
-    peer: BlePeer | string | PeerReference,
+    peer: BlePeer | string | PeerReference | PeerAddress,
     options: ConnectOptions = {}
   ): Promise<import('../public/ble-manager').BleConnection> {
     try {
@@ -205,6 +212,13 @@ export class IpcPublicManagerAdapter implements BleManager {
       const normalized = normalizeOperationOptions(options, () => globalThis.performance.now())
       assertIpcConnectionOptions(options)
       assertDirectConnectionCapability(this.capabilities.get('connection:direct'), 'ipc-public-manager.connect.direct')
+      if (isPeerAddressTarget(peer)) {
+        assertDirectConnectionCapability(
+          this.capabilities.get('peer:address-targeting'),
+          'ipc-public-manager.connect.address'
+        )
+        throw contractError('capability.unsupported', 'connection', 'ipc-public-manager.connect.address')
+      }
       if (isReferenceLike(peer) && !isPeerReference(peer)) {
         throw contractError('peer.reference-invalid', 'connection', 'ipc-public-manager.connect-reference')
       }

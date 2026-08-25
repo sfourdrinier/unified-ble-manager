@@ -218,4 +218,64 @@ describe('dbus-next BlueZ boundary', () => {
     })
     await boundary.close()
   })
+
+  test("decodes modern BlueZ 'y' and 'a{qv}' property variants", async () => {
+    const fixture = createBus({
+      objects: {
+        '/org/bluez/hci0': {
+          [BLUEZ_ADAPTER_INTERFACE]: {
+            Alias: { signature: 's', value: 'primary' },
+            Powered: { signature: 'b', value: true },
+            Version: { signature: 'y', value: 13 }
+          }
+        },
+        '/org/bluez/hci0/dev_98_75_96_A2_14_34': {
+          'org.bluez.Device1': {
+            Address: { signature: 's', value: '98:75:96:A2:14:34' },
+            ManufacturerData: {
+              signature: 'a{qv}',
+              value: { 76: { signature: 'ay', value: new Uint8Array([2, 21]) } }
+            }
+          }
+        }
+      }
+    })
+    buses.push(fixture.bus)
+    const boundary = await new DbusNextBluezBoundaryFactory().open('system')
+    const snapshot = await boundary.objectManager.getManagedObjects()
+    const adapter = snapshot.find(object => object.path === '/org/bluez/hci0')
+    const adapterProperties = adapter.interfaces.find(entry => entry.name === BLUEZ_ADAPTER_INTERFACE).properties
+    expect(adapterProperties.Version).toEqual({ signature: 'y', value: 13 })
+    const device = snapshot.find(object => object.path === '/org/bluez/hci0/dev_98_75_96_A2_14_34')
+    const deviceProperties = device.interfaces.find(entry => entry.name === 'org.bluez.Device1').properties
+    expect(deviceProperties.ManufacturerData.signature).toBe('a{sv}')
+    expect(deviceProperties.ManufacturerData.value['76']).toEqual({ signature: 'ay', value: new Uint8Array([2, 21]) })
+    await boundary.close()
+  })
+
+  test('surfaces UnknownMethod for ConnectDevice on a daemon without it and calls it when exported', async () => {
+    const fixture = createBus()
+    buses.push(fixture.bus)
+    const boundary = await new DbusNextBluezBoundaryFactory().open('system')
+    const properties = {
+      signature: 'a{sv}',
+      value: {
+        Address: { signature: 's', value: '98:75:96:A2:14:34' },
+        AddressType: { signature: 's', value: 'public' }
+      }
+    }
+    await expect(
+      boundary.methods.callVoid('/org/bluez/hci0', BLUEZ_ADAPTER_INTERFACE, 'ConnectDevice', [properties])
+    ).rejects.toMatchObject({ detail: { name: 'org.freedesktop.DBus.Error.UnknownMethod' } })
+
+    fixture.adapter.ConnectDevice = jest.fn(async () => undefined)
+    await boundary.methods.callVoid('/org/bluez/hci0', BLUEZ_ADAPTER_INTERFACE, 'ConnectDevice', [properties])
+    expect(fixture.adapter.ConnectDevice).toHaveBeenCalledWith(
+      expect.objectContaining({
+        Address: expect.objectContaining({ signature: 's', value: '98:75:96:A2:14:34' }),
+        AddressType: expect.objectContaining({ signature: 's', value: 'public' })
+      })
+    )
+    await boundary.close()
+  })
 })

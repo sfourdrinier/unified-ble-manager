@@ -4,6 +4,7 @@ const { attachBackend } = require('../../../src/backend-contract/backend')
 const { capacity, opaqueId, version, versionRange } = require('../../../src/backend-contract/primitives')
 const { normalizeScanQuery } = require('../../../src/public/scan-query')
 const { createCoreBluetoothBackendProvider } = require('../../../src/backends/corebluetooth/corebluetooth-provider')
+const { COREBLUETOOTH_PLATFORM_ID } = require('../../../src/backends/corebluetooth/corebluetooth-identity')
 const { createBleManagerFromProvider, DEFAULT_BLE_MANAGER_OPTIONS } = require('../../../src/manager/ble-manager')
 const { findTckScenario } = require('../../../src/tck')
 const {
@@ -414,7 +415,7 @@ describe('CoreBluetooth contract-v1 vertical slice', () => {
         ...snapshot,
         services: [snapshot.services[0], { ...snapshot.services[0], characteristics: [] }]
       }),
-      'corebluetooth.gatt.snapshot.service-identity'
+      'direct-gatt.gatt.snapshot.service-identity'
     ],
     [
       'duplicate characteristic identity',
@@ -427,7 +428,7 @@ describe('CoreBluetooth contract-v1 vertical slice', () => {
           }
         ]
       }),
-      'corebluetooth.gatt.snapshot.characteristic-identity'
+      'direct-gatt.gatt.snapshot.characteristic-identity'
     ],
     [
       'unknown service field',
@@ -435,7 +436,7 @@ describe('CoreBluetooth contract-v1 vertical slice', () => {
         ...snapshot,
         services: [{ ...snapshot.services[0], unexpected: true }]
       }),
-      'corebluetooth.gatt.snapshot.service'
+      'direct-gatt.gatt.snapshot.service'
     ],
     [
       'unknown characteristic field',
@@ -448,7 +449,7 @@ describe('CoreBluetooth contract-v1 vertical slice', () => {
           }
         ]
       }),
-      'corebluetooth.gatt.snapshot.characteristic'
+      'direct-gatt.gatt.snapshot.characteristic'
     ],
     [
       'duplicate descriptor identity',
@@ -469,7 +470,7 @@ describe('CoreBluetooth contract-v1 vertical slice', () => {
           }
         ]
       }),
-      'corebluetooth.gatt.snapshot.descriptor-identity'
+      'direct-gatt.gatt.snapshot.descriptor-identity'
     ],
     [
       'unknown descriptor field',
@@ -487,7 +488,7 @@ describe('CoreBluetooth contract-v1 vertical slice', () => {
           }
         ]
       }),
-      'corebluetooth.gatt.snapshot.descriptor'
+      'direct-gatt.gatt.snapshot.descriptor'
     ],
     [
       'missing descriptor UUID',
@@ -505,7 +506,7 @@ describe('CoreBluetooth contract-v1 vertical slice', () => {
           }
         ]
       }),
-      'corebluetooth.gatt.snapshot.descriptor-uuid'
+      'direct-gatt.gatt.snapshot.descriptor-uuid'
     ],
     [
       'wrong descriptor occurrence type',
@@ -523,12 +524,12 @@ describe('CoreBluetooth contract-v1 vertical slice', () => {
           }
         ]
       }),
-      'corebluetooth.gatt.snapshot.descriptor-occurrence'
+      'direct-gatt.gatt.snapshot.descriptor-occurrence'
     ],
     [
       'inherited root field',
       snapshot => Object.create({ services: snapshot.services }),
-      'corebluetooth.gatt.snapshot.root'
+      'direct-gatt.gatt.snapshot.root'
     ],
     [
       'accessor root field',
@@ -537,7 +538,7 @@ describe('CoreBluetooth contract-v1 vertical slice', () => {
         Object.defineProperty(result, 'services', { enumerable: true, get: () => snapshot.services })
         return result
       },
-      'corebluetooth.gatt.snapshot.root'
+      'direct-gatt.gatt.snapshot.root'
     ],
     [
       'throwing root proxy',
@@ -547,7 +548,7 @@ describe('CoreBluetooth contract-v1 vertical slice', () => {
             throw new Error('prototype inspection failed')
           }
         }),
-      'corebluetooth.gatt.snapshot.root'
+      'direct-gatt.gatt.snapshot.root'
     ]
   ])('rejects malformed CoreBluetooth discovery data for %s', async (_caseName, mutate, operationName) => {
     const { backend, boundary } = await backendFixture()
@@ -675,11 +676,11 @@ describe('CoreBluetooth contract-v1 vertical slice', () => {
           normalized: { code: termination === 'abort' ? 'operation.aborted' : 'operation.timed-out' }
         })
         expectConsoleErrorMatching(
-          '[CoreBluetoothBackend.scan.abort] Native scan cleanup requires retry:',
+          `[${COREBLUETOOTH_PLATFORM_ID}.scan.abort] Native scan cleanup requires retry:`,
           expect.arrayContaining([expect.objectContaining({ resourceKind: 'scan' })])
         )
         expectConsoleErrorMatching(
-          '[CoreBluetoothBackend.scan.late-start] Native scan compensation failed:',
+          `[${COREBLUETOOTH_PLATFORM_ID}.scan.late-start] Native scan compensation failed:`,
           expect.objectContaining({ message: 'The deterministic late scan stop failed' })
         )
         expect(stopAttempts).toBe(2)
@@ -772,7 +773,7 @@ describe('CoreBluetooth contract-v1 vertical slice', () => {
     await expect(dispatch.completion).rejects.toMatchObject({ normalized: { code: 'operation.aborted' } })
     await flushAdapterLossCleanup()
     expectConsoleErrorMatching(
-      '[CoreBluetoothBackend.handleAdapterState] Native adapter-loss cleanup requires retry:',
+      `[${COREBLUETOOTH_PLATFORM_ID}.handleAdapterState] Native adapter-loss cleanup requires retry:`,
       expect.arrayContaining([expect.objectContaining({ resourceKind: 'operation-quarantine' })])
     )
 
@@ -833,7 +834,7 @@ describe('CoreBluetooth contract-v1 vertical slice', () => {
       })
       await flushAdapterLossCleanup()
       expectConsoleErrorMatching(
-        '[CoreBluetoothBackend.handleAdapterState] Native adapter-loss cleanup requires retry:',
+        `[${COREBLUETOOTH_PLATFORM_ID}.handleAdapterState] Native adapter-loss cleanup requires retry:`,
         expect.arrayContaining([expect.objectContaining({ resourceKind: 'operation-quarantine' })])
       )
       expect(disconnectCalls).toBe(0)
@@ -881,7 +882,7 @@ describe('CoreBluetooth contract-v1 vertical slice', () => {
       })
       await flushAdapterLossCleanup()
       expectConsoleErrorMatching(
-        '[CoreBluetoothBackend.handleAdapterState] Native adapter-loss cleanup requires retry:',
+        `[${COREBLUETOOTH_PLATFORM_ID}.handleAdapterState] Native adapter-loss cleanup requires retry:`,
         expect.arrayContaining([expect.objectContaining({ resourceKind: 'operation-quarantine' })])
       )
 
@@ -1193,7 +1194,7 @@ describe('CoreBluetooth contract-v1 vertical slice', () => {
     emitAdapterState(boundary, lossState)
     await flushAdapterLossCleanup()
     expectConsoleErrorMatching(
-      '[CoreBluetoothBackend.handleAdapterState] Native adapter-loss cleanup requires retry:',
+      `[${COREBLUETOOTH_PLATFORM_ID}.handleAdapterState] Native adapter-loss cleanup requires retry:`,
       expect.arrayContaining([expect.objectContaining({ resourceKind: 'connection' })])
     )
 
@@ -1257,7 +1258,7 @@ describe('CoreBluetooth contract-v1 vertical slice', () => {
     emitAdapterState(boundary, lossState)
     await flushAdapterLossCleanup()
     expectConsoleErrorMatching(
-      '[CoreBluetoothBackend.handleAdapterState] Native adapter-loss cleanup requires retry:',
+      `[${COREBLUETOOTH_PLATFORM_ID}.handleAdapterState] Native adapter-loss cleanup requires retry:`,
       expect.arrayContaining([expect.objectContaining({ resourceKind: 'subscription' })])
     )
 
