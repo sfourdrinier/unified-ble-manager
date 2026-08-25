@@ -231,13 +231,14 @@ export function createGattSnapshot(
         objectPath: object.path,
         uuid: serviceUuid,
         primary,
+        // BlueZ may legitimately list an Includes entry whose object lives outside
+        // this device's resolved snapshot. The public included-service link is
+        // advisory {uuid, occurrence} metadata scoped to this database, so an
+        // unresolvable entry degrades to omission instead of failing discovery.
         includedServices: Object.freeze(
-          includedObjectPaths.map(objectPath => {
+          includedObjectPaths.flatMap(objectPath => {
             const uuid = serviceUuidsByPath.get(objectPath)
-            if (uuid === undefined) {
-              throw contractError('protocol.malformed', 'gatt', 'bluez.object-manager.GattService1.Includes')
-            }
-            return { objectPath, uuid }
+            return uuid === undefined ? [] : [{ objectPath, uuid }]
           })
         ),
         characteristics: Object.freeze(

@@ -1,3 +1,5 @@
+// __tests__/public-gatt-object-model.test.js
+
 const {
   attachBleBackend,
   BleManager: InternalBleManager,
@@ -137,7 +139,18 @@ describe('stable public GATT object model (PR3 TDD)', () => {
         observations: source,
         stop: async () => ({
           state: 'release-failed',
-          failures: [{ resourceKind: 'scan', error: { code: 'platform.failure' } }]
+          failures: [
+            {
+              resourceKind: 'scan',
+              error: {
+                code: 'platform.failure',
+                domain: 'scan',
+                operation: 'public-gatt-object-model.scan-stop',
+                platform: null,
+                retryability: 'never'
+              }
+            }
+          ]
         })
       })),
       connect: jest.fn(),
