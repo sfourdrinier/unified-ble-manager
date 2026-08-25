@@ -53,6 +53,13 @@ android {
 
   compileSdk getExtOrIntegerDefault("compileSdkVersion")
 
+  // Build with the same NDK as the consuming app rather than AGP's bundled
+  // default, which can be older and links 4 KB-aligned. The fallback is the
+  // first NDK that defaults to 16 KB alignment.
+  ndkVersion rootProject.ext.has("ndkVersion")
+    ? rootProject.ext.get("ndkVersion")
+    : "27.1.12297006"
+
   defaultConfig {
     minSdk getExtOrIntegerDefault("minSdkVersion")
     targetSdk getExtOrIntegerDefault("targetSdkVersion")

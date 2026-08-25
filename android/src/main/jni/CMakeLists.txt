@@ -48,3 +48,14 @@ target_compile_options(
   -Wextra
   -Werror
 )
+
+# 16 KB page size support.
+# Android 15+ devices may use 16 KB memory pages, and Google Play requires
+# 16 KB-compatible native libraries. NDK r27.1+ links this way by default,
+# but stating it explicitly keeps the artifact correct on any NDK.
+target_link_options(
+  ${CMAKE_PROJECT_NAME}
+  PRIVATE
+  "-Wl,-z,max-page-size=16384"
+  "-Wl,-z,common-page-size=16384"
+)
