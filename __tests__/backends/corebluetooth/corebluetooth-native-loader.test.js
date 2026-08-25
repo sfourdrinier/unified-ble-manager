@@ -51,7 +51,7 @@ describe('CoreBluetooth native boundary loader', () => {
         normalized: {
           code: 'capability.unavailable',
           domain: 'platform',
-          operation: 'corebluetooth.native-boundary.load',
+          operation: 'direct-gatt.native-boundary.load',
           platform: {
             domain: 'corebluetooth',
             code: 'native-artifact-unavailable'
@@ -79,7 +79,7 @@ describe('CoreBluetooth native boundary loader', () => {
         normalized: {
           code: 'capability.unavailable',
           domain: 'platform',
-          operation: 'corebluetooth.native-boundary.create',
+          operation: 'direct-gatt.native-boundary.create',
           platform: {
             domain: 'corebluetooth',
             code: 'native-boundary-unavailable'
@@ -105,7 +105,7 @@ describe('CoreBluetooth native boundary loader', () => {
         normalized: {
           code: 'capability.unavailable',
           domain: 'platform',
-          operation: 'corebluetooth.native-boundary.load',
+          operation: 'direct-gatt.native-boundary.load',
           platform: {
             domain: 'corebluetooth',
             code: 'native-artifact-unavailable',

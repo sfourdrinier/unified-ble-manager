@@ -45,21 +45,21 @@ export class CoreBluetoothConnectionControls {
     request: ReadRssiRequest<string, Operation>
   ): BackendOperationDispatch<string, RssiMeasurement<string, Operation>> {
     if (this.backend.boundary.connectionControlCapabilities?.rssi === 'unavailable') {
-      return this.unsupported(request.operation, 'corebluetooth.connection.read-rssi')
+      return this.unsupported(request.operation, 'direct-gatt.connection.read-rssi')
     }
     const readRssi = this.backend.boundary.readRssi?.bind(this.backend.boundary)
     if (readRssi === undefined) {
-      return this.unsupported(request.operation, 'corebluetooth.connection.read-rssi')
+      return this.unsupported(request.operation, 'direct-gatt.connection.read-rssi')
     }
-    this.backend.assertOperational('corebluetooth.connection.read-rssi')
-    const record = this.backend.requireConnection(connection, 'corebluetooth.connection.read-rssi')
+    this.backend.assertOperational('direct-gatt.connection.read-rssi')
+    const record = this.backend.requireConnection(connection, 'direct-gatt.connection.read-rssi')
     return this.backend.dispatcher.dispatch(
       request.operation,
-      'corebluetooth.connection.read-rssi',
+      'direct-gatt.connection.read-rssi',
       async () => {
         const rssi = await readRssi(record.nativePeerId)
         if (!Number.isSafeInteger(rssi)) {
-          throw contractError('protocol.malformed', 'connection', 'corebluetooth.connection.read-rssi.result')
+          throw contractError('protocol.malformed', 'connection', 'direct-gatt.connection.read-rssi.result')
         }
         return Object.freeze({
           rssi,
@@ -76,20 +76,20 @@ export class CoreBluetoothConnectionControls {
     request: RequestMtuRequest<string, Operation>
   ): BackendOperationDispatch<string, MtuNegotiation<string, Operation>> {
     if (!this.requestMtuFeatureIsCallable()) {
-      return this.unsupported(request.operation, 'corebluetooth.connection.request-mtu')
+      return this.unsupported(request.operation, 'direct-gatt.connection.request-mtu')
     }
     if (this.backend.boundary.connectionControlCapabilities?.requestMtu === 'unavailable') {
-      return this.unsupported(request.operation, 'corebluetooth.connection.request-mtu')
+      return this.unsupported(request.operation, 'direct-gatt.connection.request-mtu')
     }
     const requestMtu = this.backend.boundary.requestMtu?.bind(this.backend.boundary)
     if (requestMtu === undefined) {
-      return this.unsupported(request.operation, 'corebluetooth.connection.request-mtu')
+      return this.unsupported(request.operation, 'direct-gatt.connection.request-mtu')
     }
-    this.backend.assertOperational('corebluetooth.connection.request-mtu')
-    const record = this.backend.requireConnection(connection, 'corebluetooth.connection.request-mtu')
+    this.backend.assertOperational('direct-gatt.connection.request-mtu')
+    const record = this.backend.requireConnection(connection, 'direct-gatt.connection.request-mtu')
     return this.backend.dispatcher.dispatch(
       request.operation,
-      'corebluetooth.connection.request-mtu',
+      'direct-gatt.connection.request-mtu',
       async () => {
         const negotiatedMtu = await requestMtu(record.nativePeerId, request.requestedMtu)
         if (
@@ -97,7 +97,7 @@ export class CoreBluetoothConnectionControls {
           negotiatedMtu < MINIMUM_ATT_MTU ||
           negotiatedMtu > MAXIMUM_REQUESTED_ATT_MTU
         ) {
-          throw contractError('protocol.malformed', 'connection', 'corebluetooth.connection.request-mtu.result')
+          throw contractError('protocol.malformed', 'connection', 'direct-gatt.connection.request-mtu.result')
         }
         return Object.freeze({
           requestedMtu: request.requestedMtu,
@@ -115,24 +115,24 @@ export class CoreBluetoothConnectionControls {
     request: EffectiveMtuRequest<string, Operation>
   ): BackendOperationDispatch<string, EffectiveMtuMeasurement<string, Operation>> {
     if (this.backend.boundary.connectionControlCapabilities?.effectiveMtu === 'unavailable') {
-      return this.unsupported(request.operation, 'corebluetooth.connection.effective-mtu')
+      return this.unsupported(request.operation, 'direct-gatt.connection.effective-mtu')
     }
     const effectiveMtu = this.backend.boundary.effectiveMtu?.bind(this.backend.boundary)
     if (effectiveMtu === undefined) {
-      return this.unsupported(request.operation, 'corebluetooth.connection.effective-mtu')
+      return this.unsupported(request.operation, 'direct-gatt.connection.effective-mtu')
     }
-    this.backend.assertOperational('corebluetooth.connection.effective-mtu')
-    const record = this.backend.requireConnection(connection, 'corebluetooth.connection.effective-mtu')
+    this.backend.assertOperational('direct-gatt.connection.effective-mtu')
+    const record = this.backend.requireConnection(connection, 'direct-gatt.connection.effective-mtu')
     return this.backend.dispatcher.dispatch(
       request.operation,
-      'corebluetooth.connection.effective-mtu',
+      'direct-gatt.connection.effective-mtu',
       async () => {
         const attMtu = await effectiveMtu(record.nativePeerId)
         if (
           attMtu !== null &&
           (!Number.isSafeInteger(attMtu) || attMtu < MINIMUM_ATT_MTU || attMtu > MAXIMUM_REQUESTED_ATT_MTU)
         ) {
-          throw contractError('protocol.malformed', 'connection', 'corebluetooth.connection.effective-mtu.result')
+          throw contractError('protocol.malformed', 'connection', 'direct-gatt.connection.effective-mtu.result')
         }
         return Object.freeze({
           connectionId: record.connectionId,
@@ -153,21 +153,21 @@ export class CoreBluetoothConnectionControls {
     request: RequestPriorityRequest<string, Operation>
   ): BackendOperationDispatch<string, ConnectionPriorityRequest<string, Operation>> {
     if (this.backend.boundary.connectionControlCapabilities?.priority !== 'available') {
-      return this.unsupported(request.operation, 'corebluetooth.connection.request-priority')
+      return this.unsupported(request.operation, 'direct-gatt.connection.request-priority')
     }
     const requestPriority = this.backend.boundary.requestPriority?.bind(this.backend.boundary)
     if (requestPriority === undefined) {
-      return this.unsupported(request.operation, 'corebluetooth.connection.request-priority')
+      return this.unsupported(request.operation, 'direct-gatt.connection.request-priority')
     }
-    this.backend.assertOperational('corebluetooth.connection.request-priority')
-    const record = this.backend.requireConnection(connection, 'corebluetooth.connection.request-priority')
+    this.backend.assertOperational('direct-gatt.connection.request-priority')
+    const record = this.backend.requireConnection(connection, 'direct-gatt.connection.request-priority')
     return this.backend.dispatcher.dispatch(
       request.operation,
-      'corebluetooth.connection.request-priority',
+      'direct-gatt.connection.request-priority',
       async () => {
         const accepted = await requestPriority(record.nativePeerId, request.priority)
         if (typeof accepted !== 'boolean') {
-          throw contractError('protocol.malformed', 'connection', 'corebluetooth.connection.request-priority.result')
+          throw contractError('protocol.malformed', 'connection', 'direct-gatt.connection.request-priority.result')
         }
         return Object.freeze({
           requested: request.priority,
@@ -185,21 +185,21 @@ export class CoreBluetoothConnectionControls {
     request: ReadPhyRequest<string, Operation>
   ): BackendOperationDispatch<string, ConnectionPhyObservation<string, Operation>> {
     if (this.backend.boundary.connectionControlCapabilities?.phy !== 'available') {
-      return this.unsupported(request.operation, 'corebluetooth.connection.read-phy')
+      return this.unsupported(request.operation, 'direct-gatt.connection.read-phy')
     }
     const readPhy = this.backend.boundary.readPhy?.bind(this.backend.boundary)
     if (readPhy === undefined) {
-      return this.unsupported(request.operation, 'corebluetooth.connection.read-phy')
+      return this.unsupported(request.operation, 'direct-gatt.connection.read-phy')
     }
-    this.backend.assertOperational('corebluetooth.connection.read-phy')
-    const record = this.backend.requireConnection(connection, 'corebluetooth.connection.read-phy')
+    this.backend.assertOperational('direct-gatt.connection.read-phy')
+    const record = this.backend.requireConnection(connection, 'direct-gatt.connection.read-phy')
     return this.backend.dispatcher.dispatch(
       request.operation,
-      'corebluetooth.connection.read-phy',
+      'direct-gatt.connection.read-phy',
       async () => {
         const value = await readPhy(record.nativePeerId)
         if (!isBlePhy(value.txPhy) || !isBlePhy(value.rxPhy)) {
-          throw contractError('protocol.malformed', 'connection', 'corebluetooth.connection.read-phy.result')
+          throw contractError('protocol.malformed', 'connection', 'direct-gatt.connection.read-phy.result')
         }
         return Object.freeze({
           txPhy: value.txPhy,
@@ -217,25 +217,25 @@ export class CoreBluetoothConnectionControls {
     request: RequestPhyRequest<string, Operation>
   ): BackendOperationDispatch<string, ConnectionPhyRequest<string, Operation>> {
     if (this.backend.boundary.connectionControlCapabilities?.phy !== 'available') {
-      return this.unsupported(request.operation, 'corebluetooth.connection.request-phy')
+      return this.unsupported(request.operation, 'direct-gatt.connection.request-phy')
     }
     const requestPhy = this.backend.boundary.requestPhy?.bind(this.backend.boundary)
     if (requestPhy === undefined) {
-      return this.unsupported(request.operation, 'corebluetooth.connection.request-phy')
+      return this.unsupported(request.operation, 'direct-gatt.connection.request-phy')
     }
-    this.backend.assertOperational('corebluetooth.connection.request-phy')
-    const record = this.backend.requireConnection(connection, 'corebluetooth.connection.request-phy')
+    this.backend.assertOperational('direct-gatt.connection.request-phy')
+    const record = this.backend.requireConnection(connection, 'direct-gatt.connection.request-phy')
     return this.backend.dispatcher.dispatch(
       request.operation,
-      'corebluetooth.connection.request-phy',
+      'direct-gatt.connection.request-phy',
       async () => {
         const value = await requestPhy(record.nativePeerId, request.preference)
         if (typeof value.accepted !== 'boolean') {
-          throw contractError('protocol.malformed', 'connection', 'corebluetooth.connection.request-phy.result')
+          throw contractError('protocol.malformed', 'connection', 'direct-gatt.connection.request-phy.result')
         }
         const observation = value.observation
         if (value.accepted !== (observation !== null)) {
-          throw contractError('protocol.malformed', 'connection', 'corebluetooth.connection.request-phy.observation')
+          throw contractError('protocol.malformed', 'connection', 'direct-gatt.connection.request-phy.observation')
         }
         const terminal = successfulTerminal(request.operation)
         return Object.freeze({
@@ -245,8 +245,8 @@ export class CoreBluetoothConnectionControls {
             observation === null
               ? null
               : Object.freeze({
-                  txPhy: requireBlePhy(observation.txPhy, 'corebluetooth.connection.request-phy.tx'),
-                  rxPhy: requireBlePhy(observation.rxPhy, 'corebluetooth.connection.request-phy.rx'),
+                  txPhy: requireBlePhy(observation.txPhy, 'direct-gatt.connection.request-phy.tx'),
+                  rxPhy: requireBlePhy(observation.rxPhy, 'direct-gatt.connection.request-phy.rx'),
                   observedAtMonotonicMs: this.backend.monotonicNow(),
                   terminal
                 }),
@@ -265,10 +265,10 @@ export class CoreBluetoothConnectionControls {
     const probe = this.backend.boundary.canSendWriteWithoutResponse?.bind(this.backend.boundary)
     const onReadiness = this.backend.boundary.onWriteWithoutResponseReadiness
     if (probe === undefined || onReadiness === undefined) {
-      throw contractError('capability.unsupported', 'connection', 'corebluetooth.connection.write-readiness')
+      throw contractError('capability.unsupported', 'connection', 'direct-gatt.connection.write-readiness')
     }
-    this.backend.assertOperational('corebluetooth.connection.write-readiness')
-    const record = this.backend.requireConnection(connection, 'corebluetooth.connection.write-readiness')
+    this.backend.assertOperational('direct-gatt.connection.write-readiness')
+    const record = this.backend.requireConnection(connection, 'direct-gatt.connection.write-readiness')
     const stream = new CoreBoundedStream<ConnectionWriteReadinessObservation<string>>(
       { itemCapacity: capacity(64), byteCapacity: capacity(16 * 1024), reservedControlCapacity: capacity(1) },
       'drop-oldest'
@@ -328,13 +328,13 @@ export class CoreBluetoothConnectionControls {
         typeof snapshot.ready !== 'boolean' ||
         !Number.isSafeInteger(snapshot.ordinal)
       ) {
-        throw contractError('protocol.malformed', 'connection', 'corebluetooth.connection.write-readiness.snapshot')
+        throw contractError('protocol.malformed', 'connection', 'direct-gatt.connection.write-readiness.snapshot')
       }
       if (nativeGeneration !== null && snapshot.connectionGeneration !== nativeGeneration) {
         throw contractError(
           'protocol.malformed',
           'connection',
-          'corebluetooth.connection.write-readiness.snapshot-generation'
+          'direct-gatt.connection.write-readiness.snapshot-generation'
         )
       }
     }
@@ -346,7 +346,7 @@ export class CoreBluetoothConnectionControls {
           probe(record.nativePeerId),
           { signal: reprobeCancellation.signal, deadline: options.deadline },
           this.backend.monotonicNow,
-          'corebluetooth.connection.write-readiness.reprobe'
+          'direct-gatt.connection.write-readiness.reprobe'
         )
         if (closed) return
         validateSnapshot(snapshot)
@@ -407,10 +407,10 @@ export class CoreBluetoothConnectionControls {
         probe(record.nativePeerId),
         options,
         this.backend.monotonicNow,
-        'corebluetooth.connection.write-readiness.probe'
+        'direct-gatt.connection.write-readiness.probe'
       )
       if (closed) {
-        throw contractError('connection.stale', 'connection', 'corebluetooth.connection.write-readiness.closed')
+        throw contractError('connection.stale', 'connection', 'direct-gatt.connection.write-readiness.closed')
       }
       validateSnapshot(snapshot)
       nativeGeneration = snapshot.connectionGeneration
@@ -447,21 +447,17 @@ export class CoreBluetoothConnectionControls {
   ): BackendOperationDispatch<string, ConnectionMaximumWriteLengthMeasurement<string, Operation>> {
     const maximumWriteValueLength = this.backend.boundary.maximumWriteValueLength?.bind(this.backend.boundary)
     if (maximumWriteValueLength === undefined) {
-      return this.unsupported(request.operation, 'corebluetooth.connection.maximum-write-length')
+      return this.unsupported(request.operation, 'direct-gatt.connection.maximum-write-length')
     }
-    this.backend.assertOperational('corebluetooth.connection.maximum-write-length')
-    const record = this.backend.requireConnection(connection, 'corebluetooth.connection.maximum-write-length')
+    this.backend.assertOperational('direct-gatt.connection.maximum-write-length')
+    const record = this.backend.requireConnection(connection, 'direct-gatt.connection.maximum-write-length')
     return this.backend.dispatcher.dispatch(
       request.operation,
-      'corebluetooth.connection.maximum-write-length',
+      'direct-gatt.connection.maximum-write-length',
       async () => {
         const maximumWriteLength = await maximumWriteValueLength(record.nativePeerId, request.mode === 'with-response')
         if (!Number.isSafeInteger(maximumWriteLength) || maximumWriteLength < 1) {
-          throw contractError(
-            'protocol.malformed',
-            'connection',
-            'corebluetooth.connection.maximum-write-length.result'
-          )
+          throw contractError('protocol.malformed', 'connection', 'direct-gatt.connection.maximum-write-length.result')
         }
         return Object.freeze({
           connectionId: record.connectionId,
