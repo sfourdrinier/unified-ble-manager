@@ -63,6 +63,11 @@ async function connectBluezAddressTarget(
   for (;;) {
     runtime.assertUsable('bluez.connect.address')
     assertConnectAdmission(runtime, options)
+    if (runtime.addressTargetForPath(devicePath) === undefined) {
+      // A backend restart invalidated every minted peer handle while this attempt was
+      // pending; the caller must mint a new address peer against the new generation.
+      throw contractError('connection.not-found', 'connection', 'bluez.connect.address')
+    }
     if (!runtime.store.hasInterface(devicePath, BLUEZ_DEVICE_INTERFACE)) {
       await materializeBluezAddressDevice(runtime, devicePath, target, clientId, options)
       continue

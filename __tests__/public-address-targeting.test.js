@@ -144,3 +144,35 @@ describe('fail-closed behavior on a backend without peer:address-targeting', () 
     }
   })
 })
+
+describe('IPC renderer fail-closed behavior', () => {
+  test('scan with an addresses clause fails closed instead of silently never matching', async () => {
+    const { IpcPublicManagerAdapter } = require('../src/ipc/public-manager')
+    const capabilitySnapshot = {
+      supports: () => false,
+      get: () => undefined,
+      require: () => undefined,
+      list: () => []
+    }
+    const manager = new IpcPublicManagerAdapter(
+      {
+        capabilities: capabilitySnapshot,
+        bootstrap: { discovery: { kind: 'continuous-scan' } },
+        scan: async () => {
+          throw new Error('the IPC scan must not be reached')
+        },
+        adapterState: async () => ({})
+      },
+      {
+        capabilities: capabilitySnapshot,
+        adapter: { id: 'adapter-1', state: async () => ({}), waitUntilReady: async () => ({}) }
+      }
+    )
+    await expect(
+      manager.scan({ query: { anyOf: [{ addresses: ['98:75:96:A2:14:34'] }] } })
+    ).rejects.toMatchObject({ code: 'capability.unsupported' })
+    await expect(manager.connect({ address: '98:75:96:A2:14:34' })).rejects.toMatchObject({
+      code: 'capability.unsupported'
+    })
+  })
+})

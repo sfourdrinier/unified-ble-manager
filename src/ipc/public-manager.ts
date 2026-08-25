@@ -66,7 +66,7 @@ import type { BleDiagnostics } from '../public/diagnostics'
 import { diagnosticsUnavailable } from '../public/diagnostics'
 import { normalizeOperationOptions } from '../public/operation-options'
 import type { OperationOptions } from '../public/operation-options'
-import { normalizeScanQuery } from '../public/scan-query'
+import { normalizeScanQuery, scanQueryTargetsAddresses } from '../public/scan-query'
 import { createScanState } from '../public/scan-state'
 import type { ScanStateController } from '../public/scan-state'
 import { unsupportedPeerDirectory } from '../public/peer-directory'
@@ -142,6 +142,11 @@ export class IpcPublicManagerAdapter implements BleManager {
       }
       const normalized = normalizeOperationOptions(options, () => globalThis.performance.now())
       const normalizedQuery = normalizeScanQuery(options.query)
+      if (scanQueryTargetsAddresses(normalizedQuery)) {
+        // The versioned IPC advertisement schema carries no radio address, so an addresses
+        // clause can never match here; fail closed instead of silently observing nothing.
+        throw contractError('capability.unsupported', 'scan', 'ipc-public-manager.scan.addresses')
+      }
       const session = await this.ipc.scan(
         toIpcScanOptions(options, normalized.signal, normalizedQuery, normalized.deadline)
       )
