@@ -22,6 +22,24 @@ const serviceUuid = '0000180d-0000-1000-8000-00805f9b34fb'
 const characteristicUuid = '00002a37-0000-1000-8000-00805f9b34fb'
 const descriptorUuid = '00002902-0000-1000-8000-00805f9b34fb'
 
+function characteristicObjectPath(path) {
+  const serviceOccurrence = String(path.serviceOccurrence)
+  const characteristicOccurrence = String(path.characteristicOccurrence)
+  if (!/^(0|[1-9][0-9]*)$/.test(serviceOccurrence) || !/^(0|[1-9][0-9]*)$/.test(characteristicOccurrence)) {
+    throw new Error(
+      `BlueZ D-Bus characteristic path requires decimal occurrences, got serviceOccurrence=${serviceOccurrence} characteristicOccurrence=${characteristicOccurrence}`
+    )
+  }
+  if (Number(characteristicOccurrence) !== 0) {
+    throw new Error(
+      `BlueZ fixture has one characteristic per service, got characteristicOccurrence=${characteristicOccurrence}`
+    )
+  }
+  if (serviceOccurrence === '0') return `${devicePath}/service0001/char0001`
+  if (serviceOccurrence === '1') return `${devicePath}/service0002/char0001`
+  throw new Error(`BlueZ fixture has no characteristic for serviceOccurrence=${serviceOccurrence}`)
+}
+
 function compatibility() {
   return {
     backendContract: versionRange(version('backend-contract', 1), version('backend-contract', 1)),
@@ -285,7 +303,7 @@ describe('BlueZ contract-v1 vertical slice', () => {
     const snapshot = await database.snapshot()
     const characteristic = snapshot.characteristics[0].path
     boundary.onCall(
-      String(characteristic.characteristicOccurrence),
+      characteristicObjectPath(characteristic),
       BLUEZ_GATT_CHARACTERISTIC_INTERFACE,
       'ReadValue',
       async () => new Uint8Array([12, 13])
@@ -301,7 +319,7 @@ describe('BlueZ contract-v1 vertical slice', () => {
     })
     const notification = subscription.values[Symbol.asyncIterator]().next()
     boundary.objectManager.emitPropertiesChanged(
-      String(characteristic.characteristicOccurrence),
+      characteristicObjectPath(characteristic),
       BLUEZ_GATT_CHARACTERISTIC_INTERFACE,
       { Value: { signature: 'ay', value: new Uint8Array([15]) } }
     )
@@ -386,11 +404,15 @@ describe('BlueZ contract-v1 vertical slice', () => {
     expect(snapshot.characteristics).toHaveLength(2)
     expect(snapshot.descriptors).toHaveLength(1)
     expect(snapshot.services[0].path.serviceUuid).toBe(snapshot.services[1].path.serviceUuid)
+    expect(String(snapshot.services[0].path.serviceOccurrence)).toBe('0')
+    expect(String(snapshot.services[1].path.serviceOccurrence)).toBe('1')
+    expect(String(snapshot.characteristics[0].path.characteristicOccurrence)).toBe('0')
+    expect(String(snapshot.characteristics[1].path.characteristicOccurrence)).toBe('0')
     expect(snapshot.services[0].path.serviceOccurrence).not.toBe(snapshot.services[1].path.serviceOccurrence)
     const characteristic = snapshot.characteristics[0].path
     const source = new Uint8Array([7, 8, 9])
     boundary.onCall(
-      String(characteristic.characteristicOccurrence),
+      characteristicObjectPath(characteristic),
       BLUEZ_GATT_CHARACTERISTIC_INTERFACE,
       'ReadValue',
       async () => source
@@ -405,7 +427,7 @@ describe('BlueZ contract-v1 vertical slice', () => {
       releaseWrite = resolve
     })
     boundary.onCall(
-      String(characteristic.characteristicOccurrence),
+      characteristicObjectPath(characteristic),
       BLUEZ_GATT_CHARACTERISTIC_INTERFACE,
       'WriteValue',
       async () => writeGate
@@ -433,7 +455,7 @@ describe('BlueZ contract-v1 vertical slice', () => {
       releaseNotify = resolve
     })
     boundary.onCall(
-      String(characteristic.characteristicOccurrence),
+      characteristicObjectPath(characteristic),
       BLUEZ_GATT_CHARACTERISTIC_INTERFACE,
       'StartNotify',
       async () => notifyGate
@@ -443,7 +465,7 @@ describe('BlueZ contract-v1 vertical slice', () => {
       delivery: delivery(1, 'error')
     })
     boundary.objectManager.emitPropertiesChanged(
-      String(characteristic.characteristicOccurrence),
+      characteristicObjectPath(characteristic),
       BLUEZ_GATT_CHARACTERISTIC_INTERFACE,
       { Value: { signature: 'ay', value: new Uint8Array([1]) } }
     )
@@ -451,12 +473,12 @@ describe('BlueZ contract-v1 vertical slice', () => {
     const subscription = await subscriptionPromise
     const iterator = subscription.values[Symbol.asyncIterator]()
     boundary.objectManager.emitPropertiesChanged(
-      String(characteristic.characteristicOccurrence),
+      characteristicObjectPath(characteristic),
       BLUEZ_GATT_CHARACTERISTIC_INTERFACE,
       { Value: { signature: 'ay', value: new Uint8Array([2]) } }
     )
     boundary.objectManager.emitPropertiesChanged(
-      String(characteristic.characteristicOccurrence),
+      characteristicObjectPath(characteristic),
       BLUEZ_GATT_CHARACTERISTIC_INTERFACE,
       { Value: { signature: 'ay', value: new Uint8Array([3]) } }
     )
@@ -478,7 +500,7 @@ describe('BlueZ contract-v1 vertical slice', () => {
     const { database } = await connectedDatabase(backend)
     const characteristic = (await database.snapshot()).characteristics[0].path
     boundary.onCall(
-      String(characteristic.characteristicOccurrence),
+      characteristicObjectPath(characteristic),
       BLUEZ_GATT_CHARACTERISTIC_INTERFACE,
       'StartNotify',
       async () => false
@@ -493,14 +515,14 @@ describe('BlueZ contract-v1 vertical slice', () => {
     await Promise.resolve()
     expect(subscribeSettled).toBe(false)
     boundary.objectManager.emitPropertiesChanged(
-      String(characteristic.characteristicOccurrence),
+      characteristicObjectPath(characteristic),
       BLUEZ_GATT_CHARACTERISTIC_INTERFACE,
       { Notifying: { signature: 'b', value: true } }
     )
     const subscription = await subscribing
 
     boundary.onCall(
-      String(characteristic.characteristicOccurrence),
+      characteristicObjectPath(characteristic),
       BLUEZ_GATT_CHARACTERISTIC_INTERFACE,
       'StopNotify',
       async () => false
@@ -514,7 +536,7 @@ describe('BlueZ contract-v1 vertical slice', () => {
     await Promise.resolve()
     expect(removalSettled).toBe(false)
     boundary.objectManager.emitPropertiesChanged(
-      String(characteristic.characteristicOccurrence),
+      characteristicObjectPath(characteristic),
       BLUEZ_GATT_CHARACTERISTIC_INTERFACE,
       { Value: { signature: 'ay', value: new Uint8Array([18]) } }
     )
@@ -523,7 +545,7 @@ describe('BlueZ contract-v1 vertical slice', () => {
       value: { kind: 'terminal', reason: 'owner-released' }
     })
     boundary.objectManager.emitPropertiesChanged(
-      String(characteristic.characteristicOccurrence),
+      characteristicObjectPath(characteristic),
       BLUEZ_GATT_CHARACTERISTIC_INTERFACE,
       { Notifying: { signature: 'b', value: false } }
     )
@@ -539,7 +561,7 @@ describe('BlueZ contract-v1 vertical slice', () => {
     const subscription = await database.subscribe(characteristic, { ...operation(), delivery: delivery() })
     const stopGate = deferred()
     boundary.onCall(
-      String(characteristic.characteristicOccurrence),
+      characteristicObjectPath(characteristic),
       BLUEZ_GATT_CHARACTERISTIC_INTERFACE,
       'StopNotify',
       async () => {
@@ -575,7 +597,7 @@ describe('BlueZ contract-v1 vertical slice', () => {
     const { database } = await connectedDatabase(backend)
     const characteristic = (await database.snapshot()).characteristics[0].path
     boundary.onCall(
-      String(characteristic.characteristicOccurrence),
+      characteristicObjectPath(characteristic),
       BLUEZ_GATT_CHARACTERISTIC_INTERFACE,
       'StartNotify',
       async () => false
@@ -600,7 +622,7 @@ describe('BlueZ contract-v1 vertical slice', () => {
       releaseStartNotify = resolve
     })
     boundary.onCall(
-      String(characteristic.characteristicOccurrence),
+      characteristicObjectPath(characteristic),
       BLUEZ_GATT_CHARACTERISTIC_INTERFACE,
       'StartNotify',
       async () => {
@@ -665,7 +687,7 @@ describe('BlueZ contract-v1 vertical slice', () => {
       releaseRead = resolve
     })
     boundary.onCall(
-      String(characteristic.characteristicOccurrence),
+      characteristicObjectPath(characteristic),
       BLUEZ_GATT_CHARACTERISTIC_INTERFACE,
       'ReadValue',
       async () => readGate
@@ -677,7 +699,7 @@ describe('BlueZ contract-v1 vertical slice', () => {
     releaseRead(new Uint8Array([40]))
     await Promise.resolve()
     boundary.onCall(
-      String(characteristic.characteristicOccurrence),
+      characteristicObjectPath(characteristic),
       BLUEZ_GATT_CHARACTERISTIC_INTERFACE,
       'ReadValue',
       async () => new Uint8Array([41])
@@ -701,7 +723,7 @@ describe('BlueZ contract-v1 vertical slice', () => {
       const database = await connection.discover(operation())
       const characteristic = (await database.snapshot()).characteristics[0].path
       boundary.onCall(
-        String(characteristic.characteristicOccurrence),
+        characteristicObjectPath(characteristic),
         BLUEZ_GATT_CHARACTERISTIC_INTERFACE,
         'ReadValue',
         async () => readGate.promise
@@ -976,7 +998,7 @@ describe('BlueZ contract-v1 vertical slice', () => {
       releaseStart = resolve
     })
     boundary.onCall(
-      String(characteristic.characteristicOccurrence),
+      characteristicObjectPath(characteristic),
       BLUEZ_GATT_CHARACTERISTIC_INTERFACE,
       'StartNotify',
       async () => startGate
@@ -991,7 +1013,7 @@ describe('BlueZ contract-v1 vertical slice', () => {
     expect(boundary.calls.filter(call => call.method === 'StopNotify')).toHaveLength(0)
 
     boundary.onCall(
-      String(characteristic.characteristicOccurrence),
+      characteristicObjectPath(characteristic),
       BLUEZ_GATT_CHARACTERISTIC_INTERFACE,
       'StopNotify',
       async () => {
@@ -1005,7 +1027,7 @@ describe('BlueZ contract-v1 vertical slice', () => {
     )
     expect(Number(backend.resourceCounters().physicalCccdEnablements)).toBe(1)
     boundary.onCall(
-      String(characteristic.characteristicOccurrence),
+      characteristicObjectPath(characteristic),
       BLUEZ_GATT_CHARACTERISTIC_INTERFACE,
       'StopNotify',
       async () => undefined
@@ -1018,7 +1040,7 @@ describe('BlueZ contract-v1 vertical slice', () => {
       releaseOrphanedStart = resolve
     })
     boundary.onCall(
-      String(characteristic.characteristicOccurrence),
+      characteristicObjectPath(characteristic),
       BLUEZ_GATT_CHARACTERISTIC_INTERFACE,
       'StartNotify',
       async () => orphanedStartGate
@@ -1181,7 +1203,7 @@ describe('BlueZ contract-v1 vertical slice', () => {
         releaseStopNotify = resolve
       })
       boundary.onCall(
-        String(characteristic.characteristicOccurrence),
+        characteristicObjectPath(characteristic),
         BLUEZ_GATT_CHARACTERISTIC_INTERFACE,
         'StopNotify',
         async () => stopNotifyGate
@@ -1213,7 +1235,7 @@ describe('BlueZ contract-v1 vertical slice', () => {
       const characteristic = (await database.snapshot()).characteristics[0].path
       await database.subscribe(characteristic, { ...operation(), delivery: delivery() })
       boundary.onCall(
-        String(characteristic.characteristicOccurrence),
+        characteristicObjectPath(characteristic),
         BLUEZ_GATT_CHARACTERISTIC_INTERFACE,
         'StopNotify',
         async () => false
@@ -1234,13 +1256,13 @@ describe('BlueZ contract-v1 vertical slice', () => {
       expect(Number(backend.resourceCounters().physicalCccdEnablements)).toBe(1)
 
       boundary.onCall(
-        String(characteristic.characteristicOccurrence),
+        characteristicObjectPath(characteristic),
         BLUEZ_GATT_CHARACTERISTIC_INTERFACE,
         'StopNotify',
         async () => undefined
       )
       boundary.objectManager.emitPropertiesChanged(
-        String(characteristic.characteristicOccurrence),
+        characteristicObjectPath(characteristic),
         BLUEZ_GATT_CHARACTERISTIC_INTERFACE,
         { Notifying: { signature: 'b', value: false } }
       )
@@ -1291,7 +1313,7 @@ describe('BlueZ contract-v1 vertical slice', () => {
     const { database } = await connectedDatabase(backend)
     const characteristic = (await database.snapshot()).characteristics[0].path
     boundary.onCall(
-      String(characteristic.characteristicOccurrence),
+      characteristicObjectPath(characteristic),
       BLUEZ_GATT_CHARACTERISTIC_INTERFACE,
       'StopNotify',
       async () => {
@@ -1312,7 +1334,7 @@ describe('BlueZ contract-v1 vertical slice', () => {
     expect(boundary.objectManager.listenerCount()).toBeGreaterThan(0)
 
     boundary.onCall(
-      String(characteristic.characteristicOccurrence),
+      characteristicObjectPath(characteristic),
       BLUEZ_GATT_CHARACTERISTIC_INTERFACE,
       'StopNotify',
       async () => undefined
@@ -1328,7 +1350,7 @@ describe('BlueZ contract-v1 vertical slice', () => {
     const characteristic = (await database.snapshot()).characteristics[0].path
     const subscription = await database.subscribe(characteristic, { ...operation(), delivery: delivery() })
     boundary.onCall(
-      String(characteristic.characteristicOccurrence),
+      characteristicObjectPath(characteristic),
       BLUEZ_GATT_CHARACTERISTIC_INTERFACE,
       'StopNotify',
       async () => {
@@ -1481,7 +1503,7 @@ describe('BlueZ contract-v1 vertical slice', () => {
     const characteristic = (await database.snapshot()).characteristics[0].path
     let stopAttempts = 0
     boundary.onCall(
-      String(characteristic.characteristicOccurrence),
+      characteristicObjectPath(characteristic),
       BLUEZ_GATT_CHARACTERISTIC_INTERFACE,
       'StopNotify',
       async () => {
@@ -1535,13 +1557,13 @@ describe('BlueZ contract-v1 vertical slice', () => {
       throw new Error(`shared cleanup failed for ${call.path}`)
     }
     boundary.onCall(
-      String(first.characteristicOccurrence),
+      characteristicObjectPath(first),
       BLUEZ_GATT_CHARACTERISTIC_INTERFACE,
       'StopNotify',
       failStopNotify
     )
     boundary.onCall(
-      String(second.characteristicOccurrence),
+      characteristicObjectPath(second),
       BLUEZ_GATT_CHARACTERISTIC_INTERFACE,
       'StopNotify',
       failStopNotify
@@ -1559,13 +1581,13 @@ describe('BlueZ contract-v1 vertical slice', () => {
     expect(Number(backend.resourceCounters().subscriptionConsumers)).toBe(2)
 
     boundary.onCall(
-      String(first.characteristicOccurrence),
+      characteristicObjectPath(first),
       BLUEZ_GATT_CHARACTERISTIC_INTERFACE,
       'StopNotify',
       async () => undefined
     )
     boundary.onCall(
-      String(second.characteristicOccurrence),
+      characteristicObjectPath(second),
       BLUEZ_GATT_CHARACTERISTIC_INTERFACE,
       'StopNotify',
       async () => undefined
@@ -1592,7 +1614,7 @@ describe('BlueZ contract-v1 vertical slice', () => {
         releaseStopNotify = resolve
       })
       boundary.onCall(
-        String(characteristic.characteristicOccurrence),
+        characteristicObjectPath(characteristic),
         BLUEZ_GATT_CHARACTERISTIC_INTERFACE,
         'StopNotify',
         async () => stopNotifyGate
