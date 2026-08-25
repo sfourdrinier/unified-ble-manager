@@ -1470,6 +1470,7 @@ export class IpcGattDatabase {
   readonly characteristics: readonly IpcCharacteristic[]
   readonly descriptors: readonly IpcDescriptor[]
   private valid = true
+  private pendingChangedReason: GattDatabaseChangedEvent['reason'] | null = null
   private readonly changedStream = new CoreBoundedStream<GattDatabaseChangedEvent>(REMOTE_STREAM_LIMITS, 'drop-oldest')
   private readonly subscriptions = new Set<IpcSubscription>()
 
@@ -1576,7 +1577,10 @@ export class IpcGattDatabase {
       }
     }
     this.valid = false
-    if (failures.length > 0) return { state: 'release-failed', failures }
+    if (failures.length > 0) {
+      this.pendingChangedReason = reason
+      return { state: 'release-failed', failures }
+    }
     this.terminalizeChanged(reason)
     return { state: 'released', failures: [] }
   }
@@ -1625,6 +1629,9 @@ export class IpcGattDatabase {
 
   forgetSubscription(subscription: IpcSubscription): void {
     this.subscriptions.delete(subscription)
+    if (!this.valid && this.subscriptions.size === 0) {
+      this.terminalizeChanged(this.pendingChangedReason)
+    }
   }
 
   private connectionIdentityPayload(): SerializableRecord {

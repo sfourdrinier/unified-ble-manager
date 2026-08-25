@@ -615,6 +615,49 @@ describe('IPC provisional admission', () => {
     await harness.ipc.destroy()
   })
 
+  test('successful CCCD retry finalizes the stale database changed stream without a rediscovery', async () => {
+    const failure = {
+      resourceKind: 'gatt',
+      error: {
+        code: 'platform.failure',
+        domain: 'gatt',
+        operation: 'ipc-manager.gatt-unsubscribe',
+        platform: null,
+        retryability: 'caller-decides'
+      }
+    }
+    let unsubscribeAttempts = 0
+    const harness = await createAdmissionHarness({
+      gattUnsubscribe: async () => {
+        unsubscribeAttempts += 1
+        if (unsubscribeAttempts === 1) {
+          return {
+            kind: 'route',
+            payload: { state: 'release-failed', failures: [failure] }
+          }
+        }
+        return { kind: 'route', payload: { state: 'released', failures: [] } }
+      }
+    })
+    const connection = await harness.ipc.connect('peer-1')
+    const database = await connection.discover()
+    const subscription = await database.characteristics[0].subscribe()
+    await expect(database.invalidate('service-changed')).resolves.toMatchObject({ state: 'release-failed' })
+    expect(database.changed.isTerminal()).toBe(false)
+    const changed = database.changed[Symbol.asyncIterator]()
+    const pending = changed.next()
+    await expect(subscription.remove()).resolves.toMatchObject({ state: 'released', failures: [] })
+    expect(database.changed.isTerminal()).toBe(true)
+    await expect(pending).resolves.toMatchObject({
+      value: { kind: 'value', value: { reason: 'service-changed' } }
+    })
+    await expect(changed.next()).resolves.toMatchObject({
+      value: { kind: 'terminal', reason: 'closed' }
+    })
+    await connection.release()
+    await harness.ipc.destroy()
+  })
+
   test.each(['electron', 'tauri'])('%s transport doubles exercise the same admission helper', async host => {
     const harness = await createAdmissionHarness({
       connectPayload: validConnectPayload({ peerId: `${host}-peer` })
