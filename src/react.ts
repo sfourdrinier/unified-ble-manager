@@ -600,6 +600,19 @@ export function useDiscoveredPeers(options: ScanOptions = {}): UseDiscoveredPeer
     state: 'idle',
     error: null
   })
+  const [previousScanIdentity, setPreviousScanIdentity] = React.useState({
+    manager,
+    optionsKey,
+    signal
+  })
+  const scanIdentityChanged =
+    previousScanIdentity.manager !== manager ||
+    previousScanIdentity.optionsKey !== optionsKey ||
+    previousScanIdentity.signal !== signal
+  if (scanIdentityChanged) {
+    setPreviousScanIdentity({ manager, optionsKey, signal })
+    setResult({ peers: [], state: 'idle', error: null })
+  }
 
   React.useEffect(() => {
     let active = true
@@ -807,7 +820,7 @@ export function useDiscoveredPeers(options: ScanOptions = {}): UseDiscoveredPeer
     }
   }, [manager, optionsKey, signal, stableOptions, reportError])
 
-  return result
+  return scanIdentityChanged ? { peers: [], state: 'idle', error: null } : result
 }
 
 export function useConnectionState(connection: BleConnection | null): UseConnectionStateResult {
@@ -913,7 +926,7 @@ export function useCharacteristicValue(
     let removeAttempt: Promise<CleanupResult> | null = null
     let removeReleased = false
     if (characteristic === null) return () => undefined
-    const isCurrent = (): boolean => generationRef.current === runGeneration
+    const isCurrent = (): boolean => active && generationRef.current === runGeneration
 
     const publish = (next: UseCharacteristicValueResult): void => {
       if (!isCurrent()) return

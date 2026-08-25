@@ -1523,6 +1523,7 @@ describe('public scan-state-budget', () => {
       expect(source).not.toMatch(/export\s+\{[^}]*MAX_PUBLIC_SCAN_STATE/)
       expect(source).not.toMatch(/export\s+\{[^}]*estimatePublicPeerRetentionBytes/)
       expect(source).not.toMatch(/export\s+\{[^}]*connectionEventsEndedExpectedly/)
+      expect(source).not.toMatch(/export\s+\{[^}]*publicConnectionTerminalError/)
       expect(source).not.toMatch(/export\s+\{[^}]*inspectReactAdapterWatchOwnershipForTests/)
       expect(source).not.toMatch(/export\s+\*\s+from ['"].*scan-state-budget['"]/)
     }

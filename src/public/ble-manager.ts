@@ -2003,7 +2003,7 @@ export function connectionEventsEndedExpectedly(iterable: AsyncIterable<BleConne
   return expectedConnectionEventEnds.get(iterable) === 'expected'
 }
 
-function publicConnectionTerminalError(reason: StreamTerminalNotice['reason']): Error {
+export function publicConnectionTerminalError(reason: StreamTerminalNotice['reason']): Error {
   if (reason === 'closed' || reason === 'owner-released') {
     return new ExpectedConnectionEventEnd()
   }

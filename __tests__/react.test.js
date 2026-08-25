@@ -1548,7 +1548,7 @@ describe('React host surface', () => {
 
     firstCleanup()
     hookHarness.rerender()
-    useDiscoveredPeers({ timeoutMs: 2_000 })
+    expect(useDiscoveredPeers({ timeoutMs: 2_000 }).peers).toEqual([])
     const secondCleanup = hookHarness.effects[0]()
     await flush()
     expect(peerIds()).toEqual([])
