@@ -544,6 +544,60 @@ describe('public stream follow-up boundaries', () => {
     expect(destroyCleanup.failures[0].error.platform.metadata.nested.bytes).toEqual(new Uint8Array([1, 2, 3]))
   })
 
+  test('IPC adapter watch stream close stops polling and removes the abort listener', async () => {
+    jest.useFakeTimers()
+    try {
+      const capabilities = {
+        require: id => ({ id, state: 'supported', limitations: [] }),
+        list: () => []
+      }
+      let reads = 0
+      const ipc = {
+        capabilities,
+        bootstrap: {
+          discovery: { kind: 'continuous-scan' },
+          attachment: {
+            adapter: { adapterId: 'adapter-1' },
+            backendGeneration: 'backend-1'
+          }
+        },
+        destroy: async () => ({ state: 'released', failures: [] }),
+        adapterState: async () => {
+          reads += 1
+          return {
+            availability: 'available',
+            authorization: 'granted',
+            power: 'on',
+            backendGeneration: 'backend-1',
+            updatedAt: reads,
+            safeReason: null
+          }
+        }
+      }
+      const manager = new IpcPublicManagerAdapter(ipc, { capabilities })
+      const controller = new AbortController()
+      const removeListener = jest.spyOn(controller.signal, 'removeEventListener')
+      const watch = await manager.adapter.watchState({ signal: controller.signal })
+      const readsAfterInitial = reads
+      await jest.advanceTimersByTimeAsync(25)
+      expect(reads).toBe(readsAfterInitial + 1)
+
+      await expect(watch.values.close()).resolves.toMatchObject({ state: 'released', failures: [] })
+      expect(removeListener).toHaveBeenCalledWith('abort', expect.any(Function))
+      const readsAfterClose = reads
+      await jest.advanceTimersByTimeAsync(250)
+      expect(reads).toBe(readsAfterClose)
+      expect(jest.getTimerCount()).toBe(0)
+
+      await expect(watch.stop()).resolves.toMatchObject({ state: 'released', failures: [] })
+      expect(reads).toBe(readsAfterClose)
+      const item = await watch.values[Symbol.asyncIterator]().next()
+      expect(item.value).toMatchObject({ kind: 'terminal' })
+    } finally {
+      jest.useRealTimers()
+    }
+  })
+
   test('memoizes successful public manager destroy results and retries failures', async () => {
     const internal = {
       identity: null,

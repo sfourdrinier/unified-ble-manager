@@ -1057,10 +1057,17 @@ async function watchIpcAdapterState(
     }
     signal?.addEventListener('abort', abortHandler, { once: true })
     schedulePoll()
+    const values = mapPublicBoundedAsyncStream(stream, value => value)
+    const publicStop = () => stop().then(toPublicCleanupRecord)
     return Object.freeze({
       initial,
-      values: mapPublicBoundedAsyncStream(stream, value => value),
-      stop: () => stop().then(toPublicCleanupRecord)
+      values: Object.freeze({
+        limits: values.limits,
+        overflowPolicy: values.overflowPolicy,
+        [Symbol.asyncIterator]: () => values[Symbol.asyncIterator](),
+        close: publicStop
+      }),
+      stop: publicStop
     })
   } catch (error) {
     throw rehydratePublicError(error)
