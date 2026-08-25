@@ -1523,9 +1523,13 @@ describe('public scan-state-budget', () => {
       expect(source).not.toMatch(/export\s+\{[^}]*MAX_PUBLIC_SCAN_STATE/)
       expect(source).not.toMatch(/export\s+\{[^}]*estimatePublicPeerRetentionBytes/)
       expect(source).not.toMatch(/export\s+\{[^}]*connectionEventsEndedExpectedly/)
+      expect(source).not.toMatch(/export\s+\{[^}]*inspectReactAdapterWatchOwnershipForTests/)
       expect(source).not.toMatch(/export\s+\*\s+from ['"].*scan-state-budget['"]/)
     }
     expect(fs.readFileSync(path.join(__dirname, '../src/index.ts'), 'utf8')).not.toMatch(/scan-state-budget/)
     expect(fs.readFileSync(path.join(__dirname, '../src/advanced.ts'), 'utf8')).not.toMatch(/scan-state-budget/)
+    expect(fs.readFileSync(path.join(__dirname, '../src/react.ts'), 'utf8')).not.toMatch(
+      /export function inspectReactAdapterWatchOwnershipForTests/
+    )
   })
 })

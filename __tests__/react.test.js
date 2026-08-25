@@ -106,9 +106,9 @@ const {
   useBleReadiness,
   useCharacteristicValue,
   useConnectionState,
-  useDiscoveredPeers,
-  inspectReactAdapterWatchOwnershipForTests
+  useDiscoveredPeers
 } = require('../src/react')
+const { inspectReactAdapterWatchOwnershipForTests } = require('../src/public/react-adapter-watch-inspect')
 const { publicConnectionEvents, connectionEventsEndedExpectedly } = require('../src/public/ble-manager')
 const { CoreBoundedStream } = require('../src/core/bounded-stream')
 const { capacity } = require('../src/backend-contract/primitives')

@@ -21,6 +21,7 @@ import {
 import type { BleAdapterState, BleAdapterStateWatch } from './public/ble-adapter'
 import type { GattCharacteristic, GattSubscribeOptions, GattSubscription, GattValueEvent } from './public/gatt'
 import type { BleCapabilities, CapabilityDescriptor, FeatureId } from './public/capabilities'
+import { adapterWatchOwnershipInspectors } from './public/react-adapter-watch-inspect'
 import { normalizeScanQuery } from './public/scan-query'
 import type { BleReadiness, ExpoBleManager } from './expo'
 
@@ -202,26 +203,6 @@ interface WatchRun {
 }
 
 const managerStores = new WeakMap<BleManager, ManagerStore>()
-const adapterWatchOwnershipInspectors = new WeakMap<
-  BleManager,
-  () => {
-    readonly runCount: number
-    readonly phase: 'idle' | 'starting' | 'active' | 'stopping' | 'cleanup-failed'
-    readonly hasWatch: boolean
-  }
->()
-
-export function inspectReactAdapterWatchOwnershipForTests(manager: BleManager): {
-  readonly runCount: number
-  readonly phase: 'idle' | 'starting' | 'active' | 'stopping' | 'cleanup-failed'
-  readonly hasWatch: boolean
-} {
-  const inspect = adapterWatchOwnershipInspectors.get(manager)
-  if (inspect === undefined) {
-    return { runCount: 0, phase: 'idle', hasWatch: false }
-  }
-  return inspect()
-}
 
 function getManagerStore(manager: BleManager): ManagerStore {
   const existing = managerStores.get(manager)
