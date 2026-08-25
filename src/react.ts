@@ -180,15 +180,39 @@ export function useBleReadiness(): UseBleReadinessResult {
 
 type StoreListener = () => void
 
+type WatchPhase = 'starting' | 'active' | 'stopping' | 'cleanup-failed'
+
 interface WatchRun {
-  readonly promise: Promise<BleAdapterStateWatch>
+  phase: WatchPhase
+  readonly generation: number
+  readonly creation: Promise<BleAdapterStateWatch>
   watch: BleAdapterStateWatch | null
-  stopped: boolean
-  stopPromise: Promise<void> | null
-  restartScheduled: boolean
+  consumption: Promise<void> | null
+  stopAttempt: Promise<CleanupRecord> | null
+  cleanupFailure: CleanupRecord | Error | null
 }
 
 const managerStores = new WeakMap<BleManager, ManagerStore>()
+const adapterWatchOwnershipInspectors = new WeakMap<
+  BleManager,
+  () => {
+    readonly runCount: number
+    readonly phase: 'idle' | 'starting' | 'active' | 'stopping' | 'cleanup-failed'
+    readonly hasWatch: boolean
+  }
+>()
+
+export function inspectReactAdapterWatchOwnershipForTests(manager: BleManager): {
+  readonly runCount: number
+  readonly phase: 'idle' | 'starting' | 'active' | 'stopping' | 'cleanup-failed'
+  readonly hasWatch: boolean
+} {
+  const inspect = adapterWatchOwnershipInspectors.get(manager)
+  if (inspect === undefined) {
+    return { runCount: 0, phase: 'idle', hasWatch: false }
+  }
+  return inspect()
+}
 
 function getManagerStore(manager: BleManager): ManagerStore {
   const existing = managerStores.get(manager)
@@ -202,6 +226,7 @@ class ManagerStore {
   private readonly listeners = new Set<StoreListener>()
   private readonly capabilityStores = new Map<FeatureId, CapabilityStore>()
   private watchRun: WatchRun | null = null
+  private watchGeneration = 0
   private adapterState: BleAdapterState | null = null
   private errorReporter: (error: Error) => void = () => undefined
   private adapterSnapshot: UseAdapterStateResult = { state: null, loading: true, error: null }
@@ -224,7 +249,15 @@ class ManagerStore {
 
   readonly getReadinessSnapshot = (): UseBleReadinessResult => this.readinessSnapshot
 
-  constructor(private readonly managerInstance: BleManager) {}
+  constructor(private readonly managerInstance: BleManager) {
+    adapterWatchOwnershipInspectors.set(managerInstance, () => {
+      const run = this.watchRun
+      if (run === null) {
+        return { runCount: 0, phase: 'idle', hasWatch: false }
+      }
+      return { runCount: 1, phase: run.phase, hasWatch: run.watch !== null }
+    })
+  }
 
   manager(): BleManager {
     return this.managerInstance
@@ -252,88 +285,202 @@ class ManagerStore {
 
   private ensureWatch(): void {
     const existing = this.watchRun
-    if (existing !== null) {
-      if (!existing.stopped) return
-      if (existing.stopPromise !== null) {
-        if (!existing.restartScheduled) {
-          existing.restartScheduled = true
-          existing.stopPromise.then(() => {
-            if (this.watchRun !== existing || this.listeners.size === 0) return
-            this.watchRun = null
-            this.ensureWatch()
-          })
-        }
-        return
-      }
-      existing.stopped = false
+    if (existing === null) {
+      this.startWatch()
       return
     }
+    if (existing.phase === 'starting' || existing.phase === 'active') {
+      return
+    }
+    if (existing.phase === 'stopping') {
+      this.continueAfterStop(existing)
+      return
+    }
+    this.retryFailedCleanup(existing)
+  }
 
-    const promise = Promise.resolve().then(() => this.managerInstance.adapter.watchState())
+  private startWatch(): void {
+    this.watchGeneration += 1
+    const generation = this.watchGeneration
+    const creation = Promise.resolve().then(() => this.managerInstance.adapter.watchState())
     const run: WatchRun = {
-      promise,
+      phase: 'starting',
+      generation,
+      creation,
       watch: null,
-      stopped: false,
-      stopPromise: null,
-      restartScheduled: false
+      consumption: null,
+      stopAttempt: null,
+      cleanupFailure: null
     }
     this.watchRun = run
-    promise.then(
+    creation.then(
       watch => {
-        run.watch = watch
-        if (!this.isActive(run)) {
-          this.stopResolvedWatch(run, watch)
+        if (this.watchRun !== run || run.generation !== generation) {
+          this.releaseOrphanedWatch(watch)
           return
         }
+        run.watch = watch
+        if (run.phase === 'stopping' || run.phase === 'cleanup-failed' || this.listeners.size === 0) {
+          this.stopRun(run).then(undefined, error => this.errorReporter(toError(error)))
+          return
+        }
+        run.phase = 'active'
         this.applyState(watch.initial)
-        this.consumeWatch(run, watch).catch(error => {
+        const consumption = this.consumeWatch(run, watch)
+        run.consumption = consumption
+        consumption.catch(error => {
           if (this.isActive(run)) this.applyError(toError(error))
         })
       },
       error => {
-        if (this.isActive(run)) this.applyError(toError(error))
-        else if (this.watchRun === run) this.watchRun = null
+        if (this.watchRun !== run || run.generation !== generation) {
+          return
+        }
+        if (this.listeners.size > 0) {
+          this.applyError(toError(error))
+        }
+        if (this.watchRun === run) {
+          this.watchRun = null
+        }
       }
     )
   }
 
   private stopWatch(): void {
     const run = this.watchRun
-    if (run === null || run.stopped) return
-    run.stopped = true
-    if (run.watch !== null) {
-      this.stopResolvedWatch(run, run.watch)
+    if (run === null) {
       return
     }
-    run.promise
-      .then(watch => {
-        run.watch = watch
-        if (run.stopped) this.stopResolvedWatch(run, watch)
-      })
-      .catch(() => undefined)
+    if (run.phase === 'stopping' || run.phase === 'cleanup-failed') {
+      return
+    }
+    this.stopRun(run).then(undefined, error => this.errorReporter(toError(error)))
   }
 
-  private stopResolvedWatch(run: WatchRun, watch: BleAdapterStateWatch): void {
-    if (run.stopPromise !== null) return
-    run.stopPromise = settleCleanup(() => watch.stop(), this.errorReporter, 'adapter state watch')
-    run.stopPromise.then(() => {
-      if (this.watchRun === run && run.stopped && this.listeners.size === 0) this.watchRun = null
+  private continueAfterStop(run: WatchRun): void {
+    const attempt = run.stopAttempt ?? this.stopRun(run)
+    attempt.then(
+      () => {
+        if (this.listeners.size === 0) {
+          return
+        }
+        if (this.watchRun === run && run.phase === 'cleanup-failed') {
+          this.retryFailedCleanup(run)
+          return
+        }
+        if (this.watchRun === null) {
+          this.ensureWatch()
+        }
+      },
+      error => this.errorReporter(toError(error))
+    )
+  }
+
+  private retryFailedCleanup(run: WatchRun): void {
+    if (run.phase !== 'cleanup-failed') {
+      return
+    }
+    this.stopRun(run).then(
+      cleanup => {
+        if (cleanup.state !== 'released' || this.listeners.size === 0) {
+          return
+        }
+        if (this.watchRun === null) {
+          this.ensureWatch()
+        }
+      },
+      error => this.errorReporter(toError(error))
+    )
+  }
+
+  private stopRun(run: WatchRun): Promise<CleanupRecord> {
+    if (run.stopAttempt !== null) {
+      return run.stopAttempt
+    }
+    run.phase = 'stopping'
+    const attempt = this.performStop(run).then(cleanup => {
+      if (this.watchRun !== run) {
+        return cleanup
+      }
+      if (cleanup.state === 'released') {
+        this.watchRun = null
+        return cleanup
+      }
+      run.phase = 'cleanup-failed'
+      run.cleanupFailure = cleanup
+      run.stopAttempt = null
+      reportCleanupFailure(cleanup, this.errorReporter, 'adapter state watch')
+      return cleanup
     })
+    run.stopAttempt = attempt
+    return attempt
+  }
+
+  private async performStop(run: WatchRun): Promise<CleanupRecord> {
+    let watch = run.watch
+    if (watch === null) {
+      try {
+        watch = await run.creation
+        run.watch = watch
+      } catch {
+        return { state: 'released', failures: [] }
+      }
+    }
+    try {
+      return await watch.stop()
+    } catch (error) {
+      this.errorReporter(toError(error))
+      return {
+        state: 'release-failed',
+        failures: []
+      }
+    }
+  }
+
+  private releaseOrphanedWatch(watch: BleAdapterStateWatch): void {
+    watch.stop().then(
+      cleanup => {
+        if (cleanup.state === 'release-failed') {
+          reportCleanupFailure(cleanup, this.errorReporter, 'adapter state watch')
+        }
+      },
+      error => this.errorReporter(toError(error))
+    )
   }
 
   private isActive(run: WatchRun): boolean {
-    return this.watchRun === run && !run.stopped && this.listeners.size > 0
+    return this.watchRun === run && (run.phase === 'starting' || run.phase === 'active') && this.listeners.size > 0
   }
 
   private async consumeWatch(run: WatchRun, watch: BleAdapterStateWatch): Promise<void> {
-    for await (const item of watch.values) {
-      if (!this.isActive(run)) return
-      if (item.kind === 'terminal') return
-      if (item.kind === 'overflow') {
-        this.applyError(streamOverflowError('react.adapterStateWatch'))
-        continue
+    try {
+      for await (const item of watch.values) {
+        if (!this.isActive(run)) {
+          return
+        }
+        if (item.kind === 'terminal') {
+          break
+        }
+        if (item.kind === 'overflow') {
+          this.applyError(streamOverflowError('react.adapterStateWatch'))
+          continue
+        }
+        this.applyState(item.value)
       }
-      this.applyState(item.value)
+    } catch (error) {
+      if (this.isActive(run)) {
+        this.applyError(toError(error))
+      }
+    }
+    if (this.watchRun !== run) {
+      return
+    }
+    if (run.phase !== 'starting' && run.phase !== 'active') {
+      return
+    }
+    const cleanup = await this.stopRun(run)
+    if (cleanup.state === 'released' && this.listeners.size > 0 && this.watchRun === null) {
+      this.ensureWatch()
     }
   }
 
