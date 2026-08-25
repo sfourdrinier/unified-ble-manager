@@ -1,14 +1,22 @@
 import * as React from 'react'
 import type { ReactNode } from 'react'
 import { contractError, type CleanupRecord } from './backend-contract/errors'
+import type { StreamItem } from './backend-contract/streams'
 import type {
   BleConnection,
   BleConnectionEvent,
   BleManager,
   BlePeer,
+  DiscoveryEvent,
+  PublicScanObservation,
   ScanOptions,
   ScanSession
 } from './public/ble-manager'
+import {
+  MAX_PUBLIC_SCAN_STATE_BYTES,
+  MAX_PUBLIC_SCAN_STATE_ENTRIES,
+  estimatePublicPeerRetentionBytes
+} from './public/scan-state-budget'
 import type { BleAdapterState, BleAdapterStateWatch } from './public/ble-adapter'
 import type { GattCharacteristic, GattSubscribeOptions, GattValueEvent } from './public/gatt'
 import type { BleCapabilities, CapabilityDescriptor, FeatureId } from './public/capabilities'
@@ -604,6 +612,7 @@ export function useDiscoveredPeers(options: ScanOptions = {}): UseDiscoveredPeer
   // AbortSignal identity is compared directly so mutable signal state does not restart an active scan.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const stableOptions = React.useMemo(() => options, [optionsKey, signal])
+  const generationRef = React.useRef(0)
   const [result, setResult] = React.useState<UseDiscoveredPeersResult>({
     peers: [],
     state: 'idle',
@@ -612,46 +621,207 @@ export function useDiscoveredPeers(options: ScanOptions = {}): UseDiscoveredPeer
 
   React.useEffect(() => {
     let active = true
-    let session: ScanSession | null = null
+    const runGeneration = generationRef.current + 1
+    generationRef.current = runGeneration
     if (manager === null) {
       return () => undefined
     }
-    const peers = new Map<string, BlePeer>()
+    const peers = new Map<string, { peer: BlePeer; bytes: number }>()
+    let retainedBytes = 0
     let overflowError: Error | null = null
+    let consumeError: Error | null = null
+    let session: ScanSession | null = null
+    let observationIterator: AsyncIterator<StreamItem<PublicScanObservation>> | null = null
+    let eventIterator: AsyncIterator<DiscoveryEvent> | null = null
+    let observationReturned = false
+    let eventsReturned = false
+    let sessionReleased = false
+    let stopAttempt: Promise<void> | null = null
+    const eventsAuthoritative = (): boolean => eventIterator !== null
+
+    const isCurrentGeneration = (): boolean => generationRef.current === runGeneration
+
+    const snapshotPeers = (): BlePeer[] => {
+      const next: BlePeer[] = []
+      for (const entry of peers.values()) next.push(entry.peer)
+      return next
+    }
+
+    const publish = (state: UseDiscoveredPeersResult['state'], error: Error | null): void => {
+      if (!isCurrentGeneration()) return
+      setResult({ peers: snapshotPeers(), state, error })
+    }
+
+    const evict = (): void => {
+      while (peers.size > MAX_PUBLIC_SCAN_STATE_ENTRIES || retainedBytes > MAX_PUBLIC_SCAN_STATE_BYTES) {
+        const oldest = peers.entries().next()
+        if (oldest.done) return
+        const [oldestId, entry] = oldest.value
+        peers.delete(oldestId)
+        retainedBytes -= entry.bytes
+        overflowError = streamOverflowError('react.useDiscoveredPeers.cap')
+      }
+    }
+
+    const upsert = (peer: BlePeer): void => {
+      const existing = peers.get(peer.id)
+      if (existing !== undefined) {
+        peers.delete(peer.id)
+        retainedBytes -= existing.bytes
+      }
+      const bytes = estimatePublicPeerRetentionBytes(peer)
+      peers.set(peer.id, { peer, bytes })
+      retainedBytes += bytes
+      evict()
+    }
+
+    const refreshIfPresent = (peer: BlePeer): void => {
+      if (!peers.has(peer.id)) return
+      upsert(peer)
+    }
+
+    const removePeer = (id: string): void => {
+      const existing = peers.get(id)
+      if (existing === undefined) return
+      peers.delete(id)
+      retainedBytes -= existing.bytes
+    }
+
+    const returnIterator = async (
+      iterator: { return?: () => PromiseLike<unknown> | unknown } | null,
+      complete: () => boolean,
+      markComplete: () => void
+    ): Promise<void> => {
+      if (complete() || iterator === null) return
+      const close = iterator.return
+      if (close === undefined) {
+        markComplete()
+        return
+      }
+      try {
+        await close.call(iterator)
+        markComplete()
+      } catch (reason) {
+        reportError(toError(reason))
+      }
+    }
+
+    const stopRun = (): Promise<void> => {
+      if (stopAttempt !== null) return stopAttempt
+      const attempt = (async () => {
+        await Promise.all([
+          returnIterator(
+            observationIterator,
+            () => observationReturned,
+            () => {
+              observationReturned = true
+            }
+          ),
+          returnIterator(
+            eventIterator,
+            () => eventsReturned,
+            () => {
+              eventsReturned = true
+            }
+          )
+        ])
+        if (!sessionReleased && session !== null) {
+          const currentSession = session
+          try {
+            const cleanup = await currentSession.stop()
+            if (cleanup.state === 'release-failed') {
+              reportCleanupFailure(cleanup, reportError, 'scan session stop')
+            } else {
+              sessionReleased = true
+            }
+          } catch (reason) {
+            reportError(toError(reason))
+          }
+        }
+        peers.clear()
+        retainedBytes = 0
+      })()
+      stopAttempt = attempt.finally(() => {
+        if (stopAttempt === attempt) stopAttempt = null
+      })
+      return stopAttempt
+    }
+
+    const consumeObservations = async (): Promise<void> => {
+      if (observationIterator === null) return
+      while (true) {
+        const next = await observationIterator.next()
+        if (next.done || !active) return
+        const item = next.value
+        if (item.kind === 'terminal') return
+        if (item.kind === 'overflow') {
+          overflowError = streamOverflowError('react.useDiscoveredPeers.observations')
+          publish('active', overflowError)
+          continue
+        }
+        if (item.kind === 'value') {
+          if (eventsAuthoritative()) refreshIfPresent(item.value.peer)
+          else upsert(item.value.peer)
+          if (active) publish('active', overflowError)
+        }
+      }
+    }
+
+    const consumeEvents = async (): Promise<void> => {
+      if (eventIterator === null) {
+        eventsReturned = true
+        return
+      }
+      while (true) {
+        const next = await eventIterator.next()
+        if (next.done || !active) return
+        const event = next.value
+        if (event.kind === 'observed') upsert(event.peer)
+        else if (event.kind === 'lost') removePeer(event.peer.id)
+        if (active) publish('active', overflowError)
+      }
+    }
+
     const run = async (): Promise<void> => {
       try {
         session = await manager.scan(stableOptions)
-        const current = session
+        observationIterator = session.observations[Symbol.asyncIterator]()
+        eventIterator =
+          session.events === undefined || session.events === null ? null : session.events[Symbol.asyncIterator]()
+        if (eventIterator === null) eventsReturned = true
         if (!active) {
-          await settleCleanup(() => current.stop(), reportError, 'scan session stop')
+          await stopRun()
           return
         }
-        setResult({ peers: [], state: 'active', error: null })
-        for await (const item of session.observations) {
-          if (!active) return
-          if (item.kind === 'terminal') break
-          if (item.kind === 'overflow') {
-            overflowError = streamOverflowError('react.useDiscoveredPeers.observations')
-            setResult({ peers: [...peers.values()], state: 'active', error: overflowError })
-            continue
-          }
-          if (item.kind === 'value') {
-            peers.set(item.value.peer.id, item.value.peer)
-            setResult({ peers: [...peers.values()], state: 'active', error: overflowError })
-          }
+        publish('active', null)
+        await Promise.all([consumeObservations(), consumeEvents()])
+        await stopRun()
+        if (isCurrentGeneration()) {
+          setResult({
+            peers: [],
+            state: consumeError === null ? 'stopped' : 'failed',
+            error: overflowError ?? consumeError
+          })
         }
-        if (active) setResult({ peers: [...peers.values()], state: 'stopped', error: overflowError })
       } catch (reason) {
-        if (active) {
-          setResult({ peers: [...peers.values()], state: 'failed', error: overflowError ?? toError(reason) })
+        consumeError = overflowError ?? toError(reason)
+        if (isCurrentGeneration()) {
+          setResult({ peers: snapshotPeers(), state: 'failed', error: consumeError })
         }
+        await stopRun()
       }
     }
     run().catch(() => undefined)
     return () => {
       active = false
-      const current = session
-      if (current !== null) observeCleanup(() => current.stop(), reportError, 'scan session stop')
+      observeRejected(
+        () =>
+          stopRun().then(() => {
+            if (!isCurrentGeneration()) return
+            setResult({ peers: [], state: 'idle', error: overflowError ?? consumeError })
+          }),
+        reportError
+      )
     }
   }, [manager, optionsKey, signal, stableOptions, reportError])
 

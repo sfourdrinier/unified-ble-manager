@@ -1474,3 +1474,57 @@ describe('canonical public ScanQuery v1', () => {
     expect(fixture.nativeStop).toHaveBeenCalledTimes(count)
   }
 })
+
+describe('public scan-state-budget', () => {
+  const fs = require('fs')
+  const path = require('path')
+
+  test('exposes package-internal 256-entry and 256 KiB caps plus peer byte estimates', () => {
+    const {
+      MAX_PUBLIC_SCAN_STATE_ENTRIES,
+      MAX_PUBLIC_SCAN_STATE_BYTES,
+      estimatePublicPeerRetentionBytes
+    } = require('../src/public/scan-state-budget')
+    expect(MAX_PUBLIC_SCAN_STATE_ENTRIES).toBe(256)
+    expect(MAX_PUBLIC_SCAN_STATE_BYTES).toBe(256 * 1024)
+    expect(
+      estimatePublicPeerRetentionBytes({
+        id: 'ab',
+        name: 'xy',
+        lastAdvertisement: {
+          manufacturerData: [{ data: new Uint8Array(10) }],
+          serviceData: [{ data: new Uint8Array(5) }]
+        }
+      })
+    ).toBe(64 + 4 + 4 + 10 + 5)
+    expect(estimatePublicPeerRetentionBytes({ id: 'z', name: null })).toBe(64 + 2)
+  })
+
+  test('public scan controller imports budget constants without re-exporting them', () => {
+    const source = fs.readFileSync(path.join(__dirname, '../src/public/ble-manager.ts'), 'utf8')
+    expect(source).toMatch(/from ['"]\.\/scan-state-budget['"]/)
+    expect(source).not.toMatch(/export\s+\{[^}]*MAX_PUBLIC_SCAN_STATE/)
+    expect(source).not.toMatch(/export\s+\*\s+from ['"]\.\/scan-state-budget['"]/)
+  })
+
+  test('scan-state-budget is not re-exported from package entrypoints', () => {
+    const files = [
+      'src/index.ts',
+      'src/advanced.ts',
+      'src/react.ts',
+      'src/react-native.ts',
+      'src/web.ts',
+      'src/expo.ts',
+      'src/electron-main.ts',
+      'src/electron-renderer.ts'
+    ]
+    for (const relative of files) {
+      const source = fs.readFileSync(path.join(__dirname, '..', relative), 'utf8')
+      expect(source).not.toMatch(/export\s+\{[^}]*MAX_PUBLIC_SCAN_STATE/)
+      expect(source).not.toMatch(/export\s+\{[^}]*estimatePublicPeerRetentionBytes/)
+      expect(source).not.toMatch(/export\s+\*\s+from ['"].*scan-state-budget['"]/)
+    }
+    expect(fs.readFileSync(path.join(__dirname, '../src/index.ts'), 'utf8')).not.toMatch(/scan-state-budget/)
+    expect(fs.readFileSync(path.join(__dirname, '../src/advanced.ts'), 'utf8')).not.toMatch(/scan-state-budget/)
+  })
+})

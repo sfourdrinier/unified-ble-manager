@@ -166,12 +166,118 @@ function manager(overrides = {}) {
 function scanSession(
   observations = (async function* () {
     yield { kind: 'terminal' }
-  })()
+  })(),
+  events
 ) {
   return {
     observations,
+    ...(events === undefined ? {} : { events }),
     stop: jest.fn().mockResolvedValue({ state: 'released', failures: [] })
   }
+}
+
+function discoveredPeer(id, overrides = {}) {
+  return {
+    id,
+    name: overrides.name ?? null,
+    rssi: overrides.rssi ?? -50,
+    reference: null,
+    sources: [],
+    lastAdvertisement: overrides.lastAdvertisement ?? null
+  }
+}
+
+function observationItem(id, overrides = {}) {
+  const peer = discoveredPeer(id, overrides)
+  return {
+    kind: 'value',
+    value: {
+      peer,
+      observedAtMonotonicMs: 1,
+      localName: peer.name,
+      rssi: peer.rssi,
+      connectable: true,
+      serviceUuids: [],
+      manufacturerData: peer.lastAdvertisement?.manufacturerData ?? null,
+      serviceData: peer.lastAdvertisement?.serviceData ?? null
+    }
+  }
+}
+
+function observedEvent(id, overrides = {}) {
+  return { kind: 'observed', peer: discoveredPeer(id, overrides) }
+}
+
+function lostEvent(id) {
+  return {
+    kind: 'lost',
+    peer: discoveredPeer(id),
+    lastObservedAt: 1,
+    derivedAt: 2,
+    reason: 'observation-timeout'
+  }
+}
+
+function richAdvertisement(byteLength) {
+  return {
+    localName: null,
+    rssi: -50,
+    connectable: true,
+    serviceUuids: [],
+    manufacturerData: [{ companyId: 1, data: new Uint8Array(byteLength) }],
+    serviceData: []
+  }
+}
+
+function createControllableAsyncIterator() {
+  const waiters = []
+  const queued = []
+  let finished = false
+  let failure = null
+  const iterator = {
+    next() {
+      if (failure !== null) return Promise.reject(failure)
+      if (queued.length > 0) return Promise.resolve(queued.shift())
+      if (finished) return Promise.resolve({ done: true, value: undefined })
+      return new Promise((resolve, reject) => {
+        waiters.push({ resolve, reject })
+      })
+    },
+    return: jest.fn(async () => {
+      finished = true
+      while (waiters.length > 0) {
+        waiters.shift().resolve({ done: true, value: undefined })
+      }
+      return { done: true, value: undefined }
+    }),
+    [Symbol.asyncIterator]() {
+      return this
+    }
+  }
+  return {
+    iterable: iterator,
+    iterator,
+    returnFn: iterator.return,
+    push(value) {
+      const result = { done: false, value }
+      if (waiters.length > 0) waiters.shift().resolve(result)
+      else queued.push(result)
+    },
+    end() {
+      finished = true
+      if (waiters.length > 0) {
+        while (waiters.length > 0) waiters.shift().resolve({ done: true, value: undefined })
+      } else queued.push({ done: true, value: undefined })
+    },
+    fail(error) {
+      failure = error
+      while (waiters.length > 0) waiters.shift().reject(error)
+    }
+  }
+}
+
+function peerIds(result = hookHarness.stateValues[0]) {
+  return result.peers.map(peer => peer.id)
 }
 
 function characteristicSubscription(
@@ -223,6 +329,11 @@ function connectionWithState(current) {
 
 async function flush() {
   for (let index = 0; index < 5; index += 1) await Promise.resolve()
+  await new Promise(resolve => setImmediate(resolve))
+}
+
+async function flushMany(count = 400) {
+  for (let index = 0; index < count; index += 1) await Promise.resolve()
   await new Promise(resolve => setImmediate(resolve))
 }
 
@@ -1189,6 +1300,387 @@ describe('React host surface', () => {
 
     expect(hookHarness.stateValues[0].error).toMatchObject({ normalized: { code: 'stream.overflow' } })
     cleanup()
+  })
+
+  test('lost discovery event removes the peer when events are present', async () => {
+    const observations = createControllableAsyncIterator()
+    const events = createControllableAsyncIterator()
+    const session = scanSession(observations.iterable, events.iterable)
+    const createdManager = manager({ scan: jest.fn().mockResolvedValue(session) })
+    hookHarness.contextValue = { manager: createdManager, loading: false, error: null }
+
+    useDiscoveredPeers()
+    const cleanup = hookHarness.effects[0]()
+    await flush()
+    events.push(observedEvent('keep'))
+    events.push(observedEvent('drop-me'))
+    await flush()
+    expect(peerIds()).toEqual(['keep', 'drop-me'])
+
+    events.push(lostEvent('drop-me'))
+    await flush()
+    expect(peerIds()).toEqual(['keep'])
+    expect(hookHarness.stateValues[0].state).toBe('active')
+    cleanup()
+  })
+
+  test('observed discovery event refreshes one peer without duplication', async () => {
+    const observations = createControllableAsyncIterator()
+    const events = createControllableAsyncIterator()
+    const session = scanSession(observations.iterable, events.iterable)
+    const createdManager = manager({ scan: jest.fn().mockResolvedValue(session) })
+    hookHarness.contextValue = { manager: createdManager, loading: false, error: null }
+
+    useDiscoveredPeers()
+    const cleanup = hookHarness.effects[0]()
+    await flush()
+    events.push(observedEvent('sensor', { name: null }))
+    await flush()
+    events.push(observedEvent('sensor', { name: 'Heart Strap' }))
+    await flush()
+    expect(peerIds()).toEqual(['sensor'])
+    expect(hookHarness.stateValues[0].peers[0].name).toBe('Heart Strap')
+
+    events.push(observedEvent('other'))
+    await flush()
+    events.push(observedEvent('sensor', { name: 'Heart Strap' }))
+    await flush()
+    expect(peerIds()).toEqual(['other', 'sensor'])
+    cleanup()
+  })
+
+  test('observations provide presence when events are absent', async () => {
+    const observations = createControllableAsyncIterator()
+    const session = scanSession(observations.iterable, undefined)
+    const createdManager = manager({ scan: jest.fn().mockResolvedValue(session) })
+    hookHarness.contextValue = { manager: createdManager, loading: false, error: null }
+
+    useDiscoveredPeers()
+    const cleanup = hookHarness.effects[0]()
+    await flush()
+    observations.push(observationItem('alpha', { name: 'A' }))
+    await flush()
+    observations.push(observationItem('beta'))
+    await flush()
+    observations.push(observationItem('alpha', { name: 'A2' }))
+    await flush()
+    expect(peerIds()).toEqual(['beta', 'alpha'])
+    expect(hookHarness.stateValues[0].peers[1].name).toBe('A2')
+    cleanup()
+  })
+
+  test('observation values do not double-insert when events are present', async () => {
+    const observations = createControllableAsyncIterator()
+    const events = createControllableAsyncIterator()
+    const session = scanSession(observations.iterable, events.iterable)
+    const createdManager = manager({ scan: jest.fn().mockResolvedValue(session) })
+    hookHarness.contextValue = { manager: createdManager, loading: false, error: null }
+
+    useDiscoveredPeers()
+    const cleanup = hookHarness.effects[0]()
+    await flush()
+    observations.push(observationItem('ghost'))
+    await flush()
+    expect(peerIds()).toEqual([])
+
+    events.push(observedEvent('sensor', { name: 'first' }))
+    await flush()
+    observations.push(observationItem('sensor', { name: 'richer' }))
+    observations.push(observationItem('ghost'))
+    await flush()
+    expect(peerIds()).toEqual(['sensor'])
+    expect(hookHarness.stateValues[0].peers[0].name).toBe('richer')
+    cleanup()
+  })
+
+  test.each([
+    ['events present', true],
+    ['events absent', false]
+  ])('peer map evicts oldest observation at 256 entries (%s)', async (_label, withEvents) => {
+    const observations = createControllableAsyncIterator()
+    const events = withEvents ? createControllableAsyncIterator() : undefined
+    const session = scanSession(observations.iterable, events?.iterable)
+    const createdManager = manager({ scan: jest.fn().mockResolvedValue(session) })
+    hookHarness.contextValue = { manager: createdManager, loading: false, error: null }
+
+    useDiscoveredPeers()
+    const cleanup = hookHarness.effects[0]()
+    await flush()
+    for (let index = 0; index < 257; index += 1) {
+      const id = `peer-${index}`
+      if (withEvents) events.push(observedEvent(id))
+      else observations.push(observationItem(id))
+    }
+    await flushMany()
+    const ids = peerIds()
+    expect(ids).toHaveLength(256)
+    expect(ids).not.toContain('peer-0')
+    expect(ids).toContain('peer-256')
+    expect(hookHarness.stateValues[0].error).toMatchObject({ normalized: { code: 'stream.overflow' } })
+    expect(hookHarness.stateValues[0].state).toBe('active')
+    cleanup()
+  })
+
+  test.each([
+    ['events present', true],
+    ['events absent', false]
+  ])('peer map evicts oldest observation above 256 KiB (%s)', async (_label, withEvents) => {
+    const observations = createControllableAsyncIterator()
+    const events = withEvents ? createControllableAsyncIterator() : undefined
+    const session = scanSession(observations.iterable, events?.iterable)
+    const createdManager = manager({ scan: jest.fn().mockResolvedValue(session) })
+    hookHarness.contextValue = { manager: createdManager, loading: false, error: null }
+    const advertisement = richAdvertisement(200_000)
+
+    useDiscoveredPeers()
+    const cleanup = hookHarness.effects[0]()
+    await flush()
+    if (withEvents) {
+      events.push(observedEvent('old', { lastAdvertisement: advertisement }))
+      events.push(observedEvent('new', { lastAdvertisement: advertisement }))
+    } else {
+      observations.push(observationItem('old', { lastAdvertisement: advertisement }))
+      observations.push(observationItem('new', { lastAdvertisement: advertisement }))
+    }
+    await flush()
+    expect(peerIds()).toEqual(['new'])
+    expect(hookHarness.stateValues[0].error).toMatchObject({ normalized: { code: 'stream.overflow' } })
+    expect(hookHarness.stateValues[0].state).toBe('active')
+    cleanup()
+  })
+
+  test.each([
+    ['events present', true],
+    ['events absent', false]
+  ])('cap eviction sets stream.overflow while scan remains active (%s)', async (_label, withEvents) => {
+    const observations = createControllableAsyncIterator()
+    const events = withEvents ? createControllableAsyncIterator() : undefined
+    const session = scanSession(observations.iterable, events?.iterable)
+    const createdManager = manager({ scan: jest.fn().mockResolvedValue(session) })
+    hookHarness.contextValue = { manager: createdManager, loading: false, error: null }
+
+    useDiscoveredPeers()
+    const cleanup = hookHarness.effects[0]()
+    await flush()
+    for (let index = 0; index < 257; index += 1) {
+      const id = `cap-${index}`
+      if (withEvents) events.push(observedEvent(id))
+      else observations.push(observationItem(id))
+    }
+    await flushMany()
+    expect(hookHarness.stateValues[0].state).toBe('active')
+    expect(hookHarness.stateValues[0].error).toMatchObject({
+      normalized: { code: 'stream.overflow', operation: 'react.useDiscoveredPeers.cap' }
+    })
+    if (withEvents) events.push(observedEvent('after-cap'))
+    else observations.push(observationItem('after-cap'))
+    await flush()
+    expect(hookHarness.stateValues[0].state).toBe('active')
+    expect(peerIds()).toContain('after-cap')
+    expect(peerIds()).toHaveLength(256)
+    cleanup()
+  })
+
+  test('options change manager replacement and unmount clear retained state', async () => {
+    const firstObservations = createControllableAsyncIterator()
+    const secondObservations = createControllableAsyncIterator()
+    const thirdObservations = createControllableAsyncIterator()
+    const firstSession = scanSession(firstObservations.iterable)
+    const secondSession = scanSession(secondObservations.iterable)
+    const thirdSession = scanSession(thirdObservations.iterable)
+    const firstManager = manager({
+      scan: jest.fn().mockResolvedValueOnce(firstSession).mockResolvedValueOnce(secondSession)
+    })
+    hookHarness.contextValue = { manager: firstManager, loading: false, error: null }
+
+    useDiscoveredPeers({ timeoutMs: 1_000 })
+    const firstCleanup = hookHarness.effects[0]()
+    await flush()
+    firstObservations.push(observationItem('keep'))
+    await flush()
+    expect(peerIds()).toEqual(['keep'])
+
+    firstCleanup()
+    hookHarness.rerender()
+    useDiscoveredPeers({ timeoutMs: 2_000 })
+    const secondCleanup = hookHarness.effects[0]()
+    await flush()
+    expect(peerIds()).toEqual([])
+    firstObservations.push(observationItem('stale'))
+    await flush()
+    expect(peerIds()).toEqual([])
+
+    secondObservations.push(observationItem('next'))
+    await flush()
+    expect(peerIds()).toEqual(['next'])
+
+    secondCleanup()
+    hookHarness.rerender()
+    const secondManager = manager({ scan: jest.fn().mockResolvedValue(thirdSession) })
+    hookHarness.contextValue = { manager: secondManager, loading: false, error: null }
+    useDiscoveredPeers({ timeoutMs: 2_000 })
+    const thirdCleanup = hookHarness.effects[0]()
+    await flush()
+    expect(peerIds()).toEqual([])
+    secondObservations.push(observationItem('from-old-manager'))
+    await flush()
+    expect(peerIds()).toEqual([])
+
+    thirdObservations.push(observationItem('third'))
+    await flush()
+    expect(peerIds()).toEqual(['third'])
+    thirdCleanup()
+    await flush()
+    expect(peerIds()).toEqual([])
+    expect(firstSession.stop).toHaveBeenCalledTimes(1)
+    expect(secondSession.stop).toHaveBeenCalledTimes(1)
+    expect(thirdSession.stop).toHaveBeenCalledTimes(1)
+  })
+
+  test.each([
+    ['events present', true],
+    ['events absent', false]
+  ])('observation and optional event iterators are returned exactly once (%s)', async (_label, withEvents) => {
+    const observations = createControllableAsyncIterator()
+    const events = withEvents ? createControllableAsyncIterator() : undefined
+    const session = scanSession(observations.iterable, events?.iterable)
+    const createdManager = manager({ scan: jest.fn().mockResolvedValue(session) })
+    hookHarness.contextValue = { manager: createdManager, loading: false, error: null }
+
+    useDiscoveredPeers()
+    const cleanup = hookHarness.effects[0]()
+    await flush()
+    cleanup()
+    await flush()
+    expect(observations.returnFn).toHaveBeenCalledTimes(1)
+    if (withEvents) expect(events.returnFn).toHaveBeenCalledTimes(1)
+    cleanup()
+    await flush()
+    expect(observations.returnFn).toHaveBeenCalledTimes(1)
+    if (withEvents) expect(events.returnFn).toHaveBeenCalledTimes(1)
+  })
+
+  test.each([
+    ['events present', true],
+    ['events absent', false]
+  ])('session stop is attempted exactly once after both iterator returns (%s)', async (_label, withEvents) => {
+    const observations = createControllableAsyncIterator()
+    const events = withEvents ? createControllableAsyncIterator() : undefined
+    const observationReturn = deferred()
+    const eventReturn = deferred()
+    observations.returnFn.mockImplementation(() =>
+      observationReturn.promise.then(() => {
+        observations.end()
+        return { done: true }
+      })
+    )
+    if (withEvents) {
+      events.returnFn.mockImplementation(() =>
+        eventReturn.promise.then(() => {
+          events.end()
+          return { done: true }
+        })
+      )
+    }
+    const session = scanSession(observations.iterable, events?.iterable)
+    const createdManager = manager({ scan: jest.fn().mockResolvedValue(session) })
+    hookHarness.contextValue = { manager: createdManager, loading: false, error: null }
+
+    useDiscoveredPeers()
+    const cleanup = hookHarness.effects[0]()
+    await flush()
+    cleanup()
+    await flush()
+    expect(observations.returnFn).toHaveBeenCalledTimes(1)
+    if (withEvents) expect(events.returnFn).toHaveBeenCalledTimes(1)
+    expect(session.stop).not.toHaveBeenCalled()
+
+    observationReturn.resolve()
+    await flush()
+    if (withEvents) {
+      expect(session.stop).not.toHaveBeenCalled()
+      eventReturn.resolve()
+      await flush()
+    }
+    expect(session.stop).toHaveBeenCalledTimes(1)
+    cleanup()
+    await flush()
+    expect(session.stop).toHaveBeenCalledTimes(1)
+  })
+
+  test('iterator-return and session-stop failures are all reported', async () => {
+    const observations = createControllableAsyncIterator()
+    const events = createControllableAsyncIterator()
+    const observationError = new Error('observation return failed')
+    const eventError = new Error('event return failed')
+    const stopError = new Error('session stop failed')
+    observations.returnFn.mockImplementation(async () => {
+      observations.end()
+      throw observationError
+    })
+    events.returnFn.mockImplementation(async () => {
+      events.end()
+      throw eventError
+    })
+    const session = scanSession(observations.iterable, events.iterable)
+    session.stop.mockRejectedValue(stopError)
+    const onError = jest.fn()
+    const createdManager = manager({ scan: jest.fn().mockResolvedValue(session) })
+    hookHarness.contextValue = { manager: createdManager, loading: false, error: null }
+    hookHarness.errorContextValue = onError
+
+    useDiscoveredPeers()
+    const cleanup = hookHarness.effects[0]()
+    await flush()
+    cleanup()
+    await flush()
+
+    expect(onError).toHaveBeenCalledWith(observationError)
+    expect(onError).toHaveBeenCalledWith(eventError)
+    expect(onError).toHaveBeenCalledWith(stopError)
+    expect(session.stop).toHaveBeenCalledTimes(1)
+  })
+
+  test.each([
+    ['events present', true],
+    ['events absent', false]
+  ])('per-update array length never exceeds 256 (%s)', async (_label, withEvents) => {
+    const observations = createControllableAsyncIterator()
+    const events = withEvents ? createControllableAsyncIterator() : undefined
+    const session = scanSession(observations.iterable, events?.iterable)
+    const createdManager = manager({ scan: jest.fn().mockResolvedValue(session) })
+    hookHarness.contextValue = { manager: createdManager, loading: false, error: null }
+
+    useDiscoveredPeers()
+    const lengths = []
+    let stored = hookHarness.stateValues[0]
+    Object.defineProperty(hookHarness.stateValues, '0', {
+      configurable: true,
+      enumerable: true,
+      get: () => stored,
+      set(value) {
+        stored = value
+        if (value && Array.isArray(value.peers)) lengths.push(value.peers.length)
+      }
+    })
+    const cleanup = hookHarness.effects[0]()
+    await flush()
+    for (let index = 0; index < 260; index += 1) {
+      const id = `len-${index}`
+      if (withEvents) events.push(observedEvent(id))
+      else observations.push(observationItem(id))
+    }
+    await flushMany()
+    expect(lengths.length).toBeGreaterThan(0)
+    expect(Math.max(...lengths)).toBeLessThanOrEqual(256)
+    expect(peerIds()).toHaveLength(256)
+    cleanup()
+    Object.defineProperty(hookHarness.stateValues, '0', {
+      configurable: true,
+      enumerable: true,
+      writable: true,
+      value: stored
+    })
   })
 
   test('reports a connection iterator cleanup rejection through the provider error callback', async () => {

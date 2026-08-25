@@ -63,6 +63,7 @@ import {
   type ConnectionWriteReadinessObservation,
   type ConnectionWriteReadinessWatch
 } from '../backend-contract/connection-controls'
+import { MAX_PUBLIC_SCAN_STATE_BYTES, MAX_PUBLIC_SCAN_STATE_ENTRIES } from './scan-state-budget'
 
 export type { ConnectionPriority } from '../backend-contract/connection-controls'
 
@@ -454,9 +455,6 @@ interface PublicScanFingerprint {
   readonly value: string
   readonly bytes: number
 }
-
-const MAX_PUBLIC_SCAN_STATE_ENTRIES = 256
-const MAX_PUBLIC_SCAN_STATE_BYTES = 256 * 1024
 
 type PublicScanEventTerminalReason = 'closed' | 'source-failed' | 'overflow' | 'owner-released'
 
