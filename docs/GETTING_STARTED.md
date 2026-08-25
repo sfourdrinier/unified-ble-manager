@@ -4,7 +4,7 @@
 
 This page gets you to a first scan, connect, read, notify, and teardown on React Native. Other hosts are linked at the bottom. The root import does not turn Bluetooth on.
 
-The current package is `4.0.4`.
+The current package is `4.0.5`.
 
 ## Pick a host
 
@@ -27,7 +27,7 @@ The current package is `4.0.4`.
 Pin the current package for a known native rebuild:
 
 ```sh
-pnpm add unified-ble-manager@4.0.4
+pnpm add unified-ble-manager@4.0.5
 ```
 
 Declare Android Bluetooth permissions and the BLE hardware feature yourself,
@@ -37,10 +37,10 @@ request runtime permissions on Android 12+, add
 #### Expo / CNG v2
 
 The Expo v2 schema and `unified-ble-manager/expo` factory are in the published
-`4.0.4` package. Pin that exact version:
+`4.0.5` package. Pin that exact version:
 
 ```sh
-pnpm add unified-ble-manager@4.0.4
+pnpm add unified-ble-manager@4.0.5
 ```
 
 The package does not run in Expo Go.
