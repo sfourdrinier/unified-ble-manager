@@ -699,7 +699,9 @@ function validateSemantics(manifest, errors, info, scenarios, validationAt) {
     if (nextDueAt !== null && info.capturedAt !== null) {
       if (nextDueAt < info.capturedAt) problem(errors, 'ownership.revalidation.nextDueAt', 'must be at or after execution.capturedAt')
       if (cadenceValid && nextDueAt > info.capturedAt + revalidation.cadenceDays * dayMilliseconds) problem(errors, 'ownership.revalidation.nextDueAt', 'must not exceed the declared revalidation cadence from execution.capturedAt')
-      if (nextDueAt < validationAt) problem(errors, 'ownership.revalidation.nextDueAt', 'evidence is stale and must be revalidated before publication')
+      if (nextDueAt < validationAt && (proof.supportGate === true || proof.status === 'passed')) {
+        problem(errors, 'ownership.revalidation.nextDueAt', 'evidence is stale and must be revalidated before publication')
+      }
     }
   }
 }
