@@ -2,7 +2,7 @@
 
 import type { BackendConnection, BackendSubscription, ConnectionLease, ScanLease } from '../../backend-contract/backend'
 import type { AdvertisementObservation } from '../../backend-contract/advertisement'
-import type { CleanupRecord } from '../../backend-contract/errors'
+import { contractError, type CleanupRecord } from '../../backend-contract/errors'
 import {
   createGattCharacteristicProperties,
   createGattDescriptorProperties,
@@ -35,7 +35,8 @@ import {
   type PeerId,
   type ScanSessionId,
   type ScanShareToken,
-  type SubscriptionId
+  type SubscriptionId,
+  type Uuid
 } from '../../backend-contract/primitives'
 import type { BoundedAsyncStream } from '../../backend-contract/streams'
 import type { BluezBackendRuntime } from './bluez-backend-runtime'
@@ -56,6 +57,49 @@ function bluezAccessRequirement(
   if (flags.includes(`authorize-${operation}`)) return 'authorized'
   if (flags.includes(operation) || flags.includes(`${operation}-without-response`)) return 'none'
   return 'unknown'
+}
+
+const DECIMAL_OCCURRENCE = /^(0|[1-9][0-9]*)$/
+
+function nextUuidOccurrence(counts: Map<string, number>, uuid: string): number {
+  const occurrence = counts.get(uuid) ?? 0
+  counts.set(uuid, occurrence + 1)
+  return occurrence
+}
+
+function recordAtUuidOccurrence<Record extends { readonly uuid: Uuid }>(
+  records: readonly Record[],
+  uuid: Uuid,
+  occurrence: string,
+  onMiss: () => never
+): Record {
+  if (!DECIMAL_OCCURRENCE.test(occurrence)) {
+    return onMiss()
+  }
+  const index = Number(occurrence)
+  let seen = 0
+  for (const record of records) {
+    if (record.uuid !== uuid) {
+      continue
+    }
+    if (seen === index) {
+      return record
+    }
+    seen += 1
+  }
+  return onMiss()
+}
+
+function requireServiceOccurrence(
+  occurrences: ReadonlyMap<string, GenerationId<'service-occurrence', string>>,
+  objectPath: string,
+  operation: string
+): GenerationId<'service-occurrence', string> {
+  const occurrence = occurrences.get(objectPath)
+  if (occurrence === undefined) {
+    throw contractError('protocol.violation', 'gatt', operation)
+  }
+  return occurrence
 }
 
 export const releasedBluezCleanup: CleanupRecord = Object.freeze({ state: 'released', failures: Object.freeze([]) })
@@ -157,32 +201,50 @@ export class BluezGattDatabase implements GattDatabase<string, string, string> {
     const services: Service<string, string, string, string>[] = []
     const characteristics: Characteristic<string, string, string, string, string>[] = []
     const descriptors: Descriptor<string, string, string, string, string, string>[] = []
+    const serviceCounts = new Map<string, number>()
+    const serviceOccurrenceByObjectPath = new Map<string, GenerationId<'service-occurrence', string>>()
+    for (const service of this.snapshotRecord.services) {
+      serviceOccurrenceByObjectPath.set(
+        service.objectPath,
+        opaqueId(
+          String(nextUuidOccurrence(serviceCounts, service.uuid)),
+          'service-occurrence',
+          String(this.path.databaseId)
+        )
+      )
+    }
     for (const service of this.snapshotRecord.services) {
       const servicePath = {
         ...this.path,
         serviceUuid: service.uuid,
-        serviceOccurrence: opaqueId(service.objectPath, 'service-occurrence', String(this.path.databaseId))
+        serviceOccurrence: requireServiceOccurrence(
+          serviceOccurrenceByObjectPath,
+          service.objectPath,
+          'bluez.gatt.service-occurrence'
+        )
       }
       services.push(
         Object.freeze({
           path: Object.freeze(servicePath),
           primary: service.primary,
+          // An included service can reference a BlueZ object outside this
+          // snapshot; such a link has no occurrence in this database and is
+          // omitted rather than failing the whole snapshot.
           includedServices: Object.freeze(
-            service.includedServices.map(included =>
-              Object.freeze({
-                uuid: included.uuid,
-                occurrence: opaqueId(included.objectPath, 'service-occurrence', String(this.path.databaseId))
-              })
-            )
+            service.includedServices.flatMap(included => {
+              const occurrence = serviceOccurrenceByObjectPath.get(included.objectPath)
+              return occurrence === undefined ? [] : [Object.freeze({ uuid: included.uuid, occurrence })]
+            })
           )
         })
       )
+      const characteristicCounts = new Map<string, number>()
       for (const characteristic of service.characteristics) {
         const characteristicPath: CharacteristicPath<string, string, string, string, string, 'current'> = {
           ...servicePath,
           characteristicUuid: characteristic.uuid,
           characteristicOccurrence: opaqueId(
-            characteristic.objectPath,
+            String(nextUuidOccurrence(characteristicCounts, characteristic.uuid)),
             'characteristic-occurrence',
             String(servicePath.serviceOccurrence)
           ),
@@ -209,12 +271,13 @@ export class BluezGattDatabase implements GattDatabase<string, string, string> {
             })
           })
         )
+        const descriptorCounts = new Map<string, number>()
         for (const descriptor of characteristic.descriptors) {
           const descriptorPath: DescriptorPath<string, string, string, string, string, string, 'current'> = {
             ...characteristicPath,
             descriptorUuid: descriptor.uuid,
             descriptorOccurrence: opaqueId(
-              descriptor.objectPath,
+              String(nextUuidOccurrence(descriptorCounts, descriptor.uuid)),
               'descriptor-occurrence',
               String(characteristicPath.characteristicOccurrence)
             )
@@ -323,22 +386,22 @@ export class BluezGattDatabase implements GattDatabase<string, string, string> {
     operation: string
   ): string {
     this.assertPathBase(path, operation)
-    for (const service of this.snapshotRecord.services) {
-      if (service.objectPath !== String(path.serviceOccurrence) || service.uuid !== path.serviceUuid) {
-        continue
-      }
-      const characteristic = service.characteristics.find(
-        candidate =>
-          candidate.objectPath === String(path.characteristicOccurrence) && candidate.uuid === path.characteristicUuid
-      )
-      if (
-        characteristic !== undefined &&
-        this.runtime.store.hasInterface(characteristic.objectPath, BLUEZ_GATT_CHARACTERISTIC_INTERFACE)
-      ) {
-        return characteristic.objectPath
-      }
+    const service = recordAtUuidOccurrence(
+      this.snapshotRecord.services,
+      path.serviceUuid,
+      String(path.serviceOccurrence),
+      () => this.runtime.throwStale(operation)
+    )
+    const characteristic = recordAtUuidOccurrence(
+      service.characteristics,
+      path.characteristicUuid,
+      String(path.characteristicOccurrence),
+      () => this.runtime.throwStale(operation)
+    )
+    if (!this.runtime.store.hasInterface(characteristic.objectPath, BLUEZ_GATT_CHARACTERISTIC_INTERFACE)) {
+      this.runtime.throwStale(operation)
     }
-    this.runtime.throwStale(operation)
+    return characteristic.objectPath
   }
 
   resolveDescriptorPath(
@@ -346,30 +409,28 @@ export class BluezGattDatabase implements GattDatabase<string, string, string> {
     operation: string
   ): string {
     this.assertPathBase(path, operation)
-    for (const service of this.snapshotRecord.services) {
-      if (service.objectPath !== String(path.serviceOccurrence) || service.uuid !== path.serviceUuid) {
-        continue
-      }
-      for (const characteristic of service.characteristics) {
-        if (
-          characteristic.objectPath !== String(path.characteristicOccurrence) ||
-          characteristic.uuid !== path.characteristicUuid
-        ) {
-          continue
-        }
-        const descriptor = characteristic.descriptors.find(
-          candidate =>
-            candidate.objectPath === String(path.descriptorOccurrence) && candidate.uuid === path.descriptorUuid
-        )
-        if (
-          descriptor !== undefined &&
-          this.runtime.store.hasInterface(descriptor.objectPath, BLUEZ_GATT_DESCRIPTOR_INTERFACE)
-        ) {
-          return descriptor.objectPath
-        }
-      }
+    const service = recordAtUuidOccurrence(
+      this.snapshotRecord.services,
+      path.serviceUuid,
+      String(path.serviceOccurrence),
+      () => this.runtime.throwStale(operation)
+    )
+    const characteristic = recordAtUuidOccurrence(
+      service.characteristics,
+      path.characteristicUuid,
+      String(path.characteristicOccurrence),
+      () => this.runtime.throwStale(operation)
+    )
+    const descriptor = recordAtUuidOccurrence(
+      characteristic.descriptors,
+      path.descriptorUuid,
+      String(path.descriptorOccurrence),
+      () => this.runtime.throwStale(operation)
+    )
+    if (!this.runtime.store.hasInterface(descriptor.objectPath, BLUEZ_GATT_DESCRIPTOR_INTERFACE)) {
+      this.runtime.throwStale(operation)
     }
-    this.runtime.throwStale(operation)
+    return descriptor.objectPath
   }
 
   private assertPathBase(

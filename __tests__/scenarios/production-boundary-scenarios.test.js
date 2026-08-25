@@ -197,12 +197,50 @@ function bluezCharacteristicObject(path, servicePath) {
   }
 }
 
+function bluezInterfaceProperty(object, interfaceName, property) {
+  const found = object.interfaces.find(candidate => candidate.name === interfaceName)
+  return found === undefined ? undefined : found.properties[property]?.value
+}
+
+function bluezRecordAtUuidOccurrence(objects, uuid, occurrence, describe) {
+  const matches = objects.filter(object => object.uuid === uuid).sort((left, right) => left.path.localeCompare(right.path))
+  const match = matches[Number(occurrence)]
+  if (match === undefined) {
+    throw new Error(`BlueZ scenario controller could not resolve ${describe} ${uuid}#${String(occurrence)}`)
+  }
+  return match
+}
+
+// The public facade addresses attributes by decimal per-UUID occurrence, never by
+// D-Bus object path. Mirror the snapshot ordering (object paths sorted lexically,
+// occurrence counted per UUID within the parent) to translate a public
+// characteristic path back into the boundary object the controller must drive.
+function bluezCharacteristicObjectPath(objects, path) {
+  const services = objects
+    .filter(object => bluezInterfaceProperty(object, BLUEZ_GATT_SERVICE_INTERFACE, 'Device') === devicePath)
+    .map(object => ({ path: object.path, uuid: bluezInterfaceProperty(object, BLUEZ_GATT_SERVICE_INTERFACE, 'UUID') }))
+  const service = bluezRecordAtUuidOccurrence(services, path.serviceUuid, String(path.serviceOccurrence), 'service')
+  const characteristics = objects
+    .filter(object => bluezInterfaceProperty(object, BLUEZ_GATT_CHARACTERISTIC_INTERFACE, 'Service') === service.path)
+    .map(object => ({
+      path: object.path,
+      uuid: bluezInterfaceProperty(object, BLUEZ_GATT_CHARACTERISTIC_INTERFACE, 'UUID')
+    }))
+  return bluezRecordAtUuidOccurrence(
+    characteristics,
+    path.characteristicUuid,
+    String(path.characteristicOccurrence),
+    'characteristic'
+  ).path
+}
+
 function createBluezScenarioFactory() {
   return {
     backendId: 'unified-ble:bluez-dbus',
     platformId: 'unified-ble:linux-bluez',
     create: async () => {
-      const boundary = new InMemoryBluezBoundary({ objects: bluezManagedObjects() })
+      const managedObjects = bluezManagedObjects()
+      const boundary = new InMemoryBluezBoundary({ objects: managedObjects })
       boundary.onCall(
         bluezCharacteristicPath,
         BLUEZ_GATT_CHARACTERISTIC_INTERFACE,
@@ -230,7 +268,7 @@ function createBluezScenarioFactory() {
           },
           emitNotification: (path, value) => {
             boundary.objectManager.emitPropertiesChanged(
-              String(path.characteristicOccurrence),
+              bluezCharacteristicObjectPath(managedObjects, path),
               BLUEZ_GATT_CHARACTERISTIC_INTERFACE,
               { Value: { signature: 'ay', value } }
             )

@@ -200,7 +200,21 @@ describe('CoreBluetooth late-operation quarantine', () => {
 
       await expect(stop).resolves.toMatchObject({
         state: 'release-failed',
-        failures: [{ resourceKind: 'scan', error: { code: 'operation.timed-out', domain: 'cleanup' } }]
+        failures: [
+          {
+            resourceKind: 'scan',
+            error: {
+              code: 'operation.timed-out',
+              domain: 'cleanup',
+              operation: 'direct-gatt.scan.stop',
+              platform: {
+                domain: COREBLUETOOTH_PLATFORM_ID,
+                code: 'scan-stop-timeout',
+                safeMessage: 'Native scan stop did not complete before the cleanup deadline.'
+              }
+            }
+          }
+        ]
       })
       expect(stopScanCalls).toBe(1)
       expect(backend.resourceCounters()).toMatchObject({ activeScanControllers: 1, scanConsumers: 1 })
