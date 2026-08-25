@@ -4,6 +4,21 @@ All notable changes to `unified-ble-manager` are documented here.
 
 ## [Unreleased]
 
+## [4.0.3] - 2026-08-25
+
+Lifecycle ownership is explicit through clone/decode, public stream close, IPC admission, Web/Tauri teardown, backend unregister/overflow native release, and React hook store/terminal cleanup. Does not retag `v4.0.2`.
+
+### Fixes
+
+- Serializable clone/decode stays fail-closed; public stream close, scan stop, and IPC/Web/Tauri teardown no longer drop `release-failed` or skip native disconnect (#58, #59, #75, #60, #72, #63, #73, #76, #74, #79, #67, #77, #78).
+- Adapter, security, and event-stream close/overflow keep backend ownership until native release succeeds; overflowing CoreBluetooth scan owners do not stop remaining joiners (#61, #68, #69, #70, #71).
+- React adapter-state watches cannot wedge or double-own a run; `useDiscoveredPeers` is bounded and honors lost-peer events; connection and characteristic hooks leave loading with a fail-visible terminal (#62, #65, #66).
+
+### Release integrity
+
+- Cut from the exact post-PR #105 `main` merge commit through the tag-driven trusted-publishing workflow.
+- Intended for publication as `latest`; this does not promote backend support labels or claim physical-radio evidence.
+
 ## [4.0.2] - 2026-08-24
 
 Public coalesced scans no longer lose duplicate suppression after lost-peer or presence-cap churn: fingerprint deletions now decrement the retained-byte counter. IPC pre-registration buffering is globally bounded (ID/item/byte/age) with fail-visible tombstones. Connection release attempts `connection.disconnect` even when lifecycle unsubscribe rejects or returns `release-failed`, and preserves both cleanup failures. Does not retag `v4.0.1`.

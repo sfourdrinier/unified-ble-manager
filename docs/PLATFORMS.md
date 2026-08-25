@@ -8,7 +8,7 @@ This page is an evidence index, not a static compatibility matrix. An applicatio
 
 ## Package stability and backend support are separate
 
-`unified-ble-manager@4.0.2` is the published **stable package/API** for the 4.x contract; it is immutable. Backend support labels remain evidence-derived and independent of this SemVer. Immutable `4.0.0` and `4.0.1` remain published history.
+`unified-ble-manager@4.0.3` is the published **stable package/API** for the 4.x contract; it is immutable. Backend support labels remain evidence-derived and independent of this SemVer. Immutable `4.0.0`, `4.0.1`, and `4.0.2` remain published history.
 
 This package is the portable API/semantics freeze; it does **not** mean every first-party backend is
 automatically Preview, Supported, or Reliability-qualified.
