@@ -11,6 +11,14 @@ import type {
  * Typed, bytes-first boundary between the CoreBluetooth addon and the shared
  * backend. Native peripheral identifiers remain inside this boundary; callers
  * only receive backend-issued opaque identities.
+ *
+ * `peer:address-targeting` (the `addresses` scan clause and the address form of
+ * `connect()`) deliberately does not revise this decision for CoreBluetooth:
+ * the platform cannot bootstrap a connection from a radio address at all, so
+ * this backend keeps the capability unregistered and fails closed with
+ * `capability.unsupported`. Re-entry to a known peer on Apple platforms remains
+ * the durable `PeerReference`/restoration path, which never exports the native
+ * CBPeripheral identifier across this boundary.
  */
 export interface CoreBluetoothAdapterSnapshot {
   readonly availability: 'available' | 'unavailable' | 'unsupported' | 'unknown'

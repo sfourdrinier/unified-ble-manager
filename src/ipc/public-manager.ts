@@ -25,6 +25,7 @@ import type {
   MaximumWriteLengthObservation,
   MtuNegotiation,
   MtuObservation,
+  PeerAddress,
   PhyObservation,
   PhyPreference,
   PhyUpdateResult,
@@ -46,6 +47,7 @@ import {
   publicConnectionTerminalError,
   filterScanObservations,
   findPeerInScan,
+  isPeerAddressTarget,
   snapshotBlePeer
 } from '../public/ble-manager'
 import type {
@@ -190,7 +192,7 @@ export class IpcPublicManagerAdapter implements BleManager {
   }
 
   async connect(
-    peer: BlePeer | string | PeerReference,
+    peer: BlePeer | string | PeerReference | PeerAddress,
     options: ConnectOptions = {}
   ): Promise<import('../public/ble-manager').BleConnection> {
     try {
@@ -198,6 +200,13 @@ export class IpcPublicManagerAdapter implements BleManager {
       const normalized = normalizeOperationOptions(options, () => globalThis.performance.now())
       assertIpcConnectionOptions(options)
       assertDirectConnectionCapability(this.capabilities.get('connection:direct'), 'ipc-public-manager.connect.direct')
+      if (isPeerAddressTarget(peer)) {
+        assertDirectConnectionCapability(
+          this.capabilities.get('peer:address-targeting'),
+          'ipc-public-manager.connect.address'
+        )
+        throw contractError('capability.unsupported', 'connection', 'ipc-public-manager.connect.address')
+      }
       if (isReferenceLike(peer) && !isPeerReference(peer)) {
         throw contractError('peer.reference-invalid', 'connection', 'ipc-public-manager.connect-reference')
       }

@@ -5,7 +5,12 @@ import type { ScanOptions as InternalScanOptions } from '../backend-contract/adv
 import type { ConnectionLifecycleCause, ConnectionLifecycleEvent } from '../backend-contract/connection-lifecycle'
 import { contractError, type CleanupRecord } from '../backend-contract/errors'
 import type { BackendIdentity } from '../backend-contract/identity'
-import { capacity, canonicalUuid, createAttachmentBoundPeerId } from '../backend-contract/primitives'
+import {
+  capacity,
+  canonicalBleAddress,
+  canonicalUuid,
+  createAttachmentBoundPeerId
+} from '../backend-contract/primitives'
 import type { PeerId } from '../backend-contract/primitives'
 import type { BleManager as InternalBleManager } from '../manager/ble-manager'
 import type { BleManagerOptions } from '../manager/ble-manager'
@@ -43,6 +48,7 @@ import {
   normalizeScanQuery,
   observationMatchesScanQuery,
   type NormalizedScanObservation,
+  type NormalizedScanQuery,
   type ScanQuery
 } from './scan-query'
 import { createScanState } from './scan-state'
@@ -50,12 +56,12 @@ import type { BlePeerDirectory, BlePeerState, PeerSource } from './peer-director
 import { createPublicPeerDirectory } from './peer-directory'
 import { encodePeerReference, isPeerReference, snapshotPeerReference } from './peer-reference'
 import type { PeerReference } from './peer-reference'
-import type { ResourceCounters } from '../backend-contract/backend'
+import type { PeerAddressDescriptor, ResourceCounters } from '../backend-contract/backend'
 import type { ScanPlan } from '../backend-contract/scan-planning'
 export type { ScanPlan } from '../backend-contract/scan-planning'
 import { createPublicSecurity } from './security'
 import type { BleSecurity } from './security'
-import type { Limitation } from '../backend-contract/capabilities'
+import type { CapabilityDescriptor, Limitation } from '../backend-contract/capabilities'
 import {
   MAXIMUM_REQUESTED_ATT_MTU,
   MINIMUM_ATT_MTU,
@@ -74,6 +80,19 @@ type PublicInternalManager<
 
 export type GattSubscriptionValue = GattValueEvent
 export type ConnectionIntent = 'direct' | 'when-available'
+
+/**
+ * Out-of-band address entry form for `connect()` (NFC, QR codes, persisted state) minted
+ * without a prior scan. Address targeting only works for peers using public/static
+ * addresses; devices using resolvable private addresses need the durable `PeerReference`
+ * form instead. Requires the `peer:address-targeting` capability and fails closed with
+ * `capability.unsupported` on backends that do not implement it.
+ */
+export interface PeerAddress {
+  readonly address: string
+  /** Defaults to 'public'. */
+  readonly addressType?: 'public' | 'random'
+}
 export interface ConnectOptions extends OperationOptions {
   readonly intent?: ConnectionIntent
   readonly transport?: 'le' | 'auto'
@@ -375,15 +394,15 @@ export interface BleManager {
   scan(options?: ScanOptions): Promise<ScanSession>
   find(options?: FindOptions): Promise<BlePeer>
   choose(options?: ChooseOptions): Promise<BlePeer>
-  connect(peer: BlePeer | string | PeerReference, options?: ConnectOptions): Promise<BleConnection>
+  connect(peer: BlePeer | string | PeerReference | PeerAddress, options?: ConnectOptions): Promise<BleConnection>
   withConnection<T>(
-    peer: BlePeer | string | PeerReference,
+    peer: BlePeer | string | PeerReference | PeerAddress,
     options: ConnectOptions,
     action: (connection: BleConnection) => Promise<T>
   ): Promise<T>
   withScan<T>(options: ScanOptions, action: (scan: ScanSession) => Promise<T>): Promise<T>
   withDiscoveredConnection<T>(
-    peer: BlePeer | string | PeerReference,
+    peer: BlePeer | string | PeerReference | PeerAddress,
     options: ConnectOptions,
     action: (scope: { readonly connection: BleConnection; readonly gatt: GattDatabase }) => Promise<T>
   ): Promise<T>
@@ -1377,6 +1396,13 @@ class PublicBleManager<Attachment extends string, Identity extends BackendIdenti
       const { signal, deadline } = normalizeOperationOptions(options, this.now)
       const delivery = resolveStreamPolicy(options.delivery ?? 'balanced')
       const normalizedQuery = normalizeScanQuery(options.query)
+      if (scanQueryTargetsAddresses(normalizedQuery)) {
+        assertAddressTargetingCapability(
+          this.internal.capability('peer:address-targeting'),
+          'scan',
+          'public-ble-manager.scan.addresses'
+        )
+      }
       const reportLostAfterMs = options.observation?.reportLostAfterMs
       if (options.observation?.includeRawAdvertisement === true) {
         throw contractError('capability.unsupported', 'scan', 'public-ble-manager.scan.raw-advertisement')
@@ -1531,7 +1557,10 @@ class PublicBleManager<Attachment extends string, Identity extends BackendIdenti
     }
   }
 
-  async connect(peer: BlePeer | string | PeerReference, options: ConnectOptions = {}): Promise<BleConnection> {
+  async connect(
+    peer: BlePeer | string | PeerReference | PeerAddress,
+    options: ConnectOptions = {}
+  ): Promise<BleConnection> {
     try {
       assertPublicConnectOptions(options)
       const { signal, deadline } = normalizeOperationOptions(options, this.now)
@@ -1546,10 +1575,26 @@ class PublicBleManager<Attachment extends string, Identity extends BackendIdenti
       if (options.preferredPhy !== undefined && !this.internal.supports('connection:phy')) {
         throw contractError('capability.unsupported', 'connection', 'public-ble-manager.connect.preferred-phy')
       }
-      if (isReferenceLike(peer) && !isPeerReference(peer)) {
+      let resolvedPeer: BlePeer | string | null
+      if (isPeerAddressTarget(peer)) {
+        const target = snapshotPeerAddress(peer, 'public-ble-manager.connect.address')
+        assertAddressTargetingCapability(
+          this.internal.capability('peer:address-targeting'),
+          'connection',
+          'public-ble-manager.connect.address'
+        )
+        const connections = this.internal.attachedBackend?.backend.connections
+        if (connections?.peerFromAddress === undefined) {
+          throw contractError('capability.unsupported', 'connection', 'public-ble-manager.connect.address')
+        }
+        resolvedPeer = String(connections.peerFromAddress(target))
+      } else if (isPeerReference(peer)) {
+        resolvedPeer = await this.peers.resolve(peer, options)
+      } else if (isReferenceLike(peer)) {
         throw contractError('peer.reference-invalid', 'connection', 'public-ble-manager.connect-reference')
+      } else {
+        resolvedPeer = peer
       }
-      const resolvedPeer = isPeerReference(peer) ? await this.peers.resolve(peer, options) : peer
       if (resolvedPeer === null)
         throw rehydratePublicError(
           contractError('peer.not-found', 'connection', 'public-ble-manager.connect-reference')
@@ -1619,7 +1664,7 @@ class PublicBleManager<Attachment extends string, Identity extends BackendIdenti
   }
 
   async withConnection<T>(
-    peer: BlePeer | string | PeerReference,
+    peer: BlePeer | string | PeerReference | PeerAddress,
     options: ConnectOptions,
     action: (connection: BleConnection) => Promise<T>
   ): Promise<T> {
@@ -1639,7 +1684,7 @@ class PublicBleManager<Attachment extends string, Identity extends BackendIdenti
   }
 
   async withDiscoveredConnection<T>(
-    peer: BlePeer | string | PeerReference,
+    peer: BlePeer | string | PeerReference | PeerAddress,
     options: ConnectOptions,
     action: (scope: { readonly connection: BleConnection; readonly gatt: GattDatabase }) => Promise<T>
   ): Promise<T> {
@@ -2211,6 +2256,43 @@ function projectPublicScanObservation<Attachment extends string>(
   })
   const observedAtMonotonicMs = isCompact ? null : Number(observation.receivedAtMonotonicMs)
   return Object.freeze({ ...normalized, peer, observedAtMonotonicMs })
+}
+
+function scanQueryTargetsAddresses(query: NormalizedScanQuery): boolean {
+  return [...(query.anyOf ?? []), ...(query.exclude ?? [])].some(clause => clause.addresses !== null)
+}
+
+function assertAddressTargetingCapability(
+  descriptor: CapabilityDescriptor | null | undefined,
+  domain: 'scan' | 'connection',
+  operation: string
+): void {
+  if (descriptor === undefined || descriptor === null || descriptor.state === 'unsupported') {
+    throw contractError('capability.unsupported', domain, operation)
+  }
+  if (descriptor.state === 'unavailable') {
+    throw contractError('capability.unavailable', domain, operation)
+  }
+}
+
+export function isPeerAddressTarget(value: unknown): value is PeerAddress {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
+  if (!('address' in value)) return false
+  return Object.keys(value).every(key => key === 'address' || key === 'addressType')
+}
+
+function snapshotPeerAddress(value: PeerAddress, operation: string): PeerAddressDescriptor {
+  const addressType = value.addressType ?? 'public'
+  if (addressType !== 'public' && addressType !== 'random') {
+    throw contractError('argument.invalid', 'connection', operation)
+  }
+  let address: string
+  try {
+    address = canonicalBleAddress(value.address)
+  } catch {
+    throw contractError('argument.invalid', 'connection', operation)
+  }
+  return Object.freeze({ address, addressType })
 }
 
 function isReferenceLike(value: unknown): value is object {

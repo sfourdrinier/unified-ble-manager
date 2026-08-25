@@ -10,6 +10,12 @@ export const BUILT_IN_FEATURE_IDS = Object.freeze({
   discoverySystemChooser: 'discovery:system-chooser',
   discoveryAdvertisementWatch: 'discovery:advertisement-watch',
   peerResolveReference: 'peer:resolve-reference',
+  /**
+   * The backend can target a peer by an out-of-band radio address: the `addresses` scan
+   * clause and the address form of `connect()`. Only public/static addresses are
+   * addressable; peers using resolvable private addresses need a durable `PeerReference`.
+   */
+  peerAddressTargeting: 'peer:address-targeting',
   peerKnown: 'peer:known',
   peerSystemConnected: 'peer:system-connected',
   peerBonded: 'peer:bonded',
