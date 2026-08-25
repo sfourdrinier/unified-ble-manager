@@ -747,6 +747,9 @@ export function useDiscoveredPeers(options: ScanOptions = {}): UseDiscoveredPeer
 
     const stopRun = (): Promise<void> => {
       if (stopAttempt !== null) return stopAttempt
+      if (session !== null && !sessionReleased) {
+        parkScanStop(manager, session)
+      }
       const attempt = (async () => {
         await Promise.all([
           returnIterator(
@@ -765,16 +768,9 @@ export function useDiscoveredPeers(options: ScanOptions = {}): UseDiscoveredPeer
           )
         ])
         if (!sessionReleased && session !== null) {
-          const currentSession = session
-          try {
-            const cleanup = await currentSession.stop()
-            if (cleanup.state === 'release-failed') {
-              reportCleanupFailure(cleanup, reportError, 'scan session stop')
-            } else {
-              sessionReleased = true
-            }
-          } catch (reason) {
-            reportError(toError(reason))
+          const cleanup = await completeScanStop(manager, session, reportError)
+          if (cleanup.state === 'released') {
+            sessionReleased = true
           }
         }
         peers.clear()
@@ -826,6 +822,22 @@ export function useDiscoveredPeers(options: ScanOptions = {}): UseDiscoveredPeer
 
     const run = async (): Promise<void> => {
       try {
+        const retained = await settleRetainedScan(manager, reportError)
+        if (!active) return
+        if (retained !== null && retained.state !== 'released') {
+          if (isCurrentGeneration()) {
+            setResult({
+              peers: [],
+              state: 'failed',
+              error:
+                retainedByManager.get(manager)?.scan?.lastError ??
+                overflowError ??
+                consumeError ??
+                new Error('BLE scan session stop reported release-failed')
+            })
+          }
+          return
+        }
         session = await manager.scan(stableOptions)
         observationIterator = session.observations[Symbol.asyncIterator]()
         eventIterator =
@@ -939,6 +951,7 @@ export function useCharacteristicValue(
   characteristic: GattCharacteristic | null,
   options: GattSubscribeOptions = {}
 ): UseCharacteristicValueResult {
+  const { manager } = useBle()
   const reportError = useReactErrorReporter()
   const generationRef = React.useRef(0)
   const [result, setResult] = React.useState<UseCharacteristicValueResult>({
@@ -990,20 +1003,12 @@ export function useCharacteristicValue(
       }
       const current = subscription
       if (current === null) return Promise.resolve()
-      const attempt = (async (): Promise<CleanupResult> => {
-        try {
-          const cleanup = await current.remove()
-          if (cleanup.state === 'release-failed') {
-            reportCleanupFailure(cleanup, reportError, 'characteristic subscription remove')
-            return cleanup
-          }
-          removeReleased = true
+      const attempt = retainSubscriptionAttempt(characteristic, manager, () => current.remove(), reportError).then(
+        cleanup => {
+          if (cleanup.state === 'released') removeReleased = true
           return cleanup
-        } catch (reason) {
-          reportError(toError(reason))
-          throw reason
         }
-      })()
+      )
       removeAttempt = attempt.finally(() => {
         if (!removeReleased) removeAttempt = null
       })
@@ -1015,6 +1020,18 @@ export function useCharacteristicValue(
 
     const observe = async (): Promise<void> => {
       try {
+        const retained = await settleRetainedSubscription(characteristic, reportError)
+        if (!active) return
+        if (retained !== null && retained.state !== 'released') {
+          publish({
+            value: latestValue,
+            loading: false,
+            error:
+              retainedByCharacteristic.get(characteristic)?.cleanup.lastError ??
+              new Error('BLE characteristic subscription remove reported release-failed')
+          })
+          return
+        }
         subscription = await characteristic.subscribe({
           ...stableOptions,
           stream: stableOptions.stream ?? 'balanced'
@@ -1069,7 +1086,7 @@ export function useCharacteristicValue(
       }
       observeRejected(() => removeSubscription(), reportError)
     }
-  }, [characteristic, characteristicChanged, optionsKey, signal, stableOptions, reportError])
+  }, [characteristic, characteristicChanged, optionsKey, signal, stableOptions, reportError, manager])
   return characteristic === null
     ? { value: null, loading: false, error: null }
     : characteristicChanged
@@ -1234,6 +1251,8 @@ class ManagerLease {
     }
 
     try {
+      const adopted = await adoptRetainedHookCleanups(manager, report)
+      if (!adopted) return false
       const cleanup = await manager.destroy()
       if (cleanup.state === 'release-failed') {
         reportCleanupFailure(cleanup, report, 'manager destroy')
@@ -1247,10 +1266,206 @@ class ManagerLease {
   }
 }
 
-function reportCleanupFailure(cleanup: CleanupResult, report: (error: Error) => void, resource: string): void {
+function reportCleanupFailure(cleanup: CleanupResult, report: (error: Error) => void, resource: string): Error {
   const error = new Error(`BLE ${resource} reported release-failed`)
   Object.defineProperty(error, 'cleanup', { value: cleanup, enumerable: true })
   report(error)
+  return error
+}
+
+type HookCleanupKind = 'scan' | 'subscription'
+
+interface RetainedHookCleanup {
+  readonly kind: HookCleanupKind
+  readonly retry: () => Promise<CleanupResult>
+  inFlight: Promise<CleanupResult> | null
+  lastError: Error | null
+  completeParked: ((cleanup: CleanupResult) => void) | null
+  clear(): void
+}
+
+interface ManagerRetainedHookCleanups {
+  scan: RetainedHookCleanup | null
+  readonly subscriptions: Map<object, RetainedHookCleanup>
+}
+
+const retainedByManager = new WeakMap<BleManager, ManagerRetainedHookCleanups>()
+const retainedByCharacteristic = new WeakMap<object, { manager: BleManager | null; cleanup: RetainedHookCleanup }>()
+
+function managerCleanups(manager: BleManager): ManagerRetainedHookCleanups {
+  const existing = retainedByManager.get(manager)
+  if (existing !== undefined) return existing
+  const created: ManagerRetainedHookCleanups = { scan: null, subscriptions: new Map() }
+  retainedByManager.set(manager, created)
+  return created
+}
+
+function finishParked(entry: RetainedHookCleanup, cleanup: CleanupResult): void {
+  const complete = entry.completeParked
+  entry.completeParked = null
+  if (cleanup.state === 'released') {
+    entry.clear()
+  } else {
+    entry.inFlight = null
+  }
+  if (complete !== null) complete(cleanup)
+}
+
+function parkScanStop(manager: BleManager, session: ScanSession): void {
+  const bucket = managerCleanups(manager)
+  if (bucket.scan === null) {
+    const entry: RetainedHookCleanup = {
+      kind: 'scan',
+      retry: () => session.stop(),
+      inFlight: null,
+      lastError: null,
+      completeParked: null,
+      clear() {
+        if (bucket.scan === entry) bucket.scan = null
+      }
+    }
+    bucket.scan = entry
+  }
+  const parked = bucket.scan
+  if (parked.inFlight === null) {
+    parked.inFlight = new Promise<CleanupResult>(resolve => {
+      parked.completeParked = resolve
+    })
+  }
+}
+
+async function completeScanStop(
+  manager: BleManager,
+  session: ScanSession,
+  report: (error: Error) => void
+): Promise<CleanupResult> {
+  const entry = managerCleanups(manager).scan
+  try {
+    const cleanup = await session.stop()
+    if (entry !== null) {
+      if (cleanup.state === 'release-failed') {
+        entry.lastError = reportCleanupFailure(cleanup, report, 'scan session stop')
+      }
+      finishParked(entry, cleanup)
+    } else if (cleanup.state === 'release-failed') {
+      reportCleanupFailure(cleanup, report, 'scan session stop')
+    }
+    return cleanup
+  } catch (reason) {
+    const error = toError(reason)
+    report(error)
+    const cleanup: CleanupResult = { state: 'release-failed', failures: [] }
+    if (entry !== null) {
+      entry.lastError = error
+      finishParked(entry, cleanup)
+    }
+    return cleanup
+  }
+}
+
+async function executeRetainedRetry(
+  entry: RetainedHookCleanup,
+  report: (error: Error) => void,
+  resource: string
+): Promise<CleanupResult> {
+  try {
+    const cleanup = await entry.retry()
+    if (cleanup.state === 'release-failed') {
+      entry.lastError = reportCleanupFailure(cleanup, report, resource)
+      return cleanup
+    }
+    entry.lastError = null
+    entry.clear()
+    return cleanup
+  } catch (reason) {
+    const error = toError(reason)
+    entry.lastError = error
+    report(error)
+    return { state: 'release-failed', failures: [] }
+  } finally {
+    if (entry.completeParked === null) entry.inFlight = null
+  }
+}
+
+function performRetainedRetry(
+  entry: RetainedHookCleanup,
+  report: (error: Error) => void,
+  resource: string
+): Promise<CleanupResult> {
+  if (entry.inFlight !== null) return entry.inFlight
+  const attempt = executeRetainedRetry(entry, report, resource)
+  entry.inFlight = attempt
+  return attempt
+}
+
+async function settleRetainedScan(
+  manager: BleManager,
+  report: (error: Error) => void
+): Promise<CleanupResult | null> {
+  const entry = retainedByManager.get(manager)?.scan
+  if (entry === undefined || entry === null) return null
+  if (entry.inFlight !== null) {
+    const current = await entry.inFlight
+    if (current.state === 'released') return current
+  }
+  return performRetainedRetry(entry, report, 'scan session stop')
+}
+
+function retainSubscriptionAttempt(
+  characteristic: object,
+  manager: BleManager | null,
+  operation: () => Promise<CleanupResult>,
+  report: (error: Error) => void
+): Promise<CleanupResult> {
+  const existing = retainedByCharacteristic.get(characteristic)
+  let entry = existing?.cleanup
+  if (entry === undefined) {
+    entry = {
+      kind: 'subscription',
+      retry: operation,
+      inFlight: null,
+      lastError: null,
+      completeParked: null,
+      clear() {
+        retainedByCharacteristic.delete(characteristic)
+        if (manager !== null) {
+          retainedByManager.get(manager)?.subscriptions.delete(characteristic)
+        }
+      }
+    }
+    retainedByCharacteristic.set(characteristic, { manager, cleanup: entry })
+    if (manager !== null) managerCleanups(manager).subscriptions.set(characteristic, entry)
+  }
+  return performRetainedRetry(entry, report, 'characteristic subscription remove')
+}
+
+async function settleRetainedSubscription(
+  characteristic: object,
+  report: (error: Error) => void
+): Promise<CleanupResult | null> {
+  const retained = retainedByCharacteristic.get(characteristic)
+  if (retained === undefined) return null
+  if (retained.cleanup.inFlight !== null) {
+    const current = await retained.cleanup.inFlight
+    if (current.state === 'released') return current
+  }
+  return performRetainedRetry(retained.cleanup, report, 'characteristic subscription remove')
+}
+
+function hasUnresolvedHookCleanup(manager: BleManager): boolean {
+  const bucket = retainedByManager.get(manager)
+  if (bucket === undefined) return false
+  return bucket.scan !== null || bucket.subscriptions.size > 0
+}
+
+async function adoptRetainedHookCleanups(manager: BleManager, report: (error: Error) => void): Promise<boolean> {
+  await settleRetainedScan(manager, report)
+  const bucket = retainedByManager.get(manager)
+  if (bucket === undefined) return true
+  for (const characteristic of [...bucket.subscriptions.keys()]) {
+    await settleRetainedSubscription(characteristic, report)
+  }
+  return !hasUnresolvedHookCleanup(manager)
 }
 
 function toError(error: unknown): Error {

@@ -1330,6 +1330,207 @@ describe('React host surface', () => {
     expect(onError).toHaveBeenCalledWith(expect.objectContaining({ cleanup }))
   })
 
+  test('scan remount retries release-failed stop and does not start a second scan until released', async () => {
+    const retryStop = deferred()
+    const firstSession = scanSession()
+    const secondSession = scanSession()
+    firstSession.stop
+      .mockResolvedValueOnce({ state: 'release-failed', failures: [{ resourceKind: 'scan' }] })
+      .mockReturnValueOnce(retryStop.promise)
+    const createdManager = manager({
+      scan: jest.fn().mockResolvedValueOnce(firstSession).mockResolvedValueOnce(secondSession)
+    })
+    hookHarness.contextValue = { manager: createdManager, loading: false, error: null }
+    hookHarness.errorContextValue = jest.fn()
+
+    useDiscoveredPeers()
+    const unmount = hookHarness.effects[0]()
+    await flush()
+    unmount()
+    await flush()
+    expect(createdManager.scan).toHaveBeenCalledTimes(1)
+    expect(firstSession.stop).toHaveBeenCalledTimes(1)
+
+    hookHarness.rerender()
+    useDiscoveredPeers()
+    const remount = hookHarness.effects[0]()
+    await flush()
+    expect(firstSession.stop).toHaveBeenCalledTimes(2)
+    expect(createdManager.scan).toHaveBeenCalledTimes(1)
+
+    retryStop.resolve({ state: 'released', failures: [] })
+    await flush()
+    expect(createdManager.scan).toHaveBeenCalledTimes(2)
+    remount()
+    await flush()
+    expect(secondSession.stop).toHaveBeenCalledTimes(1)
+  })
+
+  test('scan remount during in-flight stop does not start a second scan', async () => {
+    const observations = createControllableAsyncIterator()
+    const close = deferred()
+    const stop = deferred()
+    const firstSession = scanSession(observations.iterable)
+    const secondSession = scanSession()
+    observations.returnFn.mockImplementation(() => close.promise)
+    firstSession.stop.mockReturnValue(stop.promise)
+    const createdManager = manager({
+      scan: jest.fn().mockResolvedValueOnce(firstSession).mockResolvedValueOnce(secondSession)
+    })
+    hookHarness.contextValue = { manager: createdManager, loading: false, error: null }
+    hookHarness.errorContextValue = jest.fn()
+
+    useDiscoveredPeers()
+    const unmount = hookHarness.effects[0]()
+    await flush()
+    unmount()
+    hookHarness.rerender()
+    useDiscoveredPeers()
+    const remount = hookHarness.effects[0]()
+    await flush()
+    expect(firstSession.stop).not.toHaveBeenCalled()
+    expect(createdManager.scan).toHaveBeenCalledTimes(1)
+
+    close.resolve({ done: true, value: undefined })
+    await flush()
+    expect(firstSession.stop).toHaveBeenCalledTimes(1)
+    expect(createdManager.scan).toHaveBeenCalledTimes(1)
+
+    stop.resolve({ state: 'released', failures: [] })
+    await flush()
+    expect(createdManager.scan).toHaveBeenCalledTimes(2)
+    remount()
+    await flush()
+    expect(secondSession.stop).toHaveBeenCalledTimes(1)
+  })
+
+  test('scan remount that cannot release is fail-visible and does not admit a replacement', async () => {
+    const cleanupRecord = { state: 'release-failed', failures: [{ resourceKind: 'scan' }] }
+    const firstSession = scanSession()
+    firstSession.stop.mockResolvedValue(cleanupRecord)
+    const createdManager = manager({ scan: jest.fn().mockResolvedValue(firstSession) })
+    hookHarness.contextValue = { manager: createdManager, loading: false, error: null }
+    hookHarness.errorContextValue = jest.fn()
+
+    useDiscoveredPeers()
+    const unmount = hookHarness.effects[0]()
+    await flush()
+    unmount()
+    await flush()
+    hookHarness.rerender()
+    useDiscoveredPeers()
+    const remount = hookHarness.effects[0]()
+    await flush()
+
+    expect(createdManager.scan).toHaveBeenCalledTimes(1)
+    expect(hookHarness.stateValues[0]).toMatchObject({
+      peers: [],
+      state: 'failed',
+      error: expect.any(Error)
+    })
+    remount()
+  })
+
+  test('scan remount retries a rejected stop before admitting a replacement scan', async () => {
+    const firstSession = scanSession()
+    const secondSession = scanSession()
+    firstSession.stop
+      .mockRejectedValueOnce(new Error('scan stop failed'))
+      .mockResolvedValueOnce({ state: 'released', failures: [] })
+    const createdManager = manager({
+      scan: jest.fn().mockResolvedValueOnce(firstSession).mockResolvedValueOnce(secondSession)
+    })
+    hookHarness.contextValue = { manager: createdManager, loading: false, error: null }
+    hookHarness.errorContextValue = jest.fn()
+
+    useDiscoveredPeers()
+    const unmount = hookHarness.effects[0]()
+    await flush()
+    unmount()
+    await flush()
+
+    hookHarness.rerender()
+    useDiscoveredPeers()
+    const remount = hookHarness.effects[0]()
+    await flush()
+    expect(firstSession.stop).toHaveBeenCalledTimes(2)
+    expect(createdManager.scan).toHaveBeenCalledTimes(2)
+    remount()
+  })
+
+  test('manager destroy retries an unresolved scan stop before tearing the manager down', async () => {
+    const firstSession = scanSession()
+    firstSession.stop
+      .mockResolvedValueOnce({ state: 'release-failed', failures: [{ resourceKind: 'scan' }] })
+      .mockResolvedValueOnce({ state: 'released', failures: [] })
+    const createdManager = manager({ scan: jest.fn().mockResolvedValue(firstSession) })
+    hookHarness.contextValue = { manager: createdManager, loading: false, error: null }
+    hookHarness.errorContextValue = jest.fn()
+
+    useDiscoveredPeers()
+    const unmount = hookHarness.effects[0]()
+    await flush()
+    unmount()
+    await flush()
+    expect(firstSession.stop).toHaveBeenCalledTimes(1)
+    expect(createdManager.destroy).not.toHaveBeenCalled()
+
+    hookHarness.stateValues = []
+    hookHarness.reset()
+    const createManager = jest.fn().mockResolvedValue(createdManager)
+    const onError = jest.fn()
+    BleProvider({
+      createManager,
+      onError,
+      ownershipScope: 'destroy-adopts-scan',
+      children: null
+    })
+    const providerCleanup = hookHarness.effects[0]()
+    await flush()
+    expect(createManager).toHaveBeenCalledTimes(1)
+    providerCleanup()
+    await flush()
+
+    expect(firstSession.stop).toHaveBeenCalledTimes(2)
+    expect(createdManager.destroy).toHaveBeenCalledTimes(1)
+    expect(createdManager.destroy.mock.invocationCallOrder[0]).toBeGreaterThan(
+      firstSession.stop.mock.invocationCallOrder[1]
+    )
+  })
+
+  test('manager destroy keeps retry ownership when scan stop remains release-failed', async () => {
+    const firstSession = scanSession()
+    firstSession.stop.mockResolvedValue({
+      state: 'release-failed',
+      failures: [{ resourceKind: 'scan' }]
+    })
+    const createdManager = manager({ scan: jest.fn().mockResolvedValue(firstSession) })
+    hookHarness.contextValue = { manager: createdManager, loading: false, error: null }
+    hookHarness.errorContextValue = jest.fn()
+
+    useDiscoveredPeers()
+    const unmount = hookHarness.effects[0]()
+    await flush()
+    unmount()
+    await flush()
+
+    hookHarness.stateValues = []
+    hookHarness.reset()
+    const createManager = jest.fn().mockResolvedValue(createdManager)
+    BleProvider({
+      createManager,
+      ownershipScope: 'destroy-keeps-failed-scan',
+      children: null
+    })
+    const providerCleanup = hookHarness.effects[0]()
+    await flush()
+    providerCleanup()
+    await flush()
+
+    expect(firstSession.stop).toHaveBeenCalledTimes(2)
+    expect(createdManager.destroy).not.toHaveBeenCalled()
+  })
+
   test('surfaces scan overflow notices in the result error', async () => {
     const session = scanSession(
       (async function* () {
@@ -2051,6 +2252,200 @@ describe('React host surface', () => {
     unmount()
     await flush()
     expect(subscription.remove).toHaveBeenCalledTimes(2)
+  })
+
+  test('characteristic remount retries release-failed remove and does not subscribe again until released', async () => {
+    const retryRemove = deferred()
+    const firstSubscription = characteristicSubscription(
+      (async function* () {
+        await new Promise(() => undefined)
+      })()
+    )
+    const secondSubscription = characteristicSubscription(
+      (async function* () {
+        await new Promise(() => undefined)
+      })()
+    )
+    firstSubscription.remove
+      .mockResolvedValueOnce({ state: 'release-failed', failures: [{ resourceKind: 'gatt' }] })
+      .mockReturnValueOnce(retryRemove.promise)
+    const characteristic = {
+      subscribe: jest.fn().mockResolvedValueOnce(firstSubscription).mockResolvedValueOnce(secondSubscription)
+    }
+    hookHarness.errorContextValue = jest.fn()
+
+    useCharacteristicValue(characteristic)
+    const unmount = hookHarness.effects[0]()
+    await flush()
+    unmount()
+    await flush()
+    expect(characteristic.subscribe).toHaveBeenCalledTimes(1)
+    expect(firstSubscription.remove).toHaveBeenCalledTimes(1)
+
+    hookHarness.rerender()
+    useCharacteristicValue(characteristic)
+    const remount = hookHarness.effects[0]()
+    await flush()
+    expect(firstSubscription.remove).toHaveBeenCalledTimes(2)
+    expect(characteristic.subscribe).toHaveBeenCalledTimes(1)
+
+    retryRemove.resolve({ state: 'released', failures: [] })
+    await flush()
+    expect(characteristic.subscribe).toHaveBeenCalledTimes(2)
+    remount()
+    await flush()
+    expect(secondSubscription.remove).toHaveBeenCalledTimes(1)
+  })
+
+  test('characteristic remount during in-flight remove does not subscribe again', async () => {
+    const remove = deferred()
+    const firstSubscription = characteristicSubscription(
+      (async function* () {
+        await new Promise(() => undefined)
+      })()
+    )
+    const secondSubscription = characteristicSubscription(
+      (async function* () {
+        await new Promise(() => undefined)
+      })()
+    )
+    firstSubscription.remove.mockReturnValue(remove.promise)
+    const characteristic = {
+      subscribe: jest.fn().mockResolvedValueOnce(firstSubscription).mockResolvedValueOnce(secondSubscription)
+    }
+    const createdManager = manager()
+    hookHarness.contextValue = { manager: createdManager, loading: false, error: null }
+    hookHarness.errorContextValue = jest.fn()
+
+    useCharacteristicValue(characteristic)
+    const unmount = hookHarness.effects[0]()
+    await flush()
+    unmount()
+    hookHarness.rerender()
+    useCharacteristicValue(characteristic)
+    const remount = hookHarness.effects[0]()
+    await flush()
+    expect(firstSubscription.remove).toHaveBeenCalledTimes(1)
+    expect(characteristic.subscribe).toHaveBeenCalledTimes(1)
+
+    remove.resolve({ state: 'released', failures: [] })
+    await flush()
+    expect(characteristic.subscribe).toHaveBeenCalledTimes(2)
+    remount()
+    await flush()
+    expect(secondSubscription.remove).toHaveBeenCalledTimes(1)
+  })
+
+  test('characteristic remount that cannot release is fail-visible and does not subscribe again', async () => {
+    const firstSubscription = characteristicSubscription(
+      (async function* () {
+        await new Promise(() => undefined)
+      })()
+    )
+    firstSubscription.remove.mockResolvedValue({
+      state: 'release-failed',
+      failures: [{ resourceKind: 'gatt' }]
+    })
+    const characteristic = { subscribe: jest.fn().mockResolvedValue(firstSubscription) }
+    const createdManager = manager()
+    hookHarness.contextValue = { manager: createdManager, loading: false, error: null }
+    hookHarness.errorContextValue = jest.fn()
+
+    useCharacteristicValue(characteristic)
+    const unmount = hookHarness.effects[0]()
+    await flush()
+    unmount()
+    await flush()
+    hookHarness.rerender()
+    useCharacteristicValue(characteristic)
+    const remount = hookHarness.effects[0]()
+    await flush()
+
+    expect(characteristic.subscribe).toHaveBeenCalledTimes(1)
+    expect(hookHarness.stateValues[0]).toMatchObject({
+      value: null,
+      loading: false,
+      error: expect.any(Error)
+    })
+    remount()
+  })
+
+  test('characteristic remount of a different characteristic is not blocked by a failed sibling remove', async () => {
+    const failedSubscription = characteristicSubscription(
+      (async function* () {
+        await new Promise(() => undefined)
+      })()
+    )
+    failedSubscription.remove.mockResolvedValue({
+      state: 'release-failed',
+      failures: [{ resourceKind: 'gatt' }]
+    })
+    const siblingSubscription = characteristicSubscription(
+      (async function* () {
+        await new Promise(() => undefined)
+      })()
+    )
+    const firstCharacteristic = { subscribe: jest.fn().mockResolvedValue(failedSubscription) }
+    const secondCharacteristic = { subscribe: jest.fn().mockResolvedValue(siblingSubscription) }
+    hookHarness.errorContextValue = jest.fn()
+
+    useCharacteristicValue(firstCharacteristic)
+    const firstUnmount = hookHarness.effects[0]()
+    await flush()
+    firstUnmount()
+    await flush()
+
+    hookHarness.rerender()
+    useCharacteristicValue(secondCharacteristic)
+    const siblingCleanup = hookHarness.effects[0]()
+    await flush()
+    expect(secondCharacteristic.subscribe).toHaveBeenCalledTimes(1)
+    expect(failedSubscription.remove).toHaveBeenCalledTimes(1)
+    expect(siblingSubscription.remove).not.toHaveBeenCalled()
+    siblingCleanup()
+    await flush()
+  })
+
+  test('manager destroy retries an unresolved characteristic remove before tearing the manager down', async () => {
+    const subscription = characteristicSubscription(
+      (async function* () {
+        await new Promise(() => undefined)
+      })()
+    )
+    subscription.remove
+      .mockResolvedValueOnce({ state: 'release-failed', failures: [{ resourceKind: 'gatt' }] })
+      .mockResolvedValueOnce({ state: 'released', failures: [] })
+    const characteristic = { subscribe: jest.fn().mockResolvedValue(subscription) }
+    const createdManager = manager()
+    hookHarness.contextValue = { manager: createdManager, loading: false, error: null }
+    hookHarness.errorContextValue = jest.fn()
+
+    useCharacteristicValue(characteristic)
+    const unmount = hookHarness.effects[0]()
+    await flush()
+    unmount()
+    await flush()
+    expect(subscription.remove).toHaveBeenCalledTimes(1)
+
+    hookHarness.stateValues = []
+    hookHarness.reset()
+    const createManager = jest.fn().mockResolvedValue(createdManager)
+    BleProvider({
+      createManager,
+      ownershipScope: 'destroy-adopts-characteristic',
+      children: null
+    })
+    const providerCleanup = hookHarness.effects[0]()
+    await flush()
+    expect(createManager).toHaveBeenCalledTimes(1)
+    providerCleanup()
+    await flush()
+
+    expect(subscription.remove).toHaveBeenCalledTimes(2)
+    expect(createdManager.destroy).toHaveBeenCalledTimes(1)
+    expect(createdManager.destroy.mock.invocationCallOrder[0]).toBeGreaterThan(
+      subscription.remove.mock.invocationCallOrder[1]
+    )
   })
 
   test('replacement and StrictMode leave zero leaked iterators and subscriptions', async () => {
