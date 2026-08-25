@@ -33,7 +33,7 @@ export async function releaseCoreBluetoothAdapterLossResources(
       consumer.stream.closeWithReason('source-failed')
     }
     try {
-      const cleanup = await state.stopNativeScan(group, 'corebluetooth.adapter-loss.stop-scan')
+      const cleanup = await state.stopNativeScan(group, 'direct-gatt.adapter-loss.stop-scan')
       if (cleanup.state === 'release-failed') {
         failures.push(...cleanup.failures)
       } else {
@@ -41,7 +41,7 @@ export async function releaseCoreBluetoothAdapterLossResources(
         state.clearScanGroup(group)
       }
     } catch (error) {
-      failures.push(cleanupFailureDetail('scan', 'corebluetooth.adapter-loss.stop-scan', error))
+      failures.push(cleanupFailureDetail('scan', 'direct-gatt.adapter-loss.stop-scan', error))
     }
   }
   for (const physical of [...state.subscriptions.values()]) {
@@ -56,14 +56,14 @@ export async function releaseCoreBluetoothAdapterLossResources(
   for (const record of [...state.connections.values()]) {
     record.state = 'disconnecting'
     try {
-      const cleanup = await state.disconnectNative(record, 'corebluetooth.adapter-loss.disconnect', true)
+      const cleanup = await state.disconnectNative(record, 'direct-gatt.adapter-loss.disconnect', true)
       failures.push(...cleanup.failures)
       if (cleanup.state === 'release-failed') {
         record.state = 'connected'
       }
     } catch (error) {
       record.state = 'connected'
-      failures.push(cleanupFailureDetail('connection', 'corebluetooth.adapter-loss.disconnect', error))
+      failures.push(cleanupFailureDetail('connection', 'direct-gatt.adapter-loss.disconnect', error))
     }
   }
   return failures.length === 0
