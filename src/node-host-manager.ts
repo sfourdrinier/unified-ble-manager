@@ -73,12 +73,14 @@ function selectNodeAdapter(
   if (adapters.length === 0) {
     throw contractError('adapter.unavailable', 'adapter', 'node-host-manager.adapter')
   }
-  if (adapters.length > 1) {
-    throw contractError('adapter.ambiguous', 'adapter', 'node-host-manager.adapter')
-  }
-  const only = adapters[0]
-  if (only === undefined) {
+  // Default to the first adapter, ordered deterministically by id, so a host
+  // with more than one controller "just works" and picks the same one every
+  // run instead of forcing every caller to name an adapter. Choosing a specific
+  // controller (for example a second USB dongle used only for debugging) is the
+  // unusual case: pass `adapterId` for it.
+  const [first] = [...adapters].sort((left, right) => String(left.adapterId).localeCompare(String(right.adapterId)))
+  if (first === undefined) {
     throw contractError('adapter.unavailable', 'adapter', 'node-host-manager.adapter')
   }
-  return only
+  return first
 }

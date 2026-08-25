@@ -7,6 +7,10 @@ All notable changes to `unified-ble-manager` are documented here.
 ### Added
 
 - BlueZ pairing dispatch: `org.bluez.Device1.Pair`, `org.bluez.Device1.CancelPairing`, and `org.bluez.Adapter1.RemoveDevice` are now allowed through the dbus-next boundary, and the backend registers a just-works (`NoInputNoOutput`) `org.bluez.Agent1` on its own bus (not the system default) so a client-initiated pairing can complete without an external agent (#141, #143).
+
+### Changed
+
+- The Node convenience factories (`createBluezBleManager` and siblings) now select the first adapter (ordered deterministically by id) when the caller names no `adapterId`, instead of failing on a multi-adapter host. A single-adapter machine needs no configuration and a multi-adapter host picks the same controller every run; pass `adapterId` to target a specific controller (e.g. a second USB dongle used for debugging). The low-level provider is unchanged: it still requires an explicit selection and never silently substitutes one (#143).
 - `PairOptions.secureConnections` (`'require' | 'prefer' | 'disallow'`, default `'prefer'`): request an LE pairing generation. `'prefer'` defers to the platform. No current backend exposes per-pairing generation selection, so `'require'` and `'disallow'` fail closed with `capability.unsupported` on BlueZ, WinRT, and Android rather than being silently ignored; the contract is in place for a backend that can honour it (#144, #143).
 
 ### Fixed

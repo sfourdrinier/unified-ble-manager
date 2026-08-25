@@ -88,7 +88,13 @@ export function createEphemeralHostIdentity(input: EphemeralIdentityInput = {}):
 export interface BleManagerCreateOptions {
   /** Optional app-declared stable name for an intentionally distinct manager instance. Does not affect restoration. */
   readonly instanceId?: string
-  /** Optional adapter selector (e.g., 'hci0'). Host decides default when omitted. */
+  /**
+   * Optional adapter selector (e.g. a BlueZ adapter path like
+   * '/org/bluez/hci0'). When omitted, the host picks the first adapter in a
+   * deterministic order, so a single-adapter machine needs no configuration and
+   * a multi-adapter machine picks the same one every run. Set this only to
+   * target a specific controller (e.g. a second USB dongle) - an unusual need.
+   */
   readonly adapterId?: string
   readonly diagnostics?: DiagnosticsOptions
   /**
