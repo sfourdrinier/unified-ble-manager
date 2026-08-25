@@ -75,7 +75,7 @@
     "docs:backend-sdk": "node scripts/docs/generate-backend-sdk-reference.js && node scripts/docs/generate-platform-support.js",
     "docs:check": "node scripts/docs/generate-backend-sdk-reference.js --check && node scripts/docs/generate-platform-support.js --check && node scripts/docs/check-api-reports.js && node scripts/docs/check-generated-html.js",
     "cli": "node bin/ubm.js",
-  "docs": "pnpm prepack && documentation build lib/module/index.js -o docs --config documentation.yml -f html --shallow && prettier --write docs/index.html docs/assets/anchor.js docs/assets/site.js",
+    "docs": "pnpm prepack && documentation build lib/module/index.js -o docs --config documentation.yml -f html --shallow && prettier --write docs/index.html docs/assets/anchor.js docs/assets/site.js",
     "typecheck": "tsc --noEmit -p tsconfig.build.json",
     "lint": "eslint \"src/**/*.{ts,tsx}\" \"plugin/src/**/*.{ts,tsx}\" --max-warnings 0 && pnpm typecheck",
     "prepack": "node scripts/ci/build-package.js",
@@ -194,11 +194,11 @@
     "@types/react": "^19.0.0"
   },
   "peerDependencies": {
+    "@tauri-apps/api": "^2.0.0",
     "dbus-next": "^0.10.2",
     "expo": "^57.0.0",
     "react": "*",
-    "react-native": ">=0.86.0",
-    "@tauri-apps/api": "^2.0.0"
+    "react-native": ">=0.86.0"
   },
   "peerDependenciesMeta": {
     "expo": {
@@ -562,5 +562,8 @@
   "optionalDependencies": {
     "node-addon-api": "8.9.0",
     "node-gyp": "12.4.0"
+  },
+  "dependencies": {
+    "@babel/runtime": "^7.29.7"
   }
 }
