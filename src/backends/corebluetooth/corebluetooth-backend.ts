@@ -17,6 +17,7 @@ import {
   assertScanFilter,
   deviceIdentity,
   type AdvertisementObservation,
+  type DeviceAddress,
   type OwnerScanOptions
 } from '../../backend-contract/advertisement'
 import type { FeatureRegistry } from '../../backend-contract/capabilities'
@@ -37,6 +38,7 @@ import {
 } from '../../backend-contract/identity'
 import type { PublicOperationOptions } from '../../backend-contract/operations'
 import {
+  canonicalBleAddress,
   negotiateCoreVersions,
   opaqueId,
   resourceCount,
@@ -130,6 +132,14 @@ export interface PhysicalSubscription {
   nativeRemoval: Promise<void> | null
 }
 let nextBackendInstance = 1
+function radioAddressFromNativePeerId(nativePeerId: string): DeviceAddress | null {
+  try {
+    return Object.freeze({ value: canonicalBleAddress(nativePeerId), type: 'public' })
+  } catch {
+    return null
+  }
+}
+
 function allocateBackendInstance(): number {
   const current = nextBackendInstance
   nextBackendInstance += 1
@@ -801,7 +811,11 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
     const peerId = this.peerIdForNativeId(advertisement.nativePeerId)
     const observation = createCoreBluetoothObservation(
       advertisement,
-      deviceIdentity(peerId, this.attachment().backendInstanceId, null),
+      deviceIdentity(
+        peerId,
+        this.attachment().backendInstanceId,
+        radioAddressFromNativePeerId(advertisement.nativePeerId)
+      ),
       group.scanSessionId,
       this.now(),
       this.nextIngressOrdinal
@@ -1343,6 +1357,14 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
 
   peerIdForKnownNativeId(nativePeerId: string): string | null {
     return this.peerIdsByNativeId.get(nativePeerId) ?? null
+  }
+
+  peerFromAddress(descriptor: { readonly address: string }): PeerId<string> {
+    try {
+      return this.peerIdForNativeId(canonicalBleAddress(descriptor.address))
+    } catch {
+      throw contractError('argument.invalid', 'connection', 'direct-gatt.peer-from-address')
+    }
   }
 
   peerIdForNativeId(nativePeerId: string): PeerId<string> {

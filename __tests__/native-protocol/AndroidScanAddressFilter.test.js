@@ -7,7 +7,17 @@ const {
   requiredString
 } = require('../../src/native-protocol/rn-android-protocol-records')
 const { planReactNativeAndroidScan } = require('../../src/backends/reactnative/react-native-scan-planner')
-const { normalizeScanQuery } = require('../../src/public/scan-query')
+const {
+  normalizeScanQuery,
+  normalizeScanObservation,
+  observationMatchesScanQuery
+} = require('../../src/public/scan-query')
+const { deviceIdentity } = require('../../src/backend-contract/advertisement')
+const { canonicalBleAddress, opaqueId } = require('../../src/backend-contract/primitives')
+const {
+  createCoreBluetoothObservation
+} = require('../../src/backends/corebluetooth/corebluetooth-advertisement-observation')
+const { ReactNativeAppleProtocolBoundary } = require('../../src/native-protocol/rn-apple-boundary')
 
 const attachment = {
   attachmentId: 'android-scan-address-attachment',
@@ -48,6 +58,35 @@ describe('React Native Android ScanFilter device address', () => {
     const plan = planReactNativeAndroidScan(normalizeScanQuery({ anyOf: [{ addresses: ['98:75:96:A2:14:34'] }] }))
     expect(plan.nativeFilter.deviceAddresses).toEqual(['98:75:96:A2:14:34'])
     expect(plan.native.predicates.some(predicate => predicate.field === 'addresses')).toBe(true)
+  })
+
+  test('android MAC nativePeerId observations match an addresses scan clause', () => {
+    const mac = '98:75:96:A2:14:34'
+    const observation = createCoreBluetoothObservation(
+      { nativePeerId: mac, localName: null, rssi: -50, serviceUuids: null },
+      deviceIdentity('peer-1', 'backend-1', { value: canonicalBleAddress(mac), type: 'public' }),
+      opaqueId('scan-1', 'scan-session', 'android'),
+      1,
+      0
+    )
+    const query = normalizeScanQuery({ anyOf: [{ addresses: [mac] }] })
+    expect(observationMatchesScanQuery(query, normalizeScanObservation(observation))).toBe(true)
+  })
+
+  test('apple startScan fails closed when device addresses are provided', async () => {
+    const control = new ScanAddressControl()
+    const runtime = new ScanAddressRuntime()
+    global.__unifiedBleNativeProtocolV2 = runtime
+    const boundary = new ReactNativeAppleProtocolBoundary(control, 'apple-scan-address-owner')
+    boundary.bindAttachment(attachment)
+    await boundary.open()
+
+    await expect(boundary.startScan(() => undefined, [], ['98:75:96:A2:14:34'])).rejects.toMatchObject({
+      normalized: { code: 'capability.unsupported', operation: 'rn-apple-boundary.scan.device-addresses' }
+    })
+    expect(runtime.deviceAddresses).toBe(null)
+
+    await boundary.destroy()
   })
 })
 

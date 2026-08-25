@@ -143,7 +143,10 @@ export class ReactNativeAndroidBackend implements BleCentralBackend<string, Nati
         ),
       join: delegate.scanner.join
     })
-    this.connections = delegate.connections
+    this.connections = Object.freeze({
+      ...delegate.connections,
+      peerFromAddress: descriptor => delegate.peerFromAddress(descriptor)
+    })
     this.gatt = delegate.gatt
     this.security = boundary.securityAvailable
       ? new ReactNativeAndroidSecurityBackend(

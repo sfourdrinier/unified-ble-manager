@@ -187,6 +187,12 @@ export function advertisementMatchesFilter<Attachment extends string>(
   ) {
     return false
   }
+  if (filter.deviceAddresses !== undefined && filter.deviceAddresses.length > 0) {
+    const observedAddress = observation.device.address
+    if (observedAddress === null || !filter.deviceAddresses.includes(observedAddress.value)) {
+      return false
+    }
+  }
   if (filter.serviceUuids.length > 0) {
     const observedServices = observation.serviceUuids
     if (
