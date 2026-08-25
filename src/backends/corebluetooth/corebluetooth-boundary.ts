@@ -132,7 +132,8 @@ export interface CoreBluetoothBoundary {
   adapterSnapshot(): CoreBluetoothAdapterSnapshot
   startScan(
     onAdvertisement: (advertisement: CoreBluetoothAdvertisement) => void,
-    serviceUuids: readonly string[]
+    serviceUuids: readonly string[],
+    deviceAddresses?: readonly string[]
   ): Promise<void>
   stopScan(): Promise<void>
   connect(nativePeerId: string): Promise<void>

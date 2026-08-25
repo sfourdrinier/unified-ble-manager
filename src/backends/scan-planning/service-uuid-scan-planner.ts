@@ -38,13 +38,18 @@ export function createServiceUuidScanPlan(
   invalidContextMessage: string
 ): BackendScanExecutionPlan<ScanFilter> {
   assertPlanningContext(context, invalidContextMessage)
+  const deviceAddresses = nativeAddressList(query)
   const nativeFilter: ScanFilter = {
     serviceUuids: commonRequiredServices(query),
     manufacturerData: [],
-    localNamePrefix: null
+    localNamePrefix: null,
+    ...(deviceAddresses.length === 0 ? {} : { deviceAddresses })
   }
   const predicates = describeScanPredicates(query)
-  const nativePredicates = nativeServicePredicates(query, predicates, nativeFilter.serviceUuids)
+  const nativePredicates = [
+    ...nativeServicePredicates(query, predicates, nativeFilter.serviceUuids),
+    ...nativeAddressPredicates(query, predicates, deviceAddresses)
+  ]
   const unavailable = predicates.filter(
     predicate => !context.availableObservationFields.includes(observationField(predicate.field))
   )
@@ -88,6 +93,49 @@ function commonRequiredServices(query: NormalizedScanQuery): readonly Uuid[] {
   return firstClause
     .filter(service => requiredByEveryClause.every(services => services.includes(service)))
     .map(service => canonicalUuid(service))
+}
+
+function nativeAddressList(query: NormalizedScanQuery): readonly string[] {
+  if (query.anyOf === null || query.anyOf.length === 0) return []
+  if (query.anyOf.some(clause => clause.addresses === null || clause.addresses.length === 0)) return []
+  const seen = new Set<string>()
+  const addresses: string[] = []
+  for (const clause of query.anyOf) {
+    if (clause.addresses === null) continue
+    for (const address of clause.addresses) {
+      if (seen.has(address)) continue
+      seen.add(address)
+      addresses.push(address)
+    }
+  }
+  return Object.freeze(addresses)
+}
+
+function nativeAddressPredicates(
+  query: NormalizedScanQuery,
+  predicates: readonly ScanPredicateDescription[],
+  addresses: readonly string[]
+): readonly ScanPredicateDescription[] {
+  if (addresses.length === 0) return Object.freeze([])
+  return Object.freeze(
+    predicates.filter(
+      predicate =>
+        predicate.clauseSet === 'anyOf' &&
+        predicate.field === 'addresses' &&
+        predicate.operator === 'equals' &&
+        fullyPushedAddressPredicate(query, predicate, addresses)
+    )
+  )
+}
+
+function fullyPushedAddressPredicate(
+  query: NormalizedScanQuery,
+  predicate: ScanPredicateDescription,
+  addresses: readonly string[]
+): boolean {
+  const clause = query.anyOf?.[predicate.clauseIndex]
+  if (clause === undefined || clause.addresses === null) return false
+  return clause.addresses.every(address => addresses.includes(address))
 }
 
 function nativeServicePredicates(
@@ -174,7 +222,8 @@ function snapshotScanFilter(filter: ScanFilter): ScanFilter {
         })
       )
     ),
-    localNamePrefix: filter.localNamePrefix
+    localNamePrefix: filter.localNamePrefix,
+    ...(filter.deviceAddresses === undefined ? {} : { deviceAddresses: Object.freeze([...filter.deviceAddresses]) })
   })
 }
 

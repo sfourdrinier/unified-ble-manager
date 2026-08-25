@@ -255,7 +255,8 @@ class UnifiedBleProtocolAndroidDispatcher(
         scanMode = options.requiredSignedInteger(3).toInt(),
         callbackType = options.requiredSignedInteger(4).toInt(),
         legacyScan = options.requiredBoolean(5),
-        allowDuplicates = options.requiredBoolean(2)
+        allowDuplicates = options.requiredBoolean(2),
+        deviceAddresses = options.optionalStringList(6).toTypedArray()
       )
       emitSuccess(command, "scanStarted")
     } catch (error: Exception) {
@@ -1178,6 +1179,11 @@ private fun ProtocolWireRecord.requiredSignedInteger(fieldId: Int): Long {
 private fun ProtocolWireRecord.requiredStringList(fieldId: Int): List<String> {
   val value = fields[fieldId]
   return if (value is ProtocolWireValue.StringListValue) value.value else throw IllegalArgumentException("String list field is missing")
+}
+
+private fun ProtocolWireRecord.optionalStringList(fieldId: Int): List<String> {
+  val value = fields[fieldId] ?: return emptyList()
+  return if (value is ProtocolWireValue.StringListValue) value.value else throw IllegalArgumentException("String list field is malformed")
 }
 
 private fun Boolean?.toNativeConnectableState(): Int = when (this) {
