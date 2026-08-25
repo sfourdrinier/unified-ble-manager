@@ -1,6 +1,8 @@
-import { BLE_ERROR_CODES, contractError, type CleanupRecord } from '../backend-contract/errors'
+// src/ipc/public-manager.ts
+
+import { BackendContractError, BLE_ERROR_CODES, contractError, type CleanupRecord } from '../backend-contract/errors'
 import type { ConnectionLifecycleCause } from '../backend-contract/connection-lifecycle'
-import type { BoundedAsyncStream, BoundedAsyncStreamIterator } from '../backend-contract/streams'
+import type { BoundedAsyncStream } from '../backend-contract/streams'
 import type {
   PortableBoundedAsyncStream,
   PortableCurrentCharacteristicPath,
@@ -76,6 +78,8 @@ import type { PeerReference } from '../public/peer-reference'
 import { createPublicSecurity } from '../public/security'
 import type { BleSecurity } from '../public/security'
 import { rehydratePublicError, rehydratePublicPromise, runWithCleanup } from '../public/error-bridge'
+import { toPublicCleanupRecord, type CleanupRecord as PublicCleanupRecord } from '../public/cleanup'
+import { mapPublicBoundedAsyncStream, type PublicBoundedAsyncStream } from '../public/streams'
 import { resolveStreamPolicy } from '../public/stream-presets'
 import { CoreBoundedStream } from '../core/bounded-stream'
 import { capacity } from '../backend-contract/primitives'
@@ -91,7 +95,7 @@ import {
 const IPC_ADAPTER_STATE_POLL_INTERVAL_MS = 25
 const IPC_ADAPTER_STATE_STREAM_LIMITS = Object.freeze({
   itemCapacity: capacity(128),
-  byteCapacity: capacity(512 * 1024),
+  byteCapacity: capacity(64 * 1024),
   reservedControlCapacity: capacity(1)
 })
 
@@ -158,7 +162,10 @@ export class IpcPublicManagerAdapter implements BleManager {
       state.emit({ state: 'active' })
       return new IpcPublicScanSession(
         session,
-        filterScanObservations(session.observations, normalizedQuery, options.duplicates ?? 'coalesced'),
+        mapPublicBoundedAsyncStream(
+          filterScanObservations(session.observations, normalizedQuery, options.duplicates ?? 'coalesced'),
+          observation => observation
+        ),
         state,
         options
       )
@@ -263,8 +270,8 @@ export class IpcPublicManagerAdapter implements BleManager {
     })
   }
 
-  destroy(): Promise<CleanupRecord> {
-    return rehydratePublicPromise(this.ipc.destroy())
+  destroy(): Promise<PublicCleanupRecord> {
+    return rehydratePublicPromise(this.ipc.destroy()).then(toPublicCleanupRecord)
   }
 
   /** Low-level host seam retained for Tauri's existing deterministic tests. */
@@ -275,14 +282,14 @@ export class IpcPublicManagerAdapter implements BleManager {
 
 class IpcPublicScanSession implements ScanSession {
   readonly plan: import('../backend-contract/scan-planning').ScanPlan | null
-  private stopPromise: Promise<CleanupRecord> | null = null
+  private stopPromise: Promise<PublicCleanupRecord> | null = null
   private readonly timeoutHandle: ReturnType<typeof setTimeout> | null
   private readonly abortSignal: AbortSignal | null
   private readonly abortHandler: (() => void) | null
 
   constructor(
     private readonly inner: import('./manager').IpcScanSession,
-    readonly observations: BoundedAsyncStream<PublicScanObservation>,
+    readonly observations: PublicBoundedAsyncStream<PublicScanObservation>,
     private readonly scanState: ScanStateController,
     options: ScanOptions
   ) {
@@ -297,21 +304,21 @@ class IpcPublicScanSession implements ScanSession {
       options.timeoutMs === undefined ? null : globalThis.setTimeout(stopAutomatically, options.timeoutMs)
   }
 
-  stop(): Promise<CleanupRecord> {
+  stop(): Promise<PublicCleanupRecord> {
     if (this.stopPromise !== null) return this.stopPromise
     const result = this.stopInternal()
     this.stopPromise = result
     return result
   }
 
-  private async stopInternal(): Promise<CleanupRecord> {
+  private async stopInternal(): Promise<PublicCleanupRecord> {
     if (this.timeoutHandle !== null) globalThis.clearTimeout(this.timeoutHandle)
     if (this.abortSignal !== null && this.abortHandler !== null) {
       this.abortSignal.removeEventListener('abort', this.abortHandler)
     }
     this.scanState.emit({ state: 'stopping' })
     try {
-      const cleanup = await rehydratePublicPromise(this.inner.stop())
+      const cleanup = await rehydratePublicPromise(this.inner.stop()).then(toPublicCleanupRecord)
       this.scanState.emit(
         cleanup.state === 'released' ? { state: 'stopped' } : { state: 'failed', reason: 'scan-stop-failed' }
       )
@@ -363,10 +370,6 @@ class IpcPublicConnection implements BleConnection {
     this.controls = createIpcConnectionControls(this.base, capabilities, this.connectionGeneration)
   }
 
-  get events(): BoundedAsyncStream<import('../backend-contract/primitives').SerializableRecord> {
-    return this.base.events
-  }
-
   async discover(options: OperationOptions = {}): Promise<GattDatabase> {
     try {
       const normalized = normalizeOperationOptions(options, () => globalThis.performance.now())
@@ -403,12 +406,12 @@ class IpcPublicConnection implements BleConnection {
     }
   }
 
-  disconnect(): Promise<CleanupRecord> {
-    return rehydratePublicPromise(this.base.disconnect())
+  disconnect(): Promise<PublicCleanupRecord> {
+    return rehydratePublicPromise(this.base.disconnect()).then(toPublicCleanupRecord)
   }
 
-  release(): Promise<CleanupRecord> {
-    return rehydratePublicPromise(this.base.release())
+  release(): Promise<PublicCleanupRecord> {
+    return rehydratePublicPromise(this.base.release()).then(toPublicCleanupRecord)
   }
 }
 
@@ -575,10 +578,11 @@ function createIpcGattSource(
   database: IpcGattDatabase,
   deliverySelection: 'unknown' | 'controllable'
 ): PublicGattDatabaseSource {
+  const changed = database.changed !== undefined && 'limits' in database.changed ? database.changed : undefined
   return {
     path: database.path,
     deliverySelection,
-    changed: database.changed,
+    ...(changed === undefined ? {} : { changed }),
     assertCurrent: () => database.assertCurrent(),
     monotonicNow: () => database.monotonicNow(),
     scheduleDeadline: (deadline, action) => database.scheduleDeadline(deadline, action),
@@ -622,57 +626,20 @@ function toPortableSubscription(
     subscriptionId: subscription.subscriptionId,
     path,
     values: toPortableNotificationStream(subscription.values),
-    remove: () => subscription.remove()
+    remove: () => subscription.remove().then(toPublicCleanupRecord)
   }
 }
 
 function toPortableNotificationStream(
   source: BoundedAsyncStream<IpcNotificationValue>
 ): PortableBoundedAsyncStream<PortableNotificationValue> {
-  return {
-    limits: {
-      itemCapacity: Number(source.limits.itemCapacity),
-      byteCapacity: Number(source.limits.byteCapacity),
-      reservedControlCapacity: Number(source.limits.reservedControlCapacity)
-    },
-    overflowPolicy: source.overflowPolicy,
-    [Symbol.asyncIterator](): BoundedAsyncStreamIterator<PortableNotificationValue> {
-      const iterator = source[Symbol.asyncIterator]()
-      return {
-        async next() {
-          const result = await iterator.next()
-          if (result.done) return { done: true, value: undefined }
-          if (result.value.kind === 'value') {
-            return {
-              done: false,
-              value: {
-                kind: 'value',
-                value: {
-                  value: new Uint8Array(result.value.value.value),
-                  indication: result.value.value.delivery === 'indication',
-                  delivery: result.value.value.delivery,
-                  observedAtMonotonicMs: result.value.value.observedAtMonotonicMs,
-                  sequence: result.value.value.sequence
-                }
-              }
-            }
-          }
-          if (result.value.kind === 'overflow') {
-            return { done: false, value: result.value }
-          }
-          return { done: false, value: result.value }
-        },
-        return: async () => {
-          await iterator.return()
-          return { done: true, value: undefined }
-        },
-        [Symbol.asyncIterator]() {
-          return this
-        }
-      }
-    },
-    close: () => source.close()
-  }
+  return mapPublicBoundedAsyncStream(source, value => ({
+    value: new Uint8Array(value.value),
+    indication: value.delivery === 'indication',
+    delivery: value.delivery,
+    observedAtMonotonicMs: value.observedAtMonotonicMs,
+    sequence: value.sequence
+  }))
 }
 
 function toIpcScanOptions(
@@ -715,7 +682,8 @@ function assertIpcConnectionOptions(options: ConnectOptions): void {
   }
 }
 
-function mapIpcConnectionEvents(
+/** @internal Shared IPC lifecycle projection used by the Tauri and Electron façade. */
+export function mapIpcConnectionEvents(
   source: BoundedAsyncStream<import('../backend-contract/primitives').SerializableRecord>,
   expected: {
     readonly attachmentId: string
@@ -726,59 +694,157 @@ function mapIpcConnectionEvents(
   }
 ): AsyncIterable<BleConnectionEvent> {
   let lastSequence = 0
-  return {
+  const lifecycle: AsyncIterable<BleConnectionEvent> = {
     [Symbol.asyncIterator]() {
-      const iterator = source[Symbol.asyncIterator]()
+      let iterator: IpcConnectionEventIterator
+      try {
+        if (typeof source[Symbol.asyncIterator] !== 'function') {
+          throw contractError('protocol.malformed', 'ipc', 'ipc-public-manager.connection-event-factory')
+        }
+        iterator = source[Symbol.asyncIterator]()
+        if (typeof iterator !== 'object' || iterator === null || typeof iterator.next !== 'function') {
+          throw contractError('protocol.malformed', 'ipc', 'ipc-public-manager.connection-event-iterator')
+        }
+      } catch (error) {
+        throw rehydratePublicError(
+          error instanceof BackendContractError
+            ? error
+            : contractError('protocol.malformed', 'ipc', 'ipc-public-manager.connection-event-construction')
+        )
+      }
+      let returnPromise: IpcConnectionEventReturn | null = null
+      let sourceClosed = false
+      const returnSource = (): IpcConnectionEventReturn => {
+        if (returnPromise !== null) return returnPromise
+        sourceClosed = true
+        try {
+          const sourceReturn = iterator.return
+          if (sourceReturn === undefined) {
+            returnPromise = Promise.resolve({ done: true, value: undefined })
+          } else if (typeof sourceReturn !== 'function') {
+            returnPromise = Promise.reject(
+              contractError('protocol.malformed', 'ipc', 'ipc-public-manager.connection-event-return')
+            )
+          } else {
+            returnPromise = Promise.resolve(sourceReturn.call(iterator))
+          }
+        } catch (error) {
+          returnPromise = Promise.reject(error)
+        }
+        returnPromise = returnPromise.catch(error => {
+          returnPromise = null
+          throw error
+        })
+        return returnPromise
+      }
       return {
         async next(): Promise<IteratorResult<BleConnectionEvent, undefined>> {
-          while (true) {
-            const item = await iterator.next()
-            if (item.done) {
-              throw contractError('stream.closed', 'connection', 'ipc-public-manager.connection-events')
+          if (sourceClosed) return { done: true, value: undefined }
+          try {
+            while (true) {
+              const item = await iterator.next()
+              if (typeof item !== 'object' || item === null) {
+                throw contractError('protocol.malformed', 'ipc', 'ipc-public-manager.connection-event-result')
+              }
+              const done = readIpcConnectionField(item, 'done', 'ipc-public-manager.connection-event-result')
+              if (typeof done !== 'boolean') {
+                throw contractError('protocol.malformed', 'ipc', 'ipc-public-manager.connection-event-result')
+              }
+              if (done) {
+                sourceClosed = true
+                throw contractError('stream.closed', 'connection', 'ipc-public-manager.connection-events')
+              }
+              const itemValue = readIpcConnectionField(item, 'value', 'ipc-public-manager.connection-event-item')
+              if (
+                typeof itemValue !== 'object' ||
+                itemValue === null ||
+                Array.isArray(itemValue) ||
+                !hasOwnIpcConnectionField(itemValue, 'kind', 'ipc-public-manager.connection-event-item')
+              ) {
+                throw contractError('protocol.malformed', 'ipc', 'ipc-public-manager.connection-event-item')
+              }
+              const itemKind = readIpcConnectionField(itemValue, 'kind', 'ipc-public-manager.connection-event-kind')
+              if (itemKind === 'overflow') {
+                throw contractError('stream.overflow', 'connection', 'ipc-public-manager.connection-events')
+              }
+              if (itemKind === 'terminal') {
+                const reason = parseConnectionTerminalReason(
+                  readIpcConnectionField(itemValue, 'reason', 'ipc-public-manager.connection-event-terminal')
+                )
+                if (reason === null) {
+                  throw contractError('protocol.malformed', 'ipc', 'ipc-public-manager.connection-event-terminal')
+                }
+                throw publicConnectionTerminalError(reason)
+              }
+              if (itemKind !== 'value') {
+                throw contractError('protocol.malformed', 'ipc', 'ipc-public-manager.connection-event-kind')
+              }
+              const value = readIpcConnectionField(itemValue, 'value', 'ipc-public-manager.connection-event-value')
+              if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+                throw contractError('protocol.malformed', 'ipc', 'ipc-public-manager.connection-event-value')
+              }
+              const previous = parseConnectionState(
+                readIpcConnectionField(value, 'previous', 'ipc-public-manager.connection-event')
+              )
+              const current = parseConnectionState(
+                readIpcConnectionField(value, 'current', 'ipc-public-manager.connection-event')
+              )
+              const cause = parseConnectionCause(
+                readIpcConnectionField(value, 'cause', 'ipc-public-manager.connection-event')
+              )
+              const sequence = readIpcConnectionField(value, 'sequence', 'ipc-public-manager.connection-event')
+              if (
+                readIpcConnectionField(value, 'attachmentId', 'ipc-public-manager.connection-event') !==
+                  expected.attachmentId ||
+                readIpcConnectionField(value, 'peerId', 'ipc-public-manager.connection-event') !== expected.peerId ||
+                readIpcConnectionField(value, 'connectionId', 'ipc-public-manager.connection-event') !==
+                  expected.connectionId ||
+                readIpcConnectionField(value, 'ownerLeaseId', 'ipc-public-manager.connection-event') !==
+                  expected.ownerLeaseId ||
+                readIpcConnectionField(value, 'connectionGeneration', 'ipc-public-manager.connection-event') !==
+                  expected.connectionGeneration ||
+                previous === null ||
+                current === null ||
+                cause === null ||
+                typeof sequence !== 'number' ||
+                !Number.isSafeInteger(sequence) ||
+                sequence <= lastSequence
+              ) {
+                throw contractError('protocol.malformed', 'ipc', 'ipc-public-manager.connection-event')
+              }
+              lastSequence = sequence
+              return {
+                done: false,
+                value: Object.freeze({
+                  kind: 'connection-lifecycle',
+                  previous,
+                  current,
+                  cause,
+                  connectionGeneration: expected.connectionGeneration,
+                  sequence
+                })
+              }
             }
-            if (item.value.kind === 'overflow') {
-              throw contractError('stream.overflow', 'connection', 'ipc-public-manager.connection-events')
+          } catch (error) {
+            const primary = rehydratePublicError(error)
+            try {
+              await returnSource()
+            } catch (cleanupError) {
+              throw new AggregateError(
+                [primary, rehydratePublicError(cleanupError)],
+                'BLE IPC connection event and iterator cleanup both failed'
+              )
             }
-            if (item.value.kind === 'terminal') {
-              throw publicConnectionTerminalError(item.value.reason)
-            }
-            const value = item.value.value
-            const previous = parseConnectionState(Reflect.get(value, 'previous'))
-            const current = parseConnectionState(Reflect.get(value, 'current'))
-            const cause = parseConnectionCause(Reflect.get(value, 'cause'))
-            const sequence = Reflect.get(value, 'sequence')
-            if (
-              Reflect.get(value, 'attachmentId') !== expected.attachmentId ||
-              Reflect.get(value, 'peerId') !== expected.peerId ||
-              Reflect.get(value, 'connectionId') !== expected.connectionId ||
-              Reflect.get(value, 'ownerLeaseId') !== expected.ownerLeaseId ||
-              Reflect.get(value, 'connectionGeneration') !== expected.connectionGeneration ||
-              previous === null ||
-              current === null ||
-              cause === null ||
-              typeof sequence !== 'number' ||
-              !Number.isSafeInteger(sequence) ||
-              sequence <= lastSequence
-            ) {
-              throw contractError('protocol.malformed', 'ipc', 'ipc-public-manager.connection-event')
-            }
-            lastSequence = sequence
-            return {
-              done: false,
-              value: Object.freeze({
-                kind: 'connection-lifecycle',
-                previous,
-                current,
-                cause,
-                connectionGeneration: expected.connectionGeneration,
-                sequence
-              })
-            }
+            throw primary
           }
         },
         return: async () => {
-          await iterator.return()
-          return { done: true, value: undefined }
+          try {
+            await returnSource()
+            return { done: true, value: undefined }
+          } catch (error) {
+            throw rehydratePublicError(error)
+          }
         },
         [Symbol.asyncIterator]() {
           return this
@@ -786,6 +852,49 @@ function mapIpcConnectionEvents(
       }
     }
   }
+  return Object.freeze(lifecycle)
+}
+
+type IpcConnectionEventResult = IteratorResult<
+  import('../backend-contract/streams').StreamItem<import('../backend-contract/primitives').SerializableRecord>,
+  undefined
+>
+type IpcConnectionEventReturn = Promise<IpcConnectionEventResult>
+type IpcConnectionEventIterator = {
+  readonly next: () => IpcConnectionEventReturn
+  readonly return?: () => IpcConnectionEventReturn
+  readonly [Symbol.asyncIterator]: () => IpcConnectionEventIterator
+}
+
+function hasOwnIpcConnectionField(value: object, key: string, operation: string): boolean {
+  try {
+    return Object.prototype.hasOwnProperty.call(value, key)
+  } catch {
+    throw contractError('protocol.malformed', 'ipc', operation)
+  }
+}
+
+function readIpcConnectionField(value: object, key: string, operation: string): unknown {
+  try {
+    return Reflect.get(value, key)
+  } catch {
+    throw contractError('protocol.malformed', 'ipc', operation)
+  }
+}
+
+function parseConnectionTerminalReason(
+  value: unknown
+): import('../backend-contract/streams').StreamTerminalNotice['reason'] | null {
+  return value === 'closed' ||
+    value === 'overflow' ||
+    value === 'source-failed' ||
+    value === 'owner-released' ||
+    value === 'connection-lost' ||
+    value === 'service-changed' ||
+    value === 'operation-aborted' ||
+    value === 'operation-timed-out'
+    ? value
+    : null
 }
 
 function parseConnectionState(value: unknown): BleConnectionEvent['current'] | null {
@@ -948,7 +1057,18 @@ async function watchIpcAdapterState(
     }
     signal?.addEventListener('abort', abortHandler, { once: true })
     schedulePoll()
-    return Object.freeze({ initial, values: stream, stop })
+    const values = mapPublicBoundedAsyncStream(stream, value => value)
+    const publicStop = () => stop().then(toPublicCleanupRecord)
+    return Object.freeze({
+      initial,
+      values: Object.freeze({
+        limits: values.limits,
+        overflowPolicy: values.overflowPolicy,
+        [Symbol.asyncIterator]: () => values[Symbol.asyncIterator](),
+        close: publicStop
+      }),
+      stop: publicStop
+    })
   } catch (error) {
     throw rehydratePublicError(error)
   }

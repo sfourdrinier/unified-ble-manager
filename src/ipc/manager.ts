@@ -45,6 +45,7 @@ import { snapshotScanPlan } from '../backend-contract/scan-planning'
 import type { ScanPlan } from '../backend-contract/scan-planning'
 import { normalizeScanQuery } from '../public/scan-query'
 import { BleCleanupError, collectCleanupPhases } from '../public/error-bridge'
+import type { CleanupRecord as PublicCleanupRecord } from '../public/cleanup'
 import { IpcBleClient } from './client'
 import { IPC_GATT_DATABASE_SCHEMA_VERSION } from './protocol'
 import type { IpcCapabilitySnapshotV2, IpcClientTransport } from './protocol'
@@ -59,7 +60,7 @@ export {
 
 const REMOTE_STREAM_LIMITS = Object.freeze({
   itemCapacity: capacity(128),
-  byteCapacity: capacity(512 * 1024),
+  byteCapacity: capacity(64 * 1024),
   reservedControlCapacity: capacity(1)
 })
 
@@ -247,7 +248,7 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
   private readonly eventPump: Promise<void>
   private nextConnectionEventHandle = 1
   private lifecycle: 'active' | 'releasing' | 'released' = 'active'
-  private releaseResult: Promise<CleanupRecord> | null = null
+  private releaseResult: Promise<PublicCleanupRecord> | null = null
   private readonly ownerCleanupLedger: { run: () => void; error: unknown | null }[] = []
   private pumpDead = false
   private pumpFailure: unknown | null = null
@@ -405,14 +406,14 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
     )
   }
 
-  destroy(): Promise<CleanupRecord> {
+  destroy(): Promise<PublicCleanupRecord> {
     if (this.lifecycle === 'released') return Promise.resolve({ state: 'released', failures: [] })
     if (this.releaseResult !== null) return this.releaseResult
     this.releaseResult = this.runDestroy()
     return this.releaseResult
   }
 
-  private async runDestroy(): Promise<CleanupRecord> {
+  private async runDestroy(): Promise<PublicCleanupRecord> {
     const provisionalPhases = await this.flushUnresolvedProvisionals()
     this.lifecycle = 'releasing'
     try {
@@ -1956,7 +1957,7 @@ const EMPTY_SUBSCRIPTION_OPTIONS: PortableSubscriptionOptions = Object.freeze({
   ...EMPTY_OPERATION_OPTIONS,
   delivery: {
     itemCapacity: capacity(128),
-    byteCapacity: capacity(512 * 1024),
+    byteCapacity: capacity(64 * 1024),
     reservedControlCapacity: capacity(1),
     overflowPolicy: 'drop-oldest' as const
   }

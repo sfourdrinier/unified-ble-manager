@@ -9,6 +9,7 @@ const {
   createManagerOwnershipAuthority,
   DEFAULT_BLE_MANAGER_OPTIONS
 } = require('../../src/manager/ble-manager')
+const { createPublicBleManager } = require('../../src/public/ble-manager')
 const { opaqueId } = require('../../src/backend-contract/primitives')
 const { normalizeScanQuery } = require('../../src/public/scan-query')
 const { InMemoryWebBluetoothTckBoundary } = require('../../test-support/web/in-memory-web-bluetooth-tck-boundary')
@@ -850,6 +851,30 @@ describe('WebBluetoothBackend', () => {
     expect(connection.peerId).toBe(selection.peerId)
     await connection.release()
     await expect(manager.destroy()).resolves.toEqual({ state: 'released', failures: [] })
+  })
+
+  test('accepts the Web backend adapter watch byte quota and cleans it up through the public manager', async () => {
+    const mock = createBoundary()
+    const provider = createWebBluetoothProvider(mock.boundary)
+    const [adapter] = await provider.listAdapters()
+    const backend = await provider.create({ selectedAdapterId: adapter.adapterId })
+    const attachedBackend = await attachBleBackend(backend, provider.descriptor.compatibility)
+    const internal = await createBleManager(
+      {
+        attachedBackend,
+        clientId: opaqueId('web-watch-client', 'client', 'web-watch'),
+        managerId: opaqueId('web-watch-manager', 'manager', 'web-watch'),
+        ownerMode: 'owning'
+      },
+      createManagerOwnershipAuthority(attachedBackend),
+      DEFAULT_BLE_MANAGER_OPTIONS
+    )
+    const manager = await createPublicBleManager(internal, () => 10)
+    const watch = await manager.adapter.watchState()
+    expect(watch.values.limits.byteCapacity).toBe(512 * 1024)
+    await expect(watch.stop()).resolves.toEqual({ state: 'released', failures: [] })
+    await expect(manager.destroy()).resolves.toEqual({ state: 'released', failures: [] })
+    expect(backend.adapterStreams.size).toBe(0)
   })
 
   test('constructs a public web manager that exposes deterministic scan and chooser via WithEnvironment', async () => {

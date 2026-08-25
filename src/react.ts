@@ -1,7 +1,10 @@
+// src/react.ts
+
 import * as React from 'react'
 import type { ReactNode } from 'react'
-import { contractError, type CleanupRecord } from './backend-contract/errors'
-import type { StreamItem, StreamTerminalNotice } from './backend-contract/streams'
+import { contractError } from './backend-contract/errors'
+import type { CleanupRecord } from './public/cleanup'
+import type { PublicStreamItem, PublicStreamTerminalReason } from './public/streams'
 import {
   connectionEventsEndedExpectedly,
   type BleConnection,
@@ -665,7 +668,7 @@ export function useDiscoveredPeers(options: ScanOptions = {}): UseDiscoveredPeer
     let overflowError: Error | null = null
     let consumeError: Error | null = null
     let session: ScanSession | null = null
-    let observationIterator: AsyncIterator<StreamItem<PublicScanObservation>> | null = null
+    let observationIterator: AsyncIterator<PublicStreamItem<PublicScanObservation>> | null = null
     let eventIterator: AsyncIterator<DiscoveryEvent> | null = null
     let observationReturned = false
     let eventsReturned = false
@@ -977,7 +980,7 @@ export function useCharacteristicValue(
     let subscription: GattSubscription | null = null
     let overflowError: Error | null = null
     let latestValue: GattValueEvent | null = null
-    let valueIterator: AsyncIterator<StreamItem<GattValueEvent>> | null = null
+    let valueIterator: AsyncIterator<PublicStreamItem<GattValueEvent>> | null = null
     let removeAttempt: Promise<CleanupResult> | null = null
     let removeReleased = false
     if (characteristic === null) return () => undefined
@@ -1035,9 +1038,10 @@ export function useCharacteristicValue(
           await removeSubscription()
           return
         }
-        valueIterator = subscription.values[Symbol.asyncIterator]()
+        const iterator = subscription.values[Symbol.asyncIterator]()
+        valueIterator = iterator
         while (true) {
-          const next = await valueIterator.next()
+          const next = await iterator.next()
           if (!active) return
           if (next.done) {
             publish({
@@ -1089,7 +1093,7 @@ export function useCharacteristicValue(
       : result
 }
 
-function mapCharacteristicTerminal(reason: StreamTerminalNotice['reason']): Error | null {
+function mapCharacteristicTerminal(reason: PublicStreamTerminalReason): Error | null {
   if (reason === 'closed' || reason === 'owner-released') return null
   if (reason === 'overflow') return streamOverflowError('react.useCharacteristicValue.values')
   if (reason === 'connection-lost') {
