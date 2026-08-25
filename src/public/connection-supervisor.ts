@@ -4,7 +4,7 @@ import { BackendContractError, contractError } from '../backend-contract/errors'
 import { capacity } from '../backend-contract/primitives'
 import { CoreBoundedStream } from '../core/bounded-stream'
 import { rehydratePublicError } from './error-bridge'
-import { toPublicCleanupRecord, type CleanupRecord as PublicCleanupRecord } from './cleanup'
+import { toPublicCleanupRecord, type CleanupRecord as PublicCleanupRecord, type NormalizedBleError } from './cleanup'
 import { mapPublicBoundedAsyncStream, type PublicBoundedAsyncStream } from './streams'
 import { BleError } from './errors'
 import type { BleAdapterState } from './ble-adapter'
@@ -853,13 +853,35 @@ function toBleError(error: unknown): BleError {
 
 function cleanupFailure(resourceKind: string, error: unknown, operation: string): PublicCleanupRecord['failures'] {
   const publicError = rehydratePublicError(error)
-  const normalized =
+  const normalized: NormalizedBleError =
     publicError instanceof BleError
-      ? contractError(publicError.code, publicError.domain, publicError.operation, publicError.platform).normalized
+      ? {
+          code: publicError.code,
+          domain: publicError.domain,
+          operation: publicError.operation,
+          platform: publicError.platform,
+          retryability:
+            publicError.code === 'operation.aborted' || publicError.code === 'operation.timed-out'
+              ? 'caller-decides'
+              : 'never'
+        }
       : error instanceof BackendContractError
-        ? error.normalized
-        : contractError('platform.failure', 'cleanup', operation).normalized
-  return toPublicCleanupRecord({ state: 'release-failed', failures: [{ resourceKind, error: normalized }] }).failures
+        ? (toPublicCleanupRecord({ state: 'release-failed', failures: [{ resourceKind, error: error.normalized }] })
+            .failures[0]?.error ?? {
+            code: 'platform.failure',
+            domain: 'cleanup',
+            operation,
+            platform: null,
+            retryability: 'never'
+          })
+        : {
+            code: 'platform.failure',
+            domain: 'cleanup',
+            operation,
+            platform: null,
+            retryability: 'never'
+          }
+  return [{ resourceKind, error: normalized }]
 }
 
 function isAdapterWaitError(error: BleError): boolean {

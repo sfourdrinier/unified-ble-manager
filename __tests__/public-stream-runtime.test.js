@@ -1,8 +1,10 @@
 // __tests__/public-stream-runtime.test.js
 
 const { capacity } = require('../src/backend-contract/primitives')
+const { contractError } = require('../src/backend-contract/errors')
 const { CoreBoundedStream } = require('../src/core/bounded-stream')
 const { mapPublicBoundedAsyncStream } = require('../src/public/streams')
+const { BleError } = require('../src/public/errors')
 
 function limits(itemCapacity, byteCapacity, reservedControlCapacity) {
   return {
@@ -68,5 +70,33 @@ describe('public stream runtime projection', () => {
     await expect(iterator.return()).resolves.toEqual({ done: true, value: undefined })
     await expect(publicStream.close()).resolves.toEqual({ state: 'released', failures: [] })
     await expect(iterator.next()).resolves.toEqual({ done: true, value: undefined })
+  })
+
+  test('rehydrates source close rejection through the public error bridge', async () => {
+    const sourceError = contractError('platform.failure', 'stream', 'public-stream-runtime.close')
+    const source = {
+      limits: limits(1, 4, 1),
+      overflowPolicy: 'error',
+      [Symbol.asyncIterator]() {
+        return {
+          next: async () => ({ done: true, value: undefined }),
+          return: async () => ({ done: true, value: undefined }),
+          [Symbol.asyncIterator]() {
+            return this
+          }
+        }
+      },
+      close: async () => {
+        throw sourceError
+      }
+    }
+    const publicStream = mapPublicBoundedAsyncStream(source, value => value)
+
+    await expect(publicStream.close()).rejects.toBeInstanceOf(BleError)
+    await expect(publicStream.close()).rejects.toMatchObject({
+      code: 'platform.failure',
+      domain: 'stream',
+      operation: 'public-stream-runtime.close'
+    })
   })
 })

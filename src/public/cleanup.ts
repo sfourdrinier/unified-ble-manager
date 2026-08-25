@@ -3,6 +3,7 @@
 import type {
   CleanupRecord as BackendCleanupRecord,
   NormalizedBleError as BackendNormalizedBleError,
+  PlatformErrorDetail as BackendPlatformErrorDetail,
   BleErrorCode,
   BleErrorDomain
 } from '../backend-contract/errors'
@@ -49,6 +50,7 @@ export interface CleanupRecord {
 
 type CleanupLike = BackendCleanupRecord | CleanupRecord
 type NormalizedErrorLike = BackendNormalizedBleError | NormalizedBleError
+type PlatformErrorLike = BackendPlatformErrorDetail | PublicPlatformErrorDetail
 type SerializableRecordLike = SerializableRecord | PublicSerializableRecord
 type SerializableValueLike = SerializableValue | PublicSerializableValue
 
@@ -68,21 +70,36 @@ function toPublicCleanupFailure(resourceKind: string, error: NormalizedErrorLike
 }
 
 function toPublicNormalizedError(error: NormalizedErrorLike): NormalizedBleError {
-  const platform: PublicPlatformErrorDetail | null =
-    error.platform === null || error.platform === undefined
-      ? null
-      : Object.freeze({
-          domain: error.platform.domain,
-          code: error.platform.code,
-          safeMessage: error.platform.safeMessage,
-          metadata: toPublicSerializableRecord(error.platform.metadata)
-        })
   return Object.freeze({
     code: error.code,
     domain: error.domain,
     operation: error.operation,
-    platform,
+    platform: toPublicPlatformErrorDetail(error.platform),
     retryability: error.retryability
+  })
+}
+
+/** Deep-copies platform metadata and removes backend-only byte brands. */
+export function toPublicPlatformErrorDetail(
+  platform: PlatformErrorLike | null | undefined
+): PublicPlatformErrorDetail | null {
+  if (platform === null || platform === undefined) return null
+  if (
+    typeof platform.domain !== 'string' ||
+    typeof platform.code !== 'string' ||
+    typeof platform.safeMessage !== 'string' ||
+    typeof platform.metadata !== 'object' ||
+    platform.metadata === null ||
+    Array.isArray(platform.metadata) ||
+    platform.metadata instanceof Uint8Array
+  ) {
+    throw new TypeError('platform error detail metadata must be a serializable record')
+  }
+  return Object.freeze({
+    domain: platform.domain,
+    code: platform.code,
+    safeMessage: platform.safeMessage,
+    metadata: toPublicSerializableRecord(platform.metadata)
   })
 }
 

@@ -3,6 +3,7 @@
 import type { BoundedAsyncStream, StreamItem } from '../backend-contract/streams'
 import type { CleanupRecord } from './cleanup'
 import { toPublicCleanupRecord } from './cleanup'
+import { rehydratePublicError } from './error-bridge'
 import type { PortableBoundedAsyncStream, PortableStreamItem } from '../manager/consumer-handles'
 
 export type PublicStreamOverflowPolicy = 'latest' | 'drop-oldest' | 'drop-newest' | 'error'
@@ -97,7 +98,13 @@ export function mapPublicBoundedAsyncStream<InternalValue, PublicValue>(
       }
       return iterator
     },
-    close: async (): Promise<CleanupRecord> => toPublicCleanupRecord(await source.close())
+    close: async (): Promise<CleanupRecord> => {
+      try {
+        return toPublicCleanupRecord(await source.close())
+      } catch (error) {
+        throw rehydratePublicError(error)
+      }
+    }
   }
 }
 

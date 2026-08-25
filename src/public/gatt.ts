@@ -18,7 +18,7 @@ import { normalizeOperationOptions, type OperationOptions } from './operation-op
 import { resolveStreamPolicy, type StreamPolicy } from './stream-presets'
 import { rehydratePublicError, runWithCleanup } from './error-bridge'
 import { mapPublicBoundedAsyncStream, type PublicBoundedAsyncStream, type PublicStreamItem } from './streams'
-import type { CleanupRecord } from './cleanup'
+import { toPublicCleanupRecord, type CleanupRecord } from './cleanup'
 
 export type { GattAccessRequirements, GattCharacteristicPropertyAvailability } from '../backend-contract/gatt'
 
@@ -964,7 +964,7 @@ function emptyChangedStream(): PublicBoundedAsyncStream<GattDatabaseChangedEvent
 }
 
 function rehydrateCleanup(operation: Promise<CleanupRecord>): Promise<CleanupRecord> {
-  return operation.catch(error => {
+  return operation.then(toPublicCleanupRecord).catch(error => {
     throw rehydratePublicError(error)
   })
 }

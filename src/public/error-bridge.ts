@@ -2,6 +2,7 @@
 
 import { BackendContractError, type CleanupFailure, type CleanupRecord } from '../backend-contract/errors'
 import { BleError } from './errors'
+import { toPublicPlatformErrorDetail } from './cleanup'
 
 export interface PublicCleanupRecord {
   readonly state: 'released' | 'release-failed'
@@ -25,7 +26,7 @@ export function rehydratePublicError(error: unknown): unknown {
   }
   const normalized = error.normalized
   return new BleError(normalized.code, normalized.domain, normalized.operation, {
-    platform: normalized.platform
+    platform: toPublicPlatformErrorDetail(normalized.platform)
   })
 }
 

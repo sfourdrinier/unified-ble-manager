@@ -36,6 +36,19 @@ declare const scanA: CopyA.ScanSession
 declare const scanB: CopyB.ScanSession
 declare const adapterWatchA: Awaited<ReturnType<CopyA.BleAdapter['watchState']>>
 declare const adapterWatchB: Awaited<ReturnType<CopyB.BleAdapter['watchState']>>
+declare const supervisorA: CopyA.ConnectionSupervisor<{ readonly source: string }>
+declare const supervisorB: CopyB.ConnectionSupervisor<{ readonly source: string }>
+declare const diagnosticsA: CopyA.BleDiagnostics
+declare const diagnosticsB: CopyB.BleDiagnostics
+declare const errorA: CopyA.BleError
+declare const errorB: CopyB.BleError
+declare const platformDetailA: CopyA.PublicPlatformErrorDetail
+declare const platformDetailB: CopyB.PublicPlatformErrorDetail
+
+type TauriManagerA = Awaited<ReturnType<typeof import('./copy-a/src/tauri').createTauriBleManagerWithEnvironment>>
+type TauriManagerB = Awaited<ReturnType<typeof import('./copy-b/src/tauri').createTauriBleManagerWithEnvironment>>
+type ElectronManagerA = Awaited<ReturnType<typeof import('./copy-a/src/electron/public-manager').createElectronRendererBleManager>>
+type ElectronManagerB = Awaited<ReturnType<typeof import('./copy-b/src/electron/public-manager').createElectronRendererBleManager>>
 
 const managerFromA: CopyB.BleManager = managerA
 const managerFromB: CopyA.BleManager = managerB
@@ -49,6 +62,22 @@ const scanFromA: CopyB.ScanSession = scanA
 const scanFromB: CopyA.ScanSession = scanB
 const adapterWatchFromA: Awaited<ReturnType<CopyB.BleAdapter['watchState']>> = adapterWatchA
 const adapterWatchFromB: Awaited<ReturnType<CopyA.BleAdapter['watchState']>> = adapterWatchB
+const supervisorFromA: CopyB.ConnectionSupervisor<{ readonly source: string }> = supervisorA
+const supervisorFromB: CopyA.ConnectionSupervisor<{ readonly source: string }> = supervisorB
+const diagnosticsFromA: CopyB.BleDiagnostics = diagnosticsA
+const diagnosticsFromB: CopyA.BleDiagnostics = diagnosticsB
+const errorFromA: CopyB.BleError = errorA
+const errorFromB: CopyA.BleError = errorB
+const platformDetailFromA: CopyB.PublicPlatformErrorDetail = platformDetailA
+const platformDetailFromB: CopyA.PublicPlatformErrorDetail = platformDetailB
+declare const tauriManagerA: TauriManagerA
+declare const tauriManagerB: TauriManagerB
+declare const electronManagerA: ElectronManagerA
+declare const electronManagerB: ElectronManagerB
+const tauriFromA: TauriManagerB = tauriManagerA
+const tauriFromB: TauriManagerA = tauriManagerB
+const electronFromA: ElectronManagerB = electronManagerA
+const electronFromB: ElectronManagerA = electronManagerB
 
 void managerFromA
 void managerFromB
@@ -62,6 +91,18 @@ void scanFromA
 void scanFromB
 void adapterWatchFromA
 void adapterWatchFromB
+void supervisorFromA
+void supervisorFromB
+void diagnosticsFromA
+void diagnosticsFromB
+void errorFromA
+void errorFromB
+void platformDetailFromA
+void platformDetailFromB
+void tauriFromA
+void tauriFromB
+void electronFromA
+void electronFromB
 `,
     'utf8'
   )
@@ -99,9 +140,10 @@ void adapterWatchFromB
   } catch (error) {
     const stderr = error instanceof Error && 'stderr' in error ? String(error.stderr) : ''
     const stdout = error instanceof Error && 'stdout' in error ? String(error.stdout) : ''
-    const output = error instanceof Error && 'output' in error && Array.isArray(error.output)
-      ? error.output.map(value => String(value ?? '')).join('')
-      : ''
+    const output =
+      error instanceof Error && 'output' in error && Array.isArray(error.output)
+        ? error.output.map(value => String(value ?? '')).join('')
+        : ''
     throw new Error(`cross-copy declaration compilation failed:\n${stdout}${stderr}${output}`)
   }
 }
@@ -109,5 +151,11 @@ void adapterWatchFromB
 describe('public stream cross-copy portability', () => {
   test('assigns every root manager and stream surface across separately packed copies', () => {
     expect(() => compileCrossCopyFixture()).not.toThrow()
+  })
+
+  test('the reviewed root API report describes only the public bounded stream contract', () => {
+    const report = fs.readFileSync(path.join(rootDirectory, 'etc', 'api', 'root.api.md'), 'utf8')
+    expect(report).not.toContain('readonly observations: BoundedAsyncStream<PublicScanObservation>')
+    expect(report).toContain('readonly observations: PublicBoundedAsyncStream<PublicScanObservation>')
   })
 })

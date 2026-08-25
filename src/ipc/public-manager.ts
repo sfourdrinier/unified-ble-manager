@@ -2,7 +2,7 @@
 
 import { BLE_ERROR_CODES, contractError, type CleanupRecord } from '../backend-contract/errors'
 import type { ConnectionLifecycleCause } from '../backend-contract/connection-lifecycle'
-import type { BoundedAsyncStream, BoundedAsyncStreamIterator } from '../backend-contract/streams'
+import type { BoundedAsyncStream } from '../backend-contract/streams'
 import type {
   PortableBoundedAsyncStream,
   PortableCurrentCharacteristicPath,
@@ -76,6 +76,8 @@ import type { PeerReference } from '../public/peer-reference'
 import { createPublicSecurity } from '../public/security'
 import type { BleSecurity } from '../public/security'
 import { rehydratePublicError, rehydratePublicPromise, runWithCleanup } from '../public/error-bridge'
+import { toPublicCleanupRecord, type CleanupRecord as PublicCleanupRecord } from '../public/cleanup'
+import { mapPublicBoundedAsyncStream, type PublicBoundedAsyncStream } from '../public/streams'
 import { resolveStreamPolicy } from '../public/stream-presets'
 import { CoreBoundedStream } from '../core/bounded-stream'
 import { capacity } from '../backend-contract/primitives'
@@ -153,7 +155,10 @@ export class IpcPublicManagerAdapter implements BleManager {
       state.emit({ state: 'active' })
       return new IpcPublicScanSession(
         session,
-        filterScanObservations(session.observations, normalizedQuery, options.duplicates ?? 'coalesced'),
+        mapPublicBoundedAsyncStream(
+          filterScanObservations(session.observations, normalizedQuery, options.duplicates ?? 'coalesced'),
+          observation => observation
+        ),
         state,
         options
       )
@@ -251,8 +256,8 @@ export class IpcPublicManagerAdapter implements BleManager {
     })
   }
 
-  destroy(): Promise<CleanupRecord> {
-    return rehydratePublicPromise(this.ipc.destroy())
+  destroy(): Promise<PublicCleanupRecord> {
+    return rehydratePublicPromise(this.ipc.destroy()).then(toPublicCleanupRecord)
   }
 
   /** Low-level host seam retained for Tauri's existing deterministic tests. */
@@ -263,14 +268,14 @@ export class IpcPublicManagerAdapter implements BleManager {
 
 class IpcPublicScanSession implements ScanSession {
   readonly plan: import('../backend-contract/scan-planning').ScanPlan | null
-  private stopPromise: Promise<CleanupRecord> | null = null
+  private stopPromise: Promise<PublicCleanupRecord> | null = null
   private readonly timeoutHandle: ReturnType<typeof setTimeout> | null
   private readonly abortSignal: AbortSignal | null
   private readonly abortHandler: (() => void) | null
 
   constructor(
     private readonly inner: import('./manager').IpcScanSession,
-    readonly observations: BoundedAsyncStream<PublicScanObservation>,
+    readonly observations: PublicBoundedAsyncStream<PublicScanObservation>,
     private readonly scanState: ScanStateController,
     options: ScanOptions
   ) {
@@ -285,21 +290,21 @@ class IpcPublicScanSession implements ScanSession {
       options.timeoutMs === undefined ? null : globalThis.setTimeout(stopAutomatically, options.timeoutMs)
   }
 
-  stop(): Promise<CleanupRecord> {
+  stop(): Promise<PublicCleanupRecord> {
     if (this.stopPromise !== null) return this.stopPromise
     const result = this.stopInternal()
     this.stopPromise = result
     return result
   }
 
-  private async stopInternal(): Promise<CleanupRecord> {
+  private async stopInternal(): Promise<PublicCleanupRecord> {
     if (this.timeoutHandle !== null) globalThis.clearTimeout(this.timeoutHandle)
     if (this.abortSignal !== null && this.abortHandler !== null) {
       this.abortSignal.removeEventListener('abort', this.abortHandler)
     }
     this.scanState.emit({ state: 'stopping' })
     try {
-      const cleanup = await rehydratePublicPromise(this.inner.stop())
+      const cleanup = await rehydratePublicPromise(this.inner.stop()).then(toPublicCleanupRecord)
       this.scanState.emit(
         cleanup.state === 'released' ? { state: 'stopped' } : { state: 'failed', reason: 'scan-stop-failed' }
       )
@@ -326,6 +331,7 @@ class IpcPublicConnection implements BleConnection {
   readonly ownerLeaseId: string
   readonly connectionGeneration: string
   readonly lifecycleEvents: AsyncIterable<BleConnectionEvent>
+  readonly events: PublicBoundedAsyncStream<import('../backend-contract/primitives').SerializableRecord>
   readonly controls: BleConnectionControls
 
   constructor(
@@ -348,11 +354,17 @@ class IpcPublicConnection implements BleConnection {
         connectionGeneration: base.connectionGeneration
       })
     )
+    const eventSource =
+      base.events.limits === undefined
+        ? {
+            limits: IPC_ADAPTER_STATE_STREAM_LIMITS,
+            overflowPolicy: 'error' as const,
+            [Symbol.asyncIterator]: () => base.events[Symbol.asyncIterator](),
+            close: async () => ({ state: 'released' as const, failures: [] })
+          }
+        : base.events
+    this.events = mapPublicBoundedAsyncStream(eventSource, value => value)
     this.controls = createIpcConnectionControls(this.base, capabilities, this.connectionGeneration)
-  }
-
-  get events(): BoundedAsyncStream<import('../backend-contract/primitives').SerializableRecord> {
-    return this.base.events
   }
 
   async discover(options: OperationOptions = {}): Promise<GattDatabase> {
@@ -391,12 +403,12 @@ class IpcPublicConnection implements BleConnection {
     }
   }
 
-  disconnect(): Promise<CleanupRecord> {
-    return rehydratePublicPromise(this.base.disconnect())
+  disconnect(): Promise<PublicCleanupRecord> {
+    return rehydratePublicPromise(this.base.disconnect()).then(toPublicCleanupRecord)
   }
 
-  release(): Promise<CleanupRecord> {
-    return rehydratePublicPromise(this.base.release())
+  release(): Promise<PublicCleanupRecord> {
+    return rehydratePublicPromise(this.base.release()).then(toPublicCleanupRecord)
   }
 }
 
@@ -563,7 +575,7 @@ function createIpcGattSource(
   database: IpcGattDatabase,
   deliverySelection: 'unknown' | 'controllable'
 ): PublicGattDatabaseSource {
-  const changed = 'limits' in database.changed ? database.changed : undefined
+  const changed = database.changed !== undefined && 'limits' in database.changed ? database.changed : undefined
   return {
     path: database.path,
     deliverySelection,
@@ -611,57 +623,20 @@ function toPortableSubscription(
     subscriptionId: subscription.subscriptionId,
     path,
     values: toPortableNotificationStream(subscription.values),
-    remove: () => subscription.remove()
+    remove: () => subscription.remove().then(toPublicCleanupRecord)
   }
 }
 
 function toPortableNotificationStream(
   source: BoundedAsyncStream<IpcNotificationValue>
 ): PortableBoundedAsyncStream<PortableNotificationValue> {
-  return {
-    limits: {
-      itemCapacity: Number(source.limits.itemCapacity),
-      byteCapacity: Number(source.limits.byteCapacity),
-      reservedControlCapacity: Number(source.limits.reservedControlCapacity)
-    },
-    overflowPolicy: source.overflowPolicy,
-    [Symbol.asyncIterator](): BoundedAsyncStreamIterator<PortableNotificationValue> {
-      const iterator = source[Symbol.asyncIterator]()
-      return {
-        async next() {
-          const result = await iterator.next()
-          if (result.done) return { done: true, value: undefined }
-          if (result.value.kind === 'value') {
-            return {
-              done: false,
-              value: {
-                kind: 'value',
-                value: {
-                  value: new Uint8Array(result.value.value.value),
-                  indication: result.value.value.delivery === 'indication',
-                  delivery: result.value.value.delivery,
-                  observedAtMonotonicMs: result.value.value.observedAtMonotonicMs,
-                  sequence: result.value.value.sequence
-                }
-              }
-            }
-          }
-          if (result.value.kind === 'overflow') {
-            return { done: false, value: result.value }
-          }
-          return { done: false, value: result.value }
-        },
-        return: async () => {
-          await iterator.return()
-          return { done: true, value: undefined }
-        },
-        [Symbol.asyncIterator]() {
-          return this
-        }
-      }
-    },
-    close: () => source.close()
-  }
+  return mapPublicBoundedAsyncStream(source, value => ({
+    value: new Uint8Array(value.value),
+    indication: value.delivery === 'indication',
+    delivery: value.delivery,
+    observedAtMonotonicMs: value.observedAtMonotonicMs,
+    sequence: value.sequence
+  }))
 }
 
 function toIpcScanOptions(
@@ -937,7 +912,11 @@ async function watchIpcAdapterState(
     }
     signal?.addEventListener('abort', abortHandler, { once: true })
     schedulePoll()
-    return Object.freeze({ initial, values: stream, stop })
+    return Object.freeze({
+      initial,
+      values: mapPublicBoundedAsyncStream(stream, value => value),
+      stop: () => stop().then(toPublicCleanupRecord)
+    })
   } catch (error) {
     throw rehydratePublicError(error)
   }

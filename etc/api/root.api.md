@@ -87,7 +87,7 @@ export interface BleControlObservationMetadata { readonly connectionGeneration: 
 export type BleObservationSource = 'backend' | 'platform' | 'core' | 'unknown'
 export interface ScanSession {
   readonly plan: ScanPlan | null
-  readonly observations: BoundedAsyncStream<PublicScanObservation>
+  readonly observations: PublicBoundedAsyncStream<PublicScanObservation>
   readonly events?: AsyncIterable<DiscoveryEvent>
   readonly state: AsyncIterable<ScanStateEvent>
   stop(): Promise<CleanupRecord>
@@ -108,7 +108,7 @@ export type { GattDatabase, GattService, GattCharacteristic, GattDescriptor, Gat
 export type { BleCapabilities, CapabilityDescriptor, FeatureId } from './capabilities'
 export type { BleDiagnostics, BleDiagnosticsSnapshot } from './diagnostics'
 export type { BlePeerDirectory, PeerReference, PeerReferenceScope, PeerSource } from './peer-directory'
-export class BleError extends Error { readonly code: BleErrorCode; readonly domain: BleErrorDomain; readonly operation: string; readonly platform: PlatformErrorDetail | null; readonly recovery: BleRecovery }
+export class BleError extends Error { readonly code: BleErrorCode; readonly domain: BleErrorDomain; readonly operation: string; readonly platform: PublicPlatformErrorDetail | null; readonly recovery: BleRecovery }
 export function createConnectionSupervisor<Session = undefined>(manager: BleManager, peer: BlePeer | string | PeerReference, options: ConnectionSupervisorOptions<Session>): ConnectionSupervisor<Session>
 export type {
   ConnectionGate,
