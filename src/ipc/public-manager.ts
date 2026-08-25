@@ -58,7 +58,7 @@ import type {
   BleAdapterStateWatch
 } from '../public/ble-adapter'
 import { assertDirectConnectionCapability } from '../public/capabilities'
-import type { BleCapabilities, CapabilityDescriptor } from '../public/capabilities'
+import type { BleCapabilities, CapabilityDescriptor, FeatureId } from '../public/capabilities'
 import { BUILT_IN_FEATURE_IDS } from '../backend-contract/capabilities'
 import { createPublicGattDatabase, type PublicGattDatabaseSource } from '../public/gatt'
 import type { GattDatabase } from '../public/gatt'
@@ -121,7 +121,13 @@ export class IpcPublicManagerAdapter implements BleManager {
   ) {
     this.requireScanPlan = options.requireScanPlan ?? false
     this.gattDeliverySelection = options.gattDeliverySelection ?? 'unknown'
-    this.capabilities = options.capabilities ?? ipc.capabilities
+    // The renderer inherits the main process's capability snapshot, where a
+    // BlueZ backend may well advertise peer:address-targeting. The versioned
+    // IPC surface carries no radio address, so nothing here can honour it -
+    // advertising it would tell a renderer the feature exists and then fail
+    // every call. Report it as unsupported instead, which is what fail-closed
+    // means for a capability the transport cannot express.
+    this.capabilities = withAddressTargetingUnsupported(options.capabilities ?? ipc.capabilities)
     this.adapter = options.adapter ?? createIpcAdapter(ipc)
     this.diagnostics = options.diagnostics ?? diagnosticsUnavailable()
     this.peers = options.peers ?? unsupportedPeerDirectory()
@@ -206,10 +212,8 @@ export class IpcPublicManagerAdapter implements BleManager {
       assertIpcConnectionOptions(options)
       assertDirectConnectionCapability(this.capabilities.get('connection:direct'), 'ipc-public-manager.connect.direct')
       if (isPeerAddressTarget(peer)) {
-        assertDirectConnectionCapability(
-          this.capabilities.get('peer:address-targeting'),
-          'ipc-public-manager.connect.address'
-        )
+        // Capability is reported unsupported above, so this is the single,
+        // consistent failure a renderer can observe.
         throw contractError('capability.unsupported', 'connection', 'ipc-public-manager.connect.address')
       }
       if (isReferenceLike(peer) && !isPeerReference(peer)) {
@@ -1003,4 +1007,27 @@ function discoveryKindFromCapabilities(capabilities: BleCapabilities): BleManage
   if (continuous && chooser) return 'hybrid'
   if (chooser) return 'system-chooser'
   return 'continuous-scan'
+}
+
+/** Reports peer:address-targeting as unsupported without touching the rest. */
+function withAddressTargetingUnsupported(capabilities: BleCapabilities): BleCapabilities {
+  const hidden: FeatureId = 'peer:address-targeting'
+  const asUnsupported = (descriptor: CapabilityDescriptor): CapabilityDescriptor =>
+    Object.freeze({ ...descriptor, state: 'unsupported' as const, limits: descriptor.limits })
+  return {
+    supports: id => (id === hidden ? false : capabilities.supports(id)),
+    get: id => {
+      const descriptor = capabilities.get(id)
+      if (id !== hidden || descriptor === undefined) return descriptor
+      return asUnsupported(descriptor)
+    },
+    require: id => {
+      const descriptor = capabilities.require(id)
+      return id === hidden ? asUnsupported(descriptor) : descriptor
+    },
+    list: () =>
+      Object.freeze(
+        capabilities.list().map(descriptor => (descriptor.id === hidden ? asUnsupported(descriptor) : descriptor))
+      )
+  }
 }
