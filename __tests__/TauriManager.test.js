@@ -2,6 +2,14 @@
 
 const { BUILT_IN_FEATURE_IDS } = require('../src/backend-contract/capabilities')
 
+async function waitUntil(predicate, attempts = 200) {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    if (predicate()) return
+    await Promise.resolve()
+  }
+  throw new Error('timed out waiting for Tauri manager condition')
+}
+
 class FakeChannel {
   constructor() {
     this.onmessage = null
@@ -643,7 +651,7 @@ describe('Tauri v2 public manager', () => {
     controller.abort()
 
     await expect(connecting).rejects.toMatchObject({ code: 'operation.aborted' })
-    expect(invoke.mock.calls.some(([, args]) => args.request.envelope?.command === 'operation.cancel')).toBe(true)
+    await waitUntil(() => invoke.mock.calls.some(([, args]) => args.request.envelope?.command === 'operation.cancel'))
     await manager.destroy()
   })
 
@@ -675,7 +683,7 @@ describe('Tauri v2 public manager', () => {
     const manager = await createTauriBleManagerWithEnvironment({ invoke, Channel: FakeChannel })
 
     await expect(manager.connect('polar-h10', { timeoutMs: 1 })).rejects.toMatchObject({ code: 'operation.timed-out' })
-    expect(invoke.mock.calls.some(([, args]) => args.request.envelope?.command === 'operation.cancel')).toBe(true)
+    await waitUntil(() => invoke.mock.calls.some(([, args]) => args.request.envelope?.command === 'operation.cancel'))
     await manager.destroy()
   })
 

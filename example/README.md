@@ -32,7 +32,7 @@ or local fixture run is not physical-radio, background, restoration, or
 reliability evidence.
 
 For a consuming application, install
-`unified-ble-manager` (`4.0.3` on npm `latest`), configure native permissions and lifecycle
+`unified-ble-manager` (`4.0.4` on npm `latest`), configure native permissions and lifecycle
 ownership in that application, and follow the root [README](../README.md) and
 [Expo plugin reference](../docs/EXPO_PLUGIN.md). The 4.0 package is Experimental;
 do not use this fixture to infer Preview-or-higher support.
