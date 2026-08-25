@@ -60,17 +60,35 @@ describe('React Native Android ScanFilter device address', () => {
     expect(plan.native.predicates.some(predicate => predicate.field === 'addresses')).toBe(true)
   })
 
-  test('android MAC nativePeerId observations match an addresses scan clause', () => {
+  test('android MAC nativePeerId observations carry an opaque-typed address that matches an addresses scan clause', () => {
     const mac = '98:75:96:A2:14:34'
     const observation = createCoreBluetoothObservation(
       { nativePeerId: mac, localName: null, rssi: -50, serviceUuids: null },
-      deviceIdentity('peer-1', 'backend-1', { value: canonicalBleAddress(mac), type: 'public' }),
+      deviceIdentity('peer-1', 'backend-1', { value: canonicalBleAddress(mac), type: 'opaque' }),
       opaqueId('scan-1', 'scan-session', 'android'),
       1,
       0
     )
+    const normalized = normalizeScanObservation(observation)
+    // The native layer reports no address type, so the value survives as
+    // 'opaque' - never an invented 'public' claim - and still matches by value.
+    expect(normalized.address).toEqual({ type: 'opaque', value: mac })
     const query = normalizeScanQuery({ anyOf: [{ addresses: [mac] }] })
-    expect(observationMatchesScanQuery(query, normalizeScanObservation(observation))).toBe(true)
+    expect(observationMatchesScanQuery(query, normalized)).toBe(true)
+  })
+
+  test('opaque identities that are not radio addresses stay off the normalized observation', () => {
+    const observation = createCoreBluetoothObservation(
+      { nativePeerId: 'native-polar-h10', localName: null, rssi: -50, serviceUuids: null },
+      deviceIdentity('peer-2', 'backend-1', { value: 'native-polar-h10', type: 'opaque' }),
+      opaqueId('scan-2', 'scan-session', 'android'),
+      1,
+      0
+    )
+    const normalized = normalizeScanObservation(observation)
+    expect(normalized.address).toBeUndefined()
+    const query = normalizeScanQuery({ anyOf: [{ addresses: ['98:75:96:A2:14:34'] }] })
+    expect(observationMatchesScanQuery(query, normalized)).toBe(false)
   })
 
   test('apple startScan fails closed when device addresses are provided', async () => {
@@ -94,7 +112,7 @@ class ScanAddressControl {
   handshake() {
     return Promise.resolve({
       nativeProtocol: 2,
-      abi: 3,
+      abi: 4,
       controlSurface: 2,
       backendContract: 1,
       capabilitySchema: 1,

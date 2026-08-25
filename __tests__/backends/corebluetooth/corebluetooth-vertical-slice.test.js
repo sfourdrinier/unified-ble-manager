@@ -118,6 +118,22 @@ describe('CoreBluetooth contract-v1 vertical slice', () => {
     await expect(backend.destroy()).resolves.toEqual({ state: 'released', failures: [] })
   })
 
+  test('labels MAC-shaped native peer ids as opaque addresses and keeps UUID peer ids address-less', async () => {
+    const { backend } = await backendFixture()
+    const scan = await backend.scanner.start(scanOptions(), opaqueId('address-scan', 'client', 'corebluetooth:test'))
+    backend.boundary.emitAdvertisement({ nativePeerId: '98-75-96-a2-14-34' })
+    backend.boundary.emitAdvertisement()
+    const iterator = scan.observations[Symbol.asyncIterator]()
+    const macObservation = (await iterator.next()).value.value
+    // The boundary supplies no address type, so the backend must not invent
+    // 'public' for a value that may be static-random or a rotating RPA.
+    expect(macObservation.device.address).toEqual({ value: '98:75:96:A2:14:34', type: 'opaque' })
+    const uuidObservation = (await iterator.next()).value.value
+    expect(uuidObservation.device.address).toBeNull()
+    await scan.stop()
+    await expect(backend.destroy()).resolves.toEqual({ state: 'released', failures: [] })
+  })
+
   test('fails closed when a plan is not bound to its authoritative normalized query', async () => {
     const { backend, boundary } = await backendFixture()
     const startScan = jest.spyOn(boundary, 'startScan')

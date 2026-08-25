@@ -132,9 +132,15 @@ export interface PhysicalSubscription {
   nativeRemoval: Promise<void> | null
 }
 let nextBackendInstance = 1
+/**
+ * Android scan results expose only the MAC value; the native protocol carries
+ * no address type, so a parsable address is reported as `opaque` rather than
+ * inventing `public` for what may be a static-random or rotating private
+ * address. Non-address peer ids (CoreBluetooth UUIDs) carry no address at all.
+ */
 function radioAddressFromNativePeerId(nativePeerId: string): DeviceAddress | null {
   try {
-    return Object.freeze({ value: canonicalBleAddress(nativePeerId), type: 'public' })
+    return Object.freeze({ value: canonicalBleAddress(nativePeerId), type: 'opaque' })
   } catch {
     return null
   }

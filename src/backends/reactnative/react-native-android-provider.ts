@@ -8,6 +8,7 @@ import type {
   AdapterBackend,
   ConnectionBackend,
   GattBackend,
+  PeerAddressDescriptor,
   ResourceCounters,
   ScannerBackend
 } from '../../backend-contract/backend'
@@ -145,7 +146,7 @@ export class ReactNativeAndroidBackend implements BleCentralBackend<string, Nati
     })
     this.connections = Object.freeze({
       ...delegate.connections,
-      peerFromAddress: descriptor => delegate.peerFromAddress(descriptor)
+      peerFromAddress: (descriptor: PeerAddressDescriptor) => delegate.peerFromAddress(descriptor)
     })
     this.gatt = delegate.gatt
     this.security = boundary.securityAvailable
