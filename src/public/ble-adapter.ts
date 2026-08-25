@@ -1,7 +1,9 @@
+// src/public/ble-adapter.ts
+
 import type { AdapterStateSnapshot } from '../backend-contract/identity'
-import type { CleanupRecord } from '../backend-contract/errors'
-import type { StreamItem } from '../backend-contract/streams'
 import type { OperationOptions } from './operation-options'
+import type { CleanupRecord } from './cleanup'
+import type { PublicBoundedAsyncStream } from './streams'
 
 export type BleAdapterState = Omit<AdapterStateSnapshot<string>, 'backendGeneration' | 'updatedAt'> & {
   readonly backendGeneration: string
@@ -18,7 +20,7 @@ export interface AdapterWatchOptions {
 
 export interface BleAdapterStateWatch {
   readonly initial: BleAdapterState
-  readonly values: AsyncIterable<StreamItem<BleAdapterState>>
+  readonly values: PublicBoundedAsyncStream<BleAdapterState>
   stop(): Promise<CleanupRecord>
 }
 
