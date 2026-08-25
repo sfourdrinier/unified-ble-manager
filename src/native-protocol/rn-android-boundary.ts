@@ -21,7 +21,8 @@ import type {
   CoreBluetoothDescriptorAddress,
   CoreBluetoothGattSnapshot,
   CoreBluetoothPhyObservation,
-  CoreBluetoothPhyRequestResult
+  CoreBluetoothPhyRequestResult,
+  CoreBluetoothScanPlatformOptions
 } from '../backends/corebluetooth/corebluetooth-boundary'
 import {
   copyNativeProtocolBytes,
@@ -260,9 +261,24 @@ export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary
 
   async startScan(
     onAdvertisement: (advertisement: CoreBluetoothAdvertisement) => void,
-    serviceUuids: readonly string[]
+    serviceUuids: readonly string[],
+    deviceAddresses: readonly string[] = [],
+    platform?: CoreBluetoothScanPlatformOptions
   ): Promise<void> {
     this.requireOpen('start-scan')
+    if (platform !== undefined && platform.kind !== 'android') {
+      throw contractError('capability.unsupported', 'scan', 'rn-android-boundary.scan.platform-options')
+    }
+    if (platform?.phy !== undefined || platform?.reportDelayMs !== undefined) {
+      throw contractError('capability.unsupported', 'scan', 'rn-android-boundary.scan.platform-options')
+    }
+    if (platform?.callbackType === 'match-lost') {
+      // Android CALLBACK_TYPE_MATCH_LOST would be requested, but the native
+      // event protocol has no loss representation: the radio forwards every
+      // callback through the ordinary advertisement path, so a loss would be
+      // emitted as a fresh observation. Fail closed instead of encoding it.
+      throw contractError('capability.unsupported', 'scan', 'rn-android-boundary.scan.callback-type-match-lost')
+    }
     this.scanListeners.add(onAdvertisement)
     try {
       await this.dispatch('scanStart', [
@@ -271,9 +287,10 @@ export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary
           protocolRecord('scanOptions', [
             field(1, [...serviceUuids]),
             field(2, true),
-            field(3, 2),
-            field(4, 1),
-            field(5, true)
+            field(3, androidScanMode(platform)),
+            field(4, androidScanCallbackType(platform)),
+            field(5, androidScanLegacy(platform)),
+            ...(deviceAddresses.length === 0 ? [] : [field(6, [...deviceAddresses])])
           ])
         )
       ])
@@ -1334,4 +1351,19 @@ function securityStateFromBondState(value: string, operation: string): AndroidSe
     secureConnections: 'unsupported',
     pairingPossible: value === 'bonded' || value === 'bonding' || value === 'notBonded' ? true : null
   })
+}
+
+function androidScanMode(platform: CoreBluetoothScanPlatformOptions | undefined): number {
+  if (platform?.mode === 'low-power') return 0
+  if (platform?.mode === 'balanced') return 1
+  if (platform?.mode === 'opportunistic') return -1
+  return 2
+}
+
+function androidScanCallbackType(platform: CoreBluetoothScanPlatformOptions | undefined): number {
+  return platform?.callbackType === 'first-match' ? 2 : 1
+}
+
+function androidScanLegacy(platform: CoreBluetoothScanPlatformOptions | undefined): boolean {
+  return platform?.legacy !== false
 }

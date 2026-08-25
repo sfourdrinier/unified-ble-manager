@@ -20,6 +20,15 @@ import type {
  * the durable `PeerReference`/restoration path, which never exports the native
  * CBPeripheral identifier across this boundary.
  */
+export interface CoreBluetoothScanPlatformOptions {
+  readonly kind: 'android' | 'corebluetooth' | 'winrt' | 'web' | 'electron' | 'tauri'
+  readonly mode?: 'low-power' | 'balanced' | 'low-latency' | 'opportunistic'
+  readonly callbackType?: 'all-matches' | 'first-match' | 'match-lost'
+  readonly reportDelayMs?: number
+  readonly legacy?: boolean
+  readonly phy?: 'all-supported' | '1m' | 'coded'
+}
+
 export interface CoreBluetoothAdapterSnapshot {
   readonly availability: 'available' | 'unavailable' | 'unsupported' | 'unknown'
   /**
@@ -132,7 +141,9 @@ export interface CoreBluetoothBoundary {
   adapterSnapshot(): CoreBluetoothAdapterSnapshot
   startScan(
     onAdvertisement: (advertisement: CoreBluetoothAdvertisement) => void,
-    serviceUuids: readonly string[]
+    serviceUuids: readonly string[],
+    deviceAddresses?: readonly string[],
+    platform?: CoreBluetoothScanPlatformOptions
   ): Promise<void>
   stopScan(): Promise<void>
   connect(nativePeerId: string): Promise<void>

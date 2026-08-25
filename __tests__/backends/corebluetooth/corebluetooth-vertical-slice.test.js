@@ -105,7 +105,7 @@ describe('CoreBluetooth contract-v1 vertical slice', () => {
       },
       opaqueId('planned-scan', 'client', 'corebluetooth:scan-plan')
     )
-    expect(startScan).toHaveBeenLastCalledWith(expect.any(Function), [serviceUuid])
+    expect(startScan).toHaveBeenLastCalledWith(expect.any(Function), [serviceUuid], [], undefined)
     await expect(plannedScan.stop()).resolves.toEqual({ state: 'released', failures: [] })
 
     startScan.mockClear()
@@ -113,8 +113,24 @@ describe('CoreBluetooth contract-v1 vertical slice', () => {
       scanOptions(),
       opaqueId('legacy-scan', 'client', 'corebluetooth:scan-plan')
     )
-    expect(startScan).toHaveBeenLastCalledWith(expect.any(Function), [serviceUuid])
+    expect(startScan).toHaveBeenLastCalledWith(expect.any(Function), [serviceUuid], [], undefined)
     await expect(legacyScan.stop()).resolves.toEqual({ state: 'released', failures: [] })
+    await expect(backend.destroy()).resolves.toEqual({ state: 'released', failures: [] })
+  })
+
+  test('labels MAC-shaped native peer ids as opaque addresses and keeps UUID peer ids address-less', async () => {
+    const { backend } = await backendFixture()
+    const scan = await backend.scanner.start(scanOptions(), opaqueId('address-scan', 'client', 'corebluetooth:test'))
+    backend.boundary.emitAdvertisement({ nativePeerId: '98-75-96-a2-14-34' })
+    backend.boundary.emitAdvertisement()
+    const iterator = scan.observations[Symbol.asyncIterator]()
+    const macObservation = (await iterator.next()).value.value
+    // The boundary supplies no address type, so the backend must not invent
+    // 'public' for a value that may be static-random or a rotating RPA.
+    expect(macObservation.device.address).toEqual({ value: '98:75:96:A2:14:34', type: 'opaque' })
+    const uuidObservation = (await iterator.next()).value.value
+    expect(uuidObservation.device.address).toBeNull()
+    await scan.stop()
     await expect(backend.destroy()).resolves.toEqual({ state: 'released', failures: [] })
   })
 

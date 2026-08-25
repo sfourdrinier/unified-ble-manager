@@ -520,6 +520,7 @@ describe('canonical public ScanQuery v1', () => {
       connect: jest.fn(),
       destroy: jest.fn(async () => ({ state: 'released', failures: [] }))
     }
+    internal.supports = id => id !== 'scan:platform-options'
     const manager = await createPublicBleManager(internal, () => 0)
 
     await expect(
@@ -529,6 +530,32 @@ describe('canonical public ScanQuery v1', () => {
       code: 'argument.invalid'
     })
     expect(internal.scan).not.toHaveBeenCalled()
+  })
+
+  test('forwards android platform scan options when the backend reports scan:platform-options', async () => {
+    const source = new CoreBoundedStream(
+      { itemCapacity: capacity(8), byteCapacity: capacity(4096), reservedControlCapacity: capacity(1) },
+      'drop-oldest'
+    )
+    const internal = {
+      identity: null,
+      attachedBackend: undefined,
+      supports: id => id === 'scan:platform-options',
+      capability: () => null,
+      capabilities: () => [],
+      scan: jest.fn(async () => ({
+        observations: source,
+        stop: async () => ({ state: 'released', failures: [] })
+      })),
+      connect: jest.fn(),
+      destroy: jest.fn(async () => ({ state: 'released', failures: [] }))
+    }
+    const manager = await createPublicBleManager(internal, () => 0)
+    const platform = { kind: 'android', mode: 'low-latency', callbackType: 'all-matches' }
+    const scan = await manager.scan({ platform })
+    expect(internal.scan).toHaveBeenCalledTimes(1)
+    expect(internal.scan.mock.calls[0][0].platform).toEqual(platform)
+    await scan.stop()
   })
 
   test('does not silently ignore lost reporting when the public timer authority is absent', async () => {
@@ -1675,7 +1702,9 @@ describe('public scan presence eviction completeness', () => {
     const activeTimers = fixture.timers.filter(timer => timer.cancel.mock.calls.length === 0)
     expect(activeTimers.length).toBeGreaterThan(0)
     activeTimers[activeTimers.length - 1].action()
-    await waitUntil(() => fixture.collected.some(event => event.kind === 'lost' && event.reason === 'observation-timeout'))
+    await waitUntil(() =>
+      fixture.collected.some(event => event.kind === 'lost' && event.reason === 'observation-timeout')
+    )
     await closePresenceScan(fixture)
   })
 
@@ -1707,5 +1736,3 @@ describe('public scan presence eviction completeness', () => {
     await closePresenceScan(fixture)
   })
 })
-
-

@@ -1,7 +1,7 @@
 {
   "schema": "unified-ble-native-protocol",
   "version": 2,
-  "abiVersion": 3,
+  "abiVersion": 4,
   "controlSurfaceVersion": 2,
   "abiManifest": "native-protocol-v2-abi.json",
   "maximumControlRecordBytes": 262144,
@@ -199,7 +199,8 @@
         ["allowDuplicates", "boolean", true],
         ["scanMode", "int64", true],
         ["callbackType", "int64", true],
-        ["legacyScan", "boolean", true]
+        ["legacyScan", "boolean", true],
+        ["deviceAddresses", "strings", false]
       ]
     },
     {

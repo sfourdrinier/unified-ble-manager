@@ -1,6 +1,6 @@
 {
   "schema": "unified-ble-native-protocol-abi",
-  "version": 3,
+  "version": 4,
   "recordKinds": {
     "attachment": 1,
     "connectionPath": 2,
@@ -121,7 +121,14 @@
     "binaryReference": { "ownerToken": 1, "byteOffset": 2, "byteLength": 3, "ownership": 4, "operationCorrelation": 5 },
     "serviceDataEntry": { "serviceUuid": 1, "binary": 2 },
     "manufacturerDataEntry": { "companyIdentifier": 1, "binary": 2 },
-    "scanOptions": { "serviceUuids": 1, "allowDuplicates": 2, "scanMode": 3, "callbackType": 4, "legacyScan": 5 },
+    "scanOptions": {
+      "serviceUuids": 1,
+      "allowDuplicates": 2,
+      "scanMode": 3,
+      "callbackType": 4,
+      "legacyScan": 5,
+      "deviceAddresses": 6
+    },
     "adapterStateSnapshot": { "availability": 1, "authorization": 2, "power": 3, "safeReason": 4 },
     "characteristicSnapshot": {
       "path": 1,

@@ -394,8 +394,16 @@ class OwnedAndroidGattRadio(private val context: Context) {
     scanMode: Int,
     callbackType: Int = ScanSettings.CALLBACK_TYPE_ALL_MATCHES,
     legacyScan: Boolean = true,
-    allowDuplicates: Boolean = true
+    allowDuplicates: Boolean = true,
+    deviceAddresses: Array<out String> = emptyArray()
   ) {
+    // ScanSettings.Builder.setLegacy exists only on API 26+; below that the
+    // platform can only run a legacy scan, so accepting legacyScan=false would
+    // silently ignore the caller's extended-advertising request. Fail closed
+    // before any scan state is touched.
+    require(legacyScan || Build.VERSION.SDK_INT >= 26) {
+      "legacyScan=false requires ScanSettings.Builder.setLegacy (API 26+); this device cannot honour it"
+    }
     val normalizedServiceUuids = normalizeScanServiceUuids(serviceUuids?.toList() ?: emptyList())
     check(scanCallback == null) { "Android scan cleanup is still owned by a prior scan" }
     scanSeenDeviceIds.clear()
@@ -404,6 +412,7 @@ class OwnedAndroidGattRadio(private val context: Context) {
     val builder = ScanSettings.Builder()
       .setScanMode(
         when (scanMode) {
+          -1 -> ScanSettings.SCAN_MODE_OPPORTUNISTIC
           0 -> ScanSettings.SCAN_MODE_LOW_POWER
           1 -> ScanSettings.SCAN_MODE_BALANCED
           2 -> ScanSettings.SCAN_MODE_LOW_LATENCY
@@ -417,8 +426,26 @@ class OwnedAndroidGattRadio(private val context: Context) {
     }
     val settings = builder.build()
     val filters = mutableListOf<ScanFilter>()
-    normalizedServiceUuids.forEach { uuid ->
-      filters.add(ScanFilter.Builder().setServiceUuid(ParcelUuid.fromString(uuid)).build())
+    val normalizedAddresses = deviceAddresses.map { it.uppercase() }.distinct()
+    if (normalizedAddresses.isEmpty()) {
+      normalizedServiceUuids.forEach { uuid ->
+        filters.add(ScanFilter.Builder().setServiceUuid(ParcelUuid.fromString(uuid)).build())
+      }
+    } else if (normalizedServiceUuids.isEmpty()) {
+      normalizedAddresses.forEach { address ->
+        filters.add(ScanFilter.Builder().setDeviceAddress(address).build())
+      }
+    } else {
+      normalizedAddresses.forEach { address ->
+        normalizedServiceUuids.forEach { uuid ->
+          filters.add(
+            ScanFilter.Builder()
+              .setDeviceAddress(address)
+              .setServiceUuid(ParcelUuid.fromString(uuid))
+              .build()
+          )
+        }
+      }
     }
     val cb = object : ScanCallback() {
       override fun onScanResult(callbackType: Int, result: AndroidScanResult) {

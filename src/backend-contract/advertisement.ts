@@ -1,6 +1,7 @@
 // src/backend-contract/advertisement.ts
 
 import { contractError } from './errors'
+import { canonicalBleAddress } from './primitives'
 import type {
   BackendInstanceId,
   BorrowedBytes,
@@ -108,6 +109,7 @@ export interface ScanFilter {
   readonly serviceUuids: readonly Uuid[]
   readonly manufacturerData: readonly ManufacturerDataFilter[]
   readonly localNamePrefix: string | null
+  readonly deviceAddresses?: readonly string[]
 }
 export interface OwnerScanSharing {
   readonly mode: 'owner'
@@ -136,6 +138,14 @@ export interface ScanOptions<Attachment extends string, Lease extends string> {
   readonly deadline: Deadline | null
   readonly signal: AbortSignal | null
   readonly sharing: ScanSharing<Attachment, Lease>
+  readonly platform?: {
+    readonly kind: 'android' | 'corebluetooth' | 'winrt' | 'web' | 'electron' | 'tauri'
+    readonly mode?: 'low-power' | 'balanced' | 'low-latency' | 'opportunistic'
+    readonly callbackType?: 'all-matches' | 'first-match' | 'match-lost'
+    readonly reportDelayMs?: number
+    readonly legacy?: boolean
+    readonly phy?: 'all-supported' | '1m' | 'coded'
+  }
 }
 export type OwnerScanOptions<Attachment extends string, Lease extends string> = Omit<
   ScanOptions<Attachment, Lease>,
@@ -149,6 +159,18 @@ export interface AdvertisementInput {
 export function assertScanFilter(filter: ScanFilter, operation: string): void {
   if (filter.localNamePrefix !== null && filter.localNamePrefix.length === 0) {
     throw contractError('scan.filter-invalid', 'scan', operation)
+  }
+  if (filter.deviceAddresses !== undefined) {
+    if (filter.deviceAddresses.length === 0) {
+      throw contractError('scan.filter-invalid', 'scan', operation)
+    }
+    for (const address of filter.deviceAddresses) {
+      try {
+        canonicalBleAddress(address)
+      } catch {
+        throw contractError('scan.filter-invalid', 'scan', operation)
+      }
+    }
   }
   for (const manufacturer of filter.manufacturerData) {
     if (
@@ -172,6 +194,12 @@ export function advertisementMatchesFilter<Attachment extends string>(
     (observation.localName.state !== 'present' || !observation.localName.value.startsWith(filter.localNamePrefix))
   ) {
     return false
+  }
+  if (filter.deviceAddresses !== undefined && filter.deviceAddresses.length > 0) {
+    const observedAddress = observation.device.address
+    if (observedAddress === null || !filter.deviceAddresses.includes(observedAddress.value)) {
+      return false
+    }
   }
   if (filter.serviceUuids.length > 0) {
     const observedServices = observation.serviceUuids

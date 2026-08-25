@@ -3,7 +3,7 @@
 package com.sfourdrinier.unifiedblemanager.protocol.generated
 
 const val NATIVE_PROTOCOL_VERSION: Int = 2
-const val NATIVE_PROTOCOL_ABI_VERSION: Int = 3
+const val NATIVE_PROTOCOL_ABI_VERSION: Int = 4
 const val NATIVE_PROTOCOL_CONTROL_SURFACE_VERSION: Int = 2
 const val MAXIMUM_CONTROL_RECORD_BYTES: Int = 262144
 const val MAXIMUM_BINARY_PAYLOAD_BYTES: Int = 524288
@@ -223,6 +223,7 @@ val NATIVE_PROTOCOL_FIELDS: List<FieldDescriptor> = listOf(
     FieldDescriptor(RecordKind.SCAN_OPTIONS, 3, "scanMode", "int64", true),
     FieldDescriptor(RecordKind.SCAN_OPTIONS, 4, "callbackType", "int64", true),
     FieldDescriptor(RecordKind.SCAN_OPTIONS, 5, "legacyScan", "boolean", true),
+    FieldDescriptor(RecordKind.SCAN_OPTIONS, 6, "deviceAddresses", "strings", false),
     FieldDescriptor(RecordKind.ADAPTER_STATE_SNAPSHOT, 1, "availability", "enum:adapterAvailability", true),
     FieldDescriptor(RecordKind.ADAPTER_STATE_SNAPSHOT, 2, "authorization", "enum:adapterAuthorization", true),
     FieldDescriptor(RecordKind.ADAPTER_STATE_SNAPSHOT, 3, "power", "enum:adapterPower", true),

@@ -375,7 +375,7 @@ class DeterministicNativeControl {
     this.handshakes.push(request)
     return Promise.resolve({
       nativeProtocol: 2,
-      abi: 3,
+      abi: 4,
       controlSurface: 2,
       backendContract: 1,
       capabilitySchema: 1,

@@ -5,7 +5,8 @@ import { isAuthorizationBlocking } from '../backend-contract/identity'
 import type { ConnectionControlCapabilities } from '../backend-contract/connection-controls'
 import type {
   CoreBluetoothAdapterSnapshot,
-  CoreBluetoothAdvertisement
+  CoreBluetoothAdvertisement,
+  CoreBluetoothScanPlatformOptions
 } from '../backends/corebluetooth/corebluetooth-boundary'
 import { ReactNativeAndroidProtocolBoundary } from './rn-android-boundary'
 
@@ -40,9 +41,17 @@ export class ReactNativeAppleProtocolBoundary extends ReactNativeAndroidProtocol
 
   override async startScan(
     onAdvertisement: (advertisement: CoreBluetoothAdvertisement) => void,
-    serviceUuids: readonly string[]
+    serviceUuids: readonly string[],
+    deviceAddresses: readonly string[] = [],
+    platform?: CoreBluetoothScanPlatformOptions
   ): Promise<void> {
+    if (deviceAddresses.length > 0) {
+      throw contractError('capability.unsupported', 'scan', 'rn-apple-boundary.scan.device-addresses')
+    }
     this.assertAdapterReady('scan.start')
+    if (platform !== undefined) {
+      throw contractError('capability.unsupported', 'scan', 'rn-apple-boundary.scan.platform-options')
+    }
     return super.startScan(onAdvertisement, serviceUuids)
   }
 
