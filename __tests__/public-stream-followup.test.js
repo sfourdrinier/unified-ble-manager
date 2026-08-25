@@ -5,6 +5,7 @@ const { capacity } = require('../src/backend-contract/primitives')
 const { CoreBoundedStream } = require('../src/core/bounded-stream')
 const { IpcPublicManagerAdapter } = require('../src/ipc/public-manager')
 const { createPublicGattDatabase } = require('../src/public/gatt')
+const { BleCleanupError, collectCleanupPhases } = require('../src/public/error-bridge')
 
 function limits(itemCapacity, byteCapacity, reservedControlCapacity) {
   return {
@@ -120,11 +121,36 @@ function emptyEvents() {
 }
 
 describe('public stream follow-up boundaries', () => {
+  test('projects aggregate primary-plus-cleanup failures before BleCleanupError exposure', () => {
+    const cleanup = cleanupRecord('aggregate')
+    const primary = new Error('primary failure')
+    let aggregate
+    try {
+      collectCleanupPhases([{ error: primary }, { cleanup }])
+    } catch (error) {
+      aggregate = error
+    }
+
+    expect(aggregate).toBeInstanceOf(AggregateError)
+    const cleanupError = aggregate.errors.find(error => error instanceof BleCleanupError)
+    expect(cleanupError).toBeDefined()
+    expect(cleanupError.cleanup).not.toBe(cleanup)
+    expect(cleanupError.cleanup.failures[0].error.platform.metadata.nested.bytes).not.toBe(
+      cleanup.failures[0].error.platform.metadata.nested.bytes
+    )
+    expect(Object.isFrozen(cleanupError.cleanup)).toBe(true)
+    expect(Object.isFrozen(cleanupError.cleanup.failures[0].error.platform.metadata.nested)).toBe(true)
+  })
+
   test('projects GATT remove and withSubscription cleanup with deep owned metadata', async () => {
     const values = new CoreBoundedStream(limits(2, 32, 1), 'drop-oldest')
     const rawCleanup = cleanupRecord('gatt')
     const database = await createPublicGattDatabase(gattSource(values, async () => rawCleanup))
     const characteristic = database.characteristic('180f', '2a19')
+    const emptyChangedCleanup = await database.changed.close()
+    expect(emptyChangedCleanup).toEqual({ state: 'released', failures: [] })
+    expect(Object.isFrozen(emptyChangedCleanup)).toBe(true)
+    expect(Object.isFrozen(emptyChangedCleanup.failures)).toBe(true)
 
     const subscription = await characteristic.subscribe()
     const projected = await subscription.remove()

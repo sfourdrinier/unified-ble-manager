@@ -173,7 +173,10 @@ class ConnectionSupervisorImpl<Session> implements ConnectionSupervisor<Session>
       { itemCapacity: capacity(64), byteCapacity: capacity(64 * 1024), reservedControlCapacity: capacity(256) },
       'drop-oldest'
     )
-    this.events = mapPublicBoundedAsyncStream(this.eventStream, event => event)
+    this.events = mapPublicBoundedAsyncStream(this.eventStream, event => ({
+      ...event,
+      ...(event.cleanup === undefined ? {} : { cleanup: toPublicCleanupRecord(event.cleanup) })
+    }))
   }
 
   get snapshot(): ConnectionSupervisorSnapshot<Session> {

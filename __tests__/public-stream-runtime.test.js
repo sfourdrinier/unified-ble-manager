@@ -99,4 +99,38 @@ describe('public stream runtime projection', () => {
       operation: 'public-stream-runtime.close'
     })
   })
+
+  test('rehydrates source next and return failures without stealing iterator teardown', async () => {
+    const nextError = contractError('platform.failure', 'stream', 'public-stream-runtime.next')
+    const returnError = contractError('platform.failure', 'stream', 'public-stream-runtime.return')
+    const sourceIterator = {
+      next: async () => {
+        throw nextError
+      },
+      return: jest.fn(async () => {
+        throw returnError
+      }),
+      [Symbol.asyncIterator]() {
+        return this
+      }
+    }
+    const source = {
+      limits: limits(1, 4, 1),
+      overflowPolicy: 'error',
+      [Symbol.asyncIterator]: () => sourceIterator,
+      close: async () => ({ state: 'released', failures: [] })
+    }
+    const publicStream = mapPublicBoundedAsyncStream(source, value => value)
+    const iterator = publicStream[Symbol.asyncIterator]()
+
+    await expect(iterator.next()).rejects.toMatchObject({
+      code: 'platform.failure',
+      operation: 'public-stream-runtime.next'
+    })
+    await expect(iterator.return()).rejects.toMatchObject({
+      code: 'platform.failure',
+      operation: 'public-stream-runtime.return'
+    })
+    expect(sourceIterator.return).toHaveBeenCalledTimes(1)
+  })
 })

@@ -87,10 +87,18 @@ export function mapPublicBoundedAsyncStream<InternalValue, PublicValue>(
       const sourceIterator: SourceStreamIterator<InternalValue> = source[Symbol.asyncIterator]()
       const iterator: PublicBoundedAsyncStreamIterator<PublicValue> = {
         async next(): Promise<IteratorResult<PublicStreamItem<PublicValue>, undefined>> {
-          return mapPublicIteratorResult(await sourceIterator.next(), mapValue)
+          try {
+            return mapPublicIteratorResult(await sourceIterator.next(), mapValue)
+          } catch (error) {
+            throw rehydratePublicError(error)
+          }
         },
         async return(): Promise<IteratorResult<PublicStreamItem<PublicValue>, undefined>> {
-          return mapPublicIteratorResult(await sourceIterator.return(), mapValue)
+          try {
+            return mapPublicIteratorResult(await sourceIterator.return(), mapValue)
+          } catch (error) {
+            throw rehydratePublicError(error)
+          }
         },
         [Symbol.asyncIterator](): PublicBoundedAsyncStreamIterator<PublicValue> {
           return iterator

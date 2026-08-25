@@ -101,6 +101,62 @@ describe('public connection supervisor', () => {
     expect(current.release).toHaveBeenCalledTimes(1)
   })
 
+  test('projects cleanup embedded in supervisor events into an immutable public snapshot', async () => {
+    const current = connection()
+    const cleanup = {
+      state: 'release-failed',
+      failures: [
+        {
+          resourceKind: 'connection',
+          error: {
+            code: 'platform.failure',
+            domain: 'cleanup',
+            operation: 'supervisor-event.cleanup',
+            platform: {
+              domain: 'native',
+              code: 'E_CLEANUP',
+              safeMessage: 'cleanup failed',
+              metadata: { nested: { bytes: new Uint8Array([1, 2, 3]) } }
+            },
+            retryability: 'caller-decides'
+          }
+        }
+      ]
+    }
+    current.release.mockResolvedValue(cleanup)
+    const ble = manager(current)
+    const supervisor = createConnectionSupervisor(ble, 'peer-1', {
+      retry: { initialDelayMs: 1, maximumDelayMs: 1, multiplier: 1, jitter: 0, maximumAttempts: 1 }
+    })
+    const events = supervisor.events[Symbol.asyncIterator]()
+
+    supervisor.start()
+    await wait()
+    await supervisor.stop()
+
+    let cleanupEvent
+    for (let attempt = 0; attempt < 8; attempt += 1) {
+      const next = await events.next()
+      if (next.done) break
+      if (next.value.kind === 'value' && next.value.value.cleanup !== undefined) {
+        cleanupEvent = next.value.value
+        break
+      }
+    }
+    expect(cleanupEvent).toBeDefined()
+    const projected = cleanupEvent.cleanup
+    expect(projected).toMatchObject({ state: 'release-failed' })
+    expect(projected).not.toBe(cleanup)
+    expect(projected.failures[0].error.platform.metadata.nested.bytes).not.toBe(
+      cleanup.failures[0].error.platform.metadata.nested.bytes
+    )
+    expect(Object.isFrozen(projected)).toBe(true)
+    expect(Object.isFrozen(projected.failures[0].error.platform.metadata.nested)).toBe(true)
+    cleanup.failures[0].error.platform.metadata.nested.bytes[0] = 9
+    expect(projected.failures[0].error.platform.metadata.nested.bytes[0]).toBe(1)
+    await events.return()
+  })
+
   test('rejects invalid retry policy before starting work', () => {
     const ble = manager(connection())
     expect(() =>

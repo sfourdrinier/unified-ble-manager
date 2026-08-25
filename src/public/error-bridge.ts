@@ -2,20 +2,21 @@
 
 import { BackendContractError, type CleanupFailure, type CleanupRecord } from '../backend-contract/errors'
 import { BleError } from './errors'
-import { toPublicPlatformErrorDetail } from './cleanup'
+import {
+  toPublicCleanupRecord,
+  toPublicPlatformErrorDetail,
+  type CleanupRecord as PublicCleanupRecord
+} from './cleanup'
 
-export interface PublicCleanupRecord {
-  readonly state: 'released' | 'release-failed'
-  readonly failures: readonly unknown[]
-}
+type CleanupResultLike = CleanupRecord | PublicCleanupRecord
 
 export class BleCleanupError extends Error {
   readonly cleanup: PublicCleanupRecord
 
-  constructor(cleanup: PublicCleanupRecord, message = 'BLE cleanup failed') {
+  constructor(cleanup: CleanupResultLike, message = 'BLE cleanup failed') {
     super(message)
     this.name = 'BleCleanupError'
-    this.cleanup = cleanup
+    this.cleanup = toPublicCleanupRecord(cleanup)
   }
 }
 
@@ -34,11 +35,6 @@ export function rehydratePublicPromise<Value>(operation: Promise<Value>): Promis
   return operation.catch(error => {
     throw rehydratePublicError(error)
   })
-}
-
-interface CleanupResultLike {
-  readonly state: 'released' | 'release-failed'
-  readonly failures: PublicCleanupRecord['failures']
 }
 
 export function collectCleanupPhases(
@@ -94,8 +90,5 @@ function resolvedCleanupFailure(value: CleanupResultLike | void): Error | null {
   if (value === undefined || value.state !== 'release-failed') {
     return null
   }
-  return new BleCleanupError({
-    state: 'release-failed',
-    failures: value.failures
-  })
+  return new BleCleanupError(value)
 }

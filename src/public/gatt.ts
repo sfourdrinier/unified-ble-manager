@@ -959,7 +959,7 @@ function emptyChangedStream(): PublicBoundedAsyncStream<GattDatabaseChangedEvent
         }
       }
     },
-    close: async () => ({ state: 'released', failures: [] })
+    close: async () => toPublicCleanupRecord({ state: 'released', failures: [] })
   }
 }
 
