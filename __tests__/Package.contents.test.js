@@ -14,6 +14,12 @@ const {
 } = require('../scripts/ci/forbidden-runtime-dependencies')
 
 describe('published package contains the files and scripts it claims', () => {
+  test('loads emitted CommonJS through declared production runtime dependencies', () => {
+    expect(packageJson.dependencies).toEqual({ '@babel/runtime': '^7.29.7' })
+    expect(() => require('../lib/commonjs/public/ble-manager.js')).not.toThrow()
+    expect(() => require('../lib/commonjs/advanced.js')).not.toThrow()
+  })
+
   test('build and prepack verify the current published artifact surface', () => {
     expect(packageJson.scripts.build).toBe('pnpm prepack')
     expect(packageJson.scripts.lint).toContain('--max-warnings 0')
@@ -118,7 +124,7 @@ describe('published package contains the files and scripts it claims', () => {
     })
     expect(packageJson.optionalDependencies).not.toHaveProperty('@expo/config-plugins')
     expect(packageJson.optionalDependencies).not.toHaveProperty('dbus-next')
-    expect(packageJson.dependencies).toBeUndefined()
+    expect(packageJson.dependencies).toEqual({ '@babel/runtime': '^7.29.7' })
     expect(packageJson.devDependencies.webpack).toBe('5.109.2')
     expect(packInstallSmokeSource).toContain('createPackedBrowserBundleConsumer')
     expect(packInstallSmokeSource).toContain('bundlePackedBrowserConsumer')
@@ -186,7 +192,7 @@ describe('published package contains the files and scripts it claims', () => {
     })
     expect(packageJson.peerDependencies).toMatchObject({ expo: '^57.0.0' })
     expect(packageJson.peerDependenciesMeta).toMatchObject({ expo: { optional: true } })
-    expect(packageJson.dependencies).toBeUndefined()
+    expect(packageJson.dependencies).toEqual({ '@babel/runtime': '^7.29.7' })
     expect(packageJson.devDependencies.expo).toBe('^57.0.0')
     expect(packageJson.devDependencies.semver).toBe('^7.8.5')
     expect(packageJson.devDependencies).not.toHaveProperty('node-addon-api')
