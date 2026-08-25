@@ -1,6 +1,6 @@
 import type { PeerReference } from './peer-reference'
 import { snapshotPeerReference } from './peer-reference'
-import { canonicalUuid } from './primitives'
+import { canonicalBleAddress, canonicalUuid } from './primitives'
 
 export interface NormalizedManufacturerDataPattern {
   readonly companyId: number
@@ -16,6 +16,8 @@ export interface NormalizedServiceDataPattern {
 
 export interface NormalizedScanClause {
   readonly peers: readonly PeerReference[] | null
+  /** Canonical radio addresses; matches only peers advertising a public or static random address. */
+  readonly addresses: readonly string[] | null
   readonly services: {
     readonly any: readonly string[]
     readonly all: readonly string[]
@@ -44,12 +46,18 @@ export interface NormalizedScanQuery {
 
 export interface NormalizedScanObservation {
   readonly peerReference?: PeerReference
+  readonly address?: NormalizedObservationAddress
   readonly localName: string | null
   readonly rssi: number | null
   readonly connectable: boolean | null
   readonly serviceUuids: readonly string[] | null
   readonly manufacturerData: readonly { readonly companyId: number; readonly data: Uint8Array }[] | null
   readonly serviceData: readonly { readonly service: string; readonly data: Uint8Array }[] | null
+}
+
+export interface NormalizedObservationAddress {
+  readonly type: 'public' | 'random'
+  readonly value: string
 }
 
 export function snapshotNormalizedScanQuery(query: NormalizedScanQuery): NormalizedScanQuery {
@@ -77,7 +85,7 @@ export function scanQueryDigest(query: Omit<NormalizedScanQuery, 'digest'>): str
 
 export function canonicalScanQueryJson(value: unknown): string {
   return JSON.stringify(value, (key, entry: unknown) => {
-    if (key === 'peers' && entry === null) return undefined
+    if ((key === 'peers' || key === 'addresses') && entry === null) return undefined
     return entry instanceof Uint8Array ? bytesToHex(entry) : entry
   })
 }
@@ -103,10 +111,11 @@ function assertNormalizedClause(clause: NormalizedScanClause, path: string): voi
   assertObject(clause, `normalized scan query ${path}`)
   assertExactKeys(
     clause,
-    ['peers', 'services', 'names', 'manufacturerData', 'serviceData', 'rssi', 'connectable'],
+    ['peers', 'addresses', 'services', 'names', 'manufacturerData', 'serviceData', 'rssi', 'connectable'],
     path
   )
   if (clause.peers !== null && !Array.isArray(clause.peers)) throw invalidNormalized(path)
+  assertCanonicalAddressList(clause.addresses, `${path}.addresses`)
   assertUuidField(clause.services, `${path}.services`)
   assertNameField(clause.names, `${path}.names`)
   assertManufacturerField(clause.manufacturerData, `${path}.manufacturerData`)
@@ -130,6 +139,7 @@ function assertNormalizedClause(clause: NormalizedScanClause, path: string): voi
   }
   if (
     clause.peers === null &&
+    clause.addresses === null &&
     clause.services === null &&
     clause.names === null &&
     clause.manufacturerData === null &&
@@ -210,6 +220,20 @@ function assertByteFields(
   }
 }
 
+function assertCanonicalAddressList(values: readonly string[] | null, path: string): void {
+  if (values === null) return
+  if (!Array.isArray(values) || values.length === 0 || values.some(value => typeof value !== 'string')) {
+    throw invalidNormalized(path)
+  }
+  values.forEach((value, index) => {
+    try {
+      if (canonicalBleAddress(value) !== value) throw new Error('not canonical')
+    } catch {
+      throw invalidNormalized(`${path}[${index}]`)
+    }
+  })
+}
+
 function assertCanonicalUuidList(values: readonly string[], path: string): void {
   if (!Array.isArray(values) || values.some(value => typeof value !== 'string')) throw invalidNormalized(path)
   values.forEach((value, index) => assertCanonicalUuid(value, `${path}[${index}]`))
@@ -262,6 +286,7 @@ function snapshotClauseList(clauses: readonly NormalizedScanClause[] | null): re
 function snapshotClause(clause: NormalizedScanClause): NormalizedScanClause {
   return Object.freeze({
     peers: clause.peers === null ? null : snapshotPeers(clause.peers),
+    addresses: clause.addresses === null ? null : sortedUnique(clause.addresses),
     services:
       clause.services === null
         ? null

@@ -30,7 +30,7 @@ export async function releaseLateCoreBluetoothConnection(
     )
   }
   try {
-    await withCoreBluetoothCleanupTimeout(() => nativeDisconnect, 'corebluetooth.connect.late-cleanup')
+    await withCoreBluetoothCleanupTimeout(() => nativeDisconnect, 'direct-gatt.connect.late-cleanup')
   } catch (error) {
     if (error instanceof BackendContractError && error.normalized.code === 'operation.timed-out') {
       return false

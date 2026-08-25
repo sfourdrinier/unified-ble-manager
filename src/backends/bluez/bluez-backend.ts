@@ -65,6 +65,14 @@ export class BluezBackend implements BleCentralBackend<string, HostNeutralBacken
       tckSuiteId: 'capability.catalog-v2',
       requiredScenarioIds: ['scenario.scan-connect-discover-read-notify-destroy']
     }),
+    createBackendOperationCapabilityRegistration({
+      id: BUILT_IN_FEATURE_IDS.peerAddressTargeting,
+      implementationVersion: BLUEZ_IMPLEMENTATION_VERSION,
+      sourceDigest: 'bluez-address-targeting-v1',
+      tckSuiteId: 'capability.catalog-v2',
+      requiredScenarioIds: ['scenario.scan-connect-discover-read-notify-destroy'],
+      operation: 'peer:address-targeting.invoke-without-connection'
+    }),
     ...bluezSecurityFeatureIds.map(id =>
       createBackendOperationCapabilityRegistration({
         id,

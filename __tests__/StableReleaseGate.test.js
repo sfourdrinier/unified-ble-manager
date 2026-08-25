@@ -89,7 +89,13 @@ function writeJson(file, value) {
 }
 
 function runGit(root, args) {
-  const result = spawnSync('git', args, { cwd: root, encoding: 'utf8', shell: false })
+  // Neutralise the developer's global git config: a machine with
+  // `tag.gpgSign = true` (or signed commits) turns these throwaway fixture
+  // tags into signed tags, which demand a message and fail with
+  // "fatal: no tag message?". The gate under test is about release content,
+  // not about how the contributor signs their own work.
+  const isolated = ['-c', 'tag.gpgSign=false', '-c', 'commit.gpgSign=false', ...args]
+  const result = spawnSync('git', isolated, { cwd: root, encoding: 'utf8', shell: false })
   if (result.error) throw result.error
   if (result.status !== 0) throw new Error(`git ${args.join(' ')} failed: ${result.stderr}`)
   return result.stdout.trim()

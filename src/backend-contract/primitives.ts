@@ -282,6 +282,19 @@ export function canonicalUuid(value: string): Uuid {
   }
   return `${compact.slice(0, 8)}-${compact.slice(8, 12)}-${compact.slice(12, 16)}-${compact.slice(16, 20)}-${compact.slice(20)}` as Uuid
 }
+/**
+ * Canonicalizes a 48-bit BLE radio address to uppercase colon-separated octets.
+ * Accepts ':' or '-' separators in any case; rejects every other shape. This
+ * canonical form only identifies peers using public or static random addresses;
+ * peers using resolvable private addresses have no stable radio address and
+ * must be re-entered through a durable `PeerReference` instead.
+ */
+export function canonicalBleAddress(value: string): string {
+  if (typeof value !== 'string' || !/^[0-9A-Fa-f]{2}([:-][0-9A-Fa-f]{2}){5}$/.test(value)) {
+    throw new Error('BLE address must be six hexadecimal octets separated by ":" or "-"')
+  }
+  return value.replaceAll('-', ':').toUpperCase()
+}
 export function byteLimit(value: number): ByteLimit {
   assertNonNegativeSafeInteger(value, 'byte limit')
   return value as ByteLimit

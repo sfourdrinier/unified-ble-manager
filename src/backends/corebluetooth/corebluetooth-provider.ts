@@ -56,7 +56,7 @@ export function createCoreBluetoothBackendProvider(
     create: async selection => {
       const selected = String(selection.selectedAdapterId)
       if (selected !== 'corebluetooth-default-adapter') {
-        throw contractError('adapter.unavailable', 'adapter', 'corebluetooth.provider.select-adapter')
+        throw contractError('adapter.unavailable', 'adapter', 'direct-gatt.provider.select-adapter')
       }
       const boundary = options.boundaryFactory()
       try {

@@ -137,7 +137,7 @@ function allocateBackendInstance(): number {
 }
 
 function throwCoreBluetoothGattSnapshotMalformed(field: string): never {
-  throw contractError('protocol.malformed', 'gatt', `corebluetooth.gatt.snapshot.${field}`)
+  throw contractError('protocol.malformed', 'gatt', `direct-gatt.gatt.snapshot.${field}`)
 }
 
 function isCoreBluetoothGattRecord(value: unknown): value is Record<string, unknown> {
@@ -447,9 +447,9 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
   async attach(
     request: BackendAttachmentRequest
   ): Promise<BackendAttachment<string, HostNeutralBackendIdentity<string>>> {
-    this.assertUsable('corebluetooth.attach')
+    this.assertUsable('direct-gatt.attach')
     if (this.attached) {
-      throw contractError('lifecycle.invalid-state', 'core', 'corebluetooth.attach')
+      throw contractError('lifecycle.invalid-state', 'core', 'direct-gatt.attach')
     }
     negotiateCoreVersions(coreBluetoothCompatibility, request.coreCompatibility)
     this.attached = true
@@ -457,7 +457,7 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
     return Object.freeze({ attachment: identity.attachment, identity })
   }
   events(): BoundedAsyncStream<BackendEvent<string>> {
-    this.assertUsable('corebluetooth.events')
+    this.assertUsable('direct-gatt.events')
     const stream = new OwnedCoreBoundedStream<BackendEvent<string>>(backendEventLimits, 'error', () => {
       this.eventStreams.delete(stream)
     })
@@ -515,7 +515,7 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
   }
   refreshAttachmentState(): void {
     if (this.admissionClosed || this.destroyed) {
-      throw contractError('lifecycle.destroyed', 'core', 'corebluetooth.refresh-attachment-state')
+      throw contractError('lifecycle.destroyed', 'core', 'direct-gatt.refresh-attachment-state')
     }
     this.attachmentLifecycle.refreshAttachmentState()
   }
@@ -539,6 +539,18 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
     record.readinessWatchClosures.add(close)
     return () => record.readinessWatchClosures.delete(close)
   }
+
+  /**
+   * This backend is shared by CoreBluetooth and the React Native Android GATT
+   * boundary, so a hardcoded "CoreBluetoothBackend" tag reports Apple's stack
+   * on Android phones. The identity options already carry the real platform.
+   */
+  private diagnosticTag(scope: string): string {
+    return scope.length === 0
+      ? `[${this.identityOptions.registeredPlatformId}]`
+      : `[${this.identityOptions.registeredPlatformId}.${scope}]`
+  }
+
   private watchAdapterState(): AdapterStateWatch<string> {
     const stream = new OwnedCoreBoundedStream<AdapterStateSnapshot<string>>(adapterStateLimits, 'latest', () => {
       this.stateStreams.delete(stream)
@@ -553,13 +565,13 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
     options: OwnerScanOptions<string, string>,
     _clientId: ClientId<string, string>
   ): Promise<ScanLease<string, string>> {
-    this.assertOperational('corebluetooth.scan.start')
-    assertScanFilter(options.filter, 'corebluetooth.scan.start')
-    const serviceUuids = trustedServiceUuidFilter(options, planCoreBluetoothScan, 'corebluetooth.scan').serviceUuids
+    this.assertOperational('direct-gatt.scan.start')
+    assertScanFilter(options.filter, 'direct-gatt.scan.start')
+    const serviceUuids = trustedServiceUuidFilter(options, planCoreBluetoothScan, 'direct-gatt.scan').serviceUuids
     const failedScanGroup = this.scanGroup
     if (failedScanGroup?.state === 'failed') {
       try {
-        const cleanup = await this.stopNativeScan(failedScanGroup, 'corebluetooth.scan.retry-stop')
+        const cleanup = await this.stopNativeScan(failedScanGroup, 'direct-gatt.scan.retry-stop')
         if (cleanup.state === 'release-failed') {
           throw new Error('CoreBluetooth scan cleanup requires retry')
         }
@@ -568,13 +580,13 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
           this.scanGroup = null
         }
       } catch (error) {
-        throw this.operationLifecycle.platformError('scan.start-failed', 'scan', 'corebluetooth.scan.retry-stop', error)
+        throw this.operationLifecycle.platformError('scan.start-failed', 'scan', 'direct-gatt.scan.retry-stop', error)
       }
     }
     if (this.scanGroup !== null) {
-      throw contractError('scan.already-active', 'scan', 'corebluetooth.scan.start')
+      throw contractError('scan.already-active', 'scan', 'direct-gatt.scan.start')
     }
-    this.operationLifecycle.assertAdmission(options, 'corebluetooth.scan.start')
+    this.operationLifecycle.assertAdmission(options, 'direct-gatt.scan.start')
     const identifiers = this.identifiers()
     const ordinal = this.nextScan
     this.nextScan += 1
@@ -606,11 +618,11 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
       this.stopScanConsumer(consumer)
         .then(result => {
           if (result.state === 'release-failed') {
-            console.error('[CoreBluetoothBackend.scan.abort] Native scan cleanup requires retry:', result.failures)
+            console.error(`${this.diagnosticTag('scan.abort')} Native scan cleanup requires retry:`, result.failures)
           }
         })
         .catch(error => {
-          console.error('[CoreBluetoothBackend.scan.abort] Native scan cleanup rejected:', error)
+          console.error(`${this.diagnosticTag('scan.abort')} Native scan cleanup rejected:`, error)
         })
     }
     const deadline = (): void => {
@@ -627,34 +639,34 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
     } catch (error) {
       this.releaseScanConsumerAdmission(consumer)
       this.scanGroup = null
-      throw this.operationLifecycle.platformError('scan.start-failed', 'scan', 'corebluetooth.scan.start', error)
+      throw this.operationLifecycle.platformError('scan.start-failed', 'scan', 'direct-gatt.scan.start', error)
     }
     if (this.scanGroup !== group || group.state === 'failed') {
       try {
-        const cleanup = await this.stopNativeScan(group, 'corebluetooth.scan.late-start-stop')
+        const cleanup = await this.stopNativeScan(group, 'direct-gatt.scan.late-start-stop')
         if (cleanup.state === 'release-failed') {
           const detail = cleanup.failures[0]?.error.platform
           throw new Error(detail?.safeMessage ?? 'CoreBluetooth scan cleanup requires retry')
         }
       } catch (error) {
-        console.error('[CoreBluetoothBackend.scan.late-start] Native scan compensation failed:', error)
+        console.error(`${this.diagnosticTag('scan.late-start')} Native scan compensation failed:`, error)
         group.state = 'failed'
         group.consumers.clear()
         this.scanGroup = group
-        throw this.scanStartTerminalError(consumer, 'corebluetooth.scan.start')
+        throw this.scanStartTerminalError(consumer, 'direct-gatt.scan.start')
       }
       group.consumers.clear()
       if (this.scanGroup === group) {
         this.scanGroup = null
       }
-      throw this.scanStartTerminalError(consumer, 'corebluetooth.scan.start')
+      throw this.scanStartTerminalError(consumer, 'direct-gatt.scan.start')
     }
     if (group.state !== 'starting' || consumer.terminalCause !== null || options.signal?.aborted === true) {
       const cleanup = await this.stopScanConsumer(consumer)
       if (cleanup.state === 'release-failed') {
         group.state = 'failed'
       }
-      throw this.scanStartTerminalError(consumer, 'corebluetooth.scan.start')
+      throw this.scanStartTerminalError(consumer, 'direct-gatt.scan.start')
     }
     group.state = 'active'
     return new CoreBluetoothScanLease(this, consumer)
@@ -664,14 +676,14 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
     token: ScanShareToken<string, string>,
     _clientId: ClientId<string, string>
   ): Promise<ScanLease<string, string>> {
-    this.assertOperational('corebluetooth.scan.join')
+    this.assertOperational('direct-gatt.scan.join')
     const group = this.scanGroup
     if (group === null || group.state !== 'active' || group.ownerLeaseId !== leaseId || group.shareToken !== token) {
-      throw contractError('ownership.denied', 'scan', 'corebluetooth.scan.join')
+      throw contractError('ownership.denied', 'scan', 'direct-gatt.scan.join')
     }
     const owner = group.consumers.get(String(group.ownerLeaseId))
     if (owner === undefined) {
-      throw contractError('lifecycle.invariant-violation', 'scan', 'corebluetooth.scan.join.owner')
+      throw contractError('lifecycle.invariant-violation', 'scan', 'direct-gatt.scan.join.owner')
     }
     const identifiers = this.identifiers()
     const ordinal = this.nextScan
@@ -714,13 +726,13 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
       }
     }
     try {
-      const cleanup = await this.stopNativeScan(group, 'corebluetooth.scan.stop')
+      const cleanup = await this.stopNativeScan(group, 'direct-gatt.scan.stop')
       if (cleanup.state === 'release-failed') {
         return cleanup
       }
     } catch (error) {
       group.state = 'failed'
-      return cleanupFailure('scan', 'corebluetooth.scan.stop', error)
+      return cleanupFailure('scan', 'direct-gatt.scan.stop', error)
     }
     group.consumers.clear()
     this.scanGroup = null
@@ -803,13 +815,13 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
             .then(result => {
               if (result.state === 'release-failed') {
                 console.error(
-                  '[CoreBluetoothBackend.handleAdvertisement] Overflow scan cleanup requires retry:',
+                  `${this.diagnosticTag('handleAdvertisement')} Overflow scan cleanup requires retry:`,
                   result.failures
                 )
               }
             })
             .catch(error => {
-              console.error('[CoreBluetoothBackend.handleAdvertisement] Overflow scan cleanup rejected:', error)
+              console.error(`${this.diagnosticTag('handleAdvertisement')} Overflow scan cleanup rejected:`, error)
             })
         }
       }
@@ -827,30 +839,33 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
     }
     group.consumers.clear()
     this.scanGroup = null
-    console.error('[CoreBluetoothBackend.handleScanFailure] Native scan failed:', safeMessage)
+    console.error(`${this.diagnosticTag('handleScanFailure')} Native scan failed:`, safeMessage)
   }
   private async connect(
     peerId: PeerId<string>,
     clientId: ClientId<string, string>,
     options: PublicOperationOptions
   ): Promise<ConnectionLease<string, string, string>> {
-    this.assertOperational('corebluetooth.connect')
-    this.operationLifecycle.assertAdmission(options, 'corebluetooth.connect')
-    const nativePeerId = this.nativePeerIdForPeerId(peerId, 'corebluetooth.connect.peer')
+    this.assertOperational('direct-gatt.connect')
+    this.operationLifecycle.assertAdmission(options, 'direct-gatt.connect')
+    const nativePeerId = this.nativePeerIdForPeerId(peerId, 'direct-gatt.connect.peer')
     let existing = this.connectionsByNativeId.get(nativePeerId)
     if (existing?.state === 'cleanup-failed') {
       try {
         const released = await releaseLateCoreBluetoothConnection(this.boundary, this.connectionsByNativeId, existing)
         if (!released) {
-          console.error('[CoreBluetoothBackend.connect] Late connection cleanup remains active:', existing.nativePeerId)
+          console.error(
+            `${this.diagnosticTag('connect')} Late connection cleanup remains active:`,
+            existing.nativePeerId
+          )
         }
       } catch (error) {
-        console.error('[CoreBluetoothBackend.connect] Late connection cleanup retry failed:', error)
+        console.error(`${this.diagnosticTag('connect')} Late connection cleanup retry failed:`, error)
       }
       existing = this.connectionsByNativeId.get(nativePeerId)
     }
     if (existing !== undefined && existing.state !== 'disconnected' && existing.state !== 'lost') {
-      throw contractError('connection.already-owned', 'connection', 'corebluetooth.connect.owner')
+      throw contractError('connection.already-owned', 'connection', 'direct-gatt.connect.owner')
     }
     const identifiers = this.identifiers()
     const record: ConnectionRecord = {
@@ -876,12 +891,15 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
     try {
       await this.operationLifecycle.awaitBoundaryOperation(
         options,
-        'corebluetooth.connect',
+        'direct-gatt.connect',
         () => this.boundary.connect(nativePeerId),
         async () => {
           const released = await releaseLateCoreBluetoothConnection(this.boundary, this.connectionsByNativeId, record)
           if (!released) {
-            console.error('[CoreBluetoothBackend.connect] Late native connection remains active:', record.nativePeerId)
+            console.error(
+              `${this.diagnosticTag('connect')} Late native connection remains active:`,
+              record.nativePeerId
+            )
           }
         },
         async () => {
@@ -905,7 +923,7 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
     if (this.admissionClosed) {
       await this.boundary.disconnect(nativePeerId)
       this.connectionsByNativeId.delete(nativePeerId)
-      throw contractError('operation.cancelled-by-destroy', 'connection', 'corebluetooth.connect.destroyed')
+      throw contractError('operation.cancelled-by-destroy', 'connection', 'direct-gatt.connect.destroyed')
     }
     record.state = 'connected'
     const connection = new CoreBluetoothConnection(this, record)
@@ -918,7 +936,7 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
     if (record.lease !== lease) {
       return releasedCleanup
     }
-    return this.disconnect(record, 'corebluetooth.connection.release')
+    return this.disconnect(record, 'direct-gatt.connection.release')
   }
   async disconnect(record: ConnectionRecord, operation: string): Promise<CleanupRecord> {
     if (record.state === 'disconnected' || record.state === 'lost') {
@@ -928,7 +946,7 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
       return cleanupFailure('connection', operation, new Error('CoreBluetooth disconnect remains in flight'))
     }
     const connectionKey = String(record.connectionId)
-    const activeFailures = this.activeOperationCleanupFailures('corebluetooth.connection', connectionKey)
+    const activeFailures = this.activeOperationCleanupFailures('direct-gatt.connection', connectionKey)
     if (activeFailures.length > 0) {
       return Object.freeze({ state: 'release-failed', failures: Object.freeze(activeFailures) })
     }
@@ -988,14 +1006,14 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
       cleanup => {
         if (cleanup.state === 'release-failed') {
           console.error(
-            '[CoreBluetoothBackend.handleDisconnect] Subscription cleanup requires retry:',
+            `${this.diagnosticTag('handleDisconnect')} Subscription cleanup requires retry:`,
             cleanup.failures
           )
           this.scheduleConnectionLossSubscriptionRetry(record)
         }
       },
       error => {
-        console.error('[CoreBluetoothBackend.handleDisconnect] Subscription cleanup rejected:', error)
+        console.error(`${this.diagnosticTag('handleDisconnect')} Subscription cleanup rejected:`, error)
         this.scheduleConnectionLossSubscriptionRetry(record)
       }
     )
@@ -1009,7 +1027,7 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
     })
     this.nextIngressOrdinal += 1
     if (safeMessage !== null) {
-      console.error('[CoreBluetoothBackend.handleDisconnect] Native link loss:', safeMessage)
+      console.error(`${this.diagnosticTag('handleDisconnect')} Native link loss:`, safeMessage)
     }
   }
   private handleDatabaseChanged(nativePeerId: string): void {
@@ -1030,7 +1048,7 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
         }
       },
       error => {
-        console.error('[CoreBluetoothBackend.database-changed] Subscription cleanup rejected:', error)
+        console.error(`${this.diagnosticTag('database-changed')} Subscription cleanup rejected:`, error)
         this.scheduleConnectionLossSubscriptionRetry(record)
       }
     )
@@ -1083,7 +1101,7 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
     this.adapterLossActive = true
     this.adapterLossPending = true
     this.dispatcher.cancelAll()
-    const activeFailures = this.activeOperationCleanupFailures('corebluetooth.adapter-loss')
+    const activeFailures = this.activeOperationCleanupFailures('direct-gatt.adapter-loss')
     if (activeFailures.length > 0) {
       this.reportAdapterLossCleanupFailure(activeFailures)
       this.scheduleAdapterLossRetry()
@@ -1096,7 +1114,7 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
         this.scheduleAdapterLossRetryAfterNativeSettlements()
         return
       }
-      const lateFailures = this.activeOperationCleanupFailures('corebluetooth.adapter-loss')
+      const lateFailures = this.activeOperationCleanupFailures('direct-gatt.adapter-loss')
       if (lateFailures.length > 0) {
         this.reportAdapterLossCleanupFailure(lateFailures)
         this.scheduleAdapterLossRetry()
@@ -1123,7 +1141,7 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
     return failures
   }
   private reportAdapterLossCleanupFailure(failures: readonly CleanupFailure[]): void {
-    console.error('[CoreBluetoothBackend.handleAdapterState] Native adapter-loss cleanup requires retry:', failures)
+    console.error(`${this.diagnosticTag('handleAdapterState')} Native adapter-loss cleanup requires retry:`, failures)
     const attachment = this.attachment()
     this.broadcastEvent({
       attachment,
@@ -1222,7 +1240,7 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
   private closeConnectionReadinessWatches(record: ConnectionRecord): void {
     for (const close of [...record.readinessWatchClosures]) {
       close().catch(error => {
-        console.error('[CoreBluetoothBackend] Readiness watch cleanup rejected:', error)
+        console.error(`${this.diagnosticTag('')} Readiness watch cleanup rejected:`, error)
       })
     }
     record.readinessWatchClosures.clear()
@@ -1237,12 +1255,12 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
         cleanup => {
           if (cleanup.state === 'release-failed') {
             console.error(
-              '[CoreBluetoothBackend.handleDisconnect] Subscription cleanup retry requires retry:',
+              `${this.diagnosticTag('handleDisconnect')} Subscription cleanup retry requires retry:`,
               cleanup.failures
             )
           }
         },
-        error => console.error('[CoreBluetoothBackend.handleDisconnect] Subscription cleanup retry rejected:', error)
+        error => console.error(`${this.diagnosticTag('handleDisconnect')} Subscription cleanup retry rejected:`, error)
       )
     }, 100)
     this.connectionLossRetryTimers.set(record, retry)
@@ -1464,13 +1482,13 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
         failures: Object.freeze([
           {
             resourceKind: 'backend',
-            error: contractError('operation.timed-out', 'cleanup', 'corebluetooth.destroy.adapter-loss-cleanup')
+            error: contractError('operation.timed-out', 'cleanup', 'direct-gatt.destroy.adapter-loss-cleanup')
               .normalized
           }
         ])
       })
     }
-    const activeFailures = this.activeOperationCleanupFailures('corebluetooth.destroy')
+    const activeFailures = this.activeOperationCleanupFailures('direct-gatt.destroy')
     if (activeFailures.length > 0) {
       return Object.freeze({ state: 'release-failed', failures: Object.freeze(activeFailures) })
     }
@@ -1492,7 +1510,7 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
       failures.push(...cleanup.failures)
     }
     for (const record of [...this.connectionsByNativeId.values()]) {
-      const cleanup = await this.disconnect(record, 'corebluetooth.destroy.connection')
+      const cleanup = await this.disconnect(record, 'direct-gatt.destroy.connection')
       failures.push(...cleanup.failures)
     }
     if (failures.length > 0) {
@@ -1505,7 +1523,7 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
       this.adapterStateListener()
       await this.boundary.destroy()
     } catch (error) {
-      return cleanupFailure('boundary', 'corebluetooth.destroy.boundary', error)
+      return cleanupFailure('boundary', 'direct-gatt.destroy.boundary', error)
     }
     this.destroyed = true
     for (const stream of [...this.eventStreams]) {
