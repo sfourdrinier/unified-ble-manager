@@ -48,6 +48,7 @@ function assertPlanningContext(context: ScanPlanningContext): void {
 function isScanObservationField(value: ScanObservationField): value is ScanObservationField {
   return (
     value === 'peerReference' ||
+    value === 'address' ||
     value === 'localName' ||
     value === 'rssi' ||
     value === 'connectable' ||

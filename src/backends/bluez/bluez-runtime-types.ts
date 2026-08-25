@@ -133,6 +133,8 @@ export interface BluezSubscriptionRecord {
 }
 
 export interface BluezPropertyWaiter {
+  /** 'interface-presence' waiters resolve as soon as the interface exists at the path. */
+  readonly kind?: 'property' | 'interface-presence'
   readonly path: string
   readonly interfaceName: string
   readonly property: string

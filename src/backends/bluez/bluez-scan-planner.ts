@@ -9,7 +9,12 @@ import type {
 } from '../../backend-contract/scan-planning'
 import type { NormalizedScanQuery } from '../../backend-contract/scan-query'
 
-const bluezScanObservationFields: readonly ScanObservationField[] = Object.freeze(['localName', 'rssi', 'serviceUuids'])
+const bluezScanObservationFields: readonly ScanObservationField[] = Object.freeze([
+  'address',
+  'localName',
+  'rssi',
+  'serviceUuids'
+])
 
 export const bluezScanPlanningContext: ScanPlanningContext = Object.freeze({
   backendId: 'bluez',

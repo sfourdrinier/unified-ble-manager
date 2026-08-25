@@ -5,6 +5,7 @@ import type {
   BackendEvent,
   ConnectionBackend,
   GattBackend,
+  PeerAddressDescriptor,
   ResourceCounters,
   ScannerBackend
 } from '../../backend-contract/backend'
@@ -28,6 +29,7 @@ import type {
 } from '../../backend-contract/operations'
 import {
   byteLimit,
+  canonicalBleAddress,
   createAttachmentBoundIdFactory,
   monotonicTimestamp,
   opaqueId,
@@ -160,6 +162,9 @@ export class BluezBackendRuntime implements BluezObjectStoreObserver {
   readonly physicalSubscriptions = new Map<string, BluezPhysicalSubscription>()
   private readonly peerPaths = new Map<string, string>()
   private readonly peerHandles = new Map<string, PeerId<string>>()
+  private readonly addressTargets = new Map<string, PeerAddressDescriptor>()
+  /** Latched after the daemon rejects Adapter1.ConnectDevice (non-experimental bluetoothd). */
+  connectDeviceUnavailable = false
   readonly waiters = new Set<BluezPropertyWaiter>()
   scanGroup: BluezScanGroup | null = null
   private backendGeneration = 1
@@ -196,7 +201,8 @@ export class BluezBackendRuntime implements BluezObjectStoreObserver {
       join: async (leaseId, shareToken, clientId) => joinBluezScan(this, leaseId, shareToken, clientId)
     }
     this.connections = {
-      connect: async (peerId, clientId, options) => this.connect(peerId, clientId, options)
+      connect: async (peerId, clientId, options) => this.connect(peerId, clientId, options),
+      peerFromAddress: descriptor => this.peerFromAddress(descriptor)
     }
     this.gatt = {
       discover: async (connection, options) => this.discover(connection, options),
@@ -323,6 +329,7 @@ export class BluezBackendRuntime implements BluezObjectStoreObserver {
   }
 
   interfacesAdded(event: BluezInterfacesAdded): void {
+    resolveBluezWaiters(this)
     if (event.interfaces.some(entry => entry.name === BLUEZ_DEVICE_INTERFACE)) {
       this.emitAdvertisementForPath(event.path)
     }
@@ -915,6 +922,7 @@ export class BluezBackendRuntime implements BluezObjectStoreObserver {
     this.security.reset()
     this.peerPaths.clear()
     this.peerHandles.clear()
+    this.addressTargets.clear()
     const resettingScanGroup = this.scanGroup
     if (resettingScanGroup !== null && !resettingScanGroup.startupComplete) {
       const owner = resettingScanGroup.consumers.get(String(resettingScanGroup.ownerLeaseId))
@@ -994,6 +1002,33 @@ export class BluezBackendRuntime implements BluezObjectStoreObserver {
     this.peerHandles.set(path, peerId)
     this.peerPaths.set(String(peerId), path)
     return peerId
+  }
+
+  /**
+   * peer:address-targeting seam. Mints a stable peer handle for a canonical out-of-band
+   * radio address; the connect path then owns materialization and pending semantics.
+   */
+  peerFromAddress(descriptor: PeerAddressDescriptor): PeerId<string> {
+    this.assertUsable('bluez.peer-from-address')
+    let address: string
+    try {
+      address = canonicalBleAddress(descriptor.address)
+    } catch {
+      throw contractError('argument.invalid', 'connection', 'bluez.peer-from-address')
+    }
+    if (
+      address !== descriptor.address ||
+      (descriptor.addressType !== 'public' && descriptor.addressType !== 'random')
+    ) {
+      throw contractError('argument.invalid', 'connection', 'bluez.peer-from-address')
+    }
+    const devicePath = `${String(this.selectedAdapter.adapterId)}/dev_${address.replaceAll(':', '_')}`
+    this.addressTargets.set(devicePath, Object.freeze({ address, addressType: descriptor.addressType }))
+    return this.peerIdForPath(devicePath)
+  }
+
+  addressTargetForPath(path: string): PeerAddressDescriptor | undefined {
+    return this.addressTargets.get(path)
   }
 
   devicePathForPeer(peerId: string): string {

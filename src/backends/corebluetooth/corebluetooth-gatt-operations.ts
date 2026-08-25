@@ -42,14 +42,14 @@ export class CoreBluetoothGattOperations {
     connection: BackendConnection<string, string>,
     options: PublicOperationOptions
   ): Promise<GattDatabase<string, string, string>> {
-    this.backend.assertOperational('corebluetooth.gatt.discover')
-    this.backend.operationLifecycle.assertAdmission(options, 'corebluetooth.gatt.discover')
-    const record = this.backend.requireConnection(connection, 'corebluetooth.gatt.discover')
+    this.backend.assertOperational('direct-gatt.gatt.discover')
+    this.backend.operationLifecycle.assertAdmission(options, 'direct-gatt.gatt.discover')
+    const record = this.backend.requireConnection(connection, 'direct-gatt.gatt.discover')
     let snapshot: unknown
     try {
       snapshot = await this.backend.operationLifecycle.awaitBoundaryOperation(
         options,
-        'corebluetooth.gatt.discover',
+        'direct-gatt.gatt.discover',
         () => this.backend.boundary.discover(record.nativePeerId),
         undefined,
         undefined,
@@ -59,13 +59,13 @@ export class CoreBluetoothGattOperations {
       throw this.backend.operationLifecycle.platformError(
         'gatt.read-failed',
         'gatt',
-        'corebluetooth.gatt.discover',
+        'direct-gatt.gatt.discover',
         error
       )
     }
     this.backend.assertGattSnapshot(snapshot)
     if (record.state !== 'connected') {
-      throw contractError('operation.disconnected', 'connection', 'corebluetooth.gatt.discover.connection')
+      throw contractError('operation.disconnected', 'connection', 'direct-gatt.gatt.discover.connection')
     }
     record.database?.invalidate()
     const identifiers = this.backend.identifiers()
@@ -93,12 +93,12 @@ export class CoreBluetoothGattOperations {
     path: CharacteristicPath<string, string, string, string, string, 'current'>,
     request: ReadRequest<string, string>
   ): BackendOperationDispatch<string, ReadResult<string, string>> {
-    this.backend.assertOperational('corebluetooth.gatt.read')
-    const database = this.backend.databaseForPath(path, 'corebluetooth.gatt.read')
-    const address = database.addressFor(path, 'corebluetooth.gatt.read')
+    this.backend.assertOperational('direct-gatt.gatt.read')
+    const database = this.backend.databaseForPath(path, 'direct-gatt.gatt.read')
+    const address = database.addressFor(path, 'direct-gatt.gatt.read')
     return this.backend.dispatcher.dispatch(
       request.operation,
-      'corebluetooth.gatt.read',
+      'direct-gatt.gatt.read',
       async () => ({
         value: ownBytes(await this.backend.boundary.read(address), maximumValueBytes),
         terminal: successfulTerminal(request.operation)
@@ -111,13 +111,13 @@ export class CoreBluetoothGattOperations {
     path: CharacteristicPath<string, string, string, string, string, 'current'>,
     request: WriteRequest<string, string>
   ): BackendOperationDispatch<string, WriteResult<string, string>> {
-    this.backend.assertOperational('corebluetooth.gatt.write')
-    const database = this.backend.databaseForPath(path, 'corebluetooth.gatt.write')
-    const address = database.addressFor(path, 'corebluetooth.gatt.write')
+    this.backend.assertOperational('direct-gatt.gatt.write')
+    const database = this.backend.databaseForPath(path, 'direct-gatt.gatt.write')
+    const address = database.addressFor(path, 'direct-gatt.gatt.write')
     const copied = new Uint8Array(request.bytes)
     return this.backend.dispatcher.dispatch(
       request.operation,
-      'corebluetooth.gatt.write',
+      'direct-gatt.gatt.write',
       async () => {
         await this.backend.boundary.write(address, copied, request.mode === 'with-response')
         return Object.freeze({ terminal: successfulTerminal(request.operation), commitState: 'confirmed' })
@@ -130,13 +130,13 @@ export class CoreBluetoothGattOperations {
     path: DescriptorPath<string, string, string, string, string, string, 'current'>,
     request: ReadRequest<string, string>
   ): BackendOperationDispatch<string, ReadResult<string, string>> {
-    this.backend.assertOperational('corebluetooth.gatt.read-descriptor')
-    const boundary = this.descriptorBoundary('corebluetooth.gatt.read-descriptor')
-    const database = this.backend.databaseForPath(path, 'corebluetooth.gatt.read-descriptor')
-    const address = database.descriptorAddressFor(path, 'corebluetooth.gatt.read-descriptor')
+    this.backend.assertOperational('direct-gatt.gatt.read-descriptor')
+    const boundary = this.descriptorBoundary('direct-gatt.gatt.read-descriptor')
+    const database = this.backend.databaseForPath(path, 'direct-gatt.gatt.read-descriptor')
+    const address = database.descriptorAddressFor(path, 'direct-gatt.gatt.read-descriptor')
     return this.backend.dispatcher.dispatch(
       request.operation,
-      'corebluetooth.gatt.read-descriptor',
+      'direct-gatt.gatt.read-descriptor',
       async () => ({
         value: ownBytes(await boundary.readDescriptor(address), maximumValueBytes),
         terminal: successfulTerminal(request.operation)
@@ -149,14 +149,14 @@ export class CoreBluetoothGattOperations {
     path: DescriptorPath<string, string, string, string, string, string, 'current'>,
     request: WriteRequest<string, string>
   ): BackendOperationDispatch<string, WriteResult<string, string>> {
-    this.backend.assertOperational('corebluetooth.gatt.write-descriptor')
-    const boundary = this.descriptorBoundary('corebluetooth.gatt.write-descriptor')
-    const database = this.backend.databaseForPath(path, 'corebluetooth.gatt.write-descriptor')
-    const address = database.descriptorAddressFor(path, 'corebluetooth.gatt.write-descriptor')
+    this.backend.assertOperational('direct-gatt.gatt.write-descriptor')
+    const boundary = this.descriptorBoundary('direct-gatt.gatt.write-descriptor')
+    const database = this.backend.databaseForPath(path, 'direct-gatt.gatt.write-descriptor')
+    const address = database.descriptorAddressFor(path, 'direct-gatt.gatt.write-descriptor')
     const copied = new Uint8Array(request.bytes)
     return this.backend.dispatcher.dispatch(
       request.operation,
-      'corebluetooth.gatt.write-descriptor',
+      'direct-gatt.gatt.write-descriptor',
       async () => {
         await boundary.writeDescriptor(address, copied)
         return Object.freeze({ terminal: successfulTerminal(request.operation), commitState: 'confirmed' })
@@ -169,18 +169,18 @@ export class CoreBluetoothGattOperations {
     path: CharacteristicPath<string, string, string, string, string, 'current'>,
     request: SubscribeRequest<string, string>
   ): BackendOperationDispatch<string, BackendSubscription<string, string, string, string, string>> {
-    this.backend.assertOperational('corebluetooth.gatt.subscribe')
-    const database = this.backend.databaseForPath(path, 'corebluetooth.gatt.subscribe')
-    const address = database.addressFor(path, 'corebluetooth.gatt.subscribe')
+    this.backend.assertOperational('direct-gatt.gatt.subscribe')
+    const database = this.backend.databaseForPath(path, 'direct-gatt.gatt.subscribe')
+    const address = database.addressFor(path, 'direct-gatt.gatt.subscribe')
     return this.backend.dispatcher.dispatch(
       request.operation,
-      'corebluetooth.gatt.subscribe',
+      'direct-gatt.gatt.subscribe',
       async execution => {
         const key = addressKey(address)
         let physical = this.backend.subscriptions.get(key)
         if (physical?.state === 'removing') {
           if (physical.removal === null) {
-            throw contractError('lifecycle.invariant-violation', 'gatt', 'corebluetooth.gatt.subscribe.removal')
+            throw contractError('lifecycle.invariant-violation', 'gatt', 'direct-gatt.gatt.subscribe.removal')
           }
           const cleanup = await physical.removal
           if (cleanup.state === 'release-failed') {
@@ -256,7 +256,7 @@ export class CoreBluetoothGattOperations {
                 postStartCleanup.failures
               )
             }
-            throw contractError('operation.cancelled-by-destroy', 'gatt', 'corebluetooth.gatt.subscribe.cancelled')
+            throw contractError('operation.cancelled-by-destroy', 'gatt', 'direct-gatt.gatt.subscribe.cancelled')
           }
           enabling.state = 'ready'
           return subscription
@@ -278,7 +278,7 @@ export class CoreBluetoothGattOperations {
               cleanup.failures
             )
           }
-          throw contractError('operation.cancelled-by-destroy', 'gatt', 'corebluetooth.gatt.subscribe.cancelled')
+          throw contractError('operation.cancelled-by-destroy', 'gatt', 'direct-gatt.gatt.subscribe.cancelled')
         }
         return subscription
       },
@@ -291,11 +291,11 @@ export class CoreBluetoothGattOperations {
     operation: OperationOptions<string, string>
   ): BackendOperationDispatch<string, OperationTerminalRecord<string, string>> {
     if (!(subscription instanceof CoreBluetoothBackendSubscription) || !subscription.isOwnedBy(this.backend)) {
-      throw contractError('ownership.denied', 'gatt', 'corebluetooth.gatt.unsubscribe.subscription')
+      throw contractError('ownership.denied', 'gatt', 'direct-gatt.gatt.unsubscribe.subscription')
     }
     return this.backend.dispatcher.dispatch(
       operation,
-      'corebluetooth.gatt.unsubscribe',
+      'direct-gatt.gatt.unsubscribe',
       async () => {
         const cleanup = await this.removeSubscription(subscription)
         if (cleanup.state === 'release-failed') {
@@ -335,7 +335,7 @@ export class CoreBluetoothGattOperations {
       return Promise.resolve(
         cleanupFailure(
           'subscription',
-          'corebluetooth.gatt.stop-notify',
+          'direct-gatt.gatt.stop-notify',
           new Error('CoreBluetooth notification cleanup remains in flight')
         )
       )
@@ -365,13 +365,13 @@ export class CoreBluetoothGattOperations {
       error => {
         physical.nativeRemoval = null
         physical.state = 'cleanup-failed'
-        return cleanupFailure('subscription', 'corebluetooth.gatt.stop-notify', error)
+        return cleanupFailure('subscription', 'direct-gatt.gatt.stop-notify', error)
       }
     )
-    const removal = withCoreBluetoothCleanupTimeout(() => nativeCompletion, 'corebluetooth.gatt.stop-notify').catch(
+    const removal = withCoreBluetoothCleanupTimeout(() => nativeCompletion, 'direct-gatt.gatt.stop-notify').catch(
       error => {
         physical.state = 'cleanup-failed'
-        return cleanupFailure('subscription', 'corebluetooth.gatt.stop-notify', error)
+        return cleanupFailure('subscription', 'direct-gatt.gatt.stop-notify', error)
       }
     )
     physical.removal = removal
@@ -402,7 +402,7 @@ export class CoreBluetoothGattOperations {
     const dispatch = this.subscribe(path, { operation: { ...options, correlation }, options })
     const subscription = await dispatch.completion
     if (!(subscription instanceof CoreBluetoothBackendSubscription)) {
-      throw contractError('protocol.violation', 'gatt', 'corebluetooth.gatt.database-subscribe.subscription')
+      throw contractError('protocol.violation', 'gatt', 'direct-gatt.gatt.database-subscribe.subscription')
     }
     return subscription
   }
@@ -412,10 +412,10 @@ export class CoreBluetoothGattOperations {
     options: PublicOperationOptions,
     connectionSerializationKey: string
   ): Promise<OwnedBytes> {
-    this.backend.assertOperational('corebluetooth.gatt.database-read')
+    this.backend.assertOperational('direct-gatt.gatt.database-read')
     const dispatch = this.backend.dispatcher.dispatch(
       options,
-      'corebluetooth.gatt.database-read',
+      'direct-gatt.gatt.database-read',
       async () => ownBytes(await this.backend.boundary.read(address), maximumValueBytes),
       connectionSerializationKey
     )
@@ -429,11 +429,11 @@ export class CoreBluetoothGattOperations {
     options: PublicOperationOptions,
     connectionSerializationKey: string
   ): Promise<void> {
-    this.backend.assertOperational('corebluetooth.gatt.database-write')
+    this.backend.assertOperational('direct-gatt.gatt.database-write')
     const copied = new Uint8Array(value)
     const dispatch = this.backend.dispatcher.dispatch(
       options,
-      'corebluetooth.gatt.database-write',
+      'direct-gatt.gatt.database-write',
       async () => this.backend.boundary.write(address, copied, withResponse),
       connectionSerializationKey
     )
@@ -445,11 +445,11 @@ export class CoreBluetoothGattOperations {
     options: PublicOperationOptions,
     connectionSerializationKey: string
   ): Promise<OwnedBytes> {
-    this.backend.assertOperational('corebluetooth.gatt.database-read-descriptor')
-    const boundary = this.descriptorBoundary('corebluetooth.gatt.database-read-descriptor')
+    this.backend.assertOperational('direct-gatt.gatt.database-read-descriptor')
+    const boundary = this.descriptorBoundary('direct-gatt.gatt.database-read-descriptor')
     const dispatch = this.backend.dispatcher.dispatch(
       options,
-      'corebluetooth.gatt.database-read-descriptor',
+      'direct-gatt.gatt.database-read-descriptor',
       async () => ownBytes(await boundary.readDescriptor(address), maximumValueBytes),
       connectionSerializationKey
     )
@@ -462,12 +462,12 @@ export class CoreBluetoothGattOperations {
     options: PublicOperationOptions,
     connectionSerializationKey: string
   ): Promise<void> {
-    this.backend.assertOperational('corebluetooth.gatt.database-write-descriptor')
-    const boundary = this.descriptorBoundary('corebluetooth.gatt.database-write-descriptor')
+    this.backend.assertOperational('direct-gatt.gatt.database-write-descriptor')
+    const boundary = this.descriptorBoundary('direct-gatt.gatt.database-write-descriptor')
     const copied = new Uint8Array(value)
     const dispatch = this.backend.dispatcher.dispatch(
       options,
-      'corebluetooth.gatt.database-write-descriptor',
+      'direct-gatt.gatt.database-write-descriptor',
       async () => boundary.writeDescriptor(address, copied),
       connectionSerializationKey
     )

@@ -115,7 +115,7 @@ export class CoreBluetoothConnection implements BackendConnection<string, string
   }
 
   disconnect(): Promise<CleanupRecord> {
-    return this.backend.disconnect(this.record, 'corebluetooth.connection.disconnect')
+    return this.backend.disconnect(this.record, 'direct-gatt.connection.disconnect')
   }
 }
 
@@ -166,7 +166,7 @@ export class CoreBluetoothGattDatabase implements GattDatabase<string, string, s
   ) {}
 
   async snapshot(): Promise<GattDatabaseSnapshot<string, string, string>> {
-    this.assertCurrent('corebluetooth.gatt.snapshot')
+    this.assertCurrent('direct-gatt.gatt.snapshot')
     const services: Service<string, string, string, string>[] = []
     const characteristics: Characteristic<string, string, string, string, string>[] = []
     const descriptors: Descriptor<string, string, string, string, string, string>[] = []
@@ -240,8 +240,8 @@ export class CoreBluetoothGattDatabase implements GattDatabase<string, string, s
     path: CharacteristicPath<string, string, string, ServiceOccurrence, CharacteristicOccurrence, 'current'>,
     options: PublicOperationOptions
   ): Promise<OwnedBytes> {
-    this.assertCurrent('corebluetooth.gatt.database-read')
-    const address = this.addressFor(path, 'corebluetooth.gatt.database-read')
+    this.assertCurrent('direct-gatt.gatt.database-read')
+    const address = this.addressFor(path, 'direct-gatt.gatt.database-read')
     return this.backend.gattOperations.readFromDatabase(address, options, String(this.path.connectionId))
   }
 
@@ -250,8 +250,8 @@ export class CoreBluetoothGattDatabase implements GattDatabase<string, string, s
     value: Uint8Array,
     options: import('../../backend-contract/operations').WritePolicy
   ): Promise<import('../../backend-contract/operations').WriteReceipt<string, string>> {
-    this.assertCurrent('corebluetooth.gatt.database-write')
-    const address = this.addressFor(path, 'corebluetooth.gatt.database-write')
+    this.assertCurrent('direct-gatt.gatt.database-write')
+    const address = this.addressFor(path, 'direct-gatt.gatt.database-write')
     await this.backend.gattOperations.writeFromDatabase(
       address,
       value,
@@ -285,8 +285,8 @@ export class CoreBluetoothGattDatabase implements GattDatabase<string, string, s
     >,
     options: PublicOperationOptions
   ): Promise<OwnedBytes> {
-    this.assertCurrent('corebluetooth.gatt.database-read-descriptor')
-    const address = this.descriptorAddressFor(path, 'corebluetooth.gatt.database-read-descriptor')
+    this.assertCurrent('direct-gatt.gatt.database-read-descriptor')
+    const address = this.descriptorAddressFor(path, 'direct-gatt.gatt.database-read-descriptor')
     return this.backend.gattOperations.readDescriptorFromDatabase(address, options, String(this.path.connectionId))
   }
 
@@ -307,8 +307,8 @@ export class CoreBluetoothGattDatabase implements GattDatabase<string, string, s
     value: Uint8Array,
     options: import('../../backend-contract/operations').WritePolicy
   ): Promise<import('../../backend-contract/operations').WriteReceipt<string, string>> {
-    this.assertCurrent('corebluetooth.gatt.database-write-descriptor')
-    const address = this.descriptorAddressFor(path, 'corebluetooth.gatt.database-write-descriptor')
+    this.assertCurrent('direct-gatt.gatt.database-write-descriptor')
+    const address = this.descriptorAddressFor(path, 'direct-gatt.gatt.database-write-descriptor')
     await this.backend.gattOperations.writeDescriptorFromDatabase(
       address,
       value,
@@ -329,8 +329,8 @@ export class CoreBluetoothGattDatabase implements GattDatabase<string, string, s
     path: CharacteristicPath<string, string, string, ServiceOccurrence, CharacteristicOccurrence, 'current'>,
     options: import('../../backend-contract/operations').SubscriptionOptions
   ): Promise<CoreBluetoothBackendSubscription> {
-    this.assertCurrent('corebluetooth.gatt.database-subscribe')
-    this.addressFor(path, 'corebluetooth.gatt.database-subscribe')
+    this.assertCurrent('direct-gatt.gatt.database-subscribe')
+    this.addressFor(path, 'direct-gatt.gatt.database-subscribe')
     return this.backend.gattOperations.subscribeFromDatabase(path, options)
   }
 

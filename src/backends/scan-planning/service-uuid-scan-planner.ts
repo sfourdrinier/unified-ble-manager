@@ -154,6 +154,7 @@ function createLimitations(
 
 function observationField(field: ScanPredicateDescription['field']): ScanObservationField {
   if (field === 'peers') return 'peerReference'
+  if (field === 'addresses') return 'address'
   if (field === 'names') return 'localName'
   if (field === 'services') return 'serviceUuids'
   if (field === 'manufacturerData') return 'manufacturerData'
@@ -195,6 +196,7 @@ function assertPlanningContext(context: ScanPlanningContext, invalidContextMessa
 function isScanObservationField(value: ScanObservationField): value is ScanObservationField {
   return (
     value === 'peerReference' ||
+    value === 'address' ||
     value === 'localName' ||
     value === 'rssi' ||
     value === 'connectable' ||

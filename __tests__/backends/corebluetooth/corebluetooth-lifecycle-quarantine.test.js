@@ -4,6 +4,7 @@ const { attachBackend } = require('../../../src/backend-contract/backend')
 const { capacity, opaqueId, version, versionRange } = require('../../../src/backend-contract/primitives')
 const { createBleManagerFromProvider, DEFAULT_BLE_MANAGER_OPTIONS } = require('../../../src/manager/ble-manager')
 const { createCoreBluetoothBackendProvider } = require('../../../src/backends/corebluetooth/corebluetooth-provider')
+const { COREBLUETOOTH_PLATFORM_ID } = require('../../../src/backends/corebluetooth/corebluetooth-identity')
 const {
   InMemoryCoreBluetoothBoundary
 } = require('../../../test-support/corebluetooth/in-memory-corebluetooth-boundary')
@@ -291,7 +292,7 @@ describe('CoreBluetooth late-operation quarantine', () => {
       await flushMicrotasks()
       expect(stopScanCalls).toBe(1)
       expectConsoleErrorMatching(
-        '[CoreBluetoothBackend.handleAdapterState] Native adapter-loss cleanup requires retry:',
+        `[${COREBLUETOOTH_PLATFORM_ID}.handleAdapterState] Native adapter-loss cleanup requires retry:`,
         expect.any(Array)
       )
 
@@ -304,7 +305,7 @@ describe('CoreBluetooth late-operation quarantine', () => {
       await flushMicrotasks()
       expect(stopScanCalls).toBe(1)
       expectConsoleErrorMatching(
-        '[CoreBluetoothBackend.handleAdapterState] Native adapter-loss cleanup requires retry:',
+        `[${COREBLUETOOTH_PLATFORM_ID}.handleAdapterState] Native adapter-loss cleanup requires retry:`,
         expect.any(Array)
       )
 
@@ -349,7 +350,7 @@ describe('CoreBluetooth late-operation quarantine', () => {
       await flushMicrotasks()
       expect(disconnectCalls).toBe(1)
       expectConsoleErrorMatching(
-        '[CoreBluetoothBackend.handleAdapterState] Native adapter-loss cleanup requires retry:',
+        `[${COREBLUETOOTH_PLATFORM_ID}.handleAdapterState] Native adapter-loss cleanup requires retry:`,
         expect.any(Array)
       )
 
@@ -362,7 +363,7 @@ describe('CoreBluetooth late-operation quarantine', () => {
       await flushMicrotasks()
       expect(disconnectCalls).toBe(1)
       expectConsoleErrorMatching(
-        '[CoreBluetoothBackend.handleAdapterState] Native adapter-loss cleanup requires retry:',
+        `[${COREBLUETOOTH_PLATFORM_ID}.handleAdapterState] Native adapter-loss cleanup requires retry:`,
         expect.any(Array)
       )
 
@@ -406,7 +407,7 @@ describe('CoreBluetooth late-operation quarantine', () => {
       expect(stopNotifyCalls).toBe(1)
       expect(backend.resourceCounters()).toMatchObject({ physicalCccdEnablements: 1, subscriptionConsumers: 0 })
       expectConsoleErrorMatching(
-        '[CoreBluetoothBackend.handleDisconnect] Subscription cleanup requires retry:',
+        `[${COREBLUETOOTH_PLATFORM_ID}.handleDisconnect] Subscription cleanup requires retry:`,
         expect.any(Array)
       )
 
@@ -447,14 +448,14 @@ describe('CoreBluetooth late-operation quarantine', () => {
       jest.advanceTimersByTime(1_000)
       await flushMicrotasks()
       expectConsoleErrorMatching(
-        '[CoreBluetoothBackend.handleAdapterState] Native adapter-loss cleanup requires retry:',
+        `[${COREBLUETOOTH_PLATFORM_ID}.handleAdapterState] Native adapter-loss cleanup requires retry:`,
         expect.any(Array)
       )
 
       boundary.setAdapterState({ availability: 'available', authorization: 'granted', power: 'on', safeReason: null })
       await flushMicrotasks()
       expectConsoleErrorMatching(
-        '[CoreBluetoothBackend.handleAdapterState] Native adapter-loss cleanup requires retry:',
+        `[${COREBLUETOOTH_PLATFORM_ID}.handleAdapterState] Native adapter-loss cleanup requires retry:`,
         expect.any(Array)
       )
 
@@ -554,7 +555,7 @@ describe('CoreBluetooth late-operation quarantine', () => {
     await flushAdapterLossCleanup()
     expect(stopNotifyCalls).toBe(1)
     expectConsoleErrorMatching(
-      '[CoreBluetoothBackend.handleAdapterState] Native adapter-loss cleanup requires retry:',
+      `[${COREBLUETOOTH_PLATFORM_ID}.handleAdapterState] Native adapter-loss cleanup requires retry:`,
       expect.any(Array)
     )
 

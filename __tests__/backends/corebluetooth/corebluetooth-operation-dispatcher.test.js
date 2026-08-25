@@ -40,7 +40,7 @@ describe('CoreBluetoothOperationDispatcher cancellation admission', () => {
     const dispatcher = new CoreBluetoothOperationDispatcher(() => 100)
     const dispatch = dispatcher.dispatch(
       { signal: controller.signal, deadline: null },
-      'corebluetooth.read',
+      'direct-gatt.read',
       () => pending.promise
     )
 
@@ -60,7 +60,7 @@ describe('CoreBluetoothOperationDispatcher cancellation admission', () => {
     const dispatcher = new CoreBluetoothOperationDispatcher(() => 100)
     const dispatch = dispatcher.dispatch(
       { signal: null, deadline: 101 },
-      'corebluetooth.read',
+      'direct-gatt.read',
       () => pending.promise
     )
 
@@ -80,12 +80,12 @@ describe('CoreBluetoothOperationDispatcher cancellation admission', () => {
     const dispatcher = new CoreBluetoothOperationDispatcher(() => 100)
     const firstDispatch = dispatcher.dispatch(
       { signal: null, deadline: null },
-      'corebluetooth.first',
+      'direct-gatt.first',
       () => first.promise
     )
     const secondDispatch = dispatcher.dispatch(
       { signal: null, deadline: null },
-      'corebluetooth.second',
+      'direct-gatt.second',
       () => second.promise
     )
 
@@ -106,7 +106,7 @@ describe('CoreBluetoothOperationDispatcher cancellation admission', () => {
     const dispatcher = new CoreBluetoothOperationDispatcher(() => 100)
     const first = dispatcher.dispatch(
       { signal: controller.signal, deadline: null },
-      'corebluetooth.read',
+      'direct-gatt.read',
       () => pending.promise,
       'connection-1'
     )
@@ -115,7 +115,7 @@ describe('CoreBluetoothOperationDispatcher cancellation admission', () => {
     const secondOperation = jest.fn(async () => 'second')
     const second = dispatcher.dispatch(
       { signal: null, deadline: null },
-      'corebluetooth.write',
+      'direct-gatt.write',
       secondOperation,
       'connection-1'
     )
@@ -125,7 +125,7 @@ describe('CoreBluetoothOperationDispatcher cancellation admission', () => {
     await Promise.resolve()
     const third = dispatcher.dispatch(
       { signal: null, deadline: null },
-      'corebluetooth.write',
+      'direct-gatt.write',
       async () => 'third',
       'connection-1'
     )
@@ -146,7 +146,7 @@ describe('CoreBluetoothOperationDispatcher cancellation admission', () => {
         correlation = operationCorrelation
         const dispatch = dispatcher.dispatch(
           { signal: controller.signal, deadline: null },
-          'corebluetooth.read',
+          'direct-gatt.read',
           () => pending.promise,
           'connection-1'
         )

@@ -323,6 +323,7 @@ describe('first-party backend standard TCK registrations', () => {
     expect(report.standard.featureSuiteIds).toEqual(['tck.feature.security.bluez'])
     expect(report.standard.featureBindings.map(binding => binding.featureId)).toEqual([
       'connection:direct',
+      'peer:address-targeting',
       'security:state',
       'security:pair',
       'security:cancel-pairing',

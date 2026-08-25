@@ -4,6 +4,7 @@ import type { NormalizedScanQuery } from './scan-query'
 export type ScanPredicateClauseSet = 'anyOf' | 'exclude'
 export type ScanPredicateField =
   | 'peers'
+  | 'addresses'
   | 'services'
   | 'names'
   | 'manufacturerData'
@@ -67,6 +68,7 @@ export interface ScanPlan {
 
 export type ScanObservationField =
   | 'peerReference'
+  | 'address'
   | 'localName'
   | 'rssi'
   | 'connectable'
@@ -99,6 +101,8 @@ export function describeScanPredicates(query: NormalizedScanQuery): readonly Sca
     if (clauses === null) continue
     clauses.forEach((clause, clauseIndex) => {
       if (clause.peers !== null) descriptions.push({ clauseSet, clauseIndex, field: 'peers', operator: 'equals' })
+      if (clause.addresses !== null)
+        descriptions.push({ clauseSet, clauseIndex, field: 'addresses', operator: 'equals' })
       if (clause.services !== null) {
         if (clause.services.any.length > 0)
           descriptions.push({ clauseSet, clauseIndex, field: 'services', operator: 'any' })
@@ -333,6 +337,7 @@ function assertPredicateReference(predicate: ScanPredicateDescription, query: No
   if (clause === undefined) throw new Error(`scan plan ${name} contains an out-of-range clause index`)
   const supported =
     (predicate.field === 'peers' && predicate.operator === 'equals' && clause.peers !== null) ||
+    (predicate.field === 'addresses' && predicate.operator === 'equals' && clause.addresses !== null) ||
     (predicate.field === 'services' &&
       clause.services !== null &&
       (predicate.operator === 'any' || predicate.operator === 'all')) ||
@@ -399,6 +404,7 @@ function isPredicateClauseSet(value: ScanPredicateDescription['clauseSet']): val
 function isPredicateField(value: ScanPredicateDescription['field']): value is ScanPredicateField {
   return (
     value === 'peers' ||
+    value === 'addresses' ||
     value === 'services' ||
     value === 'names' ||
     value === 'manufacturerData' ||
