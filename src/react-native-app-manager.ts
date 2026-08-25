@@ -20,7 +20,7 @@ export async function createReactNativeBleManager(options: BleManagerCreateOptio
 
 async function createReactNativeBleManagerInternal(options: BleManagerCreateOptions): Promise<BleManager> {
   const normalized = normalizeBleManagerCreateOptions(options)
-  const ephemeral = createEphemeralHostIdentity()
+  const ephemeral = createEphemeralHostIdentity({ randomBytes: normalized.randomBytes })
   const control = requireNativeControl()
   let hostSessionScope = `ephemeral:${ephemeral.operationNonce}`
   let clientId = ephemeral.managerNonce

@@ -8,31 +8,19 @@ import {
   type RestorationBootstrapRequest
 } from '../backend-contract/restoration'
 
-declare const require: ((id: string) => unknown) | undefined
-
 function getRandomValues(length: number): Uint8Array {
   const out = new Uint8Array(length)
   if (globalThis.crypto?.getRandomValues) {
     globalThis.crypto.getRandomValues(out)
     return out
   }
-  const nodeBytes = tryNodeRandomBytes(length)
-  if (nodeBytes !== null) return nodeBytes
-  throw contractError('capability.unsupported', 'core', 'host-identity.secure-randomness')
-}
-
-function tryNodeRandomBytes(length: number): Uint8Array | null {
-  try {
-    if (typeof require !== 'function') return null
-    const crypto = Reflect.apply(require, undefined, ['crypto'])
-    if (typeof crypto !== 'object' || crypto === null) return null
-    const randomBytes = Reflect.get(crypto, 'randomBytes')
-    if (typeof randomBytes !== 'function') return null
-    const result: unknown = Reflect.apply(randomBytes, crypto, [length])
-    return result instanceof Uint8Array && result.byteLength === length ? new Uint8Array(result) : null
-  } catch {
-    return null
-  }
+  // No WebCrypto on this host (React Native/Hermes is the common case).
+  // Callers supply entropy through `randomBytes` in the create options.
+  throw contractError(
+    'capability.unsupported',
+    'core',
+    'host-identity.secure-randomness.pass-randomBytes-in-create-options'
+  )
 }
 
 function bytesToHex(bytes: Uint8Array): string {
@@ -105,6 +93,13 @@ export interface BleManagerCreateOptions {
   /** Optional adapter selector (e.g., 'hci0'). Host decides default when omitted. */
   readonly adapterId?: string
   readonly diagnostics?: DiagnosticsOptions
+  /**
+   * Entropy source for this manager's ephemeral nonces. Required on hosts
+   * without WebCrypto — React Native/Hermes has none, so RN apps pass e.g.
+   * `randomBytes: n => ExpoCrypto.getRandomBytes(n)`. Node and browsers have
+   * `globalThis.crypto` and may omit it.
+   */
+  readonly randomBytes?: (length: number) => Uint8Array
   /** One app-facing restoration token; native derives all internal identity values. */
   readonly restoration?: {
     readonly restorationId: string
@@ -131,7 +126,7 @@ export function normalizeBleManagerCreateOptions(
     return Object.freeze({})
   }
   assertPlainRecord(options, 'options')
-  const allowedKeys = new Set(['instanceId', 'adapterId', 'diagnostics', 'restoration'])
+  const allowedKeys = new Set(['instanceId', 'adapterId', 'diagnostics', 'restoration', 'randomBytes'])
   if (Object.keys(options).some(key => !allowedKeys.has(key))) {
     throw contractError('argument.invalid', 'core', 'options.unknown-key')
   }
@@ -143,6 +138,9 @@ export function normalizeBleManagerCreateOptions(
   }
   if (options.adapterId !== undefined) {
     assertNonEmptyString(options.adapterId, 'options.adapterId')
+  }
+  if (options.randomBytes !== undefined && typeof options.randomBytes !== 'function') {
+    throw contractError('argument.invalid', 'core', 'options.randomBytes')
   }
   if (options.diagnostics !== undefined) {
     assertPlainRecord(options.diagnostics, 'options.diagnostics')
