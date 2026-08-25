@@ -462,7 +462,11 @@ public final class UnifiedBleProtocolControlModule extends NativeUnifiedBleProto
     }
     final byte[] out = new byte[n];
     new java.security.SecureRandom().nextBytes(out);
-    promise.resolve(android.util.Base64.encodeToString(out, android.util.Base64.NO_WRAP));
+    final com.facebook.react.bridge.WritableArray values = Arguments.createArray();
+    for (byte value : out) {
+      values.pushInt(value & 0xff);
+    }
+    promise.resolve(values);
   }
 
   @Override

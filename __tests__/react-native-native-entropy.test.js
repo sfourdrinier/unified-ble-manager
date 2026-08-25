@@ -6,7 +6,7 @@ const root = path.resolve(__dirname, '..')
 describe('React Native native entropy', () => {
   test('TurboModule spec declares getRandomBytes', () => {
     const spec = fs.readFileSync(path.join(root, 'src/NativeUnifiedBleProtocolControl.ts'), 'utf8')
-    expect(spec).toMatch(/getRandomBytes\(length: number\): Promise<string>/)
+    expect(spec).toMatch(/getRandomBytes\(length: number\): Promise<number\[\]>/)
   })
 
   test('Android control module uses SecureRandom and rejects out-of-range lengths', () => {
@@ -16,7 +16,7 @@ describe('React Native native entropy', () => {
     )
     expect(source).toMatch(/void getRandomBytes\(double length, Promise promise\)/)
     expect(source).toContain('java.security.SecureRandom')
-    expect(source).toContain('android.util.Base64')
+    expect(source).not.toContain('Base64')
     expect(source).toContain('n <= 0 || n > 1024')
   })
 
@@ -37,7 +37,7 @@ describe('React Native native entropy', () => {
 
   test('native entropy source slices a decoded CSPRNG pool', async () => {
     const { createNativeRandomBytesSource } = require('../src/react-native-entropy')
-    const pool = Buffer.from(new Uint8Array(40).fill(0xcd)).toString('base64')
+    const pool = Array.from({ length: 40 }, () => 0xcd)
     const getRandomBytes = jest.fn(async length => {
       expect(length).toBe(40)
       return pool

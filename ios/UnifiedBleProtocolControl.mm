@@ -531,8 +531,11 @@ RCT_EXPORT_MODULE(UnifiedBleProtocolControl)
     rejectControl(reject, @"capability.unsupported", @"host-identity.secure-randomness");
     return;
   }
-  NSData *data = [NSData dataWithBytes:bytes.data() length:static_cast<NSUInteger>(n)];
-  resolve([data base64EncodedStringWithOptions:0]);
+  NSMutableArray<NSNumber *> *values = [NSMutableArray arrayWithCapacity:static_cast<NSUInteger>(n)];
+  for (int index = 0; index < n; index += 1) {
+    [values addObject:@(bytes[static_cast<size_t>(index)])];
+  }
+  resolve(values);
 }
 
 - (void)installExecutionRuntime:(RCTPromiseResolveBlock)resolve
