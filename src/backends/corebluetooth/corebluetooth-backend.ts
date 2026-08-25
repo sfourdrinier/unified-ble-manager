@@ -623,7 +623,11 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
       consumer.deadlineTimer = setTimeout(deadline, Math.max(0, options.deadline - this.now()))
     }
     try {
-      await this.boundary.startScan(advertisement => this.handleAdvertisement(advertisement), serviceUuids)
+      await this.boundary.startScan(
+        advertisement => this.handleAdvertisement(advertisement),
+        serviceUuids,
+        options.platform
+      )
     } catch (error) {
       this.releaseScanConsumerAdmission(consumer)
       this.scanGroup = null

@@ -404,6 +404,7 @@ class OwnedAndroidGattRadio(private val context: Context) {
     val builder = ScanSettings.Builder()
       .setScanMode(
         when (scanMode) {
+          -1 -> ScanSettings.SCAN_MODE_OPPORTUNISTIC
           0 -> ScanSettings.SCAN_MODE_LOW_POWER
           1 -> ScanSettings.SCAN_MODE_BALANCED
           2 -> ScanSettings.SCAN_MODE_LOW_LATENCY

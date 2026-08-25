@@ -21,7 +21,8 @@ import type {
   CoreBluetoothDescriptorAddress,
   CoreBluetoothGattSnapshot,
   CoreBluetoothPhyObservation,
-  CoreBluetoothPhyRequestResult
+  CoreBluetoothPhyRequestResult,
+  CoreBluetoothScanPlatformOptions
 } from '../backends/corebluetooth/corebluetooth-boundary'
 import {
   copyNativeProtocolBytes,
@@ -260,9 +261,16 @@ export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary
 
   async startScan(
     onAdvertisement: (advertisement: CoreBluetoothAdvertisement) => void,
-    serviceUuids: readonly string[]
+    serviceUuids: readonly string[],
+    platform?: CoreBluetoothScanPlatformOptions
   ): Promise<void> {
     this.requireOpen('start-scan')
+    if (platform !== undefined && platform.kind !== 'android') {
+      throw contractError('capability.unsupported', 'scan', 'rn-android-boundary.scan.platform-options')
+    }
+    if (platform?.phy !== undefined || platform?.reportDelayMs !== undefined) {
+      throw contractError('capability.unsupported', 'scan', 'rn-android-boundary.scan.platform-options')
+    }
     this.scanListeners.add(onAdvertisement)
     try {
       await this.dispatch('scanStart', [
@@ -271,9 +279,9 @@ export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary
           protocolRecord('scanOptions', [
             field(1, [...serviceUuids]),
             field(2, true),
-            field(3, 2),
-            field(4, 1),
-            field(5, true)
+            field(3, androidScanMode(platform)),
+            field(4, androidScanCallbackType(platform)),
+            field(5, androidScanLegacy(platform))
           ])
         )
       ])
@@ -1334,4 +1342,21 @@ function securityStateFromBondState(value: string, operation: string): AndroidSe
     secureConnections: 'unsupported',
     pairingPossible: value === 'bonded' || value === 'bonding' || value === 'notBonded' ? true : null
   })
+}
+
+function androidScanMode(platform: CoreBluetoothScanPlatformOptions | undefined): number {
+  if (platform?.mode === 'low-power') return 0
+  if (platform?.mode === 'balanced') return 1
+  if (platform?.mode === 'opportunistic') return -1
+  return 2
+}
+
+function androidScanCallbackType(platform: CoreBluetoothScanPlatformOptions | undefined): number {
+  if (platform?.callbackType === 'first-match') return 2
+  if (platform?.callbackType === 'match-lost') return 4
+  return 1
+}
+
+function androidScanLegacy(platform: CoreBluetoothScanPlatformOptions | undefined): boolean {
+  return platform?.legacy !== false
 }

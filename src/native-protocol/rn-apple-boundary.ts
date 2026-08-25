@@ -5,7 +5,8 @@ import { isAuthorizationBlocking } from '../backend-contract/identity'
 import type { ConnectionControlCapabilities } from '../backend-contract/connection-controls'
 import type {
   CoreBluetoothAdapterSnapshot,
-  CoreBluetoothAdvertisement
+  CoreBluetoothAdvertisement,
+  CoreBluetoothScanPlatformOptions
 } from '../backends/corebluetooth/corebluetooth-boundary'
 import { ReactNativeAndroidProtocolBoundary } from './rn-android-boundary'
 
@@ -40,10 +41,11 @@ export class ReactNativeAppleProtocolBoundary extends ReactNativeAndroidProtocol
 
   override async startScan(
     onAdvertisement: (advertisement: CoreBluetoothAdvertisement) => void,
-    serviceUuids: readonly string[]
+    serviceUuids: readonly string[],
+    platform?: CoreBluetoothScanPlatformOptions
   ): Promise<void> {
     this.assertAdapterReady('scan.start')
-    return super.startScan(onAdvertisement, serviceUuids)
+    return super.startScan(onAdvertisement, serviceUuids, platform)
   }
 
   override async connect(nativePeerId: string): Promise<void> {

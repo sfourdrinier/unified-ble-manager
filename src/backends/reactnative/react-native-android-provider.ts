@@ -289,10 +289,26 @@ function androidDirectGattIdentity(): DirectGattBackendIdentityOptions {
     ]),
     features: combineReactNativeFeatureRegistries(
       createReactNativeAndroidConnectionControlFeatureRegistry(),
+      createReactNativeAndroidScanPlatformFeatureRegistry(),
       createReactNativeDescriptorFeatureRegistry('android', REACT_NATIVE_ANDROID_IMPLEMENTATION_VERSION),
       createReactNativeRestorationFeatureRegistry('android', REACT_NATIVE_ANDROID_IMPLEMENTATION_VERSION)
     )
   })
+}
+
+function createReactNativeAndroidScanPlatformFeatureRegistry() {
+  return createFeatureRegistry(
+    Object.freeze([
+      createBackendOperationCapabilityRegistration({
+        id: BUILT_IN_FEATURE_IDS.scanPlatformOptions,
+        implementationVersion: REACT_NATIVE_ANDROID_IMPLEMENTATION_VERSION,
+        sourceDigest: 'react-native-android-scan-platform-options-v1',
+        tckSuiteId: 'capability.catalog-v2',
+        requiredScenarioIds: ['capability.truth-limits-evidence-and-binding'],
+        operation: 'scan:platform-options.invoke-without-scan'
+      })
+    ])
+  )
 }
 
 function createReactNativeAndroidConnectionControlFeatureRegistry() {
