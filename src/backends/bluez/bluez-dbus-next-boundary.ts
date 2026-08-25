@@ -39,6 +39,8 @@ interface AdapterProxy extends dbus.ClientInterface {
   SetDiscoveryFilter(filter: Readonly<Record<string, dbus.Variant>>): Promise<void>
   StartDiscovery(): Promise<void>
   StopDiscovery(): Promise<void>
+  /** Only exported by experimental bluetoothd builds; guarded before use. */
+  ConnectDevice(properties: Readonly<Record<string, dbus.Variant>>): Promise<void>
 }
 
 interface DeviceProxy extends dbus.ClientInterface {
@@ -332,6 +334,19 @@ class DbusNextBluezBoundary implements BluezDbusBoundary {
           await adapter.StopDiscovery()
           return
         }
+        if (method === 'ConnectDevice' && argumentsValue.length === 1) {
+          // ConnectDevice is only exported by experimental bluetoothd builds; a daemon
+          // without it must surface the same UnknownMethod error a raw call would.
+          if (typeof adapter.ConnectDevice !== 'function') {
+            throw new BluezDbusMethodError({
+              name: 'org.freedesktop.DBus.Error.UnknownMethod',
+              message: 'BlueZ adapter does not export ConnectDevice',
+              safeDetails: Object.freeze({})
+            })
+          }
+          await adapter.ConnectDevice(variantDictionary(argumentsValue[0]))
+          return
+        }
       }
       if (interfaceName === BLUEZ_DEVICE_INTERFACE && argumentsValue.length === 0) {
         const device = proxy.getInterface<DeviceProxy>(interfaceName)
@@ -528,6 +543,9 @@ function isRawProperties(value: RawVariant['value']): value is RawProperties {
 }
 
 function normalizeDbusError(error: unknown): BluezDbusMethodError {
+  if (error instanceof BluezDbusMethodError) {
+    return error
+  }
   if (!(error instanceof Error)) {
     return new BluezDbusMethodError({
       name: 'org.bluez.Error.Failed',
