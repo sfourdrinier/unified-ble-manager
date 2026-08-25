@@ -550,10 +550,12 @@ describe('IPC provisional admission', () => {
     })
     await expect(subscription.remove()).resolves.toMatchObject({ state: 'release-failed' })
     expect(unsubscribeAttempts).toBe(2)
+    const attemptsBeforeRelease = unsubscribeAttempts
     const released = await connection.release()
     expect(released.state).toBe('release-failed')
     expect(released.failures.some(failure => failure.resourceKind === 'gatt')).toBe(true)
-    expect(unsubscribeAttempts).toBeGreaterThanOrEqual(2)
+    expect(harness.commands).toContain('connection.disconnect')
+    expect(unsubscribeAttempts).toBeGreaterThan(attemptsBeforeRelease)
     await harness.ipc.destroy()
   })
 
