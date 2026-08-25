@@ -1217,7 +1217,7 @@ export class IpcConnection {
       })
       .catch(error => {
         this.lifecycleEvents.closeWithReason('source-failed')
-        void this.invalidateDatabases()
+        this.invalidateDatabases().catch(() => undefined)
         throw error
       })
     this.lifecycleAdmission = admission
@@ -1227,7 +1227,7 @@ export class IpcConnection {
   private async pumpLifecycleEvents(subscription: IpcConnectionEventSubscription): Promise<void> {
     for await (const event of subscription.events) {
       if (event.kind === 'terminal') {
-        void this.invalidateDatabases()
+        this.invalidateDatabases().catch(() => undefined)
         this.lifecycleEvents.finishWithReason(requiredTerminalReason(event.reason, 'ipc-manager.connection-lifecycle'))
         return
       }
@@ -1245,7 +1245,7 @@ export class IpcConnection {
       this.lifecycleEvents.emit(value, estimateByteLength(value))
     }
     this.lifecycleEvents.closeWithReason('source-failed')
-    void this.invalidateDatabases()
+    this.invalidateDatabases().catch(() => undefined)
   }
 
   registerDatabase(database: IpcGattDatabase): void {
@@ -1527,7 +1527,7 @@ export class IpcGattDatabase {
       )
       .catch(error => {
         if (error instanceof BackendContractError && error.normalized.code === 'gatt.stale-handle') {
-          void this.invalidate('service-changed')
+          this.invalidate('service-changed').catch(() => undefined)
         }
         throw error
       })
@@ -1543,8 +1543,7 @@ export class IpcGattDatabase {
 
   async invalidate(reason: GattDatabaseChangedEvent['reason'] | null = null): Promise<void> {
     if (!this.valid) return
-    const streamReason: 'service-changed' | 'connection-lost' =
-      reason === null ? 'connection-lost' : 'service-changed'
+    const streamReason: 'service-changed' | 'connection-lost' = reason === null ? 'connection-lost' : 'service-changed'
     const removals = [...this.subscriptions].map(subscription => subscription.closeFromDatabase(streamReason))
     this.subscriptions.clear()
     const results = await Promise.all(removals)
@@ -1852,7 +1851,7 @@ export class IpcCharacteristic {
           toRemoteStreamLimits(options.stream),
           options.stream?.overflowPolicy,
           reason => {
-            if (reason === 'service-changed') void this.database.invalidate('service-changed')
+            if (reason === 'service-changed') this.database.invalidate('service-changed').catch(() => undefined)
             if (reason === 'overflow' || reason === 'source-failed') {
               this.database
                 .route('gatt.unsubscribe', Object.freeze({ subscriptionHandle: handle }), null)
@@ -1864,10 +1863,7 @@ export class IpcCharacteristic {
       this.database.registerSubscription(subscription)
       return subscription
     } catch (error) {
-      if (
-        error instanceof BackendContractError &&
-        error.normalized.operation === 'ipc-manager.stream-handle'
-      ) {
+      if (error instanceof BackendContractError && error.normalized.operation === 'ipc-manager.stream-handle') {
         throw error
       }
       return await this.database.manager.compensateFailedGattAdmission(

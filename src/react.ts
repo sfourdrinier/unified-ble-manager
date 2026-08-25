@@ -508,12 +508,7 @@ class ManagerStore {
     }
     const failedVisible = this.adapterSnapshot?.error !== null
     const cleanup = await this.stopRun(run)
-    if (
-      cleanup.state === 'released' &&
-      this.listeners.size > 0 &&
-      this.watchRun === null &&
-      !failedVisible
-    ) {
+    if (cleanup.state === 'released' && this.listeners.size > 0 && this.watchRun === null && !failedVisible) {
       this.ensureWatch()
     }
   }
@@ -1398,10 +1393,7 @@ function performRetainedRetry(
   return attempt
 }
 
-async function settleRetainedScan(
-  manager: BleManager,
-  report: (error: Error) => void
-): Promise<CleanupResult | null> {
+async function settleRetainedScan(manager: BleManager, report: (error: Error) => void): Promise<CleanupResult | null> {
   const entry = retainedByManager.get(manager)?.scan
   if (entry === undefined || entry === null) return null
   if (entry.inFlight !== null) {
