@@ -13,6 +13,7 @@ All notable changes to `unified-ble-manager` are documented here.
 
 - BlueZ `security.pair()` no longer fires `Device1.Pair` when the operation is aborted or times out while the just-works agent is still registering; it re-checks cancellation after agent registration so a cancelled pairing never proceeds on the daemon (#143).
 - BlueZ `security.pair()` reports `paired` (not `cancelled`) when an abort or deadline lands after `Device1.Pair` has already completed the bond, so a bond that was actually created is never reported as if it never happened (#143).
+- Android `security.pair()` no longer reports a timed-out pairing as `cancelled` when native cancellation is unavailable and it cannot actually stop the in-flight bond; the deadline path now fails closed with `capability.unsupported`, matching the abort path, so a bond that may still complete is never misreported as cancelled (#143).
 
 ## [4.0.4] - 2026-08-25
 

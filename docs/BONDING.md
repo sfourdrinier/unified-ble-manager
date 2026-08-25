@@ -60,11 +60,22 @@ bonding as unverified until it is measured on real radio.
 
 Android reports public bond-state transitions but does
 not ship a reflection-based remove-bond operation. On the current Expo SDK 57 /
-Android API 36 artifact, the cancellation capability is also omitted because
-the public `cancelBondProcess` API is newer; an aborted or timed-out Android
-pair releases the library's pending-operation ownership but cannot cancel the
-OS ceremony; it may still reach a later bond terminal state, which `watch()`
-reports. Apple and Web keep generic
+Android API 36 artifact, native pairing cancellation is also unavailable because
+the public `cancelBondProcess` API is newer. When cancellation is unavailable
+the library cannot stop an in-flight OS ceremony, so rather than claim a cancel
+it did not perform, an aborted or timed-out `pair()` fails closed by rejecting
+with `capability.unsupported`; a bond may still reach a later terminal state,
+which `watch()` reports.
+
+This is a deliberate cross-backend difference callers should handle: where a
+backend can cancel an in-flight pairing (BlueZ, WinRT), an aborted or timed-out
+attempt resolves `{ outcome: 'cancelled' }`; where it cannot (an Android build
+without the cancellation extension), the attempt rejects with
+`capability.unsupported` instead of misreporting a cancellation that did not
+happen. Separately, once a bond has actually completed, an abort that arrives
+too late is reported as `paired` (never `cancelled`), because the bond exists.
+
+Apple and Web keep generic
 pairing/bonding unsupported where their public APIs do not provide a truthful
 measurement; Web `forget()` remains origin-authorization revocation, not
 `unpair`.

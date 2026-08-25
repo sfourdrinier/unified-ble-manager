@@ -174,8 +174,16 @@ export class ReactNativeAndroidSecurityBackend implements SecurityBackend {
             if (publicSettled) return
             publicSettled = true
             cancellationController.abort()
+            if (!this.boundary.securityCancellationAvailable) {
+              // Without native cancellation we cannot stop an in-flight
+              // createBond at the deadline, so a 'timed-out' outcome (which the
+              // public layer maps to 'cancelled') could strand a bond that then
+              // completes. Fail closed, exactly as the abort path does.
+              reject(contractError('capability.unsupported', 'capability', 'android.security.pair.cancellation'))
+              return
+            }
             reject(contractError('operation.timed-out', 'core', 'android.security.pair'))
-            if (this.boundary.securityCancellationAvailable) this.requestCancellation(peerId)
+            this.requestCancellation(peerId)
           },
           Math.max(0, options.deadline - this.now())
         )
