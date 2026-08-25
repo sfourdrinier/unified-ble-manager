@@ -6,7 +6,7 @@
 
 It is an evolution of `react-native-ble-plx`, rewritten as a **cross-platform unified product**. One bytes-first BLE model and lifecycle semantics across hosts, with host-specific construction and ownership. The root package never picks a radio for you, and it will not quietly fall back to a simulator or a different backend.
 
-Install `unified-ble-manager` from npm (`4.0.4` on `latest`). The root import does not pick a radio. Package SemVer and backend support labels are independent: each radio backend stays Experimental until live-radio evidence says otherwise. See [`docs/PLATFORMS.md`](docs/PLATFORMS.md).
+Install `unified-ble-manager` from npm (`4.0.5` on `latest`). The root import does not pick a radio. Package SemVer and backend support labels are independent: each radio backend stays Experimental until live-radio evidence says otherwise. See [`docs/PLATFORMS.md`](docs/PLATFORMS.md).
 
 > Sponsored by [Imagi Explain](https://imagiexplain.com) — researched, narrated whiteboard explainers from a prompt, a PDF, or your notes.
 

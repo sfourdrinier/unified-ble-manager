@@ -4,6 +4,31 @@ All notable changes to `unified-ble-manager` are documented here.
 
 ## [Unreleased]
 
+## [4.0.5] - 2026-08-25
+
+First release cut against a live peripheral. Every fix below came from driving a real CGM from an Android phone and a Linux/BlueZ host, and several are defects no unit test had reason to catch. Does not retag `v4.0.4`.
+
+### Fixes
+
+- `readiness()` no longer reports a working radio as `unavailable` before the Android adapter publishes its authoritative state; a boundary that has not yet been told the radio's state is a pending condition, not an absent radio (#116, #128).
+- The direct-GATT backend is shared by CoreBluetooth and React Native Android, so its diagnostics now name the platform that is actually running — `[unified-ble:android-gatt.*]` rather than `[CoreBluetoothBackend.*]` — and its operation ids are `direct-gatt.*` instead of `corebluetooth.*`. Scan-stop cleanup timeouts carry the platform identity instead of `platform: null` (#117, #128, #132).
+- An address known out of band can now enter the system: `ScanClause.addresses` and `connect({ address })`, gated on the reported `peer:address-targeting` capability, with pending BlueZ semantics that complete whenever the peripheral next advertises, and Android `ScanFilter.setDeviceAddress`. Hosts that cannot express a radio address — CoreBluetooth, Web, and the IPC transport — report the capability unsupported and fail closed rather than advertising something they cannot honour (#118, #128, #131, #133).
+- `ScanOptions.platform` is honoured instead of unconditionally rejected, so consumers can select Android scan mode; peripherals that advertise infrequently are no longer effectively undiscoverable behind the platform default duty cycle. Gated on `scan:platform-options` in the public, core and IPC paths; `match-lost` and pre-26 `legacy: false` fail closed rather than silently doing something else (#120, #130).
+- BlueZ GATT works again: occurrences are decimal indices rather than D-Bus object paths, so `discover()` no longer fails with `protocol.violation: public-gatt.occurrence` on every device — a regression introduced when the public validator was tightened without migrating the backend. Two same-UUID services are now distinctly addressable, which neither the old leniency nor the strict check managed (#123, #129).
+- The BlueZ boundary decodes the `y` and `a{qv}` D-Bus variants that BlueZ 5.85 actually sends, and routes `Adapter1.ConnectDevice` through the boundary instead of rejecting it as locally unsupported; without these the backend could not attach at all (#128).
+- Public BLE resources are portable across copies, and closing an adapter watch's value stream tears the watch down instead of leaving a 25 ms poll timer and an abort listener alive (#122).
+- `@babel/runtime` is declared as a production dependency. The emitted CommonJS imports its helpers, so an external linked checkout failed with `MODULE_NOT_FOUND` while repository-local tests passed against a transitive copy — a packaging gap only a real consumer could surface (#134, #135).
+- A database stream is finalized after an invalidation retry succeeds, and per-subscription React cleanup and failed IPC CCCDs stay owned (#127).
+
+### Compatibility
+
+- Native protocol ABI 3 → 4. A JavaScript bundle carrying the new scan fields now fails attachment negotiation against an older native binary instead of failing at scan-start — or, worse, silently selecting the opposite scan mode.
+
+### Release integrity
+
+- Cut from the exact `main` merge commit through the tag-driven trusted-publishing workflow.
+- Intended for publication as `latest`; this does not promote backend support labels. The live-hardware runs behind these fixes are development evidence, not qualification evidence.
+
 ## [4.0.4] - 2026-08-25
 
 Post-4.0.3 audit: wire/scan/IPC ownership, Android 16 KB ELF alignment, Apple teardown, abortable Web chooser honesty, React remount-owned cleanup, and React Native entropy without WebCrypto. Does not retag `v4.0.3`.
