@@ -1773,8 +1773,16 @@ async function watchPublicAdapter<Attachment extends string, Identity extends Ba
     const signal = normalizeOperationOptions({ signal: options.signal ?? undefined }, now).signal
     const watch = await internal.adapterStates({ signal })
     if (signal?.aborted === true) {
-      await watch.stop()
-      throw contractError('operation.aborted', 'adapter', 'public-adapter.watch-state')
+      const primary = contractError('operation.aborted', 'adapter', 'public-adapter.watch-state')
+      let cleanup: BackendCleanupRecord
+      try {
+        cleanup = await watch.stop()
+      } catch (cleanupError) {
+        throw aggregateAdapterWatchCleanupFailure(primary, cleanupError)
+      }
+      const cleanupFailure = projectedAdapterWatchCleanupFailure(primary, cleanup)
+      if (cleanupFailure !== null) throw cleanupFailure
+      throw rehydratePublicError(primary)
     }
     let stopPromise: Promise<BackendCleanupRecord> | null = null
     const abortHandler = () => {
@@ -1803,14 +1811,14 @@ async function watchPublicAdapter<Attachment extends string, Identity extends Ba
     try {
       values = mapPublicAdapterStates(watch.values)
     } catch (error) {
+      let cleanup: BackendCleanupRecord
       try {
-        await stop()
+        cleanup = await stop()
       } catch (cleanupError) {
-        throw new AggregateError(
-          [rehydratePublicError(error), rehydratePublicError(cleanupError)],
-          'BLE adapter watch projection and cleanup both failed'
-        )
+        throw aggregateAdapterWatchCleanupFailure(error, cleanupError)
       }
+      const cleanupFailure = projectedAdapterWatchCleanupFailure(error, cleanup)
+      if (cleanupFailure !== null) throw cleanupFailure
       throw rehydratePublicError(error)
     }
     return Object.freeze({
@@ -1827,6 +1835,21 @@ function mapPublicAdapterStates<Attachment extends string>(
   source: BoundedAsyncStream<AdapterStateSnapshot<Attachment>>
 ): PublicBoundedAsyncStream<BleAdapterState> {
   return mapPublicBoundedAsyncStream(source, snapshotPublicAdapterState)
+}
+
+function projectedAdapterWatchCleanupFailure(primary: unknown, cleanup: BackendCleanupRecord): AggregateError | null {
+  if (cleanup.state === 'released') return null
+  return new AggregateError(
+    [rehydratePublicError(primary), new BleCleanupError(cleanup)],
+    'BLE adapter watch operation and cleanup both failed'
+  )
+}
+
+function aggregateAdapterWatchCleanupFailure(primary: unknown, cleanup: unknown): AggregateError {
+  return new AggregateError(
+    [rehydratePublicError(primary), rehydratePublicError(cleanup)],
+    'BLE adapter watch operation and cleanup both failed'
+  )
 }
 
 async function waitForPublicAdapter<Attachment extends string, Identity extends BackendIdentity<Attachment>>(

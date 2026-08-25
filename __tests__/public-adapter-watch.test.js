@@ -2,6 +2,7 @@
 
 const { CoreBoundedStream } = require('../src/core/bounded-stream')
 const { capacity } = require('../src/backend-contract/primitives')
+const { contractError } = require('../src/backend-contract/errors')
 const { createPublicBleManager } = require('../src/public/ble-manager')
 const { IpcPublicManagerAdapter } = require('../src/ipc/public-manager')
 const { createDeterministicTestBleManager } = require('../src/testing/deterministic/deterministic-test-manager')
@@ -41,6 +42,29 @@ function publicInternal(watch) {
     adapterState: async () => watch.initial,
     adapterStates: async () => watch,
     destroy: async () => ({ state: 'released', failures: [] })
+  }
+}
+
+function failedWatchCleanup(resourceKind = 'adapter-watch') {
+  return {
+    state: 'release-failed',
+    failures: [
+      {
+        resourceKind,
+        error: {
+          code: 'platform.failure',
+          domain: 'cleanup',
+          operation: `public-adapter-watch.${resourceKind}`,
+          platform: {
+            domain: 'native',
+            code: 'E_WATCH_CLEANUP',
+            safeMessage: 'adapter watch cleanup failed',
+            metadata: { nested: { bytes: new Uint8Array([7, 8, 9]) } }
+          },
+          retryability: 'caller-decides'
+        }
+      }
+    ]
   }
 }
 
@@ -141,6 +165,104 @@ describe('public adapter watch contract', () => {
       code: 'protocol.malformed',
       domain: 'stream'
     })
+    expect(stop).toHaveBeenCalledTimes(1)
+  })
+
+  test('aggregates pre-abort primary failure with projected release-failed cleanup', async () => {
+    const cleanup = failedWatchCleanup('pre-abort')
+    const stop = jest.fn(async () => cleanup)
+    const manager = await createPublicBleManager(
+      publicInternal({ initial: adapterState(), values: stateStream(), stop }),
+      () => 100
+    )
+    const controller = new AbortController()
+    controller.abort()
+
+    let failure
+    try {
+      await manager.adapter.watchState({ signal: controller.signal })
+    } catch (error) {
+      failure = error
+    }
+    expect(failure).toBeInstanceOf(AggregateError)
+    expect(failure.errors).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: 'operation.aborted' }),
+        expect.objectContaining({ name: 'BleCleanupError' })
+      ])
+    )
+    const cleanupError = failure.errors.find(error => error.name === 'BleCleanupError')
+    expect(cleanupError.cleanup.failures[0].error.platform.metadata.nested.bytes).toEqual(new Uint8Array([7, 8, 9]))
+    expect(Object.isFrozen(cleanupError.cleanup.failures[0].error.platform.metadata.nested)).toBe(true)
+    expect(stop).toHaveBeenCalledTimes(1)
+  })
+
+  test('aggregates projection failure with projected release-failed cleanup', async () => {
+    const source = new CoreBoundedStream(
+      {
+        itemCapacity: capacity(1),
+        byteCapacity: capacity(4 * 1024 * 1024 + 1),
+        reservedControlCapacity: capacity(1)
+      },
+      'drop-newest'
+    )
+    const cleanup = failedWatchCleanup('projection')
+    const stop = jest.fn(async () => cleanup)
+    const manager = await createPublicBleManager(
+      publicInternal({ initial: adapterState(), values: source, stop }),
+      () => 100
+    )
+
+    let failure
+    try {
+      await manager.adapter.watchState()
+    } catch (error) {
+      failure = error
+    }
+    expect(failure).toBeInstanceOf(AggregateError)
+    expect(failure.errors).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: 'protocol.malformed' }),
+        expect.objectContaining({ name: 'BleCleanupError' })
+      ])
+    )
+    const cleanupError = failure.errors.find(error => error.name === 'BleCleanupError')
+    expect(cleanupError.cleanup.failures[0].error.platform.metadata.nested.bytes).toEqual(new Uint8Array([7, 8, 9]))
+    expect(Object.isFrozen(cleanupError.cleanup.failures[0].error.platform.metadata.nested)).toBe(true)
+    expect(stop).toHaveBeenCalledTimes(1)
+  })
+
+  test('aggregates projection failure with rejected watch cleanup', async () => {
+    const source = new CoreBoundedStream(
+      {
+        itemCapacity: capacity(1),
+        byteCapacity: capacity(4 * 1024 * 1024 + 1),
+        reservedControlCapacity: capacity(1)
+      },
+      'drop-newest'
+    )
+    const cleanupError = contractError('platform.failure', 'cleanup', 'public-adapter-watch.rejected-cleanup')
+    const stop = jest.fn(async () => {
+      throw cleanupError
+    })
+    const manager = await createPublicBleManager(
+      publicInternal({ initial: adapterState(), values: source, stop }),
+      () => 100
+    )
+
+    let failure
+    try {
+      await manager.adapter.watchState()
+    } catch (error) {
+      failure = error
+    }
+    expect(failure).toBeInstanceOf(AggregateError)
+    expect(failure.errors).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ code: 'protocol.malformed' }),
+        expect.objectContaining({ code: 'platform.failure', operation: 'public-adapter-watch.rejected-cleanup' })
+      ])
+    )
     expect(stop).toHaveBeenCalledTimes(1)
   })
 
