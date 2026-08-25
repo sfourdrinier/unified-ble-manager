@@ -260,7 +260,8 @@ export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary
 
   async startScan(
     onAdvertisement: (advertisement: CoreBluetoothAdvertisement) => void,
-    serviceUuids: readonly string[]
+    serviceUuids: readonly string[],
+    deviceAddresses: readonly string[] = []
   ): Promise<void> {
     this.requireOpen('start-scan')
     this.scanListeners.add(onAdvertisement)
@@ -273,7 +274,8 @@ export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary
             field(2, true),
             field(3, 2),
             field(4, 1),
-            field(5, true)
+            field(5, true),
+            ...(deviceAddresses.length === 0 ? [] : [field(6, [...deviceAddresses])])
           ])
         )
       ])

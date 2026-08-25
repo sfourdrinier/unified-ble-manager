@@ -56,7 +56,12 @@ export interface NormalizedScanObservation {
 }
 
 export interface NormalizedObservationAddress {
-  readonly type: 'public' | 'random'
+  /**
+   * `opaque` carries a canonical radio address whose native layer reported no
+   * address type (Android scan results); it makes no public/static claim, so
+   * consumers must not persist it as a stable public identity.
+   */
+  readonly type: 'public' | 'random' | 'opaque'
   readonly value: string
 }
 

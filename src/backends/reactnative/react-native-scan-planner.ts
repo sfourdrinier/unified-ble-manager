@@ -9,6 +9,16 @@ import type {
 } from '../../backend-contract/scan-planning'
 import type { NormalizedScanQuery } from '../../backend-contract/scan-query'
 
+const reactNativeAndroidScanObservationFields: readonly ScanObservationField[] = Object.freeze([
+  'localName',
+  'rssi',
+  'connectable',
+  'serviceUuids',
+  'manufacturerData',
+  'serviceData',
+  'address'
+])
+
 const reactNativeScanObservationFields: readonly ScanObservationField[] = Object.freeze([
   'localName',
   'rssi',
@@ -21,7 +31,7 @@ const reactNativeScanObservationFields: readonly ScanObservationField[] = Object
 export const reactNativeAndroidScanPlanningContext: ScanPlanningContext = Object.freeze({
   backendId: 'unified-ble:react-native-android',
   platformId: 'unified-ble:android-gatt',
-  availableObservationFields: reactNativeScanObservationFields
+  availableObservationFields: reactNativeAndroidScanObservationFields
 })
 
 export const reactNativeAppleScanPlanningContext: ScanPlanningContext = Object.freeze({

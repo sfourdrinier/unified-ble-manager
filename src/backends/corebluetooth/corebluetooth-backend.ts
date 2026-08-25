@@ -17,6 +17,7 @@ import {
   assertScanFilter,
   deviceIdentity,
   type AdvertisementObservation,
+  type DeviceAddress,
   type OwnerScanOptions
 } from '../../backend-contract/advertisement'
 import type { FeatureRegistry } from '../../backend-contract/capabilities'
@@ -37,6 +38,7 @@ import {
 } from '../../backend-contract/identity'
 import type { PublicOperationOptions } from '../../backend-contract/operations'
 import {
+  canonicalBleAddress,
   negotiateCoreVersions,
   opaqueId,
   resourceCount,
@@ -130,6 +132,20 @@ export interface PhysicalSubscription {
   nativeRemoval: Promise<void> | null
 }
 let nextBackendInstance = 1
+/**
+ * Android scan results expose only the MAC value; the native protocol carries
+ * no address type, so a parsable address is reported as `opaque` rather than
+ * inventing `public` for what may be a static-random or rotating private
+ * address. Non-address peer ids (CoreBluetooth UUIDs) carry no address at all.
+ */
+function radioAddressFromNativePeerId(nativePeerId: string): DeviceAddress | null {
+  try {
+    return Object.freeze({ value: canonicalBleAddress(nativePeerId), type: 'opaque' })
+  } catch {
+    return null
+  }
+}
+
 function allocateBackendInstance(): number {
   const current = nextBackendInstance
   nextBackendInstance += 1
@@ -567,7 +583,9 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
   ): Promise<ScanLease<string, string>> {
     this.assertOperational('direct-gatt.scan.start')
     assertScanFilter(options.filter, 'direct-gatt.scan.start')
-    const serviceUuids = trustedServiceUuidFilter(options, planCoreBluetoothScan, 'direct-gatt.scan').serviceUuids
+    const nativeFilter = trustedServiceUuidFilter(options, planCoreBluetoothScan, 'direct-gatt.scan')
+    const serviceUuids = nativeFilter.serviceUuids
+    const deviceAddresses = nativeFilter.deviceAddresses ?? []
     const failedScanGroup = this.scanGroup
     if (failedScanGroup?.state === 'failed') {
       try {
@@ -635,7 +653,11 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
       consumer.deadlineTimer = setTimeout(deadline, Math.max(0, options.deadline - this.now()))
     }
     try {
-      await this.boundary.startScan(advertisement => this.handleAdvertisement(advertisement), serviceUuids)
+      await this.boundary.startScan(
+        advertisement => this.handleAdvertisement(advertisement),
+        serviceUuids,
+        deviceAddresses
+      )
     } catch (error) {
       this.releaseScanConsumerAdmission(consumer)
       this.scanGroup = null
@@ -802,7 +824,11 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
     const peerId = this.peerIdForNativeId(advertisement.nativePeerId)
     const observation = createCoreBluetoothObservation(
       advertisement,
-      deviceIdentity(peerId, this.attachment().backendInstanceId, null),
+      deviceIdentity(
+        peerId,
+        this.attachment().backendInstanceId,
+        radioAddressFromNativePeerId(advertisement.nativePeerId)
+      ),
       group.scanSessionId,
       this.now(),
       this.nextIngressOrdinal
@@ -1344,6 +1370,14 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
 
   peerIdForKnownNativeId(nativePeerId: string): string | null {
     return this.peerIdsByNativeId.get(nativePeerId) ?? null
+  }
+
+  peerFromAddress(descriptor: { readonly address: string }): PeerId<string> {
+    try {
+      return this.peerIdForNativeId(canonicalBleAddress(descriptor.address))
+    } catch {
+      throw contractError('argument.invalid', 'connection', 'direct-gatt.peer-from-address')
+    }
   }
 
   peerIdForNativeId(nativePeerId: string): PeerId<string> {
