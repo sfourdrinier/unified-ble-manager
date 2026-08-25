@@ -58,7 +58,7 @@ import type {
   BleAdapterStateWatch
 } from '../public/ble-adapter'
 import { assertDirectConnectionCapability } from '../public/capabilities'
-import type { BleCapabilities, CapabilityDescriptor } from '../public/capabilities'
+import type { BleCapabilities, CapabilityDescriptor, FeatureId } from '../public/capabilities'
 import { BUILT_IN_FEATURE_IDS } from '../backend-contract/capabilities'
 import { createPublicGattDatabase, type PublicGattDatabaseSource } from '../public/gatt'
 import type { GattDatabase } from '../public/gatt'
@@ -121,7 +121,17 @@ export class IpcPublicManagerAdapter implements BleManager {
   ) {
     this.requireScanPlan = options.requireScanPlan ?? false
     this.gattDeliverySelection = options.gattDeliverySelection ?? 'unknown'
-    this.capabilities = options.capabilities ?? ipc.capabilities
+    // The renderer inherits the main process's capability snapshot, where an
+    // instantiated backend may well advertise scan:platform-options. The
+    // versioned IPC scan request does not serialize ScanOptions.platform and
+    // scan() below rejects it before IPC, so advertising the capability would
+    // tell a renderer the feature exists and then fail every call. Project it
+    // as unsupported instead, which is what fail-closed means for a
+    // capability the transport cannot express.
+    this.capabilities = withIpcInexpressibleCapabilitiesUnsupported(
+      options.capabilities ?? ipc.capabilities,
+      Object.freeze(['scan:platform-options'])
+    )
     this.adapter = options.adapter ?? createIpcAdapter(ipc)
     this.diagnostics = options.diagnostics ?? diagnosticsUnavailable()
     this.peers = options.peers ?? unsupportedPeerDirectory()
@@ -1003,4 +1013,29 @@ function discoveryKindFromCapabilities(capabilities: BleCapabilities): BleManage
   if (continuous && chooser) return 'hybrid'
   if (chooser) return 'system-chooser'
   return 'continuous-scan'
+}
+
+/** Reports capabilities the versioned IPC surface cannot express as unsupported, leaving the rest untouched. */
+function withIpcInexpressibleCapabilitiesUnsupported(
+  capabilities: BleCapabilities,
+  hidden: readonly FeatureId[]
+): BleCapabilities {
+  const asUnsupported = (descriptor: CapabilityDescriptor): CapabilityDescriptor =>
+    Object.freeze({ ...descriptor, state: 'unsupported' as const, limits: descriptor.limits })
+  return {
+    supports: id => (hidden.includes(id) ? false : capabilities.supports(id)),
+    get: id => {
+      const descriptor = capabilities.get(id)
+      if (!hidden.includes(id) || descriptor === undefined) return descriptor
+      return asUnsupported(descriptor)
+    },
+    require: id => {
+      const descriptor = capabilities.require(id)
+      return hidden.includes(id) ? asUnsupported(descriptor) : descriptor
+    },
+    list: () =>
+      Object.freeze(
+        capabilities.list().map(descriptor => (hidden.includes(descriptor.id) ? asUnsupported(descriptor) : descriptor))
+      )
+  }
 }
