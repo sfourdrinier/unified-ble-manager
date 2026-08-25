@@ -78,6 +78,7 @@ const supportedVariantSignatures = new Set([
   's',
   'o',
   'b',
+  'y',
   'n',
   'q',
   'i',
@@ -88,7 +89,8 @@ const supportedVariantSignatures = new Set([
   'ay',
   'as',
   'ao',
-  'a{sv}'
+  'a{sv}',
+  'a{qv}'
 ])
 const dbusService = 'org.freedesktop.DBus'
 const dbusPath = '/org/freedesktop/DBus'
@@ -444,7 +446,8 @@ function decodeVariant(variant: RawVariant): BluezVariant {
     return { signature: 'b', value: variant.value }
   }
   if (
-    (variant.signature === 'n' ||
+    (variant.signature === 'y' ||
+      variant.signature === 'n' ||
       variant.signature === 'q' ||
       variant.signature === 'i' ||
       variant.signature === 'u' ||
@@ -465,7 +468,9 @@ function decodeVariant(variant: RawVariant): BluezVariant {
   ) {
     return { signature: variant.signature, value: Object.freeze([...variant.value]) }
   }
-  if (variant.signature === 'a{sv}' && isRawProperties(variant.value)) {
+  if ((variant.signature === 'a{sv}' || variant.signature === 'a{qv}') && isRawProperties(variant.value)) {
+    // a{qv} dictionaries (e.g. Device1.ManufacturerData) surface with their keys already
+    // stringified by the transport, so they are re-tagged as the string-keyed shape.
     return { signature: 'a{sv}', value: decodeProperties(variant.value) }
   }
   throw new Error(`Malformed D-Bus variant ${variant.signature}`)
