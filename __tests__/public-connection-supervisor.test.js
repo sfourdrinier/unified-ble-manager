@@ -146,6 +146,11 @@ describe('public connection supervisor', () => {
       }
     }
     expect(cleanupEvent).toBeDefined()
+    const eventSnapshot = cleanupEvent
+    expect(Object.isFrozen(eventSnapshot)).toBe(true)
+    const originalAttempt = eventSnapshot.attempt
+    expect(Reflect.set(eventSnapshot, 'attempt', originalAttempt + 1)).toBe(false)
+    expect(eventSnapshot.attempt).toBe(originalAttempt)
     const projected = cleanupEvent.cleanup
     expect(projected).toMatchObject({ state: 'release-failed' })
     expect(projected).not.toBe(cleanup)

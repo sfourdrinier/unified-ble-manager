@@ -93,7 +93,7 @@ import {
 const IPC_ADAPTER_STATE_POLL_INTERVAL_MS = 25
 const IPC_ADAPTER_STATE_STREAM_LIMITS = Object.freeze({
   itemCapacity: capacity(128),
-  byteCapacity: capacity(512 * 1024),
+  byteCapacity: capacity(64 * 1024),
   reservedControlCapacity: capacity(1)
 })
 
@@ -698,16 +698,29 @@ export function mapIpcConnectionEvents(
             : contractError('protocol.malformed', 'ipc', 'ipc-public-manager.connection-event-construction')
         )
       }
-      let returnPromise: ReturnType<IpcConnectionEventIterator['return']> | null = null
+      let returnPromise: IpcConnectionEventReturn | null = null
       let sourceClosed = false
-      const returnSource = (): ReturnType<IpcConnectionEventIterator['return']> => {
+      const returnSource = (): IpcConnectionEventReturn => {
         if (returnPromise !== null) return returnPromise
         sourceClosed = true
         try {
-          returnPromise = Promise.resolve(iterator.return())
+          const sourceReturn = iterator.return
+          if (sourceReturn === undefined) {
+            returnPromise = Promise.resolve({ done: true, value: undefined })
+          } else if (typeof sourceReturn !== 'function') {
+            returnPromise = Promise.reject(
+              contractError('protocol.malformed', 'ipc', 'ipc-public-manager.connection-event-return')
+            )
+          } else {
+            returnPromise = Promise.resolve(sourceReturn.call(iterator))
+          }
         } catch (error) {
           returnPromise = Promise.reject(error)
         }
+        returnPromise = returnPromise.catch(error => {
+          returnPromise = null
+          throw error
+        })
         return returnPromise
       }
       return {
@@ -828,9 +841,16 @@ export function mapIpcConnectionEvents(
   return Object.freeze(lifecycle)
 }
 
-type IpcConnectionEventIterator = import('../backend-contract/streams').BoundedAsyncStreamIterator<
-  import('../backend-contract/primitives').SerializableRecord
+type IpcConnectionEventResult = IteratorResult<
+  import('../backend-contract/streams').StreamItem<import('../backend-contract/primitives').SerializableRecord>,
+  undefined
 >
+type IpcConnectionEventReturn = Promise<IpcConnectionEventResult>
+type IpcConnectionEventIterator = {
+  readonly next: () => IpcConnectionEventReturn
+  readonly return?: () => IpcConnectionEventReturn
+  readonly [Symbol.asyncIterator]: () => IpcConnectionEventIterator
+}
 
 function hasOwnIpcConnectionField(value: object, key: string, operation: string): boolean {
   try {

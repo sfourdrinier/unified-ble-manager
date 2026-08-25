@@ -4,6 +4,7 @@ import { capacity, type Capacity } from '../backend-contract/primitives'
 import { contractError } from '../backend-contract/errors'
 import type { OverflowPolicy } from '../backend-contract/streams'
 import type { PublicStreamOverflowPolicy } from './streams'
+import { MAX_PUBLIC_STREAM_CAPACITY } from './stream-capacity'
 
 export type StreamPreset = 'latest' | 'balanced' | 'lossless-bounded' | 'custom'
 
@@ -68,7 +69,12 @@ export function resolveStreamPreset(input: StreamPresetInput = {}): StreamBudget
         throw contractError('argument.invalid', 'stream', 'stream-preset.custom')
       }
       const reservedControlCapacity = custom.reservedControlCapacity ?? capacity(2)
-      if (Number(custom.byteCapacity) <= Number(reservedControlCapacity)) {
+      if (
+        !isPublicCapacity(custom.itemCapacity) ||
+        !isPublicCapacity(custom.byteCapacity) ||
+        !isPublicCapacity(reservedControlCapacity) ||
+        custom.byteCapacity <= reservedControlCapacity
+      ) {
         throw contractError('argument.invalid', 'stream', 'stream-preset.custom-byte-capacity')
       }
       return Object.freeze({
@@ -93,10 +99,13 @@ export function resolveStreamPolicy(policy: StreamPolicy = 'balanced'): StreamBu
   if (
     !Number.isSafeInteger(budget.itemCapacity) ||
     budget.itemCapacity <= 0 ||
+    budget.itemCapacity > MAX_PUBLIC_STREAM_CAPACITY ||
     !Number.isSafeInteger(budget.byteCapacity) ||
     budget.byteCapacity <= 0 ||
+    budget.byteCapacity > MAX_PUBLIC_STREAM_CAPACITY ||
     !Number.isSafeInteger(reservedControlCapacity) ||
     reservedControlCapacity <= 0 ||
+    reservedControlCapacity > MAX_PUBLIC_STREAM_CAPACITY ||
     budget.byteCapacity <= reservedControlCapacity ||
     (budget.overflowPolicy !== undefined &&
       budget.overflowPolicy !== 'latest' &&
@@ -115,6 +124,10 @@ export function resolveStreamPolicy(policy: StreamPolicy = 'balanced'): StreamBu
       overflowPolicy: budget.overflowPolicy
     }
   })
+}
+
+function isPublicCapacity(value: number): boolean {
+  return Number.isSafeInteger(value) && value >= 1 && value <= MAX_PUBLIC_STREAM_CAPACITY
 }
 
 export const STREAM_PRESET_DEFAULTS = Object.freeze({

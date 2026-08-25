@@ -6,6 +6,7 @@ import type { CleanupRecord } from './cleanup'
 import { toPublicCleanupRecord } from './cleanup'
 import { rehydratePublicError } from './error-bridge'
 import { BleError } from './errors'
+import { MAX_PUBLIC_STREAM_CAPACITY } from './stream-capacity'
 import type { PortableBoundedAsyncStream, PortableStreamItem } from '../manager/consumer-handles'
 
 export type PublicStreamOverflowPolicy = 'latest' | 'drop-oldest' | 'drop-newest' | 'error'
@@ -68,7 +69,7 @@ type SourceStreamItem<Value> = StreamItem<Value> | PortableStreamItem<Value>
 
 type SourceStreamIterator<Value> = {
   readonly next: () => Promise<IteratorResult<SourceStreamItem<Value>, undefined>>
-  readonly return: () => Promise<IteratorResult<SourceStreamItem<Value>, undefined>>
+  readonly return?: () => Promise<IteratorResult<SourceStreamItem<Value>, undefined>>
   readonly [Symbol.asyncIterator]: () => SourceStreamIterator<Value>
 }
 
@@ -147,13 +148,23 @@ export function mapPublicBoundedAsyncStream<InternalValue, PublicValue>(
         if (sourceReturnPromise !== null) return sourceReturnPromise
         sourceClosed = true
         try {
-          sourceReturnPromise =
-            typeof sourceIterator.return === 'function'
-              ? Promise.resolve(sourceIterator.return())
-              : Promise.resolve({ done: true, value: undefined })
+          const sourceReturn = sourceIterator.return
+          if (sourceReturn === undefined) {
+            sourceReturnPromise = Promise.resolve({ done: true, value: undefined })
+          } else if (typeof sourceReturn !== 'function') {
+            sourceReturnPromise = Promise.reject(
+              contractError('protocol.malformed', 'stream', 'public-stream.iterator-return')
+            )
+          } else {
+            sourceReturnPromise = Promise.resolve(sourceReturn.call(sourceIterator))
+          }
         } catch (error) {
           sourceReturnPromise = Promise.reject(error)
         }
+        sourceReturnPromise = sourceReturnPromise.catch(error => {
+          sourceReturnPromise = null
+          throw error
+        })
         return sourceReturnPromise
       }
       const iterator: PublicBoundedAsyncStreamIterator<PublicValue> = {
@@ -254,7 +265,7 @@ function requireStreamCapacity(value: number, label: string): number {
     throw contractError('protocol.malformed', 'stream', `public-stream.limits.${label}`)
   }
   const number = Number(value)
-  if (!Number.isSafeInteger(number) || number <= 0) {
+  if (!Number.isSafeInteger(number) || number <= 0 || number > MAX_PUBLIC_STREAM_CAPACITY) {
     throw contractError('protocol.malformed', 'stream', `public-stream.limits.${label}`)
   }
   return number

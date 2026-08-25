@@ -16,7 +16,11 @@ export class BleCleanupError extends Error {
   constructor(cleanup: CleanupResultLike, message = 'BLE cleanup failed') {
     super(message)
     this.name = 'BleCleanupError'
-    this.cleanup = toPublicCleanupRecord(cleanup)
+    try {
+      this.cleanup = toPublicCleanupRecord(cleanup)
+    } catch (error) {
+      throw rehydratePublicError(error)
+    }
   }
 }
 
@@ -51,7 +55,15 @@ export function collectCleanupPhases(
   for (const result of results) {
     if (result.error instanceof AggregateError) thrown.push(...result.error.errors)
     else if (result.error !== undefined) thrown.push(result.error)
-    if (result.cleanup?.state === 'release-failed') cleanupFailures.push(...result.cleanup.failures)
+    if (result.cleanup !== undefined) {
+      let projected: PublicCleanupRecord
+      try {
+        projected = toPublicCleanupRecord(result.cleanup)
+      } catch (error) {
+        throw rehydratePublicError(error)
+      }
+      if (projected.state === 'release-failed') cleanupFailures.push(...result.cleanup.failures)
+    }
   }
   const cleanup: CleanupRecord =
     cleanupFailures.length === 0

@@ -248,6 +248,85 @@ describe('public stream follow-up boundaries', () => {
     })
   })
 
+  test('retries IPC iterator return rejection and handles optional or malformed return members', async () => {
+    const returnError = contractError('platform.failure', 'ipc', 'followup.lifecycle-return-retry')
+    let returnAttempts = 0
+    const retryLifecycle = mapIpcConnectionEvents(
+      {
+        [Symbol.asyncIterator]: () => ({
+          next: async () => ({ done: true, value: undefined }),
+          return: jest.fn(async () => {
+            returnAttempts += 1
+            if (returnAttempts === 1) throw returnError
+            return { done: true, value: undefined }
+          }),
+          [Symbol.asyncIterator]() {
+            return this
+          }
+        })
+      },
+      {
+        attachmentId: 'attachment-1',
+        peerId: 'peer-1',
+        connectionId: 'connection-1',
+        ownerLeaseId: 'lease-1',
+        connectionGeneration: 'generation-1'
+      }
+    )
+    const retryIterator = retryLifecycle[Symbol.asyncIterator]()
+    await expect(retryIterator.return()).rejects.toMatchObject({
+      code: 'platform.failure',
+      operation: 'followup.lifecycle-return-retry'
+    })
+    await expect(retryIterator.return()).resolves.toEqual({ done: true, value: undefined })
+    expect(returnAttempts).toBe(2)
+
+    const optionalLifecycle = mapIpcConnectionEvents(
+      {
+        [Symbol.asyncIterator]: () => ({
+          next: async () => ({ done: true, value: undefined }),
+          [Symbol.asyncIterator]() {
+            return this
+          }
+        })
+      },
+      {
+        attachmentId: 'attachment-1',
+        peerId: 'peer-1',
+        connectionId: 'connection-1',
+        ownerLeaseId: 'lease-1',
+        connectionGeneration: 'generation-1'
+      }
+    )
+    await expect(optionalLifecycle[Symbol.asyncIterator]().return()).resolves.toEqual({
+      done: true,
+      value: undefined
+    })
+
+    const malformedLifecycle = mapIpcConnectionEvents(
+      {
+        [Symbol.asyncIterator]: () => ({
+          next: async () => ({ done: true, value: undefined }),
+          return: 1,
+          [Symbol.asyncIterator]() {
+            return this
+          }
+        })
+      },
+      {
+        attachmentId: 'attachment-1',
+        peerId: 'peer-1',
+        connectionId: 'connection-1',
+        ownerLeaseId: 'lease-1',
+        connectionGeneration: 'generation-1'
+      }
+    )
+    await expect(malformedLifecycle[Symbol.asyncIterator]().return()).rejects.toMatchObject({
+      code: 'protocol.malformed',
+      domain: 'ipc'
+    })
+  })
+
   test('projects aggregate primary-plus-cleanup failures before BleCleanupError exposure', () => {
     const cleanup = cleanupRecord('aggregate')
     const primary = new Error('primary failure')
@@ -451,5 +530,46 @@ describe('public stream follow-up boundaries', () => {
     await expect(connection.disconnect()).resolves.toMatchObject({ state: 'release-failed' })
     await expect(manager.destroy()).resolves.toMatchObject({ state: 'release-failed' })
     expect(destroyCleanup.failures[0].error.platform.metadata.nested.bytes).toEqual(new Uint8Array([1, 2, 3]))
+  })
+
+  test('memoizes successful public manager destroy results and retries failures', async () => {
+    const internal = {
+      identity: null,
+      attachedBackend: undefined,
+      supports: () => true,
+      capability: () => null,
+      capabilities: () => [],
+      connect: async () => undefined,
+      destroy: jest.fn(async () => ({ state: 'released', failures: [] }))
+    }
+    const manager = await require('../src/public/ble-manager').createPublicBleManager(internal, () => 0)
+    const first = manager.destroy()
+    const second = manager.destroy()
+    await Promise.resolve()
+    expect(internal.destroy).toHaveBeenCalledTimes(1)
+    const firstResult = await first
+    const secondResult = await second
+    expect(secondResult).toBe(firstResult)
+    expect(Object.isFrozen(firstResult)).toBe(true)
+    expect(await manager.destroy()).toBe(firstResult)
+    expect(internal.destroy).toHaveBeenCalledTimes(1)
+
+    let attempts = 0
+    const retryInternal = {
+      ...internal,
+      destroy: jest.fn(async () => {
+        attempts += 1
+        if (attempts === 1) throw new Error('destroy failed')
+        return { state: 'released', failures: [] }
+      })
+    }
+    const retryManager = await require('../src/public/ble-manager').createPublicBleManager(retryInternal, () => 0)
+    await expect(retryManager.destroy()).rejects.toMatchObject({
+      constructor: AggregateError,
+      errors: expect.arrayContaining([expect.objectContaining({ message: 'destroy failed' })])
+    })
+    const retryResult = await retryManager.destroy()
+    expect(await retryManager.destroy()).toBe(retryResult)
+    expect(retryInternal.destroy).toHaveBeenCalledTimes(2)
   })
 })

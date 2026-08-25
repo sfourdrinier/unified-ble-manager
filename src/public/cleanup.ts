@@ -7,7 +7,7 @@ import type {
   BleErrorCode,
   BleErrorDomain
 } from '../backend-contract/errors'
-import { BackendContractError, contractError } from '../backend-contract/errors'
+import { BackendContractError, BLE_ERROR_CODES, BLE_ERROR_DOMAINS, contractError } from '../backend-contract/errors'
 import type { SerializableRecord, SerializableValue } from '../backend-contract/primitives'
 import {
   assertAllowedSerializableKey,
@@ -78,6 +78,12 @@ export function toPublicCleanupRecord(record: CleanupLike): CleanupRecord {
     if (!Array.isArray(record.failures)) {
       throw contractError('protocol.malformed', 'boundary', 'public-cleanup.failures')
     }
+    if (record.state === 'released' && record.failures.length !== 0) {
+      throw contractError('protocol.malformed', 'boundary', 'public-cleanup.released-failures')
+    }
+    if (record.state === 'release-failed' && record.failures.length === 0) {
+      throw contractError('protocol.malformed', 'boundary', 'public-cleanup.release-failed-failures')
+    }
     const snapshot = Object.freeze({
       state: record.state,
       failures: Object.freeze(
@@ -93,9 +99,20 @@ export function toPublicCleanupRecord(record: CleanupLike): CleanupRecord {
 }
 
 function toPublicCleanupFailure(resourceKind: string, error: NormalizedErrorLike): CleanupFailure {
-  if (typeof resourceKind !== 'string' || typeof error !== 'object' || error === null) {
+  if (
+    typeof resourceKind !== 'string' ||
+    resourceKind.length === 0 ||
+    typeof error !== 'object' ||
+    error === null ||
+    !Object.prototype.hasOwnProperty.call(error, 'code') ||
+    !Object.prototype.hasOwnProperty.call(error, 'domain') ||
+    !Object.prototype.hasOwnProperty.call(error, 'operation') ||
+    !Object.prototype.hasOwnProperty.call(error, 'platform') ||
+    !Object.prototype.hasOwnProperty.call(error, 'retryability')
+  ) {
     throw contractError('protocol.malformed', 'boundary', 'public-cleanup.failure')
   }
+  assertSafeSerializablePrototype(error, 'boundary', 'public-cleanup.error')
   return Object.freeze({
     resourceKind,
     error: toPublicNormalizedError(error)
@@ -103,6 +120,20 @@ function toPublicCleanupFailure(resourceKind: string, error: NormalizedErrorLike
 }
 
 function toPublicNormalizedError(error: NormalizedErrorLike): NormalizedBleError {
+  if (
+    !BLE_ERROR_CODES.some(candidate => candidate === error.code) ||
+    !BLE_ERROR_DOMAINS.some(candidate => candidate === error.domain) ||
+    typeof error.operation !== 'string' ||
+    error.operation.length === 0 ||
+    (error.retryability !== 'never' && error.retryability !== 'caller-decides') ||
+    (error.platform !== null &&
+      (typeof error.platform !== 'object' || error.platform === null || Array.isArray(error.platform)))
+  ) {
+    throw contractError('protocol.malformed', 'boundary', 'public-cleanup.error')
+  }
+  if (error.platform !== null) {
+    assertSafeSerializablePrototype(error.platform, 'boundary', 'public-cleanup.error.platform')
+  }
   return Object.freeze({
     code: error.code,
     domain: error.domain,

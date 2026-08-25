@@ -1348,6 +1348,7 @@ class PublicBleManager<Attachment extends string, Identity extends BackendIdenti
     readonly closeState: () => void
     readonly stop: () => Promise<BackendCleanupRecord>
   }>()
+  private destroyPromise: Promise<PublicCleanupRecord> | null = null
 
   constructor(
     private readonly internal: PublicInternalManager<Attachment, Identity>,
@@ -1662,20 +1663,34 @@ class PublicBleManager<Attachment extends string, Identity extends BackendIdenti
     })
   }
 
-  async destroy(): Promise<PublicCleanupRecord> {
+  destroy(): Promise<PublicCleanupRecord> {
+    if (this.destroyPromise !== null) return this.destroyPromise
+    const run = this.destroyInternal()
+    this.destroyPromise = run.then(
+      cleanup => {
+        if (cleanup.state !== 'released') this.destroyPromise = null
+        return cleanup
+      },
+      error => {
+        this.destroyPromise = null
+        throw error
+      }
+    )
+    return this.destroyPromise
+  }
+
+  private async destroyInternal(): Promise<PublicCleanupRecord> {
     try {
       const active = [...this.activeScanSessions]
       const viewResults: { readonly error?: unknown; readonly cleanup?: BackendCleanupRecord }[] = []
-      await Promise.all(
-        active.map(async scan => {
-          try {
-            const cleanup = await scan.stop()
-            viewResults.push({ cleanup })
-          } catch (error) {
-            viewResults.push({ error })
-          }
-        })
-      )
+      for (const scan of active) {
+        try {
+          const cleanup = await scan.stop()
+          viewResults.push({ cleanup })
+        } catch (error) {
+          viewResults.push({ error })
+        }
+      }
       let cleanup: BackendCleanupRecord | undefined
       let nativeError: unknown
       try {

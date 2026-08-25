@@ -59,7 +59,7 @@ export {
 
 const REMOTE_STREAM_LIMITS = Object.freeze({
   itemCapacity: capacity(128),
-  byteCapacity: capacity(512 * 1024),
+  byteCapacity: capacity(64 * 1024),
   reservedControlCapacity: capacity(1)
 })
 
@@ -1956,7 +1956,7 @@ const EMPTY_SUBSCRIPTION_OPTIONS: PortableSubscriptionOptions = Object.freeze({
   ...EMPTY_OPERATION_OPTIONS,
   delivery: {
     itemCapacity: capacity(128),
-    byteCapacity: capacity(512 * 1024),
+    byteCapacity: capacity(64 * 1024),
     reservedControlCapacity: capacity(1),
     overflowPolicy: 'drop-oldest' as const
   }

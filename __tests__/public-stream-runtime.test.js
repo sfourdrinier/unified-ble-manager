@@ -148,6 +148,59 @@ describe('public stream runtime projection', () => {
     expect(returnSourceIterator.return).toHaveBeenCalledTimes(1)
   })
 
+  test('retries a rejected source return, accepts an optional return, and rejects malformed return members', async () => {
+    const returnError = contractError('platform.failure', 'stream', 'public-stream-runtime.return-retry')
+    let returnAttempts = 0
+    const retrySourceIterator = {
+      next: async () => ({ done: true, value: undefined }),
+      return: jest.fn(async () => {
+        returnAttempts += 1
+        if (returnAttempts === 1) throw returnError
+        return { done: true, value: undefined }
+      }),
+      [Symbol.asyncIterator]() {
+        return this
+      }
+    }
+    const retryStream = mapPublicBoundedAsyncStream(sourceWithIterator(retrySourceIterator), value => value)
+    const retryIterator = retryStream[Symbol.asyncIterator]()
+    await expect(retryIterator.return()).rejects.toMatchObject({
+      code: 'platform.failure',
+      operation: 'public-stream-runtime.return-retry'
+    })
+    await expect(retryIterator.return()).resolves.toEqual({ done: true, value: undefined })
+    expect(retrySourceIterator.return).toHaveBeenCalledTimes(2)
+
+    const optionalReturnStream = mapPublicBoundedAsyncStream(
+      sourceWithIterator({
+        next: async () => ({ done: true, value: undefined }),
+        [Symbol.asyncIterator]() {
+          return this
+        }
+      }),
+      value => value
+    )
+    await expect(optionalReturnStream[Symbol.asyncIterator]().return()).resolves.toEqual({
+      done: true,
+      value: undefined
+    })
+
+    const malformedReturnStream = mapPublicBoundedAsyncStream(
+      sourceWithIterator({
+        next: async () => ({ done: true, value: undefined }),
+        return: 1,
+        [Symbol.asyncIterator]() {
+          return this
+        }
+      }),
+      value => value
+    )
+    await expect(malformedReturnStream[Symbol.asyncIterator]().return()).rejects.toMatchObject({
+      code: 'protocol.malformed',
+      domain: 'stream'
+    })
+  })
+
   test('fails closed on malformed stream controls, limits, iterator construction, and metadata', async () => {
     const malformedControls = sourceWithIterator({
       next: async () => ({
@@ -508,5 +561,88 @@ describe('public stream runtime projection', () => {
     )
     expect(rehydrated).toMatchObject({ code: 'protocol.malformed', domain: 'boundary' })
     expect(rehydrated).toBeInstanceOf(BleError)
+  })
+
+  test('rejects semantically malformed cleanup states and normalized errors', async () => {
+    const validFailure = {
+      resourceKind: 'stream',
+      error: {
+        code: 'platform.failure',
+        domain: 'stream',
+        operation: 'public-stream-runtime.semantic-cleanup',
+        platform: null,
+        retryability: 'never'
+      }
+    }
+    const malformedCleanups = [
+      { state: 'released', failures: [validFailure] },
+      { state: 'release-failed', failures: [] },
+      {
+        state: 'release-failed',
+        failures: [{ ...validFailure, error: { ...validFailure.error, code: 'not-a-code' } }]
+      },
+      {
+        state: 'release-failed',
+        failures: [{ ...validFailure, error: { ...validFailure.error, domain: 'not-a-domain' } }]
+      },
+      {
+        state: 'release-failed',
+        failures: [{ ...validFailure, error: { ...validFailure.error, operation: '' } }]
+      },
+      {
+        state: 'release-failed',
+        failures: [{ ...validFailure, error: { ...validFailure.error, retryability: 'sometimes' } }]
+      },
+      {
+        state: 'release-failed',
+        failures: [{ ...validFailure, error: { ...validFailure.error, platform: undefined } }]
+      },
+      {
+        state: 'release-failed',
+        failures: [{ ...validFailure, error: Object.assign(Object.create({ inherited: true }), validFailure.error) }]
+      }
+    ]
+    for (const cleanup of malformedCleanups) {
+      const stream = mapPublicBoundedAsyncStream(
+        sourceWithIterator(
+          {
+            next: async () => ({ done: true, value: undefined }),
+            return: async () => ({ done: true, value: undefined }),
+            [Symbol.asyncIterator]() {
+              return this
+            }
+          },
+          async () => cleanup
+        ),
+        value => value
+      )
+      await expect(stream.close()).rejects.toMatchObject({
+        code: 'protocol.malformed',
+        domain: 'boundary'
+      })
+    }
+  })
+
+  test('accepts the normative maximum public stream capacity and rejects one above it', async () => {
+    const source = sourceWithIterator({
+      next: async () => ({ done: true, value: undefined }),
+      return: async () => ({ done: true, value: undefined }),
+      [Symbol.asyncIterator]() {
+        return this
+      }
+    })
+    source.limits = { itemCapacity: 65_536, byteCapacity: 65_536, reservedControlCapacity: 1 }
+    const publicStream = mapPublicBoundedAsyncStream(source, value => value)
+    expect(publicStream.limits.itemCapacity).toBe(65_536)
+
+    const aboveMaximum = sourceWithIterator({
+      next: async () => ({ done: true, value: undefined }),
+      return: async () => ({ done: true, value: undefined }),
+      [Symbol.asyncIterator]() {
+        return this
+      }
+    })
+    aboveMaximum.limits = { itemCapacity: 65_537, byteCapacity: 65_536, reservedControlCapacity: 1 }
+    expect(() => mapPublicBoundedAsyncStream(aboveMaximum, value => value)).toThrow(BleError)
   })
 })
