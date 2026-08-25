@@ -59,7 +59,7 @@ function scanOptions() {
   }
 }
 
-function serviceObject(path) {
+function serviceObject(path, includes = null) {
   return {
     path,
     interfaces: [
@@ -68,7 +68,8 @@ function serviceObject(path) {
         properties: {
           Device: { signature: 'o', value: devicePath },
           UUID: { signature: 's', value: serviceUuid },
-          Primary: { signature: 'b', value: true }
+          Primary: { signature: 'b', value: true },
+          ...(includes === null ? {} : { Includes: { signature: 'ao', value: includes } })
         }
       }
     ]
@@ -145,8 +146,8 @@ function managedObjects() {
   ]
 }
 
-async function backendFixture() {
-  const boundary = new InMemoryBluezBoundary({ objects: managedObjects() })
+async function backendFixture(objects = managedObjects()) {
+  const boundary = new InMemoryBluezBoundary({ objects })
   const provider = createBluezBackendProvider({
     busKind: 'system',
     boundaryFactory: new InMemoryBluezBoundaryFactory([boundary]),
@@ -267,6 +268,52 @@ describe('BlueZ public GATT occurrences', () => {
 
     await expect(first.characteristic(characteristicUuid).read()).resolves.toEqual(new Uint8Array([12, 13]))
     await expect(second.characteristic(characteristicUuid).read()).resolves.toEqual(new Uint8Array([22, 23]))
+    await expect(backend.destroy()).resolves.toEqual({ state: 'released', failures: [] })
+  })
+
+  test('keeps in-snapshot included-service links and omits links outside the snapshot', async () => {
+    const objects = managedObjects().map(object =>
+      object.path === service0Path
+        ? serviceObject(service0Path, [service1Path, `${devicePath}/service_not_resolved`])
+        : object
+    )
+    const { backend } = await backendFixture(objects)
+    const { database } = await connectedDatabase(backend)
+    const snapshot = await database.snapshot()
+    expect(snapshot.services).toHaveLength(2)
+    expect(snapshot.services[0].includedServices).toHaveLength(1)
+    expect(snapshot.services[0].includedServices[0].uuid).toBe(serviceUuid)
+    expect(String(snapshot.services[0].includedServices[0].occurrence)).toBe('1')
+    expect(snapshot.services[1].includedServices).toHaveLength(0)
+    await expect(backend.destroy()).resolves.toEqual({ state: 'released', failures: [] })
+  })
+
+  test('rejects notification emission addressed by occurrence and delivers on the resolved object path', async () => {
+    const { backend, boundary } = await backendFixture()
+    const { database } = await connectedDatabase(backend)
+    const snapshot = await database.snapshot()
+    const characteristicPath = snapshot.characteristics[0].path
+    const subscription = await database.subscribe(characteristicPath, { ...operation(), delivery: delivery() })
+    const notification = subscription.values[Symbol.asyncIterator]().next()
+
+    // Regression: occurrences are decimal indices, not D-Bus object paths. A
+    // driver that addresses the boundary by occurrence must fail loudly instead
+    // of emitting into the void and stranding the awaiting consumer forever.
+    expect(() =>
+      boundary.objectManager.emitPropertiesChanged(
+        String(characteristicPath.characteristicOccurrence),
+        BLUEZ_GATT_CHARACTERISTIC_INTERFACE,
+        { Value: { signature: 'ay', value: new Uint8Array([9]) } }
+      )
+    ).toThrow(/unknown object path '0'/)
+
+    boundary.objectManager.emitPropertiesChanged(characteristic0Path, BLUEZ_GATT_CHARACTERISTIC_INTERFACE, {
+      Value: { signature: 'ay', value: new Uint8Array([15]) }
+    })
+    await expect(notification).resolves.toMatchObject({
+      done: false,
+      value: { kind: 'value', value: { value: new Uint8Array([15]) } }
+    })
     await expect(backend.destroy()).resolves.toEqual({ state: 'released', failures: [] })
   })
 
