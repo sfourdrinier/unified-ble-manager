@@ -247,13 +247,29 @@ public final class UnifiedBleExpoRuntimeModule extends NativeUnifiedBleExpoRunti
     }
   }
 
+  /**
+   * Read a manifest meta-data flag without assuming how the platform typed it.
+   *
+   * <p>The config plugin writes {@code android:value="true"}, but the Android manifest parser
+   * coerces the literals {@code "true"} and {@code "false"} into a {@link Boolean} before they
+   * reach the {@link Bundle}. Reading such an entry with {@code getString} logs a type warning and
+   * yields {@code null}, so the caller silently falls back to its default and every configuration
+   * digests identically - which defeats the purpose of a digest that exists to detect drift.
+   */
+  private static boolean metadataFlag(Bundle metadata, String key, boolean fallback) {
+    final Object value = metadata.get(key);
+    if (value instanceof Boolean) return (Boolean) value;
+    if (value instanceof String) return Boolean.parseBoolean((String) value);
+    return fallback;
+  }
+
   private String configurationDigest(String legacyLocationPolicy) {
     final Bundle metadata = applicationMetadata();
     final String canonical = "unified-ble-expo-runtime-v1\n"
         + "platform=android\n"
         + "legacyLocationPolicy=" + legacyLocationPolicy + "\n"
-        + "neverForLocation=" + metadata.getString(NEVER_FOR_LOCATION_METADATA, "false") + "\n"
-        + "requiredHardware=" + metadata.getString(REQUIRED_HARDWARE_METADATA, "false") + "\n";
+        + "neverForLocation=" + metadataFlag(metadata, NEVER_FOR_LOCATION_METADATA, false) + "\n"
+        + "requiredHardware=" + metadataFlag(metadata, REQUIRED_HARDWARE_METADATA, false) + "\n";
     try {
       final byte[] digest = MessageDigest.getInstance("SHA-256")
           .digest(canonical.getBytes(StandardCharsets.UTF_8));

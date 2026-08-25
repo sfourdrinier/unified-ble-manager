@@ -8,6 +8,7 @@
 #include "../include/BoundedNativeEventBuffer.hpp"
 #include "../include/AndroidJsiEventIngressLedger.hpp"
 
+#include <algorithm>
 #include <cassert>
 #include <cstdint>
 #include <functional>
@@ -514,6 +515,58 @@ void testTerminalAndRichAdvertisementParity() {
   };
   const auto encoded = codec.encode(advertisement);
   assert(codec.encode(codec.decode(encoded)) == encoded);
+
+  // Every advertisement is observed by some scan, and the backends carry that
+  // scan's operationCorrelation (field 10) on the event. This is the exact
+  // shape the Android JSI binding emits for each scan result; rejecting it
+  // drops every advertisement before it reaches a caller, so scan() yields
+  // nothing while the radio is receiving the device perfectly well.
+  const protocol::ProtocolRecord correlatedAdvertisementEvent{
+      .kind = protocol::RecordKind::event,
+      .fields = {
+          field(1U, std::uint64_t{protocol::kProtocolVersion}),
+          field(2U, std::string("native-advertisement-1:7")),
+          field(3U, std::string("advertisement")),
+          field(4U, attachment()),
+          field(5U, std::uint64_t{7U}),
+          field(6U, std::uint64_t{20U}),
+          field(10U, correlation(1U)),
+          field(12U, std::make_shared<protocol::ProtocolRecord>(advertisement)),
+      },
+  };
+  codec.validate(correlatedAdvertisementEvent);
+  assert(
+      codec.encode(codec.decode(codec.encode(correlatedAdvertisementEvent))) ==
+      codec.encode(correlatedAdvertisementEvent));
+
+  // The correlation is optional, not required: an advertisement that belongs to
+  // no scan operation is still well formed.
+  auto uncorrelatedAdvertisementEvent = correlatedAdvertisementEvent;
+  uncorrelatedAdvertisementEvent.fields.erase(
+      std::remove_if(
+          uncorrelatedAdvertisementEvent.fields.begin(),
+          uncorrelatedAdvertisementEvent.fields.end(),
+          [](const protocol::ProtocolField& value) { return value.id == 10U; }),
+      uncorrelatedAdvertisementEvent.fields.end());
+  codec.validate(uncorrelatedAdvertisementEvent);
+
+  // A rejected field is reported by name. "A field is forbidden" is true of
+  // every record on the wire; without the identity a caller cannot tell which
+  // record kind, or which field, the boundary actually refused.
+  auto forbiddenAdvertisementEvent = correlatedAdvertisementEvent;
+  forbiddenAdvertisementEvent.fields.push_back(field(16U, std::string("peer-1")));
+  bool describedForbiddenField = false;
+  try {
+    codec.validate(forbiddenAdvertisementEvent);
+  } catch (const protocol::ProtocolException& error) {
+    const std::string message = error.what();
+    assert(message.find("kind=event") != std::string::npos);
+    assert(message.find("field=16") != std::string::npos);
+    assert(message.find("peerId") != std::string::npos);
+    describedForbiddenField = true;
+  }
+  assert(describedForbiddenField);
+
 
   const protocol::ProtocolRecord readResult{
       .kind = protocol::RecordKind::result,
