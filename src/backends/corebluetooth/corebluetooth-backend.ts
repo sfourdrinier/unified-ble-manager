@@ -766,9 +766,16 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
         return cleanupFailure('scan', operation, error)
       }
     )
-    return withCoreBluetoothCleanupTimeout(() => nativeCompletion, operation).catch(error =>
-      cleanupFailure('scan', operation, error)
-    )
+    return withCoreBluetoothCleanupTimeout(
+      () => nativeCompletion,
+      operation,
+      Object.freeze({
+        domain: this.identityOptions.registeredPlatformId,
+        code: 'scan-stop-timeout',
+        safeMessage: 'Native scan stop did not complete before the cleanup deadline.',
+        metadata: Object.freeze({})
+      })
+    ).catch(error => cleanupFailure('scan', operation, error))
   }
   private releaseScanConsumerAdmission(consumer: ScanConsumer): void {
     if (consumer.abort !== null) {
