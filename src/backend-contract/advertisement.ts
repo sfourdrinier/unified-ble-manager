@@ -1,6 +1,7 @@
 // src/backend-contract/advertisement.ts
 
 import { contractError } from './errors'
+import { canonicalBleAddress } from './primitives'
 import type {
   BackendInstanceId,
   BorrowedBytes,
@@ -108,6 +109,7 @@ export interface ScanFilter {
   readonly serviceUuids: readonly Uuid[]
   readonly manufacturerData: readonly ManufacturerDataFilter[]
   readonly localNamePrefix: string | null
+  readonly deviceAddresses?: readonly string[]
 }
 export interface OwnerScanSharing {
   readonly mode: 'owner'
@@ -149,6 +151,18 @@ export interface AdvertisementInput {
 export function assertScanFilter(filter: ScanFilter, operation: string): void {
   if (filter.localNamePrefix !== null && filter.localNamePrefix.length === 0) {
     throw contractError('scan.filter-invalid', 'scan', operation)
+  }
+  if (filter.deviceAddresses !== undefined) {
+    if (filter.deviceAddresses.length === 0) {
+      throw contractError('scan.filter-invalid', 'scan', operation)
+    }
+    for (const address of filter.deviceAddresses) {
+      try {
+        canonicalBleAddress(address)
+      } catch {
+        throw contractError('scan.filter-invalid', 'scan', operation)
+      }
+    }
   }
   for (const manufacturer of filter.manufacturerData) {
     if (

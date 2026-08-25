@@ -302,6 +302,7 @@ export const nativeProtocolFields: readonly NativeProtocolFieldDescriptor[] = Ob
   nativeProtocolField('scanOptions', 3, 'scanMode', 'int64', true),
   nativeProtocolField('scanOptions', 4, 'callbackType', 'int64', true),
   nativeProtocolField('scanOptions', 5, 'legacyScan', 'boolean', true),
+  nativeProtocolField('scanOptions', 6, 'deviceAddresses', 'strings', false),
   nativeProtocolField('adapterStateSnapshot', 1, 'availability', 'enum:adapterAvailability', true),
   nativeProtocolField('adapterStateSnapshot', 2, 'authorization', 'enum:adapterAuthorization', true),
   nativeProtocolField('adapterStateSnapshot', 3, 'power', 'enum:adapterPower', true),

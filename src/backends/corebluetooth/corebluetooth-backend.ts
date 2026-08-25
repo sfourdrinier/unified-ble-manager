@@ -567,7 +567,9 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
   ): Promise<ScanLease<string, string>> {
     this.assertOperational('direct-gatt.scan.start')
     assertScanFilter(options.filter, 'direct-gatt.scan.start')
-    const serviceUuids = trustedServiceUuidFilter(options, planCoreBluetoothScan, 'direct-gatt.scan').serviceUuids
+    const nativeFilter = trustedServiceUuidFilter(options, planCoreBluetoothScan, 'direct-gatt.scan')
+    const serviceUuids = nativeFilter.serviceUuids
+    const deviceAddresses = nativeFilter.deviceAddresses ?? []
     const failedScanGroup = this.scanGroup
     if (failedScanGroup?.state === 'failed') {
       try {
@@ -635,7 +637,11 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
       consumer.deadlineTimer = setTimeout(deadline, Math.max(0, options.deadline - this.now()))
     }
     try {
-      await this.boundary.startScan(advertisement => this.handleAdvertisement(advertisement), serviceUuids)
+      await this.boundary.startScan(
+        advertisement => this.handleAdvertisement(advertisement),
+        serviceUuids,
+        deviceAddresses
+      )
     } catch (error) {
       this.releaseScanConsumerAdmission(consumer)
       this.scanGroup = null

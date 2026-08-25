@@ -199,7 +199,8 @@
         ["allowDuplicates", "boolean", true],
         ["scanMode", "int64", true],
         ["callbackType", "int64", true],
-        ["legacyScan", "boolean", true]
+        ["legacyScan", "boolean", true],
+        ["deviceAddresses", "strings", false]
       ]
     },
     {

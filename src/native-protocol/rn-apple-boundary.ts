@@ -40,9 +40,13 @@ export class ReactNativeAppleProtocolBoundary extends ReactNativeAndroidProtocol
 
   override async startScan(
     onAdvertisement: (advertisement: CoreBluetoothAdvertisement) => void,
-    serviceUuids: readonly string[]
+    serviceUuids: readonly string[],
+    deviceAddresses: readonly string[] = []
   ): Promise<void> {
     this.assertAdapterReady('scan.start')
+    if (deviceAddresses.length > 0) {
+      throw contractError('capability.unsupported', 'scan', 'rn-apple-boundary.scan.device-addresses')
+    }
     return super.startScan(onAdvertisement, serviceUuids)
   }
 

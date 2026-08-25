@@ -22,6 +22,7 @@ describe('Android scan and receiver ownership source guards', () => {
     expect(assign).toBeGreaterThan(nativeStart)
     expect(startScan).toMatch(/catch\s*\(/)
     expect(startScan).toMatch(/stopScan\(cb\)/)
+    expect(startScan).toMatch(/setDeviceAddress/)
   })
 
   test('commits adapter and bond receivers only after registerReceiver succeeds', () => {
@@ -30,7 +31,9 @@ describe('Android scan and receiver ownership source guards', () => {
       radio.indexOf('internal fun unregisterAdapterStateReceiver()')
     )
     expect(adapter.indexOf('context.registerReceiver')).toBeGreaterThan(-1)
-    expect(adapter.indexOf('adapterStateReceiver = receiver')).toBeGreaterThan(adapter.indexOf('context.registerReceiver'))
+    expect(adapter.indexOf('adapterStateReceiver = receiver')).toBeGreaterThan(
+      adapter.indexOf('context.registerReceiver')
+    )
 
     const bond = radio.slice(
       radio.indexOf('internal fun registerBondStateReceiver()'),

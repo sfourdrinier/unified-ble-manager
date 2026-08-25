@@ -136,6 +136,7 @@ export class ReactNativeAndroidBackend implements BleCentralBackend<string, Nati
         delegate.scanner.start(
           {
             ...options,
+            plan: undefined,
             filter: trustedServiceUuidFilter(options, planReactNativeAndroidScan, 'rn-android.scan')
           },
           clientId
@@ -289,10 +290,26 @@ function androidDirectGattIdentity(): DirectGattBackendIdentityOptions {
     ]),
     features: combineReactNativeFeatureRegistries(
       createReactNativeAndroidConnectionControlFeatureRegistry(),
+      createReactNativeAndroidAddressTargetingFeatureRegistry(),
       createReactNativeDescriptorFeatureRegistry('android', REACT_NATIVE_ANDROID_IMPLEMENTATION_VERSION),
       createReactNativeRestorationFeatureRegistry('android', REACT_NATIVE_ANDROID_IMPLEMENTATION_VERSION)
     )
   })
+}
+
+function createReactNativeAndroidAddressTargetingFeatureRegistry() {
+  return createFeatureRegistry(
+    Object.freeze([
+      createBackendOperationCapabilityRegistration({
+        id: BUILT_IN_FEATURE_IDS.peerAddressTargeting,
+        implementationVersion: REACT_NATIVE_ANDROID_IMPLEMENTATION_VERSION,
+        sourceDigest: 'react-native-android-address-targeting-v1',
+        tckSuiteId: 'capability.catalog-v2',
+        requiredScenarioIds: ['capability.truth-limits-evidence-and-binding'],
+        operation: 'peer:address-targeting.invoke-without-connection'
+      })
+    ])
+  )
 }
 
 function createReactNativeAndroidConnectionControlFeatureRegistry() {

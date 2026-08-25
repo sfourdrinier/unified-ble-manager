@@ -152,7 +152,8 @@ describe('React Native Android canonical protocol vertical slice', () => {
         'connectable',
         'serviceUuids',
         'manufacturerData',
-        'serviceData'
+        'serviceData',
+        ...(fixture.name === 'Android' ? ['address'] : [])
       ]
     })
     expect(backend.scanner.plan(query)).toMatchObject({
