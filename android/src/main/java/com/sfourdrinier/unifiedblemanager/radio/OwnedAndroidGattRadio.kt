@@ -396,6 +396,13 @@ class OwnedAndroidGattRadio(private val context: Context) {
     legacyScan: Boolean = true,
     allowDuplicates: Boolean = true
   ) {
+    // ScanSettings.Builder.setLegacy exists only on API 26+; below that the
+    // platform can only run a legacy scan, so accepting legacyScan=false would
+    // silently ignore the caller's extended-advertising request. Fail closed
+    // before any scan state is touched.
+    require(legacyScan || Build.VERSION.SDK_INT >= 26) {
+      "legacyScan=false requires ScanSettings.Builder.setLegacy (API 26+); this device cannot honour it"
+    }
     val normalizedServiceUuids = normalizeScanServiceUuids(serviceUuids?.toList() ?: emptyList())
     check(scanCallback == null) { "Android scan cleanup is still owned by a prior scan" }
     scanSeenDeviceIds.clear()

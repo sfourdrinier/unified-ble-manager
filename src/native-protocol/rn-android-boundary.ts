@@ -271,6 +271,13 @@ export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary
     if (platform?.phy !== undefined || platform?.reportDelayMs !== undefined) {
       throw contractError('capability.unsupported', 'scan', 'rn-android-boundary.scan.platform-options')
     }
+    if (platform?.callbackType === 'match-lost') {
+      // Android CALLBACK_TYPE_MATCH_LOST would be requested, but the native
+      // event protocol has no loss representation: the radio forwards every
+      // callback through the ordinary advertisement path, so a loss would be
+      // emitted as a fresh observation. Fail closed instead of encoding it.
+      throw contractError('capability.unsupported', 'scan', 'rn-android-boundary.scan.callback-type-match-lost')
+    }
     this.scanListeners.add(onAdvertisement)
     try {
       await this.dispatch('scanStart', [
@@ -1352,9 +1359,7 @@ function androidScanMode(platform: CoreBluetoothScanPlatformOptions | undefined)
 }
 
 function androidScanCallbackType(platform: CoreBluetoothScanPlatformOptions | undefined): number {
-  if (platform?.callbackType === 'first-match') return 2
-  if (platform?.callbackType === 'match-lost') return 4
-  return 1
+  return platform?.callbackType === 'first-match' ? 2 : 1
 }
 
 function androidScanLegacy(platform: CoreBluetoothScanPlatformOptions | undefined): boolean {
