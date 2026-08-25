@@ -1558,6 +1558,7 @@ export class IpcGattDatabase {
 
   async invalidate(reason: GattDatabaseChangedEvent['reason'] | null = null): Promise<CleanupRecord> {
     if (!this.valid && this.subscriptions.size === 0) {
+      this.terminalizeChanged(reason)
       return { state: 'released', failures: [] }
     }
     const streamReason: 'service-changed' | 'connection-lost' = reason === null ? 'connection-lost' : 'service-changed'
@@ -1576,6 +1577,12 @@ export class IpcGattDatabase {
     }
     this.valid = false
     if (failures.length > 0) return { state: 'release-failed', failures }
+    this.terminalizeChanged(reason)
+    return { state: 'released', failures: [] }
+  }
+
+  private terminalizeChanged(reason: GattDatabaseChangedEvent['reason'] | null): void {
+    if (this.changedStream.isTerminal()) return
     if (reason !== null) {
       this.changedStream.emit(
         Object.freeze({
@@ -1586,10 +1593,9 @@ export class IpcGattDatabase {
         128
       )
       this.changedStream.finishWithReason('closed')
-    } else {
-      this.changedStream.closeWithReason('connection-lost')
+      return
     }
-    return { state: 'released', failures: [] }
+    this.changedStream.closeWithReason('connection-lost')
   }
 
   registerStream<Value>(
