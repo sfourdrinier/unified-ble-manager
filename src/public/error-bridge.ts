@@ -62,7 +62,7 @@ export function collectCleanupPhases(
       } catch (error) {
         throw rehydratePublicError(error)
       }
-      if (projected.state === 'release-failed') cleanupFailures.push(...result.cleanup.failures)
+      if (projected.state === 'release-failed') cleanupFailures.push(...projected.failures)
     }
   }
   const cleanup: CleanupRecord =

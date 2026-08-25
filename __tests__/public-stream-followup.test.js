@@ -348,6 +348,18 @@ describe('public stream follow-up boundaries', () => {
     expect(Object.isFrozen(cleanupError.cleanup.failures[0].error.platform.metadata.nested)).toBe(true)
   })
 
+  test('collectCleanupPhases returns projected failures when no phase throws', () => {
+    const cleanup = cleanupRecord('scan')
+    const collected = collectCleanupPhases([{ cleanup }])
+    expect(collected.state).toBe('release-failed')
+    expect(collected.failures[0]).not.toBe(cleanup.failures[0])
+    expect(collected.failures[0].error.platform.metadata.nested.bytes).not.toBe(
+      cleanup.failures[0].error.platform.metadata.nested.bytes
+    )
+    cleanup.failures[0].error.platform.metadata.nested.bytes[0] = 9
+    expect(collected.failures[0].error.platform.metadata.nested.bytes[0]).toBe(1)
+  })
+
   test('projects GATT remove and withSubscription cleanup with deep owned metadata', async () => {
     const values = new CoreBoundedStream(limits(2, 32, 1), 'drop-oldest')
     const rawCleanup = cleanupRecord('gatt')
