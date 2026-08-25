@@ -5,6 +5,7 @@ const { BUILT_IN_FEATURE_IDS } = require('../../../src/backend-contract/capabili
 const { contractError } = require('../../../src/backend-contract/errors')
 const { normalizeScanQuery } = require('../../../src/public/scan-query')
 const { createBleManagerFromProvider, DEFAULT_BLE_MANAGER_OPTIONS } = require('../../../src/manager/ble-manager')
+const { REACT_NATIVE_ANDROID_PLATFORM_ID } = require('../../../src/backends/reactnative/react-native-android-provider')
 const {
   createReactNativeAndroidBackendProvider,
   createReactNativeAppleBackendProvider,
@@ -817,7 +818,7 @@ describe('React Native Android canonical protocol vertical slice', () => {
       value: { kind: 'terminal', reason: 'source-failed' }
     })
     expectConsoleError(
-      '[CoreBluetoothBackend.handleScanFailure] Native scan failed:',
+      `[${REACT_NATIVE_ANDROID_PLATFORM_ID}.handleScanFailure] Native scan failed:`,
       'Android scanner rejected its active scan'
     )
     await scan.stop()
@@ -850,7 +851,7 @@ describe('React Native Android canonical protocol vertical slice', () => {
       value: { kind: 'terminal', reason: 'connection-lost' }
     })
     expectConsoleError(
-      '[CoreBluetoothBackend.handleDisconnect] Native link loss:',
+      `[${REACT_NATIVE_ANDROID_PLATFORM_ID}.handleDisconnect] Native link loss:`,
       'Android GATT connection lost with status 133'
     )
     await connection.release()

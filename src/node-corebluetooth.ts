@@ -61,7 +61,7 @@ export function prepareNativeCoreBluetoothBoundary(boundary: CoreBluetoothBounda
       removeListener?.()
       reject(
         nativeArtifactUnavailable(
-          'corebluetooth.native-boundary.initialize',
+          'direct-gatt.native-boundary.initialize',
           'adapter-initialization-timed-out',
           'CoreBluetooth did not report a usable adapter state before the initialization deadline'
         )
@@ -96,7 +96,7 @@ function nativeArtifactUnavailable(operation: string, code: string, safeMessage:
 /** Loads the macOS-only direct CoreBluetooth addon for the current backend boundary. */
 export function createNativeCoreBluetoothBoundary(): CoreBluetoothBoundary {
   if (process.platform !== 'darwin') {
-    throw contractError('capability.unavailable', 'platform', 'corebluetooth.native-boundary.load', {
+    throw contractError('capability.unavailable', 'platform', 'direct-gatt.native-boundary.load', {
       domain: 'corebluetooth',
       code: 'macos-required',
       safeMessage: 'The CoreBluetooth backend is available only on macOS',
@@ -111,7 +111,7 @@ export function createNativeCoreBluetoothBoundary(): CoreBluetoothBoundary {
       throw error
     }
     throw nativeArtifactUnavailable(
-      'corebluetooth.native-boundary.load',
+      'direct-gatt.native-boundary.load',
       'native-artifact-unavailable',
       'The packaged CoreBluetooth native artifact could not be loaded for this Node or Electron runtime'
     )
@@ -123,7 +123,7 @@ export function createNativeCoreBluetoothBoundary(): CoreBluetoothBoundary {
       throw error
     }
     throw nativeArtifactUnavailable(
-      'corebluetooth.native-boundary.create',
+      'direct-gatt.native-boundary.create',
       'native-boundary-unavailable',
       'The CoreBluetooth native boundary could not be created for this macOS process'
     )

@@ -1,9 +1,11 @@
 // src/backends/bluez/bluez-connection-runtime.ts
 
+import type { OwnerScanOptions } from '../../backend-contract/advertisement'
+import type { PeerAddressDescriptor } from '../../backend-contract/backend'
 import { BackendContractError, contractError, type CleanupRecord } from '../../backend-contract/errors'
 import type { PublicOperationOptions } from '../../backend-contract/operations'
-import { deadline, opaqueId, type ClientId, type PeerId } from '../../backend-contract/primitives'
-import { BLUEZ_DEVICE_INTERFACE, BluezDbusMethodError } from './bluez-dbus-contract'
+import { capacity, deadline, opaqueId, type ClientId, type PeerId } from '../../backend-contract/primitives'
+import { BLUEZ_ADAPTER_INTERFACE, BLUEZ_DEVICE_INTERFACE, BluezDbusMethodError } from './bluez-dbus-contract'
 import { BluezConnection, BluezConnectionLease, releasedBluezCleanup } from './bluez-backend-handles'
 import type { BluezBackendRuntime } from './bluez-backend-runtime'
 import { createPendingConnectionRecord, requireRecordConnection } from './bluez-runtime-models'
@@ -11,28 +13,221 @@ import {
   awaitBluezNativePromise,
   awaitSharedBluezTransition,
   scheduleOrphanedBluezConnectionCleanup,
-  waitForBluezBoolean
+  waitForBluezBoolean,
+  waitForBluezInterfacePresence
 } from './bluez-property-waiters'
+import { startBluezScan } from './bluez-scan-runtime'
 import type { BluezConnectionRecord } from './bluez-runtime-types'
 
 const CONNECTION_OPERATION_DRAIN_TIMEOUT_MS = 1_000
 const DISCONNECT_CONFIRMATION_TIMEOUT_MS = 1_000
+const ADDRESS_CONNECT_RETRY_DELAY_MS = 250
 
 export async function connectBluezConnection(
   runtime: BluezBackendRuntime,
   peerId: PeerId<string>,
-  _clientId: ClientId<string, string>,
+  clientId: ClientId<string, string>,
   options: PublicOperationOptions
 ): Promise<BluezConnectionLease> {
   runtime.assertUsable('bluez.connect')
   assertConnectAdmission(runtime, options)
   const devicePath = runtime.devicePathForPeer(peerId)
-  if (
-    !devicePath.startsWith(`${String(runtime.selectedAdapter.adapterId)}/`) ||
-    !runtime.store.hasInterface(devicePath, BLUEZ_DEVICE_INTERFACE)
-  ) {
+  if (!devicePath.startsWith(`${String(runtime.selectedAdapter.adapterId)}/`)) {
     throw contractError('connection.not-found', 'connection', 'bluez.connect')
   }
+  const addressTarget = runtime.addressTargetForPath(devicePath)
+  if (addressTarget !== undefined) {
+    return connectBluezAddressTarget(runtime, peerId, devicePath, addressTarget, clientId, options)
+  }
+  if (!runtime.store.hasInterface(devicePath, BLUEZ_DEVICE_INTERFACE)) {
+    throw contractError('connection.not-found', 'connection', 'bluez.connect')
+  }
+  return connectBluezSharedRecord(runtime, peerId, devicePath, options)
+}
+
+/**
+ * Pending connect to an out-of-band address (peer:address-targeting). The peer does not
+ * need to be advertising at call time: the device object is materialized when it wakes
+ * (Adapter1.ConnectDevice where the daemon supports it, otherwise an address-filtered
+ * bootstrap discovery) and failed establishment attempts are retried until the caller's
+ * signal aborts or deadline expires.
+ */
+async function connectBluezAddressTarget(
+  runtime: BluezBackendRuntime,
+  peerId: PeerId<string>,
+  devicePath: string,
+  target: PeerAddressDescriptor,
+  clientId: ClientId<string, string>,
+  options: PublicOperationOptions
+): Promise<BluezConnectionLease> {
+  for (;;) {
+    runtime.assertUsable('bluez.connect.address')
+    assertConnectAdmission(runtime, options)
+    if (runtime.addressTargetForPath(devicePath) === undefined) {
+      // A backend restart invalidated every minted peer handle while this attempt was
+      // pending; the caller must mint a new address peer against the new generation.
+      throw contractError('connection.not-found', 'connection', 'bluez.connect.address')
+    }
+    if (!runtime.store.hasInterface(devicePath, BLUEZ_DEVICE_INTERFACE)) {
+      await materializeBluezAddressDevice(runtime, devicePath, target, clientId, options)
+      continue
+    }
+    try {
+      return await connectBluezSharedRecord(runtime, peerId, devicePath, options)
+    } catch (error) {
+      if (!isRetriableBluezAddressConnectFailure(error)) {
+        throw error
+      }
+      await delayBluezAddressRetry(runtime, options)
+    }
+  }
+}
+
+async function materializeBluezAddressDevice(
+  runtime: BluezBackendRuntime,
+  devicePath: string,
+  target: PeerAddressDescriptor,
+  clientId: ClientId<string, string>,
+  options: PublicOperationOptions
+): Promise<void> {
+  if (!runtime.connectDeviceUnavailable) {
+    try {
+      await runtime.boundary.methods.callVoid(
+        String(runtime.selectedAdapter.adapterId),
+        BLUEZ_ADAPTER_INTERFACE,
+        'ConnectDevice',
+        [
+          {
+            signature: 'a{sv}',
+            value: Object.freeze({
+              Address: { signature: 's', value: target.address },
+              AddressType: { signature: 's', value: target.addressType }
+            })
+          }
+        ]
+      )
+      await waitForBluezInterfacePresence(runtime, devicePath, BLUEZ_DEVICE_INTERFACE, options)
+      return
+    } catch (error) {
+      if (isBluezUnknownMethodError(error)) {
+        runtime.connectDeviceUnavailable = true
+      } else if (error instanceof BluezDbusMethodError) {
+        // The daemon supports ConnectDevice but the peer did not answer this attempt;
+        // stay pending and try again after the retry window.
+        await delayBluezAddressRetry(runtime, options)
+        return
+      } else {
+        throw error
+      }
+    }
+  }
+  await discoverBluezAddressDevice(runtime, devicePath, target, clientId, options)
+}
+
+async function discoverBluezAddressDevice(
+  runtime: BluezBackendRuntime,
+  devicePath: string,
+  target: PeerAddressDescriptor,
+  clientId: ClientId<string, string>,
+  options: PublicOperationOptions
+): Promise<void> {
+  if (runtime.scanGroup !== null) {
+    // A discovery session already owns the radio; the device object materializes when the
+    // peer wakes and BlueZ reports it through the shared ObjectManager.
+    await waitForBluezInterfacePresence(runtime, devicePath, BLUEZ_DEVICE_INTERFACE, options)
+    return
+  }
+  const lease = await startBluezScan(runtime, addressDiscoveryScanOptions(target, options), clientId)
+  try {
+    await waitForBluezInterfacePresence(runtime, devicePath, BLUEZ_DEVICE_INTERFACE, options)
+  } finally {
+    try {
+      await lease.stop()
+    } catch (stopError) {
+      console.error('[connectBluezConnection] Address bootstrap discovery stop failed:', stopError)
+    }
+  }
+}
+
+function addressDiscoveryScanOptions(
+  target: PeerAddressDescriptor,
+  options: PublicOperationOptions
+): OwnerScanOptions<string, string> {
+  return {
+    // BlueZ discovery `Pattern` matches an address prefix, which keeps the bootstrap
+    // discovery narrowed to the targeted peer.
+    filter: { serviceUuids: [], manufacturerData: [], localNamePrefix: target.address },
+    duplicatePolicy: 'first',
+    timestampPolicy: 'receipt-monotonic',
+    delivery: {
+      itemCapacity: capacity(4),
+      byteCapacity: capacity(4096),
+      reservedControlCapacity: capacity(1),
+      overflowPolicy: 'drop-oldest'
+    },
+    deadline: options.deadline,
+    signal: options.signal,
+    sharing: { mode: 'owner', allowSharing: false }
+  }
+}
+
+function isRetriableBluezAddressConnectFailure(error: unknown): boolean {
+  if (error instanceof BluezDbusMethodError) {
+    return true
+  }
+  if (!(error instanceof BackendContractError)) {
+    return false
+  }
+  // A failed D-Bus establishment attempt (peer asleep between advertising bursts) surfaces
+  // as platform.failure; the pending contract keeps trying until the caller's signal or
+  // deadline ends the attempt. Stale/raced records are re-created by the next iteration.
+  if (error.normalized.code === 'platform.failure') {
+    return error.normalized.platform?.domain === 'bluez-dbus'
+  }
+  return error.normalized.code === 'connection.stale' || error.normalized.code === 'connection.not-found'
+}
+
+function isBluezUnknownMethodError(error: unknown): boolean {
+  return (
+    error instanceof BluezDbusMethodError &&
+    (error.detail.name === 'org.freedesktop.DBus.Error.UnknownMethod' ||
+      error.detail.name === 'org.bluez.Error.NotSupported')
+  )
+}
+
+function delayBluezAddressRetry(runtime: BluezBackendRuntime, options: PublicOperationOptions): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (options.signal?.aborted === true) {
+      reject(contractError('operation.aborted', 'connection', 'bluez.connect.address-retry'))
+      return
+    }
+    const waitMs =
+      options.deadline === null
+        ? ADDRESS_CONNECT_RETRY_DELAY_MS
+        : Math.min(ADDRESS_CONNECT_RETRY_DELAY_MS, Math.max(0, options.deadline - runtime.now()))
+    let settled = false
+    const abort = (): void => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      reject(contractError('operation.aborted', 'connection', 'bluez.connect.address-retry'))
+    }
+    const timer = setTimeout(() => {
+      if (settled) return
+      settled = true
+      options.signal?.removeEventListener('abort', abort)
+      resolve()
+    }, waitMs)
+    options.signal?.addEventListener('abort', abort, { once: true })
+  })
+}
+
+async function connectBluezSharedRecord(
+  runtime: BluezBackendRuntime,
+  peerId: PeerId<string>,
+  devicePath: string,
+  options: PublicOperationOptions
+): Promise<BluezConnectionLease> {
   let record = runtime.connectionRecords.get(devicePath)
   if (record === undefined) {
     const attachmentId = runtime.attachment().attachmentId
