@@ -10,7 +10,7 @@ const IMPLEMENTATION_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Capabilities whose mechanics are implemented by this dispatcher. Every
 /// implemented entry remains `limited` until the corresponding physical-radio
 /// evidence is qualified; every other catalog entry is explicitly unsupported.
-const TAURI_CAPABILITIES: [&str; 36] = [
+const TAURI_CAPABILITIES: [&str; 37] = [
     "discovery:continuous-scan",
     "discovery:system-chooser",
     "discovery:advertisement-watch",
