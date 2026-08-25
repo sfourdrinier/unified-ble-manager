@@ -43,6 +43,7 @@ import {
   assertPublicChooseOptions,
   assertPublicScanOptions,
   broadcastConnectionEvents,
+  publicConnectionTerminalError,
   filterScanObservations,
   findPeerInScan,
   snapshotBlePeer
@@ -718,10 +719,14 @@ function mapIpcConnectionEvents(
         async next(): Promise<IteratorResult<BleConnectionEvent, undefined>> {
           while (true) {
             const item = await iterator.next()
-            if (item.done) return { done: true, value: undefined }
-            if (item.value.kind !== 'value') {
-              if (item.value.kind === 'terminal') return { done: true, value: undefined }
+            if (item.done) {
+              throw contractError('stream.closed', 'connection', 'ipc-public-manager.connection-events')
+            }
+            if (item.value.kind === 'overflow') {
               throw contractError('stream.overflow', 'connection', 'ipc-public-manager.connection-events')
+            }
+            if (item.value.kind === 'terminal') {
+              throw publicConnectionTerminalError(item.value.reason)
             }
             const value = item.value.value
             const previous = parseConnectionState(Reflect.get(value, 'previous'))

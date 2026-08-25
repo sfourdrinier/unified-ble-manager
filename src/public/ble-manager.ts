@@ -63,6 +63,7 @@ import {
   type ConnectionWriteReadinessObservation,
   type ConnectionWriteReadinessWatch
 } from '../backend-contract/connection-controls'
+import { MAX_PUBLIC_SCAN_STATE_BYTES, MAX_PUBLIC_SCAN_STATE_ENTRIES } from './scan-state-budget'
 
 export type { ConnectionPriority } from '../backend-contract/connection-controls'
 
@@ -454,9 +455,6 @@ interface PublicScanFingerprint {
   readonly value: string
   readonly bytes: number
 }
-
-const MAX_PUBLIC_SCAN_STATE_ENTRIES = 256
-const MAX_PUBLIC_SCAN_STATE_BYTES = 256 * 1024
 
 type PublicScanEventTerminalReason = 'closed' | 'source-failed' | 'overflow' | 'owner-released'
 
@@ -1992,6 +1990,41 @@ export function broadcastConnectionEvents(
   return new PublicConnectionEventBroadcast(source)
 }
 
+class ExpectedConnectionEventEnd extends Error {
+  constructor() {
+    super('expected-connection-event-end')
+    this.name = 'ExpectedConnectionEventEnd'
+  }
+}
+
+const expectedConnectionEventEnds = new WeakMap<AsyncIterable<BleConnectionEvent>, 'expected'>()
+
+export function connectionEventsEndedExpectedly(iterable: AsyncIterable<BleConnectionEvent>): boolean {
+  return expectedConnectionEventEnds.get(iterable) === 'expected'
+}
+
+export function publicConnectionTerminalError(reason: StreamTerminalNotice['reason']): Error {
+  if (reason === 'closed' || reason === 'owner-released') {
+    return new ExpectedConnectionEventEnd()
+  }
+  if (reason === 'overflow') {
+    return contractError('stream.overflow', 'connection', 'public-connection.events')
+  }
+  if (reason === 'connection-lost') {
+    return contractError('connection.lost', 'connection', 'public-connection.events')
+  }
+  if (reason === 'service-changed') {
+    return contractError('gatt.stale-handle', 'gatt', 'public-connection.events')
+  }
+  if (reason === 'operation-aborted') {
+    return contractError('operation.aborted', 'connection', 'public-connection.events')
+  }
+  if (reason === 'operation-timed-out') {
+    return contractError('operation.timed-out', 'connection', 'public-connection.events')
+  }
+  return contractError('stream.closed', 'connection', 'public-connection.events')
+}
+
 function mapPublicConnectionEvents(
   source: BoundedAsyncStream<ConnectionLifecycleEvent<string>>
 ): AsyncIterable<BleConnectionEvent> {
@@ -2002,10 +2035,14 @@ function mapPublicConnectionEvents(
         async next(): Promise<IteratorResult<BleConnectionEvent, undefined>> {
           while (true) {
             const item = await iterator.next()
-            if (item.done) return { done: true, value: undefined }
-            if (item.value.kind !== 'value') {
-              if (item.value.kind === 'terminal') return { done: true, value: undefined }
+            if (item.done) {
+              throw contractError('stream.closed', 'connection', 'public-connection.events')
+            }
+            if (item.value.kind === 'overflow') {
               throw contractError('stream.overflow', 'connection', 'public-connection.events')
+            }
+            if (item.value.kind === 'terminal') {
+              throw publicConnectionTerminalError(item.value.reason)
             }
             const event = item.value.value
             return {
@@ -2037,10 +2074,20 @@ class PublicConnectionEventBroadcast implements AsyncIterable<BleConnectionEvent
   private readonly subscribers = new Set<CoreBoundedStream<BleConnectionEvent>>()
   private pumping = false
   private terminalReason: 'closed' | 'source-failed' | null = null
+  private retainedError: Error | null = null
 
   constructor(private readonly source: AsyncIterable<BleConnectionEvent>) {}
 
   [Symbol.asyncIterator](): AsyncIterator<BleConnectionEvent> {
+    if (this.retainedError !== null) {
+      const error = this.retainedError
+      return {
+        next: async () => {
+          throw error
+        },
+        return: async () => ({ done: true, value: undefined })
+      }
+    }
     const stream = new CoreBoundedStream<BleConnectionEvent>(
       { itemCapacity: capacity(64), byteCapacity: capacity(64 * 1024), reservedControlCapacity: capacity(1) },
       'error'
@@ -2055,6 +2102,7 @@ class PublicConnectionEventBroadcast implements AsyncIterable<BleConnectionEvent
     return {
       next: async () => {
         const item = await iterator.next()
+        if (this.retainedError !== null) throw this.retainedError
         if (item.done) return { done: true, value: undefined }
         if (item.value.kind === 'value') return { done: false, value: item.value.value }
         if (item.value.kind === 'overflow') {
@@ -2084,12 +2132,24 @@ class PublicConnectionEventBroadcast implements AsyncIterable<BleConnectionEvent
           if (result.terminated) this.subscribers.delete(subscriber)
         }
       }
-      this.terminalReason = 'closed'
-      this.closeSubscribers('closed')
-    } catch {
-      this.terminalReason = 'source-failed'
-      this.closeSubscribers('source-failed')
+      this.retainFailure(contractError('stream.closed', 'connection', 'public-connection.events'))
+    } catch (error) {
+      if (error instanceof ExpectedConnectionEventEnd) {
+        expectedConnectionEventEnds.set(this, 'expected')
+        this.terminalReason = 'closed'
+        this.closeSubscribers('closed')
+        return
+      }
+      this.retainFailure(
+        error instanceof Error ? error : contractError('stream.closed', 'connection', 'public-connection.events')
+      )
     }
+  }
+
+  private retainFailure(error: Error): void {
+    this.retainedError = error
+    this.terminalReason = 'source-failed'
+    this.closeSubscribers('source-failed')
   }
 
   private closeSubscribers(reason: 'closed' | 'source-failed'): void {

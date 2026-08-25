@@ -1,17 +1,27 @@
 import * as React from 'react'
 import type { ReactNode } from 'react'
 import { contractError, type CleanupRecord } from './backend-contract/errors'
-import type {
-  BleConnection,
-  BleConnectionEvent,
-  BleManager,
-  BlePeer,
-  ScanOptions,
-  ScanSession
+import type { StreamItem, StreamTerminalNotice } from './backend-contract/streams'
+import {
+  connectionEventsEndedExpectedly,
+  type BleConnection,
+  type BleConnectionEvent,
+  type BleManager,
+  type BlePeer,
+  type DiscoveryEvent,
+  type PublicScanObservation,
+  type ScanOptions,
+  type ScanSession
 } from './public/ble-manager'
+import {
+  MAX_PUBLIC_SCAN_STATE_BYTES,
+  MAX_PUBLIC_SCAN_STATE_ENTRIES,
+  estimatePublicPeerRetentionBytes
+} from './public/scan-state-budget'
 import type { BleAdapterState, BleAdapterStateWatch } from './public/ble-adapter'
-import type { GattCharacteristic, GattSubscribeOptions, GattValueEvent } from './public/gatt'
+import type { GattCharacteristic, GattSubscribeOptions, GattSubscription, GattValueEvent } from './public/gatt'
 import type { BleCapabilities, CapabilityDescriptor, FeatureId } from './public/capabilities'
+import { adapterWatchOwnershipInspectors } from './public/react-adapter-watch-inspect'
 import { normalizeScanQuery } from './public/scan-query'
 import type { BleReadiness, ExpoBleManager } from './expo'
 
@@ -180,12 +190,16 @@ export function useBleReadiness(): UseBleReadinessResult {
 
 type StoreListener = () => void
 
+type WatchPhase = 'starting' | 'active' | 'stopping' | 'cleanup-failed'
+
 interface WatchRun {
-  readonly promise: Promise<BleAdapterStateWatch>
+  phase: WatchPhase
+  readonly generation: number
+  readonly creation: Promise<BleAdapterStateWatch>
   watch: BleAdapterStateWatch | null
-  stopped: boolean
-  stopPromise: Promise<void> | null
-  restartScheduled: boolean
+  consumption: Promise<void> | null
+  stopAttempt: Promise<CleanupRecord> | null
+  cleanupFailure: CleanupRecord | Error | null
 }
 
 const managerStores = new WeakMap<BleManager, ManagerStore>()
@@ -202,6 +216,7 @@ class ManagerStore {
   private readonly listeners = new Set<StoreListener>()
   private readonly capabilityStores = new Map<FeatureId, CapabilityStore>()
   private watchRun: WatchRun | null = null
+  private watchGeneration = 0
   private adapterState: BleAdapterState | null = null
   private errorReporter: (error: Error) => void = () => undefined
   private adapterSnapshot: UseAdapterStateResult = { state: null, loading: true, error: null }
@@ -224,7 +239,15 @@ class ManagerStore {
 
   readonly getReadinessSnapshot = (): UseBleReadinessResult => this.readinessSnapshot
 
-  constructor(private readonly managerInstance: BleManager) {}
+  constructor(private readonly managerInstance: BleManager) {
+    adapterWatchOwnershipInspectors.set(managerInstance, () => {
+      const run = this.watchRun
+      if (run === null) {
+        return { runCount: 0, phase: 'idle', hasWatch: false }
+      }
+      return { runCount: 1, phase: run.phase, hasWatch: run.watch !== null }
+    })
+  }
 
   manager(): BleManager {
     return this.managerInstance
@@ -252,88 +275,202 @@ class ManagerStore {
 
   private ensureWatch(): void {
     const existing = this.watchRun
-    if (existing !== null) {
-      if (!existing.stopped) return
-      if (existing.stopPromise !== null) {
-        if (!existing.restartScheduled) {
-          existing.restartScheduled = true
-          existing.stopPromise.then(() => {
-            if (this.watchRun !== existing || this.listeners.size === 0) return
-            this.watchRun = null
-            this.ensureWatch()
-          })
-        }
-        return
-      }
-      existing.stopped = false
+    if (existing === null) {
+      this.startWatch()
       return
     }
+    if (existing.phase === 'starting' || existing.phase === 'active') {
+      return
+    }
+    if (existing.phase === 'stopping') {
+      this.continueAfterStop(existing)
+      return
+    }
+    this.retryFailedCleanup(existing)
+  }
 
-    const promise = Promise.resolve().then(() => this.managerInstance.adapter.watchState())
+  private startWatch(): void {
+    this.watchGeneration += 1
+    const generation = this.watchGeneration
+    const creation = Promise.resolve().then(() => this.managerInstance.adapter.watchState())
     const run: WatchRun = {
-      promise,
+      phase: 'starting',
+      generation,
+      creation,
       watch: null,
-      stopped: false,
-      stopPromise: null,
-      restartScheduled: false
+      consumption: null,
+      stopAttempt: null,
+      cleanupFailure: null
     }
     this.watchRun = run
-    promise.then(
+    creation.then(
       watch => {
-        run.watch = watch
-        if (!this.isActive(run)) {
-          this.stopResolvedWatch(run, watch)
+        if (this.watchRun !== run || run.generation !== generation) {
+          this.releaseOrphanedWatch(watch)
           return
         }
+        run.watch = watch
+        if (run.phase === 'stopping' || run.phase === 'cleanup-failed' || this.listeners.size === 0) {
+          this.stopRun(run).then(undefined, error => this.errorReporter(toError(error)))
+          return
+        }
+        run.phase = 'active'
         this.applyState(watch.initial)
-        this.consumeWatch(run, watch).catch(error => {
+        const consumption = this.consumeWatch(run, watch)
+        run.consumption = consumption
+        consumption.catch(error => {
           if (this.isActive(run)) this.applyError(toError(error))
         })
       },
       error => {
-        if (this.isActive(run)) this.applyError(toError(error))
-        else if (this.watchRun === run) this.watchRun = null
+        if (this.watchRun !== run || run.generation !== generation) {
+          return
+        }
+        if (this.listeners.size > 0) {
+          this.applyError(toError(error))
+        }
+        if (this.watchRun === run) {
+          this.watchRun = null
+        }
       }
     )
   }
 
   private stopWatch(): void {
     const run = this.watchRun
-    if (run === null || run.stopped) return
-    run.stopped = true
-    if (run.watch !== null) {
-      this.stopResolvedWatch(run, run.watch)
+    if (run === null) {
       return
     }
-    run.promise
-      .then(watch => {
-        run.watch = watch
-        if (run.stopped) this.stopResolvedWatch(run, watch)
-      })
-      .catch(() => undefined)
+    if (run.phase === 'stopping' || run.phase === 'cleanup-failed') {
+      return
+    }
+    this.stopRun(run).then(undefined, error => this.errorReporter(toError(error)))
   }
 
-  private stopResolvedWatch(run: WatchRun, watch: BleAdapterStateWatch): void {
-    if (run.stopPromise !== null) return
-    run.stopPromise = settleCleanup(() => watch.stop(), this.errorReporter, 'adapter state watch')
-    run.stopPromise.then(() => {
-      if (this.watchRun === run && run.stopped && this.listeners.size === 0) this.watchRun = null
+  private continueAfterStop(run: WatchRun): void {
+    const attempt = run.stopAttempt ?? this.stopRun(run)
+    attempt.then(
+      () => {
+        if (this.listeners.size === 0) {
+          return
+        }
+        if (this.watchRun === run && run.phase === 'cleanup-failed') {
+          this.retryFailedCleanup(run)
+          return
+        }
+        if (this.watchRun === null) {
+          this.ensureWatch()
+        }
+      },
+      error => this.errorReporter(toError(error))
+    )
+  }
+
+  private retryFailedCleanup(run: WatchRun): void {
+    if (run.phase !== 'cleanup-failed') {
+      return
+    }
+    this.stopRun(run).then(
+      cleanup => {
+        if (cleanup.state !== 'released' || this.listeners.size === 0) {
+          return
+        }
+        if (this.watchRun === null) {
+          this.ensureWatch()
+        }
+      },
+      error => this.errorReporter(toError(error))
+    )
+  }
+
+  private stopRun(run: WatchRun): Promise<CleanupRecord> {
+    if (run.stopAttempt !== null) {
+      return run.stopAttempt
+    }
+    run.phase = 'stopping'
+    const attempt = this.performStop(run).then(cleanup => {
+      if (this.watchRun !== run) {
+        return cleanup
+      }
+      if (cleanup.state === 'released') {
+        this.watchRun = null
+        return cleanup
+      }
+      run.phase = 'cleanup-failed'
+      run.cleanupFailure = cleanup
+      run.stopAttempt = null
+      reportCleanupFailure(cleanup, this.errorReporter, 'adapter state watch')
+      return cleanup
     })
+    run.stopAttempt = attempt
+    return attempt
+  }
+
+  private async performStop(run: WatchRun): Promise<CleanupRecord> {
+    let watch = run.watch
+    if (watch === null) {
+      try {
+        watch = await run.creation
+        run.watch = watch
+      } catch {
+        return { state: 'released', failures: [] }
+      }
+    }
+    try {
+      return await watch.stop()
+    } catch (error) {
+      this.errorReporter(toError(error))
+      return {
+        state: 'release-failed',
+        failures: []
+      }
+    }
+  }
+
+  private releaseOrphanedWatch(watch: BleAdapterStateWatch): void {
+    watch.stop().then(
+      cleanup => {
+        if (cleanup.state === 'release-failed') {
+          reportCleanupFailure(cleanup, this.errorReporter, 'adapter state watch')
+        }
+      },
+      error => this.errorReporter(toError(error))
+    )
   }
 
   private isActive(run: WatchRun): boolean {
-    return this.watchRun === run && !run.stopped && this.listeners.size > 0
+    return this.watchRun === run && (run.phase === 'starting' || run.phase === 'active') && this.listeners.size > 0
   }
 
   private async consumeWatch(run: WatchRun, watch: BleAdapterStateWatch): Promise<void> {
-    for await (const item of watch.values) {
-      if (!this.isActive(run)) return
-      if (item.kind === 'terminal') return
-      if (item.kind === 'overflow') {
-        this.applyError(streamOverflowError('react.adapterStateWatch'))
-        continue
+    try {
+      for await (const item of watch.values) {
+        if (!this.isActive(run)) {
+          return
+        }
+        if (item.kind === 'terminal') {
+          break
+        }
+        if (item.kind === 'overflow') {
+          this.applyError(streamOverflowError('react.adapterStateWatch'))
+          continue
+        }
+        this.applyState(item.value)
       }
-      this.applyState(item.value)
+    } catch (error) {
+      if (this.isActive(run)) {
+        this.applyError(toError(error))
+      }
+    }
+    if (this.watchRun !== run) {
+      return
+    }
+    if (run.phase !== 'starting' && run.phase !== 'active') {
+      return
+    }
+    const cleanup = await this.stopRun(run)
+    if (cleanup.state === 'released' && this.listeners.size > 0 && this.watchRun === null) {
+      this.ensureWatch()
     }
   }
 
@@ -457,62 +594,238 @@ export function useDiscoveredPeers(options: ScanOptions = {}): UseDiscoveredPeer
   // AbortSignal identity is compared directly so mutable signal state does not restart an active scan.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const stableOptions = React.useMemo(() => options, [optionsKey, signal])
+  const generationRef = React.useRef(0)
   const [result, setResult] = React.useState<UseDiscoveredPeersResult>({
     peers: [],
     state: 'idle',
     error: null
   })
+  const [previousScanIdentity, setPreviousScanIdentity] = React.useState({
+    manager,
+    optionsKey,
+    signal
+  })
+  const scanIdentityChanged =
+    previousScanIdentity.manager !== manager ||
+    previousScanIdentity.optionsKey !== optionsKey ||
+    previousScanIdentity.signal !== signal
+  if (scanIdentityChanged) {
+    setPreviousScanIdentity({ manager, optionsKey, signal })
+    setResult({ peers: [], state: 'idle', error: null })
+  }
 
   React.useEffect(() => {
     let active = true
-    let session: ScanSession | null = null
+    const runGeneration = generationRef.current + 1
+    generationRef.current = runGeneration
     if (manager === null) {
       return () => undefined
     }
-    const peers = new Map<string, BlePeer>()
+    const peers = new Map<string, { peer: BlePeer; bytes: number }>()
+    let retainedBytes = 0
     let overflowError: Error | null = null
+    let consumeError: Error | null = null
+    let session: ScanSession | null = null
+    let observationIterator: AsyncIterator<StreamItem<PublicScanObservation>> | null = null
+    let eventIterator: AsyncIterator<DiscoveryEvent> | null = null
+    let observationReturned = false
+    let eventsReturned = false
+    let sessionReleased = false
+    let stopAttempt: Promise<void> | null = null
+    const eventsAuthoritative = (): boolean => eventIterator !== null
+
+    const isCurrentGeneration = (): boolean => generationRef.current === runGeneration
+
+    const snapshotPeers = (): BlePeer[] => {
+      const next: BlePeer[] = []
+      for (const entry of peers.values()) next.push(entry.peer)
+      return next
+    }
+
+    const publish = (state: UseDiscoveredPeersResult['state'], error: Error | null): void => {
+      if (!isCurrentGeneration()) return
+      setResult({ peers: snapshotPeers(), state, error })
+    }
+
+    const evict = (): void => {
+      while (peers.size > MAX_PUBLIC_SCAN_STATE_ENTRIES || retainedBytes > MAX_PUBLIC_SCAN_STATE_BYTES) {
+        const oldest = peers.entries().next()
+        if (oldest.done) return
+        const [oldestId, entry] = oldest.value
+        peers.delete(oldestId)
+        retainedBytes -= entry.bytes
+        overflowError = streamOverflowError('react.useDiscoveredPeers.cap')
+      }
+    }
+
+    const upsert = (peer: BlePeer): void => {
+      const existing = peers.get(peer.id)
+      if (existing !== undefined) {
+        peers.delete(peer.id)
+        retainedBytes -= existing.bytes
+      }
+      const bytes = estimatePublicPeerRetentionBytes(peer)
+      peers.set(peer.id, { peer, bytes })
+      retainedBytes += bytes
+      evict()
+    }
+
+    const refreshIfPresent = (peer: BlePeer): void => {
+      if (!peers.has(peer.id)) return
+      upsert(peer)
+    }
+
+    const removePeer = (id: string): void => {
+      const existing = peers.get(id)
+      if (existing === undefined) return
+      peers.delete(id)
+      retainedBytes -= existing.bytes
+    }
+
+    const returnIterator = async (
+      iterator: { return?: () => PromiseLike<unknown> | unknown } | null,
+      complete: () => boolean,
+      markComplete: () => void
+    ): Promise<void> => {
+      if (complete() || iterator === null) return
+      const close = iterator.return
+      if (close === undefined) {
+        markComplete()
+        return
+      }
+      try {
+        await close.call(iterator)
+        markComplete()
+      } catch (reason) {
+        reportError(toError(reason))
+      }
+    }
+
+    const stopRun = (): Promise<void> => {
+      if (stopAttempt !== null) return stopAttempt
+      const attempt = (async () => {
+        await Promise.all([
+          returnIterator(
+            observationIterator,
+            () => observationReturned,
+            () => {
+              observationReturned = true
+            }
+          ),
+          returnIterator(
+            eventIterator,
+            () => eventsReturned,
+            () => {
+              eventsReturned = true
+            }
+          )
+        ])
+        if (!sessionReleased && session !== null) {
+          const currentSession = session
+          try {
+            const cleanup = await currentSession.stop()
+            if (cleanup.state === 'release-failed') {
+              reportCleanupFailure(cleanup, reportError, 'scan session stop')
+            } else {
+              sessionReleased = true
+            }
+          } catch (reason) {
+            reportError(toError(reason))
+          }
+        }
+        peers.clear()
+        retainedBytes = 0
+      })()
+      stopAttempt = attempt.finally(() => {
+        if (stopAttempt === attempt) stopAttempt = null
+      })
+      return stopAttempt
+    }
+
+    const consumeObservations = async (): Promise<void> => {
+      if (observationIterator === null) return
+      while (true) {
+        const next = await observationIterator.next()
+        if (next.done || !active) return
+        const item = next.value
+        if (item.kind === 'terminal') return
+        if (item.kind === 'overflow') {
+          overflowError = streamOverflowError('react.useDiscoveredPeers.observations')
+          publish('active', overflowError)
+          continue
+        }
+        if (item.kind === 'value') {
+          if (eventsAuthoritative()) refreshIfPresent(item.value.peer)
+          else upsert(item.value.peer)
+          if (active) publish('active', overflowError)
+        }
+      }
+    }
+
+    const consumeEvents = async (): Promise<void> => {
+      if (eventIterator === null) {
+        eventsReturned = true
+        return
+      }
+      while (true) {
+        const next = await eventIterator.next()
+        if (next.done || !active) return
+        const event = next.value
+        if (event.kind === 'observed') upsert(event.peer)
+        else if (event.kind === 'lost') removePeer(event.peer.id)
+        if (active) publish('active', overflowError)
+      }
+    }
+
     const run = async (): Promise<void> => {
       try {
         session = await manager.scan(stableOptions)
-        const current = session
+        observationIterator = session.observations[Symbol.asyncIterator]()
+        eventIterator =
+          session.events === undefined || session.events === null ? null : session.events[Symbol.asyncIterator]()
+        if (eventIterator === null) eventsReturned = true
         if (!active) {
-          await settleCleanup(() => current.stop(), reportError, 'scan session stop')
+          await stopRun()
           return
         }
-        setResult({ peers: [], state: 'active', error: null })
-        for await (const item of session.observations) {
-          if (!active) return
-          if (item.kind === 'terminal') break
-          if (item.kind === 'overflow') {
-            overflowError = streamOverflowError('react.useDiscoveredPeers.observations')
-            setResult({ peers: [...peers.values()], state: 'active', error: overflowError })
-            continue
-          }
-          if (item.kind === 'value') {
-            peers.set(item.value.peer.id, item.value.peer)
-            setResult({ peers: [...peers.values()], state: 'active', error: overflowError })
-          }
+        publish('active', null)
+        await Promise.all([consumeObservations(), consumeEvents()])
+        await stopRun()
+        if (isCurrentGeneration()) {
+          setResult({
+            peers: [],
+            state: consumeError === null ? 'stopped' : 'failed',
+            error: overflowError ?? consumeError
+          })
         }
-        if (active) setResult({ peers: [...peers.values()], state: 'stopped', error: overflowError })
       } catch (reason) {
-        if (active) {
-          setResult({ peers: [...peers.values()], state: 'failed', error: overflowError ?? toError(reason) })
+        consumeError = overflowError ?? toError(reason)
+        if (isCurrentGeneration()) {
+          setResult({ peers: snapshotPeers(), state: 'failed', error: consumeError })
         }
+        await stopRun()
       }
     }
     run().catch(() => undefined)
     return () => {
       active = false
-      const current = session
-      if (current !== null) observeCleanup(() => current.stop(), reportError, 'scan session stop')
+      observeRejected(
+        () =>
+          stopRun().then(() => {
+            if (!isCurrentGeneration()) return
+            setResult({ peers: [], state: 'idle', error: overflowError ?? consumeError })
+          }),
+        reportError
+      )
     }
   }, [manager, optionsKey, signal, stableOptions, reportError])
 
-  return result
+  return scanIdentityChanged ? { peers: [], state: 'idle', error: null } : result
 }
 
 export function useConnectionState(connection: BleConnection | null): UseConnectionStateResult {
   const reportError = useReactErrorReporter()
+  const generationRef = React.useRef(0)
   const [result, setResult] = React.useState<UseConnectionStateResult>({
     state: null,
     loading: connection !== null,
@@ -526,20 +839,36 @@ export function useConnectionState(connection: BleConnection | null): UseConnect
   }
   React.useEffect(() => {
     let active = true
+    const runGeneration = generationRef.current + 1
+    generationRef.current = runGeneration
     let iterator: AsyncIterator<BleConnectionEvent> | null = null
     if (connection === null) return () => undefined
+    const isCurrent = (): boolean => active && generationRef.current === runGeneration
     const observe = async (): Promise<void> => {
       try {
         const current = connection.lifecycleEvents[Symbol.asyncIterator]()
         iterator = current
         while (true) {
           const next = await current.next()
-          if (next.done) break
-          const event = next.value
-          if (active) setResult({ state: event.current, loading: false, error: null })
+          if (!isCurrent()) return
+          if (next.done) {
+            const expected = connectionEventsEndedExpectedly(connection.lifecycleEvents)
+            setResult(currentResult => ({
+              state: currentResult.state,
+              loading: false,
+              error: expected ? null : contractError('stream.closed', 'stream', 'react.useConnectionState')
+            }))
+            break
+          }
+          setResult({ state: next.value.current, loading: false, error: null })
         }
       } catch (reason) {
-        if (active) setResult({ state: null, loading: false, error: toError(reason) })
+        if (!isCurrent()) return
+        setResult(currentResult => ({
+          state: currentResult.state,
+          loading: false,
+          error: toError(reason)
+        }))
       }
     }
     observe().catch(() => undefined)
@@ -564,6 +893,7 @@ export function useCharacteristicValue(
   options: GattSubscribeOptions = {}
 ): UseCharacteristicValueResult {
   const reportError = useReactErrorReporter()
+  const generationRef = React.useRef(0)
   const [result, setResult] = React.useState<UseCharacteristicValueResult>({
     value: null,
     loading: characteristic !== null,
@@ -587,43 +917,110 @@ export function useCharacteristicValue(
   const stableOptions = React.useMemo(() => options, [optionsKey, signal])
   React.useEffect(() => {
     let active = true
-    let subscription: Awaited<ReturnType<GattCharacteristic['subscribe']>> | null = null
+    const runGeneration = generationRef.current + 1
+    generationRef.current = runGeneration
+    let subscription: GattSubscription | null = null
     let overflowError: Error | null = null
     let latestValue: GattValueEvent | null = null
+    let valueIterator: AsyncIterator<StreamItem<GattValueEvent>> | null = null
+    let removeAttempt: Promise<CleanupResult> | null = null
+    let removeReleased = false
     if (characteristic === null) return () => undefined
+    const isCurrent = (): boolean => active && generationRef.current === runGeneration
+
+    const publish = (next: UseCharacteristicValueResult): void => {
+      if (!isCurrent()) return
+      setResult(next)
+    }
+
+    const removeSubscription = (): Promise<void> => {
+      if (removeReleased) return Promise.resolve()
+      if (removeAttempt !== null) {
+        return removeAttempt.then(
+          () => undefined,
+          () => undefined
+        )
+      }
+      const current = subscription
+      if (current === null) return Promise.resolve()
+      const attempt = (async (): Promise<CleanupResult> => {
+        try {
+          const cleanup = await current.remove()
+          if (cleanup.state === 'release-failed') {
+            reportCleanupFailure(cleanup, reportError, 'characteristic subscription remove')
+            return cleanup
+          }
+          removeReleased = true
+          return cleanup
+        } catch (reason) {
+          reportError(toError(reason))
+          throw reason
+        }
+      })()
+      removeAttempt = attempt.finally(() => {
+        if (!removeReleased) removeAttempt = null
+      })
+      return attempt.then(
+        () => undefined,
+        () => undefined
+      )
+    }
+
     const observe = async (): Promise<void> => {
       try {
         subscription = await characteristic.subscribe({
           ...stableOptions,
           stream: stableOptions.stream ?? 'balanced'
         })
-        const current = subscription
         if (!active) {
-          await settleCleanup(() => current.remove(), reportError, 'characteristic subscription remove')
+          await removeSubscription()
           return
         }
-        for await (const item of subscription.values) {
+        valueIterator = subscription.values[Symbol.asyncIterator]()
+        while (true) {
+          const next = await valueIterator.next()
           if (!active) return
-          if (item.kind === 'terminal') break
+          if (next.done) {
+            publish({
+              value: latestValue,
+              loading: false,
+              error: overflowError ?? contractError('stream.closed', 'stream', 'react.useCharacteristicValue')
+            })
+            await removeSubscription()
+            return
+          }
+          const item = next.value
+          if (item.kind === 'terminal') {
+            publish({
+              value: latestValue,
+              loading: false,
+              error: overflowError ?? mapCharacteristicTerminal(item.reason)
+            })
+            await removeSubscription()
+            return
+          }
           if (item.kind === 'overflow') {
             overflowError = streamOverflowError('react.useCharacteristicValue.values')
-            setResult({ value: latestValue, loading: false, error: overflowError })
+            publish({ value: latestValue, loading: false, error: overflowError })
             continue
           }
-          if (item.kind === 'value') {
-            latestValue = item.value
-            setResult({ value: latestValue, loading: false, error: overflowError })
-          }
+          latestValue = item.value
+          publish({ value: latestValue, loading: false, error: overflowError })
         }
       } catch (reason) {
-        if (active) setResult({ value: latestValue, loading: false, error: overflowError ?? toError(reason) })
+        publish({ value: latestValue, loading: false, error: overflowError ?? toError(reason) })
+        await removeSubscription()
       }
     }
     observe().catch(() => undefined)
     return () => {
       active = false
-      const current = subscription
-      if (current !== null) observeCleanup(() => current.remove(), reportError, 'characteristic subscription remove')
+      const currentIterator = valueIterator
+      if (currentIterator !== null && currentIterator.return !== undefined) {
+        const close = currentIterator.return
+        observeRejected(() => close.call(currentIterator), reportError)
+      }
+      observeRejected(() => removeSubscription(), reportError)
     }
   }, [characteristic, characteristicChanged, optionsKey, signal, stableOptions, reportError])
   return characteristic === null
@@ -631,6 +1028,24 @@ export function useCharacteristicValue(
     : characteristicChanged
       ? { value: null, loading: true, error: null }
       : result
+}
+
+function mapCharacteristicTerminal(reason: StreamTerminalNotice['reason']): Error | null {
+  if (reason === 'closed' || reason === 'owner-released') return null
+  if (reason === 'overflow') return streamOverflowError('react.useCharacteristicValue.values')
+  if (reason === 'connection-lost') {
+    return contractError('connection.lost', 'connection', 'react.useCharacteristicValue')
+  }
+  if (reason === 'service-changed') {
+    return contractError('gatt.stale-handle', 'gatt', 'react.useCharacteristicValue')
+  }
+  if (reason === 'operation-aborted') {
+    return contractError('operation.aborted', 'connection', 'react.useCharacteristicValue')
+  }
+  if (reason === 'operation-timed-out') {
+    return contractError('operation.timed-out', 'connection', 'react.useCharacteristicValue')
+  }
+  return contractError('stream.closed', 'stream', 'react.useCharacteristicValue')
 }
 
 type CleanupResult = Pick<CleanupRecord, 'state'> & { readonly failures: readonly unknown[] }
@@ -651,31 +1066,6 @@ function useReactErrorReporter(): (error: Error) => void {
     },
     [callback]
   )
-}
-
-async function settleCleanup(
-  operation: () => PromiseLike<CleanupResult>,
-  report: (error: Error) => void,
-  resource: string
-): Promise<void> {
-  let cleanup: CleanupResult
-  try {
-    cleanup = await operation()
-  } catch (error) {
-    report(toError(error))
-    return
-  }
-  if (cleanup.state === 'release-failed') {
-    reportCleanupFailure(cleanup, report, resource)
-  }
-}
-
-function observeCleanup(
-  operation: () => PromiseLike<CleanupResult>,
-  report: (error: Error) => void,
-  resource: string
-): void {
-  settleCleanup(operation, report, resource).then(undefined, error => report(toError(error)))
 }
 
 function observeRejected(operation: () => PromiseLike<unknown>, report: (error: Error) => void): void {
