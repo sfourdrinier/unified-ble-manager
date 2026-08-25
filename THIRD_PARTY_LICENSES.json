@@ -9,7 +9,7 @@
   "source": {
     "method": "pnpm-lock production graph with installed-manifest license audit",
     "lockfile": "pnpm-lock.yaml",
-    "lockfileSha256": "95b40628ee5be6e80662325b6f7c09547541957e885f4bb714fe1aca28f4153f"
+    "lockfileSha256": "5fb778bd200cb93f552ec61264d53829dca5bdd27623ccc692d4d9bcbf9ec296"
   },
   "reviewedOverrides": [
     {
@@ -27,6 +27,13 @@
   ],
   "unresolved": [],
   "packages": [
+    {
+      "name": "@babel/runtime",
+      "version": "7.29.7",
+      "license": "MIT",
+      "licenseSource": "package-metadata",
+      "purl": "pkg:npm/%40babel/runtime@7.29.7"
+    },
     {
       "name": "@isaacs/fs-minipass",
       "version": "4.0.1",
