@@ -4,6 +4,15 @@ All notable changes to `unified-ble-manager` are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- BlueZ pairing dispatch: `org.bluez.Device1.Pair`, `org.bluez.Device1.CancelPairing`, and `org.bluez.Adapter1.RemoveDevice` are now allowed through the dbus-next boundary, and the backend registers a just-works (`NoInputNoOutput`) `org.bluez.Agent1` on its own bus (not the system default) so a client-initiated pairing can complete without an external agent (#141, #143).
+- `PairOptions.secureConnections` (`'require' | 'prefer' | 'disallow'`, default `'prefer'`): opt into or out of LE Secure Connections for a pairing. BlueZ selects the pairing generation at the adapter level, so `'disallow'` (LE Legacy) is reported as `capability.unsupported` rather than silently ignored (#144, #143).
+
+### Fixed
+
+- BlueZ `security.pair()` no longer fires `Device1.Pair` when the operation is aborted or times out while the just-works agent is still registering; it re-checks cancellation after agent registration so a cancelled pairing never proceeds on the daemon (#143).
+
 ## [4.0.4] - 2026-08-25
 
 Post-4.0.3 audit: wire/scan/IPC ownership, Android 16 KB ELF alignment, Apple teardown, abortable Web chooser honesty, React remount-owned cleanup, and React Native entropy without WebCrypto. Does not retag `v4.0.3`.

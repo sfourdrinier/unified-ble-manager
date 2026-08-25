@@ -142,6 +142,14 @@ export class BluezSecurityBackend implements SecurityBackend {
     if (options.protection !== 'system-default') {
       return Promise.reject(contractError('capability.unsupported', 'capability', 'bluez.security.pair.protection'))
     }
+    if (options.secureConnections === 'disallow') {
+      // BlueZ selects the pairing generation at the adapter level (mgmt
+      // SET_SECURE_CONN), not per Device1.Pair; the D-Bus surface this backend
+      // uses cannot request LE Legacy for a single pairing.
+      return Promise.reject(
+        contractError('capability.unsupported', 'capability', 'bluez.security.pair.secure-connections')
+      )
+    }
     if (this.activePairings.has(peerId)) {
       return Promise.reject(contractError('ownership.denied', 'platform', 'bluez.security.pair.arbitration'))
     }
@@ -165,6 +173,18 @@ export class BluezSecurityBackend implements SecurityBackend {
           }
           // BlueZ needs a registered Agent1 to drive even a just-works pairing.
           await this.runtime.boundary.ensurePairingAgent()
+          // Registration is a real IPC round-trip; an abort or deadline that
+          // lands while it is in flight runs onCancellation before Pair starts,
+          // and it skips cancelNativePairing because pairCallStarted is still
+          // false. Re-check here so we never fire Pair() for an operation that
+          // was already cancelled - otherwise the caller sees 'cancelled' while
+          // bluetoothd goes on to bond with no CancelPairing ever issued.
+          if (controller.signal.aborted) {
+            throw contractError('operation.aborted', 'core', 'bluez.security.pair')
+          }
+          if (options.deadline !== null && options.deadline <= this.runtime.now()) {
+            throw contractError('operation.timed-out', 'core', 'bluez.security.pair')
+          }
           try {
             // Mark started only immediately before Pair, so an abort during
             // agent registration does not cancel a pairing that never began.

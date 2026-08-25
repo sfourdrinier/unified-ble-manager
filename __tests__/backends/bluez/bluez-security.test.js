@@ -187,6 +187,55 @@ describe('BlueZ system security backend', () => {
     await expect(backend.destroy()).resolves.toMatchObject({ state: 'released' })
   })
 
+  test('does not fire Pair() when aborted while the pairing agent is still registering', async () => {
+    const { backend, boundary, peerId: observedPeerId } = await createFixture()
+    // Registering the agent is a real IPC round-trip on the live bus; model it
+    // as a pending promise so the abort can land inside that window - the exact
+    // gap where onCancellation sees pairCallStarted === false and skips the
+    // native cancel.
+    let releaseAgent = () => undefined
+    boundary.ensurePairingAgent = () =>
+      new Promise(resolve => {
+        releaseAgent = () => {
+          boundary.pairingAgentEnsured = (boundary.pairingAgentEnsured ?? 0) + 1
+          resolve()
+        }
+      })
+    const controller = new AbortController()
+    const pairing = backend.security.pair(observedPeerId, pairOptions({ signal: controller.signal }))
+    // Let the operation body reach and suspend on ensurePairingAgent().
+    await Promise.resolve()
+    await Promise.resolve()
+    // Abort arrives while registration is still in flight, then registration
+    // completes and the body resumes.
+    controller.abort()
+    releaseAgent()
+    // Drain the resumed continuation: in the broken case it would go on to push
+    // a Device1.Pair call; the fix re-checks the abort and throws first.
+    for (let flush = 0; flush < 5; flush += 1) await Promise.resolve()
+    await expect(pairing).resolves.toEqual({ outcome: 'cancelled' })
+    expect(boundary.calls).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ interfaceName: BLUEZ_DEVICE_INTERFACE, method: 'Pair' })])
+    )
+    // And having never begun a native pairing, it must not have issued a stray
+    // CancelPairing either.
+    expect(boundary.calls).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ interfaceName: BLUEZ_DEVICE_INTERFACE, method: 'CancelPairing' })
+      ])
+    )
+    await expect(backend.security.state(observedPeerId, pairOptions())).resolves.toMatchObject({ bond: 'not-bonded' })
+    await expect(backend.destroy()).resolves.toMatchObject({ state: 'released' })
+  })
+
+  test('rejects legacy pairing (secureConnections: disallow) as unsupported on BlueZ', async () => {
+    const { backend, peerId } = await createFixture()
+    await expect(
+      backend.security.pair(peerId, pairOptions({ secureConnections: 'disallow' }))
+    ).rejects.toMatchObject({ normalized: { code: 'capability.unsupported' } })
+    await expect(backend.destroy()).resolves.toMatchObject({ state: 'released' })
+  })
+
   test('cancels promptly while the native Pair call remains pending and issues one CancelPairing', async () => {
     const { backend, boundary, peerId: observedPeerId } = await createFixture()
     let resolvePair = () => undefined

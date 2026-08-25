@@ -116,19 +116,33 @@ let cachedAgentClass: (new (name: string) => dbus.interface.Interface) | null = 
 function pairingAgentClass(): new (name: string) => dbus.interface.Interface {
   if (cachedAgentClass !== null) return cachedAgentClass
   class UbmJustWorksAgent extends dbus.interface.Interface {
-    Release(): void {}
-    RequestConfirmation(_device: string, _passkey: number): void {}
-    AuthorizeService(_device: string, _uuid: string): void {}
-    RequestAuthorization(_device: string): void {}
-    Cancel(): void {}
+    Release(): void {
+      // BlueZ released the agent; nothing of ours to tear down here.
+    }
+    RequestConfirmation(_device: string, _passkey: number): void {
+      // Just-works association: returning without error confirms the pairing.
+    }
+    AuthorizeService(_device: string, _uuid: string): void {
+      // Authorize any service on a device this client chose to pair with.
+    }
+    RequestAuthorization(_device: string): void {
+      // Just-works incoming authorization: accept by returning without error.
+    }
+    Cancel(): void {
+      // BlueZ aborted the ceremony; no partial state of ours to unwind.
+    }
     RequestPinCode(_device: string): string {
       throw new dbus.DBusError('org.bluez.Error.Rejected', 'NoInputNoOutput cannot supply a PIN')
     }
     RequestPasskey(_device: string): number {
       throw new dbus.DBusError('org.bluez.Error.Rejected', 'NoInputNoOutput cannot supply a passkey')
     }
-    DisplayPinCode(_device: string, _pincode: string): void {}
-    DisplayPasskey(_device: string, _passkey: number, _entered: number): void {}
+    DisplayPinCode(_device: string, _pincode: string): void {
+      // NoInputNoOutput has no display; nothing to show.
+    }
+    DisplayPasskey(_device: string, _passkey: number, _entered: number): void {
+      // NoInputNoOutput has no display; nothing to show.
+    }
   }
   UbmJustWorksAgent.configureMembers({
     methods: {
@@ -233,13 +247,20 @@ class DbusNextBluezBoundary implements BluezDbusBoundary {
    * re-registers after bluetoothd restarts.
    */
   ensurePairingAgent(): Promise<void> {
+    // Nothing to register on a torn-down bus; pair() gates on assertUsable, so
+    // this is defense-in-depth against a post-close caller exporting on a dead
+    // connection.
+    if (this.closed || this.disconnected) return Promise.resolve()
     if (this.pairingAgentPromise !== null) return this.pairingAgentPromise
-    this.pairingAgentPromise = this.registerPairingAgent().catch(error => {
-      // Allow a later retry rather than wedging on a transient failure.
-      this.pairingAgentPromise = null
+    const attempt = this.registerPairingAgent().catch(error => {
+      // Allow a later retry rather than wedging on a transient failure, but only
+      // clear our own memoization: a reset may already have installed a
+      // successor promise, and nulling that would drop a live registration.
+      if (this.pairingAgentPromise === attempt) this.pairingAgentPromise = null
       throw error
     })
-    return this.pairingAgentPromise
+    this.pairingAgentPromise = attempt
+    return attempt
   }
 
   private async registerPairingAgent(): Promise<void> {
@@ -250,16 +271,21 @@ class DbusNextBluezBoundary implements BluezDbusBoundary {
       this.pairingAgent = agent
     }
     const manager = await this.bus.getProxyObject(BLUEZ_SERVICE, '/org/bluez')
+    // A close() during the proxy round-trip unexports the agent; do not register
+    // a path that no longer exists on our bus.
+    if (this.closed || this.disconnected) return
     const agentManager = manager.getInterface(BLUEZ_AGENT_MANAGER_INTERFACE) as unknown as {
       RegisterAgent(path: string, capability: string): Promise<void>
     }
     try {
       await agentManager.RegisterAgent(UBM_AGENT_PATH, UBM_AGENT_CAPABILITY)
     } catch (error) {
-      // A prior registration of this exact path is benign; anything else is not.
-      if (!(error instanceof dbus.DBusError) || error.type !== 'org.bluez.Error.AlreadyExists') {
-        throw error
+      // A prior registration of this exact path is benign; anything else is
+      // surfaced with the same typed D-Bus code every other call preserves.
+      if (error instanceof dbus.DBusError && error.type === 'org.bluez.Error.AlreadyExists') {
+        return
       }
+      throw normalizeDbusError(error)
     }
   }
 

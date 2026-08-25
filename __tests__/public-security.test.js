@@ -63,6 +63,7 @@ describe('public security façade', () => {
         expect(options.transport).toBe('auto')
         expect(options.protection).toBe('authenticated')
         expect(options.ceremony).toBe('system')
+        expect(options.secureConnections).toBe('prefer')
         expect(options.deadline).toBe(150)
         return { outcome: 'paired', state: measuredState({ bond: 'bonded' }) }
       }),

@@ -95,7 +95,8 @@ export function createBluezFirstPartyTckRegistration(
       Object.freeze({
         featureId: 'bluez:pairing-agent',
         state: 'unsupported',
-        reason: 'BlueZ pairing and Agent1 behavior are not implemented or proven by the first-party backend.'
+        reason:
+          'Device1.Pair/CancelPairing dispatch and just-works Agent1 registration are implemented and unit-tested, but Agent1 pairing behavior against a live BlueZ daemon is not proven by the first-party backend (a deterministic boundary cannot exercise a real SMP exchange).'
       }),
       Object.freeze({
         featureId: 'bluez:deterministic-advanced-scenario-controls',

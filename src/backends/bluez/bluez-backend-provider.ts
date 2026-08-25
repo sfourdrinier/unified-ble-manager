@@ -130,7 +130,8 @@ function adapterDescriptors(store: BluezObjectStore, now: () => number): readonl
         }),
         adapterGeneration: opaqueId('1', 'adapter-generation', `bluez:${path}`),
         limitations: Object.freeze([
-          'AcquireWrite and AcquireNotify are unavailable until separately proven'
+          'AcquireWrite and AcquireNotify are unavailable until separately proven',
+          'Pairing dispatch and the just-works Agent1 are implemented and unit-tested, but their behavior against a live BlueZ daemon is not proven until separately verified on real radio'
         ])
       })
     })

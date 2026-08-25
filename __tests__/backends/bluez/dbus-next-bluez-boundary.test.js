@@ -176,6 +176,82 @@ describe('dbus-next BlueZ boundary', () => {
     await boundary.close()
   })
 
+  it('auto-accepts just-works pairing and rejects input-requiring ceremonies', async () => {
+    const fixture = createBus()
+    buses.push(fixture.bus)
+    const boundary = await new DbusNextBluezBoundaryFactory().open('system')
+    await boundary.ensurePairingAgent()
+    expect(fixture.bus.export).toHaveBeenCalledTimes(1)
+    const [exportedPath, agent] = fixture.bus.export.mock.calls[0]
+    expect(exportedPath).toBe('/org/bluez/unifiedble/agent')
+
+    const device = '/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF'
+    // Just-works association: confirmation, authorization, and service
+    // authorization are auto-accepted; lifecycle callbacks are no-ops.
+    expect(() => agent.RequestConfirmation(device, 0)).not.toThrow()
+    expect(() => agent.RequestAuthorization(device)).not.toThrow()
+    expect(() => agent.AuthorizeService(device, '0000180d-0000-1000-8000-00805f9b34fb')).not.toThrow()
+    expect(() => agent.Release()).not.toThrow()
+    expect(() => agent.Cancel()).not.toThrow()
+
+    // NoInputNoOutput cannot satisfy PIN or passkey entry, so those ceremonies
+    // must be rejected with the D-Bus error BlueZ expects.
+    let pinError
+    try {
+      agent.RequestPinCode(device)
+    } catch (error) {
+      pinError = error
+    }
+    expect(pinError).toBeInstanceOf(dbus.DBusError)
+    expect(pinError.type).toBe('org.bluez.Error.Rejected')
+
+    let passkeyError
+    try {
+      agent.RequestPasskey(device)
+    } catch (error) {
+      passkeyError = error
+    }
+    expect(passkeyError).toBeInstanceOf(dbus.DBusError)
+    expect(passkeyError.type).toBe('org.bluez.Error.Rejected')
+
+    await boundary.close()
+  })
+
+  it('re-registers the pairing agent after a daemon reset', async () => {
+    const fixture = createBus()
+    buses.push(fixture.bus)
+    const boundary = await new DbusNextBluezBoundaryFactory().open('system')
+    await boundary.ensurePairingAgent()
+    expect(fixture.bus.export).toHaveBeenCalledTimes(1)
+    expect(fixture.agentManager.RegisterAgent).toHaveBeenCalledTimes(1)
+
+    // A bluetoothd restart drops every registration; the boundary observes the
+    // owner loss as a reset and must forget the agent so the next pair rebuilds it.
+    fixture.bus.emit('message', {
+      type: 4,
+      path: '/org/freedesktop/DBus',
+      interface: 'org.freedesktop.DBus',
+      member: 'NameOwnerChanged',
+      body: ['org.bluez', ':1.42', '']
+    })
+    expect(fixture.bus.unexport).toHaveBeenCalledTimes(1)
+
+    await boundary.ensurePairingAgent()
+    expect(fixture.bus.export).toHaveBeenCalledTimes(2)
+    expect(fixture.agentManager.RegisterAgent).toHaveBeenCalledTimes(2)
+    await boundary.close()
+  })
+
+  it('does not export a pairing agent once the boundary is closed', async () => {
+    const fixture = createBus()
+    buses.push(fixture.bus)
+    const boundary = await new DbusNextBluezBoundaryFactory().open('system')
+    await boundary.close()
+    await expect(boundary.ensurePairingAgent()).resolves.toBeUndefined()
+    expect(fixture.bus.export).not.toHaveBeenCalled()
+    expect(fixture.agentManager.RegisterAgent).not.toHaveBeenCalled()
+  })
+
   test.each([
     ['system', 'systemBus'],
     ['session', 'sessionBus']
