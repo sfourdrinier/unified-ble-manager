@@ -143,6 +143,9 @@ class InMemoryBluezBoundary {
   onCall(path, interfaceName, method, handler) {
     this.handlers.set(this.handlerKey(path, interfaceName, method), handler)
   }
+  async ensurePairingAgent() {
+    this.pairingAgentEnsured = (this.pairingAgentEnsured ?? 0) + 1
+  }
 
   onReset(listener) {
     this.resetListeners.add(listener)

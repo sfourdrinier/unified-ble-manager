@@ -165,6 +165,8 @@ export class BluezSecurityBackend implements SecurityBackend {
           }
           pairCallStarted = true
           try {
+            // BlueZ needs a registered Agent1 to drive even a just-works pairing.
+            await this.runtime.boundary.ensurePairingAgent()
             await this.runtime.boundary.methods.callVoid(path, BLUEZ_DEVICE_INTERFACE, 'Pair', [])
           } finally {
             pairCallSettled = true

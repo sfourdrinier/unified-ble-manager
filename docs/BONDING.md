@@ -42,8 +42,12 @@ replay an uncertain GATT write. Use the explicit `withRequiredSecurity` helper
 when the application wants a state check followed by an explicitly authorized
 pairing attempt and one callback invocation.
 
-Windows and BlueZ may expose system pairing and durable unpairing where their
-public APIs provide it. Android reports public bond-state transitions but does
+Windows and BlueZ expose system pairing and durable unpairing where their
+public APIs provide it. On BlueZ, `pair()` calls `org.bluez.Device1.Pair` and
+`unpair()` calls `org.bluez.Adapter1.RemoveDevice`; the library registers a
+just-works (`NoInputNoOutput`) `org.bluez.Agent1` on its own bus so the
+system-mediated ceremony can complete without an external agent. Numeric-entry
+and passkey ceremonies are rejected, matching the just-works capability. Android reports public bond-state transitions but does
 not ship a reflection-based remove-bond operation. On the current Expo SDK 57 /
 Android API 36 artifact, the cancellation capability is also omitted because
 the public `cancelBondProcess` API is newer; an aborted or timed-out Android

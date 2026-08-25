@@ -41,11 +41,14 @@ interface AdapterProxy extends dbus.ClientInterface {
   StopDiscovery(): Promise<void>
   /** Only exported by experimental bluetoothd builds; guarded before use. */
   ConnectDevice(properties: Readonly<Record<string, dbus.Variant>>): Promise<void>
+  RemoveDevice(device: string): Promise<void>
 }
 
 interface DeviceProxy extends dbus.ClientInterface {
   Connect(): Promise<void>
   Disconnect(): Promise<void>
+  Pair(): Promise<void>
+  CancelPairing(): Promise<void>
 }
 
 interface CharacteristicProxy extends dbus.ClientInterface {
@@ -96,6 +99,53 @@ const supportedVariantSignatures = new Set([
 ])
 const dbusService = 'org.freedesktop.DBus'
 const dbusPath = '/org/freedesktop/DBus'
+
+const BLUEZ_AGENT_MANAGER_INTERFACE = 'org.bluez.AgentManager1'
+const BLUEZ_AGENT_INTERFACE = 'org.bluez.Agent1'
+const UBM_AGENT_PATH = '/org/bluez/unifiedble/agent'
+/** No display, no keyboard: the system uses the just-works association model. */
+const UBM_AGENT_CAPABILITY = 'NoInputNoOutput'
+
+/**
+ * Builds the just-works pairing agent class lazily, so importing this module
+ * does not require dbus.interface (test mocks may omit it). Cached after first
+ * use. The agent accepts just-works pairing; input-requiring methods are
+ * rejected because NoInputNoOutput cannot satisfy them.
+ */
+let cachedAgentClass: (new (name: string) => object) | null = null
+function pairingAgentClass(): new (name: string) => object {
+  if (cachedAgentClass !== null) return cachedAgentClass
+  class UbmJustWorksAgent extends dbus.interface.Interface {
+    Release(): void {}
+    RequestConfirmation(_device: string, _passkey: number): void {}
+    AuthorizeService(_device: string, _uuid: string): void {}
+    RequestAuthorization(_device: string): void {}
+    Cancel(): void {}
+    RequestPinCode(_device: string): string {
+      throw new dbus.DBusError('org.bluez.Error.Rejected', 'NoInputNoOutput cannot supply a PIN')
+    }
+    RequestPasskey(_device: string): number {
+      throw new dbus.DBusError('org.bluez.Error.Rejected', 'NoInputNoOutput cannot supply a passkey')
+    }
+    DisplayPinCode(_device: string, _pincode: string): void {}
+    DisplayPasskey(_device: string, _passkey: number, _entered: number): void {}
+  }
+  UbmJustWorksAgent.configureMembers({
+    methods: {
+      Release: { inSignature: '', outSignature: '' },
+      RequestConfirmation: { inSignature: 'ou', outSignature: '' },
+      AuthorizeService: { inSignature: 'os', outSignature: '' },
+      RequestAuthorization: { inSignature: 'o', outSignature: '' },
+      Cancel: { inSignature: '', outSignature: '' },
+      RequestPinCode: { inSignature: 'o', outSignature: 's' },
+      RequestPasskey: { inSignature: 'o', outSignature: 'u' },
+      DisplayPinCode: { inSignature: 'os', outSignature: '' },
+      DisplayPasskey: { inSignature: 'ouq', outSignature: '' }
+    }
+  })
+  cachedAgentClass = UbmJustWorksAgent as unknown as new (name: string) => object
+  return cachedAgentClass
+}
 const bluezMatchRules = Object.freeze([
   "type='signal',sender='org.bluez',interface='org.freedesktop.DBus.ObjectManager',path='/'",
   "type='signal',sender='org.bluez',interface='org.freedesktop.DBus.Properties',path_namespace='/org/bluez'",
@@ -142,6 +192,8 @@ class DbusNextBluezBoundary implements BluezDbusBoundary {
   private readonly changed = new Set<(event: BluezPropertiesChanged) => void>()
   private readonly resets = new Set<(reason: string) => void>()
   private ordinal = 1
+  private pairingAgent: object | null = null
+  private pairingAgentRegistered = false
   private closed = false
   private disconnected = false
   private resetEmitted = false
@@ -171,6 +223,35 @@ class DbusNextBluezBoundary implements BluezDbusBoundary {
     this.bus.on('error', this.handleBusError)
   }
 
+  /**
+   * Registers a just-works pairing agent once, so security.pair() can complete.
+   * Idempotent. Registered on UBM's own bus, which is why pairing on the owned
+   * connection works where an external client's Pair() is cancelled.
+   */
+  async ensurePairingAgent(): Promise<void> {
+    if (this.pairingAgentRegistered) return
+    const AgentClass = pairingAgentClass()
+    const agent = new AgentClass(BLUEZ_AGENT_INTERFACE)
+    this.bus.export(UBM_AGENT_PATH, agent)
+    this.pairingAgent = agent
+    const manager = await this.bus.getProxyObject(BLUEZ_SERVICE, '/org/bluez')
+    const agentManager = manager.getInterface(BLUEZ_AGENT_MANAGER_INTERFACE) as unknown as {
+      RegisterAgent(path: string, capability: string): Promise<void>
+      RequestDefaultAgent(path: string): Promise<void>
+    }
+    try {
+      await agentManager.RegisterAgent(UBM_AGENT_PATH, UBM_AGENT_CAPABILITY)
+    } catch (error) {
+      if (!(error instanceof dbus.DBusError) || !/AlreadyExists/.test(error.message)) {
+        this.bus.unexport(UBM_AGENT_PATH, agent)
+        this.pairingAgent = null
+        throw error
+      }
+    }
+    await agentManager.RequestDefaultAgent(UBM_AGENT_PATH)
+    this.pairingAgentRegistered = true
+  }
+
   onReset(listener: (reason: string) => void): BluezListener {
     return listenerRegistration(this.resets, listener)
   }
@@ -181,6 +262,10 @@ class DbusNextBluezBoundary implements BluezDbusBoundary {
     }
     if (!this.closed) {
       this.closed = true
+    if (this.pairingAgent !== null) {
+      try { this.bus.unexport(UBM_AGENT_PATH, this.pairingAgent) } catch { /* bus may be gone */ }
+      this.pairingAgent = null
+    }
       this.bus.removeListener('message', this.handleMessage)
       this.bus.removeListener('error', this.handleBusError)
       this.added.clear()
@@ -334,6 +419,10 @@ class DbusNextBluezBoundary implements BluezDbusBoundary {
           await adapter.StopDiscovery()
           return
         }
+        if (method === 'RemoveDevice' && argumentsValue.length === 1) {
+          await adapter.RemoveDevice(variantObjectPath(argumentsValue[0]))
+          return
+        }
         if (method === 'ConnectDevice' && argumentsValue.length === 1) {
           // ConnectDevice is only exported by experimental bluetoothd builds; a daemon
           // without it must surface the same UnknownMethod error a raw call would.
@@ -356,6 +445,14 @@ class DbusNextBluezBoundary implements BluezDbusBoundary {
         }
         if (method === 'Disconnect') {
           await device.Disconnect()
+          return
+        }
+        if (method === 'Pair') {
+          await device.Pair()
+          return
+        }
+        if (method === 'CancelPairing') {
+          await device.CancelPairing()
           return
         }
       }
@@ -515,6 +612,13 @@ function variantBytes(variant: BluezVariant | undefined): Uint8Array {
     throw new Error('Expected ay D-Bus variant')
   }
   return new Uint8Array(variant.value)
+}
+
+function variantObjectPath(variant: BluezVariant | undefined): string {
+  if (variant?.signature !== 'o' || typeof variant.value !== 'string') {
+    throw new Error('Expected o (object path) D-Bus variant')
+  }
+  return variant.value
 }
 
 function encodeVariant(variant: BluezVariant): dbus.Variant {

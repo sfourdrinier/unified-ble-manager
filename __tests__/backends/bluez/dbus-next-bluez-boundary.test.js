@@ -19,6 +19,7 @@ jest.mock('dbus-next', () => ({
 const dbus = require('dbus-next')
 const {
   BLUEZ_ADAPTER_INTERFACE,
+  BLUEZ_DEVICE_INTERFACE,
   BLUEZ_OBJECT_MANAGER_INTERFACE,
   DBUS_PROPERTIES_INTERFACE
 } = require('../../../src/backends/bluez/bluez-dbus-contract')
@@ -29,7 +30,14 @@ function createBus(options = {}) {
   const adapter = {
     SetDiscoveryFilter: jest.fn(async () => undefined),
     StartDiscovery: jest.fn(async () => undefined),
-    StopDiscovery: jest.fn(async () => undefined)
+    StopDiscovery: jest.fn(async () => undefined),
+    RemoveDevice: jest.fn(async () => undefined)
+  }
+  const device = {
+    Connect: jest.fn(async () => undefined),
+    Disconnect: jest.fn(async () => undefined),
+    Pair: jest.fn(async () => undefined),
+    CancelPairing: jest.fn(async () => undefined)
   }
   const manager = {
     GetManagedObjects: jest.fn(
@@ -56,17 +64,49 @@ function createBus(options = {}) {
       if (path === '/' && interfaceName === BLUEZ_OBJECT_MANAGER_INTERFACE) {
         return manager
       }
+      if (interfaceName === BLUEZ_DEVICE_INTERFACE) {
+        return device
+      }
       return adapter
     }
   }))
   emitter.disconnect = jest.fn()
-  return { bus: emitter, manager, adapter, daemon }
+  return { bus: emitter, manager, adapter, device, daemon }
 }
 
 describe('dbus-next BlueZ boundary', () => {
   afterEach(() => {
     buses.length = 0
     jest.clearAllMocks()
+  })
+
+  it('dispatches Device1.Pair (regression: was rejected as unsupported)', async () => {
+    const fixture = createBus()
+    buses.push(fixture.bus)
+    const boundary = await new DbusNextBluezBoundaryFactory().open('system', [])
+    await boundary.methods.callVoid('/org/bluez/hci0/dev_AA', BLUEZ_DEVICE_INTERFACE, 'Pair', [])
+    expect(fixture.device.Pair).toHaveBeenCalledTimes(1)
+    await boundary.close()
+  })
+
+  it('dispatches Device1.CancelPairing', async () => {
+    const fixture = createBus()
+    buses.push(fixture.bus)
+    const boundary = await new DbusNextBluezBoundaryFactory().open('system', [])
+    await boundary.methods.callVoid('/org/bluez/hci0/dev_AA', BLUEZ_DEVICE_INTERFACE, 'CancelPairing', [])
+    expect(fixture.device.CancelPairing).toHaveBeenCalledTimes(1)
+    await boundary.close()
+  })
+
+  it('dispatches Adapter1.RemoveDevice with the object path argument', async () => {
+    const fixture = createBus()
+    buses.push(fixture.bus)
+    const boundary = await new DbusNextBluezBoundaryFactory().open('system', [])
+    await boundary.methods.callVoid('/org/bluez/hci0', BLUEZ_ADAPTER_INTERFACE, 'RemoveDevice', [
+      { signature: 'o', value: '/org/bluez/hci0/dev_AA' }
+    ])
+    expect(fixture.adapter.RemoveDevice).toHaveBeenCalledWith('/org/bluez/hci0/dev_AA')
+    await boundary.close()
   })
 
   test.each([
