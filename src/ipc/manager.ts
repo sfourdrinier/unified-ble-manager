@@ -1549,7 +1549,7 @@ export class IpcGattDatabase {
     this.subscriptions.clear()
     const results = await Promise.all(removals)
     const cleanupFailed = results.some(result => result.state === 'release-failed')
-    this.valid = !cleanupFailed
+    this.valid = false
     if (cleanupFailed) return
     if (reason !== null) {
       this.changedStream.emit(
