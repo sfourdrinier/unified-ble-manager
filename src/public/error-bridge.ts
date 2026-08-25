@@ -1,20 +1,27 @@
 // src/public/error-bridge.ts — internal boundary between backend and application errors
 
-import { BackendContractError, type CleanupFailure, type CleanupRecord } from '../backend-contract/errors'
+import { BackendContractError, type CleanupRecord } from '../backend-contract/errors'
 import { BleError } from './errors'
+import {
+  toPublicCleanupRecord,
+  toPublicPlatformErrorDetail,
+  type CleanupFailure as PublicCleanupFailure,
+  type CleanupRecord as PublicCleanupRecord
+} from './cleanup'
 
-export interface PublicCleanupRecord {
-  readonly state: 'released' | 'release-failed'
-  readonly failures: readonly unknown[]
-}
+type CleanupResultLike = CleanupRecord | PublicCleanupRecord
 
 export class BleCleanupError extends Error {
   readonly cleanup: PublicCleanupRecord
 
-  constructor(cleanup: PublicCleanupRecord, message = 'BLE cleanup failed') {
+  constructor(cleanup: CleanupResultLike, message = 'BLE cleanup failed') {
     super(message)
     this.name = 'BleCleanupError'
-    this.cleanup = cleanup
+    try {
+      this.cleanup = toPublicCleanupRecord(cleanup)
+    } catch (error) {
+      throw rehydratePublicError(error)
+    }
   }
 }
 
@@ -24,9 +31,15 @@ export function rehydratePublicError(error: unknown): unknown {
     return error
   }
   const normalized = error.normalized
-  return new BleError(normalized.code, normalized.domain, normalized.operation, {
-    platform: normalized.platform
-  })
+  try {
+    return new BleError(normalized.code, normalized.domain, normalized.operation, {
+      platform: toPublicPlatformErrorDetail(normalized.platform)
+    })
+  } catch (mappingError) {
+    if (!(mappingError instanceof BackendContractError)) throw mappingError
+    const malformed = mappingError.normalized
+    return new BleError(malformed.code, malformed.domain, malformed.operation)
+  }
 }
 
 export function rehydratePublicPromise<Value>(operation: Promise<Value>): Promise<Value> {
@@ -35,22 +48,28 @@ export function rehydratePublicPromise<Value>(operation: Promise<Value>): Promis
   })
 }
 
-interface CleanupResultLike {
-  readonly state: 'released' | 'release-failed'
-  readonly failures: PublicCleanupRecord['failures']
-}
-
 export function collectCleanupPhases(
-  results: readonly { readonly error?: unknown; readonly cleanup?: Pick<CleanupRecord, 'state' | 'failures'> }[]
-): CleanupRecord {
+  results: readonly {
+    readonly error?: unknown
+    readonly cleanup?: Pick<CleanupRecord, 'state' | 'failures'> | Pick<PublicCleanupRecord, 'state' | 'failures'>
+  }[]
+): PublicCleanupRecord {
   const thrown: unknown[] = []
-  const cleanupFailures: CleanupFailure[] = []
+  const cleanupFailures: PublicCleanupFailure[] = []
   for (const result of results) {
     if (result.error instanceof AggregateError) thrown.push(...result.error.errors)
     else if (result.error !== undefined) thrown.push(result.error)
-    if (result.cleanup?.state === 'release-failed') cleanupFailures.push(...result.cleanup.failures)
+    if (result.cleanup !== undefined) {
+      let projected: PublicCleanupRecord
+      try {
+        projected = toPublicCleanupRecord(result.cleanup)
+      } catch (error) {
+        throw rehydratePublicError(error)
+      }
+      if (projected.state === 'release-failed') cleanupFailures.push(...projected.failures)
+    }
   }
-  const cleanup: CleanupRecord =
+  const cleanup: PublicCleanupRecord =
     cleanupFailures.length === 0
       ? { state: 'released', failures: [] }
       : { state: 'release-failed', failures: cleanupFailures }
@@ -93,8 +112,5 @@ function resolvedCleanupFailure(value: CleanupResultLike | void): Error | null {
   if (value === undefined || value.state !== 'release-failed') {
     return null
   }
-  return new BleCleanupError({
-    state: 'release-failed',
-    failures: value.failures
-  })
+  return new BleCleanupError(value)
 }

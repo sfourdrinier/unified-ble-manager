@@ -9,6 +9,7 @@ const BLUEZ_GATT_DESCRIPTOR_INTERFACE = 'org.bluez.GattDescriptor1'
 class InMemoryBluezObjectManager {
   constructor(objects = []) {
     this.objects = objects
+    this.knownPaths = new Set(objects.map(object => object.path))
     this.nextOrdinal = 1
     this.listeners = {
       interfacesAdded: new Set(),
@@ -51,6 +52,7 @@ class InMemoryBluezObjectManager {
   }
 
   emitInterfacesAdded(path, interfaces) {
+    this.knownPaths.add(path)
     this.emit('interfacesAdded', { ordinal: this.allocateOrdinal(), path, interfaces })
   }
 
@@ -59,6 +61,13 @@ class InMemoryBluezObjectManager {
   }
 
   emitPropertiesChanged(path, interfaceName, changed) {
+    // A PropertiesChanged signal for an object this boundary never exposed can
+    // only be a test-driver bug (for example treating a public occurrence as a
+    // D-Bus object path). Silently emitting it would strand consumers awaiting
+    // an event that never arrives, so fail loudly instead.
+    if (!this.knownPaths.has(path)) {
+      throw new Error(`InMemoryBluezObjectManager cannot emit PropertiesChanged for unknown object path '${path}'`)
+    }
     this.emit('propertiesChanged', {
       ordinal: this.allocateOrdinal(),
       path,

@@ -1,5 +1,9 @@
+// __tests__/public-link-controls.test.js
+
 const { createPublicBleManager } = require('../src/public/ble-manager')
-const { createReactNativeConnectionControlFeatureRegistry } = require('../src/backends/reactnative/react-native-connection-control-features')
+const {
+  createReactNativeConnectionControlFeatureRegistry
+} = require('../src/backends/reactnative/react-native-connection-control-features')
 const { CoreBoundedStream } = require('../src/core/bounded-stream')
 const { capacity, opaqueId } = require('../src/backend-contract/primitives')
 
@@ -12,7 +16,10 @@ function terminal() {
 }
 
 function capability(state) {
-  return { state, limitations: state === 'limited' ? [{ code: 'test', explanation: 'test', affectedGuarantee: 'test' }] : [] }
+  return {
+    state,
+    limitations: state === 'limited' ? [{ code: 'test', explanation: 'test', affectedGuarantee: 'test' }] : []
+  }
 }
 
 function fakeGattDatabase(generation) {
@@ -32,10 +39,24 @@ function fakeGattDatabase(generation) {
     snapshot: async () => ({ path, services: [], characteristics: [], descriptors: [] }),
     read: async () => new Uint8Array(),
     write: async () => ({ terminal: terminal(), commitState: 'confirmed' }),
-    writeLong: async () => ({ terminal: terminal(), planState: 'not-planned', commitState: 'not-started', totalBytes: 0, chunkSize: 0, totalChunks: 0, chunks: [], completedChunks: 0, committedBytes: 0, failedChunkIndex: null }),
+    writeLong: async () => ({
+      terminal: terminal(),
+      planState: 'not-planned',
+      commitState: 'not-started',
+      totalBytes: 0,
+      chunkSize: 0,
+      totalChunks: 0,
+      chunks: [],
+      completedChunks: 0,
+      committedBytes: 0,
+      failedChunkIndex: null
+    }),
     readDescriptor: async () => new Uint8Array(),
     writeDescriptor: async () => ({ terminal: terminal(), commitState: 'confirmed' }),
-    subscribe: async () => ({ values: { [Symbol.asyncIterator]: () => ({ next: async () => ({ done: true, value: undefined }) }) }, remove: async () => ({ state: 'released', failures: [] }) })
+    subscribe: async () => ({
+      values: { [Symbol.asyncIterator]: () => ({ next: async () => ({ done: true, value: undefined }) }) },
+      remove: async () => ({ state: 'released', failures: [] })
+    })
   }
 }
 
@@ -78,15 +99,19 @@ function fakeInternalManager({
     readiness.closeWithReason('owner-released')
     return { state: 'released', failures: [] }
   })
-  const readinessWatch =
-    readinessWatchOverride ?? {
-      events: readiness,
-      close: readinessClose
-    }
+  const readinessWatch = readinessWatchOverride ?? {
+    events: readiness,
+    close: readinessClose
+  }
   const internalConnection = {
     connectionId: 'connection-1',
     connectionGeneration: 'generation-1',
-    events: { [Symbol.asyncIterator]: () => ({ next: async () => ({ done: true, value: undefined }), return: async () => ({ done: true, value: undefined }) }) },
+    events: {
+      [Symbol.asyncIterator]: () => ({
+        next: async () => ({ done: true, value: undefined }),
+        return: async () => ({ done: true, value: undefined })
+      })
+    },
     readRssi: async () => ({ rssi: -42, observedAtMonotonicMs: 5678, terminal: terminal() }),
     requestMtu: async requestedMtu =>
       requestMtuResult === undefined
@@ -206,7 +231,13 @@ function failedReadinessCleanup() {
     failures: [
       {
         resourceKind: 'gatt.write-readiness',
-        error: { code: 'platform.failure', domain: 'cleanup', operation: 'test-readiness-close' }
+        error: {
+          code: 'platform.failure',
+          domain: 'cleanup',
+          operation: 'test-readiness-close',
+          platform: null,
+          retryability: 'never'
+        }
       }
     ]
   }

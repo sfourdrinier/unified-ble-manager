@@ -226,7 +226,7 @@ inline constexpr std::array<RecordKindDescriptor, 23> kRecordKindDescriptors{{
   RecordKindDescriptor{RecordKind::restorationAdoptionResult, "restorationAdoptionResult"}
 }};
 
-inline constexpr std::array<FieldDescriptor, 167> kFieldDescriptors{{
+inline constexpr std::array<FieldDescriptor, 168> kFieldDescriptors{{
   FieldDescriptor{RecordKind::attachment, 1U, "attachmentId", "string", true},
   FieldDescriptor{RecordKind::attachment, 2U, "backendInstanceId", "string", true},
   FieldDescriptor{RecordKind::attachment, 3U, "backendGeneration", "string", true},
@@ -266,6 +266,7 @@ inline constexpr std::array<FieldDescriptor, 167> kFieldDescriptors{{
   FieldDescriptor{RecordKind::scanOptions, 3U, "scanMode", "int64", true},
   FieldDescriptor{RecordKind::scanOptions, 4U, "callbackType", "int64", true},
   FieldDescriptor{RecordKind::scanOptions, 5U, "legacyScan", "boolean", true},
+  FieldDescriptor{RecordKind::scanOptions, 6U, "deviceAddresses", "strings", false},
   FieldDescriptor{RecordKind::adapterStateSnapshot, 1U, "availability", "enum:adapterAvailability", true},
   FieldDescriptor{RecordKind::adapterStateSnapshot, 2U, "authorization", "enum:adapterAuthorization", true},
   FieldDescriptor{RecordKind::adapterStateSnapshot, 3U, "power", "enum:adapterPower", true},

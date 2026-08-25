@@ -2236,10 +2236,7 @@ describe('React host surface', () => {
     const cleanupRecord = { state: 'release-failed', failures: [{ resourceKind: 'gatt' }] }
     const subscription = {
       values: values.iterable,
-      remove: jest
-        .fn()
-        .mockResolvedValueOnce(cleanupRecord)
-        .mockResolvedValueOnce({ state: 'released', failures: [] })
+      remove: jest.fn().mockResolvedValueOnce(cleanupRecord).mockResolvedValueOnce({ state: 'released', failures: [] })
     }
     const characteristic = { subscribe: jest.fn().mockResolvedValue(subscription) }
     useCharacteristicValue(characteristic)
@@ -2403,6 +2400,44 @@ describe('React host surface', () => {
     expect(failedSubscription.remove).toHaveBeenCalledTimes(1)
     expect(siblingSubscription.remove).not.toHaveBeenCalled()
     siblingCleanup()
+    await flush()
+  })
+
+  test('two same-characteristic subscriptions each remove on concurrent unmount', async () => {
+    const firstRemove = deferred()
+    const firstSubscription = characteristicSubscription(
+      (async function* () {
+        await new Promise(() => undefined)
+      })()
+    )
+    const secondSubscription = characteristicSubscription(
+      (async function* () {
+        await new Promise(() => undefined)
+      })()
+    )
+    firstSubscription.remove.mockReturnValue(firstRemove.promise)
+    secondSubscription.remove.mockResolvedValue({ state: 'released', failures: [] })
+    const characteristic = {
+      subscribe: jest.fn().mockResolvedValueOnce(firstSubscription).mockResolvedValueOnce(secondSubscription)
+    }
+    const createdManager = manager()
+    hookHarness.contextValue = { manager: createdManager, loading: false, error: null }
+    hookHarness.errorContextValue = jest.fn()
+
+    useCharacteristicValue(characteristic)
+    const firstUnmount = hookHarness.effects[0]()
+    useCharacteristicValue(characteristic)
+    const secondUnmount = hookHarness.effects[1]()
+    await flush()
+    expect(characteristic.subscribe).toHaveBeenCalledTimes(2)
+
+    firstUnmount()
+    secondUnmount()
+    await flush()
+    expect(firstSubscription.remove).toHaveBeenCalledTimes(1)
+    expect(secondSubscription.remove).toHaveBeenCalledTimes(1)
+
+    firstRemove.resolve({ state: 'released', failures: [] })
     await flush()
   })
 

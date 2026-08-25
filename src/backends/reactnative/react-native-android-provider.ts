@@ -8,6 +8,7 @@ import type {
   AdapterBackend,
   ConnectionBackend,
   GattBackend,
+  PeerAddressDescriptor,
   ResourceCounters,
   ScannerBackend
 } from '../../backend-contract/backend'
@@ -136,13 +137,17 @@ export class ReactNativeAndroidBackend implements BleCentralBackend<string, Nati
         delegate.scanner.start(
           {
             ...options,
+            plan: undefined,
             filter: trustedServiceUuidFilter(options, planReactNativeAndroidScan, 'rn-android.scan')
           },
           clientId
         ),
       join: delegate.scanner.join
     })
-    this.connections = delegate.connections
+    this.connections = Object.freeze({
+      ...delegate.connections,
+      peerFromAddress: (descriptor: PeerAddressDescriptor) => delegate.peerFromAddress(descriptor)
+    })
     this.gatt = delegate.gatt
     this.security = boundary.securityAvailable
       ? new ReactNativeAndroidSecurityBackend(
@@ -290,6 +295,7 @@ function androidDirectGattIdentity(): DirectGattBackendIdentityOptions {
     features: combineReactNativeFeatureRegistries(
       createReactNativeAndroidConnectionControlFeatureRegistry(),
       createReactNativeAndroidScanPlatformFeatureRegistry(),
+      createReactNativeAndroidAddressTargetingFeatureRegistry(),
       createReactNativeDescriptorFeatureRegistry('android', REACT_NATIVE_ANDROID_IMPLEMENTATION_VERSION),
       createReactNativeRestorationFeatureRegistry('android', REACT_NATIVE_ANDROID_IMPLEMENTATION_VERSION)
     )
@@ -306,6 +312,21 @@ function createReactNativeAndroidScanPlatformFeatureRegistry() {
         tckSuiteId: 'capability.catalog-v2',
         requiredScenarioIds: ['capability.truth-limits-evidence-and-binding'],
         operation: 'scan:platform-options.invoke-without-scan'
+      })
+    ])
+  )
+}
+
+function createReactNativeAndroidAddressTargetingFeatureRegistry() {
+  return createFeatureRegistry(
+    Object.freeze([
+      createBackendOperationCapabilityRegistration({
+        id: BUILT_IN_FEATURE_IDS.peerAddressTargeting,
+        implementationVersion: REACT_NATIVE_ANDROID_IMPLEMENTATION_VERSION,
+        sourceDigest: 'react-native-android-address-targeting-v1',
+        tckSuiteId: 'capability.catalog-v2',
+        requiredScenarioIds: ['capability.truth-limits-evidence-and-binding'],
+        operation: 'peer:address-targeting.invoke-without-connection'
       })
     ])
   )

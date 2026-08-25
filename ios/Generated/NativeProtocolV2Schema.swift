@@ -223,6 +223,7 @@ public let nativeProtocolFields: [FieldDescriptor] = [
     FieldDescriptor(record: .scanOptions, fieldID: 3, name: "scanMode", type: "int64", required: true),
     FieldDescriptor(record: .scanOptions, fieldID: 4, name: "callbackType", type: "int64", required: true),
     FieldDescriptor(record: .scanOptions, fieldID: 5, name: "legacyScan", type: "boolean", required: true),
+    FieldDescriptor(record: .scanOptions, fieldID: 6, name: "deviceAddresses", type: "strings", required: false),
     FieldDescriptor(record: .adapterStateSnapshot, fieldID: 1, name: "availability", type: "enum:adapterAvailability", required: true),
     FieldDescriptor(record: .adapterStateSnapshot, fieldID: 2, name: "authorization", type: "enum:adapterAuthorization", required: true),
     FieldDescriptor(record: .adapterStateSnapshot, fieldID: 3, name: "power", type: "enum:adapterPower", required: true),

@@ -1,7 +1,10 @@
+// src/react.ts
+
 import * as React from 'react'
 import type { ReactNode } from 'react'
-import { contractError, type CleanupRecord } from './backend-contract/errors'
-import type { StreamItem, StreamTerminalNotice } from './backend-contract/streams'
+import { contractError } from './backend-contract/errors'
+import type { CleanupRecord } from './public/cleanup'
+import type { PublicStreamItem, PublicStreamTerminalReason } from './public/streams'
 import {
   connectionEventsEndedExpectedly,
   type BleConnection,
@@ -665,7 +668,7 @@ export function useDiscoveredPeers(options: ScanOptions = {}): UseDiscoveredPeer
     let overflowError: Error | null = null
     let consumeError: Error | null = null
     let session: ScanSession | null = null
-    let observationIterator: AsyncIterator<StreamItem<PublicScanObservation>> | null = null
+    let observationIterator: AsyncIterator<PublicStreamItem<PublicScanObservation>> | null = null
     let eventIterator: AsyncIterator<DiscoveryEvent> | null = null
     let observationReturned = false
     let eventsReturned = false
@@ -977,7 +980,7 @@ export function useCharacteristicValue(
     let subscription: GattSubscription | null = null
     let overflowError: Error | null = null
     let latestValue: GattValueEvent | null = null
-    let valueIterator: AsyncIterator<StreamItem<GattValueEvent>> | null = null
+    let valueIterator: AsyncIterator<PublicStreamItem<GattValueEvent>> | null = null
     let removeAttempt: Promise<CleanupResult> | null = null
     let removeReleased = false
     if (characteristic === null) return () => undefined
@@ -998,12 +1001,16 @@ export function useCharacteristicValue(
       }
       const current = subscription
       if (current === null) return Promise.resolve()
-      const attempt = retainSubscriptionAttempt(characteristic, manager, () => current.remove(), reportError).then(
-        cleanup => {
-          if (cleanup.state === 'released') removeReleased = true
-          return cleanup
-        }
-      )
+      const attempt = retainSubscriptionAttempt(
+        characteristic,
+        current,
+        manager,
+        () => current.remove(),
+        reportError
+      ).then(cleanup => {
+        if (cleanup.state === 'released') removeReleased = true
+        return cleanup
+      })
       removeAttempt = attempt.finally(() => {
         if (!removeReleased) removeAttempt = null
       })
@@ -1022,7 +1029,7 @@ export function useCharacteristicValue(
             value: latestValue,
             loading: false,
             error:
-              retainedByCharacteristic.get(characteristic)?.cleanup.lastError ??
+              lastRetainedSubscriptionError(characteristic) ??
               new Error('BLE characteristic subscription remove reported release-failed')
           })
           return
@@ -1035,9 +1042,10 @@ export function useCharacteristicValue(
           await removeSubscription()
           return
         }
-        valueIterator = subscription.values[Symbol.asyncIterator]()
+        const iterator = subscription.values[Symbol.asyncIterator]()
+        valueIterator = iterator
         while (true) {
-          const next = await valueIterator.next()
+          const next = await iterator.next()
           if (!active) return
           if (next.done) {
             publish({
@@ -1089,7 +1097,7 @@ export function useCharacteristicValue(
       : result
 }
 
-function mapCharacteristicTerminal(reason: StreamTerminalNotice['reason']): Error | null {
+function mapCharacteristicTerminal(reason: PublicStreamTerminalReason): Error | null {
   if (reason === 'closed' || reason === 'owner-released') return null
   if (reason === 'overflow') return streamOverflowError('react.useCharacteristicValue.values')
   if (reason === 'connection-lost') {
@@ -1273,6 +1281,7 @@ type HookCleanupKind = 'scan' | 'subscription'
 interface RetainedHookCleanup {
   readonly kind: HookCleanupKind
   readonly retry: () => Promise<CleanupResult>
+  readonly ownerKey: object | null
   inFlight: Promise<CleanupResult> | null
   lastError: Error | null
   completeParked: ((cleanup: CleanupResult) => void) | null
@@ -1285,7 +1294,8 @@ interface ManagerRetainedHookCleanups {
 }
 
 const retainedByManager = new WeakMap<BleManager, ManagerRetainedHookCleanups>()
-const retainedByCharacteristic = new WeakMap<object, { manager: BleManager | null; cleanup: RetainedHookCleanup }>()
+const retainedByCharacteristic = new WeakMap<object, Set<RetainedHookCleanup>>()
+const retainedBySubscription = new WeakMap<object, RetainedHookCleanup>()
 
 function managerCleanups(manager: BleManager): ManagerRetainedHookCleanups {
   const existing = retainedByManager.get(manager)
@@ -1312,6 +1322,7 @@ function parkScanStop(manager: BleManager, session: ScanSession): void {
     const entry: RetainedHookCleanup = {
       kind: 'scan',
       retry: () => session.stop(),
+      ownerKey: session,
       inFlight: null,
       lastError: null,
       completeParked: null,
@@ -1405,43 +1416,71 @@ async function settleRetainedScan(manager: BleManager, report: (error: Error) =>
 
 function retainSubscriptionAttempt(
   characteristic: object,
+  subscription: object,
   manager: BleManager | null,
   operation: () => Promise<CleanupResult>,
   report: (error: Error) => void
 ): Promise<CleanupResult> {
-  const existing = retainedByCharacteristic.get(characteristic)
-  let entry = existing?.cleanup
-  if (entry === undefined) {
-    entry = {
-      kind: 'subscription',
-      retry: operation,
-      inFlight: null,
-      lastError: null,
-      completeParked: null,
-      clear() {
-        retainedByCharacteristic.delete(characteristic)
-        if (manager !== null) {
-          retainedByManager.get(manager)?.subscriptions.delete(characteristic)
-        }
+  const existing = retainedBySubscription.get(subscription)
+  if (existing !== undefined) {
+    return performRetainedRetry(existing, report, 'characteristic subscription remove')
+  }
+  const entry: RetainedHookCleanup = {
+    kind: 'subscription',
+    retry: operation,
+    ownerKey: characteristic,
+    inFlight: null,
+    lastError: null,
+    completeParked: null,
+    clear() {
+      retainedBySubscription.delete(subscription)
+      const group = retainedByCharacteristic.get(characteristic)
+      group?.delete(entry)
+      if (group !== undefined && group.size === 0) retainedByCharacteristic.delete(characteristic)
+      if (manager !== null) {
+        retainedByManager.get(manager)?.subscriptions.delete(subscription)
       }
     }
-    retainedByCharacteristic.set(characteristic, { manager, cleanup: entry })
-    if (manager !== null) managerCleanups(manager).subscriptions.set(characteristic, entry)
   }
+  retainedBySubscription.set(subscription, entry)
+  const group = retainedByCharacteristic.get(characteristic)
+  if (group === undefined) retainedByCharacteristic.set(characteristic, new Set([entry]))
+  else group.add(entry)
+  if (manager !== null) managerCleanups(manager).subscriptions.set(subscription, entry)
   return performRetainedRetry(entry, report, 'characteristic subscription remove')
+}
+
+function lastRetainedSubscriptionError(characteristic: object): Error | null {
+  const group = retainedByCharacteristic.get(characteristic)
+  if (group === undefined) return null
+  for (const entry of group) {
+    if (entry.lastError !== null) return entry.lastError
+  }
+  return null
 }
 
 async function settleRetainedSubscription(
   characteristic: object,
   report: (error: Error) => void
 ): Promise<CleanupResult | null> {
-  const retained = retainedByCharacteristic.get(characteristic)
-  if (retained === undefined) return null
-  if (retained.cleanup.inFlight !== null) {
-    const current = await retained.cleanup.inFlight
-    if (current.state === 'released') return current
+  const group = retainedByCharacteristic.get(characteristic)
+  if (group === undefined || group.size === 0) return null
+  let failed: CleanupResult | null = null
+  let released: CleanupResult | null = null
+  for (const entry of [...group]) {
+    let cleanup: CleanupResult
+    if (entry.inFlight !== null) {
+      cleanup = await entry.inFlight
+      if (cleanup.state === 'released') {
+        released = cleanup
+        continue
+      }
+    }
+    cleanup = await performRetainedRetry(entry, report, 'characteristic subscription remove')
+    if (cleanup.state === 'released') released = cleanup
+    else failed = cleanup
   }
-  return performRetainedRetry(retained.cleanup, report, 'characteristic subscription remove')
+  return failed ?? released
 }
 
 function hasUnresolvedHookCleanup(manager: BleManager): boolean {
@@ -1454,7 +1493,11 @@ async function adoptRetainedHookCleanups(manager: BleManager, report: (error: Er
   await settleRetainedScan(manager, report)
   const bucket = retainedByManager.get(manager)
   if (bucket === undefined) return true
-  for (const characteristic of [...bucket.subscriptions.keys()]) {
+  const characteristics = new Set<object>()
+  for (const entry of bucket.subscriptions.values()) {
+    if (entry.ownerKey !== null) characteristics.add(entry.ownerKey)
+  }
+  for (const characteristic of characteristics) {
     await settleRetainedSubscription(characteristic, report)
   }
   return !hasUnresolvedHookCleanup(manager)

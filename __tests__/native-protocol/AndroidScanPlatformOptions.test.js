@@ -37,7 +37,7 @@ describe('React Native Android scan platform options', () => {
     boundary.bindAttachment(attachment)
     await boundary.open()
 
-    await boundary.startScan(() => undefined, ['0000180d-0000-1000-8000-00805f9b34fb'], {
+    await boundary.startScan(() => undefined, ['0000180d-0000-1000-8000-00805f9b34fb'], [], {
       kind: 'android',
       mode: 'low-power',
       callbackType: 'first-match',
@@ -61,15 +61,15 @@ describe('React Native Android scan platform options', () => {
     boundary.bindAttachment(attachment)
     await boundary.open()
 
-    await expect(boundary.startScan(() => undefined, [], { kind: 'android', phy: '1m' })).rejects.toMatchObject({
+    await expect(boundary.startScan(() => undefined, [], [], { kind: 'android', phy: '1m' })).rejects.toMatchObject({
       normalized: { code: 'capability.unsupported' }
     })
     await expect(
-      boundary.startScan(() => undefined, [], { kind: 'android', reportDelayMs: 100 })
+      boundary.startScan(() => undefined, [], [], { kind: 'android', reportDelayMs: 100 })
     ).rejects.toMatchObject({ normalized: { code: 'capability.unsupported' } })
     expect(runtime.scanOptions).toBe(null)
 
-    await expect(boundary.startScan(() => undefined, [], { kind: 'corebluetooth' })).rejects.toMatchObject({
+    await expect(boundary.startScan(() => undefined, [], [], { kind: 'corebluetooth' })).rejects.toMatchObject({
       normalized: { code: 'capability.unsupported' }
     })
 
@@ -84,7 +84,7 @@ describe('React Native Android scan platform options', () => {
     boundary.bindAttachment(attachment)
     await boundary.open()
 
-    await boundary.startScan(() => undefined, [], { kind: 'android', mode: 'opportunistic' })
+    await boundary.startScan(() => undefined, [], [], { kind: 'android', mode: 'opportunistic' })
     expect(runtime.scanOptions).toEqual({ scanMode: -1, callbackType: 1, legacyScan: true })
 
     await boundary.destroy()
@@ -103,7 +103,7 @@ describe('React Native Android scan platform options', () => {
     await boundary.open()
 
     await expect(
-      boundary.startScan(() => undefined, [], { kind: 'android', callbackType: 'match-lost' })
+      boundary.startScan(() => undefined, [], [], { kind: 'android', callbackType: 'match-lost' })
     ).rejects.toMatchObject({
       normalized: { code: 'capability.unsupported', operation: 'rn-android-boundary.scan.callback-type-match-lost' }
     })

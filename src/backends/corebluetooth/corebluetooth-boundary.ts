@@ -142,6 +142,7 @@ export interface CoreBluetoothBoundary {
   startScan(
     onAdvertisement: (advertisement: CoreBluetoothAdvertisement) => void,
     serviceUuids: readonly string[],
+    deviceAddresses?: readonly string[],
     platform?: CoreBluetoothScanPlatformOptions
   ): Promise<void>
   stopScan(): Promise<void>

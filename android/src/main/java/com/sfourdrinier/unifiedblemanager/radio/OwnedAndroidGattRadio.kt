@@ -394,7 +394,8 @@ class OwnedAndroidGattRadio(private val context: Context) {
     scanMode: Int,
     callbackType: Int = ScanSettings.CALLBACK_TYPE_ALL_MATCHES,
     legacyScan: Boolean = true,
-    allowDuplicates: Boolean = true
+    allowDuplicates: Boolean = true,
+    deviceAddresses: Array<out String> = emptyArray()
   ) {
     // ScanSettings.Builder.setLegacy exists only on API 26+; below that the
     // platform can only run a legacy scan, so accepting legacyScan=false would
@@ -425,8 +426,26 @@ class OwnedAndroidGattRadio(private val context: Context) {
     }
     val settings = builder.build()
     val filters = mutableListOf<ScanFilter>()
-    normalizedServiceUuids.forEach { uuid ->
-      filters.add(ScanFilter.Builder().setServiceUuid(ParcelUuid.fromString(uuid)).build())
+    val normalizedAddresses = deviceAddresses.map { it.uppercase() }.distinct()
+    if (normalizedAddresses.isEmpty()) {
+      normalizedServiceUuids.forEach { uuid ->
+        filters.add(ScanFilter.Builder().setServiceUuid(ParcelUuid.fromString(uuid)).build())
+      }
+    } else if (normalizedServiceUuids.isEmpty()) {
+      normalizedAddresses.forEach { address ->
+        filters.add(ScanFilter.Builder().setDeviceAddress(address).build())
+      }
+    } else {
+      normalizedAddresses.forEach { address ->
+        normalizedServiceUuids.forEach { uuid ->
+          filters.add(
+            ScanFilter.Builder()
+              .setDeviceAddress(address)
+              .setServiceUuid(ParcelUuid.fromString(uuid))
+              .build()
+          )
+        }
+      }
     }
     val cb = object : ScanCallback() {
       override fun onScanResult(callbackType: Int, result: AndroidScanResult) {

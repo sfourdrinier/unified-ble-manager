@@ -45,6 +45,7 @@ import { snapshotScanPlan } from '../backend-contract/scan-planning'
 import type { ScanPlan } from '../backend-contract/scan-planning'
 import { normalizeScanQuery } from '../public/scan-query'
 import { BleCleanupError, collectCleanupPhases } from '../public/error-bridge'
+import type { CleanupRecord as PublicCleanupRecord } from '../public/cleanup'
 import { IpcBleClient } from './client'
 import { IPC_GATT_DATABASE_SCHEMA_VERSION } from './protocol'
 import type { IpcCapabilitySnapshotV2, IpcClientTransport } from './protocol'
@@ -59,7 +60,7 @@ export {
 
 const REMOTE_STREAM_LIMITS = Object.freeze({
   itemCapacity: capacity(128),
-  byteCapacity: capacity(512 * 1024),
+  byteCapacity: capacity(64 * 1024),
   reservedControlCapacity: capacity(1)
 })
 
@@ -247,7 +248,7 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
   private readonly eventPump: Promise<void>
   private nextConnectionEventHandle = 1
   private lifecycle: 'active' | 'releasing' | 'released' = 'active'
-  private releaseResult: Promise<CleanupRecord> | null = null
+  private releaseResult: Promise<PublicCleanupRecord> | null = null
   private readonly ownerCleanupLedger: { run: () => void; error: unknown | null }[] = []
   private pumpDead = false
   private pumpFailure: unknown | null = null
@@ -405,14 +406,14 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
     )
   }
 
-  destroy(): Promise<CleanupRecord> {
+  destroy(): Promise<PublicCleanupRecord> {
     if (this.lifecycle === 'released') return Promise.resolve({ state: 'released', failures: [] })
     if (this.releaseResult !== null) return this.releaseResult
     this.releaseResult = this.runDestroy()
     return this.releaseResult
   }
 
-  private async runDestroy(): Promise<CleanupRecord> {
+  private async runDestroy(): Promise<PublicCleanupRecord> {
     const provisionalPhases = await this.flushUnresolvedProvisionals()
     this.lifecycle = 'releasing'
     try {
@@ -1252,14 +1253,28 @@ export class IpcConnection {
     this.databases.add(database)
   }
 
-  private async invalidateDatabases(reason: GattDatabaseChangedEvent['reason'] | null = null): Promise<void> {
-    const pending = [...this.databases].map(database => database.invalidate(reason))
+  private async invalidateDatabases(reason: GattDatabaseChangedEvent['reason'] | null = null): Promise<CleanupRecord> {
+    const owned = [...this.databases]
+    const records = await Promise.all(
+      owned.map(async database => ({ database, cleanup: await database.invalidate(reason) }))
+    )
     this.databases.clear()
-    await Promise.all(pending)
+    const failures: CleanupFailure[] = []
+    for (const record of records) {
+      if (record.cleanup.state === 'release-failed') {
+        this.databases.add(record.database)
+        failures.push(...record.cleanup.failures)
+      }
+    }
+    if (failures.length > 0) return { state: 'release-failed', failures }
+    return { state: 'released', failures: [] }
   }
 
   async discover(options: IpcManagerOperationOptions = {}): Promise<IpcGattDatabase> {
-    await this.invalidateDatabases(options.reason ?? null)
+    const prior = await this.invalidateDatabases(options.reason ?? null)
+    if (prior.state === 'release-failed') {
+      throw contractError('lifecycle.invalid-state', 'gatt', 'ipc-manager.gatt-discover.release-failed')
+    }
     await this.awaitLifecycleAdmission(options)
     const payload = await this.manager.route(
       'gatt.discover',
@@ -1330,12 +1345,13 @@ export class IpcConnection {
   }
 
   private async disconnectInternal(): Promise<CleanupRecord> {
-    await this.invalidateDatabases()
+    const databaseCleanup = await this.invalidateDatabases()
     this.admissionAbort.abort()
     if (this.lifecycleSubscription === null) {
       this.lifecycleReleased = true
     }
     const failures: CleanupFailure[] = []
+    if (databaseCleanup.state === 'release-failed') failures.push(...databaseCleanup.failures)
     let disconnectError: unknown = null
     const provisionalPhases = await this.manager.retryUnresolvedAdmissionCleanup()
     for (const phase of provisionalPhases) {
@@ -1370,7 +1386,7 @@ export class IpcConnection {
         failures.push(cleanupFailureFromUnknown('connection', error))
       }
     }
-    if (this.lifecycleReleased && this.connectionReleased) {
+    if (this.lifecycleReleased && this.connectionReleased && failures.length === 0) {
       return { state: 'released', failures: [] }
     }
     this.disconnectResult = null
@@ -1455,6 +1471,7 @@ export class IpcGattDatabase {
   readonly characteristics: readonly IpcCharacteristic[]
   readonly descriptors: readonly IpcDescriptor[]
   private valid = true
+  private pendingChangedReason: GattDatabaseChangedEvent['reason'] | null = null
   private readonly changedStream = new CoreBoundedStream<GattDatabaseChangedEvent>(REMOTE_STREAM_LIMITS, 'drop-oldest')
   private readonly subscriptions = new Set<IpcSubscription>()
 
@@ -1511,7 +1528,7 @@ export class IpcGattDatabase {
     binaryPayload: Uint8Array | null,
     signal?: AbortSignal
   ): Promise<SerializableRecord> {
-    this.assertCurrent()
+    if (command !== 'gatt.unsubscribe') this.assertCurrent()
     return this.manager
       .route(
         command,
@@ -1541,15 +1558,36 @@ export class IpcGattDatabase {
     return this.changedStream
   }
 
-  async invalidate(reason: GattDatabaseChangedEvent['reason'] | null = null): Promise<void> {
-    if (!this.valid) return
+  async invalidate(reason: GattDatabaseChangedEvent['reason'] | null = null): Promise<CleanupRecord> {
+    if (!this.valid && this.subscriptions.size === 0) {
+      this.terminalizeChanged(reason)
+      return { state: 'released', failures: [] }
+    }
     const streamReason: 'service-changed' | 'connection-lost' = reason === null ? 'connection-lost' : 'service-changed'
-    const removals = [...this.subscriptions].map(subscription => subscription.closeFromDatabase(streamReason))
+    const owned = [...this.subscriptions]
+    const results = await Promise.all(owned.map(subscription => subscription.closeFromDatabase(streamReason)))
+    const failures: CleanupFailure[] = []
     this.subscriptions.clear()
-    const results = await Promise.all(removals)
-    const cleanupFailed = results.some(result => result.state === 'release-failed')
+    for (let index = 0; index < owned.length; index += 1) {
+      const cleanup = results[index]
+      const subscription = owned[index]
+      if (cleanup === undefined || subscription === undefined) continue
+      if (cleanup.state === 'release-failed') {
+        this.subscriptions.add(subscription)
+        failures.push(...cleanup.failures)
+      }
+    }
     this.valid = false
-    if (cleanupFailed) return
+    if (failures.length > 0) {
+      this.pendingChangedReason = reason
+      return { state: 'release-failed', failures }
+    }
+    this.terminalizeChanged(reason)
+    return { state: 'released', failures: [] }
+  }
+
+  private terminalizeChanged(reason: GattDatabaseChangedEvent['reason'] | null): void {
+    if (this.changedStream.isTerminal()) return
     if (reason !== null) {
       this.changedStream.emit(
         Object.freeze({
@@ -1592,6 +1630,9 @@ export class IpcGattDatabase {
 
   forgetSubscription(subscription: IpcSubscription): void {
     this.subscriptions.delete(subscription)
+    if (!this.valid && this.subscriptions.size === 0) {
+      this.terminalizeChanged(this.pendingChangedReason)
+    }
   }
 
   private connectionIdentityPayload(): SerializableRecord {
@@ -1956,7 +1997,7 @@ const EMPTY_SUBSCRIPTION_OPTIONS: PortableSubscriptionOptions = Object.freeze({
   ...EMPTY_OPERATION_OPTIONS,
   delivery: {
     itemCapacity: capacity(128),
-    byteCapacity: capacity(512 * 1024),
+    byteCapacity: capacity(64 * 1024),
     reservedControlCapacity: capacity(1),
     overflowPolicy: 'drop-oldest' as const
   }

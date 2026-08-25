@@ -800,7 +800,7 @@ function isNormalizedObservationAddress(value: unknown): boolean {
   if (Object.keys(value).sort().join(',') !== 'type,value') return false
   const type = Reflect.get(value, 'type')
   const address = Reflect.get(value, 'value')
-  if ((type !== 'public' && type !== 'random') || typeof address !== 'string') return false
+  if ((type !== 'public' && type !== 'random' && type !== 'opaque') || typeof address !== 'string') return false
   try {
     return canonicalBleAddress(address) === address
   } catch {
@@ -897,8 +897,10 @@ function cloneNormalizedObservation(value: NormalizedScanObservation): Normalize
 function normalizedObservationAddress(
   address: { readonly value: string; readonly type: 'public' | 'random' | 'opaque' } | null
 ): NormalizedScanObservation['address'] {
-  if (address === null || address.type === 'opaque') return undefined
+  if (address === null) return undefined
   try {
+    // Opaque values that are not canonical radio addresses (CoreBluetooth
+    // UUIDs, Web IDs) fail canonicalBleAddress and stay off the observation.
     return Object.freeze({ type: address.type, value: canonicalBleAddress(address.value) })
   } catch {
     return undefined

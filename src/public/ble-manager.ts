@@ -3,7 +3,7 @@
 import type { AdvertisementObservation } from '../backend-contract/advertisement'
 import type { ScanOptions as InternalScanOptions } from '../backend-contract/advertisement'
 import type { ConnectionLifecycleCause, ConnectionLifecycleEvent } from '../backend-contract/connection-lifecycle'
-import { contractError, type CleanupRecord } from '../backend-contract/errors'
+import { contractError, type CleanupRecord as BackendCleanupRecord } from '../backend-contract/errors'
 import type { BackendIdentity } from '../backend-contract/identity'
 import {
   capacity,
@@ -15,7 +15,7 @@ import type { PeerId } from '../backend-contract/primitives'
 import type { BleManager as InternalBleManager } from '../manager/ble-manager'
 import type { BleManagerOptions } from '../manager/ble-manager'
 import type { BoundedAsyncStream } from '../backend-contract/streams'
-import type { BoundedAsyncStreamIterator, StreamItem, StreamTerminalNotice } from '../backend-contract/streams'
+import type { BoundedAsyncStreamIterator, StreamTerminalNotice } from '../backend-contract/streams'
 import { CoreBoundedStream } from '../core/bounded-stream'
 import { normalizeOperationOptions } from './operation-options'
 import type { OperationOptions } from './operation-options'
@@ -38,8 +38,8 @@ import type {
   AdapterWatchOptions,
   BleAdapterStateWatch
 } from './ble-adapter'
-import type { BleDiagnostics } from './diagnostics'
-import { snapshotResourceCounters } from './diagnostics'
+import type { BleDiagnostics, BleDiagnosticTraceDocument } from './diagnostics'
+import { snapshotPublicTraceDocument, snapshotResourceCounters } from './diagnostics'
 import { isAuthorizationBlocking, type AdapterStateSnapshot } from '../backend-contract/identity'
 import { createPublicGattDatabase } from './gatt'
 import type { GattDatabase, GattValueEvent } from './gatt'
@@ -70,6 +70,9 @@ import {
   type ConnectionWriteReadinessWatch
 } from '../backend-contract/connection-controls'
 import { MAX_PUBLIC_SCAN_STATE_BYTES, MAX_PUBLIC_SCAN_STATE_ENTRIES } from './scan-state-budget'
+import type { CleanupRecord as PublicCleanupRecord } from './cleanup'
+import { toPublicCleanupRecord } from './cleanup'
+import { mapPublicBoundedAsyncStream, type PublicBoundedAsyncStream } from './streams'
 
 export type { ConnectionPriority } from '../backend-contract/connection-controls'
 
@@ -303,8 +306,8 @@ export interface BleConnection {
   readonly controls: BleConnectionControls
   readonly discover: (options?: OperationOptions) => Promise<GattDatabase>
   readonly rediscoverGatt: (options: RediscoverGattOptions) => Promise<GattDatabase>
-  readonly disconnect: () => Promise<CleanupRecord>
-  readonly release: () => Promise<CleanupRecord>
+  readonly disconnect: () => Promise<PublicCleanupRecord>
+  readonly release: () => Promise<PublicCleanupRecord>
 }
 
 // Public scan session — bounded stream, no generic.
@@ -355,8 +358,8 @@ export type ScanPlatformOptions =
 
 export interface ScanSession {
   readonly plan: ScanPlan | null
-  readonly stop: () => Promise<CleanupRecord>
-  readonly observations: BoundedAsyncStream<PublicScanObservation>
+  readonly stop: () => Promise<PublicCleanupRecord>
+  readonly observations: PublicBoundedAsyncStream<PublicScanObservation>
   readonly events?: AsyncIterable<DiscoveryEvent>
   readonly state: AsyncIterable<ScanStateEvent>
 }
@@ -390,7 +393,7 @@ export interface BleManager {
   readonly peers: BlePeerDirectory
   readonly security: BleSecurity
   readonly discovery: BleDiscoveryInfo
-  readonly destroy: () => Promise<CleanupRecord>
+  readonly destroy: () => Promise<PublicCleanupRecord>
   scan(options?: ScanOptions): Promise<ScanSession>
   find(options?: FindOptions): Promise<BlePeer>
   choose(options?: ChooseOptions): Promise<BlePeer>
@@ -549,7 +552,7 @@ class PublicScanEventBroadcast implements AsyncIterable<DiscoveryEvent> {
 }
 
 class PublicScanSessionController<Attachment extends string> {
-  readonly observations: BoundedAsyncStream<PublicScanObservation>
+  readonly observations: PublicBoundedAsyncStream<PublicScanObservation>
   readonly events: AsyncIterable<DiscoveryEvent>
   private readonly observationStream: CoreBoundedStream<PublicScanObservation>
   private readonly eventBroadcast: PublicScanEventBroadcast
@@ -573,7 +576,7 @@ class PublicScanSessionController<Attachment extends string> {
     private readonly requestStop: (reason: PublicScanEventTerminalReason) => void
   ) {
     this.observationStream = new CoreBoundedStream(delivery, delivery.overflowPolicy)
-    this.observations = {
+    const observationSource: BoundedAsyncStream<PublicScanObservation> = {
       limits: this.observationStream.limits,
       overflowPolicy: this.observationStream.overflowPolicy,
       [Symbol.asyncIterator]: () => {
@@ -582,15 +585,16 @@ class PublicScanSessionController<Attachment extends string> {
       },
       close: () => this.close('closed')
     }
+    this.observations = mapPublicBoundedAsyncStream(observationSource, observation => observation)
     this.eventBroadcast = new PublicScanEventBroadcast(() => this.start(), delivery)
     this.events = this.eventBroadcast
   }
 
-  async close(reason: PublicScanEventTerminalReason = 'owner-released'): Promise<CleanupRecord> {
+  async close(reason: PublicScanEventTerminalReason = 'owner-released'): Promise<BackendCleanupRecord> {
     return this.closeView(reason)
   }
 
-  async closeView(reason: PublicScanEventTerminalReason = 'owner-released'): Promise<CleanupRecord> {
+  async closeView(reason: PublicScanEventTerminalReason = 'owner-released'): Promise<BackendCleanupRecord> {
     this.closed = true
     this.cancelPresenceTimers()
     this.observationStream.closeWithReason(reason)
@@ -1017,7 +1021,7 @@ function publicWriteReadinessStream<Attachment extends string, Identity extends 
 
 async function closePublicReadinessWatch<Attachment extends string>(
   iterator: BoundedAsyncStreamIterator<ConnectionWriteReadinessObservation<Attachment>>,
-  close: () => Promise<CleanupRecord>,
+  close: () => Promise<BackendCleanupRecord>,
   iteratorDone: boolean
 ): Promise<void> {
   let iteratorError: unknown
@@ -1362,8 +1366,9 @@ class PublicBleManager<Attachment extends string, Identity extends BackendIdenti
   private readonly activeScanSessions = new Set<{
     readonly controller: PublicScanSessionController<Attachment>
     readonly closeState: () => void
-    readonly stop: () => Promise<CleanupRecord>
+    readonly stop: () => Promise<PublicCleanupRecord>
   }>()
+  private destroyPromise: Promise<PublicCleanupRecord> | null = null
 
   constructor(
     private readonly internal: PublicInternalManager<Attachment, Identity>,
@@ -1441,7 +1446,7 @@ class PublicBleManager<Attachment extends string, Identity extends BackendIdenti
       const stopState: {
         viewReleased: boolean
         nativeReleased: boolean
-        stopPromise: Promise<CleanupRecord> | null
+        stopPromise: Promise<PublicCleanupRecord> | null
         pendingCleanupError: unknown | null
       } = {
         viewReleased: false,
@@ -1449,7 +1454,7 @@ class PublicBleManager<Attachment extends string, Identity extends BackendIdenti
         stopPromise: null,
         pendingCleanupError: null
       }
-      let stopScan: (reason: PublicScanEventTerminalReason) => Promise<CleanupRecord> = async () => ({
+      let stopScan: (reason: PublicScanEventTerminalReason) => Promise<PublicCleanupRecord> = async () => ({
         state: 'released',
         failures: []
       })
@@ -1468,11 +1473,11 @@ class PublicBleManager<Attachment extends string, Identity extends BackendIdenti
           })
         }
       )
-      stopScan = async (reason: PublicScanEventTerminalReason): Promise<CleanupRecord> => {
+      stopScan = async (reason: PublicScanEventTerminalReason): Promise<PublicCleanupRecord> => {
         if (stopState.stopPromise !== null) return stopState.stopPromise
         scanState.emit({ state: 'stopping' })
         const run = (async () => {
-          const phases: { readonly error?: unknown; readonly cleanup?: CleanupRecord }[] = []
+          const phases: { readonly error?: unknown; readonly cleanup?: BackendCleanupRecord }[] = []
           if (stopState.pendingCleanupError !== null) {
             phases.push({ error: stopState.pendingCleanupError })
           }
@@ -1520,7 +1525,7 @@ class PublicBleManager<Attachment extends string, Identity extends BackendIdenti
       this.activeScanSessions.add(activeScan)
       const publicSession: ScanSession = {
         plan,
-        stop: () => stopScan('owner-released'),
+        stop: () => stopScan('owner-released').then(toPublicCleanupRecord),
         observations: controller.observations,
         events: controller.events,
         state: scanState.stream
@@ -1657,8 +1662,8 @@ class PublicBleManager<Attachment extends string, Identity extends BackendIdenti
             throw rehydratePublicError(error)
           }
         },
-        disconnect: () => rehydratePublicPromise(internalConnection.disconnect()),
-        release: () => rehydratePublicPromise(internalConnection.release())
+        disconnect: () => rehydratePublicPromise(internalConnection.disconnect()).then(toPublicCleanupRecord),
+        release: () => rehydratePublicPromise(internalConnection.release()).then(toPublicCleanupRecord)
       }
     } catch (error) {
       throw rehydratePublicError(error)
@@ -1705,32 +1710,48 @@ class PublicBleManager<Attachment extends string, Identity extends BackendIdenti
     })
   }
 
-  async destroy(): Promise<CleanupRecord> {
+  destroy(): Promise<PublicCleanupRecord> {
+    if (this.destroyPromise !== null) return this.destroyPromise
+    const run = this.destroyInternal()
+    this.destroyPromise = run.then(
+      cleanup => {
+        if (cleanup.state !== 'released') this.destroyPromise = null
+        return cleanup
+      },
+      error => {
+        this.destroyPromise = null
+        throw error
+      }
+    )
+    return this.destroyPromise
+  }
+
+  private async destroyInternal(): Promise<PublicCleanupRecord> {
     try {
       const active = [...this.activeScanSessions]
-      const viewResults: { readonly error?: unknown; readonly cleanup?: CleanupRecord }[] = []
-      await Promise.all(
-        active.map(async scan => {
-          try {
-            const cleanup = await scan.stop()
-            viewResults.push({ cleanup })
-          } catch (error) {
-            viewResults.push({ error })
-          }
-        })
-      )
-      let cleanup: CleanupRecord | undefined
+      const viewResults: { readonly error?: unknown; readonly cleanup?: PublicCleanupRecord }[] = []
+      for (const scan of active) {
+        try {
+          const cleanup = await scan.stop()
+          viewResults.push({ cleanup })
+        } catch (error) {
+          viewResults.push({ error })
+        }
+      }
+      let cleanup: BackendCleanupRecord | undefined
       let nativeError: unknown
       try {
         cleanup = await this.internal.destroy()
       } catch (error) {
         nativeError = error
       }
-      return collectCleanupPhases([
-        ...viewResults,
-        ...(nativeError === undefined ? [] : [{ error: nativeError }]),
-        ...(cleanup === undefined ? [] : [{ cleanup }])
-      ])
+      return toPublicCleanupRecord(
+        collectCleanupPhases([
+          ...viewResults,
+          ...(nativeError === undefined ? [] : [{ error: nativeError }]),
+          ...(cleanup === undefined ? [] : [{ cleanup }])
+        ])
+      )
     } catch (error) {
       throw rehydratePublicError(error)
     }
@@ -1739,8 +1760,8 @@ class PublicBleManager<Attachment extends string, Identity extends BackendIdenti
 
 function publicTraceDocument<Attachment extends string, Identity extends BackendIdentity<Attachment>>(
   internal: PublicInternalManager<Attachment, Identity>
-): ReturnType<PublicInternalManager<Attachment, Identity>['traceDocument']> {
-  return internal.attachedBackend?.backend.traceDocument?.() ?? internal.traceDocument()
+): BleDiagnosticTraceDocument {
+  return snapshotPublicTraceDocument(internal.attachedBackend?.backend.traceDocument?.() ?? internal.traceDocument())
 }
 
 function resolveSecurityBackend<Attachment extends string, Identity extends BackendIdentity<Attachment>>(
@@ -1799,14 +1820,22 @@ async function watchPublicAdapter<Attachment extends string, Identity extends Ba
     const signal = normalizeOperationOptions({ signal: options.signal ?? undefined }, now).signal
     const watch = await internal.adapterStates({ signal })
     if (signal?.aborted === true) {
-      await watch.stop()
-      throw contractError('operation.aborted', 'adapter', 'public-adapter.watch-state')
+      const primary = contractError('operation.aborted', 'adapter', 'public-adapter.watch-state')
+      let cleanup: BackendCleanupRecord
+      try {
+        cleanup = await watch.stop()
+      } catch (cleanupError) {
+        throw aggregateAdapterWatchCleanupFailure(primary, cleanupError)
+      }
+      const cleanupFailure = projectedAdapterWatchCleanupFailure(primary, cleanup)
+      if (cleanupFailure !== null) throw cleanupFailure
+      throw rehydratePublicError(primary)
     }
-    let stopPromise: Promise<CleanupRecord> | null = null
+    let stopPromise: Promise<BackendCleanupRecord> | null = null
     const abortHandler = () => {
       stop().catch(() => undefined)
     }
-    const stop = (): Promise<CleanupRecord> => {
+    const stop = (): Promise<BackendCleanupRecord> => {
       if (stopPromise !== null) return stopPromise
       const result = watch.stop().then(
         cleanup => {
@@ -1824,10 +1853,25 @@ async function watchPublicAdapter<Attachment extends string, Identity extends Ba
       return result
     }
     signal?.addEventListener('abort', abortHandler, { once: true })
+    const initial = snapshotPublicAdapterState(watch.initial)
+    let values: PublicBoundedAsyncStream<BleAdapterState>
+    try {
+      values = mapPublicAdapterStates(watch.values)
+    } catch (error) {
+      let cleanup: BackendCleanupRecord
+      try {
+        cleanup = await stop()
+      } catch (cleanupError) {
+        throw aggregateAdapterWatchCleanupFailure(error, cleanupError)
+      }
+      const cleanupFailure = projectedAdapterWatchCleanupFailure(error, cleanup)
+      if (cleanupFailure !== null) throw cleanupFailure
+      throw rehydratePublicError(error)
+    }
     return Object.freeze({
-      initial: snapshotPublicAdapterState(watch.initial),
-      values: mapPublicAdapterStates(watch.values),
-      stop
+      initial,
+      values,
+      stop: () => stop().then(toPublicCleanupRecord)
     })
   } catch (error) {
     throw rehydratePublicError(error)
@@ -1836,25 +1880,23 @@ async function watchPublicAdapter<Attachment extends string, Identity extends Ba
 
 function mapPublicAdapterStates<Attachment extends string>(
   source: BoundedAsyncStream<AdapterStateSnapshot<Attachment>>
-): AsyncIterable<StreamItem<BleAdapterState>> {
-  return {
-    [Symbol.asyncIterator](): BoundedAsyncStreamIterator<BleAdapterState> {
-      const iterator = source[Symbol.asyncIterator]()
-      const mapped: BoundedAsyncStreamIterator<BleAdapterState> = {
-        async next() {
-          const result = await iterator.next()
-          if (result.done) return { done: true, value: undefined }
-          if (result.value.kind !== 'value') return { done: false, value: result.value }
-          return { done: false, value: { kind: 'value', value: snapshotPublicAdapterState(result.value.value) } }
-        },
-        return: () => iterator.return(),
-        [Symbol.asyncIterator]() {
-          return mapped
-        }
-      }
-      return mapped
-    }
-  }
+): PublicBoundedAsyncStream<BleAdapterState> {
+  return mapPublicBoundedAsyncStream(source, snapshotPublicAdapterState)
+}
+
+function projectedAdapterWatchCleanupFailure(primary: unknown, cleanup: BackendCleanupRecord): AggregateError | null {
+  if (cleanup.state === 'released') return null
+  return new AggregateError(
+    [rehydratePublicError(primary), new BleCleanupError(cleanup)],
+    'BLE adapter watch operation and cleanup both failed'
+  )
+}
+
+function aggregateAdapterWatchCleanupFailure(primary: unknown, cleanup: unknown): AggregateError {
+  return new AggregateError(
+    [rehydratePublicError(primary), rehydratePublicError(cleanup)],
+    'BLE adapter watch operation and cleanup both failed'
+  )
 }
 
 async function waitForPublicAdapter<Attachment extends string, Identity extends BackendIdentity<Attachment>>(
@@ -1894,15 +1936,15 @@ async function waitForPublicAdapter<Attachment extends string, Identity extends 
 
 async function stopAdapterWatch(
   iterator: AsyncIterator<unknown>,
-  stop: () => Promise<CleanupRecord>
-): Promise<CleanupRecord> {
+  stop: () => Promise<BackendCleanupRecord>
+): Promise<BackendCleanupRecord> {
   const failures: unknown[] = []
   try {
     if (iterator.return !== undefined) await iterator.return()
   } catch (error) {
     failures.push(error)
   }
-  let cleanup: CleanupRecord
+  let cleanup: BackendCleanupRecord
   try {
     cleanup = await stop()
   } catch (error) {
