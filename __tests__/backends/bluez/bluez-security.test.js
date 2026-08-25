@@ -136,7 +136,14 @@ describe('BlueZ system security backend', () => {
       state: { bond: 'bonded' }
     })
     // A just-works agent must be ensured before Pair, or BlueZ aborts the SMP.
+    // Prove ordering, not just occurrence: the ensure must have happened no
+    // later than the Device1.Pair call's position in the recorded call sequence.
     expect(boundary.pairingAgentEnsured).toBeGreaterThanOrEqual(1)
+    const pairCallIndex = boundary.calls.findIndex(
+      call => call.interfaceName === BLUEZ_DEVICE_INTERFACE && call.method === 'Pair'
+    )
+    expect(pairCallIndex).toBeGreaterThanOrEqual(0)
+    expect(boundary.pairingAgentEnsuredAtCallIndex).toBeLessThanOrEqual(pairCallIndex)
     await expect(iterator.next()).resolves.toMatchObject({
       value: { kind: 'value', value: { sequence: 2, state: { bond: 'bonded' } } }
     })
@@ -157,7 +164,19 @@ describe('BlueZ system security backend', () => {
 
   test('cancels an in-flight system pairing without claiming a bond', async () => {
     const { backend, boundary, peerId: observedPeerId } = await createFixture()
-    boundary.onCall(devicePath, BLUEZ_DEVICE_INTERFACE, 'Pair', () => false)
+    // A genuinely in-flight pairing: Device1.Pair stays pending (real BlueZ does
+    // not resolve Pair until the bond completes or fails), so cancelling before
+    // it resolves must yield cancelled and leave no bond.
+    let resolvePair = () => undefined
+    boundary.onCall(
+      devicePath,
+      BLUEZ_DEVICE_INTERFACE,
+      'Pair',
+      () =>
+        new Promise(resolve => {
+          resolvePair = resolve
+        })
+    )
     const pairing = backend.security.pair(observedPeerId, pairOptions())
     await Promise.resolve()
     await expect(backend.security.cancelPairing(observedPeerId, pairOptions())).resolves.toEqual({
@@ -165,6 +184,13 @@ describe('BlueZ system security backend', () => {
     })
     await expect(pairing).resolves.toEqual({ outcome: 'cancelled' })
     await expect(backend.security.state(observedPeerId, pairOptions())).resolves.toMatchObject({ bond: 'not-bonded' })
+    // Settle the still-pending native call so the operation fully retires; only
+    // then does a second cancel correctly report nothing in flight.
+    const active = backend.security.activePairings.get(observedPeerId)
+    if (active !== undefined) {
+      resolvePair()
+      await active.dispatch.physicalSettlement
+    }
     await expect(backend.security.cancelPairing(observedPeerId, pairOptions())).resolves.toEqual({
       outcome: 'not-pairing'
     })
@@ -228,11 +254,40 @@ describe('BlueZ system security backend', () => {
     await expect(backend.destroy()).resolves.toMatchObject({ state: 'released' })
   })
 
-  test('rejects legacy pairing (secureConnections: disallow) as unsupported on BlueZ', async () => {
-    const { backend, peerId } = await createFixture()
-    await expect(
-      backend.security.pair(peerId, pairOptions({ secureConnections: 'disallow' }))
-    ).rejects.toMatchObject({ normalized: { code: 'capability.unsupported' } })
+  test('rejects a secureConnections generation it cannot select (require and disallow) on BlueZ', async () => {
+    const { backend, boundary, peerId } = await createFixture()
+    for (const value of ['require', 'disallow']) {
+      await expect(
+        backend.security.pair(peerId, pairOptions({ secureConnections: value }))
+      ).rejects.toMatchObject({ normalized: { code: 'capability.unsupported' } })
+    }
+    // Fail-closed: no native Device1.Pair is dispatched for a generation we
+    // cannot honour.
+    expect(boundary.calls).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ interfaceName: BLUEZ_DEVICE_INTERFACE, method: 'Pair' })])
+    )
+    await expect(backend.destroy()).resolves.toMatchObject({ state: 'released' })
+  })
+
+  test('reports paired (not cancelled) when an abort lands after Device1.Pair has bonded', async () => {
+    const { backend, boundary, peerId: observedPeerId } = await createFixture()
+    // Pair() resolves (the bond exists), but the confirming Paired signal never
+    // arrives, so the operation stays in the post-Pair wait where a late abort
+    // can land.
+    boundary.onCall(devicePath, BLUEZ_DEVICE_INTERFACE, 'Pair', () => false)
+    const controller = new AbortController()
+    const pairing = backend.security.pair(observedPeerId, pairOptions({ signal: controller.signal }))
+    // Let the body run through Pair() and into the Paired wait.
+    for (let flush = 0; flush < 6; flush += 1) await Promise.resolve()
+    controller.abort()
+    // A bond we created must be reported truthfully, never as cancelled.
+    await expect(pairing).resolves.toMatchObject({ outcome: 'paired', state: { bond: 'bonded' } })
+    // And no CancelPairing may be issued against a completed bond.
+    expect(boundary.calls).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ interfaceName: BLUEZ_DEVICE_INTERFACE, method: 'CancelPairing' })
+      ])
+    )
     await expect(backend.destroy()).resolves.toMatchObject({ state: 'released' })
   })
 

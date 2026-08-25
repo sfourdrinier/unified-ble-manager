@@ -7,11 +7,12 @@ All notable changes to `unified-ble-manager` are documented here.
 ### Added
 
 - BlueZ pairing dispatch: `org.bluez.Device1.Pair`, `org.bluez.Device1.CancelPairing`, and `org.bluez.Adapter1.RemoveDevice` are now allowed through the dbus-next boundary, and the backend registers a just-works (`NoInputNoOutput`) `org.bluez.Agent1` on its own bus (not the system default) so a client-initiated pairing can complete without an external agent (#141, #143).
-- `PairOptions.secureConnections` (`'require' | 'prefer' | 'disallow'`, default `'prefer'`): opt into or out of LE Secure Connections for a pairing. BlueZ selects the pairing generation at the adapter level, so `'disallow'` (LE Legacy) is reported as `capability.unsupported` rather than silently ignored (#144, #143).
+- `PairOptions.secureConnections` (`'require' | 'prefer' | 'disallow'`, default `'prefer'`): request an LE pairing generation. `'prefer'` defers to the platform. No current backend exposes per-pairing generation selection, so `'require'` and `'disallow'` fail closed with `capability.unsupported` on BlueZ, WinRT, and Android rather than being silently ignored; the contract is in place for a backend that can honour it (#144, #143).
 
 ### Fixed
 
 - BlueZ `security.pair()` no longer fires `Device1.Pair` when the operation is aborted or times out while the just-works agent is still registering; it re-checks cancellation after agent registration so a cancelled pairing never proceeds on the daemon (#143).
+- BlueZ `security.pair()` reports `paired` (not `cancelled`) when an abort or deadline lands after `Device1.Pair` has already completed the bond, so a bond that was actually created is never reported as if it never happened (#143).
 
 ## [4.0.4] - 2026-08-25
 

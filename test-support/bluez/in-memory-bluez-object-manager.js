@@ -145,6 +145,13 @@ class InMemoryBluezBoundary {
   }
   async ensurePairingAgent() {
     this.pairingAgentEnsured = (this.pairingAgentEnsured ?? 0) + 1
+    // Record how many boundary calls had been dispatched when the agent was
+    // ensured, so a test can prove the ensure happened BEFORE Device1.Pair
+    // (its index in `calls`) rather than merely at some point. Does not mutate
+    // `calls`, so it cannot perturb tests that assert on the call sequence.
+    if (this.pairingAgentEnsuredAtCallIndex === undefined) {
+      this.pairingAgentEnsuredAtCallIndex = this.calls.length
+    }
   }
 
   onReset(listener) {

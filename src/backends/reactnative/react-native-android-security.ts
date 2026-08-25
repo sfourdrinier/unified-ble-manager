@@ -122,6 +122,12 @@ export class ReactNativeAndroidSecurityBackend implements SecurityBackend {
     if (options.protection !== 'system-default') {
       throw contractError('capability.unsupported', 'capability', 'android.security.pair.protection')
     }
+    if (options.secureConnections !== undefined && options.secureConnections !== 'prefer') {
+      // Android's createBond does not expose LE pairing-generation selection, so
+      // a 'require' or 'disallow' request cannot be honoured. Fail closed rather
+      // than bond without the requested generation.
+      throw contractError('capability.unsupported', 'capability', 'android.security.pair.secure-connections')
+    }
     if (options.signal?.aborted === true) {
       throw contractError('operation.aborted', 'core', 'android.security.pair')
     }

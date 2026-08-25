@@ -228,6 +228,26 @@ describe('React Native Android security protocol boundary', () => {
     security.close()
   })
 
+  test('rejects a secureConnections generation it cannot select instead of ignoring it', async () => {
+    const pair = jest.fn(async () => ({ outcome: 'paired', state: securityState('bonded') }))
+    const security = new ReactNativeAndroidSecurityBackend(securityAdapter({ pair }), () => 20)
+
+    for (const value of ['require', 'disallow']) {
+      await expect(
+        security.pair(peerId, {
+          signal: null,
+          deadline: null,
+          transport: 'auto',
+          protection: 'system-default',
+          ceremony: 'system',
+          secureConnections: value
+        })
+      ).rejects.toMatchObject({ normalized: { code: 'capability.unsupported' } })
+    }
+    expect(pair).not.toHaveBeenCalled()
+    security.close()
+  })
+
   test('honors pre-aborted Android security state requests before native dispatch', async () => {
     const securityStateCall = jest.fn(async () => securityState('not-bonded'))
     const security = new ReactNativeAndroidSecurityBackend(

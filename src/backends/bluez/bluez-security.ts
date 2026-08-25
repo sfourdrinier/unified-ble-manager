@@ -142,10 +142,12 @@ export class BluezSecurityBackend implements SecurityBackend {
     if (options.protection !== 'system-default') {
       return Promise.reject(contractError('capability.unsupported', 'capability', 'bluez.security.pair.protection'))
     }
-    if (options.secureConnections === 'disallow') {
+    if (options.secureConnections !== undefined && options.secureConnections !== 'prefer') {
       // BlueZ selects the pairing generation at the adapter level (mgmt
       // SET_SECURE_CONN), not per Device1.Pair; the D-Bus surface this backend
-      // uses cannot request LE Legacy for a single pairing.
+      // uses can neither force LE Legacy ('disallow') nor guarantee Secure
+      // Connections ('require') for a single pairing. Honour the contract by
+      // failing closed rather than bonding without the requested generation.
       return Promise.reject(
         contractError('capability.unsupported', 'capability', 'bluez.security.pair.secure-connections')
       )
@@ -159,6 +161,7 @@ export class BluezSecurityBackend implements SecurityBackend {
     const controller = new AbortController()
     let pairCallStarted = false
     let pairCallSettled = false
+    let pairSucceeded = false
     const dispatch = this.runtime.trackConnectionOperationForPeer(
       peerId,
       this.runtime.dispatcher.dispatch<SecurityPairResult>(
@@ -190,6 +193,11 @@ export class BluezSecurityBackend implements SecurityBackend {
             // agent registration does not cancel a pairing that never began.
             pairCallStarted = true
             await this.runtime.boundary.methods.callVoid(path, BLUEZ_DEVICE_INTERFACE, 'Pair', [])
+            // Device1.Pair resolves only on a completed bond, so the peer is now
+            // bonded regardless of whether the confirming Paired signal has
+            // landed. Record that so a late abort is reported as paired, not
+            // cancelled (which would strand the bond we just created).
+            pairSucceeded = true
           } finally {
             pairCallSettled = true
           }
@@ -213,6 +221,14 @@ export class BluezSecurityBackend implements SecurityBackend {
         error instanceof BackendContractError &&
         (error.normalized.code === 'operation.aborted' || error.normalized.code === 'operation.timed-out')
       ) {
+        // An abort or deadline that lands after Device1.Pair has already
+        // completed cannot un-bond the peer, and onCancellation has correctly
+        // skipped CancelPairing (pairCallSettled). Report the truth - a bond we
+        // created - rather than 'cancelled', which would leave the caller
+        // believing no pairing happened while a bond persists.
+        if (pairSucceeded) {
+          return { outcome: 'paired' as const, state: this.createState('bonded') }
+        }
         return { outcome: 'cancelled' as const }
       }
       throw error

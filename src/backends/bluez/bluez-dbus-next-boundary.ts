@@ -51,6 +51,10 @@ interface DeviceProxy extends dbus.ClientInterface {
   CancelPairing(): Promise<void>
 }
 
+interface AgentManagerProxy extends dbus.ClientInterface {
+  RegisterAgent(path: string, capability: string): Promise<void>
+}
+
 interface CharacteristicProxy extends dbus.ClientInterface {
   ReadValue(options: Readonly<Record<string, dbus.Variant>>): Promise<Uint8Array>
   WriteValue(value: Uint8Array, options: Readonly<Record<string, dbus.Variant>>): Promise<void>
@@ -157,7 +161,7 @@ function pairingAgentClass(): new (name: string) => dbus.interface.Interface {
       DisplayPasskey: { inSignature: 'ouq', outSignature: '' }
     }
   })
-  cachedAgentClass = UbmJustWorksAgent as unknown as new (name: string) => dbus.interface.Interface
+  cachedAgentClass = UbmJustWorksAgent
   return cachedAgentClass
 }
 const bluezMatchRules = Object.freeze([
@@ -270,13 +274,13 @@ class DbusNextBluezBoundary implements BluezDbusBoundary {
       this.bus.export(UBM_AGENT_PATH, agent)
       this.pairingAgent = agent
     }
+    const exported = this.pairingAgent
     const manager = await this.bus.getProxyObject(BLUEZ_SERVICE, '/org/bluez')
-    // A close() during the proxy round-trip unexports the agent; do not register
-    // a path that no longer exists on our bus.
-    if (this.closed || this.disconnected) return
-    const agentManager = manager.getInterface(BLUEZ_AGENT_MANAGER_INTERFACE) as unknown as {
-      RegisterAgent(path: string, capability: string): Promise<void>
-    }
+    // A close() or a daemon reset during the proxy round-trip unexports the
+    // agent (forgetPairingAgent nulls or replaces pairingAgent); do not register
+    // a path that no longer exists on our bus. The next ensure re-exports it.
+    if (this.closed || this.disconnected || this.pairingAgent !== exported) return
+    const agentManager = manager.getInterface<AgentManagerProxy>(BLUEZ_AGENT_MANAGER_INTERFACE)
     try {
       await agentManager.RegisterAgent(UBM_AGENT_PATH, UBM_AGENT_CAPABILITY)
     } catch (error) {

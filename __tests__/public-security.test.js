@@ -101,6 +101,25 @@ describe('public security façade', () => {
     expect(security.unpair).toHaveBeenCalledTimes(1)
   })
 
+  test('rejects an invalid secureConnections value before dispatching to the backend', async () => {
+    const stream = securityStream()
+    const security = {
+      state: jest.fn(async () => measuredState()),
+      watch: jest.fn(() => stream),
+      pair: jest.fn(async () => ({ outcome: 'paired', state: measuredState({ bond: 'bonded' }) })),
+      cancelPairing: jest.fn(async () => ({ outcome: 'cancelled' })),
+      unpair: jest.fn(async () => ({ outcome: 'unpaired' }))
+    }
+    const manager = await createPublicBleManager(internalWithSecurity(security), () => 100)
+    const peer = { id: 'peer-1', name: null, rssi: null }
+
+    await expect(
+      manager.security.pair(peer, { secureConnections: 'sometimes' })
+    ).rejects.toMatchObject({ code: 'argument.invalid' })
+    // Fail closed at the public boundary: an invalid value never reaches the backend.
+    expect(security.pair).not.toHaveBeenCalled()
+  })
+
   test('maps backend security watch values and closes the backend iterator', async () => {
     const stream = securityStream()
     const security = {
