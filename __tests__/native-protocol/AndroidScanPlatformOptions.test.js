@@ -69,6 +69,10 @@ describe('React Native Android scan platform options', () => {
     ).rejects.toMatchObject({ normalized: { code: 'capability.unsupported' } })
     expect(runtime.scanOptions).toBe(null)
 
+    await expect(boundary.startScan(() => undefined, [], { kind: 'corebluetooth' })).rejects.toMatchObject({
+      normalized: { code: 'capability.unsupported' }
+    })
+
     await boundary.destroy()
   })
 })
