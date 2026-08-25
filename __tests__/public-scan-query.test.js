@@ -1534,3 +1534,178 @@ describe('public scan-state-budget', () => {
     )
   })
 })
+
+describe('public scan presence eviction completeness', () => {
+  const { MAX_PUBLIC_SCAN_STATE_ENTRIES, MAX_PUBLIC_SCAN_STATE_BYTES } = require('../src/public/scan-state-budget')
+
+  async function waitUntil(predicate, attempts = 2000) {
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      if (predicate()) return
+      await Promise.resolve()
+    }
+    throw new Error('timed out waiting for public scan presence events')
+  }
+
+  async function createPresenceScan() {
+    const source = new CoreBoundedStream(
+      { itemCapacity: capacity(512), byteCapacity: capacity(2 * 1024 * 1024), reservedControlCapacity: capacity(4) },
+      'drop-oldest'
+    )
+    let now = 0
+    const timers = []
+    const collected = []
+    const internal = {
+      identity: null,
+      attachedBackend: undefined,
+      supports: () => true,
+      capability: () => null,
+      capabilities: () => [],
+      scan: jest.fn(async () => ({
+        observations: source,
+        stop: async () => ({ state: 'released', failures: [] })
+      })),
+      scheduleDeadline: jest.fn((deadline, action) => {
+        const handle = { deadline, action, cancel: jest.fn() }
+        timers.push(handle)
+        return handle
+      }),
+      connect: jest.fn(),
+      destroy: jest.fn(async () => ({ state: 'released', failures: [] }))
+    }
+    const manager = await createPublicBleManager(internal, () => now)
+    const scan = await manager.scan({
+      observation: { reportLostAfterMs: 10 },
+      delivery: {
+        preset: 'custom',
+        budget: { itemCapacity: 512, byteCapacity: 2 * 1024 * 1024, reservedControlCapacity: 8 }
+      }
+    })
+    const events = scan.events[Symbol.asyncIterator]()
+    const observations = scan.observations[Symbol.asyncIterator]()
+    const consume = (async () => {
+      for (;;) {
+        const item = await events.next()
+        if (item.done) return
+        collected.push(item.value)
+      }
+    })()
+    return {
+      source,
+      setNow: value => {
+        now = value
+      },
+      timers,
+      scan,
+      events,
+      observations,
+      collected,
+      consume
+    }
+  }
+
+  function advertisement(peerId, manufacturerBytes = 0) {
+    return {
+      peerId,
+      localName: peerId,
+      rssi: -40,
+      serviceUuids: [],
+      manufacturerData: manufacturerBytes > 0 ? [{ companyId: 1, data: new Uint8Array(manufacturerBytes) }] : [],
+      serviceData: []
+    }
+  }
+
+  async function closePresenceScan(fixture) {
+    await fixture.observations.return()
+    await fixture.events.return()
+    await fixture.scan.stop()
+    await fixture.consume.catch(() => undefined)
+  }
+
+  test('entry-cap eviction publishes presence-tracking-overflow and never fabricates lost', async () => {
+    const fixture = await createPresenceScan()
+    for (let index = 0; index < MAX_PUBLIC_SCAN_STATE_ENTRIES + 1; index += 1) {
+      fixture.source.emit(advertisement(`peer-${index}`), 32)
+    }
+    await waitUntil(
+      () => fixture.collected.filter(event => event.kind === 'observed').length === MAX_PUBLIC_SCAN_STATE_ENTRIES + 1
+    )
+    expect(fixture.collected.some(event => event.kind === 'lost')).toBe(false)
+    expect(fixture.collected.filter(event => event.kind === 'observed')).toHaveLength(MAX_PUBLIC_SCAN_STATE_ENTRIES + 1)
+    expect(fixture.collected).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'presence-tracking-overflow',
+          guarantee: 'reportLostAfterMs-completeness',
+          droppedEntries: 1,
+          droppedBytes: expect.any(Number)
+        })
+      ])
+    )
+    await closePresenceScan(fixture)
+  })
+
+  test('byte-cap eviction is fail-visible without fabricating lost', async () => {
+    const fixture = await createPresenceScan()
+    const large = Math.floor(MAX_PUBLIC_SCAN_STATE_BYTES / 2)
+    fixture.source.emit(advertisement('peer-a', large), large + 128)
+    fixture.source.emit(advertisement('peer-b', large), large + 128)
+    fixture.source.emit(advertisement('peer-c', large), large + 128)
+    await waitUntil(() => fixture.collected.some(event => event.kind === 'presence-tracking-overflow'))
+    expect(fixture.collected.some(event => event.kind === 'lost')).toBe(false)
+    expect(fixture.collected).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'presence-tracking-overflow',
+          guarantee: 'reportLostAfterMs-completeness'
+        })
+      ])
+    )
+    await closePresenceScan(fixture)
+  })
+
+  test('retained peers still emit timeout-derived lost after one eviction', async () => {
+    const fixture = await createPresenceScan()
+    for (let index = 0; index < MAX_PUBLIC_SCAN_STATE_ENTRIES + 1; index += 1) {
+      fixture.source.emit(advertisement(`peer-${index}`), 32)
+    }
+    await waitUntil(
+      () => fixture.collected.filter(event => event.kind === 'observed').length === MAX_PUBLIC_SCAN_STATE_ENTRIES + 1
+    )
+    fixture.setNow(10)
+    const activeTimers = fixture.timers.filter(timer => timer.cancel.mock.calls.length === 0)
+    expect(activeTimers.length).toBeGreaterThan(0)
+    activeTimers[activeTimers.length - 1].action()
+    await waitUntil(() => fixture.collected.some(event => event.kind === 'lost' && event.reason === 'observation-timeout'))
+    await closePresenceScan(fixture)
+  })
+
+  test('re-observing an evicted peer starts a fresh tracking generation that can still be lost', async () => {
+    const fixture = await createPresenceScan()
+    for (let index = 0; index < MAX_PUBLIC_SCAN_STATE_ENTRIES + 1; index += 1) {
+      fixture.source.emit(advertisement(`peer-${index}`), 32)
+    }
+    await waitUntil(
+      () => fixture.collected.filter(event => event.kind === 'observed').length === MAX_PUBLIC_SCAN_STATE_ENTRIES + 1
+    )
+    fixture.source.emit(advertisement('peer-0'), 32)
+    await waitUntil(
+      () => fixture.collected.filter(event => event.kind === 'observed' && event.peer.id === 'peer-0').length === 2
+    )
+    fixture.setNow(20)
+    const activeTimers = fixture.timers.filter(timer => timer.cancel.mock.calls.length === 0)
+    activeTimers[activeTimers.length - 1].action()
+    await waitUntil(() =>
+      fixture.collected.some(
+        event => event.kind === 'lost' && event.peer.id === 'peer-0' && event.reason === 'observation-timeout'
+      )
+    )
+    expect(
+      fixture.collected.some(
+        event => event.kind === 'lost' && event.peer.id === 'peer-0' && event.reason === 'observation-timeout'
+      )
+    ).toBe(true)
+    await closePresenceScan(fixture)
+  })
+})
+
+

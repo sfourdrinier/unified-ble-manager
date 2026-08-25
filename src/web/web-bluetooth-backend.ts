@@ -644,6 +644,12 @@ export class WebBluetoothBackend
   private async chooseDevice(request: ChooserRequest, operation: AbortableOperation): Promise<WebSelectedDevice> {
     this.assertAttached('web-chooser.choose')
     this.assertAbortableAdmission(operation, 'chooser', 'web-chooser.choose')
+    if (operation.signal !== null && operation.signal !== undefined) {
+      throw contractError('capability.unsupported', 'chooser', 'web-chooser.choose')
+    }
+    if (operation.deadline !== null) {
+      throw contractError('capability.unsupported', 'chooser', 'web-chooser.choose')
+    }
     if (!this.boundary.isSecureContext()) {
       throw contractError('chooser.insecure-context', 'chooser', 'web-chooser.choose')
     }

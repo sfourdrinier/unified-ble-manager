@@ -29,6 +29,8 @@ export type BleManagerFactory = () => Promise<BleManager>
 
 export interface BleProviderProps {
   readonly createManager: BleManagerFactory
+  readonly managerKey?: string | symbol
+  readonly ownershipScope?: string | symbol
   readonly onError?: (error: Error) => void
   readonly children?: ReactNode
 }
@@ -78,11 +80,39 @@ const emptyStoreSubscribe =
 const emptyCapabilitySnapshot = (): CapabilityDescriptor | undefined => undefined
 const BleContext = React.createContext<BleContextValue | null>(null)
 const BleErrorContext = React.createContext<((error: Error) => void) | null>(null)
-let pendingManagerRelease: Promise<void> | null = null
-let pendingManagerReleaseRetry: (() => void) | null = null
+interface ReleaseCoordinator {
+  pending: Promise<void> | null
+  retry: (() => void) | null
+}
 
-export function BleProvider({ createManager, onError, children }: BleProviderProps): React.ReactElement {
-  const [lease] = React.useState(() => new ManagerLease(createManager))
+const releaseCoordinators = new Map<string | symbol, ReleaseCoordinator>()
+
+function coordinatorFor(scope: string | symbol | undefined): ReleaseCoordinator {
+  const key = scope ?? 'default'
+  const existing = releaseCoordinators.get(key)
+  if (existing !== undefined) return existing
+  const created: ReleaseCoordinator = { pending: null, retry: null }
+  releaseCoordinators.set(key, created)
+  return created
+}
+
+export function BleProvider({
+  createManager,
+  managerKey,
+  ownershipScope,
+  onError,
+  children
+}: BleProviderProps): React.ReactElement {
+  const activeKey = managerKey ?? 'default'
+  const [leaseState, setLeaseState] = React.useState(() => ({
+    key: activeKey,
+    lease: new ManagerLease(createManager, ownershipScope)
+  }))
+  let lease = leaseState.lease
+  if (leaseState.key !== activeKey) {
+    lease = new ManagerLease(createManager, ownershipScope)
+    setLeaseState({ key: activeKey, lease })
+  }
   const [value, setValue] = React.useState<BleContextValue>({ manager: null, loading: true, error: null })
 
   React.useEffect(() => {
@@ -449,6 +479,13 @@ class ManagerStore {
           return
         }
         if (item.kind === 'terminal') {
+          if (item.reason === 'source-failed' || item.reason === 'overflow') {
+            this.applyError(
+              item.reason === 'overflow'
+                ? streamOverflowError('react.adapterStateWatch')
+                : streamClosedError('react.adapterStateWatch')
+            )
+          }
           break
         }
         if (item.kind === 'overflow') {
@@ -468,8 +505,14 @@ class ManagerStore {
     if (run.phase !== 'starting' && run.phase !== 'active') {
       return
     }
+    const failedVisible = this.adapterSnapshot?.error !== null
     const cleanup = await this.stopRun(run)
-    if (cleanup.state === 'released' && this.listeners.size > 0 && this.watchRun === null) {
+    if (
+      cleanup.state === 'released' &&
+      this.listeners.size > 0 &&
+      this.watchRun === null &&
+      !failedVisible
+    ) {
       this.ensureWatch()
     }
   }
@@ -1094,12 +1137,16 @@ class ManagerLease {
   private createFailureReported = false
   private destroyFailureReported = false
 
-  constructor(private readonly createManager: BleManagerFactory) {}
+  constructor(
+    private readonly createManager: BleManagerFactory,
+    private readonly ownershipScope?: string | symbol
+  ) {}
 
   create(): Promise<BleManager> {
     if (this.managerPromise === null) {
-      const pendingRelease = pendingManagerRelease
-      pendingManagerReleaseRetry?.()
+      const coordinator = coordinatorFor(this.ownershipScope)
+      const pendingRelease = coordinator.pending
+      coordinator.retry?.()
       this.managerPromise =
         pendingRelease === null ? this.createManager() : pendingRelease.then(() => this.createManager())
     }
@@ -1123,12 +1170,13 @@ class ManagerLease {
         this.resolveReleaseBarrier = resolve
       })
       this.releaseBarrier = releaseBarrier
-      const previousRelease = pendingManagerRelease ?? Promise.resolve()
+      const coordinator = coordinatorFor(this.ownershipScope)
+      const previousRelease = coordinator.pending ?? Promise.resolve()
       const scheduledRelease = previousRelease.then(() => releaseBarrier)
-      pendingManagerRelease = scheduledRelease
+      coordinator.pending = scheduledRelease
       scheduledRelease.then(() => {
-        if (pendingManagerRelease === scheduledRelease) pendingManagerRelease = null
-        if (pendingManagerRelease === null) pendingManagerReleaseRetry = null
+        if (coordinator.pending === scheduledRelease) coordinator.pending = null
+        if (coordinator.pending === null) coordinator.retry = null
         this.releaseBarrier = null
         this.resolveReleaseBarrier = null
       })
@@ -1147,15 +1195,15 @@ class ManagerLease {
           this.releaseInFlight = false
           if (succeeded) {
             this.released = true
-            pendingManagerReleaseRetry = null
+            coordinatorFor(this.ownershipScope).retry = null
             this.resolveReleaseBarrier?.()
           } else {
-            pendingManagerReleaseRetry = () => this.scheduleRelease(report)
+            coordinatorFor(this.ownershipScope).retry = () => this.scheduleRelease(report)
           }
         },
         () => {
           this.releaseInFlight = false
-          pendingManagerReleaseRetry = () => this.scheduleRelease(report)
+          coordinatorFor(this.ownershipScope).retry = () => this.scheduleRelease(report)
         }
       )
     })
@@ -1207,6 +1255,10 @@ function toError(error: unknown): Error {
 
 function streamOverflowError(operation: string): Error {
   return contractError('stream.overflow', 'stream', operation)
+}
+
+function streamClosedError(operation: string): Error {
+  return contractError('stream.closed', 'stream', operation)
 }
 
 export type { BleAdapterState, BleCapabilities, CapabilityDescriptor, FeatureId }

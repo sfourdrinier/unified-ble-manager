@@ -48,3 +48,10 @@ target_compile_options(
   -Wextra
   -Werror
 )
+
+target_link_options(
+  ${CMAKE_PROJECT_NAME}
+  PRIVATE
+  "-Wl,-z,max-page-size=16384"
+  "-Wl,-z,common-page-size=16384"
+)

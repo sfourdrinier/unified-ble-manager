@@ -14,7 +14,8 @@ import type { SerializableRecord, SerializableValue } from '../backend-contract/
 import {
   assertSafeSerializablePrototype,
   createOwnedSerializableRecord,
-  setOwnedSerializableEntry
+  setOwnedSerializableEntry,
+  utf8ByteLength
 } from '../backend-contract/serializable'
 import type {
   IpcBleEvent,
@@ -30,6 +31,69 @@ import type { NormalizedScanQuery } from '../backend-contract/scan-query'
 /** Tauri v2 plugin command registered by the Rust crate. */
 export const TAURI_BLE_PLUGIN_COMMAND = 'plugin:unified-ble-manager|invoke'
 const TAURI_BYTES_WIRE_TAG = '$__unifiedBleBytesV2'
+
+/** Maximum nested array/record depth for one encode or decode walk. */
+export const TAURI_WIRE_MAX_DEPTH = 32
+/** Maximum objects, arrays, and primitives visited during one walk. */
+export const TAURI_WIRE_MAX_NODES = 16_384
+/** Maximum entries in a general array (tagged byte payloads use the binary budget). */
+export const TAURI_WIRE_MAX_ARRAY_LENGTH = 65_536
+/** Maximum UTF-8 bytes in a single object key. */
+export const TAURI_WIRE_MAX_KEY_BYTES = 1024
+/** Maximum cumulative UTF-8 bytes of strings and keys in one walk. */
+export const TAURI_WIRE_MAX_TEXT_BYTES = 2 * 1024 * 1024
+/** Maximum cumulative tagged/owned byte payload in one walk; matches IPC pending-stream retained bytes. */
+export const TAURI_WIRE_MAX_BINARY_BYTES = 2 * 1024 * 1024
+
+interface TauriWireWalkState {
+  depth: number
+  nodes: number
+  textBytes: number
+  binaryBytes: number
+  readonly ancestors: WeakSet<object>
+}
+
+function createTauriWireWalkState(): TauriWireWalkState {
+  return { depth: 0, nodes: 0, textBytes: 0, binaryBytes: 0, ancestors: new WeakSet<object>() }
+}
+
+function tauriWireMalformed(detail: string): never {
+  throw contractError('protocol.malformed', 'ipc', `tauri.transport.${detail}`)
+}
+
+function chargeTauriWireNode(state: TauriWireWalkState): void {
+  state.nodes += 1
+  if (state.nodes > TAURI_WIRE_MAX_NODES) tauriWireMalformed('nodes')
+}
+
+function chargeTauriWireText(state: TauriWireWalkState, value: string): void {
+  const byteLength = utf8ByteLength(value)
+  if (state.textBytes + byteLength > TAURI_WIRE_MAX_TEXT_BYTES) tauriWireMalformed('text-bytes')
+  state.textBytes += byteLength
+}
+
+function chargeTauriWireKey(state: TauriWireWalkState, key: string): void {
+  const byteLength = utf8ByteLength(key)
+  if (byteLength > TAURI_WIRE_MAX_KEY_BYTES) tauriWireMalformed('key-bytes')
+  chargeTauriWireText(state, key)
+}
+
+function chargeTauriWireBinary(state: TauriWireWalkState, byteLength: number): void {
+  if (byteLength > TAURI_WIRE_MAX_BINARY_BYTES - state.binaryBytes) tauriWireMalformed('binary-bytes')
+  state.binaryBytes += byteLength
+}
+
+function enterTauriWireContainer(state: TauriWireWalkState, value: object): void {
+  if (state.ancestors.has(value)) tauriWireMalformed('cycle')
+  if (state.depth >= TAURI_WIRE_MAX_DEPTH) tauriWireMalformed('depth')
+  state.ancestors.add(value)
+  state.depth += 1
+}
+
+function leaveTauriWireContainer(state: TauriWireWalkState, value: object): void {
+  state.ancestors.delete(value)
+  state.depth -= 1
+}
 
 /**
  * The only request that carries the event Channel. Attaching binds the sink
@@ -180,20 +244,48 @@ export class TauriBleIpcTransport<Attachment extends string, Client extends stri
 
 /** Encodes bytes explicitly before Tauri serializes nested command arguments as JSON. */
 export function encodeTauriWireValue(value: unknown): unknown {
+  return encodeTauriWireValueWithState(value, createTauriWireWalkState())
+}
+
+function encodeTauriWireValueWithState(value: unknown, state: TauriWireWalkState): unknown {
+  chargeTauriWireNode(state)
   assertEncodableTauriValue(value)
+  if (typeof value === 'string') {
+    chargeTauriWireText(state, value)
+    return value
+  }
   if (value instanceof Uint8Array) {
+    chargeTauriWireBinary(state, value.byteLength)
     return { [TAURI_BYTES_WIRE_TAG]: Array.from(value) }
   }
   if (Array.isArray(value)) {
-    return value.map(item => encodeTauriWireValue(item))
+    if (value.length > TAURI_WIRE_MAX_ARRAY_LENGTH) tauriWireMalformed('array-length')
+    enterTauriWireContainer(state, value)
+    try {
+      return value.map(item => encodeTauriWireValueWithState(item, state))
+    } finally {
+      leaveTauriWireContainer(state, value)
+    }
   }
   if (isWireRecord(value)) {
     assertSafeSerializablePrototype(value, 'ipc', 'tauri.transport.prototype')
-    const encoded = createOwnedSerializableRecord<unknown>()
-    for (const [key, item] of Object.entries(value)) {
-      setOwnedSerializableEntry(encoded, key, encodeTauriWireValue(item), 'ipc', 'tauri.transport.forbidden-key')
+    enterTauriWireContainer(state, value)
+    try {
+      const encoded = createOwnedSerializableRecord<unknown>()
+      for (const [key, item] of Object.entries(value)) {
+        chargeTauriWireKey(state, key)
+        setOwnedSerializableEntry(
+          encoded,
+          key,
+          encodeTauriWireValueWithState(item, state),
+          'ipc',
+          'tauri.transport.forbidden-key'
+        )
+      }
+      return encoded
+    } finally {
+      leaveTauriWireContainer(state, value)
     }
-    return encoded
   }
   if (value !== null && typeof value === 'object') {
     throw contractError('protocol.malformed', 'ipc', 'tauri.transport.encode-object')
@@ -203,11 +295,27 @@ export function encodeTauriWireValue(value: unknown): unknown {
 
 /** Reconstructs independently owned bytes from Rust responses and Channel messages. */
 export function decodeTauriWireValue(value: unknown): unknown {
+  return decodeTauriWireValueWithState(value, createTauriWireWalkState())
+}
+
+function decodeTauriWireValueWithState(value: unknown, state: TauriWireWalkState): unknown {
+  chargeTauriWireNode(state)
+  if (typeof value === 'string') {
+    chargeTauriWireText(state, value)
+    return value
+  }
   if (value instanceof Uint8Array) {
+    chargeTauriWireBinary(state, value.byteLength)
     return new Uint8Array(value)
   }
   if (Array.isArray(value)) {
-    return value.map(item => decodeTauriWireValue(item))
+    if (value.length > TAURI_WIRE_MAX_ARRAY_LENGTH) tauriWireMalformed('array-length')
+    enterTauriWireContainer(state, value)
+    try {
+      return value.map(item => decodeTauriWireValueWithState(item, state))
+    } finally {
+      leaveTauriWireContainer(state, value)
+    }
   }
   if (!isWireRecord(value)) {
     if (value !== null && typeof value === 'object') {
@@ -215,20 +323,35 @@ export function decodeTauriWireValue(value: unknown): unknown {
     }
     return value
   }
-  if (Object.prototype.hasOwnProperty.call(value, TAURI_BYTES_WIRE_TAG)) {
-    const keys = Object.keys(value)
-    const bytes = value[TAURI_BYTES_WIRE_TAG]
-    if (keys.length !== 1 || !Array.isArray(bytes) || !bytes.every(isByte)) {
-      throw new TypeError('Malformed Unified BLE Tauri byte value')
+  enterTauriWireContainer(state, value)
+  try {
+    if (Object.prototype.hasOwnProperty.call(value, TAURI_BYTES_WIRE_TAG)) {
+      const keys = Object.keys(value)
+      const bytes = value[TAURI_BYTES_WIRE_TAG]
+      if (keys.length !== 1 || !Array.isArray(bytes)) {
+        tauriWireMalformed('bytes')
+      }
+      chargeTauriWireKey(state, TAURI_BYTES_WIRE_TAG)
+      chargeTauriWireBinary(state, bytes.length)
+      if (!bytes.every(isByte)) tauriWireMalformed('bytes')
+      return new Uint8Array(bytes)
     }
-    return new Uint8Array(bytes)
+    assertSafeSerializablePrototype(value, 'ipc', 'tauri.transport.prototype')
+    const decoded = createOwnedSerializableRecord<unknown>()
+    for (const [key, item] of Object.entries(value)) {
+      chargeTauriWireKey(state, key)
+      setOwnedSerializableEntry(
+        decoded,
+        key,
+        decodeTauriWireValueWithState(item, state),
+        'ipc',
+        'tauri.transport.forbidden-key'
+      )
+    }
+    return decoded
+  } finally {
+    leaveTauriWireContainer(state, value)
   }
-  assertSafeSerializablePrototype(value, 'ipc', 'tauri.transport.prototype')
-  const decoded = createOwnedSerializableRecord<unknown>()
-  for (const [key, item] of Object.entries(value)) {
-    setOwnedSerializableEntry(decoded, key, decodeTauriWireValue(item), 'ipc', 'tauri.transport.forbidden-key')
-  }
-  return decoded
 }
 
 function isWireRecord(value: unknown): value is Record<string, unknown> {

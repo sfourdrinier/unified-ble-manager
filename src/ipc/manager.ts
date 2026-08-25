@@ -107,6 +107,8 @@ export function inspectIpcPendingStreamAccountingForTests(manager: IpcBleManager
 export interface IpcProvisionalAdmissionAccounting {
   readonly unresolvedConnectionCount: number
   readonly unresolvedEventSubscriptionCount: number
+  readonly unresolvedGattSubscriptionCount: number
+  readonly unresolvedDatabaseCount: number
 }
 
 export function inspectIpcProvisionalAdmissionForTests(manager: IpcBleManager): IpcProvisionalAdmissionAccounting {
@@ -126,7 +128,7 @@ interface ProvisionalConnectIdentity {
 }
 
 interface UnresolvedProvisional {
-  readonly kind: 'connection' | 'connection-events'
+  readonly kind: 'connection' | 'connection-events' | 'gatt-subscription' | 'gatt-database'
   retry: () => Promise<CleanupRecord>
   error: unknown | null
 }
@@ -459,9 +461,11 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
       return receipt.payload
     }
     if (typeof deadline !== 'number' || !Number.isFinite(deadline)) {
-      throw new TypeError('Malformed IPC operation deadline')
+      throw contractError('protocol.malformed', 'ipc', 'ipc-manager.deadline')
     }
-    if (globalThis.performance === undefined) throw new TypeError('A monotonic performance clock is required')
+    if (globalThis.performance === undefined) {
+      throw contractError('capability.unavailable', 'ipc', 'ipc-manager.monotonic-clock')
+    }
     if (deadline <= globalThis.performance.now()) {
       throw contractError('operation.timed-out', 'ipc', `ipc-manager.${command}`)
     }
@@ -491,6 +495,10 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
     }
   }
 
+  hasRegisteredStream(handle: string): boolean {
+    return this.streams.has(handle)
+  }
+
   registerStream<Value>(
     handle: string,
     isValue: (value: unknown) => value is Value,
@@ -498,7 +506,9 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
     overflowPolicy: OverflowPolicy = 'drop-oldest',
     onTerminal?: (reason: StreamTerminalNotice['reason']) => void
   ): BoundedAsyncStream<Value> {
-    if (this.streams.has(handle)) throw new TypeError(`Duplicate remote stream handle: ${handle}`)
+    if (this.hasRegisteredStream(handle)) {
+      throw contractError('protocol.violation', 'ipc', 'ipc-manager.stream-handle')
+    }
     this.expirePendingState()
     const tombstone = this.pendingTombstones.get(handle)
     const source = new CoreBoundedStream<Value>(limits, overflowPolicy)
@@ -899,7 +909,7 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
 
   private assertActive(): void {
     if (this.lifecycle !== 'active' || this.pumpDead) {
-      throw new TypeError('Tauri BLE manager has been released')
+      throw contractError('lifecycle.destroyed', 'ipc', 'ipc-manager.released')
     }
   }
 
@@ -910,12 +920,21 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
   private provisionalAdmissionAccounting(): IpcProvisionalAdmissionAccounting {
     let unresolvedConnectionCount = 0
     let unresolvedEventSubscriptionCount = 0
+    let unresolvedGattSubscriptionCount = 0
+    let unresolvedDatabaseCount = 0
     for (const entry of this.unresolvedProvisionals) {
       if (entry.error === null) continue
       if (entry.kind === 'connection') unresolvedConnectionCount += 1
-      else unresolvedEventSubscriptionCount += 1
+      else if (entry.kind === 'connection-events') unresolvedEventSubscriptionCount += 1
+      else if (entry.kind === 'gatt-subscription') unresolvedGattSubscriptionCount += 1
+      else unresolvedDatabaseCount += 1
     }
-    return { unresolvedConnectionCount, unresolvedEventSubscriptionCount }
+    return {
+      unresolvedConnectionCount,
+      unresolvedEventSubscriptionCount,
+      unresolvedGattSubscriptionCount,
+      unresolvedDatabaseCount
+    }
   }
 
   private async compensateFailedConnect(
@@ -948,6 +967,35 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
       if (error === admissionError) throw admissionError
       if (error instanceof AggregateError) throw error
       this.unresolvedProvisionals.push({ kind: 'connection', retry, error })
+      throw new AggregateError([admissionError, error], 'BLE cleanup failed')
+    }
+  }
+
+  async compensateFailedGattAdmission(
+    kind: 'gatt-subscription' | 'gatt-database',
+    handle: string | null,
+    command: 'gatt.unsubscribe' | 'gatt.database.release',
+    payload: SerializableRecord,
+    admissionError: unknown
+  ): Promise<never> {
+    if (handle === null) {
+      this.unresolvedProvisionals.push({
+        kind,
+        retry: async () => ({ state: 'released', failures: [] }),
+        error: admissionError
+      })
+      throw admissionError
+    }
+    const retry = async (): Promise<CleanupRecord> => cleanupRecord(await this.route(command, payload))
+    try {
+      const cleanup = await retry()
+      if (cleanup.state === 'released') throw admissionError
+      this.unresolvedProvisionals.push({ kind, retry, error: new BleCleanupError(cleanup) })
+      throw new AggregateError([admissionError, new BleCleanupError(cleanup)], 'BLE cleanup failed')
+    } catch (error) {
+      if (error === admissionError) throw admissionError
+      if (error instanceof AggregateError) throw error
+      this.unresolvedProvisionals.push({ kind, retry, error })
       throw new AggregateError([admissionError, error], 'BLE cleanup failed')
     }
   }
@@ -1169,7 +1217,7 @@ export class IpcConnection {
       })
       .catch(error => {
         this.lifecycleEvents.closeWithReason('source-failed')
-        this.invalidateDatabases()
+        void this.invalidateDatabases()
         throw error
       })
     this.lifecycleAdmission = admission
@@ -1179,7 +1227,7 @@ export class IpcConnection {
   private async pumpLifecycleEvents(subscription: IpcConnectionEventSubscription): Promise<void> {
     for await (const event of subscription.events) {
       if (event.kind === 'terminal') {
-        this.invalidateDatabases()
+        void this.invalidateDatabases()
         this.lifecycleEvents.finishWithReason(requiredTerminalReason(event.reason, 'ipc-manager.connection-lifecycle'))
         return
       }
@@ -1197,20 +1245,21 @@ export class IpcConnection {
       this.lifecycleEvents.emit(value, estimateByteLength(value))
     }
     this.lifecycleEvents.closeWithReason('source-failed')
-    this.invalidateDatabases()
+    void this.invalidateDatabases()
   }
 
   registerDatabase(database: IpcGattDatabase): void {
     this.databases.add(database)
   }
 
-  private invalidateDatabases(reason: GattDatabaseChangedEvent['reason'] | null = null): void {
-    for (const database of this.databases) database.invalidate(reason)
+  private async invalidateDatabases(reason: GattDatabaseChangedEvent['reason'] | null = null): Promise<void> {
+    const pending = [...this.databases].map(database => database.invalidate(reason))
     this.databases.clear()
+    await Promise.all(pending)
   }
 
   async discover(options: IpcManagerOperationOptions = {}): Promise<IpcGattDatabase> {
-    this.invalidateDatabases(options.reason ?? null)
+    await this.invalidateDatabases(options.reason ?? null)
     await this.awaitLifecycleAdmission(options)
     const payload = await this.manager.route(
       'gatt.discover',
@@ -1222,10 +1271,24 @@ export class IpcConnection {
       null,
       options.signal
     )
-    if (options.reason !== undefined && payload.rediscoveryReason !== options.reason) {
-      throw contractError('protocol.incompatible', 'ipc', 'ipc-manager.rediscovery-reason')
+    const handle = optionalResourceHandle(payload, 'handle')
+    try {
+      if (options.reason !== undefined && payload.rediscoveryReason !== options.reason) {
+        throw contractError('protocol.incompatible', 'ipc', 'ipc-manager.rediscovery-reason')
+      }
+      return IpcGattDatabase.fromPayload(this.manager, this, payload)
+    } catch (error) {
+      return await this.manager.compensateFailedGattAdmission(
+        'gatt-database',
+        handle,
+        'gatt.database.release',
+        Object.freeze({
+          ...(handle === null ? {} : { databaseHandle: handle }),
+          ...this.identityPayload()
+        }),
+        error
+      )
     }
-    return IpcGattDatabase.fromPayload(this.manager, this, payload)
   }
 
   rediscoverGatt(
@@ -1267,7 +1330,7 @@ export class IpcConnection {
   }
 
   private async disconnectInternal(): Promise<CleanupRecord> {
-    this.invalidateDatabases()
+    await this.invalidateDatabases()
     this.admissionAbort.abort()
     if (this.lifecycleSubscription === null) {
       this.lifecycleReleased = true
@@ -1396,7 +1459,7 @@ export class IpcGattDatabase {
   private readonly subscriptions = new Set<IpcSubscription>()
 
   private constructor(
-    private readonly manager: IpcBleManager,
+    readonly manager: IpcBleManager,
     readonly connection: IpcConnection,
     readonly handle: string,
     readonly databaseId: string,
@@ -1422,6 +1485,12 @@ export class IpcGattDatabase {
       requiredRecordArray(payload, 'descriptors', 'ipc-manager.gatt-database')
     )
     const services = requiredServiceRecords(requiredRecordArray(payload, 'services', 'ipc-manager.gatt-database'))
+    const characteristicHandles = new Set(characteristics.map(record => record.handle))
+    for (const descriptor of descriptors) {
+      if (!characteristicHandles.has(descriptor.characteristicHandle)) {
+        throw contractError('protocol.malformed', 'ipc', 'ipc-manager.gatt-database.descriptor-parent')
+      }
+    }
     const database = new IpcGattDatabase(
       manager,
       connection,
@@ -1458,7 +1527,7 @@ export class IpcGattDatabase {
       )
       .catch(error => {
         if (error instanceof BackendContractError && error.normalized.code === 'gatt.stale-handle') {
-          this.invalidate('service-changed')
+          void this.invalidate('service-changed')
         }
         throw error
       })
@@ -1472,13 +1541,14 @@ export class IpcGattDatabase {
     return this.changedStream
   }
 
-  invalidate(reason: GattDatabaseChangedEvent['reason'] | null = null): void {
+  async invalidate(reason: GattDatabaseChangedEvent['reason'] | null = null): Promise<void> {
     if (!this.valid) return
-    this.valid = false
-    for (const subscription of this.subscriptions) {
+    const removals = [...this.subscriptions].map(subscription =>
       subscription.closeFromDatabase(reason === 'service-changed' ? 'service-changed' : 'connection-lost')
-    }
+    )
     this.subscriptions.clear()
+    await Promise.all(removals)
+    this.valid = false
     if (reason !== null) {
       this.changedStream.emit(
         Object.freeze({
@@ -1502,6 +1572,10 @@ export class IpcGattDatabase {
     onTerminal?: (reason: StreamTerminalNotice['reason']) => void
   ): BoundedAsyncStream<Value> {
     return this.manager.registerStream<Value>(handle, isValue, limits, overflowPolicy, onTerminal)
+  }
+
+  hasRegisteredStream(handle: string): boolean {
+    return this.manager.hasRegisteredStream(handle)
   }
 
   closeStream(
@@ -1536,7 +1610,7 @@ export class IpcGattDatabase {
 
   monotonicNow(): number {
     if (globalThis.performance === undefined) {
-      throw new TypeError('A monotonic performance clock is required')
+      throw contractError('capability.unavailable', 'ipc', 'ipc-manager.monotonic-clock')
     }
     return globalThis.performance.now()
   }
@@ -1652,13 +1726,11 @@ export class IpcGattDatabase {
         String(characteristic.record.characteristicOccurrence) === String(path.characteristicOccurrence)
     )
     if (matches.length !== 1) {
-      throw new TypeError(
-        `Expected exactly one IPC characteristic ${path.characteristicUuid} in ${path.serviceUuid}; found ${matches.length}`
-      )
+      throw contractError('protocol.violation', 'gatt', 'ipc-manager.gatt-characteristic-match')
     }
     const match = matches[0]
     if (match === undefined) {
-      throw new TypeError(`IPC characteristic ${path.characteristicUuid} was missing after match`)
+      throw contractError('protocol.violation', 'gatt', 'ipc-manager.gatt-characteristic-match')
     }
     return match
   }
@@ -1761,27 +1833,43 @@ export class IpcCharacteristic {
       null,
       options.signal
     )
-    const handle = requiredString(payload, 'handle', 'ipc-manager.gatt-subscribe')
-    const subscription = new IpcSubscription(
-      this.database,
-      handle,
-      this.database.registerStream<IpcNotificationValue>(
+    const handle = optionalResourceHandle(payload, 'handle')
+    if (handle !== null && this.database.hasRegisteredStream(handle)) {
+      throw contractError('protocol.violation', 'ipc', 'ipc-manager.stream-handle')
+    }
+    try {
+      if (handle === null) {
+        throw contractError('protocol.malformed', 'ipc', 'ipc-manager.gatt-subscribe')
+      }
+      const subscription = new IpcSubscription(
+        this.database,
         handle,
-        isIpcNotificationValue,
-        toRemoteStreamLimits(options.stream),
-        options.stream?.overflowPolicy,
-        reason => {
-          if (reason === 'service-changed') this.database.invalidate('service-changed')
-          if (reason === 'overflow' || reason === 'source-failed') {
-            this.database
-              .route('gatt.unsubscribe', Object.freeze({ subscriptionHandle: handle }), null)
-              .catch(() => undefined)
+        this.database.registerStream<IpcNotificationValue>(
+          handle,
+          isIpcNotificationValue,
+          toRemoteStreamLimits(options.stream),
+          options.stream?.overflowPolicy,
+          reason => {
+            if (reason === 'service-changed') void this.database.invalidate('service-changed')
+            if (reason === 'overflow' || reason === 'source-failed') {
+              this.database
+                .route('gatt.unsubscribe', Object.freeze({ subscriptionHandle: handle }), null)
+                .catch(() => undefined)
+            }
           }
-        }
+        )
       )
-    )
-    this.database.registerSubscription(subscription)
-    return subscription
+      this.database.registerSubscription(subscription)
+      return subscription
+    } catch (error) {
+      return await this.database.manager.compensateFailedGattAdmission(
+        'gatt-subscription',
+        handle,
+        'gatt.unsubscribe',
+        Object.freeze({ ...(handle === null ? {} : { subscriptionHandle: handle }) }),
+        error
+      )
+    }
   }
 }
 
@@ -1853,9 +1941,9 @@ export class IpcSubscription {
     return result
   }
 
-  closeFromDatabase(reason: 'connection-lost' | 'service-changed'): void {
+  closeFromDatabase(reason: 'connection-lost' | 'service-changed'): Promise<CleanupRecord> {
     this.database.closeStream(this.handle, reason)
-    this.removeResult = Promise.resolve({ state: 'released', failures: [] })
+    return this.remove()
   }
 }
 
@@ -1947,7 +2035,7 @@ function characteristicRecordForDescriptor(
 ): IpcCharacteristicRecord {
   const match = characteristics.find(characteristic => characteristic.record.handle === descriptor.characteristicHandle)
   if (match === undefined) {
-    throw new TypeError(`IPC descriptor ${descriptor.uuid} has no matching characteristic`)
+    throw contractError('protocol.malformed', 'ipc', 'ipc-manager.descriptor-parent')
   }
   return match.record
 }
@@ -1955,12 +2043,18 @@ function characteristicRecordForDescriptor(
 function operationDeadline(options: IpcManagerOperationOptions): number | null {
   if (options.deadline !== undefined) {
     if (options.deadline === null) return null
-    if (!Number.isFinite(options.deadline)) throw new TypeError('deadline must be finite or null')
+    if (!Number.isFinite(options.deadline)) {
+      throw contractError('protocol.malformed', 'ipc', 'ipc-manager.deadline')
+    }
     return options.deadline
   }
   if (options.timeoutMs === undefined) return null
-  if (!Number.isFinite(options.timeoutMs) || options.timeoutMs <= 0) throw new TypeError('timeoutMs must be positive')
-  if (globalThis.performance === undefined) throw new TypeError('A monotonic performance clock is required')
+  if (!Number.isFinite(options.timeoutMs) || options.timeoutMs <= 0) {
+    throw contractError('argument.invalid', 'ipc', 'ipc-manager.timeout')
+  }
+  if (globalThis.performance === undefined) {
+    throw contractError('capability.unavailable', 'ipc', 'ipc-manager.monotonic-clock')
+  }
   return globalThis.performance.now() + options.timeoutMs
 }
 
@@ -2153,6 +2247,12 @@ function requiredRecordArray(
   if (!isSerializableRecordArray(value)) {
     throw contractError('protocol.malformed', 'ipc', operation)
   }
+  return value
+}
+
+function optionalResourceHandle(record: SerializableRecord, key: string): string | null {
+  const value = record[key]
+  if (typeof value !== 'string' || value.length === 0) return null
   return value
 }
 

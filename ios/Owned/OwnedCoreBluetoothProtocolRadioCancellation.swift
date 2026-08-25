@@ -209,4 +209,77 @@ extension OwnedCoreBluetoothProtocolRadio {
       _ = self.retryCancellationCleanupOnQueue(operationIdentifier)
     }
   }
+
+  func disableActiveNotifications() {
+    for address in subscriptions.keys {
+      if let resolved = resolve(address) {
+        resolved.peripheral.setNotifyValue(false, for: resolved.characteristic)
+      }
+    }
+  }
+
+  func completeAfterPendingDisconnects(
+    preserving restoredIdentifiers: Set<String>,
+    destroyRadio: Bool,
+    completion: @escaping (NSError?) -> Void
+  ) {
+    final class DisconnectWaiter {
+      var remaining: Int
+      var finished = false
+      let finish: (NSError?) -> Void
+      init(remaining: Int, finish: @escaping (NSError?) -> Void) {
+        self.remaining = remaining
+        self.finish = finish
+      }
+      func decrement() {
+        remaining -= 1
+        if remaining <= 0 && !finished {
+          finished = true
+          finish(nil)
+        }
+      }
+    }
+
+    var waitCount = 0
+    for (identifier, peripheral) in peripheralByIdentifier where !restoredIdentifiers.contains(identifier) {
+      if peripheral.state == .connected || peripheral.state == .connecting {
+        waitCount += 1
+      }
+    }
+    let waiter = DisconnectWaiter(remaining: waitCount) { [weak self] error in
+      guard let self else {
+        completion(error)
+        return
+      }
+      self.peripheralByIdentifier = self.peripheralByIdentifier.filter { restoredIdentifiers.contains($0.key) }
+      self.servicesByPeer = self.servicesByPeer.filter { restoredIdentifiers.contains($0.key) }
+      if destroyRadio {
+        self.peripheralByIdentifier.removeAll()
+        self.servicesByPeer.removeAll()
+        self.restoredPeerIdentifiers.removeAll()
+        self.central.delegate = nil
+      } else {
+        for peripheral in self.peripheralByIdentifier.values where !restoredIdentifiers.contains(peripheral.identifier.uuidString) {
+          peripheral.delegate = nil
+        }
+      }
+      completion(error)
+    }
+    if waitCount == 0 {
+      waiter.decrement()
+      return
+    }
+    for (identifier, peripheral) in peripheralByIdentifier where !restoredIdentifiers.contains(identifier) {
+      guard peripheral.state == .connected || peripheral.state == .connecting else {
+        peripheral.delegate = nil
+        continue
+      }
+      let previous = pendingDisconnect[identifier]
+      pendingDisconnect[identifier] = PendingVoid(operationIdentifier: "teardown-\(identifier)") { error in
+        previous?.completion(error)
+        waiter.decrement()
+      }
+      central.cancelPeripheralConnection(peripheral)
+    }
+  }
 }

@@ -95,6 +95,7 @@ export interface ScanSession {
 export type DiscoveryEvent =
   | { readonly kind: 'observed'; readonly peer: BlePeer }
   | { readonly kind: 'lost'; readonly peer: BlePeer; readonly lastObservedAt: number; readonly derivedAt: number; readonly reason: 'observation-timeout' }
+  | { readonly kind: 'presence-tracking-overflow'; readonly guarantee: 'reportLostAfterMs-completeness'; readonly droppedEntries: number; readonly droppedBytes: number }
 export type ScanPlatformOptions = AndroidScanPlatformOptions | { readonly kind: 'corebluetooth' } | { readonly kind: 'winrt' } | { readonly kind: 'web' } | { readonly kind: 'electron' } | { readonly kind: 'tauri' }
 export interface AndroidScanPlatformOptions { readonly kind: 'android'; readonly mode?: 'low-power' | 'balanced' | 'low-latency' | 'opportunistic'; readonly callbackType?: 'all-matches' | 'first-match' | 'match-lost'; readonly reportDelayMs?: number; readonly legacy?: boolean; readonly phy?: 'all-supported' | '1m' | 'coded' }
 export interface BleAdapter { readonly id: string | null; state(): Promise<BleAdapterState>; waitUntilReady(options?: AdapterReadinessOptions): Promise<BleAdapterState> }
@@ -181,7 +182,7 @@ All BLE payloads are bytes. Application operations use `AbortSignal` and
 - `CustomStreamBudget :: { readonly itemCapacity: number; readonly byteCapacity: number; readonly reservedControlCapacity?: number | undefined; readonly overflowPolicy?: OverflowPolicy | undefined }`
 - `DescriptorWriteOptions :: { readonly response?: "required" | "automatic" | undefined; readonly signal?: AbortSignal | undefined; readonly timeoutMs?: number | undefined }`
 - `DiagnosticsOptions :: { readonly traceMaximumRecords?: number | undefined; readonly traceMaximumBytes?: number | undefined; readonly maximumValueBytes?: number | undefined }`
-- `DiscoveryEvent :: { readonly kind: "observed"; readonly peer: BlePeer; } | { readonly kind: "lost"; readonly peer: BlePeer; readonly lastObservedAt: number; readonly derivedAt: number; readonly reason: "observation-timeout"; }`
+- `DiscoveryEvent :: { readonly kind: "observed"; readonly peer: BlePeer; } | { readonly kind: "lost"; readonly peer: BlePeer; readonly lastObservedAt: number; readonly derivedAt: number; readonly reason: "observation-timeout"; } | { readonly kind: "presence-tracking-overflow"; readonly guarantee: "reportLostAfterMs-completeness"; readonly droppedEntries: number; readonly droppedBytes: number; }`
 - `FeatureId :: '${Namespace}:${Name}'`
 - `FindOptions :: { readonly query?: ScanQuery | undefined; readonly select?: "first" | ((peer: BlePeer) => boolean) | undefined; readonly signal?: AbortSignal | undefined; readonly timeoutMs?: number | undefined }`
 - `GattAccessRequirements :: { readonly read: "unknown" | "none" | "encrypted" | "authenticated" | "authorized"; readonly write: "unknown" | "none" | "encrypted" | "authenticated" | "authorized" }`

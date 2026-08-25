@@ -82,18 +82,52 @@ function validConnectPayload(overrides = {}) {
   }
 }
 
+function validGattDiscoverPayload(overrides = {}) {
+  return {
+    schemaVersion: 2,
+    handle: 'database-1',
+    databaseId: 'database-id-1',
+    databaseGeneration: 'database-generation-1',
+    services: [{ uuid: '180d', occurrence: '0', primary: true, includedServices: [] }],
+    characteristics: [
+      {
+        handle: 'characteristic-1',
+        serviceUuid: '180d',
+        serviceOccurrence: '0',
+        characteristicUuid: '2a37',
+        characteristicOccurrence: '0',
+        properties: ['notify', 'read']
+      }
+    ],
+    descriptors: [
+      { handle: 'descriptor-1', characteristicHandle: 'characteristic-1', uuid: '2901', occurrence: '0' }
+    ],
+    ...overrides
+  }
+}
+
 async function createAdmissionHarness(options = {}) {
   const commands = []
   const disconnectPayloads = []
   const unsubscribePayloads = []
+  const gattUnsubscribePayloads = []
+  const databaseReleasePayloads = []
   const bootstrap = bootstrapRecord()
   const connectPayload = options.connectPayload ?? validConnectPayload()
   const subscribePayload = options.subscribePayload
+  const discoverPayload = options.discoverPayload ?? validGattDiscoverPayload()
+  const gattSubscribePayload = options.gattSubscribePayload ?? { handle: 'subscription-1' }
   let disconnectImpl =
     options.disconnect ??
     (async () => ({ kind: 'route', payload: { state: 'released', failures: [] } }))
   let unsubscribeImpl =
     options.unsubscribe ??
+    (async () => ({ kind: 'route', payload: { state: 'released', failures: [] } }))
+  let gattUnsubscribeImpl =
+    options.gattUnsubscribe ??
+    (async () => ({ kind: 'route', payload: { state: 'released', failures: [] } }))
+  let databaseReleaseImpl =
+    options.databaseRelease ??
     (async () => ({ kind: 'route', payload: { state: 'released', failures: [] } }))
   const transport = {
     invoke: async request => {
@@ -130,6 +164,23 @@ async function createAdmissionHarness(options = {}) {
         unsubscribePayloads.push(payload)
         return unsubscribeImpl()
       }
+      if (command === 'gatt.discover') {
+        return { kind: 'route', payload: typeof discoverPayload === 'function' ? discoverPayload() : discoverPayload }
+      }
+      if (command === 'gatt.database.release') {
+        databaseReleasePayloads.push(payload)
+        return databaseReleaseImpl()
+      }
+      if (command === 'gatt.subscribe') {
+        return {
+          kind: 'route',
+          payload: typeof gattSubscribePayload === 'function' ? gattSubscribePayload() : gattSubscribePayload
+        }
+      }
+      if (command === 'gatt.unsubscribe') {
+        gattUnsubscribePayloads.push(payload)
+        return gattUnsubscribeImpl()
+      }
       return { kind: 'route', payload: { state: 'released', failures: [] } }
     },
     subscribe() {
@@ -143,11 +194,16 @@ async function createAdmissionHarness(options = {}) {
     commands,
     disconnectPayloads,
     unsubscribePayloads,
+    gattUnsubscribePayloads,
+    databaseReleasePayloads,
     setDisconnect(next) {
       disconnectImpl = next
     },
     setUnsubscribe(next) {
       unsubscribeImpl = next
+    },
+    setGattUnsubscribe(next) {
+      gattUnsubscribeImpl = next
     }
   }
 }
@@ -213,7 +269,7 @@ describe('IPC provisional admission', () => {
     expect(harness.commands).not.toContain('connection.disconnect')
     expect(inspectIpcProvisionalAdmissionForTests(harness.ipc).unresolvedConnectionCount).toBe(1)
     await expect(harness.ipc.destroy()).resolves.toEqual({ state: 'released', failures: [] })
-    expect(inspectIpcProvisionalAdmissionForTests(harness.ipc)).toEqual({
+    expect(inspectIpcProvisionalAdmissionForTests(harness.ipc)).toMatchObject({
       unresolvedConnectionCount: 0,
       unresolvedEventSubscriptionCount: 0
     })
@@ -299,12 +355,12 @@ describe('IPC provisional admission', () => {
     await expect(harness.ipc.connect('peer-1')).rejects.toMatchObject({
       normalized: { code: 'protocol.violation' }
     })
-    expect(inspectIpcProvisionalAdmissionForTests(harness.ipc)).toEqual({
+    expect(inspectIpcProvisionalAdmissionForTests(harness.ipc)).toMatchObject({
       unresolvedConnectionCount: 0,
       unresolvedEventSubscriptionCount: 0
     })
     await harness.ipc.destroy()
-    expect(inspectIpcProvisionalAdmissionForTests(harness.ipc)).toEqual({
+    expect(inspectIpcProvisionalAdmissionForTests(harness.ipc)).toMatchObject({
       unresolvedConnectionCount: 0,
       unresolvedEventSubscriptionCount: 0
     })
@@ -396,6 +452,82 @@ describe('IPC provisional admission', () => {
       await harness.ipc.destroy()
     }
   )
+
+  test('duplicate GATT subscribe handle rejects without unsubscribing the admitted subscription', async () => {
+    const harness = await createAdmissionHarness({
+      gattSubscribePayload: { handle: 'subscription-1' }
+    })
+    const connection = await harness.ipc.connect('peer-1')
+    const database = await connection.discover()
+    const characteristic = database.characteristics[0]
+    const first = await characteristic.subscribe()
+    await expect(characteristic.subscribe()).rejects.toMatchObject({
+      normalized: { code: 'protocol.violation', operation: 'ipc-manager.stream-handle' }
+    })
+    expect(harness.commands.filter(command => command === 'gatt.unsubscribe')).toHaveLength(0)
+    expect(first.handle).toBe('subscription-1')
+    await first.remove()
+    expect(harness.commands.filter(command => command === 'gatt.unsubscribe')).toHaveLength(1)
+    await connection.release()
+    await harness.ipc.destroy()
+  })
+
+  test('missing GATT subscribe handle is fail-closed and destroy settles provisional ownership', async () => {
+    const harness = await createAdmissionHarness({
+      gattSubscribePayload: {}
+    })
+    const connection = await harness.ipc.connect('peer-1')
+    const database = await connection.discover()
+    const characteristic = database.characteristics[0]
+    await expect(characteristic.subscribe()).rejects.toMatchObject({
+      normalized: { code: 'protocol.malformed' }
+    })
+    expect(harness.commands).not.toContain('gatt.unsubscribe')
+    expect(inspectIpcProvisionalAdmissionForTests(harness.ipc).unresolvedGattSubscriptionCount).toBe(1)
+    await expect(harness.ipc.destroy()).resolves.toEqual({ state: 'released', failures: [] })
+    expect(inspectIpcProvisionalAdmissionForTests(harness.ipc).unresolvedGattSubscriptionCount).toBe(0)
+    await connection.release().catch(() => undefined)
+  })
+
+  test('malformed discovered GATT topology releases the provisional database handle', async () => {
+    const harness = await createAdmissionHarness({
+      discoverPayload: validGattDiscoverPayload({
+        descriptors: [{ handle: 'descriptor-1', characteristicHandle: 'missing-char', uuid: '2901', occurrence: '0' }]
+      })
+    })
+    const connection = await harness.ipc.connect('peer-1')
+    await expect(connection.discover()).rejects.toMatchObject({
+      normalized: { code: 'protocol.malformed' }
+    })
+    expect(harness.commands).toContain('gatt.database.release')
+    expect(harness.databaseReleasePayloads[0]).toMatchObject({ databaseHandle: 'database-1' })
+    await connection.release()
+    await harness.ipc.destroy()
+  })
+
+  test('rediscovery unsubscribes old subscriptions instead of synthesizing released', async () => {
+    let discoverCount = 0
+    const harness = await createAdmissionHarness({
+      discoverPayload: () => {
+        discoverCount += 1
+        return validGattDiscoverPayload({
+          handle: `database-${discoverCount}`,
+          databaseGeneration: `database-generation-${discoverCount}`,
+          ...(discoverCount > 1 ? { rediscoveryReason: 'manual-rediscovery' } : {})
+        })
+      }
+    })
+    const connection = await harness.ipc.connect('peer-1')
+    const database = await connection.discover()
+    const subscription = await database.characteristics[0].subscribe()
+    const replacement = await connection.rediscoverGatt({}, 'manual-rediscovery')
+    expect(harness.commands).toContain('gatt.unsubscribe')
+    expect(harness.gattUnsubscribePayloads[0]).toMatchObject({ subscriptionHandle: 'subscription-1' })
+    await expect(subscription.remove()).resolves.toMatchObject({ state: 'released', failures: [] })
+    expect(replacement.handle).toBe('database-2')
+    await connection.release()
+    await harness.ipc.destroy()
+  })
 
   test.each(['electron', 'tauri'])(
     '%s transport doubles exercise the same admission helper',

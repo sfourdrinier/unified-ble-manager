@@ -480,4 +480,17 @@ describe('Apple Native Protocol v2 radio boundary', () => {
       throw new Error('Non-macOS routing check failed: the macOS Apple CI workflow does not require pnpm test:native-protocol:apple.')
     }
   })
+
+  test('release and destroy wait for pendingDisconnect confirmation before completing', () => {
+    const radio = readAppleRadio()
+    const release = radio.slice(radio.indexOf('func releaseProtocolClient'), radio.indexOf('func startScan'))
+    expect(release).toContain('completeAfterPendingDisconnects')
+    expect(release).toContain('disableActiveNotifications()')
+    expect(release.indexOf('disableActiveNotifications()')).toBeLessThan(release.indexOf('subscriptions.removeAll()'))
+    expect(radio).toContain('func completeAfterPendingDisconnects')
+    expect(radio).toContain('pendingDisconnect[identifier] = PendingVoid')
+    expect(radio).toContain('setNotifyValue(false')
+    const destroy = radio.slice(radio.indexOf('func destroy(completion'), radio.indexOf('centralManagerDidUpdateState'))
+    expect(destroy).toContain('completeAfterPendingDisconnects')
+  })
 })

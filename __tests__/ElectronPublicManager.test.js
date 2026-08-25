@@ -430,4 +430,37 @@ describe('Electron public manager façade', () => {
     await manager.connect('peer-signal', { signal })
     expect(observedSignal).toBe(signal)
   })
+
+  test('use after destroy rejects with a public lifecycle BleError without Tauri wording', async () => {
+    const current = bootstrap()
+    const invoke = jest.fn(async request => {
+      if (request.kind === 'bootstrap') return { kind: 'bootstrap', bootstrap: current }
+      if (request.kind === 'release') return { kind: 'release', cleanup: { state: 'released', failures: [] } }
+      return { kind: 'route', payload: {} }
+    })
+    const manager = await createElectronRendererBleManager({
+      transport: { invoke, subscribe: () => () => undefined, acknowledge: async () => ({ kind: 'event.ack' }) }
+    })
+    await manager.destroy()
+
+    await expect(manager.adapter.state()).rejects.toMatchObject({
+      name: 'BleError',
+      code: 'lifecycle.destroyed',
+      domain: 'ipc'
+    })
+    await expect(manager.scan()).rejects.toMatchObject({
+      name: 'BleError',
+      code: 'lifecycle.destroyed',
+      domain: 'ipc'
+    })
+    await expect(manager.connect('peer-1')).rejects.toMatchObject({
+      name: 'BleError',
+      code: 'lifecycle.destroyed',
+      domain: 'ipc'
+    })
+    await manager.adapter.state().catch(error => {
+      expect(String(error)).not.toMatch(/Tauri/i)
+      expect(error).not.toBeInstanceOf(TypeError)
+    })
+  })
 })

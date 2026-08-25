@@ -562,6 +562,24 @@ describe('WebBluetoothBackend', () => {
     await backend.destroy()
   })
 
+  test('rejects cancellable chooser options before opening requestDevice', async () => {
+    const mock = createBoundary()
+    const provider = createWebBluetoothProvider(mock.boundary)
+    const [adapter] = await provider.listAdapters()
+    const backend = await provider.create({ selectedAdapterId: adapter.adapterId })
+    await backend.attach({ coreCompatibility: provider.descriptor.compatibility })
+    const request = chooserRequest()
+
+    await expect(backend.choose(request, { signal: new AbortController().signal, deadline: null })).rejects.toMatchObject({
+      normalized: { code: 'capability.unsupported', operation: 'web-chooser.choose' }
+    })
+    await expect(backend.choose(request, { signal: null, deadline: mock.boundary.now() + 1_000 })).rejects.toMatchObject({
+      normalized: { code: 'capability.unsupported', operation: 'web-chooser.choose' }
+    })
+    expect(mock.requestDevice).not.toHaveBeenCalled()
+    await backend.destroy()
+  })
+
   test('keeps a chooser session busy until the browser-owned request actually settles', async () => {
     let resolveBrowserChooser
     const browserChooser = new Promise(resolve => {
@@ -762,7 +780,7 @@ describe('WebBluetoothBackend', () => {
   })
 
   test.each(['abort', 'deadline'])(
-    'quarantines a late chooser selection after %s without retaining a peer or GATT resources',
+    'rejects cancellable chooser %s before opening requestDevice',
     async termination => {
       const boundary = new InMemoryWebBluetoothTckBoundary()
       const { backend } = await createAttachedWebBackend(boundary)
@@ -771,31 +789,10 @@ describe('WebBluetoothBackend', () => {
         signal: termination === 'abort' ? controller.signal : null,
         deadline: termination === 'deadline' ? 21 : null
       })
-      await boundary.flush()
-      expect(boundary.resourceSnapshot()).toMatchObject({ chooserRequests: 1, pendingChooser: true })
-
-      if (termination === 'abort') {
-        controller.abort()
-      } else {
-        boundary.advanceTime(1)
-        boundary.fireTimers()
-      }
-
       await expect(chooser).rejects.toMatchObject({
-        normalized: { code: termination === 'abort' ? 'operation.aborted' : 'operation.timed-out' }
+        normalized: { code: 'capability.unsupported', operation: 'web-chooser.choose' }
       })
-      expect(backend.resourceCounters()).toMatchObject({
-        chooserSessions: 1,
-        connectionLeases: 0,
-        physicalLinks: 0,
-        databaseSnapshots: 0,
-        subscriptionConsumers: 0
-      })
-
-      boundary.resolveChooser()
-      await boundary.flush()
-
-      expect(boundary.resourceSnapshot()).toMatchObject({ pendingChooser: false, connected: false })
+      expect(boundary.resourceSnapshot()).toMatchObject({ chooserRequests: 0, pendingChooser: false })
       expect(backend.resourceCounters()).toMatchObject({
         chooserSessions: 0,
         connectionLeases: 0,
@@ -803,9 +800,6 @@ describe('WebBluetoothBackend', () => {
         databaseSnapshots: 0,
         subscriptionConsumers: 0
       })
-      await expect(
-        backend.connections.connect(boundary.expectedSelectedPeerId, 'late-chooser-client', noDeadline())
-      ).rejects.toMatchObject({ normalized: { code: 'connection.not-found' } })
       await backend.destroy()
     }
   )

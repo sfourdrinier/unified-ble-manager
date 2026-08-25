@@ -41,6 +41,8 @@ def supportsNamespace() {
 }
 
 android {
+  ndkVersion rootProject.ext.has("ndkVersion") ? rootProject.ext.ndkVersion : "27.1.12297006"
+
   if (supportsNamespace()) {
     namespace = "com.sfourdrinier.unifiedblemanager"
 

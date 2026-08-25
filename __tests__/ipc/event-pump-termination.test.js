@@ -228,7 +228,7 @@ describe('IPC event pump termination', () => {
     const harness = await createPumpHarness()
     await killPump(harness)
     await expect(harness.ipc.adapterState()).rejects.toMatchObject({
-      name: 'TypeError'
+      normalized: { code: 'lifecycle.destroyed', operation: 'ipc-manager.released' }
     })
     await harness.ipc.destroy()
   })

@@ -2120,4 +2120,88 @@ describe('React host surface', () => {
     expect(firstCharacteristic.subscribe).toHaveBeenCalledTimes(2)
     expect(secondCharacteristic.subscribe).toHaveBeenCalledTimes(1)
   })
+
+  test('source-failed adapter watch is fail-visible and does not auto-restart', async () => {
+    const firstWatch = adapterWatch(
+      adapterState(),
+      (async function* () {
+        yield { kind: 'value', value: adapterState() }
+        yield { kind: 'terminal', reason: 'source-failed', droppedItems: 0, droppedBytes: 0, replacedItems: 0 }
+      })()
+    )
+    const createdManager = manager({
+      adapter: { watchState: jest.fn().mockResolvedValue(firstWatch) }
+    })
+    hookHarness.contextValue = { manager: createdManager, loading: false, error: null }
+    useAdapterState()
+    const store = hookHarness.externalStores[0]
+    const unsubscribe = store.subscribe(jest.fn())
+    await flush()
+    expect(store.getSnapshot()).toMatchObject({ loading: false, error: expect.any(Error) })
+    expect(createdManager.adapter.watchState).toHaveBeenCalledTimes(1)
+    unsubscribe()
+    await flush()
+  })
+
+  test('unrelated ownership scopes do not wait on each other', async () => {
+    const destruction = deferred()
+    const firstManager = manager({ destroy: jest.fn(() => destruction.promise) })
+    const secondManager = manager()
+    const firstCreateManager = jest.fn().mockResolvedValue(firstManager)
+    const secondCreateManager = jest.fn().mockResolvedValue(secondManager)
+
+    BleProvider({ createManager: firstCreateManager, ownershipScope: 'adapter-a', children: null })
+    const firstCleanup = hookHarness.effects[0]()
+    await flush()
+
+    hookHarness.stateValues = []
+    hookHarness.reset()
+    BleProvider({ createManager: secondCreateManager, ownershipScope: 'adapter-b', children: null })
+    const secondEffect = hookHarness.effects[0]
+    firstCleanup()
+    secondEffect()
+    await flush()
+    expect(secondCreateManager).toHaveBeenCalledTimes(1)
+    destruction.resolve({ state: 'released', failures: [] })
+    await flush()
+  })
+
+  test('managerKey replacement creates a new manager while function identity changes do not', async () => {
+    const firstManager = manager()
+    const secondManager = manager()
+    const firstCreateManager = jest.fn().mockResolvedValue(firstManager)
+    const secondCreateManager = jest.fn().mockResolvedValue(secondManager)
+
+    BleProvider({
+      createManager: firstCreateManager,
+      managerKey: 'a',
+      ownershipScope: 'manager-key-test',
+      children: null
+    })
+    const firstCleanup = hookHarness.effects[0]()
+    await flush()
+    expect(firstCreateManager).toHaveBeenCalledTimes(1)
+
+    hookHarness.rerender()
+    BleProvider({
+      createManager: () => firstCreateManager(),
+      managerKey: 'a',
+      ownershipScope: 'manager-key-test',
+      children: null
+    })
+    expect(hookHarness.effects).toHaveLength(1)
+
+    firstCleanup()
+    hookHarness.stateValues = []
+    hookHarness.reset()
+    BleProvider({
+      createManager: secondCreateManager,
+      managerKey: 'b',
+      ownershipScope: 'manager-key-test',
+      children: null
+    })
+    hookHarness.effects[0]()
+    await flush()
+    expect(secondCreateManager).toHaveBeenCalled()
+  })
 })
