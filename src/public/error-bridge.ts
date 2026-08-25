@@ -1,10 +1,11 @@
 // src/public/error-bridge.ts — internal boundary between backend and application errors
 
-import { BackendContractError, type CleanupFailure, type CleanupRecord } from '../backend-contract/errors'
+import { BackendContractError, type CleanupRecord } from '../backend-contract/errors'
 import { BleError } from './errors'
 import {
   toPublicCleanupRecord,
   toPublicPlatformErrorDetail,
+  type CleanupFailure as PublicCleanupFailure,
   type CleanupRecord as PublicCleanupRecord
 } from './cleanup'
 
@@ -48,10 +49,13 @@ export function rehydratePublicPromise<Value>(operation: Promise<Value>): Promis
 }
 
 export function collectCleanupPhases(
-  results: readonly { readonly error?: unknown; readonly cleanup?: Pick<CleanupRecord, 'state' | 'failures'> }[]
-): CleanupRecord {
+  results: readonly {
+    readonly error?: unknown
+    readonly cleanup?: Pick<CleanupRecord, 'state' | 'failures'> | Pick<PublicCleanupRecord, 'state' | 'failures'>
+  }[]
+): PublicCleanupRecord {
   const thrown: unknown[] = []
-  const cleanupFailures: CleanupFailure[] = []
+  const cleanupFailures: PublicCleanupFailure[] = []
   for (const result of results) {
     if (result.error instanceof AggregateError) thrown.push(...result.error.errors)
     else if (result.error !== undefined) thrown.push(result.error)
@@ -65,7 +69,7 @@ export function collectCleanupPhases(
       if (projected.state === 'release-failed') cleanupFailures.push(...projected.failures)
     }
   }
-  const cleanup: CleanupRecord =
+  const cleanup: PublicCleanupRecord =
     cleanupFailures.length === 0
       ? { state: 'released', failures: [] }
       : { state: 'release-failed', failures: cleanupFailures }

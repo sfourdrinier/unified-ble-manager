@@ -1365,7 +1365,7 @@ class PublicBleManager<Attachment extends string, Identity extends BackendIdenti
   private readonly activeScanSessions = new Set<{
     readonly controller: PublicScanSessionController<Attachment>
     readonly closeState: () => void
-    readonly stop: () => Promise<BackendCleanupRecord>
+    readonly stop: () => Promise<PublicCleanupRecord>
   }>()
   private destroyPromise: Promise<PublicCleanupRecord> | null = null
 
@@ -1444,7 +1444,7 @@ class PublicBleManager<Attachment extends string, Identity extends BackendIdenti
       const stopState: {
         viewReleased: boolean
         nativeReleased: boolean
-        stopPromise: Promise<BackendCleanupRecord> | null
+        stopPromise: Promise<PublicCleanupRecord> | null
         pendingCleanupError: unknown | null
       } = {
         viewReleased: false,
@@ -1452,7 +1452,7 @@ class PublicBleManager<Attachment extends string, Identity extends BackendIdenti
         stopPromise: null,
         pendingCleanupError: null
       }
-      let stopScan: (reason: PublicScanEventTerminalReason) => Promise<BackendCleanupRecord> = async () => ({
+      let stopScan: (reason: PublicScanEventTerminalReason) => Promise<PublicCleanupRecord> = async () => ({
         state: 'released',
         failures: []
       })
@@ -1471,7 +1471,7 @@ class PublicBleManager<Attachment extends string, Identity extends BackendIdenti
           })
         }
       )
-      stopScan = async (reason: PublicScanEventTerminalReason): Promise<BackendCleanupRecord> => {
+      stopScan = async (reason: PublicScanEventTerminalReason): Promise<PublicCleanupRecord> => {
         if (stopState.stopPromise !== null) return stopState.stopPromise
         scanState.emit({ state: 'stopping' })
         const run = (async () => {
@@ -1727,7 +1727,7 @@ class PublicBleManager<Attachment extends string, Identity extends BackendIdenti
   private async destroyInternal(): Promise<PublicCleanupRecord> {
     try {
       const active = [...this.activeScanSessions]
-      const viewResults: { readonly error?: unknown; readonly cleanup?: BackendCleanupRecord }[] = []
+      const viewResults: { readonly error?: unknown; readonly cleanup?: PublicCleanupRecord }[] = []
       for (const scan of active) {
         try {
           const cleanup = await scan.stop()
