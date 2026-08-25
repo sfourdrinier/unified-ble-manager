@@ -1,5 +1,7 @@
-import { canonicalUuid, resourceCount } from '../backend-contract/primitives'
-import type { StreamItem } from '../backend-contract/streams'
+// src/public/gatt.ts
+
+import { canonicalUuid } from '../backend-contract/primitives'
+import type { BoundedAsyncStream } from '../backend-contract/streams'
 import { contractError } from '../backend-contract/errors'
 import type {
   GattAccessRequirements,
@@ -15,6 +17,8 @@ import type {
 import { normalizeOperationOptions, type OperationOptions } from './operation-options'
 import { resolveStreamPolicy, type StreamPolicy } from './stream-presets'
 import { rehydratePublicError, runWithCleanup } from './error-bridge'
+import { mapPublicBoundedAsyncStream, type PublicBoundedAsyncStream, type PublicStreamItem } from './streams'
+import type { CleanupRecord } from './cleanup'
 
 export type { GattAccessRequirements, GattCharacteristicPropertyAvailability } from '../backend-contract/gatt'
 
@@ -80,15 +84,7 @@ export interface GattValueEvent {
   readonly sequence: number
 }
 
-export interface GattValueStream extends AsyncIterable<StreamItem<GattValueEvent>> {
-  readonly limits: {
-    readonly itemCapacity: number
-    readonly byteCapacity: number
-    readonly reservedControlCapacity: number
-  }
-  readonly overflowPolicy: 'latest' | 'drop-oldest' | 'drop-newest' | 'error'
-  close(): Promise<import('../manager/consumer-handles').PortableCleanupRecord>
-}
+export type GattValueStream = PublicBoundedAsyncStream<GattValueEvent>
 
 export interface GattDatabaseSnapshot {
   readonly generation: string
@@ -100,7 +96,7 @@ export interface GattDatabaseSnapshot {
 export interface GattDatabase {
   readonly generation: string
   readonly services: readonly GattService[]
-  readonly changed: AsyncIterable<StreamItem<GattDatabaseChangedEvent>>
+  readonly changed: PublicBoundedAsyncStream<GattDatabaseChangedEvent>
   service(uuid: UuidInput, selector?: OccurrenceSelector): GattService
   servicesByUuid(uuid: UuidInput): readonly GattService[]
   characteristic(serviceUuid: UuidInput, characteristicUuid: UuidInput, selector?: GattPathSelector): GattCharacteristic
@@ -149,11 +145,11 @@ export interface GattSubscription {
   readonly requestedDelivery: GattSubscribeOptions['delivery']
   readonly effectiveDelivery: GattDelivery
   readonly values: GattValueStream
-  remove(): Promise<import('../manager/consumer-handles').PortableCleanupRecord>
+  remove(): Promise<CleanupRecord>
 }
 
 export interface PublicGattDatabaseSource extends DiscoveredGattDatabaseHandle {
-  readonly changed?: AsyncIterable<StreamItem<GattDatabaseChangedEvent>>
+  readonly changed?: BoundedAsyncStream<GattDatabaseChangedEvent>
   assertCurrent?(): void
   readonly deliverySelection?: 'controllable' | 'unknown'
 }
@@ -166,7 +162,7 @@ export async function createPublicGattDatabase(source: PublicGattDatabaseSource)
 class PublicGattDatabase implements GattDatabase {
   readonly generation: string
   readonly services: readonly GattService[]
-  readonly changed: AsyncIterable<StreamItem<GattDatabaseChangedEvent>>
+  readonly changed: PublicBoundedAsyncStream<GattDatabaseChangedEvent>
   private readonly serviceLookup: ReadonlyMap<string, readonly GattService[]>
   private readonly snapshotValue: GattDatabaseSnapshot
 
@@ -201,7 +197,10 @@ class PublicGattDatabase implements GattDatabase {
         this.services.flatMap(service => service.characteristics.flatMap(characteristic => characteristic.descriptors))
       )
     })
-    this.changed = source.changed ?? emptyChangedStream()
+    this.changed =
+      source.changed === undefined
+        ? emptyChangedStream()
+        : mapPublicBoundedAsyncStream(source.changed, value => Object.freeze({ ...value }))
     Object.freeze(this)
   }
 
@@ -921,17 +920,38 @@ function mapGattValueStream(
   now: () => number
 ): GattValueStream {
   let sequence = 1
+  return mapPublicBoundedAsyncStream(source, value => {
+    const delivery = value.delivery ?? (value.indication ? 'indication' : 'notification')
+    if (delivery !== 'notification' && delivery !== 'indication' && delivery !== 'unknown') {
+      throw rehydratePublicError(contractError('protocol.violation', 'gatt', 'public-gatt.notification.delivery'))
+    }
+    const observedAtMonotonicMs = value.observedAtMonotonicMs ?? now()
+    if (!Number.isFinite(observedAtMonotonicMs) || observedAtMonotonicMs < 0) {
+      throw rehydratePublicError(contractError('protocol.violation', 'gatt', 'public-gatt.notification.timestamp'))
+    }
+    const valueSequence = value.sequence ?? sequence++
+    if (!Number.isSafeInteger(valueSequence) || valueSequence < 1) {
+      throw rehydratePublicError(contractError('protocol.violation', 'gatt', 'public-gatt.notification.sequence'))
+    }
+    return Object.freeze({
+      value: new Uint8Array(value.value),
+      delivery,
+      observedAtMonotonicMs,
+      sequence: valueSequence
+    })
+  })
+}
+
+function emptyChangedStream(): PublicBoundedAsyncStream<GattDatabaseChangedEvent> {
   return {
-    limits: source.limits,
-    overflowPolicy: source.overflowPolicy,
+    limits: Object.freeze({ itemCapacity: 1, byteCapacity: 2, reservedControlCapacity: 1 }),
+    overflowPolicy: 'error',
     [Symbol.asyncIterator]() {
-      const iterator = source[Symbol.asyncIterator]()
       return {
-        async next() {
-          return mapStreamItem(await iterator.next(), now, () => sequence++)
+        async next(): Promise<IteratorResult<PublicStreamItem<GattDatabaseChangedEvent>, undefined>> {
+          return { done: true, value: undefined }
         },
-        return: async () => {
-          await iterator.return()
+        async return(): Promise<IteratorResult<PublicStreamItem<GattDatabaseChangedEvent>, undefined>> {
           return { done: true, value: undefined }
         },
         [Symbol.asyncIterator]() {
@@ -939,90 +959,11 @@ function mapGattValueStream(
         }
       }
     },
-    close: () => source.close()
+    close: async () => ({ state: 'released', failures: [] })
   }
 }
 
-function mapStreamItem(
-  result: IteratorResult<
-    import('../manager/consumer-handles').PortableStreamItem<
-      import('../manager/consumer-handles').PortableNotificationValue
-    >,
-    undefined
-  >,
-  now: () => number,
-  nextSequence: () => number
-): IteratorResult<StreamItem<GattValueEvent>, undefined> {
-  if (result.done) return result
-  if (result.value.kind === 'overflow') {
-    return {
-      done: false,
-      value: {
-        kind: 'overflow',
-        policy: result.value.policy,
-        droppedItems: resourceCount(result.value.droppedItems),
-        droppedBytes: resourceCount(result.value.droppedBytes),
-        replacedItems: resourceCount(result.value.replacedItems)
-      }
-    }
-  }
-  if (result.value.kind === 'terminal') {
-    return {
-      done: false,
-      value: {
-        kind: 'terminal',
-        reason: result.value.reason,
-        droppedItems: resourceCount(result.value.droppedItems),
-        droppedBytes: resourceCount(result.value.droppedBytes),
-        replacedItems: resourceCount(result.value.replacedItems)
-      }
-    }
-  }
-  const value = result.value.value
-  const delivery = value.delivery ?? (value.indication ? 'indication' : 'notification')
-  if (delivery !== 'notification' && delivery !== 'indication' && delivery !== 'unknown') {
-    throw rehydratePublicError(contractError('protocol.violation', 'gatt', 'public-gatt.notification.delivery'))
-  }
-  const observedAtMonotonicMs = value.observedAtMonotonicMs ?? now()
-  if (!Number.isFinite(observedAtMonotonicMs) || observedAtMonotonicMs < 0) {
-    throw rehydratePublicError(contractError('protocol.violation', 'gatt', 'public-gatt.notification.timestamp'))
-  }
-  const sequence = value.sequence ?? nextSequence()
-  if (!Number.isSafeInteger(sequence) || sequence < 1) {
-    throw rehydratePublicError(contractError('protocol.violation', 'gatt', 'public-gatt.notification.sequence'))
-  }
-  return {
-    done: false,
-    value: {
-      kind: 'value',
-      value: Object.freeze({
-        value: new Uint8Array(value.value),
-        delivery,
-        observedAtMonotonicMs,
-        sequence
-      })
-    }
-  }
-}
-
-function emptyChangedStream(): AsyncIterable<StreamItem<GattDatabaseChangedEvent>> {
-  return {
-    [Symbol.asyncIterator]() {
-      return {
-        async next() {
-          return { done: true, value: undefined }
-        },
-        [Symbol.asyncIterator]() {
-          return this
-        }
-      }
-    }
-  }
-}
-
-function rehydrateCleanup(
-  operation: Promise<import('../manager/consumer-handles').PortableCleanupRecord>
-): Promise<import('../manager/consumer-handles').PortableCleanupRecord> {
+function rehydrateCleanup(operation: Promise<CleanupRecord>): Promise<CleanupRecord> {
   return operation.catch(error => {
     throw rehydratePublicError(error)
   })

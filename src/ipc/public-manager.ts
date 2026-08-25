@@ -1,3 +1,5 @@
+// src/ipc/public-manager.ts
+
 import { BLE_ERROR_CODES, contractError, type CleanupRecord } from '../backend-contract/errors'
 import type { ConnectionLifecycleCause } from '../backend-contract/connection-lifecycle'
 import type { BoundedAsyncStream, BoundedAsyncStreamIterator } from '../backend-contract/streams'
@@ -561,10 +563,11 @@ function createIpcGattSource(
   database: IpcGattDatabase,
   deliverySelection: 'unknown' | 'controllable'
 ): PublicGattDatabaseSource {
+  const changed = 'limits' in database.changed ? database.changed : undefined
   return {
     path: database.path,
     deliverySelection,
-    changed: database.changed,
+    ...(changed === undefined ? {} : { changed }),
     assertCurrent: () => database.assertCurrent(),
     monotonicNow: () => database.monotonicNow(),
     scheduleDeadline: (deadline, action) => database.scheduleDeadline(deadline, action),

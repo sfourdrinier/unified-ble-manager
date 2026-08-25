@@ -1,8 +1,11 @@
-import { BackendContractError, contractError, type CleanupRecord } from '../backend-contract/errors'
+// src/public/connection-supervisor.ts
+
+import { BackendContractError, contractError } from '../backend-contract/errors'
 import { capacity } from '../backend-contract/primitives'
 import { CoreBoundedStream } from '../core/bounded-stream'
-import type { BoundedAsyncStream } from '../backend-contract/streams'
 import { rehydratePublicError } from './error-bridge'
+import { toPublicCleanupRecord, type CleanupRecord as PublicCleanupRecord } from './cleanup'
+import { mapPublicBoundedAsyncStream, type PublicBoundedAsyncStream } from './streams'
 import { BleError } from './errors'
 import type { BleAdapterState } from './ble-adapter'
 import type { BleConnection, BleConnectionEvent, BleManager, BlePeer, ConnectOptions } from './ble-manager'
@@ -53,7 +56,7 @@ export interface ConnectionSupervisorEvent<Session> {
   readonly gateDecision: ConnectionGateDecision | null
   readonly error: BleError | null
   readonly session: Session | null
-  readonly cleanup?: CleanupRecord
+  readonly cleanup?: PublicCleanupRecord
 }
 
 export interface ConnectionSupervisorSnapshot<Session> {
@@ -80,13 +83,13 @@ export interface ConnectionSupervisorOptions<Session> {
 }
 
 export interface ConnectionSupervisor<Session = undefined> {
-  readonly events: BoundedAsyncStream<ConnectionSupervisorEvent<Session>>
+  readonly events: PublicBoundedAsyncStream<ConnectionSupervisorEvent<Session>>
   readonly snapshot: ConnectionSupervisorSnapshot<Session>
   start(): void
   pause(reason?: string): Promise<void>
   resume(): void
   reconnectNow(): void
-  stop(): Promise<CleanupRecord>
+  stop(): Promise<PublicCleanupRecord>
 }
 
 const supervisors = new WeakMap<object, Set<string>>()
@@ -119,7 +122,7 @@ export function createConnectionSupervisor<Session = undefined>(
 }
 
 class ConnectionSupervisorImpl<Session> implements ConnectionSupervisor<Session> {
-  readonly events: BoundedAsyncStream<ConnectionSupervisorEvent<Session>>
+  readonly events: PublicBoundedAsyncStream<ConnectionSupervisorEvent<Session>>
   private readonly eventStream: CoreBoundedStream<ConnectionSupervisorEvent<Session>>
   private state: ConnectionSupervisorState = 'idle'
   private attempt = 0
@@ -135,17 +138,17 @@ class ConnectionSupervisorImpl<Session> implements ConnectionSupervisor<Session>
   private activeIterator: AsyncIterator<BleConnectionEvent> | null = null
   private retryTimer: unknown = null
   private runPromise: Promise<void> | null = null
-  private stopPromise: Promise<CleanupRecord> | null = null
-  private cleanupPromise: Promise<CleanupRecord> | null = null
-  private lastCleanup: CleanupRecord | null = null
+  private stopPromise: Promise<PublicCleanupRecord> | null = null
+  private cleanupPromise: Promise<PublicCleanupRecord> | null = null
+  private lastCleanup: PublicCleanupRecord | null = null
   private stableTimer: unknown = null
   private waitForAdapter = false
   private ownershipReleased = false
   private readonly supervisorAbort = new AbortController()
   private readonly wakeWaiters = new Set<() => void>()
   private controlBarrier: Promise<void> | null = null
-  private lateConfigureBarrier: Promise<CleanupRecord> | null = null
-  private lateSessionRetry: (() => Promise<CleanupRecord>) | null = null
+  private lateConfigureBarrier: Promise<PublicCleanupRecord> | null = null
+  private lateSessionRetry: (() => Promise<PublicCleanupRecord>) | null = null
   private pauseCleanupRequired = false
   private readonly now: () => number
   private readonly random: () => number
@@ -170,7 +173,7 @@ class ConnectionSupervisorImpl<Session> implements ConnectionSupervisor<Session>
       { itemCapacity: capacity(64), byteCapacity: capacity(64 * 1024), reservedControlCapacity: capacity(256) },
       'drop-oldest'
     )
-    this.events = this.eventStream
+    this.events = mapPublicBoundedAsyncStream(this.eventStream, event => event)
   }
 
   get snapshot(): ConnectionSupervisorSnapshot<Session> {
@@ -215,7 +218,11 @@ class ConnectionSupervisorImpl<Session> implements ConnectionSupervisor<Session>
     this.wake()
   }
 
-  async stop(): Promise<CleanupRecord> {
+  stop(): Promise<PublicCleanupRecord> {
+    return this.stopInternal().then(toPublicCleanupRecord)
+  }
+
+  private async stopInternal(): Promise<PublicCleanupRecord> {
     if (this.stopPromise !== null) return this.stopPromise
     if (this.lateSessionRetry !== null) {
       const retry = this.lateSessionRetry()
@@ -460,7 +467,7 @@ class ConnectionSupervisorImpl<Session> implements ConnectionSupervisor<Session>
               session => this.disposeLateSession(session),
               error => {
                 this.lastError = toBleError(error)
-                return { state: 'released', failures: [] } satisfies CleanupRecord
+                return { state: 'released', failures: [] } satisfies PublicCleanupRecord
               }
             )
             .finally(() => {
@@ -555,7 +562,7 @@ class ConnectionSupervisorImpl<Session> implements ConnectionSupervisor<Session>
     return 'stopped'
   }
 
-  private async cleanupCurrentConnection(): Promise<CleanupRecord> {
+  private async cleanupCurrentConnection(): Promise<PublicCleanupRecord> {
     if (this.cleanupPromise !== null) return this.cleanupPromise
     const connection = this.activeConnection
     const iterator = this.activeIterator
@@ -563,8 +570,8 @@ class ConnectionSupervisorImpl<Session> implements ConnectionSupervisor<Session>
     if (connection === null && iterator === null && session === null && this.lastCleanup !== null)
       return this.lastCleanup
     this.clearStableResetTimer()
-    const cleanupPromise: Promise<CleanupRecord> = (async (): Promise<CleanupRecord> => {
-      const failures: CleanupRecord['failures'][number][] = []
+    const cleanupPromise: Promise<PublicCleanupRecord> = (async (): Promise<PublicCleanupRecord> => {
+      const failures: PublicCleanupRecord['failures'][number][] = []
       if (iterator !== null && iterator.return !== undefined) {
         try {
           await iterator.return()
@@ -597,7 +604,7 @@ class ConnectionSupervisorImpl<Session> implements ConnectionSupervisor<Session>
         }
       }
       return failures.length === 0
-        ? ({ state: 'released', failures: [] } satisfies CleanupRecord)
+        ? ({ state: 'released', failures: [] } satisfies PublicCleanupRecord)
         : { state: 'release-failed', failures }
     })().finally(() => {
       this.cleanupPromise = null
@@ -609,14 +616,14 @@ class ConnectionSupervisorImpl<Session> implements ConnectionSupervisor<Session>
     return cleanup
   }
 
-  private async disposeLateSession(session: Session): Promise<CleanupRecord> {
+  private async disposeLateSession(session: Session): Promise<PublicCleanupRecord> {
     if (this.options.disposeSession === undefined) return { state: 'released', failures: [] }
     try {
       await this.options.disposeSession(session)
       return { state: 'released', failures: [] }
     } catch (error) {
       this.lastError = toBleError(error)
-      const cleanup: CleanupRecord = {
+      const cleanup: PublicCleanupRecord = {
         state: 'release-failed',
         failures: cleanupFailure('session', error, 'connection-supervisor.late-session-dispose')
       }
@@ -629,7 +636,7 @@ class ConnectionSupervisorImpl<Session> implements ConnectionSupervisor<Session>
           return this.lastCleanup
         } catch (retryError) {
           this.lastError = toBleError(retryError)
-          const retryCleanup: CleanupRecord = {
+          const retryCleanup: PublicCleanupRecord = {
             state: 'release-failed',
             failures: cleanupFailure('session', retryError, 'connection-supervisor.late-session-dispose-retry')
           }
@@ -642,7 +649,7 @@ class ConnectionSupervisorImpl<Session> implements ConnectionSupervisor<Session>
     }
   }
 
-  private finalize(cleanup: CleanupRecord): void {
+  private finalize(cleanup: PublicCleanupRecord): void {
     this.lastCleanup = cleanup
     if (cleanup.state === 'released' && (this.lateConfigureBarrier !== null || this.lateSessionRetry !== null)) {
       this.transition('stopped', null, null, cleanup)
@@ -697,7 +704,7 @@ class ConnectionSupervisorImpl<Session> implements ConnectionSupervisor<Session>
     state: ConnectionSupervisorState,
     gateDecision: ConnectionGateDecision | null,
     delayMs: number | null,
-    cleanup: CleanupRecord | null
+    cleanup: PublicCleanupRecord | null
   ): void {
     const previous = this.state
     this.state = state
@@ -844,7 +851,7 @@ function toBleError(error: unknown): BleError {
   return new BleError('connection.failed', 'connection', 'connection-supervisor.attempt')
 }
 
-function cleanupFailure(resourceKind: string, error: unknown, operation: string): CleanupRecord['failures'] {
+function cleanupFailure(resourceKind: string, error: unknown, operation: string): PublicCleanupRecord['failures'] {
   const publicError = rehydratePublicError(error)
   const normalized =
     publicError instanceof BleError
@@ -852,7 +859,7 @@ function cleanupFailure(resourceKind: string, error: unknown, operation: string)
       : error instanceof BackendContractError
         ? error.normalized
         : contractError('platform.failure', 'cleanup', operation).normalized
-  return [{ resourceKind, error: normalized }]
+  return toPublicCleanupRecord({ state: 'release-failed', failures: [{ resourceKind, error: normalized }] }).failures
 }
 
 function isAdapterWaitError(error: BleError): boolean {

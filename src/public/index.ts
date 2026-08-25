@@ -5,6 +5,25 @@ export { normalizeOperationOptions, composeAbortSignal } from './operation-optio
 export type { StreamPreset, StreamPolicy, StreamBudget, StreamPresetInput, CustomStreamBudget } from './stream-presets'
 export { resolveStreamPolicy, resolveStreamPreset, STREAM_PRESET_DEFAULTS } from './stream-presets'
 export type {
+  CleanupFailure,
+  CleanupRecord,
+  NormalizedBleError,
+  PublicPlatformErrorDetail,
+  PublicSerializableRecord,
+  PublicSerializableValue
+} from './cleanup'
+export type {
+  PublicBoundedAsyncStream,
+  PublicBoundedAsyncStreamIterator,
+  PublicStreamItem,
+  PublicStreamLimits,
+  PublicStreamOverflowNotice,
+  PublicStreamOverflowPolicy,
+  PublicStreamTerminalNotice,
+  PublicStreamTerminalReason,
+  PublicStreamValue
+} from './streams'
+export type {
   BleManagerCreateOptions,
   DiagnosticsOptions,
   EphemeralHostIdentity,

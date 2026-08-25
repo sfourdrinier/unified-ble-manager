@@ -41,7 +41,7 @@ export interface ExpoBleManager extends BleManager {
 - `ExpoPermissionRequest :: { readonly purpose: "scan-and-connect" }`
 - `ExpoPermissionResult :: { readonly requested: readonly "bluetooth"[]; readonly granted: readonly "bluetooth"[]; readonly denied: readonly "bluetooth"[]; readonly recommendedSettingsTarget: ExpoSettingsTarget | null }`
 - `ExpoRestorationClaimResult :: { readonly outcome: "adopted" | "already-consumed" | "attachment-mismatch" | "backend-mismatch" | "namespace-mismatch" | "epoch-mismatch"; readonly replayRecordCount: number; readonly records: readonly ExpoRestoredRecord[] }`
-- `ExpoRestoredRecord :: { readonly kind: "connection" | "adapter"; readonly ordinal: number; readonly peerId: string | null }`
+- `ExpoRestoredRecord :: { readonly kind: "adapter" | "connection"; readonly ordinal: number; readonly peerId: string | null }`
 - `ExpoRuntimeConfiguration :: { readonly platform?: "android" | "apple" | undefined; readonly executionEnvironment?: "expo-go" | "development-build" | "production" | undefined; readonly nativeModuleAvailable?: boolean | undefined; readonly nativeConfiguration?: { readonly digest: string; } | undefined; readonly expectedConfiguration?: { readonly digest: string; } | undefined; readonly androidApiLevel?: number | undefined; readonly permissions?: { readonly android?: { readonly legacyLocation?: "auto" | "required" | "none" | undefined; } | undefined; } | undefined; readonly settingsBridge?: ExpoSettingsBridge | undefined; readonly permissionBridge?: ExpoPermissionBridge | undefined }`
 - `ExpoSettingsBridge :: { (target: ExpoSettingsTarget) => Promise<void> }`
 - `ExpoSettingsTarget :: "app" | "bluetooth" | "location-services"`

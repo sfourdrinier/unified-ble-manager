@@ -3,6 +3,7 @@
 import { capacity, type Capacity } from '../backend-contract/primitives'
 import { contractError } from '../backend-contract/errors'
 import type { OverflowPolicy } from '../backend-contract/streams'
+import type { PublicStreamOverflowPolicy } from './streams'
 
 export type StreamPreset = 'latest' | 'balanced' | 'lossless-bounded' | 'custom'
 
@@ -10,7 +11,7 @@ export interface CustomStreamBudget {
   readonly itemCapacity: number
   readonly byteCapacity: number
   readonly reservedControlCapacity?: number
-  readonly overflowPolicy?: OverflowPolicy
+  readonly overflowPolicy?: PublicStreamOverflowPolicy
 }
 
 export type StreamPolicy =
@@ -26,7 +27,7 @@ export interface StreamBudget {
 
 export interface StreamPresetInput {
   readonly preset?: StreamPreset
-  readonly custom?: Partial<StreamBudget> & { readonly overflowPolicy?: OverflowPolicy }
+  readonly custom?: Partial<StreamBudget> & { readonly overflowPolicy?: PublicStreamOverflowPolicy }
 }
 
 /**
