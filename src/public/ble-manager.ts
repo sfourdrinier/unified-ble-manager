@@ -47,8 +47,8 @@ import {
   normalizeScanObservation,
   normalizeScanQuery,
   observationMatchesScanQuery,
+  scanQueryTargetsAddresses,
   type NormalizedScanObservation,
-  type NormalizedScanQuery,
   type ScanQuery
 } from './scan-query'
 import { createScanState } from './scan-state'
@@ -2256,10 +2256,6 @@ function projectPublicScanObservation<Attachment extends string>(
   })
   const observedAtMonotonicMs = isCompact ? null : Number(observation.receivedAtMonotonicMs)
   return Object.freeze({ ...normalized, peer, observedAtMonotonicMs })
-}
-
-function scanQueryTargetsAddresses(query: NormalizedScanQuery): boolean {
-  return [...(query.anyOf ?? []), ...(query.exclude ?? [])].some(clause => clause.addresses !== null)
 }
 
 function assertAddressTargetingCapability(

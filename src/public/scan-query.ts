@@ -92,6 +92,11 @@ export function normalizeScanQuery(query: ScanQuery | undefined = {}): Normalize
   return Object.freeze({ ...base, digest: scanQueryDigest(base) })
 }
 
+/** True when any anyOf/exclude clause targets radio addresses (peer:address-targeting). */
+export function scanQueryTargetsAddresses(query: NormalizedScanQuery): boolean {
+  return [...(query.anyOf ?? []), ...(query.exclude ?? [])].some(clause => clause.addresses !== null)
+}
+
 export function normalizeScanObservation(observation: ScanObservation): NormalizedScanObservation {
   if (isNormalizedObservation(observation)) return cloneNormalizedObservation(observation)
   if (isIpcAdvertisement(observation)) {
