@@ -481,6 +481,8 @@ export interface Spec extends TurboModule {
   cancelOperation(correlation: NativeOperationCorrelation): Promise<NativeCancellationControlResult>
   adoptRestoration(request: NativeRestorationAdoptionRequest): Promise<NativeRestorationAdoptionControlResult>
   closeAttachment(attachment: NativeAttachmentIdentity): Promise<void>
+  /** Base64-encoded cryptographically secure random bytes. */
+  getRandomBytes(length: number): Promise<string>
 }
 
 export default TurboModuleRegistry.getEnforcing<Spec>('UnifiedBleProtocolControl')
