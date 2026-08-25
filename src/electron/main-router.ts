@@ -785,6 +785,11 @@ export class ElectronMainBleRouter {
 
   private releaseDatabase(resources: RendererResources, payload: SerializableRecord): SerializableRecord {
     const handle = requiredString(payload, 'databaseHandle')
+    const database = resources.databases.get(handle)
+    if (database === undefined) return Object.freeze({ state: 'released', failures: [] })
+    if (payload.connectionHandle !== undefined && database.connectionHandle !== requiredString(payload, 'connectionHandle')) {
+      throw contractError('protocol.violation', 'ipc', 'electron-main-router.database-release-connection')
+    }
     resources.databases.delete(handle)
     return Object.freeze({ state: 'released', failures: [] })
   }

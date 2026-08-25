@@ -1543,12 +1543,14 @@ export class IpcGattDatabase {
 
   async invalidate(reason: GattDatabaseChangedEvent['reason'] | null = null): Promise<void> {
     if (!this.valid) return
-    const removals = [...this.subscriptions].map(subscription =>
-      subscription.closeFromDatabase(reason === 'service-changed' ? 'service-changed' : 'connection-lost')
-    )
+    const streamReason: 'service-changed' | 'connection-lost' =
+      reason === null ? 'connection-lost' : 'service-changed'
+    const removals = [...this.subscriptions].map(subscription => subscription.closeFromDatabase(streamReason))
     this.subscriptions.clear()
-    await Promise.all(removals)
-    this.valid = false
+    const results = await Promise.all(removals)
+    const cleanupFailed = results.some(result => result.state === 'release-failed')
+    this.valid = !cleanupFailed
+    if (cleanupFailed) return
     if (reason !== null) {
       this.changedStream.emit(
         Object.freeze({
@@ -1862,6 +1864,12 @@ export class IpcCharacteristic {
       this.database.registerSubscription(subscription)
       return subscription
     } catch (error) {
+      if (
+        error instanceof BackendContractError &&
+        error.normalized.operation === 'ipc-manager.stream-handle'
+      ) {
+        throw error
+      }
       return await this.database.manager.compensateFailedGattAdmission(
         'gatt-subscription',
         handle,

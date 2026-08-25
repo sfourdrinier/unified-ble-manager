@@ -108,12 +108,13 @@ export function BleProvider({
     key: activeKey,
     lease: new ManagerLease(createManager, ownershipScope)
   }))
+  const [value, setValue] = React.useState<BleContextValue>({ manager: null, loading: true, error: null })
   let lease = leaseState.lease
   if (leaseState.key !== activeKey) {
     lease = new ManagerLease(createManager, ownershipScope)
     setLeaseState({ key: activeKey, lease })
+    setValue({ manager: null, loading: true, error: null })
   }
-  const [value, setValue] = React.useState<BleContextValue>({ manager: null, loading: true, error: null })
 
   React.useEffect(() => {
     lease.cancelScheduledRelease()
@@ -816,6 +817,9 @@ export function useDiscoveredPeers(options: ScanOptions = {}): UseDiscoveredPeer
         const event = next.value
         if (event.kind === 'observed') upsert(event.peer)
         else if (event.kind === 'lost') removePeer(event.peer.id)
+        else if (event.kind === 'presence-tracking-overflow') {
+          overflowError = streamOverflowError('react.useDiscoveredPeers.presence')
+        }
         if (active) publish('active', overflowError)
       }
     }
