@@ -92,12 +92,10 @@ export function requireCurrentDeterministicDatabase(
   return database
 }
 
-export function eventRetainedBytes(
-  streams: ReadonlySet<DeterministicBoundedStream<import('../../backend-contract/backend').BackendEvent<string>>>
-): number {
+export function eventRetainedBytes(streams: ReadonlySet<{ retainedPayloadBytes(): number }>): number {
   let retained = 0
   for (const stream of streams) {
-    retained += stream.retainedBytes()
+    retained += stream.retainedPayloadBytes()
   }
   return retained
 }
@@ -150,9 +148,7 @@ export function deterministicResourceCounters(input: {
   readonly connections: ReadonlyMap<string, ConnectionRecord>
   readonly physicalSubscriptions: ReadonlyMap<string, PhysicalSubscription>
   readonly operation: DeterministicOperationRuntimeSnapshot
-  readonly eventStreams: ReadonlySet<
-    DeterministicBoundedStream<import('../../backend-contract/backend').BackendEvent<string>>
-  >
+  readonly eventStreams: ReadonlySet<{ retainedPayloadBytes(): number }>
   readonly retainedOperationBytes: number
   readonly securityReservedBytes: number
 }): ResourceCounters {

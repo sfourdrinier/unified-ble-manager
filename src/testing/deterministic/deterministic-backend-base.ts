@@ -70,6 +70,7 @@ import type { BoundedAsyncStream, OverflowPolicy } from '../../backend-contract/
 import { snapshotScanPlan } from '../../backend-contract/scan-planning'
 import { DeterministicScanPlanner } from './deterministic-scan-planner'
 import { DeterministicBoundedStream, streamLimits } from './deterministic-stream'
+import { OwnedCoreBoundedStream } from '../../core/owned-bounded-stream'
 import {
   defaultCompletion,
   DeterministicOperationRuntime,
@@ -231,6 +232,26 @@ function createDeterministicSecurityRegistrations(
     )
 }
 
+export interface DeterministicStreamOwnershipSnapshot {
+  readonly stateWatchers: number
+  readonly eventStreams: number
+}
+
+const deterministicStreamOwnershipInspectors = new WeakMap<
+  DeterministicBackendBase,
+  () => DeterministicStreamOwnershipSnapshot
+>()
+
+export function inspectDeterministicStreamOwnershipForTests(
+  backend: DeterministicBackendBase
+): DeterministicStreamOwnershipSnapshot {
+  const inspect = deterministicStreamOwnershipInspectors.get(backend)
+  if (inspect === undefined) {
+    throw new Error('deterministic stream ownership inspector is missing')
+  }
+  return inspect()
+}
+
 /** Shared deterministic radio, attachment, stream, and operation mechanics. */
 export abstract class DeterministicBackendBase {
   readonly clock = new DeterministicVirtualClock()
@@ -243,8 +264,8 @@ export abstract class DeterministicBackendBase {
   protected readonly maximumOperationBytes
   protected currentMaximumWriteLength: number
   protected readonly aggregateStreamByteQuota
-  protected readonly eventStreams = new Set<DeterministicBoundedStream<BackendEvent<string>>>()
-  protected readonly stateWatchers = new Set<DeterministicBoundedStream<AdapterStateSnapshot<string>>>()
+  protected readonly eventStreams = new Set<OwnedCoreBoundedStream<BackendEvent<string>>>()
+  protected readonly stateWatchers = new Set<OwnedCoreBoundedStream<AdapterStateSnapshot<string>>>()
   protected scanGroup: ScanGroup | null = null
   protected readonly plans = new Map<DeterministicCompletionStage, ProgrammableCompletion[]>()
   protected readonly traceRecords: DeterministicBackendTraceRecord[] = []
@@ -307,6 +328,10 @@ export abstract class DeterministicBackendBase {
       currentState: async () => this.currentAdapterState(),
       watchState: async () => this.createStateWatch()
     }
+    deterministicStreamOwnershipInspectors.set(this, () => ({
+      stateWatchers: this.stateWatchers.size,
+      eventStreams: this.eventStreams.size
+    }))
     this.scanner = {
       plan: query => {
         const execution = this.scanPlanner.plan(query, {
@@ -346,7 +371,9 @@ export abstract class DeterministicBackendBase {
   abstract get identity(): HostNeutralBackendIdentity<string>
 
   events(): BoundedAsyncStream<BackendEvent<string>> {
-    const stream = new DeterministicBoundedStream<BackendEvent<string>>(defaultStreamLimits, 'error')
+    const stream = new OwnedCoreBoundedStream<BackendEvent<string>>(defaultStreamLimits, 'error', () => {
+      this.eventStreams.delete(stream)
+    })
     this.eventStreams.add(stream)
     return stream
   }
@@ -427,8 +454,10 @@ export abstract class DeterministicBackendBase {
     safeReason: string | null
   ): void {
     this.adapterState = this.createAdapterState(availability, authorization, power, safeReason)
-    for (const watcher of this.stateWatchers) {
-      watcher.push(this.currentAdapterState(), 1, 'adapter-state')
+    for (const watcher of [...this.stateWatchers]) {
+      if (watcher.emit(this.currentAdapterState(), 1, 'adapter-state').terminated) {
+        this.stateWatchers.delete(watcher)
+      }
     }
     this.emitEvent('adapter-state')
     if (availability !== 'available' || isAuthorizationBlocking(authorization) || power !== 'on') {
@@ -812,7 +841,9 @@ export abstract class DeterministicBackendBase {
   private reservedStreamBytes(): number {
     let retained = 0
     for (const stream of this.eventStreams) {
-      retained += stream.reservedBytes()
+      if (!stream.isTerminal()) {
+        retained += stream.retainedBytes()
+      }
     }
     const group = this.scanGroup
     if (group !== null) {
@@ -843,7 +874,9 @@ export abstract class DeterministicBackendBase {
   }
 
   private createStateWatch(): AdapterStateWatch<string> {
-    const stream = new DeterministicBoundedStream<AdapterStateSnapshot<string>>(defaultStreamLimits, 'latest')
+    const stream = new OwnedCoreBoundedStream<AdapterStateSnapshot<string>>(defaultStreamLimits, 'latest', () => {
+      this.stateWatchers.delete(stream)
+    })
     this.stateWatchers.add(stream)
     return { initial: this.currentAdapterState(), transitions: stream }
   }
@@ -880,12 +913,9 @@ export abstract class DeterministicBackendBase {
 
   protected broadcastEvent(event: BackendEvent<string>): void {
     for (const stream of [...this.eventStreams]) {
-      if (stream.isClosed()) {
-        this.eventStreams.delete(stream)
-        continue
-      }
-      const outcome = stream.push(event, 1, event.kind)
+      const outcome = stream.emit(event, 1, event.kind)
       if (outcome.terminated) {
+        this.eventStreams.delete(stream)
         this.recordTrace('stream', 'backend-event-overflow-terminal', 'stream.overflow')
       }
     }

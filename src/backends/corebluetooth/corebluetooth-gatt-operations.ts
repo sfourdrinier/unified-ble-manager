@@ -492,15 +492,32 @@ export class CoreBluetoothGattOperations {
   }
 
   emitNotification(physical: PhysicalSubscription, source: Uint8Array): void {
-    if (physical.state === 'removing' || physical.state === 'cleanup-failed') {
+    if (physical.state === 'removing' || physical.state === 'cleanup-failed' || physical.state === 'released') {
       return
     }
-    const copied = ownBytes(source, maximumValueBytes)
-    for (const consumer of physical.consumers) {
-      consumer.stream.emit(
+    for (const consumer of [...physical.consumers]) {
+      if (consumer.removed || consumer.stream.isTerminal()) {
+        continue
+      }
+      const copied = ownBytes(source, maximumValueBytes)
+      const push = consumer.stream.emit(
         Object.freeze({ value: ownBytes(copied, maximumValueBytes), indication: false }),
         copied.byteLength
       )
+      if (push.terminated) {
+        this.removeSubscription(consumer)
+          .then(result => {
+            if (result.state === 'release-failed') {
+              console.error(
+                '[CoreBluetoothGattOperations.emitNotification] Overflow notify cleanup requires retry:',
+                result.failures
+              )
+            }
+          })
+          .catch(error => {
+            console.error('[CoreBluetoothGattOperations.emitNotification] Overflow notify cleanup rejected:', error)
+          })
+      }
     }
   }
 }

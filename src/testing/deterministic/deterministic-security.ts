@@ -13,9 +13,10 @@ import type {
 } from '../../backend-contract/security'
 import type { PublicOperationOptions } from '../../backend-contract/operations'
 import type { DeterministicOperationRuntime } from './deterministic-operation-runtime'
-import { DeterministicBoundedStream } from './deterministic-stream'
 import { capacity } from '../../backend-contract/primitives'
 import type { DeterministicVirtualClock } from './virtual-clock'
+import { OwnedCoreBoundedStream } from '../../core/owned-bounded-stream'
+import type { BoundedAsyncStream } from '../../backend-contract/streams'
 
 interface ActivePairing {
   readonly controller: AbortController
@@ -37,9 +38,39 @@ const deterministicLimitations = Object.freeze([
   })
 ])
 
+export interface SecurityStreamOwnershipSnapshot {
+  readonly peerCount: number
+  readonly streamCount: number
+}
+
+const deterministicSecurityOwnershipInspectors = new WeakMap<
+  DeterministicSecurityBackend,
+  () => SecurityStreamOwnershipSnapshot
+>()
+
+export function inspectDeterministicSecurityStreamOwnershipForTests(
+  backend: DeterministicSecurityBackend
+): SecurityStreamOwnershipSnapshot {
+  const inspect = deterministicSecurityOwnershipInspectors.get(backend)
+  if (inspect === undefined) {
+    throw new Error('deterministic security ownership inspector is missing')
+  }
+  return inspect()
+}
+
+function securityStreamOwnershipSnapshot(
+  streams: ReadonlyMap<string, ReadonlySet<unknown>>
+): SecurityStreamOwnershipSnapshot {
+  let streamCount = 0
+  for (const peerStreams of streams.values()) {
+    streamCount += peerStreams.size
+  }
+  return { peerCount: streams.size, streamCount }
+}
+
 export class DeterministicSecurityBackend implements SecurityBackend {
   private readonly states = new Map<string, PeerSecurityState>()
-  private readonly streams = new Map<string, Set<DeterministicBoundedStream<PeerSecurityEvent>>>()
+  private readonly streams = new Map<string, Set<OwnedCoreBoundedStream<PeerSecurityEvent>>>()
   private readonly activePairings = new Map<string, ActivePairing>()
   private readonly sequenceByPeer = new Map<string, number>()
   private nextChallenge = 1
@@ -48,17 +79,21 @@ export class DeterministicSecurityBackend implements SecurityBackend {
     private readonly clock: DeterministicVirtualClock,
     private readonly operations: DeterministicOperationRuntime,
     private readonly assertUsable: (operation: string) => void
-  ) {}
+  ) {
+    deterministicSecurityOwnershipInspectors.set(this, () => securityStreamOwnershipSnapshot(this.streams))
+  }
 
   state(peerId: string, _options: PublicOperationOptions): Promise<PeerSecurityState> {
     this.assertUsable('security.state')
     return Promise.resolve(this.currentState(peerId))
   }
 
-  watch(peerId: string): DeterministicBoundedStream<PeerSecurityEvent> {
+  watch(peerId: string): BoundedAsyncStream<PeerSecurityEvent> {
     this.assertUsable('security.watch')
-    const stream = new DeterministicBoundedStream<PeerSecurityEvent>(securityStreamLimits, 'error')
-    const peerStreams = this.streams.get(peerId) ?? new Set<DeterministicBoundedStream<PeerSecurityEvent>>()
+    const stream = new OwnedCoreBoundedStream<PeerSecurityEvent>(securityStreamLimits, 'error', () => {
+      this.removeStream(peerId, stream)
+    })
+    const peerStreams = this.streams.get(peerId) ?? new Set<OwnedCoreBoundedStream<PeerSecurityEvent>>()
     peerStreams.add(stream)
     this.streams.set(peerId, peerStreams)
     this.emitTo(stream, this.createEvent(peerId, this.currentState(peerId)))
@@ -114,7 +149,10 @@ export class DeterministicSecurityBackend implements SecurityBackend {
   reservedBytes(): number {
     let retained = 0
     for (const streams of this.streams.values()) {
-      for (const stream of streams) retained += stream.reservedBytes()
+      for (const stream of streams) {
+        if (stream.isTerminal()) continue
+        retained += stream.retainedBytes()
+      }
     }
     return retained
   }
@@ -122,13 +160,12 @@ export class DeterministicSecurityBackend implements SecurityBackend {
   close(): void {
     for (const active of this.activePairings.values()) active.controller.abort()
     this.activePairings.clear()
-    for (const [peerId, streams] of this.streams) {
-      for (const stream of streams) {
+    for (const streams of [...this.streams.values()]) {
+      for (const stream of [...streams]) {
         stream.closeWithReason('owner-released')
-        stream.dispose()
       }
-      this.streams.delete(peerId)
     }
+    this.streams.clear()
   }
 
   private completePair(peerId: string): SecurityPairResult {
@@ -259,18 +296,20 @@ export class DeterministicSecurityBackend implements SecurityBackend {
     const streams = this.streams.get(peerId)
     if (streams === undefined) return
     for (const stream of [...streams]) {
-      if (stream.isClosed()) {
-        streams.delete(stream)
-        continue
-      }
-      const result = stream.push(event, 1, 'security-state')
-      if (result.terminated) streams.delete(stream)
+      if (stream.emit(event, 1).terminated) streams.delete(stream)
     }
     if (streams.size === 0) this.streams.delete(peerId)
   }
 
-  private emitTo(stream: DeterministicBoundedStream<PeerSecurityEvent>, event: PeerSecurityEvent): void {
-    stream.push(event, 1, 'security-state')
+  private emitTo(stream: OwnedCoreBoundedStream<PeerSecurityEvent>, event: PeerSecurityEvent): void {
+    stream.emit(event, 1)
+  }
+
+  private removeStream(peerId: string, stream: OwnedCoreBoundedStream<PeerSecurityEvent>): void {
+    const streams = this.streams.get(peerId)
+    if (streams === undefined) return
+    streams.delete(stream)
+    if (streams.size === 0) this.streams.delete(peerId)
   }
 
   private createEvent(peerId: string, state: PeerSecurityState): PeerSecurityEvent {

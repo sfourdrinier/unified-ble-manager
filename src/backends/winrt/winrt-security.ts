@@ -3,6 +3,7 @@ import type { PublicOperationOptions } from '../../backend-contract/operations'
 import { capacity } from '../../backend-contract/primitives'
 import type { BoundedAsyncStream } from '../../backend-contract/streams'
 import { CoreBoundedStream } from '../../core/bounded-stream'
+import { OwnedCoreBoundedStream } from '../../core/owned-bounded-stream'
 import type {
   PeerSecurityEvent,
   PeerSecurityState,
@@ -173,6 +174,33 @@ interface ActivePairing {
 
 type SecurityLifecycle = 'active' | 'adapter-lost' | 'closed'
 
+export interface SecurityStreamOwnershipSnapshot {
+  readonly peerCount: number
+  readonly streamCount: number
+}
+
+const winRtSecurityOwnershipInspectors = new WeakMap<WinRtSecurityBackend, () => SecurityStreamOwnershipSnapshot>()
+
+export function inspectWinRtSecurityStreamOwnershipForTests(
+  backend: WinRtSecurityBackend
+): SecurityStreamOwnershipSnapshot {
+  const inspect = winRtSecurityOwnershipInspectors.get(backend)
+  if (inspect === undefined) {
+    throw new Error('winrt security ownership inspector is missing')
+  }
+  return inspect()
+}
+
+function securityStreamOwnershipSnapshot(
+  streams: ReadonlyMap<string, ReadonlySet<unknown>>
+): SecurityStreamOwnershipSnapshot {
+  let streamCount = 0
+  for (const peerStreams of streams.values()) {
+    streamCount += peerStreams.size
+  }
+  return { peerCount: streams.size, streamCount }
+}
+
 export class WinRtSecurityBackend implements SecurityBackend {
   private readonly streams = new Map<string, Set<CoreBoundedStream<PeerSecurityEvent>>>()
   private readonly activePairings = new Map<string, ActivePairing>()
@@ -194,6 +222,7 @@ export class WinRtSecurityBackend implements SecurityBackend {
     private readonly peerIdForNativePeerId: (nativePeerId: string) => string | null = nativePeerId => nativePeerId
   ) {
     this.removeStateListener = this.registerStateListener(this.stateListenerGeneration)
+    winRtSecurityOwnershipInspectors.set(this, () => securityStreamOwnershipSnapshot(this.streams))
   }
 
   async state(peerId: string, options: PublicOperationOptions): Promise<PeerSecurityState> {
@@ -207,7 +236,9 @@ export class WinRtSecurityBackend implements SecurityBackend {
 
   watch(peerId: string): BoundedAsyncStream<PeerSecurityEvent> {
     this.assertActive('winrt.security.watch')
-    const stream = new CoreBoundedStream<PeerSecurityEvent>(securityStreamLimits, 'error')
+    const stream = new OwnedCoreBoundedStream<PeerSecurityEvent>(securityStreamLimits, 'error', () => {
+      this.removeStream(peerId, stream)
+    })
     const peerStreams = this.streams.get(peerId) ?? new Set<CoreBoundedStream<PeerSecurityEvent>>()
     peerStreams.add(stream)
     this.streams.set(peerId, peerStreams)
@@ -304,8 +335,8 @@ export class WinRtSecurityBackend implements SecurityBackend {
     for (const active of this.activePairings.values()) {
       active.operation.requestCancellation().catch(() => undefined)
     }
-    for (const streams of this.streams.values()) {
-      for (const stream of streams) stream.closeWithReason('connection-lost')
+    for (const streams of [...this.streams.values()]) {
+      for (const stream of [...streams]) stream.closeWithReason('connection-lost')
     }
     this.streams.clear()
   }
@@ -320,8 +351,8 @@ export class WinRtSecurityBackend implements SecurityBackend {
     for (const active of this.activePairings.values()) {
       active.operation.requestCancellation().catch(() => undefined)
     }
-    for (const streams of this.streams.values()) {
-      for (const stream of streams) stream.closeWithReason('owner-released')
+    for (const streams of [...this.streams.values()]) {
+      for (const stream of [...streams]) stream.closeWithReason('owner-released')
     }
     this.streams.clear()
   }
@@ -339,8 +370,8 @@ export class WinRtSecurityBackend implements SecurityBackend {
       try {
         this.stateChanged(record)
       } catch {
-        for (const streams of this.streams.values()) {
-          for (const stream of streams) stream.closeWithReason('source-failed')
+        for (const streams of [...this.streams.values()]) {
+          for (const stream of [...streams]) stream.closeWithReason('source-failed')
         }
         this.streams.clear()
       }

@@ -354,4 +354,43 @@ describe('host-neutral public helpers', () => {
       expectZeroCounters(fixture.backend.resourceCounters())
     }
   })
+
+  test('adapterStates destroy retries a watch whose first close returned release-failed', async () => {
+    const { fixture, manager } = await createFixture()
+    let attempts = 0
+    const originalWatchState = fixture.backend.adapter.watchState.bind(fixture.backend.adapter)
+    fixture.backend.adapter.watchState = async () => {
+      const watch = await originalWatchState()
+      const originalClose = watch.transitions.close.bind(watch.transitions)
+      watch.transitions.close = async () => {
+        attempts += 1
+        if (attempts === 1) {
+          return {
+            state: 'release-failed',
+            failures: [
+              {
+                resourceKind: 'adapter',
+                error: {
+                  code: 'platform.failure',
+                  domain: 'cleanup',
+                  operation: 'adapter-states-close',
+                  platform: null,
+                  retryability: 'never'
+                }
+              }
+            ]
+          }
+        }
+        return originalClose()
+      }
+      return watch
+    }
+
+    await manager.adapterStates()
+    await expect(settle(fixture, manager.destroy())).resolves.toMatchObject({ state: 'release-failed' })
+    expect(attempts).toBe(1)
+    await expect(settle(fixture, manager.destroy())).resolves.toMatchObject({ state: 'released' })
+    expect(attempts).toBe(2)
+    expectZeroCounters(fixture.backend.resourceCounters())
+  })
 })
