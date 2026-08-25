@@ -135,6 +135,8 @@ describe('BlueZ system security backend', () => {
       outcome: 'paired',
       state: { bond: 'bonded' }
     })
+    // A just-works agent must be ensured before Pair, or BlueZ aborts the SMP.
+    expect(boundary.pairingAgentEnsured).toBeGreaterThanOrEqual(1)
     await expect(iterator.next()).resolves.toMatchObject({
       value: { kind: 'value', value: { sequence: 2, state: { bond: 'bonded' } } }
     })

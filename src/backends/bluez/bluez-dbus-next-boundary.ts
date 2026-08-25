@@ -112,8 +112,8 @@ const UBM_AGENT_CAPABILITY = 'NoInputNoOutput'
  * use. The agent accepts just-works pairing; input-requiring methods are
  * rejected because NoInputNoOutput cannot satisfy them.
  */
-let cachedAgentClass: (new (name: string) => object) | null = null
-function pairingAgentClass(): new (name: string) => object {
+let cachedAgentClass: (new (name: string) => dbus.interface.Interface) | null = null
+function pairingAgentClass(): new (name: string) => dbus.interface.Interface {
   if (cachedAgentClass !== null) return cachedAgentClass
   class UbmJustWorksAgent extends dbus.interface.Interface {
     Release(): void {}
@@ -143,7 +143,7 @@ function pairingAgentClass(): new (name: string) => object {
       DisplayPasskey: { inSignature: 'ouq', outSignature: '' }
     }
   })
-  cachedAgentClass = UbmJustWorksAgent as unknown as new (name: string) => object
+  cachedAgentClass = UbmJustWorksAgent as unknown as new (name: string) => dbus.interface.Interface
   return cachedAgentClass
 }
 const bluezMatchRules = Object.freeze([
@@ -192,8 +192,8 @@ class DbusNextBluezBoundary implements BluezDbusBoundary {
   private readonly changed = new Set<(event: BluezPropertiesChanged) => void>()
   private readonly resets = new Set<(reason: string) => void>()
   private ordinal = 1
-  private pairingAgent: object | null = null
-  private pairingAgentRegistered = false
+  private pairingAgent: dbus.interface.Interface | null = null
+  private pairingAgentPromise: Promise<void> | null = null
   private closed = false
   private disconnected = false
   private resetEmitted = false
@@ -224,32 +224,56 @@ class DbusNextBluezBoundary implements BluezDbusBoundary {
   }
 
   /**
-   * Registers a just-works pairing agent once, so security.pair() can complete.
-   * Idempotent. Registered on UBM's own bus, which is why pairing on the owned
-   * connection works where an external client's Pair() is cancelled.
+   * Registers a just-works pairing agent so security.pair() can complete.
+   * Registered on UBM's own bus, so BlueZ uses it for pairings this client
+   * initiates (Device1.Pair) without becoming the system default agent.
+   *
+   * Idempotent and concurrency-safe: a single in-flight promise is shared, and
+   * the agent object is exported exactly once. Cleared on a daemon reset so it
+   * re-registers after bluetoothd restarts.
    */
-  async ensurePairingAgent(): Promise<void> {
-    if (this.pairingAgentRegistered) return
-    const AgentClass = pairingAgentClass()
-    const agent = new AgentClass(BLUEZ_AGENT_INTERFACE)
-    this.bus.export(UBM_AGENT_PATH, agent)
-    this.pairingAgent = agent
+  ensurePairingAgent(): Promise<void> {
+    if (this.pairingAgentPromise !== null) return this.pairingAgentPromise
+    this.pairingAgentPromise = this.registerPairingAgent().catch(error => {
+      // Allow a later retry rather than wedging on a transient failure.
+      this.pairingAgentPromise = null
+      throw error
+    })
+    return this.pairingAgentPromise
+  }
+
+  private async registerPairingAgent(): Promise<void> {
+    if (this.pairingAgent === null) {
+      const AgentClass = pairingAgentClass()
+      const agent = new AgentClass(BLUEZ_AGENT_INTERFACE)
+      this.bus.export(UBM_AGENT_PATH, agent)
+      this.pairingAgent = agent
+    }
     const manager = await this.bus.getProxyObject(BLUEZ_SERVICE, '/org/bluez')
     const agentManager = manager.getInterface(BLUEZ_AGENT_MANAGER_INTERFACE) as unknown as {
       RegisterAgent(path: string, capability: string): Promise<void>
-      RequestDefaultAgent(path: string): Promise<void>
     }
     try {
       await agentManager.RegisterAgent(UBM_AGENT_PATH, UBM_AGENT_CAPABILITY)
     } catch (error) {
-      if (!(error instanceof dbus.DBusError) || !/AlreadyExists/.test(error.message)) {
-        this.bus.unexport(UBM_AGENT_PATH, agent)
-        this.pairingAgent = null
+      // A prior registration of this exact path is benign; anything else is not.
+      if (!(error instanceof dbus.DBusError) || error.type !== 'org.bluez.Error.AlreadyExists') {
         throw error
       }
     }
-    await agentManager.RequestDefaultAgent(UBM_AGENT_PATH)
-    this.pairingAgentRegistered = true
+  }
+
+  /** Drops the agent registration so a later pair re-registers (e.g. after reset). */
+  private forgetPairingAgent(): void {
+    this.pairingAgentPromise = null
+    if (this.pairingAgent !== null) {
+      try {
+        this.bus.unexport(UBM_AGENT_PATH, this.pairingAgent)
+      } catch {
+        // Bus may already be gone; nothing to release.
+      }
+      this.pairingAgent = null
+    }
   }
 
   onReset(listener: (reason: string) => void): BluezListener {
@@ -262,10 +286,7 @@ class DbusNextBluezBoundary implements BluezDbusBoundary {
     }
     if (!this.closed) {
       this.closed = true
-    if (this.pairingAgent !== null) {
-      try { this.bus.unexport(UBM_AGENT_PATH, this.pairingAgent) } catch { /* bus may be gone */ }
-      this.pairingAgent = null
-    }
+      this.forgetPairingAgent()
       this.bus.removeListener('message', this.handleMessage)
       this.bus.removeListener('error', this.handleBusError)
       this.added.clear()
@@ -386,6 +407,9 @@ class DbusNextBluezBoundary implements BluezDbusBoundary {
       return
     }
     this.resetEmitted = true
+    // bluetoothd dropped every agent registration; force re-registration on the
+    // next pair rather than trusting a stale flag.
+    this.forgetPairingAgent()
     for (const listener of [...this.resets]) {
       listener(reason)
     }

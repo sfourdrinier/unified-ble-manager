@@ -46,8 +46,10 @@ Windows and BlueZ expose system pairing and durable unpairing where their
 public APIs provide it. On BlueZ, `pair()` calls `org.bluez.Device1.Pair` and
 `unpair()` calls `org.bluez.Adapter1.RemoveDevice`; the library registers a
 just-works (`NoInputNoOutput`) `org.bluez.Agent1` on its own bus so the
-system-mediated ceremony can complete without an external agent. Numeric-entry
-and passkey ceremonies are rejected, matching the just-works capability. Android reports public bond-state transitions but does
+system-mediated ceremony can complete without an external agent. Just-works
+confirmation is auto-accepted; passkey and PIN *entry* ceremonies are rejected,
+matching the `NoInputNoOutput` capability. The agent is registered (not made the
+system default) so it applies to pairings this client initiates. Android reports public bond-state transitions but does
 not ship a reflection-based remove-bond operation. On the current Expo SDK 57 /
 Android API 36 artifact, the cancellation capability is also omitted because
 the public `cancelBondProcess` API is newer; an aborted or timed-out Android

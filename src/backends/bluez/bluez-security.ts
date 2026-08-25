@@ -102,7 +102,7 @@ function securityStreamOwnershipSnapshot(
   return { peerCount: streams.size, streamCount }
 }
 
-/** BlueZ system-mediated pairing only; Agent1/custom ceremonies are intentionally unsupported. */
+/** BlueZ system-mediated pairing only; a just-works Agent1 is registered by the boundary. Custom ceremonies are unsupported. */
 export class BluezSecurityBackend implements SecurityBackend {
   private readonly streams = new Map<string, Set<CoreBoundedStream<PeerSecurityEvent>>>()
   private readonly activePairings = new Map<string, ActivePairing>()
@@ -163,10 +163,12 @@ export class BluezSecurityBackend implements SecurityBackend {
           if (options.deadline !== null && options.deadline <= this.runtime.now()) {
             throw contractError('operation.timed-out', 'core', 'bluez.security.pair')
           }
-          pairCallStarted = true
+          // BlueZ needs a registered Agent1 to drive even a just-works pairing.
+          await this.runtime.boundary.ensurePairingAgent()
           try {
-            // BlueZ needs a registered Agent1 to drive even a just-works pairing.
-            await this.runtime.boundary.ensurePairingAgent()
+            // Mark started only immediately before Pair, so an abort during
+            // agent registration does not cancel a pairing that never began.
+            pairCallStarted = true
             await this.runtime.boundary.methods.callVoid(path, BLUEZ_DEVICE_INTERFACE, 'Pair', [])
           } finally {
             pairCallSettled = true
