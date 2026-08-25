@@ -4,6 +4,22 @@ All notable changes to `unified-ble-manager` are documented here.
 
 ## [Unreleased]
 
+## [4.0.4] - 2026-08-25
+
+Post-4.0.3 audit: wire/scan/IPC ownership, Android 16 KB ELF alignment, Apple teardown, abortable Web chooser honesty, React remount-owned cleanup, and React Native entropy without WebCrypto. Does not retag `v4.0.3`.
+
+### Fixes
+
+- Tauri wire codec budgets, public scan presence overflow, IPC contract errors, GATT admission/rediscovery, Android scanCallback/receiver commit-after-success, 16 KB native page size (#80, #81, #83, #84, #93, #85, #86, #100, #107).
+- Apple disconnect confirmation, Service Changed CCCD retry, restored notify-off; Web chooser abort/timeout does not retain a late `requestDevice` grant (#87, #89, #90, #88).
+- React adapter-watch fail-visible terminals, remount-owned scan/characteristic `release-failed`, scoped BleProvider barriers, composeAbortSignal listener cleanup, `managerKey` replacement (#96, #97, #98, #99, #101).
+- React Native manager construction no longer depends on WebCrypto or a Metro-fatal `crypto` require; native CSPRNG is the default, with injectable `randomBytes` (#111, #113, #114).
+
+### Release integrity
+
+- Cut from the exact post-PR #110 `main` merge commit through the tag-driven trusted-publishing workflow.
+- Intended for publication as `latest`; this does not promote backend support labels or claim physical-radio evidence.
+
 ## [4.0.3] - 2026-08-25
 
 Lifecycle ownership is explicit through clone/decode, public stream close, IPC admission, Web/Tauri teardown, backend unregister/overflow native release, and React hook store/terminal cleanup. Does not retag `v4.0.2`.
