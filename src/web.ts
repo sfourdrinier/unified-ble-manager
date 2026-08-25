@@ -91,7 +91,7 @@ async function createWebManager(
   options: BleManagerCreateOptions
 ): Promise<BleManager> {
   const provider = createWebBluetoothProvider(new NavigatorWebBluetoothBoundary(env))
-  const ephemeral = createEphemeralHostIdentity()
+  const ephemeral = createEphemeralHostIdentity({ randomBytes: options.randomBytes })
   const instanceSuffix = options.instanceId === undefined ? '' : `-${options.instanceId}`
   const clientId = opaqueId(`web-${ephemeral.managerNonce}${instanceSuffix}`, 'client', 'web-bluetooth:browser')
   const managerId = opaqueId(`web-${ephemeral.attachmentNonce}${instanceSuffix}`, 'manager', 'web-bluetooth:browser')

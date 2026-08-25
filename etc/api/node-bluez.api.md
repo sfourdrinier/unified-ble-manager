@@ -7,7 +7,7 @@
 - `BLUEZ_IMPLEMENTATION_VERSION :: "4.0.3"`
 - `BLUEZ_PLATFORM_ID :: "unified-ble:linux-bluez"`
 - `BluezBackendProviderOptions :: { readonly busKind: BluezBusKind; readonly boundaryFactory: BluezDbusBoundaryFactory; readonly now: () => number }`
-- `BluezBleManagerAppOptions :: { readonly busKind?: BluezBusKind | undefined; readonly now?: (() => number) | undefined; readonly instanceId?: string | undefined; readonly adapterId?: string | undefined; readonly diagnostics?: DiagnosticsOptions | undefined; readonly restoration?: { readonly restorationId: string; readonly generation?: string | undefined; } | undefined }`
+- `BluezBleManagerAppOptions :: { readonly busKind?: BluezBusKind | undefined; readonly now?: (() => number) | undefined; readonly instanceId?: string | undefined; readonly adapterId?: string | undefined; readonly diagnostics?: DiagnosticsOptions | undefined; readonly randomBytes?: ((length: number) => Uint8Array<ArrayBufferLike>) | undefined; readonly restoration?: { readonly restorationId: string; readonly generation?: string | undefined; } | undefined }`
 - `BluezBusKind :: "system" | "session"`
 - `BluezDbusBoundary :: { readonly busKind: BluezBusKind; readonly objectManager: BluezObjectManagerBoundary; readonly methods: BluezMethodBoundary; onReset(listener: (reason: string) => void): BluezListener; close(): Promise<void> }`
 - `BluezDbusBoundaryFactory :: { open(busKind: BluezBusKind): Promise<BluezDbusBoundary> }`
@@ -23,7 +23,7 @@
 - `BluezVariant :: { readonly signature: "s" | "o"; readonly value: string; } | { readonly signature: "b"; readonly value: boolean; } | { readonly signature: "n" | "q" | "i" | "u" | "x" | "t" | "d"; readonly value: number; } | { readonly signature: "ay"; readonly value: Uint8Array<ArrayBufferLike>; } | { readonly signature: "as" | "ao"; readonly value: readonly string[]; } | { readonly signature: "a{sv}"; readonly value: BluezProperties; }`
 - `DbusNextBluezBoundaryFactory :: typeof DbusNextBluezBoundaryFactory`
 - `DbusNextBluezProviderOptions :: { readonly busKind: BluezBusKind; readonly now: () => number }`
-- `NodeBleManagerAppOptions :: { readonly now?: (() => number) | undefined; readonly instanceId?: string | undefined; readonly adapterId?: string | undefined; readonly diagnostics?: DiagnosticsOptions | undefined; readonly restoration?: { readonly restorationId: string; readonly generation?: string | undefined; } | undefined }`
+- `NodeBleManagerAppOptions :: { readonly now?: (() => number) | undefined; readonly instanceId?: string | undefined; readonly adapterId?: string | undefined; readonly diagnostics?: DiagnosticsOptions | undefined; readonly randomBytes?: ((length: number) => Uint8Array<ArrayBufferLike>) | undefined; readonly restoration?: { readonly restorationId: string; readonly generation?: string | undefined; } | undefined }`
 - `bluezCompatibility :: BackendCompatibilityOffer`
 - `createBluezBackendProvider :: (options: BluezBackendProviderOptions) => BackendProvider<string, HostNeutralBackendIdentity<string>>`
 - `createBluezBleManager :: (options?: BluezBleManagerAppOptions) => Promise<BleManager>`

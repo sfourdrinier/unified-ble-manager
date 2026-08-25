@@ -37,7 +37,7 @@ Pod::Spec.new do |s|
     "native/protocol/generated/**/*.hpp"
   ]
   s.resource_bundles = { 'BlePlx' => ['ios/PrivacyInfo.xcprivacy'] }
-  s.frameworks = "CoreBluetooth"
+  s.frameworks = "CoreBluetooth", "Security"
   # Do not add -fmodules/-fcxx-modules: React Native's source build owns the
   # C++ module configuration and duplicate definitions otherwise become possible.
   s.compiler_flags = "-DOWNED_COREBLUETOOTH_RADIO=1"

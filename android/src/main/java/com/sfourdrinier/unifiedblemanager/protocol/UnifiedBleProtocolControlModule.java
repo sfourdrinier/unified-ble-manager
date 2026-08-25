@@ -454,6 +454,18 @@ public final class UnifiedBleProtocolControlModule extends NativeUnifiedBleProto
   }
 
   @Override
+  public void getRandomBytes(double length, Promise promise) {
+    final int n = (int) length;
+    if (n != length || n <= 0 || n > 1024) {
+      promise.reject("argument.invalid", "randomBytes.length");
+      return;
+    }
+    final byte[] out = new byte[n];
+    new java.security.SecureRandom().nextBytes(out);
+    promise.resolve(android.util.Base64.encodeToString(out, android.util.Base64.NO_WRAP));
+  }
+
+  @Override
   public synchronized void installExecutionRuntime(Promise promise) {
     try {
       requireOpen();

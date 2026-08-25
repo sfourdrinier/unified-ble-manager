@@ -32,7 +32,7 @@ async function createNodeBleManagerFromProviderInternal(
   }
   const adapters = await provider.listAdapters()
   const selected = selectNodeAdapter(adapters, options.adapterId)
-  const ephemeral = createEphemeralHostIdentity()
+  const ephemeral = createEphemeralHostIdentity({ randomBytes: createOptions.randomBytes })
   const instanceSuffix = options.instanceId === undefined ? '' : `-${options.instanceId}`
   return createBleManagerFromProvider(
     {

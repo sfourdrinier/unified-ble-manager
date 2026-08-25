@@ -1,4 +1,6 @@
-import { createHash } from 'crypto'
+// Schema fingerprinting only. This is Node-only build-time code and must not be
+// imported from runtime modules. The hash is not a security primitive.
+import { createHash } from 'node:crypto'
 
 export type LegacyLocationPolicy = 'auto' | 'required' | 'none'
 export type NativeLoggingLevel = 'off' | 'errors' | 'events'

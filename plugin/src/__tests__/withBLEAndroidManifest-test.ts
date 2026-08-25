@@ -1,5 +1,5 @@
 import { AndroidConfig, XML } from 'expo/config-plugins'
-import { resolve } from 'path'
+import { resolve } from 'node:path'
 
 import {
   addLocationPermissionToManifest,

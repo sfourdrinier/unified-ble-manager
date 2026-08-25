@@ -2,6 +2,7 @@
 
 #import <Foundation/Foundation.h>
 #import <CoreBluetooth/CoreBluetooth.h>
+#import <Security/Security.h>
 #import <React/RCTLog.h>
 #import <ReactCommon/RCTTurboModule.h>
 #import <ReactCommon/RCTTurboModuleWithJSIBindings.h>
@@ -12,6 +13,7 @@
 #endif
 
 #include <cmath>
+#include <vector>
 #include "../native/protocol/include/NativeProtocolControlRuntime.hpp"
 #include "../native/protocol/include/NativeRestorationConfiguration.hpp"
 #include "NativeProtocol/UnifiedBleProtocolAppleExecution.hpp"
@@ -514,6 +516,23 @@ RCT_EXPORT_MODULE(UnifiedBleProtocolControl)
     @"maximumControlRecordBytes": @262144,
     @"maximumBinaryPayloadBytes": @524288,
   });
+}
+
+- (void)getRandomBytes:(double)length
+               resolve:(RCTPromiseResolveBlock)resolve
+                reject:(RCTPromiseRejectBlock)reject {
+  const int n = static_cast<int>(length);
+  if (length != static_cast<double>(n) || n <= 0 || n > 1024) {
+    rejectControl(reject, @"argument.invalid", @"randomBytes.length");
+    return;
+  }
+  std::vector<uint8_t> bytes(static_cast<size_t>(n));
+  if (SecRandomCopyBytes(kSecRandomDefault, static_cast<size_t>(n), bytes.data()) != errSecSuccess) {
+    rejectControl(reject, @"capability.unsupported", @"host-identity.secure-randomness");
+    return;
+  }
+  NSData *data = [NSData dataWithBytes:bytes.data() length:static_cast<NSUInteger>(n)];
+  resolve([data base64EncodedStringWithOptions:0]);
 }
 
 - (void)installExecutionRuntime:(RCTPromiseResolveBlock)resolve

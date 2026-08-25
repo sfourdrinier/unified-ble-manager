@@ -3,8 +3,8 @@ import {
   FOREGROUND_SERVICE_OWNERSHIP_METADATA_NAME,
   reconcileAndroidForegroundService
 } from '../withBLEAndroidForegroundService'
-import { readFileSync } from 'fs'
-import { resolve } from 'path'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 
 const foregroundServiceOptions = {
   mode: 'connected-device-foreground-service' as const,
