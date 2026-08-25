@@ -6,7 +6,7 @@ import type { CleanupRecord } from './cleanup'
 import { toPublicCleanupRecord } from './cleanup'
 import { rehydratePublicError } from './error-bridge'
 import { BleError } from './errors'
-import { MAX_PUBLIC_STREAM_CAPACITY } from './stream-capacity'
+import { MAX_PUBLIC_STREAM_BYTE_CAPACITY, MAX_PUBLIC_STREAM_ITEM_CAPACITY } from './stream-capacity'
 import type { PortableBoundedAsyncStream, PortableStreamItem } from '../manager/consumer-handles'
 
 export type PublicStreamOverflowPolicy = 'latest' | 'drop-oldest' | 'drop-newest' | 'error'
@@ -82,9 +82,13 @@ export function mapPublicBoundedAsyncStream<InternalValue, PublicValue>(
   let overflowPolicy: PublicStreamOverflowPolicy
   try {
     limits = Object.freeze({
-      itemCapacity: requireStreamCapacity(source.limits.itemCapacity, 'item-capacity'),
-      byteCapacity: requireStreamCapacity(source.limits.byteCapacity, 'byte-capacity'),
-      reservedControlCapacity: requireStreamCapacity(source.limits.reservedControlCapacity, 'reserved-control-capacity')
+      itemCapacity: requireStreamCapacity(source.limits.itemCapacity, 'item-capacity', MAX_PUBLIC_STREAM_ITEM_CAPACITY),
+      byteCapacity: requireStreamCapacity(source.limits.byteCapacity, 'byte-capacity', MAX_PUBLIC_STREAM_BYTE_CAPACITY),
+      reservedControlCapacity: requireStreamCapacity(
+        source.limits.reservedControlCapacity,
+        'reserved-control-capacity',
+        MAX_PUBLIC_STREAM_ITEM_CAPACITY
+      )
     })
     if (limits.byteCapacity <= limits.reservedControlCapacity) {
       throw contractError('protocol.malformed', 'stream', 'public-stream.limits.byte-capacity')
@@ -260,12 +264,12 @@ function mapPublicIteratorResult<InternalValue, PublicValue>(
   }
 }
 
-function requireStreamCapacity(value: number, label: string): number {
+function requireStreamCapacity(value: number, label: string, maximum: number): number {
   if (typeof value !== 'number') {
     throw contractError('protocol.malformed', 'stream', `public-stream.limits.${label}`)
   }
   const number = Number(value)
-  if (!Number.isSafeInteger(number) || number <= 0 || number > MAX_PUBLIC_STREAM_CAPACITY) {
+  if (!Number.isSafeInteger(number) || number <= 0 || number > maximum) {
     throw contractError('protocol.malformed', 'stream', `public-stream.limits.${label}`)
   }
   return number

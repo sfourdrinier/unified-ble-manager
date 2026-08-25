@@ -1798,9 +1798,24 @@ async function watchPublicAdapter<Attachment extends string, Identity extends Ba
       return result
     }
     signal?.addEventListener('abort', abortHandler, { once: true })
+    const initial = snapshotPublicAdapterState(watch.initial)
+    let values: PublicBoundedAsyncStream<BleAdapterState>
+    try {
+      values = mapPublicAdapterStates(watch.values)
+    } catch (error) {
+      try {
+        await stop()
+      } catch (cleanupError) {
+        throw new AggregateError(
+          [rehydratePublicError(error), rehydratePublicError(cleanupError)],
+          'BLE adapter watch projection and cleanup both failed'
+        )
+      }
+      throw rehydratePublicError(error)
+    }
     return Object.freeze({
-      initial: snapshotPublicAdapterState(watch.initial),
-      values: mapPublicAdapterStates(watch.values),
+      initial,
+      values,
       stop: () => stop().then(toPublicCleanupRecord)
     })
   } catch (error) {

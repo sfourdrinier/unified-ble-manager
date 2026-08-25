@@ -6,6 +6,7 @@ const { CoreBoundedStream } = require('../src/core/bounded-stream')
 const { mapPublicBoundedAsyncStream } = require('../src/public/streams')
 const { BleError } = require('../src/public/errors')
 const { rehydratePublicError } = require('../src/public/error-bridge')
+const { resolveStreamPolicy } = require('../src/public/stream-presets')
 
 function limits(itemCapacity, byteCapacity, reservedControlCapacity) {
   return {
@@ -635,6 +636,22 @@ describe('public stream runtime projection', () => {
     const publicStream = mapPublicBoundedAsyncStream(source, value => value)
     expect(publicStream.limits.itemCapacity).toBe(65_536)
 
+    const maximumBytes = sourceWithIterator({
+      next: async () => ({ done: true, value: undefined }),
+      return: async () => ({ done: true, value: undefined }),
+      [Symbol.asyncIterator]() {
+        return this
+      }
+    })
+    maximumBytes.limits = { itemCapacity: 1, byteCapacity: 4 * 1024 * 1024, reservedControlCapacity: 1 }
+    expect(mapPublicBoundedAsyncStream(maximumBytes, value => value).limits.byteCapacity).toBe(4 * 1024 * 1024)
+    expect(
+      resolveStreamPolicy({
+        preset: 'custom',
+        budget: { itemCapacity: 65_536, byteCapacity: 4 * 1024 * 1024, reservedControlCapacity: 1 }
+      }).byteCapacity
+    ).toBe(4 * 1024 * 1024)
+
     const aboveMaximum = sourceWithIterator({
       next: async () => ({ done: true, value: undefined }),
       return: async () => ({ done: true, value: undefined }),
@@ -644,5 +661,21 @@ describe('public stream runtime projection', () => {
     })
     aboveMaximum.limits = { itemCapacity: 65_537, byteCapacity: 65_536, reservedControlCapacity: 1 }
     expect(() => mapPublicBoundedAsyncStream(aboveMaximum, value => value)).toThrow(BleError)
+
+    const aboveByteMaximum = sourceWithIterator({
+      next: async () => ({ done: true, value: undefined }),
+      return: async () => ({ done: true, value: undefined }),
+      [Symbol.asyncIterator]() {
+        return this
+      }
+    })
+    aboveByteMaximum.limits = { itemCapacity: 1, byteCapacity: 4 * 1024 * 1024 + 1, reservedControlCapacity: 1 }
+    expect(() => mapPublicBoundedAsyncStream(aboveByteMaximum, value => value)).toThrow(BleError)
+    expect(() =>
+      resolveStreamPolicy({
+        preset: 'custom',
+        budget: { itemCapacity: 1, byteCapacity: 4 * 1024 * 1024 + 1, reservedControlCapacity: 1 }
+      })
+    ).toThrow()
   })
 })

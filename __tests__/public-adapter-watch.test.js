@@ -1,7 +1,13 @@
+// __tests__/public-adapter-watch.test.js
+
 const { CoreBoundedStream } = require('../src/core/bounded-stream')
 const { capacity } = require('../src/backend-contract/primitives')
 const { createPublicBleManager } = require('../src/public/ble-manager')
 const { IpcPublicManagerAdapter } = require('../src/ipc/public-manager')
+const { createDeterministicTestBleManager } = require('../src/testing/deterministic/deterministic-test-manager')
+const {
+  inspectDeterministicStreamOwnershipForTests
+} = require('../src/testing/deterministic/deterministic-backend-base')
 
 function adapterState(overrides = {}) {
   return {
@@ -114,6 +120,37 @@ describe('public adapter watch contract', () => {
     })
     await expect(publicWatch.stop()).resolves.toMatchObject({ state: 'released' })
     expect(stop).toHaveBeenCalledTimes(1)
+  })
+
+  test('stops an allocated source when public adapter stream projection rejects its byte quota', async () => {
+    const source = new CoreBoundedStream(
+      {
+        itemCapacity: capacity(1),
+        byteCapacity: capacity(4 * 1024 * 1024 + 1),
+        reservedControlCapacity: capacity(1)
+      },
+      'drop-newest'
+    )
+    const stop = jest.fn(async () => ({ state: 'released', failures: [] }))
+    const manager = await createPublicBleManager(
+      publicInternal({ initial: adapterState(), values: source, stop }),
+      () => 100
+    )
+
+    await expect(manager.adapter.watchState()).rejects.toMatchObject({
+      code: 'protocol.malformed',
+      domain: 'stream'
+    })
+    expect(stop).toHaveBeenCalledTimes(1)
+  })
+
+  test('accepts the deterministic backend adapter watch byte quota and cleans it up', async () => {
+    const { manager, fixture } = await createDeterministicTestBleManager()
+    const watch = await manager.adapter.watchState()
+    expect(watch.values.limits.byteCapacity).toBe(1024 * 1024)
+    await expect(watch.stop()).resolves.toEqual({ state: 'released', failures: [] })
+    await expect(manager.destroy()).resolves.toEqual({ state: 'released', failures: [] })
+    expect(inspectDeterministicStreamOwnershipForTests(fixture.backend)).toMatchObject({ stateWatchers: 0 })
   })
 })
 
