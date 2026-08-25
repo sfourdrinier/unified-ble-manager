@@ -16,6 +16,7 @@ const TAURI_CAPABILITIES: [&str; 36] = [
     "discovery:advertisement-watch",
     "scan:platform-options",
     "peer:resolve-reference",
+    "peer:address-targeting",
     "peer:known",
     "peer:system-connected",
     "peer:bonded",

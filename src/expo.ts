@@ -201,13 +201,41 @@ export async function createExpoBleManagerWithEnvironment(
   }
 }
 
+/**
+ * A boundary that has not yet received an adapter-state event reports every
+ * field as unknown, with a safeReason saying so. That shape is *pending*, not
+ * authoritative, and must not be mapped to a readiness state - "unknown
+ * availability" and "unavailable authorization" would otherwise read as
+ * "there is no usable radio" for a radio that is simply still starting up.
+ */
+function isPendingAdapterState(adapter: BleAdapterState): boolean {
+  return (
+    adapter.availability === 'unknown' &&
+    adapter.power === 'unknown' &&
+    adapter.authorization === 'unavailable' &&
+    adapter.safeReason !== null &&
+    adapter.safeReason !== undefined
+  )
+}
+
+/** Bounded wait for the first authoritative snapshot; ~2s at 100ms steps. */
+const PENDING_ADAPTER_STATE_ATTEMPTS = 20
+const PENDING_ADAPTER_STATE_INTERVAL_MS = 100
+
+const sleep = (milliseconds: number): Promise<void> => new Promise<void>(resolve => setTimeout(resolve, milliseconds))
+
 /** Reads one trusted adapter snapshot and derives deterministic Expo guidance. */
 export async function getExpoBleReadiness(
   manager: Pick<BleManager, 'adapter'>,
   configuration?: ExpoRuntimeConfiguration
 ): Promise<BleReadiness> {
   try {
-    return mapExpoReadiness(await manager.adapter.state(), configuration)
+    let adapter = await manager.adapter.state()
+    for (let attempt = 0; attempt < PENDING_ADAPTER_STATE_ATTEMPTS && isPendingAdapterState(adapter); attempt++) {
+      await sleep(PENDING_ADAPTER_STATE_INTERVAL_MS)
+      adapter = await manager.adapter.state()
+    }
+    return mapExpoReadiness(adapter, configuration)
   } catch (error) {
     throw rehydratePublicError(error)
   }

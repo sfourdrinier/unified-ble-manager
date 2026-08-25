@@ -1,4 +1,4 @@
-import { canonicalUuid } from '../backend-contract/primitives'
+import { canonicalBleAddress, canonicalUuid } from '../backend-contract/primitives'
 import { contractError } from '../backend-contract/errors'
 import type { AdvertisementObservation } from '../backend-contract/advertisement'
 import { canonicalScanQueryJson, scanQueryDigest } from '../backend-contract/scan-query'
@@ -38,6 +38,12 @@ export interface ScanQuery {
 
 export interface ScanClause {
   readonly peers?: readonly PeerReference[]
+  /**
+   * Radio addresses known out of band (NFC, QR, persisted state). Address matching only works
+   * for public/static addresses; devices using resolvable private addresses need the durable
+   * `peers` reference form. Requires the `peer:address-targeting` capability.
+   */
+  readonly addresses?: readonly string[]
   readonly services?: {
     readonly any?: readonly (string | number)[]
     readonly all?: readonly (string | number)[]
@@ -86,6 +92,11 @@ export function normalizeScanQuery(query: ScanQuery | undefined = {}): Normalize
   return Object.freeze({ ...base, digest: scanQueryDigest(base) })
 }
 
+/** True when any anyOf/exclude clause targets radio addresses (peer:address-targeting). */
+export function scanQueryTargetsAddresses(query: NormalizedScanQuery): boolean {
+  return [...(query.anyOf ?? []), ...(query.exclude ?? [])].some(clause => clause.addresses !== null)
+}
+
 export function normalizeScanObservation(observation: ScanObservation): NormalizedScanObservation {
   if (isNormalizedObservation(observation)) return cloneNormalizedObservation(observation)
   if (isIpcAdvertisement(observation)) {
@@ -116,8 +127,10 @@ export function normalizeScanObservation(observation: ScanObservation): Normaliz
     observation.peerReference === undefined
       ? undefined
       : snapshotPeerReference(observation.peerReference, 'scan.observation.peer-reference')
+  const address = normalizedObservationAddress(observation.device.address)
   return Object.freeze({
     ...(peerReference === undefined ? {} : { peerReference }),
+    ...(address === undefined ? {} : { address }),
     localName: fieldValue(observation.localName),
     rssi: fieldValue(observation.rssi),
     connectable: fieldValue(observation.connectable),
@@ -159,10 +172,11 @@ function normalizeClause(clause: ScanClause, operation: string): NormalizedScanC
   assertObject(clause, operation)
   assertKeys(
     clause,
-    ['peers', 'services', 'names', 'manufacturerData', 'serviceData', 'rssi', 'connectable'],
+    ['peers', 'addresses', 'services', 'names', 'manufacturerData', 'serviceData', 'rssi', 'connectable'],
     operation
   )
   const peers = normalizePeerList(clause.peers, operation)
+  const addresses = normalizeAddressList(clause.addresses, operation)
   const services = normalizeUuidField(clause.services, operation, 'services')
   const names = normalizeNames(clause.names, operation)
   const manufacturerData = normalizeManufacturerField(clause.manufacturerData, operation)
@@ -172,6 +186,7 @@ function normalizeClause(clause: ScanClause, operation: string): NormalizedScanC
     throw invalid(`${operation}.connectable`)
   if (
     peers === null &&
+    addresses === null &&
     services === null &&
     names === null &&
     manufacturerData === null &&
@@ -181,7 +196,16 @@ function normalizeClause(clause: ScanClause, operation: string): NormalizedScanC
   ) {
     throw invalid(`${operation}.empty`)
   }
-  return Object.freeze({ peers, services, names, manufacturerData, serviceData, rssi, connectable: clause.connectable })
+  return Object.freeze({
+    peers,
+    addresses,
+    services,
+    names,
+    manufacturerData,
+    serviceData,
+    rssi,
+    connectable: clause.connectable
+  })
 }
 
 function normalizePeerList(
@@ -203,6 +227,27 @@ function normalizePeerList(
   return Object.freeze(
     [...uniqueReferences.entries()].sort(([left], [right]) => compareCanonical(left, right)).map(([, value]) => value)
   )
+}
+
+function normalizeAddressList(values: readonly string[] | undefined, operation: string): readonly string[] | null {
+  if (values === undefined) return null
+  if (!Array.isArray(values) || values.length === 0) throw invalid(`${operation}.addresses`)
+  const result: string[] = []
+  const seen = new Set<string>()
+  values.forEach((value, index) => {
+    if (typeof value !== 'string') throw invalid(`${operation}.addresses[${index}]`)
+    let address: string
+    try {
+      address = canonicalBleAddress(value)
+    } catch {
+      throw invalid(`${operation}.addresses[${index}]`)
+    }
+    if (!seen.has(address)) {
+      seen.add(address)
+      result.push(address)
+    }
+  })
+  return Object.freeze(result.sort())
 }
 
 function peerReferenceKey(reference: PeerReference): string {
@@ -375,6 +420,8 @@ function clauseMatches(clause: NormalizedScanClause, observation: NormalizedScan
     (peerReference === undefined || !clause.peers.some(peer => peerReferenceEqual(peer, peerReference)))
   )
     return false
+  const address = observation.address
+  if (clause.addresses !== null && (address === undefined || !clause.addresses.includes(address.value))) return false
   if (clause.services !== null && !matchesUuidField(clause.services.any, clause.services.all, observation.serviceUuids))
     return false
   if (clause.names !== null) {
@@ -724,10 +771,11 @@ function isNormalizedObservation(value: ScanObservation): value is NormalizedSca
     !hasExactObservationKeys(
       value,
       ['localName', 'rssi', 'connectable', 'serviceUuids', 'manufacturerData', 'serviceData'],
-      ['peerReference']
+      ['peerReference', 'address']
     )
   )
     return false
+  if (!isNormalizedObservationAddress(Reflect.get(value, 'address'))) return false
   const localName = Reflect.get(value, 'localName')
   const rssi = Reflect.get(value, 'rssi')
   const connectable = Reflect.get(value, 'connectable')
@@ -744,6 +792,20 @@ function isNormalizedObservation(value: ScanObservation): value is NormalizedSca
     (serviceData === null || (Array.isArray(serviceData) && serviceData.every(isNormalizedServiceEntry))) &&
     (value.peerReference === undefined || isPeerReference(value.peerReference))
   )
+}
+
+function isNormalizedObservationAddress(value: unknown): boolean {
+  if (value === undefined) return true
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false
+  if (Object.keys(value).sort().join(',') !== 'type,value') return false
+  const type = Reflect.get(value, 'type')
+  const address = Reflect.get(value, 'value')
+  if ((type !== 'public' && type !== 'random') || typeof address !== 'string') return false
+  try {
+    return canonicalBleAddress(address) === address
+  } catch {
+    return false
+  }
 }
 
 function isNormalizedManufacturerEntry(
@@ -808,6 +870,9 @@ function cloneNormalizedObservation(value: NormalizedScanObservation): Normalize
       : snapshotPeerReference(value.peerReference, 'scan.observation.peer-reference')
   return Object.freeze({
     ...(peerReference === undefined ? {} : { peerReference }),
+    ...(value.address === undefined
+      ? {}
+      : { address: Object.freeze({ type: value.address.type, value: value.address.value }) }),
     localName: value.localName,
     rssi: value.rssi,
     connectable: value.connectable,
@@ -827,6 +892,17 @@ function cloneNormalizedObservation(value: NormalizedScanObservation): Normalize
             value.serviceData.map(entry => Object.freeze({ service: entry.service, data: copyBytes(entry.data) }))
           )
   })
+}
+
+function normalizedObservationAddress(
+  address: { readonly value: string; readonly type: 'public' | 'random' | 'opaque' } | null
+): NormalizedScanObservation['address'] {
+  if (address === null || address.type === 'opaque') return undefined
+  try {
+    return Object.freeze({ type: address.type, value: canonicalBleAddress(address.value) })
+  } catch {
+    return undefined
+  }
 }
 
 function copyBytes(value: Readonly<Uint8Array>): Uint8Array {

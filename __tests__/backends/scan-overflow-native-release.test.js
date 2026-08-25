@@ -1,6 +1,7 @@
 const { attachBackend } = require('../../src/backend-contract/backend')
 const { capacity, opaqueId, version, versionRange } = require('../../src/backend-contract/primitives')
 const { createCoreBluetoothBackendProvider } = require('../../src/backends/corebluetooth/corebluetooth-provider')
+const { COREBLUETOOTH_PLATFORM_ID } = require('../../src/backends/corebluetooth/corebluetooth-identity')
 const { createBluezBackendProvider } = require('../../src/backends/bluez/bluez-backend-provider')
 const { createWinRtBackendProvider } = require('../../src/backends/winrt/winrt-provider')
 const { InMemoryCoreBluetoothBoundary } = require('../../test-support/corebluetooth/in-memory-corebluetooth-boundary')
@@ -383,7 +384,7 @@ describe.each(['corebluetooth', 'winrt', 'bluez'])('%s scan overflow native rele
     await flush()
     expectConsoleErrorMatching(
       backendId === 'corebluetooth'
-        ? '[CoreBluetoothBackend.handleAdvertisement] Overflow scan cleanup requires retry:'
+        ? `[${COREBLUETOOTH_PLATFORM_ID}.handleAdvertisement] Overflow scan cleanup requires retry:`
         : '[WinRtBackend.handleAdvertisement] Overflow scan cleanup requires retry:',
       expect.arrayContaining([expect.objectContaining({ resourceKind: 'scan' })])
     )

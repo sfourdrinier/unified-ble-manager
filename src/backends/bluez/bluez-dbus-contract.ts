@@ -35,7 +35,7 @@ export type BluezBusKind = 'system' | 'session'
 export type BluezVariant =
   | { readonly signature: 's' | 'o'; readonly value: string }
   | { readonly signature: 'b'; readonly value: boolean }
-  | { readonly signature: 'n' | 'q' | 'i' | 'u' | 'x' | 't' | 'd'; readonly value: number }
+  | { readonly signature: 'y' | 'n' | 'q' | 'i' | 'u' | 'x' | 't' | 'd'; readonly value: number }
   | { readonly signature: 'ay'; readonly value: Uint8Array }
   | { readonly signature: 'as' | 'ao'; readonly value: readonly string[] }
   | { readonly signature: 'a{sv}'; readonly value: BluezProperties }
