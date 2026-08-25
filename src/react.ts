@@ -1,16 +1,17 @@
 import * as React from 'react'
 import type { ReactNode } from 'react'
 import { contractError, type CleanupRecord } from './backend-contract/errors'
-import type { StreamItem } from './backend-contract/streams'
-import type {
-  BleConnection,
-  BleConnectionEvent,
-  BleManager,
-  BlePeer,
-  DiscoveryEvent,
-  PublicScanObservation,
-  ScanOptions,
-  ScanSession
+import type { StreamItem, StreamTerminalNotice } from './backend-contract/streams'
+import {
+  connectionEventsEndedExpectedly,
+  type BleConnection,
+  type BleConnectionEvent,
+  type BleManager,
+  type BlePeer,
+  type DiscoveryEvent,
+  type PublicScanObservation,
+  type ScanOptions,
+  type ScanSession
 } from './public/ble-manager'
 import {
   MAX_PUBLIC_SCAN_STATE_BYTES,
@@ -18,7 +19,7 @@ import {
   estimatePublicPeerRetentionBytes
 } from './public/scan-state-budget'
 import type { BleAdapterState, BleAdapterStateWatch } from './public/ble-adapter'
-import type { GattCharacteristic, GattSubscribeOptions, GattValueEvent } from './public/gatt'
+import type { GattCharacteristic, GattSubscribeOptions, GattSubscription, GattValueEvent } from './public/gatt'
 import type { BleCapabilities, CapabilityDescriptor, FeatureId } from './public/capabilities'
 import { normalizeScanQuery } from './public/scan-query'
 import type { BleReadiness, ExpoBleManager } from './expo'
@@ -830,6 +831,7 @@ export function useDiscoveredPeers(options: ScanOptions = {}): UseDiscoveredPeer
 
 export function useConnectionState(connection: BleConnection | null): UseConnectionStateResult {
   const reportError = useReactErrorReporter()
+  const generationRef = React.useRef(0)
   const [result, setResult] = React.useState<UseConnectionStateResult>({
     state: null,
     loading: connection !== null,
@@ -843,20 +845,36 @@ export function useConnectionState(connection: BleConnection | null): UseConnect
   }
   React.useEffect(() => {
     let active = true
+    const runGeneration = generationRef.current + 1
+    generationRef.current = runGeneration
     let iterator: AsyncIterator<BleConnectionEvent> | null = null
     if (connection === null) return () => undefined
+    const isCurrent = (): boolean => active && generationRef.current === runGeneration
     const observe = async (): Promise<void> => {
       try {
         const current = connection.lifecycleEvents[Symbol.asyncIterator]()
         iterator = current
         while (true) {
           const next = await current.next()
-          if (next.done) break
-          const event = next.value
-          if (active) setResult({ state: event.current, loading: false, error: null })
+          if (!isCurrent()) return
+          if (next.done) {
+            const expected = connectionEventsEndedExpectedly(connection.lifecycleEvents)
+            setResult(currentResult => ({
+              state: currentResult.state,
+              loading: false,
+              error: expected ? null : contractError('stream.closed', 'stream', 'react.useConnectionState')
+            }))
+            break
+          }
+          setResult({ state: next.value.current, loading: false, error: null })
         }
       } catch (reason) {
-        if (active) setResult({ state: null, loading: false, error: toError(reason) })
+        if (!isCurrent()) return
+        setResult(currentResult => ({
+          state: currentResult.state,
+          loading: false,
+          error: toError(reason)
+        }))
       }
     }
     observe().catch(() => undefined)
@@ -881,6 +899,7 @@ export function useCharacteristicValue(
   options: GattSubscribeOptions = {}
 ): UseCharacteristicValueResult {
   const reportError = useReactErrorReporter()
+  const generationRef = React.useRef(0)
   const [result, setResult] = React.useState<UseCharacteristicValueResult>({
     value: null,
     loading: characteristic !== null,
@@ -904,43 +923,110 @@ export function useCharacteristicValue(
   const stableOptions = React.useMemo(() => options, [optionsKey, signal])
   React.useEffect(() => {
     let active = true
-    let subscription: Awaited<ReturnType<GattCharacteristic['subscribe']>> | null = null
+    const runGeneration = generationRef.current + 1
+    generationRef.current = runGeneration
+    let subscription: GattSubscription | null = null
     let overflowError: Error | null = null
     let latestValue: GattValueEvent | null = null
+    let valueIterator: AsyncIterator<StreamItem<GattValueEvent>> | null = null
+    let removeAttempt: Promise<CleanupResult> | null = null
+    let removeReleased = false
     if (characteristic === null) return () => undefined
+    const isCurrent = (): boolean => generationRef.current === runGeneration
+
+    const publish = (next: UseCharacteristicValueResult): void => {
+      if (!isCurrent()) return
+      setResult(next)
+    }
+
+    const removeSubscription = (): Promise<void> => {
+      if (removeReleased) return Promise.resolve()
+      if (removeAttempt !== null) {
+        return removeAttempt.then(
+          () => undefined,
+          () => undefined
+        )
+      }
+      const current = subscription
+      if (current === null) return Promise.resolve()
+      const attempt = (async (): Promise<CleanupResult> => {
+        try {
+          const cleanup = await current.remove()
+          if (cleanup.state === 'release-failed') {
+            reportCleanupFailure(cleanup, reportError, 'characteristic subscription remove')
+            return cleanup
+          }
+          removeReleased = true
+          return cleanup
+        } catch (reason) {
+          reportError(toError(reason))
+          throw reason
+        }
+      })()
+      removeAttempt = attempt.finally(() => {
+        if (!removeReleased) removeAttempt = null
+      })
+      return attempt.then(
+        () => undefined,
+        () => undefined
+      )
+    }
+
     const observe = async (): Promise<void> => {
       try {
         subscription = await characteristic.subscribe({
           ...stableOptions,
           stream: stableOptions.stream ?? 'balanced'
         })
-        const current = subscription
         if (!active) {
-          await settleCleanup(() => current.remove(), reportError, 'characteristic subscription remove')
+          await removeSubscription()
           return
         }
-        for await (const item of subscription.values) {
+        valueIterator = subscription.values[Symbol.asyncIterator]()
+        while (true) {
+          const next = await valueIterator.next()
           if (!active) return
-          if (item.kind === 'terminal') break
+          if (next.done) {
+            publish({
+              value: latestValue,
+              loading: false,
+              error: overflowError ?? contractError('stream.closed', 'stream', 'react.useCharacteristicValue')
+            })
+            await removeSubscription()
+            return
+          }
+          const item = next.value
+          if (item.kind === 'terminal') {
+            publish({
+              value: latestValue,
+              loading: false,
+              error: overflowError ?? mapCharacteristicTerminal(item.reason)
+            })
+            await removeSubscription()
+            return
+          }
           if (item.kind === 'overflow') {
             overflowError = streamOverflowError('react.useCharacteristicValue.values')
-            setResult({ value: latestValue, loading: false, error: overflowError })
+            publish({ value: latestValue, loading: false, error: overflowError })
             continue
           }
-          if (item.kind === 'value') {
-            latestValue = item.value
-            setResult({ value: latestValue, loading: false, error: overflowError })
-          }
+          latestValue = item.value
+          publish({ value: latestValue, loading: false, error: overflowError })
         }
       } catch (reason) {
-        if (active) setResult({ value: latestValue, loading: false, error: overflowError ?? toError(reason) })
+        publish({ value: latestValue, loading: false, error: overflowError ?? toError(reason) })
+        await removeSubscription()
       }
     }
     observe().catch(() => undefined)
     return () => {
       active = false
-      const current = subscription
-      if (current !== null) observeCleanup(() => current.remove(), reportError, 'characteristic subscription remove')
+      const currentIterator = valueIterator
+      if (currentIterator !== null && currentIterator.return !== undefined) {
+        const close = currentIterator.return
+        observeRejected(() => close.call(currentIterator), reportError)
+      }
+      observeRejected(() => removeSubscription(), reportError)
     }
   }, [characteristic, characteristicChanged, optionsKey, signal, stableOptions, reportError])
   return characteristic === null
@@ -948,6 +1034,24 @@ export function useCharacteristicValue(
     : characteristicChanged
       ? { value: null, loading: true, error: null }
       : result
+}
+
+function mapCharacteristicTerminal(reason: StreamTerminalNotice['reason']): Error | null {
+  if (reason === 'closed' || reason === 'owner-released') return null
+  if (reason === 'overflow') return streamOverflowError('react.useCharacteristicValue.values')
+  if (reason === 'connection-lost') {
+    return contractError('connection.lost', 'connection', 'react.useCharacteristicValue')
+  }
+  if (reason === 'service-changed') {
+    return contractError('gatt.stale-handle', 'gatt', 'react.useCharacteristicValue')
+  }
+  if (reason === 'operation-aborted') {
+    return contractError('operation.aborted', 'connection', 'react.useCharacteristicValue')
+  }
+  if (reason === 'operation-timed-out') {
+    return contractError('operation.timed-out', 'connection', 'react.useCharacteristicValue')
+  }
+  return contractError('stream.closed', 'stream', 'react.useCharacteristicValue')
 }
 
 type CleanupResult = Pick<CleanupRecord, 'state'> & { readonly failures: readonly unknown[] }
@@ -968,31 +1072,6 @@ function useReactErrorReporter(): (error: Error) => void {
     },
     [callback]
   )
-}
-
-async function settleCleanup(
-  operation: () => PromiseLike<CleanupResult>,
-  report: (error: Error) => void,
-  resource: string
-): Promise<void> {
-  let cleanup: CleanupResult
-  try {
-    cleanup = await operation()
-  } catch (error) {
-    report(toError(error))
-    return
-  }
-  if (cleanup.state === 'release-failed') {
-    reportCleanupFailure(cleanup, report, resource)
-  }
-}
-
-function observeCleanup(
-  operation: () => PromiseLike<CleanupResult>,
-  report: (error: Error) => void,
-  resource: string
-): void {
-  settleCleanup(operation, report, resource).then(undefined, error => report(toError(error)))
 }
 
 function observeRejected(operation: () => PromiseLike<unknown>, report: (error: Error) => void): void {

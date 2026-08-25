@@ -109,6 +109,9 @@ const {
   useDiscoveredPeers,
   inspectReactAdapterWatchOwnershipForTests
 } = require('../src/react')
+const { publicConnectionEvents, connectionEventsEndedExpectedly } = require('../src/public/ble-manager')
+const { CoreBoundedStream } = require('../src/core/bounded-stream')
+const { capacity } = require('../src/backend-contract/primitives')
 
 function deferred() {
   let resolve
@@ -299,6 +302,49 @@ function overflowNotice() {
     droppedBytes: 2,
     replacedItems: 0
   }
+}
+
+function streamTerminal(reason) {
+  return {
+    kind: 'terminal',
+    reason,
+    droppedItems: 0,
+    droppedBytes: 0,
+    replacedItems: 0
+  }
+}
+
+function lifecycleEvent(current, overrides = {}) {
+  return {
+    kind: 'connection-lifecycle',
+    attachment: {},
+    attachmentId: 'attachment-1',
+    peerId: 'peer-1',
+    connectionId: 'connection-1',
+    connectionGeneration: `${current}-generation`,
+    ownerLeaseId: 'lease-1',
+    sequence: 1,
+    backendIngressOrdinal: null,
+    previous: 'connecting',
+    current,
+    cause: 'caller',
+    ...overrides
+  }
+}
+
+function publicLifecycleConnection() {
+  const source = new CoreBoundedStream(
+    { itemCapacity: capacity(8), byteCapacity: capacity(4096), reservedControlCapacity: capacity(1) },
+    'error'
+  )
+  return {
+    source,
+    connection: { lifecycleEvents: publicConnectionEvents(source) }
+  }
+}
+
+function connectionFromIterator(iterator) {
+  return { lifecycleEvents: { [Symbol.asyncIterator]: () => iterator } }
 }
 
 function connectionWithState(current) {
@@ -1793,5 +1839,285 @@ describe('React host surface', () => {
 
     thirdCleanup()
     expect(thirdSubscription.remove).toHaveBeenCalledTimes(1)
+  })
+
+  test('connection done before a value sets stream.closed and loading false', async () => {
+    const iterator = {
+      next: jest.fn().mockResolvedValue({ done: true, value: undefined }),
+      return: jest.fn().mockResolvedValue({ done: true })
+    }
+    const connection = connectionFromIterator(iterator)
+    expect(useConnectionState(connection)).toEqual({ state: null, loading: true, error: null })
+    const cleanup = hookHarness.effects[0]()
+    await flush()
+    expect(hookHarness.stateValues[0].state).toBeNull()
+    expect(hookHarness.stateValues[0].loading).toBe(false)
+    expect(hookHarness.stateValues[0].error).toMatchObject({ normalized: { code: 'stream.closed' } })
+    cleanup()
+  })
+
+  test('connection done after a value keeps the state and sets stream.closed', async () => {
+    let emitted = false
+    const iterator = {
+      next: jest.fn(() => {
+        if (emitted) return Promise.resolve({ done: true, value: undefined })
+        emitted = true
+        return Promise.resolve({
+          done: false,
+          value: {
+            kind: 'connection-lifecycle',
+            previous: 'connecting',
+            current: 'connected',
+            cause: 'caller',
+            connectionGeneration: 'connected-generation',
+            sequence: 1
+          }
+        })
+      }),
+      return: jest.fn().mockResolvedValue({ done: true })
+    }
+    const connection = connectionFromIterator(iterator)
+    useConnectionState(connection)
+    const cleanup = hookHarness.effects[0]()
+    await flush()
+    expect(hookHarness.stateValues[0].state).toBe('connected')
+    expect(hookHarness.stateValues[0].loading).toBe(false)
+    expect(hookHarness.stateValues[0].error).toMatchObject({ normalized: { code: 'stream.closed' } })
+    cleanup()
+  })
+
+  test('expected owner-released completion clears loading without error', async () => {
+    const { source, connection } = publicLifecycleConnection()
+    useConnectionState(connection)
+    const cleanup = hookHarness.effects[0]()
+    await flush()
+    source.emit(lifecycleEvent('connected'), 64)
+    await flush()
+    source.finishWithReason('owner-released')
+    await flush()
+    expect(hookHarness.stateValues[0]).toEqual({ state: 'connected', loading: false, error: null })
+    expect(connectionEventsEndedExpectedly(connection.lifecycleEvents)).toBe(true)
+    cleanup()
+  })
+
+  test('connection source-failed terminal remains an error through public projection', async () => {
+    const { source, connection } = publicLifecycleConnection()
+    useConnectionState(connection)
+    const cleanup = hookHarness.effects[0]()
+    await flush()
+    source.emit(lifecycleEvent('connected'), 64)
+    await flush()
+    source.finishWithReason('source-failed')
+    await flush()
+    expect(hookHarness.stateValues[0].state).toBe('connected')
+    expect(hookHarness.stateValues[0].loading).toBe(false)
+    expect(hookHarness.stateValues[0].error).toMatchObject({ normalized: { code: 'stream.closed' } })
+    expect(connectionEventsEndedExpectedly(connection.lifecycleEvents)).toBe(false)
+    cleanup()
+  })
+
+  test('connection lost terminal keeps the last disconnected state and reports connection.lost', async () => {
+    const { source, connection } = publicLifecycleConnection()
+    useConnectionState(connection)
+    const cleanup = hookHarness.effects[0]()
+    await flush()
+    source.emit(lifecycleEvent('disconnected', { previous: 'connected', cause: 'peer-link-loss' }), 64)
+    await flush()
+    source.finishWithReason('connection-lost')
+    await flush()
+    expect(hookHarness.stateValues[0].state).toBe('disconnected')
+    expect(hookHarness.stateValues[0].loading).toBe(false)
+    expect(hookHarness.stateValues[0].error).toMatchObject({ normalized: { code: 'connection.lost' } })
+    cleanup()
+  })
+
+  test('replacement connection prevents stale terminal state updates', async () => {
+    const first = publicLifecycleConnection()
+    const second = publicLifecycleConnection()
+    useConnectionState(first.connection)
+    const firstCleanup = hookHarness.effects[0]()
+    await flush()
+    first.source.emit(lifecycleEvent('connected'), 64)
+    await flush()
+    expect(hookHarness.stateValues[0].state).toBe('connected')
+
+    firstCleanup()
+    hookHarness.rerender()
+    useConnectionState(second.connection)
+    const secondCleanup = hookHarness.effects[0]()
+    await flush()
+    second.source.emit(lifecycleEvent('connecting', { previous: 'disconnected' }), 64)
+    await flush()
+    first.source.finishWithReason('source-failed')
+    await flush()
+    expect(hookHarness.stateValues[0]).toMatchObject({
+      state: 'connecting',
+      loading: false,
+      error: null
+    })
+    secondCleanup()
+  })
+
+  test('characteristic expected owner close clears loading without error', async () => {
+    const subscription = characteristicSubscription(
+      (async function* () {
+        yield streamTerminal('owner-released')
+      })()
+    )
+    const characteristic = { subscribe: jest.fn().mockResolvedValue(subscription) }
+    expect(useCharacteristicValue(characteristic)).toEqual({ value: null, loading: true, error: null })
+    const cleanup = hookHarness.effects[0]()
+    await flush()
+    expect(hookHarness.stateValues[0]).toEqual({ value: null, loading: false, error: null })
+    cleanup()
+  })
+
+  test('characteristic abnormal terminal maps to a typed error and keeps last value', async () => {
+    const value = { value: new Uint8Array([9]), delivery: 'notification', observedAtMonotonicMs: 1, sequence: 1 }
+    const subscription = characteristicSubscription(
+      (async function* () {
+        yield { kind: 'value', value }
+        yield streamTerminal('connection-lost')
+      })()
+    )
+    const characteristic = { subscribe: jest.fn().mockResolvedValue(subscription) }
+    useCharacteristicValue(characteristic)
+    const cleanup = hookHarness.effects[0]()
+    await flush()
+    expect(hookHarness.stateValues[0].value).toBe(value)
+    expect(hookHarness.stateValues[0].loading).toBe(false)
+    expect(hookHarness.stateValues[0].error).toMatchObject({ normalized: { code: 'connection.lost' } })
+    cleanup()
+  })
+
+  test('characteristic natural end sets stream.closed even after a value', async () => {
+    const value = { value: new Uint8Array([3]), delivery: 'notification', observedAtMonotonicMs: 1, sequence: 1 }
+    const subscription = characteristicSubscription(
+      (async function* () {
+        yield { kind: 'value', value }
+      })()
+    )
+    const characteristic = { subscribe: jest.fn().mockResolvedValue(subscription) }
+    useCharacteristicValue(characteristic)
+    const cleanup = hookHarness.effects[0]()
+    await flush()
+    expect(hookHarness.stateValues[0].value).toBe(value)
+    expect(hookHarness.stateValues[0].loading).toBe(false)
+    expect(hookHarness.stateValues[0].error).toMatchObject({ normalized: { code: 'stream.closed' } })
+    cleanup()
+  })
+
+  test('characteristic terminal and unmount share one remove attempt', async () => {
+    const values = createControllableAsyncIterator()
+    const removeFinished = deferred()
+    const subscription = {
+      values: values.iterable,
+      remove: jest.fn(() => removeFinished.promise)
+    }
+    const characteristic = { subscribe: jest.fn().mockResolvedValue(subscription) }
+    useCharacteristicValue(characteristic)
+    const unmount = hookHarness.effects[0]()
+    await flush()
+    values.push(streamTerminal('closed'))
+    await flush()
+    expect(subscription.remove).toHaveBeenCalledTimes(1)
+    unmount()
+    await flush()
+    expect(subscription.remove).toHaveBeenCalledTimes(1)
+    removeFinished.resolve({ state: 'released', failures: [] })
+    await flush()
+  })
+
+  test('characteristic remove release-failed is reported and remains retryable', async () => {
+    const values = createControllableAsyncIterator()
+    const onError = jest.fn()
+    hookHarness.errorContextValue = onError
+    const cleanupRecord = { state: 'release-failed', failures: [{ resourceKind: 'gatt' }] }
+    const subscription = {
+      values: values.iterable,
+      remove: jest
+        .fn()
+        .mockResolvedValueOnce(cleanupRecord)
+        .mockResolvedValueOnce({ state: 'released', failures: [] })
+    }
+    const characteristic = { subscribe: jest.fn().mockResolvedValue(subscription) }
+    useCharacteristicValue(characteristic)
+    const unmount = hookHarness.effects[0]()
+    await flush()
+    unmount()
+    await flush()
+    expect(subscription.remove).toHaveBeenCalledTimes(1)
+    expect(onError).toHaveBeenCalledWith(expect.objectContaining({ cleanup: cleanupRecord }))
+    unmount()
+    await flush()
+    expect(subscription.remove).toHaveBeenCalledTimes(2)
+  })
+
+  test('replacement and StrictMode leave zero leaked iterators and subscriptions', async () => {
+    const firstIterator = {
+      next: jest.fn(() => new Promise(() => undefined)),
+      return: jest.fn().mockResolvedValue({ done: true })
+    }
+    const secondIterator = {
+      next: jest.fn(() => new Promise(() => undefined)),
+      return: jest.fn().mockResolvedValue({ done: true })
+    }
+    const firstConnection = connectionFromIterator(firstIterator)
+    const secondConnection = connectionFromIterator(secondIterator)
+
+    useConnectionState(firstConnection)
+    const firstConnectionCleanup = hookHarness.effects[0]()
+    await flush()
+    firstConnectionCleanup()
+    hookHarness.rerender()
+    useConnectionState(firstConnection)
+    const remountConnectionCleanup = hookHarness.effects[0]()
+    await flush()
+    remountConnectionCleanup()
+    hookHarness.rerender()
+    useConnectionState(secondConnection)
+    const replacedConnectionCleanup = hookHarness.effects[0]()
+    await flush()
+    expect(firstIterator.return).toHaveBeenCalledTimes(2)
+    expect(secondIterator.return).toHaveBeenCalledTimes(0)
+    replacedConnectionCleanup()
+    await flush()
+    expect(secondIterator.return).toHaveBeenCalledTimes(1)
+
+    const firstSubscription = characteristicSubscription(
+      (async function* () {
+        await new Promise(() => undefined)
+      })()
+    )
+    const secondSubscription = characteristicSubscription(
+      (async function* () {
+        await new Promise(() => undefined)
+      })()
+    )
+    const firstCharacteristic = { subscribe: jest.fn().mockResolvedValue(firstSubscription) }
+    const secondCharacteristic = { subscribe: jest.fn().mockResolvedValue(secondSubscription) }
+    hookHarness.rerender()
+    hookHarness.stateValues = []
+    hookHarness.reset()
+    useCharacteristicValue(firstCharacteristic)
+    const firstCharCleanup = hookHarness.effects[0]()
+    await flush()
+    firstCharCleanup()
+    hookHarness.rerender()
+    useCharacteristicValue(firstCharacteristic)
+    const remountCharCleanup = hookHarness.effects[0]()
+    await flush()
+    remountCharCleanup()
+    hookHarness.rerender()
+    useCharacteristicValue(secondCharacteristic)
+    const replacedCharCleanup = hookHarness.effects[0]()
+    await flush()
+    expect(firstSubscription.remove).toHaveBeenCalledTimes(2)
+    expect(secondSubscription.remove).toHaveBeenCalledTimes(0)
+    replacedCharCleanup()
+    await flush()
+    expect(secondSubscription.remove).toHaveBeenCalledTimes(1)
+    expect(firstCharacteristic.subscribe).toHaveBeenCalledTimes(2)
+    expect(secondCharacteristic.subscribe).toHaveBeenCalledTimes(1)
   })
 })
