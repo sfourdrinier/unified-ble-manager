@@ -268,27 +268,31 @@ class DbusNextBluezBoundary implements BluezDbusBoundary {
   }
 
   private async registerPairingAgent(): Promise<void> {
-    if (this.pairingAgent === null) {
-      const AgentClass = pairingAgentClass()
-      const agent = new AgentClass(BLUEZ_AGENT_INTERFACE)
-      this.bus.export(UBM_AGENT_PATH, agent)
-      this.pairingAgent = agent
-    }
-    const exported = this.pairingAgent
-    const manager = await this.bus.getProxyObject(BLUEZ_SERVICE, '/org/bluez')
-    // A close() or a daemon reset during the proxy round-trip unexports the
-    // agent (forgetPairingAgent nulls or replaces pairingAgent); do not register
-    // a path that no longer exists on our bus. The next ensure re-exports it.
-    if (this.closed || this.disconnected || this.pairingAgent !== exported) return
-    const agentManager = manager.getInterface<AgentManagerProxy>(BLUEZ_AGENT_MANAGER_INTERFACE)
     try {
+      if (this.pairingAgent === null) {
+        const AgentClass = pairingAgentClass()
+        const agent = new AgentClass(BLUEZ_AGENT_INTERFACE)
+        this.bus.export(UBM_AGENT_PATH, agent)
+        this.pairingAgent = agent
+      }
+      const exported = this.pairingAgent
+      const manager = await this.bus.getProxyObject(BLUEZ_SERVICE, '/org/bluez')
+      // A close() or a daemon reset during the proxy round-trip unexports the
+      // agent (forgetPairingAgent nulls or replaces pairingAgent); do not
+      // register a path that no longer exists on our bus. The next ensure
+      // re-exports it.
+      if (this.closed || this.disconnected || this.pairingAgent !== exported) return
+      const agentManager = manager.getInterface<AgentManagerProxy>(BLUEZ_AGENT_MANAGER_INTERFACE)
       await agentManager.RegisterAgent(UBM_AGENT_PATH, UBM_AGENT_CAPABILITY)
     } catch (error) {
-      // A prior registration of this exact path is benign; anything else is
-      // surfaced with the same typed D-Bus code every other call preserves.
+      // A prior registration of this exact path is benign.
       if (error instanceof dbus.DBusError && error.type === 'org.bluez.Error.AlreadyExists') {
         return
       }
+      // Surface every other D-Bus failure - export, getProxyObject,
+      // getInterface, or RegisterAgent - with the same typed code the rest of
+      // the boundary preserves, rather than letting a raw dbus-next error
+      // escape to the public layer on a daemon-failure path.
       throw normalizeDbusError(error)
     }
   }

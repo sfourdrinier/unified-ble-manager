@@ -72,8 +72,17 @@ backend can cancel an in-flight pairing (BlueZ, WinRT), an aborted or timed-out
 attempt resolves `{ outcome: 'cancelled' }`; where it cannot (an Android build
 without the cancellation extension), the attempt rejects with
 `capability.unsupported` instead of misreporting a cancellation that did not
-happen. Separately, once a bond has actually completed, an abort that arrives
-too late is reported as `paired` (never `cancelled`), because the bond exists.
+happen.
+
+There is a second, narrower window: an abort or deadline that lands after the
+bond has *already* completed but before `pair()` has returned. On BlueZ this is
+reported truthfully as `paired` (never `cancelled`), because the native pairing
+call resolves only on a completed bond. On Android and WinRT the public outcome
+is currently committed when the abort fires, before the native result is
+observed, so this race can surface `cancelled` for a peer that did in fact
+bond; the bond is still authoritative and visible through `watch()`/`state()`.
+Aligning Android and WinRT with BlueZ's report-the-bond behavior is tracked
+separately.
 
 Apple and Web keep generic
 pairing/bonding unsupported where their public APIs do not provide a truthful
