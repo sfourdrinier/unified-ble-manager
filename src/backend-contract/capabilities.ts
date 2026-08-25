@@ -9,6 +9,7 @@ export const BUILT_IN_FEATURE_IDS = Object.freeze({
   discoveryContinuousScan: 'discovery:continuous-scan',
   discoverySystemChooser: 'discovery:system-chooser',
   discoveryAdvertisementWatch: 'discovery:advertisement-watch',
+  scanPlatformOptions: 'scan:platform-options',
   peerResolveReference: 'peer:resolve-reference',
   peerKnown: 'peer:known',
   peerSystemConnected: 'peer:system-connected',

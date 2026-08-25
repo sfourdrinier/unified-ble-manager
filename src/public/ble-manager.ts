@@ -406,6 +406,7 @@ export interface FindOptions extends OperationOptions {
   /** Defaults to 10 seconds when omitted. */
   readonly query?: ScanQuery
   readonly select?: 'first' | ((peer: BlePeer) => boolean)
+  readonly platform?: ScanPlatformOptions
 }
 
 export interface ChooseOptions extends OperationOptions {
@@ -1381,7 +1382,7 @@ class PublicBleManager<Attachment extends string, Identity extends BackendIdenti
       if (options.observation?.includeRawAdvertisement === true) {
         throw contractError('capability.unsupported', 'scan', 'public-ble-manager.scan.raw-advertisement')
       }
-      if (options.platform !== undefined) {
+      if (options.platform !== undefined && !this.internal.supports('scan:platform-options')) {
         throw contractError('capability.unsupported', 'scan', 'public-ble-manager.scan.platform-options')
       }
       if (options.duplicates === 'all' && reportLostAfterMs !== undefined) {
@@ -1405,7 +1406,8 @@ class PublicBleManager<Attachment extends string, Identity extends BackendIdenti
         },
         deadline,
         signal,
-        sharing: { mode: 'owner', allowSharing: false }
+        sharing: { mode: 'owner', allowSharing: false },
+        ...(options.platform === undefined ? {} : { platform: options.platform })
       }
       const session = await this.internal.scan(internalOptions)
       const scanState = createScanState()
