@@ -1,6 +1,6 @@
 // src/ipc/public-manager.ts
 
-import { BLE_ERROR_CODES, contractError, type CleanupRecord } from '../backend-contract/errors'
+import { BackendContractError, BLE_ERROR_CODES, contractError, type CleanupRecord } from '../backend-contract/errors'
 import type { ConnectionLifecycleCause } from '../backend-contract/connection-lifecycle'
 import type { BoundedAsyncStream } from '../backend-contract/streams'
 import type {
@@ -668,7 +668,8 @@ function assertIpcConnectionOptions(options: ConnectOptions): void {
   }
 }
 
-function mapIpcConnectionEvents(
+/** @internal Shared IPC lifecycle projection used by the Tauri and Electron façade. */
+export function mapIpcConnectionEvents(
   source: BoundedAsyncStream<import('../backend-contract/primitives').SerializableRecord>,
   expected: {
     readonly attachmentId: string
@@ -679,59 +680,144 @@ function mapIpcConnectionEvents(
   }
 ): AsyncIterable<BleConnectionEvent> {
   let lastSequence = 0
-  return {
+  const lifecycle: AsyncIterable<BleConnectionEvent> = {
     [Symbol.asyncIterator]() {
-      const iterator = source[Symbol.asyncIterator]()
+      let iterator: IpcConnectionEventIterator
+      try {
+        if (typeof source[Symbol.asyncIterator] !== 'function') {
+          throw contractError('protocol.malformed', 'ipc', 'ipc-public-manager.connection-event-factory')
+        }
+        iterator = source[Symbol.asyncIterator]()
+        if (typeof iterator !== 'object' || iterator === null || typeof iterator.next !== 'function') {
+          throw contractError('protocol.malformed', 'ipc', 'ipc-public-manager.connection-event-iterator')
+        }
+      } catch (error) {
+        throw rehydratePublicError(
+          error instanceof BackendContractError
+            ? error
+            : contractError('protocol.malformed', 'ipc', 'ipc-public-manager.connection-event-construction')
+        )
+      }
+      let returnPromise: ReturnType<IpcConnectionEventIterator['return']> | null = null
+      let sourceClosed = false
+      const returnSource = (): ReturnType<IpcConnectionEventIterator['return']> => {
+        if (returnPromise !== null) return returnPromise
+        sourceClosed = true
+        try {
+          returnPromise = Promise.resolve(iterator.return())
+        } catch (error) {
+          returnPromise = Promise.reject(error)
+        }
+        return returnPromise
+      }
       return {
         async next(): Promise<IteratorResult<BleConnectionEvent, undefined>> {
-          while (true) {
-            const item = await iterator.next()
-            if (item.done) {
-              throw contractError('stream.closed', 'connection', 'ipc-public-manager.connection-events')
+          if (sourceClosed) return { done: true, value: undefined }
+          try {
+            while (true) {
+              const item = await iterator.next()
+              if (typeof item !== 'object' || item === null) {
+                throw contractError('protocol.malformed', 'ipc', 'ipc-public-manager.connection-event-result')
+              }
+              const done = readIpcConnectionField(item, 'done', 'ipc-public-manager.connection-event-result')
+              if (typeof done !== 'boolean') {
+                throw contractError('protocol.malformed', 'ipc', 'ipc-public-manager.connection-event-result')
+              }
+              if (done) {
+                sourceClosed = true
+                throw contractError('stream.closed', 'connection', 'ipc-public-manager.connection-events')
+              }
+              const itemValue = readIpcConnectionField(item, 'value', 'ipc-public-manager.connection-event-item')
+              if (
+                typeof itemValue !== 'object' ||
+                itemValue === null ||
+                Array.isArray(itemValue) ||
+                !hasOwnIpcConnectionField(itemValue, 'kind', 'ipc-public-manager.connection-event-item')
+              ) {
+                throw contractError('protocol.malformed', 'ipc', 'ipc-public-manager.connection-event-item')
+              }
+              const itemKind = readIpcConnectionField(itemValue, 'kind', 'ipc-public-manager.connection-event-kind')
+              if (itemKind === 'overflow') {
+                throw contractError('stream.overflow', 'connection', 'ipc-public-manager.connection-events')
+              }
+              if (itemKind === 'terminal') {
+                const reason = parseConnectionTerminalReason(
+                  readIpcConnectionField(itemValue, 'reason', 'ipc-public-manager.connection-event-terminal')
+                )
+                if (reason === null) {
+                  throw contractError('protocol.malformed', 'ipc', 'ipc-public-manager.connection-event-terminal')
+                }
+                throw publicConnectionTerminalError(reason)
+              }
+              if (itemKind !== 'value') {
+                throw contractError('protocol.malformed', 'ipc', 'ipc-public-manager.connection-event-kind')
+              }
+              const value = readIpcConnectionField(itemValue, 'value', 'ipc-public-manager.connection-event-value')
+              if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+                throw contractError('protocol.malformed', 'ipc', 'ipc-public-manager.connection-event-value')
+              }
+              const previous = parseConnectionState(
+                readIpcConnectionField(value, 'previous', 'ipc-public-manager.connection-event')
+              )
+              const current = parseConnectionState(
+                readIpcConnectionField(value, 'current', 'ipc-public-manager.connection-event')
+              )
+              const cause = parseConnectionCause(
+                readIpcConnectionField(value, 'cause', 'ipc-public-manager.connection-event')
+              )
+              const sequence = readIpcConnectionField(value, 'sequence', 'ipc-public-manager.connection-event')
+              if (
+                readIpcConnectionField(value, 'attachmentId', 'ipc-public-manager.connection-event') !==
+                  expected.attachmentId ||
+                readIpcConnectionField(value, 'peerId', 'ipc-public-manager.connection-event') !== expected.peerId ||
+                readIpcConnectionField(value, 'connectionId', 'ipc-public-manager.connection-event') !==
+                  expected.connectionId ||
+                readIpcConnectionField(value, 'ownerLeaseId', 'ipc-public-manager.connection-event') !==
+                  expected.ownerLeaseId ||
+                readIpcConnectionField(value, 'connectionGeneration', 'ipc-public-manager.connection-event') !==
+                  expected.connectionGeneration ||
+                previous === null ||
+                current === null ||
+                cause === null ||
+                typeof sequence !== 'number' ||
+                !Number.isSafeInteger(sequence) ||
+                sequence <= lastSequence
+              ) {
+                throw contractError('protocol.malformed', 'ipc', 'ipc-public-manager.connection-event')
+              }
+              lastSequence = sequence
+              return {
+                done: false,
+                value: Object.freeze({
+                  kind: 'connection-lifecycle',
+                  previous,
+                  current,
+                  cause,
+                  connectionGeneration: expected.connectionGeneration,
+                  sequence
+                })
+              }
             }
-            if (item.value.kind === 'overflow') {
-              throw contractError('stream.overflow', 'connection', 'ipc-public-manager.connection-events')
+          } catch (error) {
+            const primary = rehydratePublicError(error)
+            try {
+              await returnSource()
+            } catch (cleanupError) {
+              throw new AggregateError(
+                [primary, rehydratePublicError(cleanupError)],
+                'BLE IPC connection event and iterator cleanup both failed'
+              )
             }
-            if (item.value.kind === 'terminal') {
-              throw publicConnectionTerminalError(item.value.reason)
-            }
-            const value = item.value.value
-            const previous = parseConnectionState(Reflect.get(value, 'previous'))
-            const current = parseConnectionState(Reflect.get(value, 'current'))
-            const cause = parseConnectionCause(Reflect.get(value, 'cause'))
-            const sequence = Reflect.get(value, 'sequence')
-            if (
-              Reflect.get(value, 'attachmentId') !== expected.attachmentId ||
-              Reflect.get(value, 'peerId') !== expected.peerId ||
-              Reflect.get(value, 'connectionId') !== expected.connectionId ||
-              Reflect.get(value, 'ownerLeaseId') !== expected.ownerLeaseId ||
-              Reflect.get(value, 'connectionGeneration') !== expected.connectionGeneration ||
-              previous === null ||
-              current === null ||
-              cause === null ||
-              typeof sequence !== 'number' ||
-              !Number.isSafeInteger(sequence) ||
-              sequence <= lastSequence
-            ) {
-              throw contractError('protocol.malformed', 'ipc', 'ipc-public-manager.connection-event')
-            }
-            lastSequence = sequence
-            return {
-              done: false,
-              value: Object.freeze({
-                kind: 'connection-lifecycle',
-                previous,
-                current,
-                cause,
-                connectionGeneration: expected.connectionGeneration,
-                sequence
-              })
-            }
+            throw primary
           }
         },
         return: async () => {
-          await iterator.return()
-          return { done: true, value: undefined }
+          try {
+            await returnSource()
+            return { done: true, value: undefined }
+          } catch (error) {
+            throw rehydratePublicError(error)
+          }
         },
         [Symbol.asyncIterator]() {
           return this
@@ -739,6 +825,42 @@ function mapIpcConnectionEvents(
       }
     }
   }
+  return Object.freeze(lifecycle)
+}
+
+type IpcConnectionEventIterator = import('../backend-contract/streams').BoundedAsyncStreamIterator<
+  import('../backend-contract/primitives').SerializableRecord
+>
+
+function hasOwnIpcConnectionField(value: object, key: string, operation: string): boolean {
+  try {
+    return Object.prototype.hasOwnProperty.call(value, key)
+  } catch {
+    throw contractError('protocol.malformed', 'ipc', operation)
+  }
+}
+
+function readIpcConnectionField(value: object, key: string, operation: string): unknown {
+  try {
+    return Reflect.get(value, key)
+  } catch {
+    throw contractError('protocol.malformed', 'ipc', operation)
+  }
+}
+
+function parseConnectionTerminalReason(
+  value: unknown
+): import('../backend-contract/streams').StreamTerminalNotice['reason'] | null {
+  return value === 'closed' ||
+    value === 'overflow' ||
+    value === 'source-failed' ||
+    value === 'owner-released' ||
+    value === 'connection-lost' ||
+    value === 'service-changed' ||
+    value === 'operation-aborted' ||
+    value === 'operation-timed-out'
+    ? value
+    : null
 }
 
 function parseConnectionState(value: unknown): BleConnectionEvent['current'] | null {

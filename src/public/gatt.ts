@@ -200,7 +200,7 @@ class PublicGattDatabase implements GattDatabase {
     this.changed =
       source.changed === undefined
         ? emptyChangedStream()
-        : mapPublicBoundedAsyncStream(source.changed, value => Object.freeze({ ...value }))
+        : mapPublicBoundedAsyncStream(source.changed, snapshotGattDatabaseChangedEvent)
     Object.freeze(this)
   }
 
@@ -943,7 +943,8 @@ function mapGattValueStream(
 }
 
 function emptyChangedStream(): PublicBoundedAsyncStream<GattDatabaseChangedEvent> {
-  return {
+  const emptyCleanup = toPublicCleanupRecord({ state: 'released', failures: [] })
+  return Object.freeze({
     limits: Object.freeze({ itemCapacity: 1, byteCapacity: 2, reservedControlCapacity: 1 }),
     overflowPolicy: 'error',
     [Symbol.asyncIterator]() {
@@ -959,8 +960,22 @@ function emptyChangedStream(): PublicBoundedAsyncStream<GattDatabaseChangedEvent
         }
       }
     },
-    close: async () => toPublicCleanupRecord({ state: 'released', failures: [] })
-  }
+    close: async () => emptyCleanup
+  })
+}
+
+function snapshotGattDatabaseChangedEvent(event: GattDatabaseChangedEvent): GattDatabaseChangedEvent {
+  return Object.freeze({
+    previousGeneration: event.previousGeneration,
+    reason: event.reason,
+    affectedHandleRange:
+      event.affectedHandleRange === null
+        ? null
+        : Object.freeze({
+            start: event.affectedHandleRange.start,
+            end: event.affectedHandleRange.end
+          })
+  })
 }
 
 function rehydrateCleanup(operation: Promise<CleanupRecord>): Promise<CleanupRecord> {

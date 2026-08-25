@@ -4,8 +4,10 @@ const { contractError } = require('../src/backend-contract/errors')
 const { capacity } = require('../src/backend-contract/primitives')
 const { CoreBoundedStream } = require('../src/core/bounded-stream')
 const { IpcPublicManagerAdapter } = require('../src/ipc/public-manager')
+const { mapIpcConnectionEvents } = require('../src/ipc/public-manager')
 const { createPublicGattDatabase } = require('../src/public/gatt')
 const { BleCleanupError, collectCleanupPhases } = require('../src/public/error-bridge')
+const { BleError } = require('../src/public/errors')
 
 function limits(itemCapacity, byteCapacity, reservedControlCapacity) {
   return {
@@ -121,6 +123,131 @@ function emptyEvents() {
 }
 
 describe('public stream follow-up boundaries', () => {
+  test('rehydrates malformed IPC lifecycle values and source next failures while returning iterators', async () => {
+    const source = new CoreBoundedStream(limits(2, 64, 1), 'drop-oldest')
+    const lifecycle = mapIpcConnectionEvents(source, {
+      attachmentId: 'attachment-1',
+      peerId: 'peer-1',
+      connectionId: 'connection-1',
+      ownerLeaseId: 'lease-1',
+      connectionGeneration: 'generation-1'
+    })
+    const lifecycleIterator = lifecycle[Symbol.asyncIterator]()
+    source.emit(
+      {
+        kind: 'connection-lifecycle',
+        attachmentId: 'attachment-1',
+        peerId: 'peer-1',
+        connectionId: 'connection-1',
+        ownerLeaseId: 'lease-1',
+        connectionGeneration: 'generation-1',
+        previous: 'connected',
+        current: 'connected',
+        cause: 'connected'
+      },
+      16
+    )
+    await expect(lifecycleIterator.next()).rejects.toMatchObject({
+      code: 'protocol.malformed',
+      domain: 'ipc'
+    })
+
+    const sourceError = contractError('platform.failure', 'ipc', 'followup.lifecycle-source')
+    const sourceIterator = {
+      next: async () => {
+        throw sourceError
+      },
+      return: jest.fn(async () => ({ done: true, value: undefined })),
+      [Symbol.asyncIterator]() {
+        return this
+      }
+    }
+    const rejectedLifecycle = mapIpcConnectionEvents(
+      { [Symbol.asyncIterator]: () => sourceIterator },
+      {
+        attachmentId: 'attachment-1',
+        peerId: 'peer-1',
+        connectionId: 'connection-1',
+        ownerLeaseId: 'lease-1',
+        connectionGeneration: 'generation-1'
+      }
+    )
+    const rejectedIterator = rejectedLifecycle[Symbol.asyncIterator]()
+    await expect(rejectedIterator.next()).rejects.toMatchObject({
+      code: 'platform.failure',
+      domain: 'ipc',
+      operation: 'followup.lifecycle-source'
+    })
+    expect(sourceIterator.return).toHaveBeenCalledTimes(1)
+    await expect(rejectedIterator.next()).resolves.toEqual({ done: true, value: undefined })
+
+    const malformedItemLifecycle = mapIpcConnectionEvents(
+      {
+        [Symbol.asyncIterator]: () => ({
+          next: async () => ({ done: false, value: undefined }),
+          return: async () => ({ done: true, value: undefined }),
+          [Symbol.asyncIterator]() {
+            return this
+          }
+        })
+      },
+      {
+        attachmentId: 'attachment-1',
+        peerId: 'peer-1',
+        connectionId: 'connection-1',
+        ownerLeaseId: 'lease-1',
+        connectionGeneration: 'generation-1'
+      }
+    )
+    await expect(malformedItemLifecycle[Symbol.asyncIterator]().next()).rejects.toMatchObject({
+      code: 'protocol.malformed',
+      domain: 'ipc'
+    })
+
+    const malformedIteratorLifecycle = mapIpcConnectionEvents(
+      { [Symbol.asyncIterator]: () => null },
+      {
+        attachmentId: 'attachment-1',
+        peerId: 'peer-1',
+        connectionId: 'connection-1',
+        ownerLeaseId: 'lease-1',
+        connectionGeneration: 'generation-1'
+      }
+    )
+    expect(() => malformedIteratorLifecycle[Symbol.asyncIterator]()).toThrow(BleError)
+
+    const hostileEvent = new Proxy(
+      { kind: 'value' },
+      {
+        get() {
+          throw new Error('event getter trap')
+        }
+      }
+    )
+    const hostileLifecycle = mapIpcConnectionEvents(
+      {
+        [Symbol.asyncIterator]: () => ({
+          next: async () => ({ done: false, value: hostileEvent }),
+          return: async () => ({ done: true, value: undefined }),
+          [Symbol.asyncIterator]() {
+            return this
+          }
+        })
+      },
+      {
+        attachmentId: 'attachment-1',
+        peerId: 'peer-1',
+        connectionId: 'connection-1',
+        ownerLeaseId: 'lease-1',
+        connectionGeneration: 'generation-1'
+      }
+    )
+    await expect(hostileLifecycle[Symbol.asyncIterator]().next()).rejects.toMatchObject({
+      code: 'protocol.malformed',
+      domain: 'ipc'
+    })
+  })
+
   test('projects aggregate primary-plus-cleanup failures before BleCleanupError exposure', () => {
     const cleanup = cleanupRecord('aggregate')
     const primary = new Error('primary failure')
@@ -145,17 +272,44 @@ describe('public stream follow-up boundaries', () => {
   test('projects GATT remove and withSubscription cleanup with deep owned metadata', async () => {
     const values = new CoreBoundedStream(limits(2, 32, 1), 'drop-oldest')
     const rawCleanup = cleanupRecord('gatt')
-    const database = await createPublicGattDatabase(gattSource(values, async () => rawCleanup))
+    const changed = new CoreBoundedStream(limits(2, 64, 1), 'drop-oldest')
+    const source = gattSource(values, async () => rawCleanup)
+    source.changed = changed
+    const database = await createPublicGattDatabase(source)
     const characteristic = database.characteristic('180f', '2a19')
-    const emptyChangedCleanup = await database.changed.close()
+    const emptyDatabase = await createPublicGattDatabase(
+      gattSource(new CoreBoundedStream(limits(2, 32, 1), 'drop-oldest'), async () => rawCleanup)
+    )
+    const emptyChangedCleanup = await emptyDatabase.changed.close()
+    const repeatedEmptyChangedCleanup = await emptyDatabase.changed.close()
     expect(emptyChangedCleanup).toEqual({ state: 'released', failures: [] })
+    expect(repeatedEmptyChangedCleanup).toBe(emptyChangedCleanup)
+    expect(Object.isFrozen(emptyDatabase.changed)).toBe(true)
     expect(Object.isFrozen(emptyChangedCleanup)).toBe(true)
     expect(Object.isFrozen(emptyChangedCleanup.failures)).toBe(true)
 
+    const affectedHandleRange = { start: 1, end: 2 }
+    const changedIterator = database.changed[Symbol.asyncIterator]()
+    changed.emit(
+      {
+        previousGeneration: 'generation-1',
+        reason: 'service-changed',
+        affectedHandleRange
+      },
+      16
+    )
+    const changedItem = await changedIterator.next()
+    expect(changedItem.value.value.affectedHandleRange).not.toBe(affectedHandleRange)
+    expect(Object.isFrozen(changedItem.value.value.affectedHandleRange)).toBe(true)
+    affectedHandleRange.start = 9
+    expect(changedItem.value.value.affectedHandleRange.start).toBe(1)
+
     const subscription = await characteristic.subscribe()
     const projected = await subscription.remove()
+    const repeatedProjected = await subscription.remove()
     const projectedBytes = projected.failures[0].error.platform.metadata.nested.bytes
     expect(projected).toMatchObject({ state: 'release-failed' })
+    expect(repeatedProjected).toBe(projected)
     expect(projectedBytes).toEqual(new Uint8Array([1, 2, 3]))
     expect(projectedBytes).not.toBe(rawCleanup.failures[0].error.platform.metadata.nested.bytes)
     expect(Object.isFrozen(projected)).toBe(true)
@@ -195,6 +349,14 @@ describe('public stream follow-up boundaries', () => {
       require: id => ({ id, state: 'supported', limitations: [] }),
       list: () => []
     }
+    const adapterSnapshot = {
+      availability: 'available',
+      authorization: 'granted',
+      power: 'on',
+      backendGeneration: 'backend-1',
+      updatedAt: 1,
+      safeReason: null
+    }
     const ipc = {
       capabilities,
       bootstrap: {
@@ -222,14 +384,7 @@ describe('public stream follow-up boundaries', () => {
         }
       },
       destroy: async () => destroyCleanup,
-      adapterState: async () => ({
-        availability: 'available',
-        authorization: 'granted',
-        power: 'on',
-        backendGeneration: 'backend-1',
-        updatedAt: 1,
-        safeReason: null
-      })
+      adapterState: async () => adapterSnapshot
     }
     const manager = new IpcPublicManagerAdapter(ipc, { capabilities })
     const scan = await manager.scan()
@@ -272,6 +427,13 @@ describe('public stream follow-up boundaries', () => {
     expect(publicWatch.values.emit).toBeUndefined()
     expect(publicWatch.values.finishWithReason).toBeUndefined()
     expect(publicWatch.values.closeWithReason).toBeUndefined()
+    const adapterIterator = publicWatch.values[Symbol.asyncIterator]()
+    adapterSnapshot.updatedAt = 2
+    const adapterItem = await adapterIterator.next()
+    expect(adapterItem.value.kind).toBe('value')
+    expect(Object.isFrozen(adapterItem.value.value)).toBe(true)
+    adapterSnapshot.backendGeneration = 'mutated-after-emission'
+    expect(adapterItem.value.value.backendGeneration).toBe('backend-1')
     await expect(publicWatch.stop()).resolves.toMatchObject({ state: 'released' })
 
     const connection = await manager.connect('peer-1')

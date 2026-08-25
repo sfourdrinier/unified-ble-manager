@@ -26,9 +26,15 @@ export function rehydratePublicError(error: unknown): unknown {
     return error
   }
   const normalized = error.normalized
-  return new BleError(normalized.code, normalized.domain, normalized.operation, {
-    platform: toPublicPlatformErrorDetail(normalized.platform)
-  })
+  try {
+    return new BleError(normalized.code, normalized.domain, normalized.operation, {
+      platform: toPublicPlatformErrorDetail(normalized.platform)
+    })
+  } catch (mappingError) {
+    if (!(mappingError instanceof BackendContractError)) throw mappingError
+    const malformed = mappingError.normalized
+    return new BleError(malformed.code, malformed.domain, malformed.operation)
+  }
 }
 
 export function rehydratePublicPromise<Value>(operation: Promise<Value>): Promise<Value> {

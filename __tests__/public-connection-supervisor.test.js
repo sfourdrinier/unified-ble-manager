@@ -1,3 +1,5 @@
+// __tests__/public-connection-supervisor.test.js
+
 const { createConnectionSupervisor } = require('../src/public/connection-supervisor')
 const { BleError } = require('../src/public/errors')
 

@@ -1,3 +1,5 @@
+// __tests__/TauriManager.test.js
+
 'use strict'
 
 const { BUILT_IN_FEATURE_IDS } = require('../src/backend-contract/capabilities')
