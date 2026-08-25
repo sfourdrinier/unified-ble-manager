@@ -1,7 +1,4 @@
-const {
-  IpcBleManager,
-  inspectIpcProvisionalAdmissionForTests
-} = require('../../src/ipc/manager')
+const { IpcBleManager, inspectIpcProvisionalAdmissionForTests } = require('../../src/ipc/manager')
 const { BUILT_IN_FEATURE_IDS } = require('../../src/backend-contract/capabilities')
 
 function negotiated(axis, value = axis === 'ipc-protocol' ? 2 : 1) {
@@ -99,9 +96,7 @@ function validGattDiscoverPayload(overrides = {}) {
         properties: ['notify', 'read']
       }
     ],
-    descriptors: [
-      { handle: 'descriptor-1', characteristicHandle: 'characteristic-1', uuid: '2901', occurrence: '0' }
-    ],
+    descriptors: [{ handle: 'descriptor-1', characteristicHandle: 'characteristic-1', uuid: '2901', occurrence: '0' }],
     ...overrides
   }
 }
@@ -118,17 +113,13 @@ async function createAdmissionHarness(options = {}) {
   const discoverPayload = options.discoverPayload ?? validGattDiscoverPayload()
   const gattSubscribePayload = options.gattSubscribePayload ?? { handle: 'subscription-1' }
   let disconnectImpl =
-    options.disconnect ??
-    (async () => ({ kind: 'route', payload: { state: 'released', failures: [] } }))
+    options.disconnect ?? (async () => ({ kind: 'route', payload: { state: 'released', failures: [] } }))
   let unsubscribeImpl =
-    options.unsubscribe ??
-    (async () => ({ kind: 'route', payload: { state: 'released', failures: [] } }))
+    options.unsubscribe ?? (async () => ({ kind: 'route', payload: { state: 'released', failures: [] } }))
   let gattUnsubscribeImpl =
-    options.gattUnsubscribe ??
-    (async () => ({ kind: 'route', payload: { state: 'released', failures: [] } }))
+    options.gattUnsubscribe ?? (async () => ({ kind: 'route', payload: { state: 'released', failures: [] } }))
   let databaseReleaseImpl =
-    options.databaseRelease ??
-    (async () => ({ kind: 'route', payload: { state: 'released', failures: [] } }))
+    options.databaseRelease ?? (async () => ({ kind: 'route', payload: { state: 'released', failures: [] } }))
   const transport = {
     invoke: async request => {
       if (request.kind === 'bootstrap') return { kind: 'bootstrap', bootstrap }
@@ -147,13 +138,12 @@ async function createAdmissionHarness(options = {}) {
       if (command === 'connection.events.subscribe') {
         return {
           kind: 'route',
-          payload:
-            subscribePayload ?? {
-              handle: payload.connectionEventsHandle,
-              connectionId: payload.connectionId,
-              connectionGeneration: payload.connectionGeneration,
-              eventSchemaVersion: 2
-            }
+          payload: subscribePayload ?? {
+            handle: payload.connectionEventsHandle,
+            connectionId: payload.connectionId,
+            connectionGeneration: payload.connectionGeneration,
+            eventSchemaVersion: 2
+          }
         }
       }
       if (command === 'connection.events.ready') {
@@ -280,10 +270,12 @@ describe('IPC provisional admission', () => {
       subscribePayload: { handle: 'wrong-handle', eventSchemaVersion: 1 }
     })
     const connection = await harness.ipc.connect('peer-1')
-    await expect(harness.ipc.subscribeConnectionEvents(connection.handle, {
-      connectionId: connection.connectionId,
-      connectionGeneration: connection.connectionGeneration
-    })).rejects.toMatchObject({ normalized: { code: 'protocol.incompatible' } })
+    await expect(
+      harness.ipc.subscribeConnectionEvents(connection.handle, {
+        connectionId: connection.connectionId,
+        connectionGeneration: connection.connectionGeneration
+      })
+    ).rejects.toMatchObject({ normalized: { code: 'protocol.incompatible' } })
     expect(harness.commands).toContain('connection.events.unsubscribe')
     await connection.release()
     await harness.ipc.destroy()
@@ -439,19 +431,14 @@ describe('IPC provisional admission', () => {
     }
   })
 
-  test.each(['electron', 'tauri'])(
-    '%s transport doubles share the pre-dispatch deadline guard',
-    async () => {
-      const harness = await createAdmissionHarness()
-      await expect(
-        harness.ipc.connect('peer-1', { deadline: globalThis.performance.now() - 1 })
-      ).rejects.toMatchObject({
-        normalized: { code: 'operation.timed-out' }
-      })
-      expect(harness.commands).not.toContain('connection.connect')
-      await harness.ipc.destroy()
-    }
-  )
+  test.each(['electron', 'tauri'])('%s transport doubles share the pre-dispatch deadline guard', async () => {
+    const harness = await createAdmissionHarness()
+    await expect(harness.ipc.connect('peer-1', { deadline: globalThis.performance.now() - 1 })).rejects.toMatchObject({
+      normalized: { code: 'operation.timed-out' }
+    })
+    expect(harness.commands).not.toContain('connection.connect')
+    await harness.ipc.destroy()
+  })
 
   test('duplicate GATT subscribe handle rejects without unsubscribing the admitted subscription', async () => {
     const harness = await createAdmissionHarness({
@@ -529,20 +516,159 @@ describe('IPC provisional admission', () => {
     await harness.ipc.destroy()
   })
 
-  test.each(['electron', 'tauri'])(
-    '%s transport doubles exercise the same admission helper',
-    async host => {
-      const harness = await createAdmissionHarness({
-        connectPayload: validConnectPayload({ peerId: `${host}-peer` })
-      })
-      await expect(harness.ipc.connect('peer-1')).rejects.toMatchObject({
-        normalized: { code: 'protocol.violation' }
-      })
-      expect(harness.disconnectPayloads[0]).toMatchObject({
-        connectionHandle: 'connection-1',
-        peerId: `${host}-peer`
-      })
-      await harness.ipc.destroy()
+  test('rediscovery does not admit a replacement while unsubscribe remains release-failed', async () => {
+    const failure = {
+      resourceKind: 'gatt',
+      error: {
+        code: 'platform.failure',
+        domain: 'gatt',
+        operation: 'ipc-manager.gatt-unsubscribe',
+        platform: null,
+        retryability: 'caller-decides'
+      }
     }
-  )
+    let unsubscribeAttempts = 0
+    const harness = await createAdmissionHarness({
+      gattUnsubscribe: async () => {
+        unsubscribeAttempts += 1
+        return {
+          kind: 'route',
+          payload: { state: 'release-failed', failures: [failure] }
+        }
+      }
+    })
+    const connection = await harness.ipc.connect('peer-1')
+    const database = await connection.discover()
+    const subscription = await database.characteristics[0].subscribe()
+    await expect(connection.rediscoverGatt({}, 'manual-rediscovery')).rejects.toMatchObject({
+      normalized: { code: 'lifecycle.invalid-state', operation: 'ipc-manager.gatt-discover.release-failed' }
+    })
+    expect(harness.commands.filter(command => command === 'gatt.discover')).toHaveLength(1)
+    expect(unsubscribeAttempts).toBe(1)
+    await expect(database.characteristics[0].read()).rejects.toMatchObject({
+      normalized: { code: 'gatt.stale-handle' }
+    })
+    await expect(subscription.remove()).resolves.toMatchObject({ state: 'release-failed' })
+    expect(unsubscribeAttempts).toBe(2)
+    const attemptsBeforeRelease = unsubscribeAttempts
+    const released = await connection.release()
+    expect(released.state).toBe('release-failed')
+    expect(released.failures.some(failure => failure.resourceKind === 'gatt')).toBe(true)
+    expect(harness.commands).toContain('connection.disconnect')
+    expect(unsubscribeAttempts).toBeGreaterThan(attemptsBeforeRelease)
+    await harness.ipc.destroy()
+  })
+
+  test('successful CCCD retry after release-failed invalidate terminalizes the stale database changed stream', async () => {
+    const failure = {
+      resourceKind: 'gatt',
+      error: {
+        code: 'platform.failure',
+        domain: 'gatt',
+        operation: 'ipc-manager.gatt-unsubscribe',
+        platform: null,
+        retryability: 'caller-decides'
+      }
+    }
+    let unsubscribeAttempts = 0
+    let discoverCount = 0
+    const harness = await createAdmissionHarness({
+      discoverPayload: () => {
+        discoverCount += 1
+        return validGattDiscoverPayload({
+          handle: `database-${discoverCount}`,
+          databaseGeneration: `database-generation-${discoverCount}`,
+          ...(discoverCount > 1 ? { rediscoveryReason: 'manual-rediscovery' } : {})
+        })
+      },
+      gattUnsubscribe: async () => {
+        unsubscribeAttempts += 1
+        if (unsubscribeAttempts === 1) {
+          return {
+            kind: 'route',
+            payload: { state: 'release-failed', failures: [failure] }
+          }
+        }
+        return { kind: 'route', payload: { state: 'released', failures: [] } }
+      }
+    })
+    const connection = await harness.ipc.connect('peer-1')
+    const database = await connection.discover()
+    const subscription = await database.characteristics[0].subscribe()
+    await expect(connection.rediscoverGatt({}, 'manual-rediscovery')).rejects.toMatchObject({
+      normalized: { code: 'lifecycle.invalid-state', operation: 'ipc-manager.gatt-discover.release-failed' }
+    })
+    expect(database.changed.isTerminal()).toBe(false)
+    await expect(subscription.remove()).resolves.toMatchObject({ state: 'released', failures: [] })
+    const changed = database.changed[Symbol.asyncIterator]()
+    const pending = changed.next()
+    const replacement = await connection.rediscoverGatt({}, 'manual-rediscovery')
+    expect(replacement.handle).toBe('database-2')
+    expect(database.changed.isTerminal()).toBe(true)
+    await expect(pending).resolves.toMatchObject({
+      value: { kind: 'value', value: { reason: 'manual-rediscovery' } }
+    })
+    await expect(changed.next()).resolves.toMatchObject({
+      value: { kind: 'terminal', reason: 'closed' }
+    })
+    await connection.release()
+    await harness.ipc.destroy()
+  })
+
+  test('successful CCCD retry finalizes the stale database changed stream without a rediscovery', async () => {
+    const failure = {
+      resourceKind: 'gatt',
+      error: {
+        code: 'platform.failure',
+        domain: 'gatt',
+        operation: 'ipc-manager.gatt-unsubscribe',
+        platform: null,
+        retryability: 'caller-decides'
+      }
+    }
+    let unsubscribeAttempts = 0
+    const harness = await createAdmissionHarness({
+      gattUnsubscribe: async () => {
+        unsubscribeAttempts += 1
+        if (unsubscribeAttempts === 1) {
+          return {
+            kind: 'route',
+            payload: { state: 'release-failed', failures: [failure] }
+          }
+        }
+        return { kind: 'route', payload: { state: 'released', failures: [] } }
+      }
+    })
+    const connection = await harness.ipc.connect('peer-1')
+    const database = await connection.discover()
+    const subscription = await database.characteristics[0].subscribe()
+    await expect(database.invalidate('service-changed')).resolves.toMatchObject({ state: 'release-failed' })
+    expect(database.changed.isTerminal()).toBe(false)
+    const changed = database.changed[Symbol.asyncIterator]()
+    const pending = changed.next()
+    await expect(subscription.remove()).resolves.toMatchObject({ state: 'released', failures: [] })
+    expect(database.changed.isTerminal()).toBe(true)
+    await expect(pending).resolves.toMatchObject({
+      value: { kind: 'value', value: { reason: 'service-changed' } }
+    })
+    await expect(changed.next()).resolves.toMatchObject({
+      value: { kind: 'terminal', reason: 'closed' }
+    })
+    await connection.release()
+    await harness.ipc.destroy()
+  })
+
+  test.each(['electron', 'tauri'])('%s transport doubles exercise the same admission helper', async host => {
+    const harness = await createAdmissionHarness({
+      connectPayload: validConnectPayload({ peerId: `${host}-peer` })
+    })
+    await expect(harness.ipc.connect('peer-1')).rejects.toMatchObject({
+      normalized: { code: 'protocol.violation' }
+    })
+    expect(harness.disconnectPayloads[0]).toMatchObject({
+      connectionHandle: 'connection-1',
+      peerId: `${host}-peer`
+    })
+    await harness.ipc.destroy()
+  })
 })
