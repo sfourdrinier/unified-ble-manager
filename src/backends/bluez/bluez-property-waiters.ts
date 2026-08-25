@@ -80,13 +80,62 @@ export function waitForBluezBoolean(
 
 export function resolveBluezWaiters(runtime: BluezBackendRuntime): void {
   for (const waiter of [...runtime.waiters]) {
+    if (!runtime.store.hasInterface(waiter.path, waiter.interfaceName)) {
+      continue
+    }
     if (
-      runtime.store.hasInterface(waiter.path, waiter.interfaceName) &&
+      waiter.kind === 'interface-presence' ||
       runtime.store.optionalBooleanProperty(waiter.path, waiter.interfaceName, waiter.property) === waiter.expected
     ) {
       waiter.resolve()
     }
   }
+}
+
+/** Resolves once an interface exists at a path, e.g. a Device1 object materializing. */
+export function waitForBluezInterfacePresence(
+  runtime: BluezBackendRuntime,
+  path: string,
+  interfaceName: string,
+  options: PublicOperationOptions
+): Promise<void> {
+  if (runtime.store.hasInterface(path, interfaceName)) {
+    return Promise.resolve()
+  }
+  return new Promise((resolve, reject) => {
+    const waiter: BluezPropertyWaiter = {
+      kind: 'interface-presence',
+      path,
+      interfaceName,
+      property: 'interface-presence',
+      expected: true,
+      resolve: () => {
+        removeBluezWaiter(runtime, waiter)
+        resolve()
+      },
+      reject: error => {
+        removeBluezWaiter(runtime, waiter)
+        reject(error)
+      },
+      signal: options.signal,
+      abort: () => {
+        waiter.reject(contractError('operation.aborted', 'core', 'bluez.wait.interface-presence'))
+      },
+      timer: null
+    }
+    if (options.signal?.aborted === true) {
+      waiter.reject(contractError('operation.aborted', 'core', 'bluez.wait.interface-presence'))
+      return
+    }
+    options.signal?.addEventListener('abort', waiter.abort, { once: true })
+    if (options.deadline !== null) {
+      waiter.timer = setTimeout(
+        () => waiter.reject(contractError('operation.timed-out', 'core', 'bluez.wait.interface-presence')),
+        Math.max(0, options.deadline - runtime.now())
+      )
+    }
+    runtime.waiters.add(waiter)
+  })
 }
 
 export function rejectRemovedBluezObjectWaiters(runtime: BluezBackendRuntime, path: string): void {
