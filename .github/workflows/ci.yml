@@ -15,10 +15,18 @@ on:
   push:
     branches:
       - main
+      # Release branches are validated on push as well as on their PRs: a
+      # release branch accumulates several merged PRs, and the combination is
+      # what ships, so the integrated branch has to be gated in its own right.
+      - 'release/**'
   pull_request:
     branches:
       - main
       - 'agent/**'
+      # Without this, retargeting a PR onto a release branch silently removes
+      # CI from it: no workflow triggers, `gh pr checks` reports nothing, and
+      # the PR still shows the stale green from when it targeted main.
+      - 'release/**'
     types: [opened, reopened, synchronize, ready_for_review, labeled]
   workflow_dispatch:
 
