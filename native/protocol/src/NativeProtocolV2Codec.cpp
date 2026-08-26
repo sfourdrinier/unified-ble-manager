@@ -63,6 +63,27 @@ RecordKind recordKindForName(std::string_view name) {
   throw ProtocolException(ProtocolFailure::unknownRecord, "Native protocol field references an unknown record");
 }
 
+// Name a rejected record's kind and the versions that disagreed. A quarantined
+// record is only actionable if the diagnostic says which emitter produced it:
+// "the payload version is incompatible" is otherwise true of any record on the
+// wire and the reader is left to guess between four record kinds.
+// PR #142 introduces describeField() for the same reason; the two should be
+// folded into one helper when these branches meet.
+std::string describeRecordVersion(RecordKind kind, const std::uint64_t* version) {
+  const auto* kindDescriptor = std::find_if(
+      kRecordKindDescriptors.begin(),
+      kRecordKindDescriptors.end(),
+      [kind](const RecordKindDescriptor& candidate) { return candidate.kind == kind; });
+  std::string description = " (kind=";
+  description += kindDescriptor == kRecordKindDescriptors.end()
+      ? std::to_string(static_cast<std::uint32_t>(kind))
+      : std::string(kindDescriptor->name);
+  description += ", version=";
+  description += version == nullptr ? std::string("absent") : std::to_string(*version);
+  description += ", expected=" + std::to_string(static_cast<std::uint32_t>(kProtocolVersion)) + ")";
+  return description;
+}
+
 void appendBytes(std::vector<std::uint8_t>& output, const void* data, std::size_t size) {
   if (size > kMaximumControlRecordBytes - output.size()) {
     throw ProtocolException(ProtocolFailure::payloadTooLarge, "Native protocol control record exceeds its limit");
@@ -639,7 +660,9 @@ void NativeProtocolV2Codec::validateRecord(const ProtocolRecord& record, std::si
       record.kind == RecordKind::restorationRecord) {
     const auto* version = unsignedIntegerField(record, 1U);
     if (version == nullptr || *version != kProtocolVersion) {
-      throw ProtocolException(ProtocolFailure::incompatibleVersion, "Native protocol payload version is incompatible");
+      throw ProtocolException(
+          ProtocolFailure::incompatibleVersion,
+          "Native protocol payload version is incompatible" + describeRecordVersion(record.kind, version));
     }
   }
   if (record.kind == RecordKind::command) {
