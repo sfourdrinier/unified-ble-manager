@@ -12,7 +12,7 @@ const exampleExpoPackage = require('../example-expo/package.json')
 describe('canonical package modernization', () => {
   test('publishes the strict unified-ble-manager package boundary', () => {
     expect(rootPackage.name).toBe('unified-ble-manager')
-    expect(rootPackage.version).toBe('4.0.6')
+    expect(rootPackage.version).toBe('4.0.7')
     expect(Object.keys(rootPackage.exports).sort()).toEqual([
       '.',
       './advanced',

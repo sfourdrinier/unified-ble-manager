@@ -81,7 +81,7 @@ Active `4.0.0-rc.*` release-train candidates publish to npm `latest` so a bare `
 
 On release day, set `release_candidate` to the exact candidate required by the
 release plan. RC2, RC3, RC4, `4.0.0-rc.4.1`, and RC5 are already immutable
-once tagged. Stable `4.0.0`, `4.0.1`, `4.0.2`, `4.0.3`, `4.0.4`, and `4.0.5` are immutable. `4.0.6` is the current train head.
+once tagged. Stable `4.0.0`, `4.0.1`, `4.0.2`, `4.0.3`, `4.0.4`, `4.0.5`, and `4.0.6` are immutable. `4.0.7` is the current train head.
 
 ```sh
 release_candidate=4.0.0-rc.N
@@ -131,6 +131,37 @@ The `v4.0.3` tag is immutable published history. Do not recreate or move it.
 
 ```sh
 git tag -a v4.0.3 -m "v4.0.3"
+```
+
+## Releasing 4.0.7
+
+Same shape as 4.0.6. The release workflow verifies that the tag points at the
+exact current `main` commit before publication; do not create it from a side
+branch or an older commit. Do not retag any immutable version.
+
+```sh
+git fetch origin --tags
+git checkout main
+git pull --ff-only origin main
+
+test "$(git branch --show-current)" = "main"
+test "$(node -p "require('./package.json').version")" = "4.0.7"
+git diff --exit-code
+git diff --cached --exit-code
+
+git tag -a v4.0.7 -m "v4.0.7"
+git push origin v4.0.7
+```
+
+Do not push another commit to `main` between the final verification and the tag
+push.
+
+Before tagging, confirm the release-notes extraction finds the entry — the
+workflow's awk matches `^## \[4.0.7\]`, and a heading left as `[Unreleased]`
+publishes a stub instead of the changelog:
+
+```sh
+awk -v ver=4.0.7 '$0 ~ ("^## \\[" ver "\\]") {p=1;next} p && $0 ~ /^## \[/ {exit} p {print}' CHANGELOG.md
 ```
 
 ## Releasing 4.0.6
