@@ -2,6 +2,16 @@
 
 All notable changes to `unified-ble-manager` are documented here.
 
+## [4.0.7] - 2026-08-26
+
+### Changed behaviour
+
+- `cancelPairing()` reports what the cancellation **achieved**, not what it requested, and can no longer contradict the pairing it cancelled. Every backend answered `'cancelled'` unconditionally the moment the cancel was dispatched, so a cancellation that lost the race told the caller no bond exists while one did — and a caller who believes that never looks again. It now reads the in-flight pairing's own result rather than forming a second opinion, which is what makes the two calls incapable of disagreeing: there is one source of truth and the cancellation reads it. `SecurityCancelPairingResult` gains the words to say so — `'paired'` when the bond completed before the cancellation arrived, and `'rejected'` (carrying the peer's reason) when the peer refused, because claiming credit for stopping something that stopped itself is the same substitution with the arrow reversed. A pairing that *fails* is not given an invented outcome: `cancelPairing()` rejects with the error the pairing rejected with. `'paired'` deliberately matches `SecurityPairResult`'s `'paired'` — a bond exists as a result of this operation — and is not `'already-paired'`, which in that type means the peer was bonded *before* the call; one word, one meaning, in both types. Applies to BlueZ, Android, WinRT **and** the deterministic `/testing` backend, since a mock that answers differently from every real radio lets a consumer's suite pass against a contract no device honours (#159).
+
+### Known limitations
+
+- `pair()`'s abort path still reports `'cancelled'` without knowing whether the daemon bonded anyway. Learning the truth means waiting for the radio, and waiting risks a hang that a wedged daemon would inflict on the caller — which the suite explicitly forbids. Resolving it needs a vocabulary that can express "cancellation requested, bond state not yet known"; `state()` and `watch()` remain authoritative meanwhile (#157).
+
 ## [4.0.6] - 2026-08-26
 
 The first release cut against a live peripheral on Android as well as Linux. Most of it is defects that only real hardware surfaced, several of them boundaries that discarded evidence and so presented a specific fault as silence. Does not retag `v4.0.5`.

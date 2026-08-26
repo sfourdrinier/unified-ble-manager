@@ -85,6 +85,22 @@ Preserve these unless the user explicitly requests a versioned contract change:
   explicit codec for external protocols, never the public value contract;
 - cancellation uses `AbortSignal`; applications never create public
   transaction IDs;
+- a signal **requests** cancellation; the result **reports what happened**. An
+  operation's outcome is read from what the platform actually did, never
+  inferred from the fact that cancellation was asked for. `cancelPairing()`
+  therefore answers from the in-flight pairing's own result rather than forming
+  a second opinion — two observations of one fact can disagree, and that
+  disagreement is the defect. Every backend answers from the same vocabulary,
+  and a word means the same thing in every result type that uses it
+  (`'paired'` is "a bond exists because of this operation" in both
+  `SecurityPairResult` and `SecurityCancelPairingResult`; `'already-paired'`
+  means "bonded before the call" and belongs only to the former). Where a
+  platform genuinely cannot answer, it says so with `capability.unsupported`
+  and a reason — never a plausible substitute. Known gap: `pair()`'s abort path
+  still reports `'cancelled'` without knowing whether the peer bonded anyway,
+  because learning the truth means waiting for the radio and waiting risks
+  hanging the caller behind a wedged daemon (#157); `state()` and `watch()` are
+  authoritative for the bond;
 - the root is host-neutral and never silently picks or falls back to a backend;
 - managers, connections, GATT databases, subscriptions and backend resources
   have explicit ownership and asynchronous teardown; stale discoveries and

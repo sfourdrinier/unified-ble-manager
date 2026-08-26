@@ -91,8 +91,58 @@ export type SecurityPairResult =
   | { readonly outcome: 'rejected'; readonly reason: string | null }
   | { readonly outcome: 'cancelled' }
 
-export type SecurityCancelPairingResult = { readonly outcome: 'cancelled' | 'not-pairing' }
+/**
+ * What a cancellation actually achieved, not what it requested.
+ *
+ * A cancellation can lose the race, and it can also arrive at something that
+ * was never going to bond. Each of those is a different fact and gets its own
+ * word, mirroring `SecurityPairResult` so that a word means the same thing in
+ * both types:
+ *
+ * - `'cancelled'`   your cancellation stopped it
+ * - `'not-pairing'` there was nothing to stop
+ * - `'paired'`      the bond completed before your cancellation arrived
+ * - `'rejected'`    the peer refused it; nobody cancelled anything
+ *
+ * `'paired'` is deliberately not `'already-paired'`, which in `SecurityPairResult`
+ * means the peer was bonded BEFORE the call. A pairing that FAILS is not a
+ * fourth outcome: `cancelPairing()` rejects with the same error the pairing
+ * rejected with, because inventing a resolved outcome for a failure would be
+ * the same substitution this type exists to prevent.
+ */
+export type SecurityCancelPairingResult =
+  | { readonly outcome: 'cancelled' }
+  | { readonly outcome: 'not-pairing' }
+  | { readonly outcome: 'paired' }
+  | { readonly outcome: 'rejected'; readonly reason: string | null }
 export type SecurityUnpairResult = { readonly outcome: 'unpaired' | 'already-unpaired' | 'unsupported' }
+
+/**
+ * The cancellation outcome implied by the pairing's OWN result.
+ *
+ * Every backend answers `cancelPairing()` by asking the in-flight pairing what
+ * happened to it, rather than forming a second, independent opinion: two
+ * observations of one fact can disagree, and that disagreement is the defect -
+ * `pair()` reporting `paired` while `cancelPairing()` reported `cancelled` for
+ * the same operation. Reading the pairing's own answer makes them incapable of
+ * disagreeing, and keeps the four backends saying one thing.
+ */
+export function cancelOutcomeForPairResult(result: SecurityPairResult): SecurityCancelPairingResult {
+  switch (result.outcome) {
+    // One fact - a bond exists because of this operation - so one word. The
+    // re-pairing distinction stays on `pair()` for callers who need it.
+    case 'paired':
+    case 'already-paired':
+    case 'repaired':
+      return { outcome: 'paired' }
+    // The peer refused. Nobody cancelled anything, and saying otherwise would
+    // claim credit for stopping something that stopped itself.
+    case 'rejected':
+      return { outcome: 'rejected', reason: result.reason }
+    case 'cancelled':
+      return { outcome: 'cancelled' }
+  }
+}
 
 export interface SecurityBackend {
   state(peerId: string, options: PublicOperationOptions): Promise<PeerSecurityState>

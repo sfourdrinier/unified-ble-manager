@@ -13,6 +13,7 @@ import type {
   SecurityPairResult,
   SecurityUnpairResult
 } from '../../backend-contract/security'
+import { cancelOutcomeForPairResult } from '../../backend-contract/security'
 import type {
   WinRtBoundary,
   WinRtPairResult,
@@ -170,6 +171,8 @@ function securityStateChanged(value: unknown, operation: string): WinRtSecurityS
 interface ActivePairing {
   readonly operation: WinRtOperationDispatch<WinRtPairResult>
   readonly nativePeerId: string
+  /** The pairing's own public answer, so cancelPairing can read it rather than forming a second opinion. */
+  readonly result: Promise<SecurityPairResult>
 }
 
 type SecurityLifecycle = 'active' | 'adapter-lost' | 'closed'
@@ -274,7 +277,6 @@ export class WinRtSecurityBackend implements SecurityBackend {
     }
     const nativePeerId = this.nativePeerIdForPeerId(peerId, 'winrt.security.pair')
     const operation = this.dispatcher.dispatch(options, 'winrt.security.pair', () => this.boundary.pair(nativePeerId))
-    this.activePairings.set(peerId, { operation, nativePeerId })
     const settle = () => {
       const active = this.activePairings.get(peerId)
       if (active?.operation === operation) {
@@ -294,6 +296,7 @@ export class WinRtSecurityBackend implements SecurityBackend {
         }
         throw error
       })
+    this.activePairings.set(peerId, { operation, nativePeerId, result })
     return result
   }
 
@@ -323,7 +326,10 @@ export class WinRtSecurityBackend implements SecurityBackend {
       }
     })
     await dispatch.completion
-    return { outcome: 'cancelled' }
+    // Ask the pairing what happened rather than assuming the cancel won. A
+    // failed pairing propagates its error instead of being reported as a
+    // cancellation we did not achieve.
+    return cancelOutcomeForPairResult(await active.result)
   }
 
   async unpair(peerId: string, _options: PublicOperationOptions): Promise<SecurityUnpairResult> {

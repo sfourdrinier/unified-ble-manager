@@ -9,6 +9,7 @@ import type {
   SecurityPairResult,
   SecurityUnpairResult
 } from '../../backend-contract/security'
+import { cancelOutcomeForPairResult } from '../../backend-contract/security'
 import { capacity } from '../../backend-contract/primitives'
 import { CoreBoundedStream } from '../../core/bounded-stream'
 import type { BoundedAsyncStream, BoundedAsyncStreamIterator } from '../../backend-contract/streams'
@@ -189,6 +190,13 @@ export class BluezSecurityBackend implements SecurityBackend {
     let pairCallStarted = false
     let pairCallSettled = false
     let pairSucceeded = false
+    /**
+     * The in-flight `Device1.Pair` call. Held so a cancelled or timed-out
+     * operation can wait for the RADIO's answer before naming an outcome,
+     * rather than deciding from the abort and discarding what the daemon went
+     * on to do.
+     */
+    let pairCall: Promise<unknown> | null = null
     const dispatch = this.runtime.trackConnectionOperationForPeer(
       peerId,
       this.runtime.dispatcher.dispatch<SecurityPairResult>(
@@ -219,7 +227,11 @@ export class BluezSecurityBackend implements SecurityBackend {
             // Mark started only immediately before Pair, so an abort during
             // agent registration does not cancel a pairing that never began.
             pairCallStarted = true
-            await this.runtime.boundary.methods.callVoid(path, BLUEZ_DEVICE_INTERFACE, 'Pair', [])
+            // Kept as a promise, not just awaited: the cancellation path needs
+            // to observe how it settles. Its rejection is consumed there too,
+            // so retaining it cannot produce an unhandled rejection.
+            pairCall = this.runtime.boundary.methods.callVoid(path, BLUEZ_DEVICE_INTERFACE, 'Pair', [])
+            await pairCall
             // Device1.Pair resolves only on a completed bond, so the peer is now
             // bonded regardless of whether the confirming Paired signal has
             // landed. Record that so a late abort is reported as paired, not
@@ -243,7 +255,7 @@ export class BluezSecurityBackend implements SecurityBackend {
       ),
       'bluez.security.pair'
     )
-    const operation = dispatch.completion.catch(error => {
+    const operation = dispatch.completion.catch(async error => {
       if (
         error instanceof BackendContractError &&
         (error.normalized.code === 'operation.aborted' || error.normalized.code === 'operation.timed-out')
@@ -274,9 +286,16 @@ export class BluezSecurityBackend implements SecurityBackend {
   async cancelPairing(peerId: string, _options: PublicOperationOptions): Promise<SecurityCancelPairingResult> {
     this.runtime.assertUsable('bluez.security.cancel-pairing')
     const active = this.activePairings.get(peerId)
+    // Narrow known window: the pairing can settle between this lookup and the
+    // caller's call, so a cancellation that arrives at that instant reports
+    // 'not-pairing'. Documented rather than closed - see docs/BONDING.md.
     if (active === undefined) return { outcome: 'not-pairing' }
     await active.dispatch.requestCancellation()
-    return { outcome: 'cancelled' }
+    // Ask the pairing what happened to it instead of forming a second opinion.
+    // A failed pairing propagates: rethrowing its error beats inventing a
+    // resolved outcome we do not have. Concurrent callers all await the same
+    // operation, so they cannot receive different answers.
+    return cancelOutcomeForPairResult(await active.operation)
   }
 
   async unpair(peerId: string, _options: PublicOperationOptions): Promise<SecurityUnpairResult> {

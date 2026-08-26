@@ -432,7 +432,16 @@ function snapshotPairResult(value: InternalSecurityPairResult, operation: string
 }
 
 function snapshotCancelPairingResult(value: InternalSecurityCancelPairingResult, operation: string): PairCancelResult {
-  if (value.outcome !== 'cancelled' && value.outcome !== 'not-pairing') {
+  if (value.outcome === 'rejected') {
+    // Carried through rather than flattened: "the peer refused" is a different
+    // fact from "your cancellation stopped it", and the reason is the only part
+    // that says why.
+    if (value.reason !== null && typeof value.reason !== 'string') {
+      throw contractError('protocol.violation', 'platform', operation)
+    }
+    return Object.freeze({ outcome: 'rejected', reason: value.reason })
+  }
+  if (value.outcome !== 'cancelled' && value.outcome !== 'not-pairing' && value.outcome !== 'paired') {
     throw contractError('protocol.violation', 'platform', operation)
   }
   return Object.freeze({ outcome: value.outcome })
