@@ -3384,6 +3384,7 @@ dependencies = [
 name = "tauri-plugin-unified-ble-manager"
 version = "4.0.0"
 dependencies = [
+ "bluez-async",
  "btleplug",
  "futures-util",
  "objc2 0.5.2",

@@ -91,7 +91,10 @@ jobs:
         run: cargo clippy --manifest-path native/tauri/Cargo.toml -- -D warnings
 
       - name: Compile independent Tauri proving consumer
-        run: cargo check --manifest-path example-tauri/src-tauri/Cargo.toml
+        # --locked: the example is an app, so its lockfile is a shipped artifact.
+        # Without this Cargo silently rewrites a stale lock and the job passes,
+        # which is how a missing dependency edge reached a release tag.
+        run: cargo check --manifest-path example-tauri/src-tauri/Cargo.toml --locked
 
   # Always run JS/package tests — including labeled events — so required checks
   # never get replaced by a skipped success from an unrelated label.
