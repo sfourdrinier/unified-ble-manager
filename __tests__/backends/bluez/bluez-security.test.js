@@ -164,6 +164,50 @@ describe('BlueZ system security backend', () => {
     await expect(backend.destroy()).resolves.toMatchObject({ state: 'released' })
   })
 
+  /**
+   * cancelPairing() and pair() can never disagree about the same operation,
+   * because cancelPairing reads the pairing's OWN answer instead of forming a
+   * second opinion. Two observations of one fact can differ; one cannot.
+   *
+   * This is the #159 half. The remaining race - both agreeing on 'cancelled'
+   * when the daemon bonded anyway - is #157, and closing it needs an answer to
+   * "may an aborted pair stop being prompt", which the sibling tests below
+   * ("cancels promptly while the native Pair call remains pending") show is a
+   * deliberate requirement, not an oversight: a wedged bluetoothd must not hang
+   * the caller.
+   *
+   * Ordering is FORCED, not timed - the test resolves Pair itself.
+   */
+  test('cancelPairing never contradicts the pairing it cancelled', async () => {
+    const { backend, boundary, peerId: observedPeerId } = await createFixture()
+    let completePairing = () => undefined
+    boundary.onCall(
+      devicePath,
+      BLUEZ_DEVICE_INTERFACE,
+      'Pair',
+      () =>
+        new Promise(resolve => {
+          completePairing = resolve
+        })
+    )
+
+    const pairing = backend.security.pair(observedPeerId, pairOptions())
+    await Promise.resolve()
+    await Promise.resolve()
+
+    const cancelling = backend.security.cancelPairing(observedPeerId, pairOptions())
+    await Promise.resolve()
+    completePairing()
+
+    const [cancelResult, pairResult] = [await cancelling, await pairing]
+    // Whatever the answer is, it is ONE answer. A cancellation that reported
+    // 'cancelled' while the pairing reported 'paired' is the defect.
+    const pairSaysBonded =
+      pairResult.outcome === 'paired' || pairResult.outcome === 'already-paired' || pairResult.outcome === 'repaired'
+    expect(cancelResult.outcome === 'paired').toBe(pairSaysBonded)
+    await expect(backend.destroy()).resolves.toMatchObject({ state: 'released' })
+  })
+
   test('cancels an in-flight system pairing without claiming a bond', async () => {
     const { backend, boundary, peerId: observedPeerId } = await createFixture()
     // A genuinely in-flight pairing: Device1.Pair stays pending (real BlueZ does

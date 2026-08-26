@@ -84,6 +84,27 @@ bond; the bond is still authoritative and visible through `watch()`/`state()`.
 Aligning Android and WinRT with BlueZ's report-the-bond behavior is tracked
 separately.
 
+`cancelPairing()` no longer forms its own opinion about that race. It reports
+what the cancellation *achieved* by reading the pairing's own result, so the two
+calls cannot contradict each other about one operation: `'paired'` when the bond
+completed before the cancellation arrived, `'rejected'` (with the peer's reason)
+when the peer refused, `'cancelled'` when the cancellation stopped it, and
+`'not-pairing'` when there was nothing to stop. A pairing that *fails* does not
+get an invented outcome - `cancelPairing()` rejects with the same error the
+pairing rejected with.
+
+Two limits are deliberate rather than overlooked. `'not-pairing'` carries a
+narrow race of its own: the pairing can settle between the lookup and the
+caller's call, and that instant reports `'not-pairing'`. And `pair()`'s abort
+path still reports `'cancelled'` without knowing whether the daemon bonded
+anyway, because the alternative is worse: learning the truth means waiting for
+the radio, and a wedged or unresponsive daemon would then hang the caller - a
+hang the suite explicitly forbids (`cancels promptly while the native Pair call
+remains pending`). Truth and promptness genuinely conflict here, and resolving
+it needs a vocabulary that can say "cancellation requested, bond state not yet
+known" rather than a longer wait. Until then, `state()` and `watch()` remain
+authoritative for whether a bond exists.
+
 Apple and Web keep generic
 pairing/bonding unsupported where their public APIs do not provide a truthful
 measurement; Web `forget()` remains origin-authorization revocation, not
