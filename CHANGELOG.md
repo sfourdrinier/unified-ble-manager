@@ -2,7 +2,9 @@
 
 All notable changes to `unified-ble-manager` are documented here.
 
-## [Unreleased]
+## [4.0.6] - 2026-08-26
+
+The first release cut against a live peripheral on Android as well as Linux. Most of it is defects that only real hardware surfaced, several of them boundaries that discarded evidence and so presented a specific fault as silence. Does not retag `v4.0.5`.
 
 ### Fixes
 
