@@ -21,6 +21,7 @@ const {
   createBackendOperationCapabilityRegistration
 } = require('../../src/backend-contract/capabilities')
 const { CoreBoundedStream } = require('../../src/core/bounded-stream')
+const { awaitSignal } = require('../helpers/async')
 
 const maximumBytes = 512 * 1024
 
@@ -164,16 +165,22 @@ async function flushVirtual(controller) {
   }
 }
 
-async function settleWithin(promise, timeoutMs) {
-  return Promise.race([
+/**
+ * How a promise settled, without racing a timer to find out.
+ *
+ * The earlier form resolved to `{ state: 'pending' }` when a 250ms sleep won,
+ * which made a loaded runner report the cancellation as never having happened.
+ * Reflecting the promise and awaiting it says the same thing about the code and
+ * nothing about the machine.
+ */
+async function settleOutcome(promise, description) {
+  return awaitSignal(
     promise.then(
       value => ({ state: 'fulfilled', value }),
       error => ({ state: 'rejected', error })
     ),
-    new Promise(resolve => {
-      setTimeout(() => resolve({ state: 'pending' }), timeoutMs)
-    })
-  ])
+    description
+  )
 }
 
 async function connectedDatabase(fixture, manager) {
@@ -783,7 +790,7 @@ describe('UnifiedBleCore lifecycle hardening', () => {
     cancellation.cancel()
 
     try {
-      const outcome = await settleWithin(rediscovery, 250)
+      const outcome = await settleOutcome(rediscovery, 'the cancelled rediscovery to settle')
       expect(outcome.state).toBe('rejected')
       expect(outcome.error).toMatchObject({
         normalized: { code: _kind === 'abort' ? 'operation.aborted' : 'operation.timed-out' }
