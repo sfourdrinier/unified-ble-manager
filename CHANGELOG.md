@@ -2,6 +2,16 @@
 
 All notable changes to `unified-ble-manager` are documented here.
 
+## [Unreleased]
+
+### Fixes
+
+- **Every GATT notification was dropped on both React Native backends, and characteristic and descriptor reads with them.** A notification's payload is carried as a binary reference, and the protocol requires that reference to name the operation the event belongs to — the codec compares the two for equality (`requireBinaryCorrelation`). Both bindings stamped the subscribe's correlation on the event while minting the payload under a correlation of their own (`"notification:<subscription>:<ordinal>"` on Android, `"apple-notification:..."` on Apple), a combination that can never validate. Every notification was therefore refused inside our own codec before reaching a caller, so a subscription delivered nothing at all while the radio received the peer perfectly well. The read paths decorated their correlation the same way (`"read:<epoch>:<nonce>"`, `"apple-read:<nonce>"`) and failed the same check on the result record. All four sites now mint the payload under the owning operation's nonce, as the write path always did.
+
+  Sharing one correlation across a subscription's notifications is safe: `OwnedBinaryPayloadStore` keys retained payloads by a freshly generated owner token and releases by that token, treating the correlation as metadata it cross-checks rather than as a unique key.
+
+  The deterministic layer could not catch this, which is why it shipped: the React Native test doubles minted their own notification correlations and omitted the operation correlation entirely, so they modelled a record the native codec refuses to deliver, and the suite stayed green against a shape no device could ever produce. `ReactNativeAndroidProtocolBoundary` now enforces the same rule the native codec enforces, the doubles emit the shape the bindings actually emit, and the codec's own tests pin both the notification event and the read result. Found against a Dexcom G7, where the platform logged the peer's nine reply chunks and the application received none (#168).
+
 ## [4.0.7] - 2026-08-26
 
 ### Changed behaviour

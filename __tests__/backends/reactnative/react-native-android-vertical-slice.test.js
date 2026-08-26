@@ -1597,6 +1597,11 @@ class DeterministicAndroidProtocolRuntime {
     this.nextBuffer = 1
     this.nextEvent = 1
     this.subscriptionId = null
+    // The correlation of the subscribe that produced the active subscription.
+    // The real Android binding stamps this on every notification and mints the
+    // payload under its nonce; a double that invents its own correlation models
+    // a notification the native codec would reject (issue #168).
+    this.subscribeCorrelation = null
     this.commandKinds = []
     this.writes = []
     this.descriptorWrites = []
@@ -1761,11 +1766,9 @@ class DeterministicAndroidProtocolRuntime {
     }
     if (kind === 'subscribe') {
       this.subscriptionId = requiredString(command, 7)
+      this.subscribeCorrelation = requiredRecord(command, 2)
       if (this.emitInitialSubscriptionNotification) {
-        this.emitEvent('notification', [
-          field(11, this.subscriptionId),
-          field(13, binaryReferenceRecord(this.retain('notification-output', new Uint8Array([3, 4]))))
-        ])
+        this.emitNotificationRecord(new Uint8Array([3, 4]))
       }
       this.emitResult(command, 'subscribed', [field(5, requiredRecord(command, 4)), field(7, this.subscriptionId)])
       return
@@ -1844,12 +1847,23 @@ class DeterministicAndroidProtocolRuntime {
   }
 
   emitNotification(_address, bytes) {
-    if (this.subscriptionId === null) {
+    this.emitNotificationRecord(bytes)
+  }
+
+  /**
+   * Builds a notification exactly as the Android JSI binding does: the event
+   * carries the subscribe's operationCorrelation (field 10), and the payload is
+   * retained under that correlation's nonce so the two agree.
+   */
+  emitNotificationRecord(bytes) {
+    if (this.subscriptionId === null || this.subscribeCorrelation === null) {
       throw new Error('The deterministic runtime has no active subscription')
     }
+    const nonce = requiredString(this.subscribeCorrelation, 3)
     this.emitEvent('notification', [
+      field(10, this.subscribeCorrelation),
       field(11, this.subscriptionId),
-      field(13, binaryReferenceRecord(this.retain('notification-output', bytes)))
+      field(13, binaryReferenceRecord(this.retain(nonce, bytes)))
     ])
   }
 

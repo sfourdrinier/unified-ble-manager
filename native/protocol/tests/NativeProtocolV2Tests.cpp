@@ -550,6 +550,72 @@ void testTerminalAndRichAdvertisementParity() {
       uncorrelatedAdvertisementEvent.fields.end());
   codec.validate(uncorrelatedAdvertisementEvent);
 
+  // Every notification belongs to the subscribe that created it, and carries
+  // that operation's correlation (field 10) beside its payload (field 13). The
+  // two must name the SAME operation.
+  //
+  // Both React Native bindings used to mint the payload under a
+  // per-notification string ("notification:<subscription>:<ordinal>" on
+  // Android, "apple-notification:..." on Apple) while stamping the subscribe's
+  // correlation on the event. That combination can never validate, so every
+  // notification was rejected here before reaching a caller: subscriptions
+  // delivered nothing at all while the radio received the peer perfectly well.
+  // Confirmed against a Dexcom G7, where the peer's nine reply chunks were
+  // logged by the platform and none arrived. See issue #168.
+  const protocol::ProtocolRecord notificationEvent{
+      .kind = protocol::RecordKind::event,
+      .fields = {
+          field(1U, std::uint64_t{protocol::kProtocolVersion}),
+          field(2U, std::string("native-notification-1:7")),
+          field(3U, std::string("notification")),
+          field(4U, attachment()),
+          field(5U, std::uint64_t{7U}),
+          field(6U, std::uint64_t{20U}),
+          field(9U, characteristic("characteristic-occurrence-1")),
+          field(10U, correlation(1U)),
+          field(11U, std::string("subscription-1")),
+          field(13U, binary("notification-buffer", 20U)),
+      },
+  };
+  codec.validate(notificationEvent);
+  assert(
+      codec.encode(codec.decode(codec.encode(notificationEvent))) == codec.encode(notificationEvent));
+
+  // The defect itself, pinned: a payload minted under its own correlation is
+  // refused, however well formed the rest of the event is.
+  auto foreignNotificationEvent = notificationEvent;
+  for (auto& value : foreignNotificationEvent.fields) {
+    if (value.id == 13U) {
+      value = field(13U, binary("notification-buffer", 20U, "notification:subscription-1:7"));
+    }
+  }
+  expectFailure(protocol::ProtocolFailure::invalidCorrelation, [&] {
+    codec.validate(foreignNotificationEvent);
+  });
+
+  // A read result is the same rule on the other record kind: its payload must
+  // name the operation the terminal correlation names. The bindings decorated
+  // this one too ("read:<epoch>:<nonce>", "apple-read:<nonce>").
+  const protocol::ProtocolRecord correlatedReadResult{
+      .kind = protocol::RecordKind::result,
+      .fields = {
+          field(1U, std::uint64_t{protocol::kProtocolVersion}),
+          field(2U, std::string("read")),
+          field(3U, std::make_shared<protocol::ProtocolRecord>(terminal(1U, "succeeded"))),
+          field(5U, characteristic("characteristic-occurrence-1")),
+          field(6U, binary("read-buffer", 12U)),
+      },
+  };
+  codec.validate(correlatedReadResult);
+
+  auto foreignReadResult = correlatedReadResult;
+  for (auto& value : foreignReadResult.fields) {
+    if (value.id == 6U) {
+      value = field(6U, binary("read-buffer", 12U, "read:1:opaque-operation-1"));
+    }
+  }
+  expectFailure(protocol::ProtocolFailure::invalidCorrelation, [&] { codec.validate(foreignReadResult); });
+
   // A rejected field is reported by name. "A field is forbidden" is true of
   // every record on the wire; without the identity a caller cannot tell which
   // record kind, or which field, the boundary actually refused.

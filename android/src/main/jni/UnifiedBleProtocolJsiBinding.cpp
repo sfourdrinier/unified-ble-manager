@@ -755,13 +755,6 @@ bool deliverEncodedRecord(
   return admitted;
 }
 
-std::string nativeBinaryCorrelation(
-    const char* prefix,
-    std::uint64_t dispatchEpoch,
-    const std::string& nonce) {
-  return std::string(prefix) + ":" + std::to_string(dispatchEpoch) + ":" + nonce;
-}
-
 std::vector<std::uint8_t> bytesFromJava(JNIEnv* environment, jbyteArray bytes) {
   if (bytes == nullptr) {
     throw protocol::ProtocolException(
@@ -1734,8 +1727,7 @@ void emitReadFromJava(
     const char* commandKind,
     const char* resultKind,
     std::uint16_t commandPathField,
-    std::uint16_t resultPathField,
-    const char* binaryCorrelationPrefix) {
+    std::uint16_t resultPathField) {
   const auto state = eventSinkState(nativeHandle);
   if (!state) {
     __android_log_print(
@@ -1770,9 +1762,11 @@ void emitReadFromJava(
           "Native Protocol v2 byte-read result has no pending command");
     }
     const auto bytes = bytesFromJava(environment, value);
-    outputReference = activeRuntime->retainNativeBytes(
-        nativeBinaryCorrelation(binaryCorrelationPrefix, static_cast<std::uint64_t>(dispatchEpoch), nativeNonce),
-        bytes);
+    // The owning operation's nonce, exactly. The codec compares this string
+    // with the terminal correlation's nonce for equality, so a decorated
+    // "prefix:epoch:nonce" fails the same check that dropped every
+    // notification (issue #168).
+    outputReference = activeRuntime->retainNativeBytes(nativeNonce, bytes);
     const auto& correlation = requiredProtocolRecord(*command, 2U);
     const auto& path = requiredProtocolRecord(*command, commandPathField);
     const auto result = protocol::ProtocolRecord{
@@ -1832,8 +1826,7 @@ void emitDescriptorReadFromJava(
       "readDescriptor",
       "descriptorRead",
       5U,
-      15U,
-      "descriptor-read");
+      15U);
 }
 
 void emitNotificationFromJava(
@@ -1877,10 +1870,20 @@ void emitNotificationFromJava(
     }
     const auto ordinal = nextIngressOrdinal(state);
     const auto bytes = bytesFromJava(environment, value);
-    outputReference = activeRuntime->retainNativeBytes(
-        std::string("notification:") + nativeSubscriptionId + ":" + std::to_string(ordinal),
-        bytes);
     const auto& correlation = requiredProtocolRecord(*command, 2U);
+    // Mint the payload under the SUBSCRIBE's nonce. The codec requires an
+    // event's binary reference to name the operation the event belongs to
+    // (requireBinaryCorrelation), and a per-notification string never matches
+    // it, so every notification failed validation with "Native binary
+    // reference belongs to another operation" and no GATT notification could
+    // reach JS on Android at all. The read and write paths already derive
+    // their binary correlation from the command nonce; this one did not.
+    //
+    // Sharing one correlation across a subscription's notifications is safe:
+    // OwnedBinaryPayloadStore keys retained payloads by a freshly generated
+    // ownerToken and releases by that token, treating the correlation as
+    // metadata it cross-checks rather than as a unique key.
+    outputReference = activeRuntime->retainNativeBytes(requiredProtocolString(correlation, 3U), bytes);
     const auto& characteristic = requiredProtocolRecord(*command, 4U);
     const auto event = protocol::ProtocolRecord{
         .kind = protocol::RecordKind::event,
@@ -2317,8 +2320,7 @@ Java_com_sfourdrinier_unifiedblemanager_protocol_UnifiedBleProtocolJsiBinding_em
       "read",
       "read",
       4U,
-      5U,
-      "read");
+      5U);
 }
 
 extern "C" JNIEXPORT void JNICALL

@@ -130,14 +130,24 @@ describe('React Native Android descriptor protocol boundary', () => {
         ]))
       ])
       const subscriptions = runtime.commands.filter(command => requiredString(command, 3) === 'subscribe')
-      runtime.emitEvent('notification', [
-        field(11, requiredString(subscriptions[0], 7)),
-        field(13, binaryReferenceRecord(runtime.retain('listener-notification-first', new Uint8Array([4]))))
-      ])
-      runtime.emitEvent('notification', [
-        field(11, requiredString(subscriptions[1], 7)),
-        field(13, binaryReferenceRecord(runtime.retain('listener-notification-second', new Uint8Array([5]))))
-      ])
+      // The payload is retained under the SUBSCRIBE's own nonce, and the event
+      // carries that correlation, exactly as the native binding emits it. A
+      // double that invents its own correlation models a notification the
+      // native codec rejects outright (issue #168).
+      for (const [index, value] of [[0, 4], [1, 5]]) {
+        const subscribeCommand = subscriptions[index]
+        const subscribeCorrelation = requiredRecord(subscribeCommand, 2)
+        runtime.emitEvent('notification', [
+          field(10, subscribeCorrelation),
+          field(11, requiredString(subscribeCommand, 7)),
+          field(
+            13,
+            binaryReferenceRecord(
+              runtime.retain(requiredString(subscribeCorrelation, 3), new Uint8Array([value]))
+            )
+          )
+        ])
+      }
       runtime.emitEvent('connectionLost', [field(7, requiredRecord(runtime.commands[0], 10))])
       runtime.emitEvent('adapterState', [
         field(15, record('adapterStateSnapshot', [field(1, 'available'), field(2, 'granted'), field(3, 'on')]))

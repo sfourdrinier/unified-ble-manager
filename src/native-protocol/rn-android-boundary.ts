@@ -781,6 +781,22 @@ export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary
     if (kind === 'notification') {
       const subscriptionId = requiredString(event, 11, 'rn-android-boundary.event.subscription')
       const reference = binaryReferenceFromRecord(requiredRecord(event, 13, 'rn-android-boundary.event.binary'))
+      // A notification's payload must belong to the subscription that produced
+      // it. The native codec enforces exactly this (requireBinaryCorrelation,
+      // NativeProtocolV2Codec.cpp), and enforcing it here too is what stops the
+      // deterministic layer from accepting a record the radio path rejects: a
+      // test double that mints its own correlation models a notification that
+      // can never actually be delivered, so the suite stays green while every
+      // real notification is dropped. That is issue #168.
+      const operation = requiredRecord(event, 10, 'rn-android-boundary.event.notification-operation')
+      const operationNonce = requiredString(operation, 3, 'rn-android-boundary.event.notification-operation-nonce')
+      if (reference.operationCorrelation !== operationNonce) {
+        throw contractError(
+          'protocol.violation',
+          'boundary',
+          'rn-android-boundary.event.notification-binary-correlation'
+        )
+      }
       const bytes = this.takeOutputBytes(reference, 'notification')
       const subscription = [...this.subscriptionsByAddress.values()].find(
         candidate => candidate.subscriptionId === subscriptionId
