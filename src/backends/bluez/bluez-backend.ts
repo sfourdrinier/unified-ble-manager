@@ -108,7 +108,12 @@ export class BluezBackend implements BleCentralBackend<string, HostNeutralBacken
       ...createBluezConnectionControlRegistrations(BLUEZ_IMPLEMENTATION_VERSION),
       createBluezPairingGenerationRegistration(
         BLUEZ_IMPLEMENTATION_VERSION,
-        construction.pairingGeneration !== undefined
+        // `!= null`, not `!== undefined`: the runtime coerces with `?? null`, so a
+        // host passing an explicit null - trivially produced by JSON config -
+        // would otherwise be told the capability is available while every
+        // directed pairing rejects. A descriptor must not state a fact the
+        // backend does not have.
+        construction.pairingGeneration != null
       )
     ])
     this.runtime = new BluezBackendRuntime({

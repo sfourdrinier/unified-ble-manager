@@ -171,6 +171,15 @@ setting, not of this package, and they cannot be designed away:
 - **It is restored after each pairing**, whether the pairing succeeded or
   failed, and concurrent pairings on one adapter are serialised so they cannot
   corrupt each other's restore value.
+- **A controller that never settles wedges pairing on that adapter.** Neither
+  `read` nor `set` is given a timeout by this package, because the right bound
+  depends on your transport and is yours to choose. A controller that hangs
+  blocks every later directed pairing on that adapter, and the peer it was
+  pairing stays owned for the process lifetime. **Bound your own mgmt I/O.**
+- **An undirected pairing running concurrently is not serialised.** Only
+  `'require'`/`'disallow'` take the adapter lock. A default (`'prefer'`)
+  pairing that overlaps a directed one on the same controller will use
+  whichever generation is held at that moment.
 - **A failed restore never changes the pairing's outcome.** A bond that was
   created is reported as created; the restore failure is reported separately.
   Leaving a controller in LE Legacy is a security regression that must be seen —

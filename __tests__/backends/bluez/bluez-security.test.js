@@ -111,11 +111,13 @@ describe('BlueZ system security backend', () => {
     const controller = new AbortController()
     controller.abort()
 
-    await expect(
-      backend.security.unpair(peerId, { signal: controller.signal, deadline: null })
-    ).rejects.toMatchObject({ normalized: { code: 'operation.aborted' } })
+    await expect(backend.security.unpair(peerId, { signal: controller.signal, deadline: null })).rejects.toMatchObject({
+      normalized: { code: 'operation.aborted' }
+    })
     expect(boundary.calls).not.toEqual(
-      expect.arrayContaining([expect.objectContaining({ interfaceName: BLUEZ_ADAPTER_INTERFACE, method: 'RemoveDevice' })])
+      expect.arrayContaining([
+        expect.objectContaining({ interfaceName: BLUEZ_ADAPTER_INTERFACE, method: 'RemoveDevice' })
+      ])
     )
     await expect(backend.destroy()).resolves.toMatchObject({ state: 'released' })
   })
@@ -246,9 +248,9 @@ describe('BlueZ system security backend', () => {
 
   test('does not dispatch pairing after the caller has already aborted', async () => {
     const { backend, boundary, peerId: observedPeerId } = await createFixture()
-    await expect(
-      backend.security.pair(observedPeerId, pairOptions({ protection: 'encrypted' }))
-    ).rejects.toMatchObject({ normalized: { code: 'capability.unsupported' } })
+    await expect(backend.security.pair(observedPeerId, pairOptions({ protection: 'encrypted' }))).rejects.toMatchObject(
+      { normalized: { code: 'capability.unsupported' } }
+    )
     const controller = new AbortController()
     controller.abort()
     await expect(backend.security.pair(observedPeerId, pairOptions({ signal: controller.signal }))).resolves.toEqual({
@@ -403,6 +405,22 @@ describe('BlueZ system security backend', () => {
     await expect(backend.destroy()).resolves.toMatchObject({ state: 'released' })
   })
 
+  /**
+   * An explicit null is what a JSON config produces for "not configured". The
+   * capability gate and the runtime's coercion disagreed about it, so the
+   * descriptor claimed the capability while every directed pairing rejected.
+   */
+  test('an explicitly null controller reports unsupported and still fails closed', async () => {
+    const { backend, peerId } = await createFixture(false, null)
+    const descriptor = backend.features.descriptors.find(entry => entry.id === 'security:pairing-generation')
+
+    expect(descriptor).toMatchObject({ state: 'unsupported' })
+    await expect(backend.security.pair(peerId, pairOptions({ secureConnections: 'require' }))).rejects.toMatchObject({
+      normalized: { code: 'capability.unsupported' }
+    })
+    await expect(backend.destroy()).resolves.toMatchObject({ state: 'released' })
+  })
+
   test('holds the adapter at the requested generation for a directed pairing, then restores it', async () => {
     const generations = []
     let current = 'enabled'
@@ -414,9 +432,9 @@ describe('BlueZ system security backend', () => {
       }
     })
 
-    await expect(
-      backend.security.pair(peerId, pairOptions({ secureConnections: 'disallow' }))
-    ).resolves.toMatchObject({ outcome: 'paired' })
+    await expect(backend.security.pair(peerId, pairOptions({ secureConnections: 'disallow' }))).resolves.toMatchObject({
+      outcome: 'paired'
+    })
 
     // Held for the pairing, then put back - the setting is adapter-wide, so
     // leaving it would weaken every later bond on this host.
@@ -430,9 +448,9 @@ describe('BlueZ system security backend', () => {
   test('rejects a secureConnections generation it cannot select (require and disallow) on BlueZ', async () => {
     const { backend, boundary, peerId } = await createFixture()
     for (const value of ['require', 'disallow']) {
-      await expect(
-        backend.security.pair(peerId, pairOptions({ secureConnections: value }))
-      ).rejects.toMatchObject({ normalized: { code: 'capability.unsupported' } })
+      await expect(backend.security.pair(peerId, pairOptions({ secureConnections: value }))).rejects.toMatchObject({
+        normalized: { code: 'capability.unsupported' }
+      })
     }
     // Fail-closed: no native Device1.Pair is dispatched for a generation we
     // cannot honour.
