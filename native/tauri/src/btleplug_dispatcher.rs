@@ -33,6 +33,19 @@ const COMPLETED_CORRELATION_TTL: Duration = Duration::from_secs(30);
 const MAX_QUARANTINE_WORKERS: usize = 4;
 const MAX_QUARANTINE_ATTEMPTS: u32 = 8;
 const SCAN_POLL_INTERVAL: Duration = Duration::from_millis(250);
+/// Safety bound, not host policy.
+///
+/// btleplug's CoreBluetooth `disconnect()` never resolves when the peripheral
+/// has already been dropped from its internal map, so an unbounded await hangs
+/// the caller forever. This deadline converts that hang into a bounded,
+/// classified outcome, and its expiry is reported as a cleanup failure rather
+/// than swallowed.
+///
+/// It is deliberately not caller-tunable: it does not pace a peer's work, it
+/// caps a wait on a future that may never complete. A slow-but-progressing
+/// teardown is not misjudged by it, because btleplug maps a peripheral in the
+/// disconnecting state to `is_connected() == false`, which this code treats as
+/// released.
 const DISCONNECT_COMPLETION_TIMEOUT: Duration = Duration::from_secs(1);
 
 fn btleplug_runtime() -> tokio::runtime::Handle {
@@ -3048,12 +3061,26 @@ where
     resolve_disconnect_failure(disconnect_error, connected_after_failure)
 }
 
+/// Decide whether a failed disconnect nevertheless left the peer released.
+///
+/// The `Ok(false)` arm reports success, but the underlying platform error is
+/// still the only account of why the disconnect failed in the first place.
+/// Dropping it turns a specific fault into "nothing happened" - the failure
+/// mode this repository explicitly forbids - and it is what made #145 take two
+/// physical re-test sessions to characterise. So the error is recorded on the
+/// way past even when the outcome is success.
 fn resolve_disconnect_failure(
     disconnect_error: String,
     connected_after_failure: Result<bool, String>,
 ) -> Result<(), String> {
     match connected_after_failure {
-        Ok(false) => Ok(()),
+        Ok(false) => {
+            eprintln!(
+                "[unified-ble:tauri] disconnect reported an error but the peer is no longer \
+                 connected; releasing anyway: {disconnect_error}"
+            );
+            Ok(())
+        }
         Ok(true) => Err(disconnect_error),
         Err(state_error) => Err(format!(
             "{disconnect_error}; post-disconnect state check failed: {state_error}"
@@ -4051,9 +4078,11 @@ mod tests {
     use super::{
         characteristic_properties, disconnect_with_state_check, negotiate_ipc_versions, object,
         released, resolve_disconnect_failure, scan_properties_match_optional,
-        should_clear_peer_owner, string,
+        should_clear_peer_owner, string, BtleplugDispatcher, BtleplugDispatcherOptions,
+        CallerState, IpcEventSink, QuarantineScheduler, DISCONNECT_COMPLETION_TIMEOUT,
     };
     use btleplug::api::CharPropFlags;
+    use std::collections::{HashMap, HashSet};
     use std::{cell::Cell, cell::RefCell, rc::Rc};
 
     #[test]
@@ -4109,11 +4138,72 @@ mod tests {
         );
     }
 
+    /// A caller with no live connections, as it looks after its handle has
+    /// already been torn down.
+    fn caller_state_with_no_connections() -> CallerState {
+        CallerState {
+            lease_id: "lease-1".to_owned(),
+            lease_generation: "generation-1".to_owned(),
+            versions: object([]),
+            event_sink: IpcEventSink::new(tauri::ipc::Channel::new(|_| Ok(()))),
+            scan_admitting: false,
+            scan: None,
+            connections: HashMap::new(),
+            databases: HashMap::new(),
+            subscriptions: HashMap::new(),
+            connection_events: HashMap::new(),
+            operations: HashMap::new(),
+            completed_correlations: HashMap::new(),
+            pending_events: HashSet::new(),
+            quarantine: QuarantineScheduler::new(),
+        }
+    }
+
+    /// Exercises the guard through the dispatcher rather than through the pure
+    /// predicate, which is the part a revert would actually break.
+    ///
+    /// The scenario is the one the fix exists for: a stale cleanup for handle
+    /// `h1` arrives after the peer has been reconnected as `h2`. Because `h1`
+    /// is already gone, `connections.remove` yields `None`, so the removed peer
+    /// is `None` and ownership must be left alone. Passing the *requested* peer
+    /// where the *removed* peer belongs - the original bug - makes the guard
+    /// true here and clears an owner that a newer connection still holds, so
+    /// this test fails if those arguments are ever swapped back.
+    #[tokio::test]
+    async fn a_stale_cleanup_does_not_clear_a_reconnected_peers_owner() {
+        let dispatcher = BtleplugDispatcher::new(BtleplugDispatcherOptions { adapter_id: None });
+        {
+            let mut state = dispatcher.inner.lock().await;
+            state
+                .callers
+                .insert("caller-a".to_owned(), caller_state_with_no_connections());
+            state
+                .peer_owners
+                .insert("peer-1".to_owned(), "caller-a".to_owned());
+        }
+
+        let (subscriptions, event_tasks) = dispatcher
+            .remove_connection_resources("caller-a", "h1", "peer-1")
+            .await;
+
+        assert!(subscriptions.is_empty());
+        assert!(event_tasks.is_empty());
+        let state = dispatcher.inner.lock().await;
+        assert_eq!(
+            state.peer_owners.get("peer-1").map(String::as_str),
+            Some("caller-a"),
+            "a stale handle's cleanup must not release a peer a newer connection owns"
+        );
+    }
+
     #[tokio::test(start_paused = true)]
     async fn disconnect_timeout_is_preserved_when_the_peer_remains_connected() {
         assert_eq!(
             disconnect_with_state_check(std::future::pending(), || async { Ok(true) }).await,
-            Err("disconnect completion timed out after 1000 ms".to_owned())
+            Err(format!(
+                "disconnect completion timed out after {} ms",
+                DISCONNECT_COMPLETION_TIMEOUT.as_millis()
+            ))
         );
     }
 
@@ -4125,9 +4215,11 @@ mod tests {
                 std::future::pending::<Result<bool, String>>,
             )
             .await,
-            Err(
-                "disconnect completion timed out after 1000 ms; post-disconnect state check failed: post-disconnect state check timed out after 1000 ms".to_owned()
-            )
+            Err(format!(
+                "disconnect completion timed out after {ms} ms; post-disconnect state check \
+                 failed: post-disconnect state check timed out after {ms} ms",
+                ms = DISCONNECT_COMPLETION_TIMEOUT.as_millis()
+            ))
         );
     }
 
