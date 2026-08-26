@@ -1,13 +1,17 @@
 // __tests__/expo-readiness-pending-adapter.test.js
 // A boundary that has not yet received an adapter-state event reports a
 // pending snapshot. Readiness must wait for the authoritative one rather than
-// mapping "unknown" to "unavailable" — a working radio reported as unavailable
+// mapping an unmeasured state to "unavailable" — a working radio reported as unavailable
 // leaves consumers with nothing to act on.
 const { getExpoBleReadiness, mapExpoReadiness } = require('../src/expo')
 
+// The exact shape ReactNativeAndroidProtocolBoundary.adapterSnapshot() returns
+// before the radio has spoken: every field unmeasured. Kept in step with the
+// boundary deliberately - a fixture that drifts from the real pending snapshot
+// would test a shape that no backend produces.
 const PENDING = Object.freeze({
   availability: 'unknown',
-  authorization: 'unavailable',
+  authorization: 'unknown',
   power: 'unknown',
   safeReason: 'The Android radio has not emitted its authoritative adapter state yet.'
 })

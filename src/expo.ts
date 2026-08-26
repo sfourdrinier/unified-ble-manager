@@ -204,15 +204,18 @@ export async function createExpoBleManagerWithEnvironment(
 /**
  * A boundary that has not yet received an adapter-state event reports every
  * field as unknown, with a safeReason saying so. That shape is *pending*, not
- * authoritative, and must not be mapped to a readiness state - "unknown
- * availability" and "unavailable authorization" would otherwise read as
- * "there is no usable radio" for a radio that is simply still starting up.
+ * authoritative, and must not be mapped to a readiness state - an unknown
+ * availability would otherwise read as "there is no usable radio" for a radio
+ * that is simply still starting up. The conjunction is what makes this safe:
+ * a backend with no authorization concept (BlueZ) reports an unknown
+ * authorization on an adapter whose availability and power ARE measured, so it
+ * cannot be mistaken for pending.
  */
 function isPendingAdapterState(adapter: BleAdapterState): boolean {
   return (
     adapter.availability === 'unknown' &&
     adapter.power === 'unknown' &&
-    adapter.authorization === 'unavailable' &&
+    adapter.authorization === 'unknown' &&
     adapter.safeReason !== null &&
     adapter.safeReason !== undefined
   )
