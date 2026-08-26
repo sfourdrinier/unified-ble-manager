@@ -84,6 +84,13 @@ printf '  ✓ %ss\n' "$(( $(date +%s) - started ))"
 # The `package` and `tauri-plugin` jobs share no state, exactly as in CI where
 # they are separate jobs, so running them concurrently is faithful rather than
 # a shortcut.
+#
+# Each job sets `set -e` so its own steps stop at the first failure. `set -e` is
+# a shell-wide option, not a function-scoped one, so every call site below runs
+# its job in an explicit subshell. Without that the option leaks into this
+# driver the moment a job runs in the foreground - under `--serial`, or for the
+# Android phase - and the first failing check kills the script before its status
+# is recorded, taking the remaining independent jobs and the summary with it.
 run_package() {
   cd "$WORK" || return 1
   set -e
@@ -145,16 +152,16 @@ android_ready() {
 
 pkg_started=$(date +%s)
 if [ "$SERIAL" -eq 1 ]; then
-  run_package > "$CACHE/package.log" 2>&1; pkg_status=$?
+  ( run_package ) > "$CACHE/package.log" 2>&1; pkg_status=$?
   pkg_elapsed=$(( $(date +%s) - pkg_started ))
   tau_started=$(date +%s)
-  run_tauri > "$CACHE/tauri.log" 2>&1; tau_status=$?
+  ( run_tauri ) > "$CACHE/tauri.log" 2>&1; tau_status=$?
   tau_elapsed=$(( $(date +%s) - tau_started ))
 else
   printf '\033[1m▶ package + tauri-plugin (parallel)\033[0m\n'
-  run_package > "$CACHE/package.log" 2>&1 &
+  ( run_package ) > "$CACHE/package.log" 2>&1 &
   pkg_pid=$!
-  run_tauri > "$CACHE/tauri.log" 2>&1 &
+  ( run_tauri ) > "$CACHE/tauri.log" 2>&1 &
   tau_pid=$!
   wait "$pkg_pid"; pkg_status=$?
   wait "$tau_pid"; tau_status=$?
@@ -169,7 +176,7 @@ elif ! android_ready; then
   and_status=-2
 else
   printf '\033[1m▶ android (classic RN + Expo CNG)\033[0m\n'
-  run_android > "$CACHE/android.log" 2>&1; and_status=$?
+  ( run_android ) > "$CACHE/android.log" 2>&1; and_status=$?
 fi
 and_elapsed=$(( $(date +%s) - and_started ))
 
