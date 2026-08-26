@@ -306,7 +306,12 @@ export class WinRtSecurityBackend implements SecurityBackend {
     if (active === undefined) return { outcome: 'not-pairing' }
     const acknowledgement = await active.operation.requestCancellation()
     if (acknowledgement.state !== 'cancellation-requested') {
-      return { outcome: 'not-pairing' }
+      // 'already-terminal' means the pairing settled before the cancellation
+      // reached it - the lost race, not an absent pairing. Reporting
+      // 'not-pairing' here would contradict the pair() this cancellation
+      // targeted and make one word mean two things. Read the pairing's own
+      // answer, like every other backend.
+      return cancelOutcomeForPairResult(await active.result)
     }
     const dispatch = this.dispatcher.dispatch(_options, 'winrt.security.cancel-pairing', () => {
       const nativeCancellation = this.boundary.cancelPairing(active.nativePeerId)

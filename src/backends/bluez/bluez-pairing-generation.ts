@@ -116,6 +116,40 @@ async function onAdapter<Result>(adapterId: string, work: () => Promise<Result>)
  *   restore failure attached to it. The pairing error is the one they asked
  *   about; reducing it to a boolean on a restore error inverts that.
  */
+function isPairingGeneration(value: unknown): value is BluezPairingGeneration {
+  return value === 'legacy-only' || value === 'enabled' || value === 'required'
+}
+
+/**
+ * Put the adapter back, reporting rather than throwing if it will not go.
+ *
+ * Returns the failure detail, or `null` when the adapter was restored. Never
+ * throws: a restore failure must not become the caller's outcome, and neither
+ * must a reporter that throws - a host whose logger is on a closed stderr must
+ * not be able to turn a completed bond into a reported failure.
+ */
+async function restore(
+  controller: BluezPairingGenerationController,
+  adapterId: string,
+  previous: BluezPairingGeneration,
+  held: BluezPairingGeneration,
+  report: PairingGenerationRestoreReporter
+): Promise<string | null> {
+  try {
+    await controller.set(adapterId, previous)
+    return null
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error)
+    try {
+      report({ adapterId, heldGeneration: held, intendedGeneration: previous, detail })
+    } catch {
+      // A reporter that throws is a host defect. It must not decide the
+      // operation's outcome, so it is contained here.
+    }
+    return detail
+  }
+}
+
 export async function withPairingGeneration<Result>(
   controller: BluezPairingGenerationController,
   adapterId: string,
@@ -125,8 +159,26 @@ export async function withPairingGeneration<Result>(
 ): Promise<Result> {
   return onAdapter(adapterId, async () => {
     const previous = await controller.read(adapterId)
+    if (!isPairingGeneration(previous)) {
+      throw new TypeError(
+        `pairing-generation controller returned ${JSON.stringify(previous)}; ` +
+          "expected 'legacy-only', 'enabled' or 'required'"
+      )
+    }
     const held = previous !== generation
-    if (held) await controller.set(adapterId, generation)
+    if (held) {
+      try {
+        await controller.set(adapterId, generation)
+      } catch (error) {
+        // The command may have half-applied - reached the kernel, then failed
+        // on the response - so the adapter cannot be assumed untouched. Try to
+        // put it back before giving up, and report if that fails too. Treating
+        // a failed `set` as "nothing happened" is how a controller ends up
+        // silently stuck in LE Legacy.
+        await restore(controller, adapterId, previous, generation, reportRestoreFailure)
+        throw error
+      }
+    }
 
     let outcome: { readonly ok: true; readonly value: Result } | { readonly ok: false; readonly error: unknown }
     try {
@@ -135,20 +187,7 @@ export async function withPairingGeneration<Result>(
       outcome = { ok: false, error }
     }
 
-    let restoreDetail: string | null = null
-    if (held) {
-      try {
-        await controller.set(adapterId, previous)
-      } catch (restoreError) {
-        restoreDetail = restoreError instanceof Error ? restoreError.message : String(restoreError)
-        reportRestoreFailure({
-          adapterId,
-          heldGeneration: generation,
-          intendedGeneration: previous,
-          detail: restoreDetail
-        })
-      }
-    }
+    const restoreDetail = held ? await restore(controller, adapterId, previous, generation, reportRestoreFailure) : null
 
     if (outcome.ok) return outcome.value
     throw restoreDetail === null

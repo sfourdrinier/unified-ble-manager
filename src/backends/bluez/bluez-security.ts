@@ -224,10 +224,14 @@ export class BluezSecurityBackend implements SecurityBackend {
     let pairCallSettled = false
     let pairSucceeded = false
     /**
-     * The in-flight `Device1.Pair` call. Held so a cancelled or timed-out
-     * operation can wait for the RADIO's answer before naming an outcome,
-     * rather than deciding from the abort and discarding what the daemon went
-     * on to do.
+     * The in-flight `Device1.Pair` call, held so the operation body can await
+     * it after `CancelPairing` and let `pairSucceeded` record whether the
+     * daemon bonded anyway.
+     *
+     * It does NOT make the abort path wait for the radio - that is #157, and
+     * it is not implemented here: waiting risks hanging the caller behind a
+     * wedged daemon, which the suite forbids. An abort still names its outcome
+     * from `pairSucceeded` at the moment it fires.
      */
     let pairCall: Promise<unknown> | null = null
     const dispatch = this.runtime.trackConnectionOperationForPeer(

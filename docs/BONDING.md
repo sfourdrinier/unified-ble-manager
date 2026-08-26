@@ -180,4 +180,6 @@ setting, not of this package, and they cannot be designed away:
 
 This path is covered by deterministic tests only. It has **not** been verified
 against a physical peripheral, and nothing here should be read as physical-radio
-proof. See `docs/generated/PLATFORM_SUPPORT.md` for the current evidence labels.
+proof. The `security:pairing-generation` capability reports `limited` when a controller
+is supplied, never `supported`, and that label changes only when physical
+evidence says so — not because the code looks finished.

@@ -27,6 +27,20 @@ export const BLUEZ_PAIRING_GENERATION_LIMITATIONS: readonly Limitation[] = Objec
   })
 ])
 
+/** What a host accepts by supplying the privileged operation. */
+export const BLUEZ_PAIRING_GENERATION_ENABLED_LIMITATIONS: readonly Limitation[] = Object.freeze([
+  Object.freeze({
+    code: 'bluez-pairing-generation-is-adapter-wide',
+    explanation:
+      'The kernel Secure Connections setting is per-adapter, not per-pairing. While a directed pairing holds it, ' +
+      'every pairing on that controller uses the selected generation - including pairings this package did not ' +
+      'initiate. It also outlives this process: the kernel keeps the value until something sets it back, so a ' +
+      'crash between set and restore leaves the adapter changed. This backend restores it after every pairing and ' +
+      'reports a failed restore, but cannot undo a change it did not survive to reverse.',
+    affectedGuarantee: 'adapter-wide pairing generation while a directed pairing is in flight'
+  })
+])
+
 /**
  * Report `security:pairing-generation` according to what the host actually
  * supplied.
@@ -47,7 +61,11 @@ export function createBluezPairingGenerationRegistration(
       sourceDigest: 'bluez-pairing-generation-host-supplied-v1',
       tckSuiteId: 'tck.feature.security.bluez',
       requiredScenarioIds: ['security.state-pair-cancel-unpair'],
-      operation: 'security:pairing-generation.invoke-without-security-backend'
+      operation: 'security:pairing-generation.invoke-without-security-backend',
+      // The branch that actually mutates adapter-wide security state must
+      // advertise at least what the inert one does. Reporting the blast radius
+      // only when the capability is unavailable is exactly backwards.
+      limitations: BLUEZ_PAIRING_GENERATION_ENABLED_LIMITATIONS
     })
   }
   return Object.freeze({

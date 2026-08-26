@@ -16,6 +16,21 @@ changes. `README.md` and `RELEASE.md` are current guidance.
 
 ## How we work
 
+**This file holds principles, not procedure.** A rule here must survive being
+skimmed at the start of a session: state it, then point to where the detail
+lives — `RELEASE.md` for the release process, `docs/BONDING.md` for pairing
+semantics, `docs/PROFILES_AND_COMMANDS.md` for profiles, the types and their
+doc comments for contract specifics. If an entry here needs a worked example,
+an implementation note, or an issue number, it belongs in the document it
+points to. `CLAUDE.md` imports this file and holds nothing of its own.
+
+**A change is not done until the documents it touches say so.** Behaviour and
+its documentation ship together — a generated artifact is regenerated, a
+contract change reaches the type, the changelog and the guide that describes
+it, and a rule that stops being true is removed rather than left standing.
+Documentation that lags behind the code is a defect of the same kind as a
+swallowed failure: it reports something that is not so.
+
 Extreme DRY and test-first. Write the test before the behaviour, for logic,
 metadata, build configuration and contract guards alike.
 

@@ -130,6 +130,51 @@ describe('selecting an LE pairing generation', () => {
   })
 
   /**
+   * A `set` that rejects may still have half-applied - the command reached the
+   * kernel and the response read failed. Treating that as "nothing happened"
+   * is how a controller ends up silently stuck in LE Legacy.
+   */
+  test('attempts a restore even when the initial set fails', async () => {
+    const adapter = controller('enabled', { failSetTo: 'legacy-only' })
+    const reported = []
+
+    await expect(
+      withPairingGeneration(adapter, '/org/bluez/hci0', 'legacy-only', async () => 'bonded', failure =>
+        reported.push(failure)
+      )
+    ).rejects.toThrow('cannot set legacy-only')
+
+    // Put back rather than assumed untouched.
+    expect(adapter.calls).toContainEqual(['set', '/org/bluez/hci0', 'enabled'])
+    expect(adapter.current).toBe('enabled')
+    expect(reported).toEqual([])
+  })
+
+  /**
+   * A host whose logger throws - a closed stderr, a broken transport - must not
+   * be able to turn a completed bond into a reported failure. The reporter is
+   * caller-supplied, so the module's contract has to hold for any of them.
+   */
+  test('a reporter that throws cannot change the pairing outcome', async () => {
+    const adapter = controller('enabled', { failSetTo: 'enabled' })
+
+    await expect(
+      withPairingGeneration(adapter, '/org/bluez/hci0', 'legacy-only', async () => 'bonded', () => {
+        throw new Error('EPIPE')
+      })
+    ).resolves.toBe('bonded')
+  })
+
+  /** A controller that answers with nonsense is a host defect, named as one. */
+  test('rejects a generation the controller invented', async () => {
+    const adapter = { read: async () => undefined, set: async () => undefined }
+
+    await expect(
+      withPairingGeneration(adapter, '/org/bluez/hci0', 'legacy-only', async () => 'bonded', () => undefined)
+    ).rejects.toThrow(/expected 'legacy-only', 'enabled' or 'required'/)
+  })
+
+  /**
    * The setting is adapter-wide, so two overlapping pairings interleave: the
    * second reads the first's temporary value as "previous" and restores to it,
    * leaving the adapter wrong whichever finishes last. Peer-level arbitration
