@@ -65,6 +65,10 @@ buck-out/
 # example-tauri/src-tauri/Cargo.lock stays tracked (that crate is an app).
 native/tauri/target/
 native/tauri/Cargo.lock
+# The example app's build tree and Tauri's generated scaffolding are
+# outputs of `cargo check`/`tauri build`, not sources.
+example-tauri/src-tauri/target/
+example-tauri/src-tauri/gen/
 
 # Bundle artifact
 *.jsbundle

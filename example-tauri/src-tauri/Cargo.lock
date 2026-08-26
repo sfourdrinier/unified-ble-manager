@@ -3386,6 +3386,9 @@ version = "4.0.0"
 dependencies = [
  "btleplug",
  "futures-util",
+ "objc2 0.5.2",
+ "objc2-core-bluetooth",
+ "schemars 0.8.22",
  "serde",
  "serde_json",
  "tauri",
