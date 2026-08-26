@@ -48,6 +48,14 @@ pnpm release:artifacts:check
 node scripts/ci/pack-install-smoke.js
 ```
 
+Before pushing, `scripts/ci/preflight.sh` runs the Linux-reproducible CI jobs
+against a clean detached worktree outside the working tree — the same thing
+`actions/checkout` gives a runner, so uncommitted edits and stale build output
+cannot make it pass. `--fast` skips the two Android Gradle builds. It does not
+cover the windows/macos legs, the `apple` job, the CoreBluetooth and WinRT
+boundaries, or the Node matrix; green there means "worth pushing", never "CI
+will pass".
+
 Focused commands while iterating:
 
 - `pnpm test:native-protocol` (and `:android`, `:apple`, `:winrt`)
