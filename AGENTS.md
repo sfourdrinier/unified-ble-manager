@@ -16,6 +16,21 @@ changes. `README.md` and `RELEASE.md` are current guidance.
 
 ## How we work
 
+**This file holds principles, not procedure.** A rule here must survive being
+skimmed at the start of a session: state it, then point to where the detail
+lives — `RELEASE.md` for the release process, `docs/BONDING.md` for pairing
+semantics, `docs/PROFILES_AND_COMMANDS.md` for profiles, the types and their
+doc comments for contract specifics. If an entry here needs a worked example,
+an implementation note, or an issue number, it belongs in the document it
+points to. `CLAUDE.md` imports this file and holds nothing of its own.
+
+**A change is not done until the documents it touches say so.** Behaviour and
+its documentation ship together — a generated artifact is regenerated, a
+contract change reaches the type, the changelog and the guide that describes
+it, and a rule that stops being true is removed rather than left standing.
+Documentation that lags behind the code is a defect of the same kind as a
+swallowed failure: it reports something that is not so.
+
 Extreme DRY and test-first. Write the test before the behaviour, for logic,
 metadata, build configuration and contract guards alike.
 
@@ -85,22 +100,15 @@ Preserve these unless the user explicitly requests a versioned contract change:
   explicit codec for external protocols, never the public value contract;
 - cancellation uses `AbortSignal`; applications never create public
   transaction IDs;
-- a signal **requests** cancellation; the result **reports what happened**. An
-  operation's outcome is read from what the platform actually did, never
-  inferred from the fact that cancellation was asked for. `cancelPairing()`
-  therefore answers from the in-flight pairing's own result rather than forming
-  a second opinion — two observations of one fact can disagree, and that
-  disagreement is the defect. Every backend answers from the same vocabulary,
-  and a word means the same thing in every result type that uses it
-  (`'paired'` is "a bond exists because of this operation" in both
-  `SecurityPairResult` and `SecurityCancelPairingResult`; `'already-paired'`
-  means "bonded before the call" and belongs only to the former). Where a
-  platform genuinely cannot answer, it says so with `capability.unsupported`
-  and a reason — never a plausible substitute. Known gap: `pair()`'s abort path
-  still reports `'cancelled'` without knowing whether the peer bonded anyway,
-  because learning the truth means waiting for the radio and waiting risks
-  hanging the caller behind a wedged daemon (#157); `state()` and `watch()` are
-  authoritative for the bond;
+- a signal **requests**; the result **reports what happened**. An outcome is
+  read from what the platform did, never inferred from what was asked of it.
+  Two observations of one fact can disagree, so a result reads the operation's
+  own answer rather than forming a second opinion;
+- **one vocabulary, not one capability.** A word means the same thing in every
+  result type that uses it, and every backend answers the same question from
+  the same set of answers. A platform that cannot answer says so —
+  `capability.unsupported` with a reason — and never substitutes something
+  plausible;
 - the root is host-neutral and never silently picks or falls back to a backend;
 - managers, connections, GATT databases, subscriptions and backend resources
   have explicit ownership and asynchronous teardown; stale discoveries and
@@ -112,6 +120,12 @@ Preserve these unless the user explicitly requests a versioned contract change:
 - native and private backend protocols are versioned and fail closed;
 - deterministic backends and mocks are test infrastructure, never production
   radio fallbacks;
+- **elevated privilege is permitted, never implicit.** The package never
+  escalates, shells out to a privileged tool, or assumes it is root: the host
+  supplies the privileged operation, so the escalation is auditable where it
+  was chosen. Without it the capability reports `unsupported` and the default
+  posture is unchanged. Document the privilege, its blast radius, and what a
+  failure leaves behind beside the option that requests it;
 - package SemVer and backend support/evidence labels are independent
   dimensions.
 

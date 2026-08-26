@@ -55,12 +55,13 @@ function objects(paired = false) {
   ]
 }
 
-async function createFixture(paired = false) {
+async function createFixture(paired = false, pairingGeneration = undefined) {
   const boundary = new InMemoryBluezBoundary({ objects: objects(paired) })
   const provider = createBluezBackendProvider({
     busKind: 'system',
     boundaryFactory: new InMemoryBluezBoundaryFactory([boundary]),
-    now: () => 100
+    now: () => 100,
+    pairingGeneration
   })
   const backend = await provider.create({ selectedAdapterId: adapterPath })
   const scan = await backend.scanner.start(
@@ -110,11 +111,13 @@ describe('BlueZ system security backend', () => {
     const controller = new AbortController()
     controller.abort()
 
-    await expect(
-      backend.security.unpair(peerId, { signal: controller.signal, deadline: null })
-    ).rejects.toMatchObject({ normalized: { code: 'operation.aborted' } })
+    await expect(backend.security.unpair(peerId, { signal: controller.signal, deadline: null })).rejects.toMatchObject({
+      normalized: { code: 'operation.aborted' }
+    })
     expect(boundary.calls).not.toEqual(
-      expect.arrayContaining([expect.objectContaining({ interfaceName: BLUEZ_ADAPTER_INTERFACE, method: 'RemoveDevice' })])
+      expect.arrayContaining([
+        expect.objectContaining({ interfaceName: BLUEZ_ADAPTER_INTERFACE, method: 'RemoveDevice' })
+      ])
     )
     await expect(backend.destroy()).resolves.toMatchObject({ state: 'released' })
   })
@@ -245,9 +248,9 @@ describe('BlueZ system security backend', () => {
 
   test('does not dispatch pairing after the caller has already aborted', async () => {
     const { backend, boundary, peerId: observedPeerId } = await createFixture()
-    await expect(
-      backend.security.pair(observedPeerId, pairOptions({ protection: 'encrypted' }))
-    ).rejects.toMatchObject({ normalized: { code: 'capability.unsupported' } })
+    await expect(backend.security.pair(observedPeerId, pairOptions({ protection: 'encrypted' }))).rejects.toMatchObject(
+      { normalized: { code: 'capability.unsupported' } }
+    )
     const controller = new AbortController()
     controller.abort()
     await expect(backend.security.pair(observedPeerId, pairOptions({ signal: controller.signal }))).resolves.toEqual({
@@ -373,12 +376,81 @@ describe('BlueZ system security backend', () => {
     }
   })
 
+  test('reports security:pairing-generation unsupported when the host supplied no privileged operation', async () => {
+    const { backend } = await createFixture()
+    const descriptor = backend.features.descriptors.find(entry => entry.id === 'security:pairing-generation')
+
+    expect(descriptor).toMatchObject({ state: 'unsupported' })
+    // The reason names the platform gap and the way out, rather than a bare
+    // "unsupported" that teaches a caller nothing.
+    expect(JSON.stringify(descriptor.limitations)).toContain('CAP_NET_ADMIN')
+    await expect(backend.destroy()).resolves.toMatchObject({ state: 'released' })
+  })
+
+  /**
+   * The capability contract working as intended: two BlueZ backends on one
+   * machine legitimately answer differently, because one was handed the
+   * privileged operation and the other was not. A static platform matrix could
+   * not express that.
+   */
+  test('reports security:pairing-generation supported once a privileged operation is supplied', async () => {
+    const { backend } = await createFixture(false, { read: async () => 'enabled', set: async () => undefined })
+    const descriptor = backend.features.descriptors.find(entry => entry.id === 'security:pairing-generation')
+
+    // 'limited', not 'supported': the evidence behind this is deterministic
+    // tests, not a bond made by a real radio. The same honesty applies to
+    // peer:address-targeting. It stops being 'limited' when physical evidence
+    // says so, never because the code looks finished.
+    expect(descriptor).toMatchObject({ state: 'limited', implementationOrigin: 'backend-native' })
+    await expect(backend.destroy()).resolves.toMatchObject({ state: 'released' })
+  })
+
+  /**
+   * An explicit null is what a JSON config produces for "not configured". The
+   * capability gate and the runtime's coercion disagreed about it, so the
+   * descriptor claimed the capability while every directed pairing rejected.
+   */
+  test('an explicitly null controller reports unsupported and still fails closed', async () => {
+    const { backend, peerId } = await createFixture(false, null)
+    const descriptor = backend.features.descriptors.find(entry => entry.id === 'security:pairing-generation')
+
+    expect(descriptor).toMatchObject({ state: 'unsupported' })
+    await expect(backend.security.pair(peerId, pairOptions({ secureConnections: 'require' }))).rejects.toMatchObject({
+      normalized: { code: 'capability.unsupported' }
+    })
+    await expect(backend.destroy()).resolves.toMatchObject({ state: 'released' })
+  })
+
+  test('holds the adapter at the requested generation for a directed pairing, then restores it', async () => {
+    const generations = []
+    let current = 'enabled'
+    const { backend, boundary, peerId } = await createFixture(false, {
+      read: async () => current,
+      set: async (_adapterId, generation) => {
+        generations.push(generation)
+        current = generation
+      }
+    })
+
+    await expect(backend.security.pair(peerId, pairOptions({ secureConnections: 'disallow' }))).resolves.toMatchObject({
+      outcome: 'paired'
+    })
+
+    // Held for the pairing, then put back - the setting is adapter-wide, so
+    // leaving it would weaken every later bond on this host.
+    expect(generations).toEqual(['legacy-only', 'enabled'])
+    expect(
+      boundary.calls.filter(call => call.interfaceName === BLUEZ_DEVICE_INTERFACE && call.method === 'Pair')
+    ).toHaveLength(1)
+    await expect(backend.destroy()).resolves.toMatchObject({ state: 'released' })
+  })
+
   test('rejects a secureConnections generation it cannot select (require and disallow) on BlueZ', async () => {
     const { backend, boundary, peerId } = await createFixture()
     for (const value of ['require', 'disallow']) {
-      await expect(
-        backend.security.pair(peerId, pairOptions({ secureConnections: value }))
-      ).rejects.toMatchObject({ normalized: { code: 'capability.unsupported' } })
+      await expect(backend.security.pair(peerId, pairOptions({ secureConnections: value }))).rejects.toMatchObject({
+        normalized: { code: 'capability.unsupported' }
+      })
     }
     // Fail-closed: no native Device1.Pair is dispatched for a generation we
     // cannot honour.

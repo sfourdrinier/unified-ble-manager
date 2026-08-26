@@ -3100,21 +3100,6 @@ async fn disconnect_peripheral(peripheral: &Peripheral) -> Result<(), String> {
 /// has dropped the object the read errors, and treating that as indeterminate
 /// retains ownership of a peer that is provably released, permanently: the
 /// object never comes back, so every retry fails identically.
-/// The admission failure, plus what compensation could not undo.
-///
-/// A caller that is denied admission still needs to know whether a peer was
-/// left connected on its behalf - that is the difference between "try again"
-/// and "a peer is stranded until something reclaims it".
-fn compensation_failure(operation: &str, residue: Option<String>) -> DispatchError {
-    let error = DispatchError::new("ownership.denied", "connection", operation);
-    match residue {
-        None => error,
-        Some(detail) => error.platform(format!(
-            "the peer could not be confirmed released, so its reservation is retained: {detail}"
-        )),
-    }
-}
-
 async fn connected_after_failed_disconnect(peripheral: &Peripheral) -> Result<bool, String> {
     match peripheral.is_connected().await {
         Ok(connected) => Ok(connected),
@@ -3128,6 +3113,21 @@ async fn connected_after_failed_disconnect(peripheral: &Peripheral) -> Result<bo
             Ok(false)
         }
         Err(error) => Err(error.to_string()),
+    }
+}
+
+/// The admission failure, plus what compensation could not undo.
+///
+/// A caller that is denied admission still needs to know whether a peer was
+/// left connected on its behalf - that is the difference between "try again"
+/// and "a peer is stranded until something reclaims it".
+fn compensation_failure(operation: &str, residue: Option<String>) -> DispatchError {
+    let error = DispatchError::new("ownership.denied", "connection", operation);
+    match residue {
+        None => error,
+        Some(detail) => error.platform(format!(
+            "the peer could not be confirmed released, so its reservation is retained: {detail}"
+        )),
     }
 }
 

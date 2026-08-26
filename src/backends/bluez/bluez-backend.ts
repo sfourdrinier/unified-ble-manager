@@ -23,6 +23,8 @@ import {
   type BackendStreamOwnershipSnapshot
 } from './bluez-backend-runtime'
 import { createBluezConnectionControlRegistrations } from './bluez-connection-capabilities'
+import { createBluezPairingGenerationRegistration } from './bluez-pairing-generation-capability'
+import { type BluezPairingGenerationController } from './bluez-pairing-generation'
 
 const bluezBackendStreamOwnershipInspectors = new WeakMap<BluezBackend, () => BackendStreamOwnershipSnapshot>()
 
@@ -40,6 +42,8 @@ export interface BluezBackendConstruction {
   readonly adapter: AdapterDescriptor<string>
   readonly now: () => number
   readonly busKind: BluezBusKind
+  /** Host-supplied privileged pairing-generation operation; absent by default. */
+  readonly pairingGeneration?: BluezPairingGenerationController
 }
 
 let nextBluezBackendInstance = 1
@@ -59,33 +63,7 @@ function allocateBluezBackendInstance(): number {
 
 /** Contract-v1 BlueZ backend bound to one explicitly selected D-Bus adapter. */
 export class BluezBackend implements BleCentralBackend<string, HostNeutralBackendIdentity<string>> {
-  readonly features = createFeatureRegistry([
-    createBackendOperationCapabilityRegistration({
-      implementationVersion: BLUEZ_IMPLEMENTATION_VERSION,
-      sourceDigest: 'bluez-direct-connection-v1',
-      tckSuiteId: 'capability.catalog-v2',
-      requiredScenarioIds: ['scenario.scan-connect-discover-read-notify-destroy']
-    }),
-    createBackendOperationCapabilityRegistration({
-      id: BUILT_IN_FEATURE_IDS.peerAddressTargeting,
-      implementationVersion: BLUEZ_IMPLEMENTATION_VERSION,
-      sourceDigest: 'bluez-address-targeting-v1',
-      tckSuiteId: 'capability.catalog-v2',
-      requiredScenarioIds: ['scenario.scan-connect-discover-read-notify-destroy'],
-      operation: 'peer:address-targeting.invoke-without-connection'
-    }),
-    ...bluezSecurityFeatureIds.map(id =>
-      createBackendOperationCapabilityRegistration({
-        id,
-        implementationVersion: BLUEZ_IMPLEMENTATION_VERSION,
-        sourceDigest: `bluez-${id.replace(':', '-')}-v1`,
-        tckSuiteId: 'tck.feature.security.bluez',
-        requiredScenarioIds: ['security.state-pair-cancel-unpair'],
-        operation: `${id}.invoke-without-security-backend`
-      })
-    ),
-    ...createBluezConnectionControlRegistrations(BLUEZ_IMPLEMENTATION_VERSION)
-  ])
+  readonly features: ReturnType<typeof createFeatureRegistry>
   readonly adapter
   readonly scanner
   readonly connections
@@ -98,6 +76,46 @@ export class BluezBackend implements BleCentralBackend<string, HostNeutralBacken
 
   constructor(construction: BluezBackendConstruction) {
     this.backendInstanceId = opaqueId(`bluez-backend-${allocateBluezBackendInstance()}`, 'backend-instance', 'bluez')
+    // Built here rather than as a field initialiser because what this backend
+    // reports for `security:pairing-generation` depends on whether the HOST
+    // supplied the privileged operation - a capability is reported by the
+    // instantiated backend at runtime, never by a static platform matrix.
+    this.features = createFeatureRegistry([
+      createBackendOperationCapabilityRegistration({
+        implementationVersion: BLUEZ_IMPLEMENTATION_VERSION,
+        sourceDigest: 'bluez-direct-connection-v1',
+        tckSuiteId: 'capability.catalog-v2',
+        requiredScenarioIds: ['scenario.scan-connect-discover-read-notify-destroy']
+      }),
+      createBackendOperationCapabilityRegistration({
+        id: BUILT_IN_FEATURE_IDS.peerAddressTargeting,
+        implementationVersion: BLUEZ_IMPLEMENTATION_VERSION,
+        sourceDigest: 'bluez-address-targeting-v1',
+        tckSuiteId: 'capability.catalog-v2',
+        requiredScenarioIds: ['scenario.scan-connect-discover-read-notify-destroy'],
+        operation: 'peer:address-targeting.invoke-without-connection'
+      }),
+      ...bluezSecurityFeatureIds.map(id =>
+        createBackendOperationCapabilityRegistration({
+          id,
+          implementationVersion: BLUEZ_IMPLEMENTATION_VERSION,
+          sourceDigest: `bluez-${id.replace(':', '-')}-v1`,
+          tckSuiteId: 'tck.feature.security.bluez',
+          requiredScenarioIds: ['security.state-pair-cancel-unpair'],
+          operation: `${id}.invoke-without-security-backend`
+        })
+      ),
+      ...createBluezConnectionControlRegistrations(BLUEZ_IMPLEMENTATION_VERSION),
+      createBluezPairingGenerationRegistration(
+        BLUEZ_IMPLEMENTATION_VERSION,
+        // `!= null`, not `!== undefined`: the runtime coerces with `?? null`, so a
+        // host passing an explicit null - trivially produced by JSON config -
+        // would otherwise be told the capability is available while every
+        // directed pairing rejects. A descriptor must not state a fact the
+        // backend does not have.
+        construction.pairingGeneration != null
+      )
+    ])
     this.runtime = new BluezBackendRuntime({
       ...construction,
       backendInstanceId: this.backendInstanceId

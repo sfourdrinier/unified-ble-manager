@@ -73,3 +73,26 @@ describe('the cancellation vocabulary is total', () => {
     expect(bondedBeforeTheCall).toEqual({ outcome: 'paired' })
   })
 })
+
+describe('no backend forms a second opinion about the race', () => {
+  /**
+   * WinRT short-circuited UPSTREAM of the shared mapper: when the dispatcher
+   * answered 'already-terminal' - meaning the pairing had settled before the
+   * cancellation reached it, which is precisely the lost race - it returned
+   * 'not-pairing'. That contradicted the pair() it targeted and made
+   * 'not-pairing' mean two things: "there was nothing to stop" and "it was
+   * already over". Routing through the mapper is necessary but not sufficient
+   * if a backend answers before reaching it.
+   */
+  test('an already-terminal cancellation reports the bond, not "not-pairing"', () => {
+    const source = require('fs').readFileSync(
+      require('path').join(__dirname, '../../src/backends/winrt/winrt-security.ts'),
+      'utf8'
+    )
+    const branch = source.slice(source.indexOf("acknowledgement.state !== 'cancellation-requested'"))
+    const body = branch.slice(0, branch.indexOf('\n    }'))
+
+    expect(body).toContain('cancelOutcomeForPairResult')
+    expect(body).not.toContain("outcome: 'not-pairing'")
+  })
+})

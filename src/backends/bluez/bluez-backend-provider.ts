@@ -1,5 +1,6 @@
 // src/backends/bluez/bluez-backend-provider.ts
 
+import { type BluezPairingGenerationController } from './bluez-pairing-generation'
 import { contractError } from '../../backend-contract/errors'
 import type { AdapterDescriptor, BackendProvider, HostNeutralBackendIdentity } from '../../backend-contract/identity'
 import { UNIFIED_BLE_IMPLEMENTATION_VERSION } from '../../implementation-version'
@@ -36,6 +37,17 @@ export interface BluezBackendProviderOptions {
   readonly busKind: BluezBusKind
   readonly boundaryFactory: BluezDbusBoundaryFactory
   readonly now: () => number
+  /**
+   * Optional privileged operation that selects the adapter's LE pairing
+   * generation, enabling `PairOptions.secureConnections` `'require'` and
+   * `'disallow'` on this backend.
+   *
+   * This package never acquires the privilege itself. Supplying this is how a
+   * host opts in, and the setting is ADAPTER-WIDE and OUTLIVES the process, so
+   * read `docs/BONDING.md` before implementing one. Omit it and the capability
+   * is reported `unsupported`, which is the default posture.
+   */
+  readonly pairingGeneration?: BluezPairingGenerationController
 }
 
 export function createBluezBackendProvider(
@@ -68,7 +80,8 @@ export function createBluezBackendProvider(
           store,
           adapter: descriptor,
           now: options.now,
-          busKind: options.busKind
+          busKind: options.busKind,
+          pairingGeneration: options.pairingGeneration
         })
       } catch (error) {
         return closeBoundaryAfterFailure(boundary, error)
