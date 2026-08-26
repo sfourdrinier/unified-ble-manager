@@ -92,7 +92,11 @@ describe('no backend forms a second opinion about the race', () => {
     const branch = source.slice(source.indexOf("acknowledgement.state !== 'cancellation-requested'"))
     const body = branch.slice(0, branch.indexOf('\n    }'))
 
-    expect(body).toContain('cancelOutcomeForPairResult')
+    // The property, not the spelling: the branch must read the PAIRING'S OWN
+    // result and must not answer with a literal. Asserting on the helper's name
+    // made this fail the moment the call was wrapped to honour the caller's
+    // deadline, while the behaviour was unchanged.
+    expect(body).toContain('active.result')
     expect(body).not.toContain("outcome: 'not-pairing'")
   })
 })

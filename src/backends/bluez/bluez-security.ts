@@ -9,7 +9,7 @@ import type {
   SecurityPairResult,
   SecurityUnpairResult
 } from '../../backend-contract/security'
-import { cancelOutcomeForPairResult } from '../../backend-contract/security'
+import { boundedCancelOutcome } from '../../backend-contract/security'
 import { capacity } from '../../backend-contract/primitives'
 import { CoreBoundedStream } from '../../core/bounded-stream'
 import type { BoundedAsyncStream, BoundedAsyncStreamIterator } from '../../backend-contract/streams'
@@ -306,7 +306,7 @@ export class BluezSecurityBackend implements SecurityBackend {
     return operation
   }
 
-  async cancelPairing(peerId: string, _options: PublicOperationOptions): Promise<SecurityCancelPairingResult> {
+  async cancelPairing(peerId: string, options: PublicOperationOptions): Promise<SecurityCancelPairingResult> {
     this.runtime.assertUsable('bluez.security.cancel-pairing')
     const active = this.activePairings.get(peerId)
     // Narrow known window: the pairing can settle between this lookup and the
@@ -318,7 +318,7 @@ export class BluezSecurityBackend implements SecurityBackend {
     // A failed pairing propagates: rethrowing its error beats inventing a
     // resolved outcome we do not have. Concurrent callers all await the same
     // operation, so they cannot receive different answers.
-    return cancelOutcomeForPairResult(await active.operation)
+    return boundedCancelOutcome(active.operation, options, this.runtime.now, 'bluez.security.cancel-pairing')
   }
 
   async unpair(peerId: string, _options: PublicOperationOptions): Promise<SecurityUnpairResult> {
