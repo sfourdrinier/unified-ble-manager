@@ -3,52 +3,7 @@
 'use strict'
 
 const { BUILT_IN_FEATURE_IDS } = require('../src/backend-contract/capabilities')
-
-/**
- * Poll by parking, not by spinning.
- *
- * An earlier version yielded with `setImmediate`, which reschedules on every
- * loop iteration and never lets the process idle. On a two-core CI runner with
- * Jest workers in parallel that starves the very timer being waited for: a
- * manager timeout set to 1 ms took over five seconds to be observed, and the
- * test died on Jest's own deadline. A short sleep yields the core instead.
- */
-const POLL_INTERVAL_MS = 5
-
-/**
- * Below Jest's 5 s default so this waiter's message wins.
- *
- * A budget larger than the test timeout can never be reached: Jest kills the
- * test first and reports "Exceeded timeout of 5000 ms", which names neither
- * what was awaited nor for how long. A test that legitimately needs longer
- * should raise its own timeout explicitly.
- */
-const WAIT_BUDGET_MS = 4_000
-
-/**
- * Wait for a condition without depending on how work happens to be scheduled.
- *
- * The previous version spun a fixed number of `await Promise.resolve()` ticks.
- * That drains only the MICROTASK queue, so anything the manager awaits behind a
- * timer or an I/O callback could never make progress no matter how many ticks
- * were burned, and the bound was a tick count rather than a duration - which
- * made passing depend on the host's scheduling. It passed on fast machines and
- * failed on a loaded CI runner, which is a defect in the test, not flakiness.
- *
- * Yielding through `setImmediate` lets the event loop run pending timers and
- * callbacks between checks, and the bound is wall-clock so a slow machine is
- * simply slower rather than wrong.
- */
-async function waitUntil(predicate, description = 'Tauri manager condition', timeoutMs = WAIT_BUDGET_MS) {
-  const deadline = Date.now() + timeoutMs
-  for (;;) {
-    if (predicate()) return
-    if (Date.now() >= deadline) {
-      throw new Error(`timed out after ${timeoutMs}ms waiting for ${description}`)
-    }
-    await new Promise(resolve => setTimeout(resolve, POLL_INTERVAL_MS))
-  }
-}
+const { awaitSignal } = require('./helpers/async')
 
 class FakeChannel {
   constructor() {
@@ -665,12 +620,20 @@ describe('Tauri v2 public manager', () => {
 
   test('propagates AbortSignal cancellation through the shared IPC client', async () => {
     let resolveConnect
+    // The cancellation is dispatched fire-and-forget by the abort listener, so
+    // nothing in the public API exposes it to await. The mock is the one place
+    // the test can see it, so it settles a promise instead of being polled.
+    let cancelRouted
+    const cancelSeen = new Promise(resolve => {
+      cancelRouted = resolve
+    })
     const invoke = jest.fn(async (_command, args) => {
       const request = args.request
       if (request.kind === 'bootstrap') return { kind: 'bootstrap', bootstrap: bootstrap() }
       if (request.kind === 'release') return { kind: 'release', cleanup: { state: 'released', failures: [] } }
       if (request.kind === 'event.ack') return { kind: 'event.ack' }
       if (request.envelope.command === 'operation.cancel') {
+        cancelRouted(request)
         resolveConnect({
           kind: 'failure',
           error: {
@@ -697,18 +660,26 @@ describe('Tauri v2 public manager', () => {
     controller.abort()
 
     await expect(connecting).rejects.toMatchObject({ code: 'operation.aborted' })
-    await waitUntil(() => invoke.mock.calls.some(([, args]) => args.request.envelope?.command === 'operation.cancel'))
+    await awaitSignal(cancelSeen, 'operation.cancel routed to native')
     await manager.destroy()
   })
 
   test('turns a manager timeout into native operation cancellation', async () => {
     let resolveConnect
+    // The cancellation is dispatched fire-and-forget by the abort listener, so
+    // nothing in the public API exposes it to await. The mock is the one place
+    // the test can see it, so it settles a promise instead of being polled.
+    let cancelRouted
+    const cancelSeen = new Promise(resolve => {
+      cancelRouted = resolve
+    })
     const invoke = jest.fn(async (_command, args) => {
       const request = args.request
       if (request.kind === 'bootstrap') return { kind: 'bootstrap', bootstrap: bootstrap() }
       if (request.kind === 'release') return { kind: 'release', cleanup: { state: 'released', failures: [] } }
       if (request.kind === 'event.ack') return { kind: 'event.ack' }
       if (request.envelope.command === 'operation.cancel') {
+        cancelRouted(request)
         resolveConnect({
           kind: 'failure',
           error: {
@@ -729,7 +700,7 @@ describe('Tauri v2 public manager', () => {
     const manager = await createTauriBleManagerWithEnvironment({ invoke, Channel: FakeChannel })
 
     await expect(manager.connect('polar-h10', { timeoutMs: 1 })).rejects.toMatchObject({ code: 'operation.timed-out' })
-    await waitUntil(() => invoke.mock.calls.some(([, args]) => args.request.envelope?.command === 'operation.cancel'))
+    await awaitSignal(cancelSeen, 'operation.cancel routed to native')
     await manager.destroy()
   })
 
