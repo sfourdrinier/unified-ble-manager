@@ -25,7 +25,10 @@ export interface BluezFirstPartyTckRegistrationOptions {
 export interface DeterministicBluezTckBoundary extends BluezDbusBoundary {
   queueAdvertisement(): void
   emitNotification(input: BluezNotificationInput): void
-  onCall?: (path: string, interfaceName: string, method: string, handler: () => boolean) => void
+  // A handler may resolve synchronously (return false to suppress the default
+  // state transition) or return a promise the boundary awaits - the latter
+  // models a native call that stays pending until a later event settles it.
+  onCall?: (path: string, interfaceName: string, method: string, handler: () => boolean | Promise<boolean>) => void
 }
 
 export interface BluezNotificationInput {
@@ -95,7 +98,8 @@ export function createBluezFirstPartyTckRegistration(
       Object.freeze({
         featureId: 'bluez:pairing-agent',
         state: 'unsupported',
-        reason: 'BlueZ pairing and Agent1 behavior are not implemented or proven by the first-party backend.'
+        reason:
+          'Device1.Pair/CancelPairing dispatch and just-works Agent1 registration are implemented and unit-tested, but Agent1 pairing behavior against a live BlueZ daemon is not proven by the first-party backend (a deterministic boundary cannot exercise a real SMP exchange).'
       }),
       Object.freeze({
         featureId: 'bluez:deterministic-advanced-scenario-controls',
@@ -151,12 +155,24 @@ async function createBluezFixture(
         supportsAlreadyUnpaired: false,
         prepareCancellation: () => {
           suppressNextPair = true
+          // Real BlueZ resolves Device1.Pair only when the bond completes, and
+          // CancelPairing makes an in-flight Pair fail. Model that: the next
+          // Pair stays pending until CancelPairing rejects it, so the pairing is
+          // genuinely in-flight when cancelled (not a completed bond).
+          let rejectPendingPair: ((error: Error) => void) | null = null
           boundary.onCall?.(securityPeer.path, 'org.bluez.Device1', 'Pair', () => {
             if (suppressNextPair) {
               suppressNextPair = false
-              return false
+              return new Promise<boolean>((_resolve, reject) => {
+                rejectPendingPair = reject
+              })
             }
             return true
+          })
+          boundary.onCall?.(securityPeer.path, 'org.bluez.Device1', 'CancelPairing', () => {
+            rejectPendingPair?.(new Error('org.bluez.Error.AuthenticationCanceled'))
+            rejectPendingPair = null
+            return false
           })
         }
       })

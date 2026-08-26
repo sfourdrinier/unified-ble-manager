@@ -75,6 +75,13 @@ export interface SecurityPairOptions extends PublicOperationOptions {
   readonly transport: 'le' | 'auto'
   readonly protection: 'system-default' | 'encrypted' | 'authenticated'
   readonly ceremony: SecurityPairingCeremony
+  /**
+   * Preferred LE pairing generation. 'prefer' (default) leaves the choice to
+   * the platform; 'require' insists on Secure Connections; 'disallow' requests
+   * LE Legacy pairing for peers that reject Secure Connections. Backends that
+   * cannot honour the request return capability.unsupported.
+   */
+  readonly secureConnections?: 'require' | 'prefer' | 'disallow'
 }
 
 export type SecurityPairResult =

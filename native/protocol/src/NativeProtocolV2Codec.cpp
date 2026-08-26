@@ -63,22 +63,24 @@ RecordKind recordKindForName(std::string_view name) {
   throw ProtocolException(ProtocolFailure::unknownRecord, "Native protocol field references an unknown record");
 }
 
-// Name a rejected record's kind and the versions that disagreed. A quarantined
-// record is only actionable if the diagnostic says which emitter produced it:
-// "the payload version is incompatible" is otherwise true of any record on the
-// wire and the reader is left to guess between four record kinds.
-// PR #142 introduces describeField() for the same reason; the two should be
-// folded into one helper when these branches meet.
-std::string describeRecordVersion(RecordKind kind, const std::uint64_t* version) {
+// A rejected record is reported by identity, never by shape. "The payload
+// version is incompatible" and "a field is forbidden" are both true of every
+// record on the wire, so without the kind and the offending value the reader is
+// left to guess between record kinds and read the emitting binding against the
+// schema by hand. Both diagnostics below share this lookup.
+std::string describeRecordKind(RecordKind kind) {
   const auto* kindDescriptor = std::find_if(
       kRecordKindDescriptors.begin(),
       kRecordKindDescriptors.end(),
       [kind](const RecordKindDescriptor& candidate) { return candidate.kind == kind; });
-  std::string description = " (kind=";
-  description += kindDescriptor == kRecordKindDescriptors.end()
+  return kindDescriptor == kRecordKindDescriptors.end()
       ? std::to_string(static_cast<std::uint32_t>(kind))
       : std::string(kindDescriptor->name);
-  description += ", version=";
+}
+
+// Names the versions that disagreed, for a record the codec refuses to accept.
+std::string describeRecordVersion(RecordKind kind, const std::uint64_t* version) {
+  std::string description = " (kind=" + describeRecordKind(kind) + ", version=";
   description += version == nullptr ? std::string("absent") : std::to_string(*version);
   description += ", expected=" + std::to_string(static_cast<std::uint32_t>(kProtocolVersion)) + ")";
   return description;
@@ -364,19 +366,9 @@ bool hasField(const ProtocolRecord& record, std::uint16_t fieldId) {
 const ProtocolRecord* attachmentFor(const ProtocolRecord& record);
 bool attachmentsEqual(const ProtocolRecord& left, const ProtocolRecord& right);
 
-// Name a record kind and one of its fields for a diagnostic. A rejected record
-// is reported by identifier, not by shape: without this, "a field is forbidden"
-// is true of every record on the wire and locating the offender means reading
-// the emitting binding against the schema by hand.
+// Names a record kind and the field within it that was rejected.
 std::string describeField(RecordKind kind, std::uint16_t fieldId) {
-  std::string description = " (kind=";
-  const auto* kindDescriptor = std::find_if(
-      kRecordKindDescriptors.begin(),
-      kRecordKindDescriptors.end(),
-      [kind](const RecordKindDescriptor& candidate) { return candidate.kind == kind; });
-  description += kindDescriptor == kRecordKindDescriptors.end()
-      ? std::to_string(static_cast<std::uint32_t>(kind))
-      : std::string(kindDescriptor->name);
+  std::string description = " (kind=" + describeRecordKind(kind);
   description += ", field=" + std::to_string(fieldId);
   if (const auto* fieldDescriptor = descriptor(kind, fieldId); fieldDescriptor != nullptr) {
     description += " " + std::string(fieldDescriptor->name);

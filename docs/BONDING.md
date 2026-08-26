@@ -42,14 +42,49 @@ replay an uncertain GATT write. Use the explicit `withRequiredSecurity` helper
 when the application wants a state check followed by an explicitly authorized
 pairing attempt and one callback invocation.
 
-Windows and BlueZ may expose system pairing and durable unpairing where their
-public APIs provide it. Android reports public bond-state transitions but does
+Windows and BlueZ expose system pairing and durable unpairing where their
+public APIs provide it.
+
+On BlueZ, `pair()` calls `org.bluez.Device1.Pair` and `unpair()` calls
+`org.bluez.Adapter1.RemoveDevice`; the library registers a just-works
+(`NoInputNoOutput`) `org.bluez.Agent1` on its own bus so the system-mediated
+ceremony can complete without an external agent. Just-works confirmation is
+auto-accepted; passkey and PIN *entry* ceremonies are rejected, matching the
+`NoInputNoOutput` capability. The agent is registered (not made the system
+default) so it applies to pairings this client initiates. This dispatch and
+agent policy are covered by unit tests, but their behavior against a live BlueZ
+daemon is a separate capability the first-party backend does not yet prove: the
+TCK marks `bluez:pairing-agent` unsupported for exactly that reason (a
+deterministic boundary cannot exercise a real SMP exchange), so treat live
+bonding as unverified until it is measured on real radio.
+
+Android reports public bond-state transitions but does
 not ship a reflection-based remove-bond operation. On the current Expo SDK 57 /
-Android API 36 artifact, the cancellation capability is also omitted because
-the public `cancelBondProcess` API is newer; an aborted or timed-out Android
-pair releases the library's pending-operation ownership but cannot cancel the
-OS ceremony; it may still reach a later bond terminal state, which `watch()`
-reports. Apple and Web keep generic
+Android API 36 artifact, native pairing cancellation is also unavailable because
+the public `cancelBondProcess` API is newer. When cancellation is unavailable
+the library cannot stop an in-flight OS ceremony, so rather than claim a cancel
+it did not perform, an aborted or timed-out `pair()` fails closed by rejecting
+with `capability.unsupported`; a bond may still reach a later terminal state,
+which `watch()` reports.
+
+This is a deliberate cross-backend difference callers should handle: where a
+backend can cancel an in-flight pairing (BlueZ, WinRT), an aborted or timed-out
+attempt resolves `{ outcome: 'cancelled' }`; where it cannot (an Android build
+without the cancellation extension), the attempt rejects with
+`capability.unsupported` instead of misreporting a cancellation that did not
+happen.
+
+There is a second, narrower window: an abort or deadline that lands after the
+bond has *already* completed but before `pair()` has returned. On BlueZ this is
+reported truthfully as `paired` (never `cancelled`), because the native pairing
+call resolves only on a completed bond. On Android and WinRT the public outcome
+is currently committed when the abort fires, before the native result is
+observed, so this race can surface `cancelled` for a peer that did in fact
+bond; the bond is still authoritative and visible through `watch()`/`state()`.
+Aligning Android and WinRT with BlueZ's report-the-bond behavior is tracked
+separately.
+
+Apple and Web keep generic
 pairing/bonding unsupported where their public APIs do not provide a truthful
 measurement; Web `forget()` remains origin-authorization revocation, not
 `unpair`.

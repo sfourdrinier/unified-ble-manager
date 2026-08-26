@@ -1566,20 +1566,41 @@ describe('public scan presence eviction completeness', () => {
   const { MAX_PUBLIC_SCAN_STATE_ENTRIES, MAX_PUBLIC_SCAN_STATE_BYTES } = require('../src/public/scan-state-budget')
 
   /**
+   * Poll by parking, not by spinning.
+   *
+   * An earlier version yielded with `setImmediate`, which reschedules on every
+   * loop iteration and never lets the process idle. On a two-core CI runner with
+   * Jest workers in parallel that starves the very timer being waited for: a
+   * manager timeout set to 1 ms took over five seconds to be observed, and the
+   * test died on Jest's own deadline. A short sleep yields the core instead.
+   */
+  const POLL_INTERVAL_MS = 5
+
+  /**
+   * Below Jest's 5 s default so this waiter's message wins.
+   *
+   * A budget larger than the test timeout can never be reached: Jest kills the
+   * test first and reports "Exceeded timeout of 5000 ms", which names neither
+   * what was awaited nor for how long. A test that legitimately needs longer
+   * should raise its own timeout explicitly.
+   */
+  const WAIT_BUDGET_MS = 4_000
+
+  /**
    * Bounded by wall clock and yielding through the event loop, not by a count
    * of microtask ticks. A tick budget makes passing a function of how the host
    * happens to schedule work, and drains only the microtask queue - so nothing
    * behind a timer or an I/O callback can ever progress, however large the
    * budget. That is a defect in the waiter, not an unlucky test.
    */
-  async function waitUntil(predicate, description = 'public scan presence events', timeoutMs = 10_000) {
+  async function waitUntil(predicate, description = 'public scan presence events', timeoutMs = WAIT_BUDGET_MS) {
     const deadline = Date.now() + timeoutMs
     for (;;) {
       if (predicate()) return
       if (Date.now() >= deadline) {
         throw new Error(`timed out after ${timeoutMs}ms waiting for ${description}`)
       }
-      await new Promise(resolve => setImmediate(resolve))
+      await new Promise(resolve => setTimeout(resolve, POLL_INTERVAL_MS))
     }
   }
 

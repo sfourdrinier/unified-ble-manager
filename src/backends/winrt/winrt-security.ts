@@ -260,6 +260,15 @@ export class WinRtSecurityBackend implements SecurityBackend {
     if (options.protection !== 'system-default') {
       return Promise.reject(contractError('capability.unsupported', 'capability', 'winrt.security.pair.protection'))
     }
+    if (options.secureConnections !== undefined && options.secureConnections !== 'prefer') {
+      // WinRT can measure a peer's Secure Connections state but its pairing API
+      // does not let a caller SELECT the LE pairing generation, so a 'require'
+      // or 'disallow' request cannot be honoured. Fail closed rather than bond
+      // without the requested generation.
+      return Promise.reject(
+        contractError('capability.unsupported', 'capability', 'winrt.security.pair.secure-connections')
+      )
+    }
     if (this.activePairings.has(peerId)) {
       return Promise.reject(contractError('ownership.denied', 'platform', 'winrt.security.pair.arbitration'))
     }

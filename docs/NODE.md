@@ -10,7 +10,7 @@ The root import does not open an adapter. Pick one backend:
 | `unified-ble-manager/node/winrt`         | Windows                                      |
 | `unified-ble-manager/node/bluez`         | Linux (needs `dbus-next@^0.10.2` in the app) |
 
-The current package is `4.0.5`. The release ships Node-API v8 prebuilds for macOS and Windows on `arm64` and `x64`. A normal install should not compile native code. BlueZ talks D-Bus and has no addon.
+The current package is `4.0.6`. The release ships Node-API v8 prebuilds for macOS and Windows on `arm64` and `x64`. A normal install should not compile native code. BlueZ talks D-Bus and has no addon.
 
 ## One-call factories
 
@@ -22,7 +22,7 @@ import { createBluezBleManager } from 'unified-ble-manager/node/bluez'
 const manager = await createCoreBluetoothBleManager()
 ```
 
-If there is no adapter, the factory throws `adapter.unavailable`. If more than one adapter exists and you omit `adapterId`, it throws `adapter.ambiguous`. Missing native artifacts throw `capability.unavailable` — there is no fallback to Noble, Web Bluetooth, or a simulator. Expected Node engines are those in `package.json`.
+If there is no adapter, the factory throws `adapter.unavailable`. If more than one adapter exists and you omit `adapterId`, the factory picks the first adapter in a deterministic order (by adapter id) so the common single-adapter case needs no configuration and a multi-adapter host still selects the same controller every run; pass `adapterId` (e.g. a BlueZ path like `/org/bluez/hci1`) to target a specific controller — an unusual need, for example a second USB Bluetooth dongle used for debugging. Missing native artifacts throw `capability.unavailable` — there is no fallback to Noble, Web Bluetooth, or a simulator. Expected Node engines are those in `package.json`.
 
 On `SIGINT`/`SIGTERM`, await `manager.destroy()`. Then scan/connect/GATT with the same `BleManager` helpers as React Native.
 
