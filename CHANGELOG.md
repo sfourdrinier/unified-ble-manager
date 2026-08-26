@@ -4,6 +4,12 @@ All notable changes to `unified-ble-manager` are documented here.
 
 ## [Unreleased]
 
+### Fixes
+
+- `scan()` works on React Native Android again, and so does every other control-plane operation there. The Android dispatcher stamped a hardcoded `1` on field 1 of every result and event it built while the native codec has required version 2 since the schema was frozen, so all of them — `scanStarted`, a connect completing, a connect failing, a cancellation, a bond state change, a lost link — were rejected at the JSI boundary as version-incompatible and dropped. A scan therefore never received its terminal: the radio discovered the peripheral 38 times in one four-minute capture and the application was handed nothing. The stamp now comes from the generated `NATIVE_PROTOCOL_VERSION`, so it cannot drift from the version the codec validates against (#140).
+- A record the codec refuses is no longer only written to logcat: the Android binding counts quarantined records per attachment and emits a `recordQuarantined` diagnostic in place of the record it could not deliver, so an application learns that the boundary discarded something it was asked to deliver (#140).
+- A version-incompatible record names its kind, the version it carried and the version expected, so a quarantined record identifies its emitter instead of leaving four record kinds to choose between (#140).
+
 ### Additions
 
 - `FindOptions` accepts `duplicates` and `delivery`, so the `find()` convenience can be pointed at a peripheral that advertises in dense bursts instead of being abandoned for a hand-driven `scan()`. Both default to the values `find()` has always used (`'coalesced'` and `'latest'`), so nothing changes for existing callers (#148).

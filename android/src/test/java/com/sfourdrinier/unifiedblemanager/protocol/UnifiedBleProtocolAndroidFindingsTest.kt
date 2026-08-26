@@ -231,6 +231,23 @@ class UnifiedBleProtocolAndroidFindingsTest {
     assertTrue(Regex("return device.getAddress\\(\\)").containsMatchIn(addressProjection))
   }
 
+  // Regression guard for issue #140: the dispatcher stamped a literal 1 on
+  // field 1 of every control-plane record while the codec required 2, so every
+  // result it emitted -- including the one describing a failed connect -- was
+  // quarantined by the native codec and never reached JavaScript. The stamp has
+  // to follow the generated schema, not a number typed next to the field id.
+  @Test
+  fun `dispatcher records stamp the generated protocol version`() {
+    val source = readAndroidSource(
+      "android/src/main/java/com/sfourdrinier/unifiedblemanager/protocol/UnifiedBleProtocolAndroidDispatcher.kt"
+    )
+
+    assertTrue(source.contains("import com.sfourdrinier.unifiedblemanager.protocol.generated.NATIVE_PROTOCOL_VERSION"))
+    val stamps = Regex("""\n\s*1 to ProtocolWireValue\.UnsignedIntegerValue\((.+)\),""").findAll(source).toList()
+    assertTrue(stamps.isNotEmpty())
+    assertTrue(stamps.all { it.groupValues[1] == "NATIVE_PROTOCOL_VERSION.toLong()" })
+  }
+
   private fun readAndroidSource(relativePath: String): String {
     val candidates = listOf(
       File(relativePath),

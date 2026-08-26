@@ -8,6 +8,7 @@
 #include "../include/BoundedNativeEventBuffer.hpp"
 #include "../include/AndroidJsiEventIngressLedger.hpp"
 
+#include <algorithm>
 #include <cassert>
 #include <cstdint>
 #include <functional>
@@ -514,6 +515,58 @@ void testTerminalAndRichAdvertisementParity() {
   };
   const auto encoded = codec.encode(advertisement);
   assert(codec.encode(codec.decode(encoded)) == encoded);
+
+  // Every advertisement is observed by some scan, and the backends carry that
+  // scan's operationCorrelation (field 10) on the event. This is the exact
+  // shape the Android JSI binding emits for each scan result; rejecting it
+  // drops every advertisement before it reaches a caller, so scan() yields
+  // nothing while the radio is receiving the device perfectly well.
+  const protocol::ProtocolRecord correlatedAdvertisementEvent{
+      .kind = protocol::RecordKind::event,
+      .fields = {
+          field(1U, std::uint64_t{protocol::kProtocolVersion}),
+          field(2U, std::string("native-advertisement-1:7")),
+          field(3U, std::string("advertisement")),
+          field(4U, attachment()),
+          field(5U, std::uint64_t{7U}),
+          field(6U, std::uint64_t{20U}),
+          field(10U, correlation(1U)),
+          field(12U, std::make_shared<protocol::ProtocolRecord>(advertisement)),
+      },
+  };
+  codec.validate(correlatedAdvertisementEvent);
+  assert(
+      codec.encode(codec.decode(codec.encode(correlatedAdvertisementEvent))) ==
+      codec.encode(correlatedAdvertisementEvent));
+
+  // The correlation is optional, not required: an advertisement that belongs to
+  // no scan operation is still well formed.
+  auto uncorrelatedAdvertisementEvent = correlatedAdvertisementEvent;
+  uncorrelatedAdvertisementEvent.fields.erase(
+      std::remove_if(
+          uncorrelatedAdvertisementEvent.fields.begin(),
+          uncorrelatedAdvertisementEvent.fields.end(),
+          [](const protocol::ProtocolField& value) { return value.id == 10U; }),
+      uncorrelatedAdvertisementEvent.fields.end());
+  codec.validate(uncorrelatedAdvertisementEvent);
+
+  // A rejected field is reported by name. "A field is forbidden" is true of
+  // every record on the wire; without the identity a caller cannot tell which
+  // record kind, or which field, the boundary actually refused.
+  auto forbiddenAdvertisementEvent = correlatedAdvertisementEvent;
+  forbiddenAdvertisementEvent.fields.push_back(field(16U, std::string("peer-1")));
+  bool describedForbiddenField = false;
+  try {
+    codec.validate(forbiddenAdvertisementEvent);
+  } catch (const protocol::ProtocolException& error) {
+    const std::string message = error.what();
+    assert(message.find("kind=event") != std::string::npos);
+    assert(message.find("field=16") != std::string::npos);
+    assert(message.find("peerId") != std::string::npos);
+    describedForbiddenField = true;
+  }
+  assert(describedForbiddenField);
+
 
   const protocol::ProtocolRecord readResult{
       .kind = protocol::RecordKind::result,
@@ -1167,6 +1220,81 @@ void testAndroidIngressOrdinalAllocatorExhaustsWithoutWrapOrReuse() {
   assert(secondExhaustionThrew);
 }
 
+// Regression: issue #140 -- the Android dispatcher stamped protocol version 1
+// on every control-plane result, so each one was quarantined by the codec and
+// never reached JavaScript. Two shapes are pinned here because the field
+// evidence found the defect twice: the scanStarted result, whose loss leaves
+// scan() awaiting a terminal that never arrives while advertisements are
+// discovered and dropped, and the connect-failure result the issue was filed
+// for. Each must validate with the negotiated stamp, and its rejection with a
+// stale stamp must name the kind so the emitter can be found without reading
+// the binding against the schema by hand.
+protocol::ProtocolRecord androidScanStartedResult(std::uint64_t protocolVersion) {
+  return {
+      .kind = protocol::RecordKind::result,
+      .fields = {
+          field(1U, protocolVersion),
+          field(2U, std::string("scanStarted")),
+          field(3U, std::make_shared<protocol::ProtocolRecord>(terminal(8U, "succeeded"))),
+      },
+  };
+}
+
+protocol::ProtocolRecord androidConnectFailureResult(std::uint64_t protocolVersion) {
+  const auto error = std::make_shared<protocol::ProtocolRecord>(protocol::ProtocolRecord{
+      .kind = protocol::RecordKind::error,
+      .fields = {
+          field(1U, std::string("connectionFailed")),
+          field(2U, std::string("android")),
+          field(3U, std::string("connect")),
+          field(4U, std::string("notRetryable")),
+          field(7U, std::string("Android GATT connection failed with status 133")),
+      },
+  });
+  return {
+      .kind = protocol::RecordKind::result,
+      .fields = {
+          field(1U, protocolVersion),
+          field(2U, std::string("connected")),
+          field(3U, std::make_shared<protocol::ProtocolRecord>(terminal(9U, "failed", "connectionFailed"))),
+          field(10U, error),
+      },
+  };
+}
+
+void testAndroidDispatcherResultsCarryTheNegotiatedVersion() {
+  protocol::NativeProtocolV2Codec codec;
+  const auto scanStarted = androidScanStartedResult(std::uint64_t{protocol::kProtocolVersion});
+  codec.validate(scanStarted);
+  const auto encodedScanStarted = codec.encode(scanStarted);
+  assert(codec.encode(codec.decode(encodedScanStarted)) == encodedScanStarted);
+  expectFailure(protocol::ProtocolFailure::incompatibleVersion, [&] {
+    codec.validate(androidScanStartedResult(std::uint64_t{1U}));
+  });
+
+  const auto accepted = androidConnectFailureResult(std::uint64_t{protocol::kProtocolVersion});
+  codec.validate(accepted);
+  const auto encoded = codec.encode(accepted);
+  assert(codec.encode(codec.decode(encoded)) == encoded);
+
+  const auto stale = androidConnectFailureResult(std::uint64_t{1U});
+  expectFailure(protocol::ProtocolFailure::incompatibleVersion, [&] { codec.validate(stale); });
+
+  bool named = false;
+  try {
+    codec.validate(stale);
+  } catch (const protocol::ProtocolException& error) {
+    const std::string message = error.what();
+    assert(message.find("kind=result") != std::string::npos);
+    assert(message.find("version=1") != std::string::npos);
+    assert(message.find("expected=" + std::to_string(static_cast<std::uint32_t>(protocol::kProtocolVersion))) !=
+           std::string::npos);
+    named = true;
+  }
+  assert(named);
+
+}
+
 } // namespace
 
 int main() {
@@ -1188,5 +1316,6 @@ int main() {
   testPendingSubscriptionRoutingAndLateOutputRelease();
   testRuntimeRestorationAuthorityAppendAndAdoption();
   testAndroidIngressOrdinalAllocatorExhaustsWithoutWrapOrReuse();
+  testAndroidDispatcherResultsCarryTheNegotiatedVersion();
   return 0;
 }
