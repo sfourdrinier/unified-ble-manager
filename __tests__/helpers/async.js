@@ -46,28 +46,4 @@ async function awaitSignal(promise, description, budgetMs = 4_000) {
   }
 }
 
-/**
- * A promise that settles the first time `mock` is called with arguments the
- * matcher accepts, including calls that already happened before this was asked
- * for.
- *
- * Scanning the recorded calls first is what makes the helper safe to use after
- * the fact: a test that awaits an event which has already fired must not hang.
- */
-function expectedCall(mock, match, description, budgetMs = 4_000) {
-  const existing = mock.mock.calls.find(call => match(...call))
-  if (existing !== undefined) return Promise.resolve(existing)
-
-  let resolveCall
-  const seen = new Promise(resolve => {
-    resolveCall = resolve
-  })
-  const previous = mock.getMockImplementation()
-  mock.mockImplementation((...args) => {
-    if (match(...args)) resolveCall(args)
-    return previous?.(...args)
-  })
-  return awaitSignal(seen, description, budgetMs)
-}
-
-module.exports = { awaitSignal, expectedCall }
+module.exports = { awaitSignal }
