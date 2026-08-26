@@ -39,6 +39,19 @@ type CurrentCharacteristicPath<Attachment extends string> = CharacteristicPath<
   'current'
 >
 
+/**
+ * Safety bound on releasing a write-readiness source whose open is still in
+ * flight when the owner closes.
+ *
+ * Deliberately NOT derived from the caller's `PublicOperationOptions`: this runs
+ * on the teardown path, and the deadline that brought us here is frequently the
+ * one that already expired or was aborted. Inheriting it would make cleanup
+ * abandon the pending open instantly and report `gatt.write-readiness-open` as a
+ * leaked resource on every timed-out operation. The grace is an independent
+ * bound on cleanup itself: long enough for a normal open to settle, short enough
+ * that teardown stays bounded, and its expiry is reported as a cleanup failure
+ * rather than swallowed.
+ */
 const READINESS_OPEN_CLEANUP_GRACE_MS = 1000
 
 interface LongWritePlan {

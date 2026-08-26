@@ -68,6 +68,16 @@ type CurrentDescriptorPath<Attachment extends string> = DescriptorPath<
   'current'
 >
 
+/**
+ * Budget for the per-connection lifecycle event stream.
+ *
+ * Fixed rather than caller-tunable because lifecycle events are control-plane
+ * notices, not data: the stream carries a bounded set of connection state
+ * transitions, and the reserved control capacity guarantees the terminal notice
+ * is always deliverable even when the value window is full. A consumer that
+ * needs a larger *data* budget sets `delivery` on the operation that produces
+ * data; enlarging the lifecycle window would only retain stale transitions.
+ */
 const connectionLifecycleItemCapacity = 8
 const connectionLifecycleReservedControlCapacity = 256
 

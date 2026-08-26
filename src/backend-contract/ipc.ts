@@ -162,6 +162,13 @@ interface PreparedEnvelope<Attachment extends string, Renderer extends string, O
  * negotiated version axes, and hard quotas rather than trusting renderer data.
  */
 export class IpcArbiterContext<Attachment extends string> implements ElectronMainArbiter<Attachment> {
+  /**
+   * Safety bound on terminal notices retained for renderer replay.
+   *
+   * A trust-boundary quota, deliberately not renderer-configurable: it bounds
+   * how much main-process memory a reloading renderer can pin while it re-reads
+   * the terminal outcomes it missed.
+   */
   private static readonly maximumTerminalReplayEntries = 128
   private readonly renderers = new Map<string, RendererAccounting<Attachment>>()
   private readonly authority: ElectronMainArbiterAuthority<Attachment>

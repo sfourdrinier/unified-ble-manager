@@ -40,6 +40,17 @@ const rendererEventLimits = Object.freeze({
   byteCapacity: capacity(512 * 1024),
   reservedControlCapacity: capacity(1)
 })
+/**
+ * Retry cadences for renderer-side acknowledgement and cleanup re-attempts.
+ *
+ * Intervals, not deadlines: there is no caller-supplied deadline to derive from
+ * because both run on teardown/acknowledgement paths that outlive the operation
+ * that scheduled them. They only pace a bounded re-attempt whose termination is
+ * decided elsewhere (the registry's own release state), so the value trades a
+ * little latency against a little wasted work and is not host-visible. Kept at
+ * the same 100ms as the other renderer/main retry paths so one logical
+ * re-attempt is not paced differently in each module.
+ */
 const acknowledgementRetryDelayMilliseconds = 100
 const connectionEventCleanupRetryDelayMilliseconds = 100
 const releasedConnectionEventCleanup: ElectronConnectionEventCleanupReceipt = Object.freeze({

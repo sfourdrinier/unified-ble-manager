@@ -1565,12 +1565,22 @@ describe('public scan-state-budget', () => {
 describe('public scan presence eviction completeness', () => {
   const { MAX_PUBLIC_SCAN_STATE_ENTRIES, MAX_PUBLIC_SCAN_STATE_BYTES } = require('../src/public/scan-state-budget')
 
-  async function waitUntil(predicate, attempts = 2000) {
-    for (let attempt = 0; attempt < attempts; attempt += 1) {
+  /**
+   * Bounded by wall clock and yielding through the event loop, not by a count
+   * of microtask ticks. A tick budget makes passing a function of how the host
+   * happens to schedule work, and drains only the microtask queue - so nothing
+   * behind a timer or an I/O callback can ever progress, however large the
+   * budget. That is a defect in the waiter, not an unlucky test.
+   */
+  async function waitUntil(predicate, description = 'public scan presence events', timeoutMs = 10_000) {
+    const deadline = Date.now() + timeoutMs
+    for (;;) {
       if (predicate()) return
-      await Promise.resolve()
+      if (Date.now() >= deadline) {
+        throw new Error(`timed out after ${timeoutMs}ms waiting for ${description}`)
+      }
+      await new Promise(resolve => setImmediate(resolve))
     }
-    throw new Error('timed out waiting for public scan presence events')
   }
 
   async function createPresenceScan() {
