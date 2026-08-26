@@ -6,6 +6,7 @@ import android.bluetooth.BluetoothGattCharacteristic
 import android.content.Context
 import android.os.Build
 import android.os.SystemClock
+import com.sfourdrinier.unifiedblemanager.protocol.generated.NATIVE_PROTOCOL_VERSION
 import com.sfourdrinier.unifiedblemanager.protocol.generated.RecordKind
 import com.sfourdrinier.unifiedblemanager.radio.OwnedAndroidGattRadio
 import com.sfourdrinier.unifiedblemanager.radio.OwnedRadioTeardownFailure
@@ -766,7 +767,7 @@ class UnifiedBleProtocolAndroidDispatcher(
   private fun emitSuccess(command: ProtocolWireRecord, kind: String, additions: Map<Int, ProtocolWireValue> = emptyMap()) {
     if (!isPending(command)) return
     val fields = mutableMapOf<Int, ProtocolWireValue>(
-      1 to ProtocolWireValue.UnsignedIntegerValue(1),
+      1 to ProtocolWireValue.UnsignedIntegerValue(NATIVE_PROTOCOL_VERSION.toLong()),
       2 to ProtocolWireValue.StringValue(kind),
       3 to ProtocolWireValue.RecordValue(terminal(command, "succeeded"))
     )
@@ -798,7 +799,7 @@ class UnifiedBleProtocolAndroidDispatcher(
     val result = ProtocolWireRecord(
       RecordKind.RESULT,
       mapOf(
-        1 to ProtocolWireValue.UnsignedIntegerValue(1),
+        1 to ProtocolWireValue.UnsignedIntegerValue(NATIVE_PROTOCOL_VERSION.toLong()),
         2 to ProtocolWireValue.StringValue(dispatcherResultKindFor(command.requiredString(3))),
         3 to ProtocolWireValue.RecordValue(terminal(command, "failed", code)),
         10 to ProtocolWireValue.RecordValue(error)
@@ -814,7 +815,7 @@ class UnifiedBleProtocolAndroidDispatcher(
     val result = ProtocolWireRecord(
       RecordKind.RESULT,
       mapOf(
-        1 to ProtocolWireValue.UnsignedIntegerValue(1),
+        1 to ProtocolWireValue.UnsignedIntegerValue(NATIVE_PROTOCOL_VERSION.toLong()),
         2 to ProtocolWireValue.StringValue("cancelled"),
         3 to ProtocolWireValue.RecordValue(terminal(command, "failed", "cancelled")),
         10 to ProtocolWireValue.RecordValue(
@@ -841,7 +842,7 @@ class UnifiedBleProtocolAndroidDispatcher(
     val result = ProtocolWireRecord(
       RecordKind.RESULT,
       mapOf(
-        1 to ProtocolWireValue.UnsignedIntegerValue(1),
+        1 to ProtocolWireValue.UnsignedIntegerValue(NATIVE_PROTOCOL_VERSION.toLong()),
         2 to ProtocolWireValue.StringValue("cancelled"),
         3 to ProtocolWireValue.RecordValue(terminal(command, "succeeded")),
         8 to ProtocolWireValue.StringValue(state)
@@ -866,7 +867,7 @@ class UnifiedBleProtocolAndroidDispatcher(
     val event = ProtocolWireRecord(
       RecordKind.EVENT,
       mapOf(
-        1 to ProtocolWireValue.UnsignedIntegerValue(1),
+        1 to ProtocolWireValue.UnsignedIntegerValue(NATIVE_PROTOCOL_VERSION.toLong()),
         2 to ProtocolWireValue.StringValue("native-security-state-${SystemClock.elapsedRealtimeNanos()}"),
         3 to ProtocolWireValue.StringValue("securityStateChanged"),
         4 to ProtocolWireValue.RecordValue(attachment),
@@ -1112,7 +1113,7 @@ internal fun connectionLostEvent(
   return ProtocolWireRecord(
     RecordKind.EVENT,
     mapOf(
-      1 to ProtocolWireValue.UnsignedIntegerValue(1),
+      1 to ProtocolWireValue.UnsignedIntegerValue(NATIVE_PROTOCOL_VERSION.toLong()),
       2 to ProtocolWireValue.StringValue("native-connection-lost-$nativeHandle-$ingressOrdinal"),
       3 to ProtocolWireValue.StringValue("connectionLost"),
       4 to ProtocolWireValue.RecordValue(connection.requiredRecord(1)),
@@ -1134,7 +1135,7 @@ internal fun databaseChangedEvent(
   return ProtocolWireRecord(
     RecordKind.EVENT,
     mapOf(
-      1 to ProtocolWireValue.UnsignedIntegerValue(1),
+      1 to ProtocolWireValue.UnsignedIntegerValue(NATIVE_PROTOCOL_VERSION.toLong()),
       2 to ProtocolWireValue.StringValue("native-database-changed-$nativeHandle-$ingressOrdinal"),
       3 to ProtocolWireValue.StringValue("databaseChanged"),
       4 to ProtocolWireValue.RecordValue(attachment),
