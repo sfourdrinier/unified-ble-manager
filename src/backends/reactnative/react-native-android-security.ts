@@ -13,6 +13,7 @@ import type {
   SecurityPairResult,
   SecurityUnpairResult
 } from '../../backend-contract/security'
+import { cancelOutcomeForPairResult } from '../../backend-contract/security'
 import type {
   AndroidSecurityState,
   ReactNativeAndroidProtocolBoundary
@@ -66,6 +67,11 @@ export class ReactNativeAndroidSecurityBackend implements SecurityBackend {
   private readonly streams = new Map<string, Set<CoreBoundedStream<PeerSecurityEvent>>>()
   private readonly active = new Set<string>()
   private readonly activeNativeIds = new Map<string, string>()
+  /**
+   * The in-flight pairing's own public answer, so `cancelPairing()` reads what
+   * happened rather than forming a second opinion that could disagree with it.
+   */
+  private readonly activeResults = new Map<string, Promise<SecurityPairResult>>()
   private readonly sequences = new Map<string, number>()
   private readonly removeListener: () => void
   private closed = false
@@ -147,6 +153,7 @@ export class ReactNativeAndroidSecurityBackend implements SecurityBackend {
     const settleNative = (): void => {
       this.active.delete(peerId)
       this.activeNativeIds.delete(peerId)
+      this.activeResults.delete(peerId)
       if (abortListener !== null) options.signal?.removeEventListener('abort', abortListener)
       if (deadlineTimer !== null) clearTimeout(deadlineTimer)
     }
@@ -214,6 +221,9 @@ export class ReactNativeAndroidSecurityBackend implements SecurityBackend {
         }
       )
     })
+    // Registered before returning so a cancellation arriving immediately after
+    // pair() still finds the answer to read.
+    this.activeResults.set(peerId, completion)
     return completion
   }
 
@@ -222,11 +232,19 @@ export class ReactNativeAndroidSecurityBackend implements SecurityBackend {
     if (!this.boundary.securityCancellationAvailable) {
       throw contractError('capability.unsupported', 'capability', 'android.security.cancel-pairing')
     }
+    // Narrow known window: the pairing can settle between this lookup and the
+    // caller's call. Documented rather than closed - see docs/BONDING.md.
     if (!this.active.has(peerId)) return { outcome: 'not-pairing' }
     const nativePeerId = this.activeNativeIds.get(peerId)
     if (nativePeerId === undefined) return { outcome: 'not-pairing' }
+    const result = this.activeResults.get(peerId)
+    if (result === undefined) return { outcome: 'not-pairing' }
     await this.boundary.cancelPairing(nativePeerId)
-    return { outcome: 'cancelled' }
+    // Ask the pairing what happened to it. A failed pairing propagates its
+    // error rather than being reported as a cancellation we did not achieve,
+    // and concurrent callers all await the same promise, so they cannot get
+    // different answers.
+    return cancelOutcomeForPairResult(await result)
   }
 
   async unpair(peerId: string, _options: PublicOperationOptions): Promise<SecurityUnpairResult> {
