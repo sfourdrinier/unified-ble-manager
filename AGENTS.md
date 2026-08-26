@@ -85,22 +85,15 @@ Preserve these unless the user explicitly requests a versioned contract change:
   explicit codec for external protocols, never the public value contract;
 - cancellation uses `AbortSignal`; applications never create public
   transaction IDs;
-- a signal **requests** cancellation; the result **reports what happened**. An
-  operation's outcome is read from what the platform actually did, never
-  inferred from the fact that cancellation was asked for. `cancelPairing()`
-  therefore answers from the in-flight pairing's own result rather than forming
-  a second opinion — two observations of one fact can disagree, and that
-  disagreement is the defect. Every backend answers from the same vocabulary,
-  and a word means the same thing in every result type that uses it
-  (`'paired'` is "a bond exists because of this operation" in both
-  `SecurityPairResult` and `SecurityCancelPairingResult`; `'already-paired'`
-  means "bonded before the call" and belongs only to the former). Where a
-  platform genuinely cannot answer, it says so with `capability.unsupported`
-  and a reason — never a plausible substitute. Known gap: `pair()`'s abort path
-  still reports `'cancelled'` without knowing whether the peer bonded anyway,
-  because learning the truth means waiting for the radio and waiting risks
-  hanging the caller behind a wedged daemon (#157); `state()` and `watch()` are
-  authoritative for the bond;
+- a signal **requests**; the result **reports what happened**. An outcome is
+  read from what the platform did, never inferred from what was asked of it.
+  Two observations of one fact can disagree, so a result reads the operation's
+  own answer rather than forming a second opinion;
+- **one vocabulary, not one capability.** A word means the same thing in every
+  result type that uses it, and every backend answers the same question from
+  the same set of answers. A platform that cannot answer says so —
+  `capability.unsupported` with a reason — and never substitutes something
+  plausible;
 - the root is host-neutral and never silently picks or falls back to a backend;
 - managers, connections, GATT databases, subscriptions and backend resources
   have explicit ownership and asynchronous teardown; stale discoveries and
@@ -112,21 +105,12 @@ Preserve these unless the user explicitly requests a versioned contract change:
 - native and private backend protocols are versioned and fail closed;
 - deterministic backends and mocks are test infrastructure, never production
   radio fallbacks;
-- **elevated privilege is permitted, never implicit.** Some radio capabilities
-  exist only behind a privileged interface — on Linux the kernel management
-  socket (`CAP_NET_ADMIN`) reaches settings `org.bluez` does not expose at all.
-  Such a capability may be offered, on three conditions. The package never
-  acquires privilege itself: it does not shell out to a privileged tool, escalate,
-  or assume it is already root; the host supplies the privileged operation
-  explicitly, so the escalation is visible and auditable in the application that
-  chose it. The capability is reported `unsupported` at runtime whenever that
-  operation is absent, so the default posture is unchanged and a caller learns
-  the difference between "denied" and "not wired up". And the privilege
-  required, its blast radius, and what is left behind on failure are documented
-  where the option is declared — a privileged setting that is adapter-wide, or
-  that outlives the operation that set it, must say so in the same breath as the
-  option that requests it. Same vocabulary as every other capability:
-  `capability.unsupported` with a reason, never a plausible substitute;
+- **elevated privilege is permitted, never implicit.** The package never
+  escalates, shells out to a privileged tool, or assumes it is root: the host
+  supplies the privileged operation, so the escalation is auditable where it
+  was chosen. Without it the capability reports `unsupported` and the default
+  posture is unchanged. Document the privilege, its blast radius, and what a
+  failure leaves behind beside the option that requests it;
 - package SemVer and backend support/evidence labels are independent
   dimensions.
 
