@@ -5,6 +5,27 @@
 const { BUILT_IN_FEATURE_IDS } = require('../src/backend-contract/capabilities')
 
 /**
+ * Poll by parking, not by spinning.
+ *
+ * An earlier version yielded with `setImmediate`, which reschedules on every
+ * loop iteration and never lets the process idle. On a two-core CI runner with
+ * Jest workers in parallel that starves the very timer being waited for: a
+ * manager timeout set to 1 ms took over five seconds to be observed, and the
+ * test died on Jest's own deadline. A short sleep yields the core instead.
+ */
+const POLL_INTERVAL_MS = 5
+
+/**
+ * Below Jest's 5 s default so this waiter's message wins.
+ *
+ * A budget larger than the test timeout can never be reached: Jest kills the
+ * test first and reports "Exceeded timeout of 5000 ms", which names neither
+ * what was awaited nor for how long. A test that legitimately needs longer
+ * should raise its own timeout explicitly.
+ */
+const WAIT_BUDGET_MS = 4_000
+
+/**
  * Wait for a condition without depending on how work happens to be scheduled.
  *
  * The previous version spun a fixed number of `await Promise.resolve()` ticks.
@@ -18,14 +39,14 @@ const { BUILT_IN_FEATURE_IDS } = require('../src/backend-contract/capabilities')
  * callbacks between checks, and the bound is wall-clock so a slow machine is
  * simply slower rather than wrong.
  */
-async function waitUntil(predicate, description = 'Tauri manager condition', timeoutMs = 10_000) {
+async function waitUntil(predicate, description = 'Tauri manager condition', timeoutMs = WAIT_BUDGET_MS) {
   const deadline = Date.now() + timeoutMs
   for (;;) {
     if (predicate()) return
     if (Date.now() >= deadline) {
       throw new Error(`timed out after ${timeoutMs}ms waiting for ${description}`)
     }
-    await new Promise(resolve => setImmediate(resolve))
+    await new Promise(resolve => setTimeout(resolve, POLL_INTERVAL_MS))
   }
 }
 
