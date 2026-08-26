@@ -1,5 +1,13 @@
 import { contractError, type PlatformErrorDetail } from '../../backend-contract/errors'
 
+/**
+ * Safety bound on a native CoreBluetooth release call during teardown.
+ *
+ * Deliberately independent of any caller deadline: cleanup runs after the owning
+ * operation has already ended, so inheriting its (often expired) deadline would
+ * report every release as failed. Matches the BlueZ and WinRT cleanup bounds so
+ * the same logical teardown is governed identically on every desktop backend.
+ */
 export const CORE_BLUETOOTH_CLEANUP_TIMEOUT_MS = 1_000
 
 export function withCoreBluetoothCleanupTimeout<Result>(

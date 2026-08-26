@@ -79,6 +79,17 @@ const DEFAULT_DELIVERY: SubscriptionOptions['delivery'] = Object.freeze({
   reservedControlCapacity: capacity(1),
   overflowPolicy: 'drop-oldest'
 })
+/**
+ * Retention window for pre-cancelled and settled operation correlations.
+ *
+ * A safety bound on main-process memory, not host policy. The router must
+ * remember an operation's terminal fate long enough to answer a late or
+ * duplicated renderer message idempotently, and must forget it eventually or an
+ * unbounded map grows for the process lifetime. Thirty seconds comfortably
+ * exceeds any in-flight IPC round-trip while keeping retention bounded; renderer
+ * code cannot influence it, which is the point -- it is a quota the trusted side
+ * imposes on untrusted peers.
+ */
 const CANCELLATION_CORRELATION_TTL_MILLISECONDS = 30_000
 
 export interface ElectronMainBleRouterOptions {

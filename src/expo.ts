@@ -218,7 +218,19 @@ function isPendingAdapterState(adapter: BleAdapterState): boolean {
   )
 }
 
-/** Bounded wait for the first authoritative snapshot; ~2s at 100ms steps. */
+/**
+ * Bounded wait for the first authoritative snapshot; ~2s at 100ms steps.
+ *
+ * Fixed rather than caller-tunable. `getExpoBleReadiness` is a synchronous-feeling
+ * readiness probe with no `OperationOptions` of its own, and its contract is to
+ * return deterministic guidance promptly rather than to block: a caller that
+ * needs to wait for the adapter uses `adapter.waitUntilReady()`, which does take
+ * a caller-supplied deadline. These two numbers only decide how long the probe
+ * tolerates the pre-authoritative `unknown/unknown` snapshot a native module
+ * reports before its first callback lands, and both ends are already covered --
+ * an early exit as soon as the snapshot becomes authoritative, and a hard cap so
+ * the probe cannot hang.
+ */
 const PENDING_ADAPTER_STATE_ATTEMPTS = 20
 const PENDING_ADAPTER_STATE_INTERVAL_MS = 100
 
