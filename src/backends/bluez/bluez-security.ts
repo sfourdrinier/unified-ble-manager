@@ -21,6 +21,7 @@ import {
 import type { BluezBackendRuntime } from './bluez-backend-runtime'
 import { waitForBluezBoolean } from './bluez-property-waiters'
 import type { BluezOperationDispatch } from './bluez-operation-dispatcher'
+import { normalizeBluezFailure } from './bluez-operation-dispatcher'
 
 const securityStreamLimits = Object.freeze({
   itemCapacity: capacity(16),
@@ -103,6 +104,32 @@ function securityStreamOwnershipSnapshot(
 }
 
 /** BlueZ system-mediated pairing only; a just-works Agent1 is registered by the boundary. Custom ceremonies are unsupported. */
+/**
+ * Whether a rejected `Device1.CancelPairing` still proves that no pairing is
+ * left running.
+ *
+ * These two names answer the question rather than fail to answer it: BlueZ says
+ * there is no bonding to cancel, or the device object is gone and can hold no
+ * bonding at all. Either way nothing is in flight, so the cancellation got what
+ * it asked for.
+ *
+ * Every other rejection - `org.bluez.Error.Failed`, `NotAuthorized`, a D-Bus
+ * timeout, the daemon gone - means bluetoothd did not confirm that it stopped
+ * bonding, so the in-flight `Pair` may still create one. Swallowing those was
+ * reporting a pairing we could not stop as `cancelled`, which is the same
+ * defect the Android backend was fixed for: a caller told no bond exists while
+ * one is still being made cannot recover, because it never learns to look.
+ *
+ * The Tauri disconnect path classifies the identical pair of names for the
+ * identical reason - a removed device object is an answer, not an error.
+ */
+function cancelProvesPairingAlreadyTerminal(error: BluezDbusMethodError): boolean {
+  return (
+    error.detail.name === 'org.bluez.Error.DoesNotExist' ||
+    error.detail.name === 'org.freedesktop.DBus.Error.UnknownObject'
+  )
+}
+
 export class BluezSecurityBackend implements SecurityBackend {
   private readonly streams = new Map<string, Set<CoreBoundedStream<PeerSecurityEvent>>>()
   private readonly activePairings = new Map<string, ActivePairing>()
@@ -316,6 +343,9 @@ export class BluezSecurityBackend implements SecurityBackend {
       await this.runtime.boundary.methods.callVoid(path, BLUEZ_DEVICE_INTERFACE, 'CancelPairing', [])
     } catch (error) {
       if (!(error instanceof BluezDbusMethodError)) throw error
+      if (!cancelProvesPairingAlreadyTerminal(error)) {
+        throw normalizeBluezFailure(error, 'bluez.security.cancel-pairing')
+      }
     }
   }
 

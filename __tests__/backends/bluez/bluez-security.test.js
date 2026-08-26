@@ -1,5 +1,7 @@
 const { createBluezBackendProvider } = require('../../../src/backends/bluez/bluez-backend-provider')
 const { opaqueId, version, versionRange } = require('../../../src/backend-contract/primitives')
+const { BluezDbusMethodError } = require('../../../src/backends/bluez/bluez-dbus-contract')
+const { awaitSignal } = require('../../helpers/async')
 const {
   BLUEZ_ADAPTER_INTERFACE,
   BLUEZ_DEVICE_INTERFACE,
@@ -252,6 +254,79 @@ describe('BlueZ system security backend', () => {
     )
     await expect(backend.security.state(observedPeerId, pairOptions())).resolves.toMatchObject({ bond: 'not-bonded' })
     await expect(backend.destroy()).resolves.toMatchObject({ state: 'released' })
+  })
+
+  test('surfaces a CancelPairing failure instead of reporting a bond it could not stop as cancelled', async () => {
+    const { backend, boundary, peerId } = await createFixture()
+    let pairDispatched
+    const pairSeen = new Promise(resolve => {
+      pairDispatched = resolve
+    })
+    // Hold Device1.Pair open so the pairing is genuinely in flight when the
+    // cancellation arrives - that is the only state in which CancelPairing is
+    // dispatched at all.
+    let resolvePair = () => undefined
+    boundary.onCall(devicePath, BLUEZ_DEVICE_INTERFACE, 'Pair', () => {
+      pairDispatched()
+      return new Promise(resolve => {
+        resolvePair = resolve
+      })
+    })
+    boundary.onCall(devicePath, BLUEZ_DEVICE_INTERFACE, 'CancelPairing', async () => {
+      throw new BluezDbusMethodError({
+        name: 'org.bluez.Error.Failed',
+        message: 'cancel failed',
+        safeDetails: {}
+      })
+    })
+
+    const pairing = backend.security.pair(peerId, pairOptions())
+    pairing.catch(() => undefined)
+    await awaitSignal(pairSeen, 'Device1.Pair to be dispatched')
+
+    // bluetoothd refused to stop the bonding, so the peer may still bond.
+    // Reporting 'cancelled' here would tell the caller no pairing happened
+    // while one is still running.
+    await expect(backend.security.cancelPairing(peerId, pairOptions())).rejects.toMatchObject({
+      normalized: { code: 'platform.failure' }
+    })
+
+    resolvePair()
+    await Promise.resolve()
+    await expect(backend.destroy()).resolves.toMatchObject({ state: 'released' })
+  })
+
+  test('treats a CancelPairing rejection that proves no pairing is in progress as cancelled', async () => {
+    // 'No pairing in progress' is the answer to the question, not a failure to
+    // answer it: nothing is left running, so the cancellation succeeded and the
+    // caller is told the truth by reporting it.
+    for (const name of ['org.bluez.Error.DoesNotExist', 'org.freedesktop.DBus.Error.UnknownObject']) {
+      const { backend, boundary, peerId } = await createFixture()
+      let resolvePair = () => undefined
+      let pairDispatched = () => undefined
+      const pairSeen = new Promise(resolve => {
+        pairDispatched = resolve
+      })
+      boundary.onCall(devicePath, BLUEZ_DEVICE_INTERFACE, 'Pair', () => {
+        pairDispatched()
+        return new Promise(resolve => {
+          resolvePair = resolve
+        })
+      })
+      boundary.onCall(devicePath, BLUEZ_DEVICE_INTERFACE, 'CancelPairing', async () => {
+        throw new BluezDbusMethodError({ name, message: 'no pairing in progress', safeDetails: {} })
+      })
+
+      const pairing = backend.security.pair(peerId, pairOptions())
+      await awaitSignal(pairSeen, `Device1.Pair to be dispatched for ${name}`)
+
+      await expect(backend.security.cancelPairing(peerId, pairOptions())).resolves.toEqual({ outcome: 'cancelled' })
+      await expect(pairing).resolves.toEqual({ outcome: 'cancelled' })
+
+      resolvePair()
+      await Promise.resolve()
+      await expect(backend.destroy()).resolves.toMatchObject({ state: 'released' })
+    }
   })
 
   test('rejects a secureConnections generation it cannot select (require and disallow) on BlueZ', async () => {
