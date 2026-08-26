@@ -102,6 +102,14 @@ export class DeterministicSecurityBackend implements SecurityBackend {
 
   pair(peerId: string, options: SecurityPairOptions): Promise<SecurityPairResult> {
     this.assertUsable('security.pair')
+    if (options.secureConnections !== undefined && options.secureConnections !== 'prefer') {
+      // No backend can select a pairing generation per-pairing, so BlueZ, WinRT
+      // and Android all fail closed here. This backend is test infrastructure:
+      // if it accepted 'require' or 'disallow' and produced a bond anyway, a
+      // consumer's suite would pass against a contract every real radio
+      // rejects, which is the one way test infrastructure can actively mislead.
+      return Promise.reject(contractError('capability.unsupported', 'capability', 'security.pair.secure-connections'))
+    }
     if (this.activePairings.has(peerId)) {
       return Promise.reject(contractError('ownership.denied', 'platform', 'security.pair.arbitration'))
     }

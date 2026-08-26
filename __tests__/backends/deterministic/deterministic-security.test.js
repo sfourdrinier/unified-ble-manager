@@ -146,4 +146,23 @@ describe('deterministic security backend', () => {
     await expect(settle(pending.fixture, pendingPair)).resolves.toEqual({ outcome: 'cancelled' })
     await expect(pending.manager.destroy()).resolves.toMatchObject({ state: 'released' })
   })
+
+  test('rejects a secureConnections generation it cannot select instead of ignoring it', async () => {
+    const { fixture, manager } = await createFixture()
+    // Every real backend fails closed here (BlueZ, WinRT, Android), so the
+    // deterministic one must too. A test backend that accepts a generation no
+    // radio can honour lets a consumer's suite pass on a contract production
+    // rejects - the one failure mode test infrastructure must never have.
+    for (const value of ['require', 'disallow']) {
+      await expect(settle(fixture, manager.security.pair(peer, { secureConnections: value }))).rejects.toMatchObject(
+        { code: 'capability.unsupported' }
+      )
+    }
+    // Fail-closed: no virtual bond is created for a generation we refuse.
+    await expect(manager.security.state(peer)).resolves.toMatchObject({ bond: 'not-bonded' })
+    await expect(settle(fixture, manager.security.pair(peer, { secureConnections: 'prefer' }))).resolves.toMatchObject(
+      { outcome: 'paired' }
+    )
+    await expect(manager.destroy()).resolves.toMatchObject({ state: 'released' })
+  })
 })
