@@ -9,7 +9,7 @@
 - `BluezBackendProviderOptions :: { readonly busKind: BluezBusKind; readonly boundaryFactory: BluezDbusBoundaryFactory; readonly now: () => number }`
 - `BluezBleManagerAppOptions :: { readonly busKind?: BluezBusKind | undefined; readonly now?: (() => number) | undefined; readonly instanceId?: string | undefined; readonly adapterId?: string | undefined; readonly diagnostics?: DiagnosticsOptions | undefined; readonly randomBytes?: ((length: number) => Uint8Array<ArrayBufferLike>) | undefined; readonly restoration?: { readonly restorationId: string; readonly generation?: string | undefined; } | undefined }`
 - `BluezBusKind :: "system" | "session"`
-- `BluezDbusBoundary :: { readonly busKind: BluezBusKind; readonly objectManager: BluezObjectManagerBoundary; readonly methods: BluezMethodBoundary; onReset(listener: (reason: string) => void): BluezListener; close(): Promise<void> }`
+- `BluezDbusBoundary :: { readonly busKind: BluezBusKind; readonly objectManager: BluezObjectManagerBoundary; readonly methods: BluezMethodBoundary; ensurePairingAgent(): Promise<void>; onReset(listener: (reason: string) => void): BluezListener; close(): Promise<void> }`
 - `BluezDbusBoundaryFactory :: { open(busKind: BluezBusKind): Promise<BluezDbusBoundary> }`
 - `BluezDbusErrorDetail :: { readonly name: string; readonly message: string; readonly safeDetails: BluezProperties }`
 - `BluezInterfacesAdded :: { readonly ordinal: number; readonly path: string; readonly interfaces: readonly BluezManagedInterface[] }`

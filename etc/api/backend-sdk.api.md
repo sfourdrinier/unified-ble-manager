@@ -249,7 +249,7 @@ export { createBackendAuthorDefinition, runBackendAuthorTck } from './backend-sd
 - `SecurityBondState :: "unknown" | "unsupported" | "bonded" | "not-bonded" | "bonding"`
 - `SecurityCancelPairingResult :: { readonly outcome: "cancelled" | "not-pairing" }`
 - `SecurityEncryptionState :: "unknown" | "unsupported" | "encrypted" | "not-encrypted"`
-- `SecurityPairOptions :: { readonly transport: "le" | "auto"; readonly protection: "encrypted" | "authenticated" | "system-default"; readonly ceremony: SecurityPairingCeremony; readonly signal: AbortSignal | null; readonly deadline: Deadline | null }`
+- `SecurityPairOptions :: { readonly transport: "le" | "auto"; readonly protection: "encrypted" | "authenticated" | "system-default"; readonly ceremony: SecurityPairingCeremony; readonly secureConnections?: "require" | "prefer" | "disallow" | undefined; readonly signal: AbortSignal | null; readonly deadline: Deadline | null }`
 - `SecurityPairResult :: { readonly outcome: "paired"; readonly state: PeerSecurityState; } | { readonly outcome: "already-paired"; readonly state: PeerSecurityState; } | { readonly outcome: "repaired"; readonly state: PeerSecurityState; } | { readonly outcome: "rejected"; readonly reason: string | null; } | { readonly outcome: "cancelled"; }`
 - `SecurityPairingAgent :: { onChallenge(challenge: SecurityPairingChallenge): Promise<SecurityPairingResponse> }`
 - `SecurityPairingCeremony :: "system" | { readonly kind: "agent"; readonly agent: SecurityPairingAgent; }`

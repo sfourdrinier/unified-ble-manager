@@ -122,6 +122,12 @@ export class ReactNativeAndroidSecurityBackend implements SecurityBackend {
     if (options.protection !== 'system-default') {
       throw contractError('capability.unsupported', 'capability', 'android.security.pair.protection')
     }
+    if (options.secureConnections !== undefined && options.secureConnections !== 'prefer') {
+      // Android's createBond does not expose LE pairing-generation selection, so
+      // a 'require' or 'disallow' request cannot be honoured. Fail closed rather
+      // than bond without the requested generation.
+      throw contractError('capability.unsupported', 'capability', 'android.security.pair.secure-connections')
+    }
     if (options.signal?.aborted === true) {
       throw contractError('operation.aborted', 'core', 'android.security.pair')
     }
@@ -168,8 +174,16 @@ export class ReactNativeAndroidSecurityBackend implements SecurityBackend {
             if (publicSettled) return
             publicSettled = true
             cancellationController.abort()
+            if (!this.boundary.securityCancellationAvailable) {
+              // Without native cancellation we cannot stop an in-flight
+              // createBond at the deadline, so a 'timed-out' outcome (which the
+              // public layer maps to 'cancelled') could strand a bond that then
+              // completes. Fail closed, exactly as the abort path does.
+              reject(contractError('capability.unsupported', 'capability', 'android.security.pair.cancellation'))
+              return
+            }
             reject(contractError('operation.timed-out', 'core', 'android.security.pair'))
-            if (this.boundary.securityCancellationAvailable) this.requestCancellation(peerId)
+            this.requestCancellation(peerId)
           },
           Math.max(0, options.deadline - this.now())
         )

@@ -228,6 +228,26 @@ describe('React Native Android security protocol boundary', () => {
     security.close()
   })
 
+  test('rejects a secureConnections generation it cannot select instead of ignoring it', async () => {
+    const pair = jest.fn(async () => ({ outcome: 'paired', state: securityState('bonded') }))
+    const security = new ReactNativeAndroidSecurityBackend(securityAdapter({ pair }), () => 20)
+
+    for (const value of ['require', 'disallow']) {
+      await expect(
+        security.pair(peerId, {
+          signal: null,
+          deadline: null,
+          transport: 'auto',
+          protection: 'system-default',
+          ceremony: 'system',
+          secureConnections: value
+        })
+      ).rejects.toMatchObject({ normalized: { code: 'capability.unsupported' } })
+    }
+    expect(pair).not.toHaveBeenCalled()
+    security.close()
+  })
+
   test('honors pre-aborted Android security state requests before native dispatch', async () => {
     const securityStateCall = jest.fn(async () => securityState('not-bonded'))
     const security = new ReactNativeAndroidSecurityBackend(
@@ -377,6 +397,40 @@ describe('React Native Android security protocol boundary', () => {
       })
     ).resolves.toMatchObject({ outcome: 'paired' })
     security.close()
+  })
+
+  test('rejects a deadline it cannot enforce as unsupported when cancellation is unavailable', async () => {
+    jest.useFakeTimers()
+    try {
+      let resolveNative
+      const pair = jest.fn(() => new Promise(resolve => { resolveNative = resolve }))
+      const security = new ReactNativeAndroidSecurityBackend(
+        securityAdapter({ pair, securityCancellationAvailable: false }),
+        () => 20
+      )
+      const pending = security.pair(peerId, {
+        signal: null,
+        deadline: 30,
+        transport: 'auto',
+        protection: 'system-default',
+        ceremony: 'system'
+      })
+      // Without native cancellation the deadline cannot stop the in-flight bond,
+      // so it must fail closed rather than claim a timeout (which maps to
+      // cancelled) over a bond that may still complete.
+      const result = expect(pending).rejects.toMatchObject({
+        normalized: { code: 'capability.unsupported', operation: 'android.security.pair.cancellation' }
+      })
+      await jest.advanceTimersByTimeAsync(10)
+      await result
+      // The native pairing may still resolve as bonded; that must not surface a
+      // late outcome after the honest capability.unsupported rejection.
+      resolveNative({ outcome: 'paired', state: securityState('bonded') })
+      await Promise.resolve()
+      security.close()
+    } finally {
+      jest.useRealTimers()
+    }
   })
 
   test('does not submit native pairing when cancellation wins during the state preflight', async () => {

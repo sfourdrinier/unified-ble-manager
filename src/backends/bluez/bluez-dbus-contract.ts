@@ -111,6 +111,8 @@ export interface BluezDbusBoundary {
   readonly busKind: BluezBusKind
   readonly objectManager: BluezObjectManagerBoundary
   readonly methods: BluezMethodBoundary
+  /** Registers a just-works pairing agent (idempotent) so pairing can complete. */
+  ensurePairingAgent(): Promise<void>
   onReset(listener: (reason: string) => void): BluezListener
   close(): Promise<void>
 }
