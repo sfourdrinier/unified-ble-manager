@@ -178,26 +178,34 @@ Stable versions publish to `latest`. Active `4.0.0-rc.*` candidates also publish
 
 ## Post-release verification
 
-After the workflow succeeds:
+After the workflow succeeds, verify the registry rather than the workflow log:
+a green publish job and a package a consumer can actually install are not the
+same claim.
 
 ```sh
-release_candidate=4.0.0-rc.N
+version=4.0.6
 
-npm view "unified-ble-manager@$release_candidate" version
+npm view "unified-ble-manager@$version" version
 npm view unified-ble-manager dist-tags --json
-npm view "unified-ble-manager@$release_candidate" repository --json
-npm view "unified-ble-manager@$release_candidate" license
+npm view "unified-ble-manager@$version" repository --json
+npm view "unified-ble-manager@$version" license
+npm view "unified-ble-manager@$version" dist.integrity
 ```
 
 Then verify:
 
-- npm `latest` resolves to the selected release candidate;
+- npm `latest` resolves to the released version (a stable release moves
+  `latest`; a prerelease must leave it alone and publish to `next`);
 - the npm package page shows provenance for the published artifact;
-- the GitHub Release exists at the selected candidate tag and is marked prerelease;
-- its attached tarball/SBOM/license artifacts correspond to the release workflow output;
-- a clean consumer can install `unified-ble-manager` (no version pin) and import the documented host entrypoints.
-
-After the later stable tag, repeat the same checks for `4.0.0`. `latest` then moves to `4.0.0`.
+- the GitHub Release exists at that tag, and is marked prerelease only if the
+  version is one;
+- its attached tarball/SBOM/license artifacts correspond to the release
+  workflow output;
+- a clean consumer, in a directory outside this repository, can install
+  `unified-ble-manager` with no version pin and import the documented host
+  entrypoints. This is the check that catches a packaging gap the repository's
+  own tests cannot see: `@babel/runtime` shipped undeclared in 4.0.4 and only a
+  real external consumer surfaced it.
 
 ## Failed release or partial publish
 
