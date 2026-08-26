@@ -29,6 +29,7 @@ import {
   rehydratePublicPromise,
   runWithCleanup
 } from './error-bridge'
+import { BleError } from './errors'
 import { assertDirectConnectionCapability, PublicBleCapabilities } from './capabilities'
 import type { BleCapabilities } from './capabilities'
 import type {
@@ -890,12 +891,43 @@ function requireControlCapability<Attachment extends string, Identity extends Ba
 ) {
   const descriptor = internal.capability(id)
   if (descriptor === null || descriptor.state === 'unsupported') {
-    throw contractError('capability.unsupported', 'connection', operation)
+    throw controlCapabilityError('capability.unsupported', operation, descriptor)
   }
   if (descriptor.state === 'unavailable') {
-    throw contractError('capability.unavailable', 'connection', operation)
+    throw controlCapabilityError('capability.unavailable', operation, descriptor)
   }
   return descriptor
+}
+
+/**
+ * A fail-closed control error stays fail-closed, but when the backend registered the
+ * capability with limitations the error carries them, so a caller learns the platform
+ * reason (e.g. BlueZ exposes no LE connection-parameter API and the privileged kernel
+ * channels are outside this process) instead of a bare `capability.unsupported`.
+ */
+function controlCapabilityError(
+  code: 'capability.unsupported' | 'capability.unavailable',
+  operation: string,
+  descriptor: CapabilityDescriptor | null
+): Error {
+  const limitations = descriptor?.limitations ?? []
+  const primaryLimitation = limitations[0]
+  if (descriptor === null || primaryLimitation === undefined) {
+    return contractError(code, 'connection', operation)
+  }
+  return new BleError(code, 'connection', operation, {
+    limitations,
+    platform: {
+      domain: 'capability',
+      code: primaryLimitation.code,
+      safeMessage: limitations.map(limitation => limitation.explanation).join(' '),
+      metadata: {
+        featureId: descriptor.id,
+        state: descriptor.state,
+        limitationCodes: limitations.map(limitation => limitation.code)
+      }
+    }
+  })
 }
 
 async function runPublicControl<Value>(action: () => Promise<Value>): Promise<Value> {
@@ -908,9 +940,10 @@ async function runPublicControl<Value>(action: () => Promise<Value>): Promise<Va
 
 function unsupportedControlStream<Value>(
   operation: string,
-  code: 'capability.unsupported' | 'capability.unavailable' = 'capability.unsupported'
+  code: 'capability.unsupported' | 'capability.unavailable' = 'capability.unsupported',
+  descriptor: CapabilityDescriptor | null = null
 ): AsyncIterable<Value> {
-  return new UnsupportedControlStream(operation, code)
+  return new UnsupportedControlStream(operation, code, descriptor)
 }
 
 function publicWriteReadinessStream<Attachment extends string, Identity extends BackendIdentity<Attachment>>(
@@ -1056,22 +1089,24 @@ async function closePublicReadinessWatch<Attachment extends string>(
 class UnsupportedControlStream<Value> implements AsyncIterable<Value> {
   constructor(
     private readonly operation: string,
-    private readonly code: 'capability.unsupported' | 'capability.unavailable'
+    private readonly code: 'capability.unsupported' | 'capability.unavailable',
+    private readonly descriptor: CapabilityDescriptor | null = null
   ) {}
 
   [Symbol.asyncIterator](): AsyncIterator<Value> {
-    return new UnsupportedControlIterator(this.operation, this.code)
+    return new UnsupportedControlIterator(this.operation, this.code, this.descriptor)
   }
 }
 
 class UnsupportedControlIterator<Value> implements AsyncIterator<Value> {
   constructor(
     private readonly operation: string,
-    private readonly code: 'capability.unsupported' | 'capability.unavailable'
+    private readonly code: 'capability.unsupported' | 'capability.unavailable',
+    private readonly descriptor: CapabilityDescriptor | null = null
   ) {}
 
   async next(): Promise<IteratorResult<Value, undefined>> {
-    throw rehydratePublicError(contractError(this.code, 'connection', this.operation))
+    throw rehydratePublicError(controlCapabilityError(this.code, this.operation, this.descriptor))
   }
 
   async return(): Promise<IteratorResult<Value, undefined>> {
@@ -1305,8 +1340,14 @@ function createPublicConnectionControls<Attachment extends string, Identity exte
         'connection:parameters',
         'public-connection.controls.parameters'
       ),
-    parameterEvents: () =>
-      unsupportedControlStream<ConnectionParametersObservation>('public-connection.controls.parameter-events'),
+    parameterEvents: () => {
+      const descriptor = internal.capability('connection:parameters')
+      return unsupportedControlStream<ConnectionParametersObservation>(
+        'public-connection.controls.parameter-events',
+        descriptor?.state === 'unavailable' ? 'capability.unavailable' : 'capability.unsupported',
+        descriptor
+      )
+    },
     requestSubrate: (_mode: SubrateMode, _options: OperationOptions = {}) =>
       unsupportedPromise<SubrateResult>('connection:subrate', 'public-connection.controls.request-subrate'),
     writeReadiness: (mode: 'without-response') => {

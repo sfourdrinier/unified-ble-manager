@@ -4,6 +4,10 @@ All notable changes to `unified-ble-manager` are documented here.
 
 ## [Unreleased]
 
+### Fixes
+
+- BlueZ states its connection-control truth instead of omitting the concept: `connection:priority` and `connection:parameters` are now registered as explicitly `unsupported`, with limitations naming the BlueZ D-Bus gap (no LE connection-parameter API on `org.bluez.Device1`/`Adapter1`, BlueZ 5.85), the privilege requirement of the alternatives (`CAP_NET_ADMIN` kernel mgmt socket and root-only debugfs — neither a live per-connection update), and the consequence that GATT traffic may run at a multi-hundred-millisecond peer-negotiated interval. `requestPriority()`, `parameters()`, and `parameterEvents()` fail closed with that reason attached (`BleError.limitations` and `platform.safeMessage`) instead of a bare `capability.unsupported` that taught nothing while a slow link looked like a peripheral fault (#149).
+
 ## [4.0.5] - 2026-08-25
 
 First release cut against a live peripheral. Every fix below came from driving a real CGM from an Android phone and a Linux/BlueZ host, and several are defects no unit test had reason to catch. Does not retag `v4.0.4`.
