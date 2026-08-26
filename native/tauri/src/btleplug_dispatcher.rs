@@ -1,5 +1,6 @@
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
+    future::Future,
     sync::{
         atomic::{AtomicI64, AtomicU64, Ordering},
         Arc, Mutex as SyncMutex, OnceLock,
@@ -32,6 +33,20 @@ const COMPLETED_CORRELATION_TTL: Duration = Duration::from_secs(30);
 const MAX_QUARANTINE_WORKERS: usize = 4;
 const MAX_QUARANTINE_ATTEMPTS: u32 = 8;
 const SCAN_POLL_INTERVAL: Duration = Duration::from_millis(250);
+/// Safety bound, not host policy.
+///
+/// btleplug's CoreBluetooth `disconnect()` never resolves when the peripheral
+/// has already been dropped from its internal map, so an unbounded await hangs
+/// the caller forever. This deadline converts that hang into a bounded,
+/// classified outcome, and its expiry is reported as a cleanup failure rather
+/// than swallowed.
+///
+/// It is deliberately not caller-tunable: it does not pace a peer's work, it
+/// caps a wait on a future that may never complete. A slow-but-progressing
+/// teardown is not misjudged by it, because btleplug maps a peripheral in the
+/// disconnecting state to `is_connected() == false`, which this code treats as
+/// released.
+const DISCONNECT_COMPLETION_TIMEOUT: Duration = Duration::from_secs(1);
 
 fn btleplug_runtime() -> tokio::runtime::Handle {
     static HANDLE: OnceLock<tokio::runtime::Handle> = OnceLock::new();
@@ -1430,10 +1445,12 @@ impl BtleplugDispatcher {
             )?;
             connection.clone()
         };
-        connection.peripheral.disconnect().await.map_err(|error| {
-            DispatchError::new("platform.failure", "connection", "tauri.disconnect")
-                .platform(error.to_string())
-        })?;
+        disconnect_peripheral(&connection.peripheral)
+            .await
+            .map_err(|error| {
+                DispatchError::new("platform.failure", "connection", "tauri.disconnect")
+                    .platform(error)
+            })?;
         let resources = self
             .remove_connection_resources(&key, &handle, &connection.peer_id)
             .await;
@@ -1454,10 +1471,19 @@ impl BtleplugDispatcher {
     ) -> (Vec<SubscriptionResource>, Vec<TauriJoinHandle<()>>) {
         let mut state = self.inner.lock().await;
         let Some(caller_state) = state.callers.get_mut(caller_key) else {
-            state.peer_owners.remove(peer_id);
+            if state
+                .peer_owners
+                .get(peer_id)
+                .is_some_and(|owner| owner == caller_key)
+            {
+                state.peer_owners.remove(peer_id);
+            }
             return (Vec::new(), Vec::new());
         };
-        caller_state.connections.remove(connection_handle);
+        let removed_peer_id = caller_state
+            .connections
+            .remove(connection_handle)
+            .map(|connection| connection.peer_id);
         let database_handles = caller_state
             .databases
             .iter()
@@ -1495,7 +1521,14 @@ impl BtleplugDispatcher {
             .filter_map(|event_handle| caller_state.connection_events.remove(&event_handle))
             .filter_map(|event| event.task)
             .collect::<Vec<_>>();
-        state.peer_owners.remove(peer_id);
+        if should_clear_peer_owner(
+            removed_peer_id.as_deref(),
+            peer_id,
+            state.peer_owners.get(peer_id).map(String::as_str),
+            caller_key,
+        ) {
+            state.peer_owners.remove(peer_id);
+        }
         (subscriptions, event_tasks)
     }
 
@@ -2956,7 +2989,7 @@ impl BtleplugDispatcher {
             let Some(connection) = caller.connections.get(&handle).cloned() else {
                 continue;
             };
-            match connection.peripheral.disconnect().await {
+            match disconnect_peripheral(&connection.peripheral).await {
                 Ok(()) => {
                     caller.connections.remove(&handle);
                     caller
@@ -2973,6 +3006,146 @@ impl BtleplugDispatcher {
         }
         cleanup_record(failures)
     }
+}
+
+/// Disconnects a peripheral while preserving retry ownership unless the
+/// platform confirms that the physical link is already gone.
+///
+/// CoreBluetooth may report an error when its disconnect completion races the
+/// connection-event monitor. A failed command is therefore idempotent only
+/// when a fresh `is_connected` reading proves the requested end state.
+async fn disconnect_peripheral(peripheral: &Peripheral) -> Result<(), String> {
+    disconnect_with_state_check(
+        async {
+            peripheral
+                .disconnect()
+                .await
+                .map_err(|error| error.to_string())
+        },
+        || async { connected_after_failed_disconnect(peripheral).await },
+    )
+    .await
+}
+
+/// Answer "is it still connected?" after a disconnect has already failed.
+///
+/// The state check is classified *before* the error is rendered to a string,
+/// because the typed error carries the only evidence that distinguishes "the
+/// peer is gone" from "we could not tell", and stringifying first throws it
+/// away at the one call site that has it.
+///
+/// On BlueZ a removed D-Bus device object is not a failure of this question -
+/// it is the answer. `is_connected()` reads `Device1` properties, so once BlueZ
+/// has dropped the object the read errors, and treating that as indeterminate
+/// retains ownership of a peer that is provably released, permanently: the
+/// object never comes back, so every retry fails identically.
+async fn connected_after_failed_disconnect(peripheral: &Peripheral) -> Result<bool, String> {
+    match peripheral.is_connected().await {
+        Ok(connected) => Ok(connected),
+        Err(error) if error_confirms_device_released(&error) => {
+            // Reported, not swallowed: the outcome is "released", but the error
+            // is still the only account of why the disconnect failed.
+            eprintln!(
+                "[unified-ble:tauri] the peer's device object is gone, so it is released \
+                 despite the state check erroring: {error}"
+            );
+            Ok(false)
+        }
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+/// True when a state-check error proves the peer is no longer present.
+///
+/// The discriminator is the D-Bus error *name*, which is a protocol constant,
+/// not rendered text - so this does not depend on how any crate in the chain
+/// formats its errors.
+#[cfg(target_os = "linux")]
+fn error_confirms_device_released(error: &btleplug::Error) -> bool {
+    let btleplug::Error::Other(inner) = error else {
+        return false;
+    };
+    let Some(bluez_async::BluetoothError::DbusError(dbus_error)) =
+        inner.downcast_ref::<bluez_async::BluetoothError>()
+    else {
+        return false;
+    };
+    matches!(
+        dbus_error.name(),
+        Some("org.freedesktop.DBus.Error.UnknownObject" | "org.bluez.Error.DoesNotExist")
+    )
+}
+
+/// No equivalent evidence exists off Linux: CoreBluetooth and WinRT report a
+/// missing peer as `Ok(false)` rather than as an error, so nothing reaches here.
+#[cfg(not(target_os = "linux"))]
+fn error_confirms_device_released(_error: &btleplug::Error) -> bool {
+    false
+}
+
+async fn disconnect_with_state_check<DisconnectFuture, StateFuture>(
+    disconnect: DisconnectFuture,
+    connected_after_failure: impl FnOnce() -> StateFuture,
+) -> Result<(), String>
+where
+    DisconnectFuture: Future<Output = Result<(), String>>,
+    StateFuture: Future<Output = Result<bool, String>>,
+{
+    let disconnect_error =
+        match tokio::time::timeout(DISCONNECT_COMPLETION_TIMEOUT, disconnect).await {
+            Ok(Ok(())) => return Ok(()),
+            Ok(Err(error)) => error,
+            Err(_) => format!(
+                "disconnect completion timed out after {} ms",
+                DISCONNECT_COMPLETION_TIMEOUT.as_millis()
+            ),
+        };
+    let connected_after_failure =
+        tokio::time::timeout(DISCONNECT_COMPLETION_TIMEOUT, connected_after_failure())
+            .await
+            .unwrap_or_else(|_| {
+                Err(format!(
+                    "post-disconnect state check timed out after {} ms",
+                    DISCONNECT_COMPLETION_TIMEOUT.as_millis()
+                ))
+            });
+    resolve_disconnect_failure(disconnect_error, connected_after_failure)
+}
+
+/// Decide whether a failed disconnect nevertheless left the peer released.
+///
+/// The `Ok(false)` arm reports success, but the underlying platform error is
+/// still the only account of why the disconnect failed in the first place.
+/// Dropping it turns a specific fault into "nothing happened" - the failure
+/// mode this repository explicitly forbids - and it is what made #145 take two
+/// physical re-test sessions to characterise. So the error is recorded on the
+/// way past even when the outcome is success.
+fn resolve_disconnect_failure(
+    disconnect_error: String,
+    connected_after_failure: Result<bool, String>,
+) -> Result<(), String> {
+    match connected_after_failure {
+        Ok(false) => {
+            eprintln!(
+                "[unified-ble:tauri] disconnect reported an error but the peer is no longer \
+                 connected; releasing anyway: {disconnect_error}"
+            );
+            Ok(())
+        }
+        Ok(true) => Err(disconnect_error),
+        Err(state_error) => Err(format!(
+            "{disconnect_error}; post-disconnect state check failed: {state_error}"
+        )),
+    }
+}
+
+fn should_clear_peer_owner(
+    removed_peer_id: Option<&str>,
+    requested_peer_id: &str,
+    current_owner: Option<&str>,
+    caller_key: &str,
+) -> bool {
+    removed_peer_id == Some(requested_peer_id) && current_owner == Some(caller_key)
 }
 
 fn connection_cleanup_payload(payload: &BTreeMap<String, IpcValue>) -> Option<IpcValue> {
@@ -3953,11 +4126,17 @@ fn required_string(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "linux")]
+    use super::error_confirms_device_released;
     use super::{
-        characteristic_properties, negotiate_ipc_versions, object, released,
-        scan_properties_match_optional, string,
+        characteristic_properties, disconnect_with_state_check, negotiate_ipc_versions, object,
+        released, resolve_disconnect_failure, scan_properties_match_optional,
+        should_clear_peer_owner, string, BtleplugDispatcher, BtleplugDispatcherOptions,
+        CallerState, IpcEventSink, QuarantineScheduler, DISCONNECT_COMPLETION_TIMEOUT,
     };
     use btleplug::api::CharPropFlags;
+    use std::collections::{HashMap, HashSet};
+    use std::{cell::Cell, cell::RefCell, rc::Rc};
 
     #[test]
     fn capability_projection_is_data_only() {
@@ -3965,6 +4144,239 @@ mod tests {
             characteristic_properties(CharPropFlags::READ | CharPropFlags::NOTIFY),
             super::IpcValue::Array(vec![string("read"), string("notify")])
         );
+    }
+
+    #[tokio::test]
+    async fn disconnect_failure_checks_state_once_and_releases_an_already_disconnected_peer() {
+        let state_checks = Cell::new(0);
+        assert_eq!(
+            disconnect_with_state_check(
+                async { Err("already disconnected".to_owned()) },
+                || async {
+                    state_checks.set(state_checks.get() + 1);
+                    Ok(false)
+                }
+            )
+            .await,
+            Ok(())
+        );
+        assert_eq!(state_checks.get(), 1);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn disconnect_timeout_checks_state_and_releases_an_already_disconnected_peer() {
+        let state_checks = Cell::new(0);
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let disconnect_events = Rc::clone(&events);
+        let state_events = Rc::clone(&events);
+        assert_eq!(
+            disconnect_with_state_check(
+                async move {
+                    disconnect_events.borrow_mut().push("disconnect-started");
+                    std::future::pending().await
+                },
+                || async {
+                    state_events.borrow_mut().push("state-checked");
+                    state_checks.set(state_checks.get() + 1);
+                    Ok(false)
+                }
+            )
+            .await,
+            Ok(())
+        );
+        assert_eq!(state_checks.get(), 1);
+        assert_eq!(
+            events.borrow().as_slice(),
+            ["disconnect-started", "state-checked"]
+        );
+    }
+
+    /// A caller with no live connections, as it looks after its handle has
+    /// already been torn down.
+    fn caller_state_with_no_connections() -> CallerState {
+        CallerState {
+            lease_id: "lease-1".to_owned(),
+            lease_generation: "generation-1".to_owned(),
+            versions: object([]),
+            event_sink: IpcEventSink::new(tauri::ipc::Channel::new(|_| Ok(()))),
+            scan_admitting: false,
+            scan: None,
+            connections: HashMap::new(),
+            databases: HashMap::new(),
+            subscriptions: HashMap::new(),
+            connection_events: HashMap::new(),
+            operations: HashMap::new(),
+            completed_correlations: HashMap::new(),
+            pending_events: HashSet::new(),
+            quarantine: QuarantineScheduler::new(),
+        }
+    }
+
+    /// Exercises the guard through the dispatcher rather than through the pure
+    /// predicate, which is the part a revert would actually break.
+    ///
+    /// The scenario is the one the fix exists for: a stale cleanup for handle
+    /// `h1` arrives after the peer has been reconnected as `h2`. Because `h1`
+    /// is already gone, `connections.remove` yields `None`, so the removed peer
+    /// is `None` and ownership must be left alone. Passing the *requested* peer
+    /// where the *removed* peer belongs - the original bug - makes the guard
+    /// true here and clears an owner that a newer connection still holds, so
+    /// this test fails if those arguments are ever swapped back.
+    #[tokio::test]
+    async fn a_stale_cleanup_does_not_clear_a_reconnected_peers_owner() {
+        let dispatcher = BtleplugDispatcher::new(BtleplugDispatcherOptions { adapter_id: None });
+        {
+            let mut state = dispatcher.inner.lock().await;
+            state
+                .callers
+                .insert("caller-a".to_owned(), caller_state_with_no_connections());
+            state
+                .peer_owners
+                .insert("peer-1".to_owned(), "caller-a".to_owned());
+        }
+
+        let (subscriptions, event_tasks) = dispatcher
+            .remove_connection_resources("caller-a", "h1", "peer-1")
+            .await;
+
+        assert!(subscriptions.is_empty());
+        assert!(event_tasks.is_empty());
+        let state = dispatcher.inner.lock().await;
+        assert_eq!(
+            state.peer_owners.get("peer-1").map(String::as_str),
+            Some("caller-a"),
+            "a stale handle's cleanup must not release a peer a newer connection owns"
+        );
+    }
+
+    /// Builds the error btleplug actually delivers when BlueZ has dropped a
+    /// device object, by the same conversions the real path uses.
+    ///
+    /// This doubles as a version tripwire. It constructs the value through the
+    /// *direct* bluez-async dependency and hands it to btleplug's `From`, so if
+    /// that copy and btleplug's transitive copy ever diverge across a semver
+    /// bump, this stops compiling - instead of the downcast silently returning
+    /// None and the classification quietly reverting in production.
+    #[cfg(target_os = "linux")]
+    fn bluez_dbus_error(name: &str) -> btleplug::Error {
+        let dbus_error = dbus::Error::new_custom(name, "device object is gone");
+        btleplug::Error::from(bluez_async::BluetoothError::DbusError(dbus_error))
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_removed_bluez_device_object_confirms_the_peer_is_released() {
+        assert!(error_confirms_device_released(&bluez_dbus_error(
+            "org.freedesktop.DBus.Error.UnknownObject"
+        )));
+        assert!(error_confirms_device_released(&bluez_dbus_error(
+            "org.bluez.Error.DoesNotExist"
+        )));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_transport_failure_is_not_evidence_that_the_peer_was_released() {
+        // The distinction that matters: these mean "we could not tell", so
+        // ownership must be retained rather than released.
+        for name in [
+            "org.freedesktop.DBus.Error.Timeout",
+            "org.freedesktop.DBus.Error.NoReply",
+            "org.freedesktop.DBus.Error.ServiceUnknown",
+        ] {
+            assert!(
+                !error_confirms_device_released(&bluez_dbus_error(name)),
+                "{name} does not prove the peer is gone"
+            );
+        }
+        assert!(!error_confirms_device_released(
+            &btleplug::Error::NotConnected
+        ));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn disconnect_timeout_is_preserved_when_the_peer_remains_connected() {
+        assert_eq!(
+            disconnect_with_state_check(std::future::pending(), || async { Ok(true) }).await,
+            Err(format!(
+                "disconnect completion timed out after {} ms",
+                DISCONNECT_COMPLETION_TIMEOUT.as_millis()
+            ))
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn disconnect_and_state_timeouts_are_both_reported() {
+        assert_eq!(
+            disconnect_with_state_check(
+                std::future::pending(),
+                std::future::pending::<Result<bool, String>>,
+            )
+            .await,
+            Err(format!(
+                "disconnect completion timed out after {ms} ms; post-disconnect state check \
+                 failed: post-disconnect state check timed out after {ms} ms",
+                ms = DISCONNECT_COMPLETION_TIMEOUT.as_millis()
+            ))
+        );
+    }
+
+    #[tokio::test]
+    async fn successful_disconnect_does_not_query_connection_state() {
+        let state_checks = Cell::new(0);
+        assert_eq!(
+            disconnect_with_state_check(async { Ok(()) }, || async {
+                state_checks.set(state_checks.get() + 1);
+                Ok(true)
+            })
+            .await,
+            Ok(())
+        );
+        assert_eq!(state_checks.get(), 0);
+    }
+
+    #[test]
+    fn disconnect_failure_is_preserved_when_the_peripheral_remains_connected() {
+        assert_eq!(
+            resolve_disconnect_failure("transport failed".to_owned(), Ok(true)),
+            Err("transport failed".to_owned())
+        );
+    }
+
+    #[test]
+    fn disconnect_failure_includes_an_indeterminate_post_failure_state() {
+        assert_eq!(
+            resolve_disconnect_failure(
+                "transport failed".to_owned(),
+                Err("state unavailable".to_owned())
+            ),
+            Err(
+                "transport failed; post-disconnect state check failed: state unavailable"
+                    .to_owned()
+            )
+        );
+    }
+
+    #[test]
+    fn stale_connection_cleanup_does_not_clear_a_new_peer_owner() {
+        assert!(!should_clear_peer_owner(
+            None,
+            "peer-1",
+            Some("caller-1"),
+            "caller-1"
+        ));
+        assert!(!should_clear_peer_owner(
+            Some("peer-1"),
+            "peer-1",
+            Some("caller-2"),
+            "caller-1"
+        ));
+        assert!(should_clear_peer_owner(
+            Some("peer-1"),
+            "peer-1",
+            Some("caller-1"),
+            "caller-1"
+        ));
     }
 
     #[test]

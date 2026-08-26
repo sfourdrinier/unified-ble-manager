@@ -24,6 +24,20 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"
 tokio-util = "0.7"
 uuid = "1"
 
+# Linux only, and only to classify one BlueZ error. btleplug reports a removed
+# D-Bus device object as Error::Other(Box<BluetoothError>), and the D-Bus error
+# *name* inside it is a protocol constant - the one piece of evidence that
+# distinguishes "the peer is gone" from "we could not tell". Reading it requires
+# naming the type to downcast to. The semver requirement matches btleplug's own,
+# so Cargo unifies to a single copy; the round-trip test guards against a future
+# divergence turning the downcast into a silent no-op.
+[target.'cfg(target_os = "linux")'.dependencies]
+bluez-async = "0.8"
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+# Only to construct a real dbus::Error in the classifier tests.
+dbus = "0.9"
+
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt", "time", "test-util"] }
 
