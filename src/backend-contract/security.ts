@@ -1,3 +1,4 @@
+import { contractError } from './errors'
 import type { Limitation } from './capabilities'
 import type { PublicOperationOptions } from './operations'
 import type { BoundedAsyncStream } from './streams'
@@ -141,6 +142,63 @@ export function cancelOutcomeForPairResult(result: SecurityPairResult): Security
       return { outcome: 'rejected', reason: result.reason }
     case 'cancelled':
       return { outcome: 'cancelled' }
+  }
+}
+
+/**
+ * The cancellation's outcome, bounded by the CANCELLING caller's own options.
+ *
+ * `cancelPairing()` reads the pairing's result rather than forming a second
+ * opinion, which is what stops the two calls contradicting each other. The cost
+ * is that it now waits for the pairing to settle - and until this existed, that
+ * wait was bounded only by the options the *pairing's* caller passed. A caller
+ * that supplied a deadline to `cancelPairing()` had it validated at admission
+ * and then ignored, which is the shape this package keeps removing: accepting an
+ * option and discarding it.
+ *
+ * On expiry this REJECTS with `operation.timed-out` or `operation.aborted`. It
+ * never substitutes `'cancelled'`, because a caller who stopped waiting has
+ * learned nothing about the bond - and answering `'cancelled'` would reintroduce
+ * the exact lie the result vocabulary was widened to remove, this time under a
+ * deadline. `state()` and `watch()` remain authoritative for the bond.
+ */
+export async function boundedCancelOutcome(
+  pairing: Promise<SecurityPairResult>,
+  options: PublicOperationOptions,
+  now: () => number,
+  operation: string
+): Promise<SecurityCancelPairingResult> {
+  if (options.signal?.aborted === true) {
+    throw contractError('operation.aborted', 'core', operation)
+  }
+  if (options.deadline !== null && options.deadline <= now()) {
+    throw contractError('operation.timed-out', 'core', operation)
+  }
+  if (options.signal === null && options.deadline === null) {
+    return cancelOutcomeForPairResult(await pairing)
+  }
+
+  let onAbort: (() => void) | null = null
+  let timer: ReturnType<typeof setTimeout> | null = null
+  const stopWaiting = new Promise<never>((_resolve, reject) => {
+    if (options.signal !== null) {
+      onAbort = () => reject(contractError('operation.aborted', 'core', operation))
+      options.signal.addEventListener('abort', onAbort, { once: true })
+    }
+    if (options.deadline !== null) {
+      // Scheduled only when the caller asked to be bounded, and cleared on
+      // every exit, so a prompt cancellation never waits on a timer.
+      timer = setTimeout(
+        () => reject(contractError('operation.timed-out', 'core', operation)),
+        Math.max(0, Number(options.deadline) - now())
+      )
+    }
+  })
+  try {
+    return cancelOutcomeForPairResult(await Promise.race([pairing, stopWaiting]))
+  } finally {
+    if (timer !== null) clearTimeout(timer)
+    if (onAbort !== null && options.signal !== null) options.signal.removeEventListener('abort', onAbort)
   }
 }
 

@@ -11,7 +11,7 @@ import type {
   SecurityPairingChallenge,
   SecurityPairingResponse
 } from '../../backend-contract/security'
-import { cancelOutcomeForPairResult } from '../../backend-contract/security'
+import { boundedCancelOutcome } from '../../backend-contract/security'
 import type { PublicOperationOptions } from '../../backend-contract/operations'
 import type { DeterministicOperationRuntime } from './deterministic-operation-runtime'
 import { capacity } from '../../backend-contract/primitives'
@@ -137,7 +137,7 @@ export class DeterministicSecurityBackend implements SecurityBackend {
     return operation
   }
 
-  cancelPairing(peerId: string, _options: PublicOperationOptions): Promise<SecurityCancelPairingResult> {
+  cancelPairing(peerId: string, options: PublicOperationOptions): Promise<SecurityCancelPairingResult> {
     this.assertUsable('security.cancel-pairing')
     const active = this.activePairings.get(peerId)
     // Narrow known window: the pairing can settle between this lookup and the
@@ -148,7 +148,7 @@ export class DeterministicSecurityBackend implements SecurityBackend {
     // deterministic backend that reported 'cancelled' where BlueZ reports
     // 'paired' would let a consumer's suite pass against a contract no device
     // honours - the one way a mock can actively mislead.
-    return active.operation.then(cancelOutcomeForPairResult)
+    return boundedCancelOutcome(active.operation, options, () => Number(this.clock.now()), 'security.cancel-pairing')
   }
 
   unpair(peerId: string, _options: PublicOperationOptions): Promise<SecurityUnpairResult> {

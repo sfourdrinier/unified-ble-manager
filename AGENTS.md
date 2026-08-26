@@ -31,6 +31,16 @@ it, and a rule that stops being true is removed rather than left standing.
 Documentation that lags behind the code is a defect of the same kind as a
 swallowed failure: it reports something that is not so.
 
+**A fix is not a fix until every platform that has the defect has it.** Before
+changing behaviour, enumerate the implementations — BlueZ, WinRT, React Native
+Android, React Native Apple, CoreBluetooth, Web, Electron, Tauri, and the
+deterministic `/testing` backend — and say for each whether it is affected,
+fixed, or genuinely not applicable. Grep for the shape, not the word: an issue
+reported on one platform is evidence about a shared boundary, not a boundary on
+the search. Two defects this cycle were filed as one platform and found on two,
+and a mock that keeps the old behaviour is not "out of scope" — it is the next
+bug.
+
 Extreme DRY and test-first. Write the test before the behaviour, for logic,
 metadata, build configuration and contract guards alike.
 

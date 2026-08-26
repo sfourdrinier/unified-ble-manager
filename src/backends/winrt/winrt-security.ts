@@ -13,7 +13,7 @@ import type {
   SecurityPairResult,
   SecurityUnpairResult
 } from '../../backend-contract/security'
-import { cancelOutcomeForPairResult } from '../../backend-contract/security'
+import { boundedCancelOutcome, cancelOutcomeForPairResult } from '../../backend-contract/security'
 import type {
   WinRtBoundary,
   WinRtPairResult,
@@ -300,7 +300,7 @@ export class WinRtSecurityBackend implements SecurityBackend {
     return result
   }
 
-  async cancelPairing(peerId: string, _options: PublicOperationOptions): Promise<SecurityCancelPairingResult> {
+  async cancelPairing(peerId: string, options: PublicOperationOptions): Promise<SecurityCancelPairingResult> {
     this.assertActive('winrt.security.cancel-pairing')
     const active = this.activePairings.get(peerId)
     if (active === undefined) return { outcome: 'not-pairing' }
@@ -311,9 +311,9 @@ export class WinRtSecurityBackend implements SecurityBackend {
       // 'not-pairing' here would contradict the pair() this cancellation
       // targeted and make one word mean two things. Read the pairing's own
       // answer, like every other backend.
-      return cancelOutcomeForPairResult(await active.result)
+      return boundedCancelOutcome(active.result, options, this.now, 'winrt.security.cancel-pairing')
     }
-    const dispatch = this.dispatcher.dispatch(_options, 'winrt.security.cancel-pairing', () => {
+    const dispatch = this.dispatcher.dispatch(options, 'winrt.security.cancel-pairing', () => {
       const nativeCancellation = this.boundary.cancelPairing(active.nativePeerId)
       const completion = Promise.all([active.operation.requestCancellation(), nativeCancellation.completion]).then(
         () => undefined

@@ -13,7 +13,7 @@ import type {
   SecurityPairResult,
   SecurityUnpairResult
 } from '../../backend-contract/security'
-import { cancelOutcomeForPairResult } from '../../backend-contract/security'
+import { boundedCancelOutcome } from '../../backend-contract/security'
 import type {
   AndroidSecurityState,
   ReactNativeAndroidProtocolBoundary
@@ -227,7 +227,7 @@ export class ReactNativeAndroidSecurityBackend implements SecurityBackend {
     return completion
   }
 
-  async cancelPairing(peerId: string, _options: PublicOperationOptions): Promise<SecurityCancelPairingResult> {
+  async cancelPairing(peerId: string, options: PublicOperationOptions): Promise<SecurityCancelPairingResult> {
     this.assertOpen('android.security.cancel-pairing')
     if (!this.boundary.securityCancellationAvailable) {
       throw contractError('capability.unsupported', 'capability', 'android.security.cancel-pairing')
@@ -244,7 +244,7 @@ export class ReactNativeAndroidSecurityBackend implements SecurityBackend {
     // error rather than being reported as a cancellation we did not achieve,
     // and concurrent callers all await the same promise, so they cannot get
     // different answers.
-    return cancelOutcomeForPairResult(await result)
+    return boundedCancelOutcome(result, options, this.now, 'android.security.cancel-pairing')
   }
 
   async unpair(peerId: string, _options: PublicOperationOptions): Promise<SecurityUnpairResult> {

@@ -2,6 +2,12 @@
 
 All notable changes to `unified-ble-manager` are documented here.
 
+## [Unreleased]
+
+### Fixes
+
+- `cancelPairing()` honours the deadline and abort signal its own caller passed. Those options were validated at admission and then discarded by every backend, which was harmless while the call returned the moment a cancellation was dispatched — and stopped being harmless in 4.0.7, when it began awaiting the pairing's settlement so the two calls could not contradict each other. The wait was then bounded only by the options the *pairing's* caller had supplied, so a caller that asked to be bounded was not. On expiry it now rejects with `operation.timed-out` or `operation.aborted` and never substitutes `'cancelled'`: a caller who stopped waiting has learned nothing about the bond, and answering `'cancelled'` would reintroduce under a deadline the exact lie the result vocabulary was widened to remove. `state()` and `watch()` remain authoritative. Applied to all four implementations — BlueZ, WinRT, React Native Android and the deterministic `/testing` backend; CoreBluetooth, Web, Electron and Tauri have no `cancelPairing` to bound (#166).
+
 ## [4.0.7] - 2026-08-26
 
 ### Changed behaviour
