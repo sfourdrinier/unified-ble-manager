@@ -223,17 +223,6 @@ export class BluezSecurityBackend implements SecurityBackend {
     let pairCallStarted = false
     let pairCallSettled = false
     let pairSucceeded = false
-    /**
-     * The in-flight `Device1.Pair` call, held so the operation body can await
-     * it after `CancelPairing` and let `pairSucceeded` record whether the
-     * daemon bonded anyway.
-     *
-     * It does NOT make the abort path wait for the radio - that is #157, and
-     * it is not implemented here: waiting risks hanging the caller behind a
-     * wedged daemon, which the suite forbids. An abort still names its outcome
-     * from `pairSucceeded` at the moment it fires.
-     */
-    let pairCall: Promise<unknown> | null = null
     const dispatch = this.runtime.trackConnectionOperationForPeer(
       peerId,
       this.runtime.dispatcher.dispatch<SecurityPairResult>(
@@ -265,11 +254,7 @@ export class BluezSecurityBackend implements SecurityBackend {
               // Mark started only immediately before Pair, so an abort during
               // agent registration does not cancel a pairing that never began.
               pairCallStarted = true
-              // Kept as a promise, not just awaited: the cancellation path needs
-              // to observe how it settles. Its rejection is consumed there too,
-              // so retaining it cannot produce an unhandled rejection.
-              pairCall = this.runtime.boundary.methods.callVoid(path, BLUEZ_DEVICE_INTERFACE, 'Pair', [])
-              await pairCall
+              await this.runtime.boundary.methods.callVoid(path, BLUEZ_DEVICE_INTERFACE, 'Pair', [])
               // Device1.Pair resolves only on a completed bond, so the peer is now
               // bonded regardless of whether the confirming Paired signal has
               // landed. Record that so a late abort is reported as paired, not
