@@ -81,8 +81,11 @@ call resolves only on a completed bond. On Android and WinRT the public outcome
 is currently committed when the abort fires, before the native result is
 observed, so this race can surface `cancelled` for a peer that did in fact
 bond; the bond is still authoritative and visible through `watch()`/`state()`.
-Aligning Android and WinRT with BlueZ's report-the-bond behavior is tracked
-separately.
+Aligning Android and WinRT with BlueZ's report-the-bond behavior is tracked in
+[#157](https://github.com/sfourdrinier/unified-ble-manager/issues/157), which
+records why it is a contract decision rather than a bug fix: learning the truth
+means waiting for the radio, and waiting risks hanging the caller behind a
+wedged daemon.
 
 `cancelPairing()` no longer forms its own opinion about that race. It reports
 what the cancellation _achieved_ by reading the pairing's own result, so the two
