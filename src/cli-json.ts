@@ -2,6 +2,13 @@
 
 import type { SerializableRecord, SerializableValue } from './backend-contract/primitives'
 
+/**
+ * Safety bound on nesting depth when parsing CLI JSON input.
+ *
+ * A fail-closed guard against stack exhaustion from untyped external input, not
+ * a capacity a caller should ever raise. Sixty-four is far beyond any shape the
+ * CLI surface accepts.
+ */
 const maximumJsonDepth = 64
 
 /** Parses JSON without admitting untyped values into the public CLI boundary. */

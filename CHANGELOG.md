@@ -4,20 +4,30 @@ All notable changes to `unified-ble-manager` are documented here.
 
 ## [Unreleased]
 
-### Added
+### Fixes
 
+- `scan()` works on React Native Android again, and so does every other control-plane operation there. The Android dispatcher stamped a hardcoded `1` on field 1 of every result and event it built while the native codec has required version 2 since the schema was frozen, so all of them — `scanStarted`, a connect completing, a connect failing, a cancellation, a bond state change, a lost link — were rejected at the JSI boundary as version-incompatible and dropped. A scan therefore never received its terminal: the radio discovered the peripheral 38 times in one four-minute capture and the application was handed nothing. The stamp now comes from the generated `NATIVE_PROTOCOL_VERSION`, so it cannot drift from the version the codec validates against (#140).
+- A record the codec refuses is no longer only written to logcat: the Android binding counts quarantined records per attachment and emits a `recordQuarantined` diagnostic in place of the record it could not deliver, so an application learns that the boundary discarded something it was asked to deliver (#140).
+- A version-incompatible record names its kind, the version it carried and the version expected, so a quarantined record identifies its emitter instead of leaving four record kinds to choose between (#140).
+- BlueZ states its connection-control truth instead of omitting the concept: `connection:priority` and `connection:parameters` are now registered as explicitly `unsupported`, with limitations naming the BlueZ D-Bus gap (no LE connection-parameter API on `org.bluez.Device1`/`Adapter1`, BlueZ 5.85), the privilege requirement of the alternatives (`CAP_NET_ADMIN` kernel mgmt socket and root-only debugfs — neither a live per-connection update), and the consequence that GATT traffic may run at a multi-hundred-millisecond peer-negotiated interval. `requestPriority()`, `parameters()`, and `parameterEvents()` fail closed with that reason attached (`BleError.limitations` and `platform.safeMessage`) instead of a bare `capability.unsupported` that taught nothing while a slow link looked like a peripheral fault (#149).
+- BlueZ `security.pair()` no longer fires `Device1.Pair` when the operation is aborted or times out while the just-works agent is still registering; it re-checks cancellation after agent registration so a cancelled pairing never proceeds on the daemon (#143).
+- BlueZ `security.pair()` reports `paired` (not `cancelled`) when an abort or deadline lands after `Device1.Pair` has already completed the bond, so a bond that was actually created is never reported as if it never happened (#143).
+- Android `security.pair()` no longer reports a timed-out pairing as `cancelled` when native cancellation is unavailable and it cannot actually stop the in-flight bond; the deadline path now fails closed with `capability.unsupported`, matching the abort path, so a bond that may still complete is never misreported as cancelled (#143).
+
+### Additions
+
+- `FindOptions` accepts `duplicates` and `delivery`, so the `find()` convenience can be pointed at a peripheral that advertises in dense bursts instead of being abandoned for a hand-driven `scan()`. Both default to the values `find()` has always used (`'coalesced'` and `'latest'`), so nothing changes for existing callers (#148).
 - BlueZ pairing dispatch: `org.bluez.Device1.Pair`, `org.bluez.Device1.CancelPairing`, and `org.bluez.Adapter1.RemoveDevice` are now allowed through the dbus-next boundary, and the backend registers a just-works (`NoInputNoOutput`) `org.bluez.Agent1` on its own bus (not the system default) so a client-initiated pairing can complete without an external agent (#141, #143).
 
-### Changed
+### Changes
 
 - The Node convenience factories (`createBluezBleManager` and siblings) now select the first adapter (ordered deterministically by id) when the caller names no `adapterId`, instead of failing on a multi-adapter host. A single-adapter machine needs no configuration and a multi-adapter host picks the same controller every run; pass `adapterId` to target a specific controller (e.g. a second USB dongle used for debugging). The low-level provider is unchanged: it still requires an explicit selection and never silently substitutes one (#143).
 - `PairOptions.secureConnections` (`'require' | 'prefer' | 'disallow'`, default `'prefer'`): request an LE pairing generation. `'prefer'` defers to the platform. No current backend exposes per-pairing generation selection, so `'require'` and `'disallow'` fail closed with `capability.unsupported` on BlueZ, WinRT, and Android rather than being silently ignored; the contract is in place for a backend that can honour it (#144, #143).
 
-### Fixed
+### Documentation
 
-- BlueZ `security.pair()` no longer fires `Device1.Pair` when the operation is aborted or times out while the just-works agent is still registering; it re-checks cancellation after agent registration so a cancelled pairing never proceeds on the daemon (#143).
-- BlueZ `security.pair()` reports `paired` (not `cancelled`) when an abort or deadline lands after `Device1.Pair` has already completed the bond, so a bond that was actually created is never reported as if it never happened (#143).
-- Android `security.pair()` no longer reports a timed-out pairing as `cancelled` when native cancellation is unavailable and it cannot actually stop the in-flight bond; the deadline path now fails closed with `capability.unsupported`, matching the abort path, so a bond that may still complete is never misreported as cancelled (#143).
+- Every hardcoded timing and capacity constant in `src/` is now classified as a protocol invariant, a safety bound, or host policy, and each one that stays fixed carries a comment at its definition saying why. Undocumented constants were the defect: a fixed deadline that is never explained reads as a device fault when a slower host misses it (#148).
+- `find()`'s 10 s fallback deadline and `adapter.waitUntilReady()`'s 10 s fallback deadline are named constants shared between the in-process and IPC managers, so the same logical operation cannot expire at two different times either side of the IPC boundary (#148).
 
 ## [4.0.5] - 2026-08-25
 

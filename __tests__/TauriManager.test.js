@@ -4,12 +4,29 @@
 
 const { BUILT_IN_FEATURE_IDS } = require('../src/backend-contract/capabilities')
 
-async function waitUntil(predicate, attempts = 200) {
-  for (let attempt = 0; attempt < attempts; attempt += 1) {
+/**
+ * Wait for a condition without depending on how work happens to be scheduled.
+ *
+ * The previous version spun a fixed number of `await Promise.resolve()` ticks.
+ * That drains only the MICROTASK queue, so anything the manager awaits behind a
+ * timer or an I/O callback could never make progress no matter how many ticks
+ * were burned, and the bound was a tick count rather than a duration - which
+ * made passing depend on the host's scheduling. It passed on fast machines and
+ * failed on a loaded CI runner, which is a defect in the test, not flakiness.
+ *
+ * Yielding through `setImmediate` lets the event loop run pending timers and
+ * callbacks between checks, and the bound is wall-clock so a slow machine is
+ * simply slower rather than wrong.
+ */
+async function waitUntil(predicate, description = 'Tauri manager condition', timeoutMs = 10_000) {
+  const deadline = Date.now() + timeoutMs
+  for (;;) {
     if (predicate()) return
-    await Promise.resolve()
+    if (Date.now() >= deadline) {
+      throw new Error(`timed out after ${timeoutMs}ms waiting for ${description}`)
+    }
+    await new Promise(resolve => setImmediate(resolve))
   }
-  throw new Error('timed out waiting for Tauri manager condition')
 }
 
 class FakeChannel {

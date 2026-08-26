@@ -34,6 +34,18 @@ import { successfulTerminal } from './corebluetooth-handles'
 import type { CoreBluetoothBackend } from './corebluetooth-backend'
 import { awaitWithOperationAdmission } from '../../core/unified-ble-core-helpers'
 
+/**
+ * Cadence for re-sampling CoreBluetooth write readiness while it reads not-ready.
+ *
+ * `CBPeripheral` signals readiness through `peripheralIsReadyToSendWriteWithoutResponse`,
+ * a callback that is documented as best-effort and can be missed; the reprobe is
+ * a safety net against a lost edge, not the primary path. It is an interval, not
+ * a deadline, so it cannot be derived from the caller's options -- but the
+ * caller's `deadline` and `signal` do already bound the reprobe (see `reprobe`
+ * below, which passes `options.deadline` to `awaitWithOperationAdmission`) and
+ * therefore bound how long the loop runs. Only the sampling rate is fixed, and
+ * it is a property of the CoreBluetooth boundary rather than of the host.
+ */
 const READINESS_REPROBE_DELAY_MS = 100
 
 /** Bridges optional direct-boundary connection controls into the canonical operation dispatcher. */

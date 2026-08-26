@@ -747,6 +747,36 @@ result and observation, while a failed callback yields rejection with no
 observation. The same request-versus-observation rule applies to MTU. None of
 these deterministic records is physical-radio qualification.
 
+### 17.3 BlueZ cannot honour `connection:priority` or `connection:parameters`
+
+This is a permanent platform decision (#149), not an implementation gap left by
+omission. BlueZ's D-Bus API exposes no LE connection-parameter surface to any
+client, privileged or not: `org.bluez.Device1` (BlueZ 5.85,
+`doc/org.bluez.Device.rst`) documents no connection interval, peripheral
+latency, supervision timeout, or parameter-update method — its `RSSI` and
+`TxPower` are inquiry/advertising-time values — and `org.bluez.Adapter1` adds
+nothing. The Linux channels that do reach connection parameters are privileged
+and are not live per-connection updates (`doc/mgmt.rst`): the kernel management
+socket requires `CAP_NET_ADMIN`, its `Load Connection Parameters` command only
+stores per-device preferences for future connections, and `Get Connection
+Information` returns RSSI/TX power only; the root-only debugfs
+`conn_{min,max}_interval` knobs are adapter-global defaults for future
+connections; raw HCI `LE Connection Update` would race `bluetoothd`. A
+capability-detected privileged path would therefore fabricate Android
+`requestConnectionPriority` semantics the platform cannot honour on a live
+connection, so the BlueZ backend deliberately attempts none of them.
+
+The consequence is that GATT traffic on BlueZ runs at whatever LE connection
+interval the link negotiated, each write-with-response round trip can take
+hundreds of milliseconds on a slow link, and the active interval is not
+observable from the process. The backend states this truth instead of hiding
+it: `connection:priority` and `connection:parameters` are registered
+`unsupported` with limitations naming the platform gap, the privilege
+requirement, and the consequence, and the fail-closed
+`capability.unsupported` errors from `requestPriority()`, `parameters()`, and
+`parameterEvents()` carry those limitations and a platform `safeMessage` so a
+caller learns why before a slow link manifests as a peer disconnect.
+
 GATT operations that require ordering use one serialized queue per physical
 connection; that queue is bounded. Queued cancellation removes the operation before
 dispatch; dispatched cancellation follows the race and uncertainty rules in

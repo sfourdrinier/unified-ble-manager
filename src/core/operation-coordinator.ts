@@ -11,7 +11,16 @@ export type CoreOperationOutcome = OperationTerminalOutcome
 
 export type CoreCommitState = 'not-applicable' | 'confirmed' | 'unknown'
 
-/** Maximum number of waiting operations retained by one connection lane by default. */
+/**
+ * Maximum number of waiting operations retained by one connection lane by default.
+ *
+ * A backpressure bound rather than a fixed invariant: it is already overridable
+ * through the coordinator's construction options, so a host that wants a deeper
+ * queue can ask for one. The default is small on purpose -- a GATT connection
+ * executes one ATT transaction at a time, so a deep queue does not increase
+ * throughput, it only converts a stalled peripheral into a large backlog of
+ * operations that will each fail against their own deadline.
+ */
 const DEFAULT_MAXIMUM_QUEUED_OPERATIONS_PER_CONNECTION = 8
 const DEFAULT_FAIRNESS_KEY = 'default'
 

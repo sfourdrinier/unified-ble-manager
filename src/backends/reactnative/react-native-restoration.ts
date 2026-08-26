@@ -38,6 +38,14 @@ import type {
   Spec as NativeProtocolControl
 } from '../../NativeUnifiedBleProtocolControl'
 
+/**
+ * Safety bound on records adopted from a native restoration journal.
+ *
+ * A trust-boundary quota, not host policy: the journal is data the platform
+ * hands back across a process restart, and the JavaScript side must not adopt an
+ * unbounded number of records from it. Fail-closed bounds on native-supplied
+ * data are a 4.x contract invariant, so this is intentionally not configurable.
+ */
 const maximumRestorationRecords = 1024
 const restorationScenarioId = 'restoration.provider-journal-adoption-and-rejection'
 const activationIssuanceToken = Symbol('react-native-restoration-activation')

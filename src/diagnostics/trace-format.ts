@@ -4,6 +4,18 @@ import { contractError } from '../backend-contract/errors'
 import type { SerializableRecord, SerializableValue } from '../backend-contract/primitives'
 
 export const UNIFIED_BLE_TRACE_FORMAT = 'unified-ble-trace-v1'
+/**
+ * Ceilings for the diagnostic trace format.
+ *
+ * These are the normative maxima of the wire format, not the operating values:
+ * a manager's actual retention is host policy and is already configurable via
+ * `traceMaximumRecords` / `traceMaximumBytes` on manager construction (defaults
+ * 256 records / 512 KiB). These bound what any manager may be configured to
+ * retain and what a reader must accept, so they stay fixed -- a trace that
+ * exceeds them is rejected rather than silently truncated. The string-length
+ * caps bound individual fields so one pathological event cannot consume the
+ * whole byte budget.
+ */
 export const UNIFIED_BLE_TRACE_MAXIMUM_RECORDS = 10_000
 export const UNIFIED_BLE_TRACE_MAXIMUM_BYTES = 512 * 1024
 export const UNIFIED_BLE_TRACE_MAXIMUM_EVENT_LENGTH = 128
