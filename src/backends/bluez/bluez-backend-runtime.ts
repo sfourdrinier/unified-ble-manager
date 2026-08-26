@@ -110,6 +110,7 @@ import {
   waitForBluezBoolean
 } from './bluez-property-waiters'
 import { BluezSecurityBackend } from './bluez-security'
+import { type BluezPairingGenerationController } from './bluez-pairing-generation'
 import { diagnosticBluezScanPlan } from './bluez-scan-planner'
 
 const maximumOperationBytes = byteLimit(512 * 1024)
@@ -119,6 +120,12 @@ export interface BluezBackendRuntimeConstruction {
   readonly store: BluezObjectStore
   readonly adapter: AdapterDescriptor<string>
   readonly now: () => number
+  /**
+   * Host-supplied privileged operation for selecting the LE pairing generation.
+   * Absent by default: without it `secureConnections: 'require' | 'disallow'`
+   * keeps failing closed, which is this backend's unchanged posture.
+   */
+  readonly pairingGeneration?: BluezPairingGenerationController
   readonly busKind: BluezBusKind
   readonly backendInstanceId: BackendInstanceId<string>
 }
@@ -152,6 +159,7 @@ export class BluezBackendRuntime implements BluezObjectStoreObserver {
   readonly store
   readonly selectedAdapter
   readonly now
+  readonly pairingGeneration: BluezPairingGenerationController | null
   private readonly backendInstanceId
   readonly dispatcher
   private readonly observer
@@ -186,6 +194,7 @@ export class BluezBackendRuntime implements BluezObjectStoreObserver {
     this.store = construction.store
     this.selectedAdapter = construction.adapter
     this.now = construction.now
+    this.pairingGeneration = construction.pairingGeneration ?? null
     this.adapterStateUpdatedAt = monotonicTimestamp(this.now())
     this.backendInstanceId = construction.backendInstanceId
     this.dispatcher = new BluezOperationDispatcher(this.now)

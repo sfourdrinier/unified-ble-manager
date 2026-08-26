@@ -112,6 +112,21 @@ Preserve these unless the user explicitly requests a versioned contract change:
 - native and private backend protocols are versioned and fail closed;
 - deterministic backends and mocks are test infrastructure, never production
   radio fallbacks;
+- **elevated privilege is permitted, never implicit.** Some radio capabilities
+  exist only behind a privileged interface — on Linux the kernel management
+  socket (`CAP_NET_ADMIN`) reaches settings `org.bluez` does not expose at all.
+  Such a capability may be offered, on three conditions. The package never
+  acquires privilege itself: it does not shell out to a privileged tool, escalate,
+  or assume it is already root; the host supplies the privileged operation
+  explicitly, so the escalation is visible and auditable in the application that
+  chose it. The capability is reported `unsupported` at runtime whenever that
+  operation is absent, so the default posture is unchanged and a caller learns
+  the difference between "denied" and "not wired up". And the privilege
+  required, its blast radius, and what is left behind on failure are documented
+  where the option is declared — a privileged setting that is adapter-wide, or
+  that outlives the operation that set it, must say so in the same breath as the
+  option that requests it. Same vocabulary as every other capability:
+  `capability.unsupported` with a reason, never a plausible substitute;
 - package SemVer and backend support/evidence labels are independent
   dimensions.
 

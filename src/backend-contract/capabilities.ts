@@ -38,6 +38,17 @@ export const BUILT_IN_FEATURE_IDS = Object.freeze({
   securityCancelPairing: 'security:cancel-pairing',
   securityUnpair: 'security:unpair',
   securityCustomCeremony: 'security:custom-ceremony',
+  /**
+   * The backend can select the LE pairing generation for a pairing - `PairOptions
+   * .secureConnections` `'require'` (Secure Connections only) or `'disallow'` (LE
+   * Legacy only), for peripherals that accept exactly one of them.
+   *
+   * No radio exposes this unprivileged. Where a backend reports it supported, a
+   * host has supplied a privileged operation explicitly; where it does not, the
+   * two directed values fail closed rather than bonding at a generation the
+   * caller forbade.
+   */
+  securityPairingGeneration: 'security:pairing-generation',
   // GATT
   gattDescriptors: 'gatt:descriptors',
   gattIndications: 'gatt:indications',

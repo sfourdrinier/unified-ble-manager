@@ -49,7 +49,7 @@ On BlueZ, `pair()` calls `org.bluez.Device1.Pair` and `unpair()` calls
 `org.bluez.Adapter1.RemoveDevice`; the library registers a just-works
 (`NoInputNoOutput`) `org.bluez.Agent1` on its own bus so the system-mediated
 ceremony can complete without an external agent. Just-works confirmation is
-auto-accepted; passkey and PIN *entry* ceremonies are rejected, matching the
+auto-accepted; passkey and PIN _entry_ ceremonies are rejected, matching the
 `NoInputNoOutput` capability. The agent is registered (not made the system
 default) so it applies to pairings this client initiates. This dispatch and
 agent policy are covered by unit tests, but their behavior against a live BlueZ
@@ -75,7 +75,7 @@ without the cancellation extension), the attempt rejects with
 happen.
 
 There is a second, narrower window: an abort or deadline that lands after the
-bond has *already* completed but before `pair()` has returned. On BlueZ this is
+bond has _already_ completed but before `pair()` has returned. On BlueZ this is
 reported truthfully as `paired` (never `cancelled`), because the native pairing
 call resolves only on a completed bond. On Android and WinRT the public outcome
 is currently committed when the abort fires, before the native result is
@@ -85,11 +85,11 @@ Aligning Android and WinRT with BlueZ's report-the-bond behavior is tracked
 separately.
 
 `cancelPairing()` no longer forms its own opinion about that race. It reports
-what the cancellation *achieved* by reading the pairing's own result, so the two
+what the cancellation _achieved_ by reading the pairing's own result, so the two
 calls cannot contradict each other about one operation: `'paired'` when the bond
 completed before the cancellation arrived, `'rejected'` (with the peer's reason)
 when the peer refused, `'cancelled'` when the cancellation stopped it, and
-`'not-pairing'` when there was nothing to stop. A pairing that *fails* does not
+`'not-pairing'` when there was nothing to stop. A pairing that _fails_ does not
 get an invented outcome - `cancelPairing()` rejects with the same error the
 pairing rejected with.
 
@@ -111,3 +111,70 @@ measurement; Web `forget()` remains origin-authorization revocation, not
 `unpair`.
 
 See [PLATFORMS.md](./PLATFORMS.md) for current evidence boundaries.
+
+## Selecting the LE pairing generation (privileged, Linux/BlueZ)
+
+Some peripherals accept **only** LE Legacy pairing and terminate the link on an
+LE Secure Connections pairing request; others accept only SC. `PairOptions`
+carries `secureConnections` (`'require' | 'prefer' | 'disallow'`, default
+`'prefer'`) to say which you need.
+
+`'prefer'` defers to the platform and is always available. The two **directed**
+values, `'require'` and `'disallow'`, are the ones that need this section.
+
+### Why this needs privilege at all
+
+`org.bluez.Adapter1` (BlueZ 5.85) exposes no Secure Connections property, and
+`org.bluez.Device1.Pair` takes no parameters — verified against a live daemon,
+not inferred. The setting lives behind the kernel management socket's Set
+Secure Connections command, which requires `CAP_NET_ADMIN`. There is no
+unprivileged route.
+
+**This package never acquires that privilege.** It does not open a management
+socket, does not shell out to `btmgmt`, and does not assume it is already root.
+A library that silently escalates hands an application capabilities its author
+did not choose and cannot audit. Instead the host supplies the operation:
+
+```ts
+import { createBluezBleManager } from 'unified-ble-manager/node/bluez'
+
+const manager = await createBluezBleManager({
+  pairingGeneration: {
+    async read(adapterId) {
+      // mgmt Read Controller Information -> 'legacy-only' | 'enabled' | 'required'
+    },
+    async set(adapterId, generation) {
+      // mgmt Set Secure Connections: 0x00 legacy-only, 0x01 enabled, 0x02 required
+    }
+  }
+})
+```
+
+Omit it and `'require'`/`'disallow'` keep failing closed with
+`capability.unsupported`, which is the unchanged default posture. The
+`security:pairing-generation` capability reports what your host actually
+supplied, so a caller can tell "this build cannot" from "the peer refused".
+
+### What you are agreeing to
+
+Read these before implementing a controller. They are properties of the kernel
+setting, not of this package, and they cannot be designed away:
+
+- **It is adapter-wide, not per-pairing.** While held, _every_ pairing on that
+  controller uses the selected generation — including pairings this package did
+  not initiate.
+- **It outlives the process.** The kernel keeps the value until something sets
+  it back. A crash between `set` and restore leaves the adapter changed.
+- **It is restored after each pairing**, whether the pairing succeeded or
+  failed, and concurrent pairings on one adapter are serialised so they cannot
+  corrupt each other's restore value.
+- **A failed restore never changes the pairing's outcome.** A bond that was
+  created is reported as created; the restore failure is reported separately.
+  Leaving a controller in LE Legacy is a security regression that must be seen —
+  but so is telling a caller they are not bonded when they are.
+
+### Evidence
+
+This path is covered by deterministic tests only. It has **not** been verified
+against a physical peripheral, and nothing here should be read as physical-radio
+proof. See `docs/generated/PLATFORM_SUPPORT.md` for the current evidence labels.

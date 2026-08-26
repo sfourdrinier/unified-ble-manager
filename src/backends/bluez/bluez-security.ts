@@ -23,6 +23,7 @@ import type { BluezBackendRuntime } from './bluez-backend-runtime'
 import { waitForBluezBoolean } from './bluez-property-waiters'
 import type { BluezOperationDispatch } from './bluez-operation-dispatcher'
 import { normalizeBluezFailure } from './bluez-operation-dispatcher'
+import { generationForSecureConnections, withPairingGeneration } from './bluez-pairing-generation'
 
 const securityStreamLimits = Object.freeze({
   itemCapacity: capacity(16),
@@ -170,12 +171,18 @@ export class BluezSecurityBackend implements SecurityBackend {
     if (options.protection !== 'system-default') {
       return Promise.reject(contractError('capability.unsupported', 'capability', 'bluez.security.pair.protection'))
     }
-    if (options.secureConnections !== undefined && options.secureConnections !== 'prefer') {
+    const directedGeneration =
+      options.secureConnections !== undefined && options.secureConnections !== 'prefer'
+        ? options.secureConnections
+        : null
+    const generationController = this.runtime.pairingGeneration
+    if (directedGeneration !== null && generationController === null) {
       // BlueZ selects the pairing generation at the adapter level (mgmt
       // SET_SECURE_CONN), not per Device1.Pair; the D-Bus surface this backend
       // uses can neither force LE Legacy ('disallow') nor guarantee Secure
-      // Connections ('require') for a single pairing. Honour the contract by
-      // failing closed rather than bonding without the requested generation.
+      // Connections ('require') for a single pairing. Without a host-supplied
+      // privileged operation, honour the contract by failing closed rather than
+      // bonding without the requested generation.
       return Promise.reject(
         contractError('capability.unsupported', 'capability', 'bluez.security.pair.secure-connections')
       )
@@ -183,6 +190,32 @@ export class BluezSecurityBackend implements SecurityBackend {
     if (this.activePairings.has(peerId)) {
       return Promise.reject(contractError('ownership.denied', 'platform', 'bluez.security.pair.arbitration'))
     }
+    /**
+     * Holds the adapter at the requested generation around the pairing, or runs
+     * it untouched. `'prefer'` means defer to the platform, so it never reaches
+     * here - only a directed `'require'`/`'disallow'` does, and only when the
+     * host supplied the privileged operation.
+     */
+    const holdGeneration: <Result>(pair: () => Promise<Result>) => Promise<Result> =
+      directedGeneration === null || generationController === null
+        ? pair => pair()
+        : pair =>
+            withPairingGeneration(
+              generationController,
+              String(this.runtime.selectedAdapter.adapterId),
+              generationForSecureConnections(directedGeneration),
+              pair,
+              failure => {
+                // Reported, never swallowed: the adapter is left in the wrong
+                // generation, which weakens every later bond on this host until
+                // something sets it back.
+                console.error(
+                  `[unified-ble:bluez.security.pair] adapter ${failure.adapterId} left at ` +
+                    `'${failure.heldGeneration}' because restoring '${failure.intendedGeneration}' failed: ` +
+                    failure.detail
+                )
+              }
+            )
     const path = this.runtime.devicePathForPeer(peerId)
     const current = this.readState(peerId)
     if (current.bond === 'bonded') return Promise.resolve({ outcome: 'already-paired', state: current })
@@ -202,50 +235,51 @@ export class BluezSecurityBackend implements SecurityBackend {
       this.runtime.dispatcher.dispatch<SecurityPairResult>(
         { signal: options.signal, deadline: options.deadline },
         'bluez.security.pair',
-        async () => {
-          if (controller.signal.aborted) {
-            throw contractError('operation.aborted', 'core', 'bluez.security.pair')
-          }
-          if (options.deadline !== null && options.deadline <= this.runtime.now()) {
-            throw contractError('operation.timed-out', 'core', 'bluez.security.pair')
-          }
-          // BlueZ needs a registered Agent1 to drive even a just-works pairing.
-          await this.runtime.boundary.ensurePairingAgent()
-          // Registration is a real IPC round-trip; an abort or deadline that
-          // lands while it is in flight runs onCancellation before Pair starts,
-          // and it skips cancelNativePairing because pairCallStarted is still
-          // false. Re-check here so we never fire Pair() for an operation that
-          // was already cancelled - otherwise the caller sees 'cancelled' while
-          // bluetoothd goes on to bond with no CancelPairing ever issued.
-          if (controller.signal.aborted) {
-            throw contractError('operation.aborted', 'core', 'bluez.security.pair')
-          }
-          if (options.deadline !== null && options.deadline <= this.runtime.now()) {
-            throw contractError('operation.timed-out', 'core', 'bluez.security.pair')
-          }
-          try {
-            // Mark started only immediately before Pair, so an abort during
-            // agent registration does not cancel a pairing that never began.
-            pairCallStarted = true
-            // Kept as a promise, not just awaited: the cancellation path needs
-            // to observe how it settles. Its rejection is consumed there too,
-            // so retaining it cannot produce an unhandled rejection.
-            pairCall = this.runtime.boundary.methods.callVoid(path, BLUEZ_DEVICE_INTERFACE, 'Pair', [])
-            await pairCall
-            // Device1.Pair resolves only on a completed bond, so the peer is now
-            // bonded regardless of whether the confirming Paired signal has
-            // landed. Record that so a late abort is reported as paired, not
-            // cancelled (which would strand the bond we just created).
-            pairSucceeded = true
-          } finally {
-            pairCallSettled = true
-          }
-          await waitForBluezBoolean(this.runtime, path, BLUEZ_DEVICE_INTERFACE, 'Paired', true, {
-            signal: controller.signal,
-            deadline: options.deadline
-          })
-          return { outcome: 'paired', state: this.readState(peerId) }
-        },
+        () =>
+          holdGeneration(async () => {
+            if (controller.signal.aborted) {
+              throw contractError('operation.aborted', 'core', 'bluez.security.pair')
+            }
+            if (options.deadline !== null && options.deadline <= this.runtime.now()) {
+              throw contractError('operation.timed-out', 'core', 'bluez.security.pair')
+            }
+            // BlueZ needs a registered Agent1 to drive even a just-works pairing.
+            await this.runtime.boundary.ensurePairingAgent()
+            // Registration is a real IPC round-trip; an abort or deadline that
+            // lands while it is in flight runs onCancellation before Pair starts,
+            // and it skips cancelNativePairing because pairCallStarted is still
+            // false. Re-check here so we never fire Pair() for an operation that
+            // was already cancelled - otherwise the caller sees 'cancelled' while
+            // bluetoothd goes on to bond with no CancelPairing ever issued.
+            if (controller.signal.aborted) {
+              throw contractError('operation.aborted', 'core', 'bluez.security.pair')
+            }
+            if (options.deadline !== null && options.deadline <= this.runtime.now()) {
+              throw contractError('operation.timed-out', 'core', 'bluez.security.pair')
+            }
+            try {
+              // Mark started only immediately before Pair, so an abort during
+              // agent registration does not cancel a pairing that never began.
+              pairCallStarted = true
+              // Kept as a promise, not just awaited: the cancellation path needs
+              // to observe how it settles. Its rejection is consumed there too,
+              // so retaining it cannot produce an unhandled rejection.
+              pairCall = this.runtime.boundary.methods.callVoid(path, BLUEZ_DEVICE_INTERFACE, 'Pair', [])
+              await pairCall
+              // Device1.Pair resolves only on a completed bond, so the peer is now
+              // bonded regardless of whether the confirming Paired signal has
+              // landed. Record that so a late abort is reported as paired, not
+              // cancelled (which would strand the bond we just created).
+              pairSucceeded = true
+            } finally {
+              pairCallSettled = true
+            }
+            await waitForBluezBoolean(this.runtime, path, BLUEZ_DEVICE_INTERFACE, 'Paired', true, {
+              signal: controller.signal,
+              deadline: options.deadline
+            })
+            return { outcome: 'paired', state: this.readState(peerId) }
+          }),
         async () => {
           controller.abort()
           if (pairCallStarted && !pairCallSettled) {
