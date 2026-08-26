@@ -1381,27 +1381,19 @@ impl BtleplugDispatcher {
             .get(&peer_id)
             .is_some_and(|owner| owner == &key);
         let Some(caller_state) = state.callers.get_mut(&key) else {
-            state.peer_owners.remove(&peer_id);
             drop(state);
-            peripheral.disconnect().await.ok();
-            return Err(DispatchError::new(
-                "ownership.denied",
-                "connection",
-                "tauri.connect-owner",
-            ));
+            let residue = self
+                .compensate_unowned_connection(&peripheral, &peer_id, true)
+                .await;
+            return Err(compensation_failure("tauri.connect-owner", residue));
         };
         if !expected_lease_matches(caller_state, &payload) {
             let _ = caller_state;
-            if peer_owner_matches {
-                state.peer_owners.remove(&peer_id);
-            }
             drop(state);
-            peripheral.disconnect().await.ok();
-            return Err(DispatchError::new(
-                "ownership.denied",
-                "connection",
-                "tauri.connect-stale-lease",
-            ));
+            let residue = self
+                .compensate_unowned_connection(&peripheral, &peer_id, peer_owner_matches)
+                .await;
+            return Err(compensation_failure("tauri.connect-stale-lease", residue));
         }
         caller_state.connections.insert(
             handle.clone(),
@@ -1420,6 +1412,75 @@ impl BtleplugDispatcher {
             ("peerId", string(peer_id)),
             ("connectionGeneration", string(connection_generation)),
         ]))
+    }
+
+    /// Undo a physically-successful connect whose caller can no longer own it.
+    ///
+    /// The peer is connected and nobody is entitled to it, so it must come down.
+    /// What matters is what happens when it will not: dropping the reservation
+    /// anyway leaves a connected peripheral with no owner and no handle, which
+    /// nothing can reach or retry until the process restarts - the peer is
+    /// stranded, and the caller is told only that admission was denied.
+    ///
+    /// So the reservation is surrendered only when the platform PROVES the link
+    /// is down, which is the rule `disconnect` already follows: a bounded wait,
+    /// then a fresh state reading, and a D-Bus error naming a vanished device
+    /// object read as evidence of release rather than as a failed question.
+    /// Genuine indeterminacy keeps the reservation so a retry can reclaim it.
+    ///
+    /// Returns the failure to report alongside the admission error, or `None`
+    /// when the peer was released cleanly.
+    async fn compensate_unowned_connection(
+        &self,
+        peripheral: &Peripheral,
+        peer_id: &str,
+        owner_matches: bool,
+    ) -> Option<String> {
+        let outcome = disconnect_with_state_check(
+            async {
+                peripheral
+                    .disconnect()
+                    .await
+                    .map_err(|error| error.to_string())
+            },
+            || connected_after_failed_disconnect(peripheral),
+        )
+        .await;
+
+        self.apply_compensation_outcome(outcome, peer_id, owner_matches)
+            .await
+    }
+
+    /// Settle the reservation from a compensating disconnect's outcome.
+    ///
+    /// Split from the I/O above so the rule can be tested without a live
+    /// `Peripheral`: the defect this guards against is dropping the reservation
+    /// regardless of outcome, which is a decision about state, not about radios.
+    async fn apply_compensation_outcome(
+        &self,
+        outcome: Result<(), String>,
+        peer_id: &str,
+        owner_matches: bool,
+    ) -> Option<String> {
+        let mut state = self.inner.lock().await;
+        match outcome {
+            Ok(()) => {
+                if owner_matches {
+                    state.peer_owners.remove(peer_id);
+                }
+                None
+            }
+            Err(error) => {
+                // Deliberately NOT removing the reservation: the peer may still
+                // be connected, and an owner-less connected peer cannot be
+                // reached or retried until the process restarts.
+                eprintln!(
+                    "[unified-ble:tauri] compensating disconnect for {peer_id} did not confirm \
+                     release, so the reservation is retained for retry: {error}"
+                );
+                Some(error)
+            }
+        }
     }
 
     async fn disconnect(
@@ -3039,6 +3100,21 @@ async fn disconnect_peripheral(peripheral: &Peripheral) -> Result<(), String> {
 /// has dropped the object the read errors, and treating that as indeterminate
 /// retains ownership of a peer that is provably released, permanently: the
 /// object never comes back, so every retry fails identically.
+/// The admission failure, plus what compensation could not undo.
+///
+/// A caller that is denied admission still needs to know whether a peer was
+/// left connected on its behalf - that is the difference between "try again"
+/// and "a peer is stranded until something reclaims it".
+fn compensation_failure(operation: &str, residue: Option<String>) -> DispatchError {
+    let error = DispatchError::new("ownership.denied", "connection", operation);
+    match residue {
+        None => error,
+        Some(detail) => error.platform(format!(
+            "the peer could not be confirmed released, so its reservation is retained: {detail}"
+        )),
+    }
+}
+
 async fn connected_after_failed_disconnect(peripheral: &Peripheral) -> Result<bool, String> {
     match peripheral.is_connected().await {
         Ok(connected) => Ok(connected),
@@ -4246,6 +4322,85 @@ mod tests {
             state.peer_owners.get("peer-1").map(String::as_str),
             Some("caller-a"),
             "a stale handle's cleanup must not release a peer a newer connection owns"
+        );
+    }
+
+    /// A compensating disconnect that cannot confirm the link is down must keep
+    /// the reservation. Dropping it leaves a connected peripheral with no owner
+    /// and no handle - nothing can reach or retry it until the process
+    /// restarts, and the caller is told only that admission was denied.
+    ///
+    /// The original code removed the reservation BEFORE attempting the
+    /// disconnect and discarded its result, so this fails on a revert.
+    #[tokio::test]
+    async fn an_unconfirmed_compensating_disconnect_keeps_the_reservation() {
+        let dispatcher = BtleplugDispatcher::new(BtleplugDispatcherOptions { adapter_id: None });
+        {
+            let mut state = dispatcher.inner.lock().await;
+            state
+                .peer_owners
+                .insert("peer-1".to_owned(), "caller-a".to_owned());
+        }
+
+        let residue = dispatcher
+            .apply_compensation_outcome(Err("still connected".to_owned()), "peer-1", true)
+            .await;
+
+        assert_eq!(residue.as_deref(), Some("still connected"));
+        let state = dispatcher.inner.lock().await;
+        assert_eq!(
+            state.peer_owners.get("peer-1").map(String::as_str),
+            Some("caller-a"),
+            "a peer that may still be connected must keep its reservation so a retry can reclaim it"
+        );
+    }
+
+    /// The other half: a disconnect the platform confirms DOES surrender the
+    /// reservation, so retaining it is evidence-driven rather than a blanket
+    /// refusal to clean up.
+    #[tokio::test]
+    async fn a_confirmed_compensating_disconnect_releases_the_reservation() {
+        let dispatcher = BtleplugDispatcher::new(BtleplugDispatcherOptions { adapter_id: None });
+        {
+            let mut state = dispatcher.inner.lock().await;
+            state
+                .peer_owners
+                .insert("peer-1".to_owned(), "caller-a".to_owned());
+        }
+
+        let residue = dispatcher
+            .apply_compensation_outcome(Ok(()), "peer-1", true)
+            .await;
+
+        assert!(residue.is_none());
+        let state = dispatcher.inner.lock().await;
+        assert!(
+            !state.peer_owners.contains_key("peer-1"),
+            "a confirmed release must not leave a stale reservation behind"
+        );
+    }
+
+    /// A reservation held by someone else is never touched, confirmed release
+    /// or not - the same guard `remove_connection_resources` already applies.
+    #[tokio::test]
+    async fn compensation_never_clears_another_callers_reservation() {
+        let dispatcher = BtleplugDispatcher::new(BtleplugDispatcherOptions { adapter_id: None });
+        {
+            let mut state = dispatcher.inner.lock().await;
+            state
+                .peer_owners
+                .insert("peer-1".to_owned(), "caller-b".to_owned());
+        }
+
+        dispatcher
+            .apply_compensation_outcome(Ok(()), "peer-1", false)
+            .await;
+
+        let state = dispatcher.inner.lock().await;
+        assert_eq!(
+            state.peer_owners.get("peer-1").map(String::as_str),
+            Some("caller-b"),
+            "compensation must not release a peer another caller owns"
         );
     }
 
