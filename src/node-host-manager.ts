@@ -77,8 +77,14 @@ function selectNodeAdapter(
   // with more than one controller "just works" and picks the same one every
   // run instead of forcing every caller to name an adapter. Choosing a specific
   // controller (for example a second USB dongle used only for debugging) is the
-  // unusual case: pass `adapterId` for it.
-  const [first] = [...adapters].sort((left, right) => String(left.adapterId).localeCompare(String(right.adapterId)))
+  // unusual case: pass `adapterId` for it. Order by code unit, not
+  // `localeCompare`, so the choice cannot shift with the host's locale or ICU
+  // version.
+  const [first] = [...adapters].sort((left, right) => {
+    const leftId = String(left.adapterId)
+    const rightId = String(right.adapterId)
+    return leftId < rightId ? -1 : leftId > rightId ? 1 : 0
+  })
   if (first === undefined) {
     throw contractError('adapter.unavailable', 'adapter', 'node-host-manager.adapter')
   }

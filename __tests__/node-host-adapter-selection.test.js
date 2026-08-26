@@ -64,7 +64,10 @@ function twoAdapterProvider(opens = 4) {
 
 // Record the selection the host layer passes down to the provider, so the test
 // asserts the actual adapter chosen rather than reaching into manager internals.
-function recordingProvider(real) {
+// `reverseAdapters` hands the host layer the adapter list in reverse id order
+// so the test proves the host's own deterministic sort, not the BlueZ provider's
+// incidental pre-sort.
+function recordingProvider(real, { reverseAdapters = false } = {}) {
   const selections = []
   const provider = new Proxy(real, {
     get(target, property, receiver) {
@@ -72,6 +75,12 @@ function recordingProvider(real) {
         return selection => {
           selections.push(selection)
           return target.create(selection)
+        }
+      }
+      if (property === 'listAdapters' && reverseAdapters) {
+        return async () => {
+          const adapters = await target.listAdapters()
+          return [...adapters].reverse()
         }
       }
       const value = Reflect.get(target, property, receiver)
@@ -86,6 +95,15 @@ describe('Node host adapter selection', () => {
     const { provider, selections } = recordingProvider(twoAdapterProvider())
     const manager = await createNodeBleManagerFromProvider(provider, compatibility(), {})
     expect(selections.length).toBeGreaterThanOrEqual(1)
+    expect(String(selections[0].selectedAdapterId)).toBe('/org/bluez/hci0')
+    await manager.destroy()
+  })
+
+  test('picks the lowest-id adapter even when the provider lists them in reverse order', async () => {
+    const { provider, selections } = recordingProvider(twoAdapterProvider(), { reverseAdapters: true })
+    const manager = await createNodeBleManagerFromProvider(provider, compatibility(), {})
+    // The host sorts by id itself, so a provider that lists hci1 before hci0
+    // still yields hci0 - proving order-independence, not the provider's sort.
     expect(String(selections[0].selectedAdapterId)).toBe('/org/bluez/hci0')
     await manager.destroy()
   })

@@ -67,11 +67,16 @@ never unique path keys. A backend instance identity is freshly generated for
 each backend construction and MUST NOT repeat after a process restart.
 
 A provider returns zero or more adapter descriptors before backend construction.
-A request that names no adapter is valid only when exactly one descriptor is
-available and the provider declares default selection; otherwise it fails
-`adapter.selection-required` or `adapter.ambiguous`. A named adapter that is
-absent, stale, or unavailable fails before backend work. A provider MUST NOT
-silently select a different adapter.
+The low-level provider requires an explicit, stable adapter selection and MUST
+NOT silently select a different adapter: a named adapter that is absent, stale,
+or unavailable fails before backend work (`adapter.unavailable`), and a provider
+that genuinely cannot choose reports `adapter.selection-required` or
+`adapter.ambiguous`. Choosing a *default* when the caller names none is a
+host-layer concern, not the provider's: the first-party Node convenience
+factories select the first adapter, ordered deterministically by id, so the
+common single-adapter host needs no configuration and a multi-adapter host still
+picks the same controller every run. A caller targets a specific controller by
+passing `adapterId`.
 
 The runtime has independent version axes: `backend-contract`,
 `capability-schema`, `event-schema`, and `trace-format`; a native boundary also
