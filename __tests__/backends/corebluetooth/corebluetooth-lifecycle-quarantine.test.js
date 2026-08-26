@@ -1,6 +1,7 @@
 // __tests__/backends/corebluetooth/corebluetooth-lifecycle-quarantine.test.js
 
 const { attachBackend } = require('../../../src/backend-contract/backend')
+const { awaitSignal } = require('../../helpers/async')
 const { capacity, opaqueId, version, versionRange } = require('../../../src/backend-contract/primitives')
 const { createBleManagerFromProvider, DEFAULT_BLE_MANAGER_OPTIONS } = require('../../../src/manager/ble-manager')
 const { createCoreBluetoothBackendProvider } = require('../../../src/backends/corebluetooth/corebluetooth-provider')
@@ -928,11 +929,10 @@ describe('CoreBluetooth late-operation quarantine', () => {
         disconnectCalls += 1
       }
 
-      const result = await Promise.race([
+      const result = await awaitSignal(
         lease.release(),
-        new Promise(resolve => setTimeout(() => resolve('blocked'), 50))
-      ])
-      expect(result).not.toBe('blocked')
+        'the lease release to settle rather than block on the quarantined operation'
+      )
       expect(result).toMatchObject({ state: 'release-failed' })
       expect(disconnectCalls).toBe(0)
       expect(boundary.connected).toBe(true)

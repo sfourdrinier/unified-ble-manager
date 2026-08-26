@@ -812,10 +812,7 @@ describe('canonical public ScanQuery v1', () => {
         rssi: { state: 'present', value: -39, provenance: 'observed' }
       })
       await expect(
-        Promise.race([
-          changedValue,
-          new Promise(resolve => setTimeout(() => resolve({ done: false, value: { kind: 'timeout' } }), 100))
-        ])
+        awaitSignal(changedValue, 'the changed rssi to reach the consumer')
       ).resolves.toMatchObject({ value: { kind: 'value', value: { rssi: -39 } } })
 
       const unchangedValue = iterator.next()

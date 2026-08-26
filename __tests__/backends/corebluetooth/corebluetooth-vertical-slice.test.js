@@ -1,6 +1,7 @@
 // __tests__/backends/corebluetooth/corebluetooth-vertical-slice.test.js
 
 const { attachBackend } = require('../../../src/backend-contract/backend')
+const { awaitSignal } = require('../../helpers/async')
 const { capacity, opaqueId, version, versionRange } = require('../../../src/backend-contract/primitives')
 const { normalizeScanQuery } = require('../../../src/public/scan-query')
 const { createCoreBluetoothBackendProvider } = require('../../../src/backends/corebluetooth/corebluetooth-provider')
@@ -903,11 +904,10 @@ describe('CoreBluetooth contract-v1 vertical slice', () => {
       )
 
       destroyPromise = backend.destroy()
-      const result = await Promise.race([
+      const result = await awaitSignal(
         destroyPromise,
-        new Promise(resolve => setTimeout(() => resolve('blocked'), 50))
-      ])
-      expect(result).not.toBe('blocked')
+        'the backend destroy to settle rather than block on the quarantined operation'
+      )
       expect(result).toMatchObject({ state: 'release-failed' })
       expect(disconnectCalls).toBe(0)
       expect(boundary.connected).toBe(true)
