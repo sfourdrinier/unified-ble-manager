@@ -85,6 +85,25 @@ describe('WinRT security backend adapter', () => {
     security.close()
   })
 
+  test('rejects a secureConnections generation it cannot select instead of ignoring it', async () => {
+    const boundary = createBoundary()
+    const security = new WinRtSecurityBackend(boundary, () => 50)
+    for (const value of ['require', 'disallow']) {
+      await expect(security.pair('peer-1', options({ secureConnections: value }))).rejects.toMatchObject({
+        normalized: { code: 'capability.unsupported' }
+      })
+    }
+    // Fail-closed means we never dispatched a native pairing for the values we
+    // cannot honour.
+    expect(boundary.pair).not.toHaveBeenCalled()
+    // 'prefer' defers to the platform, so it proceeds to a native pairing.
+    const pending = security.pair('peer-1', options({ secureConnections: 'prefer' }))
+    expect(boundary.pair).toHaveBeenCalledTimes(1)
+    await security.cancelPairing('peer-1', options())
+    await expect(pending).resolves.toEqual({ outcome: 'cancelled' })
+    security.close()
+  })
+
   test('arbitrates pairing and maps cancellation to one terminal result', async () => {
     const boundary = createBoundary()
     const security = new WinRtSecurityBackend(boundary, () => 50)

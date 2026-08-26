@@ -21,6 +21,14 @@ import type { AdvertisementObservation } from '../backend-contract/advertisement
  * exact renderer lease release-required because delivery was impossible.
  */
 export type ElectronEventDelivery = 'delivered' | 'terminalized'
+/**
+ * Retry cadence for re-attempting a renderer stream release.
+ *
+ * An interval, not a deadline: it runs on the teardown path, after the operation
+ * that owned the stream has ended, so there is no caller deadline to derive it
+ * from. Termination is decided by the release state, not by this number. Kept at
+ * the same 100ms as the other renderer/main retry paths.
+ */
 const cleanupRetryDelayMilliseconds = 100
 
 export interface ManagedScan {

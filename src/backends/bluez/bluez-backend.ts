@@ -22,6 +22,7 @@ import {
   inspectBluezRuntimeStreamOwnershipForTests,
   type BackendStreamOwnershipSnapshot
 } from './bluez-backend-runtime'
+import { createBluezConnectionControlRegistrations } from './bluez-connection-capabilities'
 
 const bluezBackendStreamOwnershipInspectors = new WeakMap<BluezBackend, () => BackendStreamOwnershipSnapshot>()
 
@@ -82,7 +83,8 @@ export class BluezBackend implements BleCentralBackend<string, HostNeutralBacken
         requiredScenarioIds: ['security.state-pair-cancel-unpair'],
         operation: `${id}.invoke-without-security-backend`
       })
-    )
+    ),
+    ...createBluezConnectionControlRegistrations(BLUEZ_IMPLEMENTATION_VERSION)
   ])
   readonly adapter
   readonly scanner

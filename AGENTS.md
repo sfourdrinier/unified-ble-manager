@@ -1,33 +1,40 @@
 # AGENTS.md — Unified BLE Manager 4.x
 
-## Canonical project
+The single source of agent guidance for this repository. `CLAUDE.md` imports
+this file and holds no content of its own, so the two cannot drift apart.
 
-This repository is the canonical home of `unified-ble-manager` 4.x. `main` is the canonical development/release branch. `sfourdrinier/react-native-ble-plx` is historical and the home of the 3.x line; do not reintroduce its public contract into 4.x.
+## What this repository is
 
-## Contract invariants
+The canonical home of `unified-ble-manager` 4.x: a host-neutral Bluetooth Low
+Energy central/GATT package for React Native, Web, Electron, and Node/desktop
+hosts. `sfourdrinier/react-native-ble-plx` is historical and owns the 3.x line;
+never reintroduce its public contract here, and never infer 4.x behaviour from
+3.x source or docs.
 
-Read `docs/UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md` before cross-cutting changes. Preserve these 4.x boundaries unless the user explicitly requests a versioned contract change:
+Read `docs/UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md` before cross-cutting
+changes. `README.md` and `RELEASE.md` are current guidance.
 
-- public BLE payloads are bytes (`Uint8Array` / `Readonly<Uint8Array>`), not implicit Base64 strings;
-- cancellation uses `AbortSignal`, not caller-owned transaction IDs;
-- the root package is host-neutral and selects no radio backend;
-- host entrypoints are explicit for React Native, Web, Electron, and Node backends;
-- managers, connections, GATT databases, subscriptions, and backend resources have explicit ownership and cleanup;
-- runtime capabilities come from the instantiated backend, not a static platform matrix;
-- Electron renderers do not own/load the native radio;
-- production code must not silently fall back to Noble, Web Bluetooth, or a deterministic/simulated backend;
-- backend/native protocols are versioned and fail closed;
-- package SemVer and backend support/evidence labels are separate dimensions.
+## How we work
 
-## Modernization floor
+Extreme DRY and test-first. Write the test before the behaviour, for logic,
+metadata, build configuration and contract guards alike.
 
-React Native host support targets React Native 0.86+. Expo integration targets Expo SDK 57+. Keep package metadata, examples, native defaults, and docs aligned unless the project intentionally raises a floor.
+Never silently swallow a failure. A dropped record, a swallowed exception or a
+filtered-out observation turns a specific fault into "nothing happened", which
+is the most expensive class of bug to diagnose — especially against real
+hardware, where the symptom surfaces far from its cause.
 
-Do not add deprecated APIs, libraries, configuration, or build patterns when a current supported alternative exists. If deprecated usage cannot be removed safely, document why and add focused regression coverage.
+Do not add deprecated APIs, libraries, configuration or build patterns when a
+supported alternative exists. If deprecated usage cannot be removed safely,
+document why and add focused regression coverage.
 
-## Validation
+**Typing.** No `as unknown`, `as any`, or `as T` to silence the checker. Infer
+by default; annotate only exported boundaries; use mappers and guards, and fix
+the types.
 
-Use test-first changes for behavior, metadata, build configuration, and contract guards. Prefer focused tests while iterating, then run the relevant canonical checks:
+## Package manager and checks
+
+pnpm with Corepack. The canonical gate:
 
 ```sh
 corepack enable
@@ -41,16 +48,121 @@ pnpm release:artifacts:check
 node scripts/ci/pack-install-smoke.js
 ```
 
-CI owns additional host/native build and ABI lanes. Never describe deterministic/mock/compile evidence as physical-radio proof.
+Before pushing, `scripts/ci/preflight.sh` runs the Linux-reproducible CI jobs
+against a clean detached worktree outside the working tree — the same thing
+`actions/checkout` gives a runner, so uncommitted edits and stale build output
+cannot make it pass. `--fast` skips the two Android Gradle builds. It does not
+cover the windows/macos legs, the `apple` job, the CoreBluetooth and WinRT
+boundaries, or the Node matrix; green there means "worth pushing", never "CI
+will pass".
+
+Focused commands while iterating:
+
+- `pnpm test:native-protocol` (and `:android`, `:apple`, `:winrt`)
+- `pnpm build:example:web`
+- `pnpm build:electron:macos`, `pnpm build:electron:winrt`
+- `pnpm performance:check`
+
+CI owns the broader cross-platform compile/ABI matrix.
+
+## Public architecture
+
+The neutral root exports shared public manager and types and **does not choose
+a radio**. Consumers use explicit host entrypoints:
+
+`unified-ble-manager/react-native` · `/web` · `/electron/main` ·
+`/electron/renderer` · `/node/corebluetooth` · `/node/winrt` · `/node/bluez` ·
+`/backend-sdk` · `/testing` · `/codecs` · `/cli`
+
+Profile exports are documented in `README.md` and
+`docs/PROFILES_AND_COMMANDS.md`.
+
+## 4.x contract invariants
+
+Preserve these unless the user explicitly requests a versioned contract change:
+
+- public BLE values are `Uint8Array` / `Readonly<Uint8Array>`; Base64 is an
+  explicit codec for external protocols, never the public value contract;
+- cancellation uses `AbortSignal`; applications never create public
+  transaction IDs;
+- the root is host-neutral and never silently picks or falls back to a backend;
+- managers, connections, GATT databases, subscriptions and backend resources
+  have explicit ownership and asynchronous teardown; stale discoveries and
+  handles are not immortal device-object state;
+- capabilities are typed and reported by the instantiated backend at runtime,
+  never a static platform matrix;
+- Electron main owns the radio; renderers use the versioned IPC client and do
+  not load Node-API radio addons;
+- native and private backend protocols are versioned and fail closed;
+- deterministic backends and mocks are test infrastructure, never production
+  radio fallbacks;
+- package SemVer and backend support/evidence labels are independent
+  dimensions.
+
+Do not reintroduce the legacy 3.x `BleManager`/`Device`/`Service`/
+`Characteristic` facade, Base64 public payloads, caller transaction IDs, static
+`supports()` matrices, or Noble compatibility paths.
+
+## Host implementations
+
+**React Native** uses the versioned `UnifiedBleProtocolControl` boundary and
+explicit manager construction. The modernization floor is React Native 0.86+;
+Expo integration targets SDK 57+. The package contains native code and does not
+run in Expo Go. Keep package metadata, examples, native defaults and docs
+aligned unless the project intentionally raises a floor.
+
+**Web** uses Web Bluetooth's explicit chooser/session integration. Browser
+user-activation and security restrictions are part of the host contract; do not
+emulate background scanning or restoration that Web Bluetooth does not provide.
+
+**Electron**: only trusted main-process code selects or owns the radio.
+Renderer reload/rebind is an ownership and security boundary.
+
+**Node desktop**: first-party CoreBluetooth, WinRT and BlueZ backends.
+CoreBluetooth/WinRT addons are built for the exact Node/Electron ABI and
+architecture that loads them. BlueZ is isolated behind its explicit entrypoint
+and optional `dbus-next` dependency.
+
+## Evidence and support
+
+Package SemVer and backend qualification are separate. Stable `4.0.0`
+stabilizes the documented package/API contract; it does not promote any
+backend's evidence label.
+
+`docs/generated/PLATFORM_SUPPORT.md` is generated from retained evidence.
+Compilation, deterministic tests, ABI loading and mocks prove only those
+levels. **Never describe deterministic, mock or compile evidence as
+physical-radio proof.**
+
+## Generated artifacts
+
+Do not hand-edit generated support/reference artifacts, API reports,
+`SBOM.cdx.json` or `THIRD_PARTY_LICENSES.json` when a generator owns them. Run
+the generator and commit its output; verify with `pnpm release:artifacts:check`
+and `pnpm docs:check`.
 
 ## Releases
 
-Follow `RELEASE.md`. Stable releases are tag-driven from the exact current `main` commit and published by `.github/workflows/publish.yml` through npm trusted publishing/OIDC. Do not publish manually or recreate/move a published version tag.
+`main` is the canonical release branch and stable releases are tag-driven from
+the exact current `main` commit, published by `.github/workflows/publish.yml`
+through npm trusted publishing/OIDC with provenance once the release gates
+pass. Follow `RELEASE.md`.
+
+When a release carries **more than one PR**, cut a named release branch
+(`release/<version>`), retarget every PR onto it, merge them there, and open a
+single PR from the release branch into `main`. That keeps `main` releasable,
+gives one place to resolve changelog collisions between PRs, and leaves linked
+issues open until the release actually lands — GitHub only auto-closes on merge
+to the default branch. CI runs on `release/**` for both pushes and PRs; a
+release branch is gated in its own right because the integrated combination is
+what ships.
+
+Never publish a normal release manually, move or recreate a published version
+tag, or weaken evidence/support labels to make a release pass.
 
 ## Historical names
 
-Old names such as `BlePlxExample` may remain in inherited native fixtures where renaming them adds build/ABI risk without changing the public package. Do not perform cosmetic native-symbol renames unless the compatibility/build impact is understood and fully validated.
-
-## GOD rule — typing
-
-No `as unknown`, `as any`, or `as T` to silence the checker. Infer by default; annotate only exported boundaries; use mappers/guards and fix the types.
+Inherited native and example identifiers such as `BlePlxExample` may remain
+where they are internal fixture or scheme names. Cosmetic native renames are
+not a release goal; change them only with an explicit compatibility and build
+rationale, and complete validation.

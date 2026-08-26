@@ -81,7 +81,7 @@ Active `4.0.0-rc.*` release-train candidates publish to npm `latest` so a bare `
 
 On release day, set `release_candidate` to the exact candidate required by the
 release plan. RC2, RC3, RC4, `4.0.0-rc.4.1`, and RC5 are already immutable
-once tagged. Stable `4.0.0`, `4.0.1`, `4.0.2`, and `4.0.3` are immutable. `4.0.5` is the current train head.
+once tagged. Stable `4.0.0`, `4.0.1`, `4.0.2`, `4.0.3`, `4.0.4`, and `4.0.5` are immutable. `4.0.6` is the current train head.
 
 ```sh
 release_candidate=4.0.0-rc.N
@@ -133,7 +133,7 @@ The `v4.0.3` tag is immutable published history. Do not recreate or move it.
 git tag -a v4.0.3 -m "v4.0.3"
 ```
 
-## Releasing 4.0.5
+## Releasing 4.0.6
 
 The source version is prepared on `main` before the tag. The release workflow verifies that every initial release tag points at the exact current `main` commit before publication; do not create that tag from a side branch or an older commit. Do not retag immutable `v4.0.0`, `v4.0.1`, `v4.0.2`, or `v4.0.3`.
 
@@ -145,12 +145,12 @@ git checkout main
 git pull --ff-only origin main
 
 test "$(git branch --show-current)" = "main"
-test "$(node -p "require('./package.json').version")" = "4.0.5"
+test "$(node -p "require('./package.json').version")" = "4.0.6"
 git diff --exit-code
 git diff --cached --exit-code
 
-git tag -a v4.0.5 -m "v4.0.5"
-git push origin v4.0.5
+git tag -a v4.0.6 -m "v4.0.6"
+git push origin v4.0.6
 ```
 
 Do not push another commit to `main` between the final verification and the tag push.
@@ -178,26 +178,34 @@ Stable versions publish to `latest`. Active `4.0.0-rc.*` candidates also publish
 
 ## Post-release verification
 
-After the workflow succeeds:
+After the workflow succeeds, verify the registry rather than the workflow log:
+a green publish job and a package a consumer can actually install are not the
+same claim.
 
 ```sh
-release_candidate=4.0.0-rc.N
+version=4.0.6
 
-npm view "unified-ble-manager@$release_candidate" version
+npm view "unified-ble-manager@$version" version
 npm view unified-ble-manager dist-tags --json
-npm view "unified-ble-manager@$release_candidate" repository --json
-npm view "unified-ble-manager@$release_candidate" license
+npm view "unified-ble-manager@$version" repository --json
+npm view "unified-ble-manager@$version" license
+npm view "unified-ble-manager@$version" dist.integrity
 ```
 
 Then verify:
 
-- npm `latest` resolves to the selected release candidate;
+- npm `latest` resolves to the released version (a stable release moves
+  `latest`; a prerelease must leave it alone and publish to `next`);
 - the npm package page shows provenance for the published artifact;
-- the GitHub Release exists at the selected candidate tag and is marked prerelease;
-- its attached tarball/SBOM/license artifacts correspond to the release workflow output;
-- a clean consumer can install `unified-ble-manager` (no version pin) and import the documented host entrypoints.
-
-After the later stable tag, repeat the same checks for `4.0.0`. `latest` then moves to `4.0.0`.
+- the GitHub Release exists at that tag, and is marked prerelease only if the
+  version is one;
+- its attached tarball/SBOM/license artifacts correspond to the release
+  workflow output;
+- a clean consumer, in a directory outside this repository, can install
+  `unified-ble-manager` with no version pin and import the documented host
+  entrypoints. This is the check that catches a packaging gap the repository's
+  own tests cannot see: `@babel/runtime` shipped undeclared in 4.0.4 and only a
+  real external consumer surfaced it.
 
 ## Failed release or partial publish
 

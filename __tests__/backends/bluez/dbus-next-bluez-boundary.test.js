@@ -4,6 +4,13 @@ const { EventEmitter } = require('events')
 
 const buses = []
 
+class MockInterface {
+  constructor(name) { this.$name = name }
+  static configureMembers() {}
+}
+class MockDBusError extends Error {
+  constructor(type, text) { super(text); this.type = type }
+}
 jest.mock('dbus-next', () => ({
   MessageType: { SIGNAL: 4 },
   Variant: class Variant {
@@ -12,6 +19,8 @@ jest.mock('dbus-next', () => ({
       this.value = value
     }
   },
+  interface: { Interface: MockInterface, method: () => () => undefined },
+  DBusError: MockDBusError,
   systemBus: jest.fn(() => buses.shift()),
   sessionBus: jest.fn(() => buses.shift())
 }))
@@ -19,6 +28,7 @@ jest.mock('dbus-next', () => ({
 const dbus = require('dbus-next')
 const {
   BLUEZ_ADAPTER_INTERFACE,
+  BLUEZ_DEVICE_INTERFACE,
   BLUEZ_OBJECT_MANAGER_INTERFACE,
   DBUS_PROPERTIES_INTERFACE
 } = require('../../../src/backends/bluez/bluez-dbus-contract')
@@ -29,7 +39,14 @@ function createBus(options = {}) {
   const adapter = {
     SetDiscoveryFilter: jest.fn(async () => undefined),
     StartDiscovery: jest.fn(async () => undefined),
-    StopDiscovery: jest.fn(async () => undefined)
+    StopDiscovery: jest.fn(async () => undefined),
+    RemoveDevice: jest.fn(async () => undefined)
+  }
+  const device = {
+    Connect: jest.fn(async () => undefined),
+    Disconnect: jest.fn(async () => undefined),
+    Pair: jest.fn(async () => undefined),
+    CancelPairing: jest.fn(async () => undefined)
   }
   const manager = {
     GetManagedObjects: jest.fn(
@@ -48,6 +65,12 @@ function createBus(options = {}) {
     AddMatch: jest.fn(async () => undefined),
     RemoveMatch: jest.fn(async () => undefined)
   }
+  const agentManager = {
+    RegisterAgent: jest.fn(async () => undefined),
+    RequestDefaultAgent: jest.fn(async () => undefined)
+  }
+  emitter.export = jest.fn()
+  emitter.unexport = jest.fn()
   emitter.getProxyObject = jest.fn(async (service, path) => ({
     getInterface: interfaceName => {
       if (service === 'org.freedesktop.DBus' && path === '/org/freedesktop/DBus') {
@@ -56,17 +79,177 @@ function createBus(options = {}) {
       if (path === '/' && interfaceName === BLUEZ_OBJECT_MANAGER_INTERFACE) {
         return manager
       }
+      if (path === '/org/bluez' && interfaceName === 'org.bluez.AgentManager1') {
+        return agentManager
+      }
+      if (interfaceName === BLUEZ_DEVICE_INTERFACE) {
+        return device
+      }
       return adapter
     }
   }))
   emitter.disconnect = jest.fn()
-  return { bus: emitter, manager, adapter, daemon }
+  return { bus: emitter, manager, adapter, device, daemon, agentManager }
 }
 
 describe('dbus-next BlueZ boundary', () => {
   afterEach(() => {
     buses.length = 0
     jest.clearAllMocks()
+  })
+
+  it('dispatches Device1.Pair (regression: was rejected as unsupported)', async () => {
+    const fixture = createBus()
+    buses.push(fixture.bus)
+    const boundary = await new DbusNextBluezBoundaryFactory().open('system')
+    await boundary.methods.callVoid('/org/bluez/hci0/dev_AA', BLUEZ_DEVICE_INTERFACE, 'Pair', [])
+    expect(fixture.device.Pair).toHaveBeenCalledTimes(1)
+    await boundary.close()
+  })
+
+  it('dispatches Device1.CancelPairing', async () => {
+    const fixture = createBus()
+    buses.push(fixture.bus)
+    const boundary = await new DbusNextBluezBoundaryFactory().open('system')
+    await boundary.methods.callVoid('/org/bluez/hci0/dev_AA', BLUEZ_DEVICE_INTERFACE, 'CancelPairing', [])
+    expect(fixture.device.CancelPairing).toHaveBeenCalledTimes(1)
+    await boundary.close()
+  })
+
+  it('dispatches Adapter1.RemoveDevice with the object path argument', async () => {
+    const fixture = createBus()
+    buses.push(fixture.bus)
+    const boundary = await new DbusNextBluezBoundaryFactory().open('system')
+    await boundary.methods.callVoid('/org/bluez/hci0', BLUEZ_ADAPTER_INTERFACE, 'RemoveDevice', [
+      { signature: 'o', value: '/org/bluez/hci0/dev_AA' }
+    ])
+    expect(fixture.adapter.RemoveDevice).toHaveBeenCalledWith('/org/bluez/hci0/dev_AA')
+    await boundary.close()
+  })
+
+  it('registers a just-works pairing agent once (idempotent)', async () => {
+    const fixture = createBus()
+    buses.push(fixture.bus)
+    const boundary = await new DbusNextBluezBoundaryFactory().open('system')
+    await boundary.ensurePairingAgent()
+    await boundary.ensurePairingAgent()
+    expect(fixture.bus.export).toHaveBeenCalledTimes(1)
+    expect(fixture.agentManager.RegisterAgent).toHaveBeenCalledTimes(1)
+    expect(fixture.agentManager.RegisterAgent).toHaveBeenCalledWith(expect.any(String), 'NoInputNoOutput')
+    // A default agent is deliberately NOT requested (no system-wide hijack).
+    expect(fixture.agentManager.RequestDefaultAgent).not.toHaveBeenCalled()
+    await boundary.close()
+    expect(fixture.bus.unexport).toHaveBeenCalledTimes(1)
+  })
+
+  it('runs concurrent ensurePairingAgent calls without a duplicate export', async () => {
+    const fixture = createBus()
+    buses.push(fixture.bus)
+    const boundary = await new DbusNextBluezBoundaryFactory().open('system')
+    await Promise.all([boundary.ensurePairingAgent(), boundary.ensurePairingAgent()])
+    expect(fixture.bus.export).toHaveBeenCalledTimes(1)
+    expect(fixture.agentManager.RegisterAgent).toHaveBeenCalledTimes(1)
+    await boundary.close()
+  })
+
+  it('tolerates an AlreadyExists RegisterAgent error (by type, not message)', async () => {
+    const fixture = createBus()
+    fixture.agentManager.RegisterAgent.mockRejectedValueOnce(
+      new MockDBusError('org.bluez.Error.AlreadyExists', 'Already Exists')
+    )
+    buses.push(fixture.bus)
+    const boundary = await new DbusNextBluezBoundaryFactory().open('system')
+    await expect(boundary.ensurePairingAgent()).resolves.toBeUndefined()
+    await boundary.close()
+  })
+
+  it('retries registration after a failure rather than wedging', async () => {
+    const fixture = createBus()
+    fixture.agentManager.RegisterAgent
+      .mockRejectedValueOnce(new Error('transient'))
+      .mockResolvedValueOnce(undefined)
+    buses.push(fixture.bus)
+    const boundary = await new DbusNextBluezBoundaryFactory().open('system')
+    await expect(boundary.ensurePairingAgent()).rejects.toThrow('transient')
+    await expect(boundary.ensurePairingAgent()).resolves.toBeUndefined()
+    expect(fixture.agentManager.RegisterAgent).toHaveBeenCalledTimes(2)
+    await boundary.close()
+  })
+
+  it('auto-accepts just-works pairing and rejects input-requiring ceremonies', async () => {
+    const fixture = createBus()
+    buses.push(fixture.bus)
+    const boundary = await new DbusNextBluezBoundaryFactory().open('system')
+    await boundary.ensurePairingAgent()
+    expect(fixture.bus.export).toHaveBeenCalledTimes(1)
+    const [exportedPath, agent] = fixture.bus.export.mock.calls[0]
+    expect(exportedPath).toBe('/org/bluez/unifiedble/agent')
+
+    const device = '/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF'
+    // Just-works association: confirmation, authorization, and service
+    // authorization are auto-accepted; lifecycle callbacks are no-ops.
+    expect(() => agent.RequestConfirmation(device, 0)).not.toThrow()
+    expect(() => agent.RequestAuthorization(device)).not.toThrow()
+    expect(() => agent.AuthorizeService(device, '0000180d-0000-1000-8000-00805f9b34fb')).not.toThrow()
+    expect(() => agent.Release()).not.toThrow()
+    expect(() => agent.Cancel()).not.toThrow()
+
+    // NoInputNoOutput cannot satisfy PIN or passkey entry, so those ceremonies
+    // must be rejected with the D-Bus error BlueZ expects.
+    let pinError
+    try {
+      agent.RequestPinCode(device)
+    } catch (error) {
+      pinError = error
+    }
+    expect(pinError).toBeInstanceOf(dbus.DBusError)
+    expect(pinError.type).toBe('org.bluez.Error.Rejected')
+
+    let passkeyError
+    try {
+      agent.RequestPasskey(device)
+    } catch (error) {
+      passkeyError = error
+    }
+    expect(passkeyError).toBeInstanceOf(dbus.DBusError)
+    expect(passkeyError.type).toBe('org.bluez.Error.Rejected')
+
+    await boundary.close()
+  })
+
+  it('re-registers the pairing agent after a daemon reset', async () => {
+    const fixture = createBus()
+    buses.push(fixture.bus)
+    const boundary = await new DbusNextBluezBoundaryFactory().open('system')
+    await boundary.ensurePairingAgent()
+    expect(fixture.bus.export).toHaveBeenCalledTimes(1)
+    expect(fixture.agentManager.RegisterAgent).toHaveBeenCalledTimes(1)
+
+    // A bluetoothd restart drops every registration; the boundary observes the
+    // owner loss as a reset and must forget the agent so the next pair rebuilds it.
+    fixture.bus.emit('message', {
+      type: 4,
+      path: '/org/freedesktop/DBus',
+      interface: 'org.freedesktop.DBus',
+      member: 'NameOwnerChanged',
+      body: ['org.bluez', ':1.42', '']
+    })
+    expect(fixture.bus.unexport).toHaveBeenCalledTimes(1)
+
+    await boundary.ensurePairingAgent()
+    expect(fixture.bus.export).toHaveBeenCalledTimes(2)
+    expect(fixture.agentManager.RegisterAgent).toHaveBeenCalledTimes(2)
+    await boundary.close()
+  })
+
+  it('does not export a pairing agent once the boundary is closed', async () => {
+    const fixture = createBus()
+    buses.push(fixture.bus)
+    const boundary = await new DbusNextBluezBoundaryFactory().open('system')
+    await boundary.close()
+    await expect(boundary.ensurePairingAgent()).resolves.toBeUndefined()
+    expect(fixture.bus.export).not.toHaveBeenCalled()
+    expect(fixture.agentManager.RegisterAgent).not.toHaveBeenCalled()
   })
 
   test.each([

@@ -67,11 +67,16 @@ never unique path keys. A backend instance identity is freshly generated for
 each backend construction and MUST NOT repeat after a process restart.
 
 A provider returns zero or more adapter descriptors before backend construction.
-A request that names no adapter is valid only when exactly one descriptor is
-available and the provider declares default selection; otherwise it fails
-`adapter.selection-required` or `adapter.ambiguous`. A named adapter that is
-absent, stale, or unavailable fails before backend work. A provider MUST NOT
-silently select a different adapter.
+The low-level provider requires an explicit, stable adapter selection and MUST
+NOT silently select a different adapter: a named adapter that is absent, stale,
+or unavailable fails before backend work (`adapter.unavailable`), and a provider
+that genuinely cannot choose reports `adapter.selection-required` or
+`adapter.ambiguous`. Choosing a *default* when the caller names none is a
+host-layer concern, not the provider's: the first-party Node convenience
+factories select the first adapter, ordered deterministically by id, so the
+common single-adapter host needs no configuration and a multi-adapter host still
+picks the same controller every run. A caller targets a specific controller by
+passing `adapterId`.
 
 The runtime has independent version axes: `backend-contract`,
 `capability-schema`, `event-schema`, and `trace-format`; a native boundary also
@@ -741,6 +746,36 @@ of the resulting link state: a successful `onPhyUpdate` supplies the accepted
 result and observation, while a failed callback yields rejection with no
 observation. The same request-versus-observation rule applies to MTU. None of
 these deterministic records is physical-radio qualification.
+
+### 17.3 BlueZ cannot honour `connection:priority` or `connection:parameters`
+
+This is a permanent platform decision (#149), not an implementation gap left by
+omission. BlueZ's D-Bus API exposes no LE connection-parameter surface to any
+client, privileged or not: `org.bluez.Device1` (BlueZ 5.85,
+`doc/org.bluez.Device.rst`) documents no connection interval, peripheral
+latency, supervision timeout, or parameter-update method — its `RSSI` and
+`TxPower` are inquiry/advertising-time values — and `org.bluez.Adapter1` adds
+nothing. The Linux channels that do reach connection parameters are privileged
+and are not live per-connection updates (`doc/mgmt.rst`): the kernel management
+socket requires `CAP_NET_ADMIN`, its `Load Connection Parameters` command only
+stores per-device preferences for future connections, and `Get Connection
+Information` returns RSSI/TX power only; the root-only debugfs
+`conn_{min,max}_interval` knobs are adapter-global defaults for future
+connections; raw HCI `LE Connection Update` would race `bluetoothd`. A
+capability-detected privileged path would therefore fabricate Android
+`requestConnectionPriority` semantics the platform cannot honour on a live
+connection, so the BlueZ backend deliberately attempts none of them.
+
+The consequence is that GATT traffic on BlueZ runs at whatever LE connection
+interval the link negotiated, each write-with-response round trip can take
+hundreds of milliseconds on a slow link, and the active interval is not
+observable from the process. The backend states this truth instead of hiding
+it: `connection:priority` and `connection:parameters` are registered
+`unsupported` with limitations naming the platform gap, the privilege
+requirement, and the consequence, and the fail-closed
+`capability.unsupported` errors from `requestPriority()`, `parameters()`, and
+`parameterEvents()` carry those limitations and a platform `safeMessage` so a
+caller learns why before a slow link manifests as a peer disconnect.
 
 GATT operations that require ordering use one serialized queue per physical
 connection; that queue is bounded. Queued cancellation removes the operation before

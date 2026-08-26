@@ -204,21 +204,36 @@ export async function createExpoBleManagerWithEnvironment(
 /**
  * A boundary that has not yet received an adapter-state event reports every
  * field as unknown, with a safeReason saying so. That shape is *pending*, not
- * authoritative, and must not be mapped to a readiness state - "unknown
- * availability" and "unavailable authorization" would otherwise read as
- * "there is no usable radio" for a radio that is simply still starting up.
+ * authoritative, and must not be mapped to a readiness state - an unknown
+ * availability would otherwise read as "there is no usable radio" for a radio
+ * that is simply still starting up. The conjunction is what makes this safe:
+ * a backend with no authorization concept (BlueZ) reports an unknown
+ * authorization on an adapter whose availability and power ARE measured, so it
+ * cannot be mistaken for pending.
  */
 function isPendingAdapterState(adapter: BleAdapterState): boolean {
   return (
     adapter.availability === 'unknown' &&
     adapter.power === 'unknown' &&
-    adapter.authorization === 'unavailable' &&
+    adapter.authorization === 'unknown' &&
     adapter.safeReason !== null &&
     adapter.safeReason !== undefined
   )
 }
 
-/** Bounded wait for the first authoritative snapshot; ~2s at 100ms steps. */
+/**
+ * Bounded wait for the first authoritative snapshot; ~2s at 100ms steps.
+ *
+ * Fixed rather than caller-tunable. `getExpoBleReadiness` is a synchronous-feeling
+ * readiness probe with no `OperationOptions` of its own, and its contract is to
+ * return deterministic guidance promptly rather than to block: a caller that
+ * needs to wait for the adapter uses `adapter.waitUntilReady()`, which does take
+ * a caller-supplied deadline. These two numbers only decide how long the probe
+ * tolerates the pre-authoritative `unknown/unknown` snapshot a native module
+ * reports before its first callback lands, and both ends are already covered --
+ * an early exit as soon as the snapshot becomes authoritative, and a hard cap so
+ * the probe cannot hang.
+ */
 const PENDING_ADAPTER_STATE_ATTEMPTS = 20
 const PENDING_ADAPTER_STATE_INTERVAL_MS = 100
 

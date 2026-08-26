@@ -143,40 +143,7 @@ export class BluezOperationDispatcher {
               return
             }
             callerTerminal = true
-            if (error instanceof BackendContractError) {
-              reject(error)
-              return
-            }
-            if (error instanceof BluezDbusMethodError) {
-              reject(
-                contractError(
-                  'platform.failure',
-                  'platform',
-                  operationName,
-                  Object.freeze({
-                    domain: 'bluez-dbus',
-                    code: error.detail.name,
-                    safeMessage: error.detail.message,
-                    metadata: dbusSafeMetadata(error)
-                  })
-                )
-              )
-              return
-            }
-            const safeMessage = error instanceof Error ? error.message : 'D-Bus rejected with a non-Error value'
-            reject(
-              contractError(
-                'platform.failure',
-                'platform',
-                operationName,
-                Object.freeze({
-                  domain: 'bluez-dbus',
-                  code: 'org.bluez.Error.Failed',
-                  safeMessage,
-                  metadata: Object.freeze({})
-                })
-              )
-            )
+            reject(normalizeBluezFailure(error, operationName))
           }
         )
     })
@@ -224,6 +191,44 @@ export class BluezOperationDispatcher {
       this.idleWaiters.add(resolve)
     })
   }
+}
+
+/**
+ * A D-Bus rejection expressed as this package's error contract.
+ *
+ * Shared rather than inlined because a BlueZ failure can leave the backend by
+ * more than one route: the dispatcher's own execution path, and a cancellation
+ * callback whose rejection reaches the caller without passing through it. Two
+ * copies of this mapping would drift, and the second route would be the one
+ * that quietly kept leaking a raw `BluezDbusMethodError` across the public
+ * boundary.
+ */
+export function normalizeBluezFailure(error: unknown, operationName: string): BackendContractError {
+  if (error instanceof BackendContractError) return error
+  if (error instanceof BluezDbusMethodError) {
+    return contractError(
+      'platform.failure',
+      'platform',
+      operationName,
+      Object.freeze({
+        domain: 'bluez-dbus',
+        code: error.detail.name,
+        safeMessage: error.detail.message,
+        metadata: dbusSafeMetadata(error)
+      })
+    )
+  }
+  return contractError(
+    'platform.failure',
+    'platform',
+    operationName,
+    Object.freeze({
+      domain: 'bluez-dbus',
+      code: 'org.bluez.Error.Failed',
+      safeMessage: error instanceof Error ? error.message : 'D-Bus rejected with a non-Error value',
+      metadata: Object.freeze({})
+    })
+  )
 }
 
 function dbusSafeMetadata(error: BluezDbusMethodError): SerializableRecord {

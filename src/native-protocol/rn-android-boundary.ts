@@ -191,7 +191,11 @@ export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary
       this.latestAdapterState ??
       Object.freeze({
         availability: 'unknown',
-        authorization: 'unavailable',
+        // 'unknown', like its availability and power siblings: this snapshot is
+        // the ABSENCE of a measurement, not a denial. Reporting 'unavailable'
+        // made every readiness gate treat a radio that is simply still starting
+        // up as one the caller is not permitted to use.
+        authorization: 'unknown',
         power: 'unknown',
         safeReason: 'The Android radio has not emitted its authoritative adapter state yet.'
       })

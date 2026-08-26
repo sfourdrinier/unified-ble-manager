@@ -1,3 +1,5 @@
+const { awaitSignal } = require('./helpers/async')
+
 const {
   normalizeScanQuery,
   normalizeScanObservation,
@@ -810,10 +812,7 @@ describe('canonical public ScanQuery v1', () => {
         rssi: { state: 'present', value: -39, provenance: 'observed' }
       })
       await expect(
-        Promise.race([
-          changedValue,
-          new Promise(resolve => setTimeout(() => resolve({ done: false, value: { kind: 'timeout' } }), 100))
-        ])
+        awaitSignal(changedValue, 'the changed rssi to reach the consumer')
       ).resolves.toMatchObject({ value: { kind: 'value', value: { rssi: -39 } } })
 
       const unchangedValue = iterator.next()
@@ -1565,14 +1564,6 @@ describe('public scan-state-budget', () => {
 describe('public scan presence eviction completeness', () => {
   const { MAX_PUBLIC_SCAN_STATE_ENTRIES, MAX_PUBLIC_SCAN_STATE_BYTES } = require('../src/public/scan-state-budget')
 
-  async function waitUntil(predicate, attempts = 2000) {
-    for (let attempt = 0; attempt < attempts; attempt += 1) {
-      if (predicate()) return
-      await Promise.resolve()
-    }
-    throw new Error('timed out waiting for public scan presence events')
-  }
-
   async function createPresenceScan() {
     const source = new CoreBoundedStream(
       { itemCapacity: capacity(512), byteCapacity: capacity(2 * 1024 * 1024), reservedControlCapacity: capacity(4) },
@@ -1609,15 +1600,33 @@ describe('public scan presence eviction completeness', () => {
     })
     const events = scan.events[Symbol.asyncIterator]()
     const observations = scan.observations[Symbol.asyncIterator]()
+    // Waiters are settled by the collector as events arrive, so a test awaits
+    // the event it cares about rather than asking repeatedly whether it has
+    // happened yet. Checking on every push also covers the already-satisfied
+    // case, which is what makes this safe to call after the fact.
+    const waiters = []
+    const settleWaiters = () => {
+      for (let index = waiters.length - 1; index >= 0; index -= 1) {
+        if (waiters[index].predicate()) waiters.splice(index, 1)[0].resolve()
+      }
+    }
     const consume = (async () => {
       for (;;) {
         const item = await events.next()
         if (item.done) return
         collected.push(item.value)
+        settleWaiters()
       }
     })()
     return {
       source,
+      waitFor: (predicate, description) => {
+        if (predicate()) return Promise.resolve()
+        const pending = new Promise(resolve => {
+          waiters.push({ predicate, resolve })
+        })
+        return awaitSignal(pending, description)
+      },
       setNow: value => {
         now = value
       },
@@ -1653,8 +1662,9 @@ describe('public scan presence eviction completeness', () => {
     for (let index = 0; index < MAX_PUBLIC_SCAN_STATE_ENTRIES + 1; index += 1) {
       fixture.source.emit(advertisement(`peer-${index}`), 32)
     }
-    await waitUntil(
-      () => fixture.collected.filter(event => event.kind === 'observed').length === MAX_PUBLIC_SCAN_STATE_ENTRIES + 1
+    await fixture.waitFor(
+      () => fixture.collected.filter(event => event.kind === 'observed').length === MAX_PUBLIC_SCAN_STATE_ENTRIES + 1,
+      'every peer to be observed'
     )
     expect(fixture.collected.some(event => event.kind === 'lost')).toBe(false)
     expect(fixture.collected.filter(event => event.kind === 'observed')).toHaveLength(MAX_PUBLIC_SCAN_STATE_ENTRIES + 1)
@@ -1677,7 +1687,10 @@ describe('public scan presence eviction completeness', () => {
     fixture.source.emit(advertisement('peer-a', large), large + 128)
     fixture.source.emit(advertisement('peer-b', large), large + 128)
     fixture.source.emit(advertisement('peer-c', large), large + 128)
-    await waitUntil(() => fixture.collected.some(event => event.kind === 'presence-tracking-overflow'))
+    await fixture.waitFor(
+      () => fixture.collected.some(event => event.kind === 'presence-tracking-overflow'),
+      'a presence-tracking-overflow event'
+    )
     expect(fixture.collected.some(event => event.kind === 'lost')).toBe(false)
     expect(fixture.collected).toEqual(
       expect.arrayContaining([
@@ -1695,15 +1708,17 @@ describe('public scan presence eviction completeness', () => {
     for (let index = 0; index < MAX_PUBLIC_SCAN_STATE_ENTRIES + 1; index += 1) {
       fixture.source.emit(advertisement(`peer-${index}`), 32)
     }
-    await waitUntil(
-      () => fixture.collected.filter(event => event.kind === 'observed').length === MAX_PUBLIC_SCAN_STATE_ENTRIES + 1
+    await fixture.waitFor(
+      () => fixture.collected.filter(event => event.kind === 'observed').length === MAX_PUBLIC_SCAN_STATE_ENTRIES + 1,
+      'every peer to be observed'
     )
     fixture.setNow(10)
     const activeTimers = fixture.timers.filter(timer => timer.cancel.mock.calls.length === 0)
     expect(activeTimers.length).toBeGreaterThan(0)
     activeTimers[activeTimers.length - 1].action()
-    await waitUntil(() =>
-      fixture.collected.some(event => event.kind === 'lost' && event.reason === 'observation-timeout')
+    await fixture.waitFor(
+      () => fixture.collected.some(event => event.kind === 'lost' && event.reason === 'observation-timeout'),
+      'a lost event with reason observation-timeout'
     )
     await closePresenceScan(fixture)
   })
@@ -1713,20 +1728,23 @@ describe('public scan presence eviction completeness', () => {
     for (let index = 0; index < MAX_PUBLIC_SCAN_STATE_ENTRIES + 1; index += 1) {
       fixture.source.emit(advertisement(`peer-${index}`), 32)
     }
-    await waitUntil(
-      () => fixture.collected.filter(event => event.kind === 'observed').length === MAX_PUBLIC_SCAN_STATE_ENTRIES + 1
+    await fixture.waitFor(
+      () => fixture.collected.filter(event => event.kind === 'observed').length === MAX_PUBLIC_SCAN_STATE_ENTRIES + 1,
+      'every peer to be observed'
     )
     fixture.source.emit(advertisement('peer-0'), 32)
-    await waitUntil(
+    await fixture.waitFor(
       () => fixture.collected.filter(event => event.kind === 'observed' && event.peer.id === 'peer-0').length === 2
     )
     fixture.setNow(20)
     const activeTimers = fixture.timers.filter(timer => timer.cancel.mock.calls.length === 0)
     activeTimers[activeTimers.length - 1].action()
-    await waitUntil(() =>
-      fixture.collected.some(
-        event => event.kind === 'lost' && event.peer.id === 'peer-0' && event.reason === 'observation-timeout'
-      )
+    await fixture.waitFor(
+      () =>
+        fixture.collected.some(
+          event => event.kind === 'lost' && event.peer.id === 'peer-0' && event.reason === 'observation-timeout'
+        ),
+      'peer-0 to be lost by observation-timeout'
     )
     expect(
       fixture.collected.some(

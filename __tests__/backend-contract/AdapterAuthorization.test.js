@@ -23,6 +23,7 @@ const { createCoreBluetoothBackendProvider } = require('../../src/backends/coreb
 const { prepareNativeCoreBluetoothBoundary } = require('../../src/node-corebluetooth')
 const { assertWinRtAdapterReady, winRtAdapterIsReady } = require('../../src/backends/winrt/winrt-adapter-state')
 const { ReactNativeAppleProtocolBoundary } = require('../../src/native-protocol/rn-apple-boundary')
+const { ReactNativeAndroidProtocolBoundary } = require('../../src/native-protocol/rn-android-boundary')
 const {
   BLUEZ_ADAPTER_INTERFACE,
   InMemoryBluezBoundary,
@@ -386,5 +387,31 @@ describe('BlueZ reports an unmeasurable authorization', () => {
     expect(state.safeReason).toBe(noAuthorizationConcept)
 
     await backend.destroy()
+  })
+})
+
+/**
+ * A boundary that has not yet been handed the radio's state reports a PENDING
+ * snapshot. Pending is the absence of a measurement, so every field must say
+ * so - including authorization. Reporting it as 'unavailable' made the readiness
+ * gate gate raise permission.denied for a radio that is switched on with every
+ * permission granted, which is the one thing this file says must never happen.
+ */
+describe('a pending adapter snapshot reports unmeasured authorization', () => {
+  test('React Native Android reports every field unmeasured before the radio speaks', () => {
+    const boundary = new ReactNativeAndroidProtocolBoundary({}, 'pending-adapter-owner')
+
+    const snapshot = boundary.adapterSnapshot()
+
+    expect(snapshot.availability).toBe('unknown')
+    expect(snapshot.power).toBe('unknown')
+    expect(snapshot.authorization).toBe('unknown')
+    expect(snapshot.safeReason).toBe('The Android radio has not emitted its authoritative adapter state yet.')
+  })
+
+  test('the pending authorization does not block readiness', () => {
+    const boundary = new ReactNativeAndroidProtocolBoundary({}, 'pending-adapter-owner')
+
+    expect(isAuthorizationBlocking(boundary.adapterSnapshot().authorization)).toBe(false)
   })
 })

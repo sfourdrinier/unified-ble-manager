@@ -46,6 +46,8 @@ import {
   assertPublicChooseOptions,
   assertPublicScanOptions,
   broadcastConnectionEvents,
+  DEFAULT_ADAPTER_READINESS_TIMEOUT_MS,
+  DEFAULT_FIND_TIMEOUT_MS,
   publicConnectionTerminalError,
   filterScanObservations,
   findPeerInScan,
@@ -92,6 +94,18 @@ import {
   type IpcWriteReceipt
 } from './manager'
 
+/**
+ * Cadence for the renderer-side adapter-state poll.
+ *
+ * The versioned IPC surface exposes no adapter-state push channel, so the
+ * renderer samples it. Fixed rather than caller-tunable: it is a property of the
+ * IPC boundary, not of any one operation, and every caller-visible bound
+ * (`waitUntilReady`'s deadline, `watchState`'s abort signal) already governs how
+ * long polling continues. Raising it would delay every renderer's readiness
+ * transition; lowering it would multiply round-trips across all renderers. If a
+ * host ever needs to trade latency for IPC traffic, that belongs on manager
+ * construction, not per call.
+ */
 const IPC_ADAPTER_STATE_POLL_INTERVAL_MS = 25
 const IPC_ADAPTER_STATE_STREAM_LIMITS = Object.freeze({
   itemCapacity: capacity(128),
@@ -189,11 +203,12 @@ export class IpcPublicManagerAdapter implements BleManager {
     try {
       const { select, ...scanOptions } = options
       const operation = normalizeOperationOptions(options, () => globalThis.performance.now())
+      // Same host-policy defaults as the in-process manager; see FindOptions.
       const scan = await this.scan({
         ...scanOptions,
-        duplicates: 'coalesced',
-        delivery: 'latest',
-        timeoutMs: options.timeoutMs ?? 10_000
+        duplicates: options.duplicates ?? 'coalesced',
+        delivery: options.delivery ?? 'latest',
+        timeoutMs: options.timeoutMs ?? DEFAULT_FIND_TIMEOUT_MS
       })
       return await runWithCleanup(
         () => findPeerInScan(scan, select, { ...operation, now: () => globalThis.performance.now() }),
@@ -967,7 +982,14 @@ function createIpcAdapter(ipc: IpcBleManager): BleAdapter {
     watchState: options => watchIpcAdapterState(readState, options),
     waitUntilReady: async (options: AdapterReadinessOptions = {}) => {
       const normalized = normalizeOperationOptions(options, () => globalThis.performance.now())
-      const deadline = normalized.deadline === null ? globalThis.performance.now() + 10_000 : normalized.deadline
+      // Host policy with a documented default: a caller-supplied deadline always
+      // wins, and the fallback only stops an unbounded wait. Kept identical to
+      // the in-process `waitForPublicAdapter` fallback so the same logical
+      // operation does not time out differently either side of the IPC boundary.
+      const deadline =
+        normalized.deadline === null
+          ? globalThis.performance.now() + DEFAULT_ADAPTER_READINESS_TIMEOUT_MS
+          : normalized.deadline
       while (true) {
         const current = await readState({ signal: normalized.signal ?? undefined, deadline })
         if (current.availability === 'unsupported' || current.power === 'unsupported')
@@ -983,7 +1005,7 @@ function createIpcAdapter(ipc: IpcBleManager): BleAdapter {
           throw contractError('operation.aborted', 'adapter', 'ipc-public-manager.adapter-ready')
         if (globalThis.performance.now() >= deadline)
           throw contractError('operation.timed-out', 'adapter', 'ipc-public-manager.adapter-ready')
-        await new Promise(resolve => setTimeout(resolve, 25))
+        await new Promise(resolve => setTimeout(resolve, IPC_ADAPTER_STATE_POLL_INTERVAL_MS))
       }
     }
   }

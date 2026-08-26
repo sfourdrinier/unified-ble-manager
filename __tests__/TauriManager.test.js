@@ -3,14 +3,7 @@
 'use strict'
 
 const { BUILT_IN_FEATURE_IDS } = require('../src/backend-contract/capabilities')
-
-async function waitUntil(predicate, attempts = 200) {
-  for (let attempt = 0; attempt < attempts; attempt += 1) {
-    if (predicate()) return
-    await Promise.resolve()
-  }
-  throw new Error('timed out waiting for Tauri manager condition')
-}
+const { awaitSignal } = require('./helpers/async')
 
 class FakeChannel {
   constructor() {
@@ -627,12 +620,20 @@ describe('Tauri v2 public manager', () => {
 
   test('propagates AbortSignal cancellation through the shared IPC client', async () => {
     let resolveConnect
+    // The cancellation is dispatched fire-and-forget by the abort listener, so
+    // nothing in the public API exposes it to await. The mock is the one place
+    // the test can see it, so it settles a promise instead of being polled.
+    let cancelRouted
+    const cancelSeen = new Promise(resolve => {
+      cancelRouted = resolve
+    })
     const invoke = jest.fn(async (_command, args) => {
       const request = args.request
       if (request.kind === 'bootstrap') return { kind: 'bootstrap', bootstrap: bootstrap() }
       if (request.kind === 'release') return { kind: 'release', cleanup: { state: 'released', failures: [] } }
       if (request.kind === 'event.ack') return { kind: 'event.ack' }
       if (request.envelope.command === 'operation.cancel') {
+        cancelRouted(request)
         resolveConnect({
           kind: 'failure',
           error: {
@@ -659,18 +660,38 @@ describe('Tauri v2 public manager', () => {
     controller.abort()
 
     await expect(connecting).rejects.toMatchObject({ code: 'operation.aborted' })
-    await waitUntil(() => invoke.mock.calls.some(([, args]) => args.request.envelope?.command === 'operation.cancel'))
+    await awaitSignal(cancelSeen, 'operation.cancel routed to native')
     await manager.destroy()
   })
 
   test('turns a manager timeout into native operation cancellation', async () => {
     let resolveConnect
+    // The cancellation is dispatched fire-and-forget by the abort listener, so
+    // nothing in the public API exposes it to await. The mock is the one place
+    // the test can see it, so it settles a promise instead of being polled.
+    let cancelRouted
+    const cancelSeen = new Promise(resolve => {
+      cancelRouted = resolve
+    })
+    // A cancellation is routed to native only for an operation that reached the
+    // `dispatched` phase: the coordinator's `queued` and `admitting` branches
+    // settle the caller and return without one, correctly, because there is
+    // nothing on the far side to cancel. So this test must PROVE the connect
+    // was dispatched before the deadline expires, rather than assume a 1ms
+    // timer loses a race it is not guaranteed to lose - on a loaded two-core
+    // runner it can win, leaving the test waiting for a cancellation the
+    // product was right never to send.
+    let connectDispatched
+    const connectSeen = new Promise(resolve => {
+      connectDispatched = resolve
+    })
     const invoke = jest.fn(async (_command, args) => {
       const request = args.request
       if (request.kind === 'bootstrap') return { kind: 'bootstrap', bootstrap: bootstrap() }
       if (request.kind === 'release') return { kind: 'release', cleanup: { state: 'released', failures: [] } }
       if (request.kind === 'event.ack') return { kind: 'event.ack' }
       if (request.envelope.command === 'operation.cancel') {
+        cancelRouted(request)
         resolveConnect({
           kind: 'failure',
           error: {
@@ -683,6 +704,7 @@ describe('Tauri v2 public manager', () => {
         })
         return { kind: 'route', payload: { state: 'cancellation-requested' } }
       }
+      connectDispatched()
       return new Promise(resolve => {
         resolveConnect = resolve
       })
@@ -690,8 +712,28 @@ describe('Tauri v2 public manager', () => {
     const { createTauriBleManagerWithEnvironment } = require('../src/tauri')
     const manager = await createTauriBleManagerWithEnvironment({ invoke, Channel: FakeChannel })
 
-    await expect(manager.connect('polar-h10', { timeoutMs: 1 })).rejects.toMatchObject({ code: 'operation.timed-out' })
-    await waitUntil(() => invoke.mock.calls.some(([, args]) => args.request.envelope?.command === 'operation.cancel'))
+    // Fake timers only after bootstrap, so the deadline is the one timer under
+    // the test's control. Promise progression is unaffected by them, which is
+    // what lets the dispatch be awaited before the clock is advanced.
+    jest.useFakeTimers()
+    try {
+      const connecting = manager.connect('polar-h10', { timeoutMs: 1 })
+      connecting.catch(() => undefined)
+      // Awaited directly rather than through awaitSignal: fake timers replace
+      // the very setTimeout that helper's failure path depends on, so its
+      // budget could never fire here. Jest's own timeout still bounds a hang -
+      // it just reports it less specifically, which is the honest trade for
+      // owning the clock.
+      await connectSeen
+
+      // Only now can the deadline expire, and only against a dispatched
+      // operation - so a routed cancellation is a guarantee, not a race.
+      jest.advanceTimersByTime(2)
+      await expect(connecting).rejects.toMatchObject({ code: 'operation.timed-out' })
+      await cancelSeen
+    } finally {
+      jest.useRealTimers()
+    }
     await manager.destroy()
   })
 

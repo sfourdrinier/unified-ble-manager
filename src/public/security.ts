@@ -47,6 +47,12 @@ export interface PairOptions extends OperationOptions {
   readonly transport?: 'le' | 'auto'
   readonly protection?: 'system-default' | 'encrypted' | 'authenticated'
   readonly ceremony?: 'system' | PairingAgent
+  /**
+   * Preferred LE pairing generation. Defaults to 'prefer' (platform decides).
+   * Use 'disallow' for peers that reject LE Secure Connections and require
+   * legacy pairing. Backends that cannot honour it return an unsupported error.
+   */
+  readonly secureConnections?: 'require' | 'prefer' | 'disallow'
 }
 
 export type PairingChallenge =
@@ -239,11 +245,20 @@ export function createPublicSecurity(
         ) {
           throw contractError('argument.invalid', 'platform', 'public-security.pair.protection')
         }
+        if (
+          options.secureConnections !== undefined &&
+          options.secureConnections !== 'require' &&
+          options.secureConnections !== 'prefer' &&
+          options.secureConnections !== 'disallow'
+        ) {
+          throw contractError('argument.invalid', 'platform', 'public-security.pair.secure-connections')
+        }
         const ceremony = toInternalCeremony(options.ceremony, resolved.peer)
         const pairOptions: InternalSecurityPairOptions = {
           ...normalized,
           transport: options.transport ?? 'auto',
           protection: options.protection ?? 'system-default',
+          secureConnections: options.secureConnections ?? 'prefer',
           ceremony
         }
         return snapshotPairResult(await security.pair(resolved.id, pairOptions), 'public-security.pair')
