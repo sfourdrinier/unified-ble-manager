@@ -44,6 +44,17 @@ export interface NativeCoreBluetoothProviderOptions {
   readonly now: () => number
 }
 
+/**
+ * Safety bound on CoreBluetooth's first `centralManagerDidUpdateState` callback.
+ *
+ * Fixed rather than caller-tunable because it runs during provider construction,
+ * before any manager or operation exists to carry a `PublicOperationOptions`
+ * deadline: there is no caller deadline to derive from at this point. The value
+ * is a liveness guard, not a performance target -- a healthy macOS host reports
+ * a usable state in well under a second, and exceeding ten seconds means the
+ * native boundary is not going to answer. Widening it would only delay the
+ * `capability.unavailable` report; it would not make a stalled boundary start.
+ */
 const NATIVE_COREBLUETOOTH_INITIALIZATION_TIMEOUT_MILLISECONDS = 10_000
 
 function isUsableAdapterState(state: ReturnType<CoreBluetoothBoundary['adapterSnapshot']>): boolean {

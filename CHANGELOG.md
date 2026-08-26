@@ -4,6 +4,15 @@ All notable changes to `unified-ble-manager` are documented here.
 
 ## [Unreleased]
 
+### Additions
+
+- `FindOptions` accepts `duplicates` and `delivery`, so the `find()` convenience can be pointed at a peripheral that advertises in dense bursts instead of being abandoned for a hand-driven `scan()`. Both default to the values `find()` has always used (`'coalesced'` and `'latest'`), so nothing changes for existing callers (#148).
+
+### Documentation
+
+- Every hardcoded timing and capacity constant in `src/` is now classified as a protocol invariant, a safety bound, or host policy, and each one that stays fixed carries a comment at its definition saying why. Undocumented constants were the defect: a fixed deadline that is never explained reads as a device fault when a slower host misses it (#148).
+- `find()`'s 10 s fallback deadline and `adapter.waitUntilReady()`'s 10 s fallback deadline are named constants shared between the in-process and IPC managers, so the same logical operation cannot expire at two different times either side of the IPC boundary (#148).
+
 ## [4.0.5] - 2026-08-25
 
 First release cut against a live peripheral. Every fix below came from driving a real CGM from an Android phone and a Linux/BlueZ host, and several are defects no unit test had reason to catch. Does not retag `v4.0.4`.

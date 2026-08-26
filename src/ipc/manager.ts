@@ -64,6 +64,23 @@ const REMOTE_STREAM_LIMITS = Object.freeze({
   reservedControlCapacity: capacity(1)
 })
 
+/**
+ * Safety bounds on the renderer-side buffer that holds stream items which
+ * arrived before their stream handle was registered locally.
+ *
+ * These are trust-boundary quotas, not tuning knobs, and are deliberately not
+ * caller-configurable. The main process is the authority for a renderer's stream
+ * budget; this buffer exists only to absorb the small window between a remote
+ * `stream.open` and the local registration that consumes it. Letting untrusted
+ * renderer code raise them would let a misbehaving or hostile main-process peer
+ * pin unbounded memory in the renderer, which is exactly the amplification the
+ * IPC boundary exists to prevent. A caller that needs a larger *stream* budget
+ * sets `delivery` on the operation, which the main process honours within its
+ * own quotas; nothing legitimate needs a larger pre-registration buffer.
+ *
+ * The age bounds additionally stop an orphaned handle from retaining items
+ * forever when a registration never arrives.
+ */
 const MAX_PENDING_STREAM_IDS = 256
 const MAX_PENDING_STREAM_ITEMS = 512
 const MAX_PENDING_STREAM_BYTES = 2 * 1024 * 1024
