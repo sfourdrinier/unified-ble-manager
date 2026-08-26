@@ -3022,14 +3022,65 @@ async fn disconnect_peripheral(peripheral: &Peripheral) -> Result<(), String> {
                 .await
                 .map_err(|error| error.to_string())
         },
-        || async {
-            peripheral
-                .is_connected()
-                .await
-                .map_err(|error| error.to_string())
-        },
+        || async { connected_after_failed_disconnect(peripheral).await },
     )
     .await
+}
+
+/// Answer "is it still connected?" after a disconnect has already failed.
+///
+/// The state check is classified *before* the error is rendered to a string,
+/// because the typed error carries the only evidence that distinguishes "the
+/// peer is gone" from "we could not tell", and stringifying first throws it
+/// away at the one call site that has it.
+///
+/// On BlueZ a removed D-Bus device object is not a failure of this question -
+/// it is the answer. `is_connected()` reads `Device1` properties, so once BlueZ
+/// has dropped the object the read errors, and treating that as indeterminate
+/// retains ownership of a peer that is provably released, permanently: the
+/// object never comes back, so every retry fails identically.
+async fn connected_after_failed_disconnect(peripheral: &Peripheral) -> Result<bool, String> {
+    match peripheral.is_connected().await {
+        Ok(connected) => Ok(connected),
+        Err(error) if error_confirms_device_released(&error) => {
+            // Reported, not swallowed: the outcome is "released", but the error
+            // is still the only account of why the disconnect failed.
+            eprintln!(
+                "[unified-ble:tauri] the peer's device object is gone, so it is released \
+                 despite the state check erroring: {error}"
+            );
+            Ok(false)
+        }
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+/// True when a state-check error proves the peer is no longer present.
+///
+/// The discriminator is the D-Bus error *name*, which is a protocol constant,
+/// not rendered text - so this does not depend on how any crate in the chain
+/// formats its errors.
+#[cfg(target_os = "linux")]
+fn error_confirms_device_released(error: &btleplug::Error) -> bool {
+    let btleplug::Error::Other(inner) = error else {
+        return false;
+    };
+    let Some(bluez_async::BluetoothError::DbusError(dbus_error)) =
+        inner.downcast_ref::<bluez_async::BluetoothError>()
+    else {
+        return false;
+    };
+    matches!(
+        dbus_error.name(),
+        Some("org.freedesktop.DBus.Error.UnknownObject" | "org.bluez.Error.DoesNotExist")
+    )
+}
+
+/// No equivalent evidence exists off Linux: CoreBluetooth and WinRT report a
+/// missing peer as `Ok(false)` rather than as an error, so nothing reaches here.
+#[cfg(not(target_os = "linux"))]
+fn error_confirms_device_released(_error: &btleplug::Error) -> bool {
+    false
 }
 
 async fn disconnect_with_state_check<DisconnectFuture, StateFuture>(
@@ -4075,6 +4126,8 @@ fn required_string(
 
 #[cfg(test)]
 mod tests {
+    #[cfg(target_os = "linux")]
+    use super::error_confirms_device_released;
     use super::{
         characteristic_properties, disconnect_with_state_check, negotiate_ipc_versions, object,
         released, resolve_disconnect_failure, scan_properties_match_optional,
@@ -4194,6 +4247,51 @@ mod tests {
             Some("caller-a"),
             "a stale handle's cleanup must not release a peer a newer connection owns"
         );
+    }
+
+    /// Builds the error btleplug actually delivers when BlueZ has dropped a
+    /// device object, by the same conversions the real path uses.
+    ///
+    /// This doubles as a version tripwire. It constructs the value through the
+    /// *direct* bluez-async dependency and hands it to btleplug's `From`, so if
+    /// that copy and btleplug's transitive copy ever diverge across a semver
+    /// bump, this stops compiling - instead of the downcast silently returning
+    /// None and the classification quietly reverting in production.
+    #[cfg(target_os = "linux")]
+    fn bluez_dbus_error(name: &str) -> btleplug::Error {
+        let dbus_error = dbus::Error::new_custom(name, "device object is gone");
+        btleplug::Error::from(bluez_async::BluetoothError::DbusError(dbus_error))
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_removed_bluez_device_object_confirms_the_peer_is_released() {
+        assert!(error_confirms_device_released(&bluez_dbus_error(
+            "org.freedesktop.DBus.Error.UnknownObject"
+        )));
+        assert!(error_confirms_device_released(&bluez_dbus_error(
+            "org.bluez.Error.DoesNotExist"
+        )));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_transport_failure_is_not_evidence_that_the_peer_was_released() {
+        // The distinction that matters: these mean "we could not tell", so
+        // ownership must be retained rather than released.
+        for name in [
+            "org.freedesktop.DBus.Error.Timeout",
+            "org.freedesktop.DBus.Error.NoReply",
+            "org.freedesktop.DBus.Error.ServiceUnknown",
+        ] {
+            assert!(
+                !error_confirms_device_released(&bluez_dbus_error(name)),
+                "{name} does not prove the peer is gone"
+            );
+        }
+        assert!(!error_confirms_device_released(
+            &btleplug::Error::NotConnected
+        ));
     }
 
     #[tokio::test(start_paused = true)]
