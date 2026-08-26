@@ -23,6 +23,7 @@ import type {
   SecurityPairingResponse,
   SecurityUnpairResult
 } from '../backend-contract/security'
+import { cancelOutcomeForPairResult } from '../backend-contract/security'
 import {
   attachBleBackend,
   createBleManager,
@@ -72,6 +73,20 @@ const publicScenarioDefinitionId = 'scenario.scan-connect-discover-read-notify-d
  * this runner fixture. Facts are emitted only after every public operation and
  * final manager cleanup settle successfully.
  */
+/**
+ * A conformant backend agrees with itself about one pairing.
+ *
+ * This used to require `'cancelled'` from both calls, which made the suite
+ * penalise a backend for being correct: when the bond wins the race, the
+ * contract requires `pair()` to report `paired` and `cancelPairing()` to
+ * report `paired` - and the old assertion failed exactly that. What matters is
+ * not which word appears but that the two calls do not contradict each other,
+ * so the check is the shared mapper the contract is defined by.
+ */
+function cancellationIsConsistent(cancelled: SecurityCancelPairingResult, cancelledPair: SecurityPairResult): boolean {
+  return cancelOutcomeForPairResult(cancelledPair).outcome === cancelled.outcome
+}
+
 export async function executePublicTckScenario<
   Attachment extends string,
   Identity extends BackendIdentity<Attachment>,
@@ -382,9 +397,7 @@ async function executeSecurityScenario<
     ),
     fact(
       'security-pairing-cancellation-cleans-up',
-      cancelled.outcome === 'cancelled' &&
-        cancelledPair.outcome === 'cancelled' &&
-        afterCancellation.outcome === 'not-pairing',
+      cancellationIsConsistent(cancelled, cancelledPair) && afterCancellation.outcome === 'not-pairing',
       {
         cancelled: cancelled.outcome,
         cancelledPair: cancelledPair.outcome,
@@ -472,8 +485,11 @@ async function executeSystemOnlySecurityScenario<
     fact(
       'security-pairing-cancellation-cleans-up',
       !supportsCancellation ||
-        (cancelled?.outcome === 'cancelled' &&
-          cancelledPair?.outcome === 'cancelled' &&
+        (cancelled !== null &&
+          cancelled !== undefined &&
+          cancelledPair !== null &&
+          cancelledPair !== undefined &&
+          cancellationIsConsistent(cancelled, cancelledPair) &&
           afterCancellation?.outcome === 'not-pairing'),
       {
         cancelled: cancelled?.outcome ?? null,
