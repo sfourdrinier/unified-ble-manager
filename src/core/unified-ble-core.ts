@@ -79,6 +79,15 @@ import type { DiagnosticTraceDocument } from '../diagnostics/trace-format'
 export { DEFAULT_CORE_MAXIMUM_VALUE_BYTES } from './unified-ble-core-helpers'
 export type { CoreDeadlineHandle, CoreDeadlineScheduler } from './unified-ble-core-helpers'
 
+/**
+ * Safety bound on draining a quarantined connection lane during teardown.
+ *
+ * Independent of any caller deadline by design: quarantine drain runs after the
+ * operation that triggered it has already failed or been cancelled, so deriving
+ * from that operation's deadline would mean never waiting at all and reporting a
+ * spurious cleanup failure. One second bounds teardown without turning a slow
+ * native release into an unbounded hang; expiry surfaces as a cleanup failure.
+ */
 const QUARANTINE_DRAIN_TIMEOUT_MS = 1_000
 
 export interface UnifiedBleCoreOptions {

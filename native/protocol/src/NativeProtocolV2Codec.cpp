@@ -63,6 +63,27 @@ RecordKind recordKindForName(std::string_view name) {
   throw ProtocolException(ProtocolFailure::unknownRecord, "Native protocol field references an unknown record");
 }
 
+// Name a rejected record's kind and the versions that disagreed. A quarantined
+// record is only actionable if the diagnostic says which emitter produced it:
+// "the payload version is incompatible" is otherwise true of any record on the
+// wire and the reader is left to guess between four record kinds.
+// PR #142 introduces describeField() for the same reason; the two should be
+// folded into one helper when these branches meet.
+std::string describeRecordVersion(RecordKind kind, const std::uint64_t* version) {
+  const auto* kindDescriptor = std::find_if(
+      kRecordKindDescriptors.begin(),
+      kRecordKindDescriptors.end(),
+      [kind](const RecordKindDescriptor& candidate) { return candidate.kind == kind; });
+  std::string description = " (kind=";
+  description += kindDescriptor == kRecordKindDescriptors.end()
+      ? std::to_string(static_cast<std::uint32_t>(kind))
+      : std::string(kindDescriptor->name);
+  description += ", version=";
+  description += version == nullptr ? std::string("absent") : std::to_string(*version);
+  description += ", expected=" + std::to_string(static_cast<std::uint32_t>(kProtocolVersion)) + ")";
+  return description;
+}
+
 void appendBytes(std::vector<std::uint8_t>& output, const void* data, std::size_t size) {
   if (size > kMaximumControlRecordBytes - output.size()) {
     throw ProtocolException(ProtocolFailure::payloadTooLarge, "Native protocol control record exceeds its limit");
@@ -343,13 +364,36 @@ bool hasField(const ProtocolRecord& record, std::uint16_t fieldId) {
 const ProtocolRecord* attachmentFor(const ProtocolRecord& record);
 bool attachmentsEqual(const ProtocolRecord& left, const ProtocolRecord& right);
 
+// Name a record kind and one of its fields for a diagnostic. A rejected record
+// is reported by identifier, not by shape: without this, "a field is forbidden"
+// is true of every record on the wire and locating the offender means reading
+// the emitting binding against the schema by hand.
+std::string describeField(RecordKind kind, std::uint16_t fieldId) {
+  std::string description = " (kind=";
+  const auto* kindDescriptor = std::find_if(
+      kRecordKindDescriptors.begin(),
+      kRecordKindDescriptors.end(),
+      [kind](const RecordKindDescriptor& candidate) { return candidate.kind == kind; });
+  description += kindDescriptor == kRecordKindDescriptors.end()
+      ? std::to_string(static_cast<std::uint32_t>(kind))
+      : std::string(kindDescriptor->name);
+  description += ", field=" + std::to_string(fieldId);
+  if (const auto* fieldDescriptor = descriptor(kind, fieldId); fieldDescriptor != nullptr) {
+    description += " " + std::string(fieldDescriptor->name);
+  }
+  description += ")";
+  return description;
+}
+
 void requireFieldSet(
     const ProtocolRecord& record,
     std::initializer_list<std::uint16_t> required,
     std::initializer_list<std::uint16_t> optional) {
   for (const auto fieldId : required) {
     if (!hasField(record, fieldId)) {
-      throw ProtocolException(ProtocolFailure::missingField, "Native protocol semantic field is required");
+      throw ProtocolException(
+          ProtocolFailure::missingField,
+          "Native protocol semantic field is required" + describeField(record.kind, fieldId));
     }
   }
   for (const auto& field : record.fields) {
@@ -357,7 +401,9 @@ void requireFieldSet(
         std::find(required.begin(), required.end(), field.id) != required.end() ||
         std::find(optional.begin(), optional.end(), field.id) != optional.end();
     if (!allowed) {
-      throw ProtocolException(ProtocolFailure::malformedRecord, "Native protocol field is forbidden for this kind");
+      throw ProtocolException(
+          ProtocolFailure::malformedRecord,
+          "Native protocol field is forbidden for this kind" + describeField(record.kind, field.id));
     }
   }
 }
@@ -469,7 +515,11 @@ void validateEventSemantics(const ProtocolRecord& record) {
   } else if (*kind == "backendRestarted" || *kind == "restorationAvailable") {
     requireFieldSet(record, {1U, 2U, 3U, 4U, 5U, 6U}, {});
   } else if (*kind == "advertisement") {
-    requireFieldSet(record, {1U, 2U, 3U, 4U, 5U, 6U, 12U}, {});
+    // An advertisement is always observed by some scan, and backends carry that
+    // scan's operationCorrelation on the event so a caller can tell which scan
+    // produced it. Optional rather than required: an unsolicited advertisement
+    // that belongs to no scan operation is still a well-formed event.
+    requireFieldSet(record, {1U, 2U, 3U, 4U, 5U, 6U, 12U}, {10U});
   } else if (*kind == "connectionLost") {
     requireFieldSet(record, {1U, 2U, 3U, 4U, 5U, 6U, 7U, 14U}, {});
   } else if (*kind == "databaseChanged") {
@@ -639,7 +689,9 @@ void NativeProtocolV2Codec::validateRecord(const ProtocolRecord& record, std::si
       record.kind == RecordKind::restorationRecord) {
     const auto* version = unsignedIntegerField(record, 1U);
     if (version == nullptr || *version != kProtocolVersion) {
-      throw ProtocolException(ProtocolFailure::incompatibleVersion, "Native protocol payload version is incompatible");
+      throw ProtocolException(
+          ProtocolFailure::incompatibleVersion,
+          "Native protocol payload version is incompatible" + describeRecordVersion(record.kind, version));
     }
   }
   if (record.kind == RecordKind::command) {

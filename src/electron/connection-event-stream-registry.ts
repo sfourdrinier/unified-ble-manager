@@ -16,6 +16,14 @@ import { ELECTRON_CONNECTION_LIFECYCLE_EVENT_SCHEMA_VERSION, isElectronConnectio
 import type { ElectronBleIpcEvent } from './protocol'
 import type { ElectronEventDelivery } from './renderer-stream-registry'
 
+/**
+ * Retry cadence for re-attempting a connection-event stream release.
+ *
+ * An interval, not a deadline: it runs on the teardown path, after the operation
+ * that owned the stream has ended, so there is no caller deadline to derive it
+ * from. Termination is decided by the release state, not by this number. Kept at
+ * the same 100ms as the other renderer/main retry paths.
+ */
 const cleanupRetryDelayMilliseconds = 100
 
 export interface ConnectionLifecycleSource {

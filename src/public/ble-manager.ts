@@ -425,10 +425,49 @@ export interface ScanOptions extends OperationOptions {
   readonly platform?: ScanPlatformOptions
 }
 
+/**
+ * Fallback deadline for `find()` when the caller supplies no `timeoutMs`.
+ *
+ * Host policy, not an invariant: it exists only so a convenience call cannot
+ * scan indefinitely. Shared with the IPC/renderer adapter so the same logical
+ * operation is not governed by two independently drifting numbers.
+ */
+export const DEFAULT_FIND_TIMEOUT_MS = 10_000
+
+/**
+ * Fallback deadline for `adapter.waitUntilReady()` when the caller supplies no
+ * `timeoutMs`.
+ *
+ * Host policy, not an invariant: a caller-supplied deadline always wins. The
+ * fallback exists only so a readiness wait cannot hang forever on a host whose
+ * adapter never reports a usable state. Shared with the IPC/renderer adapter so
+ * the same logical wait does not expire at two different times either side of
+ * the IPC boundary.
+ */
+export const DEFAULT_ADAPTER_READINESS_TIMEOUT_MS = 10_000
+
+/**
+ * Options for the one-shot `find()` convenience over `scan()`.
+ *
+ * `find()` owns the scan session it opens, so the observation-stream policy is
+ * host policy rather than a package invariant: a peripheral that advertises in
+ * dense bursts overflows a small observation budget on one host and never comes
+ * close on another. Every field below is optional and keeps the historical
+ * default, so `find()` behaves exactly as before when nothing is supplied.
+ */
 export interface FindOptions extends OperationOptions {
-  /** Defaults to 10 seconds when omitted. */
+  /** `OperationOptions.timeoutMs` defaults to 10 seconds when omitted. */
   readonly query?: ScanQuery
   readonly select?: 'first' | ((peer: BlePeer) => boolean)
+  /** Defaults to `'coalesced'`; `'all'` keeps every report for selectors that inspect advertisement churn. */
+  readonly duplicates?: 'coalesced' | 'all'
+  /**
+   * Observation-stream budget for the scan `find()` opens. Defaults to `'latest'`
+   * (a one-item drop-oldest window), which is the smallest useful budget and the
+   * one most easily overflowed by a chatty peripheral; raise it with `'balanced'`
+   * or a custom budget when advertisement bursts are expected.
+   */
+  readonly delivery?: StreamPolicy
   readonly platform?: ScanPlatformOptions
 }
 
@@ -1583,9 +1622,12 @@ class PublicBleManager<Attachment extends string, Identity extends BackendIdenti
     const operation = normalizeOperationOptions(options, this.now)
     const scan = await this.scan({
       ...scanOptions,
-      duplicates: 'coalesced',
-      delivery: 'latest',
-      timeoutMs: options.timeoutMs ?? 10_000
+      duplicates: options.duplicates ?? 'coalesced',
+      delivery: options.delivery ?? 'latest',
+      // Host policy with a documented default rather than a silent invariant:
+      // a caller-supplied `timeoutMs` always wins, and 10s is only the fallback
+      // deadline for a convenience call that would otherwise scan forever.
+      timeoutMs: options.timeoutMs ?? DEFAULT_FIND_TIMEOUT_MS
     })
     return runWithCleanup(
       () => findPeerInScan(scan, select, { ...operation, now: this.now }),
@@ -1947,7 +1989,7 @@ async function waitForPublicAdapter<Attachment extends string, Identity extends 
 ): Promise<BleAdapterState> {
   try {
     const normalized = normalizeOperationOptions(options, now)
-    const deadline = normalized.deadline ?? now() + 10_000
+    const deadline = normalized.deadline ?? now() + DEFAULT_ADAPTER_READINESS_TIMEOUT_MS
     const watch = await internal.adapterStates({ signal: normalized.signal })
     const iterator = watch.values[Symbol.asyncIterator]()
     return await runWithCleanup(

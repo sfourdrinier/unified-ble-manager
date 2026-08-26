@@ -9,6 +9,15 @@ import { CoreBoundedStream } from '../../core/bounded-stream'
 import { resourceCount } from '../../backend-contract/primitives'
 import { releasedCleanup } from './winrt-handles'
 
+/**
+ * Safety bound on a native WinRT release call during teardown.
+ *
+ * Deliberately independent of any caller deadline: cleanup runs after the owning
+ * operation has already ended, so inheriting its (often expired) deadline would
+ * report every release as failed. Matches the BlueZ and CoreBluetooth cleanup
+ * bounds so the same logical teardown is governed identically on every desktop
+ * backend.
+ */
 export const WINRT_NATIVE_CLEANUP_TIMEOUT_MS = 1_000
 
 export type WinRtSettlementWaitResult = 'settled' | 'timed-out'

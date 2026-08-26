@@ -67,6 +67,10 @@ struct JsiEventSinkState final {
   protocol::AndroidIngressOrdinalAllocator ingressOrdinalAllocator{1U};
   protocol::AndroidJsiBinaryCleanupLedger binaryCleanupLedger{
       kMaximumBinaryCleanupReferences};
+  // A record the codec refuses never reaches JavaScript, so nothing downstream
+  // can count it. The tally lives here so the diagnostic that replaces the
+  // dropped record can say how many have been lost on this attachment.
+  std::atomic<std::uint64_t> quarantinedRecords{0U};
 };
 
 std::mutex eventSinkStatesMutex;
@@ -1339,6 +1343,30 @@ bool deliverNativeResult(
     const std::shared_ptr<protocol::NativeProtocolControlRuntime>& activeRuntime,
     const protocol::ProtocolRecord& result);
 
+bool deliverNativeEvent(
+    const std::shared_ptr<JsiEventSinkState>& state,
+    const std::shared_ptr<protocol::NativeProtocolControlRuntime>& activeRuntime,
+    const protocol::ProtocolRecord& event);
+
+protocol::ProtocolRecord diagnosticEvent(
+    jlong nativeHandle,
+    const std::shared_ptr<JsiEventSinkState>& state,
+    const std::shared_ptr<protocol::NativeProtocolControlRuntime>& activeRuntime,
+    const std::string& code,
+    const std::string& message);
+
+// Report a record the codec refused. The dropped record cannot be recovered --
+// it is malformed by definition -- but the application is entitled to learn
+// that the boundary discarded something it was asked to deliver, which a
+// logcat line alone does not tell it. The diagnostic is built natively, so it
+// carries a correct version stamp and survives the validation that the
+// quarantined record failed.
+void reportQuarantinedRecord(
+    jlong nativeHandle,
+    const std::shared_ptr<JsiEventSinkState>& state,
+    const std::shared_ptr<protocol::NativeProtocolControlRuntime>& activeRuntime,
+    const char* reason);
+
 bool emitRecordFromJava(JNIEnv* environment, jlong nativeHandle, jbyteArray encodedRecord) {
   if (encodedRecord == nullptr) {
     return false;
@@ -1403,12 +1431,50 @@ bool emitRecordFromJava(JNIEnv* environment, jlong nativeHandle, jbyteArray enco
         "UnifiedBleProtocol",
         "emitRecordNative quarantined invalid Android record: %s",
         error.what());
+    reportQuarantinedRecord(nativeHandle, state, activeRuntime, error.what());
     if (decodedRecord.has_value() && decodedRecord->kind == protocol::RecordKind::result) {
       requestFatalAttachment(
           state,
           std::string("Android terminal validation/delivery failed before settlement: ") + error.what());
     }
     return false;
+  }
+}
+
+void reportQuarantinedRecord(
+    jlong nativeHandle,
+    const std::shared_ptr<JsiEventSinkState>& state,
+    const std::shared_ptr<protocol::NativeProtocolControlRuntime>& activeRuntime,
+    const char* reason) {
+  const auto quarantined = state->quarantinedRecords.fetch_add(1U) + 1U;
+  try {
+    if (!deliverNativeEvent(
+            state,
+            activeRuntime,
+            diagnosticEvent(
+                nativeHandle,
+                state,
+                activeRuntime,
+                "recordQuarantined",
+                std::string("Android record was quarantined and not delivered (") +
+                    std::to_string(quarantined) + " on this attachment): " +
+                    (reason == nullptr ? "unknown error" : reason)))) {
+      __android_log_print(
+          ANDROID_LOG_ERROR,
+          "UnifiedBleProtocol",
+          "Android quarantine diagnostic was rejected handle=%lld quarantined=%llu",
+          static_cast<long long>(nativeHandle),
+          static_cast<unsigned long long>(quarantined));
+    }
+  } catch (const std::exception& error) {
+    // The quarantine path is already the failure path; a diagnostic that cannot
+    // be built must not replace the original record's failure with its own.
+    __android_log_print(
+        ANDROID_LOG_ERROR,
+        "UnifiedBleProtocol",
+        "Android quarantine diagnostic could not be built handle=%lld: %s",
+        static_cast<long long>(nativeHandle),
+        error.what());
   }
 }
 

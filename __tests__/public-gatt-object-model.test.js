@@ -232,6 +232,63 @@ describe('stable public GATT object model (PR3 TDD)', () => {
     expect(stop).toHaveBeenCalledTimes(1)
   })
 
+  test('find keeps its historical observation budget by default and honours a caller-supplied one', async () => {
+    const createFindFixture = () => {
+      const source = new CoreBoundedStream(
+        { itemCapacity: capacity(2), byteCapacity: capacity(64), reservedControlCapacity: capacity(1) },
+        'drop-oldest'
+      )
+      const internal = {
+        identity: null,
+        attachedBackend: undefined,
+        supports: () => true,
+        scan: jest.fn(async () => ({
+          observations: source,
+          stop: async () => ({ state: 'released', failures: [] })
+        })),
+        connect: jest.fn(),
+        destroy: jest.fn(async () => ({ state: 'released', failures: [] }))
+      }
+      return { source, internal }
+    }
+    const observe = source => {
+      source.emit(
+        {
+          peerId: 'peer-1',
+          localName: 'Sensor',
+          rssi: -42,
+          serviceUuids: [],
+          manufacturerData: [],
+          serviceData: []
+        },
+        1
+      )
+    }
+
+    const preserved = createFindFixture()
+    const defaultManager = await createPublicBleManager(preserved.internal, () => 0)
+    const defaultFind = defaultManager.find({ select: 'first' })
+    observe(preserved.source)
+    await expect(defaultFind).resolves.toMatchObject({ id: 'peer-1' })
+    // The historical `delivery: 'latest'` budget: a one-item drop-oldest window.
+    expect(preserved.internal.scan).toHaveBeenCalledWith(
+      expect.objectContaining({
+        delivery: expect.objectContaining({ itemCapacity: 1, byteCapacity: 4 * 1024, overflowPolicy: 'drop-oldest' })
+      })
+    )
+
+    const widened = createFindFixture()
+    const widenedManager = await createPublicBleManager(widened.internal, () => 0)
+    const widenedFind = widenedManager.find({ select: 'first', duplicates: 'all', delivery: 'balanced' })
+    observe(widened.source)
+    await expect(widenedFind).resolves.toMatchObject({ id: 'peer-1' })
+    expect(widened.internal.scan).toHaveBeenCalledWith(
+      expect.objectContaining({
+        delivery: expect.objectContaining({ itemCapacity: 32, byteCapacity: 16 * 1024, overflowPolicy: 'drop-oldest' })
+      })
+    )
+  })
+
   test('exposes an immutable generation-bound object graph and explicit duplicate selection', async () => {
     const publicFixture = await createPublicFixture()
     const { fixture, manager } = publicFixture

@@ -142,6 +142,15 @@ export function describeScanPredicates(query: NormalizedScanQuery): readonly Sca
   )
 }
 
+/**
+ * Safety bounds on a backend-reported scan plan.
+ *
+ * Fail-closed quotas on data crossing the backend boundary, not host policy: a
+ * scan plan is produced by backend code and consumed by the package, so its size
+ * must be bounded independently of what the backend claims. They are far above
+ * any real plan -- a scan query that needs more than 64 projection predicates is
+ * malformed, not merely large.
+ */
 const MAX_PROJECTION_PREDICATES = 64
 const MAX_UNAVAILABLE_PREDICATES = 64
 const MAX_LIMITATIONS = 32

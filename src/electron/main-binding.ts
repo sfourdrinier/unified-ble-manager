@@ -14,6 +14,22 @@ import {
 } from './protocol'
 import { ElectronMainBleRouter, type ElectronEventDelivery } from './main-router'
 
+/**
+ * Per-renderer outbound event quotas and the destroyed-renderer retry cadence.
+ *
+ * The capacities are trust-boundary quotas the trusted main process imposes on
+ * each renderer, not host policy: they bound how much main-process memory one
+ * renderer can pin, and a renderer must not be able to raise its own quota. A
+ * renderer that needs a larger *stream* budget asks through the versioned
+ * operation surface, which the main process honours within these ceilings.
+ * The separate terminal capacity guarantees a terminal notice is deliverable
+ * even when the data window is full, and the acknowledgement retention window
+ * bounds replay for a renderer that reloads mid-stream.
+ *
+ * The retry delay is an interval, not a deadline, so there is no caller deadline
+ * to derive it from: it only paces re-checking whether a renderer that was being
+ * torn down has finished being destroyed.
+ */
 const outboundDataEventCapacity = 128
 const outboundDataByteCapacity = 512 * 1024
 const outboundTerminalEventCapacity = 8

@@ -5,6 +5,16 @@ import type { PublicOperationOptions } from '../../backend-contract/operations'
 import type { BluezBackendRuntime } from './bluez-backend-runtime'
 import type { BluezConnectionRecord, BluezPropertyWaiter } from './bluez-runtime-types'
 
+/**
+ * Safety bound on a native D-Bus release call during teardown.
+ *
+ * Only a default: `awaitBluezNativePromise` takes an explicit `timeoutMs`, and
+ * every waiter in this module that serves a live operation derives its deadline
+ * from the caller's `PublicOperationOptions` instead. Cleanup is the one path
+ * that must not inherit the caller's deadline -- it runs after that deadline has
+ * usually already expired -- so it gets an independent bound. Matches the
+ * CoreBluetooth and WinRT cleanup bounds.
+ */
 export const BLUEZ_NATIVE_CLEANUP_TIMEOUT_MS = 1_000
 
 export async function awaitBluezNativePromise(
