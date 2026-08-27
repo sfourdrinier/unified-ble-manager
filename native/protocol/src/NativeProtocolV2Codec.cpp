@@ -458,8 +458,10 @@ void validateCommandSemantics(const ProtocolRecord& record) {
     requireFieldSet(record, {1U, 2U, 3U, 8U}, {});
   } else if (*kind == "adoptRestoration") {
     requireFieldSet(record, {1U, 2U, 3U, 9U}, {});
-  } else if (*kind == "securityState" || *kind == "securityPair" || *kind == "securityCancelPairing") {
+  } else if (*kind == "securityState" || *kind == "securityCancelPairing") {
     requireFieldSet(record, {1U, 2U, 3U, 15U}, {});
+  } else if (*kind == "securityPair") {
+    requireFieldSet(record, {1U, 2U, 3U, 15U, 19U}, {});
   }
 }
 

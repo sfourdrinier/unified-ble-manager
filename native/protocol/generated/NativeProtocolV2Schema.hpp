@@ -10,7 +10,7 @@
 namespace unified_ble::native_protocol::v2 {
 
 inline constexpr std::uint32_t kProtocolVersion = 2U;
-inline constexpr std::uint32_t kAbiVersion = 4U;
+inline constexpr std::uint32_t kAbiVersion = 5U;
 inline constexpr std::uint32_t kControlSurfaceVersion = 2U;
 inline constexpr std::size_t kMaximumControlRecordBytes = 262144U;
 inline constexpr std::size_t kMaximumBinaryPayloadBytes = 524288U;
@@ -135,6 +135,11 @@ enum class ConnectionPhys : std::uint16_t {
   leCoded = 3U
 };
 
+enum class PairTransports : std::uint16_t {
+  platformDefault = 1U,
+  le = 2U
+};
+
 enum class AdapterAvailability : std::uint16_t {
   available = 1U,
   unavailable = 2U,
@@ -226,7 +231,7 @@ inline constexpr std::array<RecordKindDescriptor, 23> kRecordKindDescriptors{{
   RecordKindDescriptor{RecordKind::restorationAdoptionResult, "restorationAdoptionResult"}
 }};
 
-inline constexpr std::array<FieldDescriptor, 168> kFieldDescriptors{{
+inline constexpr std::array<FieldDescriptor, 169> kFieldDescriptors{{
   FieldDescriptor{RecordKind::attachment, 1U, "attachmentId", "string", true},
   FieldDescriptor{RecordKind::attachment, 2U, "backendInstanceId", "string", true},
   FieldDescriptor{RecordKind::attachment, 3U, "backendGeneration", "string", true},
@@ -299,6 +304,7 @@ inline constexpr std::array<FieldDescriptor, 168> kFieldDescriptors{{
   FieldDescriptor{RecordKind::command, 16U, "connectionPriority", "enum:connectionPriorities", false},
   FieldDescriptor{RecordKind::command, 17U, "phyTx", "enum:connectionPhys", false},
   FieldDescriptor{RecordKind::command, 18U, "phyRx", "enum:connectionPhys", false},
+  FieldDescriptor{RecordKind::command, 19U, "pairTransport", "enum:pairTransports", false},
   FieldDescriptor{RecordKind::terminal, 1U, "correlation", "record:operationCorrelation", true},
   FieldDescriptor{RecordKind::terminal, 2U, "outcome", "enum:terminalOutcomes", true},
   FieldDescriptor{RecordKind::terminal, 3U, "cause", "string", false},
@@ -397,7 +403,7 @@ inline constexpr std::array<FieldDescriptor, 168> kFieldDescriptors{{
   FieldDescriptor{RecordKind::restorationAdoptionResult, 7U, "records", "records:restorationRecord", true}
 }};
 
-inline constexpr std::array<EnumValueDescriptor, 96> kEnumValueDescriptors{{
+inline constexpr std::array<EnumValueDescriptor, 98> kEnumValueDescriptors{{
   EnumValueDescriptor{"commandKinds", "scanStart"},
   EnumValueDescriptor{"commandKinds", "scanStop"},
   EnumValueDescriptor{"commandKinds", "connect"},
@@ -465,6 +471,8 @@ inline constexpr std::array<EnumValueDescriptor, 96> kEnumValueDescriptors{{
   EnumValueDescriptor{"connectionPhys", "le1m"},
   EnumValueDescriptor{"connectionPhys", "le2m"},
   EnumValueDescriptor{"connectionPhys", "leCoded"},
+  EnumValueDescriptor{"pairTransports", "platformDefault"},
+  EnumValueDescriptor{"pairTransports", "le"},
   EnumValueDescriptor{"adapterAvailability", "available"},
   EnumValueDescriptor{"adapterAvailability", "unavailable"},
   EnumValueDescriptor{"adapterAvailability", "unsupported"},

@@ -3,7 +3,7 @@
 import Foundation
 
 public let nativeProtocolVersion: UInt32 = 2
-public let nativeProtocolABIVersion: UInt32 = 4
+public let nativeProtocolABIVersion: UInt32 = 5
 public let nativeProtocolControlSurfaceVersion: UInt32 = 2
 public let maximumControlRecordBytes: Int = 262144
 public let maximumBinaryPayloadBytes: Int = 524288
@@ -126,6 +126,11 @@ public enum ConnectionPhys: UInt16, CaseIterable, Sendable {
   case le1m = 1
   case le2m = 2
   case leCoded = 3
+}
+
+public enum PairTransports: UInt16, CaseIterable, Sendable {
+  case platformDefault = 1
+  case le = 2
 }
 
 public enum AdapterAvailability: UInt16, CaseIterable, Sendable {
@@ -256,6 +261,7 @@ public let nativeProtocolFields: [FieldDescriptor] = [
     FieldDescriptor(record: .command, fieldID: 16, name: "connectionPriority", type: "enum:connectionPriorities", required: false),
     FieldDescriptor(record: .command, fieldID: 17, name: "phyTx", type: "enum:connectionPhys", required: false),
     FieldDescriptor(record: .command, fieldID: 18, name: "phyRx", type: "enum:connectionPhys", required: false),
+    FieldDescriptor(record: .command, fieldID: 19, name: "pairTransport", type: "enum:pairTransports", required: false),
     FieldDescriptor(record: .terminal, fieldID: 1, name: "correlation", type: "record:operationCorrelation", required: true),
     FieldDescriptor(record: .terminal, fieldID: 2, name: "outcome", type: "enum:terminalOutcomes", required: true),
     FieldDescriptor(record: .terminal, fieldID: 3, name: "cause", type: "string", required: false),

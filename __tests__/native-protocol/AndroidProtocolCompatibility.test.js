@@ -17,7 +17,7 @@ describe('React Native Android native protocol compatibility', () => {
     await expect(boundary.open()).rejects.toMatchObject({
       normalized: { code: 'protocol.incompatible' }
     })
-    expect(control.handshakes[0].abi).toEqual({ minimum: 4, maximum: 4 })
+    expect(control.handshakes[0].abi).toEqual({ minimum: 5, maximum: 5 })
     expect(control.installCalls).toBe(0)
     expect(control.closedAttachments).toEqual([attachment])
   })

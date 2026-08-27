@@ -1,7 +1,7 @@
 // src/native-protocol/generated/native-protocol-v2-schema.ts
 
 export const NATIVE_PROTOCOL_VERSION = 2
-export const NATIVE_PROTOCOL_ABI_VERSION = 4
+export const NATIVE_PROTOCOL_ABI_VERSION = 5
 export const NATIVE_PROTOCOL_CONTROL_SURFACE_VERSION = 2
 export const MAXIMUM_CONTROL_RECORD_BYTES = 262144
 export const MAXIMUM_BINARY_PAYLOAD_BYTES = 524288
@@ -123,6 +123,7 @@ export const nativeProtocolEnumValues: Readonly<Record<string, readonly string[]
   writeModes: ['withResponse', 'withoutResponse'],
   connectionPriorities: ['lowPower', 'balanced', 'highThroughput'],
   connectionPhys: ['le1m', 'le2m', 'leCoded'],
+  pairTransports: ['platformDefault', 'le'],
   adapterAvailability: ['available', 'unavailable', 'unsupported', 'unknown'],
   adapterAuthorization: ['granted', 'denied', 'restricted', 'notDetermined', 'unavailable'],
   adapterPower: ['on', 'off', 'resetting', 'unsupported', 'unknown'],
@@ -218,6 +219,9 @@ export type ConnectionPriorities = (typeof connectionPriorities)[number]
 
 export const connectionPhys = Object.freeze(['le1m', 'le2m', 'leCoded'])
 export type ConnectionPhys = (typeof connectionPhys)[number]
+
+export const pairTransports = Object.freeze(['platformDefault', 'le'])
+export type PairTransports = (typeof pairTransports)[number]
 
 export const adapterAvailability = Object.freeze(['available', 'unavailable', 'unsupported', 'unknown'])
 export type AdapterAvailability = (typeof adapterAvailability)[number]
@@ -335,6 +339,7 @@ export const nativeProtocolFields: readonly NativeProtocolFieldDescriptor[] = Ob
   nativeProtocolField('command', 16, 'connectionPriority', 'enum:connectionPriorities', false),
   nativeProtocolField('command', 17, 'phyTx', 'enum:connectionPhys', false),
   nativeProtocolField('command', 18, 'phyRx', 'enum:connectionPhys', false),
+  nativeProtocolField('command', 19, 'pairTransport', 'enum:pairTransports', false),
   nativeProtocolField('terminal', 1, 'correlation', 'record:operationCorrelation', true),
   nativeProtocolField('terminal', 2, 'outcome', 'enum:terminalOutcomes', true),
   nativeProtocolField('terminal', 3, 'cause', 'string', false),

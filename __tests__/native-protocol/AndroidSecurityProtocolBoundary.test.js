@@ -64,7 +64,7 @@ describe('React Native Android security protocol boundary', () => {
       secureConnections: 'unsupported',
       pairingPossible: true
     })
-    await expect(boundary.pair(peerId)).resolves.toMatchObject({
+    await expect(boundary.pair(peerId, 'le')).resolves.toMatchObject({
       outcome: 'paired',
       state: { bond: 'bonded' }
     })
@@ -73,11 +73,24 @@ describe('React Native Android security protocol boundary', () => {
     await boundary.cancelPairing(peerId)
 
     expect(runtime.commands).toEqual(['securityState', 'securityState', 'securityPair', 'securityCancelPairing'])
+    expect(runtime.pairTransports).toEqual(['le'])
     expect(events).toEqual([
       expect.objectContaining({ nativePeerId: peerId, state: expect.objectContaining({ bond: 'bonded' }) })
     ])
 
     removeListener()
+    await boundary.destroy()
+  })
+
+  test('maps the public auto transport to the native platform default', async () => {
+    const control = new SecurityControl(true, true)
+    const runtime = new SecurityRuntime(control)
+    global.__unifiedBleNativeProtocolV2 = runtime
+    const boundary = await openBoundary(control)
+
+    await expect(boundary.pair(peerId, 'auto')).resolves.toMatchObject({ outcome: 'paired' })
+    expect(runtime.pairTransports).toEqual(['platformDefault'])
+
     await boundary.destroy()
   })
 
@@ -132,7 +145,7 @@ describe('React Native Android security protocol boundary', () => {
     global.__unifiedBleNativeProtocolV2 = runtime
     const boundary = await openBoundary(control)
 
-    const pairing = boundary.pair(peerId)
+    const pairing = boundary.pair(peerId, 'auto')
     for (let turn = 0; turn < 4; turn += 1) await Promise.resolve()
     await boundary.cleanupPairing(peerId)
 
@@ -180,7 +193,7 @@ describe('React Native Android security protocol boundary', () => {
   })
 
   test('rejects an already-aborted or already-expired pair before allocating native work', async () => {
-    const pair = jest.fn(async (_peerId, signal) => {
+    const pair = jest.fn(async (_peerId, _transport, signal) => {
       await securityStateCall()
       if (signal?.aborted === true) throw contractError('operation.aborted', 'core', 'android.security.pair')
       return { outcome: 'paired', state: securityState('bonded') }
@@ -436,7 +449,7 @@ describe('React Native Android security protocol boundary', () => {
   test('does not submit native pairing when cancellation wins during the state preflight', async () => {
     let resolveState
     const dispatchPair = jest.fn()
-    const pair = jest.fn(async (_peerId, signal) => {
+    const pair = jest.fn(async (_peerId, _transport, signal) => {
       await securityStateCall()
       if (signal?.aborted === true) throw contractError('operation.aborted', 'core', 'android.security.pair')
       dispatchPair()
@@ -484,7 +497,7 @@ describe('React Native Android security protocol boundary', () => {
             resolveState = resolve
           })
       )
-      const pair = jest.fn(async (_peerId, signal) => {
+      const pair = jest.fn(async (_peerId, _transport, signal) => {
         await securityStateCall()
         if (signal?.aborted === true) throw contractError('operation.aborted', 'core', 'android.security.pair')
         dispatchPair()
@@ -597,7 +610,7 @@ class SecurityControl {
   handshake() {
     return Promise.resolve({
       nativeProtocol: 2,
-      abi: 4,
+      abi: 5,
       controlSurface: 2,
       backendContract: 1,
       capabilitySchema: 1,
@@ -630,6 +643,7 @@ class SecurityRuntime {
     this.eventAttachment = null
     this.deferPair = false
     this.pendingPair = null
+    this.pairTransports = []
   }
 
   setEventSink(listener) {
@@ -658,6 +672,7 @@ class SecurityRuntime {
       return
     }
     if (kind === 'securityPair') {
+      this.pairTransports.push(requiredString(command, 19, 'test.command.pair-transport'))
       if (this.deferPair) {
         this.deferPair = false
         this.pendingPair = command

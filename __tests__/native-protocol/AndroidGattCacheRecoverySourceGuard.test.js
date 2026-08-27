@@ -13,9 +13,9 @@ describe('Android GATT cache recovery source guard', () => {
 
     expect(source).not.toMatch(/getMethod\s*\(\s*["']refresh["']\s*\)/)
     expect(source).not.toMatch(/\brefreshGatt\b/)
-    expect(source).not.toMatch(
-      /\bjavaClass\.getMethod\b|\bgetDeclaredMethod\b|\bClass\.forName\b|\bjava\.lang\.reflect\b|\breflection\b/i
-    )
+    const reflectedMethods = [...source.matchAll(/javaClass\.getMethod\(\s*"([^"]+)"/g)].map(match => match[1])
+    expect(reflectedMethods).toEqual(['createBond'])
+    expect(source).not.toMatch(/\bgetDeclaredMethod\b|\bClass\.forName\b|\bjava\.lang\.reflect\b/i)
     expect(source).toContain('clearCharCacheForDevice(key)')
     expect(source).toContain('discovered.remove(key)')
     expect(source).toContain('pendingReconnect[key] = autoConnect')

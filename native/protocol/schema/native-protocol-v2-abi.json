@@ -1,6 +1,6 @@
 {
   "schema": "unified-ble-native-protocol-abi",
-  "version": 4,
+  "version": 5,
   "recordKinds": {
     "attachment": 1,
     "connectionPath": 2,
@@ -90,6 +90,7 @@
     "writeModes": { "withResponse": 1, "withoutResponse": 2 },
     "connectionPriorities": { "lowPower": 1, "balanced": 2, "highThroughput": 3 },
     "connectionPhys": { "le1m": 1, "le2m": 2, "leCoded": 3 },
+    "pairTransports": { "platformDefault": 1, "le": 2 },
     "adapterAvailability": { "available": 1, "unavailable": 2, "unsupported": 3, "unknown": 4 },
     "adapterAuthorization": { "granted": 1, "denied": 2, "restricted": 3, "notDetermined": 4, "unavailable": 5 },
     "adapterPower": { "on": 1, "off": 2, "resetting": 3, "unsupported": 4, "unknown": 5 },
@@ -157,7 +158,8 @@
       "peerId": 15,
       "connectionPriority": 16,
       "phyTx": 17,
-      "phyRx": 18
+      "phyRx": 18,
+      "pairTransport": 19
     },
     "terminal": { "correlation": 1, "outcome": 2, "cause": 3 },
     "result": {

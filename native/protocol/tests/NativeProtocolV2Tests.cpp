@@ -355,8 +355,9 @@ void testRoundTripAndAdversarialRecords() {
       .fields = {
           field(1U, std::uint64_t{protocol::kProtocolVersion}),
           field(2U, correlation(4U)),
-          field(3U, std::string("securityState")),
+          field(3U, std::string("securityPair")),
           field(15U, std::string("peer-1")),
+          field(19U, std::string("le")),
       },
   };
   assert(codec.encode(codec.decode(codec.encode(securityCommand))) == codec.encode(securityCommand));

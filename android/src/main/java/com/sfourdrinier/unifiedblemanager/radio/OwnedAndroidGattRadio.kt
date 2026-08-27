@@ -29,6 +29,7 @@ import android.os.Looper
 import android.os.ParcelUuid
 import androidx.core.content.IntentCompat
 import com.sfourdrinier.unifiedblemanager.protocol.UnifiedBleProtocolAndroidDispatcher
+import java.lang.reflect.InvocationTargetException
 import java.util.ArrayDeque
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
@@ -597,17 +598,21 @@ class OwnedAndroidGattRadio(private val context: Context) {
     }
   }
 
-  internal fun pair(deviceId: String, callback: (String, OwnedAndroidSecurityState) -> Unit): Long {
+  internal fun pair(
+    deviceId: String,
+    transport: String,
+    callback: (String, OwnedAndroidSecurityState) -> Unit
+  ): Long {
     val bluetoothAdapter = adapter ?: throw IllegalStateException("Bluetooth adapter unavailable")
     val device = bluetoothAdapter.getRemoteDevice(deviceId)
-    if (device.bondState == BluetoothDevice.BOND_BONDED) {
+    if (isAlreadyPaired(device.bondState, device.type, transport)) {
       mainHandler.post { callback("alreadyPaired", OwnedAndroidSecurityState("bonded", true)) }
       return 0L
     }
     val key = device.address.uppercase()
     check(pendingBondPairs.putIfAbsent(key, callback) == null) { "Android pairing is already active for $deviceId" }
     try {
-      if (!device.createBond()) {
+      if (!createBond(device, transport)) {
         pendingBondPairs.remove(key, callback)
         throw IllegalStateException("Android rejected the bond request")
       }
@@ -616,6 +621,26 @@ class OwnedAndroidGattRadio(private val context: Context) {
       throw error
     }
     return nextGattOperationId.getAndIncrement()
+  }
+
+  private fun createBond(device: BluetoothDevice, transport: String): Boolean = when (transport) {
+    "platformDefault" -> device.createBond()
+    "le" -> {
+      val method = device.javaClass.getMethod("createBond", Int::class.javaPrimitiveType)
+      val result = try {
+        method.invoke(device, BluetoothDevice.TRANSPORT_LE)
+      } catch (error: InvocationTargetException) {
+        val cause = error.targetException
+        when (cause) {
+          is SecurityException -> throw cause
+          is Exception -> throw cause
+          else -> throw IllegalStateException("Android createBond(TRANSPORT_LE) failed", cause)
+        }
+      }
+      result as? Boolean
+        ?: throw IllegalStateException("Android createBond(TRANSPORT_LE) returned a non-boolean result")
+    }
+    else -> throw IllegalArgumentException("Unsupported Android pair transport '$transport'")
   }
 
   internal fun registerBondStateReceiver() {
@@ -2863,6 +2888,18 @@ class OwnedAndroidGattRadio(private val context: Context) {
     const val GATT_CLOSE_TIMEOUT_MS = 5_000L
 
     val CCCD_UUID: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
+
+    internal fun isAlreadyPaired(bondState: Int, deviceType: Int, transport: String): Boolean {
+      val bonded = bondState == BluetoothDevice.BOND_BONDED
+      return when (transport) {
+        "platformDefault" -> bonded
+        // A generic bond on a dual-mode device may be BR/EDR-only. Android 36
+        // exposes no public per-transport bond query, so only an LE-only device
+        // is unambiguous; every other type retries explicit LE and fails closed.
+        "le" -> bonded && deviceType == BluetoothDevice.DEVICE_TYPE_LE
+        else -> throw IllegalArgumentException("Unsupported Android pair transport '$transport'")
+      }
+    }
 
     @JvmStatic
     internal fun normalizeScanServiceUuids(serviceUuids: List<String>): List<String> {

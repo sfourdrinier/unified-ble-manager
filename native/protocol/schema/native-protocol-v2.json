@@ -1,7 +1,7 @@
 {
   "schema": "unified-ble-native-protocol",
   "version": 2,
-  "abiVersion": 4,
+  "abiVersion": 5,
   "controlSurfaceVersion": 2,
   "abiManifest": "native-protocol-v2-abi.json",
   "maximumControlRecordBytes": 262144,
@@ -94,6 +94,7 @@
   "writeModes": ["withResponse", "withoutResponse"],
   "connectionPriorities": ["lowPower", "balanced", "highThroughput"],
   "connectionPhys": ["le1m", "le2m", "leCoded"],
+  "pairTransports": ["platformDefault", "le"],
   "adapterAvailability": ["available", "unavailable", "unsupported", "unknown"],
   "adapterAuthorization": ["granted", "denied", "restricted", "notDetermined", "unavailable"],
   "adapterPower": ["on", "off", "resetting", "unsupported", "unknown"],
@@ -252,7 +253,8 @@
         ["peerId", "string", false],
         ["connectionPriority", "enum:connectionPriorities", false],
         ["phyTx", "enum:connectionPhys", false],
-        ["phyRx", "enum:connectionPhys", false]
+        ["phyRx", "enum:connectionPhys", false],
+        ["pairTransport", "enum:pairTransports", false]
       ]
     },
     {

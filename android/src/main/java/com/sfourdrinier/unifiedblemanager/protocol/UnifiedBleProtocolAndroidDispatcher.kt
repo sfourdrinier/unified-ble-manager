@@ -736,7 +736,8 @@ class UnifiedBleProtocolAndroidDispatcher(
 
   private fun securityPair(command: ProtocolWireRecord) {
     val peerId = command.requiredString(15)
-    val operationId = radio.pair(peerId) { outcome, state ->
+    val pairTransport = command.requiredString(19)
+    val operationId = radio.pair(peerId, pairTransport) { outcome, state ->
       if (!isPending(command)) return@pair
       if (outcome == "rejected") {
         emitFailure(command, "pairRejected", "Android rejected the system bond request")

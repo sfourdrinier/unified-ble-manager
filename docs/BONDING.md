@@ -67,6 +67,21 @@ it did not perform, an aborted or timed-out `pair()` fails closed by rejecting
 with `capability.unsupported`; a bond may still reach a later terminal state,
 which `watch()` reports.
 
+`PairOptions.transport` controls how a system pairing request is dispatched.
+The default, `'auto'`, uses the platform's normal pairing selection. On React
+Native Android, `'le'` invokes Android's transport-selecting bond operation with
+`BluetoothDevice.TRANSPORT_LE`; if that operation is unavailable or rejected,
+the request fails instead of silently falling back to the platform default. The
+selector crosses the versioned native boundary, so JavaScript and a stale native
+binary with different field layouts reject their handshake before pairing.
+
+This option does not imply equal native APIs on every host. BlueZ and WinRT
+pair through BLE-only device objects, so `'auto'` and `'le'` reach the same LE
+pairing mechanism there. Apple and Web keep generic pairing unsupported. The
+option selects the transport, not the LE pairing generation; use
+`secureConnections` for the separate Legacy-versus-Secure-Connections policy
+described below.
+
 This is a deliberate cross-backend difference callers should handle: where a
 backend can cancel an in-flight pairing (BlueZ, WinRT), an aborted or timed-out
 attempt resolves `{ outcome: 'cancelled' }`; where it cannot (an Android build

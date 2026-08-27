@@ -10,6 +10,7 @@ import com.sfourdrinier.unifiedblemanager.radio.OwnedAndroidGattRadio.GattSerial
 import com.sfourdrinier.unifiedblemanager.radio.OwnedAndroidSubscriptionOwnership
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertArrayEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -164,6 +165,54 @@ class UnifiedBleProtocolAndroidDispatcherLifecycleTest {
       rejected = true
     }
     assertTrue(rejected)
+  }
+
+  @Test
+  fun securityPairTransportIsRequiredAndLeUsesTheExplicitAndroidTransport() {
+    val dispatcher = readAndroidSource(
+      "android/src/main/java/com/sfourdrinier/unifiedblemanager/protocol/UnifiedBleProtocolAndroidDispatcher.kt"
+    )
+    val radio = readAndroidSource(
+      "android/src/main/java/com/sfourdrinier/unifiedblemanager/radio/OwnedAndroidGattRadio.kt"
+    )
+
+    assertTrue(dispatcher.contains("val pairTransport = command.requiredString(19)"))
+    assertTrue(dispatcher.contains("radio.pair(peerId, pairTransport)"))
+    assertTrue(radio.contains("isAlreadyPaired(device.bondState, device.type, transport)"))
+    assertTrue(radio.contains("\"platformDefault\" -> device.createBond()"))
+    assertTrue(radio.contains("method.invoke(device, BluetoothDevice.TRANSPORT_LE)"))
+    assertTrue(radio.contains("catch (error: InvocationTargetException)"))
+    assertTrue(radio.contains("is SecurityException -> throw cause"))
+    assertTrue(radio.contains("else -> throw IllegalArgumentException"))
+  }
+
+  @Test
+  fun explicitLeAlreadyPairedRequiresAnUnambiguouslyLeOnlyBond() {
+    assertTrue(OwnedAndroidGattRadio.isAlreadyPaired(
+      BluetoothDevice.BOND_BONDED,
+      BluetoothDevice.DEVICE_TYPE_CLASSIC,
+      "platformDefault"
+    ))
+    assertTrue(OwnedAndroidGattRadio.isAlreadyPaired(
+      BluetoothDevice.BOND_BONDED,
+      BluetoothDevice.DEVICE_TYPE_LE,
+      "le"
+    ))
+    assertFalse(OwnedAndroidGattRadio.isAlreadyPaired(
+      BluetoothDevice.BOND_BONDED,
+      BluetoothDevice.DEVICE_TYPE_DUAL,
+      "le"
+    ))
+    assertFalse(OwnedAndroidGattRadio.isAlreadyPaired(
+      BluetoothDevice.BOND_BONDED,
+      BluetoothDevice.DEVICE_TYPE_CLASSIC,
+      "le"
+    ))
+    assertFalse(OwnedAndroidGattRadio.isAlreadyPaired(
+      BluetoothDevice.BOND_NONE,
+      BluetoothDevice.DEVICE_TYPE_LE,
+      "le"
+    ))
   }
 
   @Test

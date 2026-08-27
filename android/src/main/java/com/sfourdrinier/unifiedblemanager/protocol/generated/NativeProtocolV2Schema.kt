@@ -3,7 +3,7 @@
 package com.sfourdrinier.unifiedblemanager.protocol.generated
 
 const val NATIVE_PROTOCOL_VERSION: Int = 2
-const val NATIVE_PROTOCOL_ABI_VERSION: Int = 4
+const val NATIVE_PROTOCOL_ABI_VERSION: Int = 5
 const val NATIVE_PROTOCOL_CONTROL_SURFACE_VERSION: Int = 2
 const val MAXIMUM_CONTROL_RECORD_BYTES: Int = 262144
 const val MAXIMUM_BINARY_PAYLOAD_BYTES: Int = 524288
@@ -126,6 +126,11 @@ enum class ConnectionPhys(val wireValue: Int) {
   LE1M(1),
   LE2M(2),
   LE_CODED(3)
+}
+
+enum class PairTransports(val wireValue: Int) {
+  PLATFORM_DEFAULT(1),
+  LE(2)
 }
 
 enum class AdapterAvailability(val wireValue: Int) {
@@ -256,6 +261,7 @@ val NATIVE_PROTOCOL_FIELDS: List<FieldDescriptor> = listOf(
     FieldDescriptor(RecordKind.COMMAND, 16, "connectionPriority", "enum:connectionPriorities", false),
     FieldDescriptor(RecordKind.COMMAND, 17, "phyTx", "enum:connectionPhys", false),
     FieldDescriptor(RecordKind.COMMAND, 18, "phyRx", "enum:connectionPhys", false),
+    FieldDescriptor(RecordKind.COMMAND, 19, "pairTransport", "enum:pairTransports", false),
     FieldDescriptor(RecordKind.TERMINAL, 1, "correlation", "record:operationCorrelation", true),
     FieldDescriptor(RecordKind.TERMINAL, 2, "outcome", "enum:terminalOutcomes", true),
     FieldDescriptor(RecordKind.TERMINAL, 3, "cause", "string", false),

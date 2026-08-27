@@ -76,7 +76,7 @@ describe('React Native Android scan platform options', () => {
     await boundary.destroy()
   })
 
-  test('encodes the opportunistic scan mode as -1 for the ABI-4 native radio', async () => {
+  test('encodes the opportunistic scan mode as -1 for the ABI-5 native radio', async () => {
     const control = new ScanPlatformControl()
     const runtime = new ScanPlatformRuntime()
     global.__unifiedBleNativeProtocolV2 = runtime
@@ -142,7 +142,7 @@ class ScanPlatformControl {
   handshake() {
     return Promise.resolve({
       nativeProtocol: 2,
-      abi: 4,
+      abi: 5,
       controlSurface: 2,
       backendContract: 1,
       capabilitySchema: 1,

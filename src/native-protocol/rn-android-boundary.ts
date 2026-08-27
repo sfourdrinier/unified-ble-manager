@@ -1,6 +1,7 @@
 // src/native-protocol/rn-android-boundary.ts
 
 import { contractError } from '../backend-contract/errors'
+import type { SecurityPairOptions } from '../backend-contract/security'
 import {
   MAXIMUM_REQUESTED_ATT_MTU,
   MINIMUM_ATT_MTU,
@@ -451,6 +452,7 @@ export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary
 
   async pair(
     nativePeerId: string,
+    transport: SecurityPairOptions['transport'],
     signal: AbortSignal | null = null
   ): Promise<{ readonly outcome: 'paired' | 'already-paired' | 'rejected'; readonly state: AndroidSecurityState }> {
     this.requireSecurityExtension('pair')
@@ -463,7 +465,8 @@ export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary
       throw contractError('operation.aborted', 'core', 'rn-android-boundary.pair')
     }
     if (current.bond === 'bonded') return { outcome: 'already-paired', state: current }
-    const result = await this.dispatch('securityPair', [field(15, nativePeerId)])
+    const nativeTransport = transport === 'auto' ? 'platformDefault' : transport
+    const result = await this.dispatch('securityPair', [field(15, nativePeerId), field(19, nativeTransport)])
     const state = securityStateFromRecord(result, nativePeerId, 'rn-android-boundary.pair')
     return { outcome: state.bond === 'bonded' ? 'paired' : 'rejected', state }
   }
