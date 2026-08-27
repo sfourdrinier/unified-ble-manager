@@ -72,6 +72,11 @@ The default, `'auto'`, uses the platform's normal pairing selection. On React
 Native Android, `'le'` invokes Android's transport-selecting bond operation with
 `BluetoothDevice.TRANSPORT_LE`; if that operation is unavailable or rejected,
 the request fails instead of silently falling back to the platform default. The
+Android API 36 surface has no public per-transport bond-state query. An existing
+generic bond therefore counts as `already-paired` for `'le'` only on an
+unambiguously LE-only device. Dual-mode, classic, and unknown devices retry the
+explicit LE operation and fail closed rather than risk accepting a BR/EDR-only
+bond as satisfying the request. The
 selector crosses the versioned native boundary, so JavaScript and a stale native
 binary with different field layouts reject their handshake before pairing.
 
