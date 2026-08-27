@@ -1,7 +1,6 @@
-const {
-  IpcBleManager,
-  inspectIpcPendingStreamAccountingForTests
-} = require('../../src/ipc/manager')
+// __tests__/ipc/pending-stream-bounds.test.js
+
+const { IpcBleManager, inspectIpcPendingStreamAccountingForTests } = require('../../src/ipc/manager')
 const { BUILT_IN_FEATURE_IDS } = require('../../src/backend-contract/capabilities')
 
 function negotiated(axis, value = axis === 'ipc-protocol' ? 2 : 1) {
@@ -120,6 +119,43 @@ async function firstStreamItem(ipc, streamId) {
 }
 
 describe('IPC pre-registration stream buffering', () => {
+  test('forwards a structured source failure after emitted peers without inventing drops', async () => {
+    const { ipc, emit } = await createIpcHarness()
+    const stream = ipc.registerStream('scan-error', isRecord)
+    const iterator = stream[Symbol.asyncIterator]()
+    const error = {
+      code: 'platform.transport',
+      domain: 'stream',
+      operation: 'tauri.event-send',
+      platform: {
+        domain: 'btleplug',
+        code: 'native-error',
+        safeMessage: 'native channel closed',
+        metadata: {}
+      },
+      retryability: 'never'
+    }
+
+    emit('scan-error', { kind: 'value', value: { peer: 'peer-1' } }, 'scan-peer')
+    emit('scan-error', { kind: 'terminal', reason: 'source-failed', error }, 'scan-terminal')
+    await flushPump()
+
+    await expect(iterator.next()).resolves.toMatchObject({
+      value: { kind: 'value', value: { peer: 'peer-1' } }
+    })
+    await expect(iterator.next()).resolves.toMatchObject({
+      value: {
+        kind: 'terminal',
+        reason: 'source-failed',
+        droppedItems: 0,
+        droppedBytes: 0,
+        error
+      }
+    })
+    await iterator.return()
+    await ipc.destroy()
+  })
+
   test('delivers legitimate early events in order after registerStream', async () => {
     const { ipc, emit } = await createIpcHarness()
     emit('early-1', { kind: 'value', value: { seq: 1 } }, 'early-a')

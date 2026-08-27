@@ -119,7 +119,7 @@ function toPublicCleanupFailure(resourceKind: string, error: NormalizedErrorLike
   })
 }
 
-function toPublicNormalizedError(error: NormalizedErrorLike): NormalizedBleError {
+export function toPublicNormalizedError(error: NormalizedErrorLike): NormalizedBleError {
   if (
     !BLE_ERROR_CODES.some(candidate => candidate === error.code) ||
     !BLE_ERROR_DOMAINS.some(candidate => candidate === error.domain) ||

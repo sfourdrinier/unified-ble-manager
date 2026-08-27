@@ -34,7 +34,10 @@ describe('CoreBoundedStream', () => {
     const iterator = stream[Symbol.asyncIterator]()
 
     await expect(iterator.next()).resolves.toMatchObject({ done: false, value: { kind: 'overflow' } })
-    await expect(iterator.next()).resolves.toMatchObject({ done: false, value: { kind: 'value', value: 'replacement' } })
+    await expect(iterator.next()).resolves.toMatchObject({
+      done: false,
+      value: { kind: 'value', value: 'replacement' }
+    })
     expect(stream.overflowCounters()).toMatchObject({ droppedItems: 1, droppedBytes: 4, replacedItems: 1 })
   })
 
@@ -83,6 +86,36 @@ describe('CoreBoundedStream', () => {
       value: { kind: 'terminal', reason: 'connection-lost' }
     })
     await expect(iterator.next()).resolves.toEqual({ done: true, value: undefined })
+  })
+
+  test('preserves a structured source failure on the terminal without changing drop counters', async () => {
+    const stream = new CoreBoundedStream(limits(2, 6, 1), 'drop-oldest')
+    const error = {
+      code: 'platform.transport',
+      domain: 'stream',
+      operation: 'tauri.event-send',
+      platform: {
+        domain: 'btleplug',
+        code: 'native-error',
+        safeMessage: 'native channel closed',
+        metadata: {}
+      },
+      retryability: 'never'
+    }
+    stream.emit('peer', 2)
+    stream.finishWithReason('source-failed', error)
+    const iterator = stream[Symbol.asyncIterator]()
+
+    await expect(iterator.next()).resolves.toMatchObject({ value: { kind: 'value', value: 'peer' } })
+    await expect(iterator.next()).resolves.toMatchObject({
+      value: {
+        kind: 'terminal',
+        reason: 'source-failed',
+        droppedItems: 0,
+        droppedBytes: 0,
+        error
+      }
+    })
   })
 
   test.each(['closed', 'overflow', 'source-failed'])(
@@ -209,7 +242,10 @@ describe('CoreBoundedStream', () => {
     quota.emit(second, 'overflow', 2)
     const iterator = second[Symbol.asyncIterator]()
 
-    await expect(iterator.next()).resolves.toMatchObject({ done: false, value: { kind: 'terminal', reason: 'overflow' } })
+    await expect(iterator.next()).resolves.toMatchObject({
+      done: false,
+      value: { kind: 'terminal', reason: 'overflow' }
+    })
     await expect(iterator.next()).resolves.toEqual({ done: true, value: undefined })
   })
 })
