@@ -1,6 +1,6 @@
 // src/testing/deterministic/deterministic-stream.ts
 
-import type { CleanupRecord } from '../../backend-contract/errors'
+import type { CleanupRecord, NormalizedBleError } from '../../backend-contract/errors'
 import { resourceCount, type Capacity } from '../../backend-contract/primitives'
 import type {
   BoundedAsyncStream,
@@ -187,14 +187,14 @@ export class DeterministicBoundedStream<Value> implements BoundedAsyncStream<Val
     return this.cleanupRecord
   }
 
-  closeWithReason(reason: StreamTerminalNotice['reason']): void {
+  closeWithReason(reason: StreamTerminalNotice['reason'], error: NormalizedBleError | null = null): void {
     if (this.closed) {
       return
     }
     this.closed = true
     this.entries.length = 0
     this.retainedValueBytes = 0
-    this.terminalNotice = this.makeTerminalNotice(reason)
+    this.terminalNotice = this.makeTerminalNotice(reason, error)
     this.deliverAvailableItems()
   }
 
@@ -427,14 +427,19 @@ export class DeterministicBoundedStream<Value> implements BoundedAsyncStream<Val
     }
   }
 
-  private makeTerminalNotice(reason: StreamTerminalNotice['reason']): StreamTerminalNotice {
-    return {
+  private makeTerminalNotice(
+    reason: StreamTerminalNotice['reason'],
+    error: NormalizedBleError | null = null
+  ): StreamTerminalNotice {
+    const terminal: StreamTerminalNotice = {
       kind: 'terminal',
       reason,
       droppedItems: resourceCount(this.droppedOldest + this.droppedNewest),
       droppedBytes: resourceCount(this.droppedBytes),
-      replacedItems: resourceCount(this.replaced)
+      replacedItems: resourceCount(this.replaced),
+      ...(error === null ? {} : { error })
     }
+    return terminal
   }
 
   private fitsValue(byteLength: number): boolean {

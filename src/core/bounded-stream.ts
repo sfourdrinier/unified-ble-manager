@@ -2,7 +2,7 @@
 
 import { contractError } from '../backend-contract/errors'
 import { resourceCount } from '../backend-contract/primitives'
-import type { CleanupRecord } from '../backend-contract/errors'
+import type { CleanupRecord, NormalizedBleError } from '../backend-contract/errors'
 import type { ResourceCount } from '../backend-contract/primitives'
 import type {
   BoundedAsyncStream,
@@ -115,8 +115,8 @@ export class CoreBoundedStream<Value> implements BoundedAsyncStream<Value> {
     return Promise.resolve({ state: 'released', failures: [] })
   }
 
-  closeWithReason(reason: CoreStreamTerminalReason): void {
-    this.closeWithTerminal(reason, false)
+  closeWithReason(reason: CoreStreamTerminalReason, error: NormalizedBleError | null = null): void {
+    this.closeWithTerminal(reason, false, error)
   }
 
   /**
@@ -124,10 +124,14 @@ export class CoreBoundedStream<Value> implements BoundedAsyncStream<Value> {
    * local overflow to the terminal's owning operation.
    */
   closeWithExactZeroCounters(reason: CoreStreamTerminalReason): void {
-    this.closeWithTerminal(reason, true)
+    this.closeWithTerminal(reason, true, null)
   }
 
-  private closeWithTerminal(reason: CoreStreamTerminalReason, zeroOverflowCounters: boolean): void {
+  private closeWithTerminal(
+    reason: CoreStreamTerminalReason,
+    zeroOverflowCounters: boolean,
+    error: NormalizedBleError | null
+  ): void {
     if (this.ownerClosed || this.terminalDelivered) {
       return
     }
@@ -139,16 +143,16 @@ export class CoreBoundedStream<Value> implements BoundedAsyncStream<Value> {
       this.clearOverflowCounters()
     }
     this.ownerClosed = true
-    this.terminalNotice = this.makeTerminal(reason)
+    this.terminalNotice = this.makeTerminal(reason, error)
     this.flushPendingConsumers()
   }
 
   /** Appends a terminal control record after already accepted values drain. */
-  finishWithReason(reason: CoreStreamTerminalReason): void {
+  finishWithReason(reason: CoreStreamTerminalReason, error: NormalizedBleError | null = null): void {
     if (this.ownerClosed || this.terminalNotice !== null || this.terminalDelivered) {
       return
     }
-    this.terminalNotice = this.makeTerminal(reason)
+    this.terminalNotice = this.makeTerminal(reason, error)
     this.flushPendingConsumers()
   }
 
@@ -425,14 +429,19 @@ export class CoreBoundedStream<Value> implements BoundedAsyncStream<Value> {
     }
   }
 
-  private makeTerminal(reason: CoreStreamTerminalReason): StreamTerminalNotice {
-    return {
+  private makeTerminal(
+    reason: CoreStreamTerminalReason,
+    error: NormalizedBleError | null = null
+  ): StreamTerminalNotice {
+    const terminal: StreamTerminalNotice = {
       kind: 'terminal',
       reason,
       droppedItems: resourceCount(this.totalDroppedItems()),
       droppedBytes: resourceCount(this.totalDroppedBytes()),
-      replacedItems: resourceCount(this.totalReplacedItems())
+      replacedItems: resourceCount(this.totalReplacedItems()),
+      ...(error === null ? {} : { error })
     }
+    return terminal
   }
 
   private clearOverflowCounters(): void {
