@@ -10,6 +10,7 @@ import com.sfourdrinier.unifiedblemanager.protocol.generated.NATIVE_PROTOCOL_VER
 import com.sfourdrinier.unifiedblemanager.protocol.generated.RecordKind
 import com.sfourdrinier.unifiedblemanager.radio.OwnedAndroidGattRadio
 import com.sfourdrinier.unifiedblemanager.radio.OwnedRadioTeardownFailure
+import com.sfourdrinier.unifiedblemanager.radio.BondedPeerSnapshot
 import com.sfourdrinier.unifiedblemanager.radio.nextUuidOccurrence
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
@@ -204,6 +205,7 @@ class UnifiedBleProtocolAndroidDispatcher(
           securityEventsEnabled.set(true)
           securityCancelPairing(command)
         }
+        "enumerateBondedPeers" -> enumerateBondedPeers(command)
         "subscribe" -> subscribe(command, true)
         "unsubscribe" -> subscribe(command, false)
         "cancel" -> cancel(command)
@@ -765,7 +767,32 @@ class UnifiedBleProtocolAndroidDispatcher(
     emitSuccess(command, "accepted")
   }
 
+  private fun enumerateBondedPeers(command: ProtocolWireRecord) {
+    val snapshots = bondedPeerSnapshotRecords(radio.bondedPeerSnapshots())
+    emitSuccess(
+      command,
+      "bondedPeers",
+      mapOf(23 to ProtocolWireValue.RecordListValue(snapshots))
+    )
+  }
+
   private fun emitSuccess(command: ProtocolWireRecord, kind: String, additions: Map<Int, ProtocolWireValue> = emptyMap()) {
+    if (kind == "bondedPeers") {
+      // Bonded enumeration reads Android metadata synchronously and can block while
+      // JSI cancellation or attachment teardown runs concurrently. Claim first so
+      // only one terminal path owns this command's result.
+      if (!claimExactPendingCommand(pendingCommands, operationKey(command), command)) return
+      val records = additions[23]
+      require(records is ProtocolWireValue.RecordListValue) {
+        "Android bonded peer result is missing its peer snapshot list"
+      }
+      UnifiedBleProtocolJsiBinding.emitRecord(
+        nativeHandle,
+        ProtocolWireEncoder.encode(bondedPeerResultRecord(command.requiredRecord(2), records.value))
+      )
+      radioOperationIds.remove(operationKey(command))
+      return
+    }
     if (!isPending(command)) return
     val fields = mutableMapOf<Int, ProtocolWireValue>(
       1 to ProtocolWireValue.UnsignedIntegerValue(NATIVE_PROTOCOL_VERSION.toLong()),
@@ -780,13 +807,18 @@ class UnifiedBleProtocolAndroidDispatcher(
       }
     }
     fields.putAll(additions)
-    UnifiedBleProtocolJsiBinding.emitRecord(nativeHandle, ProtocolWireEncoder.encode(ProtocolWireRecord(RecordKind.RESULT, fields)))
-    pendingCommands.remove(operationKey(command), command)
+    val result = ProtocolWireRecord(RecordKind.RESULT, fields)
+    UnifiedBleProtocolJsiBinding.emitRecord(nativeHandle, ProtocolWireEncoder.encode(result))
+    claimExactPendingCommand(pendingCommands, operationKey(command), command)
     radioOperationIds.remove(operationKey(command))
   }
 
   private fun emitFailure(command: ProtocolWireRecord, code: String, message: String) {
-    if (!isPending(command)) return
+    val bondedPeerCommand = command.requiredString(3) == "enumerateBondedPeers"
+    if (bondedPeerCommand) {
+      // Keep failure/cancellation/teardown mutually exclusive with a late success.
+      if (!claimExactPendingCommand(pendingCommands, operationKey(command), command)) return
+    } else if (!isPending(command)) return
     val error = ProtocolWireRecord(
       RecordKind.ERROR,
       mapOf(
@@ -807,12 +839,15 @@ class UnifiedBleProtocolAndroidDispatcher(
       )
     )
     UnifiedBleProtocolJsiBinding.emitRecord(nativeHandle, ProtocolWireEncoder.encode(result))
-    pendingCommands.remove(operationKey(command), command)
+    if (!bondedPeerCommand) claimExactPendingCommand(pendingCommands, operationKey(command), command)
     radioOperationIds.remove(operationKey(command))
   }
 
   private fun emitCancelled(command: ProtocolWireRecord) {
-    if (!isPending(command)) return
+    val bondedPeerCommand = command.requiredString(3) == "enumerateBondedPeers"
+    if (bondedPeerCommand) {
+      if (!claimExactPendingCommand(pendingCommands, operationKey(command), command)) return
+    } else if (!isPending(command)) return
     val result = ProtocolWireRecord(
       RecordKind.RESULT,
       mapOf(
@@ -834,7 +869,7 @@ class UnifiedBleProtocolAndroidDispatcher(
       )
     )
     UnifiedBleProtocolJsiBinding.emitRecord(nativeHandle, ProtocolWireEncoder.encode(result))
-    pendingCommands.remove(operationKey(command), command)
+    if (!bondedPeerCommand) claimExactPendingCommand(pendingCommands, operationKey(command), command)
     radioOperationIds.remove(operationKey(command))
   }
 
@@ -850,7 +885,7 @@ class UnifiedBleProtocolAndroidDispatcher(
       )
     )
     UnifiedBleProtocolJsiBinding.emitRecord(nativeHandle, ProtocolWireEncoder.encode(result))
-    pendingCommands.remove(operationKey(command), command)
+    claimExactPendingCommand(pendingCommands, operationKey(command), command)
   }
 
   private fun emitConnectionLost(connection: ProtocolWireRecord, status: Int) {
@@ -1164,8 +1199,60 @@ internal fun dispatcherResultKindFor(commandKind: String): String = when (comman
   "unsubscribe" -> "unsubscribed"
   "securityState" -> "securityState"
   "securityPair" -> "securityPair"
+  "enumerateBondedPeers" -> "bondedPeers"
   "destroy" -> "destroyed"
   else -> "accepted"
+}
+
+internal fun bondedPeerResultRecord(
+  correlation: ProtocolWireRecord,
+  snapshots: List<ProtocolWireRecord>
+): ProtocolWireRecord = ProtocolWireRecord(
+  RecordKind.RESULT,
+  mapOf(
+    1 to ProtocolWireValue.UnsignedIntegerValue(NATIVE_PROTOCOL_VERSION.toLong()),
+    2 to ProtocolWireValue.StringValue("bondedPeers"),
+    3 to ProtocolWireValue.RecordValue(
+      ProtocolWireRecord(
+        RecordKind.TERMINAL,
+        mapOf(
+          1 to ProtocolWireValue.RecordValue(correlation),
+          2 to ProtocolWireValue.StringValue("succeeded")
+        )
+      )
+    ),
+    23 to ProtocolWireValue.RecordListValue(snapshots)
+  )
+)
+
+internal fun bondedPeerSnapshotRecords(
+  snapshots: Iterable<BondedPeerSnapshot>
+): List<ProtocolWireRecord> = snapshots.map { peer ->
+  ProtocolWireRecord(
+    RecordKind.BONDED_PEER_SNAPSHOT,
+    buildMap {
+      put(1, ProtocolWireValue.StringValue(peer.nativePeerId))
+      peer.displayName?.let { name -> put(2, ProtocolWireValue.StringValue(name)) }
+    }
+  )
+}
+
+/** Atomically claim one pending command by operation key and object identity. */
+internal fun claimExactPendingCommand(
+  pending: ConcurrentHashMap<String, ProtocolWireRecord>,
+  key: String,
+  command: ProtocolWireRecord
+): Boolean {
+  var removed = false
+  pending.computeIfPresent(key) { _, candidate ->
+    if (candidate === command) {
+      removed = true
+      null
+    } else {
+      candidate
+    }
+  }
+  return removed
 }
 
 private fun ProtocolWireRecord.requiredBoolean(fieldId: Int): Boolean {

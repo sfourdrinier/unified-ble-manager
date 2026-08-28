@@ -31,6 +31,7 @@ import androidx.core.content.IntentCompat
 import com.sfourdrinier.unifiedblemanager.protocol.UnifiedBleProtocolAndroidDispatcher
 import java.lang.reflect.InvocationTargetException
 import java.util.ArrayDeque
+import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
@@ -120,6 +121,55 @@ internal data class OwnedAndroidSecurityState(
   val bond: String,
   val pairingPossible: Boolean?
 )
+
+/** Immutable native-only projection of one system-bonded Android peer. */
+internal data class BondedPeerSnapshot(
+  val nativePeerId: String,
+  val displayName: String?
+)
+
+internal fun bondedPeerAdapterReadiness(
+  adapterAvailable: Boolean,
+  connectPermissionGranted: Boolean,
+  adapterState: Int
+): Result<Unit> {
+  if (!adapterAvailable) {
+    return Result.failure(IllegalStateException("Bluetooth adapter unavailable"))
+  }
+  if (!connectPermissionGranted) {
+    return Result.failure(SecurityException("Android Bluetooth connect permission is required to enumerate bonded peers"))
+  }
+  return when (adapterState) {
+    BluetoothAdapter.STATE_ON -> Result.success(Unit)
+    BluetoothAdapter.STATE_OFF ->
+      Result.failure(IllegalStateException("Bluetooth adapter is powered off"))
+    BluetoothAdapter.STATE_TURNING_ON,
+    BluetoothAdapter.STATE_TURNING_OFF ->
+      Result.failure(IllegalStateException("Bluetooth adapter is resetting"))
+    else -> Result.failure(IllegalStateException("Bluetooth adapter state is unavailable"))
+  }
+}
+
+/** Normalize the platform snapshot before it crosses the Android protocol boundary. */
+internal fun normalizeBondedPeerSnapshots(
+  peers: Iterable<BondedPeerSnapshot>
+): List<BondedPeerSnapshot> {
+  val normalized = peers.map { peer ->
+    val nativePeerId = peer.nativePeerId.trim().uppercase(Locale.ROOT)
+    require(nativePeerId.isNotEmpty()) { "Android bonded peer has an empty native identifier" }
+    BondedPeerSnapshot(nativePeerId, peer.displayName?.takeIf { it.isNotEmpty() })
+  }
+  return normalized
+    .groupBy { peer -> peer.nativePeerId }
+    .values
+    .map { duplicates ->
+      duplicates.sortedWith(
+        compareBy<BondedPeerSnapshot> { peer -> peer.displayName == null }
+          .thenBy { peer -> peer.displayName ?: "" }
+      ).first()
+    }
+    .sortedBy { peer -> peer.nativePeerId }
+}
 
 internal data class OwnedAndroidPhy(
   val txPhy: String,
@@ -334,6 +384,25 @@ class OwnedAndroidGattRadio(private val context: Context) {
         safeReason = "Android reported an unrecognized Bluetooth adapter state."
       )
     }
+  }
+
+  /** Read the system bond table without acquiring or mutating any GATT ownership. */
+  internal fun bondedPeerSnapshots(): List<BondedPeerSnapshot> {
+    val availableAdapter = adapter
+    bondedPeerAdapterReadiness(
+      adapterAvailable = availableAdapter != null,
+      connectPermissionGranted = hasBluetoothConnectPermission(),
+      adapterState = availableAdapter?.state ?: BluetoothAdapter.ERROR
+    ).getOrThrow()
+    val accessibleAdapter = availableAdapter ?: throw IllegalStateException("Bluetooth adapter unavailable")
+    return normalizeBondedPeerSnapshots(
+      accessibleAdapter.getBondedDevices().map { device ->
+        BondedPeerSnapshot(
+          nativePeerId = device.address,
+          displayName = device.name?.takeIf { name -> name.isNotEmpty() }
+        )
+      }
+    )
   }
 
   /**
