@@ -125,6 +125,9 @@ function nativeConnectionIntent(intent: ConnectionIntent): 'direct' | 'whenAvail
  * direct-boundary interface consumed by the shared backend.
  */
 export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary {
+  readonly connectionIntentCapabilities: Readonly<{ whenAvailable: 'available' | 'unsupported' }> = Object.freeze({
+    whenAvailable: 'available'
+  })
   readonly descriptorOperationsAvailable: boolean = true
   private phyExtensionAvailable = false
   private securityExtensionAvailable = false

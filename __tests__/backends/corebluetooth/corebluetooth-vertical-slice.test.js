@@ -209,6 +209,22 @@ describe('CoreBluetooth contract-v1 vertical slice', () => {
     expect(boundary.destroyed).toBe(true)
   })
 
+  test('rejects when-available before dispatch on a direct-only CoreBluetooth boundary', async () => {
+    const { backend, boundary } = await backendFixture()
+    const peerId = await observedPeerId(backend)
+    const connect = jest.spyOn(boundary, 'connect')
+
+    await expect(
+      backend.connections.connect(
+        peerId,
+        opaqueId('queued-client', 'client', 'corebluetooth:queued'),
+        { ...operation(), intent: 'when-available' }
+      )
+    ).rejects.toMatchObject({ normalized: { code: 'capability.unsupported' } })
+    expect(connect).not.toHaveBeenCalled()
+    await backend.destroy()
+  })
+
   test('applies the canonical manufacturer predicate before delivering CoreBluetooth observations', async () => {
     const { backend, boundary } = await backendFixture()
     const scan = await backend.scanner.start(

@@ -135,6 +135,8 @@ export interface CoreBluetoothPhyRequestResult {
 }
 
 export interface CoreBluetoothBoundary {
+  /** Declares whether this concrete boundary can honor queued Android-style connects. */
+  readonly connectionIntentCapabilities?: Readonly<{ whenAvailable: 'available' | 'unsupported' }>
   /** A platform declares an unavailable control before the core submits any native command. */
   readonly connectionControlCapabilities?: ConnectionControlCapabilities
   /** True only when this concrete native boundary can execute descriptor reads and writes. */
