@@ -274,6 +274,7 @@ describe('React Native Android canonical protocol vertical slice', () => {
     await scan.stop()
 
     const connection = await manager.connect(observation.value.value.device.id, operation())
+    expect(runtime.connectionIntents).toEqual(['direct'])
     await expect(connection.readRssi(operation())).resolves.toMatchObject({ rssi: -47 })
     await expect(connection.effectiveMtu()).resolves.toMatchObject({ attMtu: null, payloadBytes: null })
     await expect(connection.requestMtu(300, operation())).resolves.toMatchObject({
@@ -1608,6 +1609,7 @@ class DeterministicAndroidProtocolRuntime {
     this.descriptorCommandPaths = []
     this.descriptorValue = new Uint8Array([8, 7])
     this.connection = null
+    this.connectionIntents = []
     this.sinkFailure = sinkFailure
     this.emitInitialSubscriptionNotification = emitInitialSubscriptionNotification
     this.destroyFailuresRemaining = 0
@@ -1686,6 +1688,7 @@ class DeterministicAndroidProtocolRuntime {
       return
     }
     if (kind === 'connect') {
+      this.connectionIntents.push(requiredString(command, 20))
       this.connection = requiredRecord(command, 10)
       this.emitResult(command, 'connected', [field(11, requiredRecord(command, 10))])
       return

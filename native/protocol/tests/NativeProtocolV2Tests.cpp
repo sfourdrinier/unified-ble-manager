@@ -219,6 +219,21 @@ void testBondedPeerSnapshotsAndConnectionIntent() {
   codec.validate(validCommand);
   assert(codec.encode(codec.decode(codec.encode(validCommand))) == codec.encode(validCommand));
 
+  const auto validConnect = protocol::ProtocolRecord{
+      .kind = protocol::RecordKind::command,
+      .fields = {
+          field(1U, std::uint64_t{protocol::kProtocolVersion}),
+          field(2U, correlation(2U)),
+          field(3U, std::string("connect")),
+          field(10U, connection()),
+          field(20U, std::string("whenAvailable")),
+      },
+  };
+  codec.validate(validConnect);
+  auto connectWithoutIntent = validConnect;
+  connectWithoutIntent.fields.pop_back();
+  expectFailure(protocol::ProtocolFailure::missingField, [&] { codec.validate(connectWithoutIntent); });
+
   auto missingIntent = validCommand;
   missingIntent.fields.pop_back();
   expectFailure(protocol::ProtocolFailure::missingField, [&] { codec.validate(missingIntent); });

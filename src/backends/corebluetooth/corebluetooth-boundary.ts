@@ -6,6 +6,7 @@ import type {
   ConnectionPriority,
   PhyPreference
 } from '../../backend-contract/connection-controls'
+import type { ConnectionIntent } from '../../backend-contract/backend'
 
 /**
  * Typed, bytes-first boundary between the CoreBluetooth addon and the shared
@@ -146,7 +147,7 @@ export interface CoreBluetoothBoundary {
     platform?: CoreBluetoothScanPlatformOptions
   ): Promise<void>
   stopScan(): Promise<void>
-  connect(nativePeerId: string): Promise<void>
+  connect(nativePeerId: string, intent?: ConnectionIntent): Promise<void>
   disconnect(nativePeerId: string): Promise<void>
   connectionState(nativePeerId: string): 'connecting' | 'connected' | 'disconnected'
   readRssi?(nativePeerId: string): Promise<number>

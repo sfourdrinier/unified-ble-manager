@@ -74,6 +74,26 @@ describe('React Native Android descriptor protocol boundary', () => {
     expect(control.closedAttachments).toHaveLength(1)
   })
 
+  test('encodes when-available as the ABI 6 connection intent', async () => {
+    const control = new DescriptorControl()
+    const runtime = new DescriptorRuntime()
+    global.__unifiedBleNativeProtocolV2 = runtime
+    const boundary = new ReactNativeAndroidProtocolBoundary(control, 'queued-connect-owner')
+    boundary.bindAttachment({
+      attachmentId: 'queued-attachment',
+      backendInstanceId: 'queued-backend',
+      backendGeneration: 'queued-generation',
+      adapterId: 'queued-adapter',
+      adapterGeneration: 'queued-adapter-generation'
+    })
+
+    await boundary.open()
+    await boundary.connect(peerId, 'when-available')
+
+    expect(runtime.commands[0].fields).toContainEqual({ id: 20, value: 'whenAvailable' })
+    await boundary.destroy()
+  })
+
   test('isolates throwing consumer listeners without rejecting unrelated scan, notification, disconnect, or adapter delivery', async () => {
     const control = new DescriptorControl()
     const runtime = new DescriptorRuntime()

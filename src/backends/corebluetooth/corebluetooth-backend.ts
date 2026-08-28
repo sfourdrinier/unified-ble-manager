@@ -7,6 +7,7 @@ import type {
   BackendEvent,
   BleCentralBackend,
   ConnectionBackend,
+  ConnectionOptions,
   ConnectionLease,
   GattBackend,
   ResourceCounters,
@@ -36,7 +37,6 @@ import {
   type AttachmentRecord,
   type HostNeutralBackendIdentity
 } from '../../backend-contract/identity'
-import type { PublicOperationOptions } from '../../backend-contract/operations'
 import {
   canonicalBleAddress,
   negotiateCoreVersions,
@@ -878,7 +878,7 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
   private async connect(
     peerId: PeerId<string>,
     clientId: ClientId<string, string>,
-    options: PublicOperationOptions
+    options: ConnectionOptions
   ): Promise<ConnectionLease<string, string, string>> {
     this.assertOperational('direct-gatt.connect')
     this.operationLifecycle.assertAdmission(options, 'direct-gatt.connect')
@@ -926,7 +926,7 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
       await this.operationLifecycle.awaitBoundaryOperation(
         options,
         'direct-gatt.connect',
-        () => this.boundary.connect(nativePeerId),
+        () => this.boundary.connect(nativePeerId, options.intent ?? 'direct'),
         async () => {
           const released = await releaseLateCoreBluetoothConnection(this.boundary, this.connectionsByNativeId, record)
           if (!released) {

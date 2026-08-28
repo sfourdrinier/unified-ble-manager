@@ -7,6 +7,7 @@ import android.content.Context
 import android.os.Build
 import android.os.SystemClock
 import com.sfourdrinier.unifiedblemanager.protocol.generated.NATIVE_PROTOCOL_VERSION
+import com.sfourdrinier.unifiedblemanager.protocol.generated.ConnectionIntents
 import com.sfourdrinier.unifiedblemanager.protocol.generated.RecordKind
 import com.sfourdrinier.unifiedblemanager.radio.OwnedAndroidGattRadio
 import com.sfourdrinier.unifiedblemanager.radio.OwnedRadioTeardownFailure
@@ -288,7 +289,11 @@ class UnifiedBleProtocolAndroidDispatcher(
     val prior = pendingConnects.putIfAbsent(peerId.uppercase(), command)
     require(prior == null) { "A protocol connect is already pending for this peer" }
     try {
-      radio.connect(peerId, false)
+      val autoConnect = when (connectionIntent(command.requiredString(20))) {
+        ConnectionIntents.DIRECT -> false
+        ConnectionIntents.WHEN_AVAILABLE -> true
+      }
+      radio.connect(peerId, autoConnect)
     } catch (error: Exception) {
       pendingConnects.remove(peerId.uppercase(), command)
       throw error
@@ -1258,6 +1263,14 @@ internal fun claimExactPendingCommand(
 private fun ProtocolWireRecord.requiredBoolean(fieldId: Int): Boolean {
   val value = fields[fieldId]
   return if (value is ProtocolWireValue.BooleanValue) value.value else throw IllegalArgumentException("Boolean field is missing")
+}
+
+private fun connectionIntent(value: String): ConnectionIntents {
+  return when (value) {
+    "direct" -> ConnectionIntents.DIRECT
+    "whenAvailable" -> ConnectionIntents.WHEN_AVAILABLE
+    else -> throw IllegalArgumentException("Connection intent is invalid")
+  }
 }
 
 private fun ProtocolWireRecord.requiredSignedInteger(fieldId: Int): Long {

@@ -429,6 +429,18 @@ function validateRecord(record: NativeProtocolRecord): void {
   if (record.kind === 'bondedPeerSnapshot') {
     validateBondedPeerSnapshotStrings(record)
   }
+  if (record.kind === 'command') {
+    validateCommandSemantics(record)
+  }
+}
+
+function validateCommandSemantics(record: NativeProtocolRecord): void {
+  const kind = record.fields.find(field => field.id === 3)?.value
+  if (kind === 'connect' || kind === 'enumerateBondedPeers') {
+    if (!record.fields.some(field => field.id === 20)) {
+      throw new ProtocolCodecError(`Native protocol ${kind} command is missing connection intent`)
+    }
+  }
 }
 
 function validateBondedPeerSnapshotStrings(record: NativeProtocolRecord): void {

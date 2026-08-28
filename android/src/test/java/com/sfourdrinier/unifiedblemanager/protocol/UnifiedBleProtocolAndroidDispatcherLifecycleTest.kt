@@ -314,6 +314,19 @@ class UnifiedBleProtocolAndroidDispatcherLifecycleTest {
   }
 
   @Test
+  fun connectDecodesAbi6IntentWithoutAnImplicitStringDefault() {
+    val dispatcher = readAndroidSource(
+      "android/src/main/java/com/sfourdrinier/unifiedblemanager/protocol/UnifiedBleProtocolAndroidDispatcher.kt"
+    )
+
+    assertTrue(dispatcher.contains("command.requiredString(20)"))
+    assertTrue(dispatcher.contains("ConnectionIntents.DIRECT"))
+    assertTrue(dispatcher.contains("ConnectionIntents.WHEN_AVAILABLE"))
+    assertTrue(dispatcher.contains("radio.connect(peerId, autoConnect)"))
+    assertFalse(dispatcher.contains("command.optionalString(20) ?: \"direct\""))
+  }
+
+  @Test
   fun serviceChangedInvalidatesNativeSubscriptionOwnershipAndRoutesBeforeDatabaseChanged() {
     val dispatcher = readAndroidSource(
       "android/src/main/java/com/sfourdrinier/unifiedblemanager/protocol/UnifiedBleProtocolAndroidDispatcher.kt"

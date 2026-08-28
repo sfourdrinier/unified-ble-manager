@@ -438,7 +438,9 @@ void validateCommandSemantics(const ProtocolRecord& record) {
     requireFieldSet(record, {1U, 2U, 3U, 12U}, {});
   } else if (*kind == "scanStop" || *kind == "destroy") {
     requireFieldSet(record, {1U, 2U, 3U}, {});
-  } else if (*kind == "connect" || *kind == "disconnect") {
+  } else if (*kind == "connect") {
+    requireFieldSet(record, {1U, 2U, 3U, 10U, 20U}, {});
+  } else if (*kind == "disconnect") {
     requireFieldSet(record, {1U, 2U, 3U, 10U}, {});
   } else if (*kind == "discover") {
     requireFieldSet(record, {1U, 2U, 3U, 10U, 11U}, {});

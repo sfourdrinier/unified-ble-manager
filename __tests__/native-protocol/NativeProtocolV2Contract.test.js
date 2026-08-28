@@ -148,6 +148,32 @@ describe('Native Protocol v2 schema authority', () => {
     expect(() => encodeNativeProtocolRecord({ ...command('direct'), fields: [...command('direct').fields, { id: 21, value: 'x' }] })).toThrow(
       'Native protocol field is unknown'
     )
+    const connectCommand = {
+      ...command('direct'),
+      fields: [
+        ...command('direct').fields.map(field => (field.id === 3 ? { id: 3, value: 'connect' } : field)),
+        {
+          id: 10,
+          value: {
+            kind: 'connectionPath',
+            fields: [
+              { id: 1, value: attachment },
+              { id: 2, value: 'peer-1' },
+              { id: 3, value: 'connection-1' },
+              { id: 4, value: 'lease-1' },
+              { id: 5, value: 'generation-1' }
+            ]
+          }
+        }
+      ]
+    }
+    expect(() => encodeNativeProtocolRecord(connectCommand)).not.toThrow()
+    expect(() =>
+      encodeNativeProtocolRecord({
+        ...connectCommand,
+        fields: connectCommand.fields.filter(field => field.id !== 20)
+      })
+    ).toThrow('Native protocol connect command is missing connection intent')
     expect(() => encodeNativeProtocolRecord(result)).not.toThrow()
     expect(() => encodeNativeProtocolRecord({
       ...result,

@@ -25,6 +25,7 @@ import type {
   CoreBluetoothPhyRequestResult,
   CoreBluetoothScanPlatformOptions
 } from '../backends/corebluetooth/corebluetooth-boundary'
+import type { ConnectionIntent } from '../backend-contract/backend'
 import {
   copyNativeProtocolBytes,
   releaseNativeProtocolBytes,
@@ -110,6 +111,12 @@ type NativeSubscription = {
   readonly subscriptionId: string
   readonly address: CoreBluetoothCharacteristicAddress
   readonly onValue: (value: Uint8Array) => void
+}
+
+function nativeConnectionIntent(intent: ConnectionIntent): 'direct' | 'whenAvailable' {
+  if (intent === 'direct') return 'direct'
+  if (intent === 'when-available') return 'whenAvailable'
+  throw contractError('argument.invalid', 'connection', 'rn-android-boundary.connect.intent')
 }
 
 /**
@@ -311,7 +318,7 @@ export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary
     this.scanListeners.clear()
   }
 
-  async connect(nativePeerId: string): Promise<void> {
+  async connect(nativePeerId: string, intent: ConnectionIntent = 'direct'): Promise<void> {
     this.requireOpen('connect')
     const existing = this.connections.get(nativePeerId)
     if (existing !== undefined && existing.state !== 'disconnected') {
@@ -320,7 +327,7 @@ export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary
     const connection = this.createConnection(nativePeerId)
     this.connections.set(nativePeerId, connection)
     try {
-      await this.dispatch('connect', [field(10, connection.record)])
+      await this.dispatch('connect', [field(10, connection.record), field(20, nativeConnectionIntent(intent))])
       connection.state = 'connected'
     } catch (error) {
       this.connections.delete(nativePeerId)

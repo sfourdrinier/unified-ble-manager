@@ -4,6 +4,7 @@
  * macOS CoreBluetooth contract-v1 boundary for Electron main.
  */
 const { loadNodeApiAddon } = require('../../load-node-api-addon')
+const { contractError } = require('../../../src/backend-contract/errors')
 
 function tryLoadNative() {
   return loadNodeApiAddon({
@@ -117,7 +118,12 @@ function createContractBoundary() {
       )
     },
     stopScan: () => radio.stopScan(),
-    connect: nativePeerId => radio.connect(String(nativePeerId)),
+    connect: (nativePeerId, intent = 'direct') => {
+      if (intent !== 'direct') {
+        throw contractError('capability.unsupported', 'connection', 'corebluetooth-boundary.connect.when-available')
+      }
+      return radio.connect(String(nativePeerId))
+    },
     disconnect: nativePeerId => radio.disconnect(String(nativePeerId)),
     connectionState: nativePeerId => {
       const state = radio.getConnectionState(String(nativePeerId))
