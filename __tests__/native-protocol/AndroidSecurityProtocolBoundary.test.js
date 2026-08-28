@@ -610,7 +610,7 @@ class SecurityControl {
   handshake() {
     return Promise.resolve({
       nativeProtocol: 2,
-      abi: 5,
+      abi: 6,
       controlSurface: 2,
       backendContract: 1,
       capabilitySchema: 1,
