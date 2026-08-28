@@ -110,13 +110,12 @@ describe('Native Protocol v2 schema authority', () => {
         { id: 3, value: 'enumerate-1' }
       ]
     }
-    const command = (intent, extraFields = []) => ({
+    const command = (extraFields = []) => ({
       kind: 'command',
       fields: [
         { id: 1, value: 2 },
         { id: 2, value: correlation },
         { id: 3, value: 'enumerateBondedPeers' },
-        { id: 20, value: intent },
         ...extraFields
       ]
     })
@@ -134,24 +133,14 @@ describe('Native Protocol v2 schema authority', () => {
       ]
     }
 
-    expect(() => encodeNativeProtocolRecord(command('direct'))).not.toThrow()
-    expect(() => encodeNativeProtocolRecord(command('invalid'))).toThrow('Native protocol enum value is invalid')
-    expect(() => encodeNativeProtocolRecord(command('direct', [{ id: 20, value: 'whenAvailable' }]))).toThrow(
-      'Native protocol record has a duplicate field'
-    )
-    expect(() => encodeNativeProtocolRecord({
-      ...command('direct'),
-      fields: command('direct').fields.map(field => field.id === 20 ? { id: 20, value: 1 } : field)
-    })).toThrow(
-      'Native protocol string field has an invalid value'
-    )
-    expect(() => encodeNativeProtocolRecord({ ...command('direct'), fields: [...command('direct').fields, { id: 21, value: 'x' }] })).toThrow(
+    expect(() => encodeNativeProtocolRecord(command())).not.toThrow()
+    expect(() => encodeNativeProtocolRecord(command([{ id: 20, value: 'direct' }]))).toThrow(
       'Native protocol field is unknown'
     )
     const connectCommand = {
-      ...command('direct'),
+      ...command(),
       fields: [
-        ...command('direct').fields.map(field => (field.id === 3 ? { id: 3, value: 'connect' } : field)),
+        ...command().fields.map(field => (field.id === 3 ? { id: 3, value: 'connect' } : field)),
         {
           id: 10,
           value: {
@@ -164,7 +153,8 @@ describe('Native Protocol v2 schema authority', () => {
               { id: 5, value: 'generation-1' }
             ]
           }
-        }
+        },
+        { id: 20, value: 'direct' }
       ]
     }
     expect(() => encodeNativeProtocolRecord(connectCommand)).not.toThrow()

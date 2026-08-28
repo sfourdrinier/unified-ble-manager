@@ -436,10 +436,13 @@ function validateRecord(record: NativeProtocolRecord): void {
 
 function validateCommandSemantics(record: NativeProtocolRecord): void {
   const kind = record.fields.find(field => field.id === 3)?.value
-  if (kind === 'connect' || kind === 'enumerateBondedPeers') {
+  if (kind === 'connect') {
     if (!record.fields.some(field => field.id === 20)) {
       throw new ProtocolCodecError(`Native protocol ${kind} command is missing connection intent`)
     }
+  }
+  if (kind === 'enumerateBondedPeers' && record.fields.some(field => field.id === 20)) {
+    throw new ProtocolCodecError('Native protocol field is unknown for enumerateBondedPeers')
   }
 }
 

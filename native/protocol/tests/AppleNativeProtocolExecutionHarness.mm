@@ -163,7 +163,6 @@ protocol::ProtocolRecord enumerateBondedPeersCommand(std::uint64_t epoch) {
               },
           })),
           harnessField(3U, std::string("enumerateBondedPeers")),
-          harnessField(20U, std::string("direct")),
       },
   };
 }

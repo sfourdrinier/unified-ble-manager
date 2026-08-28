@@ -90,6 +90,11 @@ export interface AndroidSecurityStateChangedRecord {
   readonly state: AndroidSecurityState
 }
 
+export interface AndroidBondedPeerSnapshot {
+  readonly nativePeerId: string
+  readonly displayName: string | null
+}
+
 const protocolVersion = NATIVE_PROTOCOL_VERSION
 const controlSurfaceVersion = NATIVE_PROTOCOL_CONTROL_SURFACE_VERSION
 const contractVersion = 1
@@ -319,6 +324,46 @@ export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary
     this.requireOpen('stop-scan')
     await this.dispatch('scanStop', [])
     this.scanListeners.clear()
+  }
+
+  /** Reads the current Android system bond table without creating GATT ownership. */
+  async enumerateBondedPeers(): Promise<readonly AndroidBondedPeerSnapshot[]> {
+    this.requireOpen('enumerate-bonded-peers')
+    const result = await this.dispatch('enumerateBondedPeers', [])
+    if (requiredString(result, 2, 'rn-android-boundary.enumerate-bonded-peers.kind') !== 'bondedPeers') {
+      throw contractError('protocol.malformed', 'boundary', 'rn-android-boundary.enumerate-bonded-peers.kind')
+    }
+    const bondedPeers = result.fields.find(candidate => candidate.id === 23)?.value
+    if (!Array.isArray(bondedPeers)) {
+      throw contractError('protocol.malformed', 'boundary', 'rn-android-boundary.enumerate-bonded-peers.records')
+    }
+    return Object.freeze(
+      bondedPeers.map((candidate, index) => {
+        if (!isNativeProtocolRecord(candidate) || candidate.kind !== 'bondedPeerSnapshot') {
+          throw contractError(
+            'protocol.malformed',
+            'boundary',
+            `rn-android-boundary.enumerate-bonded-peers.record-${index}`
+          )
+        }
+        const nativePeerId = requiredString(
+          candidate,
+          1,
+          `rn-android-boundary.enumerate-bonded-peers.record-${index}.native-peer-id`
+        )
+        if (nativePeerId.trim().length === 0) {
+          throw contractError(
+            'protocol.malformed',
+            'boundary',
+            `rn-android-boundary.enumerate-bonded-peers.record-${index}.native-peer-id`
+          )
+        }
+        return Object.freeze({
+          nativePeerId,
+          displayName: optionalString(candidate, 2)
+        })
+      })
+    )
   }
 
   async connect(nativePeerId: string, intent: ConnectionIntent = 'direct'): Promise<void> {
@@ -749,6 +794,10 @@ export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary
   private receiveResult(result: NativeProtocolRecord): void {
     const terminal = requiredRecord(result, 3, 'rn-android-boundary.result.terminal')
     const correlation = requiredRecord(terminal, 1, 'rn-android-boundary.result.correlation')
+    this.assertCurrentAttachment(
+      requiredRecord(correlation, 1, 'rn-android-boundary.result.correlation-attachment'),
+      'result-correlation'
+    )
     const key = operationKey(
       requiredUnsigned(correlation, 2, 'rn-android-boundary.result.epoch'),
       requiredString(correlation, 3, 'rn-android-boundary.result.nonce')
@@ -1291,6 +1340,10 @@ function sameAttachmentPath(left: NativeProtocolRecord, right: NativeProtocolRec
     requiredString(left, 5, 'rn-android-boundary.attachment.adapter-generation') ===
       requiredString(right, 5, 'rn-android-boundary.attachment.adapter-generation')
   )
+}
+
+function isNativeProtocolRecord(value: unknown): value is NativeProtocolRecord {
+  return typeof value === 'object' && value !== null && !Array.isArray(value) && 'kind' in value && 'fields' in value
 }
 
 function isAbortSignalAborted(signal: AbortSignal | null): boolean {

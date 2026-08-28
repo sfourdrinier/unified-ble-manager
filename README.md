@@ -85,6 +85,12 @@ const manager = await createReactNativeBleManager({
 
 On Android 12+ the app must request `BLUETOOTH_SCAN` and `BLUETOOTH_CONNECT` itself. The library does not call `PermissionsAndroid`.
 
+On Android, `manager.peers.bonded()` lists paired system peers and
+`manager.peers.resolve(reference)` rechecks a saved reference before
+`manager.connect(peer, { intent: 'when-available' })`; paired does not mean
+reachable. See [`docs/PEERS.md`](docs/PEERS.md) for the persistence and error
+semantics.
+
 ### Expo plugin
 
 Use an Expo development build, never Expo Go. Plugin options live in

@@ -213,7 +213,6 @@ void testBondedPeerSnapshotsAndConnectionIntent() {
           field(1U, std::uint64_t{protocol::kProtocolVersion}),
           field(2U, correlation(1U)),
           field(3U, std::string("enumerateBondedPeers")),
-          field(20U, std::string("direct")),
       },
   };
   codec.validate(validCommand);
@@ -234,18 +233,9 @@ void testBondedPeerSnapshotsAndConnectionIntent() {
   connectWithoutIntent.fields.pop_back();
   expectFailure(protocol::ProtocolFailure::missingField, [&] { codec.validate(connectWithoutIntent); });
 
-  auto missingIntent = validCommand;
-  missingIntent.fields.pop_back();
-  expectFailure(protocol::ProtocolFailure::missingField, [&] { codec.validate(missingIntent); });
-  auto duplicateIntent = validCommand;
-  duplicateIntent.fields.push_back(field(20U, std::string("whenAvailable")));
-  expectFailure(protocol::ProtocolFailure::duplicateField, [&] { codec.validate(duplicateIntent); });
   auto unknownIntent = validCommand;
-  unknownIntent.fields.push_back(field(21U, std::string("direct")));
-  expectFailure(protocol::ProtocolFailure::unknownField, [&] { codec.validate(unknownIntent); });
-  auto wrongIntent = validCommand;
-  wrongIntent.fields.back() = field(20U, std::uint64_t{1U});
-  expectFailure(protocol::ProtocolFailure::invalidFieldType, [&] { codec.validate(wrongIntent); });
+  unknownIntent.fields.push_back(field(20U, std::string("direct")));
+  expectFailure(protocol::ProtocolFailure::malformedRecord, [&] { codec.validate(unknownIntent); });
 
   const auto peer = std::make_shared<protocol::ProtocolRecord>(protocol::ProtocolRecord{
       .kind = protocol::RecordKind::bondedPeerSnapshot,

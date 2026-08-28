@@ -8,6 +8,7 @@ import type {
   AdapterBackend,
   ConnectionBackend,
   GattBackend,
+  PeerDirectoryBackend,
   PeerAddressDescriptor,
   ResourceCounters,
   ScannerBackend
@@ -43,6 +44,7 @@ import { createReactNativeDescriptorFeatureRegistry } from './react-native-descr
 import { withReactNativeProviderCleanup } from './react-native-provider-cleanup'
 import { ReactNativeAndroidSecurityBackend } from './react-native-android-security'
 import { diagnosticReactNativeAndroidScanPlan } from './react-native-scan-planner'
+import { ReactNativeAndroidPeerDirectory } from './react-native-android-peer-directory'
 import { planReactNativeAndroidScan } from './react-native-scan-planner'
 import { trustedServiceUuidFilter } from '../scan-planning/service-uuid-scan-planner'
 import {
@@ -118,6 +120,7 @@ export class ReactNativeAndroidBackend implements BleCentralBackend<string, Nati
   readonly scanner: ScannerBackend<string>
   readonly connections: ConnectionBackend<string>
   readonly gatt: GattBackend<string>
+  readonly peers: PeerDirectoryBackend<string>
   readonly features: CoreBluetoothBackend['features']
   readonly security: SecurityBackend | undefined
 
@@ -149,6 +152,7 @@ export class ReactNativeAndroidBackend implements BleCentralBackend<string, Nati
       peerFromAddress: (descriptor: PeerAddressDescriptor) => delegate.peerFromAddress(descriptor)
     })
     this.gatt = delegate.gatt
+    this.peers = new ReactNativeAndroidPeerDirectory(boundary, delegate)
     this.security = boundary.securityAvailable
       ? new ReactNativeAndroidSecurityBackend(
           boundary,
@@ -296,10 +300,43 @@ function androidDirectGattIdentity(): DirectGattBackendIdentityOptions {
       createReactNativeAndroidConnectionControlFeatureRegistry(),
       createReactNativeAndroidScanPlatformFeatureRegistry(),
       createReactNativeAndroidAddressTargetingFeatureRegistry(),
+      createReactNativeAndroidPeerFeatureRegistry(),
       createReactNativeDescriptorFeatureRegistry('android', REACT_NATIVE_ANDROID_IMPLEMENTATION_VERSION),
       createReactNativeRestorationFeatureRegistry('android', REACT_NATIVE_ANDROID_IMPLEMENTATION_VERSION)
     )
   })
+}
+
+function createReactNativeAndroidPeerFeatureRegistry() {
+  const scenarioIds = ['capability.truth-limits-evidence-and-binding']
+  return createFeatureRegistry(
+    Object.freeze([
+      createBackendOperationCapabilityRegistration({
+        id: BUILT_IN_FEATURE_IDS.peerBonded,
+        implementationVersion: REACT_NATIVE_ANDROID_IMPLEMENTATION_VERSION,
+        sourceDigest: 'react-native-android-peer-bonded-v1',
+        tckSuiteId: 'capability.catalog-v2',
+        requiredScenarioIds: scenarioIds,
+        operation: 'peer:bonded.invoke-without-peer-directory'
+      }),
+      createBackendOperationCapabilityRegistration({
+        id: BUILT_IN_FEATURE_IDS.peerResolveReference,
+        implementationVersion: REACT_NATIVE_ANDROID_IMPLEMENTATION_VERSION,
+        sourceDigest: 'react-native-android-peer-resolve-reference-v1',
+        tckSuiteId: 'capability.catalog-v2',
+        requiredScenarioIds: scenarioIds,
+        operation: 'peer:resolve-reference.invoke-without-peer-directory'
+      }),
+      createBackendOperationCapabilityRegistration({
+        id: BUILT_IN_FEATURE_IDS.connectionWhenAvailable,
+        implementationVersion: REACT_NATIVE_ANDROID_IMPLEMENTATION_VERSION,
+        sourceDigest: 'react-native-android-connection-when-available-v1',
+        tckSuiteId: 'capability.catalog-v2',
+        requiredScenarioIds: scenarioIds,
+        operation: 'connection:when-available.invoke-without-connection'
+      })
+    ])
+  )
 }
 
 function createReactNativeAndroidScanPlatformFeatureRegistry() {

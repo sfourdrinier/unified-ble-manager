@@ -465,7 +465,7 @@ void validateCommandSemantics(const ProtocolRecord& record) {
   } else if (*kind == "securityPair") {
     requireFieldSet(record, {1U, 2U, 3U, 15U, 19U}, {});
   } else if (*kind == "enumerateBondedPeers") {
-    requireFieldSet(record, {1U, 2U, 3U, 20U}, {});
+    requireFieldSet(record, {1U, 2U, 3U}, {});
   }
 }
 

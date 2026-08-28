@@ -35,6 +35,23 @@ The public core consumes the versioned backend contract and uses backend-reporte
 
 Host entrypoints select an explicit concrete backend and surface its typed unavailable, permission, adapter, cancellation, deadline, and lifecycle failures.
 
+## Peer directory availability
+
+React Native Android is currently the only first-party backend that exposes the
+system-bonded directory: `manager.peers.bonded()` enumerates the Android bond
+table and `manager.peers.resolve(reference)` rechecks that table before a
+reconnect. The reference is backend-owned and opaque; the native address never
+becomes a public durable MAC identity. `bonded` means paired metadata, not
+reachable or connected. Apps need Android `BLUETOOTH_CONNECT` permission, and a
+permission failure is surfaced as `permission.denied` rather than an empty
+result.
+
+The other backends retain their truthful boundaries: Web Bluetooth exposes
+origin-authorized devices (not bonded devices), while React Native Apple,
+CoreBluetooth, BlueZ, WinRT, Electron, and Tauri do not advertise Android
+bonded or queued `when-available` support without a native primitive that can
+honour it. Their unsupported peer methods fail with `capability.unsupported`.
+
 Deterministic and mock boundaries are test-only. They prove contract/fault behavior, not live radio. Package, compile, ABI, and export checks prove only the level they actually exercise. Native compilation and package installation do not promote a backend to a higher support label.
 
 ## Evidence records

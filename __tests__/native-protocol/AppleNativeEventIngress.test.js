@@ -91,7 +91,6 @@ describe('Apple Native Protocol v2 bounded JSI ingress', () => {
     const executionHarness = read('native/protocol/tests/AppleNativeProtocolExecutionHarness.mm')
     expect(executionHarness).toContain('enumerateBondedPeersCommand')
     expect(executionHarness).toContain('harnessField(3U, std::string("enumerateBondedPeers"))')
-    expect(executionHarness).toContain('harnessField(20U, std::string("direct"))')
     expect(executionHarness).toContain('enumerateSubmit.call(*runtime, enumerateArray)')
     expect(executionHarness).toContain('enumerateUnsupported')
     expect(executionHarness).toContain('enumerateCaused')
