@@ -149,6 +149,46 @@ protocol::ProtocolRecord command(std::uint64_t epoch) {
   };
 }
 
+protocol::ProtocolRecord enumerateBondedPeersCommand(std::uint64_t epoch) {
+  return {
+      .kind = protocol::RecordKind::command,
+      .fields = {
+          harnessField(1U, std::uint64_t{protocol::kProtocolVersion}),
+          harnessField(2U, std::make_shared<protocol::ProtocolRecord>(protocol::ProtocolRecord{
+              .kind = protocol::RecordKind::operationCorrelation,
+              .fields = {
+                  harnessField(1U, attachment()),
+                  harnessField(2U, epoch),
+                  harnessField(3U, std::string("apple-enumerate-bonded-operation-") + std::to_string(epoch)),
+              },
+          })),
+          harnessField(3U, std::string("enumerateBondedPeers")),
+          harnessField(20U, std::string("direct")),
+      },
+  };
+}
+
+const protocol::ProtocolRecord* harnessRecordField(
+    const protocol::ProtocolRecord& record,
+    std::uint16_t identifier) {
+  for (const auto& candidate : record.fields) {
+    if (candidate.id != identifier) continue;
+    const auto* value = std::get_if<protocol::ProtocolRecordReference>(&candidate.value);
+    return value == nullptr || !*value ? nullptr : value->get();
+  }
+  return nullptr;
+}
+
+const std::string* harnessStringField(
+    const protocol::ProtocolRecord& record,
+    std::uint16_t identifier) {
+  for (const auto& candidate : record.fields) {
+    if (candidate.id != identifier) continue;
+    return std::get_if<std::string>(&candidate.value);
+  }
+  return nullptr;
+}
+
 protocol::ProtocolRecord connectCommand(
     std::uint64_t epoch,
     const std::string& peer,
@@ -296,6 +336,82 @@ int runAppleNativeProtocolExecutionHarness() {
     missingInvokerControl->registerCommand(unavailableCommand, true);
     static_cast<void>(success(missingInvokerState, unavailableCommand));
     if (!require(!missingInvokerControl->open(), "actual scheduling-unavailable seam did not fatally close the attachment")) return 1;
+
+    const auto enumerateControl = openedRuntime();
+    const auto enumerateInvoker = std::make_shared<ControllableInvoker>(*runtime);
+    std::atomic<std::size_t> enumerateDelivered{0U};
+    std::atomic<std::size_t> enumerateFailed{0U};
+    std::atomic<std::size_t> enumerateCaused{0U};
+    std::atomic<std::size_t> enumerateUnsupported{0U};
+    std::atomic<std::size_t> enumerateCorrelated{0U};
+    const auto enumerateSink = std::make_shared<Function>(Function::createFromHostFunction(
+        *runtime,
+        PropNameID::forUtf8(*runtime, "appleEnumerateBondedPeersSink"),
+        1U,
+        [&enumerateDelivered, &enumerateFailed, &enumerateCaused, &enumerateUnsupported, &enumerateCorrelated](
+            Runtime& inner, const Value&, const Value* arguments, std::size_t count) {
+          if (count != 1U || !arguments[0].isObject() || !arguments[0].asObject(inner).isUint8Array(inner)) {
+            return Value::undefined();
+          }
+          const auto array = arguments[0].asObject(inner).asUint8Array(inner);
+          const auto buffer = array.buffer(inner);
+          const auto offset = array.byteOffset(inner);
+          const auto length = array.byteLength(inner);
+          if (buffer.detached(inner) || offset > buffer.size(inner) || length > buffer.size(inner) - offset) {
+            return Value::undefined();
+          }
+          const auto* source = buffer.data(inner);
+          if (source == nullptr && length != 0U) return Value::undefined();
+          const auto bytes = length == 0U
+              ? std::vector<std::uint8_t>{}
+              : std::vector<std::uint8_t>(source + offset, source + offset + length);
+          const auto record = protocol::NativeProtocolV2Codec{}.decode(bytes);
+          if (record.kind != protocol::RecordKind::result) return Value::undefined();
+          enumerateDelivered.fetch_add(1U, std::memory_order_relaxed);
+          const auto* terminal = harnessRecordField(record, 3U);
+          const auto* outcome = terminal == nullptr ? nullptr : harnessStringField(*terminal, 2U);
+          if (outcome != nullptr && *outcome == "failed") enumerateFailed.fetch_add(1U, std::memory_order_relaxed);
+          const auto* cause = terminal == nullptr ? nullptr : harnessStringField(*terminal, 3U);
+          if (cause != nullptr && *cause == "unsupportedCommand") enumerateCaused.fetch_add(1U, std::memory_order_relaxed);
+          const auto* error = harnessRecordField(record, 10U);
+          const auto* code = error == nullptr ? nullptr : harnessStringField(*error, 1U);
+          if (code != nullptr && *code == "unsupportedCommand") enumerateUnsupported.fetch_add(1U, std::memory_order_relaxed);
+          const auto* correlation = terminal == nullptr ? nullptr : harnessRecordField(*terminal, 1U);
+          const auto* nonce = correlation == nullptr ? nullptr : harnessStringField(*correlation, 3U);
+          if (nonce != nullptr && *nonce == "apple-enumerate-bonded-operation-3") {
+            enumerateCorrelated.fetch_add(1U, std::memory_order_relaxed);
+          }
+          return Value::undefined();
+        }));
+    AppleNativeProtocolExecution enumerateExecution(enumerateControl, nullptr);
+    enumerateExecution.install(*runtime, enumerateInvoker);
+    enumerateExecution.beginAttachment();
+    const auto enumerateInstalled = runtime->global().getProperty(*runtime, "__unifiedBleNativeProtocolV2");
+    const auto enumerateObject = enumerateInstalled.asObject(*runtime);
+    const auto enumerateSetSink = enumerateObject.getProperty(*runtime, "setEventSink").asObject(*runtime).asFunction(*runtime);
+    enumerateSetSink.call(*runtime, *enumerateSink);
+    const auto enumerateCommand = enumerateBondedPeersCommand(3U);
+    const auto enumerateBytes = protocol::NativeProtocolV2Codec{}.encode(enumerateCommand);
+    auto enumerateArray = jsi::Uint8Array(*runtime, enumerateBytes.size());
+    auto enumerateBuffer = enumerateArray.buffer(*runtime);
+    std::memcpy(enumerateBuffer.data(*runtime), enumerateBytes.data(), enumerateBytes.size());
+    const auto enumerateSubmit = enumerateObject.getProperty(*runtime, "submit").asObject(*runtime).asFunction(*runtime);
+    enumerateSubmit.call(*runtime, enumerateArray);
+    if (!require(
+            enumerateControl->commandFor(3U, "apple-enumerate-bonded-operation-3").has_value(),
+            "Apple enumerateBondedPeers command was not retained before terminal delivery")) return 1;
+    if (!require(enumerateInvoker->pending() == 1U, "Apple enumerateBondedPeers scheduled an unexpected number of drains")) return 1;
+    enumerateInvoker->flushOne();
+    if (!require(enumerateDelivered.load(std::memory_order_relaxed) == 1U, "Apple enumerateBondedPeers did not deliver exactly one result")) return 1;
+    if (!require(enumerateFailed.load(std::memory_order_relaxed) == 1U, "Apple enumerateBondedPeers did not deliver a failed terminal")) return 1;
+    if (!require(enumerateCaused.load(std::memory_order_relaxed) == 1U, "Apple enumerateBondedPeers failure did not carry unsupportedCommand cause")) return 1;
+    if (!require(enumerateUnsupported.load(std::memory_order_relaxed) == 1U, "Apple enumerateBondedPeers did not report unsupportedCommand")) return 1;
+    if (!require(enumerateCorrelated.load(std::memory_order_relaxed) == 1U, "Apple enumerateBondedPeers failure was not correlated")) return 1;
+    if (!require(
+            !enumerateControl->commandFor(3U, "apple-enumerate-bonded-operation-3").has_value(),
+            "Apple enumerateBondedPeers terminal did not settle the operation")) return 1;
+    enumerateExecution.close();
+    while (enumerateInvoker->pending() != 0U) enumerateInvoker->flushOne();
 
     const auto immediateDisconnectControl = openedRuntime();
     const auto immediateDisconnectInvoker = std::make_shared<ControllableInvoker>(*runtime);

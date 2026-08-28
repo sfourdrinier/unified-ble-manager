@@ -426,6 +426,18 @@ function validateRecord(record: NativeProtocolRecord): void {
       throw new ProtocolCodecError('Native protocol record is missing a required field')
     }
   }
+  if (record.kind === 'bondedPeerSnapshot') {
+    validateBondedPeerSnapshotStrings(record)
+  }
+}
+
+function validateBondedPeerSnapshotStrings(record: NativeProtocolRecord): void {
+  for (const id of [1, 2]) {
+    const field = record.fields.find(candidate => candidate.id === id)
+    if (field !== undefined && typeof field.value === 'string' && field.value.length === 0) {
+      throw new ProtocolCodecError('Native protocol bonded peer string field is invalid')
+    }
+  }
 }
 
 function fieldDescriptor(kind: RecordKind, id: number): FieldDescriptor | undefined {

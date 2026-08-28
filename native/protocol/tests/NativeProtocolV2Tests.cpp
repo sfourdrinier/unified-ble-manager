@@ -246,6 +246,21 @@ void testBondedPeerSnapshotsAndConnectionIntent() {
       },
   };
   codec.validate(result);
+  const auto peerWithoutDisplayName = std::make_shared<protocol::ProtocolRecord>(protocol::ProtocolRecord{
+      .kind = protocol::RecordKind::bondedPeerSnapshot,
+      .fields = {field(1U, std::string("native-peer-2"))},
+  });
+  auto resultWithoutDisplayName = result;
+  resultWithoutDisplayName.fields[3U] = field(23U, protocol::ProtocolRecordList{peerWithoutDisplayName});
+  codec.validate(resultWithoutDisplayName);
+  auto emptyDisplayName = result;
+  emptyDisplayName.fields[3U] = field(23U, protocol::ProtocolRecordList{
+      std::make_shared<protocol::ProtocolRecord>(protocol::ProtocolRecord{
+          .kind = protocol::RecordKind::bondedPeerSnapshot,
+          .fields = {field(1U, std::string("native-peer-1")), field(2U, std::string{})},
+      }),
+  });
+  expectFailure(protocol::ProtocolFailure::invalidFieldType, [&] { codec.validate(emptyDisplayName); });
   auto missingPeerId = result;
   missingPeerId.fields[3U] = field(23U, protocol::ProtocolRecordList{
       std::make_shared<protocol::ProtocolRecord>(protocol::ProtocolRecord{

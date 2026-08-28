@@ -157,6 +157,14 @@ describe('Native Protocol v2 schema authority', () => {
       ...result,
       fields: result.fields.map(field => field.id === 23 ? { id: 23, value: [{ kind: 'bondedPeerSnapshot', fields: [{ id: 2, value: 'name' }] }] } : field)
     })).toThrow('Native protocol record is missing a required field')
+    expect(() => encodeNativeProtocolRecord({
+      ...result,
+      fields: result.fields.map(field => field.id === 23 ? { id: 23, value: [{ kind: 'bondedPeerSnapshot', fields: [{ id: 1, value: '' }] }] } : field)
+    })).toThrow('Native protocol bonded peer string field is invalid')
+    expect(() => encodeNativeProtocolRecord({
+      ...result,
+      fields: result.fields.map(field => field.id === 23 ? { id: 23, value: [{ kind: 'bondedPeerSnapshot', fields: [{ id: 1, value: 'peer-1' }, { id: 2, value: '' }] }] } : field)
+    })).toThrow('Native protocol bonded peer string field is invalid')
   })
 
   test('rejects malformed, duplicate, and unsupported priority command values at the codec boundary', () => {
