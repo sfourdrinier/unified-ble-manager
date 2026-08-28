@@ -25,10 +25,12 @@ namespace unified_ble::apple_protocol {
 
 class AppleNativeProtocolExecution::State final : public std::enable_shared_from_this<State> {
  public:
-  static constexpr std::size_t kMaximumPreJavaScriptRecords = 64U;
-  static constexpr std::size_t kMaximumPreJavaScriptBytes = 256U * 1024U;
-  static constexpr std::size_t kMaximumJavaScriptRecords = 64U;
-  static constexpr std::size_t kMaximumJavaScriptBytes = 256U * 1024U;
+  // Match Android's bounded burst budget. A 24-hour CGM history response is
+  // about 288 notifications and can arrive faster than JavaScript drains it.
+  static constexpr std::size_t kMaximumPreJavaScriptRecords = 512U;
+  static constexpr std::size_t kMaximumPreJavaScriptBytes = 1024U * 1024U;
+  static constexpr std::size_t kMaximumJavaScriptRecords = 512U;
+  static constexpr std::size_t kMaximumJavaScriptBytes = 1024U * 1024U;
   static constexpr std::size_t kMaximumPendingDisconnects = 64U;
 
   struct PendingDisconnect final {

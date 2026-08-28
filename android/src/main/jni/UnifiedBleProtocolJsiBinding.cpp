@@ -37,8 +37,11 @@ constexpr const char* kRuntimeName = "__unifiedBleNativeProtocolV2";
 using RuntimeSchedule = std::function<void(std::function<void(jsi::Runtime&)>)>;
 
 struct JsiEventSinkState final {
-  static constexpr std::size_t kMaximumQueuedRecords = 64U;
-  static constexpr std::size_t kMaximumQueuedBytes = 256U * 1024U;
+  // A legitimate high-rate peripheral can enqueue hundreds of notifications
+  // before React Native's JavaScript executor drains them. Keep this bounded,
+  // but leave headroom for a 24-hour CGM history burst (about 288 records).
+  static constexpr std::size_t kMaximumQueuedRecords = 512U;
+  static constexpr std::size_t kMaximumQueuedBytes = 1024U * 1024U;
   static constexpr std::size_t kMaximumBinaryCleanupReferences = 256U;
 
   JsiEventSinkState(

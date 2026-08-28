@@ -52,6 +52,23 @@ CoreBluetooth, BlueZ, WinRT, Electron, and Tauri do not advertise Android
 bonded or queued `when-available` support without a native primitive that can
 honour it. Their unsupported peer methods fail with `capability.unsupported`.
 
+## React Native notification bursts
+
+React Native Android and Apple both deliver native BLE events through a bounded
+native-to-JavaScript ingress queue. Each queue retains at most 512 records or
+1 MiB, whichever limit is reached first. This gives applications room for a
+peripheral to send a few hundred notifications in a catch-up burst—for example,
+about 288 five-minute records covering 24 hours—without turning the queue into
+unbounded memory.
+
+Applications should still process notifications promptly and split larger
+application-protocol transfers into resumable ranges. If JavaScript cannot drain
+the bounded queue, the backend reports `stream.overflow` and closes that ingress
+rather than silently losing a prefix. Android and Apple use the same limits;
+Web, BlueZ, CoreBluetooth desktop, WinRT, Electron, Tauri, and the deterministic
+backend do not pass through this React Native bridge and retain their existing
+stream limits and capability reports.
+
 Deterministic and mock boundaries are test-only. They prove contract/fault behavior, not live radio. Package, compile, ABI, and export checks prove only the level they actually exercise. Native compilation and package installation do not promote a backend to a higher support label.
 
 ## Evidence records

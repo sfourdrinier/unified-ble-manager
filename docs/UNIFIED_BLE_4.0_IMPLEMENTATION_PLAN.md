@@ -189,8 +189,9 @@ not by document count.
 The 2026-07-31 platform-hardening milestone closed three contradictions found by
 real consumer and backend integration. The Web environment now accepts the
 standard DOM `navigator.bluetooth` object directly without a consumer cast or
-adapter. Apple Native Protocol v2 now bounds its pre-JavaScript event buffer at
-64 records and 256 KiB, discards the entire retained prefix on overflow, and
+adapter. Apple Native Protocol v2 originally bounded its pre-JavaScript event
+buffer at 64 records and 256 KiB, discarded the entire retained prefix on
+overflow, and
 reports one counter-bearing `stream.overflow` terminal before closing ingress,
 so JavaScript cannot claim a partial restoration replay. Attachment generations
 quarantine queued callbacks, sink lifetime is serialized with detach/close, and
@@ -207,6 +208,15 @@ BlueZ/Electron/third-party-TCK/TypeScript consumer matrix. It advances G3/G4
 implementation but does not claim G4A or G4B: Windows native compile/ABI/live
 proof, Linux BlueZ live proof, the complete Web live scenario, and the complete
 Apple/Android physical-radio and lifecycle evidence remain separate gates.
+
+Physical React Native Android evidence on 2026-08-27 exposed a legitimate
+notification burst that exceeded the original 64-record native ingress budget
+before JavaScript could drain it. Issue #175 raises both React Native Android and
+Apple native-to-JavaScript ingress budgets to the same bounded 512 records /
+1 MiB. Overflow remains fail-closed and observable. Other backends do not use
+this bridge and are unchanged. This is an evidence-driven correction to the
+platform boundary, not a change to public stream defaults or an unbounded-lossless
+claim.
 
 ---
 
