@@ -1,6 +1,6 @@
 {
   "schema": "unified-ble-native-protocol-abi",
-  "version": 5,
+  "version": 6,
   "recordKinds": {
     "attachment": 1,
     "connectionPath": 2,
@@ -24,7 +24,8 @@
     "scanOptions": 20,
     "databaseSnapshot": 21,
     "characteristicSnapshot": 22,
-    "adapterStateSnapshot": 23
+    "adapterStateSnapshot": 23,
+    "bondedPeerSnapshot": 24
   },
   "enums": {
     "commandKinds": {
@@ -50,7 +51,8 @@
       "securityCancelPairing": 19,
       "readPhy": 21,
       "requestPhy": 22,
-      "readMtu": 23
+      "readMtu": 23,
+      "enumerateBondedPeers": 24
     },
     "resultKinds": {
       "accepted": 1,
@@ -71,7 +73,8 @@
       "descriptorWrite": 15,
       "securityState": 16,
       "securityPair": 17,
-      "phy": 19
+      "phy": 19,
+      "bondedPeers": 20
     },
     "eventKinds": {
       "adapterState": 1,
@@ -89,6 +92,7 @@
     "binaryOwnership": { "nativeOwnedCopy": 1, "javascriptOwnedCopy": 2, "transferred": 3 },
     "writeModes": { "withResponse": 1, "withoutResponse": 2 },
     "connectionPriorities": { "lowPower": 1, "balanced": 2, "highThroughput": 3 },
+    "connectionIntents": { "direct": 1, "whenAvailable": 2 },
     "connectionPhys": { "le1m": 1, "le2m": 2, "leCoded": 3 },
     "pairTransports": { "platformDefault": 1, "le": 2 },
     "adapterAvailability": { "available": 1, "unavailable": 2, "unsupported": 3, "unknown": 4 },
@@ -159,7 +163,8 @@
       "connectionPriority": 16,
       "phyTx": 17,
       "phyRx": 18,
-      "pairTransport": 19
+      "pairTransport": 19,
+      "connectionIntent": 20
     },
     "terminal": { "correlation": 1, "outcome": 2, "cause": 3 },
     "result": {
@@ -184,7 +189,8 @@
       "phyTx": 19,
       "phyRx": 20,
       "phyAccepted": 21,
-      "effectiveMtu": 22
+      "effectiveMtu": 22,
+      "bondedPeers": 23
     },
     "advertisement": {
       "peerId": 1,
@@ -268,6 +274,10 @@
       "adoptionEpoch": 5,
       "outcome": 6,
       "records": 7
+    },
+    "bondedPeerSnapshot": {
+      "nativePeerId": 1,
+      "displayName": 2
     }
   }
 }

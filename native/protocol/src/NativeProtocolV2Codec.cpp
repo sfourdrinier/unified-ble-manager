@@ -462,6 +462,8 @@ void validateCommandSemantics(const ProtocolRecord& record) {
     requireFieldSet(record, {1U, 2U, 3U, 15U}, {});
   } else if (*kind == "securityPair") {
     requireFieldSet(record, {1U, 2U, 3U, 15U, 19U}, {});
+  } else if (*kind == "enumerateBondedPeers") {
+    requireFieldSet(record, {1U, 2U, 3U, 20U}, {});
   }
 }
 
@@ -476,7 +478,9 @@ void validateResultSemantics(const ProtocolRecord& record) {
     requireFieldSet(record, {1U, 2U, 3U, 10U}, {});
     return;
   }
-  if (*kind == "accepted" || *kind == "scanStarted" || *kind == "write" || *kind == "destroyed") {
+  if (*kind == "bondedPeers") {
+    requireFieldSet(record, {1U, 2U, 3U, 23U}, {});
+  } else if (*kind == "accepted" || *kind == "scanStarted" || *kind == "write" || *kind == "destroyed") {
     requireFieldSet(record, {1U, 2U, 3U}, {});
   } else if (*kind == "connected") {
     requireFieldSet(record, {1U, 2U, 3U, 11U}, {});

@@ -1,7 +1,7 @@
 // src/native-protocol/generated/native-protocol-v2-schema.ts
 
 export const NATIVE_PROTOCOL_VERSION = 2
-export const NATIVE_PROTOCOL_ABI_VERSION = 5
+export const NATIVE_PROTOCOL_ABI_VERSION = 6
 export const NATIVE_PROTOCOL_CONTROL_SURFACE_VERSION = 2
 export const MAXIMUM_CONTROL_RECORD_BYTES = 262144
 export const MAXIMUM_BINARY_PAYLOAD_BYTES = 524288
@@ -29,7 +29,8 @@ export const recordKinds = Object.freeze([
   'error',
   'restorationRecord',
   'restorationAdoptionRequest',
-  'restorationAdoptionResult'
+  'restorationAdoptionResult',
+  'bondedPeerSnapshot'
 ])
 export type RecordKind = (typeof recordKinds)[number]
 
@@ -56,7 +57,8 @@ export const nativeProtocolRecordWireIds: Readonly<Record<RecordKind, number>> =
   scanOptions: 20,
   databaseSnapshot: 21,
   characteristicSnapshot: 22,
-  adapterStateSnapshot: 23
+  adapterStateSnapshot: 23,
+  bondedPeerSnapshot: 24
 })
 
 export const nativeProtocolEnumValues: Readonly<Record<string, readonly string[]>> = Object.freeze({
@@ -83,7 +85,8 @@ export const nativeProtocolEnumValues: Readonly<Record<string, readonly string[]
     'securityCancelPairing',
     'readPhy',
     'requestPhy',
-    'readMtu'
+    'readMtu',
+    'enumerateBondedPeers'
   ],
   resultKinds: [
     'accepted',
@@ -104,7 +107,8 @@ export const nativeProtocolEnumValues: Readonly<Record<string, readonly string[]
     'descriptorWrite',
     'securityState',
     'securityPair',
-    'phy'
+    'phy',
+    'bondedPeers'
   ],
   eventKinds: [
     'adapterState',
@@ -122,6 +126,7 @@ export const nativeProtocolEnumValues: Readonly<Record<string, readonly string[]
   binaryOwnership: ['nativeOwnedCopy', 'javascriptOwnedCopy', 'transferred'],
   writeModes: ['withResponse', 'withoutResponse'],
   connectionPriorities: ['lowPower', 'balanced', 'highThroughput'],
+  connectionIntents: ['direct', 'whenAvailable'],
   connectionPhys: ['le1m', 'le2m', 'leCoded'],
   pairTransports: ['platformDefault', 'le'],
   adapterAvailability: ['available', 'unavailable', 'unsupported', 'unknown'],
@@ -162,7 +167,8 @@ export const commandKinds = Object.freeze([
   'securityCancelPairing',
   'readPhy',
   'requestPhy',
-  'readMtu'
+  'readMtu',
+  'enumerateBondedPeers'
 ])
 export type CommandKinds = (typeof commandKinds)[number]
 
@@ -185,7 +191,8 @@ export const resultKinds = Object.freeze([
   'descriptorWrite',
   'securityState',
   'securityPair',
-  'phy'
+  'phy',
+  'bondedPeers'
 ])
 export type ResultKinds = (typeof resultKinds)[number]
 
@@ -216,6 +223,9 @@ export type WriteModes = (typeof writeModes)[number]
 
 export const connectionPriorities = Object.freeze(['lowPower', 'balanced', 'highThroughput'])
 export type ConnectionPriorities = (typeof connectionPriorities)[number]
+
+export const connectionIntents = Object.freeze(['direct', 'whenAvailable'])
+export type ConnectionIntents = (typeof connectionIntents)[number]
 
 export const connectionPhys = Object.freeze(['le1m', 'le2m', 'leCoded'])
 export type ConnectionPhys = (typeof connectionPhys)[number]
@@ -340,6 +350,7 @@ export const nativeProtocolFields: readonly NativeProtocolFieldDescriptor[] = Ob
   nativeProtocolField('command', 17, 'phyTx', 'enum:connectionPhys', false),
   nativeProtocolField('command', 18, 'phyRx', 'enum:connectionPhys', false),
   nativeProtocolField('command', 19, 'pairTransport', 'enum:pairTransports', false),
+  nativeProtocolField('command', 20, 'connectionIntent', 'enum:connectionIntents', false),
   nativeProtocolField('terminal', 1, 'correlation', 'record:operationCorrelation', true),
   nativeProtocolField('terminal', 2, 'outcome', 'enum:terminalOutcomes', true),
   nativeProtocolField('terminal', 3, 'cause', 'string', false),
@@ -365,6 +376,7 @@ export const nativeProtocolFields: readonly NativeProtocolFieldDescriptor[] = Ob
   nativeProtocolField('result', 20, 'phyRx', 'enum:connectionPhys', false),
   nativeProtocolField('result', 21, 'phyAccepted', 'boolean', false),
   nativeProtocolField('result', 22, 'effectiveMtu', 'uint64', false),
+  nativeProtocolField('result', 23, 'bondedPeers', 'records:bondedPeerSnapshot', false),
   nativeProtocolField('advertisement', 1, 'peerId', 'string', true),
   nativeProtocolField('advertisement', 2, 'observedAt', 'uint64', true),
   nativeProtocolField('advertisement', 3, 'ingressOrdinal', 'uint64', true),
@@ -435,5 +447,7 @@ export const nativeProtocolFields: readonly NativeProtocolFieldDescriptor[] = Ob
   nativeProtocolField('restorationAdoptionResult', 4, 'boundClientId', 'string', true),
   nativeProtocolField('restorationAdoptionResult', 5, 'adoptionEpoch', 'string', true),
   nativeProtocolField('restorationAdoptionResult', 6, 'outcome', 'enum:restorationOutcomes', true),
-  nativeProtocolField('restorationAdoptionResult', 7, 'records', 'records:restorationRecord', true)
+  nativeProtocolField('restorationAdoptionResult', 7, 'records', 'records:restorationRecord', true),
+  nativeProtocolField('bondedPeerSnapshot', 1, 'nativePeerId', 'string', true),
+  nativeProtocolField('bondedPeerSnapshot', 2, 'displayName', 'string', false)
 ])

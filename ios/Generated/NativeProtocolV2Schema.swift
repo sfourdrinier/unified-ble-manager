@@ -3,7 +3,7 @@
 import Foundation
 
 public let nativeProtocolVersion: UInt32 = 2
-public let nativeProtocolABIVersion: UInt32 = 5
+public let nativeProtocolABIVersion: UInt32 = 6
 public let nativeProtocolControlSurfaceVersion: UInt32 = 2
 public let maximumControlRecordBytes: Int = 262144
 public let maximumBinaryPayloadBytes: Int = 524288
@@ -32,6 +32,7 @@ public enum RecordKind: UInt16, CaseIterable, Sendable {
   case restorationRecord = 17
   case restorationAdoptionRequest = 18
   case restorationAdoptionResult = 19
+  case bondedPeerSnapshot = 24
 }
 
 public enum CommandKinds: UInt16, CaseIterable, Sendable {
@@ -58,6 +59,7 @@ public enum CommandKinds: UInt16, CaseIterable, Sendable {
   case readPhy = 21
   case requestPhy = 22
   case readMtu = 23
+  case enumerateBondedPeers = 24
 }
 
 public enum ResultKinds: UInt16, CaseIterable, Sendable {
@@ -80,6 +82,7 @@ public enum ResultKinds: UInt16, CaseIterable, Sendable {
   case securityState = 16
   case securityPair = 17
   case phy = 19
+  case bondedPeers = 20
 }
 
 public enum EventKinds: UInt16, CaseIterable, Sendable {
@@ -120,6 +123,11 @@ public enum ConnectionPriorities: UInt16, CaseIterable, Sendable {
   case lowPower = 1
   case balanced = 2
   case highThroughput = 3
+}
+
+public enum ConnectionIntents: UInt16, CaseIterable, Sendable {
+  case direct = 1
+  case whenAvailable = 2
 }
 
 public enum ConnectionPhys: UInt16, CaseIterable, Sendable {
@@ -262,6 +270,7 @@ public let nativeProtocolFields: [FieldDescriptor] = [
     FieldDescriptor(record: .command, fieldID: 17, name: "phyTx", type: "enum:connectionPhys", required: false),
     FieldDescriptor(record: .command, fieldID: 18, name: "phyRx", type: "enum:connectionPhys", required: false),
     FieldDescriptor(record: .command, fieldID: 19, name: "pairTransport", type: "enum:pairTransports", required: false),
+    FieldDescriptor(record: .command, fieldID: 20, name: "connectionIntent", type: "enum:connectionIntents", required: false),
     FieldDescriptor(record: .terminal, fieldID: 1, name: "correlation", type: "record:operationCorrelation", required: true),
     FieldDescriptor(record: .terminal, fieldID: 2, name: "outcome", type: "enum:terminalOutcomes", required: true),
     FieldDescriptor(record: .terminal, fieldID: 3, name: "cause", type: "string", required: false),
@@ -287,6 +296,7 @@ public let nativeProtocolFields: [FieldDescriptor] = [
     FieldDescriptor(record: .result, fieldID: 20, name: "phyRx", type: "enum:connectionPhys", required: false),
     FieldDescriptor(record: .result, fieldID: 21, name: "phyAccepted", type: "boolean", required: false),
     FieldDescriptor(record: .result, fieldID: 22, name: "effectiveMtu", type: "uint64", required: false),
+    FieldDescriptor(record: .result, fieldID: 23, name: "bondedPeers", type: "records:bondedPeerSnapshot", required: false),
     FieldDescriptor(record: .advertisement, fieldID: 1, name: "peerId", type: "string", required: true),
     FieldDescriptor(record: .advertisement, fieldID: 2, name: "observedAt", type: "uint64", required: true),
     FieldDescriptor(record: .advertisement, fieldID: 3, name: "ingressOrdinal", type: "uint64", required: true),
@@ -357,5 +367,7 @@ public let nativeProtocolFields: [FieldDescriptor] = [
     FieldDescriptor(record: .restorationAdoptionResult, fieldID: 4, name: "boundClientId", type: "string", required: true),
     FieldDescriptor(record: .restorationAdoptionResult, fieldID: 5, name: "adoptionEpoch", type: "string", required: true),
     FieldDescriptor(record: .restorationAdoptionResult, fieldID: 6, name: "outcome", type: "enum:restorationOutcomes", required: true),
-    FieldDescriptor(record: .restorationAdoptionResult, fieldID: 7, name: "records", type: "records:restorationRecord", required: true)
+    FieldDescriptor(record: .restorationAdoptionResult, fieldID: 7, name: "records", type: "records:restorationRecord", required: true),
+    FieldDescriptor(record: .bondedPeerSnapshot, fieldID: 1, name: "nativePeerId", type: "string", required: true),
+    FieldDescriptor(record: .bondedPeerSnapshot, fieldID: 2, name: "displayName", type: "string", required: false)
 ]

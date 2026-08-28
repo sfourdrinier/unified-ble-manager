@@ -18,6 +18,17 @@ function readAppleRadio() {
 }
 
 describe('Apple Native Protocol v2 radio boundary', () => {
+  test('keeps bonded-peer enumeration unsupported after ABI 6 recognizes the command', () => {
+    const execution = read('ios/NativeProtocol/UnifiedBleProtocolAppleExecution.mm')
+    const control = read('ios/UnifiedBleProtocolControl.mm')
+    expect(execution).toContain('if (kind == "enumerateBondedPeers")')
+    expect(execution).toContain('fail(state, command, "unsupportedCommand", nil);')
+    expect(execution).not.toContain('bondedPeerSnapshot')
+    expect(execution).not.toContain('bondedPeers')
+    expect(control).not.toContain('enumerateBondedPeers')
+    expect(control).not.toContain('bondedPeers')
+  })
+
   test('owns direct CoreBluetooth bytes, duplicate-aware paths, and direct restoration', () => {
     const radio = readAppleRadio()
     const control = read('ios/UnifiedBleProtocolControl.mm')

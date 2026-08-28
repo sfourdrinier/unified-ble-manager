@@ -64,6 +64,101 @@ describe('Native Protocol v2 schema authority', () => {
     ])
   })
 
+  test('declares ABI 6 bonded peer snapshots and connect intent without renumbering old IDs', () => {
+    const schema = JSON.parse(fs.readFileSync(schemaPath, 'utf8'))
+    const manifest = JSON.parse(fs.readFileSync(path.join(path.dirname(schemaPath), schema.abiManifest), 'utf8'))
+    const records = new Map(schema.records.map(record => [record.name, record.fields]))
+
+    expect(schema.abiVersion).toBe(6)
+    expect(schema.recordKinds).toContain('bondedPeerSnapshot')
+    expect(schema.commandKinds).toContain('enumerateBondedPeers')
+    expect(schema.resultKinds).toContain('bondedPeers')
+    expect(schema.connectionIntents).toEqual(['direct', 'whenAvailable'])
+    expect(records.get('bondedPeerSnapshot')).toEqual([
+      ['nativePeerId', 'string', true],
+      ['displayName', 'string', false]
+    ])
+    expect(records.get('command')).toContainEqual(['connectionIntent', 'enum:connectionIntents', false])
+    expect(records.get('result')).toContainEqual(['bondedPeers', 'records:bondedPeerSnapshot', false])
+    expect(manifest.recordKinds.bondedPeerSnapshot).toBe(24)
+    expect(manifest.enums.commandKinds.enumerateBondedPeers).toBe(24)
+    expect(manifest.enums.resultKinds.bondedPeers).toBe(20)
+    expect(manifest.enums.connectionIntents).toEqual({ direct: 1, whenAvailable: 2 })
+    expect(manifest.fields.command.connectionIntent).toBe(20)
+    expect(manifest.fields.result.bondedPeers).toBe(23)
+    expect(manifest.fields.bondedPeerSnapshot).toEqual({ nativePeerId: 1, displayName: 2 })
+    expect(manifest.fields.command.pairTransport).toBe(19)
+    expect(manifest.fields.result.effectiveMtu).toBe(22)
+  })
+
+  test('strictly validates bonded peer and intent fields at the TypeScript codec boundary', () => {
+    const attachment = {
+      kind: 'attachment',
+      fields: [
+        { id: 1, value: 'attachment-1' },
+        { id: 2, value: 'backend-1' },
+        { id: 3, value: 'generation-1' },
+        { id: 4, value: 'adapter-1' },
+        { id: 5, value: 'adapter-generation-1' }
+      ]
+    }
+    const correlation = {
+      kind: 'operationCorrelation',
+      fields: [
+        { id: 1, value: attachment },
+        { id: 2, value: 1 },
+        { id: 3, value: 'enumerate-1' }
+      ]
+    }
+    const command = (intent, extraFields = []) => ({
+      kind: 'command',
+      fields: [
+        { id: 1, value: 2 },
+        { id: 2, value: correlation },
+        { id: 3, value: 'enumerateBondedPeers' },
+        { id: 20, value: intent },
+        ...extraFields
+      ]
+    })
+    const bondedPeer = { kind: 'bondedPeerSnapshot', fields: [{ id: 1, value: 'peer-1' }] }
+    const result = {
+      kind: 'result',
+      fields: [
+        { id: 1, value: 2 },
+        { id: 2, value: 'bondedPeers' },
+        {
+          id: 3,
+          value: { kind: 'terminal', fields: [{ id: 1, value: correlation }, { id: 2, value: 'succeeded' }] }
+        },
+        { id: 23, value: [bondedPeer] }
+      ]
+    }
+
+    expect(() => encodeNativeProtocolRecord(command('direct'))).not.toThrow()
+    expect(() => encodeNativeProtocolRecord(command('invalid'))).toThrow('Native protocol enum value is invalid')
+    expect(() => encodeNativeProtocolRecord(command('direct', [{ id: 20, value: 'whenAvailable' }]))).toThrow(
+      'Native protocol record has a duplicate field'
+    )
+    expect(() => encodeNativeProtocolRecord({
+      ...command('direct'),
+      fields: command('direct').fields.map(field => field.id === 20 ? { id: 20, value: 1 } : field)
+    })).toThrow(
+      'Native protocol string field has an invalid value'
+    )
+    expect(() => encodeNativeProtocolRecord({ ...command('direct'), fields: [...command('direct').fields, { id: 21, value: 'x' }] })).toThrow(
+      'Native protocol field is unknown'
+    )
+    expect(() => encodeNativeProtocolRecord(result)).not.toThrow()
+    expect(() => encodeNativeProtocolRecord({
+      ...result,
+      fields: result.fields.map(field => field.id === 23 ? { id: 23, value: [{ kind: 'bondedPeerSnapshot', fields: [{ id: 1, value: 7 }] }] } : field)
+    })).toThrow('Native protocol string field has an invalid value')
+    expect(() => encodeNativeProtocolRecord({
+      ...result,
+      fields: result.fields.map(field => field.id === 23 ? { id: 23, value: [{ kind: 'bondedPeerSnapshot', fields: [{ id: 2, value: 'name' }] }] } : field)
+    })).toThrow('Native protocol record is missing a required field')
+  })
+
   test('rejects malformed, duplicate, and unsupported priority command values at the codec boundary', () => {
     expect(() => encodeNativeProtocolRecord(priorityCommand('highThroughput'))).not.toThrow()
     expect(() => encodeNativeProtocolRecord(priorityCommand('turbo'))).toThrow('Native protocol enum value is invalid')
@@ -243,7 +338,7 @@ describe('Native Protocol v2 schema authority', () => {
     expect(schema).not.toContain('phyAvailable')
   })
 
-  test('versions Android link-control schema additions with ABI v5 while retaining protocol v2 records', () => {
+  test('versions Android link-control schema additions with ABI v6 while retaining protocol v2 records', () => {
     const schema = JSON.parse(fs.readFileSync(schemaPath, 'utf8'))
     const manifest = JSON.parse(fs.readFileSync(path.join(path.dirname(schemaPath), schema.abiManifest), 'utf8'))
     const cpp = read('native/protocol/generated/NativeProtocolV2Schema.hpp')
@@ -257,20 +352,20 @@ describe('Native Protocol v2 schema authority', () => {
     )
 
     expect(schema.version).toBe(2)
-    expect(schema.abiVersion).toBe(5)
+    expect(schema.abiVersion).toBe(6)
     expect(schema.controlSurfaceVersion).toBe(2)
-    expect(manifest.version).toBe(5)
+    expect(manifest.version).toBe(6)
     expect(cpp).toContain('kProtocolVersion = 2U')
-    expect(cpp).toContain('kAbiVersion = 5U')
+    expect(cpp).toContain('kAbiVersion = 6U')
     expect(cpp).toContain('kControlSurfaceVersion = 2U')
     expect(kotlin).toContain('NATIVE_PROTOCOL_VERSION: Int = 2')
-    expect(kotlin).toContain('NATIVE_PROTOCOL_ABI_VERSION: Int = 5')
+    expect(kotlin).toContain('NATIVE_PROTOCOL_ABI_VERSION: Int = 6')
     expect(kotlin).toContain('NATIVE_PROTOCOL_CONTROL_SURFACE_VERSION: Int = 2')
     expect(swift).toContain('nativeProtocolVersion: UInt32 = 2')
-    expect(swift).toContain('nativeProtocolABIVersion: UInt32 = 5')
+    expect(swift).toContain('nativeProtocolABIVersion: UInt32 = 6')
     expect(swift).toContain('nativeProtocolControlSurfaceVersion: UInt32 = 2')
     expect(typescript).toContain('export const NATIVE_PROTOCOL_VERSION = 2')
-    expect(typescript).toContain('export const NATIVE_PROTOCOL_ABI_VERSION = 5')
+    expect(typescript).toContain('export const NATIVE_PROTOCOL_ABI_VERSION = 6')
     expect(typescript).toContain('export const NATIVE_PROTOCOL_CONTROL_SURFACE_VERSION = 2')
     expect(androidControl).toContain('NativeProtocolV2SchemaKt.NATIVE_PROTOCOL_ABI_VERSION')
     expect(androidControl).toContain('NativeProtocolV2SchemaKt.NATIVE_PROTOCOL_CONTROL_SURFACE_VERSION')

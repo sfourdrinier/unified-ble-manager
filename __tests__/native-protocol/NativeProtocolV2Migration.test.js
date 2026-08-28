@@ -17,6 +17,26 @@ function filesUnder(relativeDirectory) {
 }
 
 describe('native protocol v2 migration', () => {
+  test('requires ABI 6 and preserves every previously assigned wire ID', () => {
+    const schema = JSON.parse(read('native/protocol/schema/native-protocol-v2.json'))
+    const manifest = JSON.parse(read('native/protocol/schema/native-protocol-v2-abi.json'))
+    expect(schema.abiVersion).toBe(6)
+    expect(manifest.version).toBe(6)
+    expect(manifest.recordKinds).toEqual(expect.objectContaining({
+      attachment: 1,
+      connectionPath: 2,
+      databasePath: 3,
+      restorationAdoptionResult: 19,
+      scanOptions: 20,
+      adapterStateSnapshot: 23,
+      bondedPeerSnapshot: 24
+    }))
+    expect(manifest.enums.commandKinds).toEqual(expect.objectContaining({ requestPriority: 20, enumerateBondedPeers: 24 }))
+    expect(manifest.enums.resultKinds).toEqual(expect.objectContaining({ priority: 18, phy: 19, bondedPeers: 20 }))
+    expect(manifest.fields.command).toEqual(expect.objectContaining({ pairTransport: 19, connectionIntent: 20 }))
+    expect(manifest.fields.result).toEqual(expect.objectContaining({ effectiveMtu: 22, bondedPeers: 23 }))
+  })
+
   test('ships one v2 schema/generator/runtime authority without the v1 stack', () => {
     expect(fs.existsSync(path.join(root, 'native/protocol/schema/native-protocol-v2.json'))).toBe(true)
     expect(fs.existsSync(path.join(root, 'native/protocol/schema/native-protocol-v2-abi.json'))).toBe(true)

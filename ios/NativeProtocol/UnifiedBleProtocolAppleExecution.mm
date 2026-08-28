@@ -1191,12 +1191,16 @@ void dispatchCommand(
     const protocol::ProtocolRecord& borrowedCommand) {
   const auto command = borrowedCommand;
   auto* radio = radioFor(state);
+  const auto kind = requiredString(command, 3U);
+  const auto nonce = requiredString(requiredRecord(command, 2U), 3U);
+  if (kind == "enumerateBondedPeers") {
+    fail(state, command, "unsupportedCommand", nil);
+    return;
+  }
   if (radio == nil) {
     fail(state, command, "radioUnavailable", nil);
     return;
   }
-  const auto kind = requiredString(command, 3U);
-  const auto nonce = requiredString(requiredRecord(command, 2U), 3U);
   if (kind == "scanStart") {
     const auto& options = requiredRecord(command, 12U);
     const auto& values = requiredStringList(options, 1U);

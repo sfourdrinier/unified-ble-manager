@@ -204,6 +204,58 @@ void testVersionNegotiation() {
   });
 }
 
+void testBondedPeerSnapshotsAndConnectionIntent() {
+  static_assert(protocol::kAbiVersion == 6U);
+  protocol::NativeProtocolV2Codec codec;
+  const auto validCommand = protocol::ProtocolRecord{
+      .kind = protocol::RecordKind::command,
+      .fields = {
+          field(1U, std::uint64_t{protocol::kProtocolVersion}),
+          field(2U, correlation(1U)),
+          field(3U, std::string("enumerateBondedPeers")),
+          field(20U, std::string("direct")),
+      },
+  };
+  codec.validate(validCommand);
+  assert(codec.encode(codec.decode(codec.encode(validCommand))) == codec.encode(validCommand));
+
+  auto missingIntent = validCommand;
+  missingIntent.fields.pop_back();
+  expectFailure(protocol::ProtocolFailure::missingField, [&] { codec.validate(missingIntent); });
+  auto duplicateIntent = validCommand;
+  duplicateIntent.fields.push_back(field(20U, std::string("whenAvailable")));
+  expectFailure(protocol::ProtocolFailure::duplicateField, [&] { codec.validate(duplicateIntent); });
+  auto unknownIntent = validCommand;
+  unknownIntent.fields.push_back(field(21U, std::string("direct")));
+  expectFailure(protocol::ProtocolFailure::unknownField, [&] { codec.validate(unknownIntent); });
+  auto wrongIntent = validCommand;
+  wrongIntent.fields.back() = field(20U, std::uint64_t{1U});
+  expectFailure(protocol::ProtocolFailure::invalidFieldType, [&] { codec.validate(wrongIntent); });
+
+  const auto peer = std::make_shared<protocol::ProtocolRecord>(protocol::ProtocolRecord{
+      .kind = protocol::RecordKind::bondedPeerSnapshot,
+      .fields = {field(1U, std::string("native-peer-1")), field(2U, std::string("Display name"))},
+  });
+  const auto result = protocol::ProtocolRecord{
+      .kind = protocol::RecordKind::result,
+      .fields = {
+          field(1U, std::uint64_t{protocol::kProtocolVersion}),
+          field(2U, std::string("bondedPeers")),
+          field(3U, std::make_shared<protocol::ProtocolRecord>(terminal(1U, "succeeded"))),
+          field(23U, protocol::ProtocolRecordList{peer}),
+      },
+  };
+  codec.validate(result);
+  auto missingPeerId = result;
+  missingPeerId.fields[3U] = field(23U, protocol::ProtocolRecordList{
+      std::make_shared<protocol::ProtocolRecord>(protocol::ProtocolRecord{
+          .kind = protocol::RecordKind::bondedPeerSnapshot,
+          .fields = {field(2U, std::string("Display name"))},
+      }),
+  });
+  expectFailure(protocol::ProtocolFailure::missingField, [&] { codec.validate(missingPeerId); });
+}
+
 void testPreJavaScriptEventBufferFailsClosedWithoutPartialReplay() {
   protocol::BoundedNativeEventBuffer buffer(2U, 4U);
   assert(buffer.enqueue({0x01U, 0x02U}));
@@ -1366,6 +1418,7 @@ void testAndroidDispatcherResultsCarryTheNegotiatedVersion() {
 
 int main() {
   testVersionNegotiation();
+  testBondedPeerSnapshotsAndConnectionIntent();
   testPreJavaScriptEventBufferFailsClosedWithoutPartialReplay();
   testAndroidJsiIngressLedgerRetainsExactBinaryOwnershipCounters();
   testAndroidJsiBinaryCleanupLedgerPreservesOverCapReferencesForFatalRetry();
