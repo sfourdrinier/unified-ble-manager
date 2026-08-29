@@ -574,7 +574,12 @@ async function updateExpoBackgroundNotification(
     })
   } catch (error) {
     if (isExpoBoundaryError(error, operation)) throw error
-    throwExpoRuntimeError(normalizedBackgroundErrorCode(errorCode(error)), operation, errorMessage(error), errorCode(error))
+    throwExpoRuntimeError(
+      normalizedBackgroundErrorCode(errorCode(error)),
+      operation,
+      errorMessage(error),
+      errorCode(error)
+    )
   }
 }
 
