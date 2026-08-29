@@ -352,7 +352,7 @@ int runAppleNativeProtocolExecutionHarness() {
           if (count != 1U || !arguments[0].isObject() || !arguments[0].asObject(inner).isUint8Array(inner)) {
             return Value::undefined();
           }
-          const auto array = arguments[0].asObject(inner).asUint8Array(inner);
+          auto array = arguments[0].asObject(inner).asUint8Array(inner);
           const auto buffer = array.buffer(inner);
           const auto offset = array.byteOffset(inner);
           const auto length = array.byteLength(inner);
