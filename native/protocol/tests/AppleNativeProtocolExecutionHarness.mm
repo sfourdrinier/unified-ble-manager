@@ -250,6 +250,15 @@ void initializeAttachment(
   state->eventSink = sink;
 }
 
+void releaseHarnessJsiState(
+    const std::shared_ptr<AppleNativeProtocolExecution::State>& state) {
+  std::scoped_lock lock(state->mutex);
+  state->eventSink.reset();
+  state->fatalSink.reset();
+  state->sinksAwaitingJavaScriptRelease.clear();
+  state->callInvoker.reset();
+}
+
 bool require(bool condition, const char* message) {
   if (condition) return true;
   std::cerr << message << '\n';
@@ -576,6 +585,18 @@ int runAppleNativeProtocolExecutionHarness() {
     if (!require(invoker->pending() == 1U, "Apple fatal path did not schedule exactly one JavaScript fatal callback")) return 1;
     invoker->flushOne();
     if (!require(fatalDelivered.load(std::memory_order_relaxed) == 1U, "Apple fatal sink was not invoked exactly once")) return 1;
+
+    // Direct-State seams intentionally bypass AppleNativeProtocolExecution::close().
+    // Release their JSI functions while the runtime is still alive, and remove
+    // any installed host object before JSCRuntime performs its dangling-object
+    // assertion during destruction.
+    releaseHarnessJsiState(state);
+    releaseHarnessJsiState(missingInvokerState);
+    releaseHarnessJsiState(failedConnectState);
+    releaseHarnessJsiState(throwingState);
+    if (!runtime->global().getProperty(*runtime, "__unifiedBleNativeProtocolV2").isUndefined()) {
+      runtime->global().deleteProperty(*runtime, "__unifiedBleNativeProtocolV2");
+    }
     return 0;
     }
   } catch (const std::exception& error) {
