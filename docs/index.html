@@ -556,7 +556,7 @@
               supported BLE execution environment because it cannot contain this native module.
             </p>
             <p>
-              Use the v2 plugin options in the published <code>4.0.8</code> package. Those options match the schema
+              Use the v2 plugin options in the published <code>4.0.7</code> package. Those options match the schema
               introduced at <code>4.0.0-rc.4</code>. Expo Go cannot load this native module.
             </p>
             <h2>Installation and development build</h2>
@@ -564,7 +564,7 @@
               Pin the package so a later <code>latest</code> bump does not change native plugin options without a
               rebuild:
             </p>
-            <pre><code>pnpm add unified-ble-manager@4.0.8
+            <pre><code>pnpm add unified-ble-manager@4.0.7
 pnpm add expo@^57.0.0 expo-dev-client
 npx expo prebuild --clean
 npx expo run:ios
@@ -961,7 +961,7 @@ await manager.background.updateNotification({
             </p>
             <h2>Package stability and backend support are separate</h2>
             <p>
-              <code>unified-ble-manager@4.0.8</code> is the current <strong>stable package/API</strong> for the 4.x
+              <code>unified-ble-manager@4.0.7</code> is the published <strong>stable package/API</strong> for the 4.x
               contract; it is immutable. Backend support labels remain evidence-derived and independent of this SemVer.
               Immutable <code>4.0.0</code>, <code>4.0.1</code>, <code>4.0.2</code>, and <code>4.0.3</code> remain
               published history.
