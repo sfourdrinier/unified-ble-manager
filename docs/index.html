@@ -556,7 +556,7 @@
               supported BLE execution environment because it cannot contain this native module.
             </p>
             <p>
-              Use the v2 plugin options in the published <code>4.0.7</code> package. Those options match the schema
+              Use the v2 plugin options in the published <code>4.0.8</code> package. Those options match the schema
               introduced at <code>4.0.0-rc.4</code>. Expo Go cannot load this native module.
             </p>
             <h2>Installation and development build</h2>
@@ -564,7 +564,7 @@
               Pin the package so a later <code>latest</code> bump does not change native plugin options without a
               rebuild:
             </p>
-            <pre><code>pnpm add unified-ble-manager@4.0.7
+            <pre><code>pnpm add unified-ble-manager@4.0.8
 pnpm add expo@^57.0.0 expo-dev-client
 npx expo prebuild --clean
 npx expo run:ios
@@ -657,9 +657,36 @@ bunx eas build --profile development --platform android
               </li>
               <li>
                 android.mode is none or connected-device-foreground-service. The latter requires a complete notification
-                (channelId, channelName, and title) and may set body, icon, and an explicit restart policy.
+                (channelId, channelName, and title) and may set body, icon, and an explicit restart policy. Background
+                is absent by default; restart is <code>never</code> by default.
               </li>
             </ul>
+            <p>
+              When the Android connected-device service is active, applications can publish current user-facing state
+              without changing service ownership:
+            </p>
+            <pre><code>const lease = await manager.background.acquire({
+  kind: 'connected-device', reason: 'active glucose monitoring'
+})
+await manager.background.updateNotification({
+  title: 'Glucose 108', body: 'Updates are private'
+})
+</code></pre>
+            <p>
+              <code>updateNotification</code> requires an active lease, validates bounded non-empty text, updates the
+              existing UBM notification in place, and never acquires or starts a service. The notification retains its
+              configured channel, icon, connected-device service type, ongoing state, and session-intent policy; its tap
+              opens the host app. Release the lease when monitoring ends. Optional reconnection remains
+              application-owned: <code>while-session-intent-exists</code> recovers the configured service after boot or
+              package replacement only when the native session intent exists; it never scans or reconnects.
+            </p>
+            <p>
+              The platform matrix is intentionally explicit: Android supports the lease and notification update when the
+              connected-device service is configured; Apple, Web, desktop, and other hosts reject these Android-only
+              operations with <code>capability.unsupported</code> (or <code>capability.unavailable</code> when a
+              required Android lease/configuration is absent). There is one contract for the public API and native
+              bridge; unsupported surfaces do not silently discard options.
+            </p>
             <p>
               Foreground-service declarations do not acquire a runtime lease or guarantee background reliability. The
               application must explicitly acquire and release the runtime background lease exposed by the host when that
@@ -934,7 +961,7 @@ bunx eas build --profile development --platform android
             </p>
             <h2>Package stability and backend support are separate</h2>
             <p>
-              <code>unified-ble-manager@4.0.7</code> is the published <strong>stable package/API</strong> for the 4.x
+              <code>unified-ble-manager@4.0.8</code> is the current <strong>stable package/API</strong> for the 4.x
               contract; it is immutable. Backend support labels remain evidence-derived and independent of this SemVer.
               Immutable <code>4.0.0</code>, <code>4.0.1</code>, <code>4.0.2</code>, and <code>4.0.3</code> remain
               published history.
@@ -984,6 +1011,21 @@ bunx eas build --profile development --platform android
             <p>
               Host entrypoints select an explicit concrete backend and surface its typed unavailable, permission,
               adapter, cancellation, deadline, and lifecycle failures.
+            </p>
+            <h2>Connected-device background monitoring</h2>
+            <p>
+              The Expo Android host offers an explicit connected-device foreground-service lease. It is absent by
+              default, and <code>restart: 'never'</code> is the default. A caller may update the current notification
+              title/body while holding that lease; updates do not start a service or acquire another lease. Android
+              preserves the configured notification channel/icon, connected-device foreground-service type, ongoing
+              state, and app-launch tap. <code>while-session-intent-exists</code> adds managed boot and
+              package-replacement recovery, but only starts the service when the native UBM session-intent is present.
+              It never scans or reconnects; any reconnect policy belongs to the application.
+            </p>
+            <p>
+              Apple, Web, BlueZ, WinRT, Electron, Tauri, and deterministic backends do not claim this Android service
+              capability. They reject the Android-only operation truthfully with <code>capability.unsupported</code>; no
+              backend silently ignores an option or substitutes a supervisor/reconnect loop.
             </p>
             <h2>Peer directory availability</h2>
             <p>
