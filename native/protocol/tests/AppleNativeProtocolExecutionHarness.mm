@@ -272,6 +272,9 @@ int runAppleNativeProtocolExecutionHarness() {
     }
 
     const auto runtime = facebook::jsc::makeJSCRuntime();
+    // Keep every JSI wrapper, installed host object, and invoker-owned callback
+    // alive only inside the runtime's lifetime.
+    {
     std::atomic<std::size_t> delivered{0U};
     const auto sink = std::make_shared<Function>(Function::createFromHostFunction(
         *runtime,
@@ -574,6 +577,7 @@ int runAppleNativeProtocolExecutionHarness() {
     invoker->flushOne();
     if (!require(fatalDelivered.load(std::memory_order_relaxed) == 1U, "Apple fatal sink was not invoked exactly once")) return 1;
     return 0;
+    }
   } catch (const std::exception& error) {
     std::cerr << "Apple Native Protocol execution harness failed: " << error.what() << '\n';
     return 1;
