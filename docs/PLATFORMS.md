@@ -8,7 +8,7 @@ This page is an evidence index, not a static compatibility matrix. An applicatio
 
 ## Package stability and backend support are separate
 
-`unified-ble-manager@4.0.7` is the published **stable package/API** for the 4.x contract; it is immutable. Backend support labels remain evidence-derived and independent of this SemVer. Immutable `4.0.0`, `4.0.1`, `4.0.2`, and `4.0.3` remain published history.
+`unified-ble-manager@4.0.8` is the current **stable package/API** for the 4.x contract; it is immutable. Backend support labels remain evidence-derived and independent of this SemVer. Immutable `4.0.0`, `4.0.1`, `4.0.2`, and `4.0.3` remain published history.
 
 This package is the portable API/semantics freeze; it does **not** mean every first-party backend is
 automatically Preview, Supported, or Reliability-qualified.
@@ -34,6 +34,23 @@ Meta Quest and the controllable nRF52840 fault-injection controller remain defer
 The public core consumes the versioned backend contract and uses backend-reported capabilities at runtime. It has no static platform-support matrix, public Base64 BLE payload path, legacy `BlePort`/`PortBleManager` compatibility surface, or production Noble fallback.
 
 Host entrypoints select an explicit concrete backend and surface its typed unavailable, permission, adapter, cancellation, deadline, and lifecycle failures.
+
+## Connected-device background monitoring
+
+The Expo Android host offers an explicit connected-device foreground-service
+lease. It is absent by default, and `restart: 'never'` is the default. A caller
+may update the current notification title/body while holding that lease;
+updates do not start a service or acquire another lease. Android preserves the
+configured notification channel/icon, connected-device foreground-service
+type, ongoing state, and app-launch tap. `while-session-intent-exists` adds
+managed boot and package-replacement recovery, but only starts the service
+when the native UBM session-intent is present. It never scans or reconnects;
+any reconnect policy belongs to the application.
+
+Apple, Web, BlueZ, WinRT, Electron, Tauri, and deterministic backends do not
+claim this Android service capability. They reject the Android-only operation
+truthfully with `capability.unsupported`; no backend silently ignores an
+option or substitutes a supervisor/reconnect loop.
 
 ## Peer directory availability
 

@@ -117,6 +117,32 @@ class BlePlxForegroundServiceLifecycleTest {
   }
 
   @Test
+  fun `notification updates reuse the UBM id and shared builder without changing service semantics`() {
+    val source = readAndroidSource(
+      "android/src/main/java/com/sfourdrinier/unifiedblemanager/BlePlxForegroundService.java"
+    )
+    assertTrue(source.contains("manager.notify(ForegroundServiceNotificationConfiguration.NOTIFICATION_ID"))
+    assertTrue(source.contains("service.buildNotification(service.activeConfiguration)"))
+    assertTrue(source.contains(".setContentIntent(contentIntent)"))
+    assertTrue(source.contains(".setOngoing(true)"))
+    assertTrue(source.contains("FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE"))
+  }
+
+  @Test
+  fun `lifecycle recovery starts only the configured service when native session intent exists`() {
+    val source = readAndroidSource(
+      "android/src/main/java/com/sfourdrinier/unifiedblemanager/background/BlePlxForegroundServiceRecoveryReceiver.java"
+    )
+    assertTrue(source.contains("SESSION_INTENT_PREFERENCE"))
+    assertTrue(source.contains("startForegroundService(start)"))
+    assertTrue(source.contains("ACTION_BOOT_COMPLETED"))
+    assertTrue(source.contains("ACTION_MY_PACKAGE_REPLACED"))
+    assertTrue(!source.contains("BluetoothAdapter"))
+    assertTrue(!source.contains("scan("))
+    assertTrue(!source.contains("reconnect("))
+  }
+
+  @Test
   fun `bond receiver uses the API safe typed parcelable helper on min sdk 24`() {
     val source = readAndroidSource(
       "android/src/main/java/com/sfourdrinier/unifiedblemanager/radio/OwnedAndroidGattRadio.kt"

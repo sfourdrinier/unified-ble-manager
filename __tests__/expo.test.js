@@ -23,9 +23,9 @@ const { createExpoBleManager, createExpoBleManagerWithEnvironment, mapExpoReadin
 const { createReactNativeBleManager, createReactNativeBleManagerWithEnvironment } = require('../src/react-native')
 const { getNativeUnifiedBleExpoRuntime } = require('../src/expo-native-runtime')
 
-function environment(expo, control = {}) {
+function environment(expo, control = {}, platform = 'android') {
   return {
-    platform: 'android',
+    platform,
     control,
     now: () => 1,
     clientId: 'client',
@@ -442,6 +442,78 @@ describe('Expo factory', () => {
 
     expect(control.releaseBackground).toHaveBeenCalledTimes(1)
     expect(control.releaseBackground).toHaveBeenCalledWith({ leaseId: 'background-1' })
+  })
+
+  test('updates the active connected-device notification without acquiring another lease', async () => {
+    const control = {
+      acquireBackground: jest.fn().mockResolvedValue({ leaseId: 'background-1' }),
+      releaseBackground: jest.fn().mockResolvedValue(undefined),
+      updateBackgroundNotification: jest.fn().mockResolvedValue(undefined)
+    }
+    const manager = { adapter: { state: jest.fn().mockResolvedValue(adapterState()) } }
+    createReactNativeBleManagerWithEnvironment.mockResolvedValue(manager)
+
+    const result = await createExpoBleManagerWithEnvironment(
+      environment({ executionEnvironment: 'development-build', nativeModuleAvailable: true }, control)
+    )
+    await expect(result.background.updateNotification({ title: 'Glucose 108', body: 'Private' })).rejects.toMatchObject({
+      constructor: BleError,
+      code: 'capability.unavailable',
+      operation: 'expo.background.update-notification'
+    })
+    const lease = await result.background.acquire({ kind: 'connected-device', reason: 'active workout' })
+    await result.background.updateNotification({ title: 'Glucose 108', body: 'Private' })
+
+    expect(control.acquireBackground).toHaveBeenCalledTimes(1)
+    expect(control.updateBackgroundNotification).toHaveBeenCalledWith({
+      leaseId: 'background-1',
+      title: 'Glucose 108',
+      body: 'Private'
+    })
+    await lease.release()
+  })
+
+  test('rejects unbounded notification text at the public boundary', async () => {
+    const control = {
+      acquireBackground: jest.fn().mockResolvedValue({ leaseId: 'background-1' }),
+      updateBackgroundNotification: jest.fn()
+    }
+    const manager = { adapter: { state: jest.fn().mockResolvedValue(adapterState()) } }
+    createReactNativeBleManagerWithEnvironment.mockResolvedValue(manager)
+    const result = await createExpoBleManagerWithEnvironment(
+      environment({ executionEnvironment: 'development-build', nativeModuleAvailable: true }, control)
+    )
+    await result.background.acquire({ kind: 'connected-device', reason: 'active workout' })
+
+    await expect(result.background.updateNotification({ title: 'x'.repeat(257) })).rejects.toMatchObject({
+      constructor: BleError,
+      code: 'argument.invalid',
+      operation: 'expo.background.update-notification'
+    })
+    expect(control.updateBackgroundNotification).not.toHaveBeenCalled()
+  })
+
+  test('keeps the Android notification update unsupported on Apple', async () => {
+    const control = {
+      acquireBackground: jest.fn().mockResolvedValue({ leaseId: 'apple-lease' }),
+      updateBackgroundNotification: jest.fn().mockRejectedValue(
+        Object.assign(new Error('Connected-device foreground service is Android-only'), {
+          code: 'unsupportedBackground'
+        })
+      )
+    }
+    const manager = { adapter: { state: jest.fn().mockResolvedValue(adapterState()) } }
+    createReactNativeBleManagerWithEnvironment.mockResolvedValue(manager)
+    const result = await createExpoBleManagerWithEnvironment(
+      environment({ executionEnvironment: 'development-build', nativeModuleAvailable: true }, control, 'apple')
+    )
+    await result.background.acquire({ kind: 'connected-device', reason: 'active workout' })
+
+    await expect(result.background.updateNotification({ title: 'Glucose 108' })).rejects.toMatchObject({
+      constructor: BleError,
+      code: 'capability.unsupported',
+      operation: 'expo.background.update-notification'
+    })
   })
 
   test('returns an associated peer-directory record from explicit Android system UI', async () => {

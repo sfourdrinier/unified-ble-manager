@@ -116,6 +116,19 @@ public final class AndroidConnectedDeviceForegroundServiceDriver
     }
   }
 
+  @Override
+  public void update(String title, String body) {
+    try {
+      BlePlxForegroundService.updateNotification(title, body);
+    } catch (RuntimeException error) {
+      if (error instanceof ForegroundServiceControlException) throw error;
+      throw new ForegroundServiceControlException(
+          "foregroundServiceNotificationUpdateFailed",
+          "Android could not update the connected-device foreground-service notification; retry while the lease is active.",
+          error);
+    }
+  }
+
   private ForegroundServiceNotificationConfiguration configuration() {
     try {
       final ApplicationInfo application = context.getPackageManager().getApplicationInfo(

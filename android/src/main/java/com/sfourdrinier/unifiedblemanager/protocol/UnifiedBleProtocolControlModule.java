@@ -144,6 +144,20 @@ public final class UnifiedBleProtocolControlModule extends NativeUnifiedBleProto
   }
 
   @Override
+  public synchronized void updateBackgroundNotification(ReadableMap request, Promise promise) {
+    try {
+      final String leaseId = requiredString(request, "leaseId");
+      final String title = boundedString(request, "title", 256);
+      final String body = optionalNotificationString(request, "body", 256);
+      backgroundLeases.update(leaseId, title, body);
+      promise.resolve(null);
+    } catch (RuntimeException error) {
+      Log.e(TAG, "updateBackgroundNotification failed", error);
+      promise.reject(backgroundErrorCode(error, "nativeBackgroundNotificationUpdate"), error.getMessage(), error);
+    }
+  }
+
+  @Override
   public synchronized void associateCompanionDevice(ReadableMap request, Promise promise) {
     boolean associationStarted = false;
     try {
@@ -676,6 +690,25 @@ public final class UnifiedBleProtocolControlModule extends NativeUnifiedBleProto
   private static String requiredStringValue(String value, String key) {
     if (value == null || value.isEmpty()) {
       throw new IllegalArgumentException("Required native protocol string is missing: " + key);
+    }
+    return value;
+  }
+
+  private static String boundedString(ReadableMap map, String key, int maximumLength) {
+    final String value = requiredString(map, key);
+    if (value.length() > maximumLength) {
+      throw new ForegroundServiceControlException(
+          "invalidBackgroundRequest", "Native background notification field is too long: " + key);
+    }
+    return value;
+  }
+
+  private static String optionalNotificationString(ReadableMap map, String key, int maximumLength) {
+    if (!map.hasKey(key) || map.isNull(key)) return null;
+    final String value = map.getString(key);
+    if (value == null || value.trim().isEmpty() || value.length() > maximumLength) {
+      throw new ForegroundServiceControlException(
+          "invalidBackgroundRequest", "Native background notification field is invalid: " + key);
     }
     return value;
   }

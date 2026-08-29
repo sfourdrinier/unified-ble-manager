@@ -44,6 +44,15 @@ public final class ConnectedDeviceForegroundServiceLeaseRegistry {
     leases.clear();
   }
 
+  public synchronized void update(String leaseId, String title, String body) {
+    if (!leases.contains(leaseId)) {
+      throw new ForegroundServiceControlException(
+          "invalidBackgroundLease",
+          "The connected-device background lease is stale or already released.");
+    }
+    driver.update(title, body);
+  }
+
   public synchronized int activeLeaseCount() {
     return leases.size();
   }
