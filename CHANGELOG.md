@@ -6,6 +6,15 @@ All notable changes to `unified-ble-manager` are documented here.
 
 No changes yet.
 
+## [4.0.9] - 2026-08-29
+
+### Documentation
+
+- Correct the README release-truth note so it no longer describes an already
+  published version as merely being prepared. The wording now stays truthful
+  while a future release branch is ahead of npm and keeps the registry and
+  GitHub release as the publication authorities (#179).
+
 ## [4.0.8] - 2026-08-29
 
 ### Fixes

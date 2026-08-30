@@ -8,8 +8,8 @@ const pkg = JSON.parse(read('package.json'))
 
 describe('PR12 stable 4.0.0 qualification', () => {
   test('package identity is stable 4.0.0 without a prerelease suffix', () => {
-    expect(pkg.version).toBe('4.0.8')
-    expect(UNIFIED_BLE_IMPLEMENTATION_VERSION).toBe('4.0.8')
+    expect(pkg.version).toBe('4.0.9')
+    expect(UNIFIED_BLE_IMPLEMENTATION_VERSION).toBe('4.0.9')
   })
 
   test('consumer docs identify the stable source without inventing publication or backend support', () => {
@@ -25,7 +25,7 @@ describe('PR12 stable 4.0.0 qualification', () => {
     expect(platforms).toContain('backend support labels remain independent')
     expect(changelog).toContain('## [4.0.0]')
     expect(changelog).toContain('## [4.0.7]')
-    expect(changelog).toContain('## [4.0.8]')
+    expect(changelog).toContain('## [4.0.9]')
     expect(changelog).toMatch(/does not promote backend support labels/i)
     expect(support).toContain(`unified-ble-manager@${pkg.version}`)
     expect(support).toContain(
