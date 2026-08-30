@@ -12,15 +12,17 @@ describe('PR12 stable 4.0.0 qualification', () => {
     expect(UNIFIED_BLE_IMPLEMENTATION_VERSION).toBe('4.0.8')
   })
 
-  test('consumer docs publish 4.0.0 without promoting backend support labels', () => {
+  test('consumer docs identify the stable source without inventing publication or backend support', () => {
     const readme = read('README.md')
     const platforms = read('docs/PLATFORMS.md')
     const changelog = read('CHANGELOG.md')
     const support = read('docs/generated/PLATFORM_SUPPORT.md')
 
     expect(readme).toContain(pkg.version)
-    expect(readme).toContain('Package SemVer and backend support labels are independent')
-    expect(platforms).toContain(`\`unified-ble-manager@${pkg.version}\` is the published **stable package/API**`)
+    expect(readme).toContain('Package SemVer and backend support labels are')
+    expect(readme).toContain('independent: each radio backend keeps its evidence-derived label')
+    expect(platforms).toContain('it does not by itself prove npm publication or immutability')
+    expect(platforms).toContain('backend support labels remain independent')
     expect(changelog).toContain('## [4.0.0]')
     expect(changelog).toContain('## [4.0.7]')
     expect(changelog).toContain('## [4.0.8]')
