@@ -215,7 +215,11 @@ Web Bluetooth replaces the scan with `ble.choose(...)` from a user gesture. Taur
 
 Controls report the truth of the instantiated host backend, including
 `supported`, `limited`, `unavailable`, or `unsupported`; host family alone is
-not evidence of support. Readiness is unsupported until the backend advertises
+not evidence of support. `manager.capabilities.supports(id)` answers whether
+the operation is implemented and invocable, so it returns `true` for both
+`supported` and `limited`. Use `manager.capabilities.get(id)` when application
+policy needs to distinguish full qualification from a named limitation.
+Readiness is unsupported until the backend advertises
 the readiness capability, and a readiness event does not prove a later payload
 was retained.
 

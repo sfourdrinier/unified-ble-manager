@@ -117,6 +117,24 @@ class BlePlxForegroundServiceLifecycleTest {
   }
 
   @Test
+  fun `foreground readiness is signalled only after promotion and only to the host app`() {
+    val source = readAndroidSource(
+      "android/src/main/java/com/sfourdrinier/unifiedblemanager/BlePlxForegroundService.java"
+    )
+    val foregroundPromotion = source.indexOf("startForeground(")
+    val readinessSignal = source.indexOf("sendBroadcast(new Intent(ACTION_FOREGROUND_READY)")
+    val startedAcknowledgement = source.indexOf("acknowledge(intent, ACK_STARTED")
+
+    assertTrue(foregroundPromotion >= 0)
+    assertTrue(foregroundPromotion < readinessSignal)
+    assertTrue(readinessSignal < startedAcknowledgement)
+    assertTrue(
+      source.substring(readinessSignal, startedAcknowledgement)
+        .contains(".setPackage(getPackageName())")
+    )
+  }
+
+  @Test
   fun `notification updates reuse the UBM id and shared builder without changing service semantics`() {
     val source = readAndroidSource(
       "android/src/main/java/com/sfourdrinier/unifiedblemanager/BlePlxForegroundService.java"

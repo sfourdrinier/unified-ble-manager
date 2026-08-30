@@ -63,19 +63,11 @@ describe('public BleCapabilities', () => {
     const manager = await createPublicBleManager(internal, () => 0, testManagerHostOptions())
 
     expect(manager.capabilities.supports('gatt:descriptors')).toBe(true)
-    expect(manager.capabilities.supports('gatt:indications')).toBe(false)
+    expect(manager.capabilities.supports('gatt:indications')).toBe(true)
     expect(manager.capabilities.get('gatt:descriptors')).toBe(supported)
     expect(manager.capabilities.get('feature:missing')).toBeUndefined()
     expect(manager.capabilities.list()).toEqual(descriptors)
-    try {
-      manager.capabilities.require('gatt:indications')
-      throw new Error('expected limited capability rejection')
-    } catch (error) {
-      expect(error).toMatchObject({
-        code: 'capability.limited',
-        limitations: limited.limitations
-      })
-    }
+    expect(manager.capabilities.require('gatt:indications')).toBe(limited)
     expect(() => manager.capabilities.require('feature:missing')).toThrow('capability.unsupported')
 
     internal.connect.mockResolvedValue({

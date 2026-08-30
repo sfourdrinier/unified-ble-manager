@@ -280,10 +280,15 @@ int runAppleNativeProtocolExecutionHarness() {
       }
     }
 
-    const auto runtime = facebook::jsc::makeJSCRuntime();
-    // Keep every JSI wrapper, installed host object, and invoker-owned callback
-    // alive only inside the runtime's lifetime.
-    {
+    auto runtime = facebook::jsc::makeJSCRuntime();
+    int harnessResult = 1;
+    // A lambda gives every early failure one teardown path: all JSI wrappers,
+    // installed host objects, invoker-owned callbacks, and autoreleased
+    // Objective-C completion objects die before the JSCRuntime is explicitly
+    // destroyed. Returning directly from this body previously left that order
+    // implicit and JSC found a dangling API object during its destructor.
+    @autoreleasepool {
+    harnessResult = [&]() -> int {
     std::atomic<std::size_t> delivered{0U};
     const auto sink = std::make_shared<Function>(Function::createFromHostFunction(
         *runtime,
@@ -598,7 +603,10 @@ int runAppleNativeProtocolExecutionHarness() {
       runtime->global().deleteProperty(*runtime, "__unifiedBleNativeProtocolV2");
     }
     return 0;
+    }();
     }
+    runtime.reset();
+    return harnessResult;
   } catch (const std::exception& error) {
     std::cerr << "Apple Native Protocol execution harness failed: " << error.what() << '\n';
     return 1;

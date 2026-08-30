@@ -37,6 +37,13 @@ if (savedReference != null) {
 }
 ```
 
+The Android operations currently carry deterministic evidence and therefore
+report `state: 'limited'` until separate physical-radio qualification is
+retained. They are still implemented and invocable, so
+`manager.capabilities.supports('connection:when-available')` returns `true`.
+Inspect `manager.capabilities.get(...)` when the distinction between
+`supported` and `limited` affects product policy.
+
 Permission failures are reported as `permission.denied`; they are not converted into an empty list. Android, Apple React Native, CoreBluetooth, BlueZ, WinRT, Web Bluetooth, Electron, and Tauri only advertise peer categories backed by their current native boundary. In particular, Web origin-authorized devices are not Android-style bonded peers, and unsupported categories fail with `capability.unsupported` rather than returning fabricated data.
 
 `ScanClause.peers` is an additive scan predicate. It matches only observations carrying a trusted reference with the exact same backend, scope, and opaque identity. The matcher never derives a persisted reference from an address or an untrusted public ID.

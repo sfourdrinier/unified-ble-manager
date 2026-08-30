@@ -33,6 +33,11 @@ Meta Quest and the controllable nRF52840 fault-injection controller remain defer
 
 The public core consumes the versioned backend contract and uses backend-reported capabilities at runtime. It has no static platform-support matrix, public Base64 BLE payload path, legacy `BlePort`/`PortBleManager` compatibility surface, or production Noble fallback.
 
+`manager.capabilities.supports(id)` means the selected backend implements an
+invocable operation; both `supported` and `limited` descriptors satisfy it.
+The descriptor returned by `get(id)` preserves evidence and limitations so an
+application can require a fully qualified `supported` state when needed.
+
 Host entrypoints select an explicit concrete backend and surface its typed unavailable, permission, adapter, cancellation, deadline, and lifecycle failures.
 
 ## Connected-device background monitoring
@@ -45,7 +50,11 @@ configured notification channel/icon, connected-device foreground-service
 type, ongoing state, and app-launch tap. `while-session-intent-exists` adds
 managed boot and package-replacement recovery, but only starts the service
 when the native UBM session-intent is present. It never scans or reconnects;
-any reconnect policy belongs to the application.
+any reconnect policy belongs to the application. After Android has promoted
+the recovered service, UBM sends the package-scoped
+`com.sfourdrinier.unifiedblemanager.background.FOREGROUND_READY` broadcast.
+An app that owns a headless runtime may receive that signal and start its own
+work without racing Android's background-service restrictions.
 
 Apple, Web, BlueZ, WinRT, Electron, Tauri, and deterministic backends do not
 claim this Android service capability. They reject the Android-only operation

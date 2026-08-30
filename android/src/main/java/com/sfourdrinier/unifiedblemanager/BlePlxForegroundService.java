@@ -27,6 +27,8 @@ import java.util.Map;
 /** Explicit connected-device foreground lease. It performs no scan or reconnect work. */
 public final class BlePlxForegroundService extends Service {
   public static final String ACTION_START = "com.sfourdrinier.unifiedblemanager.background.START";
+  public static final String ACTION_FOREGROUND_READY =
+      "com.sfourdrinier.unifiedblemanager.background.FOREGROUND_READY";
   public static final String EXTRA_ACK = "backgroundStartAcknowledgement";
   public static final int ACK_STARTED = 1;
   public static final int ACK_FAILED = 2;
@@ -95,6 +97,7 @@ public final class BlePlxForegroundService extends Service {
       } else {
         startForeground(ForegroundServiceNotificationConfiguration.NOTIFICATION_ID, notification);
       }
+      sendBroadcast(new Intent(ACTION_FOREGROUND_READY).setPackage(getPackageName()));
       acknowledge(intent, ACK_STARTED, null);
       return configuration.restartWhileSessionIntentExists() ? START_STICKY : START_NOT_STICKY;
     } catch (RuntimeException error) {

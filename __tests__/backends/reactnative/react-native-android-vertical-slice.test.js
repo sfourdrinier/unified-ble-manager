@@ -127,6 +127,9 @@ describe('React Native Android canonical protocol vertical slice', () => {
         BUILT_IN_FEATURE_IDS.connectionWhenAvailable
       ])
     )
+    expect(fixture.manager.capabilities.supports(BUILT_IN_FEATURE_IDS.peerBonded)).toBe(true)
+    expect(fixture.manager.capabilities.supports(BUILT_IN_FEATURE_IDS.peerResolveReference)).toBe(true)
+    expect(fixture.manager.capabilities.supports(BUILT_IN_FEATURE_IDS.connectionWhenAvailable)).toBe(true)
     await expect(fixture.manager.peers.resolve(peers[0].reference)).resolves.toMatchObject({ id: peers[0].id })
     fixture.runtime.bondedPeers = []
     await expect(fixture.manager.peers.resolve(peers[0].reference)).resolves.toBeNull()
