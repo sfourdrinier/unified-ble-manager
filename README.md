@@ -12,6 +12,9 @@ root import does not pick a radio. Package SemVer and backend support labels are
 independent: each radio backend keeps its evidence-derived label. See
 [`docs/PLATFORMS.md`](docs/PLATFORMS.md).
 
+This source tree is preparing `4.0.8`; that version is installable only after it
+appears in the npm registry.
+
 > **4.0 development note:** The 4.0 line is the real-application proving ground
 > for a simpler, stronger 4.1. Develop carefully against it: pin the version you
 > validate, read the changelog when upgrading, inspect capability limitations,

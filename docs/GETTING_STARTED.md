@@ -38,11 +38,11 @@ request runtime permissions on Android 12+, add
 #### Expo / CNG v2
 
 The Expo v2 schema and `unified-ble-manager/expo` factory are in this source.
-Install the published package and keep the exact version your application
-validates in its lockfile:
+After the npm registry lists `4.0.8`, install that exact version and keep it in
+your lockfile while validating the native build:
 
 ```sh
-pnpm add unified-ble-manager
+pnpm add unified-ble-manager@4.0.8
 ```
 
 The package does not run in Expo Go.
