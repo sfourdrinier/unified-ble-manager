@@ -6,7 +6,7 @@ All notable changes to `unified-ble-manager` are documented here.
 
 No changes yet.
 
-## [4.0.10] - 2026-08-29
+## [4.0.10] - 2026-08-30
 
 ### Fixes
 
