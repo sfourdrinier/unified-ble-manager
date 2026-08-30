@@ -394,18 +394,18 @@ int runAppleNativeProtocolExecutionHarness() {
           if (code != nullptr && *code == "unsupportedCommand") enumerateUnsupported.fetch_add(1U, std::memory_order_relaxed);
           const auto* correlation = terminal == nullptr ? nullptr : harnessRecordField(*terminal, 1U);
           const auto* nonce = correlation == nullptr ? nullptr : harnessStringField(*correlation, 3U);
-          if (nonce != nullptr && *nonce == "apple-enumerate-bonded-operation-3") {
+          if (nonce != nullptr && *nonce == "apple-enumerate-bonded-operation-1") {
             enumerateCorrelated.fetch_add(1U, std::memory_order_relaxed);
           }
           return Value::undefined();
         }));
     const auto enumerateState = std::make_shared<AppleNativeProtocolExecution::State>(enumerateControl, nullptr);
     initializeAttachment(enumerateState, enumerateInvoker, enumerateSink);
-    const auto enumerateCommand = enumerateBondedPeersCommand(3U);
+    const auto enumerateCommand = enumerateBondedPeersCommand(1U);
     enumerateControl->registerCommand(enumerateCommand, true);
     dispatchCommand(enumerateState, enumerateCommand);
     if (!require(
-            enumerateControl->commandFor(3U, "apple-enumerate-bonded-operation-3").has_value(),
+            enumerateControl->commandFor(1U, "apple-enumerate-bonded-operation-1").has_value(),
             "Apple enumerateBondedPeers command was not retained before terminal delivery")) return 1;
     if (!require(enumerateInvoker->pending() == 1U, "Apple enumerateBondedPeers scheduled an unexpected number of drains")) return 1;
     enumerateInvoker->flushOne();
@@ -415,7 +415,7 @@ int runAppleNativeProtocolExecutionHarness() {
     if (!require(enumerateUnsupported.load(std::memory_order_relaxed) == 1U, "Apple enumerateBondedPeers did not report unsupportedCommand")) return 1;
     if (!require(enumerateCorrelated.load(std::memory_order_relaxed) == 1U, "Apple enumerateBondedPeers failure was not correlated")) return 1;
     if (!require(
-            !enumerateControl->commandFor(3U, "apple-enumerate-bonded-operation-3").has_value(),
+            !enumerateControl->commandFor(1U, "apple-enumerate-bonded-operation-1").has_value(),
             "Apple enumerateBondedPeers terminal did not settle the operation")) return 1;
     enumerateState->closed.store(true, std::memory_order_release);
 
