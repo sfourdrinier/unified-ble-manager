@@ -4,7 +4,7 @@
 
 Use `unified-ble-manager/web` in a secure context (HTTPS or localhost) from a user gesture. There is no background scan and no process-level restoration.
 
-The current package is `4.0.7`. The backend is Experimental until artifact-bound physical-hardware validation says otherwise. See [`PLATFORMS.md`](PLATFORMS.md).
+The current package is `4.0.8`. The backend is Experimental until artifact-bound physical-hardware validation says otherwise. See [`PLATFORMS.md`](PLATFORMS.md).
 
 ## Create the manager
 

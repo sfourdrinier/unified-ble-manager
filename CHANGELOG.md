@@ -4,7 +4,13 @@ All notable changes to `unified-ble-manager` are documented here.
 
 ## [Unreleased]
 
+No changes yet.
+
+## [4.0.8] - 2026-08-29
+
 ### Fixes
+
+- **Apple runtime shutdown no longer retains a closed JavaScript attachment through its invoker.** Closing the native protocol now moves the `CallInvoker` out of shared state before scheduling runtime-thread sink cleanup, breaking the state/invoker/callback ownership cycle. iOS, macOS, and tvOS keep the same public behavior while clean teardown no longer leaves JSI functions alive past their runtime.
 
 - **Public capability checks no longer hide implemented operations whose evidence is limited.** `manager.capabilities.supports(id)` and `require(id)` now agree with the core manager: both `supported` and invocable `limited` descriptors are usable, while `unavailable`, `unsupported`, and missing capabilities still fail closed. Callers that need full qualification can inspect `manager.capabilities.get(id).state` and its retained limitations. This fixes Android callers incorrectly discarding the bonded `when-available` reconnect path merely because its physical-radio evidence is still labelled `limited` (#177, PR #170).
 

@@ -2099,6 +2099,7 @@ void AppleNativeProtocolExecution::close() {
   const auto state = state_;
   if (!state || state->closed.exchange(true, std::memory_order_acq_rel)) return;
   auto sinksToRelease = std::make_shared<std::vector<std::shared_ptr<jsi::Function>>>();
+  std::shared_ptr<facebook::react::CallInvoker> invoker;
   {
     std::scoped_lock lock(state->mutex);
     state->attachmentActive = false;
@@ -2126,8 +2127,11 @@ void AppleNativeProtocolExecution::close() {
     sinksToRelease->swap(state->sinksAwaitingJavaScriptRelease);
     if (state->eventSink) sinksToRelease->push_back(std::move(state->eventSink));
     if (state->fatalSink) sinksToRelease->push_back(std::move(state->fatalSink));
+    // A queued cleanup callback captures state. Moving the invoker out while
+    // holding the same lock prevents state -> invoker -> callback -> state
+    // from retaining JSI functions past runtime teardown.
+    invoker = std::move(state->callInvoker);
   }
-  const auto invoker = state->callInvoker;
   const auto retainUnreachableSinks = [&]() {
     std::scoped_lock lock(state->mutex);
     state->sinksAwaitingJavaScriptRelease.insert(

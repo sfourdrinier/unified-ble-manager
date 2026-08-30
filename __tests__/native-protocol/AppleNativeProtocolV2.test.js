@@ -335,6 +335,7 @@ describe('Apple Native Protocol v2 radio boundary', () => {
     expect(execution).toContain('Apple execution close runtime-thread sink cleanup scheduling')
     expect(execution).toContain('state->sinksAwaitingJavaScriptRelease.insert(')
     expect(execution).toContain('state->sinksAwaitingJavaScriptRelease.push_back')
+    expect(execution).toContain('invoker = std::move(state->callInvoker)')
     expect(state).toContain('sinksAwaitingJavaScriptRelease')
   })
 

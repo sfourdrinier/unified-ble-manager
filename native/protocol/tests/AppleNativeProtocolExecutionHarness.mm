@@ -590,6 +590,12 @@ int runAppleNativeProtocolExecutionHarness() {
     if (!require(invoker->pending() == 1U, "Apple fatal path did not schedule exactly one JavaScript fatal callback")) return 1;
     invoker->flushOne();
     if (!require(fatalDelivered.load(std::memory_order_relaxed) == 1U, "Apple fatal sink was not invoked exactly once")) return 1;
+    if (!require(
+            invoker->pending() == 0U &&
+            enumerateInvoker->pending() == 0U &&
+            immediateDisconnectInvoker->pending() == 0U &&
+            failedConnectInvoker->pending() == 0U,
+            "Apple harness retained a CallInvoker callback before runtime teardown")) return 1;
 
     // Direct-State seams intentionally bypass AppleNativeProtocolExecution::close().
     // Release their JSI functions while the runtime is still alive, and remove
