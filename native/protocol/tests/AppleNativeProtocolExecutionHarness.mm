@@ -44,6 +44,7 @@
 
 #include <ReactCommon/CallInvoker.h>
 #include <jsc/JSCRuntime.h>
+#include <jsi/instrumentation.h>
 
 #include <atomic>
 #include <barrier>
