@@ -4,12 +4,12 @@
   "schemaVersion": "1.0.0",
   "package": {
     "name": "unified-ble-manager",
-    "version": "4.0.9"
+    "version": "4.0.10"
   },
   "source": {
     "method": "pnpm-lock production graph with installed-manifest license audit",
     "lockfile": "pnpm-lock.yaml",
-    "lockfileSha256": "5fb778bd200cb93f552ec61264d53829dca5bdd27623ccc692d4d9bcbf9ec296"
+    "lockfileSha256": "38ee8dcc8420316a625d4572ab163111ac9aef51065626ce8a747298b85819dd"
   },
   "reviewedOverrides": [
     {
@@ -40,13 +40,6 @@
       "license": "ISC",
       "licenseSource": "package-metadata",
       "purl": "pkg:npm/%40isaacs/fs-minipass@4.0.1"
-    },
-    {
-      "name": "@tauri-apps/api",
-      "version": "2.11.1",
-      "license": "Apache-2.0 OR MIT",
-      "licenseSource": "package-metadata",
-      "purl": "pkg:npm/%40tauri-apps/api@2.11.1"
     },
     {
       "name": "abbrev",

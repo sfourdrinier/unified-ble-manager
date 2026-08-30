@@ -1,11 +1,13 @@
 // __tests__/backends/corebluetooth/corebluetooth-lifecycle-quarantine.test.js
 
 const { attachBackend } = require('../../../src/backend-contract/backend')
+const { contractError } = require('../../../src/backend-contract/errors')
 const { awaitSignal } = require('../../helpers/async')
 const { capacity, opaqueId, version, versionRange } = require('../../../src/backend-contract/primitives')
 const { createBleManagerFromProvider, DEFAULT_BLE_MANAGER_OPTIONS } = require('../../../src/manager/ble-manager')
 const { createCoreBluetoothBackendProvider } = require('../../../src/backends/corebluetooth/corebluetooth-provider')
 const { COREBLUETOOTH_PLATFORM_ID } = require('../../../src/backends/corebluetooth/corebluetooth-identity')
+const { cleanupFailureDetail } = require('../../../src/backends/corebluetooth/corebluetooth-handles')
 const {
   InMemoryCoreBluetoothBoundary
 } = require('../../../test-support/corebluetooth/in-memory-corebluetooth-boundary')
@@ -126,6 +128,32 @@ async function flushAdapterLossCleanup() {
 }
 
 describe('CoreBluetooth late-operation quarantine', () => {
+  test.each([
+    ['Android', 'android-gatt', '133'],
+    ['Apple', 'CBErrorDomain', '6']
+  ])('preserves the %s native platform identity when normalizing cleanup failure', (_name, domain, code) => {
+    const nativeFailure = contractError('platform.failure', 'platform', 'native-boundary.unsubscribe', {
+      domain,
+      code,
+      safeMessage: 'native cleanup failed',
+      metadata: Object.freeze({ generation: 4 })
+    })
+
+    expect(cleanupFailureDetail('subscription', 'direct-gatt.gatt.stop-notify', nativeFailure)).toEqual({
+      resourceKind: 'subscription',
+      error: expect.objectContaining({
+        code: 'platform.failure',
+        domain: 'cleanup',
+        operation: 'direct-gatt.gatt.stop-notify',
+        platform: {
+          domain,
+          code,
+          safeMessage: 'native cleanup failed',
+          metadata: { generation: 4 }
+        }
+      })
+    })
+  })
   test('bounds a never-settling stopNotify and retains the original cleanup for retry', async () => {
     jest.useFakeTimers()
     const stopGate = deferred()

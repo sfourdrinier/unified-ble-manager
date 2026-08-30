@@ -14,9 +14,6 @@ importers:
       '@babel/runtime':
         specifier: ^7.29.7
         version: 7.29.7
-      '@tauri-apps/api':
-        specifier: ^2.0.0
-        version: 2.11.1
     devDependencies:
       '@babel/cli':
         specifier: ^7.25.9
@@ -60,6 +57,9 @@ importers:
       '@release-it/conventional-changelog':
         specifier: ^11.0.1
         version: 11.0.1(conventional-commits-filter@5.0.0)(conventional-commits-parser@6.4.0)(release-it@20.2.1(@types/node@24.13.3))
+      '@tauri-apps/api':
+        specifier: 2.11.1
+        version: 2.11.1
       '@types/jest':
         specifier: ^29.5.5
         version: 29.5.14

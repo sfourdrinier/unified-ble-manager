@@ -6,6 +6,18 @@ All notable changes to `unified-ble-manager` are documented here.
 
 No changes yet.
 
+## [4.0.10] - 2026-08-29
+
+### Fixes
+
+- Preserve the originating native platform details when a shared direct-GATT
+  cleanup failure is normalized. React Native Android adapter-loss diagnostics
+  now retain their Android domain and code instead of being mislabeled as
+  CoreBluetooth; Apple retains its CoreBluetooth domain, and host-neutral
+  cleanup records keep the same public operation and retry-ownership contract.
+- Build the complete package during `prepare`, so an explicitly pinned Git
+  release branch exposes the same public entrypoints as the packed artifact.
+
 ## [4.0.9] - 2026-08-29
 
 ### Documentation
