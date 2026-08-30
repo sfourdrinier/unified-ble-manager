@@ -19,7 +19,7 @@
     "properties": [
       {
         "name": "unified-ble-manager:pnpm-lock-sha256",
-        "value": "5fb778bd200cb93f552ec61264d53829dca5bdd27623ccc692d4d9bcbf9ec296"
+        "value": "38ee8dcc8420316a625d4572ab163111ac9aef51065626ce8a747298b85819dd"
       },
       {
         "name": "unified-ble-manager:dependency-scope",
@@ -59,25 +59,6 @@
         }
       ],
       "purl": "pkg:npm/%40isaacs/fs-minipass@4.0.1",
-      "properties": [
-        {
-          "name": "unified-ble-manager:license-source",
-          "value": "package-metadata"
-        }
-      ]
-    },
-    {
-      "type": "library",
-      "bom-ref": "pkg:npm/%40tauri-apps/api@2.11.1",
-      "group": "@tauri-apps",
-      "name": "api",
-      "version": "2.11.1",
-      "licenses": [
-        {
-          "expression": "Apache-2.0 OR MIT"
-        }
-      ],
-      "purl": "pkg:npm/%40tauri-apps/api@2.11.1",
       "properties": [
         {
           "name": "unified-ble-manager:license-source",
@@ -458,10 +439,6 @@
       ]
     },
     {
-      "ref": "pkg:npm/%40tauri-apps/api@2.11.1",
-      "dependsOn": []
-    },
-    {
       "ref": "pkg:npm/abbrev@4.0.0",
       "dependsOn": []
     },
@@ -563,7 +540,6 @@
       "ref": "pkg:npm/unified-ble-manager@4.0.10",
       "dependsOn": [
         "pkg:npm/%40babel/runtime@7.29.7",
-        "pkg:npm/%40tauri-apps/api@2.11.1",
         "pkg:npm/node-addon-api@8.9.0",
         "pkg:npm/node-gyp@12.4.0"
       ]
