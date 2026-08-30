@@ -216,6 +216,7 @@ protocol::ProtocolRecord connectCommand(
                   harnessField(5U, connectionGeneration),
               },
           })),
+          harnessField(20U, std::string("direct")),
       },
   };
 }
