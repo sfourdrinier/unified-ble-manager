@@ -8,6 +8,14 @@ const read = relativePath =>
   fs.readFileSync(path.join(root, relativePath), 'utf8').replace(/\r\n/g, '\n')
 
 describe('release retry safety', () => {
+  test('allows bounded npm processing delays for metadata and provenance', () => {
+    const workflow = read('.github/workflows/publish.yml')
+
+    expect(workflow.match(/for ATTEMPT in \$\(seq 1 120\)/g)).toHaveLength(3)
+    expect(workflow).not.toContain('for ATTEMPT in $(seq 1 36)')
+    expect(workflow.match(/attempt \$\{ATTEMPT\}\/120/g)).toHaveLength(3)
+  })
+
   test('published reruns bypass current-main publication admission and reuse immutable npm bytes', () => {
     const workflow = read('.github/workflows/publish.yml')
     const npmStatus = workflow.indexOf('- name: Check whether versions are already on npm')

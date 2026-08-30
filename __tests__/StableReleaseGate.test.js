@@ -302,7 +302,7 @@ describe('stable release evidence gate', () => {
     expect(workflow).toContain('Verify release tag points at current main')
     expect(workflow).toContain('npm publish "${PUBLISH_TARBALL}" --provenance --access public --tag "${NPM_DIST_TAG}"')
     expect(workflow).toContain('npm view "unified-ble-manager@${VER}" dist.tarball --json')
-    expect(workflow).toContain('for ATTEMPT in $(seq 1 36)')
+    expect(workflow).toContain('for ATTEMPT in $(seq 1 120)')
     expect(workflow).toContain('npm registry metadata did not become visible within the bounded retry window')
     expect(workflow).toContain('Registry tarball SHA-256 does not match the exact generated publish tarball')
     expect(workflow).toContain("curl --fail --location --silent --show-error --proto '=https'")
