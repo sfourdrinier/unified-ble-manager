@@ -1,5 +1,7 @@
 // test-support/corebluetooth/in-memory-corebluetooth-boundary.js
 
+const { contractError } = require('../../src/backend-contract/errors')
+
 class InMemoryCoreBluetoothBoundary {
   constructor({ serviceUuid, characteristicUuid, descriptorUuid = '00002902-0000-1000-8000-00805f9b34fb' }) {
     this.serviceUuid = serviceUuid
@@ -66,7 +68,14 @@ class InMemoryCoreBluetoothBoundary {
     }
   }
 
-  async connect(nativePeerId) {
+  async connect(nativePeerId, intent = 'direct') {
+    if (intent !== 'direct') {
+      throw contractError(
+        'capability.unsupported',
+        'connection',
+        'in-memory-corebluetooth-boundary.connect.when-available'
+      )
+    }
     if (nativePeerId !== 'native-polar-h10') {
       throw new Error('Unknown deterministic CoreBluetooth peer')
     }

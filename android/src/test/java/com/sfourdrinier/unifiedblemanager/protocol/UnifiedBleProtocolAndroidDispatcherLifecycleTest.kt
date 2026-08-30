@@ -8,8 +8,12 @@ import com.sfourdrinier.unifiedblemanager.radio.resolveUuidOccurrence
 import com.sfourdrinier.unifiedblemanager.radio.OwnedAndroidGattRadio
 import com.sfourdrinier.unifiedblemanager.radio.OwnedAndroidGattRadio.GattSerialQueue
 import com.sfourdrinier.unifiedblemanager.radio.OwnedAndroidSubscriptionOwnership
+import com.sfourdrinier.unifiedblemanager.radio.BondedPeerSnapshot
+import com.sfourdrinier.unifiedblemanager.radio.normalizeBondedPeerSnapshots
+import com.sfourdrinier.unifiedblemanager.radio.bondedPeerAdapterReadiness
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertArrayEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -17,10 +21,249 @@ import java.io.File
 import java.nio.file.Files
 import java.util.UUID
 import java.util.ArrayDeque
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.atomic.AtomicInteger
+import kotlin.concurrent.thread
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.le.ScanSettings
 
 class UnifiedBleProtocolAndroidDispatcherLifecycleTest {
+  @Test
+  fun bondedPeerAdapterReadinessReturnsTypedFailuresInsteadOfAnEmptySuccess() {
+    assertTrue(
+      bondedPeerAdapterReadiness(
+        adapterAvailable = false,
+        connectPermissionGranted = true,
+        adapterState = BluetoothDevice.ERROR
+      ).isFailure
+    )
+    assertTrue(
+      bondedPeerAdapterReadiness(
+        adapterAvailable = true,
+        connectPermissionGranted = false,
+        adapterState = android.bluetooth.BluetoothAdapter.STATE_ON
+      ).exceptionOrNull() is SecurityException
+    )
+    assertTrue(
+      bondedPeerAdapterReadiness(
+        adapterAvailable = true,
+        connectPermissionGranted = true,
+        adapterState = android.bluetooth.BluetoothAdapter.STATE_OFF
+      ).isFailure
+    )
+    assertTrue(
+      bondedPeerAdapterReadiness(
+        adapterAvailable = true,
+        connectPermissionGranted = true,
+        adapterState = android.bluetooth.BluetoothAdapter.STATE_TURNING_ON
+      ).isFailure
+    )
+    assertTrue(
+      bondedPeerAdapterReadiness(
+        adapterAvailable = true,
+        connectPermissionGranted = true,
+        adapterState = android.bluetooth.BluetoothAdapter.STATE_ON
+      ).isSuccess
+    )
+  }
+
+  @Test
+  fun emptyBondedPeerResultCarriesItsCorrelationAndAnEmptyField23List() {
+    val correlation = ProtocolWireRecord(
+      RecordKind.OPERATION_CORRELATION,
+      mapOf(
+        1 to ProtocolWireValue.RecordValue(
+          ProtocolWireRecord(RecordKind.ATTACHMENT, emptyMap())
+        ),
+        2 to ProtocolWireValue.UnsignedIntegerValue(41L),
+        3 to ProtocolWireValue.StringValue("enumerate-empty")
+      )
+    )
+
+    val result = bondedPeerResultRecord(correlation, emptyList())
+    assertEquals(RecordKind.RESULT, result.kind)
+    assertEquals(ProtocolWireValue.StringValue("bondedPeers"), result.fields[2])
+    val terminal = result.fields[3]
+    if (terminal !is ProtocolWireValue.RecordValue) {
+      throw AssertionError("Bonded peer result is missing its terminal")
+    }
+    assertEquals(
+      ProtocolWireValue.RecordValue(correlation),
+      terminal.value.fields[1]
+    )
+    assertEquals(
+      ProtocolWireValue.RecordListValue(emptyList()),
+      result.fields[23]
+    )
+  }
+
+  @Test
+  fun concurrentBondedPeerSettlementsRemoveOnlyTheirExactPendingCommand() {
+    val first = ProtocolWireRecord(RecordKind.COMMAND, emptyMap())
+    val second = ProtocolWireRecord(RecordKind.COMMAND, emptyMap())
+    val pending = ConcurrentHashMap(mapOf("first" to first, "second" to second))
+
+    assertTrue(claimExactPendingCommand(pending, "first", first))
+    assertEquals(second, pending["second"])
+    val lateFirst = ProtocolWireRecord(RecordKind.COMMAND, emptyMap())
+    assertTrue(!claimExactPendingCommand(pending, "second", lateFirst))
+    assertEquals(second, pending["second"])
+    assertTrue(!claimExactPendingCommand(pending, "first", first))
+    assertTrue(claimExactPendingCommand(pending, "second", second))
+    assertTrue(pending.isEmpty())
+  }
+
+  @Test
+  fun concurrentBondedSuccessCancellationAndTeardownCanClaimOnlyOneTerminal() {
+    val command = ProtocolWireRecord(RecordKind.COMMAND, emptyMap())
+    val pending = ConcurrentHashMap(mapOf("bonded" to command))
+    val ready = CountDownLatch(3)
+    val start = CountDownLatch(1)
+    val finished = CountDownLatch(3)
+    val claims = AtomicInteger(0)
+
+    repeat(3) {
+      thread {
+        ready.countDown()
+        start.await()
+        if (claimExactPendingCommand(pending, "bonded", command)) claims.incrementAndGet()
+        finished.countDown()
+      }
+    }
+    assertTrue(ready.await(5, java.util.concurrent.TimeUnit.SECONDS))
+    start.countDown()
+    assertTrue(finished.await(5, java.util.concurrent.TimeUnit.SECONDS))
+    assertEquals(1, claims.get())
+    assertTrue(pending.isEmpty())
+  }
+
+  @Test
+  fun bondedPeerSnapshotsAreDeterministicAndDeduplicated() {
+    assertEquals(
+      listOf(
+        BondedPeerSnapshot("AA:BB", "Alpha"),
+        BondedPeerSnapshot("CC:DD", null)
+      ),
+      normalizeBondedPeerSnapshots(
+        listOf(
+          BondedPeerSnapshot(" cc:dd ", ""),
+          BondedPeerSnapshot("aa:bb", "Zulu"),
+          BondedPeerSnapshot("AA:BB", "Alpha"),
+          BondedPeerSnapshot("CC:DD", null)
+        )
+      )
+    )
+    val records = bondedPeerSnapshotRecords(
+      listOf(BondedPeerSnapshot("AA:BB", "Alpha"), BondedPeerSnapshot("CC:DD", null))
+    )
+    assertEquals(2, records.size)
+    assertEquals(ProtocolWireValue.StringValue("AA:BB"), records.first().fields[1])
+    assertEquals(ProtocolWireValue.StringValue("Alpha"), records.first().fields[2])
+    assertEquals(ProtocolWireValue.StringValue("CC:DD"), records.last().fields[1])
+    assertTrue(!records.last().fields.containsKey(2))
+  }
+
+  @Test
+  fun bondedPeerSnapshotOfAccessibleAdapterCanBeEmpty() {
+    assertEquals(emptyList<BondedPeerSnapshot>(), normalizeBondedPeerSnapshots(emptyList()))
+  }
+
+  @Test
+  fun bondedPeerEnumerationDoesNotAcquireConnectionOrScanOwnership() {
+    val dispatcher = readAndroidSource(
+      "android/src/main/java/com/sfourdrinier/unifiedblemanager/protocol/UnifiedBleProtocolAndroidDispatcher.kt"
+    )
+    val enumeration = dispatcher.substring(
+      dispatcher.indexOf("private fun enumerateBondedPeers"),
+      dispatcher.indexOf("private fun emitSuccess")
+    )
+
+    assertTrue(enumeration.contains("bondedPeerSnapshots"))
+    assertTrue(enumeration.contains("RecordListValue"))
+    assertFalse(enumeration.contains("pendingConnects"))
+    assertFalse(enumeration.contains("establishedConnections"))
+    assertFalse(enumeration.contains("activeScanCommand"))
+    assertFalse(enumeration.contains("connectionPath"))
+    assertFalse(enumeration.contains("lease"))
+    assertFalse(enumeration.contains("registerBondStateReceiver"))
+    assertFalse(enumeration.contains("registerAdapterStateReceiver"))
+    assertFalse(enumeration.contains("connectGatt"))
+  }
+
+  @Test
+  fun bondedPeerEnumerationFailsClosedForPermissionAndUnavailableAdapterStates() {
+    val radio = readAndroidSource(
+      "android/src/main/java/com/sfourdrinier/unifiedblemanager/radio/OwnedAndroidGattRadio.kt"
+    )
+    val enumeration = radio.substring(
+      radio.indexOf("internal fun bondedPeerSnapshots"),
+      radio.indexOf("/**\n   * Register [BluetoothAdapter.ACTION_STATE_CHANGED]")
+    )
+
+    assertTrue(enumeration.contains("hasBluetoothConnectPermission()"))
+    assertFalse(enumeration.contains("emptyList"))
+    assertTrue(radio.contains("Result.failure(SecurityException"))
+    assertTrue(radio.contains("BluetoothAdapter.STATE_OFF"))
+    assertTrue(radio.contains("BluetoothAdapter.STATE_TURNING_ON"))
+    assertTrue(radio.contains("Bluetooth adapter is resetting"))
+  }
+
+  @Test
+  fun bondedPeerTerminalUsesTheCommandCorrelationAndExactPendingRemoval() {
+    val dispatcher = readAndroidSource(
+      "android/src/main/java/com/sfourdrinier/unifiedblemanager/protocol/UnifiedBleProtocolAndroidDispatcher.kt"
+    )
+    val enumeration = dispatcher.substring(
+      dispatcher.indexOf("private fun enumerateBondedPeers"),
+      dispatcher.indexOf("private fun emitSuccess")
+    )
+    val success = dispatcher.substring(
+      dispatcher.indexOf("private fun emitSuccess"),
+      dispatcher.indexOf("private fun emitFailure")
+    )
+
+    assertTrue(enumeration.contains("emitSuccess(\n      command,\n      \"bondedPeers\""))
+    assertTrue(success.contains("if (!isPending(command)) return"))
+    assertTrue(success.contains("claimExactPendingCommand(pendingCommands, operationKey(command), command)"))
+    assertTrue(dispatcher.contains("\"enumerateBondedPeers\" -> \"bondedPeers\""))
+    val cancellation = dispatcher.substring(
+      dispatcher.indexOf("private fun emitCancelled"),
+      dispatcher.indexOf("private fun emitCancellationAcknowledgement")
+    )
+    assertTrue(cancellation.contains("claimExactPendingCommand(pendingCommands, operationKey(command), command)"))
+    val failure = dispatcher.substring(
+      dispatcher.indexOf("private fun emitFailure"),
+      dispatcher.indexOf("private fun emitCancelled")
+    )
+    assertTrue(failure.contains("bondedPeerCommand"))
+    assertTrue(
+      failure.indexOf("claimExactPendingCommand") <
+        failure.indexOf("UnifiedBleProtocolJsiBinding.emitRecord")
+    )
+    assertTrue(dispatcher.contains("pendingBeforeDestroy = pendingCommands.values"))
+    assertTrue(
+      success.indexOf("claimExactPendingCommand") <
+        success.indexOf("UnifiedBleProtocolJsiBinding.emitRecord")
+    )
+  }
+
+  @Test
+  fun bondedPeerSnapshotBridgeHasAnOwnedRadioAndDispatcherRoute() {
+    val radio = readAndroidSource(
+      "android/src/main/java/com/sfourdrinier/unifiedblemanager/radio/OwnedAndroidGattRadio.kt"
+    )
+    val dispatcher = readAndroidSource(
+      "android/src/main/java/com/sfourdrinier/unifiedblemanager/protocol/UnifiedBleProtocolAndroidDispatcher.kt"
+    )
+
+    assertTrue(radio.contains("data class BondedPeerSnapshot"))
+    assertTrue(radio.contains("getBondedDevices()"))
+    assertTrue(radio.contains("Manifest.permission.BLUETOOTH_CONNECT"))
+    assertTrue(dispatcher.contains("enumerateBondedPeers"))
+    assertEquals("bondedPeers", dispatcherResultKindFor("enumerateBondedPeers"))
+  }
+
   @Test
   fun hostedAndroidCompileSeamsStayTypedUnambiguousAndAutoConnectPreserving() {
     val dispatcher = readAndroidSource(
@@ -68,6 +311,19 @@ class UnifiedBleProtocolAndroidDispatcherLifecycleTest {
     assertTrue(dispatcher.contains("radio.onServicesChanged = { deviceId ->"))
     assertTrue(dispatcher.contains("activeDatabases"))
     assertTrue(dispatcher.contains("databaseChangedEvent"))
+  }
+
+  @Test
+  fun connectDecodesAbi6IntentWithoutAnImplicitStringDefault() {
+    val dispatcher = readAndroidSource(
+      "android/src/main/java/com/sfourdrinier/unifiedblemanager/protocol/UnifiedBleProtocolAndroidDispatcher.kt"
+    )
+
+    assertTrue(dispatcher.contains("command.requiredString(20)"))
+    assertTrue(dispatcher.contains("ConnectionIntents.DIRECT"))
+    assertTrue(dispatcher.contains("ConnectionIntents.WHEN_AVAILABLE"))
+    assertTrue(dispatcher.contains("radio.connect(peerId, autoConnect)"))
+    assertFalse(dispatcher.contains("command.optionalString(20) ?: \"direct\""))
   }
 
   @Test
@@ -164,6 +420,54 @@ class UnifiedBleProtocolAndroidDispatcherLifecycleTest {
       rejected = true
     }
     assertTrue(rejected)
+  }
+
+  @Test
+  fun securityPairTransportIsRequiredAndLeUsesTheExplicitAndroidTransport() {
+    val dispatcher = readAndroidSource(
+      "android/src/main/java/com/sfourdrinier/unifiedblemanager/protocol/UnifiedBleProtocolAndroidDispatcher.kt"
+    )
+    val radio = readAndroidSource(
+      "android/src/main/java/com/sfourdrinier/unifiedblemanager/radio/OwnedAndroidGattRadio.kt"
+    )
+
+    assertTrue(dispatcher.contains("val pairTransport = command.requiredString(19)"))
+    assertTrue(dispatcher.contains("radio.pair(peerId, pairTransport)"))
+    assertTrue(radio.contains("isAlreadyPaired(device.bondState, device.type, transport)"))
+    assertTrue(radio.contains("\"platformDefault\" -> device.createBond()"))
+    assertTrue(radio.contains("method.invoke(device, BluetoothDevice.TRANSPORT_LE)"))
+    assertTrue(radio.contains("catch (error: InvocationTargetException)"))
+    assertTrue(radio.contains("is SecurityException -> throw cause"))
+    assertTrue(radio.contains("else -> throw IllegalArgumentException"))
+  }
+
+  @Test
+  fun explicitLeAlreadyPairedRequiresAnUnambiguouslyLeOnlyBond() {
+    assertTrue(OwnedAndroidGattRadio.isAlreadyPaired(
+      BluetoothDevice.BOND_BONDED,
+      BluetoothDevice.DEVICE_TYPE_CLASSIC,
+      "platformDefault"
+    ))
+    assertTrue(OwnedAndroidGattRadio.isAlreadyPaired(
+      BluetoothDevice.BOND_BONDED,
+      BluetoothDevice.DEVICE_TYPE_LE,
+      "le"
+    ))
+    assertFalse(OwnedAndroidGattRadio.isAlreadyPaired(
+      BluetoothDevice.BOND_BONDED,
+      BluetoothDevice.DEVICE_TYPE_DUAL,
+      "le"
+    ))
+    assertFalse(OwnedAndroidGattRadio.isAlreadyPaired(
+      BluetoothDevice.BOND_BONDED,
+      BluetoothDevice.DEVICE_TYPE_CLASSIC,
+      "le"
+    ))
+    assertFalse(OwnedAndroidGattRadio.isAlreadyPaired(
+      BluetoothDevice.BOND_NONE,
+      BluetoothDevice.DEVICE_TYPE_LE,
+      "le"
+    ))
   }
 
   @Test

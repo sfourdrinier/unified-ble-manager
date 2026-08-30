@@ -10,6 +10,18 @@ function read(relativePath) {
 }
 
 describe('Apple Native Protocol v2 bounded JSI ingress', () => {
+  test('gives both React Native bridges bounded headroom for a 24-hour notification burst', () => {
+    const apple = read('ios/NativeProtocol/UnifiedBleProtocolAppleExecutionState.hpp')
+    const android = read('android/src/main/jni/UnifiedBleProtocolJsiBinding.cpp')
+
+    expect(android).toContain('kMaximumQueuedRecords = 512U')
+    expect(android).toContain('kMaximumQueuedBytes = 1024U * 1024U')
+    expect(apple).toContain('kMaximumPreJavaScriptRecords = 512U')
+    expect(apple).toContain('kMaximumPreJavaScriptBytes = 1024U * 1024U')
+    expect(apple).toContain('kMaximumJavaScriptRecords = 512U')
+    expect(apple).toContain('kMaximumJavaScriptBytes = 1024U * 1024U')
+  })
+
   test('keeps post-sink delivery bounded and releases binary records on every terminal discard path', () => {
     const state = read('ios/NativeProtocol/UnifiedBleProtocolAppleExecutionState.hpp')
     const execution = read('ios/NativeProtocol/UnifiedBleProtocolAppleExecution.mm')
@@ -85,5 +97,19 @@ describe('Apple Native Protocol v2 bounded JSI ingress', () => {
     expect(executionHarness).toContain('actual scheduling-unavailable seam did not fatally close the attachment')
     expect(executionHarness).toContain('actual JSI sink failure did not fatally close the attachment')
     expect(ingressHarness).not.toContain('AppleTerminalSettlementGate')
+  })
+
+  test('executes and checks the correlated Apple bonded-peer unsupported terminal', () => {
+    const executionHarness = read('native/protocol/tests/AppleNativeProtocolExecutionHarness.mm')
+    expect(executionHarness).toContain('enumerateBondedPeersCommand')
+    expect(executionHarness).toContain('harnessField(3U, std::string("enumerateBondedPeers"))')
+    expect(executionHarness).toContain('enumerateBondedPeersCommand(1U)')
+    expect(executionHarness).toContain('apple-enumerate-bonded-operation-1')
+    expect(executionHarness).toContain('dispatchCommand(enumerateState, enumerateCommand)')
+    expect(executionHarness).toContain('harnessField(20U, std::string("direct"))')
+    expect(executionHarness).toContain('enumerateUnsupported')
+    expect(executionHarness).toContain('enumerateCaused')
+    expect(executionHarness).toContain('enumerateCorrelated')
+    expect(executionHarness).toContain('Apple enumerateBondedPeers terminal did not settle the operation')
   })
 })

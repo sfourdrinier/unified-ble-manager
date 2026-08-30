@@ -403,6 +403,12 @@ export interface NativeBackgroundLeaseReleaseRequest {
   leaseId: string
 }
 
+export interface NativeBackgroundNotificationUpdateRequest {
+  leaseId: string
+  title: string
+  body?: string
+}
+
 export interface NativeCompanionAssociationRequest {
   name?: string
   serviceUuid?: string
@@ -473,6 +479,7 @@ export interface Spec extends TurboModule {
   ): Promise<NativeRestorationBootstrapIdentity>
   acquireBackground(request: NativeBackgroundLeaseRequest): Promise<NativeBackgroundLeaseResult>
   releaseBackground(request: NativeBackgroundLeaseReleaseRequest): Promise<void>
+  updateBackgroundNotification(request: NativeBackgroundNotificationUpdateRequest): Promise<void>
   associateCompanionDevice(
     request: NativeCompanionAssociationRequest
   ): Promise<NativeCompanionAssociationResult>

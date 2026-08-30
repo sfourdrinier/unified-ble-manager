@@ -77,11 +77,28 @@ class ConnectedDeviceForegroundServiceLeaseRegistryTest {
     assertFalse(registry.hasLease(lease))
   }
 
+  @Test
+  fun `notification update requires an active lease and does not start the service`() {
+    val driver = RecordingServiceDriver()
+    val registry = ConnectedDeviceForegroundServiceLeaseRegistry(driver) { "lease-1" }
+
+    val failure = runCatching { registry.update("lease-1", "Glucose 108", "Private") }.exceptionOrNull()
+
+    assertTrue(failure is ForegroundServiceControlException)
+    assertEquals("invalidBackgroundLease", (failure as ForegroundServiceControlException).code)
+    assertEquals(0, driver.starts.size)
+
+    val lease = registry.acquire("active-workout")
+    registry.update(lease, "Glucose 108", "Private")
+    assertEquals(listOf("Glucose 108|Private"), driver.updates)
+  }
+
   private class RecordingServiceDriver(
     private var failFirstStart: Boolean = false,
     private var failFirstStop: Boolean = false
   ) : ConnectedDeviceForegroundServiceDriver {
     val starts = mutableListOf<String>()
+    val updates = mutableListOf<String>()
     var stopCount = 0
 
     override fun start(reason: String) {
@@ -104,6 +121,10 @@ class ConnectedDeviceForegroundServiceLeaseRegistryTest {
           "Android could not stop the connected-device foreground service; retry releasing the lease."
         )
       }
+    }
+
+    override fun update(title: String, body: String?) {
+      updates += "$title|${body ?: ""}"
     }
   }
 }

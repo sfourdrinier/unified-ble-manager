@@ -2,6 +2,32 @@
 
 All notable changes to `unified-ble-manager` are documented here.
 
+## [Unreleased]
+
+No changes yet.
+
+## [4.0.8] - 2026-08-29
+
+### Fixes
+
+- **Apple runtime shutdown no longer retains a closed JavaScript attachment through its invoker.** Closing the native protocol now moves the `CallInvoker` out of shared state before scheduling runtime-thread sink cleanup, breaking the state/invoker/callback ownership cycle. iOS, macOS, and tvOS keep the same public behavior while clean teardown no longer leaves JSI functions alive past their runtime.
+
+- **Public capability checks no longer hide implemented operations whose evidence is limited.** `manager.capabilities.supports(id)` and `require(id)` now agree with the core manager: both `supported` and invocable `limited` descriptors are usable, while `unavailable`, `unsupported`, and missing capabilities still fail closed. Callers that need full qualification can inspect `manager.capabilities.get(id).state` and its retained limitations. This fixes Android callers incorrectly discarding the bonded `when-available` reconnect path merely because its physical-radio evidence is still labelled `limited` (#174, PR #170).
+
+- **Expo Android connected-device monitoring now has an app-controlled notification and explicit lifecycle recovery.** While an active background lease is held, `manager.background.updateNotification({ title, body? })` updates the existing UBM notification in place without acquiring or starting another service. The configured channel, icon, connected-device service type, ongoing state, session-intent policy, and host-app tap are preserved. `restart: 'while-session-intent-exists'` now also manages boot and package-replaced recovery, but only starts the service when native UBM session intent exists; it never scans or reconnects. Once a recovered service is promoted, a package-scoped `FOREGROUND_READY` signal lets an app-owned headless runtime resume without racing Android's background-service restrictions; normal acquisition resolves its existing caller without launching a redundant headless runtime. Background and restart remain absent/`never` by default, and unsupported hosts reject the operation truthfully (#177, PR #170).
+
+- **React Native no longer closes a healthy notification subscription during a legitimate burst of native events.** Android and Apple still fail closed on an undrained native-to-JavaScript queue, but both bridges now retain up to 512 records / 1 MiB before declaring overflow. That bounded budget accommodates common catch-up transfers such as roughly 288 five-minute readings delivered in one 24-hour history response while preserving a visible `stream.overflow` terminal if JavaScript genuinely cannot keep up. The change applies only to the two React Native native-event ingress queues; other backends keep their existing buffering and capability truth (#175).
+
+- **React Native Android now exposes the system bonded peer directory.** `manager.peers.bonded()` reads the ABI-6 Android bond table, returns deterministic version-1 system-scoped references, and `manager.peers.resolve()` rechecks that a saved reference remains bonded before reconnecting. `manager.connect(peer, { intent: 'when-available' })` reaches Android's queued auto-connect path. Bonded metadata does not imply reachability; Android reports unknown reachability and preserves `permission.denied` instead of returning an empty list. Other backends keep their truthful unsupported boundaries, and Web origin-authorized devices remain distinct from bonded peers.
+
+- **React Native Android now honours `PairOptions.transport: 'le'` instead of discarding it.** The public security layer validated and forwarded the selector, but the React Native Android backend dropped it before the native command and always called parameterless `createBond()`. Explicit LE pairing now crosses native-protocol ABI 5 and invokes Android's transport-selecting bond operation with `BluetoothDevice.TRANSPORT_LE`; `'auto'` remains the platform default. Unsupported or rejected explicit selection fails closed rather than silently changing the request. Because Android API 36 cannot publicly query bond state by transport, only an LE-only device's existing bond satisfies an explicit-LE `already-paired` result; dual-mode, classic, and unknown devices retry the directed operation instead of risking a false success from a BR/EDR-only bond. Reflection-wrapped permission failures retain `permissionDenied`. BlueZ and WinRT already pair through BLE-only device objects, while Apple and Web keep generic pairing unsupported; those platform semantics are unchanged.
+
+- **Every GATT notification was dropped on both React Native backends, and characteristic and descriptor reads with them.** A notification's payload is carried as a binary reference, and the protocol requires that reference to name the operation the event belongs to — the codec compares the two for equality (`requireBinaryCorrelation`). Both bindings stamped the subscribe's correlation on the event while minting the payload under a correlation of their own (`"notification:<subscription>:<ordinal>"` on Android, `"apple-notification:..."` on Apple), a combination that can never validate. Every notification was therefore refused inside our own codec before reaching a caller, so a subscription delivered nothing at all while the radio received the peer perfectly well. The read paths decorated their correlation the same way (`"read:<epoch>:<nonce>"`, `"apple-read:<nonce>"`) and failed the same check on the result record. All four sites now mint the payload under the owning operation's nonce, as the write path always did.
+
+  Sharing one correlation across a subscription's notifications is safe: `OwnedBinaryPayloadStore` keys retained payloads by a freshly generated owner token and releases by that token, treating the correlation as metadata it cross-checks rather than as a unique key.
+
+  The deterministic layer could not catch this, which is why it shipped: the React Native test doubles minted their own notification correlations and omitted the operation correlation entirely, so they modelled a record the native codec refuses to deliver, and the suite stayed green against a shape no device could ever produce. `ReactNativeAndroidProtocolBoundary` now enforces the same rule the native codec enforces, the doubles emit the shape the bindings actually emit, and the codec's own tests pin both the notification event and the read result. Live-device evidence showed the platform receiving a peer's reply chunks while the application received none (#168).
+
 ## [4.0.7] - 2026-08-26
 
 ### Changed behaviour
@@ -62,7 +88,7 @@ The first release cut against a live peripheral on Android as well as Linux. Mos
 
 ## [4.0.5] - 2026-08-25
 
-First release cut against a live peripheral. Every fix below came from driving a real CGM from an Android phone and a Linux/BlueZ host, and several are defects no unit test had reason to catch. Does not retag `v4.0.4`.
+First release cut against a live peripheral. Every fix below came from driving a real BLE device from an Android phone and a Linux/BlueZ host, and several are defects no unit test had reason to catch. Does not retag `v4.0.4`.
 
 ### Fixes
 

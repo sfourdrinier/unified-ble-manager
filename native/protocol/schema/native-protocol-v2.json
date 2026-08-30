@@ -1,7 +1,7 @@
 {
   "schema": "unified-ble-native-protocol",
   "version": 2,
-  "abiVersion": 4,
+  "abiVersion": 6,
   "controlSurfaceVersion": 2,
   "abiManifest": "native-protocol-v2-abi.json",
   "maximumControlRecordBytes": 262144,
@@ -29,7 +29,8 @@
     "error",
     "restorationRecord",
     "restorationAdoptionRequest",
-    "restorationAdoptionResult"
+    "restorationAdoptionResult",
+    "bondedPeerSnapshot"
   ],
   "commandKinds": [
     "scanStart",
@@ -54,7 +55,8 @@
     "securityCancelPairing",
     "readPhy",
     "requestPhy",
-    "readMtu"
+    "readMtu",
+    "enumerateBondedPeers"
   ],
   "resultKinds": [
     "accepted",
@@ -75,7 +77,8 @@
     "descriptorWrite",
     "securityState",
     "securityPair",
-    "phy"
+    "phy",
+    "bondedPeers"
   ],
   "eventKinds": [
     "adapterState",
@@ -93,7 +96,9 @@
   "binaryOwnership": ["nativeOwnedCopy", "javascriptOwnedCopy", "transferred"],
   "writeModes": ["withResponse", "withoutResponse"],
   "connectionPriorities": ["lowPower", "balanced", "highThroughput"],
+  "connectionIntents": ["direct", "whenAvailable"],
   "connectionPhys": ["le1m", "le2m", "leCoded"],
+  "pairTransports": ["platformDefault", "le"],
   "adapterAvailability": ["available", "unavailable", "unsupported", "unknown"],
   "adapterAuthorization": ["granted", "denied", "restricted", "notDetermined", "unavailable"],
   "adapterPower": ["on", "off", "resetting", "unsupported", "unknown"],
@@ -252,7 +257,9 @@
         ["peerId", "string", false],
         ["connectionPriority", "enum:connectionPriorities", false],
         ["phyTx", "enum:connectionPhys", false],
-        ["phyRx", "enum:connectionPhys", false]
+        ["phyRx", "enum:connectionPhys", false],
+        ["pairTransport", "enum:pairTransports", false],
+        ["connectionIntent", "enum:connectionIntents", false]
       ]
     },
     {
@@ -287,7 +294,8 @@
         ["phyTx", "enum:connectionPhys", false],
         ["phyRx", "enum:connectionPhys", false],
         ["phyAccepted", "boolean", false],
-        ["effectiveMtu", "uint64", false]
+        ["effectiveMtu", "uint64", false],
+        ["bondedPeers", "records:bondedPeerSnapshot", false]
       ]
     },
     {
@@ -389,6 +397,13 @@
         ["adoptionEpoch", "string", true],
         ["outcome", "enum:restorationOutcomes", true],
         ["records", "records:restorationRecord", true]
+      ]
+    },
+    {
+      "name": "bondedPeerSnapshot",
+      "fields": [
+        ["nativePeerId", "string", true],
+        ["displayName", "string", false]
       ]
     }
   ]

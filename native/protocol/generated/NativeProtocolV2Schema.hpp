@@ -10,7 +10,7 @@
 namespace unified_ble::native_protocol::v2 {
 
 inline constexpr std::uint32_t kProtocolVersion = 2U;
-inline constexpr std::uint32_t kAbiVersion = 4U;
+inline constexpr std::uint32_t kAbiVersion = 6U;
 inline constexpr std::uint32_t kControlSurfaceVersion = 2U;
 inline constexpr std::size_t kMaximumControlRecordBytes = 262144U;
 inline constexpr std::size_t kMaximumBinaryPayloadBytes = 524288U;
@@ -38,7 +38,8 @@ enum class RecordKind : std::uint16_t {
   error = 16U,
   restorationRecord = 17U,
   restorationAdoptionRequest = 18U,
-  restorationAdoptionResult = 19U
+  restorationAdoptionResult = 19U,
+  bondedPeerSnapshot = 24U
 };
 
 enum class CommandKinds : std::uint16_t {
@@ -64,7 +65,8 @@ enum class CommandKinds : std::uint16_t {
   securityCancelPairing = 19U,
   readPhy = 21U,
   requestPhy = 22U,
-  readMtu = 23U
+  readMtu = 23U,
+  enumerateBondedPeers = 24U
 };
 
 enum class ResultKinds : std::uint16_t {
@@ -86,7 +88,8 @@ enum class ResultKinds : std::uint16_t {
   descriptorWrite = 15U,
   securityState = 16U,
   securityPair = 17U,
-  phy = 19U
+  phy = 19U,
+  bondedPeers = 20U
 };
 
 enum class EventKinds : std::uint16_t {
@@ -129,10 +132,20 @@ enum class ConnectionPriorities : std::uint16_t {
   highThroughput = 3U
 };
 
+enum class ConnectionIntents : std::uint16_t {
+  direct = 1U,
+  whenAvailable = 2U
+};
+
 enum class ConnectionPhys : std::uint16_t {
   le1m = 1U,
   le2m = 2U,
   leCoded = 3U
+};
+
+enum class PairTransports : std::uint16_t {
+  platformDefault = 1U,
+  le = 2U
 };
 
 enum class AdapterAvailability : std::uint16_t {
@@ -200,7 +213,7 @@ struct RecordKindDescriptor {
   std::string_view name;
 };
 
-inline constexpr std::array<RecordKindDescriptor, 23> kRecordKindDescriptors{{
+inline constexpr std::array<RecordKindDescriptor, 24> kRecordKindDescriptors{{
   RecordKindDescriptor{RecordKind::attachment, "attachment"},
   RecordKindDescriptor{RecordKind::connectionPath, "connectionPath"},
   RecordKindDescriptor{RecordKind::databasePath, "databasePath"},
@@ -223,10 +236,11 @@ inline constexpr std::array<RecordKindDescriptor, 23> kRecordKindDescriptors{{
   RecordKindDescriptor{RecordKind::error, "error"},
   RecordKindDescriptor{RecordKind::restorationRecord, "restorationRecord"},
   RecordKindDescriptor{RecordKind::restorationAdoptionRequest, "restorationAdoptionRequest"},
-  RecordKindDescriptor{RecordKind::restorationAdoptionResult, "restorationAdoptionResult"}
+  RecordKindDescriptor{RecordKind::restorationAdoptionResult, "restorationAdoptionResult"},
+  RecordKindDescriptor{RecordKind::bondedPeerSnapshot, "bondedPeerSnapshot"}
 }};
 
-inline constexpr std::array<FieldDescriptor, 168> kFieldDescriptors{{
+inline constexpr std::array<FieldDescriptor, 173> kFieldDescriptors{{
   FieldDescriptor{RecordKind::attachment, 1U, "attachmentId", "string", true},
   FieldDescriptor{RecordKind::attachment, 2U, "backendInstanceId", "string", true},
   FieldDescriptor{RecordKind::attachment, 3U, "backendGeneration", "string", true},
@@ -299,6 +313,8 @@ inline constexpr std::array<FieldDescriptor, 168> kFieldDescriptors{{
   FieldDescriptor{RecordKind::command, 16U, "connectionPriority", "enum:connectionPriorities", false},
   FieldDescriptor{RecordKind::command, 17U, "phyTx", "enum:connectionPhys", false},
   FieldDescriptor{RecordKind::command, 18U, "phyRx", "enum:connectionPhys", false},
+  FieldDescriptor{RecordKind::command, 19U, "pairTransport", "enum:pairTransports", false},
+  FieldDescriptor{RecordKind::command, 20U, "connectionIntent", "enum:connectionIntents", false},
   FieldDescriptor{RecordKind::terminal, 1U, "correlation", "record:operationCorrelation", true},
   FieldDescriptor{RecordKind::terminal, 2U, "outcome", "enum:terminalOutcomes", true},
   FieldDescriptor{RecordKind::terminal, 3U, "cause", "string", false},
@@ -324,6 +340,7 @@ inline constexpr std::array<FieldDescriptor, 168> kFieldDescriptors{{
   FieldDescriptor{RecordKind::result, 20U, "phyRx", "enum:connectionPhys", false},
   FieldDescriptor{RecordKind::result, 21U, "phyAccepted", "boolean", false},
   FieldDescriptor{RecordKind::result, 22U, "effectiveMtu", "uint64", false},
+  FieldDescriptor{RecordKind::result, 23U, "bondedPeers", "records:bondedPeerSnapshot", false},
   FieldDescriptor{RecordKind::advertisement, 1U, "peerId", "string", true},
   FieldDescriptor{RecordKind::advertisement, 2U, "observedAt", "uint64", true},
   FieldDescriptor{RecordKind::advertisement, 3U, "ingressOrdinal", "uint64", true},
@@ -394,10 +411,12 @@ inline constexpr std::array<FieldDescriptor, 168> kFieldDescriptors{{
   FieldDescriptor{RecordKind::restorationAdoptionResult, 4U, "boundClientId", "string", true},
   FieldDescriptor{RecordKind::restorationAdoptionResult, 5U, "adoptionEpoch", "string", true},
   FieldDescriptor{RecordKind::restorationAdoptionResult, 6U, "outcome", "enum:restorationOutcomes", true},
-  FieldDescriptor{RecordKind::restorationAdoptionResult, 7U, "records", "records:restorationRecord", true}
+  FieldDescriptor{RecordKind::restorationAdoptionResult, 7U, "records", "records:restorationRecord", true},
+  FieldDescriptor{RecordKind::bondedPeerSnapshot, 1U, "nativePeerId", "string", true},
+  FieldDescriptor{RecordKind::bondedPeerSnapshot, 2U, "displayName", "string", false}
 }};
 
-inline constexpr std::array<EnumValueDescriptor, 96> kEnumValueDescriptors{{
+inline constexpr std::array<EnumValueDescriptor, 102> kEnumValueDescriptors{{
   EnumValueDescriptor{"commandKinds", "scanStart"},
   EnumValueDescriptor{"commandKinds", "scanStop"},
   EnumValueDescriptor{"commandKinds", "connect"},
@@ -421,6 +440,7 @@ inline constexpr std::array<EnumValueDescriptor, 96> kEnumValueDescriptors{{
   EnumValueDescriptor{"commandKinds", "readPhy"},
   EnumValueDescriptor{"commandKinds", "requestPhy"},
   EnumValueDescriptor{"commandKinds", "readMtu"},
+  EnumValueDescriptor{"commandKinds", "enumerateBondedPeers"},
   EnumValueDescriptor{"resultKinds", "accepted"},
   EnumValueDescriptor{"resultKinds", "scanStarted"},
   EnumValueDescriptor{"resultKinds", "connected"},
@@ -440,6 +460,7 @@ inline constexpr std::array<EnumValueDescriptor, 96> kEnumValueDescriptors{{
   EnumValueDescriptor{"resultKinds", "securityState"},
   EnumValueDescriptor{"resultKinds", "securityPair"},
   EnumValueDescriptor{"resultKinds", "phy"},
+  EnumValueDescriptor{"resultKinds", "bondedPeers"},
   EnumValueDescriptor{"eventKinds", "adapterState"},
   EnumValueDescriptor{"eventKinds", "advertisement"},
   EnumValueDescriptor{"eventKinds", "connectionLost"},
@@ -462,9 +483,13 @@ inline constexpr std::array<EnumValueDescriptor, 96> kEnumValueDescriptors{{
   EnumValueDescriptor{"connectionPriorities", "lowPower"},
   EnumValueDescriptor{"connectionPriorities", "balanced"},
   EnumValueDescriptor{"connectionPriorities", "highThroughput"},
+  EnumValueDescriptor{"connectionIntents", "direct"},
+  EnumValueDescriptor{"connectionIntents", "whenAvailable"},
   EnumValueDescriptor{"connectionPhys", "le1m"},
   EnumValueDescriptor{"connectionPhys", "le2m"},
   EnumValueDescriptor{"connectionPhys", "leCoded"},
+  EnumValueDescriptor{"pairTransports", "platformDefault"},
+  EnumValueDescriptor{"pairTransports", "le"},
   EnumValueDescriptor{"adapterAvailability", "available"},
   EnumValueDescriptor{"adapterAvailability", "unavailable"},
   EnumValueDescriptor{"adapterAvailability", "unsupported"},

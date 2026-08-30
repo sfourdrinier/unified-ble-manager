@@ -422,6 +422,12 @@ RCT_EXPORT_MODULE(UnifiedBleProtocolControl)
   rejectControl(reject, @"unsupportedBackground", @"Connected-device foreground service is Android-only");
 }
 
+- (void)updateBackgroundNotification:(JS::NativeUnifiedBleProtocolControl::NativeBackgroundNotificationUpdateRequest &)request
+                             resolve:(RCTPromiseResolveBlock)resolve
+                              reject:(RCTPromiseRejectBlock)reject {
+  rejectControl(reject, @"unsupportedBackground", @"Connected-device foreground-service notification updates are Android-only");
+}
+
 - (void)associateCompanionDevice:(JS::NativeUnifiedBleProtocolControl::NativeCompanionAssociationRequest &)request
                           resolve:(RCTPromiseResolveBlock)resolve
                            reject:(RCTPromiseRejectBlock)reject {

@@ -149,6 +149,45 @@ protocol::ProtocolRecord command(std::uint64_t epoch) {
   };
 }
 
+protocol::ProtocolRecord enumerateBondedPeersCommand(std::uint64_t epoch) {
+  return {
+      .kind = protocol::RecordKind::command,
+      .fields = {
+          harnessField(1U, std::uint64_t{protocol::kProtocolVersion}),
+          harnessField(2U, std::make_shared<protocol::ProtocolRecord>(protocol::ProtocolRecord{
+              .kind = protocol::RecordKind::operationCorrelation,
+              .fields = {
+                  harnessField(1U, attachment()),
+                  harnessField(2U, epoch),
+                  harnessField(3U, std::string("apple-enumerate-bonded-operation-") + std::to_string(epoch)),
+              },
+          })),
+          harnessField(3U, std::string("enumerateBondedPeers")),
+      },
+  };
+}
+
+const protocol::ProtocolRecord* harnessRecordField(
+    const protocol::ProtocolRecord& record,
+    std::uint16_t identifier) {
+  for (const auto& candidate : record.fields) {
+    if (candidate.id != identifier) continue;
+    const auto* value = std::get_if<protocol::ProtocolRecordReference>(&candidate.value);
+    return value == nullptr || !*value ? nullptr : value->get();
+  }
+  return nullptr;
+}
+
+const std::string* harnessStringField(
+    const protocol::ProtocolRecord& record,
+    std::uint16_t identifier) {
+  for (const auto& candidate : record.fields) {
+    if (candidate.id != identifier) continue;
+    return std::get_if<std::string>(&candidate.value);
+  }
+  return nullptr;
+}
+
 protocol::ProtocolRecord connectCommand(
     std::uint64_t epoch,
     const std::string& peer,
@@ -177,6 +216,7 @@ protocol::ProtocolRecord connectCommand(
                   harnessField(5U, connectionGeneration),
               },
           })),
+          harnessField(20U, std::string("direct")),
       },
   };
 }
@@ -211,6 +251,15 @@ void initializeAttachment(
   state->eventSink = sink;
 }
 
+void releaseHarnessJsiState(
+    const std::shared_ptr<AppleNativeProtocolExecution::State>& state) {
+  std::scoped_lock lock(state->mutex);
+  state->eventSink.reset();
+  state->fatalSink.reset();
+  state->sinksAwaitingJavaScriptRelease.clear();
+  state->callInvoker.reset();
+}
+
 bool require(bool condition, const char* message) {
   if (condition) return true;
   std::cerr << message << '\n';
@@ -232,7 +281,15 @@ int runAppleNativeProtocolExecutionHarness() {
       }
     }
 
-    const auto runtime = facebook::jsc::makeJSCRuntime();
+    auto runtime = facebook::jsc::makeJSCRuntime();
+    int harnessResult = 1;
+    // A lambda gives every early failure one teardown path: all JSI wrappers,
+    // installed host objects, invoker-owned callbacks, and autoreleased
+    // Objective-C completion objects die before the JSCRuntime is explicitly
+    // destroyed. Returning directly from this body previously left that order
+    // implicit and JSC found a dangling API object during its destructor.
+    @autoreleasepool {
+    harnessResult = [&]() -> int {
     std::atomic<std::size_t> delivered{0U};
     const auto sink = std::make_shared<Function>(Function::createFromHostFunction(
         *runtime,
@@ -296,6 +353,72 @@ int runAppleNativeProtocolExecutionHarness() {
     missingInvokerControl->registerCommand(unavailableCommand, true);
     static_cast<void>(success(missingInvokerState, unavailableCommand));
     if (!require(!missingInvokerControl->open(), "actual scheduling-unavailable seam did not fatally close the attachment")) return 1;
+
+    const auto enumerateControl = openedRuntime();
+    const auto enumerateInvoker = std::make_shared<ControllableInvoker>(*runtime);
+    std::atomic<std::size_t> enumerateDelivered{0U};
+    std::atomic<std::size_t> enumerateFailed{0U};
+    std::atomic<std::size_t> enumerateCaused{0U};
+    std::atomic<std::size_t> enumerateUnsupported{0U};
+    std::atomic<std::size_t> enumerateCorrelated{0U};
+    const auto enumerateSink = std::make_shared<Function>(Function::createFromHostFunction(
+        *runtime,
+        PropNameID::forUtf8(*runtime, "appleEnumerateBondedPeersSink"),
+        1U,
+        [&enumerateDelivered, &enumerateFailed, &enumerateCaused, &enumerateUnsupported, &enumerateCorrelated](
+            Runtime& inner, const Value&, const Value* arguments, std::size_t count) {
+          if (count != 1U || !arguments[0].isObject() || !arguments[0].asObject(inner).isUint8Array(inner)) {
+            return Value::undefined();
+          }
+          auto array = arguments[0].asObject(inner).asUint8Array(inner);
+          const auto buffer = array.buffer(inner);
+          const auto offset = array.byteOffset(inner);
+          const auto length = array.byteLength(inner);
+          if (buffer.detached(inner) || offset > buffer.size(inner) || length > buffer.size(inner) - offset) {
+            return Value::undefined();
+          }
+          const auto* source = buffer.data(inner);
+          if (source == nullptr && length != 0U) return Value::undefined();
+          const auto bytes = length == 0U
+              ? std::vector<std::uint8_t>{}
+              : std::vector<std::uint8_t>(source + offset, source + offset + length);
+          const auto record = protocol::NativeProtocolV2Codec{}.decode(bytes);
+          if (record.kind != protocol::RecordKind::result) return Value::undefined();
+          enumerateDelivered.fetch_add(1U, std::memory_order_relaxed);
+          const auto* terminal = harnessRecordField(record, 3U);
+          const auto* outcome = terminal == nullptr ? nullptr : harnessStringField(*terminal, 2U);
+          if (outcome != nullptr && *outcome == "failed") enumerateFailed.fetch_add(1U, std::memory_order_relaxed);
+          const auto* cause = terminal == nullptr ? nullptr : harnessStringField(*terminal, 3U);
+          if (cause != nullptr && *cause == "unsupportedCommand") enumerateCaused.fetch_add(1U, std::memory_order_relaxed);
+          const auto* error = harnessRecordField(record, 10U);
+          const auto* code = error == nullptr ? nullptr : harnessStringField(*error, 1U);
+          if (code != nullptr && *code == "unsupportedCommand") enumerateUnsupported.fetch_add(1U, std::memory_order_relaxed);
+          const auto* correlation = terminal == nullptr ? nullptr : harnessRecordField(*terminal, 1U);
+          const auto* nonce = correlation == nullptr ? nullptr : harnessStringField(*correlation, 3U);
+          if (nonce != nullptr && *nonce == "apple-enumerate-bonded-operation-1") {
+            enumerateCorrelated.fetch_add(1U, std::memory_order_relaxed);
+          }
+          return Value::undefined();
+        }));
+    const auto enumerateState = std::make_shared<AppleNativeProtocolExecution::State>(enumerateControl, nullptr);
+    initializeAttachment(enumerateState, enumerateInvoker, enumerateSink);
+    const auto enumerateCommand = enumerateBondedPeersCommand(1U);
+    enumerateControl->registerCommand(enumerateCommand, true);
+    dispatchCommand(enumerateState, enumerateCommand);
+    if (!require(
+            enumerateControl->commandFor(1U, "apple-enumerate-bonded-operation-1").has_value(),
+            "Apple enumerateBondedPeers command was not retained before terminal delivery")) return 1;
+    if (!require(enumerateInvoker->pending() == 1U, "Apple enumerateBondedPeers scheduled an unexpected number of drains")) return 1;
+    enumerateInvoker->flushOne();
+    if (!require(enumerateDelivered.load(std::memory_order_relaxed) == 1U, "Apple enumerateBondedPeers did not deliver exactly one result")) return 1;
+    if (!require(enumerateFailed.load(std::memory_order_relaxed) == 1U, "Apple enumerateBondedPeers did not deliver a failed terminal")) return 1;
+    if (!require(enumerateCaused.load(std::memory_order_relaxed) == 1U, "Apple enumerateBondedPeers failure did not carry unsupportedCommand cause")) return 1;
+    if (!require(enumerateUnsupported.load(std::memory_order_relaxed) == 1U, "Apple enumerateBondedPeers did not report unsupportedCommand")) return 1;
+    if (!require(enumerateCorrelated.load(std::memory_order_relaxed) == 1U, "Apple enumerateBondedPeers failure was not correlated")) return 1;
+    if (!require(
+            !enumerateControl->commandFor(1U, "apple-enumerate-bonded-operation-1").has_value(),
+            "Apple enumerateBondedPeers terminal did not settle the operation")) return 1;
+    enumerateState->closed.store(true, std::memory_order_release);
 
     const auto immediateDisconnectControl = openedRuntime();
     const auto immediateDisconnectInvoker = std::make_shared<ControllableInvoker>(*runtime);
@@ -458,7 +581,30 @@ int runAppleNativeProtocolExecutionHarness() {
     if (!require(invoker->pending() == 1U, "Apple fatal path did not schedule exactly one JavaScript fatal callback")) return 1;
     invoker->flushOne();
     if (!require(fatalDelivered.load(std::memory_order_relaxed) == 1U, "Apple fatal sink was not invoked exactly once")) return 1;
+    if (!require(
+            invoker->pending() == 0U &&
+            enumerateInvoker->pending() == 0U &&
+            immediateDisconnectInvoker->pending() == 0U &&
+            failedConnectInvoker->pending() == 0U,
+            "Apple harness retained a CallInvoker callback before runtime teardown")) return 1;
+
+    // Direct-State seams intentionally bypass AppleNativeProtocolExecution::close().
+    // Release their JSI functions while the runtime is still alive, and remove
+    // any installed host object before JSCRuntime performs its dangling-object
+    // assertion during destruction.
+    releaseHarnessJsiState(state);
+    releaseHarnessJsiState(missingInvokerState);
+    releaseHarnessJsiState(enumerateState);
+    releaseHarnessJsiState(failedConnectState);
+    releaseHarnessJsiState(throwingState);
+    if (!runtime->global().getProperty(*runtime, "__unifiedBleNativeProtocolV2").isUndefined()) {
+      runtime->global().deleteProperty(*runtime, "__unifiedBleNativeProtocolV2");
+    }
     return 0;
+    }();
+    }
+    runtime.reset();
+    return harnessResult;
   } catch (const std::exception& error) {
     std::cerr << "Apple Native Protocol execution harness failed: " << error.what() << '\n';
     return 1;

@@ -352,7 +352,7 @@ describe('consumer documentation matches the published package', () => {
     expect(readme).not.toMatch(/new\s+BleManager\s*\(/)
   })
 
-  test('RC4 candidate documentation preserves release, evidence, and deferral boundaries', () => {
+  test('release documentation preserves publication, evidence, and deferral boundaries', () => {
     const readme = read('README.md')
     const release = read('RELEASE.md')
     const platforms = read('docs/PLATFORMS.md')
@@ -365,7 +365,10 @@ describe('consumer documentation matches the published package', () => {
     expect(release).toContain('npm trusted publishing/OIDC')
     expect(release).toContain('publishes with provenance')
     expect(platforms).toContain(
-      `\`unified-ble-manager@${packageVersion}\` is the published **stable package/API** for the 4.x contract; it is immutable. Backend support labels remain evidence-derived and independent of this SemVer`
+      'The version in `package.json` identifies the source being prepared or released;'
+    )
+    expect(platforms).toContain(
+      'and the tag-driven release workflow are the publication authorities.'
     )
     expect(platforms).toContain(
       'WinRT compilation or ABI loading, for example, is not by itself a Windows live-radio claim'

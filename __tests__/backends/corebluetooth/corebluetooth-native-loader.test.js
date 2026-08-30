@@ -1,6 +1,8 @@
 // __tests__/backends/corebluetooth/corebluetooth-native-loader.test.js
 
 const nativeAddonPath = require('path').resolve(__dirname, '../../../../native/electron/corebluetooth')
+const nativeBoundaryModulePath = require('path').resolve(__dirname, '../../../native/electron/corebluetooth/index.js')
+const { spawnSync } = require('child_process')
 
 function withDarwinPlatform(run) {
   const originalDescriptor = Object.getOwnPropertyDescriptor(process, 'platform')
@@ -36,7 +38,14 @@ function captureError(call) {
 describe('CoreBluetooth native boundary loader', () => {
   afterEach(() => {
     jest.resetModules()
-    jest.dontMock(nativeAddonPath)
+  })
+
+  test('loads the plain Node boundary module without importing TypeScript source', () => {
+    const result = spawnSync(process.execPath, ['-e', `require(${JSON.stringify(nativeBoundaryModulePath)})`], {
+      encoding: 'utf8'
+    })
+    expect(result.status).toBe(0)
+    expect(result.stderr).not.toContain('MODULE_NOT_FOUND')
   })
 
   test('fails closed with a typed diagnostic when the packaged artifact is unavailable', () => {

@@ -84,6 +84,7 @@ describe('Android RN 0.86 unified protocol boundary', () => {
       'BlePlxForegroundService.java',
       'BlePlxPackage.java',
       'background/AndroidConnectedDeviceForegroundServiceDriver.java',
+      'background/BlePlxForegroundServiceRecoveryReceiver.java',
       'background/ConnectedDeviceForegroundServiceDriver.java',
       'background/ConnectedDeviceForegroundServiceLeaseRegistry.java',
       'background/ForegroundServiceControlException.java',

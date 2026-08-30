@@ -5,6 +5,7 @@ const { BUILT_IN_FEATURE_IDS } = require('../../../src/backend-contract/capabili
 const { contractError } = require('../../../src/backend-contract/errors')
 const { normalizeScanQuery } = require('../../../src/public/scan-query')
 const { createBleManagerFromProvider, DEFAULT_BLE_MANAGER_OPTIONS } = require('../../../src/manager/ble-manager')
+const { createPublicBleManager } = require('../../../src/public/ble-manager')
 const { REACT_NATIVE_ANDROID_PLATFORM_ID } = require('../../../src/backends/reactnative/react-native-android-provider')
 const {
   createReactNativeAndroidBackendProvider,
@@ -101,6 +102,61 @@ describe('React Native Android canonical protocol vertical slice', () => {
     } else {
       global.__unifiedBleNativeProtocolV2 = previousRuntime
     }
+  })
+
+  test('publishes populated Android bonded peers and resolves a current reference', async () => {
+    const fixture = await createAndroidPeerDirectoryFixture([
+      { nativePeerId: 'CC:DD', displayName: null },
+      { nativePeerId: 'AA:BB', displayName: 'Heart Strap' },
+      { nativePeerId: 'AA:BB', displayName: 'Heart Strap' }
+    ])
+    const peers = await fixture.manager.peers.bonded()
+
+    expect(peers).toHaveLength(2)
+    expect(peers.map(peer => peer.name)).toEqual(['Heart Strap', null])
+    expect(peers[0]).toMatchObject({
+      state: { bond: 'bonded', reachability: 'unknown', connection: 'unknown', lastSeenAtMonotonicMs: null },
+      rssi: null,
+      sources: ['system-bonded'],
+      reference: { version: 1, backendId: 'unified-ble:react-native-android', scope: 'system' }
+    })
+    expect(fixture.manager.capabilities.list().map(capability => capability.id)).toEqual(
+      expect.arrayContaining([
+        BUILT_IN_FEATURE_IDS.peerBonded,
+        BUILT_IN_FEATURE_IDS.peerResolveReference,
+        BUILT_IN_FEATURE_IDS.connectionWhenAvailable
+      ])
+    )
+    expect(fixture.manager.capabilities.supports(BUILT_IN_FEATURE_IDS.peerBonded)).toBe(true)
+    expect(fixture.manager.capabilities.supports(BUILT_IN_FEATURE_IDS.peerResolveReference)).toBe(true)
+    expect(fixture.manager.capabilities.supports(BUILT_IN_FEATURE_IDS.connectionWhenAvailable)).toBe(true)
+    await expect(fixture.manager.peers.resolve(peers[0].reference)).resolves.toMatchObject({ id: peers[0].id })
+    fixture.runtime.bondedPeers = []
+    await expect(fixture.manager.peers.resolve(peers[0].reference)).resolves.toBeNull()
+    await fixture.manager.destroy()
+  })
+
+  test('publishes an empty Android bonded list without fabricating peers', async () => {
+    const fixture = await createAndroidPeerDirectoryFixture([])
+    await expect(fixture.manager.peers.bonded()).resolves.toEqual([])
+    await fixture.manager.destroy()
+  })
+
+  test('preserves Android bonded permission failures instead of treating them as empty', async () => {
+    const fixture = await createAndroidPeerDirectoryFixture([], { bondedPermissionDenied: true })
+    await expect(fixture.manager.peers.bonded()).rejects.toMatchObject({
+      code: 'permission.denied'
+    })
+    expect(fixture.runtime.commandKinds).toContain('enumerateBondedPeers')
+    await fixture.manager.destroy()
+  })
+
+  test('connects a bonded peer with the when-available Android intent', async () => {
+    const fixture = await createAndroidPeerDirectoryFixture([{ nativePeerId: 'AA:BB', displayName: 'Heart Strap' }])
+    const [peer] = await fixture.manager.peers.bonded()
+    await fixture.manager.connect(peer, { intent: 'when-available' })
+    expect(fixture.runtime.connectionIntents).toEqual(['whenAvailable'])
+    await fixture.manager.destroy()
   })
 
   test.each([
@@ -274,6 +330,7 @@ describe('React Native Android canonical protocol vertical slice', () => {
     await scan.stop()
 
     const connection = await manager.connect(observation.value.value.device.id, operation())
+    expect(runtime.connectionIntents).toEqual(['direct'])
     await expect(connection.readRssi(operation())).resolves.toMatchObject({ rssi: -47 })
     await expect(connection.effectiveMtu()).resolves.toMatchObject({ attMtu: null, payloadBytes: null })
     await expect(connection.requestMtu(300, operation())).resolves.toMatchObject({
@@ -1453,6 +1510,35 @@ function deterministicTckBoundary(runtime) {
   }
 }
 
+async function createAndroidPeerDirectoryFixture(bondedPeers, options = {}) {
+  const control = new DeterministicAndroidControl()
+  const runtime = new DeterministicAndroidProtocolRuntime(control)
+  runtime.bondedPeers = bondedPeers
+  runtime.bondedPermissionDenied = options.bondedPermissionDenied === true
+  global.__unifiedBleNativeProtocolV2 = runtime
+  const provider = createReactNativeAndroidBackendProvider({
+    control,
+    now: () => 20,
+    createOwnerId: () => 'deterministic-react-native-peer-directory-owner'
+  })
+  const [adapter] = await provider.listAdapters()
+  const internalManager = await createBleManagerFromProvider(
+    {
+      provider,
+      selection: { selectedAdapterId: adapter.adapterId },
+      coreCompatibility: compatibility(),
+      manager: {
+        clientId: opaqueId('peer-directory-manager-client', 'client', 'react-native-android:test'),
+        managerId: opaqueId('peer-directory-manager', 'manager', 'react-native-android:test'),
+        ownerMode: 'owning'
+      }
+    },
+    DEFAULT_BLE_MANAGER_OPTIONS
+  )
+  const manager = await createPublicBleManager(internalManager, () => 20)
+  return { manager, runtime }
+}
+
 class DeterministicAndroidControl {
   constructor(
     installFailure = null,
@@ -1475,7 +1561,7 @@ class DeterministicAndroidControl {
     this.handshakes.push(request)
     return Promise.resolve({
       nativeProtocol: 2,
-      abi: 4,
+      abi: 6,
       controlSurface: 2,
       backendContract: 1,
       capabilitySchema: 1,
@@ -1597,12 +1683,18 @@ class DeterministicAndroidProtocolRuntime {
     this.nextBuffer = 1
     this.nextEvent = 1
     this.subscriptionId = null
+    // The correlation of the subscribe that produced the active subscription.
+    // The real Android binding stamps this on every notification and mints the
+    // payload under its nonce; a double that invents its own correlation models
+    // a notification the native codec would reject (issue #168).
+    this.subscribeCorrelation = null
     this.commandKinds = []
     this.writes = []
     this.descriptorWrites = []
     this.descriptorCommandPaths = []
     this.descriptorValue = new Uint8Array([8, 7])
     this.connection = null
+    this.connectionIntents = []
     this.sinkFailure = sinkFailure
     this.emitInitialSubscriptionNotification = emitInitialSubscriptionNotification
     this.destroyFailuresRemaining = 0
@@ -1611,6 +1703,8 @@ class DeterministicAndroidProtocolRuntime {
     this.effectiveMtu = null
     this.phyAccepted = true
     this.phyRequests = []
+    this.bondedPeers = []
+    this.bondedPermissionDenied = false
   }
 
   retain(operationCorrelation, value) {
@@ -1681,8 +1775,31 @@ class DeterministicAndroidProtocolRuntime {
       return
     }
     if (kind === 'connect') {
+      this.connectionIntents.push(requiredString(command, 20))
       this.connection = requiredRecord(command, 10)
       this.emitResult(command, 'connected', [field(11, requiredRecord(command, 10))])
+      return
+    }
+    if (kind === 'enumerateBondedPeers') {
+      if (this.bondedPermissionDenied) {
+        this.emitFailureWithCode(command, 'permissionDenied', 'Android Bluetooth connect permission is required')
+      } else {
+        this.emitResult(
+          command,
+          'bondedPeers',
+          [
+            field(
+              23,
+              this.bondedPeers.map(peer =>
+                record('bondedPeerSnapshot', [
+                  field(1, peer.nativePeerId),
+                  ...(peer.displayName === null ? [] : [field(2, peer.displayName)])
+                ])
+              )
+            )
+          ]
+        )
+      }
       return
     }
     if (kind === 'discover') {
@@ -1761,11 +1878,9 @@ class DeterministicAndroidProtocolRuntime {
     }
     if (kind === 'subscribe') {
       this.subscriptionId = requiredString(command, 7)
+      this.subscribeCorrelation = requiredRecord(command, 2)
       if (this.emitInitialSubscriptionNotification) {
-        this.emitEvent('notification', [
-          field(11, this.subscriptionId),
-          field(13, binaryReferenceRecord(this.retain('notification-output', new Uint8Array([3, 4]))))
-        ])
+        this.emitNotificationRecord(new Uint8Array([3, 4]))
       }
       this.emitResult(command, 'subscribed', [field(5, requiredRecord(command, 4)), field(7, this.subscriptionId)])
       return
@@ -1844,12 +1959,23 @@ class DeterministicAndroidProtocolRuntime {
   }
 
   emitNotification(_address, bytes) {
-    if (this.subscriptionId === null) {
+    this.emitNotificationRecord(bytes)
+  }
+
+  /**
+   * Builds a notification exactly as the Android JSI binding does: the event
+   * carries the subscribe's operationCorrelation (field 10), and the payload is
+   * retained under that correlation's nonce so the two agree.
+   */
+  emitNotificationRecord(bytes) {
+    if (this.subscriptionId === null || this.subscribeCorrelation === null) {
       throw new Error('The deterministic runtime has no active subscription')
     }
+    const nonce = requiredString(this.subscribeCorrelation, 3)
     this.emitEvent('notification', [
+      field(10, this.subscribeCorrelation),
       field(11, this.subscriptionId),
-      field(13, binaryReferenceRecord(this.retain('notification-output', bytes)))
+      field(13, binaryReferenceRecord(this.retain(nonce, bytes)))
     ])
   }
 
@@ -1911,6 +2037,26 @@ class DeterministicAndroidProtocolRuntime {
             field(1, 'destroyFailed'),
             field(2, 'native-protocol'),
             field(3, 'destroy'),
+            field(4, 'notRetryable'),
+            field(7, safeMessage)
+          ])
+        )
+      ])
+    )
+  }
+
+  emitFailureWithCode(command, code, safeMessage) {
+    this.emit(
+      record('result', [
+        field(1, 1),
+        field(2, 'bondedPeers'),
+        field(3, record('terminal', [field(1, requiredRecord(command, 2)), field(2, 'failed')])),
+        field(
+          10,
+          record('error', [
+            field(1, code),
+            field(2, 'android'),
+            field(3, 'enumerateBondedPeers'),
             field(4, 'notRetryable'),
             field(7, safeMessage)
           ])

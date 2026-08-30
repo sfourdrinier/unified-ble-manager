@@ -3,6 +3,7 @@
 import { contractError } from '../backend-contract/errors'
 import { isAuthorizationBlocking } from '../backend-contract/identity'
 import type { ConnectionControlCapabilities } from '../backend-contract/connection-controls'
+import type { ConnectionIntent } from '../backend-contract/backend'
 import type {
   CoreBluetoothAdapterSnapshot,
   CoreBluetoothAdvertisement,
@@ -15,6 +16,10 @@ import { ReactNativeAndroidProtocolBoundary } from './rn-android-boundary'
  * The explicit capability declaration prevents the core from submitting that impossible command.
  */
 export class ReactNativeAppleProtocolBoundary extends ReactNativeAndroidProtocolBoundary {
+  override readonly connectionIntentCapabilities: Readonly<{ whenAvailable: 'unsupported' }> = Object.freeze({
+    whenAvailable: 'unsupported'
+  })
+
   override get connectionControlCapabilities(): ConnectionControlCapabilities {
     return Object.freeze({
       rssi: 'available',
@@ -55,9 +60,12 @@ export class ReactNativeAppleProtocolBoundary extends ReactNativeAndroidProtocol
     return super.startScan(onAdvertisement, serviceUuids)
   }
 
-  override async connect(nativePeerId: string): Promise<void> {
+  override async connect(nativePeerId: string, intent: ConnectionIntent = 'direct'): Promise<void> {
+    if (intent !== 'direct') {
+      throw contractError('capability.unsupported', 'connection', 'rn-apple-boundary.connect.when-available')
+    }
     this.assertAdapterReady('connection.connect')
-    return super.connect(nativePeerId)
+    return super.connect(nativePeerId, intent)
   }
 
   private assertAdapterReady(operation: string): void {

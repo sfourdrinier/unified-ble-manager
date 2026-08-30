@@ -1,6 +1,7 @@
 // src/native-protocol/rn-android-boundary.ts
 
 import { contractError } from '../backend-contract/errors'
+import type { SecurityPairOptions } from '../backend-contract/security'
 import {
   MAXIMUM_REQUESTED_ATT_MTU,
   MINIMUM_ATT_MTU,
@@ -24,6 +25,7 @@ import type {
   CoreBluetoothPhyRequestResult,
   CoreBluetoothScanPlatformOptions
 } from '../backends/corebluetooth/corebluetooth-boundary'
+import type { ConnectionIntent } from '../backend-contract/backend'
 import {
   copyNativeProtocolBytes,
   releaseNativeProtocolBytes,
@@ -88,6 +90,11 @@ export interface AndroidSecurityStateChangedRecord {
   readonly state: AndroidSecurityState
 }
 
+export interface AndroidBondedPeerSnapshot {
+  readonly nativePeerId: string
+  readonly displayName: string | null
+}
+
 const protocolVersion = NATIVE_PROTOCOL_VERSION
 const controlSurfaceVersion = NATIVE_PROTOCOL_CONTROL_SURFACE_VERSION
 const contractVersion = 1
@@ -111,12 +118,21 @@ type NativeSubscription = {
   readonly onValue: (value: Uint8Array) => void
 }
 
+function nativeConnectionIntent(intent: ConnectionIntent): 'direct' | 'whenAvailable' {
+  if (intent === 'direct') return 'direct'
+  if (intent === 'when-available') return 'whenAvailable'
+  throw contractError('argument.invalid', 'connection', 'rn-android-boundary.connect.intent')
+}
+
 /**
  * The React Native Android boundary owns the versioned JSI command/event transport.
  * It preserves native-only identifiers inside this file and exposes only the typed
  * direct-boundary interface consumed by the shared backend.
  */
 export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary {
+  readonly connectionIntentCapabilities: Readonly<{ whenAvailable: 'available' | 'unsupported' }> = Object.freeze({
+    whenAvailable: 'available'
+  })
   readonly descriptorOperationsAvailable: boolean = true
   private phyExtensionAvailable = false
   private securityExtensionAvailable = false
@@ -310,7 +326,47 @@ export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary
     this.scanListeners.clear()
   }
 
-  async connect(nativePeerId: string): Promise<void> {
+  /** Reads the current Android system bond table without creating GATT ownership. */
+  async enumerateBondedPeers(): Promise<readonly AndroidBondedPeerSnapshot[]> {
+    this.requireOpen('enumerate-bonded-peers')
+    const result = await this.dispatch('enumerateBondedPeers', [])
+    if (requiredString(result, 2, 'rn-android-boundary.enumerate-bonded-peers.kind') !== 'bondedPeers') {
+      throw contractError('protocol.malformed', 'boundary', 'rn-android-boundary.enumerate-bonded-peers.kind')
+    }
+    const bondedPeers = result.fields.find(candidate => candidate.id === 23)?.value
+    if (!Array.isArray(bondedPeers)) {
+      throw contractError('protocol.malformed', 'boundary', 'rn-android-boundary.enumerate-bonded-peers.records')
+    }
+    return Object.freeze(
+      bondedPeers.map((candidate, index) => {
+        if (!isNativeProtocolRecord(candidate) || candidate.kind !== 'bondedPeerSnapshot') {
+          throw contractError(
+            'protocol.malformed',
+            'boundary',
+            `rn-android-boundary.enumerate-bonded-peers.record-${index}`
+          )
+        }
+        const nativePeerId = requiredString(
+          candidate,
+          1,
+          `rn-android-boundary.enumerate-bonded-peers.record-${index}.native-peer-id`
+        )
+        if (nativePeerId.trim().length === 0) {
+          throw contractError(
+            'protocol.malformed',
+            'boundary',
+            `rn-android-boundary.enumerate-bonded-peers.record-${index}.native-peer-id`
+          )
+        }
+        return Object.freeze({
+          nativePeerId,
+          displayName: optionalString(candidate, 2)
+        })
+      })
+    )
+  }
+
+  async connect(nativePeerId: string, intent: ConnectionIntent = 'direct'): Promise<void> {
     this.requireOpen('connect')
     const existing = this.connections.get(nativePeerId)
     if (existing !== undefined && existing.state !== 'disconnected') {
@@ -319,7 +375,7 @@ export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary
     const connection = this.createConnection(nativePeerId)
     this.connections.set(nativePeerId, connection)
     try {
-      await this.dispatch('connect', [field(10, connection.record)])
+      await this.dispatch('connect', [field(10, connection.record), field(20, nativeConnectionIntent(intent))])
       connection.state = 'connected'
     } catch (error) {
       this.connections.delete(nativePeerId)
@@ -451,6 +507,7 @@ export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary
 
   async pair(
     nativePeerId: string,
+    transport: SecurityPairOptions['transport'],
     signal: AbortSignal | null = null
   ): Promise<{ readonly outcome: 'paired' | 'already-paired' | 'rejected'; readonly state: AndroidSecurityState }> {
     this.requireSecurityExtension('pair')
@@ -462,8 +519,15 @@ export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary
     if (isAbortSignalAborted(signal)) {
       throw contractError('operation.aborted', 'core', 'rn-android-boundary.pair')
     }
-    if (current.bond === 'bonded') return { outcome: 'already-paired', state: current }
-    const result = await this.dispatch('securityPair', [field(15, nativePeerId)])
+    // Android's public bond state is not transport-specific. A generic bond is
+    // sufficient for the platform default, but an explicit LE request must
+    // reach the native device-type-aware check instead of silently accepting a
+    // possible BR/EDR-only bond.
+    if (transport === 'auto' && current.bond === 'bonded') {
+      return { outcome: 'already-paired', state: current }
+    }
+    const nativeTransport = transport === 'auto' ? 'platformDefault' : transport
+    const result = await this.dispatch('securityPair', [field(15, nativePeerId), field(19, nativeTransport)])
     const state = securityStateFromRecord(result, nativePeerId, 'rn-android-boundary.pair')
     return { outcome: state.bond === 'bonded' ? 'paired' : 'rejected', state }
   }
@@ -736,6 +800,10 @@ export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary
   private receiveResult(result: NativeProtocolRecord): void {
     const terminal = requiredRecord(result, 3, 'rn-android-boundary.result.terminal')
     const correlation = requiredRecord(terminal, 1, 'rn-android-boundary.result.correlation')
+    this.assertCurrentAttachment(
+      requiredRecord(correlation, 1, 'rn-android-boundary.result.correlation-attachment'),
+      'result-correlation'
+    )
     const key = operationKey(
       requiredUnsigned(correlation, 2, 'rn-android-boundary.result.epoch'),
       requiredString(correlation, 3, 'rn-android-boundary.result.nonce')
@@ -781,6 +849,22 @@ export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary
     if (kind === 'notification') {
       const subscriptionId = requiredString(event, 11, 'rn-android-boundary.event.subscription')
       const reference = binaryReferenceFromRecord(requiredRecord(event, 13, 'rn-android-boundary.event.binary'))
+      // A notification's payload must belong to the subscription that produced
+      // it. The native codec enforces exactly this (requireBinaryCorrelation,
+      // NativeProtocolV2Codec.cpp), and enforcing it here too is what stops the
+      // deterministic layer from accepting a record the radio path rejects: a
+      // test double that mints its own correlation models a notification that
+      // can never actually be delivered, so the suite stays green while every
+      // real notification is dropped. That is issue #168.
+      const operation = requiredRecord(event, 10, 'rn-android-boundary.event.notification-operation')
+      const operationNonce = requiredString(operation, 3, 'rn-android-boundary.event.notification-operation-nonce')
+      if (reference.operationCorrelation !== operationNonce) {
+        throw contractError(
+          'protocol.violation',
+          'boundary',
+          'rn-android-boundary.event.notification-binary-correlation'
+        )
+      }
       const bytes = this.takeOutputBytes(reference, 'notification')
       const subscription = [...this.subscriptionsByAddress.values()].find(
         candidate => candidate.subscriptionId === subscriptionId
@@ -1262,6 +1346,10 @@ function sameAttachmentPath(left: NativeProtocolRecord, right: NativeProtocolRec
     requiredString(left, 5, 'rn-android-boundary.attachment.adapter-generation') ===
       requiredString(right, 5, 'rn-android-boundary.attachment.adapter-generation')
   )
+}
+
+function isNativeProtocolRecord(value: unknown): value is NativeProtocolRecord {
+  return typeof value === 'object' && value !== null && !Array.isArray(value) && 'kind' in value && 'fields' in value
 }
 
 function isAbortSignalAborted(signal: AbortSignal | null): boolean {
