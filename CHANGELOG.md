@@ -15,6 +15,8 @@ No changes yet.
   now retain their Android domain and code instead of being mislabeled as
   CoreBluetooth; Apple retains its CoreBluetooth domain, and host-neutral
   cleanup records keep the same public operation and retry-ownership contract.
+- Build the complete package during `prepare`, so an explicitly pinned Git
+  release branch exposes the same public entrypoints as the packed artifact.
 
 ## [4.0.9] - 2026-08-29
 

@@ -102,7 +102,7 @@
     "example:electron": "pnpm prepack && node example-electron/smoke.js",
     "build:example:web": "node scripts/examples/build-web-example.js",
     "example:web": "pnpm prepack && pnpm build:example:web && node scripts/examples/serve-web-example.js",
-    "prepare": "pnpm clean:plugin && pnpm build:plugin",
+    "prepare": "node scripts/ci/build-package.js",
     "lint:plugin": "eslint plugin/src/*"
   },
   "keywords": [
