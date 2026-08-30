@@ -4,7 +4,7 @@
 
 Main owns the radio. The renderer uses a versioned IPC client and never loads a native addon.
 
-This source targets `4.0.9`. Tagged releases ship Node-API v8 prebuilds covering macOS and Windows `arm64`/`x64` for both Node and modern Electron.
+This source targets `4.0.10`. Tagged releases ship Node-API v8 prebuilds covering macOS and Windows `arm64`/`x64` for both Node and modern Electron.
 
 `unified-ble-manager/electron/main` and
 `unified-ble-manager/electron/renderer` are the only Electron entrypoints.

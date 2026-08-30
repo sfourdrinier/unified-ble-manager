@@ -522,13 +522,14 @@ export function cleanupFailureDetail(resourceKind: string, operation: string, er
     return Object.freeze({ resourceKind, error: error.normalized })
   }
   const safeMessage = error instanceof Error ? error.message : 'CoreBluetooth cleanup rejected with a non-Error value'
+  const nativePlatform = error instanceof BackendContractError ? error.normalized.platform : null
   return Object.freeze({
     resourceKind,
     error: contractError('platform.failure', 'cleanup', operation, {
-      domain: 'corebluetooth',
-      code: 'native-cleanup-failed',
-      safeMessage,
-      metadata: Object.freeze({})
+      domain: nativePlatform?.domain ?? 'corebluetooth',
+      code: nativePlatform?.code ?? 'native-cleanup-failed',
+      safeMessage: nativePlatform?.safeMessage ?? safeMessage,
+      metadata: nativePlatform?.metadata ?? Object.freeze({})
     }).normalized
   })
 }
