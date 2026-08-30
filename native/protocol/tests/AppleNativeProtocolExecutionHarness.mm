@@ -44,7 +44,6 @@
 
 #include <ReactCommon/CallInvoker.h>
 #include <jsc/JSCRuntime.h>
-#include <jsi/instrumentation.h>
 
 #include <atomic>
 #include <barrier>
@@ -400,20 +399,11 @@ int runAppleNativeProtocolExecutionHarness() {
           }
           return Value::undefined();
         }));
-    AppleNativeProtocolExecution enumerateExecution(enumerateControl, nullptr);
-    enumerateExecution.install(*runtime, enumerateInvoker);
-    enumerateExecution.beginAttachment();
-    const auto enumerateInstalled = runtime->global().getProperty(*runtime, "__unifiedBleNativeProtocolV2");
-    const auto enumerateObject = enumerateInstalled.asObject(*runtime);
-    const auto enumerateSetSink = enumerateObject.getProperty(*runtime, "setEventSink").asObject(*runtime).asFunction(*runtime);
-    enumerateSetSink.call(*runtime, *enumerateSink);
+    const auto enumerateState = std::make_shared<AppleNativeProtocolExecution::State>(enumerateControl, nullptr);
+    initializeAttachment(enumerateState, enumerateInvoker, enumerateSink);
     const auto enumerateCommand = enumerateBondedPeersCommand(3U);
-    const auto enumerateBytes = protocol::NativeProtocolV2Codec{}.encode(enumerateCommand);
-    auto enumerateArray = jsi::Uint8Array(*runtime, enumerateBytes.size());
-    auto enumerateBuffer = enumerateArray.buffer(*runtime);
-    std::memcpy(enumerateBuffer.data(*runtime), enumerateBytes.data(), enumerateBytes.size());
-    const auto enumerateSubmit = enumerateObject.getProperty(*runtime, "submit").asObject(*runtime).asFunction(*runtime);
-    enumerateSubmit.call(*runtime, enumerateArray);
+    enumerateControl->registerCommand(enumerateCommand, true);
+    dispatchCommand(enumerateState, enumerateCommand);
     if (!require(
             enumerateControl->commandFor(3U, "apple-enumerate-bonded-operation-3").has_value(),
             "Apple enumerateBondedPeers command was not retained before terminal delivery")) return 1;
@@ -427,8 +417,7 @@ int runAppleNativeProtocolExecutionHarness() {
     if (!require(
             !enumerateControl->commandFor(3U, "apple-enumerate-bonded-operation-3").has_value(),
             "Apple enumerateBondedPeers terminal did not settle the operation")) return 1;
-    enumerateExecution.close();
-    while (enumerateInvoker->pending() != 0U) enumerateInvoker->flushOne();
+    enumerateState->closed.store(true, std::memory_order_release);
 
     const auto immediateDisconnectControl = openedRuntime();
     const auto immediateDisconnectInvoker = std::make_shared<ControllableInvoker>(*runtime);
@@ -604,6 +593,7 @@ int runAppleNativeProtocolExecutionHarness() {
     // assertion during destruction.
     releaseHarnessJsiState(state);
     releaseHarnessJsiState(missingInvokerState);
+    releaseHarnessJsiState(enumerateState);
     releaseHarnessJsiState(failedConnectState);
     releaseHarnessJsiState(throwingState);
     if (!runtime->global().getProperty(*runtime, "__unifiedBleNativeProtocolV2").isUndefined()) {
@@ -612,11 +602,6 @@ int runAppleNativeProtocolExecutionHarness() {
     return 0;
     }();
     }
-    // Deleting the installed global only makes its HostObject graph
-    // unreachable. Force JSC to finalize that graph while the runtime is still
-    // valid so any API wrappers retained by native-state finalizers are
-    // released before JSCRuntime checks its debug object counter.
-    runtime->instrumentation().collectGarbage("Apple native protocol harness teardown");
     runtime.reset();
     return harnessResult;
   } catch (const std::exception& error) {

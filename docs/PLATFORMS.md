@@ -8,7 +8,10 @@ This page is an evidence index, not a static compatibility matrix. An applicatio
 
 ## Package stability and backend support are separate
 
-`unified-ble-manager@4.0.8` is the published **stable package/API** for the 4.x contract; it is immutable. Backend support labels remain evidence-derived and independent of this SemVer. Earlier stable releases remain immutable published history.
+The version in `package.json` identifies the source being prepared or released;
+it does not by itself prove npm publication or immutability. Registry provenance
+and the tag-driven release workflow are the publication authorities. Stable
+package/API status and backend support labels remain independent.
 
 This package is the portable API/semantics freeze; it does **not** mean every first-party backend is
 automatically Preview, Supported, or Reliability-qualified.
@@ -50,11 +53,19 @@ configured notification channel/icon, connected-device foreground-service
 type, ongoing state, and app-launch tap. `while-session-intent-exists` adds
 managed boot and package-replacement recovery, but only starts the service
 when the native UBM session-intent is present. It never scans or reconnects;
-any reconnect policy belongs to the application. After Android has promoted
-the recovered service, UBM sends the package-scoped
+any reconnect policy belongs to the application. After Android has promoted a
+recovered service, UBM sends the package-scoped
 `com.sfourdrinier.unifiedblemanager.background.FOREGROUND_READY` broadcast.
 An app that owns a headless runtime may receive that signal and start its own
-work without racing Android's background-service restrictions.
+work without racing Android's background-service restrictions. Normal
+foreground acquisition resolves its existing caller instead of redundantly
+starting a second headless runtime.
+
+On Android 13 and newer, UBM intentionally requires `POST_NOTIFICATIONS`
+before acquiring this lease. Android can technically run a foreground service
+without drawer notification permission, but UBM chooses a stricter
+user-visible-monitoring policy and fails the acquisition explicitly when the
+permission is denied.
 
 Apple, Web, BlueZ, WinRT, Electron, Tauri, and deterministic backends do not
 claim this Android service capability. They reject the Android-only operation

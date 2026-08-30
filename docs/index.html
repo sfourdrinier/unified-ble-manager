@@ -64,7 +64,7 @@
               This page gets you to a first scan, connect, read, notify, and teardown on React Native. Other hosts are
               linked at the bottom. The root import does not turn Bluetooth on.
             </p>
-            <p>The current package is <code>4.0.8</code>.</p>
+            <p>This source targets <code>4.0.8</code>; verify the published version in the npm registry.</p>
             <h2>Pick a host</h2>
             <table>
               <thead>
@@ -132,15 +132,15 @@
             <h2>React Native and Expo in one hour</h2>
             <h3>1. Install</h3>
             <h4>Bare React Native</h4>
-            <p>Pin the current package for a known native rebuild:</p>
+            <p>Install the current published package and commit the resolved lockfile for a known native rebuild:</p>
             <p>
               Declare Android Bluetooth permissions and the BLE hardware feature yourself, request runtime permissions
               on Android 12+, add <code>NSBluetoothAlwaysUsageDescription</code> on iOS, run pods, and rebuild.
             </p>
             <h4>Expo / CNG v2</h4>
             <p>
-              The Expo v2 schema and <code>unified-ble-manager/expo</code> factory are in the published
-              <code>4.0.8</code> package. Pin that exact version:
+              The Expo v2 schema and <code>unified-ble-manager/expo</code> factory are in this source. Install the
+              published package and keep the exact version your application validates in its lockfile:
             </p>
             <p>The package does not run in Expo Go.</p>
             <p>Expo also needs a native build and development client:</p>
@@ -556,7 +556,7 @@
               supported BLE execution environment because it cannot contain this native module.
             </p>
             <p>
-              Use the v2 plugin options in the <code>4.0.8</code> package. Those options match the schema introduced at
+              Use the v2 plugin options in this <code>4.0.8</code> source. Those options match the schema introduced at
               <code>4.0.0-rc.4</code>. Expo Go cannot load this native module.
             </p>
             <h2>Installation and development build</h2>
@@ -564,7 +564,7 @@
               Pin the package so a later <code>latest</code> bump does not change native plugin options without a
               rebuild:
             </p>
-            <pre><code>pnpm add unified-ble-manager@4.0.8
+            <pre><code>pnpm add unified-ble-manager
 pnpm add expo@^57.0.0 expo-dev-client
 npx expo prebuild --clean
 npx expo run:ios
@@ -749,7 +749,7 @@ await manager.background.updateNotification({
             <h1>Electron</h1>
             <p>Main owns the radio. The renderer uses a versioned IPC client and never loads a native addon.</p>
             <p>
-              The current package is <code>4.0.8</code>. The release ships Node-API v8 prebuilds covering macOS and
+              This source targets <code>4.0.8</code>. Tagged releases ship Node-API v8 prebuilds covering macOS and
               Windows <code>arm64</code>/<code>x64</code> for both Node and modern Electron.
             </p>
             <p>
@@ -961,9 +961,9 @@ await manager.background.updateNotification({
             </p>
             <h2>Package stability and backend support are separate</h2>
             <p>
-              <code>unified-ble-manager@4.0.8</code> is the published <strong>stable package/API</strong> for the 4.x
-              contract; it is immutable. Backend support labels remain evidence-derived and independent of this SemVer.
-              Earlier stable releases remain immutable published history.
+              The version in <code>package.json</code> identifies the source being prepared or released; it does not by
+              itself prove npm publication or immutability. Registry provenance and the tag-driven release workflow are
+              the publication authorities. Stable package/API status and backend support labels remain independent.
             </p>
             <p>
               This package is the portable API/semantics freeze; it does <strong>not</strong> mean every first-party
@@ -1026,10 +1026,17 @@ await manager.background.updateNotification({
               state, and app-launch tap. <code>while-session-intent-exists</code> adds managed boot and
               package-replacement recovery, but only starts the service when the native UBM session-intent is present.
               It never scans or reconnects; any reconnect policy belongs to the application. After Android has promoted
-              the recovered service, UBM sends the package-scoped
+              a recovered service, UBM sends the package-scoped
               <code>com.sfourdrinier.unifiedblemanager.background.FOREGROUND_READY</code> broadcast. An app that owns a
               headless runtime may receive that signal and start its own work without racing Android's
-              background-service restrictions.
+              background-service restrictions. Normal foreground acquisition resolves its existing caller instead of
+              redundantly starting a second headless runtime.
+            </p>
+            <p>
+              On Android 13 and newer, UBM intentionally requires <code>POST_NOTIFICATIONS</code> before acquiring this
+              lease. Android can technically run a foreground service without drawer notification permission, but UBM
+              chooses a stricter user-visible-monitoring policy and fails the acquisition explicitly when the permission
+              is denied.
             </p>
             <p>
               Apple, Web, BlueZ, WinRT, Electron, Tauri, and deterministic backends do not claim this Android service

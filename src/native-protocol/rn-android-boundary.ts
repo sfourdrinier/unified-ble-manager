@@ -519,7 +519,13 @@ export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary
     if (isAbortSignalAborted(signal)) {
       throw contractError('operation.aborted', 'core', 'rn-android-boundary.pair')
     }
-    if (current.bond === 'bonded') return { outcome: 'already-paired', state: current }
+    // Android's public bond state is not transport-specific. A generic bond is
+    // sufficient for the platform default, but an explicit LE request must
+    // reach the native device-type-aware check instead of silently accepting a
+    // possible BR/EDR-only bond.
+    if (transport === 'auto' && current.bond === 'bonded') {
+      return { outcome: 'already-paired', state: current }
+    }
     const nativeTransport = transport === 'auto' ? 'platformDefault' : transport
     const result = await this.dispatch('securityPair', [field(15, nativePeerId), field(19, nativeTransport)])
     const state = securityStateFromRecord(result, nativePeerId, 'rn-android-boundary.pair')

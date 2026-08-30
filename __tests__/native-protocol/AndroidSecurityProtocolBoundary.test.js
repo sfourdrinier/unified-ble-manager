@@ -94,6 +94,20 @@ describe('React Native Android security protocol boundary', () => {
     await boundary.destroy()
   })
 
+  test('does not accept a generic existing bond as proof of an explicit LE bond', async () => {
+    const control = new SecurityControl(true, true)
+    const runtime = new SecurityRuntime(control)
+    runtime.bondState = 'bonded'
+    global.__unifiedBleNativeProtocolV2 = runtime
+    const boundary = await openBoundary(control)
+
+    await expect(boundary.pair(peerId, 'le')).resolves.toMatchObject({ outcome: 'paired' })
+    expect(runtime.commands).toEqual(['securityState', 'securityPair'])
+    expect(runtime.pairTransports).toEqual(['le'])
+
+    await boundary.destroy()
+  })
+
   test('does not infer pairing availability from an unknown bond state', async () => {
     const control = new SecurityControl(true, true)
     const runtime = new SecurityRuntime(control)

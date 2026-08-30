@@ -75,6 +75,19 @@ class BlePlxForegroundServiceLifecycleTest {
   }
 
   @Test
+  fun `foreground acquisition fails before waiting when invoked on the main thread`() {
+    val source = readAndroidSource(
+      "android/src/main/java/com/sfourdrinier/unifiedblemanager/background/AndroidConnectedDeviceForegroundServiceDriver.java"
+    )
+    val mainThreadGuard = source.indexOf("Looper.myLooper() == Looper.getMainLooper()")
+    val wait = source.indexOf("acknowledgement.await")
+
+    assertTrue(mainThreadGuard >= 0)
+    assertTrue(mainThreadGuard < wait)
+    assertTrue(source.contains("foregroundServiceMainThreadUnavailable"))
+  }
+
+  @Test
   fun `start failure cleanup checks its synchronous session intent commit`() {
     val source = readAndroidSource(
       "android/src/main/java/com/sfourdrinier/unifiedblemanager/BlePlxForegroundService.java"
@@ -117,7 +130,7 @@ class BlePlxForegroundServiceLifecycleTest {
   }
 
   @Test
-  fun `foreground readiness is signalled only after promotion and only to the host app`() {
+  fun `foreground readiness wakes recovery only after promotion and only in the host app`() {
     val source = readAndroidSource(
       "android/src/main/java/com/sfourdrinier/unifiedblemanager/BlePlxForegroundService.java"
     )
@@ -126,10 +139,14 @@ class BlePlxForegroundServiceLifecycleTest {
     val startedAcknowledgement = source.indexOf("acknowledge(intent, ACK_STARTED")
 
     assertTrue(foregroundPromotion >= 0)
-    assertTrue(foregroundPromotion < readinessSignal)
-    assertTrue(readinessSignal < startedAcknowledgement)
+    assertTrue(foregroundPromotion < startedAcknowledgement)
+    assertTrue(startedAcknowledgement < readinessSignal)
     assertTrue(
-      source.substring(readinessSignal, startedAcknowledgement)
+      source.substring(startedAcknowledgement, readinessSignal)
+        .contains("intent == null || !intent.hasExtra(EXTRA_ACK)")
+    )
+    assertTrue(
+      source.substring(readinessSignal)
         .contains(".setPackage(getPackageName())")
     )
   }

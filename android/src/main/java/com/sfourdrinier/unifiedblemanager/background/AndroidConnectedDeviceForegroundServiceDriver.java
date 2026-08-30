@@ -32,6 +32,11 @@ public final class AndroidConnectedDeviceForegroundServiceDriver
 
   @Override
   public void start(String reason) {
+    if (Looper.myLooper() == Looper.getMainLooper()) {
+      throw new ForegroundServiceControlException(
+          "foregroundServiceMainThreadUnavailable",
+          "Android foreground-service acquisition cannot wait for promotion on the main thread.");
+    }
     final ForegroundServiceNotificationConfiguration configuration = configuration();
     requireRuntimePermissions();
     final CountDownLatch acknowledgement = new CountDownLatch(1);

@@ -97,8 +97,14 @@ public final class BlePlxForegroundService extends Service {
       } else {
         startForeground(ForegroundServiceNotificationConfiguration.NOTIFICATION_ID, notification);
       }
-      sendBroadcast(new Intent(ACTION_FOREGROUND_READY).setPackage(getPackageName()));
       acknowledge(intent, ACK_STARTED, null);
+      // A normal acquisition already has a live JS caller waiting on EXTRA_ACK;
+      // starting a second headless runtime before that lease commits is both
+      // redundant and racy. Only recovery starts (boot, package replacement,
+      // or START_STICKY recreation) need the app-owned wake signal.
+      if (intent == null || !intent.hasExtra(EXTRA_ACK)) {
+        sendBroadcast(new Intent(ACTION_FOREGROUND_READY).setPackage(getPackageName()));
+      }
       return configuration.restartWhileSessionIntentExists() ? START_STICKY : START_NOT_STICKY;
     } catch (RuntimeException error) {
       acknowledge(intent, ACK_FAILED, error.getMessage());
