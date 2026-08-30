@@ -17,6 +17,7 @@ interface CapabilitySource {
 }
 
 export interface BleCapabilities {
+  /** True when the feature is implemented and invocable. Inspect get(id) for any limitations. */
   supports(id: BuiltInFeatureId): boolean
   /** Returns undefined for an unknown extension identifier. */
   get(id: FeatureId): CapabilityDescriptor | undefined
@@ -40,7 +41,8 @@ export class PublicBleCapabilities implements BleCapabilities {
   constructor(private readonly internal: CapabilitySource) {}
 
   supports(id: BuiltInFeatureId): boolean {
-    return this.get(id)?.state === 'supported'
+    const state = this.get(id)?.state
+    return state === 'supported' || state === 'limited'
   }
 
   get(id: FeatureId): CapabilityDescriptor | undefined {
@@ -51,11 +53,6 @@ export class PublicBleCapabilities implements BleCapabilities {
     const descriptor = this.get(id)
     if (descriptor === undefined) {
       throw new BleError('capability.unsupported', 'capability', `ble-capabilities.require.${id}`)
-    }
-    if (descriptor.state === 'limited') {
-      throw new BleError('capability.limited', 'capability', `ble-capabilities.require.${id}`, {
-        limitations: descriptor.limitations
-      })
     }
     if (descriptor.state === 'unsupported') {
       throw new BleError('capability.unsupported', 'capability', `ble-capabilities.require.${id}`, {

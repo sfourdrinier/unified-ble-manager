@@ -29,7 +29,9 @@ import android.os.Looper
 import android.os.ParcelUuid
 import androidx.core.content.IntentCompat
 import com.sfourdrinier.unifiedblemanager.protocol.UnifiedBleProtocolAndroidDispatcher
+import java.lang.reflect.InvocationTargetException
 import java.util.ArrayDeque
+import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
@@ -119,6 +121,55 @@ internal data class OwnedAndroidSecurityState(
   val bond: String,
   val pairingPossible: Boolean?
 )
+
+/** Immutable native-only projection of one system-bonded Android peer. */
+internal data class BondedPeerSnapshot(
+  val nativePeerId: String,
+  val displayName: String?
+)
+
+internal fun bondedPeerAdapterReadiness(
+  adapterAvailable: Boolean,
+  connectPermissionGranted: Boolean,
+  adapterState: Int
+): Result<Unit> {
+  if (!adapterAvailable) {
+    return Result.failure(IllegalStateException("Bluetooth adapter unavailable"))
+  }
+  if (!connectPermissionGranted) {
+    return Result.failure(SecurityException("Android Bluetooth connect permission is required to enumerate bonded peers"))
+  }
+  return when (adapterState) {
+    BluetoothAdapter.STATE_ON -> Result.success(Unit)
+    BluetoothAdapter.STATE_OFF ->
+      Result.failure(IllegalStateException("Bluetooth adapter is powered off"))
+    BluetoothAdapter.STATE_TURNING_ON,
+    BluetoothAdapter.STATE_TURNING_OFF ->
+      Result.failure(IllegalStateException("Bluetooth adapter is resetting"))
+    else -> Result.failure(IllegalStateException("Bluetooth adapter state is unavailable"))
+  }
+}
+
+/** Normalize the platform snapshot before it crosses the Android protocol boundary. */
+internal fun normalizeBondedPeerSnapshots(
+  peers: Iterable<BondedPeerSnapshot>
+): List<BondedPeerSnapshot> {
+  val normalized = peers.map { peer ->
+    val nativePeerId = peer.nativePeerId.trim().uppercase(Locale.ROOT)
+    require(nativePeerId.isNotEmpty()) { "Android bonded peer has an empty native identifier" }
+    BondedPeerSnapshot(nativePeerId, peer.displayName?.takeIf { it.isNotEmpty() })
+  }
+  return normalized
+    .groupBy { peer -> peer.nativePeerId }
+    .values
+    .map { duplicates ->
+      duplicates.sortedWith(
+        compareBy<BondedPeerSnapshot> { peer -> peer.displayName == null }
+          .thenBy { peer -> peer.displayName ?: "" }
+      ).first()
+    }
+    .sortedBy { peer -> peer.nativePeerId }
+}
 
 internal data class OwnedAndroidPhy(
   val txPhy: String,
@@ -333,6 +384,25 @@ class OwnedAndroidGattRadio(private val context: Context) {
         safeReason = "Android reported an unrecognized Bluetooth adapter state."
       )
     }
+  }
+
+  /** Read the system bond table without acquiring or mutating any GATT ownership. */
+  internal fun bondedPeerSnapshots(): List<BondedPeerSnapshot> {
+    val availableAdapter = adapter
+    bondedPeerAdapterReadiness(
+      adapterAvailable = availableAdapter != null,
+      connectPermissionGranted = hasBluetoothConnectPermission(),
+      adapterState = availableAdapter?.state ?: BluetoothAdapter.ERROR
+    ).getOrThrow()
+    val accessibleAdapter = availableAdapter ?: throw IllegalStateException("Bluetooth adapter unavailable")
+    return normalizeBondedPeerSnapshots(
+      accessibleAdapter.getBondedDevices().map { device ->
+        BondedPeerSnapshot(
+          nativePeerId = device.address,
+          displayName = device.name?.takeIf { name -> name.isNotEmpty() }
+        )
+      }
+    )
   }
 
   /**
@@ -597,17 +667,21 @@ class OwnedAndroidGattRadio(private val context: Context) {
     }
   }
 
-  internal fun pair(deviceId: String, callback: (String, OwnedAndroidSecurityState) -> Unit): Long {
+  internal fun pair(
+    deviceId: String,
+    transport: String,
+    callback: (String, OwnedAndroidSecurityState) -> Unit
+  ): Long {
     val bluetoothAdapter = adapter ?: throw IllegalStateException("Bluetooth adapter unavailable")
     val device = bluetoothAdapter.getRemoteDevice(deviceId)
-    if (device.bondState == BluetoothDevice.BOND_BONDED) {
+    if (isAlreadyPaired(device.bondState, device.type, transport)) {
       mainHandler.post { callback("alreadyPaired", OwnedAndroidSecurityState("bonded", true)) }
       return 0L
     }
     val key = device.address.uppercase()
     check(pendingBondPairs.putIfAbsent(key, callback) == null) { "Android pairing is already active for $deviceId" }
     try {
-      if (!device.createBond()) {
+      if (!createBond(device, transport)) {
         pendingBondPairs.remove(key, callback)
         throw IllegalStateException("Android rejected the bond request")
       }
@@ -616,6 +690,26 @@ class OwnedAndroidGattRadio(private val context: Context) {
       throw error
     }
     return nextGattOperationId.getAndIncrement()
+  }
+
+  private fun createBond(device: BluetoothDevice, transport: String): Boolean = when (transport) {
+    "platformDefault" -> device.createBond()
+    "le" -> {
+      val method = device.javaClass.getMethod("createBond", Int::class.javaPrimitiveType)
+      val result = try {
+        method.invoke(device, BluetoothDevice.TRANSPORT_LE)
+      } catch (error: InvocationTargetException) {
+        val cause = error.targetException
+        when (cause) {
+          is SecurityException -> throw cause
+          is Exception -> throw cause
+          else -> throw IllegalStateException("Android createBond(TRANSPORT_LE) failed", cause)
+        }
+      }
+      result as? Boolean
+        ?: throw IllegalStateException("Android createBond(TRANSPORT_LE) returned a non-boolean result")
+    }
+    else -> throw IllegalArgumentException("Unsupported Android pair transport '$transport'")
   }
 
   internal fun registerBondStateReceiver() {
@@ -2863,6 +2957,18 @@ class OwnedAndroidGattRadio(private val context: Context) {
     const val GATT_CLOSE_TIMEOUT_MS = 5_000L
 
     val CCCD_UUID: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
+
+    internal fun isAlreadyPaired(bondState: Int, deviceType: Int, transport: String): Boolean {
+      val bonded = bondState == BluetoothDevice.BOND_BONDED
+      return when (transport) {
+        "platformDefault" -> bonded
+        // A generic bond on a dual-mode device may be BR/EDR-only. Android 36
+        // exposes no public per-transport bond query, so only an LE-only device
+        // is unambiguous; every other type retries explicit LE and fails closed.
+        "le" -> bonded && deviceType == BluetoothDevice.DEVICE_TYPE_LE
+        else -> throw IllegalArgumentException("Unsupported Android pair transport '$transport'")
+      }
+    }
 
     @JvmStatic
     internal fun normalizeScanServiceUuids(serviceUuids: List<String>): List<String> {

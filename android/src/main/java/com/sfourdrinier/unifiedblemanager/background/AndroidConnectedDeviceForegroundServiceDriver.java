@@ -32,6 +32,11 @@ public final class AndroidConnectedDeviceForegroundServiceDriver
 
   @Override
   public void start(String reason) {
+    if (Looper.myLooper() == Looper.getMainLooper()) {
+      throw new ForegroundServiceControlException(
+          "foregroundServiceMainThreadUnavailable",
+          "Android foreground-service acquisition cannot wait for promotion on the main thread.");
+    }
     final ForegroundServiceNotificationConfiguration configuration = configuration();
     requireRuntimePermissions();
     final CountDownLatch acknowledgement = new CountDownLatch(1);
@@ -112,6 +117,19 @@ public final class AndroidConnectedDeviceForegroundServiceDriver
       throw new ForegroundServiceControlException(
           "foregroundServiceStopFailed",
           "Android could not stop the connected-device foreground service; retry releasing the lease.",
+          error);
+    }
+  }
+
+  @Override
+  public void update(String title, String body) {
+    try {
+      BlePlxForegroundService.updateNotification(title, body);
+    } catch (RuntimeException error) {
+      if (error instanceof ForegroundServiceControlException) throw error;
+      throw new ForegroundServiceControlException(
+          "foregroundServiceNotificationUpdateFailed",
+          "Android could not update the connected-device foreground-service notification; retry while the lease is active.",
           error);
     }
   }

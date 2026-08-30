@@ -81,7 +81,7 @@ Active `4.0.0-rc.*` release-train candidates publish to npm `latest` so a bare `
 
 On release day, set `release_candidate` to the exact candidate required by the
 release plan. RC2, RC3, RC4, `4.0.0-rc.4.1`, and RC5 are already immutable
-once tagged. Stable `4.0.0`, `4.0.1`, `4.0.2`, `4.0.3`, `4.0.4`, `4.0.5`, and `4.0.6` are immutable. `4.0.7` is the current train head.
+once tagged. Stable `4.0.0` through `4.0.7` are immutable. `4.0.8` is the current train head.
 
 ```sh
 release_candidate=4.0.0-rc.N
@@ -132,6 +132,27 @@ The `v4.0.3` tag is immutable published history. Do not recreate or move it.
 ```sh
 git tag -a v4.0.3 -m "v4.0.3"
 ```
+
+## Releasing 4.0.8
+
+The `v4.0.8` tag must identify the exact current `main` commit after canonical
+CI passes. Do not tag this feature branch or `release/4.0.8` directly.
+
+```sh
+git fetch origin --tags
+git checkout main
+git pull --ff-only origin main
+
+test "$(git branch --show-current)" = "main"
+test "$(node -p "require('./package.json').version")" = "4.0.8"
+git diff --exit-code
+git diff --cached --exit-code
+
+git tag -a v4.0.8 -m "v4.0.8"
+git push origin v4.0.8
+```
+
+Before tagging, confirm release-note extraction finds `## [4.0.8]`.
 
 ## Releasing 4.0.7
 

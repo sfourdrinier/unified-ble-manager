@@ -97,7 +97,12 @@ try {
     '-o',
     executionExecutable
   ])
-  run(executionExecutable, [])
+  // Teardown regressions are lifetime-sensitive. Exercise fresh attach/fatal
+  // terminal/close/runtime destruction cycles repeatedly without weakening
+  // JSC's dangling-wrapper assertion.
+  for (let iteration = 0; iteration < 3; iteration += 1) {
+    run(executionExecutable, [])
+  }
   console.log(
     '[test-apple-native-protocol] C++ protocol tests, the Apple CoreBluetooth parser, and the Apple execution CallInvoker/JSI terminal harness passed. No physical BLE radio or peripheral behavior was exercised.'
   )

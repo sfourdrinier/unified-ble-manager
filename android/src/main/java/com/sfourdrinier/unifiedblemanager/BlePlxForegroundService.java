@@ -3,6 +3,7 @@ package com.sfourdrinier.unifiedblemanager;
 import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
+import android.app.PendingIntent;
 import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
@@ -26,6 +27,8 @@ import java.util.Map;
 /** Explicit connected-device foreground lease. It performs no scan or reconnect work. */
 public final class BlePlxForegroundService extends Service {
   public static final String ACTION_START = "com.sfourdrinier.unifiedblemanager.background.START";
+  public static final String ACTION_FOREGROUND_READY =
+      "com.sfourdrinier.unifiedblemanager.background.FOREGROUND_READY";
   public static final String EXTRA_ACK = "backgroundStartAcknowledgement";
   public static final int ACK_STARTED = 1;
   public static final int ACK_FAILED = 2;
@@ -37,6 +40,8 @@ public final class BlePlxForegroundService extends Service {
   private static final String EXTRA_BODY = "body";
   private static final String EXTRA_ICON_NAME = "iconName";
   private static final String EXTRA_RESTART_STICKY = "restartSticky";
+  private static volatile BlePlxForegroundService activeService;
+  private volatile ForegroundServiceNotificationConfiguration activeConfiguration;
 
   public static Intent startIntent(
       Context context,
@@ -75,28 +80,15 @@ public final class BlePlxForegroundService extends Service {
         return START_NOT_STICKY;
       }
 
-      final String channelId = configuration.getChannelId();
-      final String channelName = configuration.getChannelName();
-      final String title = configuration.getTitle();
-      final String body = configuration.getBody();
+      activeService = this;
+      activeConfiguration = configuration;
       if (!getSharedPreferences("unified-ble-manager", MODE_PRIVATE)
           .edit()
           .putBoolean(SESSION_INTENT_PREFERENCE, configuration.restartWhileSessionIntentExists())
           .commit()) {
         throw new IllegalStateException("Android could not persist the foreground-service session intent.");
       }
-      ensureChannel(channelId, channelName);
-      final Notification.Builder builder =
-          Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
-              ? new Notification.Builder(this, channelId)
-              : new Notification.Builder(this);
-      builder
-          .setSmallIcon(iconResource(this, configuration.getIconName()))
-          .setContentTitle(title)
-          .setOngoing(true)
-          .setCategory(Notification.CATEGORY_SERVICE);
-      if (body != null) builder.setContentText(body);
-      final Notification notification = builder.build();
+      final Notification notification = buildNotification(configuration);
       if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
         startForeground(
             ForegroundServiceNotificationConfiguration.NOTIFICATION_ID,
@@ -106,6 +98,13 @@ public final class BlePlxForegroundService extends Service {
         startForeground(ForegroundServiceNotificationConfiguration.NOTIFICATION_ID, notification);
       }
       acknowledge(intent, ACK_STARTED, null);
+      // A normal acquisition already has a live JS caller waiting on EXTRA_ACK;
+      // starting a second headless runtime before that lease commits is both
+      // redundant and racy. Only recovery starts (boot, package replacement,
+      // or START_STICKY recreation) need the app-owned wake signal.
+      if (intent == null || !intent.hasExtra(EXTRA_ACK)) {
+        sendBroadcast(new Intent(ACTION_FOREGROUND_READY).setPackage(getPackageName()));
+      }
       return configuration.restartWhileSessionIntentExists() ? START_STICKY : START_NOT_STICKY;
     } catch (RuntimeException error) {
       acknowledge(intent, ACK_FAILED, error.getMessage());
@@ -117,14 +116,48 @@ public final class BlePlxForegroundService extends Service {
             new IllegalStateException("Android could not clear the foreground-service session intent."));
       }
       stopSelf();
+      activeService = null;
+      activeConfiguration = null;
       return START_NOT_STICKY;
     }
   }
 
   @Override
-  public void onDestroy() {
+  public synchronized void onDestroy() {
+    activeService = null;
+    activeConfiguration = null;
     stopForeground(STOP_FOREGROUND_REMOVE);
     super.onDestroy();
+  }
+
+  public static void updateNotification(String title, String body) {
+    final BlePlxForegroundService service = activeService;
+    if (service == null || service.activeConfiguration == null) {
+      throw new com.sfourdrinier.unifiedblemanager.background.ForegroundServiceControlException(
+          "foregroundServiceNotRunning",
+          "The connected-device foreground service is not running; acquire a background lease first.");
+    }
+    synchronized (service) {
+      final ForegroundServiceNotificationConfiguration current = service.activeConfiguration;
+      if (current == null) {
+        throw new com.sfourdrinier.unifiedblemanager.background.ForegroundServiceControlException(
+            "foregroundServiceNotRunning", "The connected-device foreground service is not running; acquire a background lease first.");
+      }
+      service.activeConfiguration = ForegroundServiceNotificationConfiguration.fromValues(
+          current.getChannelId(),
+          current.getChannelName(),
+          title,
+          body,
+          current.getIconName(),
+          current.restartWhileSessionIntentExists());
+      final NotificationManager manager = service.getSystemService(NotificationManager.class);
+      if (manager == null) {
+        throw new com.sfourdrinier.unifiedblemanager.background.ForegroundServiceControlException(
+            "foregroundServiceNotRunning", "Android notification service is unavailable.");
+      }
+      manager.notify(ForegroundServiceNotificationConfiguration.NOTIFICATION_ID,
+          service.buildNotification(service.activeConfiguration));
+    }
   }
 
   @Nullable
@@ -139,6 +172,34 @@ public final class BlePlxForegroundService extends Service {
     if (manager == null) throw new IllegalStateException("Notification service is unavailable");
     manager.createNotificationChannel(
         new NotificationChannel(channelId, channelName, NotificationManager.IMPORTANCE_LOW));
+  }
+
+  private Notification buildNotification(ForegroundServiceNotificationConfiguration configuration) {
+    ensureChannel(configuration.getChannelId(), configuration.getChannelName());
+    final Notification.Builder builder =
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.O
+            ? new Notification.Builder(this, configuration.getChannelId())
+            : new Notification.Builder(this);
+    final Intent launchIntent = getPackageManager().getLaunchIntentForPackage(getPackageName());
+    if (launchIntent == null) {
+      throw new com.sfourdrinier.unifiedblemanager.background.ForegroundServiceControlException(
+          "foregroundServiceNotConfigured", "The host app has no launchable activity for the notification tap.");
+    }
+    final PendingIntent contentIntent = PendingIntent.getActivity(
+        this,
+        ForegroundServiceNotificationConfiguration.NOTIFICATION_ID,
+        launchIntent,
+        Build.VERSION.SDK_INT >= Build.VERSION_CODES.M
+            ? PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE
+            : PendingIntent.FLAG_UPDATE_CURRENT);
+    builder
+        .setSmallIcon(iconResource(this, configuration.getIconName()))
+        .setContentTitle(configuration.getTitle())
+        .setContentIntent(contentIntent)
+        .setOngoing(true)
+        .setCategory(Notification.CATEGORY_SERVICE);
+    if (configuration.getBody() != null) builder.setContentText(configuration.getBody());
+    return builder.build();
   }
 
   private static String required(Intent intent, String name) {

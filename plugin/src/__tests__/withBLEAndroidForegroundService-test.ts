@@ -153,4 +153,33 @@ describe('withBLEAndroidForegroundService ownership', () => {
 
     expect(serviceMarker?.$['android:value']).toBe('service=1')
   })
+
+  it('declares boot and package-replaced recovery only for session-intent restart', () => {
+    const manifest = {
+      manifest: {
+        $: { 'xmlns:android': 'http://schemas.android.com/apk/res/android' },
+        application: [{ $: { 'android:name': '.MainApplication' } }]
+      }
+    }
+    const configured = applyForegroundService(manifest, {
+      ...foregroundServiceOptions,
+      restart: 'while-session-intent-exists'
+    })
+    expect(configured.manifest['uses-permission']).toContainEqual({
+      $: { 'android:name': 'android.permission.RECEIVE_BOOT_COMPLETED' }
+    })
+    expect(configured.manifest.application[0].receiver).toContainEqual(
+      expect.objectContaining({
+        $: expect.objectContaining({
+          'android:name': 'com.sfourdrinier.unifiedblemanager.background.BlePlxForegroundServiceRecoveryReceiver'
+        })
+      })
+    )
+
+    const disabled = applyForegroundService(configured, { ...foregroundServiceOptions, restart: 'never' })
+    expect(disabled.manifest.application[0].receiver).toEqual([])
+    expect(disabled.manifest['uses-permission']).not.toContainEqual({
+      $: { 'android:name': 'android.permission.RECEIVE_BOOT_COMPLETED' }
+    })
+  })
 })

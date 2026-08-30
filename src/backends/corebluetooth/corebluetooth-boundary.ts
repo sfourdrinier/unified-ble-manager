@@ -6,6 +6,7 @@ import type {
   ConnectionPriority,
   PhyPreference
 } from '../../backend-contract/connection-controls'
+import type { ConnectionIntent } from '../../backend-contract/backend'
 
 /**
  * Typed, bytes-first boundary between the CoreBluetooth addon and the shared
@@ -134,6 +135,8 @@ export interface CoreBluetoothPhyRequestResult {
 }
 
 export interface CoreBluetoothBoundary {
+  /** Declares whether this concrete boundary can honor queued Android-style connects. */
+  readonly connectionIntentCapabilities?: Readonly<{ whenAvailable: 'available' | 'unsupported' }>
   /** A platform declares an unavailable control before the core submits any native command. */
   readonly connectionControlCapabilities?: ConnectionControlCapabilities
   /** True only when this concrete native boundary can execute descriptor reads and writes. */
@@ -146,7 +149,7 @@ export interface CoreBluetoothBoundary {
     platform?: CoreBluetoothScanPlatformOptions
   ): Promise<void>
   stopScan(): Promise<void>
-  connect(nativePeerId: string): Promise<void>
+  connect(nativePeerId: string, intent?: ConnectionIntent): Promise<void>
   disconnect(nativePeerId: string): Promise<void>
   connectionState(nativePeerId: string): 'connecting' | 'connected' | 'disconnected'
   readRssi?(nativePeerId: string): Promise<number>

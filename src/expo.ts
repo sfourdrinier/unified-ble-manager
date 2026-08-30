@@ -60,6 +60,11 @@ export interface ExpoBackgroundLease {
   readonly release: () => Promise<void>
 }
 
+export interface ExpoBackgroundNotificationUpdate {
+  readonly title: string
+  readonly body?: string
+}
+
 export interface ExpoCompanionAssociationRequest {
   readonly name?: string
   readonly serviceUuid?: string
@@ -98,6 +103,7 @@ export interface ExpoBleManager extends BleManager {
   readonly openSettings: (target: ExpoSettingsTarget) => Promise<void>
   readonly background: {
     readonly acquire: (request: ExpoBackgroundRequest) => Promise<ExpoBackgroundLease>
+    readonly updateNotification: (request: ExpoBackgroundNotificationUpdate) => Promise<void>
   }
   readonly association: {
     readonly associate: (request?: ExpoCompanionAssociationRequest) => Promise<ExpoCompanionAssociationResult>
@@ -408,11 +414,15 @@ function withExpoRuntime(
   manager: BleManager,
   settingsBridge?: ExpoSettingsBridge,
   permissionBridge?: ExpoPermissionBridge,
-  backgroundControl?: Pick<import('./NativeUnifiedBleProtocolControl').Spec, 'acquireBackground' | 'releaseBackground'>,
+  backgroundControl?: Pick<
+    import('./NativeUnifiedBleProtocolControl').Spec,
+    'acquireBackground' | 'releaseBackground' | 'updateBackgroundNotification'
+  >,
   associationControl?: Pick<import('./NativeUnifiedBleProtocolControl').Spec, 'associateCompanionDevice'>,
   restorationControl?: Pick<import('./NativeUnifiedBleProtocolControl').Spec, 'claimRestoration'>,
   runtimeConfiguration?: ExpoRuntimeConfiguration
 ): ExpoBleManager {
+  const activeBackgroundLeases = new Set<string>()
   return Object.assign(manager, {
     readiness: () => getExpoBleReadiness(manager, runtimeConfiguration),
     permissions: Object.freeze({
@@ -420,7 +430,18 @@ function withExpoRuntime(
     }),
     openSettings: (target: ExpoSettingsTarget) => openExpoSettings(target, settingsBridge),
     background: Object.freeze({
-      acquire: (request: ExpoBackgroundRequest) => acquireExpoBackground(request, backgroundControl)
+      acquire: async (request: ExpoBackgroundRequest) => {
+        const lease = await acquireExpoBackground(request, backgroundControl)
+        activeBackgroundLeases.add(lease.leaseId)
+        return Object.freeze({
+          release: async () => {
+            await lease.release()
+            activeBackgroundLeases.delete(lease.leaseId)
+          }
+        })
+      },
+      updateNotification: (request: ExpoBackgroundNotificationUpdate) =>
+        updateExpoBackgroundNotification(request, backgroundControl, activeBackgroundLeases)
     }),
     association: Object.freeze({
       associate: (request: ExpoCompanionAssociationRequest = {}) =>
@@ -463,7 +484,7 @@ async function requestExpoPermissions(
 async function acquireExpoBackground(
   request: ExpoBackgroundRequest,
   control: Pick<import('./NativeUnifiedBleProtocolControl').Spec, 'acquireBackground' | 'releaseBackground'> | undefined
-): Promise<ExpoBackgroundLease> {
+): Promise<ExpoBackgroundLease & { readonly leaseId: string }> {
   if (request.kind !== 'connected-device' || request.reason.trim().length === 0) {
     throwExpoRuntimeError('argument.invalid', 'expo.background.acquire', 'A non-empty background reason is required.')
   }
@@ -494,9 +515,10 @@ async function acquireExpoBackground(
 function backgroundLease(
   control: Pick<import('./NativeUnifiedBleProtocolControl').Spec, 'acquireBackground' | 'releaseBackground'>,
   result: import('./NativeUnifiedBleProtocolControl').NativeBackgroundLeaseResult
-): ExpoBackgroundLease {
+): ExpoBackgroundLease & { readonly leaseId: string } {
   let releasePromise: Promise<void> | undefined
   return Object.freeze({
+    leaseId: result.leaseId,
     release: () => {
       if (releasePromise !== undefined) return releasePromise
       releasePromise = (async () => {
@@ -516,6 +538,49 @@ function backgroundLease(
       return releasePromise
     }
   })
+}
+
+const MAXIMUM_NOTIFICATION_TEXT_LENGTH = 256
+
+async function updateExpoBackgroundNotification(
+  request: ExpoBackgroundNotificationUpdate,
+  control: Pick<import('./NativeUnifiedBleProtocolControl').Spec, 'updateBackgroundNotification'> | undefined,
+  activeLeases: ReadonlySet<string>
+): Promise<void> {
+  const operation = 'expo.background.update-notification'
+  if (
+    !isRecord(request) ||
+    !boundedNonEmptyString(request.title) ||
+    (request.body !== undefined && !boundedNonEmptyString(request.body))
+  ) {
+    throwExpoRuntimeError('argument.invalid', operation, 'Notification title and body must be non-empty and bounded.')
+  }
+  const leaseId = activeLeases.values().next().value
+  if (leaseId === undefined) {
+    throwExpoRuntimeError(
+      'capability.unavailable',
+      operation,
+      'An active connected-device background lease is required to update its notification.'
+    )
+  }
+  if (control === undefined || typeof control.updateBackgroundNotification !== 'function') {
+    throwExpoRuntimeError('capability.unavailable', operation, 'Connected-device notification updates are unavailable.')
+  }
+  try {
+    await control.updateBackgroundNotification({
+      leaseId,
+      title: request.title,
+      ...(request.body === undefined ? {} : { body: request.body })
+    })
+  } catch (error) {
+    if (isExpoBoundaryError(error, operation)) throw error
+    throwExpoRuntimeError(
+      normalizedBackgroundErrorCode(errorCode(error)),
+      operation,
+      errorMessage(error),
+      errorCode(error)
+    )
+  }
 }
 
 async function openExpoSettings(target: ExpoSettingsTarget, settingsBridge?: ExpoSettingsBridge): Promise<void> {
@@ -711,6 +776,10 @@ function nonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.trim().length > 0
 }
 
+function boundedNonEmptyString(value: unknown): value is string {
+  return nonEmptyString(value) && value.length <= MAXIMUM_NOTIFICATION_TEXT_LENGTH
+}
+
 function nullableString(value: unknown): value is string | null {
   return value === null || nonEmptyString(value)
 }
@@ -752,7 +821,10 @@ function assertDirectExpoRuntime(): void {
 }
 
 function nativeBackgroundControl():
-  | Pick<import('./NativeUnifiedBleProtocolControl').Spec, 'acquireBackground' | 'releaseBackground'>
+  | Pick<
+      import('./NativeUnifiedBleProtocolControl').Spec,
+      'acquireBackground' | 'releaseBackground' | 'updateBackgroundNotification'
+    >
   | undefined {
   try {
     return getNativeUnifiedBleProtocolControl()
@@ -847,6 +919,7 @@ function errorCode(error: unknown): string {
 function normalizedBackgroundErrorCode(nativeCode: string): BleErrorCode {
   switch (nativeCode) {
     case 'foregroundServiceNotConfigured':
+    case 'foregroundServiceNotRunning':
       return 'capability.unavailable'
     case 'foregroundServicePermissionDenied':
       return 'permission.denied'

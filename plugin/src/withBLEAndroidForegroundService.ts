@@ -3,6 +3,8 @@ import type { AndroidBackgroundOptions } from './expoPluginSchema'
 import type { AndroidManifestWithExtraTools } from './withBLEAndroidManifest'
 
 export const BLE_FOREGROUND_SERVICE_NAME = 'com.sfourdrinier.unifiedblemanager.BlePlxForegroundService'
+export const BLE_FOREGROUND_SERVICE_RECOVERY_RECEIVER_NAME =
+  'com.sfourdrinier.unifiedblemanager.background.BlePlxForegroundServiceRecoveryReceiver'
 export const FOREGROUND_SERVICE_OWNERSHIP_METADATA_NAME =
   'com.sfourdrinier.unifiedblemanager.foreground-service-ownership'
 export const FOREGROUND_SERVICE_PERMISSION_OWNERSHIP_METADATA_NAME =
@@ -19,7 +21,8 @@ export const FOREGROUND_SERVICE_NOTIFICATION_METADATA = Object.freeze({
 export const FOREGROUND_SERVICE_PERMISSIONS = Object.freeze([
   'android.permission.FOREGROUND_SERVICE',
   'android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE',
-  'android.permission.POST_NOTIFICATIONS'
+  'android.permission.POST_NOTIFICATIONS',
+  'android.permission.RECEIVE_BOOT_COMPLETED'
 ])
 
 const FOREGROUND_SERVICE_OWNERSHIP_METADATA_VALUE = 'service=1'
@@ -37,6 +40,9 @@ const FOREGROUND_SERVICE_PERMISSION_ATTRIBUTES: Readonly<Record<string, Readonly
     'android.permission.POST_NOTIFICATIONS': Object.freeze({
       'android:name': 'android.permission.POST_NOTIFICATIONS',
       'tools:targetApi': '33'
+    }),
+    'android.permission.RECEIVE_BOOT_COMPLETED': Object.freeze({
+      'android:name': 'android.permission.RECEIVE_BOOT_COMPLETED'
     })
   })
 
@@ -122,6 +128,16 @@ function addForegroundService(
   if (!Array.isArray(manifest['uses-permission'])) manifest['uses-permission'] = []
   const permissions = manifest['uses-permission']
   const owned = ownedPermissionNames(androidManifest)
+  if (options.restart !== 'while-session-intent-exists' && owned.has('android.permission.RECEIVE_BOOT_COMPLETED')) {
+    const existing = permissions.find(
+      permission => permission.$['android:name'] === 'android.permission.RECEIVE_BOOT_COMPLETED'
+    )
+    if (existing !== undefined && isPluginOwnedPermission(existing)) {
+      const retained = permissions.filter(permission => permission !== existing)
+      permissions.splice(0, permissions.length, ...retained)
+    }
+    owned.delete('android.permission.RECEIVE_BOOT_COMPLETED')
+  }
   AndroidConfig.Manifest.ensureToolsAvailable(androidManifest)
   const requiredPermissions = [
     { $: { 'android:name': 'android.permission.FOREGROUND_SERVICE' } },
@@ -138,6 +154,9 @@ function addForegroundService(
       }
     }
   ]
+  if (options.restart === 'while-session-intent-exists') {
+    requiredPermissions.push({ $: { 'android:name': 'android.permission.RECEIVE_BOOT_COMPLETED' } })
+  }
   for (const permission of requiredPermissions) {
     const name = permission.$['android:name']
     if (permissions.some(existing => existing.$['android:name'] === name)) continue
@@ -158,6 +177,23 @@ function addForegroundService(
       'tools:targetApi': '29'
     }
   })
+  const receivers = Array.isArray(app.receiver) ? app.receiver : []
+  app.receiver = receivers.filter(
+    receiver => receiver.$['android:name'] !== BLE_FOREGROUND_SERVICE_RECOVERY_RECEIVER_NAME
+  )
+  if (options.restart === 'while-session-intent-exists') {
+    app.receiver.push({
+      $: {
+        'android:name': BLE_FOREGROUND_SERVICE_RECOVERY_RECEIVER_NAME,
+        'android:enabled': 'true',
+        'android:exported': 'false'
+      },
+      'intent-filter': [
+        { action: [{ $: { 'android:name': 'android.intent.action.BOOT_COMPLETED' } }] },
+        { action: [{ $: { 'android:name': 'android.intent.action.MY_PACKAGE_REPLACED' } }] }
+      ]
+    })
+  }
 
   setForegroundServiceOwnershipMetadata(androidManifest, owned)
   setMetadata(androidManifest, FOREGROUND_SERVICE_NOTIFICATION_METADATA.channelId, options.notification.channelId)
@@ -204,6 +240,11 @@ function removeForegroundService(androidManifest: AndroidManifestWithExtraTools)
   const app = application(androidManifest)
   if (Array.isArray(app.service)) {
     app.service = app.service.filter(service => service.$['android:name'] !== BLE_FOREGROUND_SERVICE_NAME)
+  }
+  if (Array.isArray(app.receiver)) {
+    app.receiver = app.receiver.filter(
+      receiver => receiver.$['android:name'] !== BLE_FOREGROUND_SERVICE_RECOVERY_RECEIVER_NAME
+    )
   }
   removeManagedMetadata(androidManifest)
 }

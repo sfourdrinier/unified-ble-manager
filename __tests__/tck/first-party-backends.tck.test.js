@@ -375,7 +375,7 @@ class DeterministicNativeControl {
     this.handshakes.push(request)
     return Promise.resolve({
       nativeProtocol: 2,
-      abi: 4,
+      abi: 6,
       controlSurface: 2,
       backendContract: 1,
       capabilitySchema: 1,
@@ -478,6 +478,7 @@ class DeterministicReactNativeProtocolRuntime {
     this.nextBuffer = 1
     this.nextEvent = 1
     this.subscriptionId = null
+    this.subscribeCorrelation = null
     this.connection = null
     this.descriptorValue = new Uint8Array([8, 7])
     this.emitInitialSubscriptionNotification = emitInitialSubscriptionNotification
@@ -564,11 +565,9 @@ class DeterministicReactNativeProtocolRuntime {
     }
     if (kind === 'subscribe') {
       this.subscriptionId = requiredString(command, 7)
+      this.subscribeCorrelation = requiredRecord(command, 2)
       if (this.emitInitialSubscriptionNotification) {
-        this.emitEvent('notification', [
-          field(11, this.subscriptionId),
-          field(13, binaryReferenceRecord(this.retain('first-party-registry-notification', new Uint8Array([3, 4]))))
-        ])
+        this.emitNotificationRecord(new Uint8Array([3, 4]))
       }
       return this.emitResult(command, 'subscribed', [
         field(5, requiredRecord(command, 4)),
@@ -628,10 +627,23 @@ class DeterministicReactNativeProtocolRuntime {
   }
 
   emitNotification(_address, bytes) {
-    if (this.subscriptionId === null) throw new Error('Deterministic runtime has no active subscription')
+    this.emitNotificationRecord(bytes)
+  }
+
+  /**
+   * Emits a notification the way the native binding does: the subscribe's
+   * operationCorrelation on the event, and the payload retained under that
+   * correlation's nonce. Inventing a correlation here would model a record the
+   * native codec refuses to deliver (issue #168).
+   */
+  emitNotificationRecord(bytes) {
+    if (this.subscriptionId === null || this.subscribeCorrelation === null) {
+      throw new Error('Deterministic runtime has no active subscription')
+    }
     this.emitEvent('notification', [
+      field(10, this.subscribeCorrelation),
       field(11, this.subscriptionId),
-      field(13, binaryReferenceRecord(this.retain('first-party-registry-notification', bytes)))
+      field(13, binaryReferenceRecord(this.retain(requiredString(this.subscribeCorrelation, 3), bytes)))
     ])
   }
 

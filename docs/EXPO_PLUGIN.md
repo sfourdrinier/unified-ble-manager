@@ -7,7 +7,7 @@ start a radio, request runtime permissions during prebuild, or prove physical
 radio/restoration reliability. Expo Go is not a supported BLE execution
 environment because it cannot contain this native module.
 
-Use the v2 plugin options in the published `4.0.7` package. Those options match
+Use the v2 plugin options in this `4.0.8` source. Those options match
 the schema introduced at `4.0.0-rc.4`. Expo Go cannot load this native module.
 
 ## Installation and development build
@@ -15,7 +15,7 @@ the schema introduced at `4.0.0-rc.4`. Expo Go cannot load this native module.
 Pin the package so a later `latest` bump does not change native plugin options
 without a rebuild:
 
-    pnpm add unified-ble-manager@4.0.7
+    pnpm add unified-ble-manager
     pnpm add expo@^57.0.0 expo-dev-client
     npx expo prebuild --clean
     npx expo run:ios
@@ -105,7 +105,34 @@ hosts fail explicitly.
   bundle identifier plus these values.
 - android.mode is none or connected-device-foreground-service. The latter
   requires a complete notification (channelId, channelName, and title) and may
-  set body, icon, and an explicit restart policy.
+  set body, icon, and an explicit restart policy. Background is absent by
+  default; restart is `never` by default.
+
+When the Android connected-device service is active, applications can publish
+current user-facing state without changing service ownership:
+
+    const lease = await manager.background.acquire({
+      kind: 'connected-device', reason: 'active glucose monitoring'
+    })
+    await manager.background.updateNotification({
+      title: 'Glucose 108', body: 'Updates are private'
+    })
+
+`updateNotification` requires an active lease, validates bounded non-empty
+text, updates the existing UBM notification in place, and never acquires or
+starts a service. The notification retains its configured channel, icon,
+connected-device service type, ongoing state, and session-intent policy; its
+tap opens the host app. Release the lease when monitoring ends. Optional
+reconnection remains application-owned: `while-session-intent-exists` recovers
+the configured service after boot or package replacement only when the native
+session intent exists; it never scans or reconnects.
+
+The platform matrix is intentionally explicit: Android supports the lease and
+notification update when the connected-device service is configured; Apple,
+Web, desktop, and other hosts reject these Android-only operations with
+`capability.unsupported` (or `capability.unavailable` when a required Android
+lease/configuration is absent). There is one contract for the public API and
+native bridge; unsupported surfaces do not silently discard options.
 
 Foreground-service declarations do not acquire a runtime lease or guarantee
 background reliability. The application must explicitly acquire and release

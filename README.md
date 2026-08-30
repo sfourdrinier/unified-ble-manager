@@ -6,7 +6,20 @@
 
 It is an evolution of `react-native-ble-plx`, rewritten as a **cross-platform unified product**. One bytes-first BLE model and lifecycle semantics across hosts, with host-specific construction and ownership. The root package never picks a radio for you, and it will not quietly fall back to a simulator or a different backend.
 
-Install `unified-ble-manager` from npm (`4.0.7` on `latest`). The root import does not pick a radio. Package SemVer and backend support labels are independent: each radio backend stays Experimental until live-radio evidence says otherwise. See [`docs/PLATFORMS.md`](docs/PLATFORMS.md).
+Install `unified-ble-manager` from npm. The registry and provenance attached to
+the tag-driven release are the authority for the current `latest` version. The
+root import does not pick a radio. Package SemVer and backend support labels are
+independent: each radio backend keeps its evidence-derived label. See
+[`docs/PLATFORMS.md`](docs/PLATFORMS.md).
+
+This source tree is preparing `4.0.8`; that version is installable only after it
+appears in the npm registry.
+
+> **4.0 development note:** The 4.0 line is the real-application proving ground
+> for a simpler, stronger 4.1. Develop carefully against it: pin the version you
+> validate, read the changelog when upgrading, inspect capability limitations,
+> and report real-device behavior. Missing hardware evidence remains visible;
+> it does not make an implemented operation unusable.
 
 > Sponsored by [Imagi Explain](https://imagiexplain.com) — researched, narrated whiteboard explainers from a prompt, a PDF, or your notes.
 
@@ -84,6 +97,12 @@ const manager = await createReactNativeBleManager({
 ```
 
 On Android 12+ the app must request `BLUETOOTH_SCAN` and `BLUETOOTH_CONNECT` itself. The library does not call `PermissionsAndroid`.
+
+On Android, `manager.peers.bonded()` lists paired system peers and
+`manager.peers.resolve(reference)` rechecks a saved reference before
+`manager.connect(peer, { intent: 'when-available' })`; paired does not mean
+reachable. See [`docs/PEERS.md`](docs/PEERS.md) for the persistence and error
+semantics.
 
 ### Expo plugin
 
@@ -209,7 +228,11 @@ Web Bluetooth replaces the scan with `ble.choose(...)` from a user gesture. Taur
 
 Controls report the truth of the instantiated host backend, including
 `supported`, `limited`, `unavailable`, or `unsupported`; host family alone is
-not evidence of support. Readiness is unsupported until the backend advertises
+not evidence of support. `manager.capabilities.supports(id)` answers whether
+the operation is implemented and invocable, so it returns `true` for both
+`supported` and `limited`. Use `manager.capabilities.get(id)` when application
+policy needs to distinguish full qualification from a named limitation.
+Readiness is unsupported until the backend advertises
 the readiness capability, and a readiness event does not prove a later payload
 was retained.
 

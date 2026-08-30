@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <title>unified-ble-manager 4.0.7 | Documentation</title>
+    <title>unified-ble-manager 4.0.8 | Documentation</title>
     <meta
       name="description"
       content="Unified Bluetooth Low Energy manager for React Native, Electron, Tauri, Web, and desktop"
@@ -18,7 +18,7 @@
       <div id="split-left" class="overflow-auto fs0 height-viewport-100">
         <div class="py1 px2">
           <h3 class="mb0 no-anchor">unified-ble-manager</h3>
-          <div class="mb1"><code>4.0.7</code></div>
+          <div class="mb1"><code>4.0.8</code></div>
           <input
             placeholder="Filter"
             id="filter-input"
@@ -64,7 +64,7 @@
               This page gets you to a first scan, connect, read, notify, and teardown on React Native. Other hosts are
               linked at the bottom. The root import does not turn Bluetooth on.
             </p>
-            <p>The current package is <code>4.0.7</code>.</p>
+            <p>This source targets <code>4.0.8</code>; verify the published version in the npm registry.</p>
             <h2>Pick a host</h2>
             <table>
               <thead>
@@ -132,15 +132,16 @@
             <h2>React Native and Expo in one hour</h2>
             <h3>1. Install</h3>
             <h4>Bare React Native</h4>
-            <p>Pin the current package for a known native rebuild:</p>
+            <p>Install the current published package and commit the resolved lockfile for a known native rebuild:</p>
             <p>
               Declare Android Bluetooth permissions and the BLE hardware feature yourself, request runtime permissions
               on Android 12+, add <code>NSBluetoothAlwaysUsageDescription</code> on iOS, run pods, and rebuild.
             </p>
             <h4>Expo / CNG v2</h4>
             <p>
-              The Expo v2 schema and <code>unified-ble-manager/expo</code> factory are in the published
-              <code>4.0.7</code> package. Pin that exact version:
+              The Expo v2 schema and <code>unified-ble-manager/expo</code> factory are in this source. After the npm
+              registry lists <code>4.0.8</code>, install that exact version and keep it in your lockfile while
+              validating the native build:
             </p>
             <p>The package does not run in Expo Go.</p>
             <p>Expo also needs a native build and development client:</p>
@@ -556,15 +557,15 @@
               supported BLE execution environment because it cannot contain this native module.
             </p>
             <p>
-              Use the v2 plugin options in the published <code>4.0.7</code> package. Those options match the schema
-              introduced at <code>4.0.0-rc.4</code>. Expo Go cannot load this native module.
+              Use the v2 plugin options in this <code>4.0.8</code> source. Those options match the schema introduced at
+              <code>4.0.0-rc.4</code>. Expo Go cannot load this native module.
             </p>
             <h2>Installation and development build</h2>
             <p>
               Pin the package so a later <code>latest</code> bump does not change native plugin options without a
               rebuild:
             </p>
-            <pre><code>pnpm add unified-ble-manager@4.0.7
+            <pre><code>pnpm add unified-ble-manager
 pnpm add expo@^57.0.0 expo-dev-client
 npx expo prebuild --clean
 npx expo run:ios
@@ -657,9 +658,36 @@ bunx eas build --profile development --platform android
               </li>
               <li>
                 android.mode is none or connected-device-foreground-service. The latter requires a complete notification
-                (channelId, channelName, and title) and may set body, icon, and an explicit restart policy.
+                (channelId, channelName, and title) and may set body, icon, and an explicit restart policy. Background
+                is absent by default; restart is <code>never</code> by default.
               </li>
             </ul>
+            <p>
+              When the Android connected-device service is active, applications can publish current user-facing state
+              without changing service ownership:
+            </p>
+            <pre><code>const lease = await manager.background.acquire({
+  kind: 'connected-device', reason: 'active glucose monitoring'
+})
+await manager.background.updateNotification({
+  title: 'Glucose 108', body: 'Updates are private'
+})
+</code></pre>
+            <p>
+              <code>updateNotification</code> requires an active lease, validates bounded non-empty text, updates the
+              existing UBM notification in place, and never acquires or starts a service. The notification retains its
+              configured channel, icon, connected-device service type, ongoing state, and session-intent policy; its tap
+              opens the host app. Release the lease when monitoring ends. Optional reconnection remains
+              application-owned: <code>while-session-intent-exists</code> recovers the configured service after boot or
+              package replacement only when the native session intent exists; it never scans or reconnects.
+            </p>
+            <p>
+              The platform matrix is intentionally explicit: Android supports the lease and notification update when the
+              connected-device service is configured; Apple, Web, desktop, and other hosts reject these Android-only
+              operations with <code>capability.unsupported</code> (or <code>capability.unavailable</code> when a
+              required Android lease/configuration is absent). There is one contract for the public API and native
+              bridge; unsupported surfaces do not silently discard options.
+            </p>
             <p>
               Foreground-service declarations do not acquire a runtime lease or guarantee background reliability. The
               application must explicitly acquire and release the runtime background lease exposed by the host when that
@@ -722,7 +750,7 @@ bunx eas build --profile development --platform android
             <h1>Electron</h1>
             <p>Main owns the radio. The renderer uses a versioned IPC client and never loads a native addon.</p>
             <p>
-              The current package is <code>4.0.7</code>. The release ships Node-API v8 prebuilds covering macOS and
+              This source targets <code>4.0.8</code>. Tagged releases ship Node-API v8 prebuilds covering macOS and
               Windows <code>arm64</code>/<code>x64</code> for both Node and modern Electron.
             </p>
             <p>
@@ -934,10 +962,9 @@ bunx eas build --profile development --platform android
             </p>
             <h2>Package stability and backend support are separate</h2>
             <p>
-              <code>unified-ble-manager@4.0.7</code> is the published <strong>stable package/API</strong> for the 4.x
-              contract; it is immutable. Backend support labels remain evidence-derived and independent of this SemVer.
-              Immutable <code>4.0.0</code>, <code>4.0.1</code>, <code>4.0.2</code>, and <code>4.0.3</code> remain
-              published history.
+              The version in <code>package.json</code> identifies the source being prepared or released; it does not by
+              itself prove npm publication or immutability. Registry provenance and the tag-driven release workflow are
+              the publication authorities. Stable package/API status and backend support labels remain independent.
             </p>
             <p>
               This package is the portable API/semantics freeze; it does <strong>not</strong> mean every first-party
@@ -982,8 +1009,71 @@ bunx eas build --profile development --platform android
               <code>BlePort</code>/<code>PortBleManager</code> compatibility surface, or production Noble fallback.
             </p>
             <p>
+              <code>manager.capabilities.supports(id)</code> means the selected backend implements an invocable
+              operation; both <code>supported</code> and <code>limited</code> descriptors satisfy it. The descriptor
+              returned by <code>get(id)</code> preserves evidence and limitations so an application can require a fully
+              qualified <code>supported</code> state when needed.
+            </p>
+            <p>
               Host entrypoints select an explicit concrete backend and surface its typed unavailable, permission,
               adapter, cancellation, deadline, and lifecycle failures.
+            </p>
+            <h2>Connected-device background monitoring</h2>
+            <p>
+              The Expo Android host offers an explicit connected-device foreground-service lease. It is absent by
+              default, and <code>restart: 'never'</code> is the default. A caller may update the current notification
+              title/body while holding that lease; updates do not start a service or acquire another lease. Android
+              preserves the configured notification channel/icon, connected-device foreground-service type, ongoing
+              state, and app-launch tap. <code>while-session-intent-exists</code> adds managed boot and
+              package-replacement recovery, but only starts the service when the native UBM session-intent is present.
+              It never scans or reconnects; any reconnect policy belongs to the application. After Android has promoted
+              a recovered service, UBM sends the package-scoped
+              <code>com.sfourdrinier.unifiedblemanager.background.FOREGROUND_READY</code> broadcast. An app that owns a
+              headless runtime may receive that signal and start its own work without racing Android's
+              background-service restrictions. Normal foreground acquisition resolves its existing caller instead of
+              redundantly starting a second headless runtime.
+            </p>
+            <p>
+              On Android 13 and newer, UBM intentionally requires <code>POST_NOTIFICATIONS</code> before acquiring this
+              lease. Android can technically run a foreground service without drawer notification permission, but UBM
+              chooses a stricter user-visible-monitoring policy and fails the acquisition explicitly when the permission
+              is denied.
+            </p>
+            <p>
+              Apple, Web, BlueZ, WinRT, Electron, Tauri, and deterministic backends do not claim this Android service
+              capability. They reject the Android-only operation truthfully with <code>capability.unsupported</code>; no
+              backend silently ignores an option or substitutes a supervisor/reconnect loop.
+            </p>
+            <h2>Peer directory availability</h2>
+            <p>
+              React Native Android is currently the only first-party backend that exposes the system-bonded directory:
+              <code>manager.peers.bonded()</code> enumerates the Android bond table and
+              <code>manager.peers.resolve(reference)</code> rechecks that table before a reconnect. The reference is
+              backend-owned and opaque; the native address never becomes a public durable MAC identity.
+              <code>bonded</code> means paired metadata, not reachable or connected. Apps need Android
+              <code>BLUETOOTH_CONNECT</code> permission, and a permission failure is surfaced as
+              <code>permission.denied</code> rather than an empty result.
+            </p>
+            <p>
+              The other backends retain their truthful boundaries: Web Bluetooth exposes origin-authorized devices (not
+              bonded devices), while React Native Apple, CoreBluetooth, BlueZ, WinRT, Electron, and Tauri do not
+              advertise Android bonded or queued <code>when-available</code> support without a native primitive that can
+              honour it. Their unsupported peer methods fail with <code>capability.unsupported</code>.
+            </p>
+            <h2>React Native notification bursts</h2>
+            <p>
+              React Native Android and Apple both deliver native BLE events through a bounded native-to-JavaScript
+              ingress queue. Each queue retains at most 512 records or 1 MiB, whichever limit is reached first. This
+              gives applications room for a peripheral to send a few hundred notifications in a catch-up burst—for
+              example, about 288 five-minute records covering 24 hours—without turning the queue into unbounded memory.
+            </p>
+            <p>
+              Applications should still process notifications promptly and split larger application-protocol transfers
+              into resumable ranges. If JavaScript cannot drain the bounded queue, the backend reports
+              <code>stream.overflow</code> and closes that ingress rather than silently losing a prefix. Android and
+              Apple use the same limits; Web, BlueZ, CoreBluetooth desktop, WinRT, Electron, Tauri, and the
+              deterministic backend do not pass through this React Native bridge and retain their existing stream limits
+              and capability reports.
             </p>
             <p>
               Deterministic and mock boundaries are test-only. They prove contract/fault behavior, not live radio.

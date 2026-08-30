@@ -438,7 +438,9 @@ void validateCommandSemantics(const ProtocolRecord& record) {
     requireFieldSet(record, {1U, 2U, 3U, 12U}, {});
   } else if (*kind == "scanStop" || *kind == "destroy") {
     requireFieldSet(record, {1U, 2U, 3U}, {});
-  } else if (*kind == "connect" || *kind == "disconnect") {
+  } else if (*kind == "connect") {
+    requireFieldSet(record, {1U, 2U, 3U, 10U, 20U}, {});
+  } else if (*kind == "disconnect") {
     requireFieldSet(record, {1U, 2U, 3U, 10U}, {});
   } else if (*kind == "discover") {
     requireFieldSet(record, {1U, 2U, 3U, 10U, 11U}, {});
@@ -458,8 +460,12 @@ void validateCommandSemantics(const ProtocolRecord& record) {
     requireFieldSet(record, {1U, 2U, 3U, 8U}, {});
   } else if (*kind == "adoptRestoration") {
     requireFieldSet(record, {1U, 2U, 3U, 9U}, {});
-  } else if (*kind == "securityState" || *kind == "securityPair" || *kind == "securityCancelPairing") {
+  } else if (*kind == "securityState" || *kind == "securityCancelPairing") {
     requireFieldSet(record, {1U, 2U, 3U, 15U}, {});
+  } else if (*kind == "securityPair") {
+    requireFieldSet(record, {1U, 2U, 3U, 15U, 19U}, {});
+  } else if (*kind == "enumerateBondedPeers") {
+    requireFieldSet(record, {1U, 2U, 3U}, {});
   }
 }
 
@@ -474,7 +480,9 @@ void validateResultSemantics(const ProtocolRecord& record) {
     requireFieldSet(record, {1U, 2U, 3U, 10U}, {});
     return;
   }
-  if (*kind == "accepted" || *kind == "scanStarted" || *kind == "write" || *kind == "destroyed") {
+  if (*kind == "bondedPeers") {
+    requireFieldSet(record, {1U, 2U, 3U, 23U}, {});
+  } else if (*kind == "accepted" || *kind == "scanStarted" || *kind == "write" || *kind == "destroyed") {
     requireFieldSet(record, {1U, 2U, 3U}, {});
   } else if (*kind == "connected") {
     requireFieldSet(record, {1U, 2U, 3U, 11U}, {});

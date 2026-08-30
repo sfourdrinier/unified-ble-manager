@@ -8,7 +8,10 @@ This page is an evidence index, not a static compatibility matrix. An applicatio
 
 ## Package stability and backend support are separate
 
-`unified-ble-manager@4.0.7` is the published **stable package/API** for the 4.x contract; it is immutable. Backend support labels remain evidence-derived and independent of this SemVer. Immutable `4.0.0`, `4.0.1`, `4.0.2`, and `4.0.3` remain published history.
+The version in `package.json` identifies the source being prepared or released;
+it does not by itself prove npm publication or immutability. Registry provenance
+and the tag-driven release workflow are the publication authorities. Stable
+package/API status and backend support labels remain independent.
 
 This package is the portable API/semantics freeze; it does **not** mean every first-party backend is
 automatically Preview, Supported, or Reliability-qualified.
@@ -33,7 +36,75 @@ Meta Quest and the controllable nRF52840 fault-injection controller remain defer
 
 The public core consumes the versioned backend contract and uses backend-reported capabilities at runtime. It has no static platform-support matrix, public Base64 BLE payload path, legacy `BlePort`/`PortBleManager` compatibility surface, or production Noble fallback.
 
+`manager.capabilities.supports(id)` means the selected backend implements an
+invocable operation; both `supported` and `limited` descriptors satisfy it.
+The descriptor returned by `get(id)` preserves evidence and limitations so an
+application can require a fully qualified `supported` state when needed.
+
 Host entrypoints select an explicit concrete backend and surface its typed unavailable, permission, adapter, cancellation, deadline, and lifecycle failures.
+
+## Connected-device background monitoring
+
+The Expo Android host offers an explicit connected-device foreground-service
+lease. It is absent by default, and `restart: 'never'` is the default. A caller
+may update the current notification title/body while holding that lease;
+updates do not start a service or acquire another lease. Android preserves the
+configured notification channel/icon, connected-device foreground-service
+type, ongoing state, and app-launch tap. `while-session-intent-exists` adds
+managed boot and package-replacement recovery, but only starts the service
+when the native UBM session-intent is present. It never scans or reconnects;
+any reconnect policy belongs to the application. After Android has promoted a
+recovered service, UBM sends the package-scoped
+`com.sfourdrinier.unifiedblemanager.background.FOREGROUND_READY` broadcast.
+An app that owns a headless runtime may receive that signal and start its own
+work without racing Android's background-service restrictions. Normal
+foreground acquisition resolves its existing caller instead of redundantly
+starting a second headless runtime.
+
+On Android 13 and newer, UBM intentionally requires `POST_NOTIFICATIONS`
+before acquiring this lease. Android can technically run a foreground service
+without drawer notification permission, but UBM chooses a stricter
+user-visible-monitoring policy and fails the acquisition explicitly when the
+permission is denied.
+
+Apple, Web, BlueZ, WinRT, Electron, Tauri, and deterministic backends do not
+claim this Android service capability. They reject the Android-only operation
+truthfully with `capability.unsupported`; no backend silently ignores an
+option or substitutes a supervisor/reconnect loop.
+
+## Peer directory availability
+
+React Native Android is currently the only first-party backend that exposes the
+system-bonded directory: `manager.peers.bonded()` enumerates the Android bond
+table and `manager.peers.resolve(reference)` rechecks that table before a
+reconnect. The reference is backend-owned and opaque; the native address never
+becomes a public durable MAC identity. `bonded` means paired metadata, not
+reachable or connected. Apps need Android `BLUETOOTH_CONNECT` permission, and a
+permission failure is surfaced as `permission.denied` rather than an empty
+result.
+
+The other backends retain their truthful boundaries: Web Bluetooth exposes
+origin-authorized devices (not bonded devices), while React Native Apple,
+CoreBluetooth, BlueZ, WinRT, Electron, and Tauri do not advertise Android
+bonded or queued `when-available` support without a native primitive that can
+honour it. Their unsupported peer methods fail with `capability.unsupported`.
+
+## React Native notification bursts
+
+React Native Android and Apple both deliver native BLE events through a bounded
+native-to-JavaScript ingress queue. Each queue retains at most 512 records or
+1 MiB, whichever limit is reached first. This gives applications room for a
+peripheral to send a few hundred notifications in a catch-up burst—for example,
+about 288 five-minute records covering 24 hours—without turning the queue into
+unbounded memory.
+
+Applications should still process notifications promptly and split larger
+application-protocol transfers into resumable ranges. If JavaScript cannot drain
+the bounded queue, the backend reports `stream.overflow` and closes that ingress
+rather than silently losing a prefix. Android and Apple use the same limits;
+Web, BlueZ, CoreBluetooth desktop, WinRT, Electron, Tauri, and the deterministic
+backend do not pass through this React Native bridge and retain their existing
+stream limits and capability reports.
 
 Deterministic and mock boundaries are test-only. They prove contract/fault behavior, not live radio. Package, compile, ABI, and export checks prove only the level they actually exercise. Native compilation and package installation do not promote a backend to a higher support label.
 

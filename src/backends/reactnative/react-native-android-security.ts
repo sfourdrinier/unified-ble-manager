@@ -149,7 +149,7 @@ export class ReactNativeAndroidSecurityBackend implements SecurityBackend {
     const cancellationController = new AbortController()
     let abortListener: (() => void) | null = null
     let deadlineTimer: ReturnType<typeof setTimeout> | null = null
-    const nativeOperation = this.boundary.pair(nativePeerId, cancellationController.signal)
+    const nativeOperation = this.boundary.pair(nativePeerId, options.transport, cancellationController.signal)
     const settleNative = (): void => {
       this.active.delete(peerId)
       this.activeNativeIds.delete(peerId)

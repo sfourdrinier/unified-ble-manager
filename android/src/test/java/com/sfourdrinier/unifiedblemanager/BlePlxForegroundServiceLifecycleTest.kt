@@ -75,6 +75,19 @@ class BlePlxForegroundServiceLifecycleTest {
   }
 
   @Test
+  fun `foreground acquisition fails before waiting when invoked on the main thread`() {
+    val source = readAndroidSource(
+      "android/src/main/java/com/sfourdrinier/unifiedblemanager/background/AndroidConnectedDeviceForegroundServiceDriver.java"
+    )
+    val mainThreadGuard = source.indexOf("Looper.myLooper() == Looper.getMainLooper()")
+    val wait = source.indexOf("acknowledgement.await")
+
+    assertTrue(mainThreadGuard >= 0)
+    assertTrue(mainThreadGuard < wait)
+    assertTrue(source.contains("foregroundServiceMainThreadUnavailable"))
+  }
+
+  @Test
   fun `start failure cleanup checks its synchronous session intent commit`() {
     val source = readAndroidSource(
       "android/src/main/java/com/sfourdrinier/unifiedblemanager/BlePlxForegroundService.java"
@@ -114,6 +127,54 @@ class BlePlxForegroundServiceLifecycleTest {
         "return configuration.restartWhileSessionIntentExists() ? START_STICKY : START_NOT_STICKY;"
       )
     )
+  }
+
+  @Test
+  fun `foreground readiness wakes recovery only after promotion and only in the host app`() {
+    val source = readAndroidSource(
+      "android/src/main/java/com/sfourdrinier/unifiedblemanager/BlePlxForegroundService.java"
+    )
+    val foregroundPromotion = source.indexOf("startForeground(")
+    val readinessSignal = source.indexOf("sendBroadcast(new Intent(ACTION_FOREGROUND_READY)")
+    val startedAcknowledgement = source.indexOf("acknowledge(intent, ACK_STARTED")
+
+    assertTrue(foregroundPromotion >= 0)
+    assertTrue(foregroundPromotion < startedAcknowledgement)
+    assertTrue(startedAcknowledgement < readinessSignal)
+    assertTrue(
+      source.substring(startedAcknowledgement, readinessSignal)
+        .contains("intent == null || !intent.hasExtra(EXTRA_ACK)")
+    )
+    assertTrue(
+      source.substring(readinessSignal)
+        .contains(".setPackage(getPackageName())")
+    )
+  }
+
+  @Test
+  fun `notification updates reuse the UBM id and shared builder without changing service semantics`() {
+    val source = readAndroidSource(
+      "android/src/main/java/com/sfourdrinier/unifiedblemanager/BlePlxForegroundService.java"
+    )
+    assertTrue(source.contains("manager.notify(ForegroundServiceNotificationConfiguration.NOTIFICATION_ID"))
+    assertTrue(source.contains("service.buildNotification(service.activeConfiguration)"))
+    assertTrue(source.contains(".setContentIntent(contentIntent)"))
+    assertTrue(source.contains(".setOngoing(true)"))
+    assertTrue(source.contains("FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE"))
+  }
+
+  @Test
+  fun `lifecycle recovery starts only the configured service when native session intent exists`() {
+    val source = readAndroidSource(
+      "android/src/main/java/com/sfourdrinier/unifiedblemanager/background/BlePlxForegroundServiceRecoveryReceiver.java"
+    )
+    assertTrue(source.contains("SESSION_INTENT_PREFERENCE"))
+    assertTrue(source.contains("startForegroundService(start)"))
+    assertTrue(source.contains("ACTION_BOOT_COMPLETED"))
+    assertTrue(source.contains("ACTION_MY_PACKAGE_REPLACED"))
+    assertTrue(!source.contains("BluetoothAdapter"))
+    assertTrue(!source.contains("scan("))
+    assertTrue(!source.contains("reconnect("))
   }
 
   @Test

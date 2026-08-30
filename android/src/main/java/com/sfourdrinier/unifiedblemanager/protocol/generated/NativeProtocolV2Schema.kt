@@ -3,7 +3,7 @@
 package com.sfourdrinier.unifiedblemanager.protocol.generated
 
 const val NATIVE_PROTOCOL_VERSION: Int = 2
-const val NATIVE_PROTOCOL_ABI_VERSION: Int = 4
+const val NATIVE_PROTOCOL_ABI_VERSION: Int = 6
 const val NATIVE_PROTOCOL_CONTROL_SURFACE_VERSION: Int = 2
 const val MAXIMUM_CONTROL_RECORD_BYTES: Int = 262144
 const val MAXIMUM_BINARY_PAYLOAD_BYTES: Int = 524288
@@ -31,7 +31,8 @@ enum class RecordKind(val wireValue: Int) {
   ERROR(16),
   RESTORATION_RECORD(17),
   RESTORATION_ADOPTION_REQUEST(18),
-  RESTORATION_ADOPTION_RESULT(19)
+  RESTORATION_ADOPTION_RESULT(19),
+  BONDED_PEER_SNAPSHOT(24)
 }
 
 enum class CommandKinds(val wireValue: Int) {
@@ -57,7 +58,8 @@ enum class CommandKinds(val wireValue: Int) {
   SECURITY_CANCEL_PAIRING(19),
   READ_PHY(21),
   REQUEST_PHY(22),
-  READ_MTU(23)
+  READ_MTU(23),
+  ENUMERATE_BONDED_PEERS(24)
 }
 
 enum class ResultKinds(val wireValue: Int) {
@@ -79,7 +81,8 @@ enum class ResultKinds(val wireValue: Int) {
   DESCRIPTOR_WRITE(15),
   SECURITY_STATE(16),
   SECURITY_PAIR(17),
-  PHY(19)
+  PHY(19),
+  BONDED_PEERS(20)
 }
 
 enum class EventKinds(val wireValue: Int) {
@@ -122,10 +125,20 @@ enum class ConnectionPriorities(val wireValue: Int) {
   HIGH_THROUGHPUT(3)
 }
 
+enum class ConnectionIntents(val wireValue: Int) {
+  DIRECT(1),
+  WHEN_AVAILABLE(2)
+}
+
 enum class ConnectionPhys(val wireValue: Int) {
   LE1M(1),
   LE2M(2),
   LE_CODED(3)
+}
+
+enum class PairTransports(val wireValue: Int) {
+  PLATFORM_DEFAULT(1),
+  LE(2)
 }
 
 enum class AdapterAvailability(val wireValue: Int) {
@@ -256,6 +269,8 @@ val NATIVE_PROTOCOL_FIELDS: List<FieldDescriptor> = listOf(
     FieldDescriptor(RecordKind.COMMAND, 16, "connectionPriority", "enum:connectionPriorities", false),
     FieldDescriptor(RecordKind.COMMAND, 17, "phyTx", "enum:connectionPhys", false),
     FieldDescriptor(RecordKind.COMMAND, 18, "phyRx", "enum:connectionPhys", false),
+    FieldDescriptor(RecordKind.COMMAND, 19, "pairTransport", "enum:pairTransports", false),
+    FieldDescriptor(RecordKind.COMMAND, 20, "connectionIntent", "enum:connectionIntents", false),
     FieldDescriptor(RecordKind.TERMINAL, 1, "correlation", "record:operationCorrelation", true),
     FieldDescriptor(RecordKind.TERMINAL, 2, "outcome", "enum:terminalOutcomes", true),
     FieldDescriptor(RecordKind.TERMINAL, 3, "cause", "string", false),
@@ -281,6 +296,7 @@ val NATIVE_PROTOCOL_FIELDS: List<FieldDescriptor> = listOf(
     FieldDescriptor(RecordKind.RESULT, 20, "phyRx", "enum:connectionPhys", false),
     FieldDescriptor(RecordKind.RESULT, 21, "phyAccepted", "boolean", false),
     FieldDescriptor(RecordKind.RESULT, 22, "effectiveMtu", "uint64", false),
+    FieldDescriptor(RecordKind.RESULT, 23, "bondedPeers", "records:bondedPeerSnapshot", false),
     FieldDescriptor(RecordKind.ADVERTISEMENT, 1, "peerId", "string", true),
     FieldDescriptor(RecordKind.ADVERTISEMENT, 2, "observedAt", "uint64", true),
     FieldDescriptor(RecordKind.ADVERTISEMENT, 3, "ingressOrdinal", "uint64", true),
@@ -351,5 +367,7 @@ val NATIVE_PROTOCOL_FIELDS: List<FieldDescriptor> = listOf(
     FieldDescriptor(RecordKind.RESTORATION_ADOPTION_RESULT, 4, "boundClientId", "string", true),
     FieldDescriptor(RecordKind.RESTORATION_ADOPTION_RESULT, 5, "adoptionEpoch", "string", true),
     FieldDescriptor(RecordKind.RESTORATION_ADOPTION_RESULT, 6, "outcome", "enum:restorationOutcomes", true),
-    FieldDescriptor(RecordKind.RESTORATION_ADOPTION_RESULT, 7, "records", "records:restorationRecord", true)
+    FieldDescriptor(RecordKind.RESTORATION_ADOPTION_RESULT, 7, "records", "records:restorationRecord", true),
+    FieldDescriptor(RecordKind.BONDED_PEER_SNAPSHOT, 1, "nativePeerId", "string", true),
+    FieldDescriptor(RecordKind.BONDED_PEER_SNAPSHOT, 2, "displayName", "string", false)
 )

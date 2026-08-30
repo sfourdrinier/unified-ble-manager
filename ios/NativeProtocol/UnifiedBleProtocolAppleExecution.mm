@@ -1191,12 +1191,16 @@ void dispatchCommand(
     const protocol::ProtocolRecord& borrowedCommand) {
   const auto command = borrowedCommand;
   auto* radio = radioFor(state);
+  const auto kind = requiredString(command, 3U);
+  const auto nonce = requiredString(requiredRecord(command, 2U), 3U);
+  if (kind == "enumerateBondedPeers") {
+    fail(state, command, "unsupportedCommand", nil);
+    return;
+  }
   if (radio == nil) {
     fail(state, command, "radioUnavailable", nil);
     return;
   }
-  const auto kind = requiredString(command, 3U);
-  const auto nonce = requiredString(requiredRecord(command, 2U), 3U);
   if (kind == "scanStart") {
     const auto& options = requiredRecord(command, 12U);
     const auto& values = requiredStringList(options, 1U);
@@ -1324,7 +1328,7 @@ void dispatchCommand(
         }
         std::optional<protocol::OwnedBinaryReference> output;
         try {
-          output = state->runtime->retainNativeBytes("apple-descriptor-read:" + nonce, bytesFromData(value));
+          output = state->runtime->retainNativeBytes(nonce, bytesFromData(value));
           if (!success(state, command, {field(15U, reference(descriptorPath)), field(6U, reference(binaryReferenceRecord(*output)))})) {
             releaseAndLedgerBinaryReferences(state, BinaryReferenceList{*output}, "descriptor read binary release after non-delivery");
           }
@@ -1368,7 +1372,7 @@ void dispatchCommand(
       }
       std::optional<protocol::OwnedBinaryReference> output;
       try {
-        output = state->runtime->retainNativeBytes("apple-read:" + nonce, bytesFromData(value));
+        output = state->runtime->retainNativeBytes(nonce, bytesFromData(value));
         if (!success(state, command, {field(5U, reference(path)), field(6U, reference(binaryReferenceRecord(*output)))})) {
           releaseAndLedgerBinaryReferences(state, BinaryReferenceList{*output}, "read binary release after non-delivery");
         }
@@ -2065,13 +2069,20 @@ void AppleNativeProtocolExecution::receiveNotification(void* subscriptionIdentif
     const auto ingress = reserveNativeIngressOrdinal(state_);
     if (!ingress.has_value()) return;
     const auto ordinal = ingress->ordinal;
+    // Mint the payload under the SUBSCRIBE's nonce, not a per-notification
+    // string. The codec requires an event's binary reference to name the
+    // operation the event belongs to (requireBinaryCorrelation), so a
+    // per-notification correlation fails validation and the notification is
+    // dropped before it reaches JS. Identical defect to the Android binding;
+    // see issue #168.
+    const auto& notificationCorrelation = requiredRecord(*command, 2U);
     output = state_->runtime->retainNativeBytes(
-        "apple-notification:" + subscriptionValue + ":" + std::to_string(ordinal), bytesFromData(bytes));
+        requiredString(notificationCorrelation, 3U), bytesFromData(bytes));
     const auto event = protocol::ProtocolRecord{.kind = protocol::RecordKind::event, .fields = {
         field(1U, std::uint64_t{protocol::kProtocolVersion}), field(2U, std::string("apple-notification:") + std::to_string(ordinal)),
         field(3U, std::string("notification")), field(4U, reference(attachmentRecord(state_->runtime->attachmentIdentity()))),
         field(5U, ordinal), field(6U, monotonicMilliseconds()), field(9U, reference(requiredRecord(*command, 4U))),
-        field(10U, reference(requiredRecord(*command, 2U))), field(11U, subscriptionValue),
+        field(10U, reference(notificationCorrelation)), field(11U, subscriptionValue),
         field(13U, reference(binaryReferenceRecord(*output)))} };
     if (!deliverEvent(state_, event, ingress->attachmentGeneration)) {
       releaseAndLedgerBinaryReferences(state_, BinaryReferenceList{*output}, "notification binary release after non-delivery");
@@ -2088,6 +2099,7 @@ void AppleNativeProtocolExecution::close() {
   const auto state = state_;
   if (!state || state->closed.exchange(true, std::memory_order_acq_rel)) return;
   auto sinksToRelease = std::make_shared<std::vector<std::shared_ptr<jsi::Function>>>();
+  std::shared_ptr<facebook::react::CallInvoker> invoker;
   {
     std::scoped_lock lock(state->mutex);
     state->attachmentActive = false;
@@ -2115,8 +2127,11 @@ void AppleNativeProtocolExecution::close() {
     sinksToRelease->swap(state->sinksAwaitingJavaScriptRelease);
     if (state->eventSink) sinksToRelease->push_back(std::move(state->eventSink));
     if (state->fatalSink) sinksToRelease->push_back(std::move(state->fatalSink));
+    // A queued cleanup callback captures state. Moving the invoker out while
+    // holding the same lock prevents state -> invoker -> callback -> state
+    // from retaining JSI functions past runtime teardown.
+    invoker = std::move(state->callInvoker);
   }
-  const auto invoker = state->callInvoker;
   const auto retainUnreachableSinks = [&]() {
     std::scoped_lock lock(state->mutex);
     state->sinksAwaitingJavaScriptRelease.insert(

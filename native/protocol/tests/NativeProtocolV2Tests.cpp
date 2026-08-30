@@ -204,6 +204,78 @@ void testVersionNegotiation() {
   });
 }
 
+void testBondedPeerSnapshotsAndConnectionIntent() {
+  static_assert(protocol::kAbiVersion == 6U);
+  protocol::NativeProtocolV2Codec codec;
+  const auto validCommand = protocol::ProtocolRecord{
+      .kind = protocol::RecordKind::command,
+      .fields = {
+          field(1U, std::uint64_t{protocol::kProtocolVersion}),
+          field(2U, correlation(1U)),
+          field(3U, std::string("enumerateBondedPeers")),
+      },
+  };
+  codec.validate(validCommand);
+  assert(codec.encode(codec.decode(codec.encode(validCommand))) == codec.encode(validCommand));
+
+  const auto validConnect = protocol::ProtocolRecord{
+      .kind = protocol::RecordKind::command,
+      .fields = {
+          field(1U, std::uint64_t{protocol::kProtocolVersion}),
+          field(2U, correlation(2U)),
+          field(3U, std::string("connect")),
+          field(10U, connection()),
+          field(20U, std::string("whenAvailable")),
+      },
+  };
+  codec.validate(validConnect);
+  auto connectWithoutIntent = validConnect;
+  connectWithoutIntent.fields.pop_back();
+  expectFailure(protocol::ProtocolFailure::missingField, [&] { codec.validate(connectWithoutIntent); });
+
+  auto unknownIntent = validCommand;
+  unknownIntent.fields.push_back(field(20U, std::string("direct")));
+  expectFailure(protocol::ProtocolFailure::malformedRecord, [&] { codec.validate(unknownIntent); });
+
+  const auto peer = std::make_shared<protocol::ProtocolRecord>(protocol::ProtocolRecord{
+      .kind = protocol::RecordKind::bondedPeerSnapshot,
+      .fields = {field(1U, std::string("native-peer-1")), field(2U, std::string("Display name"))},
+  });
+  const auto result = protocol::ProtocolRecord{
+      .kind = protocol::RecordKind::result,
+      .fields = {
+          field(1U, std::uint64_t{protocol::kProtocolVersion}),
+          field(2U, std::string("bondedPeers")),
+          field(3U, std::make_shared<protocol::ProtocolRecord>(terminal(1U, "succeeded"))),
+          field(23U, protocol::ProtocolRecordList{peer}),
+      },
+  };
+  codec.validate(result);
+  const auto peerWithoutDisplayName = std::make_shared<protocol::ProtocolRecord>(protocol::ProtocolRecord{
+      .kind = protocol::RecordKind::bondedPeerSnapshot,
+      .fields = {field(1U, std::string("native-peer-2"))},
+  });
+  auto resultWithoutDisplayName = result;
+  resultWithoutDisplayName.fields[3U] = field(23U, protocol::ProtocolRecordList{peerWithoutDisplayName});
+  codec.validate(resultWithoutDisplayName);
+  auto emptyDisplayName = result;
+  emptyDisplayName.fields[3U] = field(23U, protocol::ProtocolRecordList{
+      std::make_shared<protocol::ProtocolRecord>(protocol::ProtocolRecord{
+          .kind = protocol::RecordKind::bondedPeerSnapshot,
+          .fields = {field(1U, std::string("native-peer-1")), field(2U, std::string{})},
+      }),
+  });
+  expectFailure(protocol::ProtocolFailure::invalidFieldType, [&] { codec.validate(emptyDisplayName); });
+  auto missingPeerId = result;
+  missingPeerId.fields[3U] = field(23U, protocol::ProtocolRecordList{
+      std::make_shared<protocol::ProtocolRecord>(protocol::ProtocolRecord{
+          .kind = protocol::RecordKind::bondedPeerSnapshot,
+          .fields = {field(2U, std::string("Display name"))},
+      }),
+  });
+  expectFailure(protocol::ProtocolFailure::missingField, [&] { codec.validate(missingPeerId); });
+}
+
 void testPreJavaScriptEventBufferFailsClosedWithoutPartialReplay() {
   protocol::BoundedNativeEventBuffer buffer(2U, 4U);
   assert(buffer.enqueue({0x01U, 0x02U}));
@@ -355,8 +427,9 @@ void testRoundTripAndAdversarialRecords() {
       .fields = {
           field(1U, std::uint64_t{protocol::kProtocolVersion}),
           field(2U, correlation(4U)),
-          field(3U, std::string("securityState")),
+          field(3U, std::string("securityPair")),
           field(15U, std::string("peer-1")),
+          field(19U, std::string("le")),
       },
   };
   assert(codec.encode(codec.decode(codec.encode(securityCommand))) == codec.encode(securityCommand));
@@ -549,6 +622,72 @@ void testTerminalAndRichAdvertisementParity() {
           [](const protocol::ProtocolField& value) { return value.id == 10U; }),
       uncorrelatedAdvertisementEvent.fields.end());
   codec.validate(uncorrelatedAdvertisementEvent);
+
+  // Every notification belongs to the subscribe that created it, and carries
+  // that operation's correlation (field 10) beside its payload (field 13). The
+  // two must name the SAME operation.
+  //
+  // Both React Native bindings used to mint the payload under a
+  // per-notification string ("notification:<subscription>:<ordinal>" on
+  // Android, "apple-notification:..." on Apple) while stamping the subscribe's
+  // correlation on the event. That combination can never validate, so every
+  // notification was rejected here before reaching a caller: subscriptions
+  // delivered nothing at all while the radio received the peer perfectly well.
+  // Confirmed against a Dexcom G7, where the peer's nine reply chunks were
+  // logged by the platform and none arrived. See issue #168.
+  const protocol::ProtocolRecord notificationEvent{
+      .kind = protocol::RecordKind::event,
+      .fields = {
+          field(1U, std::uint64_t{protocol::kProtocolVersion}),
+          field(2U, std::string("native-notification-1:7")),
+          field(3U, std::string("notification")),
+          field(4U, attachment()),
+          field(5U, std::uint64_t{7U}),
+          field(6U, std::uint64_t{20U}),
+          field(9U, characteristic("characteristic-occurrence-1")),
+          field(10U, correlation(1U)),
+          field(11U, std::string("subscription-1")),
+          field(13U, binary("notification-buffer", 20U)),
+      },
+  };
+  codec.validate(notificationEvent);
+  assert(
+      codec.encode(codec.decode(codec.encode(notificationEvent))) == codec.encode(notificationEvent));
+
+  // The defect itself, pinned: a payload minted under its own correlation is
+  // refused, however well formed the rest of the event is.
+  auto foreignNotificationEvent = notificationEvent;
+  for (auto& value : foreignNotificationEvent.fields) {
+    if (value.id == 13U) {
+      value = field(13U, binary("notification-buffer", 20U, "notification:subscription-1:7"));
+    }
+  }
+  expectFailure(protocol::ProtocolFailure::invalidCorrelation, [&] {
+    codec.validate(foreignNotificationEvent);
+  });
+
+  // A read result is the same rule on the other record kind: its payload must
+  // name the operation the terminal correlation names. The bindings decorated
+  // this one too ("read:<epoch>:<nonce>", "apple-read:<nonce>").
+  const protocol::ProtocolRecord correlatedReadResult{
+      .kind = protocol::RecordKind::result,
+      .fields = {
+          field(1U, std::uint64_t{protocol::kProtocolVersion}),
+          field(2U, std::string("read")),
+          field(3U, std::make_shared<protocol::ProtocolRecord>(terminal(1U, "succeeded"))),
+          field(5U, characteristic("characteristic-occurrence-1")),
+          field(6U, binary("read-buffer", 12U)),
+      },
+  };
+  codec.validate(correlatedReadResult);
+
+  auto foreignReadResult = correlatedReadResult;
+  for (auto& value : foreignReadResult.fields) {
+    if (value.id == 6U) {
+      value = field(6U, binary("read-buffer", 12U, "read:1:opaque-operation-1"));
+    }
+  }
+  expectFailure(protocol::ProtocolFailure::invalidCorrelation, [&] { codec.validate(foreignReadResult); });
 
   // A rejected field is reported by name. "A field is forbidden" is true of
   // every record on the wire; without the identity a caller cannot tell which
@@ -1299,6 +1438,7 @@ void testAndroidDispatcherResultsCarryTheNegotiatedVersion() {
 
 int main() {
   testVersionNegotiation();
+  testBondedPeerSnapshotsAndConnectionIntent();
   testPreJavaScriptEventBufferFailsClosedWithoutPartialReplay();
   testAndroidJsiIngressLedgerRetainsExactBinaryOwnershipCounters();
   testAndroidJsiBinaryCleanupLedgerPreservesOverCapReferencesForFatalRetry();

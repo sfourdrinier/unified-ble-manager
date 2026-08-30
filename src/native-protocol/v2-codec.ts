@@ -426,6 +426,33 @@ function validateRecord(record: NativeProtocolRecord): void {
       throw new ProtocolCodecError('Native protocol record is missing a required field')
     }
   }
+  if (record.kind === 'bondedPeerSnapshot') {
+    validateBondedPeerSnapshotStrings(record)
+  }
+  if (record.kind === 'command') {
+    validateCommandSemantics(record)
+  }
+}
+
+function validateCommandSemantics(record: NativeProtocolRecord): void {
+  const kind = record.fields.find(field => field.id === 3)?.value
+  if (kind === 'connect') {
+    if (!record.fields.some(field => field.id === 20)) {
+      throw new ProtocolCodecError(`Native protocol ${kind} command is missing connection intent`)
+    }
+  }
+  if (kind === 'enumerateBondedPeers' && record.fields.some(field => field.id === 20)) {
+    throw new ProtocolCodecError('Native protocol field is unknown for enumerateBondedPeers')
+  }
+}
+
+function validateBondedPeerSnapshotStrings(record: NativeProtocolRecord): void {
+  for (const id of [1, 2]) {
+    const field = record.fields.find(candidate => candidate.id === id)
+    if (field !== undefined && typeof field.value === 'string' && field.value.length === 0) {
+      throw new ProtocolCodecError('Native protocol bonded peer string field is invalid')
+    }
+  }
 }
 
 function fieldDescriptor(kind: RecordKind, id: number): FieldDescriptor | undefined {
