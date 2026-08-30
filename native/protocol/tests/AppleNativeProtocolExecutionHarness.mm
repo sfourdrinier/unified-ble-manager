@@ -611,6 +611,11 @@ int runAppleNativeProtocolExecutionHarness() {
     return 0;
     }();
     }
+    // Deleting the installed global only makes its HostObject graph
+    // unreachable. Force JSC to finalize that graph while the runtime is still
+    // valid so any API wrappers retained by native-state finalizers are
+    // released before JSCRuntime checks its debug object counter.
+    runtime->instrumentation().collectGarbage("Apple native protocol harness teardown");
     runtime.reset();
     return harnessResult;
   } catch (const std::exception& error) {
