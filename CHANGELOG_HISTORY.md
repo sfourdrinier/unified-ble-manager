@@ -2,6 +2,9 @@
 
 # Changelog
 
+> **Status: Historical record.** Archived `4.0.0-alpha.*` prerelease entries.
+> The active changelog is [CHANGELOG.md](CHANGELOG.md).
+
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]

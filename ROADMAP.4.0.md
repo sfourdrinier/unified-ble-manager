@@ -2,6 +2,10 @@
 
 # Roadmap 4.0 — `unified-ble-manager`
 
+> **Status: Historical record.** This roadmap's scope was delivered with the
+> stable 4.0 releases. It is kept as a decision record and is not current
+> guidance. See the [documentation map](docs/README.md).
+
 **Status:** implemented 4.0 product scope; stable package/API release target
 
 **Architecture authority:** [`docs/UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md`](docs/UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md)

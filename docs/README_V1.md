@@ -1,3 +1,7 @@
+> **Status: Historical record.** Original `react-native-ble-plx` v1 README,
+> kept for lineage. It describes an API that does not exist in
+> `unified-ble-manager` 4.x. See the [documentation map](README.md).
+
 <p align="center">
   <img
     alt="react-native-ble-plx library logo"

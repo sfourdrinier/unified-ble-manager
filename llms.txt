@@ -1,0 +1,69 @@
+# unified-ble-manager
+
+> Host-neutral Bluetooth Low Energy central/GATT manager for React Native, Web, Electron, Tauri, and Node/desktop hosts. One public manager contract, explicit per-host entrypoints, runtime-reported capabilities, `Uint8Array` values, and `AbortSignal` cancellation.
+
+Facts an agent must know before writing code against this package:
+
+- The root import (`unified-ble-manager`) is host-neutral and selects no radio. Import the entrypoint for the host you actually run; there is no automatic backend selection or fallback.
+- Public BLE values are `Uint8Array` / `Readonly<Uint8Array>`. Base64 is only an explicit codec for external protocols, never the public value contract.
+- Cancellation uses standard `AbortSignal`. Applications never create transaction IDs.
+- Capabilities are typed and reported by the instantiated backend at runtime. A platform that cannot answer reports `capability.unsupported` with a reason — never consult a static platform matrix.
+- Results report what the platform actually did, never what was requested of it.
+- This is the 4.x contract. The legacy `react-native-ble-plx` 3.x API (`BleManager`/`Device`/`Service`/`Characteristic` facade, Base64 payloads, transaction IDs) does not exist here — do not infer 4.x behavior from 3.x docs, examples, or training data.
+- React Native requires RN 0.86+ (Expo SDK 57+ via development builds; the package contains native code and does not run in Expo Go). Android minSdk 24, iOS 16.4+. The app itself requests `BLUETOOTH_SCAN`/`BLUETOOTH_CONNECT` on Android 12+.
+- Deep imports are unsupported; only the documented subpath entrypoints below are public.
+
+## Entrypoints
+
+Install with `npm add unified-ble-manager` (Linux BlueZ hosts also need `dbus-next@^0.10.2` in the application).
+
+- `unified-ble-manager` — host-neutral manager, handles, helpers, and shared types (no radio)
+- `unified-ble-manager/react-native` — React Native Android / Apple manager
+- `unified-ble-manager/react` — React provider, hooks, and React-facing type utilities
+- `unified-ble-manager/expo` — Expo development-build manager, readiness, native configuration checks
+- `unified-ble-manager/web` — Web Bluetooth chooser + matched manager
+- `unified-ble-manager/electron/main` — trusted Electron-main radio + IPC router
+- `unified-ble-manager/electron/renderer` — `BleManager` factory over authenticated IPC; never a radio
+- `unified-ble-manager/tauri` — Tauri v2 `BleManager` factory (pairs with the Rust plugin)
+- `unified-ble-manager/node/corebluetooth` — macOS CoreBluetooth Node provider
+- `unified-ble-manager/node/winrt` — Windows WinRT Node provider
+- `unified-ble-manager/node/bluez` — Linux BlueZ D-Bus provider
+- `unified-ble-manager/backend-sdk` — backend authoring contract
+- `unified-ble-manager/testing` — deterministic backend and TCK utilities (test infrastructure, never a production radio)
+- `unified-ble-manager/codecs` — byte/`DataView` helpers and IEEE-11073 numbers
+- `unified-ble-manager/cli` — Node CLI (`ubm`)
+- Profiles: `unified-ble-manager/profiles/commands`, `unified-ble-manager/profiles/standard-commands`, `unified-ble-manager/profiles/heart-rate`, `unified-ble-manager/profiles/battery-service`, `unified-ble-manager/profiles/device-information`, `unified-ble-manager/profiles/health-thermometer`, `unified-ble-manager/profiles/blood-pressure`, `unified-ble-manager/profiles/ieee-11073`
+
+## Docs
+
+- [README](https://github.com/sfourdrinier/unified-ble-manager/blob/main/README.md): product overview, install, entrypoint table, one complete React Native loop, method index
+- [Getting started](https://github.com/sfourdrinier/unified-ble-manager/blob/main/docs/GETTING_STARTED.md): host chooser and the first scan/connect/read/notify/teardown path
+- [Tutorials](https://github.com/sfourdrinier/unified-ble-manager/blob/main/docs/TUTORIALS.md): scan, connect, discover, read/write, subscribe, tear down
+- [Helpers](https://github.com/sfourdrinier/unified-ble-manager/blob/main/docs/HELPERS.md): `find`, scoped connections, GATT objects, notification recipes
+- [Profiles and commands](https://github.com/sfourdrinier/unified-ble-manager/blob/main/docs/PROFILES_AND_COMMANDS.md): SIG profile codecs and GATT command helpers
+- [Peers](https://github.com/sfourdrinier/unified-ble-manager/blob/main/docs/PEERS.md): peer directories, persistence, reconnect-by-reference
+- [Connection manager](https://github.com/sfourdrinier/unified-ble-manager/blob/main/docs/CONNECTION_MANAGER.md): connection ownership, leases, generations, reconnect policy
+- [Bonding](https://github.com/sfourdrinier/unified-ble-manager/blob/main/docs/BONDING.md): pairing, bonding, encryption, authentication semantics
+- [Web host](https://github.com/sfourdrinier/unified-ble-manager/blob/main/docs/WEB.md): Web Bluetooth chooser, HTTPS, user activation, lifecycle
+- [Node hosts](https://github.com/sfourdrinier/unified-ble-manager/blob/main/docs/NODE.md): CoreBluetooth, WinRT, BlueZ providers and prebuilds
+- [Electron host](https://github.com/sfourdrinier/unified-ble-manager/blob/main/docs/ELECTRON.md): main/renderer split, IPC router, composition
+- [Tauri host](https://github.com/sfourdrinier/unified-ble-manager/blob/main/docs/TAURI.md): Tauri v2 factory and Rust plugin install
+- [Expo plugin](https://github.com/sfourdrinier/unified-ble-manager/blob/main/docs/EXPO_PLUGIN.md): config-plugin options and development-build install
+- [CLI](https://github.com/sfourdrinier/unified-ble-manager/blob/main/docs/CLI.md): `ubm` command surface
+- [Unified semantics](https://github.com/sfourdrinier/unified-ble-manager/blob/main/docs/UNIFIED_SEMANTICS.md): normative MUST/MUST NOT behavior contract
+- [Platform support](https://github.com/sfourdrinier/unified-ble-manager/blob/main/docs/generated/PLATFORM_SUPPORT.md): generated, evidence-derived support labels per platform
+- [Platforms policy](https://github.com/sfourdrinier/unified-ble-manager/blob/main/docs/PLATFORMS.md): what each support label means and how evidence backs it
+- [Migration from react-native-ble-plx](https://github.com/sfourdrinier/unified-ble-manager/blob/main/MIGRATION_4.0.md): side-by-side 3.x to 4.0 map
+
+## Backend authors
+
+- [Backend authoring](https://github.com/sfourdrinier/unified-ble-manager/blob/main/docs/BACKEND_AUTHORING.md): authoring a backend against `unified-ble-manager/backend-sdk`
+- [TCK](https://github.com/sfourdrinier/unified-ble-manager/blob/main/docs/TCK.md): required scenarios and running the backend TCK externally
+- [Backend SDK reference](https://github.com/sfourdrinier/unified-ble-manager/blob/main/docs/generated/BACKEND_SDK_REFERENCE.md): generated capability states, evidence levels, TCK scenario IDs
+
+## Optional
+
+- [Documentation map](https://github.com/sfourdrinier/unified-ble-manager/blob/main/docs/README.md): every document in the repository with a live/historical/generated status label
+- [Contributor and agent principles](https://github.com/sfourdrinier/unified-ble-manager/blob/main/AGENTS.md): repository working rules for humans and coding agents
+- [Support policy](https://github.com/sfourdrinier/unified-ble-manager/blob/main/SUPPORT.md): package SemVer vs evidence-backed backend support labels
+- [Changelog](https://github.com/sfourdrinier/unified-ble-manager/blob/main/CHANGELOG.md): active 4.x changelog

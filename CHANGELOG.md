@@ -4,7 +4,20 @@ All notable changes to `unified-ble-manager` are documented here.
 
 ## [Unreleased]
 
-No changes yet.
+### Documentation
+
+- Add `docs/README.md`, a complete documentation map labelling every document
+  Current, Historical, or Generated, and add `llms.txt`, a machine-readable
+  package overview for AI coding agents covering the contract facts and every
+  public entrypoint. Both are drift-gated: `pnpm docs:check` now fails when a
+  document is missing from the map, a listed document does not exist, or
+  `llms.txt` stops covering a public entrypoint.
+- Label the remaining lineage documents (pre-4.x changelogs, delivered 4.0
+  roadmap, tvOS 3.x spec, v1 README/migration) with explicit historical-record
+  banners, and mark `docs/audits/`, `docs/review/`, and `docs/superpowers/` as
+  frozen record directories.
+- Add scoped agent guidance (`docs/AGENTS.md`, `scripts/AGENTS.md`,
+  `native/AGENTS.md`) stating the conventions specific to those trees.
 
 ## [4.0.11] - 2026-08-30
 
