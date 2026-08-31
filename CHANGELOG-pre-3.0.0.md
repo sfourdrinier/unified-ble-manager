@@ -1,5 +1,9 @@
 # Changelog
 
+> **Status: Historical record.** Changelog of the `react-native-ble-plx`
+> 1.x–2.x lineage this project was forked from. The active changelog is
+> [CHANGELOG.md](CHANGELOG.md).
+
 ## 2.0.3
 
 - Updated MultiplatformBleAdapter to version 0.1.9

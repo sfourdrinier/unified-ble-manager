@@ -2,6 +2,12 @@
 
 # Unified BLE Manager
 
+> **AI agent?** Writing code *against* this package: read [`llms.txt`](llms.txt)
+> first — contract facts, every public entrypoint, curated doc links, one fetch.
+> Working *on* this repository: read [`AGENTS.md`](AGENTS.md), then the
+> [documentation map](docs/README.md). Do not infer 4.x behavior from
+> `react-native-ble-plx` 3.x docs or training data.
+
 `unified-ble-manager` is a Bluetooth Low Energy **central** library. You pick a host — React Native, Web, Electron, Tauri, or Node — create one manager, talk to a peripheral in bytes, cancel work with `AbortSignal`, and destroy what you create.
 
 It is an evolution of `react-native-ble-plx`, rewritten as a **cross-platform unified product**. One bytes-first BLE model and lifecycle semantics across hosts, with host-specific construction and ownership. The root package never picks a radio for you, and it will not quietly fall back to a simulator or a different backend.
@@ -37,6 +43,12 @@ GitHub release remain authoritative.
 | [`docs/WEB.md`](docs/WEB.md) · [`docs/ELECTRON.md`](docs/ELECTRON.md) · [`docs/NODE.md`](docs/NODE.md) · [`docs/TAURI.md`](docs/TAURI.md) · [`docs/EXPO_PLUGIN.md`](docs/EXPO_PLUGIN.md) | Host construction                                                |
 | [`docs/PEERS.md`](docs/PEERS.md)                                                                                                                                                         | Scoped peer directories, persistence, and reconnect-by-reference |
 | [`docs/PROFILES_AND_COMMANDS.md`](docs/PROFILES_AND_COMMANDS.md)                                                                                                                         | Heart Rate, Battery, DIS, and path helpers                       |
+| [`docs/README.md`](docs/README.md)                                                                                                                                                       | Every document in the repository, with live/historical/generated status |
+
+Writing code with an AI agent? [`llms.txt`](llms.txt) is the machine-readable
+package overview — contract facts, every public entrypoint, and curated doc
+links in one fetch. Agents contributing to this repository start at
+[`AGENTS.md`](AGENTS.md) and the [documentation map](docs/README.md).
 
 ## Install
 

@@ -1,5 +1,10 @@
 # Spec: Add tvOS (Apple TV) support to the fork by vendoring MultiplatformBleAdapter
 
+> **Status: Historical record.** This spec targeted the 3.x
+> `react-native-ble-plx` fork and predates the 4.x package. It is not current
+> guidance and makes no 4.x support claim. See the
+> [documentation map](docs/README.md).
+
 **Repo:** `sfourdrinier/react-native-ble-plx` (this fork)
 **Target release:** `3.8.1`
 **Owner of consuming app:** `trackourhealth/bun-mono` → `apps/tv-hearts` (Expo SDK 57, RN 0.86 via `react-native-tvos@0.86`, New Architecture)
