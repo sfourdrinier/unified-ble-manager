@@ -13,8 +13,8 @@ function read(relativePath) {
 
 describe('4.0 Web Bluetooth public example', () => {
   test('uses only packed clean-baseline public entrypoints', () => {
-    const app = read('example-web/app.js')
-    expect(app).not.toContain("from 'unified-ble-manager'")
+    const app = read('example-web/src/main.ts')
+    expect(app).toContain("from 'unified-ble-manager'")
     expect(app).toContain("from 'unified-ble-manager/web'")
     expect(app).toContain("from 'unified-ble-manager/profiles/battery-service'")
     expect(app).toContain("from 'unified-ble-manager/profiles/heart-rate'")
@@ -23,7 +23,7 @@ describe('4.0 Web Bluetooth public example', () => {
   })
 
   test('uses the current single public Web manager and diagnostics API', () => {
-    const app = read('example-web/app.js')
+    const app = read('example-web/src/main.ts')
     const packedWeb = read('fixtures/g6a-packed-consumer/web-heart-rate-protocol.mjs')
     for (const source of [app, packedWeb]) {
       expect(source).not.toContain('session.chooser')
@@ -33,14 +33,15 @@ describe('4.0 Web Bluetooth public example', () => {
       expect(source).not.toContain('deadline: null')
     }
 
-    expect(app).toContain('manager.choose(')
+    expect(app).toContain('activeManager.choose(')
     expect(app).toContain('manager.connect(')
-    expect(app).toContain('selectedPeerId = selection.id')
+    expect(app).toContain('selectedPeer = await activeManager.choose(')
+    expect(app).toContain('activeManager.peers.authorized(')
     expect(packedWeb).toContain('manager.connect(selection.id')
     expect(app).toContain('manager.diagnostics.resourceCounters()')
     expect(app).not.toMatch(/createWebBleManager\(\s*\{/u)
 
-    expect(packedWeb).toContain("createWebBleManagerWithEnvironment({")
+    expect(packedWeb).toContain('createWebBleManagerWithEnvironment({')
     expect(packedWeb).toContain('manager.choose(')
     expect(packedWeb).toContain('manager.connect(')
     expect(packedWeb).toContain('manager.diagnostics.resourceCounters()')
@@ -51,17 +52,17 @@ describe('4.0 Web Bluetooth public example', () => {
   })
 
   test('proves chooser, connect, discovery, read, notification, reconnect, and cleanup controls', () => {
-    const app = read('example-web/app.js')
+    const app = read('example-web/src/main.ts')
     const html = read('example-web/index.html')
     for (const operation of [
-      'manager.choose',
+      'activeManager.choose',
       'manager.connect',
       'connection.discover',
       'batteryCharacteristic.read',
       'measurementCharacteristic.subscribe',
       'subscription.remove',
       'connection.disconnect',
-      'manager.destroy'
+      'current.destroy'
     ]) {
       expect(app).toContain(operation)
     }
@@ -71,21 +72,23 @@ describe('4.0 Web Bluetooth public example', () => {
   })
 
   test('uses public GATT characteristic operations and public subscription options', () => {
-    const app = read('example-web/app.js')
+    const app = read('example-web/src/main.ts')
     expect(app).not.toContain("from 'unified-ble-manager/profiles/standard-commands'")
     expect(app).not.toMatch(/\b(?:readBatteryLevel|subscribeHeartRateMeasurements|resetHeartRateEnergyExpended)\s*\(/u)
     expect(app).not.toMatch(/\bdatabase\.(?:read|subscribe|write)\s*\(/u)
     expect(app).not.toContain("preset: 'balanced'")
     expect(app).not.toContain('localNamePrefix: null')
     expect(app).toContain('database.characteristic(BATTERY_SERVICE, BATTERY_LEVEL_CHARACTERISTIC)')
-    expect(app).toContain('batteryCharacteristic.read(operationOptions)')
-    expect(app).toContain('measurementCharacteristic.subscribe(notificationOptions)')
+    expect(app).toContain('batteryCharacteristic.read({ timeoutMs: GATT_TIMEOUT_MS })')
+    expect(app).toContain('measurementCharacteristic.subscribe({')
     expect(app).toContain("stream: 'balanced'")
     expect(app).toContain("delivery: 'prefer-notification'")
 
     const packedWeb = read('fixtures/g6a-packed-consumer/web-heart-rate-protocol.mjs')
     expect(packedWeb).not.toContain("from 'unified-ble-manager/profiles/standard-commands'")
-    expect(packedWeb).not.toMatch(/\b(?:readBatteryLevel|subscribeHeartRateMeasurements|resetHeartRateEnergyExpended)\s*\(/u)
+    expect(packedWeb).not.toMatch(
+      /\b(?:readBatteryLevel|subscribeHeartRateMeasurements|resetHeartRateEnergyExpended)\s*\(/u
+    )
     expect(packedWeb).not.toMatch(/\bdatabase\.(?:read|subscribe|write)\s*\(/u)
     expect(packedWeb).not.toContain("preset: 'balanced'")
     expect(packedWeb).toContain('database.characteristic(')
@@ -97,16 +100,30 @@ describe('4.0 Web Bluetooth public example', () => {
     expect(packedWeb).toContain("delivery: 'prefer-notification'")
   })
 
-  test('is built with the repository-owned bundler and documented as physical evidence only when retained', () => {
-    const build = read('scripts/examples/build-web-example.js')
+  test('is a strict TypeScript Vite build and documented as physical evidence only when retained', () => {
+    const packageJson = read('package.json')
+    const config = read('example-web/vite.config.mts')
     const readme = read('example-web/README.md')
     const continuousIntegrationWorkflow = read('.github/workflows/ci.yml')
     const publishWorkflow = read('.github/workflows/publish.yml')
-    expect(build).toContain("require('webpack')")
+    expect(packageJson).toContain('vite build --config example-web/vite.config.mts')
+    expect(packageJson).toContain('tsc --noEmit -p example-web/tsconfig.json')
+    expect(config).toContain("root: 'example-web'")
     expect(continuousIntegrationWorkflow).toContain('run: pnpm build:example:web')
     expect(publishWorkflow).toContain('run: pnpm build:example:web')
-    expect(readme).toContain('4.0 clean-baseline Web Bluetooth example')
+    expect(readme).toContain('4.0 TypeScript Web Bluetooth example')
     expect(readme).toMatch(/does not itself create a\s+release evidence receipt/u)
     expect(readme).not.toContain('Historical Web Bluetooth example')
+  })
+
+  test('bounds every radio phase and safely replaces an uncancellable timed-out manager', () => {
+    const app = read('example-web/src/main.ts')
+    expect(app).toContain('CONNECT_TIMEOUT_MS')
+    expect(app).toContain('DISCOVER_TIMEOUT_MS')
+    expect(app).toContain('GATT_TIMEOUT_MS')
+    expect(app).toContain("failure.code === 'operation.timed-out'")
+    expect(app).toContain("failure.operation === 'web-connection.connect'")
+    expect(app).toContain('await destroyManager()')
+    expect(app).toContain('failure.platform?.metadata')
   })
 })

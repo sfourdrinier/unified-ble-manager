@@ -100,8 +100,8 @@
     "native-prebuild:build": "node scripts/native-prebuilds/build.js",
     "native-prebuild:verify": "node scripts/native-prebuilds/verify.js",
     "example:electron": "pnpm prepack && node example-electron/smoke.js",
-    "build:example:web": "node scripts/examples/build-web-example.js",
-    "example:web": "pnpm prepack && pnpm build:example:web && node scripts/examples/serve-web-example.js",
+    "build:example:web": "tsc --noEmit -p example-web/tsconfig.json && vite build --config example-web/vite.config.mts",
+    "example:web": "pnpm prepack && vite --config example-web/vite.config.mts",
     "prepare": "pnpm clean:plugin && pnpm build:plugin && pnpm exec bob build",
     "lint:plugin": "eslint plugin/src/*"
   },
@@ -188,6 +188,7 @@
     "styled-components": "^6.1.11",
     "turbo": "^1.10.7",
     "typescript": "^5.2.2",
+    "vite": "^8.2.2",
     "webpack": "5.109.2",
     "yaml": "2.9.0"
   },

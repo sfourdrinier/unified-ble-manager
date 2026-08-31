@@ -118,7 +118,7 @@ describe('retired 3.x architecture absence', () => {
 
     expect(remainingPaths).toEqual([])
 
-    const currentWebExample = fs.readFileSync(path.join(rootDirectory, 'example-web/app.js'), 'utf8')
+    const currentWebExample = fs.readFileSync(path.join(rootDirectory, 'example-web/src/main.ts'), 'utf8')
     expect(currentWebExample).toContain("from 'unified-ble-manager/web'")
     expect(currentWebExample).not.toContain('react-native-ble-plx')
     expect(currentWebExample).not.toContain('createWebBleBridge')
