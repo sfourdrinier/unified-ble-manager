@@ -1,45 +1,82 @@
-<!-- example-web/index.html -->
 <!doctype html>
 <html lang="en">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Unified BLE 4.0 Web Bluetooth</title>
-    <style>
-      :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
-      body { margin: 0; background: Canvas; color: CanvasText; }
-      main { box-sizing: border-box; max-width: 56rem; margin: 0 auto; padding: 2rem; }
-      h1 { margin-top: 0; }
-      .controls { display: flex; flex-wrap: wrap; gap: 0.75rem; margin: 1.5rem 0; }
-      button { min-height: 2.75rem; padding: 0.5rem 0.9rem; font: inherit; }
-      output { display: block; padding: 1rem; border: 1px solid GrayText; border-radius: 0.5rem; }
-      dl { display: grid; grid-template-columns: max-content 1fr; gap: 0.5rem 1rem; }
-      dt { font-weight: 700; }
-      dd { margin: 0; overflow-wrap: anywhere; }
-      #events { max-height: 18rem; overflow: auto; padding-left: 1.5rem; }
-      .error { color: #d33; }
-    </style>
+    <meta name="color-scheme" content="light dark" />
+    <title>Unified BLE · Web Bluetooth</title>
   </head>
   <body>
     <main>
-      <h1>Unified BLE 4.0 Web Bluetooth</h1>
-      <p>Physical Heart Rate Service vertical-slice harness using public package entrypoints.</p>
-      <div class="controls" aria-label="Bluetooth controls">
-        <button id="choose-connect" type="button">Choose and connect</button>
-        <button id="reconnect" type="button" disabled>Reconnect</button>
-        <button id="disconnect" type="button" disabled>Disconnect</button>
-        <button id="destroy" type="button" disabled>Destroy manager</button>
-      </div>
-      <output id="status" role="status" aria-live="polite">Ready.</output>
-      <dl>
-        <dt>Peer</dt><dd id="peer">—</dd>
-        <dt>Battery</dt><dd id="battery">—</dd>
-        <dt>Heart rate</dt><dd id="heart-rate">—</dd>
-        <dt>Resources</dt><dd id="resources">—</dd>
-      </dl>
-      <h2>Operation log</h2>
-      <ol id="events" aria-live="polite"></ol>
+      <header class="hero">
+        <p class="eyebrow">Unified BLE Manager 4.0</p>
+        <h1>Web Bluetooth, end to end</h1>
+        <p class="lede">
+          Choose a standard heart-rate peripheral, open a bounded connection, read its battery, and stream measurements
+          using the same public GATT API as every UBM host.
+        </p>
+      </header>
+
+      <section class="notice" aria-labelledby="requirements-title">
+        <h2 id="requirements-title">Before you connect</h2>
+        <p>
+          Use Chrome or another Web Bluetooth-capable Chromium browser over HTTPS or <code>localhost</code>. Keep a
+          Heart Rate Service peripheral nearby.
+        </p>
+      </section>
+
+      <section class="workspace" aria-labelledby="connection-title">
+        <div class="section-heading">
+          <div>
+            <p class="kicker">Connection</p>
+            <h2 id="connection-title">Browser-owned session</h2>
+          </div>
+          <span id="support" class="badge">Checking support…</span>
+        </div>
+        <div class="controls" aria-label="Bluetooth controls">
+          <button id="choose-connect" class="primary" type="button">Choose and connect</button>
+          <button id="authorized-connect" type="button">Use authorized device</button>
+          <button id="reconnect" type="button" disabled>Reconnect</button>
+          <button id="disconnect" type="button" disabled>Disconnect</button>
+          <button id="destroy" type="button" disabled>Destroy manager</button>
+        </div>
+        <output id="status" role="status" aria-live="polite">Ready. Choose a device to begin.</output>
+
+        <div id="error-panel" class="error-panel" hidden role="alert">
+          <strong id="error-message">Bluetooth operation failed.</strong>
+          <dl class="diagnostics">
+            <dt>Code</dt>
+            <dd id="error-code">—</dd>
+            <dt>Domain</dt>
+            <dd id="error-domain">—</dd>
+            <dt>Operation</dt>
+            <dd id="error-operation">—</dd>
+            <dt>Browser cause</dt>
+            <dd id="error-browser">—</dd>
+          </dl>
+        </div>
+      </section>
+
+      <section class="metrics" aria-label="Live values">
+        <article><span>Peer</span><strong id="peer">—</strong></article>
+        <article><span>Battery</span><strong id="battery">—</strong></article>
+        <article><span>Heart rate</span><strong id="heart-rate">—</strong></article>
+      </section>
+
+      <section class="workspace" aria-labelledby="diagnostics-title">
+        <div class="section-heading">
+          <div>
+            <p class="kicker">Diagnostics</p>
+            <h2 id="diagnostics-title">Operation timeline</h2>
+          </div>
+        </div>
+        <ol id="events" aria-live="polite"></ol>
+        <details>
+          <summary>Resource counters</summary>
+          <pre id="resources">—</pre>
+        </details>
+      </section>
     </main>
-    <script src="./app.js" defer></script>
+    <script type="module" src="/src/main.ts"></script>
   </body>
 </html>
