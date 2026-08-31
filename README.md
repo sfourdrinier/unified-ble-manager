@@ -2,6 +2,12 @@
 
 # Unified BLE Manager
 
+> **AI agent?** Writing code *against* this package: read [`llms.txt`](llms.txt)
+> first — contract facts, every public entrypoint, curated doc links, one fetch.
+> Working *on* this repository: read [`AGENTS.md`](AGENTS.md), then the
+> [documentation map](docs/README.md). Do not infer 4.x behavior from
+> `react-native-ble-plx` 3.x docs or training data.
+
 `unified-ble-manager` is a Bluetooth Low Energy **central** library. You pick a host — React Native, Web, Electron, Tauri, or Node — create one manager, talk to a peripheral in bytes, cancel work with `AbortSignal`, and destroy what you create.
 
 It is an evolution of `react-native-ble-plx`, rewritten as a **cross-platform unified product**. One bytes-first BLE model and lifecycle semantics across hosts, with host-specific construction and ownership. The root package never picks a radio for you, and it will not quietly fall back to a simulator or a different backend.
