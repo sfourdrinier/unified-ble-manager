@@ -2,6 +2,7 @@
 
 import {
   BleError,
+  type BleAdapterState,
   type BleConnection,
   type GattDatabase,
   type GattSubscription,
@@ -78,6 +79,28 @@ class CanonicalBleExampleService {
 
   async adapterState() {
     return (await this.ensureManager()).adapter.state()
+  }
+
+  /** Adapter loss invalidates GATT generations; reconnection remains app-owned. */
+  async watchAdapterState(onState: (state: BleAdapterState) => void): Promise<() => Promise<void>> {
+    const watch = await (await this.ensureManager()).adapter.watchState()
+    let stopped = false
+    onState(watch.initial)
+    void (async () => {
+      try {
+        for await (const item of watch.values) {
+          if (stopped || item.kind !== 'value') continue
+          onState(item.value)
+        }
+      } catch (error) {
+        console.error('[CanonicalBleExampleService.watchAdapterState] Adapter watch failed:', error)
+      }
+    })()
+    return async () => {
+      if (stopped) return
+      stopped = true
+      await watch.stop()
+    }
   }
 
   async readiness() {

@@ -1,6 +1,6 @@
 // example-expo/src/screens/MainStack/DashboardScreen/DashboardScreen.tsx
 
-import React, { useState } from 'react'
+import React, { useEffect, useState } from 'react'
 import type { NativeStackScreenProps } from '@react-navigation/native-stack'
 import { FlatList } from 'react-native'
 import { AppButton, AppText, ScreenDefaultContainer } from '../../../components/atoms'
@@ -22,6 +22,24 @@ export function DashboardScreen({ navigation }: DashboardScreenProps) {
   const [diagnosticCounters, setDiagnosticCounters] = useState<string | null>(null)
   const [restoration, setRestoration] = useState<string | null>(null)
   const [supportBundle, setSupportBundle] = useState<string | null>(null)
+  const [adapter, setAdapter] = useState<string | null>(null)
+
+  useEffect(() => {
+    let stop: (() => Promise<void>) | null = null
+    let active = true
+    void BLEService.watchAdapterState(state => {
+      if (active) setAdapter(`${state.power} / ${state.availability} / ${state.authorization}`)
+    }).then(release => {
+      if (active) stop = release
+      else void release()
+    }).catch(error => {
+      console.error('[DashboardScreen.adapterWatch] Adapter state watch failed:', error)
+    })
+    return () => {
+      active = false
+      if (stop !== null) void stop()
+    }
+  }, [])
 
   const inspectReadiness = async () => {
     try {
@@ -121,6 +139,7 @@ export function DashboardScreen({ navigation }: DashboardScreenProps) {
       <AppButton label="Expo diagnostics" onPress={() => navigation.navigate('EXPO_DIAGNOSTICS_SCREEN')} />
       <AppButton label="Claim native restoration" onPress={() => void claimRestoration()} />
       <AppButton label="Create redacted support bundle" onPress={() => void createSupportBundle()} />
+      {adapter === null ? null : <AppText>Adapter: {adapter}</AppText>}
       <AppButton label="Stop scan" onPress={() => void stopScan(work, setError)} />
       <AppButton label="Go to nRF test" onPress={() => navigation.navigate('DEVICE_NRF_TEST_SCREEN')} />
       <AppButton

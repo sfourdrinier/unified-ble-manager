@@ -106,6 +106,31 @@ On Android, `manager.peers.bonded()` lists paired system peers and
 reachable. See [`docs/PEERS.md`](docs/PEERS.md) for the persistence and error
 semantics.
 
+### Recovering after an adapter interruption
+
+Adapter power and authorization changes are observable through the same public
+contract on every backend:
+
+```ts
+const watch = await manager.adapter.watchState()
+let previous = watch.initial
+for await (const item of watch.values) {
+  if (item.kind !== 'value') continue
+  const state = item.value
+  const restored = previous.power !== 'on' && state.power === 'on'
+  previous = state
+  if (restored && state.availability === 'available' && state.authorization === 'granted') {
+    // Reconcile your saved peer/reference and reconnect using your product policy.
+  }
+}
+await watch.stop()
+```
+
+UBM invalidates affected connections when the adapter is unavailable and does
+not reconnect silently. The host observes `watchState()`, resolves a fresh
+peer/reference, and starts a new connection generation. Do not poll, create a
+second manager, or reuse old GATT/database handles.
+
 ### Expo plugin
 
 Use an Expo development build, never Expo Go. Plugin options live in
