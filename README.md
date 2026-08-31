@@ -12,7 +12,7 @@ root import does not pick a radio. Package SemVer and backend support labels are
 independent: each radio backend keeps its evidence-derived label. See
 [`docs/PLATFORMS.md`](docs/PLATFORMS.md).
 
-This source tree is versioned `4.0.10`. Install the exact version shown in the npm
+This source tree is versioned `4.0.11`. Install the exact version shown in the npm
 registry. During release preparation, the version in `package.json` can be ahead
 of npm until the matching tag-driven workflow publishes it; the registry and
 GitHub release remain authoritative.
@@ -105,6 +105,31 @@ On Android, `manager.peers.bonded()` lists paired system peers and
 `manager.connect(peer, { intent: 'when-available' })`; paired does not mean
 reachable. See [`docs/PEERS.md`](docs/PEERS.md) for the persistence and error
 semantics.
+
+### Recovering after an adapter interruption
+
+Adapter power and authorization changes are observable through the same public
+contract on every backend:
+
+```ts
+const watch = await manager.adapter.watchState()
+let previous = watch.initial
+for await (const item of watch.values) {
+  if (item.kind !== 'value') continue
+  const state = item.value
+  const restored = previous.power !== 'on' && state.power === 'on'
+  previous = state
+  if (restored && state.availability === 'available' && state.authorization === 'granted') {
+    // Reconcile your saved peer/reference and reconnect using your product policy.
+  }
+}
+await watch.stop()
+```
+
+UBM invalidates affected connections when the adapter is unavailable and does
+not reconnect silently. The host observes `watchState()`, resolves a fresh
+peer/reference, and starts a new connection generation. Do not poll, create a
+second manager, or reuse old GATT/database handles.
 
 ### Expo plugin
 

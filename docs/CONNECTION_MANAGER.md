@@ -95,6 +95,40 @@ reconnect. See [`BACKGROUND.md`](BACKGROUND.md) and
 [`EXPO_PLUGIN.md`](EXPO_PLUGIN.md). Electron renderer resources remain owned by
 their authorized renderer lease; the main process owns the physical backend.
 
+## Adapter interruption and recovery
+
+An adapter power transition is not a peer disappearance. UBM publishes the
+typed transition through `manager.adapter.watchState()` and invalidates active
+connection generations while the adapter is unavailable. This behavior is
+shared by the React Native Android, React Native Apple, BlueZ, WinRT, Electron,
+Tauri, and Web backends wherever the platform exposes adapter state.
+
+The application remains the reconnect authority:
+
+```ts
+const watch = await manager.adapter.watchState()
+let prior = watch.initial
+for await (const item of watch.values) {
+  if (item.kind !== 'value') continue
+  const current = item.value
+  const becameReady = prior.power !== 'on'
+    && current.power === 'on'
+    && current.availability === 'available'
+    && current.authorization === 'granted'
+  prior = current
+  if (becameReady) {
+    // Resolve a fresh peer/reference and invoke the caller-owned retry policy.
+  }
+}
+await watch.stop()
+```
+
+Do not create a second manager or reuse a connection/database from before the
+adapter loss. A backend may report a cleanup retry while native operations are
+settling; wait for a ready state and retry the application operation with a new
+generation. Backends that cannot observe a given adapter transition expose the
+truthful snapshot they have and never fabricate reconnect behavior.
+
 ## Cleanup failures
 
 Cleanup records are data. A `release-failed` result retains retry ownership and

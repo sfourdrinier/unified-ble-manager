@@ -6,6 +6,16 @@ All notable changes to `unified-ble-manager` are documented here.
 
 No changes yet.
 
+## [4.0.11] - 2026-08-30
+
+### Documentation
+
+- Document adapter interruption recovery through `manager.adapter.watchState()`
+  in the README and connection guide, and add the same flow to the Expo
+  example. UBM invalidates affected generations and leaves reconnect policy
+  with the host; the example displays live adapter power, availability, and
+  authorization instead of polling or silently reconnecting.
+
 ## [4.0.10] - 2026-08-30
 
 ### Fixes
