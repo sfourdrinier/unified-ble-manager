@@ -62,7 +62,7 @@ The root import selects no radio. Import the host you actually run.
 | ---------------------------------------- | ------------------------------------------------------------------------------ |
 | `unified-ble-manager`                    | Host-neutral manager, handles, helpers, and shared types                       |
 | `unified-ble-manager/react-native`       | React Native Android / Apple manager                                           |
-| `unified-ble-manager/react`               | React provider, hooks, and React-facing type utilities                         |
+| `unified-ble-manager/react`              | React provider, hooks, and React-facing type utilities                         |
 | `unified-ble-manager/expo`               | Expo development-build manager, readiness, and native configuration checks     |
 | `unified-ble-manager/web`                | Web Bluetooth chooser + matched manager                                        |
 | `unified-ble-manager/electron/main`      | Trusted Electron-main radio + IPC router                                       |
@@ -199,7 +199,7 @@ try {
 
 Battery Level and Heart Rate Control Point are optional or conditional; see [`docs/TUTORIALS.md`](docs/TUTORIALS.md). Persistent subscriptions also live there.
 
-Web Bluetooth replaces the scan with `ble.choose(...)` from a user gesture. Tauri and the Electron renderer use different host entrypoints — see those host pages.
+Web Bluetooth replaces the scan with `ble.choose(...)` from a user gesture. The [complete Web Bluetooth guide](docs/WEB.md) and [TypeScript/Vite example](example-web/) cover chooser permissions, authorized peers, bounded operations, notifications, structured errors, and safe cleanup. Tauri and the Electron renderer use different host entrypoints — see those host pages.
 
 ## Why the API looks like this
 
@@ -318,17 +318,17 @@ after disconnect, service change, or rediscovery.
 
 ### Host factories
 
-| Factory                                                                                | Returns                                                                                         |
-| -------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
-| `createReactNativeBleManager`                                                          | Zero-plumbing public React Native manager                                                       |
-| `createReactNativeBleManagerWithEnvironment`                                           | Injectable RN factory for tests                                                                 |
-| `createExpoBleManager`                                                                 | Expo development-build manager with readiness and native configuration checks                   |
-| `createWebBleManager`                                                                  | Zero-plumbing public Web manager; use `ble.choose()` from a user gesture                        |
-| `createCoreBluetoothBleManager` / `createWinRtBleManager` / `createBluezBleManager`    | One-call Node managers                                                                          |
-| `createElectronMainCoreBluetoothBackendProvider` / `WinRt`                             | Main-process provider; you still build a `BleManager`                                           |
-| `createElectronRendererBleManager` / `createElectronRendererBleManagerWithEnvironment` | Public renderer `BleManager` over a preload transport; the renderer never loads a radio backend |
-| `createTauriBleManager`                                                                | Zero-plumbing Tauri `BleManager`; tests use `createTauriBleManagerWithEnvironment`              |
-| `createBleManagerFromProvider`                                                         | Advanced provider construction                                                                  |
+| Factory                                                                                | Returns                                                                                                                         |
+| -------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `createReactNativeBleManager`                                                          | Zero-plumbing public React Native manager                                                                                       |
+| `createReactNativeBleManagerWithEnvironment`                                           | Injectable RN factory for tests                                                                                                 |
+| `createExpoBleManager`                                                                 | Expo development-build manager with readiness and native configuration checks                                                   |
+| `createWebBleManager`                                                                  | Zero-plumbing public Web manager; use `ble.choose()` from a user gesture                                                        |
+| `createCoreBluetoothBleManager` / `createWinRtBleManager` / `createBluezBleManager`    | One-call Node managers                                                                                                          |
+| `createElectronMainCoreBluetoothBackendProvider` / `WinRt`                             | Main-process provider; you still build a `BleManager`                                                                           |
+| `createElectronRendererBleManager` / `createElectronRendererBleManagerWithEnvironment` | Public renderer `BleManager` over a preload transport; the renderer never loads a radio backend                                 |
+| `createTauriBleManager`                                                                | Zero-plumbing Tauri `BleManager`; tests use `createTauriBleManagerWithEnvironment`                                              |
+| `createBleManagerFromProvider`                                                         | Advanced provider construction                                                                                                  |
 | `createPublicBleManagerFacade`                                                         | Projects an already-owned `/advanced` manager into the root public `BleManager`; creates no advanced manager, backend, or radio |
 
 ## Other hosts
