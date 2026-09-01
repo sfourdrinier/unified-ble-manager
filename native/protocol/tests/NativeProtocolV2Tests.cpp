@@ -205,7 +205,7 @@ void testVersionNegotiation() {
 }
 
 void testBondedPeerSnapshotsAndConnectionIntent() {
-  static_assert(protocol::kAbiVersion == 6U);
+  static_assert(protocol::kAbiVersion == 7U);
   protocol::NativeProtocolV2Codec codec;
   const auto validCommand = protocol::ProtocolRecord{
       .kind = protocol::RecordKind::command,
@@ -1251,6 +1251,7 @@ void testPendingSubscriptionRoutingAndLateOutputRelease() {
       .fields = {
           field(1U, std::uint64_t{protocol::kProtocolVersion}), field(2U, correlation(1U)), field(3U, std::string("subscribe")),
           field(4U, characteristic("pending-subscription")), field(7U, std::string("subscription-pending")),
+          field(21U, std::string("notification")),
       },
   };
   runtime.registerCommand(command, true);

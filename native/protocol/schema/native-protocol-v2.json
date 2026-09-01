@@ -1,7 +1,7 @@
 {
   "schema": "unified-ble-native-protocol",
   "version": 2,
-  "abiVersion": 6,
+  "abiVersion": 7,
   "controlSurfaceVersion": 2,
   "abiManifest": "native-protocol-v2-abi.json",
   "maximumControlRecordBytes": 262144,

@@ -17,11 +17,11 @@ function filesUnder(relativeDirectory) {
 }
 
 describe('native protocol v2 migration', () => {
-  test('requires ABI 6 and preserves every previously assigned wire ID', () => {
+  test('requires ABI 7 and preserves every previously assigned wire ID', () => {
     const schema = JSON.parse(read('native/protocol/schema/native-protocol-v2.json'))
     const manifest = JSON.parse(read('native/protocol/schema/native-protocol-v2-abi.json'))
-    expect(schema.abiVersion).toBe(6)
-    expect(manifest.version).toBe(6)
+    expect(schema.abiVersion).toBe(7)
+    expect(manifest.version).toBe(7)
     expect(manifest.recordKinds).toEqual(expect.objectContaining({
       attachment: 1,
       connectionPath: 2,

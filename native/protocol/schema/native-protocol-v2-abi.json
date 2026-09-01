@@ -1,6 +1,6 @@
 {
   "schema": "unified-ble-native-protocol-abi",
-  "version": 6,
+  "version": 7,
   "recordKinds": {
     "attachment": 1,
     "connectionPath": 2,

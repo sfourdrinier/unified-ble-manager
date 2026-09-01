@@ -112,7 +112,7 @@ class ScanAddressControl {
   handshake() {
     return Promise.resolve({
       nativeProtocol: 2,
-      abi: 6,
+      abi: 7,
       controlSurface: 2,
       backendContract: 1,
       capabilitySchema: 1,

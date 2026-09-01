@@ -3,7 +3,7 @@
 package com.sfourdrinier.unifiedblemanager.protocol.generated
 
 const val NATIVE_PROTOCOL_VERSION: Int = 2
-const val NATIVE_PROTOCOL_ABI_VERSION: Int = 6
+const val NATIVE_PROTOCOL_ABI_VERSION: Int = 7
 const val NATIVE_PROTOCOL_CONTROL_SURFACE_VERSION: Int = 2
 const val MAXIMUM_CONTROL_RECORD_BYTES: Int = 262144
 const val MAXIMUM_BINARY_PAYLOAD_BYTES: Int = 524288
