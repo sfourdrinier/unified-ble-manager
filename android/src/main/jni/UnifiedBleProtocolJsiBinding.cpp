@@ -6,7 +6,7 @@
 #include <android/log.h>
 #include <fbjni/fbjni.h>
 #include <jsi/jsi.h>
-#include <react/jni/JRuntimeExecutor.h>
+#include <ReactCommon/CallInvokerHolder.h>
 
 #include <algorithm>
 #include <cstddef>
@@ -1302,22 +1302,27 @@ class UnifiedBleProtocolJsiBinding final : public jni::JavaClass<UnifiedBleProto
 
   static void installNative(
       jni::alias_ref<jclass>,
-      jni::alias_ref<facebook::react::JRuntimeExecutor::javaobject> runtimeExecutor,
+      jni::alias_ref<facebook::react::CallInvokerHolder::javaobject> jsCallInvokerHolder,
       jlong nativeHandle) {
     const auto runtimeLease = unifiedBleProtocolRuntimeLease(nativeHandle);
     if (runtimeLease.expired()) {
       throw std::invalid_argument("Native Protocol v2 runtime is unavailable");
     }
-    auto executor = runtimeExecutor->cthis()->get();
+    auto callInvoker = jsCallInvokerHolder->cthis()->getCallInvoker();
+    if (!callInvoker) {
+      throw std::invalid_argument("React Native JS CallInvoker is unavailable");
+    }
     auto state = std::make_shared<JsiEventSinkState>(
         runtimeLease,
-        [executor](std::function<void(jsi::Runtime&)> task) { executor(std::move(task)); },
+        [callInvoker](std::function<void(jsi::Runtime&)> task) {
+          callInvoker->invokeAsync(std::move(task));
+        },
         nativeHandle);
     {
       std::scoped_lock lock(eventSinkStatesMutex);
       eventSinkStates[nativeHandle] = state;
     }
-    executor([runtimeLease, nativeHandle, state](jsi::Runtime& runtime) {
+    callInvoker->invokeAsync([runtimeLease, nativeHandle, state](jsi::Runtime& runtime) {
       runtime.global().setProperty(
           runtime,
           kRuntimeName,

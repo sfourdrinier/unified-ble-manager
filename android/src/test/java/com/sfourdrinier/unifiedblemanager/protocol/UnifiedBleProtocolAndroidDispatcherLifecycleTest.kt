@@ -742,6 +742,21 @@ class UnifiedBleProtocolAndroidDispatcherLifecycleTest {
   }
 
   @Test
+  fun dispatcherForwardsResolvedSubscriptionModeToOwnedRadioCccdSelection() {
+    val dispatcher = readAndroidSource(
+      "android/src/main/java/com/sfourdrinier/unifiedblemanager/protocol/UnifiedBleProtocolAndroidDispatcher.kt"
+    )
+    val radio = readAndroidSource(
+      "android/src/main/java/com/sfourdrinier/unifiedblemanager/radio/OwnedAndroidGattRadio.kt"
+    )
+
+    assertTrue(dispatcher.contains("subscriptionType = command.optionalString(21)"))
+    assertTrue(dispatcher.contains("command.optionalString(21)\n            )"))
+    assertTrue(dispatcher.contains("subscriptionType = route.mode"))
+    assertTrue(radio.contains("resolveCccdPayload(enable, subscriptionType"))
+  }
+
+  @Test
   fun activeCancellationKeepsTheFifoBlockedUntilTheLateNativeCompletion() {
     val scheduled = ArrayDeque<() -> Unit>()
     val queue = GattSerialQueue(

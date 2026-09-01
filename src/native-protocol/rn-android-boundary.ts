@@ -21,6 +21,7 @@ import type {
   CoreBluetoothCharacteristicAddress,
   CoreBluetoothDescriptorAddress,
   CoreBluetoothGattSnapshot,
+  CoreBluetoothNotificationDeliveryMode,
   CoreBluetoothPhyObservation,
   CoreBluetoothPhyRequestResult,
   CoreBluetoothScanPlatformOptions
@@ -586,12 +587,9 @@ export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary
       field(6, binaryReferenceRecord(reference)),
       field(13, withResponse ? 'withResponse' : 'withoutResponse')
     ])
-    try {
-      await this.submit(command, correlation.nonce, 'write')
-    } catch (error) {
+    await this.submit(command, correlation.nonce, 'write', () => {
       this.releaseOrRetainForTeardown(reference, 'write-input-dispatch-failure')
-      throw error
-    }
+    })
   }
 
   async readDescriptor(address: CoreBluetoothDescriptorAddress): Promise<Uint8Array> {
@@ -618,20 +616,25 @@ export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary
       field(5, this.descriptorPath(address)),
       field(6, binaryReferenceRecord(reference))
     ])
-    try {
-      const result = await this.submit(command, correlation.nonce, 'writeDescriptor')
-      this.assertDescriptorResultPath(
-        requiredRecord(command, 5, 'rn-android-boundary.write-descriptor.path'),
-        requiredRecord(result, 15, 'rn-android-boundary.write-descriptor.result-path'),
-        'write-descriptor'
-      )
-    } catch (error) {
+    const result = await this.submit(command, correlation.nonce, 'writeDescriptor', () => {
       this.releaseOrRetainForTeardown(reference, 'write-descriptor-input-dispatch-failure')
-      throw error
-    }
+    })
+    this.assertDescriptorResultPath(
+      requiredRecord(command, 5, 'rn-android-boundary.write-descriptor.path'),
+      requiredRecord(result, 15, 'rn-android-boundary.write-descriptor.result-path'),
+      'write-descriptor'
+    )
   }
 
   async startNotify(address: CoreBluetoothCharacteristicAddress, onValue: (bytes: Uint8Array) => void): Promise<void> {
+    return this.startNotifyWithMode(address, 'notification', onValue)
+  }
+
+  async startNotifyWithMode(
+    address: CoreBluetoothCharacteristicAddress,
+    mode: CoreBluetoothNotificationDeliveryMode,
+    onValue: (bytes: Uint8Array) => void
+  ): Promise<void> {
     this.requireOpen('start-notify')
     const key = addressKey(address)
     if (this.subscriptionsByAddress.has(key)) {
@@ -643,7 +646,11 @@ export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary
     // Native Android can emit a value immediately after CCCD enablement, before its terminal result arrives.
     this.subscriptionsByAddress.set(key, subscription)
     try {
-      await this.dispatch('subscribe', [field(4, this.characteristicPath(address)), field(7, subscriptionId)])
+      await this.dispatch('subscribe', [
+        field(4, this.characteristicPath(address)),
+        field(7, subscriptionId),
+        field(21, mode)
+      ])
     } catch (error) {
       this.subscriptionsByAddress.delete(key)
       throw error
@@ -747,7 +754,12 @@ export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary
     return this.submit(commandRecord(protocolVersion, kind, correlation.record, fields), correlation.nonce, kind)
   }
 
-  private submit(command: NativeProtocolRecord, nonce: string, kind: string): Promise<NativeProtocolRecord> {
+  private submit(
+    command: NativeProtocolRecord,
+    nonce: string,
+    kind: string,
+    onSubmissionFailure: (() => void) | null = null
+  ): Promise<NativeProtocolRecord> {
     const key = operationKey(commandEpoch(command), nonce)
     const nativePeerId = nativePeerIdForCommand(command)
     return new Promise<NativeProtocolRecord>((resolve, reject) => {
@@ -756,6 +768,7 @@ export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary
         submitNativeProtocolCommand(encodeNativeProtocolRecord(command))
       } catch (error) {
         this.pending.delete(key)
+        onSubmissionFailure?.()
         reject(error instanceof Error ? error : new Error('Native protocol command submission failed'))
       }
     })
@@ -916,7 +929,7 @@ export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary
       const error = optionalRecord(event, 14)
       const safeMessage = error === null ? null : optionalString(error, 7)
       this.invalidateConnection(peerId)
-      this.rejectPendingForPeer(peerId, 'Android GATT connection was lost')
+      this.rejectPendingForPeer(peerId, safeMessage ?? 'Android GATT connection was lost')
       for (const listener of this.disconnectListeners) {
         this.invokeConsumerListener('connectionLost', () => listener(peerId, safeMessage))
       }
@@ -1286,9 +1299,21 @@ export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary
 
   private rejectPendingForPeer(nativePeerId: string, message: string): void {
     for (const [key, pending] of this.pending) {
-      if (pending.nativePeerId === nativePeerId) {
+      // Android owns disconnect teardown until it emits that operation's
+      // terminal result. A connectionLost event can arrive while that cleanup
+      // is in flight; rejecting disconnect here would turn its later, valid
+      // terminal into a protocol error and lose the authoritative cleanup
+      // outcome. This mirrors the native dispatcher's connection-loss policy.
+      if (pending.nativePeerId === nativePeerId && pending.kind !== 'disconnect') {
         this.pending.delete(key)
-        pending.reject(new Error(message))
+        pending.reject(
+          contractError('connection.lost', 'connection', `rn-android-boundary.${pending.kind}`, {
+            domain: 'android',
+            code: 'connectionLost',
+            safeMessage: message,
+            metadata: Object.freeze({})
+          })
+        )
       }
     }
   }
@@ -1376,6 +1401,14 @@ function nativeOperationFailure(error: NativeProtocolRecord | null, operation: s
   }
   if (nativeCode === 'permissionDenied') {
     return contractError('permission.denied', 'adapter', `rn-android-boundary.${operation}`)
+  }
+  if (nativeCode === 'connectionLost') {
+    return contractError('connection.lost', 'connection', `rn-android-boundary.${operation}`, {
+      domain: nativeDomain,
+      code: nativeCode,
+      safeMessage: safeMessage ?? `Native ${operation} operation ended because the connection was lost`,
+      metadata: Object.freeze({})
+    })
   }
   return contractError('platform.failure', 'platform', `rn-android-boundary.${operation}`, {
     domain: nativeDomain,

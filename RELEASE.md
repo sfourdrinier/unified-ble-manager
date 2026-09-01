@@ -81,7 +81,7 @@ Active `4.0.0-rc.*` release-train candidates publish to npm `latest` so a bare `
 
 On release day, set `release_candidate` to the exact candidate required by the
 release plan. RC2, RC3, RC4, `4.0.0-rc.4.1`, and RC5 are already immutable
-once tagged. Stable `4.0.0` through `4.0.10` are immutable. `4.0.11` is the current train head.
+once tagged. Stable `4.0.0` through `4.0.11` are immutable. `4.0.12` is the current train head.
 
 ```sh
 release_candidate=4.0.0-rc.N
@@ -133,9 +133,9 @@ The `v4.0.3` tag is immutable published history. Do not recreate or move it.
 git tag -a v4.0.3 -m "v4.0.3"
 ```
 
-## Releasing 4.0.11
+## Releasing 4.0.12
 
-The `v4.0.11` tag must identify the exact current `main` commit after canonical
+The `v4.0.12` tag must identify the exact current `main` commit after canonical
 CI passes. Do not tag this feature branch directly.
 
 ```sh
@@ -144,15 +144,23 @@ git checkout main
 git pull --ff-only origin main
 
 test "$(git branch --show-current)" = "main"
-test "$(node -p "require('./package.json').version")" = "4.0.11"
+test "$(node -p "require('./package.json').version")" = "4.0.12"
 git diff --exit-code
 git diff --cached --exit-code
 
-git tag -a v4.0.11 -m "v4.0.11"
-git push origin v4.0.11
+git tag -a v4.0.12 -m "v4.0.12"
+git push origin v4.0.12
 ```
 
-Before tagging, confirm release-note extraction finds `## [4.0.11]`.
+Before tagging, confirm release-note extraction finds `## [4.0.12]`.
+
+## Releasing 4.0.11
+
+The `v4.0.11` tag is immutable published history. Do not recreate or move it.
+
+```sh
+git tag -a v4.0.11 -m "v4.0.11"
+```
 
 ## Releasing 4.0.10
 
@@ -298,7 +306,7 @@ a green publish job and a package a consumer can actually install are not the
 same claim.
 
 ```sh
-version=4.0.11
+version=4.0.12
 
 npm view "unified-ble-manager@$version" version
 npm view unified-ble-manager dist-tags --json

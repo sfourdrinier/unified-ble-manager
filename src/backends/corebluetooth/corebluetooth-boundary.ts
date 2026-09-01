@@ -134,6 +134,9 @@ export interface CoreBluetoothPhyRequestResult {
   readonly observation: CoreBluetoothPhyObservation | null
 }
 
+/** Concrete CCCD delivery mode selected by the shared GATT contract. */
+export type CoreBluetoothNotificationDeliveryMode = 'notification' | 'indication'
+
 export interface CoreBluetoothBoundary {
   /** Declares whether this concrete boundary can honor queued Android-style connects. */
   readonly connectionIntentCapabilities?: Readonly<{ whenAvailable: 'available' | 'unsupported' }>
@@ -167,6 +170,12 @@ export interface CoreBluetoothBoundary {
   readDescriptor?(address: CoreBluetoothDescriptorAddress): Promise<Uint8Array>
   writeDescriptor?(address: CoreBluetoothDescriptorAddress, bytes: Uint8Array): Promise<void>
   startNotify(address: CoreBluetoothCharacteristicAddress, onValue: (bytes: Uint8Array) => void): Promise<void>
+  /** Optional exact delivery-mode extension; legacy boundaries remain source-compatible. */
+  startNotifyWithMode?(
+    address: CoreBluetoothCharacteristicAddress,
+    mode: CoreBluetoothNotificationDeliveryMode,
+    onValue: (bytes: Uint8Array) => void
+  ): Promise<void>
   stopNotify(address: CoreBluetoothCharacteristicAddress): Promise<void>
   onDisconnect(listener: (nativePeerId: string, safeMessage: string | null) => void): () => void
   /** Emits when the peer's GATT Services Changed indication invalidates the discovered database. */
