@@ -95,6 +95,7 @@
   "cancellationStates": ["cancellationRequested", "alreadyTerminal", "notCancellable"],
   "binaryOwnership": ["nativeOwnedCopy", "javascriptOwnedCopy", "transferred"],
   "writeModes": ["withResponse", "withoutResponse"],
+  "notificationDeliveryModes": ["notification", "indication"],
   "connectionPriorities": ["lowPower", "balanced", "highThroughput"],
   "connectionIntents": ["direct", "whenAvailable"],
   "connectionPhys": ["le1m", "le2m", "leCoded"],
@@ -259,7 +260,8 @@
         ["phyTx", "enum:connectionPhys", false],
         ["phyRx", "enum:connectionPhys", false],
         ["pairTransport", "enum:pairTransports", false],
-        ["connectionIntent", "enum:connectionIntents", false]
+        ["connectionIntent", "enum:connectionIntents", false],
+        ["notificationDeliveryMode", "enum:notificationDeliveryModes", false]
       ]
     },
     {

@@ -125,6 +125,7 @@ export const nativeProtocolEnumValues: Readonly<Record<string, readonly string[]
   cancellationStates: ['cancellationRequested', 'alreadyTerminal', 'notCancellable'],
   binaryOwnership: ['nativeOwnedCopy', 'javascriptOwnedCopy', 'transferred'],
   writeModes: ['withResponse', 'withoutResponse'],
+  notificationDeliveryModes: ['notification', 'indication'],
   connectionPriorities: ['lowPower', 'balanced', 'highThroughput'],
   connectionIntents: ['direct', 'whenAvailable'],
   connectionPhys: ['le1m', 'le2m', 'leCoded'],
@@ -220,6 +221,9 @@ export type BinaryOwnership = (typeof binaryOwnership)[number]
 
 export const writeModes = Object.freeze(['withResponse', 'withoutResponse'])
 export type WriteModes = (typeof writeModes)[number]
+
+export const notificationDeliveryModes = Object.freeze(['notification', 'indication'])
+export type NotificationDeliveryModes = (typeof notificationDeliveryModes)[number]
 
 export const connectionPriorities = Object.freeze(['lowPower', 'balanced', 'highThroughput'])
 export type ConnectionPriorities = (typeof connectionPriorities)[number]
@@ -351,6 +355,7 @@ export const nativeProtocolFields: readonly NativeProtocolFieldDescriptor[] = Ob
   nativeProtocolField('command', 18, 'phyRx', 'enum:connectionPhys', false),
   nativeProtocolField('command', 19, 'pairTransport', 'enum:pairTransports', false),
   nativeProtocolField('command', 20, 'connectionIntent', 'enum:connectionIntents', false),
+  nativeProtocolField('command', 21, 'notificationDeliveryMode', 'enum:notificationDeliveryModes', false),
   nativeProtocolField('terminal', 1, 'correlation', 'record:operationCorrelation', true),
   nativeProtocolField('terminal', 2, 'outcome', 'enum:terminalOutcomes', true),
   nativeProtocolField('terminal', 3, 'cause', 'string', false),

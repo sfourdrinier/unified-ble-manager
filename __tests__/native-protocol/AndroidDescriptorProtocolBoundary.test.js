@@ -94,6 +94,40 @@ describe('React Native Android descriptor protocol boundary', () => {
     await boundary.destroy()
   })
 
+  test('forwards the resolved notification delivery mode to the Android subscribe command', async () => {
+    const control = new DescriptorControl()
+    const runtime = new DescriptorRuntime()
+    global.__unifiedBleNativeProtocolV2 = runtime
+    const boundary = new ReactNativeAndroidProtocolBoundary(control, 'delivery-mode-owner')
+    boundary.bindAttachment({
+      attachmentId: 'delivery-mode-attachment',
+      backendInstanceId: 'delivery-mode-backend',
+      backendGeneration: 'delivery-mode-generation',
+      adapterId: 'delivery-mode-adapter',
+      adapterGeneration: 'delivery-mode-adapter-generation'
+    })
+
+    await boundary.open()
+    await boundary.connect(peerId)
+    const snapshot = await boundary.discover(peerId)
+    const characteristic = snapshot.services[0].characteristics[0]
+    const address = {
+      nativePeerId: peerId,
+      serviceUuid: snapshot.services[0].uuid,
+      serviceOccurrence: snapshot.services[0].occurrence,
+      characteristicUuid: characteristic.uuid,
+      characteristicOccurrence: characteristic.occurrence
+    }
+
+    await boundary.startNotifyWithMode(address, 'indication', () => undefined)
+
+    const subscribe = runtime.commands.find(command => requiredString(command, 3) === 'subscribe')
+    expect(subscribe).toBeDefined()
+    expect(requiredString(subscribe, 21)).toBe('indication')
+
+    await boundary.destroy()
+  })
+
   test('isolates throwing consumer listeners without rejecting unrelated scan, notification, disconnect, or adapter delivery', async () => {
     const control = new DescriptorControl()
     const runtime = new DescriptorRuntime()

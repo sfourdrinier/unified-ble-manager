@@ -30,6 +30,7 @@ Pods/
 # Android/IntelliJ
 #
 build/
+.cxx/
 .idea
 .gradle
 *.iml

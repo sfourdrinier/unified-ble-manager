@@ -22,10 +22,10 @@ import com.facebook.react.bridge.Arguments;
 import com.facebook.react.bridge.Promise;
 import com.facebook.react.bridge.ReactApplicationContext;
 import com.facebook.react.bridge.ReadableMap;
-import com.facebook.react.bridge.RuntimeExecutor;
 import com.facebook.react.bridge.WritableMap;
 import com.facebook.react.bridge.ActivityEventListener;
 import com.facebook.react.module.annotations.ReactModule;
+import com.facebook.react.turbomodule.core.CallInvokerHolderImpl;
 import com.sfourdrinier.unifiedblemanager.NativeUnifiedBleProtocolControlSpec;
 
 import java.io.ByteArrayOutputStream;
@@ -487,11 +487,12 @@ public final class UnifiedBleProtocolControlModule extends NativeUnifiedBleProto
   public synchronized void installExecutionRuntime(Promise promise) {
     try {
       requireOpen();
-      final RuntimeExecutor runtimeExecutor = reactContext.getCatalystInstance().getRuntimeExecutor();
-      if (runtimeExecutor == null) {
-        throw new IllegalStateException("React Native RuntimeExecutor is unavailable");
+      final CallInvokerHolderImpl jsCallInvokerHolder =
+          (CallInvokerHolderImpl) reactContext.getJSCallInvokerHolder();
+      if (jsCallInvokerHolder == null) {
+        throw new IllegalStateException("React Native JS CallInvoker is unavailable");
       }
-      UnifiedBleProtocolJsiBinding.install(runtimeExecutor, nativeHandle, reactContext);
+      UnifiedBleProtocolJsiBinding.install(jsCallInvokerHolder, nativeHandle, reactContext);
       promise.resolve(null);
     } catch (RuntimeException error) {
       Log.e(TAG, "installExecutionRuntime failed", error);

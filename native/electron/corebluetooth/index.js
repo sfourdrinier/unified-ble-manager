@@ -199,6 +199,18 @@ function createContractBoundary() {
         address.characteristicOccurrence,
         value => onValue(toUint8Array(value))
       ),
+    // CoreBluetooth selects the delivery mechanism internally. The shared
+    // backend still resolves a concrete mode for Android; Apple intentionally
+    // ignores that selector and preserves CoreBluetooth's native behavior.
+    startNotifyWithMode: (address, _mode, onValue) =>
+      radio.startNotifyAt(
+        address.nativePeerId,
+        address.serviceUuid,
+        address.serviceOccurrence,
+        address.characteristicUuid,
+        address.characteristicOccurrence,
+        value => onValue(toUint8Array(value))
+      ),
     stopNotify: address =>
       radio.stopNotifyAt(
         address.nativePeerId,

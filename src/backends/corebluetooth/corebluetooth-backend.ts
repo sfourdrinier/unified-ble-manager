@@ -63,7 +63,8 @@ import type {
   CoreBluetoothAdvertisement,
   CoreBluetoothBoundary,
   CoreBluetoothCharacteristicAddress,
-  CoreBluetoothGattSnapshot
+  CoreBluetoothGattSnapshot,
+  CoreBluetoothNotificationDeliveryMode
 } from './corebluetooth-boundary'
 import {
   advertisementByteLength,
@@ -124,6 +125,7 @@ export interface ConnectionRecord {
 export interface PhysicalSubscription {
   readonly key: string
   readonly address: CoreBluetoothCharacteristicAddress
+  readonly mode: CoreBluetoothNotificationDeliveryMode
   readonly consumers: Set<CoreBluetoothBackendSubscription>
   state: 'enabling' | 'ready' | 'removing' | 'cleanup-failed' | 'released'
   nativeStart: Promise<void> | null
@@ -1033,7 +1035,7 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
       cleanupFailure('connection', operation, error)
     )
   }
-  private handleDisconnect(nativePeerId: string, safeMessage: string | null): void {
+  private handleDisconnect(nativePeerId: string, _safeMessage: string | null): void {
     const record = this.connectionsByNativeId.get(nativePeerId)
     if (record === undefined || record.state === 'disconnected' || record.state === 'lost') {
       return
@@ -1064,9 +1066,11 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
       ingressOrdinal: this.nextIngressOrdinal
     })
     this.nextIngressOrdinal += 1
-    if (safeMessage !== null) {
-      console.error(`${this.diagnosticTag('handleDisconnect')} Native link loss:`, safeMessage)
-    }
+    // Link loss is a normal, typed lifecycle outcome (notably for
+    // when-available sensors such as Dexcom). Consumers receive it through the
+    // canonical event and terminal streams above. Logging it as console.error
+    // made every expected sensor wake-cycle termination an application error
+    // and, in Expo development builds, a blocking LogBox.
   }
   private handleDatabaseChanged(nativePeerId: string): void {
     if (this.admissionClosed || this.destroyed) {

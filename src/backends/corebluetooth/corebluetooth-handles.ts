@@ -49,7 +49,8 @@ import { CoreBoundedStream } from '../../core/bounded-stream'
 import type {
   CoreBluetoothCharacteristicAddress,
   CoreBluetoothDescriptorAddress,
-  CoreBluetoothGattSnapshot
+  CoreBluetoothGattSnapshot,
+  CoreBluetoothNotificationDeliveryMode
 } from './corebluetooth-boundary'
 import type {
   ConnectionRecord,
@@ -332,6 +333,40 @@ export class CoreBluetoothGattDatabase implements GattDatabase<string, string, s
     this.assertCurrent('direct-gatt.gatt.database-subscribe')
     this.addressFor(path, 'direct-gatt.gatt.database-subscribe')
     return this.backend.gattOperations.subscribeFromDatabase(path, options)
+  }
+
+  notificationDeliveryModeFor<ServiceOccurrence extends string, CharacteristicOccurrence extends string>(
+    path: CharacteristicPath<string, string, string, ServiceOccurrence, CharacteristicOccurrence, 'current'>,
+    operation: string,
+    requested: import('../../backend-contract/operations').SubscriptionOptions['deliveryMode']
+  ): CoreBluetoothNotificationDeliveryMode {
+    this.assertCurrent(operation)
+    if (!this.matchesPath(path)) {
+      throw contractError('gatt.stale-handle', 'gatt', operation)
+    }
+    const service = this.snapshotRecord.services.find(
+      candidate => candidate.uuid === path.serviceUuid && candidate.occurrence === Number(path.serviceOccurrence)
+    )
+    const characteristic = service?.characteristics.find(
+      candidate =>
+        candidate.uuid === path.characteristicUuid && candidate.occurrence === Number(path.characteristicOccurrence)
+    )
+    if (characteristic === undefined) {
+      throw contractError('gatt.not-found', 'gatt', operation)
+    }
+    const notificationAvailable = characteristic.notifiable
+    const indicationAvailable = characteristic.indicatable === true
+    if (
+      (requested === 'require-notification' && !notificationAvailable) ||
+      (requested === 'require-indication' && !indicationAvailable) ||
+      (!notificationAvailable && !indicationAvailable)
+    ) {
+      throw contractError('gatt.property-not-supported', 'gatt', operation)
+    }
+    if (requested === 'prefer-indication' || requested === 'require-indication') {
+      return indicationAvailable ? 'indication' : 'notification'
+    }
+    return notificationAvailable ? 'notification' : 'indication'
   }
 
   invalidate(): void {

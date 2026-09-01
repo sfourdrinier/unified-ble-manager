@@ -908,10 +908,9 @@ describe('React Native Android canonical protocol vertical slice', () => {
       done: false,
       value: { kind: 'terminal', reason: 'connection-lost' }
     })
-    expectConsoleError(
-      `[${REACT_NATIVE_ANDROID_PLATFORM_ID}.handleDisconnect] Native link loss:`,
-      'Android GATT connection lost with status 133'
-    )
+    // A peer ending a when-available connection is an ordinary lifecycle
+    // transition. It is delivered through the typed terminal stream above;
+    // console.error would turn every Dexcom wake cycle into an Expo LogBox.
     await connection.release()
 
     const reconnected = await manager.connect(restartedObservation.value.value.device.id, operation())
@@ -1018,6 +1017,81 @@ describe('React Native Android canonical protocol vertical slice', () => {
     })
     await expect(boundary.destroy()).resolves.toBeUndefined()
     expect(control.closedAttachments).toEqual([attachment])
+  })
+
+  test('Android connection loss preserves an in-flight disconnect until native teardown terminalizes', async () => {
+    const control = new DeterministicAndroidControl()
+    const runtime = new DeterministicAndroidProtocolRuntime(control)
+    runtime.holdDisconnectResult = true
+    global.__unifiedBleNativeProtocolV2 = runtime
+    const boundary = new ReactNativeAndroidProtocolBoundary(control, 'deterministic-android-disconnect-race-owner')
+    boundary.bindAttachment(deterministicAttachment())
+
+    await boundary.open()
+    await boundary.connect(peerId)
+
+    let outcome = 'pending'
+    const disconnect = boundary.disconnect(peerId).then(
+      () => {
+        outcome = 'resolved'
+      },
+      () => {
+        outcome = 'rejected'
+      }
+    )
+    await Promise.resolve()
+    expect(runtime.pendingDisconnectCommand).not.toBeNull()
+
+    runtime.emitConnectionLost(19)
+    await Promise.resolve()
+    expect(outcome).toBe('pending')
+
+    runtime.completePendingDisconnect()
+    await disconnect
+    expect(outcome).toBe('resolved')
+    await expect(boundary.destroy()).resolves.toBeUndefined()
+  })
+
+  test('Android connection loss does not double-release write bytes already owned by native', async () => {
+    const control = new DeterministicAndroidControl()
+    const runtime = new DeterministicAndroidProtocolRuntime(control)
+    runtime.holdWriteResult = true
+    global.__unifiedBleNativeProtocolV2 = runtime
+    const boundary = new ReactNativeAndroidProtocolBoundary(control, 'deterministic-android-write-loss-owner')
+    boundary.bindAttachment(deterministicAttachment())
+
+    await boundary.open()
+    await boundary.connect(peerId)
+    await boundary.discover(peerId)
+    const write = boundary.write(characteristicAddress(), new Uint8Array([9, 8]), true)
+    await Promise.resolve()
+    expect(runtime.pendingWriteCommand).not.toBeNull()
+    expect(runtime.retainedPayloadCount()).toBe(0)
+
+    runtime.emitConnectionLost(19)
+    await expect(write).rejects.toMatchObject({
+      normalized: { code: 'connection.lost' }
+    })
+    expect(runtime.retainedPayloadCount()).toBe(0)
+    await expect(boundary.destroy()).resolves.toBeUndefined()
+  })
+
+  test('Android synchronously releases write bytes when native submission never accepts ownership', async () => {
+    const control = new DeterministicAndroidControl()
+    const runtime = new DeterministicAndroidProtocolRuntime(control)
+    runtime.rejectWriteBeforeOwnership = true
+    global.__unifiedBleNativeProtocolV2 = runtime
+    const boundary = new ReactNativeAndroidProtocolBoundary(control, 'deterministic-android-write-submit-owner')
+    boundary.bindAttachment(deterministicAttachment())
+
+    await boundary.open()
+    await boundary.connect(peerId)
+    await boundary.discover(peerId)
+    await expect(boundary.write(characteristicAddress(), new Uint8Array([9, 8]), true)).rejects.toThrow(
+      'Native write submission was rejected before ownership transfer'
+    )
+    expect(runtime.retainedPayloadCount()).toBe(0)
+    await expect(boundary.destroy()).resolves.toBeUndefined()
   })
 
   test.each([
@@ -1705,6 +1779,11 @@ class DeterministicAndroidProtocolRuntime {
     this.phyRequests = []
     this.bondedPeers = []
     this.bondedPermissionDenied = false
+    this.holdDisconnectResult = false
+    this.pendingDisconnectCommand = null
+    this.holdWriteResult = false
+    this.pendingWriteCommand = null
+    this.rejectWriteBeforeOwnership = false
   }
 
   retain(operationCorrelation, value) {
@@ -1768,6 +1847,13 @@ class DeterministicAndroidProtocolRuntime {
     this.commandKinds.push(kind)
     if (kind === 'scanStart') {
       this.emitResult(command, 'scanStarted')
+      return
+    }
+    if (kind === 'disconnect' && this.holdDisconnectResult) {
+      if (this.pendingDisconnectCommand !== null) {
+        throw new Error('The deterministic runtime already has a pending disconnect')
+      }
+      this.pendingDisconnectCommand = command
       return
     }
     if (kind === 'scanStop' || kind === 'disconnect' || kind === 'unsubscribe') {
@@ -1855,10 +1941,17 @@ class DeterministicAndroidProtocolRuntime {
       return
     }
     if (kind === 'write') {
+      if (this.rejectWriteBeforeOwnership) {
+        throw new Error('Native write submission was rejected before ownership transfer')
+      }
       const reference = binaryReferenceFromRecord(requiredRecord(command, 6))
       this.writes.push(this.copy(reference))
       if (!this.release(reference)) {
         throw new Error('The deterministic write input was not retained')
+      }
+      if (this.holdWriteResult) {
+        this.pendingWriteCommand = command
+        return
       }
       this.emitResult(command, 'write')
       return
@@ -1999,6 +2092,15 @@ class DeterministicAndroidProtocolRuntime {
     ])
   }
 
+  completePendingDisconnect() {
+    if (this.pendingDisconnectCommand === null) {
+      throw new Error('The deterministic runtime has no pending disconnect')
+    }
+    const command = this.pendingDisconnectCommand
+    this.pendingDisconnectCommand = null
+    this.emitResult(command, 'accepted')
+  }
+
   emitDiagnostic(code, message, operation = 'scan') {
     this.emitEvent('diagnostic', [
       field(
@@ -2107,6 +2209,16 @@ function databaseSnapshot(database) {
     ]),
     field(4, [descriptor])
   ])
+}
+
+function characteristicAddress() {
+  return {
+    nativePeerId: peerId,
+    serviceUuid,
+    serviceOccurrence: 0,
+    characteristicUuid,
+    characteristicOccurrence: 0
+  }
 }
 
 function binaryReferenceRecord(reference) {

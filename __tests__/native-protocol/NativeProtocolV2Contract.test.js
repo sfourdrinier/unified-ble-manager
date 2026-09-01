@@ -330,7 +330,7 @@ describe('Native Protocol v2 schema authority', () => {
     expect(control).toContain('installExecutionRuntime')
     expect(control).toContain('controlSurface: NativeProtocolVersionRange')
     expect(androidControl).toContain('UnifiedBleProtocolJsiBinding.install')
-    expect(androidBinding).toContain('RuntimeExecutor')
+    expect(androidBinding).toContain('CallInvokerHolderImpl')
     expect(nativeBinding).toContain('retainUint8Array')
     expect(nativeBinding).toContain('submit')
     expect(nativeBinding).toContain('dispatchCommandToAndroid')
@@ -342,6 +342,24 @@ describe('Native Protocol v2 schema authority', () => {
     expect(runtime).toContain('settleResult')
     expect(runtime).toContain('deliverUint8ArrayCopy')
     expect(nativeBinding).not.toMatch(/Base64/)
+  })
+
+  test('installs Android JSI through the architecture-neutral JS call invoker', () => {
+    const androidControl = read(
+      'android/src/main/java/com/sfourdrinier/unifiedblemanager/protocol/UnifiedBleProtocolControlModule.java'
+    )
+    const androidBinding = read(
+      'android/src/main/java/com/sfourdrinier/unifiedblemanager/protocol/UnifiedBleProtocolJsiBinding.java'
+    )
+    const nativeBinding = read('android/src/main/jni/UnifiedBleProtocolJsiBinding.cpp')
+
+    expect(androidControl).toContain('getJSCallInvokerHolder')
+    expect(androidControl).not.toContain('getCatalystInstance')
+    expect(androidBinding).toContain('CallInvokerHolderImpl')
+    expect(androidBinding).not.toContain('RuntimeExecutor')
+    expect(nativeBinding).toContain('CallInvokerHolder')
+    expect(nativeBinding).toContain('invokeAsync')
+    expect(nativeBinding).not.toContain('JRuntimeExecutor')
   })
 
   test('keeps Android PHY runtime truth in the versioned handshake extension without changing protocol-v2 records', () => {

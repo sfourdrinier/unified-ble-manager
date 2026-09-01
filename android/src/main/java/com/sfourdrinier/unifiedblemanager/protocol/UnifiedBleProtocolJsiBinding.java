@@ -2,8 +2,8 @@
 
 package com.sfourdrinier.unifiedblemanager.protocol;
 
-import com.facebook.react.bridge.RuntimeExecutor;
 import com.facebook.react.bridge.ReactApplicationContext;
+import com.facebook.react.turbomodule.core.CallInvokerHolderImpl;
 
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -15,14 +15,14 @@ final class UnifiedBleProtocolJsiBinding {
   private UnifiedBleProtocolJsiBinding() {}
 
   static void install(
-      RuntimeExecutor runtimeExecutor,
+      CallInvokerHolderImpl jsCallInvokerHolder,
       long nativeHandle,
       ReactApplicationContext context) {
     final UnifiedBleProtocolAndroidDispatcher dispatcher =
         DISPATCHERS.reserve(
             nativeHandle, () -> new UnifiedBleProtocolAndroidDispatcher(context, nativeHandle));
     try {
-      installNative(runtimeExecutor, nativeHandle);
+      installNative(jsCallInvokerHolder, nativeHandle);
     } catch (RuntimeException error) {
       try {
         close(nativeHandle);
@@ -197,7 +197,7 @@ final class UnifiedBleProtocolJsiBinding {
     }
   }
 
-  private static native void installNative(RuntimeExecutor runtimeExecutor, long nativeHandle);
+  private static native void installNative(CallInvokerHolderImpl jsCallInvokerHolder, long nativeHandle);
   private static native void uninstallNative(long nativeHandle);
   private static native String requestCancellationNative(long nativeHandle, long dispatchEpoch, String nonce);
   private static native boolean emitRecordNative(long nativeHandle, byte[] encodedRecord);

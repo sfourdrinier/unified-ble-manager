@@ -119,6 +119,11 @@ public enum WriteModes: UInt16, CaseIterable, Sendable {
   case withoutResponse = 2
 }
 
+public enum NotificationDeliveryModes: UInt16, CaseIterable, Sendable {
+  case notification = 1
+  case indication = 2
+}
+
 public enum ConnectionPriorities: UInt16, CaseIterable, Sendable {
   case lowPower = 1
   case balanced = 2
@@ -271,6 +276,7 @@ public let nativeProtocolFields: [FieldDescriptor] = [
     FieldDescriptor(record: .command, fieldID: 18, name: "phyRx", type: "enum:connectionPhys", required: false),
     FieldDescriptor(record: .command, fieldID: 19, name: "pairTransport", type: "enum:pairTransports", required: false),
     FieldDescriptor(record: .command, fieldID: 20, name: "connectionIntent", type: "enum:connectionIntents", required: false),
+    FieldDescriptor(record: .command, fieldID: 21, name: "notificationDeliveryMode", type: "enum:notificationDeliveryModes", required: false),
     FieldDescriptor(record: .terminal, fieldID: 1, name: "correlation", type: "record:operationCorrelation", required: true),
     FieldDescriptor(record: .terminal, fieldID: 2, name: "outcome", type: "enum:terminalOutcomes", required: true),
     FieldDescriptor(record: .terminal, fieldID: 3, name: "cause", type: "string", required: false),

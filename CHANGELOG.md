@@ -4,6 +4,27 @@ All notable changes to `unified-ble-manager` are documented here.
 
 ## [Unreleased]
 
+No changes yet.
+
+## [4.0.12] - 2026-08-31
+
+### Fixes
+
+- Use React Native's architecture-neutral JavaScript call-invoker holder for
+  the Android JSI protocol transport. Native result and notification delivery
+  now work under both bridgeless and legacy React Native runtimes without
+  changing the public API or wire protocol.
+- Preserve the requested notification or indication delivery mode through the
+  React Native Android backend and native dispatcher instead of allowing the
+  native layer to silently choose a different CCCD mode.
+- Correct React Native protocol ownership and teardown races: binary write
+  payloads are released by exactly one owner, connection loss rejects pending
+  operations with the normalized lifecycle error, and an in-flight disconnect
+  remains pending until the authoritative native teardown terminal arrives.
+- Treat expected, typed direct-GATT link loss as lifecycle state rather than an
+  unconditional console error across shared CoreBluetooth-backed hosts. The
+  lifecycle event and recovery contract are unchanged.
+
 ### Documentation
 
 - Add `docs/README.md`, a complete documentation map labelling every document

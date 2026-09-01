@@ -571,7 +571,8 @@ class UnifiedBleProtocolAndroidDispatcher(
       endpoint.serviceOccurrence,
       endpoint.characteristicUuid,
       endpoint.characteristicOccurrence,
-      enable
+      enable,
+      subscriptionType = command.optionalString(21)
     ) { result ->
       result.fold(
         onSuccess = {
@@ -598,7 +599,11 @@ class UnifiedBleProtocolAndroidDispatcher(
           }
           val subscriptionId = command.requiredString(7)
           if (enable) {
-            activeSubscriptions[subscriptionId] = SubscriptionRoute(subscriptionId, endpoint)
+            activeSubscriptions[subscriptionId] = SubscriptionRoute(
+              subscriptionId,
+              endpoint,
+              command.optionalString(21)
+            )
           } else {
             activeSubscriptions.remove(subscriptionId)
           }
@@ -682,7 +687,8 @@ class UnifiedBleProtocolAndroidDispatcher(
             route.endpoint.serviceOccurrence,
             route.endpoint.characteristicUuid,
             route.endpoint.characteristicOccurrence,
-            true
+            true,
+            subscriptionType = route.mode
           ) { result ->
             result.exceptionOrNull()?.let { error ->
               radio.reportCleanupFailure(
@@ -1100,7 +1106,8 @@ class UnifiedBleProtocolAndroidDispatcher(
 
   private data class SubscriptionRoute(
     val subscriptionId: String,
-    val endpoint: CharacteristicEndpoint
+    val endpoint: CharacteristicEndpoint,
+    val mode: String?
   ) {
     fun matches(
       deviceId: String,

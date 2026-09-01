@@ -774,6 +774,54 @@ describe('CoreBluetooth contract-v1 vertical slice', () => {
     await backend.destroy()
   })
 
+  test('forwards the resolved indication mode to the CoreBluetooth boundary', async () => {
+    const { backend, boundary } = await backendFixture()
+    const observedModes = []
+    boundary.startNotifyWithMode = async (address, mode, onValue) => {
+      observedModes.push(mode)
+      await boundary.startNotify(address, onValue)
+    }
+    const peerId = await observedPeerId(backend)
+    const lease = await backend.connections.connect(
+      peerId,
+      opaqueId('delivery-mode-client', 'client', 'corebluetooth:delivery-mode'),
+      operation()
+    )
+    const originalDiscover = boundary.discover.bind(boundary)
+    boundary.discover = async nativePeerId => {
+      const snapshot = await originalDiscover(nativePeerId)
+      const service = snapshot.services[0]
+      const characteristic = service.characteristics[0]
+      return {
+        ...snapshot,
+        services: [
+          {
+            ...service,
+            characteristics: [{ ...characteristic, indicatable: true }, ...service.characteristics.slice(1)]
+          },
+          ...snapshot.services.slice(1)
+        ]
+      }
+    }
+    const database = await backend.gatt.discover(lease.connection, operation())
+    const characteristic = (await database.snapshot()).characteristics[0].path
+
+    const subscription = await database.subscribe(characteristic, {
+      ...operation(),
+      delivery: delivery(),
+      deliveryMode: 'prefer-indication'
+    })
+
+    expect(observedModes).toEqual(['indication'])
+    await expect(
+      backend.gatt.unsubscribe(subscription, {
+        ...operation(),
+        correlation: opaqueId('delivery-mode-remove', 'operation', 'corebluetooth:delivery-mode')
+      }).completion
+    ).resolves.toMatchObject({ outcome: 'succeeded' })
+    await backend.destroy()
+  })
+
   test('keeps adapter-loss cleanup pending until a quarantined native read settles, then emits the new generation', async () => {
     const { backend, boundary } = await backendFixture()
     const stateWatch = await backend.adapter.watchState()

@@ -119,6 +119,11 @@ enum class WriteModes(val wireValue: Int) {
   WITHOUT_RESPONSE(2)
 }
 
+enum class NotificationDeliveryModes(val wireValue: Int) {
+  NOTIFICATION(1),
+  INDICATION(2)
+}
+
 enum class ConnectionPriorities(val wireValue: Int) {
   LOW_POWER(1),
   BALANCED(2),
@@ -271,6 +276,7 @@ val NATIVE_PROTOCOL_FIELDS: List<FieldDescriptor> = listOf(
     FieldDescriptor(RecordKind.COMMAND, 18, "phyRx", "enum:connectionPhys", false),
     FieldDescriptor(RecordKind.COMMAND, 19, "pairTransport", "enum:pairTransports", false),
     FieldDescriptor(RecordKind.COMMAND, 20, "connectionIntent", "enum:connectionIntents", false),
+    FieldDescriptor(RecordKind.COMMAND, 21, "notificationDeliveryMode", "enum:notificationDeliveryModes", false),
     FieldDescriptor(RecordKind.TERMINAL, 1, "correlation", "record:operationCorrelation", true),
     FieldDescriptor(RecordKind.TERMINAL, 2, "outcome", "enum:terminalOutcomes", true),
     FieldDescriptor(RecordKind.TERMINAL, 3, "cause", "string", false),

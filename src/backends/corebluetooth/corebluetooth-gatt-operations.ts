@@ -172,11 +172,12 @@ export class CoreBluetoothGattOperations {
     this.backend.assertOperational('direct-gatt.gatt.subscribe')
     const database = this.backend.databaseForPath(path, 'direct-gatt.gatt.subscribe')
     const address = database.addressFor(path, 'direct-gatt.gatt.subscribe')
+    const mode = database.notificationDeliveryModeFor(path, 'direct-gatt.gatt.subscribe', request.options.deliveryMode)
     return this.backend.dispatcher.dispatch(
       request.operation,
       'direct-gatt.gatt.subscribe',
       async execution => {
-        const key = addressKey(address)
+        const key = `${addressKey(address)}|${mode}`
         let physical = this.backend.subscriptions.get(key)
         if (physical?.state === 'removing') {
           if (physical.removal === null) {
@@ -202,6 +203,7 @@ export class CoreBluetoothGattOperations {
           physical = {
             key,
             address,
+            mode,
             consumers: new Set(),
             state: 'enabling',
             nativeStart: null,
@@ -222,7 +224,11 @@ export class CoreBluetoothGattOperations {
           enabling.consumers.add(subscription)
           let nativeStart: Promise<void> | null = null
           try {
-            nativeStart = this.backend.boundary.startNotify(address, bytes => this.emitNotification(enabling, bytes))
+            const onValue = (bytes: Uint8Array): void => this.emitNotification(enabling, bytes)
+            nativeStart =
+              this.backend.boundary.startNotifyWithMode === undefined
+                ? this.backend.boundary.startNotify(address, onValue)
+                : this.backend.boundary.startNotifyWithMode(address, enabling.mode, onValue)
             enabling.nativeStart = nativeStart
             await nativeStart
             if (enabling.nativeStart === nativeStart) {

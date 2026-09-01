@@ -25,6 +25,7 @@ class InMemoryCoreBluetoothBoundary {
     this.writeValues = []
     this.descriptorWriteValues = []
     this.startNotifyCalls = 0
+    this.startNotifyModes = []
     this.stopNotifyCalls = 0
   }
 
@@ -190,6 +191,7 @@ class InMemoryCoreBluetoothBoundary {
 
   async startNotify(address, onValue) {
     this.startNotifyCalls += 1
+    this.startNotifyModes.push(null)
     this.notificationHandlers.set(addressKey(address), onValue)
   }
 
