@@ -6,6 +6,17 @@ All notable changes to `unified-ble-manager` are documented here.
 
 No changes yet.
 
+## [4.0.13] - 2026-09-01
+
+### Fixes
+
+- Accept the versioned notification-delivery field on native `subscribe`
+  commands while continuing to reject it on `unsubscribe`. This fixes Android
+  notification setup failing before CCCD dispatch in 4.0.12.
+- Advance the Native Protocol ABI to 7 so JavaScript built for delivery-mode
+  commands rejects an older native binary during handshake instead of failing
+  later during the first subscription.
+
 ## [4.0.12] - 2026-08-31
 
 ### Fixes

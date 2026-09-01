@@ -10,7 +10,7 @@
 namespace unified_ble::native_protocol::v2 {
 
 inline constexpr std::uint32_t kProtocolVersion = 2U;
-inline constexpr std::uint32_t kAbiVersion = 6U;
+inline constexpr std::uint32_t kAbiVersion = 7U;
 inline constexpr std::uint32_t kControlSurfaceVersion = 2U;
 inline constexpr std::size_t kMaximumControlRecordBytes = 262144U;
 inline constexpr std::size_t kMaximumBinaryPayloadBytes = 524288U;

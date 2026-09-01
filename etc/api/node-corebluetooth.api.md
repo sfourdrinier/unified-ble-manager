@@ -4,7 +4,7 @@
 <!-- entrypoint: ./node/corebluetooth; source: src/node-corebluetooth.ts -->
 
 - `COREBLUETOOTH_BACKEND_ID :: "unified-ble:corebluetooth"`
-- `COREBLUETOOTH_IMPLEMENTATION_VERSION :: "4.0.12"`
+- `COREBLUETOOTH_IMPLEMENTATION_VERSION :: "4.0.13"`
 - `COREBLUETOOTH_PLATFORM_ID :: "unified-ble:macos-corebluetooth"`
 - `CoreBluetoothAdapterSnapshot :: { readonly availability: "unknown" | "unavailable" | "unsupported" | "available"; readonly authorization: "unknown" | "unavailable" | "granted" | "denied" | "restricted" | "not-determined"; readonly power: "unknown" | "unsupported" | "on" | "off" | "resetting"; readonly safeReason: string | null }`
 - `CoreBluetoothAdvertisement :: { readonly nativePeerId: string; readonly localName: string | null; readonly rssi: number | null; readonly serviceUuids: readonly string[] | null; readonly txPower?: number | null | undefined; readonly connectable?: boolean | null | undefined; readonly appearance?: number | null | undefined; readonly solicitedServiceUuids?: readonly string[] | null | undefined; readonly overflowServiceUuids?: readonly string[] | null | undefined; readonly serviceData?: readonly CoreBluetoothServiceDataEntry[] | null | undefined; readonly manufacturerData?: readonly CoreBluetoothManufacturerData[] | null | undefined; readonly rawRecord?: Readonly<Uint8Array<ArrayBufferLike>> | null | undefined; readonly scanResponseRecord?: Readonly<Uint8Array<ArrayBufferLike>> | null | undefined }`

@@ -9,21 +9,21 @@ const attachment = {
 }
 
 describe('React Native Android native protocol compatibility', () => {
-  test('rejects an installed ABI-v2 binary before runtime installation or command dispatch', async () => {
-    const control = new LegacyAbiV2Control()
+  test('rejects an installed ABI-v6 binary before runtime installation or command dispatch', async () => {
+    const control = new LegacyAbiV6Control()
     const boundary = new ReactNativeAndroidProtocolBoundary(control, 'android-compatibility-owner')
     boundary.bindAttachment(attachment)
 
     await expect(boundary.open()).rejects.toMatchObject({
       normalized: { code: 'protocol.incompatible' }
     })
-    expect(control.handshakes[0].abi).toEqual({ minimum: 6, maximum: 6 })
+    expect(control.handshakes[0].abi).toEqual({ minimum: 7, maximum: 7 })
     expect(control.installCalls).toBe(0)
     expect(control.closedAttachments).toEqual([attachment])
   })
 })
 
-class LegacyAbiV2Control {
+class LegacyAbiV6Control {
   constructor() {
     this.handshakes = []
     this.installCalls = 0
@@ -34,7 +34,7 @@ class LegacyAbiV2Control {
     this.handshakes.push(request)
     return Promise.resolve({
       nativeProtocol: 2,
-      abi: 2,
+      abi: 6,
       controlSurface: 2,
       backendContract: 1,
       capabilitySchema: 1,

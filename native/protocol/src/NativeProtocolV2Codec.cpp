@@ -454,7 +454,9 @@ void validateCommandSemantics(const ProtocolRecord& record) {
     requireFieldSet(record, {1U, 2U, 3U, 5U}, {});
   } else if (*kind == "writeDescriptor") {
     requireFieldSet(record, {1U, 2U, 3U, 5U, 6U}, {});
-  } else if (*kind == "subscribe" || *kind == "unsubscribe") {
+  } else if (*kind == "subscribe") {
+    requireFieldSet(record, {1U, 2U, 3U, 4U, 7U}, {21U});
+  } else if (*kind == "unsubscribe") {
     requireFieldSet(record, {1U, 2U, 3U, 4U, 7U}, {});
   } else if (*kind == "cancel") {
     requireFieldSet(record, {1U, 2U, 3U, 8U}, {});

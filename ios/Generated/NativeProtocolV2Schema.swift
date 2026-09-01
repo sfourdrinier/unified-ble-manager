@@ -3,7 +3,7 @@
 import Foundation
 
 public let nativeProtocolVersion: UInt32 = 2
-public let nativeProtocolABIVersion: UInt32 = 6
+public let nativeProtocolABIVersion: UInt32 = 7
 public let nativeProtocolControlSurfaceVersion: UInt32 = 2
 public let maximumControlRecordBytes: Int = 262144
 public let maximumBinaryPayloadBytes: Int = 524288
