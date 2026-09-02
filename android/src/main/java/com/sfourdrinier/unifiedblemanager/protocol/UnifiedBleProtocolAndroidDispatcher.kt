@@ -38,7 +38,8 @@ class UnifiedBleProtocolAndroidDispatcher(
   private var attachmentRecord: ProtocolWireRecord? = null
 
   init {
-    radio.onAdapterState = {
+    radio.onAdapterState = { adapterState ->
+      clearGattProtocolOwnershipForAdapterLoss(adapterState)
       emitCurrentAdapterState()
     }
     radio.onCleanupFailure = { failure ->
@@ -138,6 +139,33 @@ class UnifiedBleProtocolAndroidDispatcher(
           UnifiedBleProtocolJsiBinding.emitNotification(nativeHandle, route.subscriptionId, value)
         }
     }
+  }
+
+  private fun clearGattProtocolOwnershipForAdapterLoss(adapterState: String) {
+    val state = radio.currentProtocolAdapterState()
+    if (state.availability == "available" && state.authorization == "granted" && state.power == "on") return
+    val failure = when (adapterState) {
+      "PoweredOff" -> AdapterLossConnectFailure(
+        "adapterPoweredOff",
+        "Android Bluetooth was powered off while the connection was pending"
+      )
+      "Resetting" -> AdapterLossConnectFailure(
+        "adapterResetting",
+        "Android Bluetooth reset while the connection was pending"
+      )
+      else -> AdapterLossConnectFailure(
+        "adapterUnavailable",
+        "Android Bluetooth became unavailable while the connection was pending"
+      )
+    }
+    pendingConnects.entries.toList().forEach { entry ->
+      if (pendingConnects.remove(entry.key, entry.value)) {
+        emitFailure(entry.value, failure.code, failure.message)
+      }
+    }
+    establishedConnections.clear()
+    activeDatabases.clear()
+    activeSubscriptions.clear()
   }
 
   fun emitCurrentAdapterState() {
@@ -564,6 +592,11 @@ class UnifiedBleProtocolAndroidDispatcher(
   }
 
   private fun subscribe(command: ProtocolWireRecord, enable: Boolean) {
+    val subscriptionId = command.requiredString(7)
+    if (!enable && !activeSubscriptions.containsKey(subscriptionId)) {
+      emitSuccess(command, "unsubscribed")
+      return
+    }
     val endpoint = characteristicEndpoint(command.requiredRecord(4))
     val radioOperationId = radio.setNotifyExact(
       endpoint.deviceId,
@@ -597,7 +630,6 @@ class UnifiedBleProtocolAndroidDispatcher(
             }
             return@fold
           }
-          val subscriptionId = command.requiredString(7)
           if (enable) {
             activeSubscriptions[subscriptionId] = SubscriptionRoute(
               subscriptionId,
@@ -1132,6 +1164,11 @@ class UnifiedBleProtocolAndroidDispatcher(
     }
   }
 
+  private data class AdapterLossConnectFailure(
+    val code: String,
+    val message: String
+  )
+
   private fun requirePhyAvailable() {
     check(Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
       "Android PHY requires API 26"
@@ -1158,6 +1195,7 @@ internal fun connectionLostEvent(
       8 to ProtocolWireValue.SignedIntegerValue(status.toLong())
     )
   )
+
   return ProtocolWireRecord(
     RecordKind.EVENT,
     mapOf(

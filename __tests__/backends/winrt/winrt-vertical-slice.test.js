@@ -860,6 +860,46 @@ describe('WinRT contract-v2 deterministic native-boundary vertical slice', () =>
     await expect(backend.destroy()).resolves.toEqual({ state: 'released', failures: [] })
   })
 
+  test('terminalizes adapter loss exactly once when native disconnect has no callback', async () => {
+    const { backend, boundary } = await backendFixture()
+    const events = backend.events()[Symbol.asyncIterator]()
+    const peerId = await observedPeerId(backend, boundary)
+    const lease = await backend.connections.connect(
+      peerId,
+      opaqueId('adapter-terminal-client', 'client', 'winrt:adapter-terminal'),
+      operation()
+    )
+    const connectionId = lease.connection.connectionId
+    const connectionGeneration = String(lease.connection.connectionGeneration)
+    const attachmentId = lease.connection.attachmentId
+
+    boundary.emitAdapterLoss()
+    await flushMicrotasks()
+
+    await expect(events.next()).resolves.toMatchObject({
+      value: { kind: 'value', value: { kind: 'adapter-state' } }
+    })
+    await expect(events.next()).resolves.toMatchObject({
+      value: {
+        kind: 'value',
+        value: {
+          kind: 'connection-state-changed',
+          connection: { connectionId, attachmentId },
+          previous: 'connected',
+          current: 'lost',
+          reason: 'adapter'
+        }
+      }
+    })
+
+    boundary.emitConnectionLoss(connectionGeneration)
+    boundary.emitAdapterReady()
+    await expect(events.next()).resolves.toMatchObject({
+      value: { kind: 'value', value: { kind: 'adapter-state' } }
+    })
+    await expect(backend.destroy()).resolves.toEqual({ state: 'released', failures: [] })
+  })
+
   test('binds scan TCK facts and enforces scan and connection ownership', async () => {
     expect(findTckScenario('scan.fairness-abort-deadline-and-final-cleanup').requiredFacts).toEqual([
       'scan-consumer-release-is-fair-and-isolated',

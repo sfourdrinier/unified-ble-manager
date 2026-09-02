@@ -1052,6 +1052,25 @@ describe('React Native Android canonical protocol vertical slice', () => {
     await expect(boundary.destroy()).resolves.toBeUndefined()
   })
 
+  test.each([
+    ['adapterUnavailable', 'adapter.unavailable'],
+    ['adapterPoweredOff', 'adapter.powered-off'],
+    ['adapterResetting', 'adapter.resetting']
+  ])('Android maps native %s connect termination to %s', async (nativeCode, normalizedCode) => {
+    const control = new DeterministicAndroidControl()
+    const runtime = new DeterministicAndroidProtocolRuntime(control)
+    runtime.connectFailureCode = nativeCode
+    global.__unifiedBleNativeProtocolV2 = runtime
+    const boundary = new ReactNativeAndroidProtocolBoundary(control, `deterministic-android-${nativeCode}`)
+    boundary.bindAttachment(deterministicAttachment())
+
+    await boundary.open()
+    await expect(boundary.connect(peerId)).rejects.toMatchObject({
+      normalized: { code: normalizedCode, domain: 'adapter' }
+    })
+    await expect(boundary.destroy()).resolves.toBeUndefined()
+  })
+
   test('Android connection loss does not double-release write bytes already owned by native', async () => {
     const control = new DeterministicAndroidControl()
     const runtime = new DeterministicAndroidProtocolRuntime(control)
@@ -1769,6 +1788,7 @@ class DeterministicAndroidProtocolRuntime {
     this.descriptorValue = new Uint8Array([8, 7])
     this.connection = null
     this.connectionIntents = []
+    this.connectFailureCode = null
     this.sinkFailure = sinkFailure
     this.emitInitialSubscriptionNotification = emitInitialSubscriptionNotification
     this.destroyFailuresRemaining = 0
@@ -1863,6 +1883,10 @@ class DeterministicAndroidProtocolRuntime {
     if (kind === 'connect') {
       this.connectionIntents.push(requiredString(command, 20))
       this.connection = requiredRecord(command, 10)
+      if (this.connectFailureCode !== null) {
+        this.emitFailureWithCode(command, this.connectFailureCode, `Android connect failed: ${this.connectFailureCode}`)
+        return
+      }
       this.emitResult(command, 'connected', [field(11, requiredRecord(command, 10))])
       return
     }
