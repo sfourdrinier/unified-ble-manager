@@ -6,6 +6,16 @@ All notable changes to `unified-ble-manager` are documented here.
 
 No changes yet.
 
+## [4.0.15] - 2026-09-02
+
+### Fixes
+
+- Silence exactly one expected late React Native Android terminal when a peer
+  is lost while an operation such as GATT discovery is still settling. The
+  boundary records only operations it explicitly rejected for that peer,
+  bounds and lifecycle-scopes those records, and continues to report unknown
+  or duplicate terminals as protocol diagnostics.
+
 ## [4.0.14] - 2026-09-02
 
 ### Fixes
