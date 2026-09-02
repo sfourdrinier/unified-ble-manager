@@ -5169,7 +5169,7 @@ packages:
     engines: {node: ^14.15.0 || ^16.10.0 || >=18.0.0}
 
   jest-expo@54.0.14:
-    resolution: {integrity: sha512-V0xefV7VJ9RD6v6Jo64I8RzQCchgEWVn6ip5r+u4TlgsGau0DA8CAqzitn4ShoSKlmjmpuaMqcGxeCz1p9Cfvg==}
+    resolution: {integrity: sha512-94EgBAfmP+TVbMzNaVh2c4vhrZe9isZJEUIONiVn6wK+DgI+UUbOr7BnlMFtd2M/5s0eawK3yC3SZurhCFXiyg==}
     hasBin: true
     peerDependencies:
       expo: '*'

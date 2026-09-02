@@ -9,7 +9,7 @@
   "source": {
     "method": "pnpm-lock production graph with installed-manifest license audit",
     "lockfile": "pnpm-lock.yaml",
-    "lockfileSha256": "b9a3281b23e61f190f8c6571be384e27f1359b207f09be7f2067fa366c166e72"
+    "lockfileSha256": "755a9d27410ae0c88b5bc142f6f72cf80dd7a2d1ff5ee192c5a597278da0fc77"
   },
   "reviewedOverrides": [
     {
