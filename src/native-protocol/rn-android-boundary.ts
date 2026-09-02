@@ -1192,9 +1192,6 @@ export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary
   }
 
   private createConnection(nativePeerId: string): NativeConnection {
-    // A new connection starts a new peer lifecycle. A terminal from the prior
-    // lifecycle must not be silently accepted after this point.
-    this.clearExpectedLateTerminalsForPeer(nativePeerId)
     const ordinal = this.nextConnection
     this.nextConnection += 1
     return {
@@ -1360,14 +1357,6 @@ export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary
       }
     }
     this.expectedLateTerminals.set(key, { nativePeerId, attachment })
-  }
-
-  private clearExpectedLateTerminalsForPeer(nativePeerId: string): void {
-    for (const [key, tombstone] of this.expectedLateTerminals) {
-      if (tombstone.nativePeerId === nativePeerId) {
-        this.expectedLateTerminals.delete(key)
-      }
-    }
   }
 }
 

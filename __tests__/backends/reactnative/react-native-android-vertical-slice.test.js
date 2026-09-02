@@ -1094,6 +1094,35 @@ describe('React Native Android canonical protocol vertical slice', () => {
     await expect(boundary.destroy()).resolves.toBeUndefined()
   })
 
+  test('Android retains the expected late terminal tombstone across a fast reconnect', async () => {
+    const control = new DeterministicAndroidControl()
+    const runtime = new DeterministicAndroidProtocolRuntime(control)
+    runtime.holdDiscoverResult = true
+    global.__unifiedBleNativeProtocolV2 = runtime
+    const boundary = new ReactNativeAndroidProtocolBoundary(control, 'deterministic-android-discover-reconnect-owner')
+    boundary.bindAttachment(deterministicAttachment())
+
+    await boundary.open()
+    await boundary.connect(peerId)
+    const discover = boundary.discover(peerId)
+    await Promise.resolve()
+    expect(runtime.pendingDiscoverCommand).not.toBeNull()
+
+    runtime.emitConnectionLost(19)
+    await expect(discover).rejects.toMatchObject({
+      normalized: { code: 'connection.lost' }
+    })
+
+    await boundary.connect(peerId)
+    runtime.completePendingDiscover()
+    runtime.emitDuplicateDiscoverResult()
+    expectConsoleErrorMatching(
+      '[ReactNativeAndroidProtocolBoundary.receiveResult] Late terminal result was quarantined:',
+      expect.objectContaining({ key: expect.any(String) })
+    )
+    await expect(boundary.destroy()).resolves.toBeUndefined()
+  })
+
   test.each([
     ['adapterUnavailable', 'adapter.unavailable'],
     ['adapterPoweredOff', 'adapter.powered-off'],
