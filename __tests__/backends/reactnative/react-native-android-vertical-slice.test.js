@@ -1052,6 +1052,48 @@ describe('React Native Android canonical protocol vertical slice', () => {
     await expect(boundary.destroy()).resolves.toBeUndefined()
   })
 
+  test('Android connection loss quarantines one deferred discover terminal without a diagnostic', async () => {
+    const control = new DeterministicAndroidControl()
+    const runtime = new DeterministicAndroidProtocolRuntime(control)
+    runtime.holdDiscoverResult = true
+    global.__unifiedBleNativeProtocolV2 = runtime
+    const boundary = new ReactNativeAndroidProtocolBoundary(control, 'deterministic-android-discover-loss-owner')
+    boundary.bindAttachment(deterministicAttachment())
+
+    await boundary.open()
+    await boundary.connect(peerId)
+    const discover = boundary.discover(peerId)
+    await Promise.resolve()
+    expect(runtime.pendingDiscoverCommand).not.toBeNull()
+
+    runtime.emitConnectionLost(19)
+    await expect(discover).rejects.toMatchObject({
+      normalized: { code: 'connection.lost' }
+    })
+
+    runtime.completePendingDiscover()
+    await expect(boundary.destroy()).resolves.toBeUndefined()
+  })
+
+  test('Android keeps duplicate discover terminals diagnostic after quarantining the expected late terminal', async () => {
+    const control = new DeterministicAndroidControl()
+    const runtime = new DeterministicAndroidProtocolRuntime(control)
+    global.__unifiedBleNativeProtocolV2 = runtime
+    const boundary = new ReactNativeAndroidProtocolBoundary(control, 'deterministic-android-discover-duplicate-owner')
+    boundary.bindAttachment(deterministicAttachment())
+
+    await boundary.open()
+    await boundary.connect(peerId)
+    await boundary.discover(peerId)
+
+    runtime.emitDuplicateDiscoverResult()
+    expectConsoleErrorMatching(
+      '[ReactNativeAndroidProtocolBoundary.receiveResult] Late terminal result was quarantined:',
+      expect.objectContaining({ key: expect.any(String) })
+    )
+    await expect(boundary.destroy()).resolves.toBeUndefined()
+  })
+
   test.each([
     ['adapterUnavailable', 'adapter.unavailable'],
     ['adapterPoweredOff', 'adapter.powered-off'],
@@ -1801,6 +1843,9 @@ class DeterministicAndroidProtocolRuntime {
     this.bondedPermissionDenied = false
     this.holdDisconnectResult = false
     this.pendingDisconnectCommand = null
+    this.holdDiscoverResult = false
+    this.pendingDiscoverCommand = null
+    this.lastDiscoverCommand = null
     this.holdWriteResult = false
     this.pendingWriteCommand = null
     this.rejectWriteBeforeOwnership = false
@@ -1913,7 +1958,15 @@ class DeterministicAndroidProtocolRuntime {
       return
     }
     if (kind === 'discover') {
+      if (this.holdDiscoverResult) {
+        if (this.pendingDiscoverCommand !== null) {
+          throw new Error('The deterministic runtime already has a pending discover')
+        }
+        this.pendingDiscoverCommand = command
+        return
+      }
       const database = requiredRecord(command, 11)
+      this.lastDiscoverCommand = command
       this.emitResult(command, 'database', [field(4, database), field(12, databaseSnapshot(database))])
       return
     }
@@ -2123,6 +2176,25 @@ class DeterministicAndroidProtocolRuntime {
     const command = this.pendingDisconnectCommand
     this.pendingDisconnectCommand = null
     this.emitResult(command, 'accepted')
+  }
+
+  completePendingDiscover() {
+    if (this.pendingDiscoverCommand === null) {
+      throw new Error('The deterministic runtime has no pending discover')
+    }
+    const command = this.pendingDiscoverCommand
+    this.pendingDiscoverCommand = null
+    this.lastDiscoverCommand = command
+    const database = requiredRecord(command, 11)
+    this.emitResult(command, 'database', [field(4, database), field(12, databaseSnapshot(database))])
+  }
+
+  emitDuplicateDiscoverResult() {
+    if (this.lastDiscoverCommand === null) {
+      throw new Error('The deterministic runtime has no completed discover')
+    }
+    const database = requiredRecord(this.lastDiscoverCommand, 11)
+    this.emitResult(this.lastDiscoverCommand, 'database', [field(4, database), field(12, databaseSnapshot(database))])
   }
 
   emitDiagnostic(code, message, operation = 'scan') {

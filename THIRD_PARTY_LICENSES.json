@@ -4,12 +4,12 @@
   "schemaVersion": "1.0.0",
   "package": {
     "name": "unified-ble-manager",
-    "version": "4.0.14"
+    "version": "4.0.15"
   },
   "source": {
     "method": "pnpm-lock production graph with installed-manifest license audit",
     "lockfile": "pnpm-lock.yaml",
-    "lockfileSha256": "755a9d27410ae0c88b5bc142f6f72cf80dd7a2d1ff5ee192c5a597278da0fc77"
+    "lockfileSha256": "c71db08744875f15ef224f29a199e85c904f25b3e9d94658a6cdb65b357d7a4b"
   },
   "reviewedOverrides": [
     {

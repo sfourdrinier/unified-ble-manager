@@ -100,12 +100,18 @@ const protocolVersion = NATIVE_PROTOCOL_VERSION
 const controlSurfaceVersion = NATIVE_PROTOCOL_CONTROL_SURFACE_VERSION
 const contractVersion = 1
 const maximumNativePayloadBytes = 512 * 1024
+const maximumExpectedLateTerminals = 64
 
 type PendingResult = {
   readonly kind: string
   readonly nativePeerId: string | null
   readonly resolve: (record: NativeProtocolRecord) => void
   readonly reject: (error: Error) => void
+}
+
+type ExpectedLateTerminal = {
+  readonly nativePeerId: string
+  readonly attachment: NativeAttachmentIdentity
 }
 
 type NativeConnection = {
@@ -158,6 +164,13 @@ export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary
     return this.securityCancellationExtensionAvailable
   }
   private readonly pending = new Map<string, PendingResult>()
+  /**
+   * Correlations explicitly rejected by connection loss may still terminalize
+   * in native code. Keep only those exact, peer-scoped correlations so one
+   * expected late terminal is quiet while unknown or duplicate terminals stay
+   * diagnostic.
+   */
+  private readonly expectedLateTerminals = new Map<string, ExpectedLateTerminal>()
   private readonly connections = new Map<string, NativeConnection>()
   private readonly databases = new Map<string, NativeProtocolRecord>()
   private readonly subscriptionsByAddress = new Map<string, NativeSubscription>()
@@ -738,6 +751,7 @@ export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary
     this.databaseChangedListeners.clear()
     this.adapterListeners.clear()
     this.securityListeners.clear()
+    this.expectedLateTerminals.clear()
     this.rejectPending('Native protocol attachment was destroyed')
   }
 
@@ -823,6 +837,20 @@ export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary
     )
     const pending = this.pending.get(key)
     if (pending === undefined) {
+      const expectedLateTerminal = this.expectedLateTerminals.get(key)
+      if (
+        expectedLateTerminal !== undefined &&
+        sameAttachmentIdentity(
+          expectedLateTerminal.attachment,
+          attachmentIdentityFromRecord(this.requireAttachmentRecord('result-late-terminal'))
+        )
+      ) {
+        // This terminal belongs to the exact operation that this boundary
+        // already rejected because its peer was lost. Consume the tombstone;
+        // a duplicate terminal must remain visible as a protocol diagnostic.
+        this.expectedLateTerminals.delete(key)
+        return
+      }
       console.error('[ReactNativeAndroidProtocolBoundary.receiveResult] Late terminal result was quarantined:', { key })
       return
     }
@@ -1129,6 +1157,7 @@ export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary
     this.databaseChangedListeners.clear()
     this.adapterListeners.clear()
     this.securityListeners.clear()
+    this.expectedLateTerminals.clear()
     this.rejectPending(reason)
     const attachment = this.requireAttachmentRecord('fatal-attachment')
     const teardown = (async () => {
@@ -1163,6 +1192,9 @@ export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary
   }
 
   private createConnection(nativePeerId: string): NativeConnection {
+    // A new connection starts a new peer lifecycle. A terminal from the prior
+    // lifecycle must not be silently accepted after this point.
+    this.clearExpectedLateTerminalsForPeer(nativePeerId)
     const ordinal = this.nextConnection
     this.nextConnection += 1
     return {
@@ -1298,6 +1330,7 @@ export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary
   }
 
   private rejectPendingForPeer(nativePeerId: string, message: string): void {
+    const attachment = attachmentIdentityFromRecord(this.requireAttachmentRecord('reject-pending-for-peer'))
     for (const [key, pending] of this.pending) {
       // Android owns disconnect teardown until it emits that operation's
       // terminal result. A connectionLost event can arrive while that cleanup
@@ -1306,6 +1339,7 @@ export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary
       // outcome. This mirrors the native dispatcher's connection-loss policy.
       if (pending.nativePeerId === nativePeerId && pending.kind !== 'disconnect') {
         this.pending.delete(key)
+        this.recordExpectedLateTerminal(key, nativePeerId, attachment)
         pending.reject(
           contractError('connection.lost', 'connection', `rn-android-boundary.${pending.kind}`, {
             domain: 'android',
@@ -1314,6 +1348,24 @@ export class ReactNativeAndroidProtocolBoundary implements CoreBluetoothBoundary
             metadata: Object.freeze({})
           })
         )
+      }
+    }
+  }
+
+  private recordExpectedLateTerminal(key: string, nativePeerId: string, attachment: NativeAttachmentIdentity): void {
+    if (this.expectedLateTerminals.size >= maximumExpectedLateTerminals) {
+      const oldest = this.expectedLateTerminals.keys().next().value
+      if (typeof oldest === 'string') {
+        this.expectedLateTerminals.delete(oldest)
+      }
+    }
+    this.expectedLateTerminals.set(key, { nativePeerId, attachment })
+  }
+
+  private clearExpectedLateTerminalsForPeer(nativePeerId: string): void {
+    for (const [key, tombstone] of this.expectedLateTerminals) {
+      if (tombstone.nativePeerId === nativePeerId) {
+        this.expectedLateTerminals.delete(key)
       }
     }
   }
@@ -1370,6 +1422,16 @@ function sameAttachmentPath(left: NativeProtocolRecord, right: NativeProtocolRec
       requiredString(right, 4, 'rn-android-boundary.attachment.adapter') &&
     requiredString(left, 5, 'rn-android-boundary.attachment.adapter-generation') ===
       requiredString(right, 5, 'rn-android-boundary.attachment.adapter-generation')
+  )
+}
+
+function sameAttachmentIdentity(left: NativeAttachmentIdentity, right: NativeAttachmentIdentity): boolean {
+  return (
+    left.attachmentId === right.attachmentId &&
+    left.backendInstanceId === right.backendInstanceId &&
+    left.backendGeneration === right.backendGeneration &&
+    left.adapterId === right.adapterId &&
+    left.adapterGeneration === right.adapterGeneration
   )
 }
 
