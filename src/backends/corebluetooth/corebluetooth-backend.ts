@@ -347,6 +347,7 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
   private adapterLossActive = false
   private adapterLossRetryScheduled = false
   private readonly connectionLossRetryTimers = new WeakMap<ConnectionRecord, ReturnType<typeof setTimeout>>()
+  private readonly adapterLossTerminalizedConnections = new WeakSet<ConnectionRecord>()
   private scanGroup: ScanGroup | null = null
   private nextPeer = 1
   private nextScan = 1
@@ -1040,6 +1041,11 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
     if (record === undefined || record.state === 'disconnected' || record.state === 'lost') {
       return
     }
+    if (this.adapterLossActive || this.adapterLossPending) {
+      const previous = record.state === 'disconnecting' ? 'disconnecting' : 'connected'
+      this.terminalizeAdapterLossConnection(record, previous)
+      return
+    }
     const connectionPath = connectionPathFor(this.attachment(), record)
     this.invalidateRecord(record, true)
     this.removeConnectionSubscriptions(record, 'connection-lost').then(
@@ -1071,6 +1077,26 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
     // canonical event and terminal streams above. Logging it as console.error
     // made every expected sensor wake-cycle termination an application error
     // and, in Expo development builds, a blocking LogBox.
+  }
+  private terminalizeAdapterLossConnection(record: ConnectionRecord, previous: 'connected' | 'disconnecting'): void {
+    if (this.adapterLossTerminalizedConnections.has(record)) return
+    this.adapterLossTerminalizedConnections.add(record)
+    const connection = connectionPathFor(this.attachment(), record)
+    if (record.state !== 'lost' && record.state !== 'disconnected') {
+      this.invalidateRecord(record, true)
+    }
+    const attachment = this.attachment()
+    this.broadcastEvent({
+      attachment,
+      attachmentId: attachment.attachmentId,
+      kind: 'connection-state-changed',
+      connection,
+      previous,
+      current: 'lost',
+      reason: 'adapter',
+      ingressOrdinal: this.nextIngressOrdinal
+    })
+    this.nextIngressOrdinal += 1
   }
   private handleDatabaseChanged(nativePeerId: string): void {
     if (this.admissionClosed || this.destroyed) {
@@ -1145,7 +1171,6 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
     this.dispatcher.cancelAll()
     const activeFailures = this.activeOperationCleanupFailures('direct-gatt.adapter-loss')
     if (activeFailures.length > 0) {
-      this.reportAdapterLossCleanupFailure(activeFailures)
       this.scheduleAdapterLossRetry()
       return
     }
@@ -1158,7 +1183,6 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
       }
       const lateFailures = this.activeOperationCleanupFailures('direct-gatt.adapter-loss')
       if (lateFailures.length > 0) {
-        this.reportAdapterLossCleanupFailure(lateFailures)
         this.scheduleAdapterLossRetry()
         return
       }
@@ -1232,6 +1256,7 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
       stopNativeScan: (group, operation) => this.stopNativeScan(group, operation),
       disconnectNative: (record, operation, preservePhysicalSubscriptions) =>
         this.disconnectNative(record, operation, preservePhysicalSubscriptions),
+      terminalizeAdapterLossConnection: (record, previous) => this.terminalizeAdapterLossConnection(record, previous),
       releaseScanConsumerAdmission: consumer => this.releaseScanConsumerAdmission(consumer),
       clearScanGroup: group => {
         if (this.scanGroup === group) {

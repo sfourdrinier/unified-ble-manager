@@ -16,6 +16,7 @@ export interface CoreBluetoothAdapterLossCleanupState {
     operation: string,
     preservePhysicalSubscriptions: boolean
   ): Promise<CleanupRecord>
+  terminalizeAdapterLossConnection(record: ConnectionRecord, previous: 'connected' | 'disconnecting'): void
   releaseScanConsumerAdmission(consumer: ScanConsumer): void
   clearScanGroup(group: ScanGroup): void
 }
@@ -54,12 +55,15 @@ export async function releaseCoreBluetoothAdapterLossResources(
     failures.push(...cleanup.failures)
   }
   for (const record of [...state.connections.values()]) {
+    const previous = record.state === 'disconnecting' ? 'disconnecting' : 'connected'
     record.state = 'disconnecting'
     try {
       const cleanup = await state.disconnectNative(record, 'direct-gatt.adapter-loss.disconnect', true)
       failures.push(...cleanup.failures)
       if (cleanup.state === 'release-failed') {
         record.state = 'connected'
+      } else {
+        state.terminalizeAdapterLossConnection(record, previous)
       }
     } catch (error) {
       record.state = 'connected'

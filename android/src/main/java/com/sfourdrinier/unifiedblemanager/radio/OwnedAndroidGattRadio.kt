@@ -150,6 +150,11 @@ internal fun bondedPeerAdapterReadiness(
   }
 }
 
+internal fun requiresImmediateGattTeardownOnAdapterState(state: Int?): Boolean =
+  state == BluetoothAdapter.STATE_OFF ||
+    state == BluetoothAdapter.STATE_TURNING_OFF ||
+    state == BluetoothAdapter.STATE_TURNING_ON
+
 /** Normalize the platform snapshot before it crosses the Android protocol boundary. */
 internal fun normalizeBondedPeerSnapshots(
   peers: Iterable<BondedPeerSnapshot>
@@ -416,6 +421,7 @@ class OwnedAndroidGattRadio(private val context: Context) {
         override fun onReceive(ctx: Context?, intent: Intent?) {
           if (intent?.action != BluetoothAdapter.ACTION_STATE_CHANGED) return
           val state = intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR)
+          handleAdapterStateTransition(state)
           onAdapterState?.invoke(mapAdapterState(state))
         }
       }
@@ -428,6 +434,23 @@ class OwnedAndroidGattRadio(private val context: Context) {
       context.registerReceiver(receiver, filter)
     }
     adapterStateReceiver = receiver
+  }
+
+  private fun handleAdapterStateTransition(state: Int) {
+    if (state == BluetoothAdapter.STATE_ON) {
+      pendingGattTeardowns.keys.toList().forEach { key -> retryGattTeardown(key) }
+      return
+    }
+    if (!requiresImmediateGattTeardownOnAdapterState(state)) return
+
+    pendingReconnect.clear()
+    (gatts.keys + pendingGattTeardowns.keys).toSet().forEach { key ->
+      failPendingForDevice(key, "adapter unavailable")
+      val owner = pendingGattTeardowns[key]
+      val gatt = gatts[key] ?: owner?.gatt ?: return@forEach
+      val teardownFailure = completeGattTeardown(key, gatt)
+      pendingDisconnectCallbacks.remove(key)?.invoke(teardownFailure)
+    }
   }
 
   internal fun unregisterAdapterStateReceiver(): OwnedRadioTeardownFailure? {
@@ -838,6 +861,18 @@ class OwnedAndroidGattRadio(private val context: Context) {
       onComplete(failure)
       return failure
     }
+    if (pendingGattTeardowns[key] != null) {
+      val teardownFailure = retryGattTeardown(key)
+      val failure = cleanupFailure ?: teardownFailure
+      onComplete(failure)
+      return failure
+    }
+    if (requiresImmediateGattTeardownOnAdapterState(adapter?.state)) {
+      val teardownFailure = completeGattTeardown(key, g)
+      val failure = cleanupFailure ?: teardownFailure
+      onComplete(failure)
+      return failure
+    }
     // R3-F003: only disconnect(); close() waits for STATE_DISCONNECTED (or safety timeout).
     pendingDisconnectCallbacks[key] = onComplete
     scheduleSafeClose(key, g)
@@ -923,6 +958,7 @@ class OwnedAndroidGattRadio(private val context: Context) {
       Runnable {
         if (gatts[key] === gatt) {
           OwnedAndroidLog.e("GATT close safety timeout for $key (DISCONNECTED never arrived)")
+          dispatchConnectionState(key, false, BluetoothGatt.GATT_FAILURE)
           failPendingForDevice(key, "disconnected timeout")
           val teardownFailure = completeGattTeardown(key, gatt)
           pendingDisconnectCallbacks.remove(key)?.invoke(teardownFailure)

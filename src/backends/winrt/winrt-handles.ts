@@ -124,7 +124,7 @@ export class WinRtConnection implements BackendConnection<string, string> {
   ) {}
 
   get attachment(): AttachmentRecord<string> {
-    return this.backend.attachment()
+    return this.record.attachment
   }
 
   get attachmentId(): AttachmentId<string> {

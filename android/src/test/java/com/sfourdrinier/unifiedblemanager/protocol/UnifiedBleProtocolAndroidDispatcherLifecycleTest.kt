@@ -11,6 +11,7 @@ import com.sfourdrinier.unifiedblemanager.radio.OwnedAndroidSubscriptionOwnershi
 import com.sfourdrinier.unifiedblemanager.radio.BondedPeerSnapshot
 import com.sfourdrinier.unifiedblemanager.radio.normalizeBondedPeerSnapshots
 import com.sfourdrinier.unifiedblemanager.radio.bondedPeerAdapterReadiness
+import com.sfourdrinier.unifiedblemanager.radio.requiresImmediateGattTeardownOnAdapterState
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertFalse
@@ -26,6 +27,7 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.concurrent.thread
 import android.bluetooth.BluetoothDevice
+import android.bluetooth.BluetoothAdapter
 import android.bluetooth.le.ScanSettings
 
 class UnifiedBleProtocolAndroidDispatcherLifecycleTest {
@@ -477,7 +479,7 @@ class UnifiedBleProtocolAndroidDispatcherLifecycleTest {
     val consumerAndroidDirectory = File(consumerRoot, "android")
     val packagedSource = File(consumerRoot, "node_modules/unified-ble-manager/$relativePath")
     consumerAndroidDirectory.mkdirs()
-    packagedSource.parentFile.mkdirs()
+    requireNotNull(packagedSource.parentFile).mkdirs()
     packagedSource.writeText("installed-package-source")
 
     try {
@@ -786,6 +788,142 @@ class UnifiedBleProtocolAndroidDispatcherLifecycleTest {
     firstDone?.invoke()
     scheduled.removeFirst().invoke()
     assertEquals(1, secondStarted)
+  }
+
+  @Test
+  fun gattSafetyClosePublishesConnectionLossBeforeDroppingNativeOwnership() {
+    val radio = readAndroidSource(
+      "android/src/main/java/com/sfourdrinier/unifiedblemanager/radio/OwnedAndroidGattRadio.kt"
+    )
+    val timeout = radio.substring(
+      radio.indexOf("private fun scheduleSafeClose"),
+      radio.indexOf("private fun cancelSafeClose")
+    )
+
+    val connectionLossIndex = timeout.indexOf("dispatchConnectionState(key, false, BluetoothGatt.GATT_FAILURE)")
+    val failPendingIndex = timeout.indexOf("failPendingForDevice(key, \"disconnected timeout\")")
+    val teardownIndex = timeout.indexOf("val teardownFailure = completeGattTeardown(key, gatt)")
+    assertTrue(connectionLossIndex >= 0)
+    assertTrue(connectionLossIndex < failPendingIndex)
+    assertTrue(connectionLossIndex < teardownIndex)
+  }
+
+  @Test
+  fun adapterLossClosesGattOwnersBeforeForwardingTheState() {
+    val radio = readAndroidSource(
+      "android/src/main/java/com/sfourdrinier/unifiedblemanager/radio/OwnedAndroidGattRadio.kt"
+    )
+    val receiver = radio.substring(
+      radio.indexOf("fun registerAdapterStateReceiver()"),
+      radio.indexOf("internal fun unregisterAdapterStateReceiver")
+    )
+
+    val teardownIndex = receiver.indexOf("handleAdapterStateTransition(state)")
+    val forwardIndex = receiver.indexOf("onAdapterState?.invoke(mapAdapterState(state))")
+    assertTrue(teardownIndex >= 0)
+    assertTrue(teardownIndex < forwardIndex)
+  }
+
+  @Test
+  fun onlyUnavailableAdapterTransitionsRequireImmediateGattTeardown() {
+    assertFalse(requiresImmediateGattTeardownOnAdapterState(BluetoothAdapter.STATE_ON))
+    assertTrue(requiresImmediateGattTeardownOnAdapterState(BluetoothAdapter.STATE_OFF))
+    assertTrue(requiresImmediateGattTeardownOnAdapterState(BluetoothAdapter.STATE_TURNING_OFF))
+    assertTrue(requiresImmediateGattTeardownOnAdapterState(BluetoothAdapter.STATE_TURNING_ON))
+  }
+
+  @Test
+  fun adapterLossTeardownDoesNotWaitForGattDisconnectedCallback() {
+    val radio = readAndroidSource(
+      "android/src/main/java/com/sfourdrinier/unifiedblemanager/radio/OwnedAndroidGattRadio.kt"
+    )
+    val transition = radio.substring(
+      radio.indexOf("private fun handleAdapterStateTransition("),
+      radio.indexOf("internal fun unregisterAdapterStateReceiver")
+    )
+
+    assertTrue(transition.contains("pendingReconnect.clear()"))
+    assertTrue(transition.contains("failPendingForDevice(key, \"adapter unavailable\")"))
+    assertTrue(transition.contains("completeGattTeardown(key, gatt)"))
+    assertTrue(transition.contains("pendingDisconnectCallbacks.remove(key)?.invoke(teardownFailure)"))
+    assertFalse(transition.contains("scheduleSafeClose"))
+    assertFalse(transition.contains("dispatchConnectionState"))
+  }
+
+  @Test
+  fun adapterRecoveryRetriesRetainedGattTeardownOwnership() {
+    val radio = readAndroidSource(
+      "android/src/main/java/com/sfourdrinier/unifiedblemanager/radio/OwnedAndroidGattRadio.kt"
+    )
+    val transition = radio.substring(
+      radio.indexOf("private fun handleAdapterStateTransition("),
+      radio.indexOf("internal fun unregisterAdapterStateReceiver")
+    )
+
+    assertTrue(transition.contains("BluetoothAdapter.STATE_ON"))
+    assertTrue(transition.contains("pendingGattTeardowns.keys.toList()"))
+    assertTrue(transition.contains("retryGattTeardown(key)"))
+  }
+
+  @Test
+  fun disconnectRetriesRetainedOrUnavailableGattWithoutSchedulingSafetyClose() {
+    val radio = readAndroidSource(
+      "android/src/main/java/com/sfourdrinier/unifiedblemanager/radio/OwnedAndroidGattRadio.kt"
+    )
+    val disconnect = radio.substring(
+      radio.indexOf("internal fun disconnect("),
+      radio.indexOf("private fun openGatt")
+    )
+
+    val retainedIndex = disconnect.indexOf("pendingGattTeardowns[key]")
+    val unavailableIndex = disconnect.indexOf("requiresImmediateGattTeardownOnAdapterState(adapter?.state)")
+    val safetyCloseIndex = disconnect.indexOf("scheduleSafeClose(key, g)")
+    assertTrue(retainedIndex >= 0)
+    assertTrue(unavailableIndex > retainedIndex)
+    assertTrue(safetyCloseIndex > unavailableIndex)
+  }
+
+  @Test
+  fun adapterLossClearsProtocolGattRoutesBeforePublishingAdapterState() {
+    val dispatcher = readAndroidSource(
+      "android/src/main/java/com/sfourdrinier/unifiedblemanager/protocol/UnifiedBleProtocolAndroidDispatcher.kt"
+    )
+    val callback = dispatcher.substring(
+      dispatcher.indexOf("radio.onAdapterState = {"),
+      dispatcher.indexOf("radio.onCleanupFailure")
+    )
+    val clearIndex = callback.indexOf("clearGattProtocolOwnershipForAdapterLoss(adapterState)")
+    val emitIndex = callback.indexOf("emitCurrentAdapterState()")
+    assertTrue(clearIndex >= 0)
+    assertTrue(clearIndex < emitIndex)
+
+    val cleanup = dispatcher.substring(
+      dispatcher.indexOf("private fun clearGattProtocolOwnershipForAdapterLoss(adapterState: String)"),
+      dispatcher.indexOf("fun emitCurrentAdapterState()")
+    )
+    assertTrue(cleanup.contains("establishedConnections.clear()"))
+    assertTrue(cleanup.contains("activeDatabases.clear()"))
+    assertTrue(cleanup.contains("activeSubscriptions.clear()"))
+    assertTrue(cleanup.contains("pendingConnects.entries.toList()"))
+    assertTrue(cleanup.contains("pendingConnects.remove(entry.key, entry.value)"))
+    assertTrue(cleanup.contains("emitFailure(entry.value, failure.code, failure.message)"))
+  }
+
+  @Test
+  fun unsubscribeIsIdempotentAfterAdapterLossClearsNativeOwnership() {
+    val dispatcher = readAndroidSource(
+      "android/src/main/java/com/sfourdrinier/unifiedblemanager/protocol/UnifiedBleProtocolAndroidDispatcher.kt"
+    )
+    val subscribe = dispatcher.substring(
+      dispatcher.indexOf("private fun subscribe(command: ProtocolWireRecord, enable: Boolean)"),
+      dispatcher.indexOf("private fun destroy(command: ProtocolWireRecord)")
+    )
+    val absentRouteIndex = subscribe.indexOf("!enable && !activeSubscriptions.containsKey(subscriptionId)")
+    val successIndex = subscribe.indexOf("emitSuccess(command, \"unsubscribed\")")
+    val nativeIndex = subscribe.indexOf("radio.setNotifyExact(")
+    assertTrue(absentRouteIndex >= 0)
+    assertTrue(successIndex > absentRouteIndex)
+    assertTrue(nativeIndex > successIndex)
   }
 
   @Test

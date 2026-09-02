@@ -1402,6 +1402,15 @@ function nativeOperationFailure(error: NativeProtocolRecord | null, operation: s
   if (nativeCode === 'permissionDenied') {
     return contractError('permission.denied', 'adapter', `rn-android-boundary.${operation}`)
   }
+  if (nativeCode === 'adapterUnavailable') {
+    return contractError('adapter.unavailable', 'adapter', `rn-android-boundary.${operation}`)
+  }
+  if (nativeCode === 'adapterPoweredOff') {
+    return contractError('adapter.powered-off', 'adapter', `rn-android-boundary.${operation}`)
+  }
+  if (nativeCode === 'adapterResetting') {
+    return contractError('adapter.resetting', 'adapter', `rn-android-boundary.${operation}`)
+  }
   if (nativeCode === 'connectionLost') {
     return contractError('connection.lost', 'connection', `rn-android-boundary.${operation}`, {
       domain: nativeDomain,

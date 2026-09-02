@@ -6,6 +6,25 @@ All notable changes to `unified-ble-manager` are documented here.
 
 No changes yet.
 
+## [4.0.14] - 2026-09-02
+
+### Fixes
+
+- Release Android GATT ownership immediately when Bluetooth powers off or
+  resets instead of waiting for a `STATE_DISCONNECTED` callback that Android
+  may never deliver. Failed native closes remain retained and retry when the
+  adapter returns, protocol routes are invalidated before adapter-state
+  publication, and an ordinary disconnect timeout now also publishes the
+  missing terminal state before cleanup. A cleanup unsubscribe after adapter
+  loss is idempotent when native ownership is already gone.
+- Terminalize adapter-loss connections exactly once with the typed `adapter`
+  reason when a native CoreBluetooth-style or WinRT disconnect completes
+  without a platform loss callback. Delayed native callbacks are ignored, and
+  WinRT connection paths retain the attachment that created them.
+- Treat an operation that is still settling after adapter loss as expected
+  quarantine rather than a cleanup error. Cleanup still waits and retries, but
+  only an actual native release failure produces an error diagnostic.
+
 ## [4.0.13] - 2026-09-01
 
 ### Fixes

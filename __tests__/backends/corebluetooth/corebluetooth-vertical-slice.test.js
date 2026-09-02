@@ -853,11 +853,6 @@ describe('CoreBluetooth contract-v1 vertical slice', () => {
     })
     await expect(dispatch.completion).rejects.toMatchObject({ normalized: { code: 'operation.aborted' } })
     await flushAdapterLossCleanup()
-    expectConsoleErrorMatching(
-      `[${COREBLUETOOTH_PLATFORM_ID}.handleAdapterState] Native adapter-loss cleanup requires retry:`,
-      expect.arrayContaining([expect.objectContaining({ resourceKind: 'operation-quarantine' })])
-    )
-
     expect(backend.attachment().attachmentId).toBe(attachmentBeforeLoss.attachmentId)
     expect(backend.resourceCounters()).toMatchObject({ dispatchedOperations: 1 })
     await expect(
@@ -878,6 +873,57 @@ describe('CoreBluetooth contract-v1 vertical slice', () => {
     }
     expect(restartedTransition.value.value.backendGeneration).not.toBe(stateWatch.initial.backendGeneration)
     expect(backend.resourceCounters()).toMatchObject({ dispatchedOperations: 0 })
+    await backend.destroy()
+  })
+
+  test('terminalizes adapter loss exactly once when native disconnect has no callback', async () => {
+    const { backend, boundary } = await backendFixture()
+    const events = backend.events()[Symbol.asyncIterator]()
+    const peerId = await observedPeerId(backend)
+    const lease = await backend.connections.connect(
+      peerId,
+      opaqueId('adapter-terminal-client', 'client', 'corebluetooth:adapter-terminal'),
+      operation()
+    )
+    const connectionId = lease.connection.connectionId
+
+    emitAdapterState(boundary, {
+      availability: 'unavailable',
+      authorization: 'granted',
+      power: 'off',
+      safeReason: 'The test adapter is off.'
+    })
+    await flushAdapterLossCleanup()
+
+    const lossEvents = []
+    for (let index = 0; index < 3; index += 1) {
+      const item = await events.next()
+      if (!item.done && item.value.kind === 'value') lossEvents.push(item.value.value)
+    }
+    expect(lossEvents).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: 'adapter-state' }),
+        expect.objectContaining({
+          kind: 'connection-state-changed',
+          connection: expect.objectContaining({ connectionId }),
+          previous: 'connected',
+          current: 'lost',
+          reason: 'adapter'
+        }),
+        expect.objectContaining({ kind: 'backend-restarted' })
+      ])
+    )
+
+    boundary.forceDisconnect('native-polar-h10')
+    emitAdapterState(boundary, {
+      availability: 'available',
+      authorization: 'granted',
+      power: 'on',
+      safeReason: null
+    })
+    await expect(events.next()).resolves.toMatchObject({
+      value: { kind: 'value', value: { kind: 'adapter-state' } }
+    })
     await backend.destroy()
   })
 
@@ -914,10 +960,6 @@ describe('CoreBluetooth contract-v1 vertical slice', () => {
         safeReason: 'The test radio was lost while discovery was pending.'
       })
       await flushAdapterLossCleanup()
-      expectConsoleErrorMatching(
-        `[${COREBLUETOOTH_PLATFORM_ID}.handleAdapterState] Native adapter-loss cleanup requires retry:`,
-        expect.arrayContaining([expect.objectContaining({ resourceKind: 'operation-quarantine' })])
-      )
       expect(disconnectCalls).toBe(0)
       expect(boundary.connected).toBe(true)
       expect(backend.attachment().attachmentId).toBe(attachmentBeforeLoss.attachmentId)
@@ -962,11 +1004,6 @@ describe('CoreBluetooth contract-v1 vertical slice', () => {
         safeReason: 'The test radio was lost while discovery remained blocked.'
       })
       await flushAdapterLossCleanup()
-      expectConsoleErrorMatching(
-        `[${COREBLUETOOTH_PLATFORM_ID}.handleAdapterState] Native adapter-loss cleanup requires retry:`,
-        expect.arrayContaining([expect.objectContaining({ resourceKind: 'operation-quarantine' })])
-      )
-
       destroyPromise = backend.destroy()
       const result = await awaitSignal(
         destroyPromise,
@@ -1346,6 +1383,12 @@ describe('CoreBluetooth contract-v1 vertical slice', () => {
     expect(backend.attachment().attachmentId).toBe(attachmentBeforeLoss.attachmentId)
     expect(backend.resourceCounters()).toMatchObject({ physicalCccdEnablements: 1 })
     await expect(events.next()).resolves.toMatchObject({ value: { kind: 'value', value: { kind: 'adapter-state' } } })
+    await expect(events.next()).resolves.toMatchObject({
+      value: {
+        kind: 'value',
+        value: { kind: 'connection-state-changed', current: 'lost', reason: 'adapter' }
+      }
+    })
     await expect(events.next()).resolves.toMatchObject({ value: { kind: 'value', value: { kind: 'diagnostic' } } })
 
     emitAdapterState(boundary, lossState)

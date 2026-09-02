@@ -314,6 +314,7 @@ function validateWinRtAdvertisement(advertisement: unknown): ValidatedWinRtAdver
 }
 
 export interface WinRtConnectionRecord {
+  readonly attachment: AttachmentRecord<string>
   readonly nativePeerId: string
   readonly peerId: PeerId<string>
   readonly connectionId: ConnectionId<string, string>
@@ -410,6 +411,7 @@ export class WinRtBackend implements BleCentralBackend<string, HostNeutralBacken
   private destroyed = false
   private destroyResult: Promise<CleanupRecord> | null = null
   private adapterLossCleanup: Promise<void> | null = null
+  private readonly adapterLossTerminalizedConnections = new WeakSet<WinRtConnectionRecord>()
   private adapterLossPending = false
   private scanGroup: WinRtScanGroup | null = null
   private backendGeneration = 1
@@ -1132,6 +1134,7 @@ export class WinRtBackend implements BleCentralBackend<string, HostNeutralBacken
       terminalError: null
     }
     const record: WinRtConnectionRecord = {
+      attachment: this.attachment(),
       nativePeerId,
       peerId,
       connectionId: ids.connectionId(`winrt-connection-${this.nextConnection}`),
@@ -1468,9 +1471,14 @@ export class WinRtBackend implements BleCentralBackend<string, HostNeutralBacken
     if (String(record.connectionGeneration) !== event.connectionGeneration) {
       return
     }
+    if (this.adapterLossPending) {
+      const previous = record.state === 'disconnecting' ? 'disconnecting' : 'connected'
+      this.terminalizeAdapterLossConnection(record, previous)
+      return
+    }
     const connectionPath = Object.freeze({
-      attachment: this.attachment(),
-      attachmentId: this.attachment().attachmentId,
+      attachment: record.attachment,
+      attachmentId: record.attachment.attachmentId,
       peerId: record.peerId,
       connectionId: record.connectionId,
       ownerLeaseId: record.ownerLeaseId,
@@ -1521,6 +1529,41 @@ export class WinRtBackend implements BleCentralBackend<string, HostNeutralBacken
     if (event.safeReason !== null) {
       console.info('[WinRtBackend.connection-loss] WinRT reported connection loss:', event.safeReason)
     }
+  }
+
+  private terminalizeAdapterLossConnection(
+    record: WinRtConnectionRecord,
+    previous: 'connected' | 'disconnecting'
+  ): void {
+    if (this.adapterLossTerminalizedConnections.has(record)) return
+    this.adapterLossTerminalizedConnections.add(record)
+    const connection = Object.freeze({
+      attachment: record.attachment,
+      attachmentId: record.attachment.attachmentId,
+      peerId: record.peerId,
+      connectionId: record.connectionId,
+      ownerLeaseId: record.ownerLeaseId,
+      connectionGeneration: record.connectionGeneration
+    })
+    record.state = 'lost'
+    record.database?.invalidate()
+    record.database = null
+    record.lease?.markReleased()
+    record.lease = null
+    if (this.connectionsByNativeId.get(record.nativePeerId) === record) {
+      this.connectionsByNativeId.delete(record.nativePeerId)
+    }
+    broadcastWinRtEvent(this.eventStreams, {
+      attachment: record.attachment,
+      attachmentId: record.attachment.attachmentId,
+      kind: 'connection-state-changed',
+      connection,
+      previous,
+      current: 'lost',
+      reason: 'adapter',
+      ingressOrdinal: this.nextIngressOrdinal
+    })
+    this.nextIngressOrdinal += 1
   }
 
   private async finishConnectionLoss(
@@ -1644,7 +1687,7 @@ export class WinRtBackend implements BleCentralBackend<string, HostNeutralBacken
         const outcome: WinRtDisconnectOutcome = { state: 'released' }
         if (record.disconnectSettlement === settlement) {
           record.disconnectSettlement = null
-          record.state = 'disconnected'
+          if (record.state !== 'lost') record.state = 'disconnected'
         }
         return outcome
       },
@@ -1899,6 +1942,7 @@ export class WinRtBackend implements BleCentralBackend<string, HostNeutralBacken
     }
     for (const record of [...this.connectionsByNativeId.values()]) {
       if (record.state === 'connected' || record.state === 'disconnecting') {
+        const previous = record.state
         const disconnectCleanup = await this.disconnect(record, 'winrt.adapter-loss.disconnect', false, false)
         failures.push(...disconnectCleanup.failures)
         if (disconnectCleanup.state === 'release-failed') {
@@ -1906,6 +1950,7 @@ export class WinRtBackend implements BleCentralBackend<string, HostNeutralBacken
           // for the next adapter-state cleanup retry.
           continue
         }
+        this.terminalizeAdapterLossConnection(record, previous)
       }
       if (record.state === 'connecting' && record.pendingConnect !== null) {
         this.terminalizePendingConnect(
@@ -1913,13 +1958,15 @@ export class WinRtBackend implements BleCentralBackend<string, HostNeutralBacken
           contractError('operation.reset', 'connection', 'winrt.connect.adapter-loss')
         )
       }
-      record.state = 'lost'
-      record.database?.invalidate()
-      record.database = null
-      record.lease?.markReleased()
-      record.lease = null
-      if (this.connectionsByNativeId.get(record.nativePeerId) === record) {
-        this.connectionsByNativeId.delete(record.nativePeerId)
+      if (record.state !== 'lost') {
+        record.state = 'lost'
+        record.database?.invalidate()
+        record.database = null
+        record.lease?.markReleased()
+        record.lease = null
+        if (this.connectionsByNativeId.get(record.nativePeerId) === record) {
+          this.connectionsByNativeId.delete(record.nativePeerId)
+        }
       }
     }
     return failures.length === 0
