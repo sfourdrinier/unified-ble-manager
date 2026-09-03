@@ -789,6 +789,55 @@ describe('CoreBluetooth late-operation quarantine', () => {
     await backend.destroy()
   })
 
+  test('reports slow cancelled connect cleanup as informational while retaining quarantine ownership', async () => {
+    jest.useFakeTimers()
+    const disconnectGate = deferred()
+    const connectGate = deferred()
+    try {
+      const { backend, boundary } = await fixture()
+      const peerId = await observedPeerId(backend)
+      const nativeConnect = boundary.connect.bind(boundary)
+      const nativeDisconnect = boundary.disconnect.bind(boundary)
+      boundary.connect = async nativePeerId => {
+        await nativeConnect(nativePeerId)
+        await connectGate.promise
+      }
+      boundary.disconnect = async nativePeerId => {
+        await disconnectGate.promise
+        await nativeDisconnect(nativePeerId)
+      }
+
+      const controller = new AbortController()
+      const pending = backend.connections.connect(
+        peerId,
+        opaqueId('slow-cancel-client', 'client', 'corebluetooth:slow-cancel'),
+        operation(controller.signal)
+      )
+      await flushMicrotasks()
+      controller.abort()
+      await expect(pending).rejects.toMatchObject({ normalized: { code: 'operation.aborted' } })
+
+      jest.advanceTimersByTime(1_000)
+      await flushMicrotasks()
+
+      expectConsoleInfo(
+        '[unified-ble:macos-corebluetooth.connect] Cancelled native connection cleanup is not yet confirmed; quarantine retained:',
+        'native-polar-h10'
+      )
+      expect(boundary.connected).toBe(true)
+      expect(backend.resourceCounters()).toMatchObject({ physicalLinks: 1, connectionLeases: 0 })
+
+      disconnectGate.resolve()
+      connectGate.resolve()
+      await flushMicrotasks()
+      await expect(backend.destroy()).resolves.toEqual({ state: 'released', failures: [] })
+    } finally {
+      disconnectGate.resolve()
+      connectGate.resolve()
+      jest.useRealTimers()
+    }
+  })
+
   test('quarantines direct database read and write calls through the same per-connection dispatcher', async () => {
     const { backend, boundary } = await fixture()
     const peerId = await observedPeerId(backend)

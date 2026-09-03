@@ -17,6 +17,10 @@ object OwnedAndroidLog {
     if (level <= Log.DEBUG) Log.d(TAG, msg)
   }
 
+  @JvmStatic fun i(msg: String) {
+    if (level <= Log.INFO) Log.i(TAG, msg)
+  }
+
   @JvmStatic fun e(msg: String, t: Throwable? = null) {
     try {
       if (t != null) Log.e(TAG, msg, t) else Log.e(TAG, msg)
