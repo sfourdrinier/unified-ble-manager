@@ -159,6 +159,38 @@ describe('React Native Android canonical protocol vertical slice', () => {
     await fixture.manager.destroy()
   })
 
+  test('cancels a dispatched when-available connect before admitting a same-peer retry', async () => {
+    const fixture = await createAndroidPeerDirectoryFixture(
+      [
+        { nativePeerId: 'AA:BB', displayName: 'Heart Strap' },
+        { nativePeerId: 'CC:DD', displayName: 'Other Strap' }
+      ],
+      { holdWhenAvailableConnect: true }
+    )
+    const peers = await fixture.manager.peers.bonded()
+    const [firstPeer, otherPeer] = peers
+    if (firstPeer === undefined || otherPeer === undefined) throw new Error('Expected bonded peers are missing')
+
+    const controller = new AbortController()
+    const pending = fixture.manager.connect(firstPeer, { intent: 'when-available', signal: controller.signal })
+    await Promise.resolve()
+    expect(fixture.runtime.pendingConnectCommand).not.toBeNull()
+    controller.abort()
+
+    await expect(pending).rejects.toMatchObject({ code: 'operation.aborted' })
+    expect(fixture.runtime.cancelledConnectPeers).toEqual(['AA:BB'])
+    expect(fixture.runtime.connection).toBeNull()
+    expect(fixture.runtime.commandKinds).toEqual(expect.arrayContaining(['connect', 'disconnect']))
+
+    fixture.runtime.holdWhenAvailableConnect = false
+    const retry = await fixture.manager.connect(firstPeer, { intent: 'when-available' })
+    await retry.release()
+
+    const other = await fixture.manager.connect(otherPeer, { intent: 'when-available' })
+    await other.release()
+    await expect(fixture.manager.destroy()).resolves.toMatchObject({ state: 'released', failures: [] })
+  })
+
   test.each([
     {
       name: 'Android',
@@ -1736,6 +1768,7 @@ async function createAndroidPeerDirectoryFixture(bondedPeers, options = {}) {
   const runtime = new DeterministicAndroidProtocolRuntime(control)
   runtime.bondedPeers = bondedPeers
   runtime.bondedPermissionDenied = options.bondedPermissionDenied === true
+  runtime.holdWhenAvailableConnect = options.holdWhenAvailableConnect === true
   global.__unifiedBleNativeProtocolV2 = runtime
   const provider = createReactNativeAndroidBackendProvider({
     control,
@@ -1916,6 +1949,9 @@ class DeterministicAndroidProtocolRuntime {
     this.descriptorValue = new Uint8Array([8, 7])
     this.connection = null
     this.connectionIntents = []
+    this.holdWhenAvailableConnect = false
+    this.pendingConnectCommand = null
+    this.cancelledConnectPeers = []
     this.connectFailureCode = null
     this.sinkFailure = sinkFailure
     this.emitInitialSubscriptionNotification = emitInitialSubscriptionNotification
@@ -2001,6 +2037,16 @@ class DeterministicAndroidProtocolRuntime {
       this.emitResult(command, 'scanStarted')
       return
     }
+    if (kind === 'disconnect' && this.pendingConnectCommand !== null) {
+      const pendingConnect = this.pendingConnectCommand
+      this.pendingConnectCommand = null
+      const pendingPeer = requiredRecord(pendingConnect, 10)
+      this.cancelledConnectPeers.push(requiredString(pendingPeer, 2))
+      this.connection = null
+      this.emitFailureWithCode(pendingConnect, 'connectionLost', 'Android connect cancelled by native disconnect')
+      this.emitResult(command, 'accepted')
+      return
+    }
     if (kind === 'disconnect' && this.holdDisconnectResult) {
       if (this.pendingDisconnectCommand !== null) {
         throw new Error('The deterministic runtime already has a pending disconnect')
@@ -2013,8 +2059,16 @@ class DeterministicAndroidProtocolRuntime {
       return
     }
     if (kind === 'connect') {
-      this.connectionIntents.push(requiredString(command, 20))
+      const intent = requiredString(command, 20)
+      this.connectionIntents.push(intent)
       this.connection = requiredRecord(command, 10)
+      if (intent === 'whenAvailable' && this.holdWhenAvailableConnect) {
+        if (this.pendingConnectCommand !== null) {
+          throw new Error('The deterministic runtime already has a pending when-available connect')
+        }
+        this.pendingConnectCommand = command
+        return
+      }
       if (this.connectFailureCode !== null) {
         this.emitFailureWithCode(command, this.connectFailureCode, `Android connect failed: ${this.connectFailureCode}`)
         return

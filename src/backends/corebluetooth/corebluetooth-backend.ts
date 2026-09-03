@@ -929,6 +929,21 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
     this.nextConnection += 1
     this.nextLease += 1
     this.connectionsByNativeId.set(nativePeerId, record)
+    const cleanupCancelledConnection = async (): Promise<void> => {
+      // A caller may abort before the boundary has dispatched the native
+      // connect. Preserve the quarantine record in that case so a late native
+      // success still receives compensation; once native owns the link,
+      // releaseLateCoreBluetoothConnection cancels both connecting and
+      // connected states through the boundary.
+      if (this.boundary.connectionState(nativePeerId) === 'disconnected') return
+      const released = await releaseLateCoreBluetoothConnection(this.boundary, this.connectionsByNativeId, record)
+      if (!released) {
+        console.error(
+          `${this.diagnosticTag('connect')} Cancelled native connection remains active:`,
+          record.nativePeerId
+        )
+      }
+    }
     try {
       await this.operationLifecycle.awaitBoundaryOperation(
         options,
@@ -944,11 +959,10 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
           }
         },
         async () => {
-          if (this.connectionsByNativeId.get(nativePeerId) === record) {
-            this.connectionsByNativeId.delete(nativePeerId)
-          }
+          await cleanupCancelledConnection()
         },
-        String(record.connectionId)
+        String(record.connectionId),
+        cleanupCancelledConnection
       )
     } catch (error) {
       const terminalCancellation =
