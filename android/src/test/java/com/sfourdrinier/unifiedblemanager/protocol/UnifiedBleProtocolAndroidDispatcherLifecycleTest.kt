@@ -840,6 +840,21 @@ class UnifiedBleProtocolAndroidDispatcherLifecycleTest {
   }
 
   @Test
+  fun gattSafetyCloseTimeoutUsesInformationalDiagnostics() {
+    val radio = readAndroidSource(
+      "android/src/main/java/com/sfourdrinier/unifiedblemanager/radio/OwnedAndroidGattRadio.kt"
+    )
+    val timeout = radio.substring(
+      radio.indexOf("private fun scheduleSafeClose"),
+      radio.indexOf("private fun cancelSafeClose")
+    )
+
+    assertTrue(timeout.contains("OwnedAndroidLog.i(\"GATT close safety timeout"))
+    assertFalse(timeout.contains("OwnedAndroidLog.w(\"GATT close safety timeout"))
+    assertFalse(timeout.contains("OwnedAndroidLog.e(\"GATT close safety timeout"))
+  }
+
+  @Test
   fun adapterLossClosesGattOwnersBeforeForwardingTheState() {
     val radio = readAndroidSource(
       "android/src/main/java/com/sfourdrinier/unifiedblemanager/radio/OwnedAndroidGattRadio.kt"

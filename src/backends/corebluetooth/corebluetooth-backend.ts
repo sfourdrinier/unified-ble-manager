@@ -938,8 +938,8 @@ export class CoreBluetoothBackend implements BleCentralBackend<string, HostNeutr
       if (this.boundary.connectionState(nativePeerId) === 'disconnected') return
       const released = await releaseLateCoreBluetoothConnection(this.boundary, this.connectionsByNativeId, record)
       if (!released) {
-        console.error(
-          `${this.diagnosticTag('connect')} Cancelled native connection remains active:`,
+        console.info(
+          `${this.diagnosticTag('connect')} Cancelled native connection cleanup is not yet confirmed; quarantine retained:`,
           record.nativePeerId
         )
       }

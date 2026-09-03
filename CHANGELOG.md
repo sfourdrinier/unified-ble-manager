@@ -6,6 +6,14 @@ All notable changes to `unified-ble-manager` are documented here.
 
 No changes yet.
 
+## [4.0.17] - 2026-09-03
+
+### Fixes
+
+- Downgrade expected late native connect-cleanup diagnostics after caller
+  cancellation from error severity to informational telemetry, while retaining
+  the physical connection quarantine until native teardown is confirmed.
+
 ## [4.0.16] - 2026-09-03
 
 ### Fixes

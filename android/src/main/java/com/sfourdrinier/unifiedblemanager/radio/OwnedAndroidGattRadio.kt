@@ -978,7 +978,7 @@ class OwnedAndroidGattRadio(private val context: Context) {
     val r =
       Runnable {
         if (gatts[key] === gatt) {
-          OwnedAndroidLog.e("GATT close safety timeout for $key (DISCONNECTED never arrived)")
+          OwnedAndroidLog.i("GATT close safety timeout; cleanup callback absent, forced close proceeding for $key")
           dispatchConnectionState(key, false, BluetoothGatt.GATT_FAILURE)
           failPendingForDevice(key, "disconnected timeout")
           val teardownFailure = completeGattTeardown(key, gatt)
