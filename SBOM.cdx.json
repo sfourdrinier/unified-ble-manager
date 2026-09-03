@@ -6,15 +6,15 @@
   "metadata": {
     "component": {
       "type": "library",
-      "bom-ref": "pkg:npm/unified-ble-manager@4.0.15",
+      "bom-ref": "pkg:npm/unified-ble-manager@4.0.16",
       "name": "unified-ble-manager",
-      "version": "4.0.15",
+      "version": "4.0.16",
       "licenses": [
         {
           "expression": "Apache-2.0"
         }
       ],
-      "purl": "pkg:npm/unified-ble-manager@4.0.15"
+      "purl": "pkg:npm/unified-ble-manager@4.0.16"
     },
     "properties": [
       {
@@ -537,7 +537,7 @@
       "dependsOn": []
     },
     {
-      "ref": "pkg:npm/unified-ble-manager@4.0.15",
+      "ref": "pkg:npm/unified-ble-manager@4.0.16",
       "dependsOn": [
         "pkg:npm/%40babel/runtime@7.29.7",
         "pkg:npm/node-addon-api@8.9.0",

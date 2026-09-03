@@ -4,6 +4,10 @@ All notable changes to `unified-ble-manager` are documented here.
 
 ## [Unreleased]
 
+No changes yet.
+
+## [4.0.16] - 2026-09-03
+
 ### Fixes
 
 - Normalize an Android CCCD operation that terminates with GATT status 19 as
