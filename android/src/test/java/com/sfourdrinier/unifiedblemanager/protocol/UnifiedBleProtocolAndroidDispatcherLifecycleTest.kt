@@ -12,6 +12,7 @@ import com.sfourdrinier.unifiedblemanager.radio.BondedPeerSnapshot
 import com.sfourdrinier.unifiedblemanager.radio.normalizeBondedPeerSnapshots
 import com.sfourdrinier.unifiedblemanager.radio.bondedPeerAdapterReadiness
 import com.sfourdrinier.unifiedblemanager.radio.requiresImmediateGattTeardownOnAdapterState
+import com.sfourdrinier.unifiedblemanager.radio.classifyAndroidGattOperationFailure
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertFalse
@@ -31,6 +32,36 @@ import android.bluetooth.BluetoothAdapter
 import android.bluetooth.le.ScanSettings
 
 class UnifiedBleProtocolAndroidDispatcherLifecycleTest {
+  @Test
+  fun gattStatus19IsTypedAsLinkLossButOrdinaryCccdFailureIsNot() {
+    val linkLoss = classifyAndroidGattOperationFailure("cccd-write", 19)
+    assertTrue(linkLoss.isLinkLoss)
+    assertEquals(19, linkLoss.gattStatus)
+
+    val ordinaryFailure = classifyAndroidGattOperationFailure("cccd-write", 133)
+    assertFalse(ordinaryFailure.isLinkLoss)
+    assertEquals(133, ordinaryFailure.gattStatus)
+  }
+
+  @Test
+  fun dispatcherOnlyMapsTypedLinkLossToConnectionLost() {
+    val linkLoss = classifyAndroidGattOperationFailure("cccd-write", 19)
+    assertEquals("connectionLost", androidGattOperationFailureCode(linkLoss, "subscriptionFailed"))
+    assertEquals(19, androidGattOperationFailureStatus(linkLoss))
+
+    val ordinaryFailure = classifyAndroidGattOperationFailure("cccd-write", 133)
+    assertEquals("subscriptionFailed", androidGattOperationFailureCode(ordinaryFailure, "subscriptionFailed"))
+    assertEquals(133, androidGattOperationFailureStatus(ordinaryFailure))
+
+    // Matching an error message is intentionally insufficient: only the
+    // typed callback failure may change the public terminal vocabulary.
+    assertEquals(
+      "subscriptionFailed",
+      androidGattOperationFailureCode(IllegalStateException("onDescriptorWrite status=19"), "subscriptionFailed")
+    )
+    assertNull(androidGattOperationFailureStatus(IllegalStateException("onDescriptorWrite status=19")))
+  }
+
   @Test
   fun bondedPeerAdapterReadinessReturnsTypedFailuresInsteadOfAnEmptySuccess() {
     assertTrue(

@@ -109,6 +109,27 @@ internal class OwnedAndroidSubscriptionOwnership<K> {
   }
 }
 
+/**
+ * Preserves the Android GATT callback status when an asynchronous operation
+ * terminates. Status 19 means that the peer terminated the link; keeping that
+ * distinction typed prevents a CCCD race from being flattened to a generic
+ * platform failure before the later connection-state callback arrives.
+ */
+internal class AndroidGattOperationFailure(
+  val operation: String,
+  val gattStatus: Int
+) : IllegalStateException("$operation status=$gattStatus") {
+  val isLinkLoss: Boolean
+    get() = gattStatus == ANDROID_GATT_LINK_LOSS_STATUS
+}
+
+internal const val ANDROID_GATT_LINK_LOSS_STATUS = 19
+
+internal fun classifyAndroidGattOperationFailure(
+  operation: String,
+  gattStatus: Int
+): AndroidGattOperationFailure = AndroidGattOperationFailure(operation, gattStatus)
+
 /** Runtime adapter state derived from Android hardware and granted permissions. */
 internal data class OwnedRadioAdapterProtocolState(
   val availability: String,
@@ -2479,7 +2500,7 @@ class OwnedAndroidGattRadio(private val context: Context) {
         } else {
           completeExactUnit(
             pending,
-            Result.failure(IllegalStateException("onDescriptorWrite status=$status"))
+            Result.failure(classifyAndroidGattOperationFailure("descriptor-write", status))
           )
         }
         return
@@ -2494,7 +2515,7 @@ class OwnedAndroidGattRadio(private val context: Context) {
         } else {
           completeExactUnit(
             pending,
-            Result.failure(IllegalStateException("onDescriptorWrite status=$status"))
+            Result.failure(classifyAndroidGattOperationFailure("cccd-write", status))
           )
         }
         return
@@ -2515,7 +2536,14 @@ class OwnedAndroidGattRadio(private val context: Context) {
       if (status == BluetoothGatt.GATT_SUCCESS) {
         cb?.invoke(Result.success(Unit))
       } else {
-        cb?.invoke(Result.failure(IllegalStateException("onDescriptorWrite status=$status")))
+        cb?.invoke(
+          Result.failure(
+            classifyAndroidGattOperationFailure(
+              if (matchedKey?.startsWith("cccd:") == true) "cccd-write" else "descriptor-write",
+              status
+            )
+          )
+        )
       }
     }
 
