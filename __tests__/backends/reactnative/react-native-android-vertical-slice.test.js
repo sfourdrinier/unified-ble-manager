@@ -159,6 +159,38 @@ describe('React Native Android canonical protocol vertical slice', () => {
     await fixture.manager.destroy()
   })
 
+  test('cancels a dispatched when-available connect before admitting a same-peer retry', async () => {
+    const fixture = await createAndroidPeerDirectoryFixture(
+      [
+        { nativePeerId: 'AA:BB', displayName: 'Heart Strap' },
+        { nativePeerId: 'CC:DD', displayName: 'Other Strap' }
+      ],
+      { holdWhenAvailableConnect: true }
+    )
+    const peers = await fixture.manager.peers.bonded()
+    const [firstPeer, otherPeer] = peers
+    if (firstPeer === undefined || otherPeer === undefined) throw new Error('Expected bonded peers are missing')
+
+    const controller = new AbortController()
+    const pending = fixture.manager.connect(firstPeer, { intent: 'when-available', signal: controller.signal })
+    await Promise.resolve()
+    expect(fixture.runtime.pendingConnectCommand).not.toBeNull()
+    controller.abort()
+
+    await expect(pending).rejects.toMatchObject({ code: 'operation.aborted' })
+    expect(fixture.runtime.cancelledConnectPeers).toEqual(['AA:BB'])
+    expect(fixture.runtime.connection).toBeNull()
+    expect(fixture.runtime.commandKinds).toEqual(expect.arrayContaining(['connect', 'disconnect']))
+
+    fixture.runtime.holdWhenAvailableConnect = false
+    const retry = await fixture.manager.connect(firstPeer, { intent: 'when-available' })
+    await retry.release()
+
+    const other = await fixture.manager.connect(otherPeer, { intent: 'when-available' })
+    await other.release()
+    await expect(fixture.manager.destroy()).resolves.toMatchObject({ state: 'released', failures: [] })
+  })
+
   test.each([
     {
       name: 'Android',
@@ -1142,6 +1174,63 @@ describe('React Native Android canonical protocol vertical slice', () => {
     await expect(boundary.destroy()).resolves.toBeUndefined()
   })
 
+  test('Android normalizes the native CCCD link-loss terminal before connectionLost event delivery', async () => {
+    const control = new DeterministicAndroidControl()
+    const runtime = new DeterministicAndroidProtocolRuntime(control)
+    global.__unifiedBleNativeProtocolV2 = runtime
+    const boundary = new ReactNativeAndroidProtocolBoundary(control, 'deterministic-android-cccd-link-loss-owner')
+    boundary.bindAttachment(deterministicAttachment())
+
+    await boundary.open()
+    await boundary.connect(peerId)
+    await boundary.discover(peerId)
+    runtime.subscribeFailure = { code: 'connectionLost', status: 19 }
+
+    const failure = await rejectedError(() => boundary.startNotify(characteristicAddress(), () => undefined))
+    expect(failure).toMatchObject({
+      normalized: {
+        code: 'connection.lost',
+        operation: 'rn-android-boundary.subscribe',
+        platform: {
+          domain: 'android',
+          code: 'connectionLost',
+          metadata: { androidGattStatus: 19 }
+        }
+      }
+    })
+    // Physical Android can report the descriptor terminal before its
+    // connection-state callback; the later lifecycle event remains harmless.
+    runtime.emitConnectionLost(19)
+    await expect(boundary.destroy()).resolves.toBeUndefined()
+  })
+
+  test('Android keeps ordinary CCCD status failures as platform failures', async () => {
+    const control = new DeterministicAndroidControl()
+    const runtime = new DeterministicAndroidProtocolRuntime(control)
+    global.__unifiedBleNativeProtocolV2 = runtime
+    const boundary = new ReactNativeAndroidProtocolBoundary(control, 'deterministic-android-cccd-failure-owner')
+    boundary.bindAttachment(deterministicAttachment())
+
+    await boundary.open()
+    await boundary.connect(peerId)
+    await boundary.discover(peerId)
+    runtime.subscribeFailure = { code: 'subscriptionFailed', status: 133 }
+
+    const failure = await rejectedError(() => boundary.startNotify(characteristicAddress(), () => undefined))
+    expect(failure).toMatchObject({
+      normalized: {
+        code: 'platform.failure',
+        operation: 'rn-android-boundary.subscribe',
+        platform: {
+          domain: 'android',
+          code: 'subscriptionFailed',
+          metadata: { androidGattStatus: 133 }
+        }
+      }
+    })
+    await expect(boundary.destroy()).resolves.toBeUndefined()
+  })
+
   test('Android connection loss does not double-release write bytes already owned by native', async () => {
     const control = new DeterministicAndroidControl()
     const runtime = new DeterministicAndroidProtocolRuntime(control)
@@ -1679,6 +1768,7 @@ async function createAndroidPeerDirectoryFixture(bondedPeers, options = {}) {
   const runtime = new DeterministicAndroidProtocolRuntime(control)
   runtime.bondedPeers = bondedPeers
   runtime.bondedPermissionDenied = options.bondedPermissionDenied === true
+  runtime.holdWhenAvailableConnect = options.holdWhenAvailableConnect === true
   global.__unifiedBleNativeProtocolV2 = runtime
   const provider = createReactNativeAndroidBackendProvider({
     control,
@@ -1859,6 +1949,9 @@ class DeterministicAndroidProtocolRuntime {
     this.descriptorValue = new Uint8Array([8, 7])
     this.connection = null
     this.connectionIntents = []
+    this.holdWhenAvailableConnect = false
+    this.pendingConnectCommand = null
+    this.cancelledConnectPeers = []
     this.connectFailureCode = null
     this.sinkFailure = sinkFailure
     this.emitInitialSubscriptionNotification = emitInitialSubscriptionNotification
@@ -1878,6 +1971,7 @@ class DeterministicAndroidProtocolRuntime {
     this.holdWriteResult = false
     this.pendingWriteCommand = null
     this.rejectWriteBeforeOwnership = false
+    this.subscribeFailure = null
   }
 
   retain(operationCorrelation, value) {
@@ -1943,6 +2037,16 @@ class DeterministicAndroidProtocolRuntime {
       this.emitResult(command, 'scanStarted')
       return
     }
+    if (kind === 'disconnect' && this.pendingConnectCommand !== null) {
+      const pendingConnect = this.pendingConnectCommand
+      this.pendingConnectCommand = null
+      const pendingPeer = requiredRecord(pendingConnect, 10)
+      this.cancelledConnectPeers.push(requiredString(pendingPeer, 2))
+      this.connection = null
+      this.emitFailureWithCode(pendingConnect, 'connectionLost', 'Android connect cancelled by native disconnect')
+      this.emitResult(command, 'accepted')
+      return
+    }
     if (kind === 'disconnect' && this.holdDisconnectResult) {
       if (this.pendingDisconnectCommand !== null) {
         throw new Error('The deterministic runtime already has a pending disconnect')
@@ -1955,8 +2059,16 @@ class DeterministicAndroidProtocolRuntime {
       return
     }
     if (kind === 'connect') {
-      this.connectionIntents.push(requiredString(command, 20))
+      const intent = requiredString(command, 20)
+      this.connectionIntents.push(intent)
       this.connection = requiredRecord(command, 10)
+      if (intent === 'whenAvailable' && this.holdWhenAvailableConnect) {
+        if (this.pendingConnectCommand !== null) {
+          throw new Error('The deterministic runtime already has a pending when-available connect')
+        }
+        this.pendingConnectCommand = command
+        return
+      }
       if (this.connectFailureCode !== null) {
         this.emitFailureWithCode(command, this.connectFailureCode, `Android connect failed: ${this.connectFailureCode}`)
         return
@@ -2078,6 +2190,16 @@ class DeterministicAndroidProtocolRuntime {
     if (kind === 'subscribe') {
       this.subscriptionId = requiredString(command, 7)
       this.subscribeCorrelation = requiredRecord(command, 2)
+      if (this.subscribeFailure !== null) {
+        this.emitFailureWithCode(
+          command,
+          this.subscribeFailure.code,
+          `Android CCCD operation failed with status ${this.subscribeFailure.status}`,
+          'subscribe',
+          this.subscribeFailure.status
+        )
+        return
+      }
       if (this.emitInitialSubscriptionNotification) {
         this.emitNotificationRecord(new Uint8Array([3, 4]))
       }
@@ -2272,7 +2394,7 @@ class DeterministicAndroidProtocolRuntime {
     )
   }
 
-  emitFailureWithCode(command, code, safeMessage) {
+  emitFailureWithCode(command, code, safeMessage, operation = 'enumerateBondedPeers', androidGattStatus = null) {
     this.emit(
       record('result', [
         field(1, 1),
@@ -2283,9 +2405,10 @@ class DeterministicAndroidProtocolRuntime {
           record('error', [
             field(1, code),
             field(2, 'android'),
-            field(3, 'enumerateBondedPeers'),
+            field(3, operation),
             field(4, 'notRetryable'),
-            field(7, safeMessage)
+            field(7, safeMessage),
+            ...(androidGattStatus === null ? [] : [field(8, androidGattStatus)])
           ])
         )
       ])

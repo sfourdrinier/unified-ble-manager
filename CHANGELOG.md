@@ -6,6 +6,18 @@ All notable changes to `unified-ble-manager` are documented here.
 
 No changes yet.
 
+## [4.0.16] - 2026-09-03
+
+### Fixes
+
+- Normalize an Android CCCD operation that terminates with GATT status 19 as
+  `connection.lost` even when it arrives before the native `connectionLost`
+  event. Other CCCD failures remain `platform.failure` and retain their native
+  GATT status.
+- Cancel a dispatched React Native Android `when-available` connection when
+  its caller aborts, releasing the native pending connection so a later
+  same-peer retry is admitted without affecting distinct-peer connects.
+
 ## [4.0.15] - 2026-09-02
 
 ### Fixes
