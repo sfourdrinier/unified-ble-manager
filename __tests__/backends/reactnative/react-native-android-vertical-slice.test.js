@@ -1142,6 +1142,63 @@ describe('React Native Android canonical protocol vertical slice', () => {
     await expect(boundary.destroy()).resolves.toBeUndefined()
   })
 
+  test('Android normalizes the native CCCD link-loss terminal before connectionLost event delivery', async () => {
+    const control = new DeterministicAndroidControl()
+    const runtime = new DeterministicAndroidProtocolRuntime(control)
+    global.__unifiedBleNativeProtocolV2 = runtime
+    const boundary = new ReactNativeAndroidProtocolBoundary(control, 'deterministic-android-cccd-link-loss-owner')
+    boundary.bindAttachment(deterministicAttachment())
+
+    await boundary.open()
+    await boundary.connect(peerId)
+    await boundary.discover(peerId)
+    runtime.subscribeFailure = { code: 'connectionLost', status: 19 }
+
+    const failure = await rejectedError(() => boundary.startNotify(characteristicAddress(), () => undefined))
+    expect(failure).toMatchObject({
+      normalized: {
+        code: 'connection.lost',
+        operation: 'rn-android-boundary.subscribe',
+        platform: {
+          domain: 'android',
+          code: 'connectionLost',
+          metadata: { androidGattStatus: 19 }
+        }
+      }
+    })
+    // Physical Android can report the descriptor terminal before its
+    // connection-state callback; the later lifecycle event remains harmless.
+    runtime.emitConnectionLost(19)
+    await expect(boundary.destroy()).resolves.toBeUndefined()
+  })
+
+  test('Android keeps ordinary CCCD status failures as platform failures', async () => {
+    const control = new DeterministicAndroidControl()
+    const runtime = new DeterministicAndroidProtocolRuntime(control)
+    global.__unifiedBleNativeProtocolV2 = runtime
+    const boundary = new ReactNativeAndroidProtocolBoundary(control, 'deterministic-android-cccd-failure-owner')
+    boundary.bindAttachment(deterministicAttachment())
+
+    await boundary.open()
+    await boundary.connect(peerId)
+    await boundary.discover(peerId)
+    runtime.subscribeFailure = { code: 'subscriptionFailed', status: 133 }
+
+    const failure = await rejectedError(() => boundary.startNotify(characteristicAddress(), () => undefined))
+    expect(failure).toMatchObject({
+      normalized: {
+        code: 'platform.failure',
+        operation: 'rn-android-boundary.subscribe',
+        platform: {
+          domain: 'android',
+          code: 'subscriptionFailed',
+          metadata: { androidGattStatus: 133 }
+        }
+      }
+    })
+    await expect(boundary.destroy()).resolves.toBeUndefined()
+  })
+
   test('Android connection loss does not double-release write bytes already owned by native', async () => {
     const control = new DeterministicAndroidControl()
     const runtime = new DeterministicAndroidProtocolRuntime(control)
@@ -1878,6 +1935,7 @@ class DeterministicAndroidProtocolRuntime {
     this.holdWriteResult = false
     this.pendingWriteCommand = null
     this.rejectWriteBeforeOwnership = false
+    this.subscribeFailure = null
   }
 
   retain(operationCorrelation, value) {
@@ -2078,6 +2136,16 @@ class DeterministicAndroidProtocolRuntime {
     if (kind === 'subscribe') {
       this.subscriptionId = requiredString(command, 7)
       this.subscribeCorrelation = requiredRecord(command, 2)
+      if (this.subscribeFailure !== null) {
+        this.emitFailureWithCode(
+          command,
+          this.subscribeFailure.code,
+          `Android CCCD operation failed with status ${this.subscribeFailure.status}`,
+          'subscribe',
+          this.subscribeFailure.status
+        )
+        return
+      }
       if (this.emitInitialSubscriptionNotification) {
         this.emitNotificationRecord(new Uint8Array([3, 4]))
       }
@@ -2272,7 +2340,7 @@ class DeterministicAndroidProtocolRuntime {
     )
   }
 
-  emitFailureWithCode(command, code, safeMessage) {
+  emitFailureWithCode(command, code, safeMessage, operation = 'enumerateBondedPeers', androidGattStatus = null) {
     this.emit(
       record('result', [
         field(1, 1),
@@ -2283,9 +2351,10 @@ class DeterministicAndroidProtocolRuntime {
           record('error', [
             field(1, code),
             field(2, 'android'),
-            field(3, 'enumerateBondedPeers'),
+            field(3, operation),
             field(4, 'notRetryable'),
-            field(7, safeMessage)
+            field(7, safeMessage),
+            ...(androidGattStatus === null ? [] : [field(8, androidGattStatus)])
           ])
         )
       ])

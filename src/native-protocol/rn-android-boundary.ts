@@ -1447,6 +1447,8 @@ function nativeOperationFailure(error: NativeProtocolRecord | null, operation: s
   }
   const nativeDomain = optionalString(error, 9) ?? optionalString(error, 2) ?? 'native-protocol'
   const nativeCode = nativeErrorCode(error)
+  const androidGattStatus = nativeAndroidGattStatus(error)
+  const metadata = androidGattStatus === null ? Object.freeze({}) : Object.freeze({ androidGattStatus })
   if (nativeCode === 'cancelled') {
     return contractError('operation.aborted', 'core', `rn-android-boundary.${operation}`)
   }
@@ -1462,19 +1464,19 @@ function nativeOperationFailure(error: NativeProtocolRecord | null, operation: s
   if (nativeCode === 'adapterResetting') {
     return contractError('adapter.resetting', 'adapter', `rn-android-boundary.${operation}`)
   }
-  if (nativeCode === 'connectionLost') {
+  if (nativeCode === 'connectionLost' || androidGattStatus === 19) {
     return contractError('connection.lost', 'connection', `rn-android-boundary.${operation}`, {
       domain: nativeDomain,
       code: nativeCode,
       safeMessage: safeMessage ?? `Native ${operation} operation ended because the connection was lost`,
-      metadata: Object.freeze({})
+      metadata
     })
   }
   return contractError('platform.failure', 'platform', `rn-android-boundary.${operation}`, {
     domain: nativeDomain,
     code: nativeCode,
     safeMessage: safeMessage ?? `Native ${operation} operation failed`,
-    metadata: Object.freeze({})
+    metadata
   })
 }
 
@@ -1484,6 +1486,11 @@ function nativeErrorCode(error: NativeProtocolRecord): string {
     return String(coreBluetoothCode)
   }
   return optionalString(error, 1) ?? 'native-error'
+}
+
+function nativeAndroidGattStatus(error: NativeProtocolRecord): number | null {
+  const status = error.fields.find(candidate => candidate.id === 8)?.value
+  return typeof status === 'number' && Number.isSafeInteger(status) ? status : null
 }
 
 function assertHandshakeSelection(handshake: NativeProtocolHandshakeResult): void {

@@ -11,6 +11,7 @@ import com.sfourdrinier.unifiedblemanager.protocol.generated.ConnectionIntents
 import com.sfourdrinier.unifiedblemanager.protocol.generated.RecordKind
 import com.sfourdrinier.unifiedblemanager.radio.OwnedAndroidGattRadio
 import com.sfourdrinier.unifiedblemanager.radio.OwnedRadioTeardownFailure
+import com.sfourdrinier.unifiedblemanager.radio.AndroidGattOperationFailure
 import com.sfourdrinier.unifiedblemanager.radio.BondedPeerSnapshot
 import com.sfourdrinier.unifiedblemanager.radio.nextUuidOccurrence
 import java.util.UUID
@@ -641,7 +642,9 @@ class UnifiedBleProtocolAndroidDispatcher(
           }
           emitSuccess(command, if (enable) "subscribed" else "unsubscribed")
         },
-        onFailure = { error -> emitFailure(command, "subscriptionFailed", error.message ?: "Android CCCD operation failed") }
+        onFailure = { error ->
+          emitGattOperationFailure(command, "subscriptionFailed", error, "Android CCCD operation failed")
+        }
       )
     }
     radioOperationIds[operationKey(command)] = radioOperationId
@@ -856,21 +859,44 @@ class UnifiedBleProtocolAndroidDispatcher(
     radioOperationIds.remove(operationKey(command))
   }
 
-  private fun emitFailure(command: ProtocolWireRecord, code: String, message: String) {
+  private fun emitGattOperationFailure(
+    command: ProtocolWireRecord,
+    fallbackCode: String,
+    error: Throwable,
+    fallbackMessage: String
+  ) {
+    emitFailure(
+      command,
+      androidGattOperationFailureCode(error, fallbackCode),
+      error.message ?: fallbackMessage,
+      androidGattOperationFailureStatus(error)
+    )
+  }
+
+  private fun emitFailure(
+    command: ProtocolWireRecord,
+    code: String,
+    message: String,
+    androidGattStatus: Int? = null
+  ) {
     val bondedPeerCommand = command.requiredString(3) == "enumerateBondedPeers"
     if (bondedPeerCommand) {
       // Keep failure/cancellation/teardown mutually exclusive with a late success.
       if (!claimExactPendingCommand(pendingCommands, operationKey(command), command)) return
     } else if (!isPending(command)) return
-    val error = ProtocolWireRecord(
-      RecordKind.ERROR,
-      mapOf(
+    val errorFields = mutableMapOf<Int, ProtocolWireValue>(
         1 to ProtocolWireValue.StringValue(code),
         2 to ProtocolWireValue.StringValue("android"),
         3 to ProtocolWireValue.StringValue(command.requiredString(3)),
         4 to ProtocolWireValue.StringValue("notRetryable"),
         7 to ProtocolWireValue.StringValue(message)
       )
+    androidGattStatus?.let { status ->
+      errorFields[8] = ProtocolWireValue.SignedIntegerValue(status.toLong())
+    }
+    val error = ProtocolWireRecord(
+      RecordKind.ERROR,
+      errorFields
     )
     val result = ProtocolWireRecord(
       RecordKind.RESULT,
@@ -1210,6 +1236,14 @@ internal fun connectionLostEvent(
     )
   )
 }
+
+internal fun androidGattOperationFailureCode(error: Throwable, fallbackCode: String): String {
+  val gattFailure = error as? AndroidGattOperationFailure
+  return if (gattFailure?.isLinkLoss == true) "connectionLost" else fallbackCode
+}
+
+internal fun androidGattOperationFailureStatus(error: Throwable): Int? =
+  (error as? AndroidGattOperationFailure)?.gattStatus
 
 internal fun databaseChangedEvent(
   nativeHandle: Long,

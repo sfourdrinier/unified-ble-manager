@@ -4,7 +4,10 @@ All notable changes to `unified-ble-manager` are documented here.
 
 ## [Unreleased]
 
-No changes yet.
+- Normalize an Android CCCD operation that terminates with GATT status 19 as
+  `connection.lost` even when it arrives before the native `connectionLost`
+  event. Other CCCD failures remain `platform.failure` and retain their native
+  GATT status.
 
 ## [4.0.15] - 2026-09-02
 
