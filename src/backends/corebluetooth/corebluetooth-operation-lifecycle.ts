@@ -28,12 +28,14 @@ export class CoreBluetoothOperationLifecycle {
     start: () => Promise<Result>,
     onLateSuccess?: (result: Result) => Promise<void>,
     onLateFailure?: () => Promise<void>,
-    serializationKey: string | null = null
+    serializationKey: string | null = null,
+    onCancel?: () => Promise<void>
   ): Promise<Result> {
     this.assertAdmission(options, operation)
     let settled = false
     let deadlineTimer: ReturnType<typeof setTimeout> | null = null
     let abortListener: (() => void) | null = null
+    let cancellationStarted = false
     let resolvePublic: (result: Result) => void = () => undefined
     let rejectPublic: (error: Error) => void = () => undefined
     const publicCompletion = new Promise<Result>((resolve, reject) => {
@@ -50,6 +52,13 @@ export class CoreBluetoothOperationLifecycle {
         abortListener = null
       }
     }
+    const cancelPhysicalOperation = (): void => {
+      if (cancellationStarted || onCancel === undefined) return
+      cancellationStarted = true
+      onCancel().catch(error => {
+        console.error('[CoreBluetoothOperationLifecycle] Physical cancellation failed:', error)
+      })
+    }
     const fail = (error: Error): void => {
       if (settled) {
         return
@@ -58,11 +67,17 @@ export class CoreBluetoothOperationLifecycle {
       clear()
       rejectPublic(error)
     }
-    abortListener = () => fail(contractError('operation.aborted', 'core', operation))
+    abortListener = () => {
+      fail(contractError('operation.aborted', 'core', operation))
+      cancelPhysicalOperation()
+    }
     options.signal?.addEventListener('abort', abortListener, { once: true })
     if (options.deadline !== null) {
       deadlineTimer = setTimeout(
-        () => fail(contractError('operation.timed-out', 'core', operation)),
+        () => {
+          fail(contractError('operation.timed-out', 'core', operation))
+          cancelPhysicalOperation()
+        },
         Math.max(0, options.deadline - this.now())
       )
     }
