@@ -40,6 +40,27 @@ describe('release retry safety', () => {
     expect(workflow.indexOf('LOCAL_TARBALL_SHA256=')).toBeGreaterThan(restore)
   })
 
+  test('retries the registry tarball download after metadata becomes visible', () => {
+    const workflow = read('.github/workflows/publish.yml')
+    const bind = workflow.indexOf('- name: Bind npm tarball to the generated release artifact')
+    const provenance = workflow.indexOf('PROVENANCE_VERIFIED=false', bind)
+    const tarballBinding = workflow.slice(bind, provenance)
+
+    expect(tarballBinding).toContain('REGISTRY_TARBALL_READY=false')
+    expect(tarballBinding).toContain('curl --fail --location --silent --show-error')
+    expect(tarballBinding).toContain('test -s "${REGISTRY_TARBALL_COPY}"')
+    expect(tarballBinding).toContain('REGISTRY_TARBALL_READY=true')
+    expect(tarballBinding).toContain(
+      'npm registry tarball is not downloadable yet (attempt ${ATTEMPT}/120)'
+    )
+    expect(tarballBinding).toContain(
+      'npm registry tarball did not become downloadable within the bounded retry window'
+    )
+    expect(tarballBinding.indexOf('curl --fail')).toBeLessThan(
+      tarballBinding.indexOf('npm registry tarball is not downloadable yet')
+    )
+  })
+
   test('retries npm attestation download after publish instead of failing on a first 404', () => {
     const workflow = read('.github/workflows/publish.yml')
     const bindProvenance = workflow.indexOf('- name: Bind npm provenance to this exact tag commit')
