@@ -4,7 +4,12 @@ All notable changes to `unified-ble-manager` are documented here.
 
 ## [Unreleased]
 
-No changes yet.
+### Fixes
+
+- Let exactly one lifecycle path complete a React Native subscription command
+  when peer disconnection races a late CCCD callback. Android atomically
+  claims the pending command before emitting a failure, while Apple ignores
+  subscription completions from a disconnected connection generation.
 
 ## [4.0.17] - 2026-09-03
 
