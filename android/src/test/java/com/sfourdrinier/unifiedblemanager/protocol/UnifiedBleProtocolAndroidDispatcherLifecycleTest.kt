@@ -19,6 +19,7 @@ import com.sfourdrinier.unifiedblemanager.radio.AndroidCccdSubmissionFailure
 import com.sfourdrinier.unifiedblemanager.radio.AndroidNotificationRollbackRejected
 import com.sfourdrinier.unifiedblemanager.radio.OwnedRadioTeardownFailure
 import com.sfourdrinier.unifiedblemanager.radio.androidGattTerminalResult
+import com.sfourdrinier.unifiedblemanager.radio.shouldAwaitAndroidCccdDisconnectEvidence
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertFalse
@@ -47,6 +48,39 @@ class UnifiedBleProtocolAndroidDispatcherLifecycleTest {
     val ordinaryFailure = classifyAndroidGattOperationFailure("cccd-write", 133)
     assertFalse(ordinaryFailure.isLinkLoss)
     assertEquals(133, ordinaryFailure.gattStatus)
+  }
+
+  @Test
+  fun onlyProvisionalAsyncCccdFailuresAwaitAuthoritativeDisconnectEvidence() {
+    assertTrue(
+      shouldAwaitAndroidCccdDisconnectEvidence(
+        classifyAndroidGattOperationFailure("cccd-write", 133)
+      )
+    )
+    assertFalse(
+      shouldAwaitAndroidCccdDisconnectEvidence(
+        classifyAndroidGattOperationFailure("cccd-write", 19)
+      )
+    )
+    assertFalse(
+      shouldAwaitAndroidCccdDisconnectEvidence(
+        classifyAndroidGattOperationFailure("descriptor-write", 133)
+      )
+    )
+    assertFalse(
+      shouldAwaitAndroidCccdDisconnectEvidence(
+        IllegalStateException("ordinary failure")
+      )
+    )
+
+    val radio = readAndroidSource(
+      "android/src/main/java/com/sfourdrinier/unifiedblemanager/radio/OwnedAndroidGattRadio.kt"
+    )
+    val callback = radio.substring(
+      radio.indexOf("override fun onDescriptorWrite"),
+      radio.indexOf("@Deprecated(\"Deprecated in Java\")")
+    )
+    assertTrue(callback.contains("deferExactCccdFailure(descriptor, pending, failure)"))
   }
 
   @Test

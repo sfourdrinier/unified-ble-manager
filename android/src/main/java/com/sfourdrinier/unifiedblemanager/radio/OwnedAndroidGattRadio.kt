@@ -134,6 +134,20 @@ internal fun classifyAndroidNotificationRegistrationFailure(
   operation: String
 ): AndroidGattOperationFailure = AndroidGattOperationFailure(operation, null, isLinkLoss = true)
 
+/**
+ * Android may deliver an ordinary CCCD callback immediately before the
+ * authoritative status-19 connection callback for the same GATT generation.
+ * Keep only that provisional result pending long enough for lifecycle evidence
+ * already in flight to claim it. Descriptor writes and already-typed link loss
+ * are never delayed.
+ */
+internal fun shouldAwaitAndroidCccdDisconnectEvidence(failure: Throwable): Boolean =
+  failure is AndroidGattOperationFailure &&
+    failure.operation == "cccd-write" &&
+    !failure.isLinkLoss
+
+private const val ANDROID_CCCD_DISCONNECT_EVIDENCE_GRACE_MS = 250L
+
 /** Synchronous API rejection after local CCCD registration, before Android starts ATT work. */
 internal class AndroidCccdSubmissionFailure(
   val platformStatus: Int?
@@ -2464,6 +2478,18 @@ class OwnedAndroidGattRadio(private val context: Context) {
     }
   }
 
+  private fun deferExactCccdFailure(
+    descriptor: BluetoothGattDescriptor,
+    pending: ExactUnitPending,
+    failure: AndroidGattOperationFailure
+  ) {
+    mainHandler.postDelayed({
+      if (exactCccdPending.remove(descriptor, pending)) {
+        completeExactUnit(pending, Result.failure(failure))
+      }
+    }, ANDROID_CCCD_DISCONNECT_EVIDENCE_GRACE_MS)
+  }
+
   private fun completeExactUnitDirect(
     callback: (Result<Unit>) -> Unit,
     done: () -> Unit,
@@ -2567,18 +2593,22 @@ class OwnedAndroidGattRadio(private val context: Context) {
         }
         return
       }
-      exactCccdPending.remove(descriptor)?.let { pending ->
+      exactCccdPending[descriptor]?.let { pending ->
         if (!isCurrentGatt(pending.deviceKeyUpper, gatt, pending.gattGeneration)) {
-          pending.done()
+          if (exactCccdPending.remove(descriptor, pending)) pending.done()
           return@let
         }
         if (status == BluetoothGatt.GATT_SUCCESS) {
-          completeExactUnit(pending, Result.success(Unit))
+          if (exactCccdPending.remove(descriptor, pending)) {
+            completeExactUnit(pending, Result.success(Unit))
+          }
         } else {
-          completeExactUnit(
-            pending,
-            Result.failure(classifyAndroidGattOperationFailure("cccd-write", status))
-          )
+          val failure = classifyAndroidGattOperationFailure("cccd-write", status)
+          if (shouldAwaitAndroidCccdDisconnectEvidence(failure)) {
+            deferExactCccdFailure(descriptor, pending, failure)
+          } else if (exactCccdPending.remove(descriptor, pending)) {
+            completeExactUnit(pending, Result.failure(failure))
+          }
         }
         return
       }
