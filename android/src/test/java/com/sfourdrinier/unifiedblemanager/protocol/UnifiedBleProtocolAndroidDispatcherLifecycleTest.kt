@@ -101,6 +101,46 @@ class UnifiedBleProtocolAndroidDispatcherLifecycleTest {
   }
 
   @Test
+  fun disconnectStatus19PreservesTypedCccdFailureWhileDrainingBothSubscribePaths() {
+    val radio = readAndroidSource(
+      "android/src/main/java/com/sfourdrinier/unifiedblemanager/radio/OwnedAndroidGattRadio.kt"
+    )
+    val pendingDrain = radio.substring(
+      radio.indexOf("private fun failPendingForDevice("),
+      radio.indexOf("private fun findChar(")
+    )
+    val disconnectCallback = radio.substring(
+      radio.indexOf("override fun onConnectionStateChange"),
+      radio.indexOf("override fun onDescriptorWrite")
+    )
+    val nonExactSubscribe = radio.substring(
+      radio.indexOf("private fun setNotify("),
+      radio.indexOf("/** Enables or disables an exact duplicate-safe")
+    )
+    val exactSubscribe = radio.substring(
+      radio.indexOf("private fun setNotifyTarget("),
+      radio.indexOf("private fun rollbackNotifyRegistration")
+    )
+    val descriptorCallback = radio.substring(
+      radio.indexOf("override fun onDescriptorWrite"),
+      radio.indexOf("@Deprecated(\"Deprecated in Java\")")
+    )
+
+    assertTrue(pendingDrain.contains("gattStatus: Int?"))
+    assertTrue(pendingDrain.contains("classifyAndroidGattOperationFailure(\"cccd-write\", gattStatus)"))
+    assertTrue(pendingDrain.contains("if (key.startsWith(\"cccd:\")) failCccd else failUnit"))
+    assertTrue(pendingDrain.contains("if (entry.value.subscriptionEnabled != null) failCccd else failUnit"))
+    assertTrue(nonExactSubscribe.contains("pendingDesc[key]"))
+    assertTrue(exactSubscribe.contains("exactCccdPending.putIfAbsent(cccd, pending)"))
+    assertTrue(descriptorCallback.contains("classifyAndroidGattOperationFailure"))
+    assertTrue(
+      disconnectCallback.contains(
+        "failPendingForDevice(key, \"disconnected status=\$status\", status)"
+      )
+    )
+  }
+
+  @Test
   fun bondedPeerAdapterReadinessReturnsTypedFailuresInsteadOfAnEmptySuccess() {
     assertTrue(
       bondedPeerAdapterReadiness(

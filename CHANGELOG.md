@@ -4,7 +4,12 @@ All notable changes to `unified-ble-manager` are documented here.
 
 ## [Unreleased]
 
-No changes yet.
+### Fixes
+
+- Preserve Android GATT status 19 when a peer disconnects while an exact or
+  non-exact CCCD subscription is awaiting `onDescriptorWrite`. The pending
+  subscription now reports typed `connection.lost` instead of generic
+  `platform.failure`; asynchronous CCCD status 133 handling is unchanged.
 
 ## [4.0.20] - 2026-09-03
 
