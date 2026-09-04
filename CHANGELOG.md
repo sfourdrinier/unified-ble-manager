@@ -4,6 +4,10 @@ All notable changes to `unified-ble-manager` are documented here.
 
 ## [Unreleased]
 
+No changes yet.
+
+## [4.0.18] - 2026-09-03
+
 ### Fixes
 
 - Let exactly one lifecycle path complete a React Native subscription command
