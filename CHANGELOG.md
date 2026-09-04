@@ -14,6 +14,8 @@ No changes yet.
   non-exact CCCD subscription is awaiting `onDescriptorWrite`. The pending
   subscription now reports typed `connection.lost` instead of generic
   `platform.failure`; asynchronous CCCD status 133 handling is unchanged.
+- Preserve that typed primary link-loss result when exact CCCD rollback also
+  fails; the cleanup failure remains separately reported and retryable.
 
 ## [4.0.20] - 2026-09-03
 

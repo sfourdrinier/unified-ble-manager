@@ -14,6 +14,9 @@ import com.sfourdrinier.unifiedblemanager.radio.bondedPeerAdapterReadiness
 import com.sfourdrinier.unifiedblemanager.radio.requiresImmediateGattTeardownOnAdapterState
 import com.sfourdrinier.unifiedblemanager.radio.classifyAndroidGattOperationFailure
 import com.sfourdrinier.unifiedblemanager.radio.classifyAndroidNotificationRegistrationFailure
+import com.sfourdrinier.unifiedblemanager.radio.AndroidGattOperationFailure
+import com.sfourdrinier.unifiedblemanager.radio.OwnedRadioTeardownFailure
+import com.sfourdrinier.unifiedblemanager.radio.androidGattTerminalResult
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertFalse
@@ -138,6 +141,46 @@ class UnifiedBleProtocolAndroidDispatcherLifecycleTest {
         "failPendingForDevice(key, \"disconnected status=\$status\", status)"
       )
     )
+  }
+
+  @Test
+  fun cccdRollbackFailureDoesNotReplaceThePrimaryTypedGattFailure() {
+    val radio = readAndroidSource(
+      "android/src/main/java/com/sfourdrinier/unifiedblemanager/radio/OwnedAndroidGattRadio.kt"
+    )
+    val completion = radio.substring(
+      radio.indexOf("private fun completeExactUnit("),
+      radio.indexOf("private fun rollbackNotifyRegistration")
+    )
+
+    assertTrue(completion.contains("androidGattTerminalResult(result, rollbackFailure)"))
+    assertTrue(completion.contains("registerRetryableCleanup(rollbackFailure.operation)"))
+    assertTrue(completion.contains("reportCleanupFailure(rollbackFailure)"))
+  }
+
+  @Test
+  fun cccdRollbackFailurePreservesTypedPrimaryAndKeepsSuccessfulPrimaryCleanupFailureBehavior() {
+    val primary = classifyAndroidGattOperationFailure("cccd-write", 19)
+    val rollbackFailure = OwnedRadioTeardownFailure(
+      "cccdRollback:AA:BB",
+      IllegalStateException("link is gone")
+    )
+
+    val typedFailure = androidGattTerminalResult(Result.failure<Unit>(primary), rollbackFailure)
+    val typedError = typedFailure.exceptionOrNull()
+    assertTrue(typedError === primary)
+    assertTrue(typedError is AndroidGattOperationFailure)
+    if (typedError !is AndroidGattOperationFailure) throw AssertionError("typed primary was flattened")
+    assertTrue(typedError.isLinkLoss)
+
+    val successfulPrimary = androidGattTerminalResult(Result.success(Unit), rollbackFailure)
+    assertTrue(successfulPrimary.isFailure)
+    assertTrue(successfulPrimary.exceptionOrNull() is IllegalStateException)
+    assertTrue(successfulPrimary.exceptionOrNull()?.message?.contains("CCCD rollback failed") == true)
+
+    val ordinaryPrimary = IllegalStateException("ordinary CCCD failure")
+    val ordinaryFailure = androidGattTerminalResult(Result.failure<Unit>(ordinaryPrimary), rollbackFailure)
+    assertTrue(ordinaryFailure.exceptionOrNull() === ordinaryPrimary)
   }
 
   @Test

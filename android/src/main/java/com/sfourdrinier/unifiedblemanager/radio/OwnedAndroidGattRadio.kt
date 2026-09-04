@@ -134,6 +134,20 @@ internal fun classifyAndroidNotificationRegistrationFailure(
   operation: String
 ): AndroidGattOperationFailure = AndroidGattOperationFailure(operation, null, isLinkLoss = true)
 
+internal fun androidGattTerminalResult(
+  result: Result<Unit>,
+  rollbackFailure: OwnedRadioTeardownFailure?
+): Result<Unit> {
+  if (rollbackFailure == null || result.isFailure) return result
+  return Result.failure(
+    IllegalStateException(
+      "CCCD operation failed; CCCD rollback failed: " +
+        (rollbackFailure.throwable.message ?: "unknown error"),
+      rollbackFailure.throwable
+    )
+  )
+}
+
 /** Runtime adapter state derived from Android hardware and granted permissions. */
 internal data class OwnedRadioAdapterProtocolState(
   val availability: String,
@@ -2363,17 +2377,7 @@ class OwnedAndroidGattRadio(private val context: Context) {
       pending.done()
       return
     }
-    val terminalResult = if (rollbackFailure == null) {
-      result
-    } else {
-      Result.failure(
-        IllegalStateException(
-          "${result.exceptionOrNull()?.message ?: "CCCD operation failed"}; " +
-            "CCCD rollback failed: ${rollbackFailure.throwable.message ?: "unknown error"}",
-          result.exceptionOrNull() ?: rollbackFailure.throwable
-        )
-      )
-    }
+    val terminalResult = androidGattTerminalResult(result, rollbackFailure)
     if (terminalResult.isSuccess && !pending.token.isPubliclySettled()) {
       pending.subscriptionEnabled?.let { enabled ->
         pending.subscriptionCharacteristic?.let { characteristic ->
