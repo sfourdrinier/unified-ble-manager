@@ -64,20 +64,40 @@ class UnifiedBleProtocolAndroidDispatcherLifecycleTest {
   }
 
   @Test
-  fun synchronousNotificationRegistrationFailureIsTypedAsLinkLossWhenAndroidReportsDisconnected() {
-    val disconnected = classifyAndroidNotificationRegistrationFailure(
-      operation = "notification-registration",
-      connected = false
+  fun synchronousNotificationRegistrationFailureIsTypedAsLinkLossDespiteStaleManagerState() {
+    val failure = classifyAndroidNotificationRegistrationFailure(
+      operation = "notification-registration"
     )
-    assertEquals("connectionLost", androidGattOperationFailureCode(disconnected, "subscriptionFailed"))
-    assertNull(androidGattOperationFailureStatus(disconnected))
+    assertEquals("connectionLost", androidGattOperationFailureCode(failure, "subscriptionFailed"))
+    assertNull(androidGattOperationFailureStatus(failure))
 
-    val connected = classifyAndroidNotificationRegistrationFailure(
-      operation = "notification-registration",
-      connected = true
+    val ordinaryCccdFailure = classifyAndroidGattOperationFailure("cccd-write", 133)
+    assertEquals(
+      "subscriptionFailed",
+      androidGattOperationFailureCode(ordinaryCccdFailure, "subscriptionFailed")
     )
-    assertEquals("subscriptionFailed", androidGattOperationFailureCode(connected, "subscriptionFailed"))
-    assertNull(androidGattOperationFailureStatus(connected))
+    assertEquals(133, androidGattOperationFailureStatus(ordinaryCccdFailure))
+  }
+
+  @Test
+  fun exactAndNonExactNotificationRegistrationFailuresShareTheTypedLinkLossClassifier() {
+    val radio = readAndroidSource(
+      "android/src/main/java/com/sfourdrinier/unifiedblemanager/radio/OwnedAndroidGattRadio.kt"
+    )
+    val nonExact = radio.substring(
+      radio.indexOf("private fun setNotify("),
+      radio.indexOf("/** Enables or disables an exact duplicate-safe")
+    )
+    val exact = radio.substring(
+      radio.indexOf("private fun setNotifyTarget("),
+      radio.indexOf("private fun rollbackNotifyRegistration")
+    )
+
+    assertTrue(nonExact.contains("classifyAndroidNotificationRegistrationFailure("))
+    assertTrue(exact.contains("classifyAndroidNotificationRegistrationFailure("))
+    assertFalse(nonExact.contains("isConnected("))
+    assertFalse(exact.contains("isConnected("))
+    assertFalse(radio.contains("fun isConnected("))
   }
 
   @Test

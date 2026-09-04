@@ -131,13 +131,8 @@ internal fun classifyAndroidGattOperationFailure(
 ): AndroidGattOperationFailure = AndroidGattOperationFailure(operation, gattStatus)
 
 internal fun classifyAndroidNotificationRegistrationFailure(
-  operation: String,
-  connected: Boolean
-): Throwable = if (connected) {
-  IllegalStateException("$operation failed")
-} else {
-  AndroidGattOperationFailure(operation, null, isLinkLoss = true)
-}
+  operation: String
+): AndroidGattOperationFailure = AndroidGattOperationFailure(operation, null, isLinkLoss = true)
 
 /** Runtime adapter state derived from Android hardware and granted permissions. */
 internal data class OwnedRadioAdapterProtocolState(
@@ -1047,11 +1042,6 @@ class OwnedAndroidGattRadio(private val context: Context) {
     return failures
   }
 
-  fun isConnected(deviceId: String): Boolean {
-    val device = adapter?.getRemoteDevice(deviceId) ?: return false
-    return bluetoothManager.getConnectionState(device, BluetoothProfile.GATT) == BluetoothProfile.STATE_CONNECTED
-  }
-
   fun discover(deviceId: String, onDone: (Boolean) -> Unit): Long {
     return enqueue(
       deviceId,
@@ -1565,12 +1555,10 @@ class OwnedAndroidGattRadio(private val context: Context) {
         return@enqueue
       }
       if (!gatt.setCharacteristicNotification(ch, enable)) {
-        val connected = runCatching { isConnected(deviceId) }.getOrDefault(true)
         onResult(
           Result.failure(
             classifyAndroidNotificationRegistrationFailure(
-              "setCharacteristicNotification",
-              connected
+              "setCharacteristicNotification"
             )
           )
         )
@@ -1683,14 +1671,12 @@ class OwnedAndroidGattRadio(private val context: Context) {
         return@enqueue
       }
       if (!gatt.setCharacteristicNotification(characteristic, enable)) {
-        val connected = runCatching { isConnected(deviceId) }.getOrDefault(true)
         completeExactUnitDirect(
           onResult,
           done,
           Result.failure(
             classifyAndroidNotificationRegistrationFailure(
-              "setCharacteristicNotification",
-              connected
+              "setCharacteristicNotification"
             )
           ),
           token

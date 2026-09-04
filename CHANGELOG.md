@@ -6,6 +6,18 @@ All notable changes to `unified-ble-manager` are documented here.
 
 No changes yet.
 
+## [4.0.20] - 2026-09-03
+
+### Fixes
+
+- Treat Android's synchronous `setCharacteristicNotification(...) == false`
+  result as typed `connection.lost` without consulting
+  `BluetoothManager.getConnectionState`. Android can reject registration after
+  the GATT link is gone while that manager query still reports connected.
+  Exact and non-exact notification paths now share this behavior; asynchronous
+  CCCD failures retain their native status and remain ordinary subscription
+  failures unless Android reports link loss.
+
 ## [4.0.19] - 2026-09-03
 
 ### Fixes
