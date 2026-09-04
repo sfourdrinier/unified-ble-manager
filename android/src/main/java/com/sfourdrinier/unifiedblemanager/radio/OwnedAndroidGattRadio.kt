@@ -134,10 +134,21 @@ internal fun classifyAndroidNotificationRegistrationFailure(
   operation: String
 ): AndroidGattOperationFailure = AndroidGattOperationFailure(operation, null, isLinkLoss = true)
 
+/** Synchronous API rejection after local CCCD registration, before Android starts ATT work. */
+internal class AndroidCccdSubmissionFailure(
+  val platformStatus: Int?
+) : IllegalStateException(
+  if (platformStatus == null) "writeDescriptor failed to start"
+  else "writeDescriptor failed to start status=$platformStatus"
+)
+
 internal fun androidGattTerminalResult(
   result: Result<Unit>,
   rollbackFailure: OwnedRadioTeardownFailure?
 ): Result<Unit> {
+  if (rollbackFailure != null && result.exceptionOrNull() is AndroidCccdSubmissionFailure) {
+    return Result.failure(classifyAndroidNotificationRegistrationFailure("cccd-write"))
+  }
   if (rollbackFailure == null || result.isFailure) return result
   return Result.failure(
     IllegalStateException(
@@ -1768,7 +1779,7 @@ class OwnedAndroidGattRadio(private val context: Context) {
           if (exactCccdPending.remove(cccd, pending)) {
             completeExactUnit(
               pending,
-              Result.failure(IllegalStateException("writeDescriptor failed to start status=$status"))
+              Result.failure(AndroidCccdSubmissionFailure(status))
             )
           }
         }
@@ -1781,7 +1792,7 @@ class OwnedAndroidGattRadio(private val context: Context) {
           if (exactCccdPending.remove(cccd, pending)) {
             completeExactUnit(
               pending,
-              Result.failure(IllegalStateException("writeDescriptor failed to start"))
+              Result.failure(AndroidCccdSubmissionFailure(null))
             )
           }
         }

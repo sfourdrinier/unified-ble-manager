@@ -16,6 +16,9 @@ No changes yet.
   `platform.failure`; asynchronous CCCD status 133 handling is unchanged.
 - Preserve that typed primary link-loss result when exact CCCD rollback also
   fails; the cleanup failure remains separately reported and retryable.
+- Classify an exact synchronous CCCD descriptor-submission rejection as link
+  loss only when the subsequent local-registration rollback is also rejected;
+  genuine subscription rejections remain ordinary failures.
 
 ## [4.0.20] - 2026-09-03
 

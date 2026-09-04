@@ -15,6 +15,7 @@ import com.sfourdrinier.unifiedblemanager.radio.requiresImmediateGattTeardownOnA
 import com.sfourdrinier.unifiedblemanager.radio.classifyAndroidGattOperationFailure
 import com.sfourdrinier.unifiedblemanager.radio.classifyAndroidNotificationRegistrationFailure
 import com.sfourdrinier.unifiedblemanager.radio.AndroidGattOperationFailure
+import com.sfourdrinier.unifiedblemanager.radio.AndroidCccdSubmissionFailure
 import com.sfourdrinier.unifiedblemanager.radio.OwnedRadioTeardownFailure
 import com.sfourdrinier.unifiedblemanager.radio.androidGattTerminalResult
 import org.junit.Assert.assertEquals
@@ -181,6 +182,67 @@ class UnifiedBleProtocolAndroidDispatcherLifecycleTest {
     val ordinaryPrimary = IllegalStateException("ordinary CCCD failure")
     val ordinaryFailure = androidGattTerminalResult(Result.failure<Unit>(ordinaryPrimary), rollbackFailure)
     assertTrue(ordinaryFailure.exceptionOrNull() === ordinaryPrimary)
+
+    val synchronousSubmission = AndroidCccdSubmissionFailure(133)
+    assertEquals(133, synchronousSubmission.platformStatus)
+    val linkLossAfterSubmission = androidGattTerminalResult(
+      Result.failure<Unit>(synchronousSubmission),
+      rollbackFailure
+    )
+    val linkLossError = linkLossAfterSubmission.exceptionOrNull()
+    assertTrue(linkLossError is AndroidGattOperationFailure)
+    if (linkLossError !is AndroidGattOperationFailure) throw AssertionError("submission failure was not classified")
+    assertTrue(linkLossError.isLinkLoss)
+    assertTrue(
+      androidGattTerminalResult(Result.failure(synchronousSubmission), null).exceptionOrNull() ===
+        synchronousSubmission
+    )
+    val legacySubmission = AndroidCccdSubmissionFailure(null)
+    assertNull(legacySubmission.platformStatus)
+  }
+
+  @Test
+  fun exactCccdSubmissionRejectionIsMarkedBeforeRollbackClassification() {
+    val radio = readAndroidSource(
+      "android/src/main/java/com/sfourdrinier/unifiedblemanager/radio/OwnedAndroidGattRadio.kt"
+    )
+    val exactSubscribe = radio.substring(
+      radio.indexOf("private fun setNotifyTarget("),
+      radio.indexOf("private fun rollbackNotifyRegistration")
+    )
+    val completion = radio.substring(
+      radio.indexOf("private fun completeExactUnit("),
+      radio.indexOf("private fun rollbackNotifyRegistration")
+    )
+
+    assertTrue(exactSubscribe.contains("AndroidCccdSubmissionFailure"))
+    assertTrue(exactSubscribe.contains("AndroidCccdSubmissionFailure(status)"))
+    assertTrue(exactSubscribe.contains("AndroidCccdSubmissionFailure(null)"))
+    assertTrue(completion.contains("androidGattTerminalResult(result, rollbackFailure)"))
+  }
+
+  @Test
+  fun publicSubscribeUsesExactNotificationPathWhileLegacyPrivatePathStaysOrdinary() {
+    val dispatcher = readAndroidSource(
+      "android/src/main/java/com/sfourdrinier/unifiedblemanager/protocol/UnifiedBleProtocolAndroidDispatcher.kt"
+    )
+    val subscribe = dispatcher.substring(
+      dispatcher.indexOf("private fun subscribe(command: ProtocolWireRecord, enable: Boolean)"),
+      dispatcher.indexOf("private fun destroy(command: ProtocolWireRecord)")
+    )
+    assertTrue(subscribe.contains("radio.setNotifyExact("))
+    assertFalse(subscribe.contains("radio.setNotify("))
+
+    val radio = readAndroidSource(
+      "android/src/main/java/com/sfourdrinier/unifiedblemanager/radio/OwnedAndroidGattRadio.kt"
+    )
+    val legacy = radio.substring(
+      radio.indexOf("private fun setNotify("),
+      radio.indexOf("/** Enables or disables an exact duplicate-safe")
+    )
+    assertTrue(legacy.contains("IllegalStateException(\"writeDescriptor failed to start status=\$status\")"))
+    assertTrue(legacy.contains("IllegalStateException(\"writeDescriptor failed to start\")"))
+    assertFalse(legacy.contains("AndroidCccdSubmissionFailure"))
   }
 
   @Test
