@@ -1400,6 +1400,11 @@ void dispatchCommand(
     const auto subscription = requiredString(command, 7U);
     const auto subscriptionIdentifier = [NSString stringWithUTF8String:subscription.c_str()];
     void (^completion)(NSError*) = ^(NSError* error) {
+      // CoreBluetooth can complete a CCCD write after didDisconnect. The
+      // disconnect path removes this connection generation before publishing
+      // its event, so suppress any completion that is now stale and let the
+      // boundary's connectionLost terminal own the pending operation.
+      if (!currentConnectionGenerationMatches(state, endpoint.peer, endpoint.connectionGeneration)) return;
       if (error == nil) static_cast<void>(success(state, command));
       else fail(state, command, "subscriptionFailed", error);
     };

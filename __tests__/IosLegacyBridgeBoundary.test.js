@@ -77,4 +77,22 @@ describe('iOS Native Protocol 4.0 source boundary', () => {
       expect.objectContaining({ UnifiedBleProtocolControl: 'UnifiedBleProtocolControl' })
     )
   })
+
+  test('quarantines late CoreBluetooth CCCD completions after link loss', () => {
+    const execution = fs.readFileSync(
+      path.join(root, 'ios/NativeProtocol/UnifiedBleProtocolAppleExecution.mm'),
+      'utf8'
+    )
+    const subscribeStart = execution.indexOf(
+      'if (kind == "subscribe" || kind == "unsubscribe")',
+      execution.indexOf('void dispatchCommand(')
+    )
+    const subscribe = execution.slice(
+      subscribeStart,
+      execution.indexOf('  fail(state, command, "unsupportedCommand", nil);', subscribeStart)
+    )
+    const guard = 'if (!currentConnectionGenerationMatches(state, endpoint.peer, endpoint.connectionGeneration)) return;'
+    expect(subscribe).toContain(guard)
+    expect(subscribe.indexOf(guard)).toBeLessThan(subscribe.indexOf('if (error == nil)'))
+  })
 })

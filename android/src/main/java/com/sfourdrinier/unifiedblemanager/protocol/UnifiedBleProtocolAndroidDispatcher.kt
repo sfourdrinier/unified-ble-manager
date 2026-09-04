@@ -879,11 +879,10 @@ class UnifiedBleProtocolAndroidDispatcher(
     message: String,
     androidGattStatus: Int? = null
   ) {
-    val bondedPeerCommand = command.requiredString(3) == "enumerateBondedPeers"
-    if (bondedPeerCommand) {
-      // Keep failure/cancellation/teardown mutually exclusive with a late success.
-      if (!claimExactPendingCommand(pendingCommands, operationKey(command), command)) return
-    } else if (!isPending(command)) return
+    // Claim before constructing or emitting the terminal. Link loss can race a
+    // native CCCD callback; a check followed by a later claim lets both paths
+    // publish a result for the same operation.
+    if (!claimExactPendingCommand(pendingCommands, operationKey(command), command)) return
     val errorFields = mutableMapOf<Int, ProtocolWireValue>(
         1 to ProtocolWireValue.StringValue(code),
         2 to ProtocolWireValue.StringValue("android"),
@@ -908,7 +907,6 @@ class UnifiedBleProtocolAndroidDispatcher(
       )
     )
     UnifiedBleProtocolJsiBinding.emitRecord(nativeHandle, ProtocolWireEncoder.encode(result))
-    if (!bondedPeerCommand) claimExactPendingCommand(pendingCommands, operationKey(command), command)
     radioOperationIds.remove(operationKey(command))
   }
 

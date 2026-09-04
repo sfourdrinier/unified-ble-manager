@@ -307,6 +307,25 @@ int runAppleNativeProtocolExecutionHarness() {
     const auto state = std::make_shared<AppleNativeProtocolExecution::State>(control, nullptr);
     initializeAttachment(state, invoker, sink);
 
+    // The CoreBluetooth CCCD completion guard must observe the same generation
+    // transition as receiveDisconnect: once the connection is removed, a late
+    // subscribe callback is stale and cannot publish subscriptionFailed.
+    const auto generationConnection = connectCommand(3U, "peer-generation-guard");
+    {
+      std::scoped_lock lock(state->mutex);
+      state->connections.emplace("peer-generation-guard", *harnessRecordField(generationConnection, 10U));
+    }
+    if (!require(
+            currentConnectionGenerationMatches(state, "peer-generation-guard", "connection-generation-1"),
+            "Apple current connection generation guard rejected a live peer")) return 1;
+    {
+      std::scoped_lock lock(state->mutex);
+      state->connections.erase("peer-generation-guard");
+    }
+    if (!require(
+            !currentConnectionGenerationMatches(state, "peer-generation-guard", "connection-generation-1"),
+            "Apple current connection generation guard accepted a disconnected peer")) return 1;
+
     const auto first = command(1U);
     const auto second = command(2U);
     control->registerCommand(first, true);
