@@ -13,6 +13,7 @@ import com.sfourdrinier.unifiedblemanager.radio.normalizeBondedPeerSnapshots
 import com.sfourdrinier.unifiedblemanager.radio.bondedPeerAdapterReadiness
 import com.sfourdrinier.unifiedblemanager.radio.requiresImmediateGattTeardownOnAdapterState
 import com.sfourdrinier.unifiedblemanager.radio.classifyAndroidGattOperationFailure
+import com.sfourdrinier.unifiedblemanager.radio.classifyAndroidNotificationRegistrationFailure
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertFalse
@@ -60,6 +61,23 @@ class UnifiedBleProtocolAndroidDispatcherLifecycleTest {
       androidGattOperationFailureCode(IllegalStateException("onDescriptorWrite status=19"), "subscriptionFailed")
     )
     assertNull(androidGattOperationFailureStatus(IllegalStateException("onDescriptorWrite status=19")))
+  }
+
+  @Test
+  fun synchronousNotificationRegistrationFailureIsTypedAsLinkLossWhenAndroidReportsDisconnected() {
+    val disconnected = classifyAndroidNotificationRegistrationFailure(
+      operation = "notification-registration",
+      connected = false
+    )
+    assertEquals("connectionLost", androidGattOperationFailureCode(disconnected, "subscriptionFailed"))
+    assertNull(androidGattOperationFailureStatus(disconnected))
+
+    val connected = classifyAndroidNotificationRegistrationFailure(
+      operation = "notification-registration",
+      connected = true
+    )
+    assertEquals("subscriptionFailed", androidGattOperationFailureCode(connected, "subscriptionFailed"))
+    assertNull(androidGattOperationFailureStatus(connected))
   }
 
   @Test

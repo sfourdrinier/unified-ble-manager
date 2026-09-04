@@ -117,11 +117,11 @@ internal class OwnedAndroidSubscriptionOwnership<K> {
  */
 internal class AndroidGattOperationFailure(
   val operation: String,
-  val gattStatus: Int
-) : IllegalStateException("$operation status=$gattStatus") {
-  val isLinkLoss: Boolean
-    get() = gattStatus == ANDROID_GATT_LINK_LOSS_STATUS
-}
+  val gattStatus: Int?,
+  val isLinkLoss: Boolean = gattStatus == ANDROID_GATT_LINK_LOSS_STATUS
+) : IllegalStateException(
+  if (gattStatus == null) "$operation failed because the GATT link is unavailable" else "$operation status=$gattStatus"
+)
 
 internal const val ANDROID_GATT_LINK_LOSS_STATUS = 19
 
@@ -129,6 +129,15 @@ internal fun classifyAndroidGattOperationFailure(
   operation: String,
   gattStatus: Int
 ): AndroidGattOperationFailure = AndroidGattOperationFailure(operation, gattStatus)
+
+internal fun classifyAndroidNotificationRegistrationFailure(
+  operation: String,
+  connected: Boolean
+): Throwable = if (connected) {
+  IllegalStateException("$operation failed")
+} else {
+  AndroidGattOperationFailure(operation, null, isLinkLoss = true)
+}
 
 /** Runtime adapter state derived from Android hardware and granted permissions. */
 internal data class OwnedRadioAdapterProtocolState(
@@ -1556,7 +1565,15 @@ class OwnedAndroidGattRadio(private val context: Context) {
         return@enqueue
       }
       if (!gatt.setCharacteristicNotification(ch, enable)) {
-        onResult(Result.failure(IllegalStateException("setCharacteristicNotification failed")))
+        val connected = runCatching { isConnected(deviceId) }.getOrDefault(true)
+        onResult(
+          Result.failure(
+            classifyAndroidNotificationRegistrationFailure(
+              "setCharacteristicNotification",
+              connected
+            )
+          )
+        )
         done()
         return@enqueue
       }
@@ -1666,10 +1683,16 @@ class OwnedAndroidGattRadio(private val context: Context) {
         return@enqueue
       }
       if (!gatt.setCharacteristicNotification(characteristic, enable)) {
+        val connected = runCatching { isConnected(deviceId) }.getOrDefault(true)
         completeExactUnitDirect(
           onResult,
           done,
-          Result.failure(IllegalStateException("setCharacteristicNotification failed")),
+          Result.failure(
+            classifyAndroidNotificationRegistrationFailure(
+              "setCharacteristicNotification",
+              connected
+            )
+          ),
           token
         )
         return@enqueue
