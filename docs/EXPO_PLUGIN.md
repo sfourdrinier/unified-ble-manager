@@ -7,7 +7,7 @@ start a radio, request runtime permissions during prebuild, or prove physical
 radio/restoration reliability. Expo Go is not a supported BLE execution
 environment because it cannot contain this native module.
 
-Use the v2 plugin options in this `4.0.18` source. Those options match
+Use the v2 plugin options in this `4.0.19` source. Those options match
 the schema introduced at `4.0.0-rc.4`. Expo Go cannot load this native module.
 
 ## Installation and development build
