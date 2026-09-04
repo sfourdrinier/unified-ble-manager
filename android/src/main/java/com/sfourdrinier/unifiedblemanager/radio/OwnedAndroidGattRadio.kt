@@ -134,6 +134,52 @@ internal fun classifyAndroidNotificationRegistrationFailure(
   operation: String
 ): AndroidGattOperationFailure = AndroidGattOperationFailure(operation, null, isLinkLoss = true)
 
+/** Synchronous API rejection after local CCCD registration, before Android starts ATT work. */
+internal class AndroidCccdSubmissionFailure(
+  val platformStatus: Int?
+) : IllegalStateException(
+  if (platformStatus == null) "writeDescriptor failed to start"
+  else "writeDescriptor failed to start status=$platformStatus"
+)
+
+/** Android rejected removal of the exact local notification registration. */
+internal class AndroidNotificationRollbackRejected :
+  IllegalStateException("setCharacteristicNotification rollback was rejected")
+
+internal fun androidGattTerminalResult(
+  result: Result<Unit>,
+  rollbackFailure: OwnedRadioTeardownFailure?
+): Result<Unit> {
+  val primaryFailure = result.exceptionOrNull()
+  val registrationRollbackRejected =
+    rollbackFailure?.throwable is AndroidNotificationRollbackRejected
+  if (registrationRollbackRejected && primaryFailure is AndroidCccdSubmissionFailure) {
+    return Result.failure(classifyAndroidNotificationRegistrationFailure("cccd-write"))
+  }
+  if (
+    registrationRollbackRejected &&
+    primaryFailure is AndroidGattOperationFailure &&
+    primaryFailure.operation == "cccd-write" &&
+    !primaryFailure.isLinkLoss
+  ) {
+    return Result.failure(
+      AndroidGattOperationFailure(
+        primaryFailure.operation,
+        primaryFailure.gattStatus,
+        isLinkLoss = true
+      )
+    )
+  }
+  if (rollbackFailure == null || result.isFailure) return result
+  return Result.failure(
+    IllegalStateException(
+      "CCCD operation failed; CCCD rollback failed: " +
+        (rollbackFailure.throwable.message ?: "unknown error"),
+      rollbackFailure.throwable
+    )
+  )
+}
+
 /** Runtime adapter state derived from Android hardware and granted permissions. */
 internal data class OwnedRadioAdapterProtocolState(
   val availability: String,
@@ -1754,7 +1800,7 @@ class OwnedAndroidGattRadio(private val context: Context) {
           if (exactCccdPending.remove(cccd, pending)) {
             completeExactUnit(
               pending,
-              Result.failure(IllegalStateException("writeDescriptor failed to start status=$status"))
+              Result.failure(AndroidCccdSubmissionFailure(status))
             )
           }
         }
@@ -1767,7 +1813,7 @@ class OwnedAndroidGattRadio(private val context: Context) {
           if (exactCccdPending.remove(cccd, pending)) {
             completeExactUnit(
               pending,
-              Result.failure(IllegalStateException("writeDescriptor failed to start"))
+              Result.failure(AndroidCccdSubmissionFailure(null))
             )
           }
         }
@@ -2138,12 +2184,24 @@ class OwnedAndroidGattRadio(private val context: Context) {
       }
   }
 
-  private fun failPendingForDevice(deviceKeyUpper: String, reason: String) {
+  private fun failPendingForDevice(
+    deviceKeyUpper: String,
+    reason: String,
+    gattStatus: Int? = null
+  ) {
     effectiveMtuByDevice.remove(deviceKeyUpper)
     deviceQueues.remove(deviceKeyUpper)?.clear(IllegalStateException(reason))
     val failBytes = Result.failure<ByteArray?>(IllegalStateException(reason))
     val failInt = Result.failure<Int>(IllegalStateException(reason))
     val failUnit = Result.failure<Unit>(IllegalStateException(reason))
+    // A peer link-loss callback can win the race with onDescriptorWrite. Keep
+    // that exact Android status on pending CCCD work so the protocol boundary
+    // reports connectionLost instead of flattening the race to platformFailure.
+    val failCccd: Result<Unit> = if (gattStatus == ANDROID_GATT_LINK_LOSS_STATUS) {
+      Result.failure(classifyAndroidGattOperationFailure("cccd-write", gattStatus))
+    } else {
+      failUnit
+    }
     pending.keys
       .filter { key ->
         keyBelongsToDevice(key, "discover", deviceKeyUpper) ||
@@ -2166,7 +2224,9 @@ class OwnedAndroidGattRadio(private val context: Context) {
           keyBelongsToDevice(key, "descWrite", deviceKeyUpper)
       }
       .toList()
-      .forEach { key -> pendingDesc.remove(key)?.invoke(failUnit) }
+      .forEach { key ->
+        pendingDesc.remove(key)?.invoke(if (key.startsWith("cccd:")) failCccd else failUnit)
+      }
     pendingDescRead.keys
       .filter { key -> keyBelongsToDevice(key, "descRead", deviceKeyUpper) }
       .toList()
@@ -2194,7 +2254,10 @@ class OwnedAndroidGattRadio(private val context: Context) {
       .filter { it.value.deviceKeyUpper == deviceKeyUpper }
       .forEach { entry ->
         if (exactCccdPending.remove(entry.key, entry.value)) {
-          completeExactUnit(entry.value, failUnit)
+          completeExactUnit(
+            entry.value,
+            if (entry.value.subscriptionEnabled != null) failCccd else failUnit
+          )
         }
       }
     exactDescriptorReadPending.entries
@@ -2346,17 +2409,7 @@ class OwnedAndroidGattRadio(private val context: Context) {
       pending.done()
       return
     }
-    val terminalResult = if (rollbackFailure == null) {
-      result
-    } else {
-      Result.failure(
-        IllegalStateException(
-          "${result.exceptionOrNull()?.message ?: "CCCD operation failed"}; " +
-            "CCCD rollback failed: ${rollbackFailure.throwable.message ?: "unknown error"}",
-          result.exceptionOrNull() ?: rollbackFailure.throwable
-        )
-      )
-    }
+    val terminalResult = androidGattTerminalResult(result, rollbackFailure)
     if (terminalResult.isSuccess && !pending.token.isPubliclySettled()) {
       pending.subscriptionEnabled?.let { enabled ->
         pending.subscriptionCharacteristic?.let { characteristic ->
@@ -2403,7 +2456,7 @@ class OwnedAndroidGattRadio(private val context: Context) {
       } else {
         OwnedRadioTeardownFailure(
           "cccdRollback:$deviceKeyUpper:generation=$generation",
-          IllegalStateException("setCharacteristicNotification rollback was rejected")
+          AndroidNotificationRollbackRejected()
         )
       }
     } catch (throwable: Throwable) {
@@ -2477,7 +2530,7 @@ class OwnedAndroidGattRadio(private val context: Context) {
         // Always pass gatt status: status 133 etc. means failed connect, not clean disconnect.
         // R3-F003: close() only after STATE_DISCONNECTED (not from disconnect()/connect prior).
         dispatchConnectionState(id, false, status)
-        failPendingForDevice(key, "disconnected status=$status")
+        failPendingForDevice(key, "disconnected status=$status", status)
         val teardownFailure = completeGattTeardown(key, gatt, generation)
         pendingDisconnectCallbacks.remove(key)?.invoke(teardownFailure)
         if (teardownFailure != null) return

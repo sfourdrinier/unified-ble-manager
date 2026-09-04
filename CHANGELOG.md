@@ -6,6 +6,25 @@ All notable changes to `unified-ble-manager` are documented here.
 
 No changes yet.
 
+## [4.0.21] - 2026-09-04
+
+### Fixes
+
+- Preserve Android GATT status 19 when a peer disconnects while an exact or
+  non-exact CCCD subscription is awaiting `onDescriptorWrite`. The pending
+  subscription now reports typed `connection.lost` instead of generic
+  `platform.failure`; asynchronous CCCD status 133 remains an ordinary failure
+  when local-registration rollback succeeds.
+- Preserve that typed primary link-loss result when exact CCCD rollback also
+  fails; the cleanup failure remains separately reported and retryable.
+- Classify an exact synchronous CCCD descriptor-submission rejection as link
+  loss only when the subsequent local-registration rollback is also rejected;
+  genuine subscription rejections remain ordinary failures.
+- Apply the same two-signal rule when Android accepts descriptor submission but
+  its asynchronous CCCD callback fails before the connection-state callback:
+  a rejected rollback proves the link is gone, while a successful rollback
+  preserves the original platform failure and GATT status.
+
 ## [4.0.20] - 2026-09-03
 
 ### Fixes

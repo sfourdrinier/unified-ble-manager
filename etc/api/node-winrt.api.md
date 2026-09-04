@@ -6,7 +6,7 @@
 - `NativeWinRtProviderOptions :: { readonly now: () => number }`
 - `NodeBleManagerAppOptions :: { readonly now?: (() => number) | undefined; readonly instanceId?: string | undefined; readonly adapterId?: string | undefined; readonly diagnostics?: DiagnosticsOptions | undefined; readonly randomBytes?: ((length: number) => Uint8Array<ArrayBufferLike>) | undefined; readonly restoration?: { readonly restorationId: string; readonly generation?: string | undefined; } | undefined }`
 - `WINRT_BACKEND_ID :: "unified-ble:winrt"`
-- `WINRT_IMPLEMENTATION_VERSION :: "4.0.20"`
+- `WINRT_IMPLEMENTATION_VERSION :: "4.0.21"`
 - `WINRT_PLATFORM_ID :: "unified-ble:windows-winrt"`
 - `WinRtAdapterRecord :: { readonly nativeAdapterId: string; readonly displayName: string | null; readonly state: WinRtAdapterSnapshot; readonly deployment: "packaged" | "unpackaged" }`
 - `WinRtAdapterSnapshot :: { readonly availability: "unknown" | "unavailable" | "unsupported" | "available"; readonly authorization: "unknown" | "unavailable" | "granted" | "denied" | "restricted" | "not-determined"; readonly power: "unknown" | "unsupported" | "on" | "off" | "resetting"; readonly safeReason: string | null }`
