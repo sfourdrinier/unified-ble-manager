@@ -6,7 +6,21 @@ All notable changes to `unified-ble-manager` are documented here.
 
 No changes yet.
 
-## [4.0.21] - 2026-09-04
+## [4.0.22] - 2026-09-04
+
+### Fixes
+
+- Arbitrate an Android asynchronous CCCD failure against an already-in-flight
+  disconnect callback for the same GATT generation. Android can deliver status
+  133 from `onDescriptorWrite`, accept local notification rollback, and only
+  then deliver the authoritative status-19 disconnect; exact subscriptions now
+  retain that provisional failure for a bounded 250 ms evidence window so the
+  command reports typed `connection.lost` without hiding genuine CCCD errors.
+
+## [4.0.21] - 2026-09-04 (unpublished)
+
+Publication was cancelled before the npm version check after physical Android
+hardware reproduced a later callback ordering that required the 4.0.22 fix.
 
 ### Fixes
 

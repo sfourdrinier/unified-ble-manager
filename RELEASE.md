@@ -81,7 +81,9 @@ Active `4.0.0-rc.*` release-train candidates publish to npm `latest` so a bare `
 
 On release day, set `release_candidate` to the exact candidate required by the
 release plan. RC2, RC3, RC4, `4.0.0-rc.4.1`, and RC5 are already immutable
-once tagged. Stable `4.0.0` through `4.0.20` are immutable. `4.0.21` is the current train head.
+once tagged. Stable `4.0.0` through `4.0.20` are immutable. The unpublished
+`v4.0.21` tag is also immutable after its cancelled workflow. `4.0.22` is the
+current train head.
 
 ```sh
 release_candidate=4.0.0-rc.N
@@ -109,9 +111,9 @@ The first stable tag `v4.0.0` is immutable published history. Do not recreate or
 git tag -a v4.0.0 -m "v4.0.0"
 ```
 
-## Releasing 4.0.21
+## Releasing 4.0.22
 
-The `v4.0.21` tag must identify the exact current `main` commit after canonical
+The `v4.0.22` tag must identify the exact current `main` commit after canonical
 CI passes. Do not tag the release branch directly.
 
 ```sh
@@ -120,15 +122,22 @@ git checkout main
 git pull --ff-only origin main
 
 test "$(git branch --show-current)" = "main"
-test "$(node -p "require('./package.json').version")" = "4.0.21"
+test "$(node -p "require('./package.json').version")" = "4.0.22"
 git diff --exit-code
 git diff --cached --exit-code
 
-git tag -a v4.0.21 -m "v4.0.21"
-git push origin v4.0.21
+git tag -a v4.0.22 -m "v4.0.22"
+git push origin v4.0.22
 ```
 
-Before tagging, confirm release-note extraction finds `## [4.0.21]`.
+Before tagging, confirm release-note extraction finds `## [4.0.22]`.
+
+## Unpublished 4.0.21 tag
+
+The immutable `v4.0.21` tag triggered workflow `33862393779`, which was
+cancelled during native prebuilds before the npm version check or publication
+after physical Android hardware exposed a remaining CCCD callback-order race.
+It must not be recreated, moved, or published manually.
 
 ## Releasing 4.0.20
 
@@ -466,7 +475,7 @@ a green publish job and a package a consumer can actually install are not the
 same claim.
 
 ```sh
-version=4.0.21
+version=4.0.22
 
 npm view "unified-ble-manager@$version" version
 npm view unified-ble-manager dist-tags --json

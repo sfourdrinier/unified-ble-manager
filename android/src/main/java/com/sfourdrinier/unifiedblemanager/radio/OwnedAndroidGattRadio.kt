@@ -134,6 +134,44 @@ internal fun classifyAndroidNotificationRegistrationFailure(
   operation: String
 ): AndroidGattOperationFailure = AndroidGattOperationFailure(operation, null, isLinkLoss = true)
 
+/**
+ * Android may deliver an ordinary CCCD callback immediately before the
+ * authoritative status-19 connection callback for the same GATT generation.
+ * Keep only that provisional result pending long enough for lifecycle evidence
+ * already in flight to claim it. Descriptor writes and already-typed link loss
+ * are never delayed.
+ */
+internal fun shouldAwaitAndroidCccdDisconnectEvidence(failure: Throwable): Boolean =
+  failure is AndroidGattOperationFailure &&
+    failure.operation == "cccd-write" &&
+    !failure.isLinkLoss
+
+private const val ANDROID_CCCD_DISCONNECT_EVIDENCE_GRACE_MS = 250L
+
+internal class AndroidCccdTerminalArbiter<Key>(
+  private val schedule: (delayMs: Long, action: () -> Unit) -> Boolean,
+  private val onFallback: (key: Key, failure: AndroidGattOperationFailure) -> Unit
+) {
+  private val provisionalFailures = ConcurrentHashMap<Key, AndroidGattOperationFailure>()
+
+  fun defer(key: Key, failure: AndroidGattOperationFailure) {
+    if (provisionalFailures.putIfAbsent(key, failure) != null) return
+    val fallback: () -> Unit = {
+      val retained = provisionalFailures.remove(key)
+      if (retained != null) onFallback(key, retained)
+    }
+    if (!schedule(ANDROID_CCCD_DISCONNECT_EVIDENCE_GRACE_MS, fallback)) fallback()
+  }
+
+  fun claim(key: Key): AndroidGattOperationFailure? = provisionalFailures.remove(key)
+
+  fun isPending(key: Key): Boolean = provisionalFailures.containsKey(key)
+
+  fun clear() {
+    provisionalFailures.clear()
+  }
+}
+
 /** Synchronous API rejection after local CCCD registration, before Android starts ATT work. */
 internal class AndroidCccdSubmissionFailure(
   val platformStatus: Int?
@@ -359,6 +397,13 @@ class OwnedAndroidGattRadio(private val context: Context) {
   private val exactWritePending = ConcurrentHashMap<BluetoothGattCharacteristic, ExactBytePending>()
   private val exactWriteValues = ConcurrentHashMap<BluetoothGattCharacteristic, ByteArray>()
   private val exactCccdPending = ConcurrentHashMap<BluetoothGattDescriptor, ExactUnitPending>()
+  private val exactCccdTerminalArbiter = AndroidCccdTerminalArbiter<BluetoothGattDescriptor>(
+    schedule = { delayMs, action -> mainHandler.postDelayed(action, delayMs) },
+    onFallback = fallback@ { descriptor, failure ->
+      val pending = exactCccdPending.remove(descriptor) ?: return@fallback
+      completeExactUnit(pending, Result.failure(failure))
+    }
+  )
   private val exactDescriptorReadPending = ConcurrentHashMap<BluetoothGattDescriptor, ExactBytePending>()
   private val exactDescriptorWritePending = ConcurrentHashMap<BluetoothGattDescriptor, ExactUnitPending>()
   private val activeNativeSubscriptionOwnership =
@@ -2126,6 +2171,7 @@ class OwnedAndroidGattRadio(private val context: Context) {
       exactWritePending.clear()
       exactWriteValues.clear()
       exactCccdPending.clear()
+      exactCccdTerminalArbiter.clear()
       exactDescriptorReadPending.clear()
       exactDescriptorWritePending.clear()
       activeNativeSubscriptionOwnership.clear()
@@ -2254,6 +2300,7 @@ class OwnedAndroidGattRadio(private val context: Context) {
       .filter { it.value.deviceKeyUpper == deviceKeyUpper }
       .forEach { entry ->
         if (exactCccdPending.remove(entry.key, entry.value)) {
+          exactCccdTerminalArbiter.claim(entry.key)
           completeExactUnit(
             entry.value,
             if (entry.value.subscriptionEnabled != null) failCccd else failUnit
@@ -2464,6 +2511,16 @@ class OwnedAndroidGattRadio(private val context: Context) {
     }
   }
 
+  private fun deferExactCccdFailure(
+    descriptor: BluetoothGattDescriptor,
+    pending: ExactUnitPending,
+    failure: AndroidGattOperationFailure
+  ) {
+    if (exactCccdPending[descriptor] === pending) {
+      exactCccdTerminalArbiter.defer(descriptor, failure)
+    }
+  }
+
   private fun completeExactUnitDirect(
     callback: (Result<Unit>) -> Unit,
     done: () -> Unit,
@@ -2567,18 +2624,29 @@ class OwnedAndroidGattRadio(private val context: Context) {
         }
         return
       }
-      exactCccdPending.remove(descriptor)?.let { pending ->
+      exactCccdPending[descriptor]?.let { pending ->
+        // The first callback owns the terminal. A contradictory duplicate
+        // callback cannot replace a provisional failure during arbitration.
+        if (exactCccdTerminalArbiter.isPending(descriptor)) return
         if (!isCurrentGatt(pending.deviceKeyUpper, gatt, pending.gattGeneration)) {
-          pending.done()
+          if (exactCccdPending.remove(descriptor, pending)) {
+            exactCccdTerminalArbiter.claim(descriptor)
+            pending.done()
+          }
           return@let
         }
         if (status == BluetoothGatt.GATT_SUCCESS) {
-          completeExactUnit(pending, Result.success(Unit))
+          if (exactCccdPending.remove(descriptor, pending)) {
+            completeExactUnit(pending, Result.success(Unit))
+          }
         } else {
-          completeExactUnit(
-            pending,
-            Result.failure(classifyAndroidGattOperationFailure("cccd-write", status))
-          )
+          val failure = classifyAndroidGattOperationFailure("cccd-write", status)
+          if (shouldAwaitAndroidCccdDisconnectEvidence(failure)) {
+            deferExactCccdFailure(descriptor, pending, failure)
+          } else if (exactCccdPending.remove(descriptor, pending)) {
+            exactCccdTerminalArbiter.claim(descriptor)
+            completeExactUnit(pending, Result.failure(failure))
+          }
         }
         return
       }
