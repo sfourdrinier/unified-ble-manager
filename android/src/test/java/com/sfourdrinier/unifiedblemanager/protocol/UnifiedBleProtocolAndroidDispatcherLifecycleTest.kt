@@ -17,6 +17,7 @@ import com.sfourdrinier.unifiedblemanager.radio.classifyAndroidNotificationRegis
 import com.sfourdrinier.unifiedblemanager.radio.AndroidGattOperationFailure
 import com.sfourdrinier.unifiedblemanager.radio.AndroidCccdSubmissionFailure
 import com.sfourdrinier.unifiedblemanager.radio.AndroidNotificationRollbackRejected
+import com.sfourdrinier.unifiedblemanager.radio.AndroidCccdTerminalArbiter
 import com.sfourdrinier.unifiedblemanager.radio.OwnedRadioTeardownFailure
 import com.sfourdrinier.unifiedblemanager.radio.androidGattTerminalResult
 import com.sfourdrinier.unifiedblemanager.radio.shouldAwaitAndroidCccdDisconnectEvidence
@@ -81,6 +82,54 @@ class UnifiedBleProtocolAndroidDispatcherLifecycleTest {
       radio.indexOf("@Deprecated(\"Deprecated in Java\")")
     )
     assertTrue(callback.contains("deferExactCccdFailure(descriptor, pending, failure)"))
+
+    val disconnectCleanup = radio.substring(
+      radio.indexOf("exactCccdPending.entries"),
+      radio.indexOf("exactDescriptorReadPending.entries")
+    )
+    assertTrue(
+      disconnectCleanup.indexOf("exactCccdPending.remove(entry.key, entry.value)") <
+        disconnectCleanup.indexOf("exactCccdTerminalArbiter.claim(entry.key)")
+    )
+  }
+
+  @Test
+  fun cccdTerminalArbiterLetsDisconnectWinAndPreservesOrdinaryFallbackExactlyOnce() {
+    val scheduled = mutableListOf<() -> Unit>()
+    val fallbacks = mutableListOf<Pair<String, AndroidGattOperationFailure>>()
+    val arbiter = AndroidCccdTerminalArbiter<String>(
+      schedule = { _, action -> scheduled.add(action) },
+      onFallback = { key, failure -> fallbacks.add(key to failure) }
+    )
+    val first = classifyAndroidGattOperationFailure("cccd-write", 133)
+
+    arbiter.defer("disconnect-wins", first)
+    arbiter.defer("disconnect-wins", classifyAndroidGattOperationFailure("cccd-write", 257))
+    assertTrue(arbiter.isPending("disconnect-wins"))
+    assertEquals(1, scheduled.size)
+    assertTrue(arbiter.claim("disconnect-wins") === first)
+    scheduled.removeAt(0).invoke()
+    assertTrue(fallbacks.isEmpty())
+
+    arbiter.defer("ordinary-fallback", first)
+    scheduled.removeAt(0).invoke()
+    assertEquals(listOf("ordinary-fallback" to first), fallbacks)
+    assertFalse(arbiter.isPending("ordinary-fallback"))
+  }
+
+  @Test
+  fun cccdTerminalArbiterCannotStrandFailureWhenSchedulingIsRejected() {
+    val fallbacks = mutableListOf<AndroidGattOperationFailure>()
+    val arbiter = AndroidCccdTerminalArbiter<String>(
+      schedule = { _, _ -> false },
+      onFallback = { _, failure -> fallbacks.add(failure) }
+    )
+    val failure = classifyAndroidGattOperationFailure("cccd-write", 133)
+
+    arbiter.defer("cccd", failure)
+
+    assertEquals(listOf(failure), fallbacks)
+    assertFalse(arbiter.isPending("cccd"))
   }
 
   @Test
