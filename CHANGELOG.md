@@ -4,6 +4,10 @@ All notable changes to `unified-ble-manager` are documented here.
 
 ## [Unreleased]
 
+No changes yet.
+
+## [4.0.21] - 2026-09-04
+
 ### Fixes
 
 - Preserve Android GATT status 19 when a peer disconnects while an exact or
