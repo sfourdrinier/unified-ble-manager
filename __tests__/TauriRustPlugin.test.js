@@ -99,6 +99,15 @@ describe('Tauri v2 Rust plugin boundary', () => {
     expect(dispatcher).toContain('adapter.adapter_state()')
   })
 
+  test('preserves native scan emission diagnostics on the shared terminal contract', () => {
+    const dispatcher = read('native/tauri/src/btleplug_dispatcher.rs')
+
+    expect(dispatcher).toContain('if let Err(error) = dispatcher')
+    expect(dispatcher).toMatch(/"source-failed",\s+Some\(&error\)/)
+    expect(dispatcher).toContain('fn normalized_error(&self) -> IpcValue')
+    expect(dispatcher).toContain('item.insert("error".to_owned(), error.normalized_error())')
+  })
+
   test('runs Rust formatting, tests, and a clippy warning gate in CI', () => {
     const workflow = read('.github/workflows/ci.yml')
 

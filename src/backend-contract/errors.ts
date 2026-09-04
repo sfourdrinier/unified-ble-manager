@@ -109,6 +109,26 @@ export interface CleanupRecord {
   readonly state: 'released' | 'release-failed'
   readonly failures: readonly CleanupFailure[]
 }
+
+/** Converts a normalized error to the data-only shape used by host boundaries. */
+export function serializeNormalizedError(error: NormalizedBleError): SerializableRecord {
+  return Object.freeze({
+    code: error.code,
+    domain: error.domain,
+    operation: error.operation,
+    retryability: error.retryability,
+    platform:
+      error.platform === null
+        ? null
+        : Object.freeze({
+            domain: error.platform.domain,
+            code: error.platform.code,
+            safeMessage: error.platform.safeMessage,
+            metadata: error.platform.metadata
+          })
+  })
+}
+
 export class BackendContractError extends Error {
   readonly normalized: NormalizedBleError
   constructor(normalized: NormalizedBleError) {
