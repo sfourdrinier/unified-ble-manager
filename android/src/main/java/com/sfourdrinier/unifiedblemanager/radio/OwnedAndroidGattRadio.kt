@@ -142,12 +142,33 @@ internal class AndroidCccdSubmissionFailure(
   else "writeDescriptor failed to start status=$platformStatus"
 )
 
+/** Android rejected removal of the exact local notification registration. */
+internal class AndroidNotificationRollbackRejected :
+  IllegalStateException("setCharacteristicNotification rollback was rejected")
+
 internal fun androidGattTerminalResult(
   result: Result<Unit>,
   rollbackFailure: OwnedRadioTeardownFailure?
 ): Result<Unit> {
-  if (rollbackFailure != null && result.exceptionOrNull() is AndroidCccdSubmissionFailure) {
+  val primaryFailure = result.exceptionOrNull()
+  val registrationRollbackRejected =
+    rollbackFailure?.throwable is AndroidNotificationRollbackRejected
+  if (registrationRollbackRejected && primaryFailure is AndroidCccdSubmissionFailure) {
     return Result.failure(classifyAndroidNotificationRegistrationFailure("cccd-write"))
+  }
+  if (
+    registrationRollbackRejected &&
+    primaryFailure is AndroidGattOperationFailure &&
+    primaryFailure.operation == "cccd-write" &&
+    !primaryFailure.isLinkLoss
+  ) {
+    return Result.failure(
+      AndroidGattOperationFailure(
+        primaryFailure.operation,
+        primaryFailure.gattStatus,
+        isLinkLoss = true
+      )
+    )
   }
   if (rollbackFailure == null || result.isFailure) return result
   return Result.failure(
@@ -2435,7 +2456,7 @@ class OwnedAndroidGattRadio(private val context: Context) {
       } else {
         OwnedRadioTeardownFailure(
           "cccdRollback:$deviceKeyUpper:generation=$generation",
-          IllegalStateException("setCharacteristicNotification rollback was rejected")
+          AndroidNotificationRollbackRejected()
         )
       }
     } catch (throwable: Throwable) {

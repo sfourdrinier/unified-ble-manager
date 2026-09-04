@@ -16,6 +16,7 @@ import com.sfourdrinier.unifiedblemanager.radio.classifyAndroidGattOperationFail
 import com.sfourdrinier.unifiedblemanager.radio.classifyAndroidNotificationRegistrationFailure
 import com.sfourdrinier.unifiedblemanager.radio.AndroidGattOperationFailure
 import com.sfourdrinier.unifiedblemanager.radio.AndroidCccdSubmissionFailure
+import com.sfourdrinier.unifiedblemanager.radio.AndroidNotificationRollbackRejected
 import com.sfourdrinier.unifiedblemanager.radio.OwnedRadioTeardownFailure
 import com.sfourdrinier.unifiedblemanager.radio.androidGattTerminalResult
 import org.junit.Assert.assertEquals
@@ -174,6 +175,37 @@ class UnifiedBleProtocolAndroidDispatcherLifecycleTest {
     if (typedError !is AndroidGattOperationFailure) throw AssertionError("typed primary was flattened")
     assertTrue(typedError.isLinkLoss)
 
+    val callbackFailure = classifyAndroidGattOperationFailure("cccd-write", 133)
+    val callbackFailureWithGenericCleanupError = androidGattTerminalResult(
+      Result.failure<Unit>(callbackFailure),
+      rollbackFailure
+    )
+    assertTrue(callbackFailureWithGenericCleanupError.exceptionOrNull() === callbackFailure)
+
+    val rejectedRegistrationRollback = OwnedRadioTeardownFailure(
+      "cccdRollback:AA:BB",
+      AndroidNotificationRollbackRejected()
+    )
+    val linkLossAfterCallbackFailure = androidGattTerminalResult(
+      Result.failure<Unit>(callbackFailure),
+      rejectedRegistrationRollback
+    )
+    val callbackError = linkLossAfterCallbackFailure.exceptionOrNull()
+    assertTrue(callbackError is AndroidGattOperationFailure)
+    if (callbackError !is AndroidGattOperationFailure) {
+      throw AssertionError("CCCD callback failure plus rejected rollback was not classified")
+    }
+    assertTrue(callbackError.isLinkLoss)
+    assertEquals(133, callbackError.gattStatus)
+
+    val descriptorFailure = classifyAndroidGattOperationFailure("descriptor-write", 133)
+    assertTrue(
+      androidGattTerminalResult(
+        Result.failure<Unit>(descriptorFailure),
+        rejectedRegistrationRollback
+      ).exceptionOrNull() === descriptorFailure
+    )
+
     val successfulPrimary = androidGattTerminalResult(Result.success(Unit), rollbackFailure)
     assertTrue(successfulPrimary.isFailure)
     assertTrue(successfulPrimary.exceptionOrNull() is IllegalStateException)
@@ -187,7 +219,7 @@ class UnifiedBleProtocolAndroidDispatcherLifecycleTest {
     assertEquals(133, synchronousSubmission.platformStatus)
     val linkLossAfterSubmission = androidGattTerminalResult(
       Result.failure<Unit>(synchronousSubmission),
-      rollbackFailure
+      rejectedRegistrationRollback
     )
     val linkLossError = linkLossAfterSubmission.exceptionOrNull()
     assertTrue(linkLossError is AndroidGattOperationFailure)
