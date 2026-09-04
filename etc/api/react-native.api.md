@@ -48,11 +48,11 @@ host/test seam; its internal options remain separate from the application API.
 - `NativeUnifiedBleProtocolControl :: { handshake(request: NativeProtocolHandshakeRequest): Promise<NativeProtocolHandshakeResult>; bootstrapRestorationIdentity(request: NativeRestorationBootstrapRequest): Promise<NativeRestorationBootstrapIdentity>; acquireBackground(request: NativeBackgroundLeaseRequest): Promise<NativeBackgroundLeaseResult>; releaseBackground(request: NativeBackgroundLeaseReleaseRequest): Promise<void>; updateBackgroundNotification(request: NativeBackgroundNotificationUpdateRequest): Promise<void>; associateCompanionDevice(request: NativeCompanionAssociationRequest): Promise<NativeCompanionAssociationResult>; claimRestoration(): Promise<NativeRestorationAdoptionControlResult>; installExecutionRuntime(): Promise<void>; cancelOperation(correlation: NativeOperationCorrelation): Promise<NativeCancellationControlResult>; adoptRestoration(request: NativeRestorationAdoptionRequest): Promise<NativeRestorationAdoptionControlResult>; closeAttachment(attachment: NativeAttachmentIdentity): Promise<void>; getRandomBytes(length: number): Promise<number[]>; getConstants?: (() => {}) | undefined }`
 - `REACT_NATIVE_ANDROID_BACKEND_ID :: "unified-ble:react-native-android"`
 - `REACT_NATIVE_ANDROID_DEFAULT_ADAPTER_NATIVE_ID :: "android-default-adapter"`
-- `REACT_NATIVE_ANDROID_IMPLEMENTATION_VERSION :: "4.0.18"`
+- `REACT_NATIVE_ANDROID_IMPLEMENTATION_VERSION :: "4.0.19"`
 - `REACT_NATIVE_ANDROID_PLATFORM_ID :: "unified-ble:android-gatt"`
 - `REACT_NATIVE_APPLE_BACKEND_ID :: "unified-ble:react-native-apple"`
 - `REACT_NATIVE_APPLE_DEFAULT_ADAPTER_NATIVE_ID :: "apple-corebluetooth-default-adapter"`
-- `REACT_NATIVE_APPLE_IMPLEMENTATION_VERSION :: "4.0.18"`
+- `REACT_NATIVE_APPLE_IMPLEMENTATION_VERSION :: "4.0.19"`
 - `REACT_NATIVE_APPLE_PLATFORM_ID :: "unified-ble:apple-corebluetooth"`
 - `ReactNativeAndroidBackendProviderOptions :: { readonly control: Spec; readonly now: () => number; readonly createOwnerId?: (() => string) | undefined }`
 - `ReactNativeAppleBackendProviderOptions :: { readonly control: Spec; readonly now: () => number; readonly createOwnerId?: (() => string) | undefined }`

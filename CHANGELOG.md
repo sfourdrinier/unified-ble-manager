@@ -6,6 +6,16 @@ All notable changes to `unified-ble-manager` are documented here.
 
 No changes yet.
 
+## [4.0.19] - 2026-09-03
+
+### Fixes
+
+- Normalize a synchronous Android notification-registration failure as
+  `connection.lost` when the platform already reports the GATT peer as
+  disconnected. This closes the callback-ordering window where a peer could
+  disconnect before Android delivered `onConnectionStateChange`, while
+  preserving ordinary registration failures as `platform.failure`.
+
 ## [4.0.18] - 2026-09-03
 
 ### Fixes

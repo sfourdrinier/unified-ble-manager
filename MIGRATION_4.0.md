@@ -2,7 +2,7 @@
 
 # Migrating from react-native-ble-plx
 
-This source targets `4.0.18`. The `4.0.0` release is a new package and a new contract. It is **not a source-compatible rename**. There is no `new BleManager()` facade, no Base64 characteristic values, and no public transaction IDs.
+This source targets `4.0.19`. The `4.0.0` release is a new package and a new contract. It is **not a source-compatible rename**. There is no `new BleManager()` facade, no Base64 characteristic values, and no public transaction IDs.
 
 This page is for a React Native app that already uses `react-native-ble-plx`. Web, Electron, Node, and Tauri are new hosts — use those pages after you understand the RN rewrite.
 
