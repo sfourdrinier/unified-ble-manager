@@ -13,7 +13,7 @@ function readExampleSource(exampleDirectory, relativePath) {
 }
 
 describe('Expo example cold-review regressions', () => {
-  test('examples consume one aligned RN 0.86.2 toolchain without auto-installed host peers', () => {
+  test('examples pin Expo-compatible RN toolchains without auto-installed host peers', () => {
     const expoPackage = require('../example-expo/package.json')
     const classicPackage = require('../example/package.json')
     const classicBabel = fs.readFileSync(path.join(root, 'example', 'babel.config.js'), 'utf8')
@@ -21,10 +21,13 @@ describe('Expo example cold-review regressions', () => {
     const classicPnpmConfig = fs.readFileSync(path.join(root, 'example', '.npmrc'), 'utf8')
 
     expect(expoPackage.dependencies['@expo/dom-webview']).toBe('57.0.1')
+    expect(expoPackage.dependencies.expo).toBe('~57.0.20')
+    expect(expoPackage.dependencies['expo-system-ui']).toBe('^57.0.3')
+    expect(expoPackage.dependencies['react-native']).toBe('~0.86.3')
     expect(expoPackage.devDependencies).not.toHaveProperty('@expo/config-plugins')
-    expect(expoPackage.devDependencies['@react-native/babel-preset']).toBe('~0.86.2')
-    expect(expoPackage.devDependencies['@react-native/metro-config']).toBe('~0.86.2')
-    expect(expoPackage.devDependencies['@react-native/typescript-config']).toBe('~0.86.2')
+    expect(expoPackage.devDependencies['@react-native/babel-preset']).toBe('~0.86.3')
+    expect(expoPackage.devDependencies['@react-native/metro-config']).toBe('~0.86.3')
+    expect(expoPackage.devDependencies['@react-native/typescript-config']).toBe('~0.86.3')
     expect(expoPackage.devDependencies).not.toHaveProperty('babel-plugin-module-resolver')
     expect(classicPackage.dependencies['react-native']).toBe('~0.86.2')
     expect(classicPackage.devDependencies['@react-native/babel-preset']).toBe('~0.86.2')
