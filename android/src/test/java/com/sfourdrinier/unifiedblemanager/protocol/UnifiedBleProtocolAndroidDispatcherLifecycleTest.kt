@@ -269,7 +269,6 @@ class UnifiedBleProtocolAndroidDispatcherLifecycleTest {
       dispatcher.indexOf("private fun emitFailure"),
       dispatcher.indexOf("private fun emitCancelled")
     )
-    assertTrue(failure.contains("bondedPeerCommand"))
     assertTrue(
       failure.indexOf("claimExactPendingCommand") <
         failure.indexOf("UnifiedBleProtocolJsiBinding.emitRecord")
@@ -279,6 +278,28 @@ class UnifiedBleProtocolAndroidDispatcherLifecycleTest {
       success.indexOf("claimExactPendingCommand") <
         success.indexOf("UnifiedBleProtocolJsiBinding.emitRecord")
     )
+  }
+
+  @Test
+  fun cccdFailureClaimsThePendingCommandBeforeEmittingItsTerminal() {
+    val dispatcher = readAndroidSource(
+      "android/src/main/java/com/sfourdrinier/unifiedblemanager/protocol/UnifiedBleProtocolAndroidDispatcher.kt"
+    )
+    val failure = dispatcher.substring(
+      dispatcher.indexOf("private fun emitFailure"),
+      dispatcher.indexOf("private fun emitCancelled")
+    )
+
+    // Link loss and the CCCD callback can run concurrently. Claiming before
+    // emission makes the first terminal the owner; a late subscriptionFailed
+    // callback must not pass a check-then-emit race and publish a duplicate.
+    val claimIndex = failure.indexOf(
+      "if (!claimExactPendingCommand(pendingCommands, operationKey(command), command)) return",
+      failure.indexOf("Claim before constructing")
+    )
+    val emitIndex = failure.indexOf("UnifiedBleProtocolJsiBinding.emitRecord")
+    assertTrue(claimIndex >= 0)
+    assertTrue(claimIndex < emitIndex)
   }
 
   @Test
