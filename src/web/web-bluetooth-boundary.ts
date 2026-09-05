@@ -29,6 +29,7 @@ export type WebBluetoothPageLifecycleReason = 'page-hidden' | 'page-unloaded'
 export type WebBluetoothTimerHandle = object
 export type WebBluetoothNotificationListener = (value: Uint8Array) => void
 export type WebBluetoothDisconnectListener = () => void
+export type WebBluetoothAvailabilityListener = () => void
 
 export interface WebBluetoothDescriptorBoundary {
   readonly uuid: string
@@ -93,4 +94,12 @@ export interface WebBluetoothBoundary {
   setTimer(callback: () => void, delayMilliseconds: number): WebBluetoothTimerHandle
   clearTimer(handle: WebBluetoothTimerHandle): void
   addPageLifecycleListener(listener: (reason: WebBluetoothPageLifecycleReason) => void): () => void
+  /**
+   * Optional `availabilitychanged` subscription. Present only when the
+   * browser can actually subscribe. Missing support makes the backend use a
+   * shared bounded `bluetoothAvailable()` poll for adapter watches. The
+   * listener is a change signal; callers re-sample availability and never
+   * treat it as physical adapter power.
+   */
+  readonly addAvailabilityChangeListener?: (listener: WebBluetoothAvailabilityListener) => () => void
 }

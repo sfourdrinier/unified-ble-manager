@@ -40,6 +40,7 @@ export function createNavigatorWebBluetoothProvider(environment: NavigatorWebBlu
 export type { NavigatorWebBluetoothEnvironment } from './web/navigator-web-bluetooth-boundary'
 export type { ChooserRequest, ChooserSelection, WebChooser, WebHost } from './backend-contract/host/web'
 export type {
+  WebBluetoothAvailabilityListener,
   WebBluetoothBoundary,
   WebBluetoothCharacteristicBoundary,
   WebBluetoothCharacteristicProperties,

@@ -2,6 +2,7 @@
 
 import type { Uuid } from '../backend-contract/primitives'
 import type {
+  WebBluetoothAvailabilityListener,
   WebBluetoothBoundary,
   WebBluetoothCharacteristicBoundary,
   WebBluetoothDescriptorBoundary,
@@ -97,10 +98,23 @@ type BrowserBluetoothRequestOptions =
       readonly optionalServices?: string[]
     }
 
+interface BrowserBluetoothAvailabilityChangedEvent {
+  readonly value?: boolean
+}
+
+type BrowserBluetoothAvailabilityListener = (event: BrowserBluetoothAvailabilityChangedEvent) => void
+
 interface BrowserBluetooth {
   getAvailability?(): Promise<boolean>
   getDevices?(): Promise<readonly BrowserBluetoothDevice[]>
   requestDevice(options?: BrowserBluetoothRequestOptions): Promise<BrowserBluetoothDevice>
+  addEventListener?(type: 'availabilitychanged', listener: BrowserBluetoothAvailabilityListener): void
+  removeEventListener?(type: 'availabilitychanged', listener: BrowserBluetoothAvailabilityListener): void
+}
+
+type BrowserBluetoothAvailabilityEventTarget = BrowserBluetooth & {
+  addEventListener(type: 'availabilitychanged', listener: BrowserBluetoothAvailabilityListener): void
+  removeEventListener(type: 'availabilitychanged', listener: BrowserBluetoothAvailabilityListener): void
 }
 
 export function createDefaultNavigatorWebBluetoothEnvironment(): NavigatorWebBluetoothEnvironment {
@@ -169,6 +183,7 @@ export class NavigatorWebBluetoothBoundary implements WebBluetoothBoundary {
   readonly implementationVersion: string
   readonly browserEngine: string
   readonly getAuthorizedDevices: (() => Promise<readonly WebBluetoothDeviceBoundary[]>) | undefined
+  readonly addAvailabilityChangeListener: ((listener: WebBluetoothAvailabilityListener) => () => void) | undefined
 
   constructor(private readonly environment: NavigatorWebBluetoothEnvironment) {
     this.implementationVersion = environment.implementationVersion
@@ -184,6 +199,11 @@ export class NavigatorWebBluetoothBoundary implements WebBluetoothBoundary {
             const devices = await bluetooth.getDevices()
             return devices.map(device => new NavigatorDeviceBoundary(device))
           }
+    if (browserBluetoothSupportsAvailabilityEvents(bluetooth)) {
+      this.addAvailabilityChangeListener = listener => subscribeBrowserAvailabilityChanged(bluetooth, listener)
+    } else {
+      this.addAvailabilityChangeListener = undefined
+    }
   }
 
   isSecureContext(): boolean {
@@ -390,6 +410,30 @@ class NavigatorDescriptorBoundary implements WebBluetoothDescriptorBoundary {
 
   async writeValue(value: Uint8Array): Promise<void> {
     await this.descriptor.writeValue(copyToArrayBuffer(value))
+  }
+}
+
+function browserBluetoothSupportsAvailabilityEvents(
+  bluetooth: BrowserBluetooth | null
+): bluetooth is BrowserBluetoothAvailabilityEventTarget {
+  return (
+    bluetooth !== null &&
+    typeof bluetooth.addEventListener === 'function' &&
+    typeof bluetooth.removeEventListener === 'function'
+  )
+}
+
+function subscribeBrowserAvailabilityChanged(
+  bluetooth: BrowserBluetoothAvailabilityEventTarget,
+  listener: WebBluetoothAvailabilityListener
+): () => void {
+  const browserListener: BrowserBluetoothAvailabilityListener = () => {
+    // Ignore event.value; the backend re-samples bluetoothAvailable().
+    listener()
+  }
+  bluetooth.addEventListener('availabilitychanged', browserListener)
+  return () => {
+    bluetooth.removeEventListener('availabilitychanged', browserListener)
   }
 }
 
