@@ -175,7 +175,11 @@ internal class AndroidGattOperationFailure(
   val gattStatus: Int?,
   val isLinkLoss: Boolean = gattStatus == ANDROID_GATT_LINK_LOSS_STATUS
 ) : IllegalStateException(
-  if (gattStatus == null) "$operation failed because the GATT link is unavailable" else "$operation status=$gattStatus"
+  when {
+    gattStatus != null -> "$operation status=$gattStatus"
+    isLinkLoss -> "$operation failed because the GATT link is unavailable"
+    else -> "$operation failed"
+  }
 )
 
 internal const val ANDROID_GATT_LINK_LOSS_STATUS = 19
@@ -185,9 +189,16 @@ internal fun classifyAndroidGattOperationFailure(
   gattStatus: Int
 ): AndroidGattOperationFailure = AndroidGattOperationFailure(operation, gattStatus)
 
+/**
+ * Local [BluetoothGatt.setCharacteristicNotification] rejection is not proven
+ * peer-disconnect. Generation-matched [BluetoothGattCallback.onConnectionStateChange]
+ * remains the physical-loss authority; status 19 on that callback is typed as
+ * link loss. Do not consult [BluetoothManager.getConnectionState] here: that
+ * query can stay "connected" after the GATT link is already gone.
+ */
 internal fun classifyAndroidNotificationRegistrationFailure(
   operation: String
-): AndroidGattOperationFailure = AndroidGattOperationFailure(operation, null, isLinkLoss = true)
+): AndroidGattOperationFailure = AndroidGattOperationFailure(operation, null)
 
 /**
  * Android may deliver an ordinary CCCD or characteristic-write callback
@@ -277,26 +288,10 @@ internal fun androidGattTerminalResult(
   result: Result<Unit>,
   rollbackFailure: OwnedRadioTeardownFailure?
 ): Result<Unit> {
-  val primaryFailure = result.exceptionOrNull()
-  val registrationRollbackRejected =
-    rollbackFailure?.throwable is AndroidNotificationRollbackRejected
-  if (registrationRollbackRejected && primaryFailure is AndroidCccdSubmissionFailure) {
-    return Result.failure(classifyAndroidNotificationRegistrationFailure("cccd-write"))
-  }
-  if (
-    registrationRollbackRejected &&
-    primaryFailure is AndroidGattOperationFailure &&
-    primaryFailure.operation == "cccd-write" &&
-    !primaryFailure.isLinkLoss
-  ) {
-    return Result.failure(
-      AndroidGattOperationFailure(
-        primaryFailure.operation,
-        primaryFailure.gattStatus,
-        isLinkLoss = true
-      )
-    )
-  }
+  // A rejected local-registration rollback is a cleanup obligation. It is not
+  // generation-matched disconnect evidence, so it must not upgrade the primary
+  // result into typed link loss. completeExactUnit already reports and retries
+  // that cleanup separately.
   if (rollbackFailure == null || result.isFailure) return result
   return Result.failure(
     IllegalStateException(
