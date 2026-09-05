@@ -6,6 +6,24 @@ All notable changes to `unified-ble-manager` are documented here.
 
 No changes yet.
 
+## [4.0.23] - 2026-09-05
+
+### Fixes
+
+- Share one adapter-state polling owner across IPC state watchers and readiness waits, sampling at
+  a 500 ms control-plane cadence. The previous 25 ms polling loop could fill
+  Tauri's bounded native correlation window and prevent scan cleanup or other
+  operations. Watchers retain independent cancellation and bounded streams;
+  stopping the last watcher releases polling, and stale reads cannot affect a
+  replacement watch owner. Native replay protection remains unchanged.
+- Honor readiness deadlines shorter than the polling interval and abort a
+  pending readiness delay immediately without issuing an extra native route.
+- Cancel event-driven readiness waits promptly in the shared public wrapper,
+  preserving `operation.aborted` even when the underlying stream closes first.
+- Bound and retain pending backend state-watch acquisitions. Aborted or timed-out
+  readiness calls no longer wait indefinitely for Web availability probes; late
+  resources are cleaned up and failed cleanup remains retryable during teardown.
+
 ## [4.0.22] - 2026-09-04
 
 ### Fixes

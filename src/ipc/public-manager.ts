@@ -101,12 +101,13 @@ import {
  * renderer samples it. Fixed rather than caller-tunable: it is a property of the
  * IPC boundary, not of any one operation, and every caller-visible bound
  * (`waitUntilReady`'s deadline, `watchState`'s abort signal) already governs how
- * long polling continues. Raising it would delay every renderer's readiness
- * transition; lowering it would multiply round-trips across all renderers. If a
- * host ever needs to trade latency for IPC traffic, that belongs on manager
- * construction, not per call.
+ * long polling continues. The 500 ms cadence keeps the shared watch owner to at
+ * most 60 completed route correlations per native 30-second replay window,
+ * leaving room for ordinary control-plane operations under the native 256-entry
+ * admission bound. If a host ever needs a different latency/traffic tradeoff,
+ * that belongs on a future manager-level transport policy, not per call.
  */
-const IPC_ADAPTER_STATE_POLL_INTERVAL_MS = 25
+const IPC_ADAPTER_STATE_POLL_INTERVAL_MS = 500
 const IPC_ADAPTER_STATE_STREAM_LIMITS = Object.freeze({
   itemCapacity: capacity(128),
   byteCapacity: capacity(64 * 1024),
@@ -976,132 +977,265 @@ function createIpcAdapter(ipc: IpcBleManager): BleAdapter {
       throw rehydratePublicError(error)
     }
   }
+  const adapterWatchOwner = new IpcAdapterWatchOwner(readState)
   return {
     id: String(ipc.bootstrap.attachment.adapter.adapterId),
     state: () => readState(),
-    watchState: options => watchIpcAdapterState(readState, options),
+    watchState: options => adapterWatchOwner.watch(options),
     waitUntilReady: async (options: AdapterReadinessOptions = {}) => {
-      const normalized = normalizeOperationOptions(options, () => globalThis.performance.now())
-      // Host policy with a documented default: a caller-supplied deadline always
-      // wins, and the fallback only stops an unbounded wait. Kept identical to
-      // the in-process `waitForPublicAdapter` fallback so the same logical
-      // operation does not time out differently either side of the IPC boundary.
-      const deadline =
-        normalized.deadline === null
-          ? globalThis.performance.now() + DEFAULT_ADAPTER_READINESS_TIMEOUT_MS
-          : normalized.deadline
-      while (true) {
-        const current = await readState({ signal: normalized.signal ?? undefined, deadline })
-        if (current.availability === 'unsupported' || current.power === 'unsupported')
-          throw contractError('capability.unsupported', 'adapter', 'ipc-public-manager.adapter-ready')
-        if (
-          current.authorization === 'denied' ||
-          current.authorization === 'restricted' ||
-          current.authorization === 'unavailable'
+      try {
+        const normalized = normalizeOperationOptions(options, () => globalThis.performance.now())
+        const deadline = normalized.deadline ?? globalThis.performance.now() + DEFAULT_ADAPTER_READINESS_TIMEOUT_MS
+        const controller = new AbortController()
+        const abort = () => controller.abort()
+        const assertWaiting = () => {
+          if (normalized.signal?.aborted === true)
+            throw rehydratePublicError(
+              contractError('operation.aborted', 'adapter', 'ipc-public-manager.adapter-ready')
+            )
+          if (globalThis.performance.now() >= deadline)
+            throw rehydratePublicError(
+              contractError('operation.timed-out', 'adapter', 'ipc-public-manager.adapter-ready')
+            )
+        }
+        assertWaiting()
+        normalized.signal?.addEventListener('abort', abort, { once: true })
+        const timer = globalThis.setTimeout(abort, Math.max(0, deadline - globalThis.performance.now()))
+        let watch: BleAdapterStateWatch
+        try {
+          watch = await adapterWatchOwner.watch({ signal: controller.signal })
+        } catch (error) {
+          // Preserve combined acquisition/cleanup errors instead of replacing them
+          // with the timeout that initiated cancellation.
+          if (!(error instanceof AggregateError)) assertWaiting()
+          throw error
+        } finally {
+          globalThis.clearTimeout(timer)
+          normalized.signal?.removeEventListener('abort', abort)
+        }
+        return await runWithCleanup(
+          async () => {
+            const iterator = watch.values[Symbol.asyncIterator]()
+            let current = watch.initial
+            while (true) {
+              assertWaiting()
+              if (current.availability === 'unsupported' || current.power === 'unsupported')
+                throw rehydratePublicError(
+                  contractError('capability.unsupported', 'adapter', 'ipc-public-manager.adapter-ready')
+                )
+              if (
+                current.authorization === 'denied' ||
+                current.authorization === 'restricted' ||
+                current.authorization === 'unavailable'
+              )
+                throw rehydratePublicError(
+                  contractError('permission.denied', 'adapter', 'ipc-public-manager.adapter-ready')
+                )
+              if (current.availability === 'available' && current.power === 'on') return current
+              const item = await nextIpcAdapterState(iterator, deadline, normalized.signal)
+              assertWaiting()
+              if (item.done || item.value.kind === 'terminal')
+                throw rehydratePublicError(
+                  contractError('stream.closed', 'adapter', 'ipc-public-manager.adapter-ready')
+                )
+              if (item.value.kind === 'value') current = item.value.value
+            }
+          },
+          () => watch.stop()
         )
-          throw contractError('permission.denied', 'adapter', 'ipc-public-manager.adapter-ready')
-        if (current.availability === 'available' && current.power === 'on') return current
-        if (normalized.signal?.aborted === true)
-          throw contractError('operation.aborted', 'adapter', 'ipc-public-manager.adapter-ready')
-        if (globalThis.performance.now() >= deadline)
-          throw contractError('operation.timed-out', 'adapter', 'ipc-public-manager.adapter-ready')
-        await new Promise(resolve => setTimeout(resolve, IPC_ADAPTER_STATE_POLL_INTERVAL_MS))
+      } catch (error) {
+        throw rehydratePublicError(error)
       }
     }
   }
 }
 
-async function watchIpcAdapterState(
-  readState: (options?: import('./manager').IpcManagerOperationOptions) => Promise<BleAdapterState>,
-  options: AdapterWatchOptions = {}
-): Promise<BleAdapterStateWatch> {
+/** The enclosing readiness operation always stops its owned watch after this
+ * settles, releasing a pending next() before returning success or failure. */
+async function nextIpcAdapterState(
+  iterator: AsyncIterator<import('../public/streams').PublicStreamItem<BleAdapterState>, undefined>,
+  deadline: number,
+  signal: AbortSignal | null
+) {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  let abort: (() => void) | undefined
   try {
-    const signal = options.signal ?? null
-    if (signal !== null && !(signal instanceof AbortSignal)) {
-      throw contractError('argument.invalid', 'adapter', 'ipc-public-manager.watch-state.signal')
-    }
-    if (adapterWatchAborted(signal)) {
-      throw contractError('operation.aborted', 'adapter', 'ipc-public-manager.watch-state')
-    }
-    const initial = await readState({ signal: signal ?? undefined })
-    if (adapterWatchAborted(signal)) {
-      throw contractError('operation.aborted', 'adapter', 'ipc-public-manager.watch-state')
-    }
-    const stream = new CoreBoundedStream<BleAdapterState>(IPC_ADAPTER_STATE_STREAM_LIMITS, 'drop-oldest')
-    let current = initial
-    let active = true
-    let timer: ReturnType<typeof setTimeout> | null = null
-    let stopPromise: Promise<CleanupRecord> | null = null
-
-    const clearTimer = () => {
-      if (timer !== null) {
-        globalThis.clearTimeout(timer)
-        timer = null
-      }
-    }
-    const removeAbortHandler = () => signal?.removeEventListener('abort', abortHandler)
-    const stop = (): Promise<CleanupRecord> => {
-      if (stopPromise !== null) return stopPromise
-      active = false
-      clearTimer()
-      removeAbortHandler()
-      const result = stream.close().then(
-        cleanup => {
-          if (cleanup.state === 'release-failed') stopPromise = null
-          return cleanup
-        },
-        error => {
-          stopPromise = null
-          throw error
-        }
+    const cancelled = new Promise<never>((_, reject) => {
+      abort = () =>
+        reject(rehydratePublicError(contractError('operation.aborted', 'adapter', 'ipc-public-manager.adapter-ready')))
+      signal?.addEventListener('abort', abort, { once: true })
+      if (signal?.aborted === true) abort()
+      timer = globalThis.setTimeout(
+        () =>
+          reject(
+            rehydratePublicError(contractError('operation.timed-out', 'adapter', 'ipc-public-manager.adapter-ready'))
+          ),
+        Math.max(0, deadline - globalThis.performance.now())
       )
-      stopPromise = result
-      return result
-    }
-    const abortHandler = () => {
-      stop().catch(() => undefined)
-    }
-    const schedulePoll = () => {
-      if (!active) return
-      timer = globalThis.setTimeout(() => {
-        timer = null
-        poll().catch(() => undefined)
-      }, IPC_ADAPTER_STATE_POLL_INTERVAL_MS)
-    }
-    const poll = async (): Promise<void> => {
-      if (!active) return
-      try {
-        const next = await readState({ signal: signal ?? undefined })
-        if (!active) return
-        if (!sameAdapterState(current, next)) {
-          current = next
-          stream.emit(next, adapterStateByteLength(next))
-        }
-        schedulePoll()
-      } catch {
-        if (!active) return
-        active = false
-        clearTimer()
-        removeAbortHandler()
-        stream.finishWithReason('source-failed')
-      }
-    }
-    signal?.addEventListener('abort', abortHandler, { once: true })
-    schedulePoll()
-    const values = mapPublicBoundedAsyncStream(stream, value => value)
-    const publicStop = () => stop().then(toPublicCleanupRecord)
-    return Object.freeze({
-      initial,
-      values: Object.freeze({
-        limits: values.limits,
-        overflowPolicy: values.overflowPolicy,
-        [Symbol.asyncIterator]: () => values[Symbol.asyncIterator](),
-        close: publicStop
-      }),
-      stop: publicStop
     })
-  } catch (error) {
-    throw rehydratePublicError(error)
+    return await Promise.race([iterator.next(), cancelled])
+  } finally {
+    if (timer !== undefined) globalThis.clearTimeout(timer)
+    if (abort !== undefined) signal?.removeEventListener('abort', abort)
+  }
+}
+
+interface IpcAdapterWatchEpoch {
+  readonly controller: AbortController
+  readonly watchers: Map<symbol, { readonly stream: CoreBoundedStream<BleAdapterState>; readonly detach: () => void }>
+  initial: Promise<BleAdapterState>
+  current: BleAdapterState | null
+  timer: ReturnType<typeof setTimeout> | null
+}
+
+/** One polling lifetime per adapter, independent of the number of consumers. */
+class IpcAdapterWatchOwner {
+  private epoch: IpcAdapterWatchEpoch | null = null
+
+  constructor(
+    private readonly readState: (options?: import('./manager').IpcManagerOperationOptions) => Promise<BleAdapterState>
+  ) {}
+
+  async watch(options: AdapterWatchOptions = {}): Promise<BleAdapterStateWatch> {
+    try {
+      const signal = options.signal ?? null
+      if (signal !== null && !(signal instanceof AbortSignal)) {
+        throw contractError('argument.invalid', 'adapter', 'ipc-public-manager.watch-state.signal')
+      }
+      const aborted = () => contractError('operation.aborted', 'adapter', 'ipc-public-manager.watch-state')
+      if (adapterWatchAborted(signal)) throw aborted()
+      const epoch = this.epoch ?? this.createEpoch()
+      const stream = new CoreBoundedStream<BleAdapterState>(IPC_ADAPTER_STATE_STREAM_LIMITS, 'drop-oldest')
+      const key = Symbol('adapter-watch')
+      let stopPromise: Promise<CleanupRecord> | null = null
+      let abortCleanup: Promise<CleanupRecord> | null = null
+      let rejectAcquisition: (error: Error) => void = () => undefined
+      const cancelled = new Promise<never>((_, reject) => {
+        rejectAcquisition = reject
+      })
+      const detach = () => signal?.removeEventListener('abort', abortHandler)
+      const stop = (): Promise<CleanupRecord> => {
+        if (stopPromise !== null) return stopPromise
+        epoch.watchers.delete(key)
+        detach()
+        if (epoch.watchers.size === 0) this.releaseEpoch(epoch)
+        const result = stream.close().then(
+          cleanup => {
+            if (cleanup.state === 'release-failed') stopPromise = null
+            return cleanup
+          },
+          error => {
+            stopPromise = null
+            throw error
+          }
+        )
+        stopPromise = result
+        return result
+      }
+      const abortHandler = () => {
+        rejectAcquisition(aborted())
+        // The retained stop promise reports cleanup to an explicit stop caller.
+        abortCleanup = stop()
+        abortCleanup.catch(() => undefined)
+      }
+      epoch.watchers.set(key, { stream, detach })
+      signal?.addEventListener('abort', abortHandler, { once: true })
+      let initial: BleAdapterState
+      try {
+        initial = await Promise.race([
+          epoch.current === null ? epoch.initial : Promise.resolve(epoch.current),
+          cancelled
+        ])
+        if (adapterWatchAborted(signal)) throw aborted()
+      } catch (error) {
+        return await runWithCleanup(
+          async () => {
+            throw rehydratePublicError(error)
+          },
+          () => abortCleanup ?? stop()
+        )
+      }
+      const values = mapPublicBoundedAsyncStream(stream, value => value)
+      const publicStop = () => stop().then(toPublicCleanupRecord)
+      return Object.freeze({
+        initial,
+        values: Object.freeze({
+          limits: values.limits,
+          overflowPolicy: values.overflowPolicy,
+          [Symbol.asyncIterator]: () => values[Symbol.asyncIterator](),
+          close: publicStop
+        }),
+        stop: publicStop
+      })
+    } catch (error) {
+      throw rehydratePublicError(error)
+    }
+  }
+
+  private createEpoch(): IpcAdapterWatchEpoch {
+    const controller = new AbortController()
+    const initial = this.readState({ signal: controller.signal })
+    const epoch: IpcAdapterWatchEpoch = {
+      controller,
+      initial,
+      watchers: new Map(),
+      current: null,
+      timer: null
+    }
+    this.epoch = epoch
+    epoch.initial = initial.then(
+      value => {
+        if (this.epoch === epoch) {
+          epoch.current = value
+          this.schedule(epoch)
+        }
+        return value
+      },
+      error => {
+        this.fail(epoch)
+        throw error
+      }
+    )
+    return epoch
+  }
+
+  private schedule(epoch: IpcAdapterWatchEpoch): void {
+    if (this.epoch !== epoch || epoch.watchers.size === 0 || epoch.timer !== null) return
+    epoch.timer = globalThis.setTimeout(() => {
+      epoch.timer = null
+      this.poll(epoch)
+    }, IPC_ADAPTER_STATE_POLL_INTERVAL_MS)
+  }
+
+  private releaseEpoch(epoch: IpcAdapterWatchEpoch): void {
+    if (this.epoch === epoch) this.epoch = null
+    if (epoch.timer !== null) globalThis.clearTimeout(epoch.timer)
+    epoch.timer = null
+    epoch.controller.abort()
+  }
+
+  private fail(epoch: IpcAdapterWatchEpoch): void {
+    this.releaseEpoch(epoch)
+    for (const { stream, detach } of epoch.watchers.values()) {
+      detach()
+      stream.finishWithReason('source-failed')
+    }
+    epoch.watchers.clear()
+  }
+
+  private async poll(epoch: IpcAdapterWatchEpoch): Promise<void> {
+    if (this.epoch !== epoch) return
+    try {
+      const next = await this.readState({ signal: epoch.controller.signal })
+      if (this.epoch !== epoch) return
+      if (epoch.current === null || !sameAdapterState(epoch.current, next)) {
+        epoch.current = next
+        for (const { stream } of epoch.watchers.values()) stream.emit(next, adapterStateByteLength(next))
+      }
+      this.schedule(epoch)
+    } catch {
+      this.fail(epoch)
+    }
   }
 }
 

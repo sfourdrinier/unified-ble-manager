@@ -3,7 +3,11 @@
 import type { AdvertisementObservation } from '../backend-contract/advertisement'
 import type { ScanOptions as InternalScanOptions } from '../backend-contract/advertisement'
 import type { ConnectionLifecycleCause, ConnectionLifecycleEvent } from '../backend-contract/connection-lifecycle'
-import { contractError, type CleanupRecord as BackendCleanupRecord } from '../backend-contract/errors'
+import {
+  BackendContractError,
+  contractError,
+  type CleanupRecord as BackendCleanupRecord
+} from '../backend-contract/errors'
 import type { BackendIdentity } from '../backend-contract/identity'
 import {
   capacity,
@@ -1987,22 +1991,52 @@ async function waitForPublicAdapter<Attachment extends string, Identity extends 
   now: () => number,
   options: AdapterReadinessOptions = {}
 ): Promise<BleAdapterState> {
+  const controller = new AbortController()
+  let timer: ReturnType<typeof setTimeout> | undefined
+  let signal: AbortSignal | null = null
+  let timedOut = false
+  const abort = () => controller.abort()
   try {
     const normalized = normalizeOperationOptions(options, now)
+    signal = normalized.signal
+    signal?.addEventListener('abort', abort, { once: true })
+    if (signal?.aborted === true) abort()
     const deadline = normalized.deadline ?? now() + DEFAULT_ADAPTER_READINESS_TIMEOUT_MS
-    const watch = await internal.adapterStates({ signal: normalized.signal })
+    timer = setTimeout(
+      () => {
+        timedOut = true
+        controller.abort()
+      },
+      Math.max(0, deadline - now())
+    )
+    const watch = await internal.adapterStates({ signal: controller.signal }).catch(error => {
+      if (timedOut && error instanceof BackendContractError && error.normalized.code === 'operation.aborted') {
+        throw contractError('operation.timed-out', 'adapter', 'public-adapter.wait-until-ready')
+      }
+      throw error
+    })
     const iterator = watch.values[Symbol.asyncIterator]()
     return await runWithCleanup(
       async () => {
         let current = watch.initial
         while (true) {
-          assertAdapterCanBecomeReady(current, options.operation ?? 'scan')
-          if (adapterIsReady(current)) return snapshotPublicAdapterState(current)
-          if (normalized.signal?.aborted === true)
+          if (normalized.signal !== null && Boolean(normalized.signal.aborted))
             throw contractError('operation.aborted', 'adapter', 'public-adapter.wait-until-ready')
           if (now() >= deadline)
             throw contractError('operation.timed-out', 'adapter', 'public-adapter.wait-until-ready')
-          const item = await nextAdapterState(iterator, deadline - now())
+          assertAdapterCanBecomeReady(current, options.operation ?? 'scan')
+          if (adapterIsReady(current)) return snapshotPublicAdapterState(current)
+          const item = await nextAdapterState(iterator, deadline - now(), controller.signal, () =>
+            contractError(
+              timedOut ? 'operation.timed-out' : 'operation.aborted',
+              'adapter',
+              'public-adapter.wait-until-ready'
+            )
+          )
+          if (normalized.signal !== null && Boolean(normalized.signal.aborted))
+            throw contractError('operation.aborted', 'adapter', 'public-adapter.wait-until-ready')
+          if (timedOut || now() >= deadline)
+            throw contractError('operation.timed-out', 'adapter', 'public-adapter.wait-until-ready')
           if (item.done) throw contractError('stream.closed', 'adapter', 'public-adapter.wait-until-ready')
           if (item.value.kind === 'terminal')
             throw contractError('stream.closed', 'adapter', 'public-adapter.wait-until-ready')
@@ -2014,6 +2048,9 @@ async function waitForPublicAdapter<Attachment extends string, Identity extends 
     )
   } catch (error) {
     throw rehydratePublicError(error)
+  } finally {
+    if (timer !== undefined) clearTimeout(timer)
+    signal?.removeEventListener('abort', abort)
   }
 }
 
@@ -2060,12 +2097,20 @@ function assertAdapterCanBecomeReady<Attachment extends string>(
 
 async function nextAdapterState<Attachment extends string>(
   iterator: import('../backend-contract/streams').BoundedAsyncStreamIterator<AdapterStateSnapshot<Attachment>>,
-  timeoutMs: number
+  timeoutMs: number,
+  signal: AbortSignal | null,
+  abortFailure: () => BackendContractError
 ): Promise<
   IteratorResult<import('../backend-contract/streams').StreamItem<AdapterStateSnapshot<Attachment>>, undefined>
 > {
   let timer: ReturnType<typeof setTimeout> | undefined
+  let onAbort: (() => void) | undefined
   try {
+    const aborted = new Promise<never>((_, reject) => {
+      onAbort = () => reject(abortFailure())
+      signal?.addEventListener('abort', onAbort, { once: true })
+      if (signal?.aborted === true) onAbort()
+    })
     return await Promise.race([
       iterator.next(),
       new Promise<never>((_, reject) => {
@@ -2073,10 +2118,12 @@ async function nextAdapterState<Attachment extends string>(
           () => reject(contractError('operation.timed-out', 'adapter', 'public-adapter.wait-until-ready')),
           timeoutMs
         )
-      })
+      }),
+      aborted
     ])
   } finally {
     if (timer !== undefined) clearTimeout(timer)
+    if (onAbort !== undefined) signal?.removeEventListener('abort', onAbort)
   }
 }
 

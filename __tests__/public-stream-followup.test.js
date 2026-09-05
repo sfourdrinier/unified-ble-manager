@@ -579,13 +579,13 @@ describe('public stream follow-up boundaries', () => {
       const removeListener = jest.spyOn(controller.signal, 'removeEventListener')
       const watch = await manager.adapter.watchState({ signal: controller.signal })
       const readsAfterInitial = reads
-      await jest.advanceTimersByTimeAsync(25)
+      await jest.advanceTimersByTimeAsync(500)
       expect(reads).toBe(readsAfterInitial + 1)
 
       await expect(watch.values.close()).resolves.toMatchObject({ state: 'released', failures: [] })
       expect(removeListener).toHaveBeenCalledWith('abort', expect.any(Function))
       const readsAfterClose = reads
-      await jest.advanceTimersByTimeAsync(250)
+      await jest.advanceTimersByTimeAsync(5_000)
       expect(reads).toBe(readsAfterClose)
       expect(jest.getTimerCount()).toBe(0)
 
