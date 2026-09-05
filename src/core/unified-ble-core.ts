@@ -89,6 +89,8 @@ export type { CoreDeadlineHandle, CoreDeadlineScheduler } from './unified-ble-co
  * native release into an unbounded hang; expiry surfaces as a cleanup failure.
  */
 const QUARANTINE_DRAIN_TIMEOUT_MS = 1_000
+// Non-cancellable backend probes remain owned until they settle. Bound their accumulation.
+const MAX_PENDING_ADAPTER_WATCH_ACQUISITIONS = 64
 
 export interface UnifiedBleCoreOptions {
   readonly now: () => number
@@ -153,6 +155,7 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
   private backendDestroyResult: Promise<CleanupRecord> | null = null
   private readonly discoveries = new Map<string, Promise<CoreGattDatabase<Attachment, Identity>>>()
   private readonly adapterStateWatches = new Set<TrackedAdapterStateWatch<Attachment>>()
+  private readonly pendingAdapterStateWatches = new Set<(error: BackendContractError) => void>()
   private admissionEpoch = 1
   private nextOperation = 1
 
@@ -301,11 +304,50 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
     if (abortRequested(options.signal)) {
       throw contractError('operation.aborted', 'adapter', 'adapter-states')
     }
-    const watch: AdapterStateWatch<Attachment> = await this.backend.adapter.watchState()
-    if (abortRequested(options.signal)) {
-      await closeAdapterStateStream(watch.transitions)
-      throw contractError('operation.aborted', 'adapter', 'adapter-states')
+    if (this.pendingAdapterStateWatches.size >= MAX_PENDING_ADAPTER_WATCH_ACQUISITIONS) {
+      throw contractError('stream.quota', 'adapter', 'adapter-states.pending-acquisitions')
     }
+    return new Promise((resolve, reject) => {
+      let cancelled = false
+      const cancel = (error: BackendContractError) => {
+        cancelled = true
+        options.signal?.removeEventListener('abort', onAbort)
+        reject(error)
+      }
+      const onAbort = () => cancel(contractError('operation.aborted', 'adapter', 'adapter-states'))
+      this.pendingAdapterStateWatches.add(cancel)
+      options.signal?.addEventListener('abort', onAbort, { once: true })
+      const acquire = async () => {
+        try {
+          const watch = await this.backend.adapter.watchState()
+          const session = this.trackAdapterStateWatch(watch, options)
+          this.pendingAdapterStateWatches.delete(cancel)
+          if (cancelled || this.coreState !== 'ready' || abortRequested(options.signal)) {
+            if (!cancelled) cancel(contractError('operation.cancelled-by-destroy', 'adapter', 'adapter-states'))
+            // Ownership has moved to the tracked session. Failed late cleanup
+            // remains available to manager.destroy() for an explicit retry.
+            const cleanup = session.stop()
+            this.lifecycleObserver.observeCleanup(cleanup, 'adapter-states-late-stop')
+            await cleanup
+          } else {
+            resolve(session)
+          }
+        } catch (error) {
+          if (!cancelled) reject(error)
+          else throw error
+        } finally {
+          this.pendingAdapterStateWatches.delete(cancel)
+          options.signal?.removeEventListener('abort', onAbort)
+        }
+      }
+      this.lifecycleObserver.observeBackground(acquire(), 'manager', 'adapter-states-acquisition')
+    })
+  }
+
+  private trackAdapterStateWatch(
+    watch: AdapterStateWatch<Attachment>,
+    options: { readonly signal?: AbortSignal | null }
+  ): TrackedAdapterStateWatch<Attachment> {
     const session: TrackedAdapterStateWatch<Attachment> = {
       initial: watch.initial,
       values: watch.transitions,
@@ -1076,6 +1118,17 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
   private async destroyOwnedResources(cause: ConnectionLifecycleTerminalCause): Promise<CleanupRecord> {
     const failures: CleanupFailure[] = []
     const eventClose = this.closeBackendEventStream()
+    for (const cancel of this.pendingAdapterStateWatches) {
+      cancel(contractError('operation.cancelled-by-destroy', 'adapter', 'adapter-states'))
+    }
+    if (this.pendingAdapterStateWatches.size > 0) {
+      failures.push(
+        ...cleanupFailure(
+          'adapter',
+          contractError('lifecycle.invalid-state', 'cleanup', 'adapter-states.acquisition-pending')
+        ).failures
+      )
+    }
     for (const watch of [...this.adapterStateWatches]) {
       const result = await this.lifecycleObserver.captureCleanup(watch.stop(), 'manager', 'destroy-adapter-states')
       failures.push(...result.failures)

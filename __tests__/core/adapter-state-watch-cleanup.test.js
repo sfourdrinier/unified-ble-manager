@@ -1,8 +1,4 @@
-const {
-  attachBleBackend,
-  createBleManager,
-  createManagerOwnershipAuthority
-} = require('../../src/manager/ble-manager')
+const { attachBleBackend, createBleManager, createManagerOwnershipAuthority } = require('../../src/manager/ble-manager')
 const { DEFAULT_BLE_MANAGER_OPTIONS } = require('../../src/manager/ble-manager')
 const { opaqueId, version, versionRange } = require('../../src/backend-contract/primitives')
 const { createDeterministicTestBackend } = require('../../src/testing/deterministic/deterministic-test-backend')
@@ -228,4 +224,81 @@ describe('adapter-state watch cleanup ownership', () => {
     expect(result.failures.every(failure => failure.resourceKind === 'adapter')).toBe(true)
     expect(closer.attempts()).toBe(2)
   })
+})
+
+describe('pending adapter watch acquisition ownership', () => {
+  test('abort settles before backend acquisition, and late failed cleanup remains retryable', async () => {
+    const closer = createCloser('fail-then-succeed')
+    const { manager, fixture } = await createFixture(closer)
+    const original = fixture.backend.adapter.watchState
+    let release
+    const gate = new Promise(resolve => {
+      release = resolve
+    })
+    fixture.backend.adapter.watchState = async () => {
+      await gate
+      return original()
+    }
+    const controller = new AbortController()
+    const acquisition = manager.adapterStates({ signal: controller.signal })
+    controller.abort()
+    await expect(acquisition).rejects.toMatchObject({ normalized: { code: 'operation.aborted' } })
+    await expect(manager.destroy()).resolves.toMatchObject({ state: 'release-failed' })
+    release()
+    await new Promise(resolve => setImmediate(resolve))
+    expect(closer.attempts()).toBe(1)
+    expect(manager.traces()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ transition: 'adapter-states-late-stop', cause: 'platform.failure' })
+      ])
+    )
+    await expect(manager.destroy()).resolves.toMatchObject({ state: 'released' })
+    expect(closer.attempts()).toBe(2)
+  })
+
+  test('destroy cancels a pending acquisition and refuses to report complete until it settles', async () => {
+    const closer = createCloser('always-succeed')
+    const { manager, fixture } = await createFixture(closer)
+    const original = fixture.backend.adapter.watchState
+    let release
+    const gate = new Promise(resolve => {
+      release = resolve
+    })
+    fixture.backend.adapter.watchState = async () => {
+      await gate
+      return original()
+    }
+    const acquisition = manager.adapterStates()
+    const rejected = expect(acquisition).rejects.toMatchObject({
+      normalized: { code: 'operation.cancelled-by-destroy' }
+    })
+    await expect(manager.destroy()).resolves.toMatchObject({ state: 'release-failed' })
+    await rejected
+    release()
+    await new Promise(resolve => setImmediate(resolve))
+    await expect(manager.destroy()).resolves.toMatchObject({ state: 'released' })
+    expect(closer.attempts()).toBe(1)
+  })
+})
+
+test('cancelled backend probes stay bounded until their late failures settle', async () => {
+  const { manager, fixture } = await createFixture(createCloser('always-succeed'))
+  const rejects = []
+  fixture.backend.adapter.watchState = () => new Promise((_, reject) => rejects.push(reject))
+  for (let index = 0; index < 64; index++) {
+    const controller = new AbortController()
+    const acquisition = manager.adapterStates({ signal: controller.signal })
+    controller.abort()
+    await expect(acquisition).rejects.toMatchObject({ normalized: { code: 'operation.aborted' } })
+  }
+  await expect(manager.adapterStates()).rejects.toMatchObject({ normalized: { code: 'stream.quota' } })
+  expect(rejects).toHaveLength(64)
+  for (const reject of rejects) reject(new Error('late availability failure'))
+  await new Promise(resolve => setImmediate(resolve))
+  expect(manager.traces()).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ transition: 'adapter-states-acquisition', cause: 'platform.failure' })
+    ])
+  )
+  await expect(manager.destroy()).resolves.toMatchObject({ state: 'released' })
 })

@@ -82,7 +82,7 @@ Active `4.0.0-rc.*` release-train candidates publish to npm `latest` so a bare `
 On release day, set `release_candidate` to the exact candidate required by the
 release plan. RC2, RC3, RC4, `4.0.0-rc.4.1`, and RC5 are already immutable
 once tagged. Stable `4.0.0` through `4.0.20` are immutable. The unpublished
-`v4.0.21` tag is also immutable after its cancelled workflow. `4.0.22` is the
+`v4.0.21` tag is also immutable after its cancelled workflow. `4.0.22` is immutable published history. `4.0.23` is the
 current train head.
 
 ```sh
@@ -110,6 +110,14 @@ The first stable tag `v4.0.0` is immutable published history. Do not recreate or
 ```sh
 git tag -a v4.0.0 -m "v4.0.0"
 ```
+
+## Releasing 4.0.23
+
+Release `v4.0.23` only from the exact current `main` commit after its canonical
+CI succeeds. Verify `package.json` is `4.0.23`, the worktree is clean, and
+release-note extraction finds `## [4.0.23]`. Push a new annotated `v4.0.23`
+tag; never move the immutable `v4.0.22` tag. Follow the required local validation,
+publish workflow, and registry verification below.
 
 ## Releasing 4.0.22
 
@@ -475,7 +483,7 @@ a green publish job and a package a consumer can actually install are not the
 same claim.
 
 ```sh
-version=4.0.22
+version=4.0.23
 
 npm view "unified-ble-manager@$version" version
 npm view unified-ble-manager dist-tags --json

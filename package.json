@@ -1,6 +1,6 @@
 {
   "name": "unified-ble-manager",
-  "version": "4.0.22",
+  "version": "4.0.23",
   "description": "Unified Bluetooth Low Energy manager for React Native, Electron, Tauri, Web, and desktop",
   "packageManager": "pnpm@10.14.0",
   "main": "lib/commonjs/index.js",
