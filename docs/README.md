@@ -125,6 +125,8 @@ Kept as evidence of how the project got here. Nothing below is guidance.
 | [`review/README.md`](review/README.md) | What the review directory holds and why it is frozen | Current |
 | [`review/2026-08-19-pr-26-external-review.md`](review/2026-08-19-pr-26-external-review.md) | Verbatim external review of PR #26 at rc.0 | Historical |
 | [`review/2026-08-19-pr-26-external-review-verification.md`](review/2026-08-19-pr-26-external-review-verification.md) | Multi-agent verification of that review with per-item verdicts | Historical |
+| [`review/2026-09-05-4.0.23-reliability-review.md`](review/2026-09-05-4.0.23-reliability-review.md) | External 4.0.23 reliability review (BLE-01..BLE-18) | Historical |
+| [`review/2026-09-05-4.0.23-reliability-review-verification.md`](review/2026-09-05-4.0.23-reliability-review-verification.md) | Independent verification of those 18 findings | Historical |
 
 The `review/` directory also holds machine-readable findings data
 (`findings-4.0.json`, `findings-4.0-round2.json`,
@@ -174,5 +176,6 @@ The `review/` directory also holds machine-readable findings data
 | [`superpowers/plans/2026-08-24-pr-b-backend-unregister.md`](superpowers/plans/2026-08-24-pr-b-backend-unregister.md) | Plan B: backend stream unregister and overflow native release | Historical |
 | [`superpowers/plans/2026-08-24-pr-c-react-hooks.md`](superpowers/plans/2026-08-24-pr-c-react-hooks.md) | Plan C: React hooks and adapter store ownership fixes | Historical |
 | [`superpowers/plans/2026-08-30-web-bluetooth-example.md`](superpowers/plans/2026-08-30-web-bluetooth-example.md) | Plan: TypeScript/Vite Web Bluetooth example and `docs/WEB.md` | Historical |
+| [`superpowers/plans/2026-09-05-release-4.0.25-reliability.md`](superpowers/plans/2026-09-05-release-4.0.25-reliability.md) | Plan: 4.0.25 reliability fixes for BLE-01..BLE-18 | Historical |
 | [`superpowers/specs/2026-07-23-ios-tvos-ci-design.md`](superpowers/specs/2026-07-23-ios-tvos-ci-design.md) | Design spec: CI iOS and tvOS compile checks | Historical |
 | [`superpowers/specs/2026-08-30-web-bluetooth-example-design.md`](superpowers/specs/2026-08-30-web-bluetooth-example-design.md) | Design spec for the Web Bluetooth TypeScript example | Historical |
