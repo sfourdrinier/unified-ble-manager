@@ -3,6 +3,7 @@
 package com.sfourdrinier.unifiedblemanager.protocol
 
 import com.sfourdrinier.unifiedblemanager.protocol.generated.RecordKind
+import com.sfourdrinier.unifiedblemanager.radio.deferCharacteristicWriteFailure
 import com.sfourdrinier.unifiedblemanager.radio.nextUuidOccurrence
 import com.sfourdrinier.unifiedblemanager.radio.resolveUuidOccurrence
 import com.sfourdrinier.unifiedblemanager.radio.OwnedAndroidGattRadio
@@ -18,9 +19,14 @@ import com.sfourdrinier.unifiedblemanager.radio.AndroidGattOperationFailure
 import com.sfourdrinier.unifiedblemanager.radio.AndroidCccdSubmissionFailure
 import com.sfourdrinier.unifiedblemanager.radio.AndroidNotificationRollbackRejected
 import com.sfourdrinier.unifiedblemanager.radio.AndroidCccdTerminalArbiter
+import com.sfourdrinier.unifiedblemanager.radio.AndroidWriteTerminalArbiter
+import com.sfourdrinier.unifiedblemanager.radio.AndroidPendingWriteOwner
+import com.sfourdrinier.unifiedblemanager.radio.AndroidPendingWriteRegistry
+import com.sfourdrinier.unifiedblemanager.radio.removeAndroidWritePayloadIfSame
 import com.sfourdrinier.unifiedblemanager.radio.OwnedRadioTeardownFailure
 import com.sfourdrinier.unifiedblemanager.radio.androidGattTerminalResult
 import com.sfourdrinier.unifiedblemanager.radio.shouldAwaitAndroidCccdDisconnectEvidence
+import com.sfourdrinier.unifiedblemanager.radio.shouldAwaitAndroidWriteDisconnectEvidence
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertFalse
@@ -130,6 +136,202 @@ class UnifiedBleProtocolAndroidDispatcherLifecycleTest {
 
     assertEquals(listOf(failure), fallbacks)
     assertFalse(arbiter.isPending("cccd"))
+  }
+
+  @Test
+  fun pendingWrite133ThenAuthoritativeDisconnectStatus8EmitsOneConnectionLostTerminal() {
+    val scheduled = mutableListOf<() -> Unit>()
+    val terminalKinds = mutableListOf<String>()
+    val arbiter = AndroidWriteTerminalArbiter<String>(
+      schedule = { _, action -> scheduled.add(action) },
+      onFallback = { _, failure ->
+        terminalKinds.add(androidGattOperationFailureCode(failure, "writeFailed"))
+      }
+    )
+    val writeFailure = classifyAndroidGattOperationFailure("characteristic-write", 133)
+
+    assertTrue(shouldAwaitAndroidWriteDisconnectEvidence(writeFailure))
+    assertFalse(
+      shouldAwaitAndroidWriteDisconnectEvidence(
+        classifyAndroidGattOperationFailure("characteristic-write", 19)
+      )
+    )
+    assertFalse(
+      shouldAwaitAndroidWriteDisconnectEvidence(
+        classifyAndroidGattOperationFailure("descriptor-write", 133)
+      )
+    )
+    assertTrue(arbiter.deferCharacteristicWriteFailure("write", writeFailure.gattStatus!!))
+
+    // The lifecycle callback is authoritative even though Android reports the
+    // transport timeout as status 8 rather than the write callback's 133.
+    val pendingCommands = mutableSetOf("write")
+    val disconnectStatus = 8
+    if (disconnectStatus == 8 && pendingCommands.remove("write")) {
+      terminalKinds.add("connectionLost")
+    }
+    val claimedFailure = arbiter.claim("write")
+    assertEquals("characteristic-write", claimedFailure?.operation)
+    assertEquals(133, claimedFailure?.gattStatus)
+    scheduled.single().invoke()
+
+    assertEquals(listOf("connectionLost"), terminalKinds)
+    val connection = ProtocolWireRecord(
+      RecordKind.CONNECTION_PATH,
+      mapOf(1 to ProtocolWireValue.RecordValue(ProtocolWireRecord(RecordKind.ATTACHMENT, emptyMap())))
+    )
+    val event = connectionLostEvent(1L, connection, disconnectStatus, 0L, 0L)
+    val error = event.requiredRecord(14)
+    assertEquals(ProtocolWireValue.StringValue("connectionLost"), event.fields[3])
+    assertEquals(ProtocolWireValue.SignedIntegerValue(8L), error.fields[8])
+  }
+
+  @Test
+  fun isolatedWrite133AfterGraceEmitsPlatformFailureRetainingOperationAndStatus() {
+    val scheduled = mutableListOf<() -> Unit>()
+    val terminalKinds = mutableListOf<String>()
+    var fallback: AndroidGattOperationFailure? = null
+    val arbiter = AndroidWriteTerminalArbiter<String>(
+      schedule = { _, action -> scheduled.add(action) },
+      onFallback = { _, failure ->
+        fallback = failure
+        terminalKinds.add(androidGattOperationFailureCode(failure, "writeFailed"))
+      }
+    )
+    val writeFailure = classifyAndroidGattOperationFailure("characteristic-write", 133)
+
+    assertTrue(arbiter.deferCharacteristicWriteFailure("write", writeFailure.gattStatus!!))
+    scheduled.single().invoke()
+
+    assertEquals(listOf("writeFailed"), terminalKinds)
+    assertTrue(fallback != null)
+    assertEquals("characteristic-write", fallback?.operation)
+    assertEquals(133, fallback?.gattStatus)
+    assertEquals(133, androidGattOperationFailureStatus(fallback!!))
+    assertEquals("writeFailed", androidGattOperationFailureCode(fallback!!, "writeFailed"))
+  }
+
+  @Test
+  fun writeTerminalArbiterPreventsDuplicateTerminalAfterDisconnectAndLateWriteCallback() {
+    val scheduled = mutableListOf<() -> Unit>()
+    val terminalKinds = mutableListOf<String>()
+    val arbiter = AndroidWriteTerminalArbiter<String>(
+      schedule = { _, action -> scheduled.add(action) },
+      onFallback = { _, failure ->
+        terminalKinds.add(androidGattOperationFailureCode(failure, "writeFailed"))
+      }
+    )
+    val writeFailure = classifyAndroidGattOperationFailure("characteristic-write", 133)
+
+    assertTrue(arbiter.deferCharacteristicWriteFailure("write", writeFailure.gattStatus!!))
+    assertTrue(arbiter.isPending("write"))
+    val claimedFailure = arbiter.claim("write")
+    assertEquals("characteristic-write", claimedFailure?.operation)
+    assertEquals(133, claimedFailure?.gattStatus)
+    assertTrue(!arbiter.isPending("write"))
+    scheduled.single().invoke()
+    // A late duplicate callback cannot reclaim the already-settled terminal.
+    assertTrue(arbiter.claim("write") == null)
+
+    val pendingCommands = mutableSetOf("write")
+    if (pendingCommands.remove("write")) terminalKinds.add("connectionLost")
+    if (pendingCommands.remove("write")) terminalKinds.add("writeFailed")
+    assertEquals(listOf("connectionLost"), terminalKinds)
+  }
+
+  @Test
+  fun pendingWriteReplacementIsIdentitySafeDuringOldDisconnectTeardownAndLateCallback() {
+    val registry = AndroidPendingWriteRegistry<String>()
+    val terminals = mutableListOf<String>()
+    val oldAttribute = "old-characteristic"
+    val replacementAttribute = "replacement-characteristic"
+    val oldOwner = AndroidPendingWriteOwner(
+      deviceKeyUpper = "AA:BB",
+      attribute = oldAttribute,
+      value = byteArrayOf(1)
+    ) { terminals.add("old") }
+    val replacementOwner = AndroidPendingWriteOwner(
+      deviceKeyUpper = "AA:BB",
+      attribute = replacementAttribute,
+      value = byteArrayOf(2)
+    ) { terminals.add("replacement") }
+
+    assertTrue(registry.putIfAbsent("write:key", oldOwner))
+    // Teardown observed the old owner, but a replacement acquired the key
+    // before the stale disconnect work finished.
+    assertTrue(registry.remove("write:key", oldOwner))
+    assertTrue(registry.putIfAbsent("write:key", replacementOwner))
+    assertFalse(registry.remove("write:key", oldOwner))
+    assertFalse(
+      registry.complete(
+        "write:key",
+        oldAttribute,
+        Result.success(byteArrayOf(9))
+      )
+    )
+    assertEquals(listOf<String>(), terminals)
+    assertTrue(registry.complete("write:key", replacementAttribute, Result.success(byteArrayOf(2))))
+    assertEquals(listOf("replacement"), terminals)
+  }
+
+  @Test
+  fun exactWriteTeardownOrRejectionCannotDeleteReplacementPayload() {
+    val values = ConcurrentHashMap<String, ByteArray>()
+    val oldPayload = byteArrayOf(1)
+    val replacementPayload = byteArrayOf(2)
+    values["write:key"] = oldPayload
+
+    // Capture the old payload before conditional owner removal, then let the
+    // replacement acquire the same key before stale cleanup runs.
+    val observed = values["write:key"]
+    values["write:key"] = replacementPayload
+    assertFalse(removeAndroidWritePayloadIfSame(values, "write:key", observed))
+    assertTrue(values["write:key"] === replacementPayload)
+  }
+
+  @Test
+  fun writeArbiterClearCannotLetPostedFallbackSettleReusedKey() {
+    val scheduled = mutableListOf<() -> Unit>()
+    val fallbacks = mutableListOf<AndroidGattOperationFailure>()
+    val arbiter = AndroidWriteTerminalArbiter<String>(
+      schedule = { _, action -> scheduled.add(action) },
+      onFallback = { _, failure -> fallbacks.add(failure) }
+    )
+    val first = classifyAndroidGattOperationFailure("characteristic-write", 133)
+    val replacement = classifyAndroidGattOperationFailure("characteristic-write", 257)
+
+    arbiter.defer("write", first)
+    arbiter.clear()
+    arbiter.defer("write", replacement)
+    scheduled[0].invoke()
+    assertTrue(arbiter.isPending("write"))
+    assertEquals(listOf<AndroidGattOperationFailure>(), fallbacks)
+    scheduled[1].invoke()
+    assertEquals(listOf(replacement), fallbacks)
+  }
+
+  @Test
+  fun characteristicWriteCallbacksAndDispatcherPreserveTypedFailurePolicy() {
+    val radio = readAndroidSource(
+      "android/src/main/java/com/sfourdrinier/unifiedblemanager/radio/OwnedAndroidGattRadio.kt"
+    )
+    val callback = radio.substring(
+      radio.indexOf("override fun onCharacteristicWrite"),
+      radio.indexOf("@Deprecated", radio.indexOf("override fun onCharacteristicWrite"))
+    )
+    assertEquals(2, Regex("deferCharacteristicWriteFailure\\(").findAll(callback).count())
+    assertTrue(callback.contains("pendingWriteRegistry.complete(key, characteristic"))
+    assertTrue(callback.contains("classifyAndroidGattOperationFailure(\"characteristic-write\", status)"))
+
+    val dispatcher = readAndroidSource(
+      "android/src/main/java/com/sfourdrinier/unifiedblemanager/protocol/UnifiedBleProtocolAndroidDispatcher.kt"
+    )
+    val write = dispatcher.substring(
+      dispatcher.indexOf("private fun write(command: ProtocolWireRecord)"),
+      dispatcher.indexOf("private fun writeDescriptor(command: ProtocolWireRecord)")
+    )
+    assertTrue(write.contains("emitGattOperationFailure(command, \"writeFailed\", error"))
+    assertFalse(write.contains("emitFailure(command, \"writeFailed\", error.message"))
   }
 
   @Test

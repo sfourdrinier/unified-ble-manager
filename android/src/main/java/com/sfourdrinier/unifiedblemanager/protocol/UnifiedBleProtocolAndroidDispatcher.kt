@@ -409,7 +409,9 @@ class UnifiedBleProtocolAndroidDispatcher(
     ) { result ->
       result.fold(
         onSuccess = { emitSuccess(command, "write") },
-        onFailure = { error -> emitFailure(command, "writeFailed", error.message ?: "Android GATT write failed") }
+        onFailure = { error ->
+          emitGattOperationFailure(command, "writeFailed", error, "Android GATT write failed")
+        }
       )
     }
     radioOperationIds[operationKey(command)] = radioOperationId
@@ -880,8 +882,8 @@ class UnifiedBleProtocolAndroidDispatcher(
     androidGattStatus: Int? = null
   ) {
     // Claim before constructing or emitting the terminal. Link loss can race a
-    // native CCCD callback; a check followed by a later claim lets both paths
-    // publish a result for the same operation.
+    // native GATT operation callback; a check followed by a later claim lets
+    // both paths publish a result for the same operation.
     if (!claimExactPendingCommand(pendingCommands, operationKey(command), command)) return
     val errorFields = mutableMapOf<Int, ProtocolWireValue>(
         1 to ProtocolWireValue.StringValue(code),
