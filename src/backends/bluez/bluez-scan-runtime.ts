@@ -81,6 +81,9 @@ export async function startBluezScan(
     filterClearRequested: false,
     filterClear: null,
     pendingFilterRestore: null,
+    addressWidenBorrowers: 0,
+    addressWiden: null,
+    addressWidenRestore: null,
     stopRequested: false,
     resetRequested: false,
     startupComplete: false,
@@ -415,6 +418,9 @@ function retainBluezScanStopFailure(runtime: BluezBackendRuntime, group: BluezSc
 }
 
 async function restorePendingBluezScanFilter(runtime: BluezBackendRuntime, group: BluezScanGroup): Promise<void> {
+  if (group.addressWidenBorrowers > 0) {
+    return
+  }
   const original = group.pendingFilterRestore
   if (original === null) {
     return

@@ -60,6 +60,12 @@ export interface BluezScanGroup {
   filterClear: Promise<void> | null
   /** Owner filter that still needs SetDiscoveryFilter after a failed address-widen restore. */
   pendingFilterRestore: BluezVariant | null
+  /** Address-connect waiters currently relying on a temporarily widened scan filter. */
+  addressWidenBorrowers: number
+  /** Shared widen SetDiscoveryFilter; null when the owner filter is in force. */
+  addressWiden: Promise<void> | null
+  /** In-flight owner-filter restore after the last address-widen borrower leaves. */
+  addressWidenRestore: Promise<void> | null
   stopRequested: boolean
   resetRequested: boolean
   startupComplete: boolean

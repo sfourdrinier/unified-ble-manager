@@ -387,33 +387,110 @@ async function widenBluezScanForAddress(
   options: PublicOperationOptions
 ): Promise<void> {
   const original = scanFilterVariant(owner.options)
-  const widen = runtime.boundary.methods.callVoid(
-    String(runtime.selectedAdapter.adapterId),
-    BLUEZ_ADAPTER_INTERFACE,
-    'SetDiscoveryFilter',
-    [widenedDiscoveryFilterVariant(owner.options)]
-  )
-  group.setFilter = widen
+  group.addressWidenBorrowers += 1
   let adopted = false
   try {
-    await awaitSharedBluezTransition(widen, options, runtime.now, 'bluez.connect.address-widen')
-    adopted = true
+    adopted = await adoptBluezAddressWiden(runtime, group, owner, options)
     await waitForBluezInterfacePresence(runtime, devicePath, BLUEZ_DEVICE_INTERFACE, options)
   } catch (error) {
     if (!adopted) {
-      widen.then(
-        () => {
-          restoreBluezScanFilter(runtime, group, original).catch(() => undefined)
-        },
-        () => undefined
-      )
+      const widen = group.addressWiden
+      if (widen !== null) {
+        widen.then(
+          () => {
+            if (group.addressWidenBorrowers === 0) {
+              beginBluezAddressWidenRestore(runtime, group, original).catch(() => undefined)
+            }
+          },
+          () => {
+            if (group.addressWiden === widen && group.addressWidenBorrowers === 0) {
+              group.addressWiden = null
+            }
+          }
+        )
+      }
     }
     throw error
   } finally {
-    if (adopted) {
-      await restoreBluezScanFilter(runtime, group, original)
+    group.addressWidenBorrowers -= 1
+    if (group.addressWidenBorrowers === 0 && adopted) {
+      await beginBluezAddressWidenRestore(runtime, group, original)
     }
   }
+}
+
+async function adoptBluezAddressWiden(
+  runtime: BluezBackendRuntime,
+  group: BluezScanGroup,
+  owner: { readonly options: OwnerScanOptions<string, string> },
+  options: PublicOperationOptions
+): Promise<boolean> {
+  if (group.addressWidenRestore !== null) {
+    await awaitSharedBluezTransition(
+      group.addressWidenRestore,
+      options,
+      runtime.now,
+      'bluez.connect.address-restore'
+    )
+  }
+  if (runtime.scanGroup !== group || group.state !== 'active' || group.stopRequested) {
+    return false
+  }
+  let widen = group.addressWiden
+  if (widen === null) {
+    widen = runtime.boundary.methods.callVoid(
+      String(runtime.selectedAdapter.adapterId),
+      BLUEZ_ADAPTER_INTERFACE,
+      'SetDiscoveryFilter',
+      [widenedDiscoveryFilterVariant(owner.options)]
+    )
+    group.setFilter = widen
+    group.filterSettled = false
+    group.addressWiden = widen
+  }
+  await awaitSharedBluezTransition(widen, options, runtime.now, 'bluez.connect.address-widen')
+  if (runtime.scanGroup !== group || group.state !== 'active' || group.stopRequested) {
+    return false
+  }
+  if (group.setFilter === widen) {
+    group.filterSettled = true
+  }
+  return true
+}
+
+function beginBluezAddressWidenRestore(
+  runtime: BluezBackendRuntime,
+  group: BluezScanGroup,
+  original: ReturnType<typeof scanFilterVariant>
+): Promise<void> {
+  if (group.addressWidenBorrowers > 0) {
+    return Promise.resolve()
+  }
+  if (group.addressWidenRestore !== null) {
+    return group.addressWidenRestore
+  }
+  group.addressWiden = null
+  let settleRestore = (): void => undefined
+  const held = new Promise<void>(resolve => {
+    settleRestore = resolve
+  })
+  group.addressWidenRestore = held
+  const restore = restoreBluezScanFilter(runtime, group, original)
+  restore.then(
+    () => {
+      settleRestore()
+      if (group.addressWidenRestore === held) {
+        group.addressWidenRestore = null
+      }
+    },
+    () => {
+      settleRestore()
+      if (group.addressWidenRestore === held) {
+        group.addressWidenRestore = null
+      }
+    }
+  )
+  return restore
 }
 
 async function restoreBluezScanFilter(
@@ -422,6 +499,9 @@ async function restoreBluezScanFilter(
   original: ReturnType<typeof scanFilterVariant>
 ): Promise<void> {
   if (runtime.scanGroup !== group) {
+    return
+  }
+  if (group.addressWidenBorrowers > 0) {
     return
   }
   if (group.state !== 'active' || group.stopRequested) {

@@ -54,8 +54,9 @@ No changes yet.
   succeeds after the caller is gone. A failed first Disconnect is retried on
   destroy instead of being logged and forgotten.
 - BlueZ address-connect fallback checks scan-plan compatibility, waits out a
-  stopping scan, and widens an excluding live scan (then restores it) instead of
-  waiting under a filter that cannot observe the target.
+  stopping scan, and widens an excluding live scan for concurrent address
+  waiters, restoring the owner filter only after the last borrower leaves
+  instead of waiting under a filter that cannot observe the target.
 - Apple CoreBluetooth rejects an independent GATT read while that characteristic
   is notifying, because `didUpdateValueFor` cannot distinguish a read response
   from a notification. Electron/Node CoreBluetooth uses the same policy. A read
