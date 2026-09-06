@@ -59,6 +59,7 @@ export class CoreBoundedStream<Value> implements BoundedAsyncStream<Value> {
   private sourceDroppedItems = 0
   private sourceDroppedBytes = 0
   private sourceReplacedItems = 0
+  private settledTerminalReason: CoreStreamTerminalReason | null = null
 
   constructor(
     readonly limits: StreamLimits,
@@ -139,6 +140,7 @@ export class CoreBoundedStream<Value> implements BoundedAsyncStream<Value> {
       this.clearOverflowCounters()
     }
     this.ownerClosed = true
+    this.settledTerminalReason = reason
     this.terminalNotice = this.makeTerminal(reason)
     this.flushPendingConsumers()
   }
@@ -148,6 +150,7 @@ export class CoreBoundedStream<Value> implements BoundedAsyncStream<Value> {
     if (this.ownerClosed || this.terminalNotice !== null || this.terminalDelivered) {
       return
     }
+    this.settledTerminalReason = reason
     this.terminalNotice = this.makeTerminal(reason)
     this.flushPendingConsumers()
   }
@@ -460,6 +463,10 @@ export class CoreBoundedStream<Value> implements BoundedAsyncStream<Value> {
 
   isTerminal(): boolean {
     return this.terminalNotice !== null || this.terminalDelivered
+  }
+
+  terminalReason(): CoreStreamTerminalReason | null {
+    return this.settledTerminalReason
   }
 
   private assertByteLength(byteLength: number): void {

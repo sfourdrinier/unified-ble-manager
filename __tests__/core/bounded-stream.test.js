@@ -38,6 +38,20 @@ describe('CoreBoundedStream', () => {
     expect(stream.overflowCounters()).toMatchObject({ droppedItems: 1, droppedBytes: 4, replacedItems: 1 })
   })
 
+  test('terminalReason is readable without consuming the iterator and survives delivery', async () => {
+    const stream = new CoreBoundedStream(limits(2, 6, 1), 'drop-oldest')
+    expect(stream.terminalReason()).toBeNull()
+    stream.finishWithReason('source-failed')
+    expect(stream.isTerminal()).toBe(true)
+    expect(stream.terminalReason()).toBe('source-failed')
+    const iterator = stream[Symbol.asyncIterator]()
+    await expect(iterator.next()).resolves.toMatchObject({
+      done: false,
+      value: { kind: 'terminal', reason: 'source-failed' }
+    })
+    expect(stream.terminalReason()).toBe('source-failed')
+  })
+
   test('closes ingress before resolving cleanup and never exposes a later value', async () => {
     const stream = new CoreBoundedStream(limits(2, 6, 1), 'drop-newest')
     stream.emit('pending', 2)

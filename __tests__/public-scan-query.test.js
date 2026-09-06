@@ -1675,6 +1675,45 @@ describe('canonical public ScanQuery v1', () => {
     await expect(scan.stop()).resolves.toEqual({ state: 'released', failures: [] })
     expect(fixture.nativeStop).toHaveBeenCalledTimes(1)
   })
+
+  test.each([
+    ['source-failed', { state: 'failed', reason: 'source-failed' }],
+    ['connection-lost', { state: 'failed', reason: 'connection-lost' }],
+    ['closed', { state: 'stopped', reason: 'closed' }]
+  ])('%s already on the source before scan() leaves the session not active', async (reason, expected) => {
+    const source = new CoreBoundedStream(
+      { itemCapacity: capacity(8), byteCapacity: capacity(4096), reservedControlCapacity: capacity(1) },
+      'drop-oldest'
+    )
+    source.closeWithReason(reason)
+    const nativeStop = jest.fn(async () => ({ state: 'released', failures: [] }))
+    const internal = {
+      identity: null,
+      attachedBackend: undefined,
+      supports: () => true,
+      capability: () => null,
+      capabilities: () => [],
+      scan: jest.fn(async () => ({
+        observations: source,
+        stop: nativeStop
+      })),
+      connect: jest.fn(),
+      destroy: jest.fn(async () => ({ state: 'released', failures: [] }))
+    }
+    const manager = await createPublicBleManager(internal, () => 0)
+    const scan = await manager.scan()
+    const states = scan.state[Symbol.asyncIterator]()
+    await expect(states.next()).resolves.toMatchObject({ value: { state: 'active' } })
+    const terminal = await awaitSignal(states.next(), `already-terminal ${reason} to leave session active`)
+    expect(terminal.value.state).not.toBe('active')
+    expect(terminal.value).toMatchObject(expected)
+    expect(nativeStop).not.toHaveBeenCalled()
+    await expect(scan.observations[Symbol.asyncIterator]().next()).resolves.toMatchObject({
+      value: { kind: 'terminal', reason }
+    })
+    await expect(scan.stop()).resolves.toEqual({ state: 'released', failures: [] })
+    expect(nativeStop).toHaveBeenCalledTimes(1)
+  })
 })
 
 describe('public scan-state-budget', () => {

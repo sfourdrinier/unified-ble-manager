@@ -96,4 +96,31 @@ describe('IPC public scan session state', () => {
     await expect(scan.stop()).resolves.toEqual({ state: 'released', failures: [] })
     expect(stop).toHaveBeenCalledTimes(1)
   })
+
+  test.each([
+    ['source-failed', { state: 'failed', reason: 'source-failed' }],
+    ['connection-lost', { state: 'failed', reason: 'connection-lost' }],
+    ['closed', { state: 'stopped', reason: 'closed' }]
+  ])(
+    '%s that raced scan.start is projected without consuming the unicast stream',
+    async (reason, expected) => {
+      const { manager, observations, stop } = createIpcScanFixture()
+      observations.finishWithReason(reason)
+      const scan = await manager.scan()
+      const states = scan.state[Symbol.asyncIterator]()
+      await expect(states.next()).resolves.toMatchObject({ value: { state: 'active' } })
+      const terminal = await awaitSignal(
+        states.next(),
+        `already-terminal ${reason} to leave IPC session active`
+      )
+      expect(terminal.value.state).not.toBe('active')
+      expect(terminal.value).toMatchObject(expected)
+      expect(stop).not.toHaveBeenCalled()
+      await expect(scan.observations[Symbol.asyncIterator]().next()).resolves.toMatchObject({
+        value: { kind: 'terminal', reason }
+      })
+      await expect(scan.stop()).resolves.toEqual({ state: 'released', failures: [] })
+      expect(stop).toHaveBeenCalledTimes(1)
+    }
+  )
 })

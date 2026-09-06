@@ -67,6 +67,7 @@ export class DeterministicBoundedStream<Value> implements BoundedAsyncStream<Val
   private terminalCount = 0
   private closed = false
   private terminalNotice: StreamTerminalNotice | null = null
+  private settledTerminalReason: StreamTerminalNotice['reason'] | null = null
   private cleanupRecord: CleanupRecord | null = null
 
   constructor(limits: StreamLimits, overflowPolicy: OverflowPolicy) {
@@ -181,6 +182,7 @@ export class DeterministicBoundedStream<Value> implements BoundedAsyncStream<Val
     this.closed = true
     this.entries.length = 0
     this.retainedValueBytes = 0
+    this.settledTerminalReason = 'closed'
     this.terminalNotice = this.makeTerminalNotice('closed')
     this.deliverAvailableItems()
     this.cleanupRecord = releasedCleanup
@@ -194,8 +196,13 @@ export class DeterministicBoundedStream<Value> implements BoundedAsyncStream<Val
     this.closed = true
     this.entries.length = 0
     this.retainedValueBytes = 0
+    this.settledTerminalReason = reason
     this.terminalNotice = this.makeTerminalNotice(reason)
     this.deliverAvailableItems()
+  }
+
+  terminalReason(): StreamTerminalNotice['reason'] | null {
+    return this.settledTerminalReason
   }
 
   /** Releases retained values and terminal bookkeeping during backend teardown. */
@@ -345,6 +352,7 @@ export class DeterministicBoundedStream<Value> implements BoundedAsyncStream<Val
     this.closed = true
     this.entries.length = 0
     this.retainedValueBytes = 0
+    this.settledTerminalReason = 'overflow'
     this.terminalNotice = this.makeTerminalNotice('overflow')
     this.deliverAvailableItems()
     return { accepted: false, terminated: true, quotaExceeded }

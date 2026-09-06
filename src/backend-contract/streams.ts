@@ -45,6 +45,8 @@ export interface BoundedAsyncStream<T> extends AsyncIterable<StreamItem<T>, unde
   readonly overflowPolicy: OverflowPolicy
   /** Optional synchronous state check for FIFO admission race prevention. */
   readonly isTerminal?: () => boolean
+  /** Optional readable terminal cause; must not consume the unicast iterator. */
+  readonly terminalReason?: () => StreamTerminalNotice['reason'] | null
   [Symbol.asyncIterator](): BoundedAsyncStreamIterator<T>
   close(): Promise<CleanupRecord>
 }

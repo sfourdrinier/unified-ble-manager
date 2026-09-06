@@ -28,6 +28,28 @@ export function bindScanSourceTerminal(
 ): void {
   bindScanSourceTerminalMethod(source, 'finishWithReason', onTerminal)
   bindScanSourceTerminalMethod(source, 'closeWithReason', onTerminal)
+  const already = readScanSourceTerminalReason(source)
+  if (already !== null) onTerminal(already)
+}
+
+function readScanSourceTerminalReason(source: object): StreamTerminalNotice['reason'] | null {
+  const reader = Reflect.get(source, 'terminalReason')
+  if (typeof reader !== 'function') return null
+  const reason = reader.call(source)
+  return isStreamTerminalReason(reason) ? reason : null
+}
+
+function isStreamTerminalReason(value: unknown): value is StreamTerminalNotice['reason'] {
+  return (
+    value === 'closed' ||
+    value === 'overflow' ||
+    value === 'source-failed' ||
+    value === 'owner-released' ||
+    value === 'connection-lost' ||
+    value === 'service-changed' ||
+    value === 'operation-aborted' ||
+    value === 'operation-timed-out'
+  )
 }
 
 function bindScanSourceTerminalMethod(
