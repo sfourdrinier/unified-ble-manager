@@ -25,19 +25,17 @@ export async function subscribeBluez(
 ): Promise<BluezBackendSubscription> {
   const objectPath = runtime.resolveCharacteristicPath(path, 'bluez.gatt.subscribe')
   let physical = runtime.physicalSubscriptions.get(objectPath)
-  if (physical?.state === 'removing') {
-    if (physical.removal === null) {
-      throw new Error('BlueZ notification removal has no transition')
-    }
+  if (physical?.state === 'removing' || physical?.state === 'enabling-failed') {
+    const removal = physical.removal ?? beginBluezPhysicalRemoval(runtime, physical)
     try {
       await awaitSharedBluezTransition(
-        physical.removal.then(() => undefined),
+        removal.then(() => undefined),
         options,
         runtime.now,
         'bluez.gatt.stop-notify.join'
       )
     } catch (error) {
-      if (physical.state === 'removing') {
+      if (physical.state === 'removing' || physical.state === 'enabling-failed') {
         throw error
       }
     }
@@ -54,13 +52,27 @@ export async function subscribeBluez(
         }
       },
       error => {
-        if (runtime.physicalSubscriptions.get(objectPath) === enabling) {
-          if (runtime.isDestroying()) {
-            return
-          }
-          runtime.physicalSubscriptions.delete(objectPath)
+        if (runtime.physicalSubscriptions.get(objectPath) !== enabling) {
+          return
+        }
+        if (enabling.state === 'enabling') {
+          enabling.state = 'enabling-failed'
+        }
+        if (!runtime.isDestroying()) {
           console.error('[subscribeBluez] BlueZ StartNotify failed:', error)
         }
+        if (
+          runtime.isDestroying() ||
+          enabling.pendingConsumers > 0 ||
+          enabling.consumers.size > 0 ||
+          enabling.removal !== null
+        ) {
+          return
+        }
+        const orphanCleanup = beginBluezPhysicalRemoval(runtime, enabling)
+        orphanCleanup.catch(cleanupError => {
+          console.error('[subscribeBluez] Failed to clean an orphaned BlueZ notification enablement:', cleanupError)
+        })
       }
     )
   }
@@ -159,12 +171,12 @@ export function beginBluezPhysicalRemoval(
     cleanup => {
       if (cleanup.state === 'release-failed' && physical.removal === removal) {
         physical.removal = null
-        physical.state = 'ready'
+        physical.state = physical.consumers.size > 0 ? 'ready' : 'enabling-failed'
       }
       return cleanup
     },
     error => {
-      physical.state = 'ready'
+      physical.state = physical.consumers.size > 0 ? 'ready' : 'enabling-failed'
       physical.removal = null
       console.error('[beginBluezPhysicalRemoval] BlueZ StopNotify failed:', error)
       throw error
@@ -182,12 +194,14 @@ export async function stopBluezPhysicalSubscription(
     await awaitBluezNativePromise(physical.startMethod, runtime.now, 'bluez.gatt.start-notify.cleanup')
   } catch (error) {
     if (physicalSubscriptionIsGone(runtime, physical)) {
+      releaseBluezPhysicalSubscription(runtime, physical)
       return releasedBluezCleanup
     }
     if (isBluezCleanupTimeout(error)) {
       return pendingBluezSubscriptionCleanup('bluez.gatt.start-notify.cleanup')
     }
-    throw error
+    releaseBluezPhysicalSubscription(runtime, physical)
+    return releasedBluezCleanup
   }
   try {
     if (physical.stopMethod === null) {
@@ -211,12 +225,9 @@ export async function stopBluezPhysicalSubscription(
       throw contractError('lifecycle.invariant-violation', 'gatt', 'bluez.gatt.stop-notify-method')
     }
     await awaitBluezNativePromise(stopMethod, runtime.now, 'bluez.gatt.stop-notify-method')
-    await waitForBluezBoolean(runtime, physical.objectPath, BLUEZ_GATT_CHARACTERISTIC_INTERFACE, 'Notifying', false, {
-      signal: null,
-      deadline: deadline(runtime.now() + BLUEZ_NATIVE_CLEANUP_TIMEOUT_MS)
-    })
   } catch (error) {
     if (physicalSubscriptionIsGone(runtime, physical)) {
+      releaseBluezPhysicalSubscription(runtime, physical)
       return releasedBluezCleanup
     }
     if (isBluezCleanupTimeout(error)) {
@@ -226,9 +237,7 @@ export async function stopBluezPhysicalSubscription(
   }
   physical.stopMethod = null
   physical.stopRequested = false
-  if (runtime.physicalSubscriptions.get(physical.objectPath) === physical) {
-    runtime.physicalSubscriptions.delete(physical.objectPath)
-  }
+  releaseBluezPhysicalSubscription(runtime, physical)
   return releasedBluezCleanup
 }
 
@@ -296,6 +305,12 @@ function createBluezPhysicalSubscription(runtime: BluezBackendRuntime, objectPat
   }
   physical = created
   return created
+}
+
+function releaseBluezPhysicalSubscription(runtime: BluezBackendRuntime, physical: BluezPhysicalSubscription): void {
+  if (runtime.physicalSubscriptions.get(physical.objectPath) === physical) {
+    runtime.physicalSubscriptions.delete(physical.objectPath)
+  }
 }
 
 function physicalSubscriptionIsGone(runtime: BluezBackendRuntime, physical: BluezPhysicalSubscription): boolean {

@@ -68,6 +68,13 @@ class InMemoryBluezObjectManager {
     if (!this.knownPaths.has(path)) {
       throw new Error(`InMemoryBluezObjectManager cannot emit PropertiesChanged for unknown object path '${path}'`)
     }
+    const object = this.objects.find(candidate => candidate.path === path)
+    const iface = object?.interfaces.find(definition => definition.name === interfaceName)
+    if (iface !== undefined) {
+      for (const [name, variant] of Object.entries(changed)) {
+        iface.properties[name] = variant
+      }
+    }
     this.emit('propertiesChanged', {
       ordinal: this.allocateOrdinal(),
       path,
@@ -111,6 +118,8 @@ class InMemoryBluezBoundary {
     this.closed = false
     this.resetListeners = new Set()
     this.handlers = new Map()
+    this.externalDiscoveryHolds = 0
+    this.externalNotifyHolds = new Map()
     this.methods = {
       callVoid: async (path, interfaceName, method, argumentsValue) => {
         const call = { returnKind: 'void', path, interfaceName, method, argumentsValue }
@@ -142,6 +151,60 @@ class InMemoryBluezBoundary {
 
   onCall(path, interfaceName, method, handler) {
     this.handlers.set(this.handlerKey(path, interfaceName, method), handler)
+  }
+
+  /**
+   * Simulate another D-Bus client that keeps Adapter1.Discovering true after this
+   * client's StopDiscovery. Session-local cleanup must not wait for the global
+   * property to become false.
+   */
+  holdExternalDiscovery() {
+    this.externalDiscoveryHolds += 1
+    this.objectManager.emitPropertiesChanged(this.adapterPath(), BLUEZ_ADAPTER_INTERFACE, {
+      Discovering: { signature: 'b', value: true }
+    })
+  }
+
+  releaseExternalDiscovery() {
+    this.externalDiscoveryHolds = Math.max(0, this.externalDiscoveryHolds - 1)
+    if (this.externalDiscoveryHolds === 0) {
+      this.objectManager.emitPropertiesChanged(this.adapterPath(), BLUEZ_ADAPTER_INTERFACE, {
+        Discovering: { signature: 'b', value: false }
+      })
+    }
+  }
+
+  /**
+   * Simulate another D-Bus client that keeps GattCharacteristic1.Notifying true
+   * after this client's StopNotify.
+   */
+  holdExternalNotify(path) {
+    this.externalNotifyHolds.set(path, (this.externalNotifyHolds.get(path) ?? 0) + 1)
+    this.objectManager.emitPropertiesChanged(path, BLUEZ_GATT_CHARACTERISTIC_INTERFACE, {
+      Notifying: { signature: 'b', value: true }
+    })
+  }
+
+  releaseExternalNotify(path) {
+    const remaining = Math.max(0, (this.externalNotifyHolds.get(path) ?? 0) - 1)
+    if (remaining === 0) {
+      this.externalNotifyHolds.delete(path)
+      this.objectManager.emitPropertiesChanged(path, BLUEZ_GATT_CHARACTERISTIC_INTERFACE, {
+        Notifying: { signature: 'b', value: false }
+      })
+      return
+    }
+    this.externalNotifyHolds.set(path, remaining)
+  }
+
+  adapterPath() {
+    const adapter = this.objectManager.objects.find(candidate =>
+      candidate.interfaces.some(definition => definition.name === BLUEZ_ADAPTER_INTERFACE)
+    )
+    if (adapter === undefined) {
+      throw new Error('In-memory BlueZ boundary has no Adapter1 object')
+    }
+    return adapter.path
   }
   async ensurePairingAgent() {
     this.pairingAgentEnsured = (this.pairingAgentEnsured ?? 0) + 1
@@ -224,9 +287,11 @@ class InMemoryBluezBoundary {
       return
     }
     if (call.interfaceName === BLUEZ_ADAPTER_INTERFACE && call.method === 'StopDiscovery') {
-      this.objectManager.emitPropertiesChanged(call.path, BLUEZ_ADAPTER_INTERFACE, {
-        Discovering: { signature: 'b', value: false }
-      })
+      if (this.externalDiscoveryHolds === 0) {
+        this.objectManager.emitPropertiesChanged(call.path, BLUEZ_ADAPTER_INTERFACE, {
+          Discovering: { signature: 'b', value: false }
+        })
+      }
       return
     }
     if (call.interfaceName === BLUEZ_DEVICE_INTERFACE && call.method === 'Disconnect') {
@@ -258,9 +323,11 @@ class InMemoryBluezBoundary {
       return
     }
     if (call.interfaceName === BLUEZ_GATT_CHARACTERISTIC_INTERFACE && call.method === 'StopNotify') {
-      this.objectManager.emitPropertiesChanged(call.path, BLUEZ_GATT_CHARACTERISTIC_INTERFACE, {
-        Notifying: { signature: 'b', value: false }
-      })
+      if ((this.externalNotifyHolds.get(call.path) ?? 0) === 0) {
+        this.objectManager.emitPropertiesChanged(call.path, BLUEZ_GATT_CHARACTERISTIC_INTERFACE, {
+          Notifying: { signature: 'b', value: false }
+        })
+      }
     }
   }
 }

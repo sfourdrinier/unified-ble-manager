@@ -48,6 +48,11 @@ export interface BluezScanGroup {
   readonly consumers: Map<string, BluezScanConsumer>
   state: 'starting' | 'active' | 'stopping'
   physicalStarted: boolean
+  filterApplied: boolean
+  filterSettled: boolean
+  discoverySettled: boolean
+  setFilter: Promise<void> | null
+  startDiscovery: Promise<void> | null
   stopDiscoveryRequested: boolean
   stopDiscovery: Promise<void> | null
   filterClearRequested: boolean
@@ -57,6 +62,12 @@ export interface BluezScanGroup {
   startupComplete: boolean
   readonly startupSettled: Promise<void>
   readonly settleStartup: () => void
+}
+
+export interface BluezAddressAcquisition {
+  readonly completion: Promise<void>
+  waiters: number
+  connectDevice: Promise<void> | null
 }
 
 export interface BluezConnectionRecord {
@@ -115,7 +126,7 @@ export interface BluezPhysicalSubscription {
   readonly consumers: Set<BluezSubscriptionRecord>
   readonly pendingRemovals: Set<BluezSubscriptionRecord>
   pendingConsumers: number
-  state: 'enabling' | 'ready' | 'removing'
+  state: 'enabling' | 'enabling-failed' | 'ready' | 'removing'
   readonly startMethod: Promise<void>
   readonly enablement: Promise<void>
   removal: Promise<CleanupRecord> | null

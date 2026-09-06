@@ -93,6 +93,7 @@ import {
 import { beginBluezPhysicalRemoval, removeBluezSubscription, subscribeBluez } from './bluez-subscription-runtime'
 import { destroyBluezScan, joinBluezScan, startBluezScan, stopBluezScan } from './bluez-scan-runtime'
 import type {
+  BluezAddressAcquisition,
   BluezConnectionRecord,
   BluezPhysicalSubscription,
   BluezPropertyWaiter,
@@ -168,6 +169,7 @@ export class BluezBackendRuntime implements BluezObjectStoreObserver {
   private readonly stateStreams = new Set<CoreBoundedStream<AdapterStateSnapshot<string>>>()
   readonly connectionRecords = new Map<string, BluezConnectionRecord>()
   readonly physicalSubscriptions = new Map<string, BluezPhysicalSubscription>()
+  readonly addressAcquisitions = new Map<string, BluezAddressAcquisition>()
   private readonly peerPaths = new Map<string, string>()
   private readonly peerHandles = new Map<string, PeerId<string>>()
   private readonly addressTargets = new Map<string, PeerAddressDescriptor>()

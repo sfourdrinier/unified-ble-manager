@@ -11,7 +11,11 @@ const { createBluezBackendProvider } = require('../../../src/backends/bluez/blue
 const { BluezDbusMethodError } = require('../../../src/backends/bluez/bluez-dbus-contract')
 const { createBleManagerFromProvider, DEFAULT_BLE_MANAGER_OPTIONS } = require('../../../src/manager/ble-manager')
 const { createPublicBleManager } = require('../../../src/public/ble-manager')
-const { normalizeScanObservation, normalizeScanQuery, observationMatchesScanQuery } = require('../../../src/public/scan-query')
+const {
+  normalizeScanObservation,
+  normalizeScanQuery,
+  observationMatchesScanQuery
+} = require('../../../src/public/scan-query')
 const {
   BLUEZ_ADAPTER_INTERFACE,
   BLUEZ_DEVICE_INTERFACE,
@@ -306,5 +310,208 @@ describe('BlueZ peer:address-targeting', () => {
     expect(boundary.calls.filter(call => call.method === 'StartDiscovery')).toHaveLength(0)
     await connection.release()
     await manager.destroy()
+  })
+
+  test('bounds a hung ConnectDevice by the caller deadline and does not start a second call', async () => {
+    jest.useFakeTimers({ now: 1_000 })
+    let backend
+    try {
+      const fixtureResult = await backendFixture([adapterObject()])
+      backend = fixtureResult.backend
+      const { boundary } = fixtureResult
+      let releaseConnectDevice
+      const connectDeviceGate = new Promise(resolve => {
+        releaseConnectDevice = resolve
+      })
+      boundary.onCall(adapterPath, BLUEZ_ADAPTER_INTERFACE, 'ConnectDevice', async () => {
+        await connectDeviceGate
+        boundary.objectManager.objects.push(deviceObject(true))
+        boundary.objectManager.emitInterfacesAdded(devicePath, [deviceInterface(true)])
+      })
+
+      const peerId = backend.connections.peerFromAddress({ address, addressType: 'public' })
+      let firstOutcome = 'pending'
+      const first = backend.connections.connect(peerId, clientId, { signal: null, deadline: Date.now() + 20 })
+      first.then(
+        () => {
+          firstOutcome = 'resolved'
+        },
+        error => {
+          firstOutcome = error.normalized?.code ?? 'rejected'
+        }
+      )
+      await jest.advanceTimersByTimeAsync(0)
+      expect(boundary.calls.filter(call => call.method === 'ConnectDevice')).toHaveLength(1)
+      await jest.advanceTimersByTimeAsync(20)
+      expect(firstOutcome).toBe('operation.timed-out')
+      await expect(first).rejects.toMatchObject({ normalized: { code: 'operation.timed-out' } })
+
+      let secondOutcome = 'pending'
+      const second = backend.connections.connect(peerId, clientId, { signal: null, deadline: Date.now() + 20 })
+      second.then(
+        () => {
+          secondOutcome = 'resolved'
+        },
+        error => {
+          secondOutcome = error.normalized?.code ?? 'rejected'
+        }
+      )
+      await jest.advanceTimersByTimeAsync(20)
+      expect(secondOutcome).toBe('operation.timed-out')
+      await expect(second).rejects.toMatchObject({ normalized: { code: 'operation.timed-out' } })
+      expect(boundary.calls.filter(call => call.method === 'ConnectDevice')).toHaveLength(1)
+
+      releaseConnectDevice()
+      await jest.advanceTimersByTimeAsync(0)
+      await Promise.resolve()
+      expect(boundary.calls.filter(call => call.method === 'Disconnect')).toHaveLength(1)
+      await expect(backend.destroy()).resolves.toEqual({ state: 'released', failures: [] })
+    } finally {
+      jest.useRealTimers()
+      if (backend !== undefined) {
+        await backend.destroy().catch(() => undefined)
+      }
+    }
+  })
+
+  test('widens an excluding live scan so address fallback can observe the target', async () => {
+    const heartRateUuid = '0000180d-0000-1000-8000-00805f9b34fb'
+    const polarPath = `${adapterPath}/dev_AA_BB_CC_DD_EE_FF`
+    const polarInterface = {
+      name: BLUEZ_DEVICE_INTERFACE,
+      properties: {
+        Address: { signature: 's', value: 'AA:BB:CC:DD:EE:FF' },
+        AddressType: { signature: 's', value: 'random' },
+        Alias: { signature: 's', value: 'Polar H10' },
+        RSSI: { signature: 'n', value: -48 },
+        UUIDs: { signature: 'as', value: [heartRateUuid] },
+        Connected: { signature: 'b', value: false },
+        ServicesResolved: { signature: 'b', value: false }
+      }
+    }
+    const { backend, boundary } = await backendFixture([
+      adapterObject(),
+      { path: polarPath, interfaces: [polarInterface] }
+    ])
+    boundary.onCall(adapterPath, BLUEZ_ADAPTER_INTERFACE, 'ConnectDevice', async () => {
+      throw unknownMethodError()
+    })
+    const scan = await backend.scanner.start(
+      {
+        filter: { serviceUuids: [heartRateUuid], manufacturerData: [], localNamePrefix: 'Polar' },
+        duplicatePolicy: 'all',
+        timestampPolicy: 'receipt-monotonic',
+        delivery: {
+          itemCapacity: 4,
+          byteCapacity: 4096,
+          reservedControlCapacity: 1,
+          overflowPolicy: 'drop-oldest'
+        },
+        deadline: null,
+        signal: null,
+        sharing: { mode: 'owner', allowSharing: false }
+      },
+      opaqueId('excluding-scan', 'client', 'bluez:test')
+    )
+    const seenNames = []
+    const iterator = scan.observations[Symbol.asyncIterator]()
+    const firstObservation = await iterator.next()
+    expect(firstObservation.value.value.localName.value).toBe('Polar H10')
+    seenNames.push(firstObservation.value.value.localName.value)
+
+    boundary.onCall(adapterPath, BLUEZ_ADAPTER_INTERFACE, 'SetDiscoveryFilter', async call => {
+      const filter = call.argumentsValue[0].value
+      if (filter.UUIDs === undefined) {
+        setImmediate(() => {
+          if (!boundary.objectManager.objects.some(candidate => candidate.path === devicePath)) {
+            boundary.objectManager.objects.push(deviceObject())
+            boundary.objectManager.emitInterfacesAdded(devicePath, [deviceInterface()])
+          }
+        })
+      }
+    })
+    boundary.onCall(devicePath, BLUEZ_DEVICE_INTERFACE, 'Connect', async () => {
+      boundary.objectManager.emitPropertiesChanged(devicePath, BLUEZ_DEVICE_INTERFACE, {
+        Connected: { signature: 'b', value: true }
+      })
+    })
+    boundary.onCall(devicePath, BLUEZ_DEVICE_INTERFACE, 'Disconnect', async () => undefined)
+
+    const peerId = backend.connections.peerFromAddress({ address, addressType: 'public' })
+    const lease = await backend.connections.connect(peerId, clientId, {
+      signal: null,
+      deadline: Date.now() + 500
+    })
+    const widened = boundary.calls.filter(
+      call => call.method === 'SetDiscoveryFilter' && call.argumentsValue[0].value.UUIDs === undefined
+    )
+    expect(widened.length).toBeGreaterThanOrEqual(1)
+    const restored = boundary.calls.filter(
+      call =>
+        call.method === 'SetDiscoveryFilter' &&
+        Array.isArray(call.argumentsValue[0].value.UUIDs?.value) &&
+        call.argumentsValue[0].value.UUIDs.value.includes(heartRateUuid)
+    )
+    expect(restored.length).toBeGreaterThanOrEqual(2)
+    expect(boundary.calls.filter(call => call.method === 'StartDiscovery')).toHaveLength(1)
+
+    const nextObservation = iterator.next()
+    let extraObservation = null
+    nextObservation.then(item => {
+      extraObservation = item
+    })
+    await new Promise(resolve => setImmediate(resolve))
+    expect(extraObservation).toBe(null)
+
+    await expect(lease.release()).resolves.toEqual({ state: 'released', failures: [] })
+    await expect(scan.stop()).resolves.toEqual({ state: 'released', failures: [] })
+    expect(seenNames).toEqual(['Polar H10'])
+    await backend.destroy()
+  })
+
+  test('reuses a compatible live scan for address fallback without a second StartDiscovery', async () => {
+    const { backend, boundary } = await backendFixture([adapterObject()])
+    boundary.onCall(adapterPath, BLUEZ_ADAPTER_INTERFACE, 'ConnectDevice', async () => {
+      throw unknownMethodError()
+    })
+    const scan = await backend.scanner.start(
+      {
+        filter: { serviceUuids: [], manufacturerData: [], localNamePrefix: null },
+        duplicatePolicy: 'all',
+        timestampPolicy: 'receipt-monotonic',
+        delivery: {
+          itemCapacity: 4,
+          byteCapacity: 4096,
+          reservedControlCapacity: 1,
+          overflowPolicy: 'drop-oldest'
+        },
+        deadline: null,
+        signal: null,
+        sharing: { mode: 'owner', allowSharing: false }
+      },
+      opaqueId('compatible-scan', 'client', 'bluez:test')
+    )
+    boundary.onCall(devicePath, BLUEZ_DEVICE_INTERFACE, 'Connect', async () => {
+      boundary.objectManager.emitPropertiesChanged(devicePath, BLUEZ_DEVICE_INTERFACE, {
+        Connected: { signature: 'b', value: true }
+      })
+    })
+    boundary.onCall(devicePath, BLUEZ_DEVICE_INTERFACE, 'Disconnect', async () => undefined)
+
+    const peerId = backend.connections.peerFromAddress({ address, addressType: 'public' })
+    const pending = backend.connections.connect(peerId, clientId, operation())
+    await new Promise(resolve => setImmediate(resolve))
+    boundary.objectManager.objects.push(deviceObject())
+    boundary.objectManager.emitInterfacesAdded(devicePath, [deviceInterface()])
+    const lease = await pending
+    expect(boundary.calls.filter(call => call.method === 'StartDiscovery')).toHaveLength(1)
+    expect(
+      boundary.calls.filter(
+        call => call.method === 'SetDiscoveryFilter' && call.argumentsValue[0].value.Pattern?.value === address
+      )
+    ).toHaveLength(0)
+    await expect(lease.release()).resolves.toEqual({ state: 'released', failures: [] })
+    await expect(scan.stop()).resolves.toEqual({ state: 'released', failures: [] })
+    await backend.destroy()
   })
 })
