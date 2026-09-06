@@ -745,7 +745,7 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
             return database
           }
         } catch (error) {
-          if (isRediscoverCallerTerminal(error, options)) {
+          if (isRediscoverCallerTerminal(error, options, this.options.now)) {
             throw error
           }
         }
@@ -1487,14 +1487,14 @@ function abortRequested(signal: AbortSignal | null | undefined): boolean {
   return signal !== null && signal !== undefined && signal.aborted
 }
 
-function isRediscoverCallerTerminal(error: unknown, options: PublicOperationOptions): boolean {
+function isRediscoverCallerTerminal(error: unknown, options: PublicOperationOptions, now: () => number): boolean {
   if (!(error instanceof BackendContractError)) {
     return false
   }
   const code = error.normalized.code
   return (
     (code === 'operation.aborted' && abortRequested(options.signal)) ||
-    code === 'operation.timed-out' ||
+    (code === 'operation.timed-out' && options.deadline !== null && options.deadline <= now()) ||
     code === 'operation.cancelled-by-destroy'
   )
 }

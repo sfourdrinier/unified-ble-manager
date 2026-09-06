@@ -1248,6 +1248,42 @@ describe('UnifiedBleCore lifecycle hardening', () => {
     expectNoResources(fixture.backend.resourceCounters())
   })
 
+  test('a starter deadline does not fail a sibling rediscover waiter with no deadline', async () => {
+    const { fixture, manager } = await createFixture()
+    const { connection } = await connectedDatabase(fixture, manager)
+    const originalDiscover = fixture.backend.gatt.discover.bind(fixture.backend.gatt)
+    let releaseReplacement
+    const replacementGate = new Promise(resolve => {
+      releaseReplacement = resolve
+    })
+    fixture.backend.gatt.discover = async (...args) => {
+      await replacementGate
+      return originalDiscover(...args)
+    }
+    const starter = connection.connection.rediscoverGatt(
+      operation(null, deadline(manager.monotonicNow() + 20)),
+      'manual-rediscovery'
+    )
+    const waiter = connection.connection.rediscoverGatt(operation(), 'manual-rediscovery')
+    await flushMicrotasks()
+
+    const waiterOutcome = waiter.then(
+      value => ({ state: 'fulfilled', value }),
+      error => ({ state: 'rejected', error })
+    )
+    await expect(starter).rejects.toMatchObject({ normalized: { code: 'operation.timed-out' } })
+    releaseReplacement()
+    await flushVirtual(fixture.controller)
+
+    const waiterResult = await waiterOutcome
+    expect(waiterResult.state).toBe('fulfilled')
+    waiterResult.value.assertCurrent()
+
+    fixture.backend.gatt.discover = originalDiscover
+    await settle(fixture.controller, manager.destroy())
+    expectNoResources(fixture.backend.resourceCounters())
+  })
+
   test('discover joiner follows a replacement rediscovery instead of asserting a stale snapshot', async () => {
     const { fixture, manager } = await createFixture()
     const connection = await settle(fixture.controller, manager.connect(peer(), operation()))
