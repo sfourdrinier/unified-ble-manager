@@ -165,7 +165,7 @@ its owner completes cleanup; it never becomes ready by implication.
 
 | Resource | States | Transition rules | Invalid-use result |
 | --- | --- | --- | --- |
-| scan session | starting, active, stopping, stopped, invalid | starting → active or stopping; active → stopping; stop/abort/deadline → stopping → stopped; reset/restart/destroy → invalid | stopped includes one terminal cause; invalid rejects use. |
+| scan session | starting, active, stopping, stopped, invalid | starting → active or stopping; active → stopping; stop/abort/deadline → stopping → stopped; host/source terminals leave `active` without `stop()` (`failed` for `source-failed`/`connection-lost`, `stopped` for ordinary close) and that event is ended delivery, not physical cleanup; reset/restart/destroy → invalid | stopped includes one terminal cause; invalid rejects use. |
 | chooser session | requesting, selected, cancelled, failed, closed | requesting → selected/cancelled/failed; every terminal → closed; abort/deadline → failed → closed | closed cannot request or grant access. |
 | connection | connecting, connected, disconnecting, disconnected, lost, invalid | connecting → connected/disconnecting/lost/invalid; connected → disconnecting/lost/invalid; disconnecting → disconnected/lost/invalid; reset/restart/destroy → invalid | invalid rejects every path from its attachment. |
 | database | undiscovered, discovering, current, changed, invalid | undiscovered/current → discovering; discovering → current/undiscovered/invalid; current → changed → undiscovered; connection loss → invalid | a failed or interrupted discovery leaves no current partial snapshot. |

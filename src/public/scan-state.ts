@@ -1,9 +1,46 @@
+import type { StreamTerminalNotice } from '../backend-contract/streams'
 import type { ScanStateEvent } from './ble-manager'
 
 export interface ScanStateController {
   readonly stream: AsyncIterable<ScanStateEvent>
   emit(event: ScanStateEvent): void
   close(): void
+}
+
+/**
+ * Projects a source/host terminal into public scan state.
+ *
+ * This is ended delivery, not physical cleanup: `source-failed` and
+ * `connection-lost` become `failed`; ordinary close becomes `stopped`.
+ * `stop()` still reports remaining native/session cleanup.
+ */
+export function projectScanDeliveryTerminal(reason: StreamTerminalNotice['reason']): ScanStateEvent {
+  if (reason === 'source-failed' || reason === 'connection-lost' || reason === 'overflow') {
+    return Object.freeze({ state: 'failed', reason })
+  }
+  return Object.freeze({ state: 'stopped', reason })
+}
+
+/** Observes producer-side terminal methods so state updates without an iterator. */
+export function bindScanSourceTerminal(
+  source: object,
+  onTerminal: (reason: StreamTerminalNotice['reason']) => void
+): void {
+  bindScanSourceTerminalMethod(source, 'finishWithReason', onTerminal)
+  bindScanSourceTerminalMethod(source, 'closeWithReason', onTerminal)
+}
+
+function bindScanSourceTerminalMethod(
+  source: object,
+  methodName: 'finishWithReason' | 'closeWithReason',
+  onTerminal: (reason: StreamTerminalNotice['reason']) => void
+): void {
+  const method = Reflect.get(source, methodName)
+  if (typeof method !== 'function') return
+  Reflect.set(source, methodName, (reason: StreamTerminalNotice['reason']) => {
+    method.call(source, reason)
+    onTerminal(reason)
+  })
 }
 
 interface StateWaiter {

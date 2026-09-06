@@ -1228,6 +1228,8 @@ describe('canonical public ScanQuery v1', () => {
       limits: inner.limits,
       overflowPolicy: inner.overflowPolicy,
       emit: (value, bytes) => inner.emit(value, bytes),
+      closeWithReason: reason => inner.closeWithReason(reason),
+      finishWithReason: reason => inner.finishWithReason(reason),
       [Symbol.asyncIterator]: () => {
         const iterator = inner[Symbol.asyncIterator]()
         return {
@@ -1499,6 +1501,180 @@ describe('canonical public ScanQuery v1', () => {
     }
     expect(fixture.nativeStop).toHaveBeenCalledTimes(count)
   }
+
+  const tinyByteErrorDelivery = {
+    preset: 'custom',
+    budget: {
+      itemCapacity: 16,
+      byteCapacity: 200,
+      reservedControlCapacity: 1,
+      overflowPolicy: 'error'
+    }
+  }
+
+  async function consumeEventsAtFullSpeed(scan, fixture, count, prefix) {
+    const events = scan.events[Symbol.asyncIterator]()
+    for (let index = 0; index < count; index += 1) {
+      const next = events.next()
+      fixture.source.emit(scanAdvertisement(`${prefix}-${index}`), 32)
+      await expect(next).resolves.toMatchObject({
+        value: { kind: 'observed', peer: { id: `${prefix}-${index}` } }
+      })
+    }
+    return events
+  }
+
+  async function consumeObservationsAtFullSpeed(scan, fixture, count, prefix) {
+    const observations = scan.observations[Symbol.asyncIterator]()
+    for (let index = 0; index < count; index += 1) {
+      const next = observations.next()
+      fixture.source.emit(scanAdvertisement(`${prefix}-${index}`), 32)
+      await expect(next).resolves.toMatchObject({
+        value: { kind: 'value', value: { peer: { id: `${prefix}-${index}` } } }
+      })
+    }
+    return observations
+  }
+
+  test('events-only consumer at full speed is not killed by unused observation item overflow', async () => {
+    const fixture = createStopOverflowFixture()
+    const manager = await createPublicBleManager(fixture.internal, () => 0)
+    const scan = await manager.scan({ delivery: tinyErrorDelivery, duplicates: 'all' })
+    const events = await consumeEventsAtFullSpeed(scan, fixture, 8, 'events-only-item')
+    expect(fixture.nativeStop).not.toHaveBeenCalled()
+    fixture.source.emit(scanAdvertisement('events-only-item-still-alive'), 32)
+    await expect(events.next()).resolves.toMatchObject({
+      value: { kind: 'observed', peer: { id: 'events-only-item-still-alive' } }
+    })
+    await events.return()
+    await scan.stop()
+  })
+
+  test('events-only consumer at full speed is not killed by unused observation byte overflow', async () => {
+    const fixture = createStopOverflowFixture()
+    const manager = await createPublicBleManager(fixture.internal, () => 0)
+    const scan = await manager.scan({ delivery: tinyByteErrorDelivery, duplicates: 'all' })
+    const events = scan.events[Symbol.asyncIterator]()
+    const bulky = { manufacturerData: [{ companyId: 1, data: new Uint8Array(50) }] }
+    for (let index = 0; index < 8; index += 1) {
+      const next = events.next()
+      fixture.source.emit(scanAdvertisement(`events-only-byte-${index}`, bulky), 80)
+      await expect(next).resolves.toMatchObject({
+        value: { kind: 'observed', peer: { id: `events-only-byte-${index}` } }
+      })
+    }
+    expect(fixture.nativeStop).not.toHaveBeenCalled()
+    await events.return()
+    await scan.stop()
+  })
+
+  test('observations-only consumer at full speed is not killed by unused event overflow', async () => {
+    const fixture = createStopOverflowFixture()
+    const manager = await createPublicBleManager(fixture.internal, () => 0)
+    const scan = await manager.scan({ delivery: tinyErrorDelivery, duplicates: 'all' })
+    const observations = await consumeObservationsAtFullSpeed(scan, fixture, 8, 'obs-only')
+    expect(fixture.nativeStop).not.toHaveBeenCalled()
+    await observations.return()
+    await scan.stop()
+  })
+
+  test('both scan views consumed at full speed survive error-on-overflow budgets', async () => {
+    const fixture = createStopOverflowFixture()
+    const manager = await createPublicBleManager(fixture.internal, () => 0)
+    const scan = await manager.scan({ delivery: tinyErrorDelivery, duplicates: 'all' })
+    const observations = scan.observations[Symbol.asyncIterator]()
+    const events = scan.events[Symbol.asyncIterator]()
+    for (let index = 0; index < 8; index += 1) {
+      const observationNext = observations.next()
+      const eventNext = events.next()
+      fixture.source.emit(scanAdvertisement(`both-views-${index}`), 32)
+      await expect(observationNext).resolves.toMatchObject({
+        value: { kind: 'value', value: { peer: { id: `both-views-${index}` } } }
+      })
+      await expect(eventNext).resolves.toMatchObject({
+        value: { kind: 'observed', peer: { id: `both-views-${index}` } }
+      })
+    }
+    expect(fixture.nativeStop).not.toHaveBeenCalled()
+    await observations.return()
+    await events.return()
+    await scan.stop()
+  })
+
+  test('slow events consumer still overflows the subscribed view and stops the scan', async () => {
+    const fixture = createStopOverflowFixture()
+    const manager = await createPublicBleManager(fixture.internal, () => 0)
+    const scan = await manager.scan({ delivery: tinyErrorDelivery, duplicates: 'all' })
+    const events = scan.events[Symbol.asyncIterator]()
+    fixture.source.emit(scanAdvertisement('slow-events-1'), 32)
+    fixture.source.emit(scanAdvertisement('slow-events-2'), 32)
+    await flushMicrotasks()
+    await expect(events.next()).rejects.toMatchObject({ code: 'stream.overflow' })
+    await waitForNativeStop(fixture, 1)
+    await scan.stop()
+  })
+
+  test('default balanced events-only consumer does not terminate on unused observation pressure', async () => {
+    const fixture = createStopOverflowFixture()
+    const manager = await createPublicBleManager(fixture.internal, () => 0)
+    const scan = await manager.scan({ duplicates: 'all' })
+    const events = await consumeEventsAtFullSpeed(scan, fixture, 40, 'balanced-events')
+    expect(fixture.nativeStop).not.toHaveBeenCalled()
+    await events.return()
+    await scan.stop()
+  })
+
+  async function collectRemainingScanStates(iterator) {
+    const states = []
+    for (;;) {
+      const next = await iterator.next()
+      if (next.done) return states
+      states.push(next.value)
+    }
+  }
+
+  test.each([
+    ['source-failed', { state: 'failed', reason: 'source-failed' }],
+    ['connection-lost', { state: 'failed', reason: 'connection-lost' }],
+    ['closed', { state: 'stopped', reason: 'closed' }]
+  ])('%s without stop() leaves the session not active with no iterator', async (reason, expected) => {
+    const fixture = createStopOverflowFixture()
+    const manager = await createPublicBleManager(fixture.internal, () => 0)
+    const scan = await manager.scan()
+    const states = scan.state[Symbol.asyncIterator]()
+    await expect(states.next()).resolves.toMatchObject({ value: { state: 'active' } })
+    fixture.source.closeWithReason(reason)
+    const terminal = await awaitSignal(states.next(), `${reason} to terminalize session state`)
+    expect(terminal.value.state).not.toBe('active')
+    expect(terminal.value).toMatchObject(expected)
+    expect(fixture.nativeStop).not.toHaveBeenCalled()
+    await expect(scan.stop()).resolves.toEqual({ state: 'released', failures: [] })
+    expect(fixture.nativeStop).toHaveBeenCalledTimes(1)
+    const rest = await awaitSignal(collectRemainingScanStates(states), 'scan state stream to close after stop')
+    expect(rest.every(event => event.state !== 'active')).toBe(true)
+  })
+
+  test.each([
+    ['source-failed', { state: 'failed', reason: 'source-failed' }],
+    ['connection-lost', { state: 'failed', reason: 'connection-lost' }],
+    ['closed', { state: 'stopped', reason: 'closed' }]
+  ])('%s without stop() leaves the session not active with an attached iterator', async (reason, expected) => {
+    const fixture = createStopOverflowFixture()
+    const manager = await createPublicBleManager(fixture.internal, () => 0)
+    const scan = await manager.scan()
+    const states = scan.state[Symbol.asyncIterator]()
+    const observations = scan.observations[Symbol.asyncIterator]()
+    await expect(states.next()).resolves.toMatchObject({ value: { state: 'active' } })
+    const observationTerminal = observations.next()
+    fixture.source.closeWithReason(reason)
+    await expect(observationTerminal).resolves.toMatchObject({ value: { kind: 'terminal', reason } })
+    const terminal = await awaitSignal(states.next(), `${reason} to terminalize session state`)
+    expect(terminal.value.state).not.toBe('active')
+    expect(terminal.value).toMatchObject(expected)
+    expect(fixture.nativeStop).not.toHaveBeenCalled()
+    await expect(scan.stop()).resolves.toEqual({ state: 'released', failures: [] })
+    expect(fixture.nativeStop).toHaveBeenCalledTimes(1)
+  })
 })
 
 describe('public scan-state-budget', () => {

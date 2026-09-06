@@ -18,8 +18,12 @@ import {
 import type { PeerId } from '../backend-contract/primitives'
 import type { BleManager as InternalBleManager } from '../manager/ble-manager'
 import type { BleManagerOptions } from '../manager/ble-manager'
-import type { BoundedAsyncStream } from '../backend-contract/streams'
-import type { BoundedAsyncStreamIterator, StreamTerminalNotice } from '../backend-contract/streams'
+import type {
+  BoundedAsyncStream,
+  BoundedAsyncStreamIterator,
+  StreamOverflowNotice,
+  StreamTerminalNotice
+} from '../backend-contract/streams'
 import { CoreBoundedStream } from '../core/bounded-stream'
 import { normalizeOperationOptions } from './operation-options'
 import type { OperationOptions } from './operation-options'
@@ -56,7 +60,7 @@ import {
   type NormalizedScanObservation,
   type ScanQuery
 } from './scan-query'
-import { createScanState } from './scan-state'
+import { bindScanSourceTerminal, createScanState, projectScanDeliveryTerminal } from './scan-state'
 import type { BlePeerDirectory, BlePeerState, PeerSource } from './peer-directory'
 import { createPublicPeerDirectory } from './peer-directory'
 import { encodePeerReference, isPeerReference, snapshotPeerReference } from './peer-reference'
@@ -385,6 +389,15 @@ export function inspectPublicScanFingerprintAccountingForTests(session: ScanSess
   return inspect()
 }
 
+/**
+ * Public scan session lifecycle.
+ *
+ * `active` means the session is still accepting source advertisements.
+ * Host/source terminals project out of `active` even with no iterator:
+ * `source-failed`/`connection-lost` become `failed`, ordinary close becomes
+ * `stopped`. That event is ended delivery. `stop()` still performs physical
+ * cleanup and reports it through its `CleanupRecord`.
+ */
 export type ScanStateEvent = {
   readonly state: 'starting' | 'active' | 'stopping' | 'stopped' | 'failed'
   readonly reason?: string
@@ -595,10 +608,82 @@ class PublicScanEventBroadcast implements AsyncIterable<DiscoveryEvent> {
   }
 }
 
+class PublicScanObservationBroadcast {
+  private readonly subscribers = new Set<CoreBoundedStream<PublicScanObservation>>()
+  private terminal: {
+    readonly mode: 'close' | 'finish'
+    readonly reason: StreamTerminalNotice['reason']
+  } | null = null
+
+  constructor(
+    private readonly startPump: () => void,
+    private readonly delivery: StreamBudget
+  ) {}
+
+  subscribe(): BoundedAsyncStreamIterator<PublicScanObservation> {
+    const stream = new CoreBoundedStream<PublicScanObservation>(this.delivery, this.delivery.overflowPolicy)
+    if (this.terminal === null) {
+      this.subscribers.add(stream)
+      this.startPump()
+    } else if (this.terminal.mode === 'finish') {
+      stream.finishWithReason(this.terminal.reason)
+    } else {
+      stream.closeWithReason(this.terminal.reason)
+    }
+    const iterator = stream[Symbol.asyncIterator]()
+    return {
+      next: () => iterator.next(),
+      return: async () => {
+        this.subscribers.delete(stream)
+        await iterator.return()
+        return { done: true, value: undefined }
+      },
+      [Symbol.asyncIterator]() {
+        return this
+      }
+    }
+  }
+
+  emit(observation: PublicScanObservation, byteLength: number): boolean {
+    let terminated = false
+    for (const subscriber of [...this.subscribers]) {
+      if (subscriber.emit(observation, byteLength).terminated) {
+        terminated = true
+        this.subscribers.delete(subscriber)
+      }
+    }
+    return terminated
+  }
+
+  observeSourceOverflow(notice: StreamOverflowNotice): void {
+    for (const subscriber of this.subscribers) {
+      subscriber.observeSourceOverflow(notice)
+    }
+  }
+
+  finishWithReason(reason: StreamTerminalNotice['reason']): void {
+    if (this.terminal !== null) return
+    this.terminal = { mode: 'finish', reason }
+    for (const subscriber of [...this.subscribers]) {
+      subscriber.finishWithReason(reason)
+      this.subscribers.delete(subscriber)
+    }
+  }
+
+  closeWithReason(reason: StreamTerminalNotice['reason']): void {
+    if (this.terminal !== null) return
+    this.terminal = { mode: 'close', reason }
+    for (const subscriber of [...this.subscribers]) {
+      subscriber.closeWithReason(reason)
+      this.subscribers.delete(subscriber)
+    }
+  }
+}
+
 class PublicScanSessionController<Attachment extends string> {
   readonly observations: PublicBoundedAsyncStream<PublicScanObservation>
   readonly events: AsyncIterable<DiscoveryEvent>
-  private readonly observationStream: CoreBoundedStream<PublicScanObservation>
+  private readonly observationBroadcast: PublicScanObservationBroadcast
   private readonly eventBroadcast: PublicScanEventBroadcast
   private readonly presence = new Map<string, PublicScanPresence>()
   private presenceBytes = 0
@@ -617,21 +702,22 @@ class PublicScanSessionController<Attachment extends string> {
     private readonly now: () => number,
     private readonly scheduleDeadline: InternalScanScheduler,
     private readonly reportLostAfterMs: number | undefined,
-    private readonly requestStop: (reason: PublicScanEventTerminalReason) => void
+    private readonly requestStop: (reason: PublicScanEventTerminalReason) => void,
+    private readonly onDeliveryEnded: (reason: StreamTerminalNotice['reason']) => void
   ) {
-    this.observationStream = new CoreBoundedStream(delivery, delivery.overflowPolicy)
+    this.observationBroadcast = new PublicScanObservationBroadcast(() => this.start(), delivery)
     const observationSource: BoundedAsyncStream<PublicScanObservation> = {
-      limits: this.observationStream.limits,
-      overflowPolicy: this.observationStream.overflowPolicy,
-      [Symbol.asyncIterator]: () => {
-        this.start()
-        return this.observationStream[Symbol.asyncIterator]()
-      },
+      limits: delivery,
+      overflowPolicy: delivery.overflowPolicy,
+      [Symbol.asyncIterator]: () => this.observationBroadcast.subscribe(),
       close: () => this.close('closed')
     }
     this.observations = mapPublicBoundedAsyncStream(observationSource, observation => observation)
     this.eventBroadcast = new PublicScanEventBroadcast(() => this.start(), delivery)
     this.events = this.eventBroadcast
+    bindScanSourceTerminal(source, reason => {
+      this.finish(reason)
+    })
   }
 
   async close(reason: PublicScanEventTerminalReason = 'owner-released'): Promise<BackendCleanupRecord> {
@@ -641,7 +727,7 @@ class PublicScanSessionController<Attachment extends string> {
   async closeView(reason: PublicScanEventTerminalReason = 'owner-released'): Promise<BackendCleanupRecord> {
     this.closed = true
     this.cancelPresenceTimers()
-    this.observationStream.closeWithReason(reason)
+    this.observationBroadcast.closeWithReason(reason)
     this.eventBroadcast.close(reason)
     if (this.sourceIterator === null) return { state: 'released', failures: [] }
     await this.sourceIterator.return()
@@ -656,7 +742,7 @@ class PublicScanSessionController<Attachment extends string> {
     }
     this.closed = true
     this.cancelPresenceTimers()
-    this.observationStream.closeWithReason('overflow')
+    this.observationBroadcast.closeWithReason('overflow')
     this.eventBroadcast.close('overflow')
     this.requestStop('overflow')
   }
@@ -676,22 +762,22 @@ class PublicScanSessionController<Attachment extends string> {
       while (!this.closed) {
         const item = await iterator.next()
         if (item.done) {
-          await this.finish('closed')
+          this.finish('closed')
           return
         }
         if (item.value.kind === 'overflow') {
-          this.observationStream.observeSourceOverflow(item.value)
+          this.observationBroadcast.observeSourceOverflow(item.value)
           this.eventBroadcast.close('overflow')
           continue
         }
         if (item.value.kind === 'terminal') {
-          await this.finish(item.value.reason)
+          this.finish(item.value.reason)
           return
         }
         this.accept(item.value.value)
       }
     } catch {
-      await this.finish('source-failed')
+      this.finish('source-failed')
     }
   }
 
@@ -706,12 +792,15 @@ class PublicScanSessionController<Attachment extends string> {
       if (previous?.value === fingerprint) return
       this.rememberObservationFingerprint(observation.peer.id, fingerprint)
     }
-    const observationPush = this.observationStream.emit(observation, estimatePublicScanObservationBytes(observation))
+    const observationTerminated = this.observationBroadcast.emit(
+      observation,
+      estimatePublicScanObservationBytes(observation)
+    )
     const eventTerminated = this.eventBroadcast.emit(
       Object.freeze({ kind: 'observed', peer: observation.peer }),
       estimatePublicDiscoveryEventBytes({ kind: 'observed', peer: observation.peer })
     )
-    if (observationPush.terminated || eventTerminated) this.terminateFromOverflow()
+    if (observationTerminated || eventTerminated) this.terminateFromOverflow()
   }
 
   private observePresence(observation: PublicScanObservation): void {
@@ -854,11 +943,11 @@ class PublicScanSessionController<Attachment extends string> {
     }
   }
 
-  private async finish(reason: StreamTerminalNotice['reason']): Promise<void> {
+  private finish(reason: StreamTerminalNotice['reason']): void {
     if (this.closed) return
     this.closed = true
     this.cancelPresenceTimers()
-    this.observationStream.finishWithReason(reason)
+    this.observationBroadcast.finishWithReason(reason)
     this.eventBroadcast.close(
       reason === 'source-failed'
         ? 'source-failed'
@@ -868,6 +957,7 @@ class PublicScanSessionController<Attachment extends string> {
             ? 'owner-released'
             : 'closed'
     )
+    this.onDeliveryEnded(reason)
   }
 }
 
@@ -1532,11 +1622,13 @@ class PublicBleManager<Attachment extends string, Identity extends BackendIdenti
         nativeReleased: boolean
         stopPromise: Promise<PublicCleanupRecord> | null
         pendingCleanupError: unknown | null
+        deliveryEnded: boolean
       } = {
         viewReleased: false,
         nativeReleased: false,
         stopPromise: null,
-        pendingCleanupError: null
+        pendingCleanupError: null,
+        deliveryEnded: false
       }
       let stopScan: (reason: PublicScanEventTerminalReason) => Promise<PublicCleanupRecord> = async () => ({
         state: 'released',
@@ -1555,11 +1647,16 @@ class PublicBleManager<Attachment extends string, Identity extends BackendIdenti
             stopState.pendingCleanupError = error
             scanState.emit({ state: 'failed', reason: 'scan-stop-failed' })
           })
+        },
+        reason => {
+          if (stopState.deliveryEnded || stopState.stopPromise !== null) return
+          stopState.deliveryEnded = true
+          scanState.emit(projectScanDeliveryTerminal(reason))
         }
       )
       stopScan = async (reason: PublicScanEventTerminalReason): Promise<PublicCleanupRecord> => {
         if (stopState.stopPromise !== null) return stopState.stopPromise
-        scanState.emit({ state: 'stopping' })
+        if (!stopState.deliveryEnded) scanState.emit({ state: 'stopping' })
         const run = (async () => {
           const phases: { readonly error?: unknown; readonly cleanup?: BackendCleanupRecord }[] = []
           if (stopState.pendingCleanupError !== null) {
@@ -1586,7 +1683,7 @@ class PublicBleManager<Attachment extends string, Identity extends BackendIdenti
           try {
             const combined = collectCleanupPhases(phases)
             if (stopState.viewReleased && stopState.nativeReleased) {
-              scanState.emit({ state: 'stopped' })
+              if (!stopState.deliveryEnded) scanState.emit({ state: 'stopped' })
               scanState.close()
               this.activeScanSessions.delete(activeScan)
               stopState.pendingCleanupError = null
