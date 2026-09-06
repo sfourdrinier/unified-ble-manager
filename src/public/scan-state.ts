@@ -10,9 +10,9 @@ export interface ScanStateController {
 /**
  * Projects a source/host terminal into public scan state.
  *
- * This is ended delivery, not physical cleanup: `source-failed` and
- * `connection-lost` become `failed`; ordinary close becomes `stopped`.
- * `stop()` still reports remaining native/session cleanup.
+ * This is ended delivery, not physical cleanup: `source-failed`,
+ * `connection-lost`, and `overflow` become `failed`; ordinary close becomes
+ * `stopped`. `stop()` still reports remaining native/session cleanup.
  */
 export function projectScanDeliveryTerminal(reason: StreamTerminalNotice['reason']): ScanStateEvent {
   if (reason === 'source-failed' || reason === 'connection-lost' || reason === 'overflow') {

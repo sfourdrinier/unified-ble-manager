@@ -33,8 +33,13 @@ No changes yet.
 - Public scan observation overflow is subscriber-local. Consuming only `events`
   at full speed with `duplicates: 'all'` and `overflowPolicy: 'error'` no longer
   terminates the scan because an unused observation queue filled.
+- Subscriber or source overflow that fail-closes a consumed public scan view
+  projects `failed`/`overflow` instead of `stopping` then `stopped`. Physical
+  stop remains cleanup.
 - In-process and IPC scan sessions leave `active` when the host source ends
-  without `stop()`, including a terminal that raced `scan.start`. That event is
+  without `stop()`. An already-terminal source never publishes `active`; the
+  first state is the projected terminal (`failed` for `source-failed` /
+  `connection-lost` / `overflow`, `stopped` for ordinary close). That event is
   ended delivery; `stop()` remains the physical cleanup path.
 - BlueZ `StopDiscovery` / `StopNotify` release this client’s session even if
   another D-Bus client keeps `Discovering` / `Notifying` true.

@@ -584,6 +584,14 @@ describe('canonical public ScanQuery v1', () => {
       { itemCapacity: capacity(1), byteCapacity: capacity(128), reservedControlCapacity: capacity(1) },
       'drop-newest'
     )
+    let nativeStopStarted
+    const nativeStopped = new Promise(resolve => {
+      nativeStopStarted = resolve
+    })
+    const nativeStop = jest.fn(async () => {
+      nativeStopStarted()
+      return { state: 'released', failures: [] }
+    })
     const internal = {
       identity: null,
       attachedBackend: undefined,
@@ -592,13 +600,15 @@ describe('canonical public ScanQuery v1', () => {
       capabilities: () => [],
       scan: jest.fn(async () => ({
         observations: source,
-        stop: async () => ({ state: 'released', failures: [] })
+        stop: nativeStop
       })),
       connect: jest.fn(),
       destroy: jest.fn(async () => ({ state: 'released', failures: [] }))
     }
     const manager = await createPublicBleManager(internal, () => 0)
     const scan = await manager.scan()
+    const states = scan.state[Symbol.asyncIterator]()
+    await expect(states.next()).resolves.toMatchObject({ value: { state: 'active' } })
     const observation = {
       peerId: 'overflow-peer',
       localName: 'Overflow peer',
@@ -614,7 +624,17 @@ describe('canonical public ScanQuery v1', () => {
     const events = scan.events[Symbol.asyncIterator]()
     await expect(observations.next()).resolves.toMatchObject({ value: { kind: 'overflow' } })
     await expect(events.next()).rejects.toMatchObject({ code: 'stream.overflow' })
+    const terminal = await awaitSignal(states.next(), 'source overflow to terminalize session state')
+    expect(terminal.value).toMatchObject({ state: 'failed', reason: 'overflow' })
+    await awaitSignal(nativeStopped, 'native stop after source overflow')
+    expect(nativeStop).toHaveBeenCalledTimes(1)
     await scan.stop()
+    expect(nativeStop).toHaveBeenCalledTimes(1)
+    const rest = await awaitSignal(
+      collectRemainingScanStates(states),
+      'scan state stream to close after source-overflow stop'
+    )
+    expect(rest.some(event => event.state === 'stopping' || event.state === 'stopped')).toBe(false)
   })
 
   test('drains an accepted observation before delivering the source terminal', async () => {
@@ -1321,6 +1341,22 @@ describe('canonical public ScanQuery v1', () => {
     expect(fixture.nativeStop).toHaveBeenCalledTimes(1)
   })
 
+  test('local observation overflow projects failed/overflow and retains native stop as cleanup', async () => {
+    const fixture = createStopOverflowFixture()
+    const manager = await createPublicBleManager(fixture.internal, () => 0)
+    const scan = await manager.scan({ delivery: tinyErrorDelivery })
+    const states = scan.state[Symbol.asyncIterator]()
+    await expect(states.next()).resolves.toMatchObject({ value: { state: 'active' } })
+    await overflowLocalScan(fixture, scan)
+    const terminal = await awaitSignal(states.next(), 'subscriber overflow to terminalize session state')
+    expect(terminal.value).toMatchObject({ state: 'failed', reason: 'overflow' })
+    await waitForNativeStop(fixture, 1)
+    await scan.stop()
+    expect(fixture.nativeStop).toHaveBeenCalledTimes(1)
+    const rest = await awaitSignal(collectRemainingScanStates(states), 'scan state stream to close after overflow cleanup')
+    expect(rest.some(event => event.state === 'stopping' || event.state === 'stopped')).toBe(false)
+  })
+
   test('observation and discovery streams terminate together on overflow', async () => {
     const fixture = createStopOverflowFixture()
     const manager = await createPublicBleManager(fixture.internal, () => 0)
@@ -1636,6 +1672,7 @@ describe('canonical public ScanQuery v1', () => {
   test.each([
     ['source-failed', { state: 'failed', reason: 'source-failed' }],
     ['connection-lost', { state: 'failed', reason: 'connection-lost' }],
+    ['overflow', { state: 'failed', reason: 'overflow' }],
     ['closed', { state: 'stopped', reason: 'closed' }]
   ])('%s without stop() leaves the session not active with no iterator', async (reason, expected) => {
     const fixture = createStopOverflowFixture()
@@ -1657,6 +1694,7 @@ describe('canonical public ScanQuery v1', () => {
   test.each([
     ['source-failed', { state: 'failed', reason: 'source-failed' }],
     ['connection-lost', { state: 'failed', reason: 'connection-lost' }],
+    ['overflow', { state: 'failed', reason: 'overflow' }],
     ['closed', { state: 'stopped', reason: 'closed' }]
   ])('%s without stop() leaves the session not active with an attached iterator', async (reason, expected) => {
     const fixture = createStopOverflowFixture()
@@ -1679,8 +1717,9 @@ describe('canonical public ScanQuery v1', () => {
   test.each([
     ['source-failed', { state: 'failed', reason: 'source-failed' }],
     ['connection-lost', { state: 'failed', reason: 'connection-lost' }],
+    ['overflow', { state: 'failed', reason: 'overflow' }],
     ['closed', { state: 'stopped', reason: 'closed' }]
-  ])('%s already on the source before scan() leaves the session not active', async (reason, expected) => {
+  ])('%s already on the source before scan() is the initial state and never publishes active', async (reason, expected) => {
     const source = new CoreBoundedStream(
       { itemCapacity: capacity(8), byteCapacity: capacity(4096), reservedControlCapacity: capacity(1) },
       'drop-oldest'
@@ -1703,16 +1742,17 @@ describe('canonical public ScanQuery v1', () => {
     const manager = await createPublicBleManager(internal, () => 0)
     const scan = await manager.scan()
     const states = scan.state[Symbol.asyncIterator]()
-    await expect(states.next()).resolves.toMatchObject({ value: { state: 'active' } })
-    const terminal = await awaitSignal(states.next(), `already-terminal ${reason} to leave session active`)
-    expect(terminal.value.state).not.toBe('active')
-    expect(terminal.value).toMatchObject(expected)
+    const first = await awaitSignal(states.next(), `already-terminal ${reason} as initial session state`)
+    expect(first.value.state).not.toBe('active')
+    expect(first.value).toMatchObject(expected)
     expect(nativeStop).not.toHaveBeenCalled()
     await expect(scan.observations[Symbol.asyncIterator]().next()).resolves.toMatchObject({
       value: { kind: 'terminal', reason }
     })
     await expect(scan.stop()).resolves.toEqual({ state: 'released', failures: [] })
     expect(nativeStop).toHaveBeenCalledTimes(1)
+    const rest = await awaitSignal(collectRemainingScanStates(states), 'scan state stream to close after already-terminal stop')
+    expect([first.value, ...rest].some(event => event.state === 'active')).toBe(false)
   })
 })
 

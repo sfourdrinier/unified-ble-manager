@@ -185,7 +185,6 @@ export class IpcPublicManagerAdapter implements BleManager {
         throw contractError('protocol.malformed', 'ipc', 'ipc-public-manager.scan-plan')
       }
       const state = createScanState()
-      state.emit({ state: 'active' })
       return new IpcPublicScanSession(
         session,
         mapPublicBoundedAsyncStream(
@@ -331,6 +330,7 @@ class IpcPublicScanSession implements ScanSession {
     bindScanSourceTerminal(inner.observations, reason => {
       this.noteDeliveryEnded(reason)
     })
+    if (!this.deliveryEnded) this.scanState.emit({ state: 'active' })
   }
 
   stop(): Promise<PublicCleanupRecord> {

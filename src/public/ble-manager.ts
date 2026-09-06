@@ -394,9 +394,11 @@ export function inspectPublicScanFingerprintAccountingForTests(session: ScanSess
  *
  * `active` means the session is still accepting source advertisements.
  * Host/source terminals project out of `active` even with no iterator:
- * `source-failed`/`connection-lost` become `failed`, ordinary close becomes
- * `stopped`. That event is ended delivery. `stop()` still performs physical
- * cleanup and reports it through its `CleanupRecord`.
+ * `source-failed`/`connection-lost`/`overflow` become `failed`, ordinary close
+ * becomes `stopped`. An already-terminal source publishes that projected
+ * terminal as the initial state and never `active`. Subscriber/source overflow
+ * that fail-closes a consumed view is `failed`/`overflow`; physical `stop()`
+ * remains cleanup and reports through its `CleanupRecord`.
  */
 export type ScanStateEvent = {
   readonly state: 'starting' | 'active' | 'stopping' | 'stopped' | 'failed'
@@ -736,14 +738,7 @@ class PublicScanSessionController<Attachment extends string> {
   }
 
   private terminateFromOverflow(): void {
-    if (this.closed) {
-      this.requestStop('overflow')
-      return
-    }
-    this.closed = true
-    this.cancelPresenceTimers()
-    this.observationBroadcast.closeWithReason('overflow')
-    this.eventBroadcast.close('overflow')
+    this.endDelivery('overflow', 'close')
     this.requestStop('overflow')
   }
 
@@ -767,8 +762,9 @@ class PublicScanSessionController<Attachment extends string> {
         }
         if (item.value.kind === 'overflow') {
           this.observationBroadcast.observeSourceOverflow(item.value)
-          this.eventBroadcast.close('overflow')
-          continue
+          this.finish('overflow')
+          this.requestStop('overflow')
+          return
         }
         if (item.value.kind === 'terminal') {
           this.finish(item.value.reason)
@@ -843,22 +839,15 @@ class PublicScanSessionController<Attachment extends string> {
     this.presenceBytes -= current.bytes
     this.forgetObservationFingerprint(peerId)
     current.timer = null
-    this.eventBroadcast.emit(
-      Object.freeze({
-        kind: 'lost',
-        peer: current.observation.peer,
-        lastObservedAt: expectedLastSeenAtMonotonicMs,
-        derivedAt: now,
-        reason: 'observation-timeout'
-      }),
-      estimatePublicDiscoveryEventBytes({
-        kind: 'lost',
-        peer: current.observation.peer,
-        lastObservedAt: expectedLastSeenAtMonotonicMs,
-        derivedAt: now,
-        reason: 'observation-timeout'
-      })
-    )
+    const lost: DiscoveryEvent = Object.freeze({
+      kind: 'lost',
+      peer: current.observation.peer,
+      lastObservedAt: expectedLastSeenAtMonotonicMs,
+      derivedAt: now,
+      reason: 'observation-timeout'
+    })
+    const eventTerminated = this.eventBroadcast.emit(lost, estimatePublicDiscoveryEventBytes(lost))
+    if (eventTerminated) this.terminateFromOverflow()
   }
 
   private cancelPresenceTimers(): void {
@@ -944,10 +933,18 @@ class PublicScanSessionController<Attachment extends string> {
   }
 
   private finish(reason: StreamTerminalNotice['reason']): void {
+    this.endDelivery(reason, 'finish')
+  }
+
+  private endDelivery(reason: StreamTerminalNotice['reason'], observationMode: 'finish' | 'close'): void {
     if (this.closed) return
     this.closed = true
     this.cancelPresenceTimers()
-    this.observationBroadcast.finishWithReason(reason)
+    if (observationMode === 'close') {
+      this.observationBroadcast.closeWithReason(reason)
+    } else {
+      this.observationBroadcast.finishWithReason(reason)
+    }
     this.eventBroadcast.close(
       reason === 'source-failed'
         ? 'source-failed'
@@ -1616,7 +1613,6 @@ class PublicBleManager<Attachment extends string, Identity extends BackendIdenti
       }
       const session = await this.internal.scan(internalOptions)
       const scanState = createScanState()
-      scanState.emit({ state: 'active' })
       const stopState: {
         viewReleased: boolean
         nativeReleased: boolean
@@ -1704,6 +1700,7 @@ class PublicBleManager<Attachment extends string, Identity extends BackendIdenti
       }
       const activeScan = { controller, closeState: scanState.close, stop: () => stopScan('owner-released') }
       this.activeScanSessions.add(activeScan)
+      if (!stopState.deliveryEnded) scanState.emit({ state: 'active' })
       const publicSession: ScanSession = {
         plan,
         stop: () => stopScan('owner-released').then(toPublicCleanupRecord),
