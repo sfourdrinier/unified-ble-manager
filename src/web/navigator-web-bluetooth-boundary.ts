@@ -110,6 +110,7 @@ interface BrowserBluetooth {
   requestDevice(options?: BrowserBluetoothRequestOptions): Promise<BrowserBluetoothDevice>
   addEventListener?(type: 'availabilitychanged', listener: BrowserBluetoothAvailabilityListener): void
   removeEventListener?(type: 'availabilitychanged', listener: BrowserBluetoothAvailabilityListener): void
+  onavailabilitychanged?: BrowserBluetoothAvailabilityListener | null
 }
 
 type BrowserBluetoothAvailabilityEventTarget = BrowserBluetooth & {
@@ -416,10 +417,13 @@ class NavigatorDescriptorBoundary implements WebBluetoothDescriptorBoundary {
 function browserBluetoothSupportsAvailabilityEvents(
   bluetooth: BrowserBluetooth | null
 ): bluetooth is BrowserBluetoothAvailabilityEventTarget {
+  // Spec Bluetooth is always an EventTarget. The documented capability check is
+  // `'onavailabilitychanged' in bluetooth`, not addEventListener presence.
   return (
     bluetooth !== null &&
     typeof bluetooth.addEventListener === 'function' &&
-    typeof bluetooth.removeEventListener === 'function'
+    typeof bluetooth.removeEventListener === 'function' &&
+    'onavailabilitychanged' in bluetooth
   )
 }
 

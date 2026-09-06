@@ -96,10 +96,12 @@ export interface WebBluetoothBoundary {
   addPageLifecycleListener(listener: (reason: WebBluetoothPageLifecycleReason) => void): () => void
   /**
    * Optional `availabilitychanged` subscription. Present only when the
-   * browser can actually subscribe. Missing support makes the backend use a
-   * shared bounded `bluetoothAvailable()` poll for adapter watches. The
-   * listener is a change signal; callers re-sample availability and never
-   * treat it as physical adapter power.
+   * browser exposes the event (`onavailabilitychanged`). Missing support
+   * makes the backend use a shared bounded `bluetoothAvailable()` poll for
+   * adapter watches. Subscribed watches still start that poll if no event
+   * arrives within the documented bound. The listener is a change signal;
+   * callers re-sample availability and never treat it as physical adapter
+   * power.
    */
   readonly addAvailabilityChangeListener?: (listener: WebBluetoothAvailabilityListener) => () => void
 }

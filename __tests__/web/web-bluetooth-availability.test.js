@@ -4,6 +4,7 @@ const { assertAttachedBackend } = require('../../src/backend-contract/backend')
 const { attachBleBackend } = require('../../src/manager/ble-manager')
 const { createWebBluetoothProvider } = require('../../src/web/web-bluetooth-backend')
 const { NavigatorWebBluetoothBoundary } = require('../../src/web/navigator-web-bluetooth-boundary')
+const { awaitSignal } = require('../helpers/async')
 
 const HEART_RATE_SERVICE = '0000180d-0000-1000-8000-00805f9b34fb'
 const HEART_RATE_MEASUREMENT = '00002a37-0000-1000-8000-00805f9b34fb'
@@ -133,6 +134,50 @@ function chooserRequest() {
 
 function noDeadline() {
   return { signal: null, deadline: null }
+}
+
+function deferBluetoothAvailable(boundary) {
+  const probes = []
+  let notify = () => {}
+  boundary.bluetoothAvailable = () =>
+    new Promise(resolve => {
+      probes.push(resolve)
+      notify()
+    })
+  return {
+    get length() {
+      return probes.length
+    },
+    resolve(index, available) {
+      probes[index](available)
+    },
+    waitUntilCount(expected) {
+      if (probes.length >= expected) {
+        return Promise.resolve()
+      }
+      return awaitSignal(
+        new Promise(resolve => {
+          const previous = notify
+          notify = () => {
+            previous()
+            if (probes.length >= expected) {
+              resolve()
+            }
+          }
+        }),
+        `${expected} bluetoothAvailable probes`
+      )
+    }
+  }
+}
+
+async function attachConnectedAvailabilitySession(mock) {
+  const { backend } = await attachAvailableBackend(mock)
+  const selection = await backend.choose(chooserRequest(), noDeadline())
+  const lease = await backend.connections.connect(selection.peerId, 'availability-race-client', noDeadline())
+  const database = await backend.gatt.discover(lease.connection, noDeadline())
+  const path = (await database.snapshot()).characteristics[0].path
+  return { backend, database, path, attachmentId: backend.attachment.attachmentId }
 }
 
 describe('WebBluetoothBackend availability and attachment lifecycle', () => {
@@ -444,11 +489,12 @@ describe('WebBluetoothBackend availability and attachment lifecycle', () => {
     const watch = await backend.adapter.watchState()
     const pending = watch.transitions[Symbol.asyncIterator]().next()
     expect(mock.availabilityListeners.size).toBe(1)
-    expect(mock.timers.size).toBe(0)
+    expect([...mock.timers].map(timer => timer.delayMilliseconds)).toEqual([500])
     available = false
 
     mock.emitAvailabilityChanged()
 
+    expect(mock.timers.size).toBe(0)
     await expect(pending).resolves.toMatchObject({
       value: {
         kind: 'value',
@@ -459,24 +505,80 @@ describe('WebBluetoothBackend availability and attachment lifecycle', () => {
     await backend.destroy()
   })
 
+  test('does not tear down a live session when overlapping availability probes complete out of order', async () => {
+    const mock = createBoundary()
+    const { backend, database, path, attachmentId } = await attachConnectedAvailabilitySession(mock)
+    const probes = deferBluetoothAvailable(mock.boundary)
+    const first = backend.adapter.currentState()
+    await probes.waitUntilCount(1)
+    const second = backend.adapter.currentState()
+    await probes.waitUntilCount(2)
+
+    probes.resolve(1, true)
+    probes.resolve(0, false)
+    await first
+    await second
+
+    expect(backend.attachment.attachmentId).toBe(attachmentId)
+    expect(backend.attachment.adapter.state).toMatchObject({
+      availability: 'available',
+      power: 'unknown'
+    })
+    expect(backend.resourceCounters()).toMatchObject({ connectionLeases: 1, physicalLinks: 1 })
+    await expect(database.read(path, noDeadline())).resolves.toEqual(new Uint8Array([0, 72]))
+    await backend.destroy()
+  })
+
+  test('does not let a stale currentState sample detach after a newer watch probe reports available', async () => {
+    const mock = createBoundary({ availabilityChangeSource: true })
+    const { backend, database, path, attachmentId } = await attachConnectedAvailabilitySession(mock)
+    const watch = await backend.adapter.watchState()
+    expect(watch.initial.availability).toBe('available')
+    expect(mock.availabilityListeners.size).toBe(1)
+    const probes = deferBluetoothAvailable(mock.boundary)
+    const current = backend.adapter.currentState()
+    await probes.waitUntilCount(1)
+    mock.emitAvailabilityChanged()
+    await probes.waitUntilCount(2)
+
+    probes.resolve(1, true)
+    probes.resolve(0, false)
+    await current
+
+    expect(backend.attachment.attachmentId).toBe(attachmentId)
+    expect(backend.attachment.adapter.state).toMatchObject({
+      availability: 'available',
+      power: 'unknown'
+    })
+    expect(backend.resourceCounters()).toMatchObject({ connectionLeases: 1, physicalLinks: 1 })
+    await expect(database.read(path, noDeadline())).resolves.toEqual(new Uint8Array([0, 72]))
+    await backend.destroy()
+  })
+
   test('releases the shared availabilitychanged listener after the last watch closes and after destroy', async () => {
     const mock = createBoundary({ availabilityChangeSource: true })
     const { backend } = await attachAvailableBackend(mock)
     const first = await backend.adapter.watchState()
     const second = await backend.adapter.watchState()
     expect(mock.availabilityListeners.size).toBe(1)
+    expect(mock.timers.size).toBe(1)
 
     await first.transitions.close()
     expect(mock.availabilityListeners.size).toBe(1)
+    expect(mock.timers.size).toBe(1)
     await second.transitions.close()
     expect(mock.availabilityListeners.size).toBe(0)
+    expect(mock.timers.size).toBe(0)
 
     const live = await backend.adapter.watchState()
     expect(mock.availabilityListeners.size).toBe(1)
+    expect(mock.timers.size).toBe(1)
     await expect(backend.destroy()).resolves.toEqual({ state: 'released', failures: [] })
     expect(mock.availabilityListeners.size).toBe(0)
+    expect(mock.timers.size).toBe(0)
     await live.transitions.close()
     expect(mock.availabilityListeners.size).toBe(0)
+    expect(mock.timers.size).toBe(0)
   })
 
   test('polls bluetooth availability for adapter watches when availabilitychanged is missing', async () => {
@@ -534,7 +636,8 @@ describe('WebBluetoothBackend availability and attachment lifecycle', () => {
       },
       removeEventListener(type) {
         listeners.delete(type)
-      }
+      },
+      onavailabilitychanged: null
     }
     const boundary = new NavigatorWebBluetoothBoundary(navigatorEnvironment(bluetooth))
     const observed = []
@@ -601,6 +704,85 @@ describe('WebBluetoothBackend availability and attachment lifecycle', () => {
         value: { availability: 'unavailable', power: 'unsupported' }
       }
     })
+    await backend.destroy()
+    expect(timers.size).toBe(0)
+  })
+
+  test('does not subscribe to availabilitychanged when the browser is only an EventTarget', async () => {
+    const bluetooth = {
+      getAvailability: async () => true,
+      requestDevice: async () => {
+        throw new Error('chooser unused')
+      },
+      addEventListener() {
+        throw new Error('EventTarget methods are not an availabilitychanged source')
+      },
+      removeEventListener() {
+        throw new Error('EventTarget methods are not an availabilitychanged source')
+      }
+    }
+    const boundary = new NavigatorWebBluetoothBoundary(navigatorEnvironment(bluetooth))
+    expect(boundary.addAvailabilityChangeListener).toBeUndefined()
+  })
+
+  test('polls through NavigatorWebBluetoothBoundary when EventTarget is present and availabilitychanged never fires', async () => {
+    let available = true
+    const listeners = new Map()
+    const timers = new Set()
+    const boundary = new NavigatorWebBluetoothBoundary({
+      implementationVersion: 'navigator-availability-eventtarget-poll',
+      browserEngine: 'test-engine',
+      bluetooth: {
+        getAvailability: async () => available,
+        requestDevice: async () => {
+          throw new Error('chooser unused')
+        },
+        addEventListener(type, listener) {
+          listeners.set(type, listener)
+        },
+        removeEventListener(type) {
+          listeners.delete(type)
+        },
+        onavailabilitychanged: null
+      },
+      isSecureContext: () => true,
+      hasTransientUserActivation: () => true,
+      now: () => 1,
+      setTimer: (callback, delayMilliseconds) => {
+        const handle = { callback, delayMilliseconds }
+        timers.add(handle)
+        return handle
+      },
+      clearTimer: handle => timers.delete(handle),
+      addPageLifecycleListener: () => () => {}
+    })
+    const provider = createWebBluetoothProvider(boundary)
+    const [adapter] = await provider.listAdapters()
+    const backend = await provider.create({ selectedAdapterId: adapter.adapterId })
+    await backend.attach({ coreCompatibility: provider.descriptor.compatibility })
+    const watch = await backend.adapter.watchState()
+    const pending = watch.transitions[Symbol.asyncIterator]().next()
+    expect([...timers].map(timer => timer.delayMilliseconds)).toEqual([500])
+    available = false
+    for (const handle of [...timers]) {
+      timers.delete(handle)
+      handle.callback()
+    }
+    if (timers.size > 0) {
+      expect([...timers].map(timer => timer.delayMilliseconds)).toEqual([500])
+      for (const handle of [...timers]) {
+        timers.delete(handle)
+        handle.callback()
+      }
+    }
+
+    await expect(pending).resolves.toMatchObject({
+      value: {
+        kind: 'value',
+        value: { availability: 'unavailable', power: 'unsupported' }
+      }
+    })
+    expect(listeners.has('availabilitychanged')).toBe(true)
     await backend.destroy()
     expect(timers.size).toBe(0)
   })
