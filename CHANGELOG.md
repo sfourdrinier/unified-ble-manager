@@ -19,6 +19,8 @@ No changes yet.
   release together, and only for the matching generation.
 - Tauri: scan-stream failure keeps the scan owner in a stopping state until
   native stop settles. A failed stop stays retryable and blocks a second scan.
+  Event and poll emit failures carry structured native diagnostics on the
+  shared `source-failed` terminal without inventing drop counters (#173).
 - Tauri: post-await lease/generation checks on unsubscribe and scan stop.
   Old-generation resources quarantine instead of attaching to a replacement
   caller. Compensating unsubscribe after subscribe success uses the same orphan
@@ -44,7 +46,8 @@ No changes yet.
 - BlueZ `StopDiscovery` / `StopNotify` release this client’s session even if
   another D-Bus client keeps `Discovering` / `Notifying` true.
 - BlueZ `StartNotify` confirmation failure after native accept keeps a retryable
-  `StopNotify` owner instead of orphaning the notify session.
+  `StopNotify` owner instead of orphaning the notify session. A late enablement
+  success does not promote `removing` / `enabling-failed` back to `ready`.
 - BlueZ `SetDiscoveryFilter`, `StartDiscovery`, and `ConnectDevice` honor caller
   deadline/abort without dropping a later native allocation.
 - BlueZ keeps a retryable compensating `Disconnect` when `ConnectDevice`
@@ -64,7 +67,10 @@ No changes yet.
 - Android `setCharacteristicNotification(...) == false` is a local registration
   failure, not proven link loss. Generation-matched disconnect and GATT status 19
   remain the physical-loss authority. The 4.0.22 250 ms CCCD/disconnect two-signal
-  arbitration is unchanged.
+  arbitration is unchanged. Notifications that arrive after the CCCD write and
+  before `onDescriptorWrite` SUCCESS are staged and flushed to admitted
+  subscribers. A later same-generation CCCD SUCCESS claims the arbiter instead
+  of leaving the peer enabled after a failed public subscribe.
 - WinRT stages `ValueChanged` notifications that arrive before CCCD enablement
   completes, then flushes them once and in order only to admitted subscribers.
   Staging continues until every pending waiter is admitted, and a per-subscriber
@@ -77,6 +83,9 @@ No changes yet.
 - `cancelPairing()` honors abort and deadline on Android, WinRT, and BlueZ.
   Admission runs before native cancellation. A timed-out wait is not reported as
   `'cancelled'`. An abandoned waiter leaves the in-flight pairing owned.
+  `pair()` abort/deadline keeps the pairing owned until the native result;
+  a later native `paired`/`rejected` is authoritative for both `pair()` and
+  `cancelPairing()`.
 - Web adapter `watchState()` follows browser `availabilitychanged` instead of
   staying stale until another API samples availability. When that event is
   missing, watches share one bounded `getAvailability()` poll.
