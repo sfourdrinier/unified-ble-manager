@@ -579,19 +579,12 @@ describe('canonical public ScanQuery v1', () => {
     expect(internal.scan).not.toHaveBeenCalled()
   })
 
-  test('propagates source overflow to observations and terminates event subscribers with overflow', async () => {
+  test('drop-policy source overflow reports the drop, keeps scanning, and does not stop the radio', async () => {
     const source = new CoreBoundedStream(
       { itemCapacity: capacity(1), byteCapacity: capacity(128), reservedControlCapacity: capacity(1) },
       'drop-newest'
     )
-    let nativeStopStarted
-    const nativeStopped = new Promise(resolve => {
-      nativeStopStarted = resolve
-    })
-    const nativeStop = jest.fn(async () => {
-      nativeStopStarted()
-      return { state: 'released', failures: [] }
-    })
+    const nativeStop = jest.fn(async () => ({ state: 'released', failures: [] }))
     const internal = {
       identity: null,
       attachedBackend: undefined,
@@ -610,31 +603,40 @@ describe('canonical public ScanQuery v1', () => {
     const states = scan.state[Symbol.asyncIterator]()
     await expect(states.next()).resolves.toMatchObject({ value: { state: 'active' } })
     const observation = {
-      peerId: 'overflow-peer',
-      localName: 'Overflow peer',
+      peerId: 'queued-peer',
+      localName: 'Queued peer',
       rssi: -42,
       serviceUuids: [],
       manufacturerData: [],
       serviceData: []
     }
     source.emit(observation, 32)
-    source.emit({ ...observation, peerId: 'overflow-peer-2' }, 32)
+    source.emit({ ...observation, peerId: 'dropped-peer' }, 32)
 
     const observations = scan.observations[Symbol.asyncIterator]()
     const events = scan.events[Symbol.asyncIterator]()
-    await expect(observations.next()).resolves.toMatchObject({ value: { kind: 'overflow' } })
-    await expect(events.next()).rejects.toMatchObject({ code: 'stream.overflow' })
-    const terminal = await awaitSignal(states.next(), 'source overflow to terminalize session state')
-    expect(terminal.value).toMatchObject({ state: 'failed', reason: 'overflow' })
-    await awaitSignal(nativeStopped, 'native stop after source overflow')
-    expect(nativeStop).toHaveBeenCalledTimes(1)
+    await expect(observations.next()).resolves.toMatchObject({
+      value: { kind: 'overflow', policy: 'drop-newest' }
+    })
+    await expect(observations.next()).resolves.toMatchObject({
+      value: { kind: 'value', value: { peer: { id: 'queued-peer' } } }
+    })
+    await expect(events.next()).resolves.toMatchObject({
+      value: { kind: 'observed', peer: { id: 'queued-peer' } }
+    })
+    expect(nativeStop).not.toHaveBeenCalled()
+
+    source.emit({ ...observation, peerId: 'after-overflow-peer' }, 32)
+    await expect(observations.next()).resolves.toMatchObject({
+      value: { kind: 'value', value: { peer: { id: 'after-overflow-peer' } } }
+    })
+    await expect(events.next()).resolves.toMatchObject({
+      value: { kind: 'observed', peer: { id: 'after-overflow-peer' } }
+    })
+    expect(nativeStop).not.toHaveBeenCalled()
+
     await scan.stop()
     expect(nativeStop).toHaveBeenCalledTimes(1)
-    const rest = await awaitSignal(
-      collectRemainingScanStates(states),
-      'scan state stream to close after source-overflow stop'
-    )
-    expect(rest.some(event => event.state === 'stopping' || event.state === 'stopped')).toBe(false)
   })
 
   test('drains an accepted observation before delivering the source terminal', async () => {

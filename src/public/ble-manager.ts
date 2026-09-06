@@ -397,9 +397,10 @@ export function inspectPublicScanFingerprintAccountingForTests(session: ScanSess
  * Host/source terminals project out of `active` even with no iterator:
  * `source-failed`/`connection-lost`/`overflow` become `failed`, ordinary close
  * becomes `stopped`. An already-terminal source publishes that projected
- * terminal as the initial state and never `active`. Subscriber/source overflow
- * that fail-closes a consumed view is `failed`/`overflow`; physical `stop()`
- * remains cleanup and reports through its `CleanupRecord`.
+ * terminal as the initial state and never `active`. Drop-policy overflow
+ * notices keep the session `active` and the radio up. Subscriber overflow that
+ * fail-closes a consumed view (`overflowPolicy: 'error'`) is `failed`/`overflow`;
+ * physical `stop()` remains cleanup and reports through its `CleanupRecord`.
  */
 export type ScanStateEvent = {
   readonly state: 'starting' | 'active' | 'stopping' | 'stopped' | 'failed'
@@ -778,9 +779,7 @@ class PublicScanSessionController<Attachment extends string> {
         }
         if (item.value.kind === 'overflow') {
           this.observationBroadcast.observeSourceOverflow(item.value)
-          this.finish('overflow')
-          this.requestStop('overflow')
-          return
+          continue
         }
         if (item.value.kind === 'terminal') {
           this.finish(item.value.reason, item.value.error)
