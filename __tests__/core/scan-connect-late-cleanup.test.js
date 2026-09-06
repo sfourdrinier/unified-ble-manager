@@ -1,6 +1,6 @@
 const { attachBleBackend, createBleManager, createManagerOwnershipAuthority } = require('../../src/manager/ble-manager')
 const { DEFAULT_BLE_MANAGER_OPTIONS } = require('../../src/manager/ble-manager')
-const { capacity, opaqueId, version, versionRange } = require('../../src/backend-contract/primitives')
+const { capacity, deadline, opaqueId, version, versionRange } = require('../../src/backend-contract/primitives')
 const { createDeterministicTestBackend } = require('../../src/testing/deterministic/deterministic-test-backend')
 const { awaitSignal } = require('../helpers/async')
 
@@ -37,6 +37,7 @@ function releasedRecord() {
 
 function createCloser(resourceKind, operation, policy) {
   let attempts = 0
+  let held = null
   let resolveFirstAttempt
   const firstAttempt = new Promise(resolve => {
     resolveFirstAttempt = resolve
@@ -46,10 +47,27 @@ function createCloser(resourceKind, operation, policy) {
       return attempts
     },
     firstAttempt,
+    hold() {
+      let resolveHold
+      const promise = new Promise(resolve => {
+        resolveHold = resolve
+      })
+      held = { promise, resolve: resolveHold }
+      return () => {
+        if (held === null) {
+          return
+        }
+        held.resolve()
+        held = null
+      }
+    },
     async close() {
       attempts += 1
       if (attempts === 1) {
         resolveFirstAttempt()
+      }
+      if (held !== null) {
+        await held.promise
       }
       if (policy === 'fail-then-succeed') {
         return attempts === 1 ? releaseFailedRecord(resourceKind, operation) : releasedRecord()
@@ -59,7 +77,7 @@ function createCloser(resourceKind, operation, policy) {
   }
 }
 
-function scanOptions(signal = null) {
+function scanOptions(signal = null, operationDeadline = null) {
   return {
     filter: { serviceUuids: [], manufacturerData: [], localNamePrefix: null },
     duplicatePolicy: 'all',
@@ -70,14 +88,14 @@ function scanOptions(signal = null) {
       reservedControlCapacity: capacity(1),
       overflowPolicy: 'drop-oldest'
     },
-    deadline: null,
+    deadline: operationDeadline,
     signal,
     sharing: { mode: 'owner', allowSharing: false }
   }
 }
 
-function operation(signal = null) {
-  return { signal, deadline: null }
+function operation(signal = null, operationDeadline = null) {
+  return { signal, deadline: operationDeadline }
 }
 
 function peer() {
@@ -135,6 +153,12 @@ async function createBorrowedFixture() {
     managerOptions(fixture)
   )
   return { fixture, manager, owner }
+}
+
+async function flushMicrotasks() {
+  for (let turn = 0; turn < 8; turn += 1) {
+    await Promise.resolve()
+  }
 }
 
 async function settle(controller, promise) {
@@ -253,6 +277,7 @@ describe('pending scan/connect acquisition ownership', () => {
     gate.release()
     await settle(fixture.controller, gate.leaseCreated)
     await awaitSignal(closer.firstAttempt, `the late ${acquisition.name} cleanup to run`)
+    await flushMicrotasks()
     expect(closer.attempts()).toBe(1)
 
     await expect(settle(fixture.controller, manager.destroy())).resolves.toMatchObject({ state: 'released' })
@@ -275,6 +300,7 @@ describe('pending scan/connect acquisition ownership', () => {
       gate.release()
       await settle(fixture.controller, gate.leaseCreated)
       await awaitSignal(closer.firstAttempt, `the late ${acquisition.name} cleanup to run`)
+      await flushMicrotasks()
       expect(closer.attempts()).toBe(1)
       expect(manager.traces()).toEqual(
         expect.arrayContaining([
@@ -309,6 +335,7 @@ describe('pending scan/connect acquisition ownership', () => {
     gate.release()
     await settle(fixture.controller, gate.leaseCreated)
     await awaitSignal(closer.firstAttempt, 'the late borrowed connect cleanup to run')
+    await flushMicrotasks()
     expect(closer.attempts()).toBe(1)
     expect(ownerConnection.connection.isCurrent()).toBe(true)
 
@@ -317,5 +344,63 @@ describe('pending scan/connect acquisition ownership', () => {
     expect(ownerConnection.connection.isCurrent()).toBe(true)
     await expect(settle(fixture.controller, ownerConnection.discover(operation()))).resolves.toBeDefined()
     await settle(fixture.controller, owner.destroy())
+  })
+
+  test.each(acquisitions)(
+    'expired deadline after a late $name lease does not adopt and remains retryable',
+    async acquisition => {
+      const closer = createCloser(acquisition.resourceKind, acquisition.operation, 'fail-then-succeed')
+      const { manager, fixture } = await createOwningFixture()
+      const gate = acquisition.install(fixture.backend, closer)
+      const operationDeadline = deadline(Number(fixture.controller.clock.now()) + 5)
+      const pending =
+        acquisition.name === 'scan'
+          ? manager.scan(scanOptions(null, operationDeadline))
+          : manager.connect(peer(), operation(null, operationDeadline))
+      const outcome = pending.then(
+        value => ({ state: 'fulfilled', value }),
+        error => ({ state: 'rejected', error })
+      )
+
+      fixture.controller.clock.advanceBy(10)
+      gate.release()
+      await settle(fixture.controller, gate.leaseCreated)
+      const result = await settle(fixture.controller, outcome)
+      expect(result.state).toBe('rejected')
+      expect(result.error).toMatchObject({ normalized: { code: 'operation.timed-out' } })
+      expect(Number(manager.localResourceCounters().connectionLeases)).toBe(0)
+      expect(Number(manager.localResourceCounters().scanConsumers)).toBe(0)
+      await awaitSignal(closer.firstAttempt, `the late ${acquisition.name} deadline cleanup to run`)
+      await flushMicrotasks()
+      expect(closer.attempts()).toBe(1)
+
+      await expect(settle(fixture.controller, manager.destroy())).resolves.toMatchObject({ state: 'released' })
+      expect(closer.attempts()).toBe(2)
+    }
+  )
+
+  test('in-flight late connect release is shared with manager retry', async () => {
+    const closer = createCloser('connection', 'connect-stale-admission-release', 'always-succeed')
+    const releaseHold = closer.hold()
+    const { manager, fixture } = await createOwningFixture()
+    const gate = installConnectAcquisition(fixture.backend, closer)
+    const pending = manager.connect(peer(), operation())
+    const rejected = expect(pending).rejects.toMatchObject({
+      normalized: { code: 'operation.cancelled-by-destroy' }
+    })
+
+    await expect(manager.destroy()).resolves.toMatchObject({ state: 'release-failed' })
+    await rejected
+    gate.release()
+    await settle(fixture.controller, gate.leaseCreated)
+    await awaitSignal(closer.firstAttempt, 'the late connect cleanup to start')
+    expect(closer.attempts()).toBe(1)
+
+    const retry = manager.destroy()
+    await Promise.resolve()
+    expect(closer.attempts()).toBe(1)
+    releaseHold()
+    await expect(settle(fixture.controller, retry)).resolves.toMatchObject({ state: 'released' })
+    expect(closer.attempts()).toBe(1)
   })
 })

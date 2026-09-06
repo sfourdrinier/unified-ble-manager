@@ -11,6 +11,30 @@ export interface RetainedCleanup {
   retry(): Promise<CleanupRecord>
 }
 
+export function createRetainedCleanup(
+  resourceKind: CoreTraceResource,
+  transition: string,
+  run: () => Promise<CleanupRecord>
+): RetainedCleanup {
+  let inFlight: Promise<CleanupRecord> | null = null
+  return {
+    resourceKind,
+    transition,
+    retry() {
+      if (inFlight !== null) {
+        return inFlight
+      }
+      const attempt = run().finally(() => {
+        if (inFlight === attempt) {
+          inFlight = null
+        }
+      })
+      inFlight = attempt
+      return attempt
+    }
+  }
+}
+
 /** Records asynchronous lifecycle cleanup without allowing background failures to escape unchecked. */
 export class CoreLifecycleObserver {
   private readonly retainedCleanups = new Set<RetainedCleanup>()

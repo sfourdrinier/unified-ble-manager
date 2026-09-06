@@ -1208,6 +1208,79 @@ describe('UnifiedBleCore lifecycle hardening', () => {
     expectNoResources(fixture.backend.resourceCounters())
   })
 
+  test('aborting the rediscovery starter does not fail a waiter of the in-flight replacement', async () => {
+    const { fixture, manager } = await createFixture()
+    const { connection } = await connectedDatabase(fixture, manager)
+    const originalDiscover = fixture.backend.gatt.discover.bind(fixture.backend.gatt)
+    let releaseReplacement
+    const replacementGate = new Promise(resolve => {
+      releaseReplacement = resolve
+    })
+    const abortController = new AbortController()
+    fixture.backend.gatt.discover = async (...args) => {
+      abortController.abort()
+      await replacementGate
+      return originalDiscover(...args)
+    }
+    const starter = connection.connection.rediscoverGatt(operation(abortController.signal), 'manual-rediscovery')
+    const waiter = connection.connection.rediscoverGatt(operation(), 'manual-rediscovery')
+    await flushMicrotasks()
+
+    const starterOutcome = starter.then(
+      value => ({ state: 'fulfilled', value }),
+      error => ({ state: 'rejected', error })
+    )
+    const waiterOutcome = waiter.then(
+      value => ({ state: 'fulfilled', value }),
+      error => ({ state: 'rejected', error })
+    )
+    releaseReplacement()
+    await flushVirtual(fixture.controller)
+
+    const [starterResult, waiterResult] = await Promise.all([starterOutcome, waiterOutcome])
+    expect(starterResult.state).toBe('rejected')
+    expect(starterResult.error).toMatchObject({ normalized: { code: 'operation.aborted' } })
+    expect(waiterResult.state).toBe('fulfilled')
+    waiterResult.value.assertCurrent()
+
+    fixture.backend.gatt.discover = originalDiscover
+    await settle(fixture.controller, manager.destroy())
+    expectNoResources(fixture.backend.resourceCounters())
+  })
+
+  test('discover joiner follows a replacement rediscovery instead of asserting a stale snapshot', async () => {
+    const { fixture, manager } = await createFixture()
+    const connection = await settle(fixture.controller, manager.connect(peer(), operation()))
+    fixture.controller.queueCompletion('discover', {
+      delayMs: 10,
+      failure: null,
+      cancellable: false,
+      deadlineOrder: 'completion-first'
+    })
+    const initial = connection.connection.discover(operation())
+    await flushMicrotasks()
+    const rediscovery = connection.rediscoverGatt(operation(), 'manual-rediscovery')
+    const joiner = connection.connection.discover(operation())
+    await flushMicrotasks()
+
+    const joinerOutcome = joiner.then(
+      value => ({ state: 'fulfilled', value }),
+      error => ({ state: 'rejected', error })
+    )
+    await settle(fixture.controller, initial)
+    await flushVirtual(fixture.controller)
+
+    const joinerResult = await joinerOutcome
+    expect(joinerResult.state).toBe('fulfilled')
+    joinerResult.value.assertCurrent()
+    const replacement = await settle(fixture.controller, rediscovery)
+    replacement.assertCurrent()
+    expect(String(joinerResult.value.path.databaseGeneration)).toBe(String(replacement.path.databaseGeneration))
+
+    await settle(fixture.controller, manager.destroy())
+    expectNoResources(fixture.backend.resourceCounters())
+  })
+
   test('keeps a rediscovery joiner abort local while the other waiter receives the replacement', async () => {
     const { fixture, manager } = await createFixture()
     const connection = await settle(fixture.controller, manager.connect(peer(), operation()))

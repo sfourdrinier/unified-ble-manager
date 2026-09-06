@@ -46,7 +46,7 @@ import { CoreOperationCoordinator } from './operation-coordinator'
 import { ResourceLedger } from './resource-ledger'
 import { CoreSubscription, SubscriptionRegistry } from './subscription-registry'
 import { CoreTraceRecorder, type CoreTraceResource } from './trace-recorder'
-import { CoreLifecycleObserver } from './core-lifecycle-observer'
+import { CoreLifecycleObserver, createRetainedCleanup } from './core-lifecycle-observer'
 import { CoreConnection, CoreGattDatabase } from './core-gatt-handles'
 import { readCoreAdapterState } from './core-adapter-state'
 import {
@@ -460,17 +460,27 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
     this.aggregateQuota.register(stream)
     return new Promise((resolve, reject) => {
       let cancelled = false
+      let deadlineHandle: CoreDeadlineHandle | null = null
       const cancel = (error: BackendContractError) => {
         if (cancelled) {
           return
         }
         cancelled = true
+        deadlineHandle?.cancel()
         options.signal?.removeEventListener('abort', onAbort)
         reject(error)
       }
       const onAbort = () => cancel(contractError('operation.aborted', 'core', 'scan'))
       this.pendingScanAcquisitions.add(cancel)
       options.signal?.addEventListener('abort', onAbort, { once: true })
+      if (options.deadline !== null) {
+        deadlineHandle = scheduleCoreDeadline(
+          Number(options.deadline),
+          () => cancel(contractError('operation.timed-out', 'core', 'scan')),
+          this.options.timer,
+          this.options.now
+        )
+      }
       const acquire = async () => {
         const releaseStream = () => {
           stream.closeWithReason('owner-released')
@@ -486,20 +496,13 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
               ? error
               : contractError('scan.start-failed', 'scan', 'unified-core.scan')
           }
-          if (
-            cancelled ||
-            this.coreState !== 'ready' ||
-            this.admissionEpoch !== admissionEpoch ||
-            abortRequested(options.signal)
-          ) {
+          const closed = this.admissionClosedError(admissionEpoch, options, 'scan')
+          if (cancelled || closed !== null) {
             releaseStream()
-            if (!cancelled) {
-              cancel(
-                abortRequested(options.signal)
-                  ? contractError('operation.aborted', 'core', 'scan')
-                  : contractError('operation.cancelled-by-destroy', 'core', 'scan')
-              )
+            if (!cancelled && closed !== null) {
+              cancel(closed)
             }
+            this.pendingScanAcquisitions.delete(cancel)
             await this.compensateUnadoptedLease(lease.stop.bind(lease), 'scan', 'scan-stale-admission-release')
             return
           }
@@ -511,6 +514,7 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
             throw error
           }
         } finally {
+          deadlineHandle?.cancel()
           this.pendingScanAcquisitions.delete(cancel)
           options.signal?.removeEventListener('abort', onAbort)
         }
@@ -530,17 +534,27 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
     const admissionEpoch = this.admissionEpoch
     return new Promise((resolve, reject) => {
       let cancelled = false
+      let deadlineHandle: CoreDeadlineHandle | null = null
       const cancel = (error: BackendContractError) => {
         if (cancelled) {
           return
         }
         cancelled = true
+        deadlineHandle?.cancel()
         options.signal?.removeEventListener('abort', onAbort)
         reject(error)
       }
       const onAbort = () => cancel(contractError('operation.aborted', 'core', 'connect'))
       this.pendingConnectAcquisitions.add(cancel)
       options.signal?.addEventListener('abort', onAbort, { once: true })
+      if (options.deadline !== null) {
+        deadlineHandle = scheduleCoreDeadline(
+          Number(options.deadline),
+          () => cancel(contractError('operation.timed-out', 'core', 'connect')),
+          this.options.timer,
+          this.options.now
+        )
+      }
       const acquire = async () => {
         try {
           let lease: ConnectionLease<Attachment, string, string>
@@ -551,19 +565,12 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
               ? error
               : contractError('connection.failed', 'connection', 'unified-core.connect')
           }
-          if (
-            cancelled ||
-            this.coreState !== 'ready' ||
-            this.admissionEpoch !== admissionEpoch ||
-            abortRequested(options.signal)
-          ) {
-            if (!cancelled) {
-              cancel(
-                abortRequested(options.signal)
-                  ? contractError('operation.aborted', 'core', 'connect')
-                  : contractError('operation.cancelled-by-destroy', 'core', 'connect')
-              )
+          const closed = this.admissionClosedError(admissionEpoch, options, 'connect')
+          if (cancelled || closed !== null) {
+            if (!cancelled && closed !== null) {
+              cancel(closed)
             }
+            this.pendingConnectAcquisitions.delete(cancel)
             await this.compensateUnadoptedLease(
               lease.release.bind(lease),
               'connection',
@@ -582,6 +589,7 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
             throw error
           }
         } finally {
+          deadlineHandle?.cancel()
           this.pendingConnectAcquisitions.delete(cancel)
           options.signal?.removeEventListener('abort', onAbort)
         }
@@ -659,8 +667,16 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
     const existing = this.discoveries.get(key)
     if (existing !== undefined) {
       const database = await awaitWithOperationAdmission(existing.promise, options, this.options.now, 'discover')
-      database.assertCurrent()
-      return database
+      if (database.isCurrent()) {
+        return database
+      }
+      const registered = this.discoveries.get(key)
+      if (registered !== undefined && registered !== existing) {
+        const replacement = await awaitWithOperationAdmission(registered.promise, options, this.options.now, 'discover')
+        replacement.assertCurrent()
+        return replacement
+      }
+      throw contractError('gatt.stale-handle', 'gatt', 'core-gatt-database.current')
     }
     const promise = discoverCoreGattDatabase(
       this,
@@ -694,73 +710,78 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
       'service-changed' | 'manual-rediscovery'
     >
   ): Promise<CoreGattDatabase<Attachment, Identity>> {
-    this.assertReady('rediscover')
-    this.assertOperationAdmission(options, 'rediscover')
-    connection.assertCurrent()
     const key = String(connection.resource.connectionId)
     const connectionGeneration = connection.resource.connectionGeneration
     const startingDatabaseGeneration = connection.database?.path.databaseGeneration ?? null
-    const existing = this.discoveries.get(key)
-    if (existing !== undefined) {
-      try {
-        await awaitWithOperationAdmission(existing.promise, options, this.options.now, 'rediscover')
-      } catch (error) {
-        if (isRediscoverCallerTerminal(error, options)) {
-          throw error
-        }
+    let lastAwaited: CoreGattDiscovery<Attachment, Identity> | undefined
+    for (;;) {
+      this.assertReady('rediscover')
+      this.assertOperationAdmission(options, 'rediscover')
+      connection.assertCurrent()
+      if (connection.resource.connectionGeneration !== connectionGeneration) {
+        throw contractError('connection.stale', 'connection', 'core-connection.current')
       }
-    }
-    const registered = this.discoveries.get(key)
-    if (registered !== undefined && registered !== existing) {
-      const database = await awaitWithOperationAdmission(registered.promise, options, this.options.now, 'rediscover')
-      database.assertCurrent()
-      return database
-    }
-    this.assertReady('rediscover')
-    this.assertOperationAdmission(options, 'rediscover')
-    connection.assertCurrent()
-    if (connection.resource.connectionGeneration !== connectionGeneration) {
-      throw contractError('connection.stale', 'connection', 'core-connection.current')
-    }
-    const current = connection.database
-    if (current !== null && current.isCurrent()) {
-      if (existing?.kind === 'rediscover') {
-        return current
-      }
+      const current = connection.database
       if (
-        startingDatabaseGeneration !== null &&
-        String(current.path.databaseGeneration) !== String(startingDatabaseGeneration)
+        current !== null &&
+        current.isCurrent() &&
+        (lastAwaited?.kind === 'rediscover' ||
+          (startingDatabaseGeneration !== null &&
+            String(current.path.databaseGeneration) !== String(startingDatabaseGeneration)))
       ) {
         return current
       }
-    }
-    this.operationCoordinator.cancelQueue(key, 'disconnected')
-    const promise = discoverCoreGattDatabase(
-      this,
-      this.backend,
-      this.resourceLedger,
-      connection,
-      options,
-      operation => this.assertReady(operation),
-      (value, operation) => this.assertOperationAdmission(value, operation),
-      (admissionEpoch, value, operation) => this.assertAdmissionCurrent(admissionEpoch, value, operation),
-      this.admissionEpoch,
-      reason,
-      () => {
-        const drain = this.operationCoordinator.waitForQuarantineDrainCancellable(key)
-        return awaitWithOperationAdmission(drain.promise, options, this.options.now, 'rediscover').finally(() => {
-          drain.cancel()
-        })
+      const registered = this.discoveries.get(key)
+      if (registered !== undefined && registered !== lastAwaited) {
+        lastAwaited = registered
+        try {
+          const database = await awaitWithOperationAdmission(
+            registered.promise,
+            options,
+            this.options.now,
+            'rediscover'
+          )
+          if (database.isCurrent()) {
+            return database
+          }
+        } catch (error) {
+          if (isRediscoverCallerTerminal(error, options)) {
+            throw error
+          }
+        }
+        continue
       }
-    )
-    const discovery: CoreGattDiscovery<Attachment, Identity> = { kind: 'rediscover', promise }
-    this.discoveries.set(key, discovery)
-    try {
-      return await promise
-    } finally {
-      if (this.discoveries.get(key) === discovery) {
-        this.discoveries.delete(key)
+      this.operationCoordinator.cancelQueue(key, 'disconnected')
+      const promise = discoverCoreGattDatabase(
+        this,
+        this.backend,
+        this.resourceLedger,
+        connection,
+        options,
+        operation => this.assertReady(operation),
+        (value, operation) => this.assertOperationAdmission(value, operation),
+        (admissionEpoch, value, operation) => this.assertAdmissionCurrent(admissionEpoch, value, operation),
+        this.admissionEpoch,
+        reason,
+        () => {
+          const drain = this.operationCoordinator.waitForQuarantineDrainCancellable(key)
+          return awaitWithOperationAdmission(drain.promise, options, this.options.now, 'rediscover').finally(() => {
+            drain.cancel()
+          })
+        }
+      )
+      const discovery: CoreGattDiscovery<Attachment, Identity> = { kind: 'rediscover', promise }
+      this.discoveries.set(key, discovery)
+      const releaseRegistration = () => {
+        if (this.discoveries.get(key) === discovery) {
+          this.discoveries.delete(key)
+        }
       }
+      promise.then(releaseRegistration, releaseRegistration)
+      lastAwaited = discovery
+      const database = await awaitWithOperationAdmission(promise, options, this.options.now, 'rediscover')
+      database.assertCurrent()
+      return database
     }
   }
 
@@ -1249,9 +1270,9 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
     resourceKind: CoreTraceResource,
     transition: string
   ): Promise<void> {
-    const retained = { resourceKind, transition, retry }
+    const retained = createRetainedCleanup(resourceKind, transition, retry)
     this.lifecycleObserver.retainCleanup(retained)
-    const cleanup = retry()
+    const cleanup = retained.retry()
     this.lifecycleObserver.observeCleanup(cleanup, transition)
     const result = await this.lifecycleObserver.captureCleanup(cleanup, resourceKind, transition)
     if (result.state === 'released') {
@@ -1386,10 +1407,27 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
   }
 
   private assertAdmissionCurrent(admissionEpoch: number, options: PublicOperationOptions, operation: string): void {
-    this.assertOperationAdmission(options, operation)
-    if (this.coreState !== 'ready' || this.admissionEpoch !== admissionEpoch) {
-      throw contractError('operation.cancelled-by-destroy', 'core', operation)
+    const closed = this.admissionClosedError(admissionEpoch, options, operation)
+    if (closed !== null) {
+      throw closed
     }
+  }
+
+  private admissionClosedError(
+    admissionEpoch: number,
+    options: PublicOperationOptions,
+    operation: string
+  ): BackendContractError | null {
+    if (options.signal?.aborted === true) {
+      return contractError('operation.aborted', 'core', operation)
+    }
+    if (options.deadline !== null && options.deadline <= this.options.now()) {
+      return contractError('operation.timed-out', 'core', operation)
+    }
+    if (this.coreState !== 'ready' || this.admissionEpoch !== admissionEpoch) {
+      return contractError('operation.cancelled-by-destroy', 'core', operation)
+    }
+    return null
   }
 
   private isCurrentPath(path: CurrentCharacteristicPath<Attachment>): boolean {
