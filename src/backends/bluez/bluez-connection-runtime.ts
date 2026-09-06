@@ -426,12 +426,7 @@ async function adoptBluezAddressWiden(
   options: PublicOperationOptions
 ): Promise<boolean> {
   if (group.addressWidenRestore !== null) {
-    await awaitSharedBluezTransition(
-      group.addressWidenRestore,
-      options,
-      runtime.now,
-      'bluez.connect.address-restore'
-    )
+    await awaitSharedBluezTransition(group.addressWidenRestore, options, runtime.now, 'bluez.connect.address-restore')
   }
   if (runtime.scanGroup !== group || group.state !== 'active' || group.stopRequested) {
     return false
