@@ -131,9 +131,189 @@ describe('WinRT security backend adapter', () => {
       security.cancelPairing('peer-1', { signal: controller.signal, deadline: null })
     ).rejects.toMatchObject({ normalized: { code: 'operation.aborted' } })
     expect(boundary.cancelPairing).not.toHaveBeenCalled()
+    expect(boundary.pairCancellation).not.toHaveBeenCalled()
+    expect(security.activePairings.size).toBe(1)
     await expect(security.cancelPairing('peer-1', options())).resolves.toEqual({ outcome: 'cancelled' })
     await expect(first).resolves.toEqual({ outcome: 'cancelled' })
     security.close()
+  })
+
+  test('times out a never-resolving pairing-cancel acknowledgement without inventing cancelled', async () => {
+    jest.useFakeTimers()
+    try {
+      const boundary = createBoundary()
+      boundary.pair = jest.fn(() => ({
+        completion: new Promise(() => undefined),
+        cancel: jest.fn(() => new Promise(() => undefined))
+      }))
+      const security = new WinRtSecurityBackend(boundary, () => 50)
+      const pendingPair = security.pair('peer-1', options())
+      pendingPair.catch(() => undefined)
+      const pendingCancel = security.cancelPairing('peer-1', { signal: null, deadline: 60 })
+      const seen = []
+      pendingCancel.then(
+        value => seen.push(value),
+        error => seen.push(error)
+      )
+
+      await jest.advanceTimersByTimeAsync(10)
+      expect(seen).toHaveLength(1)
+      expect(seen[0]).toMatchObject({
+        normalized: { code: 'operation.timed-out', operation: 'winrt.security.cancel-pairing' }
+      })
+      expect(boundary.cancelPairing).not.toHaveBeenCalled()
+      expect(security.activePairings.size).toBe(1)
+      security.close()
+    } finally {
+      jest.useRealTimers()
+    }
+  })
+
+  test('times out after a cancel ack when the pairing result never arrives', async () => {
+    jest.useFakeTimers()
+    try {
+      const boundary = createBoundary()
+      boundary.pair = jest.fn(() => ({
+        completion: new Promise(() => undefined),
+        cancel: jest.fn(async () => 'cancellation-requested')
+      }))
+      const security = new WinRtSecurityBackend(boundary, () => 50)
+      const pendingPair = security.pair('peer-1', options())
+      pendingPair.catch(() => undefined)
+      const pendingCancel = security.cancelPairing('peer-1', { signal: null, deadline: 60 })
+      const seen = []
+      pendingCancel.then(
+        value => seen.push(value),
+        error => seen.push(error)
+      )
+
+      await jest.advanceTimersByTimeAsync(10)
+      expect(seen).toHaveLength(1)
+      expect(seen[0]).toMatchObject({ normalized: { code: 'operation.timed-out' } })
+      expect(boundary.cancelPairing).toHaveBeenCalledTimes(1)
+      expect(security.activePairings.size).toBe(1)
+      security.close()
+    } finally {
+      jest.useRealTimers()
+    }
+  })
+
+  test('reports paired when the in-flight pairing wins and completes successfully', async () => {
+    const boundary = createBoundary()
+    let resolvePair = () => undefined
+    boundary.pair = jest.fn(() => ({
+      completion: new Promise(resolve => {
+        resolvePair = resolve
+      }),
+      cancel: jest.fn(async () => 'cancellation-requested')
+    }))
+    const security = new WinRtSecurityBackend(boundary, () => 50)
+    const pendingPair = security.pair('peer-1', options())
+    const pendingCancel = security.cancelPairing('peer-1', options())
+
+    resolvePair({ outcome: 'paired', state: state({ bond: 'bonded' }), reason: null })
+    await expect(pendingPair).resolves.toMatchObject({ outcome: 'paired' })
+    await expect(pendingCancel).resolves.toEqual({ outcome: 'paired' })
+    security.close()
+  })
+
+  test('reports paired when dispatcher abort loses to a later native bond', async () => {
+    const boundary = createBoundary()
+    let resolvePair = () => undefined
+    let bond = 'not-bonded'
+    boundary.securityState = jest.fn(() => ({
+      completion: Promise.resolve(state({ bond })),
+      cancel: jest.fn(async () => 'already-terminal')
+    }))
+    boundary.pair = jest.fn(() => ({
+      completion: new Promise(resolve => {
+        resolvePair = resolve
+      }),
+      // Cancellation acknowledgement without settling the native pair — the
+      // abort lost the race and the peer bonded anyway.
+      cancel: jest.fn(async () => 'cancellation-requested')
+    }))
+    const security = new WinRtSecurityBackend(boundary, () => 50)
+    const controller = new AbortController()
+    const pendingPair = security.pair('peer-1', options({ signal: controller.signal }))
+    const pendingCancel = security.cancelPairing('peer-1', options())
+
+    controller.abort()
+    bond = 'bonded'
+    resolvePair({ outcome: 'paired', state: state({ bond: 'bonded' }), reason: null })
+
+    await expect(pendingPair).resolves.toMatchObject({ outcome: 'paired', state: { bond: 'bonded' } })
+    await expect(pendingCancel).resolves.toEqual({ outcome: 'paired' })
+    await expect(security.state('peer-1', options())).resolves.toMatchObject({ bond: 'bonded' })
+    security.close()
+  })
+
+  test('reports paired when a dispatcher deadline loses to a later native bond', async () => {
+    jest.useFakeTimers()
+    try {
+      const boundary = createBoundary()
+      let resolvePair = () => undefined
+      let bond = 'not-bonded'
+      boundary.securityState = jest.fn(() => ({
+        completion: Promise.resolve(state({ bond })),
+        cancel: jest.fn(async () => 'already-terminal')
+      }))
+      boundary.pair = jest.fn(() => ({
+        completion: new Promise(resolve => {
+          resolvePair = resolve
+        }),
+        cancel: jest.fn(async () => 'cancellation-requested')
+      }))
+      const security = new WinRtSecurityBackend(boundary, () => 50)
+      const pendingPair = security.pair('peer-1', options({ deadline: 60 }))
+      const pendingCancel = security.cancelPairing('peer-1', options())
+
+      await jest.advanceTimersByTimeAsync(10)
+      bond = 'bonded'
+      resolvePair({ outcome: 'paired', state: state({ bond: 'bonded' }), reason: null })
+
+      await expect(pendingPair).resolves.toMatchObject({ outcome: 'paired', state: { bond: 'bonded' } })
+      await expect(pendingCancel).resolves.toEqual({ outcome: 'paired' })
+      await expect(security.state('peer-1', options())).resolves.toMatchObject({ bond: 'bonded' })
+      security.close()
+    } finally {
+      jest.useRealTimers()
+    }
+  })
+
+  test('gives concurrent cancel waiters independent deadlines without dropping pairing ownership', async () => {
+    jest.useFakeTimers()
+    try {
+      const boundary = createBoundary()
+      let resolvePair = () => undefined
+      boundary.pair = jest.fn(() => ({
+        completion: new Promise(resolve => {
+          resolvePair = resolve
+        }),
+        cancel: jest.fn(async () => 'cancellation-requested')
+      }))
+      const security = new WinRtSecurityBackend(boundary, () => 50)
+      const pendingPair = security.pair('peer-1', options())
+      const shortWait = security.cancelPairing('peer-1', { signal: null, deadline: 60 })
+      const longWait = security.cancelPairing('peer-1', { signal: null, deadline: 80 })
+      const seen = []
+      shortWait.then(
+        value => seen.push(value),
+        error => seen.push(error)
+      )
+
+      await jest.advanceTimersByTimeAsync(10)
+      expect(seen).toHaveLength(1)
+      expect(seen[0]).toMatchObject({ normalized: { code: 'operation.timed-out' } })
+      expect(security.activePairings.size).toBe(1)
+
+      resolvePair({ outcome: 'paired', state: state({ bond: 'bonded' }), reason: null })
+      await expect(pendingPair).resolves.toMatchObject({ outcome: 'paired' })
+      await expect(longWait).resolves.toEqual({ outcome: 'paired' })
+      security.close()
+    } finally {
+      jest.useRealTimers()
+    }
   })
 
   test('settles a pending pairing at its deadline and requests native cancellation', async () => {

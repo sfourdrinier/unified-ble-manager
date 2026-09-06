@@ -1,9 +1,11 @@
 import {
   BackendContractError,
   BLE_ERROR_CODES,
+  BLE_ERROR_DOMAINS,
   contractError,
   type CleanupFailure,
-  type CleanupRecord
+  type CleanupRecord,
+  type NormalizedBleError
 } from '../backend-contract/errors'
 import type {
   BoundedAsyncStream,
@@ -558,7 +560,7 @@ export class IpcBleManager<Attachment extends string = string, Client extends st
       }
       if (item.kind === 'terminal') {
         const reason = requiredTerminalReason(item.reason, 'ipc-manager.event')
-        source.finishWithReason(reason)
+        source.finishWithReason(reason, requiredTerminalError(item.error, 'ipc-manager.event'))
         onTerminal?.(reason)
         this.streams.delete(streamId)
         this.discardPendingStream(streamId)
@@ -2187,6 +2189,51 @@ function requiredTerminalReason(
     return value
   }
   throw contractError('protocol.malformed', 'ipc', operation)
+}
+
+function requiredTerminalError(value: SerializableValue | undefined, operation: string): NormalizedBleError | null {
+  if (value === undefined || value === null) return null
+  if (!isSerializableRecord(value)) throw contractError('protocol.malformed', 'ipc', `${operation}.terminal-error`)
+  const code = BLE_ERROR_CODES.find(candidate => candidate === value.code)
+  const domain = BLE_ERROR_DOMAINS.find(candidate => candidate === value.domain)
+  const retryability =
+    value.retryability === 'never' || value.retryability === 'caller-decides' ? value.retryability : null
+  if (
+    code === undefined ||
+    domain === undefined ||
+    typeof value.operation !== 'string' ||
+    value.operation.length === 0 ||
+    retryability === null
+  ) {
+    throw contractError('protocol.malformed', 'ipc', `${operation}.terminal-error`)
+  }
+  const platform = value.platform
+  if (platform === null) {
+    return { code, domain, operation: value.operation, platform: null, retryability }
+  }
+  if (!isSerializableRecord(platform)) {
+    throw contractError('protocol.malformed', 'ipc', `${operation}.terminal-error-platform`)
+  }
+  if (
+    typeof platform.domain !== 'string' ||
+    typeof platform.code !== 'string' ||
+    typeof platform.safeMessage !== 'string' ||
+    !isSerializableRecord(platform.metadata)
+  ) {
+    throw contractError('protocol.malformed', 'ipc', `${operation}.terminal-error-platform`)
+  }
+  return {
+    code,
+    domain,
+    operation: value.operation,
+    platform: {
+      domain: platform.domain,
+      code: platform.code,
+      safeMessage: platform.safeMessage,
+      metadata: platform.metadata
+    },
+    retryability
+  }
 }
 
 function isSerializableRecord(value: unknown): value is SerializableRecord {

@@ -1,6 +1,6 @@
 // src/backend-contract/streams.ts
 
-import type { CleanupRecord } from './errors'
+import type { CleanupRecord, NormalizedBleError } from './errors'
 import type { Capacity, ResourceCount } from './primitives'
 
 export type OverflowPolicy = 'latest' | 'drop-oldest' | 'drop-newest' | 'error'
@@ -34,6 +34,8 @@ export interface StreamTerminalNotice {
   readonly droppedItems: ResourceCount
   readonly droppedBytes: ResourceCount
   readonly replacedItems: ResourceCount
+  /** Structured cause when the source failed while delivering this stream. */
+  readonly error?: NormalizedBleError | null
 }
 export type StreamItem<T> = StreamValue<T> | StreamOverflowNotice | StreamTerminalNotice
 export interface BoundedAsyncStreamIterator<T> extends AsyncIterator<StreamItem<T>, undefined, undefined> {
@@ -45,6 +47,8 @@ export interface BoundedAsyncStream<T> extends AsyncIterable<StreamItem<T>, unde
   readonly overflowPolicy: OverflowPolicy
   /** Optional synchronous state check for FIFO admission race prevention. */
   readonly isTerminal?: () => boolean
+  /** Optional readable terminal cause; must not consume the unicast iterator. */
+  readonly terminalReason?: () => StreamTerminalNotice['reason'] | null
   [Symbol.asyncIterator](): BoundedAsyncStreamIterator<T>
   close(): Promise<CleanupRecord>
 }

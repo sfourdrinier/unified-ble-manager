@@ -2,26 +2,54 @@
 
 import type { OwnerScanOptions } from '../../backend-contract/advertisement'
 import type { PeerAddressDescriptor } from '../../backend-contract/backend'
-import { BackendContractError, contractError, type CleanupRecord } from '../../backend-contract/errors'
+import {
+  BackendContractError,
+  contractError,
+  type CleanupFailure,
+  type CleanupRecord
+} from '../../backend-contract/errors'
 import type { PublicOperationOptions } from '../../backend-contract/operations'
 import { capacity, deadline, opaqueId, type ClientId, type PeerId } from '../../backend-contract/primitives'
 import { BLUEZ_ADAPTER_INTERFACE, BLUEZ_DEVICE_INTERFACE, BluezDbusMethodError } from './bluez-dbus-contract'
 import { BluezConnection, BluezConnectionLease, releasedBluezCleanup } from './bluez-backend-handles'
 import type { BluezBackendRuntime } from './bluez-backend-runtime'
-import { createPendingConnectionRecord, requireRecordConnection } from './bluez-runtime-models'
+import {
+  captureCleanup,
+  createPendingConnectionRecord,
+  requireRecordConnection,
+  scanFilterObservesAddress,
+  scanFilterVariant,
+  widenedDiscoveryFilterVariant
+} from './bluez-runtime-models'
 import {
   awaitBluezNativePromise,
   awaitSharedBluezTransition,
+  isBluezCallerTerminal,
   scheduleOrphanedBluezConnectionCleanup,
   waitForBluezBoolean,
   waitForBluezInterfacePresence
 } from './bluez-property-waiters'
 import { startBluezScan } from './bluez-scan-runtime'
-import type { BluezConnectionRecord } from './bluez-runtime-types'
+import type { BluezAddressAcquisition, BluezConnectionRecord, BluezScanGroup } from './bluez-runtime-types'
 
 const CONNECTION_OPERATION_DRAIN_TIMEOUT_MS = 1_000
 const DISCONNECT_CONFIRMATION_TIMEOUT_MS = 1_000
 const ADDRESS_CONNECT_RETRY_DELAY_MS = 250
+
+export async function destroyBluezAddressAcquisitions(runtime: BluezBackendRuntime): Promise<CleanupRecord> {
+  const failures: CleanupFailure[] = []
+  for (const [devicePath, acquisition] of [...runtime.addressAcquisitions.entries()]) {
+    const cleanup = await captureCleanup(
+      compensateOrphanedBluezAddressAcquisition(runtime, devicePath, acquisition),
+      'connection',
+      'bluez.destroy.address-acquisition'
+    )
+    failures.push(...cleanup.failures)
+  }
+  return failures.length === 0
+    ? releasedBluezCleanup
+    : Object.freeze({ state: 'release-failed', failures: Object.freeze(failures) })
+}
 
 export async function connectBluezConnection(
   runtime: BluezBackendRuntime,
@@ -68,6 +96,7 @@ async function connectBluezAddressTarget(
       // pending; the caller must mint a new address peer against the new generation.
       throw contractError('connection.not-found', 'connection', 'bluez.connect.address')
     }
+    await settleRetainedBluezAddressCompensation(runtime, devicePath)
     if (!runtime.store.hasInterface(devicePath, BLUEZ_DEVICE_INTERFACE)) {
       await materializeBluezAddressDevice(runtime, devicePath, target, clientId, options)
       continue
@@ -91,37 +120,193 @@ async function materializeBluezAddressDevice(
   options: PublicOperationOptions
 ): Promise<void> {
   if (!runtime.connectDeviceUnavailable) {
+    const acquisition = adoptBluezAddressAcquisition(runtime, devicePath, target)
+    acquisition.waiters += 1
+    let adopted = false
     try {
-      await runtime.boundary.methods.callVoid(
-        String(runtime.selectedAdapter.adapterId),
-        BLUEZ_ADAPTER_INTERFACE,
-        'ConnectDevice',
-        [
-          {
-            signature: 'a{sv}',
-            value: Object.freeze({
-              Address: { signature: 's', value: target.address },
-              AddressType: { signature: 's', value: target.addressType }
-            })
-          }
-        ]
-      )
+      await awaitSharedBluezTransition(acquisition.completion, options, runtime.now, 'bluez.connect.connect-device')
       await waitForBluezInterfacePresence(runtime, devicePath, BLUEZ_DEVICE_INTERFACE, options)
+      adopted = true
       return
     } catch (error) {
       if (isBluezUnknownMethodError(error)) {
         runtime.connectDeviceUnavailable = true
+        if (runtime.addressAcquisitions.get(devicePath) === acquisition && acquisition.waiters <= 1) {
+          runtime.addressAcquisitions.delete(devicePath)
+        }
+      } else if (isBluezCallerTerminal(error)) {
+        throw error
       } else if (error instanceof BluezDbusMethodError) {
-        // The daemon supports ConnectDevice but the peer did not answer this attempt;
-        // stay pending and try again after the retry window.
         await delayBluezAddressRetry(runtime, options)
         return
       } else {
         throw error
       }
+    } finally {
+      acquisition.waiters -= 1
+      if (acquisition.waiters === 0 && !adopted) {
+        scheduleOrphanedBluezAddressAcquisition(runtime, devicePath, acquisition)
+      } else if (acquisition.waiters === 0 && adopted) {
+        runtime.addressAcquisitions.delete(devicePath)
+      }
     }
   }
   await discoverBluezAddressDevice(runtime, devicePath, target, clientId, options)
+}
+
+function adoptBluezAddressAcquisition(
+  runtime: BluezBackendRuntime,
+  devicePath: string,
+  target: PeerAddressDescriptor
+): BluezAddressAcquisition {
+  const existing = runtime.addressAcquisitions.get(devicePath)
+  if (existing !== undefined) {
+    return existing
+  }
+  const connectDevice = runtime.boundary.methods.callVoid(
+    String(runtime.selectedAdapter.adapterId),
+    BLUEZ_ADAPTER_INTERFACE,
+    'ConnectDevice',
+    [
+      {
+        signature: 'a{sv}',
+        value: Object.freeze({
+          Address: { signature: 's', value: target.address },
+          AddressType: { signature: 's', value: target.addressType }
+        })
+      }
+    ]
+  )
+  const acquisition: BluezAddressAcquisition = {
+    completion: connectDevice,
+    waiters: 0,
+    connectDevice,
+    compensation: null
+  }
+  runtime.addressAcquisitions.set(devicePath, acquisition)
+  return acquisition
+}
+
+function scheduleOrphanedBluezAddressAcquisition(
+  runtime: BluezBackendRuntime,
+  devicePath: string,
+  acquisition: BluezAddressAcquisition
+): void {
+  acquisition.completion.then(
+    () => {
+      if (acquisition.waiters > 0 || runtime.addressAcquisitions.get(devicePath) !== acquisition) {
+        return
+      }
+      compensateOrphanedBluezAddressAcquisition(runtime, devicePath, acquisition).then(
+        cleanup => {
+          if (cleanup.state === 'release-failed') {
+            console.error('[connectBluezConnection] Late ConnectDevice compensation failed:', cleanup.failures)
+          }
+        },
+        error => {
+          console.error('[connectBluezConnection] Late ConnectDevice compensation failed:', error)
+        }
+      )
+    },
+    () => {
+      if (acquisition.waiters === 0 && runtime.addressAcquisitions.get(devicePath) === acquisition) {
+        runtime.addressAcquisitions.delete(devicePath)
+      }
+    }
+  )
+}
+
+async function settleRetainedBluezAddressCompensation(runtime: BluezBackendRuntime, devicePath: string): Promise<void> {
+  const acquisition = runtime.addressAcquisitions.get(devicePath)
+  if (acquisition === undefined || acquisition.waiters > 0) {
+    return
+  }
+  if (acquisition.compensation === null && !runtime.store.hasInterface(devicePath, BLUEZ_DEVICE_INTERFACE)) {
+    return
+  }
+  const cleanup = await compensateOrphanedBluezAddressAcquisition(runtime, devicePath, acquisition)
+  if (cleanup.state !== 'released') {
+    throw contractError('platform.failure', 'cleanup', 'bluez.connect.address-compensation')
+  }
+}
+
+async function compensateOrphanedBluezAddressAcquisition(
+  runtime: BluezBackendRuntime,
+  devicePath: string,
+  acquisition: BluezAddressAcquisition
+): Promise<CleanupRecord> {
+  if (acquisition.compensation !== null) {
+    return acquisition.compensation
+  }
+  const compensation = disconnectOrphanedBluezAddressDevice(runtime, devicePath, acquisition)
+  acquisition.compensation = compensation
+  try {
+    const cleanup = await compensation
+    if (cleanup.state === 'released') {
+      if (runtime.addressAcquisitions.get(devicePath) === acquisition) {
+        runtime.addressAcquisitions.delete(devicePath)
+      }
+    } else if (acquisition.compensation === compensation) {
+      acquisition.compensation = null
+    }
+    return cleanup
+  } catch (error) {
+    if (acquisition.compensation === compensation) {
+      acquisition.compensation = null
+    }
+    throw error
+  }
+}
+
+async function disconnectOrphanedBluezAddressDevice(
+  runtime: BluezBackendRuntime,
+  devicePath: string,
+  acquisition: BluezAddressAcquisition
+): Promise<CleanupRecord> {
+  try {
+    await awaitBluezNativePromise(acquisition.completion, runtime.now, 'bluez.connect.address-compensation')
+  } catch (error) {
+    if (error instanceof BackendContractError && error.normalized.code === 'operation.timed-out') {
+      return pendingBluezConnectionCleanup('bluez.connect.address-compensation')
+    }
+    if (acquisition.waiters === 0 && runtime.addressAcquisitions.get(devicePath) === acquisition) {
+      runtime.addressAcquisitions.delete(devicePath)
+    }
+    return releasedBluezCleanup
+  }
+  if (acquisition.waiters > 0 || runtime.addressAcquisitions.get(devicePath) !== acquisition) {
+    return releasedBluezCleanup
+  }
+  if (runtime.connectionRecords.has(devicePath) || !runtime.store.hasInterface(devicePath, BLUEZ_DEVICE_INTERFACE)) {
+    runtime.addressAcquisitions.delete(devicePath)
+    return releasedBluezCleanup
+  }
+  try {
+    const disconnectMethod = runtime.boundary.methods.callVoid(devicePath, BLUEZ_DEVICE_INTERFACE, 'Disconnect', [])
+    await awaitBluezNativePromise(disconnectMethod, runtime.now, 'bluez.connect.address-compensation')
+    await waitForBluezBoolean(runtime, devicePath, BLUEZ_DEVICE_INTERFACE, 'Connected', false, {
+      signal: null,
+      deadline: deadline(runtime.now() + DISCONNECT_CONFIRMATION_TIMEOUT_MS)
+    })
+  } catch (error) {
+    if (
+      runtime.addressAcquisitions.get(devicePath) !== acquisition ||
+      !runtime.store.hasInterface(devicePath, BLUEZ_DEVICE_INTERFACE)
+    ) {
+      if (runtime.addressAcquisitions.get(devicePath) === acquisition) {
+        runtime.addressAcquisitions.delete(devicePath)
+      }
+      return releasedBluezCleanup
+    }
+    if (error instanceof BackendContractError && error.normalized.code === 'operation.timed-out') {
+      return pendingBluezConnectionCleanup('bluez.connect.address-compensation')
+    }
+    throw error
+  }
+  if (runtime.addressAcquisitions.get(devicePath) === acquisition) {
+    runtime.addressAcquisitions.delete(devicePath)
+  }
+  return releasedBluezCleanup
 }
 
 async function discoverBluezAddressDevice(
@@ -131,21 +316,215 @@ async function discoverBluezAddressDevice(
   clientId: ClientId<string, string>,
   options: PublicOperationOptions
 ): Promise<void> {
-  if (runtime.scanGroup !== null) {
-    // A discovery session already owns the radio; the device object materializes when the
-    // peer wakes and BlueZ reports it through the shared ObjectManager.
-    await waitForBluezInterfacePresence(runtime, devicePath, BLUEZ_DEVICE_INTERFACE, options)
-    return
+  await waitForBluezScanGroupToSettle(runtime, options)
+  const current = runtime.scanGroup
+  if (current !== null && isReusableBluezScanGroup(current)) {
+    const owner = current.consumers.get(String(current.ownerLeaseId))
+    if (owner !== undefined && scanFilterObservesAddress(owner.options, target)) {
+      await waitForBluezInterfacePresence(runtime, devicePath, BLUEZ_DEVICE_INTERFACE, options)
+      return
+    }
+    if (owner !== undefined) {
+      await widenBluezScanForAddress(runtime, current, owner, devicePath, options)
+      return
+    }
   }
   const lease = await startBluezScan(runtime, addressDiscoveryScanOptions(target, options), clientId)
+  let presenceError: unknown = null
   try {
     await waitForBluezInterfacePresence(runtime, devicePath, BLUEZ_DEVICE_INTERFACE, options)
-  } finally {
-    try {
-      await lease.stop()
-    } catch (stopError) {
-      console.error('[connectBluezConnection] Address bootstrap discovery stop failed:', stopError)
+  } catch (error) {
+    presenceError = error
+  }
+  const cleanup = await captureCleanup(lease.stop(), 'scan', 'bluez.connect.address-scan-stop')
+  if (cleanup.state !== 'released') {
+    if (presenceError !== null) {
+      throw presenceError
     }
+    throw contractError('scan.stop-failed', 'scan', 'bluez.connect.address-scan-stop')
+  }
+  if (presenceError !== null) {
+    throw presenceError
+  }
+}
+
+function isReusableBluezScanGroup(group: BluezScanGroup): boolean {
+  return group.state === 'active' && !group.stopRequested
+}
+
+async function waitForBluezScanGroupToSettle(
+  runtime: BluezBackendRuntime,
+  options: PublicOperationOptions
+): Promise<void> {
+  const group = runtime.scanGroup
+  if (group === null) {
+    return
+  }
+  if (!group.startupComplete) {
+    await awaitSharedBluezTransition(group.startupSettled, options, runtime.now, 'bluez.connect.address-scan-start')
+  }
+  const current = runtime.scanGroup
+  if (current === null || isReusableBluezScanGroup(current)) {
+    return
+  }
+  const owner = current.consumers.get(String(current.ownerLeaseId))
+  if (owner === undefined) {
+    return
+  }
+  await awaitSharedBluezTransition(
+    runtime.stopScan(owner).then(() => undefined),
+    options,
+    runtime.now,
+    'bluez.connect.address-scan-stop'
+  )
+}
+
+async function widenBluezScanForAddress(
+  runtime: BluezBackendRuntime,
+  group: BluezScanGroup,
+  owner: { readonly options: OwnerScanOptions<string, string> },
+  devicePath: string,
+  options: PublicOperationOptions
+): Promise<void> {
+  const original = scanFilterVariant(owner.options)
+  group.addressWidenBorrowers += 1
+  let adopted = false
+  try {
+    adopted = await adoptBluezAddressWiden(runtime, group, owner, options)
+    await waitForBluezInterfacePresence(runtime, devicePath, BLUEZ_DEVICE_INTERFACE, options)
+  } catch (error) {
+    if (!adopted) {
+      const widen = group.addressWiden
+      if (widen !== null) {
+        widen.then(
+          () => {
+            if (group.addressWidenBorrowers === 0) {
+              beginBluezAddressWidenRestore(runtime, group, original).catch(() => undefined)
+            }
+          },
+          () => {
+            if (group.addressWiden === widen && group.addressWidenBorrowers === 0) {
+              group.addressWiden = null
+            }
+          }
+        )
+      }
+    }
+    throw error
+  } finally {
+    group.addressWidenBorrowers -= 1
+    if (group.addressWidenBorrowers === 0 && adopted) {
+      await beginBluezAddressWidenRestore(runtime, group, original)
+    }
+  }
+}
+
+async function adoptBluezAddressWiden(
+  runtime: BluezBackendRuntime,
+  group: BluezScanGroup,
+  owner: { readonly options: OwnerScanOptions<string, string> },
+  options: PublicOperationOptions
+): Promise<boolean> {
+  if (group.addressWidenRestore !== null) {
+    await awaitSharedBluezTransition(group.addressWidenRestore, options, runtime.now, 'bluez.connect.address-restore')
+  }
+  if (runtime.scanGroup !== group || group.state !== 'active' || group.stopRequested) {
+    return false
+  }
+  let widen = group.addressWiden
+  if (widen === null) {
+    widen = runtime.boundary.methods.callVoid(
+      String(runtime.selectedAdapter.adapterId),
+      BLUEZ_ADAPTER_INTERFACE,
+      'SetDiscoveryFilter',
+      [widenedDiscoveryFilterVariant(owner.options)]
+    )
+    group.setFilter = widen
+    group.filterSettled = false
+    group.addressWiden = widen
+  }
+  await awaitSharedBluezTransition(widen, options, runtime.now, 'bluez.connect.address-widen')
+  if (runtime.scanGroup !== group || group.state !== 'active' || group.stopRequested) {
+    return false
+  }
+  if (group.setFilter === widen) {
+    group.filterSettled = true
+  }
+  return true
+}
+
+function beginBluezAddressWidenRestore(
+  runtime: BluezBackendRuntime,
+  group: BluezScanGroup,
+  original: ReturnType<typeof scanFilterVariant>
+): Promise<void> {
+  if (group.addressWidenBorrowers > 0) {
+    return Promise.resolve()
+  }
+  if (group.addressWidenRestore !== null) {
+    return group.addressWidenRestore
+  }
+  group.addressWiden = null
+  let settleRestore = (): void => undefined
+  const held = new Promise<void>(resolve => {
+    settleRestore = resolve
+  })
+  group.addressWidenRestore = held
+  const restore = restoreBluezScanFilter(runtime, group, original)
+  restore.then(
+    () => {
+      settleRestore()
+      if (group.addressWidenRestore === held) {
+        group.addressWidenRestore = null
+      }
+    },
+    () => {
+      settleRestore()
+      if (group.addressWidenRestore === held) {
+        group.addressWidenRestore = null
+      }
+    }
+  )
+  return restore
+}
+
+async function restoreBluezScanFilter(
+  runtime: BluezBackendRuntime,
+  group: BluezScanGroup,
+  original: ReturnType<typeof scanFilterVariant>
+): Promise<void> {
+  if (runtime.scanGroup !== group) {
+    return
+  }
+  if (group.addressWidenBorrowers > 0) {
+    return
+  }
+  if (group.state !== 'active' || group.stopRequested) {
+    group.pendingFilterRestore = original
+    return
+  }
+  group.pendingFilterRestore = original
+  try {
+    const restore = runtime.boundary.methods.callVoid(
+      String(runtime.selectedAdapter.adapterId),
+      BLUEZ_ADAPTER_INTERFACE,
+      'SetDiscoveryFilter',
+      [original]
+    )
+    group.setFilter = restore
+    group.filterSettled = false
+    await awaitBluezNativePromise(restore, runtime.now, 'bluez.connect.address-restore')
+    group.filterSettled = true
+    group.setFilter = null
+    group.pendingFilterRestore = null
+  } catch (error) {
+    group.filterSettled = true
+    group.setFilter = null
+    console.error(
+      '[connectBluezConnection] Failed to restore the BlueZ discovery filter after address widening:',
+      error
+    )
+    throw error
   }
 }
 

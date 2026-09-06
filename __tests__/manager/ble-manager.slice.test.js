@@ -131,7 +131,11 @@ async function settle(controller, promise) {
       settled = true
     }
   )
-  for (let attempt = 0; attempt < 20 && !settled; attempt += 1) {
+  // BLE-05 scan/connect acquisition is observed in the background, so the
+  // next virtual-clock task can be scheduled one microtask after runUntilIdle
+  // reports idle. The late-cleanup suite already pumps 100 times; 20 left this
+  // slice hanging with one pending task.
+  for (let attempt = 0; attempt < 100 && !settled; attempt += 1) {
     controller.clock.runUntilIdle()
     await Promise.resolve()
   }

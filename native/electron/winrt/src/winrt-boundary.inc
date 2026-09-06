@@ -456,7 +456,14 @@ bool BoundaryState::RemoveConnection(const std::string& peer, const std::shared_
     }
     connection->setup_finished.notify_all();
     for (auto notification = notifications.begin(); notification != notifications.end();) {
-      if (notification->first.rfind(peer_prefix, 0) == 0) {
+      bool snapshotted = false;
+      for (const NotificationEntry& captured : notifications_for_peer) {
+        if (captured.lifecycle == notification->second.lifecycle) {
+          snapshotted = true;
+          break;
+        }
+      }
+      if (snapshotted) {
         notification = notifications.erase(notification);
       } else {
         ++notification;
@@ -1198,6 +1205,9 @@ class WinRtContractBoundary final : public Napi::ObjectWrap<WinRtContractBoundar
       bool provisional_published = false;
       try {
         connection = RequiredConnection(state, address.peer);
+        if (connection->connection_generation != address.connection_generation) {
+          throw std::runtime_error("The WinRT notification subscription is no longer admissible");
+        }
         {
           std::lock_guard<std::mutex> gatt_guard(connection->gatt_mutex);
           CharacteristicEntry& entry = RequiredCharacteristic(*connection, address);
@@ -1211,7 +1221,12 @@ class WinRtContractBoundary final : public Napi::ObjectWrap<WinRtContractBoundar
           // retry any partially-created subscription through this same entry.
           std::lock_guard<std::mutex> state_guard(state->mutex);
           const auto found = state->connections.find(address.peer);
-          if (state->destroyed || state->destroying || found == state->connections.end() || found->second != connection || state->notifications.contains(key)) {
+          bool removal_claimed = false;
+          if (found != state->connections.end() && found->second == connection) {
+            std::lock_guard<std::mutex> lifecycle_guard(connection->lifecycle_mutex);
+            removal_claimed = connection->removal_claimed;
+          }
+          if (state->destroyed || state->destroying || found == state->connections.end() || found->second != connection || removal_claimed || state->notifications.contains(key)) {
             throw std::runtime_error("The WinRT notification subscription is no longer admissible");
           }
           state->notifications.emplace(key, *provisional);
@@ -1271,14 +1286,24 @@ class WinRtContractBoundary final : public Napi::ObjectWrap<WinRtContractBoundar
     return StartOperation<VoidResult>(info.Env(), [state, address] {
       const std::string key = CharacteristicKey(address);
       std::optional<NotificationEntry> notification;
+      bool disable_cccd = true;
       {
         std::lock_guard<std::mutex> guard(state->mutex);
         const auto found = state->notifications.find(key);
         if (found == state->notifications.end()) return VoidResult{};
         notification.emplace(found->second);
+        const std::string identity = NotificationCharacteristicIdentity(key);
+        for (const auto& pair : state->notifications) {
+          if (pair.second.lifecycle == notification->lifecycle) continue;
+          if (NotificationCharacteristicIdentity(pair.first) == identity) {
+            // Another generation still owns this characteristic CCCD.
+            disable_cccd = false;
+            break;
+          }
+        }
       }
       std::vector<std::string> cleanup_failures;
-      const bool cleanup_complete = CleanupNotificationEntry(*notification, cleanup_failures, true);
+      const bool cleanup_complete = CleanupNotificationEntry(*notification, cleanup_failures, disable_cccd);
       if (!cleanup_complete || !cleanup_failures.empty()) {
         ThrowWinRtCleanupFailures("WinRT notification stop", cleanup_failures);
       }

@@ -27,6 +27,7 @@ export async function discoverCoreGattDatabase<Attachment extends string, Identi
   assertReady('discover')
   assertOperationAdmission(options, 'discover')
   connection.assertCurrent()
+  const connectionGeneration = connection.resource.connectionGeneration
   const invalidation = await connection.invalidateDatabase('owner-released', changeReason)
   if (invalidation.state === 'release-failed') {
     throw new BackendContractError(
@@ -50,6 +51,9 @@ export async function discoverCoreGattDatabase<Attachment extends string, Identi
   }
   assertAdmissionCurrent(admissionEpoch, options, 'discover')
   connection.assertCurrent()
+  if (connection.resource.connectionGeneration !== connectionGeneration) {
+    throw contractError('connection.stale', 'connection', 'unified-core.discover')
+  }
   const database = new CoreGattDatabaseRuntime(core, connection, backendDatabase)
   connection.setDatabase(database)
   resourceLedger.increment('databaseSnapshots')

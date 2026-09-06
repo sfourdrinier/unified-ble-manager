@@ -306,19 +306,22 @@ export class BluezSecurityBackend implements SecurityBackend {
     return operation
   }
 
-  async cancelPairing(peerId: string, _options: PublicOperationOptions): Promise<SecurityCancelPairingResult> {
+  async cancelPairing(peerId: string, options: PublicOperationOptions): Promise<SecurityCancelPairingResult> {
     this.runtime.assertUsable('bluez.security.cancel-pairing')
     const active = this.activePairings.get(peerId)
     // Narrow known window: the pairing can settle between this lookup and the
     // caller's call, so a cancellation that arrives at that instant reports
     // 'not-pairing'. Documented rather than closed - see docs/BONDING.md.
     if (active === undefined) return { outcome: 'not-pairing' }
-    await active.dispatch.requestCancellation()
-    // Ask the pairing what happened to it instead of forming a second opinion.
-    // A failed pairing propagates: rethrowing its error beats inventing a
-    // resolved outcome we do not have. Concurrent callers all await the same
-    // operation, so they cannot receive different answers.
-    return cancelOutcomeForPairResult(await active.operation)
+    // Bound the whole cancellation transaction (CancelPairing acknowledgement
+    // AND the pairing's own result). A timed-out wait is not a successful
+    // physical cancellation, and giving up the wait does not drop the in-flight
+    // pairing.
+    const dispatch = this.runtime.dispatcher.dispatch(options, 'bluez.security.cancel-pairing', async () => {
+      await active.dispatch.requestCancellation()
+      return cancelOutcomeForPairResult(await active.operation)
+    })
+    return dispatch.completion
   }
 
   async unpair(peerId: string, _options: PublicOperationOptions): Promise<SecurityUnpairResult> {

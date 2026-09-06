@@ -74,6 +74,8 @@ const subscription = await measurement.subscribe({
   timeoutMs: 15_000,
   stream: 'balanced'
 })
+// Apple/Electron CoreBluetooth: do not measurement.read() while this
+// subscription is active. Use `item.value` below, or unsubscribe first.
 
 try {
   for await (const item of subscription.values) {

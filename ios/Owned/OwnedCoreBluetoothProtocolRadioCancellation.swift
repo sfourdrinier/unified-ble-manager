@@ -52,6 +52,7 @@ extension OwnedCoreBluetoothProtocolRadio {
     descriptorOperations.cancel(operationIdentifier)
     for (address, pending) in pendingNotify where pending.operationIdentifier == operationIdentifier {
       pendingNotify.removeValue(forKey: address)
+      failPendingIndependentRead(for: address)
       // `subscriptions` remains installed while an unsubscribe is pending.  Its
       // cancellation therefore restores CCCD rather than disabling it.
       cleanup.notificationDesiredStates[address] = pending.enabled ? false : true
@@ -294,6 +295,67 @@ extension OwnedCoreBluetoothProtocolRadio {
       if entry.peripheral.state == .disconnected {
         pendingDisconnect.removeValue(forKey: entry.identifier)?.completion(nil)
       }
+    }
+  }
+
+  func independentReadWhileNotifyingError() -> NSError {
+    error(
+      code: OwnedCoreBluetoothReadNotifyProvenance.independentReadWhileNotifyingCode,
+      message: OwnedCoreBluetoothReadNotifyProvenance.independentReadWhileNotifyingMessage
+    )
+  }
+
+  func isIndependentReadAmbiguous(address: CharacteristicAddress, characteristic: CBCharacteristic) -> Bool {
+    OwnedCoreBluetoothReadNotifyProvenance.independentReadIsAmbiguous(
+      isNotifying: characteristic.isNotifying,
+      hasInstalledSubscription: subscriptions[address] != nil,
+      pendingNotifyEnable: pendingNotify[address] != nil,
+      pendingCancellationCleanup: hasPendingCancellationCleanup(for: address)
+    )
+  }
+
+  func hasPendingCancellationCleanup(for address: CharacteristicAddress) -> Bool {
+    pendingCancellationCleanup.values.contains { cleanup in
+      cleanup.notificationDesiredStates[address] != nil || cleanup.notificationAwaitingCallbacks.contains(address)
+    }
+  }
+
+  func failPendingIndependentRead(for address: CharacteristicAddress) {
+    guard let pending = pendingRead.removeValue(forKey: address) else { return }
+    pending.completion(nil, independentReadWhileNotifyingError())
+  }
+
+  func handleCharacteristicValueUpdate(
+    address: CharacteristicAddress,
+    characteristic: CBCharacteristic,
+    error: Error?
+  ) {
+    let route = OwnedCoreBluetoothReadNotifyProvenance.routeValueUpdate(
+      hasPendingRead: pendingRead[address] != nil,
+      isNotifying: characteristic.isNotifying,
+      hasInstalledSubscription: subscriptions[address] != nil,
+      pendingNotifyEnable: pendingNotify[address]?.enabled == true,
+      pendingCancellationCleanup: hasPendingCancellationCleanup(for: address),
+      hasError: error != nil,
+      hasValue: characteristic.value != nil
+    )
+    switch route {
+    case .completePendingRead:
+      if let pending = pendingRead.removeValue(forKey: address) {
+        pending.completion(characteristic.value as NSData?, error as NSError?)
+      }
+    case .rejectPendingRead:
+      failPendingIndependentRead(for: address)
+    case .deliverNotification:
+      let pendingSubscriptionIdentifier = pendingNotify[address].flatMap { pending in
+        pending.enabled ? pending.subscriptionIdentifier : nil
+      }
+      guard error == nil,
+            let subscriptionIdentifier = subscriptions[address] ?? pendingSubscriptionIdentifier,
+            let value = characteristic.value else { return }
+      delegate?.protocolRadioDidReceiveNotification(subscriptionIdentifier, value: value as NSData)
+    case .ignore:
+      break
     }
   }
 }

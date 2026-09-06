@@ -1,6 +1,6 @@
 // src/backends/bluez/bluez-property-waiters.ts
 
-import { contractError } from '../../backend-contract/errors'
+import { BackendContractError, contractError } from '../../backend-contract/errors'
 import type { PublicOperationOptions } from '../../backend-contract/operations'
 import type { BluezBackendRuntime } from './bluez-backend-runtime'
 import type { BluezConnectionRecord, BluezPropertyWaiter } from './bluez-runtime-types'
@@ -16,6 +16,13 @@ import type { BluezConnectionRecord, BluezPropertyWaiter } from './bluez-runtime
  * CoreBluetooth and WinRT cleanup bounds.
  */
 export const BLUEZ_NATIVE_CLEANUP_TIMEOUT_MS = 1_000
+
+export function isBluezCallerTerminal(error: unknown): boolean {
+  return (
+    error instanceof BackendContractError &&
+    (error.normalized.code === 'operation.aborted' || error.normalized.code === 'operation.timed-out')
+  )
+}
 
 export async function awaitBluezNativePromise(
   nativePromise: Promise<void>,
@@ -222,11 +229,6 @@ export function awaitSharedBluezTransition(
     }
     if (options.signal?.aborted === true) {
       abort()
-      return
-    }
-    if (options.deadline !== null && options.deadline <= now()) {
-      terminal = true
-      reject(contractError('operation.timed-out', 'core', operation))
       return
     }
     options.signal?.addEventListener('abort', abort, { once: true })

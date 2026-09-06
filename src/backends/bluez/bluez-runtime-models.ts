@@ -6,6 +6,7 @@ import {
   type AdvertisementObservation,
   type OwnerScanOptions
 } from '../../backend-contract/advertisement'
+import type { PeerAddressDescriptor } from '../../backend-contract/backend'
 import { contractError, type CleanupFailure, type CleanupRecord } from '../../backend-contract/errors'
 import type { OperationOptions, OperationTerminalRecord } from '../../backend-contract/operations'
 import {
@@ -103,6 +104,29 @@ export function scanSignature(options: OwnerScanOptions<string, string>): string
     duplicatePolicy: options.duplicatePolicy,
     timestampPolicy: options.timestampPolicy
   })
+}
+
+export function widenedDiscoveryFilterVariant(options: OwnerScanOptions<string, string>): BluezVariant {
+  const filter: Record<string, BluezVariant> = {
+    DuplicateData: { signature: 'b', value: options.duplicatePolicy === 'all' },
+    Transport: { signature: 's', value: 'le' }
+  }
+  return Object.freeze({ signature: 'a{sv}', value: Object.freeze(filter) })
+}
+
+export function scanFilterObservesAddress(
+  options: OwnerScanOptions<string, string>,
+  target: PeerAddressDescriptor
+): boolean {
+  const filter = trustedServiceUuidFilter(options, planBluezScan, 'bluez.scan')
+  if (filter.serviceUuids.length > 0) {
+    return false
+  }
+  const pattern = filter.localNamePrefix
+  if (pattern === null || pattern.length === 0) {
+    return true
+  }
+  return target.address.toLowerCase().startsWith(pattern.toLowerCase())
 }
 
 export function createObservation(

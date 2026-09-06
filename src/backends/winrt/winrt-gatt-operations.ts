@@ -18,7 +18,6 @@ import {
   WinRtBackendSubscription,
   WinRtGattDatabase,
   WinRtSubscriptionStream,
-  characteristicAddressKey,
   successfulTerminal
 } from './winrt-handles'
 import type {
@@ -37,7 +36,9 @@ import type {
 import {
   createWinRtPhysicalSubscription,
   createWinRtSubscription,
+  discardWinRtStagedNotifications,
   emitWinRtNotification,
+  physicalSubscriptionKey,
   removeWinRtSubscription,
   requestWinRtPhysicalEnableCancellation,
   stopWinRtPhysicalSubscriptionAfterEnable,
@@ -445,7 +446,7 @@ export class WinRtGattOperations {
       enablement.then(resolvePhysicalCompletion, resolvePhysicalCompletion)
     }
     try {
-      const key = characteristicAddressKey(address)
+      const key = physicalSubscriptionKey(address, connectionRecord.connectionGeneration)
       let physical = this.backend.subscriptions.get(key)
       if (physical?.state === 'removing') {
         if (physical.removal === null) {
@@ -474,7 +475,7 @@ export class WinRtGattOperations {
       }
       if (physical === undefined) {
         const mode = this.backend.databaseForPath(path, 'winrt.gatt.subscribe.mode').notificationModeForPath(path)
-        physical = createWinRtPhysicalSubscription(this.backend, address, mode)
+        physical = createWinRtPhysicalSubscription(this.backend, address, mode, connectionRecord.connectionGeneration)
         this.registerSubscriptionWaiter(waiter, physical)
         this.beginPhysicalSubscriptionEnablement(physical, resolvePhysicalCompletion)
       } else {
@@ -497,7 +498,12 @@ export class WinRtGattOperations {
         return cancelledSubscriptionResult
       }
       this.completeSubscriptionWaiter(waiter)
-      if (this.backend.subscriptions.get(key) !== physical || physical.state !== 'ready') {
+      if (
+        this.backend.subscriptions.get(key) !== physical ||
+        physical.state !== 'ready' ||
+        physical.invalidated ||
+        !this.physicalGenerationIsCurrent(physical)
+      ) {
         throw contractError('operation.cancelled-by-destroy', 'gatt', 'winrt.gatt.subscribe.destroyed')
       }
       const subscription = createWinRtSubscription(
@@ -562,11 +568,13 @@ export class WinRtGattOperations {
           if (
             physical.invalidated ||
             this.backend.subscriptions.get(physical.key) !== physical ||
-            physical.state !== 'enabling'
+            physical.state !== 'enabling' ||
+            !this.physicalGenerationIsCurrent(physical)
           ) {
             // The invalidating owner awaits and reports this exact cleanup receipt. Resolving the
             // enablement here lets every waiter publish its already-recorded lifecycle terminal
             // without misclassifying expected invalidation as an unhandled late native failure.
+            discardWinRtStagedNotifications(physical)
             await stopWinRtPhysicalSubscriptionAfterEnable(this.backend, physical)
             resolvePhysicalCompletion()
             return
@@ -592,6 +600,7 @@ export class WinRtGattOperations {
     physical.nativeEnable = null
     physical.enableCancellation = null
     physical.enableOutcome = 'failed'
+    discardWinRtStagedNotifications(physical)
     const preEnableRemoval = physical.removalPhase === 'pre-enable' ? physical.removal : null
     if (preEnableRemoval !== null) {
       const cleanup = await preEnableRemoval
@@ -644,6 +653,7 @@ export class WinRtGattOperations {
     ) {
       return Promise.resolve('cancellation-requested')
     }
+    discardWinRtStagedNotifications(physical)
     if (physical.state === 'enabling' && physical.nativeEnable !== null) {
       return requestWinRtPhysicalEnableCancellation(physical)
     }
@@ -655,6 +665,10 @@ export class WinRtGattOperations {
       })
     }
     return Promise.resolve('cancellation-requested')
+  }
+
+  private physicalGenerationIsCurrent(physical: WinRtPhysicalSubscription): boolean {
+    return this.backend.connectionOwnsGeneration(physical.address.nativePeerId, physical.connectionGeneration)
   }
 
   private createDatabase(

@@ -31,8 +31,16 @@ if (process.platform !== 'darwin') {
 
 const temporaryDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'unified-ble-apple-native-protocol-'))
 const executable = path.join(temporaryDirectory, 'AppleCoreBluetoothScanParserHarness')
+const provenanceExecutable = path.join(temporaryDirectory, 'AppleCoreBluetoothReadNotifyProvenanceHarness')
 const ingressExecutable = path.join(temporaryDirectory, 'AppleNativeIngressOrdinalHarness')
 const executionExecutable = path.join(temporaryDirectory, 'AppleNativeProtocolExecutionHarness')
+const ownedRadioSources = [
+  path.join(root, 'ios/Owned/OwnedCoreBluetoothProtocolRadioSupport.swift'),
+  path.join(root, 'ios/Owned/OwnedCoreBluetoothCentralDelegate.swift'),
+  path.join(root, 'ios/Owned/OwnedCoreBluetoothProtocolRadio.swift'),
+  path.join(root, 'ios/Owned/OwnedCoreBluetoothProtocolRadioCancellation.swift'),
+  path.join(root, 'ios/Owned/OwnedCoreBluetoothProtocolRadioDescriptors.swift')
+]
 
 try {
   run(process.execPath, [path.join(root, 'scripts/native-protocol/test-native-protocol.js')])
@@ -40,16 +48,22 @@ try {
     '--sdk',
     'macosx',
     'swiftc',
-    path.join(root, 'ios/Owned/OwnedCoreBluetoothProtocolRadioSupport.swift'),
-    path.join(root, 'ios/Owned/OwnedCoreBluetoothCentralDelegate.swift'),
-    path.join(root, 'ios/Owned/OwnedCoreBluetoothProtocolRadio.swift'),
-    path.join(root, 'ios/Owned/OwnedCoreBluetoothProtocolRadioCancellation.swift'),
-    path.join(root, 'ios/Owned/OwnedCoreBluetoothProtocolRadioDescriptors.swift'),
+    ...ownedRadioSources,
     path.join(root, 'native/protocol/tests/AppleCoreBluetoothScanParserHarness.swift'),
     '-o',
     executable
   ])
   run(executable, [])
+  run('xcrun', [
+    '--sdk',
+    'macosx',
+    'swiftc',
+    ...ownedRadioSources,
+    path.join(root, 'native/protocol/tests/AppleCoreBluetoothReadNotifyProvenanceHarness.swift'),
+    '-o',
+    provenanceExecutable
+  ])
+  run(provenanceExecutable, [])
   run('xcrun', [
     '--sdk',
     'macosx',
@@ -104,7 +118,7 @@ try {
     run(executionExecutable, [])
   }
   console.log(
-    '[test-apple-native-protocol] C++ protocol tests, the Apple CoreBluetooth parser, and the Apple execution CallInvoker/JSI terminal harness passed. No physical BLE radio or peripheral behavior was exercised.'
+    '[test-apple-native-protocol] C++ protocol tests, the Apple CoreBluetooth parser, the CoreBluetooth read/notify provenance harness, and the Apple execution CallInvoker/JSI terminal harness passed. No physical BLE radio or peripheral behavior was exercised.'
   )
 } catch (error) {
   console.error('[test-apple-native-protocol] Apple Native Protocol executable harness failed:', error)

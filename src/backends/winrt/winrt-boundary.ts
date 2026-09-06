@@ -434,6 +434,7 @@ export interface WinRtGattSnapshot {
 
 export interface WinRtCharacteristicAddress {
   readonly nativePeerId: string
+  readonly connectionGeneration: string
   readonly serviceUuid: string
   readonly serviceOccurrence: number
   readonly characteristicUuid: string

@@ -511,6 +511,158 @@ describe('BlueZ system security backend', () => {
     await expect(backend.destroy()).resolves.toMatchObject({ state: 'released' })
   })
 
+  test('rejects an already-aborted cancelPairing before native CancelPairing', async () => {
+    const { backend, boundary, peerId: observedPeerId } = await createFixture()
+    let resolvePair = () => undefined
+    boundary.onCall(
+      devicePath,
+      BLUEZ_DEVICE_INTERFACE,
+      'Pair',
+      () =>
+        new Promise(resolve => {
+          resolvePair = resolve
+        })
+    )
+    const pairing = backend.security.pair(observedPeerId, pairOptions())
+    pairing.catch(() => undefined)
+    await Promise.resolve()
+    await Promise.resolve()
+    const controller = new AbortController()
+    controller.abort()
+
+    await expect(
+      backend.security.cancelPairing(observedPeerId, pairOptions({ signal: controller.signal }))
+    ).rejects.toMatchObject({ normalized: { code: 'operation.aborted' } })
+    expect(boundary.calls).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ interfaceName: BLUEZ_DEVICE_INTERFACE, method: 'CancelPairing' })
+      ])
+    )
+    expect(backend.security.activePairings.has(observedPeerId)).toBe(true)
+
+    resolvePair()
+    await Promise.resolve()
+    await expect(backend.destroy()).resolves.toMatchObject({ state: 'released' })
+  })
+
+  test('times out a never-resolving CancelPairing acknowledgement without inventing cancelled', async () => {
+    jest.useFakeTimers()
+    try {
+      const { backend, boundary, peerId: observedPeerId } = await createFixture()
+      let resolvePair = () => undefined
+      let resolveCancel = () => undefined
+      boundary.onCall(
+        devicePath,
+        BLUEZ_DEVICE_INTERFACE,
+        'Pair',
+        () =>
+          new Promise(resolve => {
+            resolvePair = resolve
+          })
+      )
+      boundary.onCall(
+        devicePath,
+        BLUEZ_DEVICE_INTERFACE,
+        'CancelPairing',
+        () =>
+          new Promise(resolve => {
+            resolveCancel = resolve
+          })
+      )
+      const pairing = backend.security.pair(observedPeerId, pairOptions())
+      pairing.catch(() => undefined)
+      await Promise.resolve()
+      await Promise.resolve()
+      const pendingCancel = backend.security.cancelPairing(observedPeerId, pairOptions({ deadline: 110 }))
+      const seen = []
+      pendingCancel.then(
+        value => seen.push(value),
+        error => seen.push(error)
+      )
+
+      await jest.advanceTimersByTimeAsync(10)
+      expect(seen).toHaveLength(1)
+      expect(seen[0]).toMatchObject({
+        normalized: { code: 'operation.timed-out', operation: 'bluez.security.cancel-pairing' }
+      })
+      expect(backend.security.activePairings.has(observedPeerId)).toBe(true)
+
+      resolveCancel()
+      resolvePair()
+      const active = backend.security.activePairings.get(observedPeerId)
+      if (active !== undefined) await active.dispatch.physicalSettlement
+      await expect(backend.destroy()).resolves.toMatchObject({ state: 'released' })
+    } finally {
+      jest.useRealTimers()
+    }
+  })
+
+  test('reports paired when the in-flight pairing wins and completes successfully', async () => {
+    const { backend, boundary, peerId: observedPeerId } = await createFixture()
+    // Pair() resolves (the bond exists) but the confirming Paired signal never
+    // arrives, so cancelPairing lands after the native bond and must report it.
+    boundary.onCall(devicePath, BLUEZ_DEVICE_INTERFACE, 'Pair', () => false)
+    const pairing = backend.security.pair(observedPeerId, pairOptions())
+    for (let flush = 0; flush < 6; flush += 1) await Promise.resolve()
+    const cancelling = backend.security.cancelPairing(observedPeerId, pairOptions())
+
+    await expect(pairing).resolves.toMatchObject({ outcome: 'paired', state: { bond: 'bonded' } })
+    await expect(cancelling).resolves.toEqual({ outcome: 'paired' })
+    await expect(backend.destroy()).resolves.toMatchObject({ state: 'released' })
+  })
+
+  test('gives concurrent cancel waiters independent deadlines without dropping pairing ownership', async () => {
+    jest.useFakeTimers()
+    try {
+      const { backend, boundary, peerId: observedPeerId } = await createFixture()
+      let resolvePair = () => undefined
+      let resolveCancel = () => undefined
+      boundary.onCall(
+        devicePath,
+        BLUEZ_DEVICE_INTERFACE,
+        'Pair',
+        () =>
+          new Promise(resolve => {
+            resolvePair = resolve
+          })
+      )
+      boundary.onCall(
+        devicePath,
+        BLUEZ_DEVICE_INTERFACE,
+        'CancelPairing',
+        () =>
+          new Promise(resolve => {
+            resolveCancel = resolve
+          })
+      )
+      const pairing = backend.security.pair(observedPeerId, pairOptions())
+      pairing.catch(() => undefined)
+      await Promise.resolve()
+      await Promise.resolve()
+      const shortWait = backend.security.cancelPairing(observedPeerId, pairOptions({ deadline: 110 }))
+      const longWait = backend.security.cancelPairing(observedPeerId, pairOptions({ deadline: 130 }))
+      const seen = []
+      shortWait.then(
+        value => seen.push(value),
+        error => seen.push(error)
+      )
+
+      await jest.advanceTimersByTimeAsync(10)
+      expect(seen).toHaveLength(1)
+      expect(seen[0]).toMatchObject({ normalized: { code: 'operation.timed-out' } })
+      expect(backend.security.activePairings.has(observedPeerId)).toBe(true)
+
+      resolveCancel()
+      await expect(longWait).resolves.toEqual({ outcome: 'cancelled' })
+      await expect(pairing).resolves.toEqual({ outcome: 'cancelled' })
+      resolvePair()
+      await Promise.resolve()
+      await expect(backend.destroy()).resolves.toMatchObject({ state: 'released' })
+    } finally {
+      jest.useRealTimers()
+    }
+  })
+
   test('cancels promptly at a deadline while the native Pair call remains pending', async () => {
     jest.useFakeTimers()
     try {

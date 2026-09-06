@@ -6,6 +6,101 @@ All notable changes to `unified-ble-manager` are documented here.
 
 No changes yet.
 
+## [4.0.25] - 2026-09-05
+
+### Fixes
+
+- Tauri: separate live correlation capacity from 30s replay tombstones. Routed
+  cleanup still admits after a full replay window. Live exhaustion is retryable
+  backpressure, not `protocol.violation`. Replay of an old correlation still
+  rejects.
+- Tauri: a native connect that completes after its caller/lease is gone gets an
+  orphan cleanup owner before compensating disconnect. Reservation and owner
+  release together, and only for the matching generation.
+- Tauri: scan-stream failure keeps the scan owner in a stopping state until
+  native stop settles. A failed stop stays retryable and blocks a second scan.
+  Event and poll emit failures carry structured native diagnostics on the
+  shared `source-failed` terminal without inventing drop counters (#173).
+- Tauri: post-await lease/generation checks on unsubscribe and scan stop.
+  Old-generation resources quarantine instead of attaching to a replacement
+  caller. Compensating unsubscribe after subscribe success uses the same orphan
+  owner instead of discarding the outcome.
+- Tauri: overlapping stop requests for the same scan join one native
+  `stop_scan()`. Completions carry an attempt token, so a late stop of scan A
+  cannot take scan B’s stopping owner.
+- Core: retain unadopted scan/connect leases when stale-admission `stop`/`release`
+  fails, and retry that exact lease on later manager cleanup. Aborted, destroyed,
+  or deadline-expired callers settle promptly; native work stays owned until
+  adopted or compensated.
+- Core: coalesce concurrent `rediscoverGatt` waiters onto one replacement after
+  a shared in-flight discovery settles. A starter abort or timeout does not fail
+  a sibling waiter with its own admission.
+- Public scan observation overflow is subscriber-local. Consuming only `events`
+  at full speed with `duplicates: 'all'` and `overflowPolicy: 'error'` no longer
+  terminates the scan because an unused observation queue filled.
+- Drop-policy public scan overflow (`balanced` / `latest` / drop-*) reports an
+  overflow notice and keeps scanning. The radio stays up. `overflowPolicy:
+  'error'` (`lossless-bounded`) still fail-closes the consumed view as
+  `failed`/`overflow`; physical `stop()` remains cleanup.
+- In-process and IPC scan sessions leave `active` when the host source ends
+  without `stop()`. An already-terminal source never publishes `active`; the
+  first state is the projected terminal (`failed` for `source-failed` /
+  `connection-lost` / `overflow`, `stopped` for ordinary close). That event is
+  ended delivery; `stop()` remains the physical cleanup path. The data pump
+  still drains advertisements already accepted by `finishWithReason` before
+  the observation terminal. Structured `source-failed` errors survive scan-state
+  binding and reach `scan.observations`.
+- BlueZ `StopDiscovery` / `StopNotify` release this client’s session even if
+  another D-Bus client keeps `Discovering` / `Notifying` true.
+- BlueZ `StartNotify` confirmation failure after native accept keeps a retryable
+  `StopNotify` owner instead of orphaning the notify session. A late enablement
+  success does not promote `removing` / `enabling-failed` back to `ready`.
+- BlueZ `SetDiscoveryFilter`, `StartDiscovery`, and `ConnectDevice` honor caller
+  deadline/abort without dropping a later native allocation.
+- BlueZ keeps a retryable compensating `Disconnect` when `ConnectDevice`
+  succeeds after the caller is gone. A failed first Disconnect is retried on
+  destroy instead of being logged and forgotten.
+- BlueZ address-connect fallback checks scan-plan compatibility, waits out a
+  stopping scan, and widens an excluding live scan for concurrent address
+  waiters, restoring the owner filter only after the last borrower leaves
+  instead of waiting under a filter that cannot observe the target.
+- Apple CoreBluetooth rejects an independent GATT read while that characteristic
+  is notifying, because `didUpdateValueFor` cannot distinguish a read response
+  from a notification. Electron/Node CoreBluetooth uses the same policy. A read
+  admitted while idle still completes from its ATT response if CCCD enable
+  races it; overlapping reads and subscribe-while-read are rejected; fused
+  values that cannot be attributed are dropped. Remaining native reject codes
+  (iOS 1031/1011/1032, Electron 413/414/415) map to `gatt.read-failed` or
+  `gatt.subscribe-failed`, not `platform.failure`.
+- Android `setCharacteristicNotification(...) == false` is a local registration
+  failure, not proven link loss. Generation-matched disconnect and GATT status 19
+  remain the physical-loss authority. The 4.0.22 250 ms CCCD/disconnect two-signal
+  arbitration is unchanged. Notifications that arrive after the CCCD write and
+  before `onDescriptorWrite` SUCCESS are staged and flushed to admitted
+  subscribers. A later same-generation CCCD SUCCESS claims the arbiter instead
+  of leaving the peer enabled after a failed public subscribe.
+- WinRT stages `ValueChanged` notifications that arrive before CCCD enablement
+  completes, then flushes them once and in order only to admitted subscribers.
+  Staging continues until every pending waiter is admitted, and a per-subscriber
+  overflow does not discard siblings’ pending buffer.
+- WinRT subscription invalidation waits are bounded. If native `startNotify`
+  never settles, disconnect still completes within the cleanup budget. A late
+  enable issues a compensating `stopNotify` when the native CCCD key is vacant,
+  and skips that disable only when a replacement generation already occupies it.
+  Native notification map entries are keyed by connection generation.
+- `cancelPairing()` honors abort and deadline on Android, WinRT, and BlueZ.
+  Admission runs before native cancellation. A timed-out wait is not reported as
+  `'cancelled'`. An abandoned waiter leaves the in-flight pairing owned.
+  `pair()` abort/deadline keeps the pairing owned until the native result;
+  a later native `paired`/`rejected` is authoritative for both `pair()` and
+  `cancelPairing()`.
+- Web adapter `watchState()` follows browser `availabilitychanged` instead of
+  staying stale until another API samples availability. When that event is
+  missing, watches share one bounded `getAvailability()` poll. A completed
+  availability sample is applied unless a newer sample has already been applied,
+  so an outstanding later probe cannot make `attach()` throw `adapter.unavailable`
+  from a stale unavailable cache.
+
 ## [4.0.24] - 2026-09-05
 
 ### Fixes
@@ -254,7 +349,7 @@ hardware reproduced a later callback ordering that required the 4.0.22 fix.
 
 ### Changed behaviour
 
-- `cancelPairing()` reports what the cancellation **achieved**, not what it requested, and can no longer contradict the pairing it cancelled. Every backend answered `'cancelled'` unconditionally the moment the cancel was dispatched, so a cancellation that lost the race told the caller no bond exists while one did — and a caller who believes that never looks again. It now reads the in-flight pairing's own result rather than forming a second opinion, which is what makes the two calls incapable of disagreeing: there is one source of truth and the cancellation reads it. `SecurityCancelPairingResult` gains the words to say so — `'paired'` when the bond completed before the cancellation arrived, and `'rejected'` (carrying the peer's reason) when the peer refused, because claiming credit for stopping something that stopped itself is the same substitution with the arrow reversed. A pairing that *fails* is not given an invented outcome: `cancelPairing()` rejects with the error the pairing rejected with. `'paired'` deliberately matches `SecurityPairResult`'s `'paired'` — a bond exists as a result of this operation — and is not `'already-paired'`, which in that type means the peer was bonded *before* the call; one word, one meaning, in both types. Applies to BlueZ, Android, WinRT **and** the deterministic `/testing` backend, since a mock that answers differently from every real radio lets a consumer's suite pass against a contract no device honours. WinRT additionally short-circuited *upstream* of the shared mapper — when its dispatcher reported the operation already terminal, which is exactly the lost race, it answered `'not-pairing'`, contradicting its own `pair()` and making that word mean both "there was nothing to stop" and "it was already over" (#159).
+- `cancelPairing()` reports what the cancellation **achieved**, not what it requested, and can no longer contradict the pairing it cancelled. Every backend answered `'cancelled'` unconditionally the moment the cancel was dispatched, so a cancellation that lost the race told the caller no bond exists while one did — and a caller who believes that never looks again. It now reads the in-flight pairing's own result rather than forming a second opinion, which is what makes the two calls incapable of disagreeing: there is one source of truth and the cancellation reads it. `SecurityCancelPairingResult` gains the words to say so — `'paired'` when the bond completed before the cancellation arrived, and `'rejected'` (carrying the peer's reason) when the peer refused, because claiming credit for stopping something that stopped itself is the same substitution with the arrow reversed. A pairing that _fails_ is not given an invented outcome: `cancelPairing()` rejects with the error the pairing rejected with. `'paired'` deliberately matches `SecurityPairResult`'s `'paired'` — a bond exists as a result of this operation — and is not `'already-paired'`, which in that type means the peer was bonded _before_ the call; one word, one meaning, in both types. Applies to BlueZ, Android, WinRT **and** the deterministic `/testing` backend, since a mock that answers differently from every real radio lets a consumer's suite pass against a contract no device honours. WinRT additionally short-circuited _upstream_ of the shared mapper — when its dispatcher reported the operation already terminal, which is exactly the lost race, it answered `'not-pairing'`, contradicting its own `pair()` and making that word mean both "there was nothing to stop" and "it was already over" (#159).
 
 ### Additions
 
@@ -262,13 +357,13 @@ hardware reproduced a later callback ordering that required the 4.0.22 fix.
 
   This package never acquires that privilege: it opens no management socket, shells out to nothing, and does not assume it is root. A library that silently escalates hands an application capabilities its author did not choose and cannot audit. The **host** supplies the operation via `BluezBackendProviderOptions.pairingGeneration`, which makes the escalation visible in the application that opted into it. Omit it and `'require'`/`'disallow'` keep failing closed exactly as in 4.0.6 — the default posture is unchanged.
 
-  Three properties of the kernel setting a host must accept, documented in `docs/BONDING.md` rather than discovered: it is **adapter-wide**, not per-pairing, so every pairing on that controller uses the selected generation while it is held; it **outlives the process**, because the kernel keeps it until something sets it back; and a **failed restore never changes the pairing's outcome** — a bond that was created is reported as created, with the restore failure reported separately, because leaving a controller in LE Legacy and telling a caller they are not bonded are both serious and are different facts. Concurrent *directed* pairings on one adapter are serialised so they cannot corrupt each other's restore value; an undirected (`'prefer'`) pairing does not take that lock and uses whichever generation is held, which `docs/BONDING.md` states beside the option.
+  Three properties of the kernel setting a host must accept, documented in `docs/BONDING.md` rather than discovered: it is **adapter-wide**, not per-pairing, so every pairing on that controller uses the selected generation while it is held; it **outlives the process**, because the kernel keeps it until something sets it back; and a **failed restore never changes the pairing's outcome** — a bond that was created is reported as created, with the restore failure reported separately, because leaving a controller in LE Legacy and telling a caller they are not bonded are both serious and are different facts. Concurrent _directed_ pairings on one adapter are serialised so they cannot corrupt each other's restore value; an undirected (`'prefer'`) pairing does not take that lock and uses whichever generation is held, which `docs/BONDING.md` states beside the option.
 
   `security:pairing-generation` joins the capability catalog and is reported by the instantiated backend at runtime: `unsupported` with the platform reason when no operation was supplied, `limited` when one was — so two BlueZ backends on one machine legitimately answer differently. Evidence is deterministic tests only; this is **not** physical-radio proof, and the label says so (#144).
 
 ### Fixes
 
-- A Tauri connect that succeeds physically but is then denied admission no longer strands the peer. Both compensation branches — the caller vanished, and the caller's lease went stale — removed the peer reservation *before* attempting the disconnect and then discarded its result with `.ok()`. If that disconnect failed or hung while the peripheral stayed connected, the result was a connected peer with no owner and no handle: nothing could reach it, nothing could retry it, and the caller was told only that admission was denied. Compensation now follows the rule the explicit disconnect already follows — a bounded wait, a fresh state reading, and a D-Bus error naming a vanished device object read as evidence of release rather than as a failed question — and surrenders the reservation only when the platform proves the link is down. Genuine indeterminacy keeps it so a retry can reclaim the peer, and the admission error carries what compensation could not undo, which is the difference between "try again" and "a peer is stranded" (#146).
+- A Tauri connect that succeeds physically but is then denied admission no longer strands the peer. Both compensation branches — the caller vanished, and the caller's lease went stale — removed the peer reservation _before_ attempting the disconnect and then discarded its result with `.ok()`. If that disconnect failed or hung while the peripheral stayed connected, the result was a connected peer with no owner and no handle: nothing could reach it, nothing could retry it, and the caller was told only that admission was denied. Compensation now follows the rule the explicit disconnect already follows — a bounded wait, a fresh state reading, and a D-Bus error naming a vanished device object read as evidence of release rather than as a failed question — and surrenders the reservation only when the platform proves the link is down. Genuine indeterminacy keeps it so a retry can reclaim the peer, and the admission error carries what compensation could not undo, which is the difference between "try again" and "a peer is stranded" (#146).
 
 ### Known limitations
 

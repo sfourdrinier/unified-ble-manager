@@ -354,23 +354,97 @@ class UnifiedBleProtocolAndroidDispatcherLifecycleTest {
   }
 
   @Test
-  fun synchronousNotificationRegistrationFailureIsTypedAsLinkLossDespiteStaleManagerState() {
-    val failure = classifyAndroidNotificationRegistrationFailure(
-      operation = "notification-registration"
+  fun localNotificationRegistrationFailureIsNotProvenLinkLossWhileGenerationRemainsConnected() {
+    val registrationFailure = classifyAndroidNotificationRegistrationFailure(
+      "setCharacteristicNotification"
     )
-    assertEquals("connectionLost", androidGattOperationFailureCode(failure, "subscriptionFailed"))
-    assertNull(androidGattOperationFailureStatus(failure))
+    assertFalse(registrationFailure.isLinkLoss)
+    assertNull(registrationFailure.gattStatus)
+    assertEquals(
+      "subscriptionFailed",
+      androidGattOperationFailureCode(registrationFailure, "subscriptionFailed")
+    )
+    assertNull(androidGattOperationFailureStatus(registrationFailure))
+    assertFalse(registrationFailure.message.orEmpty().contains("GATT link is unavailable"))
+    assertFalse(shouldAwaitAndroidCccdDisconnectEvidence(registrationFailure))
 
     val ordinaryCccdFailure = classifyAndroidGattOperationFailure("cccd-write", 133)
+    assertFalse(ordinaryCccdFailure.isLinkLoss)
     assertEquals(
       "subscriptionFailed",
       androidGattOperationFailureCode(ordinaryCccdFailure, "subscriptionFailed")
     )
-    assertEquals(133, androidGattOperationFailureStatus(ordinaryCccdFailure))
+    assertTrue(shouldAwaitAndroidCccdDisconnectEvidence(ordinaryCccdFailure))
+
+    val radio = readAndroidSource(
+      "android/src/main/java/com/sfourdrinier/unifiedblemanager/radio/OwnedAndroidGattRadio.kt"
+    )
+    val classifier = radio.substring(
+      radio.indexOf("internal fun classifyAndroidNotificationRegistrationFailure"),
+      radio.indexOf("internal fun shouldAwaitAndroidCccdDisconnectEvidence")
+    )
+    assertFalse(classifier.contains("isLinkLoss = true"))
+    assertFalse(classifier.contains("isConnected("))
+
+    val nonExact = radio.substring(
+      radio.indexOf("private fun setNotify("),
+      radio.indexOf("/** Enables or disables an exact duplicate-safe")
+    )
+    val exact = radio.substring(
+      radio.indexOf("private fun setNotifyTarget("),
+      radio.indexOf("private fun rollbackNotifyRegistration")
+    )
+    val nonExactRegistration = nonExact.substring(
+      nonExact.indexOf("if (!gatt.setCharacteristicNotification(ch, enable))"),
+      nonExact.indexOf("val cccd = ch.getDescriptor(CCCD_UUID)")
+    )
+    val exactRegistration = exact.substring(
+      exact.indexOf("if (!gatt.setCharacteristicNotification(characteristic, enable))"),
+      exact.indexOf("val gattGeneration = gattGenerations")
+    )
+    for (registrationReject in listOf(nonExactRegistration, exactRegistration)) {
+      assertTrue(registrationReject.contains("classifyAndroidNotificationRegistrationFailure("))
+      assertFalse(registrationReject.contains("isConnected("))
+      assertFalse(registrationReject.contains("failPendingForDevice("))
+      assertFalse(registrationReject.contains("completeGattTeardown("))
+      assertFalse(registrationReject.contains("dispatchConnectionState("))
+    }
+    assertFalse(radio.contains("fun isConnected("))
   }
 
   @Test
-  fun exactAndNonExactNotificationRegistrationFailuresShareTheTypedLinkLossClassifier() {
+  fun generationMatchedDisconnectAndStatus19RemainProvenLinkLoss() {
+    val status19 = classifyAndroidGattOperationFailure("cccd-write", 19)
+    assertTrue(status19.isLinkLoss)
+    assertEquals(19, status19.gattStatus)
+    assertEquals("connectionLost", androidGattOperationFailureCode(status19, "subscriptionFailed"))
+    assertEquals(19, androidGattOperationFailureStatus(status19))
+    assertFalse(shouldAwaitAndroidCccdDisconnectEvidence(status19))
+
+    val radio = readAndroidSource(
+      "android/src/main/java/com/sfourdrinier/unifiedblemanager/radio/OwnedAndroidGattRadio.kt"
+    )
+    val disconnectCallback = radio.substring(
+      radio.indexOf("override fun onConnectionStateChange"),
+      radio.indexOf("override fun onDescriptorWrite")
+    )
+    assertTrue(disconnectCallback.contains("if (!isCurrentGattCallback(gatt)) return"))
+    assertTrue(
+      disconnectCallback.contains(
+        "failPendingForDevice(key, \"disconnected status=\$status\", status)"
+      )
+    )
+
+    val pendingDrain = radio.substring(
+      radio.indexOf("private fun failPendingForDevice("),
+      radio.indexOf("private fun findChar(")
+    )
+    assertTrue(pendingDrain.contains("gattStatus == ANDROID_GATT_LINK_LOSS_STATUS"))
+    assertTrue(pendingDrain.contains("classifyAndroidGattOperationFailure(\"cccd-write\", gattStatus)"))
+  }
+
+  @Test
+  fun exactAndNonExactNotificationRegistrationFailuresShareTheClassifierWithoutManagerState() {
     val radio = readAndroidSource(
       "android/src/main/java/com/sfourdrinier/unifiedblemanager/radio/OwnedAndroidGattRadio.kt"
     )
@@ -443,6 +517,13 @@ class UnifiedBleProtocolAndroidDispatcherLifecycleTest {
     assertTrue(completion.contains("androidGattTerminalResult(result, rollbackFailure)"))
     assertTrue(completion.contains("registerRetryableCleanup(rollbackFailure.operation)"))
     assertTrue(completion.contains("reportCleanupFailure(rollbackFailure)"))
+
+    val terminal = radio.substring(
+      radio.indexOf("internal fun androidGattTerminalResult("),
+      radio.indexOf("/** Runtime adapter state derived from Android hardware")
+    )
+    assertFalse(terminal.contains("isLinkLoss = true"))
+    assertFalse(terminal.contains("classifyAndroidNotificationRegistrationFailure"))
   }
 
   @Test
@@ -471,16 +552,17 @@ class UnifiedBleProtocolAndroidDispatcherLifecycleTest {
       "cccdRollback:AA:BB",
       AndroidNotificationRollbackRejected()
     )
-    val linkLossAfterCallbackFailure = androidGattTerminalResult(
+    val callbackFailureWithRejectedRollback = androidGattTerminalResult(
       Result.failure<Unit>(callbackFailure),
       rejectedRegistrationRollback
     )
-    val callbackError = linkLossAfterCallbackFailure.exceptionOrNull()
+    val callbackError = callbackFailureWithRejectedRollback.exceptionOrNull()
+    assertTrue(callbackError === callbackFailure)
     assertTrue(callbackError is AndroidGattOperationFailure)
     if (callbackError !is AndroidGattOperationFailure) {
       throw AssertionError("CCCD callback failure plus rejected rollback was not classified")
     }
-    assertTrue(callbackError.isLinkLoss)
+    assertFalse(callbackError.isLinkLoss)
     assertEquals(133, callbackError.gattStatus)
 
     val descriptorFailure = classifyAndroidGattOperationFailure("descriptor-write", 133)
@@ -502,14 +584,11 @@ class UnifiedBleProtocolAndroidDispatcherLifecycleTest {
 
     val synchronousSubmission = AndroidCccdSubmissionFailure(133)
     assertEquals(133, synchronousSubmission.platformStatus)
-    val linkLossAfterSubmission = androidGattTerminalResult(
+    val submissionWithRejectedRollback = androidGattTerminalResult(
       Result.failure<Unit>(synchronousSubmission),
       rejectedRegistrationRollback
     )
-    val linkLossError = linkLossAfterSubmission.exceptionOrNull()
-    assertTrue(linkLossError is AndroidGattOperationFailure)
-    if (linkLossError !is AndroidGattOperationFailure) throw AssertionError("submission failure was not classified")
-    assertTrue(linkLossError.isLinkLoss)
+    assertTrue(submissionWithRejectedRollback.exceptionOrNull() === synchronousSubmission)
     assertTrue(
       androidGattTerminalResult(Result.failure(synchronousSubmission), null).exceptionOrNull() ===
         synchronousSubmission
@@ -1268,11 +1347,11 @@ class UnifiedBleProtocolAndroidDispatcherLifecycleTest {
 
   @Test
   fun explicitSubscriptionModesNeverFallBackToAnotherCccdMode() {
-    val notifyOnly = android.bluetooth.BluetoothGattCharacteristic.PROPERTY_NOTIFY
-    val indicateOnly = android.bluetooth.BluetoothGattCharacteristic.PROPERTY_INDICATE
+    val notifyOnly = com.sfourdrinier.unifiedblemanager.radio.ANDROID_PROPERTY_NOTIFY
+    val indicateOnly = com.sfourdrinier.unifiedblemanager.radio.ANDROID_PROPERTY_INDICATE
 
     assertArrayEquals(
-      android.bluetooth.BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE,
+      com.sfourdrinier.unifiedblemanager.radio.ANDROID_CCCD_ENABLE_NOTIFICATION,
       com.sfourdrinier.unifiedblemanager.radio.OwnedAndroidGattRadio.resolveCccdPayload(
         true,
         "notification",
@@ -1305,7 +1384,7 @@ class UnifiedBleProtocolAndroidDispatcherLifecycleTest {
     )
 
     assertTrue(dispatcher.contains("subscriptionType = command.optionalString(21)"))
-    assertTrue(dispatcher.contains("command.optionalString(21)\n            )"))
+    assertTrue(dispatcher.contains("command.optionalString(21)"))
     assertTrue(dispatcher.contains("subscriptionType = route.mode"))
     assertTrue(radio.contains("resolveCccdPayload(enable, subscriptionType"))
   }

@@ -15,6 +15,7 @@ import type {
 } from '../../backend-contract/security'
 import { cancelOutcomeForPairResult } from '../../backend-contract/security'
 import type {
+  WinRtAsyncOperation,
   WinRtBoundary,
   WinRtPairResult,
   WinRtSecurityState,
@@ -276,7 +277,15 @@ export class WinRtSecurityBackend implements SecurityBackend {
       return Promise.reject(contractError('ownership.denied', 'platform', 'winrt.security.pair.arbitration'))
     }
     const nativePeerId = this.nativePeerIdForPeerId(peerId, 'winrt.security.pair')
-    const operation = this.dispatcher.dispatch(options, 'winrt.security.pair', () => this.boundary.pair(nativePeerId))
+    let lateNative: WinRtPairResult | undefined
+    const operation = this.dispatcher.dispatch(
+      options,
+      'winrt.security.pair',
+      () => this.boundary.pair(nativePeerId),
+      async value => {
+        lateNative = value
+      }
+    )
     const settle = () => {
       const active = this.activePairings.get(peerId)
       if (active?.operation === operation) {
@@ -290,7 +299,17 @@ export class WinRtSecurityBackend implements SecurityBackend {
         await operation.physicalSettlement
         return snapshot
       })
-      .catch(error => {
+      .catch(async error => {
+        // Dispatcher abort/deadline is prompt; a later native paired/rejected is
+        // still the pairing's own answer. Inventing 'cancelled' here would
+        // disagree with cancelPairing() and state() after a lost cancel race.
+        await operation.physicalSettlement
+        if (lateNative !== undefined) {
+          const adopted = this.snapshotPairResult(lateNative)
+          if (adopted.outcome !== 'cancelled') {
+            return adopted
+          }
+        }
         if (error instanceof BackendContractError && error.normalized.code === 'operation.aborted') {
           return { outcome: 'cancelled' as const }
         }
@@ -300,41 +319,51 @@ export class WinRtSecurityBackend implements SecurityBackend {
     return result
   }
 
-  async cancelPairing(peerId: string, _options: PublicOperationOptions): Promise<SecurityCancelPairingResult> {
+  async cancelPairing(peerId: string, options: PublicOperationOptions): Promise<SecurityCancelPairingResult> {
     this.assertActive('winrt.security.cancel-pairing')
     const active = this.activePairings.get(peerId)
     if (active === undefined) return { outcome: 'not-pairing' }
-    const acknowledgement = await active.operation.requestCancellation()
-    if (acknowledgement.state !== 'cancellation-requested') {
-      // 'already-terminal' means the pairing settled before the cancellation
-      // reached it - the lost race, not an absent pairing. Reporting
-      // 'not-pairing' here would contradict the pair() this cancellation
-      // targeted and make one word mean two things. Read the pairing's own
-      // answer, like every other backend.
-      return cancelOutcomeForPairResult(await active.result)
-    }
-    const dispatch = this.dispatcher.dispatch(_options, 'winrt.security.cancel-pairing', () => {
-      const nativeCancellation = this.boundary.cancelPairing(active.nativePeerId)
-      const completion = Promise.all([active.operation.requestCancellation(), nativeCancellation.completion]).then(
-        () => undefined
-      )
+    // Admission, the pairing-cancel acknowledgement, native cancelPairing, and
+    // the pairing's own result are one bounded transaction. A timed-out wait
+    // is not a successful physical cancellation, and giving up the wait does
+    // not drop the in-flight pairing.
+    const dispatch = this.dispatcher.dispatch(options, 'winrt.security.cancel-pairing', () => {
+      let nativeCancellation: WinRtAsyncOperation<void> | null = null
+      const completion = (async () => {
+        const acknowledgement = await active.operation.requestCancellation()
+        if (acknowledgement.state !== 'cancellation-requested') {
+          // 'already-terminal' means the pairing settled before the cancellation
+          // reached it - the lost race, not an absent pairing. Reporting
+          // 'not-pairing' here would contradict the pair() this cancellation
+          // targeted and make one word mean two things. Read the pairing's own
+          // answer, like every other backend.
+          return cancelOutcomeForPairResult(await active.result)
+        }
+        nativeCancellation = this.boundary.cancelPairing(active.nativePeerId)
+        await nativeCancellation.completion
+        return cancelOutcomeForPairResult(await active.result)
+      })()
       return {
         completion,
         cancel: async () => {
-          const state = await nativeCancellation.cancel()
-          if (state !== 'cancellation-requested' && state !== 'already-terminal' && state !== 'not-cancellable') {
-            throw contractError('protocol.malformed', 'boundary', 'winrt.security.cancel-pairing.acknowledgement')
+          if (nativeCancellation !== null) {
+            const state = await nativeCancellation.cancel()
+            if (state !== 'cancellation-requested' && state !== 'already-terminal' && state !== 'not-cancellable') {
+              throw contractError('protocol.malformed', 'boundary', 'winrt.security.cancel-pairing.acknowledgement')
+            }
           }
           return 'cancellation-requested' as const
         },
-        physicalCompletion: Promise.all([completion, active.operation.physicalSettlement]).then(() => undefined)
+        physicalCompletion: Promise.all([
+          completion.then(
+            () => undefined,
+            () => undefined
+          ),
+          active.operation.physicalSettlement
+        ]).then(() => undefined)
       }
     })
-    await dispatch.completion
-    // Ask the pairing what happened rather than assuming the cancel won. A
-    // failed pairing propagates its error instead of being reported as a
-    // cancellation we did not achieve.
-    return cancelOutcomeForPairResult(await active.result)
+    return dispatch.completion
   }
 
   async unpair(peerId: string, _options: PublicOperationOptions): Promise<SecurityUnpairResult> {

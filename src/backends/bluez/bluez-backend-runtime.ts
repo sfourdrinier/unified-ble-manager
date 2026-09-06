@@ -63,7 +63,11 @@ import {
 import type { BluezObjectStoreObserver } from './bluez-object-store'
 import { BluezObjectStore } from './bluez-object-store'
 import { BluezOperationDispatcher, type BluezOperationDispatch } from './bluez-operation-dispatcher'
-import { connectBluezConnection, disconnectBluezConnection } from './bluez-connection-runtime'
+import {
+  connectBluezConnection,
+  destroyBluezAddressAcquisitions,
+  disconnectBluezConnection
+} from './bluez-connection-runtime'
 import {
   dispatchBluezCharacteristicRead,
   dispatchBluezCharacteristicWrite,
@@ -93,6 +97,7 @@ import {
 import { beginBluezPhysicalRemoval, removeBluezSubscription, subscribeBluez } from './bluez-subscription-runtime'
 import { destroyBluezScan, joinBluezScan, startBluezScan, stopBluezScan } from './bluez-scan-runtime'
 import type {
+  BluezAddressAcquisition,
   BluezConnectionRecord,
   BluezPhysicalSubscription,
   BluezPropertyWaiter,
@@ -168,6 +173,7 @@ export class BluezBackendRuntime implements BluezObjectStoreObserver {
   private readonly stateStreams = new Set<CoreBoundedStream<AdapterStateSnapshot<string>>>()
   readonly connectionRecords = new Map<string, BluezConnectionRecord>()
   readonly physicalSubscriptions = new Map<string, BluezPhysicalSubscription>()
+  readonly addressAcquisitions = new Map<string, BluezAddressAcquisition>()
   private readonly peerPaths = new Map<string, string>()
   private readonly peerHandles = new Map<string, PeerId<string>>()
   private readonly addressTargets = new Map<string, PeerAddressDescriptor>()
@@ -1131,6 +1137,7 @@ export class BluezBackendRuntime implements BluezObjectStoreObserver {
         )
       }
     }
+    failures.push(...(await destroyBluezAddressAcquisitions(this)).failures)
     if (failures.length > 0) {
       return Object.freeze({ state: 'release-failed', failures: Object.freeze(failures) })
     }

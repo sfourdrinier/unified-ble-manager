@@ -491,9 +491,8 @@ describe('React Native Android security protocol boundary', () => {
 
     await Promise.resolve()
     controller.abort()
-    await expect(pending).resolves.toEqual({ outcome: 'cancelled' })
     resolveState(securityState('not-bonded'))
-    await Promise.resolve()
+    await expect(pending).resolves.toEqual({ outcome: 'cancelled' })
     expect(pair).toHaveBeenCalledTimes(1)
     expect(dispatchPair).not.toHaveBeenCalled()
     expect(cancelPairing).toHaveBeenCalledWith(peerId)
@@ -528,12 +527,9 @@ describe('React Native Android security protocol boundary', () => {
         protection: 'system-default',
         ceremony: 'system'
       })
-      const result = expect(pending).rejects.toMatchObject({ normalized: { code: 'operation.timed-out' } })
-
       await jest.advanceTimersByTimeAsync(10)
-      await result
       resolveState(securityState('not-bonded'))
-      await Promise.resolve()
+      await expect(pending).rejects.toMatchObject({ normalized: { code: 'operation.timed-out' } })
       expect(dispatchPair).not.toHaveBeenCalled()
       security.close()
     } finally {
@@ -579,7 +575,235 @@ describe('React Native Android security protocol boundary', () => {
     })
     security.close()
   })
+
+  test('rejects an already-aborted or already-expired cancelPairing before native cancellation', async () => {
+    const pair = jest.fn(() => new Promise(() => undefined))
+    const cancelPairing = jest.fn(async () => undefined)
+    const security = new ReactNativeAndroidSecurityBackend(securityAdapter({ pair, cancelPairing }), () => 20)
+    const pending = security.pair(peerId, pairOptions())
+    pending.catch(() => undefined)
+    const controller = new AbortController()
+    controller.abort()
+    const aborted = []
+    const expired = []
+    security.cancelPairing(peerId, { signal: controller.signal, deadline: null }).then(
+      value => aborted.push(value),
+      error => aborted.push(error)
+    )
+    security.cancelPairing(peerId, { signal: null, deadline: 10 }).then(
+      value => expired.push(value),
+      error => expired.push(error)
+    )
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(aborted).toHaveLength(1)
+    expect(aborted[0]).toMatchObject({ normalized: { code: 'operation.aborted' } })
+    expect(expired).toHaveLength(1)
+    expect(expired[0]).toMatchObject({ normalized: { code: 'operation.timed-out' } })
+    expect(cancelPairing).not.toHaveBeenCalled()
+    expect([...security.active]).toEqual([peerId])
+    security.close()
+  })
+
+  test('times out a never-resolving cancel acknowledgement without inventing cancelled', async () => {
+    jest.useFakeTimers()
+    try {
+      const pair = jest.fn(() => new Promise(() => undefined))
+      const cancelPairing = jest.fn(() => new Promise(() => undefined))
+      const security = new ReactNativeAndroidSecurityBackend(securityAdapter({ pair, cancelPairing }), () => 20)
+      const pendingPair = security.pair(peerId, pairOptions())
+      pendingPair.catch(() => undefined)
+      const pendingCancel = security.cancelPairing(peerId, { signal: null, deadline: 30 })
+      const seen = []
+      pendingCancel.then(
+        value => seen.push(value),
+        error => seen.push(error)
+      )
+
+      await jest.advanceTimersByTimeAsync(10)
+      expect(seen).toHaveLength(1)
+      expect(seen[0]).toMatchObject({
+        normalized: { code: 'operation.timed-out', operation: 'android.security.cancel-pairing' }
+      })
+      expect(cancelPairing).toHaveBeenCalledWith(peerId)
+      expect([...security.active]).toEqual([peerId])
+      security.close()
+    } finally {
+      jest.useRealTimers()
+    }
+  })
+
+  test('times out after a cancel ack when the pairing result never arrives', async () => {
+    jest.useFakeTimers()
+    try {
+      let resolvePair
+      const pair = jest.fn(
+        () =>
+          new Promise(resolve => {
+            resolvePair = resolve
+          })
+      )
+      const cancelPairing = jest.fn(async () => undefined)
+      const security = new ReactNativeAndroidSecurityBackend(securityAdapter({ pair, cancelPairing }), () => 20)
+      const pendingPair = security.pair(peerId, pairOptions())
+      pendingPair.catch(() => undefined)
+      const pendingCancel = security.cancelPairing(peerId, { signal: null, deadline: 30 })
+      const seen = []
+      pendingCancel.then(
+        value => seen.push(value),
+        error => seen.push(error)
+      )
+
+      await jest.advanceTimersByTimeAsync(10)
+      expect(seen).toHaveLength(1)
+      expect(seen[0]).toMatchObject({ normalized: { code: 'operation.timed-out' } })
+      expect([...security.active]).toEqual([peerId])
+      resolvePair({ outcome: 'paired', state: securityState('bonded') })
+      await expect(pendingPair).resolves.toMatchObject({ outcome: 'paired' })
+      security.close()
+    } finally {
+      jest.useRealTimers()
+    }
+  })
+
+  test('reports paired when the in-flight pairing wins and completes successfully', async () => {
+    let resolvePair
+    const pair = jest.fn(
+      () =>
+        new Promise(resolve => {
+          resolvePair = resolve
+        })
+    )
+    const cancelPairing = jest.fn(async () => undefined)
+    const security = new ReactNativeAndroidSecurityBackend(securityAdapter({ pair, cancelPairing }), () => 20)
+    const pendingPair = security.pair(peerId, pairOptions())
+    const pendingCancel = security.cancelPairing(peerId, { signal: null, deadline: null })
+
+    resolvePair({ outcome: 'paired', state: securityState('bonded') })
+    await expect(pendingPair).resolves.toMatchObject({ outcome: 'paired' })
+    await expect(pendingCancel).resolves.toEqual({ outcome: 'paired' })
+    security.close()
+  })
+
+  test('gives concurrent cancel waiters independent deadlines without dropping pairing ownership', async () => {
+    jest.useFakeTimers()
+    try {
+      let resolvePair
+      const pair = jest.fn(
+        () =>
+          new Promise(resolve => {
+            resolvePair = resolve
+          })
+      )
+      const cancelPairing = jest.fn(async () => undefined)
+      const security = new ReactNativeAndroidSecurityBackend(securityAdapter({ pair, cancelPairing }), () => 20)
+      const pendingPair = security.pair(peerId, pairOptions())
+      const shortWait = security.cancelPairing(peerId, { signal: null, deadline: 30 })
+      const longWait = security.cancelPairing(peerId, { signal: null, deadline: 50 })
+      const seen = []
+      shortWait.then(
+        value => seen.push(value),
+        error => seen.push(error)
+      )
+
+      await jest.advanceTimersByTimeAsync(10)
+      expect(seen).toHaveLength(1)
+      expect(seen[0]).toMatchObject({ normalized: { code: 'operation.timed-out' } })
+      expect([...security.active]).toEqual([peerId])
+
+      resolvePair({ outcome: 'paired', state: securityState('bonded') })
+      await expect(pendingPair).resolves.toMatchObject({ outcome: 'paired' })
+      await expect(longWait).resolves.toEqual({ outcome: 'paired' })
+      security.close()
+    } finally {
+      jest.useRealTimers()
+    }
+  })
+
+  test('reports paired when pair abort loses to a later native bond', async () => {
+    let resolvePair
+    let bond = 'not-bonded'
+    const pair = jest.fn(
+      () =>
+        new Promise(resolve => {
+          resolvePair = resolve
+        })
+    )
+    const cancelPairing = jest.fn(async () => undefined)
+    const security = new ReactNativeAndroidSecurityBackend(
+      securityAdapter({
+        pair,
+        cancelPairing,
+        securityState: jest.fn(async () => securityState(bond))
+      }),
+      () => 20
+    )
+    const controller = new AbortController()
+    const pendingPair = security.pair(peerId, pairOptions({ signal: controller.signal }))
+    const pendingCancel = security.cancelPairing(peerId, { signal: null, deadline: null })
+
+    controller.abort()
+    bond = 'bonded'
+    resolvePair({ outcome: 'paired', state: securityState('bonded') })
+
+    await expect(pendingPair).resolves.toMatchObject({ outcome: 'paired', state: { bond: 'bonded' } })
+    await expect(pendingCancel).resolves.toEqual({ outcome: 'paired' })
+    await expect(security.state(peerId, { signal: null, deadline: null })).resolves.toMatchObject({
+      bond: 'bonded'
+    })
+    security.close()
+  })
+
+  test('reports paired when a pair deadline loses to a later native bond', async () => {
+    jest.useFakeTimers()
+    try {
+      let resolvePair
+      let bond = 'not-bonded'
+      const pair = jest.fn(
+        () =>
+          new Promise(resolve => {
+            resolvePair = resolve
+          })
+      )
+      const cancelPairing = jest.fn(async () => undefined)
+      const security = new ReactNativeAndroidSecurityBackend(
+        securityAdapter({
+          pair,
+          cancelPairing,
+          securityState: jest.fn(async () => securityState(bond))
+        }),
+        () => 20
+      )
+      const pendingPair = security.pair(peerId, pairOptions({ deadline: 30 }))
+      const pendingCancel = security.cancelPairing(peerId, { signal: null, deadline: null })
+
+      await jest.advanceTimersByTimeAsync(10)
+      bond = 'bonded'
+      resolvePair({ outcome: 'paired', state: securityState('bonded') })
+
+      await expect(pendingPair).resolves.toMatchObject({ outcome: 'paired', state: { bond: 'bonded' } })
+      await expect(pendingCancel).resolves.toEqual({ outcome: 'paired' })
+      await expect(security.state(peerId, { signal: null, deadline: null })).resolves.toMatchObject({
+        bond: 'bonded'
+      })
+      security.close()
+    } finally {
+      jest.useRealTimers()
+    }
+  })
 })
+
+function pairOptions(overrides = {}) {
+  return {
+    signal: null,
+    deadline: null,
+    transport: 'auto',
+    protection: 'system-default',
+    ceremony: 'system',
+    ...overrides
+  }
+}
 
 function securityState(bond) {
   return {

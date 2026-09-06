@@ -319,6 +319,13 @@ public final class OwnedCoreBluetoothProtocolRadio: NSObject, CBPeripheralDelega
         completion(nil, self.error(code: 1010, message: "The generation-bound characteristic path is stale"))
         return
       }
+      // CoreBluetooth fuses ATT reads and notifications into didUpdateValueFor.
+      // Independent read is ambiguous while this characteristic is notifying, so
+      // reject rather than guessing which callback is the read response.
+      guard !self.isIndependentReadAmbiguous(address: address, characteristic: resolved.characteristic) else {
+        completion(nil, self.independentReadWhileNotifyingError())
+        return
+      }
       guard self.pendingRead[address] == nil else {
         completion(nil, self.error(code: 1011, message: "A read is already pending for this characteristic"))
         return
@@ -608,17 +615,7 @@ public final class OwnedCoreBluetoothProtocolRadio: NSObject, CBPeripheralDelega
 
   public func peripheral(_ peripheral: CBPeripheral, didUpdateValueFor characteristic: CBCharacteristic, error: Error?) {
     guard let address = address(for: characteristic, peerIdentifier: peripheral.identifier.uuidString) else { return }
-    if let pending = pendingRead.removeValue(forKey: address) {
-      pending.completion(characteristic.value as NSData?, error as NSError?)
-      return
-    }
-    let pendingSubscriptionIdentifier = pendingNotify[address].flatMap { pending in
-      pending.enabled ? pending.subscriptionIdentifier : nil
-    }
-    guard error == nil,
-          let subscriptionIdentifier = subscriptions[address] ?? pendingSubscriptionIdentifier,
-          let value = characteristic.value else { return }
-    delegate?.protocolRadioDidReceiveNotification(subscriptionIdentifier, value: value as NSData)
+    handleCharacteristicValueUpdate(address: address, characteristic: characteristic, error: error)
   }
 
   public func peripheral(_ peripheral: CBPeripheral, didReadRSSI RSSI: NSNumber, error: Error?) {
@@ -635,6 +632,9 @@ public final class OwnedCoreBluetoothProtocolRadio: NSObject, CBPeripheralDelega
 
   public func peripheral(_ peripheral: CBPeripheral, didUpdateNotificationStateFor characteristic: CBCharacteristic, error: Error?) {
     guard let address = address(for: characteristic, peerIdentifier: peripheral.identifier.uuidString) else { return }
+    if characteristic.isNotifying {
+      failPendingIndependentRead(for: address)
+    }
     let pending = pendingNotify.removeValue(forKey: address)
     let desiredCancellationState = cancellationDesiredState(forNotificationAddress: address)
     guard pending != nil || desiredCancellationState != nil else { return }
@@ -686,6 +686,10 @@ public final class OwnedCoreBluetoothProtocolRadio: NSObject, CBPeripheralDelega
       )
       guard let resolved = self.resolve(address) else {
         completion(self.error(code: 1017, message: "The generation-bound characteristic path is stale"))
+        return
+      }
+      guard self.pendingRead[address] == nil else {
+        completion(self.error(code: 1032, message: OwnedCoreBluetoothReadNotifyProvenance.subscribeWhileReadPendingMessage))
         return
       }
       guard self.pendingNotify[address] == nil else {

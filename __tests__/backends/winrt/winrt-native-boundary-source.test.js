@@ -481,8 +481,29 @@ describe('WinRT native boundary source contract', () => {
     expect(cleanupNotification).toContain('std::lock_guard<std::mutex> lifecycle_guard(entry.lifecycle->mutex)')
     expect(cleanupNotification.indexOf('gatt_guard')).toBeLessThan(cleanupNotification.indexOf('lifecycle_guard'))
     expect(startNotify).toContain('Lock order is connection GATT followed by notification lifecycle')
-    expect(stopNotify).toContain('CleanupNotificationEntry(*notification, cleanup_failures, true)')
+    expect(stopNotify).toContain('CleanupNotificationEntry(*notification, cleanup_failures, disable_cccd)')
     expect(boundary).toContain('BoundaryState::mutex is used only to snapshot/erase entries')
+  })
+
+  test('keys native notification map entries by connection generation and erases only snapshotted owners', () => {
+    const addon = read('native/electron/winrt/src/addon.cpp')
+    const boundary = read('native/electron/winrt/src/winrt-boundary.inc')
+    const startNotify = section(boundary, 'Napi::Value StartNotify', 'Napi::Value StopNotify')
+    const stopNotify = section(boundary, 'Napi::Value StopNotify', 'Napi::Value OnConnectionLost')
+    const removeConnection = section(boundary, 'bool BoundaryState::RemoveConnection', 'void BoundaryState::Destroy')
+    const characteristicKey = section(addon, 'std::string CharacteristicKey', '#include "winrt-boundary.inc"')
+
+    expect(characteristicKey).toContain('address.connection_generation')
+    expect(startNotify).toContain('connection->connection_generation != address.connection_generation')
+    expect(startNotify).toContain('connection->removal_claimed')
+    expect(startNotify).toContain('state->notifications.emplace(key, *provisional)')
+    expect(stopNotify).toContain('Another generation still owns this characteristic CCCD')
+    expect(removeConnection).toContain('notifications_for_peer.push_back(notification.second)')
+    const eraseLoop = removeConnection.slice(
+      removeConnection.lastIndexOf('for (auto notification = notifications.begin()')
+    )
+    expect(eraseLoop).toContain('captured.lifecycle == notification->second.lifecycle')
+    expect(eraseLoop).not.toContain('rfind(peer_prefix')
   })
 
   test('uses one exact cleanup path for connect registration rollback', () => {

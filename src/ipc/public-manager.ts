@@ -2,7 +2,7 @@
 
 import { BackendContractError, BLE_ERROR_CODES, contractError, type CleanupRecord } from '../backend-contract/errors'
 import type { ConnectionLifecycleCause } from '../backend-contract/connection-lifecycle'
-import type { BoundedAsyncStream } from '../backend-contract/streams'
+import type { BoundedAsyncStream, StreamTerminalNotice } from '../backend-contract/streams'
 import type {
   PortableBoundedAsyncStream,
   PortableCurrentCharacteristicPath,
@@ -71,7 +71,7 @@ import { diagnosticsUnavailable } from '../public/diagnostics'
 import { normalizeOperationOptions } from '../public/operation-options'
 import type { OperationOptions } from '../public/operation-options'
 import { normalizeScanQuery, scanQueryTargetsAddresses } from '../public/scan-query'
-import { createScanState } from '../public/scan-state'
+import { bindScanSourceTerminal, createScanState, projectScanDeliveryTerminal } from '../public/scan-state'
 import type { ScanStateController } from '../public/scan-state'
 import { unsupportedPeerDirectory } from '../public/peer-directory'
 import type { BlePeerDirectory } from '../public/peer-directory'
@@ -185,7 +185,6 @@ export class IpcPublicManagerAdapter implements BleManager {
         throw contractError('protocol.malformed', 'ipc', 'ipc-public-manager.scan-plan')
       }
       const state = createScanState()
-      state.emit({ state: 'active' })
       return new IpcPublicScanSession(
         session,
         mapPublicBoundedAsyncStream(
@@ -308,6 +307,7 @@ export class IpcPublicManagerAdapter implements BleManager {
 class IpcPublicScanSession implements ScanSession {
   readonly plan: import('../backend-contract/scan-planning').ScanPlan | null
   private stopPromise: Promise<PublicCleanupRecord> | null = null
+  private deliveryEnded = false
   private readonly timeoutHandle: ReturnType<typeof setTimeout> | null
   private readonly abortSignal: AbortSignal | null
   private readonly abortHandler: (() => void) | null
@@ -327,6 +327,10 @@ class IpcPublicScanSession implements ScanSession {
     this.abortSignal?.addEventListener('abort', stopAutomatically, { once: true })
     this.timeoutHandle =
       options.timeoutMs === undefined ? null : globalThis.setTimeout(stopAutomatically, options.timeoutMs)
+    bindScanSourceTerminal(inner.observations, reason => {
+      this.noteDeliveryEnded(reason)
+    })
+    if (!this.deliveryEnded) this.scanState.emit({ state: 'active' })
   }
 
   stop(): Promise<PublicCleanupRecord> {
@@ -336,17 +340,25 @@ class IpcPublicScanSession implements ScanSession {
     return result
   }
 
+  private noteDeliveryEnded(reason: StreamTerminalNotice['reason']): void {
+    if (this.deliveryEnded || this.stopPromise !== null) return
+    this.deliveryEnded = true
+    this.scanState.emit(projectScanDeliveryTerminal(reason))
+  }
+
   private async stopInternal(): Promise<PublicCleanupRecord> {
     if (this.timeoutHandle !== null) globalThis.clearTimeout(this.timeoutHandle)
     if (this.abortSignal !== null && this.abortHandler !== null) {
       this.abortSignal.removeEventListener('abort', this.abortHandler)
     }
-    this.scanState.emit({ state: 'stopping' })
+    if (!this.deliveryEnded) this.scanState.emit({ state: 'stopping' })
     try {
       const cleanup = await rehydratePublicPromise(this.inner.stop()).then(toPublicCleanupRecord)
-      this.scanState.emit(
-        cleanup.state === 'released' ? { state: 'stopped' } : { state: 'failed', reason: 'scan-stop-failed' }
-      )
+      if (cleanup.state === 'released') {
+        if (!this.deliveryEnded) this.scanState.emit({ state: 'stopped' })
+      } else {
+        this.scanState.emit({ state: 'failed', reason: 'scan-stop-failed' })
+      }
       this.scanState.close()
       if (cleanup.state === 'release-failed') this.stopPromise = null
       return cleanup

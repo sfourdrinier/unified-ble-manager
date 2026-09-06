@@ -18,7 +18,7 @@ root import does not pick a radio. Package SemVer and backend support labels are
 independent: each radio backend keeps its evidence-derived label. See
 [`docs/PLATFORMS.md`](docs/PLATFORMS.md).
 
-This source tree is versioned `4.0.24`. Install the exact version shown in the npm
+This source tree is versioned `4.0.25`. Install the exact version shown in the npm
 registry. During release preparation, the version in `package.json` can be ahead
 of npm until the matching tag-driven workflow publishes it; the registry and
 GitHub release remain authoritative.
@@ -243,7 +243,7 @@ Web Bluetooth replaces the scan with `ble.choose(...)` from a user gesture. The 
 
 | Member         | Use                                                                                                                                                  |
 | -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `observations` | Bounded stream: `value`, `overflow`, or `terminal`                                                                                                   |
+| `observations` | Bounded stream: `value`, `overflow`, or `terminal`. Drop-policy overflow means ads were missed; the scan stays up. `error` fail-closes.              |
 | `events`       | Optional derived current-view events: `observed` and monotonic `lost` (`observation.reportLostAfterMs`); unsupported host façades reject this option |
 | `plan`         | Host-owned native/residual planning diagnostics, or `null` when this host has no planner                                                             |
 | `stop()`       | End the scan and return a cleanup receipt. `find` already does this.                                                                                 |

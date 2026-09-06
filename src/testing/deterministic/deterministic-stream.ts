@@ -1,6 +1,6 @@
 // src/testing/deterministic/deterministic-stream.ts
 
-import type { CleanupRecord } from '../../backend-contract/errors'
+import type { CleanupRecord, NormalizedBleError } from '../../backend-contract/errors'
 import { resourceCount, type Capacity } from '../../backend-contract/primitives'
 import type {
   BoundedAsyncStream,
@@ -67,6 +67,7 @@ export class DeterministicBoundedStream<Value> implements BoundedAsyncStream<Val
   private terminalCount = 0
   private closed = false
   private terminalNotice: StreamTerminalNotice | null = null
+  private settledTerminalReason: StreamTerminalNotice['reason'] | null = null
   private cleanupRecord: CleanupRecord | null = null
 
   constructor(limits: StreamLimits, overflowPolicy: OverflowPolicy) {
@@ -181,21 +182,27 @@ export class DeterministicBoundedStream<Value> implements BoundedAsyncStream<Val
     this.closed = true
     this.entries.length = 0
     this.retainedValueBytes = 0
+    this.settledTerminalReason = 'closed'
     this.terminalNotice = this.makeTerminalNotice('closed')
     this.deliverAvailableItems()
     this.cleanupRecord = releasedCleanup
     return this.cleanupRecord
   }
 
-  closeWithReason(reason: StreamTerminalNotice['reason']): void {
+  closeWithReason(reason: StreamTerminalNotice['reason'], error: NormalizedBleError | null = null): void {
     if (this.closed) {
       return
     }
     this.closed = true
     this.entries.length = 0
     this.retainedValueBytes = 0
-    this.terminalNotice = this.makeTerminalNotice(reason)
+    this.settledTerminalReason = reason
+    this.terminalNotice = this.makeTerminalNotice(reason, error)
     this.deliverAvailableItems()
+  }
+
+  terminalReason(): StreamTerminalNotice['reason'] | null {
+    return this.settledTerminalReason
   }
 
   /** Releases retained values and terminal bookkeeping during backend teardown. */
@@ -345,6 +352,7 @@ export class DeterministicBoundedStream<Value> implements BoundedAsyncStream<Val
     this.closed = true
     this.entries.length = 0
     this.retainedValueBytes = 0
+    this.settledTerminalReason = 'overflow'
     this.terminalNotice = this.makeTerminalNotice('overflow')
     this.deliverAvailableItems()
     return { accepted: false, terminated: true, quotaExceeded }
@@ -427,14 +435,19 @@ export class DeterministicBoundedStream<Value> implements BoundedAsyncStream<Val
     }
   }
 
-  private makeTerminalNotice(reason: StreamTerminalNotice['reason']): StreamTerminalNotice {
-    return {
+  private makeTerminalNotice(
+    reason: StreamTerminalNotice['reason'],
+    error: NormalizedBleError | null = null
+  ): StreamTerminalNotice {
+    const terminal: StreamTerminalNotice = {
       kind: 'terminal',
       reason,
       droppedItems: resourceCount(this.droppedOldest + this.droppedNewest),
       droppedBytes: resourceCount(this.droppedBytes),
-      replacedItems: resourceCount(this.replaced)
+      replacedItems: resourceCount(this.replaced),
+      ...(error === null ? {} : { error })
     }
+    return terminal
   }
 
   private fitsValue(byteLength: number): boolean {

@@ -46,6 +46,7 @@ class DeterministicWinRtBoundary {
     this.securityBonded = false
     this.suppressNextSecurityPair = false
     this.pendingSecurityPair = null
+    this.connectionGenerations = new Map()
   }
 
   listAdapters() {
@@ -147,12 +148,17 @@ class DeterministicWinRtBoundary {
     this.scanTerminalListeners.add(listener)
     return () => this.scanTerminalListeners.delete(listener)
   }
-  connect(peerId, _connectionGeneration) {
+  connect(peerId, connectionGeneration) {
     this.connected.add(peerId)
+    this.connectionGenerations.set(peerId, connectionGeneration)
     return operation(undefined)
+  }
+  connectionGenerationFor(nativePeerId) {
+    return this.connectionGenerations.get(nativePeerId)
   }
   disconnect(peerId) {
     this.connected.delete(peerId)
+    this.connectionGenerations.delete(peerId)
     return operation(undefined)
   }
   discover() {
@@ -254,6 +260,7 @@ function operation(value) {
 function addressKey(address) {
   return [
     address.nativePeerId,
+    address.connectionGeneration,
     address.serviceUuid,
     address.serviceOccurrence,
     address.characteristicUuid,

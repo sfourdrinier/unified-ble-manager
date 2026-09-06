@@ -70,6 +70,36 @@ describe('public stream runtime projection', () => {
     expect(typeof overflow.value.droppedItems).toBe('number')
   })
 
+  test('projects a structured terminal source failure through the public stream contract', async () => {
+    const source = new CoreBoundedStream(limits(1, 4, 1), 'error')
+    const error = {
+      code: 'platform.transport',
+      domain: 'stream',
+      operation: 'tauri.event-send',
+      platform: {
+        domain: 'btleplug',
+        code: 'native-error',
+        safeMessage: 'native channel closed',
+        metadata: {}
+      },
+      retryability: 'never'
+    }
+    source.finishWithReason('source-failed', error)
+    const iterator = mapPublicBoundedAsyncStream(source, value => value)[Symbol.asyncIterator]()
+
+    await expect(iterator.next()).resolves.toEqual({
+      done: false,
+      value: {
+        kind: 'terminal',
+        reason: 'source-failed',
+        droppedItems: 0,
+        droppedBytes: 0,
+        replacedItems: 0,
+        error
+      }
+    })
+  })
+
   test('returns the source iterator and maps close cleanup while preserving idempotent teardown', async () => {
     const source = new CoreBoundedStream(limits(2, 6, 1), 'drop-newest')
     const publicStream = mapPublicBoundedAsyncStream(source, value => value)

@@ -521,12 +521,16 @@ describe('BlueZ contract-v1 vertical slice', () => {
     )
     const subscription = await subscribing
 
-    boundary.onCall(
-      characteristicObjectPath(characteristic),
-      BLUEZ_GATT_CHARACTERISTIC_INTERFACE,
-      'StopNotify',
-      async () => false
-    )
+    const characteristicPath = characteristicObjectPath(characteristic)
+    boundary.holdExternalNotify(characteristicPath)
+    let releaseStop
+    const stopGate = new Promise(resolve => {
+      releaseStop = resolve
+    })
+    boundary.onCall(characteristicPath, BLUEZ_GATT_CHARACTERISTIC_INTERFACE, 'StopNotify', async () => {
+      await stopGate
+      return false
+    })
     const iterator = subscription.values[Symbol.asyncIterator]()
     let removalSettled = false
     const removing = subscription.remove().then(cleanup => {
@@ -535,22 +539,21 @@ describe('BlueZ contract-v1 vertical slice', () => {
     })
     await Promise.resolve()
     expect(removalSettled).toBe(false)
-    boundary.objectManager.emitPropertiesChanged(
-      characteristicObjectPath(characteristic),
-      BLUEZ_GATT_CHARACTERISTIC_INTERFACE,
-      { Value: { signature: 'ay', value: new Uint8Array([18]) } }
-    )
+    boundary.objectManager.emitPropertiesChanged(characteristicPath, BLUEZ_GATT_CHARACTERISTIC_INTERFACE, {
+      Value: { signature: 'ay', value: new Uint8Array([18]) }
+    })
     await expect(iterator.next()).resolves.toMatchObject({
       done: false,
       value: { kind: 'terminal', reason: 'owner-released' }
     })
-    boundary.objectManager.emitPropertiesChanged(
-      characteristicObjectPath(characteristic),
-      BLUEZ_GATT_CHARACTERISTIC_INTERFACE,
-      { Notifying: { signature: 'b', value: false } }
-    )
+    releaseStop()
     await expect(removing).resolves.toEqual({ state: 'released', failures: [] })
     expect(Number(backend.resourceCounters().physicalCccdEnablements)).toBe(0)
+    expect(
+      boundary.objectManager.objects
+        .find(candidate => candidate.path === characteristicPath)
+        .interfaces.find(entry => entry.name === BLUEZ_GATT_CHARACTERISTIC_INTERFACE).properties.Notifying.value
+    ).toBe(true)
     await backend.destroy()
   })
 
@@ -945,6 +948,7 @@ describe('BlueZ contract-v1 vertical slice', () => {
     releaseFilter()
     await expect(pendingStart).rejects.toMatchObject({ normalized: { code: 'operation.aborted' } })
     expect(startup.boundary.calls.filter(call => call.method === 'StartDiscovery')).toHaveLength(0)
+    await flushMicrotasks()
     expect(Number(startup.backend.resourceCounters().activeScanControllers)).toBe(0)
     await startup.backend.destroy()
 
@@ -1056,6 +1060,108 @@ describe('BlueZ contract-v1 vertical slice', () => {
     await new Promise(resolve => setImmediate(resolve))
     expect(Number(backend.resourceCounters().physicalCccdEnablements)).toBe(0)
     await backend.destroy()
+  })
+
+  test('keeps StopNotify ownership when StartNotify succeeds and confirmation times out', async () => {
+    jest.useFakeTimers({ now: 1_000 })
+    try {
+      const { backend, boundary } = await backendFixture(() => Date.now())
+      const { database } = await connectedDatabase(backend)
+      const characteristic = (await database.snapshot()).characteristics[0].path
+      const characteristicPath = characteristicObjectPath(characteristic)
+      boundary.onCall(characteristicPath, BLUEZ_GATT_CHARACTERISTIC_INTERFACE, 'StartNotify', async () => false)
+      boundary.onCall(characteristicPath, BLUEZ_GATT_CHARACTERISTIC_INTERFACE, 'StopNotify', async () => {
+        throw new Error('transient enabling-failed stop failure')
+      })
+
+      const subscribing = database.subscribe(characteristic, { ...operation(), delivery: delivery() })
+      const timedOut = expect(subscribing).rejects.toMatchObject({ normalized: { code: 'operation.timed-out' } })
+      await flushMicrotasks()
+      expect(boundary.calls.filter(call => call.method === 'StartNotify')).toHaveLength(1)
+      await jest.advanceTimersByTimeAsync(1_000)
+      await timedOut
+      await flushMicrotasks()
+      expectConsoleErrorMatching(
+        '[subscribeBluez] BlueZ StartNotify failed:',
+        expect.objectContaining({ normalized: expect.objectContaining({ code: 'operation.timed-out' }) })
+      )
+      expect(boundary.calls.filter(call => call.method === 'StopNotify')).toHaveLength(1)
+      expectConsoleErrorMatching(
+        '[beginBluezPhysicalRemoval] BlueZ StopNotify failed:',
+        expect.objectContaining({ message: 'transient enabling-failed stop failure' })
+      )
+      expectConsoleErrorMatching(
+        '[subscribeBluez] Failed to clean an orphaned BlueZ notification enablement:',
+        expect.objectContaining({ message: 'transient enabling-failed stop failure' })
+      )
+      expect(Number(backend.resourceCounters().physicalCccdEnablements)).toBe(1)
+
+      boundary.onCall(characteristicPath, BLUEZ_GATT_CHARACTERISTIC_INTERFACE, 'StopNotify', async () => undefined)
+      await expect(backend.destroy()).resolves.toEqual({ state: 'released', failures: [] })
+      expect(boundary.calls.filter(call => call.method === 'StopNotify')).toHaveLength(2)
+      expect(Number(backend.resourceCounters().physicalCccdEnablements)).toBe(0)
+    } finally {
+      jest.useRealTimers()
+    }
+  })
+
+  test('does not promote a removing physical to ready when StartNotify confirmation succeeds late', async () => {
+    jest.useFakeTimers({ now: 1_000 })
+    try {
+      const { backend, boundary } = await backendFixture(() => Date.now())
+      const { database } = await connectedDatabase(backend)
+      const characteristic = (await database.snapshot()).characteristics[0].path
+      const characteristicPath = characteristicObjectPath(characteristic)
+      boundary.onCall(characteristicPath, BLUEZ_GATT_CHARACTERISTIC_INTERFACE, 'StartNotify', async () => false)
+      const stopGate = deferred()
+      boundary.onCall(characteristicPath, BLUEZ_GATT_CHARACTERISTIC_INTERFACE, 'StopNotify', async () => {
+        await stopGate.promise
+        return false
+      })
+
+      const subscribing = database.subscribe(characteristic, {
+        ...operation(),
+        deadline: Date.now() + 20,
+        delivery: delivery()
+      })
+      const timedOut = expect(subscribing).rejects.toMatchObject({ normalized: { code: 'operation.timed-out' } })
+      await flushMicrotasks()
+      expect(boundary.calls.filter(call => call.method === 'StartNotify')).toHaveLength(1)
+      await jest.advanceTimersByTimeAsync(20)
+      await timedOut
+      await flushMicrotasks()
+      expect(boundary.calls.filter(call => call.method === 'StopNotify')).toHaveLength(1)
+
+      boundary.objectManager.emitPropertiesChanged(characteristicPath, BLUEZ_GATT_CHARACTERISTIC_INTERFACE, {
+        Notifying: { signature: 'b', value: true }
+      })
+      await flushMicrotasks()
+
+      let secondSettled = false
+      const second = database.subscribe(characteristic, { ...operation(), delivery: delivery() }).then(subscription => {
+        secondSettled = true
+        return subscription
+      })
+      await flushMicrotasks()
+      expect(secondSettled).toBe(false)
+      expect(boundary.calls.filter(call => call.method === 'StartNotify')).toHaveLength(1)
+
+      stopGate.resolve()
+      await flushMicrotasks()
+      expect(boundary.calls.filter(call => call.method === 'StartNotify')).toHaveLength(2)
+      boundary.objectManager.emitPropertiesChanged(characteristicPath, BLUEZ_GATT_CHARACTERISTIC_INTERFACE, {
+        Notifying: { signature: 'b', value: true }
+      })
+      const secondSubscription = await second
+      expect(secondSettled).toBe(true)
+      expect(Number(backend.resourceCounters().physicalCccdEnablements)).toBe(1)
+
+      await expect(secondSubscription.remove()).resolves.toEqual({ state: 'released', failures: [] })
+      expect(boundary.calls.filter(call => call.method === 'StopNotify')).toHaveLength(2)
+      await expect(backend.destroy()).resolves.toEqual({ state: 'released', failures: [] })
+    } finally {
+      jest.useRealTimers()
+    }
   })
 
   test('bounds native disconnect confirmation and retries without issuing a second Disconnect', async () => {
@@ -1227,85 +1333,51 @@ describe('BlueZ contract-v1 vertical slice', () => {
     }
   })
 
-  test('bounds StopNotify property confirmation and retains ownership for retry', async () => {
-    jest.useFakeTimers({ now: 1_000 })
-    try {
-      const { backend, boundary } = await backendFixture(() => Date.now())
-      const { database } = await connectedDatabase(backend)
-      const characteristic = (await database.snapshot()).characteristics[0].path
-      await database.subscribe(characteristic, { ...operation(), delivery: delivery() })
-      boundary.onCall(
-        characteristicObjectPath(characteristic),
-        BLUEZ_GATT_CHARACTERISTIC_INTERFACE,
-        'StopNotify',
-        async () => false
-      )
+  test("releases this client's notification session while another D-Bus client keeps Notifying true", async () => {
+    const { backend, boundary } = await backendFixture()
+    const { database } = await connectedDatabase(backend)
+    const characteristic = (await database.snapshot()).characteristics[0].path
+    const characteristicPath = characteristicObjectPath(characteristic)
+    const subscription = await database.subscribe(characteristic, { ...operation(), delivery: delivery() })
+    boundary.holdExternalNotify(characteristicPath)
 
-      const firstDestroy = backend.destroy()
-      await flushMicrotasks()
-      await jest.advanceTimersByTimeAsync(1_000)
-      await expect(firstDestroy).resolves.toMatchObject({
-        state: 'release-failed',
-        failures: [
-          {
-            resourceKind: 'subscription',
-            error: expect.objectContaining({ code: 'operation.timed-out' })
-          }
-        ]
-      })
-      expect(Number(backend.resourceCounters().physicalCccdEnablements)).toBe(1)
+    await expect(subscription.remove()).resolves.toEqual({ state: 'released', failures: [] })
+    expect(Number(backend.resourceCounters().physicalCccdEnablements)).toBe(0)
+    expect(boundary.calls.filter(call => call.method === 'StopNotify')).toHaveLength(1)
+    expect(
+      boundary.objectManager.objects
+        .find(candidate => candidate.path === characteristicPath)
+        .interfaces.find(entry => entry.name === BLUEZ_GATT_CHARACTERISTIC_INTERFACE).properties.Notifying.value
+    ).toBe(true)
 
-      boundary.onCall(
-        characteristicObjectPath(characteristic),
-        BLUEZ_GATT_CHARACTERISTIC_INTERFACE,
-        'StopNotify',
-        async () => undefined
-      )
-      boundary.objectManager.emitPropertiesChanged(
-        characteristicObjectPath(characteristic),
-        BLUEZ_GATT_CHARACTERISTIC_INTERFACE,
-        { Notifying: { signature: 'b', value: false } }
-      )
-      await flushMicrotasks()
-      await expect(backend.destroy()).resolves.toEqual({ state: 'released', failures: [] })
-    } finally {
-      jest.useRealTimers()
-    }
+    const resubscribed = await database.subscribe(characteristic, { ...operation(), delivery: delivery() })
+    await expect(resubscribed.remove()).resolves.toEqual({ state: 'released', failures: [] })
+    await expect(backend.destroy()).resolves.toEqual({ state: 'released', failures: [] })
   })
 
-  test('bounds StopDiscovery property confirmation and retains ownership for retry', async () => {
-    jest.useFakeTimers({ now: 1_000 })
-    try {
-      const { backend, boundary } = await backendFixture(() => Date.now())
-      await backend.scanner.start(
-        scanOptions(),
-        opaqueId('destroy-stop-discovery-confirmation', 'client', 'bluez:scan-race')
-      )
-      boundary.onCall(adapterPath, BLUEZ_ADAPTER_INTERFACE, 'StopDiscovery', async () => false)
+  test("releases this client's discovery session while another D-Bus client keeps Discovering true", async () => {
+    const { backend, boundary } = await backendFixture()
+    const scan = await backend.scanner.start(
+      scanOptions(),
+      opaqueId('two-client-stop-discovery', 'client', 'bluez:scan-race')
+    )
+    boundary.holdExternalDiscovery()
 
-      const firstDestroy = backend.destroy()
-      await flushMicrotasks()
-      await jest.advanceTimersByTimeAsync(1_000)
-      await expect(firstDestroy).resolves.toMatchObject({
-        state: 'release-failed',
-        failures: [
-          {
-            resourceKind: 'scan',
-            error: expect.objectContaining({ code: 'operation.timed-out' })
-          }
-        ]
-      })
-      expect(Number(backend.resourceCounters().activeScanControllers)).toBe(1)
+    await expect(scan.stop()).resolves.toEqual({ state: 'released', failures: [] })
+    expect(Number(backend.resourceCounters().activeScanControllers)).toBe(0)
+    expect(boundary.calls.filter(call => call.method === 'StopDiscovery')).toHaveLength(1)
+    expect(
+      boundary.objectManager.objects
+        .find(candidate => candidate.path === adapterPath)
+        .interfaces.find(entry => entry.name === BLUEZ_ADAPTER_INTERFACE).properties.Discovering.value
+    ).toBe(true)
 
-      boundary.onCall(adapterPath, BLUEZ_ADAPTER_INTERFACE, 'StopDiscovery', async () => undefined)
-      boundary.objectManager.emitPropertiesChanged(adapterPath, BLUEZ_ADAPTER_INTERFACE, {
-        Discovering: { signature: 'b', value: false }
-      })
-      await flushMicrotasks()
-      await expect(backend.destroy()).resolves.toEqual({ state: 'released', failures: [] })
-    } finally {
-      jest.useRealTimers()
-    }
+    const restarted = await backend.scanner.start(
+      scanOptions(),
+      opaqueId('two-client-restart-discovery', 'client', 'bluez:scan-race')
+    )
+    await expect(restarted.stop()).resolves.toEqual({ state: 'released', failures: [] })
+    await expect(backend.destroy()).resolves.toEqual({ state: 'released', failures: [] })
   })
 
   test('retains child ownership after destroy cleanup failure and permits a full destroy retry', async () => {
@@ -1439,9 +1511,14 @@ describe('BlueZ contract-v1 vertical slice', () => {
       { ...scanOptions(), signal: abortController.signal },
       opaqueId('startup-filter-retry', 'client', 'bluez:scan-race')
     )
-    await expect(starting).rejects.toThrow('BlueZ scan start and cleanup both failed')
+    await expect(starting).rejects.toMatchObject({ normalized: { code: 'operation.aborted' } })
+    await flushMicrotasks()
     expectConsoleErrorMatching(
-      '[startBluezScan] Failed to clear the BlueZ discovery filter after start failure:',
+      '[stopBluezScan] BlueZ discovery-filter cleanup failed; scan ownership retained for retry:',
+      expect.objectContaining({ message: 'transient startup filter cleanup failure' })
+    )
+    expectConsoleErrorMatching(
+      '[startBluezScan] Failed to stop an aborted BlueZ scan:',
       expect.objectContaining({ message: 'transient startup filter cleanup failure' })
     )
     expect(Number(backend.resourceCounters().activeScanControllers)).toBe(1)
@@ -1556,18 +1633,8 @@ describe('BlueZ contract-v1 vertical slice', () => {
       failedPaths.push(call.path)
       throw new Error(`shared cleanup failed for ${call.path}`)
     }
-    boundary.onCall(
-      characteristicObjectPath(first),
-      BLUEZ_GATT_CHARACTERISTIC_INTERFACE,
-      'StopNotify',
-      failStopNotify
-    )
-    boundary.onCall(
-      characteristicObjectPath(second),
-      BLUEZ_GATT_CHARACTERISTIC_INTERFACE,
-      'StopNotify',
-      failStopNotify
-    )
+    boundary.onCall(characteristicObjectPath(first), BLUEZ_GATT_CHARACTERISTIC_INTERFACE, 'StopNotify', failStopNotify)
+    boundary.onCall(characteristicObjectPath(second), BLUEZ_GATT_CHARACTERISTIC_INTERFACE, 'StopNotify', failStopNotify)
 
     const cleanup = await ownerLease.release()
     expect(cleanup.state).toBe('release-failed')

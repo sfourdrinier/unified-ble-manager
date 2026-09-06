@@ -13,6 +13,7 @@ import {
   awaitBluezNativePromise,
   awaitSharedBluezTransition,
   BLUEZ_NATIVE_CLEANUP_TIMEOUT_MS,
+  isBluezCallerTerminal,
   waitForBluezBoolean
 } from './bluez-property-waiters'
 
@@ -70,10 +71,19 @@ export async function startBluezScan(
     consumers: new Map([[String(leaseId), consumer]]),
     state: 'starting',
     physicalStarted: false,
+    filterApplied: false,
+    filterSettled: false,
+    discoverySettled: false,
+    setFilter: null,
+    startDiscovery: null,
     stopDiscoveryRequested: false,
     stopDiscovery: null,
     filterClearRequested: false,
     filterClear: null,
+    pendingFilterRestore: null,
+    addressWidenBorrowers: 0,
+    addressWiden: null,
+    addressWidenRestore: null,
     stopRequested: false,
     resetRequested: false,
     startupComplete: false,
@@ -83,12 +93,27 @@ export async function startBluezScan(
   runtime.scanGroup = group
   options.signal?.addEventListener('abort', abort, { once: true })
   try {
-    await runtime.boundary.methods.callVoid(
+    const setFilter = runtime.boundary.methods.callVoid(
       String(runtime.selectedAdapter.adapterId),
       BLUEZ_ADAPTER_INTERFACE,
       'SetDiscoveryFilter',
       [scanFilterVariant(options)]
     )
+    group.setFilter = setFilter
+    trackBluezScanAcquisition(
+      runtime,
+      group,
+      consumer,
+      setFilter,
+      () => {
+        group.filterApplied = true
+        group.filterSettled = true
+      },
+      () => {
+        group.filterSettled = true
+      }
+    )
+    await awaitSharedBluezTransition(setFilter, options, runtime.now, 'bluez.scan.set-filter')
   } catch (primaryError) {
     await failBluezScanStartup(runtime, group, consumer, primaryError)
   }
@@ -106,12 +131,27 @@ export async function startBluezScan(
     )
   }
   try {
-    await runtime.boundary.methods.callVoid(
+    const startDiscovery = runtime.boundary.methods.callVoid(
       String(runtime.selectedAdapter.adapterId),
       BLUEZ_ADAPTER_INTERFACE,
       'StartDiscovery',
       []
     )
+    group.startDiscovery = startDiscovery
+    trackBluezScanAcquisition(
+      runtime,
+      group,
+      consumer,
+      startDiscovery,
+      () => {
+        group.physicalStarted = true
+        group.discoverySettled = true
+      },
+      () => {
+        group.discoverySettled = true
+      }
+    )
+    await awaitSharedBluezTransition(startDiscovery, options, runtime.now, 'bluez.scan.start-discovery')
     group.physicalStarted = true
     const discoveryStartupFailure = scanStartupFailure(runtime, group)
     if (discoveryStartupFailure !== null) {
@@ -210,6 +250,24 @@ export async function stopBluezScan(runtime: BluezBackendRuntime, consumer: Blue
     group.stopRequested = true
   }
   group.state = 'stopping'
+  try {
+    await adoptPendingBluezScanAcquisition(runtime, group)
+  } catch (error) {
+    if (isBluezCleanupTimeout(error)) {
+      return pendingBluezScanCleanup('bluez.scan.startup-method')
+    }
+    throw error
+  }
+  try {
+    await restorePendingBluezScanFilter(runtime, group)
+  } catch (error) {
+    if (isBluezCleanupTimeout(error)) {
+      return pendingBluezScanCleanup('bluez.scan.filter-restore')
+    }
+    retainBluezScanStopFailure(runtime, group)
+    console.error('[stopBluezScan] BlueZ discovery-filter restore failed; scan ownership retained for retry:', error)
+    throw error
+  }
   if (group.physicalStarted) {
     try {
       await stopBluezPhysicalDiscovery(runtime, group)
@@ -217,9 +275,7 @@ export async function stopBluezScan(runtime: BluezBackendRuntime, consumer: Blue
       if (isBluezCleanupTimeout(error)) {
         return pendingBluezScanCleanup('bluez.scan.stop-discovery')
       }
-      if (runtime.scanGroup === group) {
-        group.state = 'active'
-      }
+      retainBluezScanStopFailure(runtime, group)
       console.error('[stopBluezScan] BlueZ StopDiscovery failed; scan ownership retained for retry:', error)
       throw error
     }
@@ -230,7 +286,7 @@ export async function stopBluezScan(runtime: BluezBackendRuntime, consumer: Blue
     if (isBluezCleanupTimeout(error)) {
       return pendingBluezScanCleanup('bluez.scan.discovery-filter')
     }
-    group.state = 'active'
+    retainBluezScanStopFailure(runtime, group)
     console.error('[stopBluezScan] BlueZ discovery-filter cleanup failed; scan ownership retained for retry:', error)
     throw error
   }
@@ -280,6 +336,12 @@ async function failBluezScanStartup(
   consumer: BluezScanConsumer,
   primaryError: unknown
 ): Promise<never> {
+  if (isBluezCallerTerminal(primaryError) && bluezScanAcquisitionPending(group)) {
+    group.stopRequested = true
+    settleBluezScanStartup(group)
+    observeScanCleanup(runtime.stopScan(consumer))
+    throw primaryError
+  }
   const cleanupErrors: unknown[] = []
   const ownsGroup = runtime.scanGroup === group
   if (group.physicalStarted && ownsGroup) {
@@ -347,6 +409,41 @@ function retainFailedScanStartup(
   group.settleStartup()
 }
 
+function retainBluezScanStopFailure(runtime: BluezBackendRuntime, group: BluezScanGroup): void {
+  if (runtime.scanGroup !== group) {
+    return
+  }
+  group.state = 'active'
+  group.stopRequested = true
+}
+
+async function restorePendingBluezScanFilter(runtime: BluezBackendRuntime, group: BluezScanGroup): Promise<void> {
+  if (group.addressWidenBorrowers > 0) {
+    return
+  }
+  const original = group.pendingFilterRestore
+  if (original === null) {
+    return
+  }
+  const restore = runtime.boundary.methods.callVoid(
+    String(runtime.selectedAdapter.adapterId),
+    BLUEZ_ADAPTER_INTERFACE,
+    'SetDiscoveryFilter',
+    [original]
+  )
+  group.setFilter = restore
+  try {
+    await awaitBluezNativePromise(restore, runtime.now, 'bluez.scan.filter-restore')
+  } catch (error) {
+    if (group.setFilter === restore) {
+      group.setFilter = null
+    }
+    throw error
+  }
+  group.pendingFilterRestore = null
+  group.setFilter = null
+}
+
 async function clearBluezDiscoveryFilter(runtime: BluezBackendRuntime, group: BluezScanGroup): Promise<void> {
   if (!group.filterClearRequested) {
     group.filterClearRequested = true
@@ -400,17 +497,76 @@ async function stopBluezPhysicalDiscovery(runtime: BluezBackendRuntime, group: B
     throw contractError('lifecycle.invariant-violation', 'scan', 'bluez.scan.stop-discovery')
   }
   await awaitBluezNativePromise(stopDiscovery, runtime.now, 'bluez.scan.stop-discovery')
-  await waitForBluezBoolean(
-    runtime,
-    String(runtime.selectedAdapter.adapterId),
-    BLUEZ_ADAPTER_INTERFACE,
-    'Discovering',
-    false,
-    { signal: null, deadline: deadline(runtime.now() + BLUEZ_NATIVE_CLEANUP_TIMEOUT_MS) }
-  )
   group.physicalStarted = false
   group.stopDiscovery = null
   group.stopDiscoveryRequested = false
+}
+
+function trackBluezScanAcquisition(
+  runtime: BluezBackendRuntime,
+  group: BluezScanGroup,
+  consumer: BluezScanConsumer,
+  nativePromise: Promise<void>,
+  onSuccess: () => void,
+  onFailure: () => void
+): void {
+  nativePromise.then(
+    () => {
+      if (runtime.scanGroup !== group) {
+        return
+      }
+      onSuccess()
+      if (group.stopRequested && consumer.stopped === null) {
+        observeScanCleanup(runtime.stopScan(consumer))
+      }
+    },
+    () => {
+      onFailure()
+    }
+  )
+}
+
+function bluezScanAcquisitionPending(group: BluezScanGroup): boolean {
+  return (
+    (group.setFilter !== null && !group.filterSettled) || (group.startDiscovery !== null && !group.discoverySettled)
+  )
+}
+
+async function adoptPendingBluezScanAcquisition(runtime: BluezBackendRuntime, group: BluezScanGroup): Promise<void> {
+  if (group.setFilter !== null && !group.filterSettled) {
+    try {
+      await awaitBluezNativePromise(group.setFilter, runtime.now, 'bluez.scan.set-filter')
+      group.filterApplied = true
+      group.filterSettled = true
+    } catch (error) {
+      if (isBluezCleanupTimeout(error)) {
+        throw error
+      }
+      group.filterSettled = true
+      group.setFilter = null
+    }
+  }
+  if (group.startDiscovery !== null && !group.discoverySettled) {
+    try {
+      await awaitBluezNativePromise(group.startDiscovery, runtime.now, 'bluez.scan.start-discovery')
+      group.physicalStarted = true
+      group.discoverySettled = true
+    } catch (error) {
+      if (isBluezCleanupTimeout(error)) {
+        throw error
+      }
+      group.discoverySettled = true
+      group.startDiscovery = null
+    }
+  }
+}
+
+function settleBluezScanStartup(group: BluezScanGroup): void {
+  if (group.startupComplete) {
+    return
+  }
+  group.startupComplete = true
+  group.settleStartup()
 }
 
 function pendingBluezScanCleanup(operation: string): CleanupRecord {

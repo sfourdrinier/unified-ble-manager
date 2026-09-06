@@ -3,6 +3,7 @@
 import {
   BackendContractError,
   contractError,
+  serializeNormalizedError,
   type CleanupFailure,
   type CleanupRecord
 } from '../backend-contract/errors'
@@ -398,7 +399,8 @@ function lifecycleStreamItemRecord(
     reason: item.reason,
     droppedItems: Number(item.droppedItems),
     droppedBytes: Number(item.droppedBytes),
-    replacedItems: Number(item.replacedItems)
+    replacedItems: Number(item.replacedItems),
+    ...(item.error === undefined || item.error === null ? {} : { error: serializeNormalizedError(item.error) })
   })
 }
 

@@ -288,14 +288,18 @@ describe('BlueZ lifecycle regressions', () => {
     await expect(connecting).rejects.toMatchObject({ normalized: { code: 'operation.aborted' } })
     expectConsoleErrorMatching(
       '[scheduleOrphanedBluezConnectionCleanup] Shared transition cleanup failed:',
-      expect.objectContaining({ normalized: expect.objectContaining({ code: 'operation.aborted', operation: 'bluez.connect' }) })
+      expect.objectContaining({
+        normalized: expect.objectContaining({ code: 'operation.aborted', operation: 'bluez.connect' })
+      })
     )
     releaseConnect()
 
     await expect(destroying).resolves.toEqual({ state: 'released', failures: [] })
     expectConsoleErrorMatching(
       '[connectBluezConnection] Shared BlueZ connect transition failed:',
-      expect.objectContaining({ normalized: expect.objectContaining({ code: 'operation.aborted', operation: 'bluez.connect' }) })
+      expect.objectContaining({
+        normalized: expect.objectContaining({ code: 'operation.aborted', operation: 'bluez.connect' })
+      })
     )
     expect(boundary.calls.filter(call => call.method === 'Disconnect')).toHaveLength(1)
   })
@@ -387,5 +391,145 @@ describe('BlueZ lifecycle regressions', () => {
     expect(boundary.calls.filter(call => call.method === 'StartDiscovery')).toHaveLength(0)
     expect(backend.resourceCounters().activeScanControllers).toBe(0)
     await expect(backend.destroy()).resolves.toEqual({ state: 'released', failures: [] })
+  })
+
+  test('bounds a hung SetDiscoveryFilter by the caller deadline and retains the pending scan', async () => {
+    jest.useFakeTimers({ now: 1_000 })
+    let backend
+    try {
+      const fixtureResult = await fixture({ connected: false, now: () => Date.now() })
+      backend = fixtureResult.backend
+      const { boundary } = fixtureResult
+      let releaseFilter
+      const filterGate = new Promise(resolve => {
+        releaseFilter = resolve
+      })
+      boundary.onCall(adapterPath, BLUEZ_ADAPTER_INTERFACE, 'SetDiscoveryFilter', async call => {
+        if (Object.keys(call.argumentsValue[0].value).length > 0) {
+          await filterGate
+        }
+      })
+
+      let startOutcome = 'pending'
+      const starting = backend.scanner.start(
+        scanOptions(Date.now() + 20),
+        opaqueId('hung-filter', 'client', 'bluez:regression')
+      )
+      starting.then(
+        () => {
+          startOutcome = 'resolved'
+        },
+        error => {
+          startOutcome = error.normalized?.code ?? 'rejected'
+        }
+      )
+      await jest.advanceTimersByTimeAsync(0)
+      expect(boundary.calls.filter(call => call.method === 'SetDiscoveryFilter')).toHaveLength(1)
+      await jest.advanceTimersByTimeAsync(20)
+      expect(startOutcome).toBe('operation.timed-out')
+      await expect(starting).rejects.toMatchObject({ normalized: { code: 'operation.timed-out' } })
+      expect(boundary.calls.filter(call => call.method === 'StartDiscovery')).toHaveLength(0)
+      expect(Number(backend.resourceCounters().activeScanControllers)).toBe(1)
+
+      let secondOutcome = 'pending'
+      const second = backend.scanner.start(scanOptions(), opaqueId('hung-filter-second', 'client', 'bluez:regression'))
+      second.then(
+        () => {
+          secondOutcome = 'resolved'
+        },
+        error => {
+          secondOutcome = error.normalized?.code ?? 'rejected'
+        }
+      )
+      await jest.advanceTimersByTimeAsync(1_000)
+      expect(secondOutcome).toBe('scan.already-active')
+      await expect(second).rejects.toMatchObject({ normalized: { code: 'scan.already-active' } })
+      expect(boundary.calls.filter(call => call.method === 'StartDiscovery')).toHaveLength(0)
+
+      releaseFilter()
+      await jest.advanceTimersByTimeAsync(0)
+      await Promise.resolve()
+      expect(Number(backend.resourceCounters().activeScanControllers)).toBe(0)
+
+      const recovered = await backend.scanner.start(
+        scanOptions(),
+        opaqueId('hung-filter-recovered', 'client', 'bluez:regression')
+      )
+      await expect(recovered.stop()).resolves.toEqual({ state: 'released', failures: [] })
+      await expect(backend.destroy()).resolves.toEqual({ state: 'released', failures: [] })
+    } finally {
+      jest.useRealTimers()
+      if (backend !== undefined) {
+        await backend.destroy().catch(() => undefined)
+      }
+    }
+  })
+
+  test('bounds a hung StartDiscovery by the caller deadline and stops the late allocation', async () => {
+    jest.useFakeTimers({ now: 1_000 })
+    let backend
+    try {
+      const fixtureResult = await fixture({ connected: false, now: () => Date.now() })
+      backend = fixtureResult.backend
+      const { boundary } = fixtureResult
+      let releaseStart
+      const startGate = new Promise(resolve => {
+        releaseStart = resolve
+      })
+      boundary.onCall(adapterPath, BLUEZ_ADAPTER_INTERFACE, 'StartDiscovery', async () => startGate)
+
+      let startOutcome = 'pending'
+      const starting = backend.scanner.start(
+        scanOptions(Date.now() + 20),
+        opaqueId('hung-start', 'client', 'bluez:regression')
+      )
+      starting.then(
+        () => {
+          startOutcome = 'resolved'
+        },
+        error => {
+          startOutcome = error.normalized?.code ?? 'rejected'
+        }
+      )
+      await jest.advanceTimersByTimeAsync(0)
+      expect(boundary.calls.filter(call => call.method === 'StartDiscovery')).toHaveLength(1)
+      await jest.advanceTimersByTimeAsync(20)
+      expect(startOutcome).toBe('operation.timed-out')
+      await expect(starting).rejects.toMatchObject({ normalized: { code: 'operation.timed-out' } })
+      expect(Number(backend.resourceCounters().activeScanControllers)).toBe(1)
+
+      let secondOutcome = 'pending'
+      const second = backend.scanner.start(scanOptions(), opaqueId('hung-start-second', 'client', 'bluez:regression'))
+      second.then(
+        () => {
+          secondOutcome = 'resolved'
+        },
+        error => {
+          secondOutcome = error.normalized?.code ?? 'rejected'
+        }
+      )
+      await jest.advanceTimersByTimeAsync(1_000)
+      expect(secondOutcome).toBe('scan.already-active')
+      await expect(second).rejects.toMatchObject({ normalized: { code: 'scan.already-active' } })
+      expect(boundary.calls.filter(call => call.method === 'StartDiscovery')).toHaveLength(1)
+
+      releaseStart()
+      await jest.advanceTimersByTimeAsync(0)
+      await Promise.resolve()
+      expect(boundary.calls.filter(call => call.method === 'StopDiscovery')).toHaveLength(1)
+      expect(Number(backend.resourceCounters().activeScanControllers)).toBe(0)
+
+      const recovered = await backend.scanner.start(
+        scanOptions(),
+        opaqueId('hung-start-recovered', 'client', 'bluez:regression')
+      )
+      await expect(recovered.stop()).resolves.toEqual({ state: 'released', failures: [] })
+      await expect(backend.destroy()).resolves.toEqual({ state: 'released', failures: [] })
+    } finally {
+      jest.useRealTimers()
+      if (backend !== undefined) {
+        await backend.destroy().catch(() => undefined)
+      }
+    }
   })
 })

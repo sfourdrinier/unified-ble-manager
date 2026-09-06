@@ -17,6 +17,7 @@ import type {
 import { capacity } from '../../backend-contract/primitives'
 import { CoreBoundedStream } from '../../core/bounded-stream'
 import type { BluezConnection, BluezConnectionLease, BluezGattDatabase } from './bluez-backend-handles'
+import type { BluezVariant } from './bluez-dbus-contract'
 
 export const bluezEventLimits = Object.freeze({
   itemCapacity: capacity(64),
@@ -48,15 +49,36 @@ export interface BluezScanGroup {
   readonly consumers: Map<string, BluezScanConsumer>
   state: 'starting' | 'active' | 'stopping'
   physicalStarted: boolean
+  filterApplied: boolean
+  filterSettled: boolean
+  discoverySettled: boolean
+  setFilter: Promise<void> | null
+  startDiscovery: Promise<void> | null
   stopDiscoveryRequested: boolean
   stopDiscovery: Promise<void> | null
   filterClearRequested: boolean
   filterClear: Promise<void> | null
+  /** Owner filter that still needs SetDiscoveryFilter after a failed address-widen restore. */
+  pendingFilterRestore: BluezVariant | null
+  /** Address-connect waiters currently relying on a temporarily widened scan filter. */
+  addressWidenBorrowers: number
+  /** Shared widen SetDiscoveryFilter; null when the owner filter is in force. */
+  addressWiden: Promise<void> | null
+  /** In-flight owner-filter restore after the last address-widen borrower leaves. */
+  addressWidenRestore: Promise<void> | null
   stopRequested: boolean
   resetRequested: boolean
   startupComplete: boolean
   readonly startupSettled: Promise<void>
   readonly settleStartup: () => void
+}
+
+export interface BluezAddressAcquisition {
+  readonly completion: Promise<void>
+  waiters: number
+  connectDevice: Promise<void> | null
+  /** Owned compensating Disconnect after a late ConnectDevice; null means retryable. */
+  compensation: Promise<CleanupRecord> | null
 }
 
 export interface BluezConnectionRecord {
@@ -115,7 +137,7 @@ export interface BluezPhysicalSubscription {
   readonly consumers: Set<BluezSubscriptionRecord>
   readonly pendingRemovals: Set<BluezSubscriptionRecord>
   pendingConsumers: number
-  state: 'enabling' | 'ready' | 'removing'
+  state: 'enabling' | 'enabling-failed' | 'ready' | 'removing'
   readonly startMethod: Promise<void>
   readonly enablement: Promise<void>
   removal: Promise<CleanupRecord> | null

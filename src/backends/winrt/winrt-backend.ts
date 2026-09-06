@@ -53,6 +53,7 @@ import {
   type ConnectionId,
   type GenerationId,
   type LeaseId,
+  type OwnedBytes,
   type PeerId,
   type ScanSessionId,
   type ScanShareToken,
@@ -160,6 +161,10 @@ function createWinRtFeatureRegistry(securityAvailable: boolean): FeatureRegistry
 
 function pendingWinRtConnectionCleanup(operation = 'winrt.connection.dispatcher-idle'): CleanupRecord {
   return timedOutWinRtCleanup('connection', operation)
+}
+
+function winRtEnablementCleanupTimedOut(cleanup: CleanupRecord): boolean {
+  return cleanup.failures.some(failure => failure.error.operation === 'winrt.gatt.start-notify.enablement')
 }
 
 function pendingWinRtOperationCleanup(operation: string): CleanupRecord {
@@ -333,9 +338,11 @@ export interface WinRtConnectionRecord {
 export interface WinRtPhysicalSubscription {
   readonly key: string
   readonly address: WinRtCharacteristicAddress
+  readonly connectionGeneration: GenerationId<'connection-generation', string>
   readonly mode: 'notify' | 'indicate'
   readonly consumers: Set<WinRtBackendSubscription>
   readonly pendingConsumers: Set<WinRtPendingSubscription>
+  readonly stagedValues: OwnedBytes[]
   state: 'enabling' | 'ready' | 'removing' | 'cleanup-pending'
   enableConfirmed: boolean
   enableOutcome: 'pending' | 'enabled' | 'failed'
@@ -348,6 +355,8 @@ export interface WinRtPhysicalSubscription {
   removal: Promise<CleanupRecord> | null
   removalSettlement: Promise<CleanupRecord> | null
   removalPhase: 'pre-enable' | 'post-enable' | null
+  stagedBytes: number
+  stagingOverflowed: boolean
 }
 
 export interface WinRtPendingSubscription {
@@ -395,6 +404,13 @@ export class WinRtBackend implements BleCentralBackend<string, HostNeutralBacken
   readonly security: WinRtSecurityBackend | undefined
   readonly dispatcher: WinRtOperationDispatcher
   readonly subscriptions = new Map<string, WinRtPhysicalSubscription>()
+  connectionOwnsGeneration(
+    nativePeerId: string,
+    connectionGeneration: GenerationId<'connection-generation', string>
+  ): boolean {
+    const record = this.connectionsByNativeId.get(nativePeerId)
+    return record !== undefined && record.connectionGeneration === connectionGeneration
+  }
   private readonly backendInstanceId: BackendInstanceId<string>
   private readonly eventStreams = new Set<CoreBoundedStream<BackendEvent<string>>>()
   private readonly stateStreams = new Set<CoreBoundedStream<AdapterStateSnapshot<string>>>()
@@ -748,7 +764,8 @@ export class WinRtBackend implements BleCentralBackend<string, HostNeutralBacken
     if (!(await this.waitForPendingConnectBeforeDisconnect(record))) {
       return combineWinRtCleanup(invalidation, pendingWinRtConnectionCleanup())
     }
-    if (!(await this.waitForConnectionOperationsBeforeDisconnect(record))) {
+    const enablementTimedOut = winRtEnablementCleanupTimedOut(invalidation)
+    if (!enablementTimedOut && !(await this.waitForConnectionOperationsBeforeDisconnect(record))) {
       if (record.state === 'disconnecting') {
         record.state = 'connected'
       }
@@ -762,18 +779,25 @@ export class WinRtBackend implements BleCentralBackend<string, HostNeutralBacken
         return combineWinRtCleanup(invalidation, nativeCleanup)
       }
     }
-    if (waitForOperations && !(await this.waitForConnectionOperations(record))) {
+    if (waitForOperations && !enablementTimedOut && !(await this.waitForConnectionOperations(record))) {
       return combineWinRtCleanup(invalidation, pendingWinRtConnectionCleanup())
     }
     if (invalidation.state === 'release-failed') {
+      if (winRtEnablementCleanupTimedOut(invalidation)) {
+        this.retireDisconnectedRecord(record)
+      }
       return invalidation
     }
+    this.retireDisconnectedRecord(record)
+    return invalidation
+  }
+
+  private retireDisconnectedRecord(record: WinRtConnectionRecord): void {
     record.state = 'disconnected'
     record.lease?.markReleased()
     if (this.connectionsByNativeId.get(record.nativePeerId) === record) {
       this.connectionsByNativeId.delete(record.nativePeerId)
     }
-    return invalidation
   }
 
   async releaseConnectionLease(lease: WinRtConnectionLease): Promise<CleanupRecord> {

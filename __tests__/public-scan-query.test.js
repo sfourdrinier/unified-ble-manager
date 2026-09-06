@@ -579,11 +579,12 @@ describe('canonical public ScanQuery v1', () => {
     expect(internal.scan).not.toHaveBeenCalled()
   })
 
-  test('propagates source overflow to observations and terminates event subscribers with overflow', async () => {
+  test('drop-policy source overflow reports the drop, keeps scanning, and does not stop the radio', async () => {
     const source = new CoreBoundedStream(
       { itemCapacity: capacity(1), byteCapacity: capacity(128), reservedControlCapacity: capacity(1) },
       'drop-newest'
     )
+    const nativeStop = jest.fn(async () => ({ state: 'released', failures: [] }))
     const internal = {
       identity: null,
       attachedBackend: undefined,
@@ -592,29 +593,50 @@ describe('canonical public ScanQuery v1', () => {
       capabilities: () => [],
       scan: jest.fn(async () => ({
         observations: source,
-        stop: async () => ({ state: 'released', failures: [] })
+        stop: nativeStop
       })),
       connect: jest.fn(),
       destroy: jest.fn(async () => ({ state: 'released', failures: [] }))
     }
     const manager = await createPublicBleManager(internal, () => 0)
     const scan = await manager.scan()
+    const states = scan.state[Symbol.asyncIterator]()
+    await expect(states.next()).resolves.toMatchObject({ value: { state: 'active' } })
     const observation = {
-      peerId: 'overflow-peer',
-      localName: 'Overflow peer',
+      peerId: 'queued-peer',
+      localName: 'Queued peer',
       rssi: -42,
       serviceUuids: [],
       manufacturerData: [],
       serviceData: []
     }
     source.emit(observation, 32)
-    source.emit({ ...observation, peerId: 'overflow-peer-2' }, 32)
+    source.emit({ ...observation, peerId: 'dropped-peer' }, 32)
 
     const observations = scan.observations[Symbol.asyncIterator]()
     const events = scan.events[Symbol.asyncIterator]()
-    await expect(observations.next()).resolves.toMatchObject({ value: { kind: 'overflow' } })
-    await expect(events.next()).rejects.toMatchObject({ code: 'stream.overflow' })
+    await expect(observations.next()).resolves.toMatchObject({
+      value: { kind: 'overflow', policy: 'drop-newest' }
+    })
+    await expect(observations.next()).resolves.toMatchObject({
+      value: { kind: 'value', value: { peer: { id: 'queued-peer' } } }
+    })
+    await expect(events.next()).resolves.toMatchObject({
+      value: { kind: 'observed', peer: { id: 'queued-peer' } }
+    })
+    expect(nativeStop).not.toHaveBeenCalled()
+
+    source.emit({ ...observation, peerId: 'after-overflow-peer' }, 32)
+    await expect(observations.next()).resolves.toMatchObject({
+      value: { kind: 'value', value: { peer: { id: 'after-overflow-peer' } } }
+    })
+    await expect(events.next()).resolves.toMatchObject({
+      value: { kind: 'observed', peer: { id: 'after-overflow-peer' } }
+    })
+    expect(nativeStop).not.toHaveBeenCalled()
+
     await scan.stop()
+    expect(nativeStop).toHaveBeenCalledTimes(1)
   })
 
   test('drains an accepted observation before delivering the source terminal', async () => {
@@ -655,6 +677,224 @@ describe('canonical public ScanQuery v1', () => {
     source.closeWithReason('closed')
     await expect(observations.next()).resolves.toMatchObject({ value: { kind: 'terminal', reason: 'closed' } })
     await expect(events.next()).resolves.toMatchObject({ done: true })
+    await scan.stop()
+  })
+
+  test('drains buffered source observations after finishWithReason before a late public attach', async () => {
+    const source = new CoreBoundedStream(
+      { itemCapacity: capacity(8), byteCapacity: capacity(4096), reservedControlCapacity: capacity(1) },
+      'drop-oldest'
+    )
+    const internal = {
+      identity: null,
+      attachedBackend: undefined,
+      supports: () => true,
+      capability: () => null,
+      capabilities: () => [],
+      scan: jest.fn(async () => ({
+        observations: source,
+        stop: async () => ({ state: 'released', failures: [] })
+      })),
+      connect: jest.fn(),
+      destroy: jest.fn(async () => ({ state: 'released', failures: [] }))
+    }
+    const manager = await createPublicBleManager(internal, () => 0)
+    const scan = await manager.scan()
+    const states = scan.state[Symbol.asyncIterator]()
+    await expect(states.next()).resolves.toMatchObject({ value: { state: 'active' } })
+
+    const advertisements = [
+      scanAdvertisement('buffered-peer-1'),
+      scanAdvertisement('buffered-peer-2'),
+      scanAdvertisement('buffered-peer-3')
+    ]
+    for (const advertisement of advertisements) source.emit(advertisement, 32)
+    source.finishWithReason('closed')
+
+    const stateTerminal = await awaitSignal(states.next(), 'scan state to become terminal before observation attach')
+    expect(stateTerminal.value).toMatchObject({ state: 'stopped', reason: 'closed' })
+
+    const observations = scan.observations[Symbol.asyncIterator]()
+    const events = scan.events[Symbol.asyncIterator]()
+    const items = []
+    for (;;) {
+      const next = await observations.next()
+      expect(next.done).toBe(false)
+      items.push(next.value)
+      if (next.value.kind === 'terminal') break
+    }
+    expect(items.slice(0, -1).map(item => item.value.peer.id)).toEqual([
+      'buffered-peer-1',
+      'buffered-peer-2',
+      'buffered-peer-3'
+    ])
+    expect(items.at(-1)).toMatchObject({ kind: 'terminal', reason: 'closed' })
+    await expect(events.next()).resolves.toMatchObject({
+      value: { kind: 'observed', peer: { id: 'buffered-peer-1' } }
+    })
+    await expect(events.next()).resolves.toMatchObject({
+      value: { kind: 'observed', peer: { id: 'buffered-peer-2' } }
+    })
+    await expect(events.next()).resolves.toMatchObject({
+      value: { kind: 'observed', peer: { id: 'buffered-peer-3' } }
+    })
+    await expect(events.next()).resolves.toMatchObject({ done: true })
+    await scan.stop()
+  })
+
+  test('already-finished source still drains buffered observations with a terminal initial state', async () => {
+    const source = new CoreBoundedStream(
+      { itemCapacity: capacity(8), byteCapacity: capacity(4096), reservedControlCapacity: capacity(1) },
+      'drop-oldest'
+    )
+    source.emit(scanAdvertisement('pre-scan-peer-1'), 32)
+    source.emit(scanAdvertisement('pre-scan-peer-2'), 32)
+    source.finishWithReason('source-failed')
+    const nativeStop = jest.fn(async () => ({ state: 'released', failures: [] }))
+    const internal = {
+      identity: null,
+      attachedBackend: undefined,
+      supports: () => true,
+      capability: () => null,
+      capabilities: () => [],
+      scan: jest.fn(async () => ({
+        observations: source,
+        stop: nativeStop
+      })),
+      connect: jest.fn(),
+      destroy: jest.fn(async () => ({ state: 'released', failures: [] }))
+    }
+    const manager = await createPublicBleManager(internal, () => 0)
+    const scan = await manager.scan()
+    const states = scan.state[Symbol.asyncIterator]()
+    const first = await awaitSignal(states.next(), 'already-finished source as initial session state')
+    expect(first.value.state).not.toBe('active')
+    expect(first.value).toMatchObject({ state: 'failed', reason: 'source-failed' })
+
+    const observations = scan.observations[Symbol.asyncIterator]()
+    await expect(observations.next()).resolves.toMatchObject({
+      value: { kind: 'value', value: { peer: { id: 'pre-scan-peer-1' } } }
+    })
+    await expect(observations.next()).resolves.toMatchObject({
+      value: { kind: 'value', value: { peer: { id: 'pre-scan-peer-2' } } }
+    })
+    await expect(observations.next()).resolves.toMatchObject({
+      value: { kind: 'terminal', reason: 'source-failed' }
+    })
+    expect(nativeStop).not.toHaveBeenCalled()
+    await scan.stop()
+  })
+
+  test('keeps draining queued source observations when finishWithReason races a running pump', async () => {
+    const source = new CoreBoundedStream(
+      { itemCapacity: capacity(8), byteCapacity: capacity(4096), reservedControlCapacity: capacity(1) },
+      'drop-oldest'
+    )
+    const internal = {
+      identity: null,
+      attachedBackend: undefined,
+      supports: () => true,
+      capability: () => null,
+      capabilities: () => [],
+      scan: jest.fn(async () => ({
+        observations: source,
+        stop: async () => ({ state: 'released', failures: [] })
+      })),
+      connect: jest.fn(),
+      destroy: jest.fn(async () => ({ state: 'released', failures: [] }))
+    }
+    const manager = await createPublicBleManager(internal, () => 0)
+    const scan = await manager.scan()
+    const observations = scan.observations[Symbol.asyncIterator]()
+    const events = scan.events[Symbol.asyncIterator]()
+    source.emit(scanAdvertisement('racing-peer-1'), 32)
+    source.emit(scanAdvertisement('racing-peer-2'), 32)
+    source.emit(scanAdvertisement('racing-peer-3'), 32)
+    source.finishWithReason('connection-lost')
+
+    const items = []
+    for (;;) {
+      const next = await observations.next()
+      expect(next.done).toBe(false)
+      items.push(next.value)
+      if (next.value.kind === 'terminal') break
+    }
+    expect(items.slice(0, -1).map(item => item.value.peer.id)).toEqual([
+      'racing-peer-1',
+      'racing-peer-2',
+      'racing-peer-3'
+    ])
+    expect(items.at(-1)).toMatchObject({ kind: 'terminal', reason: 'connection-lost' })
+    await expect(events.next()).resolves.toMatchObject({
+      value: { kind: 'observed', peer: { id: 'racing-peer-1' } }
+    })
+    await expect(events.next()).resolves.toMatchObject({
+      value: { kind: 'observed', peer: { id: 'racing-peer-2' } }
+    })
+    await expect(events.next()).resolves.toMatchObject({
+      value: { kind: 'observed', peer: { id: 'racing-peer-3' } }
+    })
+    await expect(events.next()).resolves.toMatchObject({ done: true })
+    const states = scan.state[Symbol.asyncIterator]()
+    await expect(states.next()).resolves.toMatchObject({ value: { state: 'active' } })
+    await expect(states.next()).resolves.toMatchObject({
+      value: { state: 'failed', reason: 'connection-lost' }
+    })
+    await scan.stop()
+  })
+
+  test('forwards a structured source-failed error through public scan observations', async () => {
+    const source = new CoreBoundedStream(
+      { itemCapacity: capacity(8), byteCapacity: capacity(4096), reservedControlCapacity: capacity(1) },
+      'drop-oldest'
+    )
+    const error = {
+      code: 'platform.transport',
+      domain: 'stream',
+      operation: 'scan.source-failed',
+      platform: {
+        domain: 'btleplug',
+        code: 'native-error',
+        safeMessage: 'native scan channel closed',
+        metadata: {}
+      },
+      retryability: 'never'
+    }
+    const internal = {
+      identity: null,
+      attachedBackend: undefined,
+      supports: () => true,
+      capability: () => null,
+      capabilities: () => [],
+      scan: jest.fn(async () => ({
+        observations: source,
+        stop: async () => ({ state: 'released', failures: [] })
+      })),
+      connect: jest.fn(),
+      destroy: jest.fn(async () => ({ state: 'released', failures: [] }))
+    }
+    const manager = await createPublicBleManager(internal, () => 0)
+    const scan = await manager.scan()
+    const states = scan.state[Symbol.asyncIterator]()
+    await expect(states.next()).resolves.toMatchObject({ value: { state: 'active' } })
+    source.emit(scanAdvertisement('failed-peer'), 32)
+    source.finishWithReason('source-failed', error)
+
+    const stateTerminal = await awaitSignal(states.next(), 'scan state to fail with source-failed')
+    expect(stateTerminal.value).toMatchObject({ state: 'failed', reason: 'source-failed' })
+
+    const observations = scan.observations[Symbol.asyncIterator]()
+    await expect(observations.next()).resolves.toMatchObject({
+      value: { kind: 'value', value: { peer: { id: 'failed-peer' } } }
+    })
+    await expect(observations.next()).resolves.toEqual({
+      done: false,
+      value: expect.objectContaining({
+        kind: 'terminal',
+        reason: 'source-failed',
+        error
+      })
+    })
     await scan.stop()
   })
 
@@ -811,9 +1051,9 @@ describe('canonical public ScanQuery v1', () => {
         ...firstObservation,
         rssi: { state: 'present', value: -39, provenance: 'observed' }
       })
-      await expect(
-        awaitSignal(changedValue, 'the changed rssi to reach the consumer')
-      ).resolves.toMatchObject({ value: { kind: 'value', value: { rssi: -39 } } })
+      await expect(awaitSignal(changedValue, 'the changed rssi to reach the consumer')).resolves.toMatchObject({
+        value: { kind: 'value', value: { rssi: -39 } }
+      })
 
       const unchangedValue = iterator.next()
       fixture.controller.emitAdvertisement({
@@ -1228,6 +1468,8 @@ describe('canonical public ScanQuery v1', () => {
       limits: inner.limits,
       overflowPolicy: inner.overflowPolicy,
       emit: (value, bytes) => inner.emit(value, bytes),
+      closeWithReason: reason => inner.closeWithReason(reason),
+      finishWithReason: reason => inner.finishWithReason(reason),
       [Symbol.asyncIterator]: () => {
         const iterator = inner[Symbol.asyncIterator]()
         return {
@@ -1317,6 +1559,25 @@ describe('canonical public ScanQuery v1', () => {
     await flushMicrotasks()
     await scan.stop()
     expect(fixture.nativeStop).toHaveBeenCalledTimes(1)
+  })
+
+  test('local observation overflow projects failed/overflow and retains native stop as cleanup', async () => {
+    const fixture = createStopOverflowFixture()
+    const manager = await createPublicBleManager(fixture.internal, () => 0)
+    const scan = await manager.scan({ delivery: tinyErrorDelivery })
+    const states = scan.state[Symbol.asyncIterator]()
+    await expect(states.next()).resolves.toMatchObject({ value: { state: 'active' } })
+    await overflowLocalScan(fixture, scan)
+    const terminal = await awaitSignal(states.next(), 'subscriber overflow to terminalize session state')
+    expect(terminal.value).toMatchObject({ state: 'failed', reason: 'overflow' })
+    await waitForNativeStop(fixture, 1)
+    await scan.stop()
+    expect(fixture.nativeStop).toHaveBeenCalledTimes(1)
+    const rest = await awaitSignal(
+      collectRemainingScanStates(states),
+      'scan state stream to close after overflow cleanup'
+    )
+    expect(rest.some(event => event.state === 'stopping' || event.state === 'stopped')).toBe(false)
   })
 
   test('observation and discovery streams terminate together on overflow', async () => {
@@ -1499,6 +1760,229 @@ describe('canonical public ScanQuery v1', () => {
     }
     expect(fixture.nativeStop).toHaveBeenCalledTimes(count)
   }
+
+  const tinyByteErrorDelivery = {
+    preset: 'custom',
+    budget: {
+      itemCapacity: 16,
+      byteCapacity: 200,
+      reservedControlCapacity: 1,
+      overflowPolicy: 'error'
+    }
+  }
+
+  async function consumeEventsAtFullSpeed(scan, fixture, count, prefix) {
+    const events = scan.events[Symbol.asyncIterator]()
+    for (let index = 0; index < count; index += 1) {
+      const next = events.next()
+      fixture.source.emit(scanAdvertisement(`${prefix}-${index}`), 32)
+      await expect(next).resolves.toMatchObject({
+        value: { kind: 'observed', peer: { id: `${prefix}-${index}` } }
+      })
+    }
+    return events
+  }
+
+  async function consumeObservationsAtFullSpeed(scan, fixture, count, prefix) {
+    const observations = scan.observations[Symbol.asyncIterator]()
+    for (let index = 0; index < count; index += 1) {
+      const next = observations.next()
+      fixture.source.emit(scanAdvertisement(`${prefix}-${index}`), 32)
+      await expect(next).resolves.toMatchObject({
+        value: { kind: 'value', value: { peer: { id: `${prefix}-${index}` } } }
+      })
+    }
+    return observations
+  }
+
+  test('events-only consumer at full speed is not killed by unused observation item overflow', async () => {
+    const fixture = createStopOverflowFixture()
+    const manager = await createPublicBleManager(fixture.internal, () => 0)
+    const scan = await manager.scan({ delivery: tinyErrorDelivery, duplicates: 'all' })
+    const events = await consumeEventsAtFullSpeed(scan, fixture, 8, 'events-only-item')
+    expect(fixture.nativeStop).not.toHaveBeenCalled()
+    fixture.source.emit(scanAdvertisement('events-only-item-still-alive'), 32)
+    await expect(events.next()).resolves.toMatchObject({
+      value: { kind: 'observed', peer: { id: 'events-only-item-still-alive' } }
+    })
+    await events.return()
+    await scan.stop()
+  })
+
+  test('events-only consumer at full speed is not killed by unused observation byte overflow', async () => {
+    const fixture = createStopOverflowFixture()
+    const manager = await createPublicBleManager(fixture.internal, () => 0)
+    const scan = await manager.scan({ delivery: tinyByteErrorDelivery, duplicates: 'all' })
+    const events = scan.events[Symbol.asyncIterator]()
+    const bulky = { manufacturerData: [{ companyId: 1, data: new Uint8Array(50) }] }
+    for (let index = 0; index < 8; index += 1) {
+      const next = events.next()
+      fixture.source.emit(scanAdvertisement(`events-only-byte-${index}`, bulky), 80)
+      await expect(next).resolves.toMatchObject({
+        value: { kind: 'observed', peer: { id: `events-only-byte-${index}` } }
+      })
+    }
+    expect(fixture.nativeStop).not.toHaveBeenCalled()
+    await events.return()
+    await scan.stop()
+  })
+
+  test('observations-only consumer at full speed is not killed by unused event overflow', async () => {
+    const fixture = createStopOverflowFixture()
+    const manager = await createPublicBleManager(fixture.internal, () => 0)
+    const scan = await manager.scan({ delivery: tinyErrorDelivery, duplicates: 'all' })
+    const observations = await consumeObservationsAtFullSpeed(scan, fixture, 8, 'obs-only')
+    expect(fixture.nativeStop).not.toHaveBeenCalled()
+    await observations.return()
+    await scan.stop()
+  })
+
+  test('both scan views consumed at full speed survive error-on-overflow budgets', async () => {
+    const fixture = createStopOverflowFixture()
+    const manager = await createPublicBleManager(fixture.internal, () => 0)
+    const scan = await manager.scan({ delivery: tinyErrorDelivery, duplicates: 'all' })
+    const observations = scan.observations[Symbol.asyncIterator]()
+    const events = scan.events[Symbol.asyncIterator]()
+    for (let index = 0; index < 8; index += 1) {
+      const observationNext = observations.next()
+      const eventNext = events.next()
+      fixture.source.emit(scanAdvertisement(`both-views-${index}`), 32)
+      await expect(observationNext).resolves.toMatchObject({
+        value: { kind: 'value', value: { peer: { id: `both-views-${index}` } } }
+      })
+      await expect(eventNext).resolves.toMatchObject({
+        value: { kind: 'observed', peer: { id: `both-views-${index}` } }
+      })
+    }
+    expect(fixture.nativeStop).not.toHaveBeenCalled()
+    await observations.return()
+    await events.return()
+    await scan.stop()
+  })
+
+  test('slow events consumer still overflows the subscribed view and stops the scan', async () => {
+    const fixture = createStopOverflowFixture()
+    const manager = await createPublicBleManager(fixture.internal, () => 0)
+    const scan = await manager.scan({ delivery: tinyErrorDelivery, duplicates: 'all' })
+    const events = scan.events[Symbol.asyncIterator]()
+    fixture.source.emit(scanAdvertisement('slow-events-1'), 32)
+    fixture.source.emit(scanAdvertisement('slow-events-2'), 32)
+    await flushMicrotasks()
+    await expect(events.next()).rejects.toMatchObject({ code: 'stream.overflow' })
+    await waitForNativeStop(fixture, 1)
+    await scan.stop()
+  })
+
+  test('default balanced events-only consumer does not terminate on unused observation pressure', async () => {
+    const fixture = createStopOverflowFixture()
+    const manager = await createPublicBleManager(fixture.internal, () => 0)
+    const scan = await manager.scan({ duplicates: 'all' })
+    const events = await consumeEventsAtFullSpeed(scan, fixture, 40, 'balanced-events')
+    expect(fixture.nativeStop).not.toHaveBeenCalled()
+    await events.return()
+    await scan.stop()
+  })
+
+  async function collectRemainingScanStates(iterator) {
+    const states = []
+    for (;;) {
+      const next = await iterator.next()
+      if (next.done) return states
+      states.push(next.value)
+    }
+  }
+
+  test.each([
+    ['source-failed', { state: 'failed', reason: 'source-failed' }],
+    ['connection-lost', { state: 'failed', reason: 'connection-lost' }],
+    ['overflow', { state: 'failed', reason: 'overflow' }],
+    ['closed', { state: 'stopped', reason: 'closed' }]
+  ])('%s without stop() leaves the session not active with no iterator', async (reason, expected) => {
+    const fixture = createStopOverflowFixture()
+    const manager = await createPublicBleManager(fixture.internal, () => 0)
+    const scan = await manager.scan()
+    const states = scan.state[Symbol.asyncIterator]()
+    await expect(states.next()).resolves.toMatchObject({ value: { state: 'active' } })
+    fixture.source.closeWithReason(reason)
+    const terminal = await awaitSignal(states.next(), `${reason} to terminalize session state`)
+    expect(terminal.value.state).not.toBe('active')
+    expect(terminal.value).toMatchObject(expected)
+    expect(fixture.nativeStop).not.toHaveBeenCalled()
+    await expect(scan.stop()).resolves.toEqual({ state: 'released', failures: [] })
+    expect(fixture.nativeStop).toHaveBeenCalledTimes(1)
+    const rest = await awaitSignal(collectRemainingScanStates(states), 'scan state stream to close after stop')
+    expect(rest.every(event => event.state !== 'active')).toBe(true)
+  })
+
+  test.each([
+    ['source-failed', { state: 'failed', reason: 'source-failed' }],
+    ['connection-lost', { state: 'failed', reason: 'connection-lost' }],
+    ['overflow', { state: 'failed', reason: 'overflow' }],
+    ['closed', { state: 'stopped', reason: 'closed' }]
+  ])('%s without stop() leaves the session not active with an attached iterator', async (reason, expected) => {
+    const fixture = createStopOverflowFixture()
+    const manager = await createPublicBleManager(fixture.internal, () => 0)
+    const scan = await manager.scan()
+    const states = scan.state[Symbol.asyncIterator]()
+    const observations = scan.observations[Symbol.asyncIterator]()
+    await expect(states.next()).resolves.toMatchObject({ value: { state: 'active' } })
+    const observationTerminal = observations.next()
+    fixture.source.closeWithReason(reason)
+    await expect(observationTerminal).resolves.toMatchObject({ value: { kind: 'terminal', reason } })
+    const terminal = await awaitSignal(states.next(), `${reason} to terminalize session state`)
+    expect(terminal.value.state).not.toBe('active')
+    expect(terminal.value).toMatchObject(expected)
+    expect(fixture.nativeStop).not.toHaveBeenCalled()
+    await expect(scan.stop()).resolves.toEqual({ state: 'released', failures: [] })
+    expect(fixture.nativeStop).toHaveBeenCalledTimes(1)
+  })
+
+  test.each([
+    ['source-failed', { state: 'failed', reason: 'source-failed' }],
+    ['connection-lost', { state: 'failed', reason: 'connection-lost' }],
+    ['overflow', { state: 'failed', reason: 'overflow' }],
+    ['closed', { state: 'stopped', reason: 'closed' }]
+  ])(
+    '%s already on the source before scan() is the initial state and never publishes active',
+    async (reason, expected) => {
+      const source = new CoreBoundedStream(
+        { itemCapacity: capacity(8), byteCapacity: capacity(4096), reservedControlCapacity: capacity(1) },
+        'drop-oldest'
+      )
+      source.closeWithReason(reason)
+      const nativeStop = jest.fn(async () => ({ state: 'released', failures: [] }))
+      const internal = {
+        identity: null,
+        attachedBackend: undefined,
+        supports: () => true,
+        capability: () => null,
+        capabilities: () => [],
+        scan: jest.fn(async () => ({
+          observations: source,
+          stop: nativeStop
+        })),
+        connect: jest.fn(),
+        destroy: jest.fn(async () => ({ state: 'released', failures: [] }))
+      }
+      const manager = await createPublicBleManager(internal, () => 0)
+      const scan = await manager.scan()
+      const states = scan.state[Symbol.asyncIterator]()
+      const first = await awaitSignal(states.next(), `already-terminal ${reason} as initial session state`)
+      expect(first.value.state).not.toBe('active')
+      expect(first.value).toMatchObject(expected)
+      expect(nativeStop).not.toHaveBeenCalled()
+      await expect(scan.observations[Symbol.asyncIterator]().next()).resolves.toMatchObject({
+        value: { kind: 'terminal', reason }
+      })
+      await expect(scan.stop()).resolves.toEqual({ state: 'released', failures: [] })
+      expect(nativeStop).toHaveBeenCalledTimes(1)
+      const rest = await awaitSignal(
+        collectRemainingScanStates(states),
+        'scan state stream to close after already-terminal stop'
+      )
+      expect([first.value, ...rest].some(event => event.state === 'active')).toBe(false)
+    }
+  )
 })
 
 describe('public scan-state-budget', () => {

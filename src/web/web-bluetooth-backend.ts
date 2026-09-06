@@ -79,6 +79,15 @@ const DEFAULT_STREAM_LIMITS: StreamLimits = {
   byteCapacity: capacity(512 * 1024),
   reservedControlCapacity: capacity(1)
 }
+/**
+ * Shared availability observation cadence. This is not a power-state poll:
+ * Web Bluetooth `getAvailability()` answers whether the API can run, not
+ * whether the radio is physically on. One timer is shared by all adapter
+ * watches and is released with the last owner. When the browser exposes
+ * `onavailabilitychanged`, watches still fall back to this cadence if no
+ * `availabilitychanged` event arrives within the same bound.
+ */
+const WEB_ADAPTER_AVAILABILITY_POLL_INTERVAL_MS = 500
 const LOCAL_COMPATIBILITY: BackendCompatibilityOffer = {
   backendContract: versionRange(version('backend-contract', 1), version('backend-contract', 1)),
   capabilitySchema: versionRange(version('capability-schema', 1), version('capability-schema', 1)),
@@ -186,6 +195,12 @@ export class WebBluetoothBackend
   private readonly destroyWaiters = new Set<() => void>()
   private readonly gattRuntime: WebBluetoothGattRuntime
   private removePageLifecycleListener: (() => void) | null
+  private removeAvailabilityChangeListener: (() => void) | null = null
+  private availabilityPollTimer: WebBluetoothTimerHandle | null = null
+  private availabilityEventSilenceTimer: WebBluetoothTimerHandle | null = null
+  private availabilityChangeObserved = false
+  private availabilitySampleGeneration = 0
+  private appliedAvailabilitySampleGeneration = 0
 
   constructor(
     private readonly boundary: WebBluetoothBoundary,
@@ -260,13 +275,14 @@ export class WebBluetoothBackend
     if (this.attached) {
       throw contractError('lifecycle.invalid-state', 'core', 'web-backend.attach')
     }
+    const generation = this.beginAvailabilitySample()
     const available = await this.boundary.bluetoothAvailable()
     this.assertUsable('web-backend.attach')
     if (this.attached) {
       throw contractError('lifecycle.invalid-state', 'core', 'web-backend.attach')
     }
-    this.refreshAttachmentAvailability(available)
-    if (!available) {
+    this.applyAvailabilitySample(generation, available)
+    if (this.attachmentRecord.adapter.state.availability !== 'available') {
       throw contractError('adapter.unavailable', 'adapter', 'web-backend.attach')
     }
     const retainedCleanup = await this.releaseRetainedSessionResources()
@@ -538,18 +554,33 @@ export class WebBluetoothBackend
 
   private async currentAdapterState(): Promise<AdapterStateSnapshot<string>> {
     this.assertUsable('web-adapter.current-state')
+    const generation = this.beginAvailabilitySample()
     const available = await this.boundary.bluetoothAvailable()
     this.assertUsable('web-adapter.current-state')
-    this.refreshAttachmentAvailability(available)
+    this.applyAvailabilitySample(generation, available)
     return this.attachmentRecord.adapter.state
   }
 
   private async assertBluetoothAvailable(operation: string): Promise<void> {
+    const generation = this.beginAvailabilitySample()
     const available = await this.boundary.bluetoothAvailable()
-    this.refreshAttachmentAvailability(available)
-    if (!available) {
+    this.applyAvailabilitySample(generation, available)
+    if (this.attachmentRecord.adapter.state.availability !== 'available') {
       throw contractError('adapter.unavailable', 'adapter', operation)
     }
+  }
+
+  private beginAvailabilitySample(): number {
+    this.availabilitySampleGeneration += 1
+    return this.availabilitySampleGeneration
+  }
+
+  private applyAvailabilitySample(generation: number, available: boolean): void {
+    if (generation < this.appliedAvailabilitySampleGeneration) {
+      return
+    }
+    this.appliedAvailabilitySampleGeneration = generation
+    this.refreshAttachmentAvailability(available)
   }
 
   private refreshAttachmentAvailability(available: boolean): void {
@@ -568,6 +599,7 @@ export class WebBluetoothBackend
         this.adapterStreams.delete(stream)
       }
     }
+    this.releaseAvailabilityObservationIfIdle()
     if (!available) {
       this.attached = false
       this.invalidateUnavailableSession()
@@ -638,7 +670,135 @@ export class WebBluetoothBackend
     this.assertUsable('web-adapter.watch-state')
     const transitions = new CoreBoundedStream<AdapterStateSnapshot<string>>(DEFAULT_STREAM_LIMITS, 'latest')
     this.adapterStreams.add(transitions)
-    return { initial, transitions: managedStream(transitions, () => this.adapterStreams.delete(transitions)) }
+    try {
+      this.ensureAvailabilityObservation()
+    } catch (error) {
+      this.adapterStreams.delete(transitions)
+      throw error
+    }
+    return {
+      initial,
+      transitions: managedStream(transitions, () => {
+        this.adapterStreams.delete(transitions)
+        this.releaseAvailabilityObservationIfIdle()
+      })
+    }
+  }
+
+  private ensureAvailabilityObservation(): void {
+    if (
+      this.removeAvailabilityChangeListener !== null ||
+      this.availabilityPollTimer !== null ||
+      this.availabilityEventSilenceTimer !== null
+    ) {
+      return
+    }
+    const addAvailabilityChangeListener = this.boundary.addAvailabilityChangeListener
+    if (addAvailabilityChangeListener !== undefined) {
+      this.removeAvailabilityChangeListener = addAvailabilityChangeListener(() => {
+        this.availabilityChangeObserved = true
+        this.clearAvailabilityEventSilenceTimer()
+        this.reconcileWatchedAvailability().then(
+          () => undefined,
+          error => {
+            console.error(
+              '[WebBluetoothBackend.reconcileWatchedAvailability] Availability change reconcile failed:',
+              error
+            )
+          }
+        )
+      })
+      this.scheduleAvailabilityEventSilenceFallback()
+      return
+    }
+    this.scheduleAvailabilityPoll()
+  }
+
+  private releaseAvailabilityObservationIfIdle(): void {
+    if (this.adapterStreams.size > 0) {
+      return
+    }
+    this.stopAvailabilityObservation()
+  }
+
+  private stopAvailabilityObservation(): void {
+    if (this.removeAvailabilityChangeListener !== null) {
+      this.removeAvailabilityChangeListener()
+      this.removeAvailabilityChangeListener = null
+    }
+    this.clearAvailabilityEventSilenceTimer()
+    if (this.availabilityPollTimer !== null) {
+      this.boundary.clearTimer(this.availabilityPollTimer)
+      this.availabilityPollTimer = null
+    }
+    this.availabilityChangeObserved = false
+  }
+
+  private scheduleAvailabilityEventSilenceFallback(): void {
+    if (
+      this.destroyed ||
+      this.adapterStreams.size === 0 ||
+      this.availabilityEventSilenceTimer !== null ||
+      this.availabilityPollTimer !== null ||
+      this.availabilityChangeObserved
+    ) {
+      return
+    }
+    this.availabilityEventSilenceTimer = this.boundary.setTimer(() => {
+      this.availabilityEventSilenceTimer = null
+      if (!this.availabilityChangeObserved) {
+        this.scheduleAvailabilityPoll()
+      }
+    }, WEB_ADAPTER_AVAILABILITY_POLL_INTERVAL_MS)
+  }
+
+  private clearAvailabilityEventSilenceTimer(): void {
+    if (this.availabilityEventSilenceTimer === null) {
+      return
+    }
+    this.boundary.clearTimer(this.availabilityEventSilenceTimer)
+    this.availabilityEventSilenceTimer = null
+  }
+
+  private scheduleAvailabilityPoll(): void {
+    if (this.destroyed || this.adapterStreams.size === 0 || this.availabilityPollTimer !== null) {
+      return
+    }
+    this.availabilityPollTimer = this.boundary.setTimer(() => {
+      this.availabilityPollTimer = null
+      this.pollWatchedAvailability().then(
+        () => undefined,
+        error => {
+          console.error('[WebBluetoothBackend.pollWatchedAvailability] Availability poll failed:', error)
+        }
+      )
+    }, WEB_ADAPTER_AVAILABILITY_POLL_INTERVAL_MS)
+  }
+
+  private async pollWatchedAvailability(): Promise<void> {
+    try {
+      await this.reconcileWatchedAvailability()
+    } finally {
+      this.scheduleAvailabilityPoll()
+    }
+  }
+
+  private async reconcileWatchedAvailability(): Promise<void> {
+    if (this.destroyed || this.adapterStreams.size === 0) {
+      return
+    }
+    const generation = this.beginAvailabilitySample()
+    let available: boolean
+    try {
+      available = await this.boundary.bluetoothAvailable()
+    } catch (error) {
+      console.error('[WebBluetoothBackend.reconcileWatchedAvailability] Browser availability probe failed:', error)
+      return
+    }
+    if (this.destroyed || this.adapterStreams.size === 0) {
+      return
+    }
+    this.applyAvailabilitySample(generation, available)
   }
 
   private async chooseDevice(request: ChooserRequest, operation: AbortableOperation): Promise<WebSelectedDevice> {
@@ -1059,6 +1219,7 @@ export class WebBluetoothBackend
         await this.compensatePendingConnection(pending)
       }
     }
+    this.stopAvailabilityObservation()
     if (this.removePageLifecycleListener !== null) {
       this.removePageLifecycleListener()
       this.removePageLifecycleListener = null
