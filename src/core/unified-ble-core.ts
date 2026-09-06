@@ -955,7 +955,7 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
           scan.stream.observeSourceOverflow(item)
         }
         if (item.kind === 'terminal') {
-          scan.stream.closeWithReason(item.reason)
+          scan.stream.closeWithReason(item.reason, item.error)
           await this.stopScan(scan)
           return
         }

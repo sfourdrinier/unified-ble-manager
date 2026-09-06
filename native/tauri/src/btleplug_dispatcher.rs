@@ -316,34 +316,35 @@ impl DispatchError {
         self
     }
 
-    fn into_response(self) -> IpcValue {
-        let platform = self.platform.map_or(IpcValue::Null, |message| {
+    fn normalized_error(&self) -> IpcValue {
+        let platform = self.platform.as_ref().map_or(IpcValue::Null, |message| {
             object([
                 ("domain", string("btleplug")),
                 ("code", string("native-error")),
-                ("safeMessage", string(message)),
+                ("safeMessage", string(message.clone())),
                 ("metadata", object([])),
             ])
         });
         object([
-            ("kind", string("failure")),
+            ("code", string(self.code)),
+            ("domain", string(self.domain)),
+            ("operation", string(self.operation.clone())),
+            ("platform", platform),
             (
-                "error",
-                object([
-                    ("code", string(self.code)),
-                    ("domain", string(self.domain)),
-                    ("operation", string(self.operation)),
-                    ("platform", platform),
-                    (
-                        "retryability",
-                        string(if self.retryable {
-                            "caller-decides"
-                        } else {
-                            "never"
-                        }),
-                    ),
-                ]),
+                "retryability",
+                string(if self.retryable {
+                    "caller-decides"
+                } else {
+                    "never"
+                }),
             ),
+        ])
+    }
+
+    fn into_response(self) -> IpcValue {
+        object([
+            ("kind", string("failure")),
+            ("error", self.normalized_error()),
         ])
     }
 }
@@ -1118,7 +1119,7 @@ impl BtleplugDispatcher {
                             );
                         }
                         for peripheral in peripherals {
-                            if dispatcher
+                            if let Err(error) = dispatcher
                                 .emit_scan_peripheral(
                                     &peripheral,
                                     ScanObservation {
@@ -1131,7 +1132,6 @@ impl BtleplugDispatcher {
                                     },
                                 )
                                 .await
-                                .is_err()
                             {
                                 dispatcher
                                     .terminal(
@@ -1139,6 +1139,7 @@ impl BtleplugDispatcher {
                                         (&stream_lease_id, &stream_lease_generation),
                                         &stream_handle,
                                         "source-failed",
+                                        Some(&error),
                                     )
                                     .await
                                     .ok();
@@ -1164,7 +1165,7 @@ impl BtleplugDispatcher {
                         let Ok(peripheral) = scan_adapter.peripheral(&peripheral_id).await else {
                             continue;
                         };
-                        if dispatcher
+                        if let Err(error) = dispatcher
                             .emit_scan_peripheral(
                                 &peripheral,
                                 ScanObservation {
@@ -1177,7 +1178,6 @@ impl BtleplugDispatcher {
                                 },
                             )
                             .await
-                            .is_err()
                         {
                             dispatcher
                                 .terminal(
@@ -1185,6 +1185,7 @@ impl BtleplugDispatcher {
                                     (&stream_lease_id, &stream_lease_generation),
                                     &stream_handle,
                                     "source-failed",
+                                    Some(&error),
                                 )
                                 .await
                                 .ok();
@@ -2146,6 +2147,7 @@ impl BtleplugDispatcher {
                             (&subscription_lease_id, &subscription_lease_generation),
                             &stream_handle,
                             "source-failed",
+                            None,
                         )
                         .await
                         .ok();
@@ -2165,6 +2167,7 @@ impl BtleplugDispatcher {
                     (&subscription_lease_id, &subscription_lease_generation),
                     &stream_handle,
                     "source-failed",
+                    None,
                 )
                 .await
                 .ok();
@@ -2720,6 +2723,7 @@ impl BtleplugDispatcher {
                     expected_lease,
                     identity.stream_id,
                     terminal_reason,
+                    None,
                 )
                 .await
             {
@@ -2798,6 +2802,7 @@ impl BtleplugDispatcher {
         expected_lease: (&str, &str),
         stream_id: &str,
         reason: &str,
+        error: Option<&DispatchError>,
     ) -> Result<(), DispatchError> {
         let (sink, lease_id, lease_generation, event_id) = {
             let mut state = self.inner.lock().await;
@@ -2822,6 +2827,10 @@ impl BtleplugDispatcher {
                 event_id,
             )
         };
+        let mut terminal_item = object([("kind", string("terminal")), ("reason", string(reason))]);
+        if let (Some(error), IpcValue::Object(item)) = (error, &mut terminal_item) {
+            item.insert("error".to_owned(), error.normalized_error());
+        }
         let send_result = sink.send(object([
             (
                 "rendererLease",
@@ -2832,10 +2841,7 @@ impl BtleplugDispatcher {
             ),
             ("eventId", string(event_id.clone())),
             ("streamId", string(stream_id)),
-            (
-                "item",
-                object([("kind", string("terminal")), ("reason", string(reason))]),
-            ),
+            ("item", terminal_item),
         ]));
         if send_result.is_err() {
             let mut state = self.inner.lock().await;
@@ -4208,7 +4214,8 @@ mod tests {
         characteristic_properties, disconnect_with_state_check, negotiate_ipc_versions, object,
         released, resolve_disconnect_failure, scan_properties_match_optional,
         should_clear_peer_owner, string, BtleplugDispatcher, BtleplugDispatcherOptions,
-        CallerState, IpcEventSink, QuarantineScheduler, DISCONNECT_COMPLETION_TIMEOUT,
+        CallerState, DispatchError, IpcEventSink, QuarantineScheduler,
+        DISCONNECT_COMPLETION_TIMEOUT,
     };
     use btleplug::api::CharPropFlags;
     use std::collections::{HashMap, HashSet};
@@ -4219,6 +4226,28 @@ mod tests {
         assert_eq!(
             characteristic_properties(CharPropFlags::READ | CharPropFlags::NOTIFY),
             super::IpcValue::Array(vec![string("read"), string("notify")])
+        );
+    }
+
+    #[test]
+    fn native_dispatch_error_keeps_structured_platform_diagnostics_for_terminals() {
+        let error = DispatchError::new("platform.transport", "stream", "tauri.event-send")
+            .platform("native channel closed");
+        let super::IpcValue::Object(record) = error.normalized_error() else {
+            panic!("normalized error must be an object");
+        };
+
+        assert_eq!(record.get("code"), Some(&string("platform.transport")));
+        assert_eq!(record.get("domain"), Some(&string("stream")));
+        assert_eq!(record.get("operation"), Some(&string("tauri.event-send")));
+        let Some(super::IpcValue::Object(platform)) = record.get("platform") else {
+            panic!("platform diagnostics must be preserved");
+        };
+        assert_eq!(platform.get("domain"), Some(&string("btleplug")));
+        assert_eq!(platform.get("code"), Some(&string("native-error")));
+        assert_eq!(
+            platform.get("safeMessage"),
+            Some(&string("native channel closed"))
         );
     }
 

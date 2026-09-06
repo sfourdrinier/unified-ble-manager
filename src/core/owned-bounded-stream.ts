@@ -1,4 +1,4 @@
-import type { CleanupRecord } from '../backend-contract/errors'
+import type { CleanupRecord, NormalizedBleError } from '../backend-contract/errors'
 import type { OverflowPolicy, StreamLimits } from '../backend-contract/streams'
 import { CoreBoundedStream, type CoreStreamTerminalReason } from './bounded-stream'
 
@@ -27,13 +27,13 @@ export class OwnedCoreBoundedStream<Value> extends CoreBoundedStream<Value> {
     })
   }
 
-  override closeWithReason(reason: CoreStreamTerminalReason): void {
-    super.closeWithReason(reason)
+  override closeWithReason(reason: CoreStreamTerminalReason, error: NormalizedBleError | null = null): void {
+    super.closeWithReason(reason, error)
     this.release()
   }
 
-  override finishWithReason(reason: CoreStreamTerminalReason): void {
-    super.finishWithReason(reason)
+  override finishWithReason(reason: CoreStreamTerminalReason, error: NormalizedBleError | null = null): void {
+    super.finishWithReason(reason, error)
     this.release()
   }
 

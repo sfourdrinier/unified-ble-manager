@@ -268,6 +268,7 @@ export interface PortableStreamTerminalNotice {
   readonly droppedItems: number
   readonly droppedBytes: number
   readonly replacedItems: number
+  readonly error?: PortableNormalizedBleError | null
 }
 
 export type PortableStreamItem<Value> =

@@ -3,7 +3,7 @@
 import type { BoundedAsyncStream, StreamItem } from '../backend-contract/streams'
 import { BackendContractError, contractError } from '../backend-contract/errors'
 import type { CleanupRecord } from './cleanup'
-import { toPublicCleanupRecord } from './cleanup'
+import { toPublicCleanupRecord, toPublicNormalizedError } from './cleanup'
 import { rehydratePublicError } from './error-bridge'
 import { BleError } from './errors'
 import { MAX_PUBLIC_STREAM_BYTE_CAPACITY, MAX_PUBLIC_STREAM_ITEM_CAPACITY } from './stream-capacity'
@@ -41,6 +41,7 @@ export interface PublicStreamTerminalNotice {
   readonly droppedItems: number
   readonly droppedBytes: number
   readonly replacedItems: number
+  readonly error?: import('./cleanup').NormalizedBleError | null
 }
 
 export interface PublicStreamValue<Value> {
@@ -248,15 +249,21 @@ function mapPublicIteratorResult<InternalValue, PublicValue>(
       throw contractError('protocol.malformed', 'stream', 'public-stream.item-kind')
     }
     const reason = requireTerminalReason(result.value.reason)
+    const error =
+      result.value.error === undefined || result.value.error === null
+        ? null
+        : toPublicNormalizedError(result.value.error)
+    const terminal: PublicStreamTerminalNotice = {
+      kind: 'terminal',
+      reason,
+      droppedItems: requireStreamCounter(result.value.droppedItems, 'dropped-items'),
+      droppedBytes: requireStreamCounter(result.value.droppedBytes, 'dropped-bytes'),
+      replacedItems: requireStreamCounter(result.value.replacedItems, 'replaced-items'),
+      ...(error === null ? {} : { error })
+    }
     return {
       done: false,
-      value: Object.freeze({
-        kind: 'terminal',
-        reason,
-        droppedItems: requireStreamCounter(result.value.droppedItems, 'dropped-items'),
-        droppedBytes: requireStreamCounter(result.value.droppedBytes, 'dropped-bytes'),
-        replacedItems: requireStreamCounter(result.value.replacedItems, 'replaced-items')
-      })
+      value: Object.freeze(terminal)
     }
   } catch (error) {
     if (error instanceof BackendContractError || error instanceof BleError) throw error
