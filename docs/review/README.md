@@ -10,5 +10,5 @@ The current exception is the 4.0.23 reliability review:
 - [`2026-09-05-4.0.23-reliability-review.md`](./2026-09-05-4.0.23-reliability-review.md)
 - [`2026-09-05-4.0.23-reliability-review-verification.md`](./2026-09-05-4.0.23-reliability-review-verification.md)
 
-That pair is a live verification of `c6a3984e` / package `4.0.23`. Findings
-there are not yet dispositioned in a fix tracker.
+That pair is a live verification of `c6a3984e` / package `4.0.23`. The
+findings are implemented on `release/4.0.25`.
