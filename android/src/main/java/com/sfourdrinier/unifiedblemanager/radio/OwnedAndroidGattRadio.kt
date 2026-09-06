@@ -114,28 +114,87 @@ internal fun <Key> removeAndroidWritePayloadIfSame(
 internal class OwnedAndroidSubscriptionOwnership<K> {
   private data class Registration(
     val deviceKeyUpper: String,
-    val gattGeneration: Long
+    val gattGeneration: Long,
+    val active: Boolean,
+    val stagedValues: ArrayDeque<ByteArray> = ArrayDeque(),
+    var stagedBytes: Int = 0,
+    var overflowed: Boolean = false
   )
 
   private val registrations = ConcurrentHashMap<K, Registration>()
 
-  fun activate(deviceKey: String, gattGeneration: Long, key: K) {
-    registrations[key] = Registration(deviceKey.uppercase(), gattGeneration)
+  fun arm(deviceKey: String, gattGeneration: Long, key: K) {
+    registrations[key] = Registration(deviceKey.uppercase(), gattGeneration, active = false)
+  }
+
+  fun activate(deviceKey: String, gattGeneration: Long, key: K): List<ByteArray> {
+    val deviceKeyUpper = deviceKey.uppercase()
+    var staged: List<ByteArray> = emptyList()
+    registrations.compute(key) { _, previous ->
+      if (
+        previous != null &&
+        previous.deviceKeyUpper == deviceKeyUpper &&
+        previous.gattGeneration == gattGeneration
+      ) {
+        staged = previous.stagedValues.toList()
+      }
+      Registration(deviceKeyUpper, gattGeneration, active = true)
+    }
+    return staged
   }
 
   fun deactivate(deviceKey: String, gattGeneration: Long, key: K) {
-    val registration = registrations[key] ?: return
-    if (registration.deviceKeyUpper == deviceKey.uppercase() &&
-      registration.gattGeneration == gattGeneration
+    abandon(deviceKey, gattGeneration, key)
+  }
+
+  fun abandon(deviceKey: String, gattGeneration: Long, key: K): List<ByteArray> {
+    val registration = registrations[key] ?: return emptyList()
+    if (registration.deviceKeyUpper != deviceKey.uppercase() ||
+      registration.gattGeneration != gattGeneration
     ) {
-      registrations.remove(key, registration)
+      return emptyList()
     }
+    if (!registrations.remove(key, registration)) return emptyList()
+    return registration.stagedValues.toList()
   }
 
   fun isActive(deviceKey: String, gattGeneration: Long, key: K): Boolean {
     val registration = registrations[key] ?: return false
-    return registration.deviceKeyUpper == deviceKey.uppercase() &&
+    return registration.active &&
+      registration.deviceKeyUpper == deviceKey.uppercase() &&
       registration.gattGeneration == gattGeneration
+  }
+
+  fun isArmed(deviceKey: String, gattGeneration: Long, key: K): Boolean {
+    val registration = registrations[key] ?: return false
+    return !registration.active &&
+      registration.deviceKeyUpper == deviceKey.uppercase() &&
+      registration.gattGeneration == gattGeneration
+  }
+
+  fun stage(deviceKey: String, gattGeneration: Long, key: K, value: ByteArray): Boolean {
+    var staged = false
+    registrations.computeIfPresent(key) { _, registration ->
+      if (
+        !registration.active &&
+        registration.deviceKeyUpper == deviceKey.uppercase() &&
+        registration.gattGeneration == gattGeneration
+      ) {
+        if (
+          !registration.overflowed &&
+          registration.stagedValues.size < ANDROID_ENABLEMENT_STAGING_ITEM_LIMIT &&
+          registration.stagedBytes + value.size <= ANDROID_ENABLEMENT_STAGING_BYTE_LIMIT
+        ) {
+          registration.stagedValues.addLast(value.copyOf())
+          registration.stagedBytes += value.size
+          staged = true
+        } else {
+          registration.overflowed = true
+        }
+      }
+      registration
+    }
+    return staged
   }
 
   fun invalidateForDatabaseChange(deviceKey: String, gattGeneration: Long): List<K> {
@@ -183,6 +242,13 @@ internal class AndroidGattOperationFailure(
 )
 
 internal const val ANDROID_GATT_LINK_LOSS_STATUS = 19
+internal const val ANDROID_PROPERTY_NOTIFY = 0x10
+internal const val ANDROID_PROPERTY_INDICATE = 0x20
+internal val ANDROID_CCCD_ENABLE_NOTIFICATION = byteArrayOf(0x01, 0x00)
+internal val ANDROID_CCCD_ENABLE_INDICATION = byteArrayOf(0x02, 0x00)
+internal val ANDROID_CCCD_DISABLE = byteArrayOf(0x00, 0x00)
+internal const val ANDROID_ENABLEMENT_STAGING_ITEM_LIMIT = 16
+internal const val ANDROID_ENABLEMENT_STAGING_BYTE_LIMIT = 64 * 1024
 
 internal fun classifyAndroidGattOperationFailure(
   operation: String,
@@ -210,6 +276,11 @@ internal fun classifyAndroidNotificationRegistrationFailure(
 internal fun shouldAwaitAndroidCccdDisconnectEvidence(failure: Throwable): Boolean =
   failure is AndroidGattOperationFailure &&
     failure.operation == "cccd-write" &&
+    !failure.isLinkLoss
+
+internal fun shouldAwaitAndroidRegistrationDisconnectEvidence(failure: Throwable): Boolean =
+  failure is AndroidGattOperationFailure &&
+    failure.operation == "setCharacteristicNotification" &&
     !failure.isLinkLoss
 
 internal fun shouldAwaitAndroidWriteDisconnectEvidence(failure: Throwable): Boolean =
@@ -417,12 +488,29 @@ internal data class OwnedAndroidProtocolAdvertisement(
  * device connects never overwrite each other.
  */
 @SuppressLint("MissingPermission")
-class OwnedAndroidGattRadio(private val context: Context) {
+class OwnedAndroidGattRadio private constructor(
+  private val context: Context,
+  private val mainHandler: Handler?,
+  private val post: ((() -> Unit) -> Boolean)?,
+  private val scheduleDelayed: ((Long, () -> Unit) -> Boolean)?
+) {
+  constructor(context: Context) : this(
+    context,
+    Handler(Looper.getMainLooper()),
+    null,
+    null
+  )
 
-  private val mainHandler = Handler(Looper.getMainLooper())
-  private val bluetoothManager: BluetoothManager =
+  internal constructor(
+    context: Context,
+    post: ((() -> Unit) -> Boolean),
+    scheduleDelayed: (Long, () -> Unit) -> Boolean
+  ) : this(context, null, post, scheduleDelayed)
+
+  private val bluetoothManager: BluetoothManager by lazy {
     context.getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
-  private val adapter: BluetoothAdapter? = bluetoothManager.adapter
+  }
+  private val adapter: BluetoothAdapter? by lazy { bluetoothManager.adapter }
 
   private var scanner: BluetoothLeScanner? = null
   private var scanCallback: ScanCallback? = null
@@ -482,14 +570,14 @@ class OwnedAndroidGattRadio(private val context: Context) {
   private val exactWriteValues = ConcurrentHashMap<BluetoothGattCharacteristic, ByteArray>()
   private val exactCccdPending = ConcurrentHashMap<BluetoothGattDescriptor, ExactUnitPending>()
   private val exactCccdTerminalArbiter = AndroidCccdTerminalArbiter<BluetoothGattDescriptor>(
-    schedule = { delayMs, action -> mainHandler.postDelayed(action, delayMs) },
+    schedule = { delayMs, action -> scheduleDeferred(delayMs, action) },
     onFallback = fallback@ { descriptor, failure ->
       val pending = exactCccdPending.remove(descriptor) ?: return@fallback
       completeExactUnit(pending, Result.failure(failure))
     }
   )
   private val exactWriteTerminalArbiter = AndroidWriteTerminalArbiter<BluetoothGattCharacteristic>(
-    schedule = { delayMs, action -> mainHandler.postDelayed(action, delayMs) },
+    schedule = { delayMs, action -> scheduleDeferred(delayMs, action) },
     onFallback = fallback@ { characteristic, failure ->
       val observedPayload = exactWriteValues[characteristic]
       val pending = exactWritePending.remove(characteristic) ?: return@fallback
@@ -498,10 +586,18 @@ class OwnedAndroidGattRadio(private val context: Context) {
     }
   )
   private val writeTerminalArbiter = AndroidWriteTerminalArbiter<String>(
-    schedule = { delayMs, action -> mainHandler.postDelayed(action, delayMs) },
+    schedule = { delayMs, action -> scheduleDeferred(delayMs, action) },
     onFallback = fallback@ { key, failure ->
       val owner = pendingWriteRegistry.remove(key) ?: return@fallback
       owner.callback(Result.failure(failure))
+    }
+  )
+  private val exactRegistrationPending = ConcurrentHashMap<BluetoothGattCharacteristic, ExactUnitPending>()
+  private val exactRegistrationTerminalArbiter = AndroidGattTerminalArbiter<BluetoothGattCharacteristic>(
+    schedule = { delayMs, action -> scheduleDeferred(delayMs, action) },
+    onFallback = fallback@ { characteristic, failure ->
+      val pending = exactRegistrationPending.remove(characteristic) ?: return@fallback
+      completeExactUnit(pending, Result.failure(failure))
     }
   )
   private val exactDescriptorReadPending = ConcurrentHashMap<BluetoothGattDescriptor, ExactBytePending>()
@@ -914,7 +1010,9 @@ class OwnedAndroidGattRadio(private val context: Context) {
     val bluetoothAdapter = adapter ?: throw IllegalStateException("Bluetooth adapter unavailable")
     val device = bluetoothAdapter.getRemoteDevice(deviceId)
     if (isAlreadyPaired(device.bondState, device.type, transport)) {
-      mainHandler.post { callback("alreadyPaired", OwnedAndroidSecurityState("bonded", true)) }
+      if (!postNow { callback("alreadyPaired", OwnedAndroidSecurityState("bonded", true)) }) {
+        callback("alreadyPaired", OwnedAndroidSecurityState("bonded", true))
+      }
       return 0L
     }
     val key = device.address.uppercase()
@@ -1192,12 +1290,20 @@ class OwnedAndroidGattRadio(private val context: Context) {
         }
       }
     closeTimeouts[key] = r
-    mainHandler.postDelayed(r, GATT_CLOSE_TIMEOUT_MS)
+    if (mainHandler?.postDelayed(r, GATT_CLOSE_TIMEOUT_MS) != true) {
+      closeTimeouts.remove(key, r)
+    }
   }
 
   private fun cancelSafeClose(key: String) {
-    closeTimeouts.remove(key)?.let { mainHandler.removeCallbacks(it) }
+    closeTimeouts.remove(key)?.let { runnable -> mainHandler?.removeCallbacks(runnable) }
   }
+
+  private fun scheduleDeferred(delayMs: Long, action: () -> Unit): Boolean =
+    scheduleDelayed?.invoke(delayMs, action) ?: mainHandler?.postDelayed(action, delayMs) ?: false
+
+  private fun postNow(action: () -> Unit): Boolean =
+    post?.invoke(action) ?: mainHandler?.post(action) ?: false
 
   internal fun reportCleanupFailure(failure: OwnedRadioTeardownFailure) {
     onCleanupFailure?.invoke(failure)
@@ -1869,16 +1975,32 @@ class OwnedAndroidGattRadio(private val context: Context) {
         return@enqueue
       }
       if (!gatt.setCharacteristicNotification(characteristic, enable)) {
-        completeExactUnitDirect(
+        val failure = classifyAndroidNotificationRegistrationFailure(
+          "setCharacteristicNotification"
+        )
+        val registrationGeneration = gattGenerations[deviceId.uppercase()] ?: run {
+          completeExactUnitDirect(onResult, done, Result.failure(failure), token)
+          return@enqueue
+        }
+        val pending = ExactUnitPending(
+          deviceId.uppercase(),
+          gatt,
+          registrationGeneration,
+          token,
           onResult,
           done,
-          Result.failure(
-            classifyAndroidNotificationRegistrationFailure(
-              "setCharacteristicNotification"
-            )
-          ),
-          token
+          subscriptionEnabled = enable,
+          subscriptionCharacteristic = characteristic
         )
+        if (exactRegistrationPending.putIfAbsent(characteristic, pending) != null) {
+          completeExactUnitDirect(onResult, done, Result.failure(failure), token)
+          return@enqueue
+        }
+        if (shouldAwaitAndroidRegistrationDisconnectEvidence(failure)) {
+          exactRegistrationTerminalArbiter.defer(characteristic, failure)
+        } else if (exactRegistrationPending.remove(characteristic, pending)) {
+          completeExactUnit(pending, Result.failure(failure))
+        }
         return@enqueue
       }
       val gattGeneration = gattGenerations[deviceId.uppercase()] ?: run {
@@ -1945,6 +2067,13 @@ class OwnedAndroidGattRadio(private val context: Context) {
           token
         )
         return@enqueue
+      }
+      if (enable) {
+        activeNativeSubscriptionOwnership.arm(
+          deviceId.uppercase(),
+          gattGeneration,
+          characteristic
+        )
       }
       if (Build.VERSION.SDK_INT >= 33) {
         val status = gatt.writeDescriptor(cccd, payload)
@@ -2242,6 +2371,7 @@ class OwnedAndroidGattRadio(private val context: Context) {
     pendingDeviceKeys.addAll(exactReadPending.values.map { it.deviceKeyUpper })
     pendingDeviceKeys.addAll(exactWritePending.values.map { it.deviceKeyUpper })
     pendingDeviceKeys.addAll(exactCccdPending.values.map { it.deviceKeyUpper })
+    pendingDeviceKeys.addAll(exactRegistrationPending.values.map { it.deviceKeyUpper })
     pendingDeviceKeys.addAll(exactDescriptorReadPending.values.map { it.deviceKeyUpper })
     pendingDeviceKeys.addAll(exactDescriptorWritePending.values.map { it.deviceKeyUpper })
     pendingDeviceKeys.forEach { key -> failPendingForDevice(key, "radio destroyed") }
@@ -2255,7 +2385,7 @@ class OwnedAndroidGattRadio(private val context: Context) {
       val generation = gattGenerations[key] ?: owner?.generation ?: return@forEach
       completeGattTeardown(key, gatt, generation)?.let { failure -> failures.add(failure) }
     }
-    closeTimeouts.values.forEach { mainHandler.removeCallbacks(it) }
+    closeTimeouts.values.forEach { runnable -> mainHandler?.removeCallbacks(runnable) }
     closeTimeouts.clear()
     pendingDisconnectCallbacks.clear()
     if (failures.isEmpty() && pendingGattTeardowns.isEmpty() && gatts.isEmpty()) {
@@ -2279,6 +2409,8 @@ class OwnedAndroidGattRadio(private val context: Context) {
       exactWriteValues.clear()
       exactCccdPending.clear()
       exactCccdTerminalArbiter.clear()
+      exactRegistrationPending.clear()
+      exactRegistrationTerminalArbiter.clear()
       exactWriteTerminalArbiter.clear()
       writeTerminalArbiter.clear()
       exactDescriptorReadPending.clear()
@@ -2291,6 +2423,28 @@ class OwnedAndroidGattRadio(private val context: Context) {
   internal fun cancelOperation(operationId: Long): Boolean =
     deviceQueues.values.any { queue -> queue.cancel(operationId) }
 
+  internal fun attachConnectedGatt(
+    deviceId: String,
+    gatt: BluetoothGatt,
+    services: List<android.bluetooth.BluetoothGattService>
+  ): Long {
+    val key = deviceId.uppercase()
+    val generation = nextGattGeneration.getAndIncrement()
+    gatts[key] = gatt
+    gattGenerations[key] = generation
+    gattGenerationByInstance[gatt] = generation
+    discovered[key] = services.toMutableList()
+    return generation
+  }
+
+  internal fun nativeGattCallback(): BluetoothGattCallback = gattCallback
+
+  internal fun isNativeSubscriptionActive(
+    deviceId: String,
+    gattGeneration: Long,
+    characteristic: BluetoothGattCharacteristic
+  ): Boolean = activeNativeSubscriptionOwnership.isActive(deviceId, gattGeneration, characteristic)
+
   private fun enqueue(
     deviceId: String,
     onCancelled: () -> Unit = {},
@@ -2299,7 +2453,11 @@ class OwnedAndroidGattRadio(private val context: Context) {
   ): Long {
     val key = deviceId.uppercase()
     return deviceQueues.getOrPut(key) {
-      GattSerialQueue(mainHandler, idProvider = { nextGattOperationId.getAndIncrement() })
+      GattSerialQueue(
+        handler = mainHandler,
+        post = post,
+        idProvider = { nextGattOperationId.getAndIncrement() }
+      )
     }.submitCancellable(op, onCancelled, onStartFailure)
   }
 
@@ -2421,6 +2579,17 @@ class OwnedAndroidGattRadio(private val context: Context) {
           completeExactUnit(
             entry.value,
             if (entry.value.subscriptionEnabled != null) failCccd else failUnit
+          )
+        }
+      }
+    exactRegistrationPending.entries
+      .filter { it.value.deviceKeyUpper == deviceKeyUpper }
+      .forEach { entry ->
+        if (exactRegistrationPending.remove(entry.key, entry.value)) {
+          exactRegistrationTerminalArbiter.claim(entry.key)
+          completeExactUnit(
+            entry.value,
+            if (gattStatus == ANDROID_GATT_LINK_LOSS_STATUS) failCccd else failUnit
           )
         }
       }
@@ -2570,11 +2739,18 @@ class OwnedAndroidGattRadio(private val context: Context) {
       reportCleanupFailure(rollbackFailure)
     }
     if (pending.token.isPubliclySettled()) {
+      pending.subscriptionCharacteristic?.let { characteristic ->
+        activeNativeSubscriptionOwnership.abandon(
+          pending.deviceKeyUpper,
+          pending.gattGeneration,
+          characteristic
+        )
+      }
       pending.done()
       return
     }
     val terminalResult = androidGattTerminalResult(result, rollbackFailure)
-    if (terminalResult.isSuccess && !pending.token.isPubliclySettled()) {
+    val stagedNotifications = if (terminalResult.isSuccess && !pending.token.isPubliclySettled()) {
       pending.subscriptionEnabled?.let { enabled ->
         pending.subscriptionCharacteristic?.let { characteristic ->
           if (enabled) {
@@ -2589,15 +2765,41 @@ class OwnedAndroidGattRadio(private val context: Context) {
               pending.gattGeneration,
               characteristic
             )
+            emptyList()
           }
         }
       }
+    } else {
+      pending.subscriptionCharacteristic?.let { characteristic ->
+        activeNativeSubscriptionOwnership.abandon(
+          pending.deviceKeyUpper,
+          pending.gattGeneration,
+          characteristic
+        )
+      }
+      emptyList()
     }
     try {
       pending.callback(terminalResult)
     } catch (throwable: Throwable) {
       OwnedAndroidLog.e("protocol exact unit callback", throwable)
     } finally {
+      if (!stagedNotifications.isNullOrEmpty()) {
+        pending.subscriptionCharacteristic?.let { characteristic ->
+          val serviceUuid = characteristic.service?.uuid
+          if (serviceUuid != null) {
+            for (value in stagedNotifications) {
+              onNotification?.invoke(
+                pending.deviceKeyUpper,
+                serviceUuid,
+                characteristic.uuid,
+                value
+              )
+              onProtocolNotification?.invoke(pending.deviceKeyUpper, characteristic, value.copyOf())
+            }
+          }
+        }
+      }
       pending.done()
     }
   }
@@ -2626,6 +2828,24 @@ class OwnedAndroidGattRadio(private val context: Context) {
     } catch (throwable: Throwable) {
       OwnedRadioTeardownFailure("cccdRollback:$deviceKeyUpper:generation=$generation", throwable)
     }
+  }
+
+  private fun deliverNotification(
+    gatt: BluetoothGatt,
+    characteristic: BluetoothGattCharacteristic,
+    value: ByteArray
+  ) {
+    if (!isCurrentGattCallback(gatt)) return
+    val deviceKeyUpper = gatt.device.address.uppercase()
+    val gattGeneration = gattGenerationByInstance[gatt] ?: return
+    val copied = value.copyOf()
+    if (activeNativeSubscriptionOwnership.isActive(deviceKeyUpper, gattGeneration, characteristic)) {
+      val serviceUuid = characteristic.service?.uuid ?: return
+      onNotification?.invoke(gatt.device.address, serviceUuid, characteristic.uuid, copied)
+      onProtocolNotification?.invoke(gatt.device.address, characteristic, copied.copyOf())
+      return
+    }
+    activeNativeSubscriptionOwnership.stage(deviceKeyUpper, gattGeneration, characteristic, copied)
   }
 
   private fun deferExactCccdFailure(
@@ -2742,9 +2962,6 @@ class OwnedAndroidGattRadio(private val context: Context) {
         return
       }
       exactCccdPending[descriptor]?.let { pending ->
-        // The first callback owns the terminal. A contradictory duplicate
-        // callback cannot replace a provisional failure during arbitration.
-        if (exactCccdTerminalArbiter.isPending(descriptor)) return
         if (!isCurrentGatt(pending.deviceKeyUpper, gatt, pending.gattGeneration)) {
           if (exactCccdPending.remove(descriptor, pending)) {
             exactCccdTerminalArbiter.claim(descriptor)
@@ -2753,17 +2970,21 @@ class OwnedAndroidGattRadio(private val context: Context) {
           return@let
         }
         if (status == BluetoothGatt.GATT_SUCCESS) {
+          exactCccdTerminalArbiter.claim(descriptor)
           if (exactCccdPending.remove(descriptor, pending)) {
             completeExactUnit(pending, Result.success(Unit))
           }
-        } else {
-          val failure = classifyAndroidGattOperationFailure("cccd-write", status)
-          if (shouldAwaitAndroidCccdDisconnectEvidence(failure)) {
-            deferExactCccdFailure(descriptor, pending, failure)
-          } else if (exactCccdPending.remove(descriptor, pending)) {
-            exactCccdTerminalArbiter.claim(descriptor)
-            completeExactUnit(pending, Result.failure(failure))
-          }
+          return
+        }
+        // A later success on this generation may still claim a provisional
+        // failure. Duplicate failures cannot replace the first deferred result.
+        if (exactCccdTerminalArbiter.isPending(descriptor)) return
+        val failure = classifyAndroidGattOperationFailure("cccd-write", status)
+        if (shouldAwaitAndroidCccdDisconnectEvidence(failure)) {
+          deferExactCccdFailure(descriptor, pending, failure)
+        } else if (exactCccdPending.remove(descriptor, pending)) {
+          exactCccdTerminalArbiter.claim(descriptor)
+          completeExactUnit(pending, Result.failure(failure))
         }
         return
       }
@@ -2993,17 +3214,9 @@ class OwnedAndroidGattRadio(private val context: Context) {
       gatt: BluetoothGatt,
       characteristic: BluetoothGattCharacteristic
     ) {
-      if (!isCurrentGattCallback(gatt)) return
-      val deviceKeyUpper = gatt.device.address.uppercase()
-      val gattGeneration = gattGenerationByInstance[gatt] ?: return
-      if (!activeNativeSubscriptionOwnership.isActive(deviceKeyUpper, gattGeneration, characteristic)) return
       @Suppress("DEPRECATION")
       val raw = characteristic.value ?: return
-      // Clone immediately — binder may reuse the buffer on the next notify.
-      val value = raw.copyOf()
-      val serviceUuid = characteristic.service?.uuid ?: return
-      onNotification?.invoke(gatt.device.address, serviceUuid, characteristic.uuid, value)
-      onProtocolNotification?.invoke(gatt.device.address, characteristic, value.copyOf())
+      deliverNotification(gatt, characteristic, raw)
     }
 
     override fun onCharacteristicChanged(
@@ -3011,15 +3224,7 @@ class OwnedAndroidGattRadio(private val context: Context) {
       characteristic: BluetoothGattCharacteristic,
       value: ByteArray
     ) {
-      if (!isCurrentGattCallback(gatt)) return
-      val deviceKeyUpper = gatt.device.address.uppercase()
-      val gattGeneration = gattGenerationByInstance[gatt] ?: return
-      if (!activeNativeSubscriptionOwnership.isActive(deviceKeyUpper, gattGeneration, characteristic)) return
-      val serviceUuid = characteristic.service?.uuid ?: return
-      // Clone immediately so concurrent notifies cannot share the stack buffer.
-      val copied = value.copyOf()
-      onNotification?.invoke(gatt.device.address, serviceUuid, characteristic.uuid, copied)
-      onProtocolNotification?.invoke(gatt.device.address, characteristic, copied.copyOf())
+      deliverNotification(gatt, characteristic, value)
     }
 
     override fun onMtuChanged(gatt: BluetoothGatt, mtu: Int, status: Int) {
@@ -3331,19 +3536,19 @@ class OwnedAndroidGattRadio(private val context: Context) {
     @JvmStatic
     fun resolveCccdPayload(enable: Boolean, subscriptionType: String?, properties: Int): ByteArray? {
       if (!enable) {
-        return BluetoothGattDescriptor.DISABLE_NOTIFICATION_VALUE
+        return ANDROID_CCCD_DISABLE.copyOf()
       }
-      val notifiable = (properties and BluetoothGattCharacteristic.PROPERTY_NOTIFY) != 0
-      val indicatable = (properties and BluetoothGattCharacteristic.PROPERTY_INDICATE) != 0
+      val notifiable = (properties and ANDROID_PROPERTY_NOTIFY) != 0
+      val indicatable = (properties and ANDROID_PROPERTY_INDICATE) != 0
       return when {
         "notification".equals(subscriptionType, ignoreCase = true) && notifiable ->
-          BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
+          ANDROID_CCCD_ENABLE_NOTIFICATION.copyOf()
         "indication".equals(subscriptionType, ignoreCase = true) && indicatable ->
-          BluetoothGattDescriptor.ENABLE_INDICATION_VALUE
+          ANDROID_CCCD_ENABLE_INDICATION.copyOf()
         subscriptionType == null || subscriptionType.isEmpty() ->
           when {
-            notifiable -> BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
-            indicatable -> BluetoothGattDescriptor.ENABLE_INDICATION_VALUE
+            notifiable -> ANDROID_CCCD_ENABLE_NOTIFICATION.copyOf()
+            indicatable -> ANDROID_CCCD_ENABLE_INDICATION.copyOf()
             else -> null
           }
         else -> null

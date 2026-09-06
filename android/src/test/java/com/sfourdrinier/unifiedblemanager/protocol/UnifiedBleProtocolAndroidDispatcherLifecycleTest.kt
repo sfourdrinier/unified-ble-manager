@@ -1347,11 +1347,11 @@ class UnifiedBleProtocolAndroidDispatcherLifecycleTest {
 
   @Test
   fun explicitSubscriptionModesNeverFallBackToAnotherCccdMode() {
-    val notifyOnly = android.bluetooth.BluetoothGattCharacteristic.PROPERTY_NOTIFY
-    val indicateOnly = android.bluetooth.BluetoothGattCharacteristic.PROPERTY_INDICATE
+    val notifyOnly = com.sfourdrinier.unifiedblemanager.radio.ANDROID_PROPERTY_NOTIFY
+    val indicateOnly = com.sfourdrinier.unifiedblemanager.radio.ANDROID_PROPERTY_INDICATE
 
     assertArrayEquals(
-      android.bluetooth.BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE,
+      com.sfourdrinier.unifiedblemanager.radio.ANDROID_CCCD_ENABLE_NOTIFICATION,
       com.sfourdrinier.unifiedblemanager.radio.OwnedAndroidGattRadio.resolveCccdPayload(
         true,
         "notification",
@@ -1384,7 +1384,7 @@ class UnifiedBleProtocolAndroidDispatcherLifecycleTest {
     )
 
     assertTrue(dispatcher.contains("subscriptionType = command.optionalString(21)"))
-    assertTrue(dispatcher.contains("command.optionalString(21)\n            )"))
+    assertTrue(dispatcher.contains("command.optionalString(21)"))
     assertTrue(dispatcher.contains("subscriptionType = route.mode"))
     assertTrue(radio.contains("resolveCccdPayload(enable, subscriptionType"))
   }

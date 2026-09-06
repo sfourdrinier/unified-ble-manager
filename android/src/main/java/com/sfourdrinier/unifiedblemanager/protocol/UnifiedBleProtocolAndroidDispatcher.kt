@@ -30,6 +30,7 @@ class UnifiedBleProtocolAndroidDispatcher(
   private val establishedConnections = ConcurrentHashMap<String, ProtocolWireRecord>()
   private val activeDatabases = ConcurrentHashMap<String, ProtocolWireRecord>()
   private val activeSubscriptions = ConcurrentHashMap<String, SubscriptionRoute>()
+  private val pendingSubscriptions = ConcurrentHashMap<String, SubscriptionRoute>()
   private val radioOperationIds = ConcurrentHashMap<String, Long>()
   private val activeScanCommand = AtomicReference<ProtocolWireRecord?>(null)
   private val cancelledScanCommands = ConcurrentHashMap<String, ProtocolWireRecord>()
@@ -78,11 +79,7 @@ class UnifiedBleProtocolAndroidDispatcher(
         activeDatabases.remove(deviceKey)
         failPendingCommandsForDevice(deviceKey, "Android GATT link was lost")
         if (established != null) {
-          activeSubscriptions.entries.forEach { entry ->
-            if (entry.value.endpoint.deviceId.equals(deviceId, ignoreCase = true)) {
-              activeSubscriptions.remove(entry.key, entry.value)
-            }
-          }
+          clearSubscriptionRoutesForDevice(deviceId)
           emitConnectionLost(established, status)
         }
       }
@@ -134,7 +131,7 @@ class UnifiedBleProtocolAndroidDispatcher(
       }
     }
     radio.onProtocolNotification = { deviceId, characteristic, value ->
-      activeSubscriptions.values
+      (pendingSubscriptions.values.asSequence() + activeSubscriptions.values.asSequence())
         .filter { route -> route.matches(deviceId, characteristic, radio) }
         .forEach { route ->
           UnifiedBleProtocolJsiBinding.emitNotification(nativeHandle, route.subscriptionId, value)
@@ -166,6 +163,7 @@ class UnifiedBleProtocolAndroidDispatcher(
     }
     establishedConnections.clear()
     activeDatabases.clear()
+    pendingSubscriptions.clear()
     activeSubscriptions.clear()
   }
 
@@ -272,6 +270,7 @@ class UnifiedBleProtocolAndroidDispatcher(
       pendingConnects.clear()
       establishedConnections.clear()
       activeDatabases.clear()
+      pendingSubscriptions.clear()
       activeSubscriptions.clear()
       activeScanCommand.set(null)
     }
@@ -601,6 +600,14 @@ class UnifiedBleProtocolAndroidDispatcher(
       return
     }
     val endpoint = characteristicEndpoint(command.requiredRecord(4))
+    val route = SubscriptionRoute(
+      subscriptionId,
+      endpoint,
+      command.optionalString(21)
+    )
+    if (enable) {
+      pendingSubscriptions[subscriptionId] = route
+    }
     val radioOperationId = radio.setNotifyExact(
       endpoint.deviceId,
       endpoint.serviceUuid,
@@ -613,6 +620,7 @@ class UnifiedBleProtocolAndroidDispatcher(
       result.fold(
         onSuccess = {
           if (!isPending(command)) {
+            pendingSubscriptions.remove(subscriptionId, route)
             if (enable) {
               radio.setNotifyExact(
                 endpoint.deviceId,
@@ -634,17 +642,16 @@ class UnifiedBleProtocolAndroidDispatcher(
             return@fold
           }
           if (enable) {
-            activeSubscriptions[subscriptionId] = SubscriptionRoute(
-              subscriptionId,
-              endpoint,
-              command.optionalString(21)
-            )
+            pendingSubscriptions.remove(subscriptionId, route)
+            activeSubscriptions[subscriptionId] = route
           } else {
+            pendingSubscriptions.remove(subscriptionId)
             activeSubscriptions.remove(subscriptionId)
           }
           emitSuccess(command, if (enable) "subscribed" else "unsubscribed")
         },
         onFailure = { error ->
+          pendingSubscriptions.remove(subscriptionId, route)
           emitGattOperationFailure(command, "subscriptionFailed", error, "Android CCCD operation failed")
         }
       )
@@ -665,6 +672,7 @@ class UnifiedBleProtocolAndroidDispatcher(
     pendingConnects.clear()
     establishedConnections.clear()
     activeDatabases.clear()
+    pendingSubscriptions.clear()
     activeSubscriptions.clear()
     if (result.isSuccessful) {
       activeScanCommand.set(null)
@@ -737,7 +745,9 @@ class UnifiedBleProtocolAndroidDispatcher(
       }
       if (commandKind == "subscribe") {
         val endpoint = characteristicEndpoint(command.requiredRecord(4))
-        activeSubscriptions.remove(command.requiredString(7))
+        val subscriptionId = command.requiredString(7)
+        pendingSubscriptions.remove(subscriptionId)
+        activeSubscriptions.remove(subscriptionId)
         radio.setNotifyExact(
           endpoint.deviceId,
           endpoint.serviceUuid,
@@ -1137,6 +1147,11 @@ class UnifiedBleProtocolAndroidDispatcher(
   }
 
   private fun clearSubscriptionRoutesForDevice(deviceId: String) {
+    pendingSubscriptions.entries.forEach { entry ->
+      if (entry.value.endpoint.deviceId.equals(deviceId, ignoreCase = true)) {
+        pendingSubscriptions.remove(entry.key, entry.value)
+      }
+    }
     activeSubscriptions.entries.forEach { entry ->
       if (entry.value.endpoint.deviceId.equals(deviceId, ignoreCase = true)) {
         activeSubscriptions.remove(entry.key, entry.value)

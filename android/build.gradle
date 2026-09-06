@@ -89,6 +89,9 @@ android {
   kotlinOptions {
     jvmTarget = "17"
   }
+  testOptions {
+    unitTests.returnDefaultValues = true
+  }
   externalNativeBuild {
     cmake {
       path file("src/main/jni/CMakeLists.txt")
@@ -105,6 +108,7 @@ dependencies {
   implementation "com.facebook.react:react-android"
   implementation "org.jetbrains.kotlin:kotlin-stdlib:$kotlin_version"
   testImplementation "junit:junit:4.13.2"
+  testImplementation "org.mockito:mockito-core:5.14.2"
 }
 
 react {
