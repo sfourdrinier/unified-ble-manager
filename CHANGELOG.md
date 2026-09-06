@@ -6,6 +6,64 @@ All notable changes to `unified-ble-manager` are documented here.
 
 No changes yet.
 
+## [4.0.25] - 2026-09-05
+
+### Fixes
+
+- Tauri: separate live correlation capacity from 30s replay tombstones. Routed
+  cleanup still admits after a full replay window. Live exhaustion is retryable
+  backpressure, not `protocol.violation`. Replay of an old correlation still
+  rejects.
+- Tauri: a native connect that completes after its caller/lease is gone gets an
+  orphan cleanup owner before compensating disconnect. Reservation and owner
+  release together, and only for the matching generation.
+- Tauri: scan-stream failure keeps the scan owner in a stopping state until
+  native stop settles. A failed stop stays retryable and blocks a second scan.
+- Tauri: post-await lease/generation checks on unsubscribe and scan stop.
+  Old-generation resources quarantine instead of attaching to a replacement
+  caller. Compensating unsubscribe after subscribe success uses the same orphan
+  owner instead of discarding the outcome.
+- Core: retain unadopted scan/connect leases when stale-admission `stop`/`release`
+  fails, and retry that exact lease on later manager cleanup. Aborted, destroyed,
+  or deadline-expired callers settle promptly; native work stays owned until
+  adopted or compensated.
+- Core: coalesce concurrent `rediscoverGatt` waiters onto one replacement after
+  a shared in-flight discovery settles. A starter abort or timeout does not fail
+  a sibling waiter with its own admission.
+- Public scan observation overflow is subscriber-local. Consuming only `events`
+  at full speed with `duplicates: 'all'` and `overflowPolicy: 'error'` no longer
+  terminates the scan because an unused observation queue filled.
+- In-process and IPC scan sessions leave `active` when the host source ends
+  without `stop()`, including a terminal that raced `scan.start`. That event is
+  ended delivery; `stop()` remains the physical cleanup path.
+- BlueZ `StopDiscovery` / `StopNotify` release this client’s session even if
+  another D-Bus client keeps `Discovering` / `Notifying` true.
+- BlueZ `StartNotify` confirmation failure after native accept keeps a retryable
+  `StopNotify` owner instead of orphaning the notify session.
+- BlueZ `SetDiscoveryFilter`, `StartDiscovery`, and `ConnectDevice` honor caller
+  deadline/abort without dropping a later native allocation.
+- BlueZ address-connect fallback checks scan-plan compatibility, waits out a
+  stopping scan, and widens an excluding live scan (then restores it) instead of
+  waiting under a filter that cannot observe the target.
+- Apple CoreBluetooth rejects an independent GATT read while that characteristic
+  is notifying, because `didUpdateValueFor` cannot distinguish a read response
+  from a notification. Electron/Node CoreBluetooth uses the same policy.
+- Android `setCharacteristicNotification(...) == false` is a local registration
+  failure, not proven link loss. Generation-matched disconnect and GATT status 19
+  remain the physical-loss authority. The 4.0.22 250 ms CCCD/disconnect two-signal
+  arbitration is unchanged.
+- WinRT stages `ValueChanged` notifications that arrive before CCCD enablement
+  completes, then flushes them once and in order only to admitted subscribers.
+- WinRT subscription invalidation waits are bounded. If native `startNotify`
+  never settles, disconnect still completes within the cleanup budget. A late
+  enable cannot `stopNotify` a replacement generation’s live CCCD.
+- `cancelPairing()` honors abort and deadline on Android, WinRT, and BlueZ.
+  Admission runs before native cancellation. A timed-out wait is not reported as
+  `'cancelled'`. An abandoned waiter leaves the in-flight pairing owned.
+- Web adapter `watchState()` follows browser `availabilitychanged` instead of
+  staying stale until another API samples availability. When that event is
+  missing, watches share one bounded `getAvailability()` poll.
+
 ## [4.0.24] - 2026-09-05
 
 ### Fixes
