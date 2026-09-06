@@ -1380,6 +1380,7 @@ impl BtleplugDispatcher {
                 &key,
                 (&expected_lease_id, &expected_lease_generation),
                 &handle,
+                true,
             )? {
                 ScanStopBegin::AlreadyReleased => return Ok(released()),
                 ScanStopBegin::Started => {}
@@ -3185,7 +3186,7 @@ impl BtleplugDispatcher {
         let should_stop = {
             let mut state = self.inner.lock().await;
             matches!(
-                begin_scan_stop(&mut state, caller_key, expected_lease, stream_id),
+                begin_scan_stop(&mut state, caller_key, expected_lease, stream_id, false),
                 Ok(ScanStopBegin::Started)
             )
         };
@@ -3223,7 +3224,6 @@ impl BtleplugDispatcher {
             caller.subscriptions.remove(stream_id)
         };
         if let Some(subscription) = subscription {
-            subscription.task.abort();
             let native = subscription
                 .native()
                 .map(|(peripheral, characteristic)| (peripheral.clone(), characteristic.clone()));
@@ -3309,14 +3309,41 @@ impl BtleplugDispatcher {
         caller.operations.clear();
         if caller.scan_admitting {
             caller.scan_admitting = false;
-            let mut state = self.inner.lock().await;
-            if !state
-                .stopping_scan
-                .as_ref()
-                .is_some_and(|stopping| stopping.caller_key == key)
-                && state.scan_owner.as_deref() == Some(key)
-            {
-                state.scan_owner = None;
+            let should_stop = {
+                let mut state = self.inner.lock().await;
+                if state
+                    .stopping_scan
+                    .as_ref()
+                    .is_some_and(|stopping| stopping.caller_key == key)
+                {
+                    false
+                } else if state.scan_owner.as_deref() == Some(key) {
+                    state.stopping_scan = Some(StoppingScan {
+                        caller_key: key.to_owned(),
+                        lease_id: caller.lease_id.clone(),
+                        lease_generation: caller.lease_generation.clone(),
+                        handle: String::new(),
+                    });
+                    true
+                } else {
+                    false
+                }
+            };
+            if should_stop {
+                let outcome = match self.adapter().await {
+                    Ok(adapter) => adapter.stop_scan().await.map_err(|error| error.to_string()),
+                    Err(error) => Err(error
+                        .platform
+                        .unwrap_or_else(|| "adapter unavailable".to_owned())),
+                };
+                let mut state = self.inner.lock().await;
+                if let Err(error) = apply_scan_stop_outcome(&mut state, outcome) {
+                    failures.push(cleanup_failure(
+                        "scan",
+                        "tauri.release.scan-admitting",
+                        error,
+                    ));
+                }
             }
         }
         for resource in caller.connection_events.values_mut() {
@@ -3805,6 +3832,7 @@ fn begin_scan_stop(
     caller_key: &str,
     expected_lease: (&str, &str),
     stream_id: &str,
+    abort_pump: bool,
 ) -> Result<ScanStopBegin, DispatchError> {
     if let Some(stopping) = state.stopping_scan.as_ref() {
         if stopping.caller_key == caller_key
@@ -3846,7 +3874,9 @@ fn begin_scan_stop(
     };
     match scan {
         Some(scan) if scan.handle == stream_id => {
-            scan.task.abort();
+            if abort_pump {
+                scan.task.abort();
+            }
             state.stopping_scan = Some(StoppingScan {
                 caller_key: caller_key.to_owned(),
                 lease_id: expected_lease.0.to_owned(),
@@ -5242,6 +5272,7 @@ mod tests {
             "caller-a",
             ("lease-1", "generation-1"),
             "scan-1",
+            true,
         )
         .expect("owned scan must be claimable for stop");
 
@@ -5260,6 +5291,96 @@ mod tests {
         );
     }
 
+    /// fail_scan_stream runs on the stored pump JoinHandle. Aborting that
+    /// handle inside begin_scan_stop cancels adapter()/stop_scan() at the next
+    /// await, so apply_scan_stop_outcome never runs and the radio stays up.
+    #[tokio::test]
+    async fn fail_scan_stream_does_not_abort_the_pump_before_native_stop() {
+        let dispatcher = BtleplugDispatcher::new(BtleplugDispatcherOptions { adapter_id: None });
+        let (armed_tx, armed_rx) = tokio::sync::oneshot::channel::<()>();
+        let (done_tx, done_rx) = tokio::sync::oneshot::channel::<()>();
+        let dispatcher_task = dispatcher.clone();
+        let task = tokio::spawn(async move {
+            let _ = armed_rx.await;
+            dispatcher_task
+                .fail_scan_stream("caller-a", ("lease-1", "generation-1"), "scan-1")
+                .await;
+            tokio::task::yield_now().await;
+            let _ = done_tx.send(());
+        });
+        {
+            let mut state = dispatcher.inner.lock().await;
+            let mut caller = caller_state_with_no_connections();
+            caller.scan = Some(super::ScanResource {
+                handle: "scan-1".to_owned(),
+                task,
+            });
+            state.callers.insert("caller-a".to_owned(), caller);
+            state.scan_owner = Some("caller-a".to_owned());
+        }
+        armed_tx.send(()).expect("pump must be waiting to fail");
+        done_rx
+            .await
+            .expect("fail_scan_stream must finish native stop on the pump instead of aborting it");
+        let state = dispatcher.inner.lock().await;
+        assert!(
+            super::scan_start_blocked(&state),
+            "adapter-unavailable stop must keep the scan blocked for retry"
+        );
+    }
+
+    #[tokio::test]
+    async fn fail_subscription_stream_does_not_abort_the_pump_before_unsubscribe() {
+        let dispatcher = BtleplugDispatcher::new(BtleplugDispatcherOptions { adapter_id: None });
+        let (armed_tx, armed_rx) = tokio::sync::oneshot::channel::<()>();
+        let (done_tx, done_rx) = tokio::sync::oneshot::channel::<()>();
+        let dispatcher_task = dispatcher.clone();
+        let task = tauri::async_runtime::spawn(async move {
+            let _ = armed_rx.await;
+            dispatcher_task
+                .fail_subscription_stream("caller-a", ("lease-1", "generation-1"), "sub-1")
+                .await;
+            tokio::task::yield_now().await;
+            let _ = done_tx.send(());
+        });
+        {
+            let mut state = dispatcher.inner.lock().await;
+            let mut caller = caller_state_with_no_connections();
+            caller.subscriptions.insert(
+                "sub-1".to_owned(),
+                super::SubscriptionResource {
+                    database_handle: "db-stand-in".to_owned(),
+                    body: super::SubscriptionBody::StandIn,
+                    task,
+                },
+            );
+            state.callers.insert("caller-a".to_owned(), caller);
+        }
+        armed_tx.send(()).expect("pump must be waiting to fail");
+        done_rx.await.expect(
+            "fail_subscription_stream must finish unsubscribe on the pump instead of aborting it",
+        );
+    }
+
+    #[tokio::test]
+    async fn release_during_scan_admission_keeps_the_scan_blocked_until_stop() {
+        let dispatcher = BtleplugDispatcher::new(BtleplugDispatcherOptions { adapter_id: None });
+        {
+            let mut state = dispatcher.inner.lock().await;
+            let mut caller = caller_state_with_no_connections();
+            caller.scan_admitting = true;
+            state.callers.insert("caller-a".to_owned(), caller);
+            state.scan_owner = Some("caller-a".to_owned());
+        }
+
+        let _cleanup = dispatcher.release("caller-a").await;
+        let state = dispatcher.inner.lock().await;
+        assert!(
+            super::scan_start_blocked(&state),
+            "release while a scan is still admitting must keep a stopping owner, not clear scan_owner"
+        );
+    }
+
     #[tokio::test]
     async fn failed_scan_stop_remains_retryable() {
         let dispatcher = BtleplugDispatcher::new(BtleplugDispatcherOptions { adapter_id: None });
@@ -5273,6 +5394,7 @@ mod tests {
             "caller-a",
             ("lease-1", "generation-1"),
             "scan-1",
+            true,
         )
         .expect("owned scan must be claimable for stop");
 
@@ -5299,6 +5421,7 @@ mod tests {
             "caller-a",
             ("lease-1", "generation-1"),
             "scan-1",
+            true,
         )
         .expect("owned scan must be claimable for stop");
 
@@ -5513,6 +5636,7 @@ mod tests {
             "caller-a",
             ("lease-1", "generation-1"),
             "scan-1",
+            true,
         )
         .expect("owned scan must be claimable for stop");
 
