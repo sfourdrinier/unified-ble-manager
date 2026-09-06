@@ -617,6 +617,35 @@ characteristicUUID:(NSString *)characteristicUUID
   });
 }
 
+- (NSError *)independentReadWhileNotifyingError {
+  return [NSError errorWithDomain:@"UBMCoreBluetooth"
+                             code:413
+                         userInfo:@{
+                           NSLocalizedDescriptionKey :
+                               @"Independent read is ambiguous while this characteristic is notifying"
+                         }];
+}
+
+- (BOOL)independentReadIsAmbiguousForCharacteristic:(BOOL)isNotifying
+                                      notifyHandler:(UBMNotifyBlock)notifyHandler
+                                pendingNotifyEnable:(BOOL)pendingNotifyEnable {
+  return isNotifying || notifyHandler != nil || pendingNotifyEnable;
+}
+
+- (void)failPendingIndependentReadAt:(NSString *)directKey {
+  UBMDataBlock done = self.pendingReadAt[directKey];
+  if (!done) return;
+  [self.pendingReadAt removeObjectForKey:directKey];
+  done(nil, [self independentReadWhileNotifyingError]);
+}
+
+- (void)failPendingIndependentRead:(NSString *)key {
+  UBMDataBlock done = self.pendingRead[key];
+  if (!done) return;
+  [self.pendingRead removeObjectForKey:key];
+  done(nil, [self independentReadWhileNotifyingError]);
+}
+
 - (void)startNotifyAt:(NSString *)deviceId
            serviceUUID:(NSString *)serviceUUID
      serviceOccurrence:(NSInteger)serviceOccurrence
@@ -679,7 +708,16 @@ characteristicUUID:(NSString *)characteristicUUID
                                       userInfo:@{NSLocalizedDescriptionKey : @"Characteristic occurrence not found"}]);
       return;
     }
-    self.pendingReadAt[[self directCharacteristicKey:deviceId characteristic:characteristic]] = completion;
+    NSString *directKey = [self directCharacteristicKey:deviceId characteristic:characteristic];
+    // CoreBluetooth fuses ATT reads and notifications into didUpdateValueFor.
+    // Independent read is ambiguous while this characteristic is notifying.
+    if ([self independentReadIsAmbiguousForCharacteristic:characteristic.isNotifying
+                                            notifyHandler:self.notifyHandlersAt[directKey]
+                                      pendingNotifyEnable:self.pendingNotifyEnableAt[directKey] != nil]) {
+      completion(nil, [self independentReadWhileNotifyingError]);
+      return;
+    }
+    self.pendingReadAt[directKey] = completion;
     [peripheral readValueForCharacteristic:characteristic];
   });
 }
@@ -1180,6 +1218,14 @@ characteristicUUID:(NSString *)characteristicUUID
       return;
     }
     NSString *key = [self notifyKey:deviceId service:serviceUUID char:characteristicUUID];
+    // CoreBluetooth fuses ATT reads and notifications into didUpdateValueFor.
+    // Independent read is ambiguous while this characteristic is notifying.
+    if ([self independentReadIsAmbiguousForCharacteristic:ch.isNotifying
+                                            notifyHandler:self.notifyHandlers[key]
+                                      pendingNotifyEnable:self.pendingNotifyEnable[key] != nil]) {
+      completion(nil, [self independentReadWhileNotifyingError]);
+      return;
+    }
     self.pendingRead[key] = completion;
     [p readValueForCharacteristic:ch];
   });
@@ -1602,22 +1648,50 @@ characteristicUUID:(NSString *)characteristicUUID
                               error:(NSError *)error {
   NSString *deviceId = peripheral.identifier.UUIDString;
   NSString *directKey = [self directCharacteristicKey:deviceId characteristic:characteristic];
-  UBMDataBlock directReadDone = self.pendingReadAt[directKey];
-  if (directReadDone) {
-    [self.pendingReadAt removeObjectForKey:directKey];
-    if (error) directReadDone(nil, error);
-    else directReadDone(characteristic.value ?: [NSData data], nil);
-    return;
-  }
-  UBMNotifyBlock directNotify = self.notifyHandlersAt[directKey];
-  if (directNotify && !error && characteristic.value) {
-    directNotify(characteristic.value);
-    return;
+  BOOL directAmbiguous = [self independentReadIsAmbiguousForCharacteristic:characteristic.isNotifying
+                                                            notifyHandler:self.notifyHandlersAt[directKey]
+                                                      pendingNotifyEnable:self.pendingNotifyEnableAt[directKey] != nil];
+  if (directAmbiguous) {
+    UBMDataBlock stolenDirectRead = self.pendingReadAt[directKey];
+    if (stolenDirectRead) {
+      [self.pendingReadAt removeObjectForKey:directKey];
+      stolenDirectRead(nil, [self independentReadWhileNotifyingError]);
+    }
+    UBMNotifyBlock directNotify = self.notifyHandlersAt[directKey];
+    if (directNotify && !error && characteristic.value) {
+      directNotify(characteristic.value);
+      return;
+    }
+  } else {
+    UBMDataBlock directReadDone = self.pendingReadAt[directKey];
+    if (directReadDone) {
+      [self.pendingReadAt removeObjectForKey:directKey];
+      if (error) directReadDone(nil, error);
+      else directReadDone(characteristic.value ?: [NSData data], nil);
+      return;
+    }
+    UBMNotifyBlock directNotify = self.notifyHandlersAt[directKey];
+    if (directNotify && !error && characteristic.value) {
+      directNotify(characteristic.value);
+      return;
+    }
   }
   NSString *sUUID = NormalizeUUID(characteristic.service.UUID.UUIDString);
   NSString *cUUID = NormalizeUUID(characteristic.UUID.UUIDString);
   NSString *key = [self notifyKey:deviceId service:sUUID char:cUUID];
-
+  BOOL uuidAmbiguous = [self independentReadIsAmbiguousForCharacteristic:characteristic.isNotifying
+                                                           notifyHandler:self.notifyHandlers[key]
+                                                     pendingNotifyEnable:self.pendingNotifyEnable[key] != nil];
+  if (uuidAmbiguous) {
+    UBMDataBlock stolenRead = self.pendingRead[key];
+    if (stolenRead) {
+      [self.pendingRead removeObjectForKey:key];
+      stolenRead(nil, [self independentReadWhileNotifyingError]);
+    }
+    UBMNotifyBlock notify = self.notifyHandlers[key];
+    if (notify && !error && characteristic.value) notify(characteristic.value);
+    return;
+  }
   UBMDataBlock readDone = self.pendingRead[key];
   if (readDone) {
     [self.pendingRead removeObjectForKey:key];
@@ -1683,6 +1757,13 @@ characteristicUUID:(NSString *)characteristicUUID
                                           error:(NSError *)error {
   NSString *deviceId = peripheral.identifier.UUIDString;
   NSString *directKey = [self directCharacteristicKey:deviceId characteristic:characteristic];
+  NSString *sUUID = NormalizeUUID(characteristic.service.UUID.UUIDString);
+  NSString *cUUID = NormalizeUUID(characteristic.UUID.UUIDString);
+  NSString *key = [self notifyKey:deviceId service:sUUID char:cUUID];
+  if (characteristic.isNotifying) {
+    [self failPendingIndependentReadAt:directKey];
+    [self failPendingIndependentRead:key];
+  }
   UBMVoidBlock directDisableDone = self.pendingNotifyDisableAt[directKey];
   if (directDisableDone) {
     if (characteristic.isNotifying && !error) return;
@@ -1716,9 +1797,6 @@ characteristicUUID:(NSString *)characteristicUUID
     directEnableDone(nil);
     return;
   }
-  NSString *sUUID = NormalizeUUID(characteristic.service.UUID.UUIDString);
-  NSString *cUUID = NormalizeUUID(characteristic.UUID.UUIDString);
-  NSString *key = [self notifyKey:deviceId service:sUUID char:cUUID];
 
   UBMVoidBlock disableDone = self.pendingNotifyDisable[key];
   if (disableDone) {

@@ -296,4 +296,58 @@ extension OwnedCoreBluetoothProtocolRadio {
       }
     }
   }
+
+  func independentReadWhileNotifyingError() -> NSError {
+    error(
+      code: OwnedCoreBluetoothReadNotifyProvenance.independentReadWhileNotifyingCode,
+      message: OwnedCoreBluetoothReadNotifyProvenance.independentReadWhileNotifyingMessage
+    )
+  }
+
+  func isIndependentReadAmbiguous(address: CharacteristicAddress, characteristic: CBCharacteristic) -> Bool {
+    OwnedCoreBluetoothReadNotifyProvenance.independentReadIsAmbiguous(
+      isNotifying: characteristic.isNotifying,
+      hasInstalledSubscription: subscriptions[address] != nil,
+      pendingNotifyEnable: pendingNotify[address]?.enabled == true
+    )
+  }
+
+  func failPendingIndependentRead(for address: CharacteristicAddress) {
+    guard let pending = pendingRead.removeValue(forKey: address) else { return }
+    pending.completion(nil, independentReadWhileNotifyingError())
+  }
+
+  func handleCharacteristicValueUpdate(
+    address: CharacteristicAddress,
+    characteristic: CBCharacteristic,
+    error: Error?
+  ) {
+    let route = OwnedCoreBluetoothReadNotifyProvenance.routeValueUpdate(
+      hasPendingRead: pendingRead[address] != nil,
+      isNotifying: characteristic.isNotifying,
+      hasInstalledSubscription: subscriptions[address] != nil,
+      pendingNotifyEnable: pendingNotify[address]?.enabled == true,
+      hasError: error != nil,
+      hasValue: characteristic.value != nil
+    )
+    switch route {
+    case .completePendingRead:
+      if let pending = pendingRead.removeValue(forKey: address) {
+        pending.completion(characteristic.value as NSData?, error as NSError?)
+      }
+    case .rejectPendingReadAndDeliverNotification:
+      failPendingIndependentRead(for: address)
+      fallthrough
+    case .deliverNotification:
+      let pendingSubscriptionIdentifier = pendingNotify[address].flatMap { pending in
+        pending.enabled ? pending.subscriptionIdentifier : nil
+      }
+      guard error == nil,
+            let subscriptionIdentifier = subscriptions[address] ?? pendingSubscriptionIdentifier,
+            let value = characteristic.value else { return }
+      delegate?.protocolRadioDidReceiveNotification(subscriptionIdentifier, value: value as NSData)
+    case .ignore:
+      break
+    }
+  }
 }

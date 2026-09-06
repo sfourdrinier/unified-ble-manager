@@ -103,3 +103,58 @@ enum OwnedCoreBluetoothProtocolRadioSupport {
     return uppercased
   }
 }
+
+/// CoreBluetooth fuses ATT reads and notifications into `didUpdateValueFor`.
+/// An independent `read()` while that characteristic is notifying cannot be
+/// attributed, so the radio rejects it rather than guessing callback order.
+enum OwnedCoreBluetoothReadNotifyProvenance {
+  static let independentReadWhileNotifyingCode = 1031
+  static let independentReadWhileNotifyingMessage =
+    "Independent read is ambiguous while this characteristic is notifying"
+
+  static func independentReadIsAmbiguous(
+    isNotifying: Bool,
+    hasInstalledSubscription: Bool,
+    pendingNotifyEnable: Bool
+  ) -> Bool {
+    isNotifying || hasInstalledSubscription || pendingNotifyEnable
+  }
+
+  enum ValueUpdateRoute: Equatable {
+    case completePendingRead
+    case rejectPendingReadAndDeliverNotification
+    case deliverNotification
+    case ignore
+  }
+
+  static func routeValueUpdate(
+    hasPendingRead: Bool,
+    isNotifying: Bool,
+    hasInstalledSubscription: Bool,
+    pendingNotifyEnable: Bool,
+    hasError: Bool,
+    hasValue: Bool
+  ) -> ValueUpdateRoute {
+    let notifying = independentReadIsAmbiguous(
+      isNotifying: isNotifying,
+      hasInstalledSubscription: hasInstalledSubscription,
+      pendingNotifyEnable: pendingNotifyEnable
+    )
+    if notifying {
+      if hasPendingRead {
+        return .rejectPendingReadAndDeliverNotification
+      }
+      if !hasError && hasValue && (hasInstalledSubscription || pendingNotifyEnable) {
+        return .deliverNotification
+      }
+      return .ignore
+    }
+    if hasPendingRead {
+      return .completePendingRead
+    }
+    if !hasError && hasValue && (hasInstalledSubscription || pendingNotifyEnable) {
+      return .deliverNotification
+    }
+    return .ignore
+  }
+}
