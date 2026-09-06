@@ -404,6 +404,13 @@ export class WinRtBackend implements BleCentralBackend<string, HostNeutralBacken
   readonly security: WinRtSecurityBackend | undefined
   readonly dispatcher: WinRtOperationDispatcher
   readonly subscriptions = new Map<string, WinRtPhysicalSubscription>()
+  connectionOwnsGeneration(
+    nativePeerId: string,
+    connectionGeneration: GenerationId<'connection-generation', string>
+  ): boolean {
+    const record = this.connectionsByNativeId.get(nativePeerId)
+    return record !== undefined && record.connectionGeneration === connectionGeneration
+  }
   private readonly backendInstanceId: BackendInstanceId<string>
   private readonly eventStreams = new Set<CoreBoundedStream<BackendEvent<string>>>()
   private readonly stateStreams = new Set<CoreBoundedStream<AdapterStateSnapshot<string>>>()
@@ -772,11 +779,7 @@ export class WinRtBackend implements BleCentralBackend<string, HostNeutralBacken
         return combineWinRtCleanup(invalidation, nativeCleanup)
       }
     }
-    if (
-      waitForOperations &&
-      !enablementTimedOut &&
-      !(await this.waitForConnectionOperations(record))
-    ) {
+    if (waitForOperations && !enablementTimedOut && !(await this.waitForConnectionOperations(record))) {
       return combineWinRtCleanup(invalidation, pendingWinRtConnectionCleanup())
     }
     if (invalidation.state === 'release-failed') {

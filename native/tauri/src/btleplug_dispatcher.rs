@@ -114,6 +114,7 @@ struct StoppingScan {
 #[derive(Clone)]
 struct OrphanConnectionOwner {
     caller_key: String,
+    #[allow(dead_code)]
     lease_id: String,
     lease_generation: String,
     peer_id: String,
@@ -123,6 +124,7 @@ struct OrphanConnectionOwner {
 
 struct OrphanSubscriptionOwner {
     caller_key: String,
+    #[allow(dead_code)]
     lease_id: String,
     lease_generation: String,
     stream_id: String,

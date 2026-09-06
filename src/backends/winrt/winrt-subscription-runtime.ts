@@ -138,18 +138,11 @@ export async function stopWinRtPhysicalSubscriptionAfterEnable(
   return stopWinRtPhysicalSubscription(backend, physical)
 }
 
-function winRtPhysicalOwnsCurrentGeneration(
-  backend: WinRtBackend,
-  physical: WinRtPhysicalSubscription
-): boolean {
-  const record = backend.connectionsByNativeId.get(physical.address.nativePeerId)
-  return record !== undefined && record.connectionGeneration === physical.connectionGeneration
+function winRtPhysicalOwnsCurrentGeneration(backend: WinRtBackend, physical: WinRtPhysicalSubscription): boolean {
+  return backend.connectionOwnsGeneration(physical.address.nativePeerId, physical.connectionGeneration)
 }
 
-function releaseWinRtPhysicalSubscriptionRecord(
-  backend: WinRtBackend,
-  physical: WinRtPhysicalSubscription
-): void {
+function releaseWinRtPhysicalSubscriptionRecord(backend: WinRtBackend, physical: WinRtPhysicalSubscription): void {
   if (backend.subscriptions.get(physical.key) === physical) {
     backend.subscriptions.delete(physical.key)
   }
@@ -367,11 +360,7 @@ function copyWinRtNotificationBytes(source: unknown): OwnedBytes {
   return ownBytes(source, maximumValueBytes)
 }
 
-function stageWinRtNotification(
-  backend: WinRtBackend,
-  physical: WinRtPhysicalSubscription,
-  source: unknown
-): void {
+function stageWinRtNotification(backend: WinRtBackend, physical: WinRtPhysicalSubscription, source: unknown): void {
   try {
     const copied = copyWinRtNotificationBytes(source)
     if (physical.stagingOverflowed) {

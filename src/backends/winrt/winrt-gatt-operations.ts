@@ -475,12 +475,7 @@ export class WinRtGattOperations {
       }
       if (physical === undefined) {
         const mode = this.backend.databaseForPath(path, 'winrt.gatt.subscribe.mode').notificationModeForPath(path)
-        physical = createWinRtPhysicalSubscription(
-          this.backend,
-          address,
-          mode,
-          connectionRecord.connectionGeneration
-        )
+        physical = createWinRtPhysicalSubscription(this.backend, address, mode, connectionRecord.connectionGeneration)
         this.registerSubscriptionWaiter(waiter, physical)
         this.beginPhysicalSubscriptionEnablement(physical, resolvePhysicalCompletion)
       } else {
@@ -673,8 +668,7 @@ export class WinRtGattOperations {
   }
 
   private physicalGenerationIsCurrent(physical: WinRtPhysicalSubscription): boolean {
-    const record = this.backend.connectionsByNativeId.get(physical.address.nativePeerId)
-    return record !== undefined && record.connectionGeneration === physical.connectionGeneration
+    return this.backend.connectionOwnsGeneration(physical.address.nativePeerId, physical.connectionGeneration)
   }
 
   private createDatabase(
