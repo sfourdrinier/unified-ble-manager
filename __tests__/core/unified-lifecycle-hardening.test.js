@@ -1169,6 +1169,57 @@ describe('UnifiedBleCore lifecycle hardening', () => {
     }
   )
 
+  test('concurrent rediscoverGatt during in-flight initial discover returns a replacement generation', async () => {
+    const { fixture, manager } = await createFixture()
+    const connection = await settle(fixture.controller, manager.connect(peer(), operation()))
+    const originalDiscover = fixture.backend.gatt.discover.bind(fixture.backend.gatt)
+    let discoverCount = 0
+    fixture.backend.gatt.discover = async (...args) => {
+      discoverCount += 1
+      return originalDiscover(...args)
+    }
+    try {
+      fixture.controller.queueCompletion('discover', {
+        delayMs: 10,
+        failure: null,
+        cancellable: false,
+        deadlineOrder: 'completion-first'
+      })
+      const initial = connection.connection.discover(operation())
+      await flushMicrotasks()
+      const first = connection.rediscoverGatt(operation(), 'service-changed')
+      const second = connection.rediscoverGatt(operation(), 'service-changed')
+      await flushMicrotasks()
+
+      const firstOutcome = first.then(
+        value => ({ state: 'fulfilled', value }),
+        error => ({ state: 'rejected', error })
+      )
+      const secondOutcome = second.then(
+        value => ({ state: 'fulfilled', value }),
+        error => ({ state: 'rejected', error })
+      )
+
+      const initialDatabase = await settle(fixture.controller, initial)
+      await flushVirtual(fixture.controller)
+
+      const [firstResult, secondResult] = await Promise.all([firstOutcome, secondOutcome])
+      expect(firstResult.state).toBe('fulfilled')
+      expect(secondResult.state).toBe('fulfilled')
+      firstResult.value.assertCurrent()
+      secondResult.value.assertCurrent()
+      const replacementGeneration = String(firstResult.value.path.databaseGeneration)
+      expect(replacementGeneration).not.toBe(String(initialDatabase.path.databaseGeneration))
+      expect(String(secondResult.value.path.databaseGeneration)).toBe(replacementGeneration)
+      expect(initialDatabase.isCurrent()).toBe(false)
+      expect(discoverCount).toBe(2)
+    } finally {
+      fixture.backend.gatt.discover = originalDiscover
+      await settle(fixture.controller, manager.destroy())
+    }
+    expectNoResources(fixture.backend.resourceCounters())
+  })
+
   test('coalesces concurrent rediscovery waiters after a pending initial discovery', async () => {
     const { fixture, manager } = await createFixture()
     const connection = await settle(fixture.controller, manager.connect(peer(), operation()))
@@ -1193,7 +1244,7 @@ describe('UnifiedBleCore lifecycle hardening', () => {
       error => ({ state: 'rejected', error })
     )
 
-    await settle(fixture.controller, initial)
+    const initialDatabase = await settle(fixture.controller, initial)
     await flushVirtual(fixture.controller)
 
     const [firstResult, secondResult] = await Promise.all([firstOutcome, secondOutcome])
@@ -1201,7 +1252,10 @@ describe('UnifiedBleCore lifecycle hardening', () => {
     expect(secondResult.state).toBe('fulfilled')
     firstResult.value.assertCurrent()
     secondResult.value.assertCurrent()
-    expect(String(firstResult.value.path.databaseGeneration)).toBe(String(secondResult.value.path.databaseGeneration))
+    const replacementGeneration = String(firstResult.value.path.databaseGeneration)
+    expect(replacementGeneration).not.toBe(String(initialDatabase.path.databaseGeneration))
+    expect(String(secondResult.value.path.databaseGeneration)).toBe(replacementGeneration)
+    expect(initialDatabase.isCurrent()).toBe(false)
     expect(Number(manager.localResourceCounters().databaseSnapshots)).toBe(1)
 
     await settle(fixture.controller, manager.destroy())

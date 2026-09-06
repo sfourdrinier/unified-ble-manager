@@ -725,6 +725,7 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
       if (
         current !== null &&
         current.isCurrent() &&
+        lastAwaited?.kind !== 'discover' &&
         (lastAwaited?.kind === 'rediscover' ||
           (startingDatabaseGeneration !== null &&
             String(current.path.databaseGeneration) !== String(startingDatabaseGeneration)))
@@ -735,15 +736,7 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
       if (registered !== undefined && registered !== lastAwaited) {
         lastAwaited = registered
         try {
-          const database = await awaitWithOperationAdmission(
-            registered.promise,
-            options,
-            this.options.now,
-            'rediscover'
-          )
-          if (database.isCurrent()) {
-            return database
-          }
+          await awaitWithOperationAdmission(registered.promise, options, this.options.now, 'rediscover')
         } catch (error) {
           if (isRediscoverCallerTerminal(error, options, this.options.now)) {
             throw error
