@@ -8,7 +8,8 @@
           {
             "sources": ["src/addon.mm"],
             "include_dirs": [
-              "<!@(node -p \"require('node-addon-api').include\")"
+              "<!@(node -p \"require('node-addon-api').include\")",
+              "../../protocol/include"
             ],
             "dependencies": ["<!(node -p \"require('node-addon-api').gyp\")"],
             "defines": ["NAPI_DISABLE_CPP_EXCEPTIONS", "NAPI_VERSION=8"],

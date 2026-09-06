@@ -72,6 +72,20 @@ if(UNIFIED_BLE_NATIVE_PROTOCOL_BUILD_TESTS)
     NAME unified_ble_native_protocol_v2
     COMMAND unified_ble_native_protocol_v2_tests
   )
+  add_executable(
+    unified_ble_corebluetooth_read_notify_provenance_tests
+    tests/OwnedCoreBluetoothReadNotifyProvenanceTests.cpp
+  )
+  target_include_directories(
+    unified_ble_corebluetooth_read_notify_provenance_tests
+    PRIVATE
+    include
+  )
+  unified_ble_enable_strict_warnings(unified_ble_corebluetooth_read_notify_provenance_tests)
+  add_test(
+    NAME unified_ble_corebluetooth_read_notify_provenance
+    COMMAND unified_ble_corebluetooth_read_notify_provenance_tests
+  )
 endif()
 
 option(UNIFIED_BLE_NATIVE_PROTOCOL_BUILD_BENCHMARKS "Build Native Protocol v2 host benchmarks" OFF)

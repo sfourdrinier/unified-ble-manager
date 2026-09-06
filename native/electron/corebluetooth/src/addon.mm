@@ -19,6 +19,9 @@
 #include <mutex>
 #include <string>
 #include <vector>
+#include "OwnedCoreBluetoothReadNotifyProvenance.hpp"
+
+namespace provenance = unified_ble::native_protocol::corebluetooth;
 
 static NSString *NormalizeUUID(NSString *uuid) {
   if (!uuid) return @"";
@@ -316,6 +319,12 @@ characteristicUUID:(NSString *)characteristicUUID
    characteristicUUID:(NSString *)characteristicUUID
  characteristicOccurrence:(NSInteger)characteristicOccurrence
         completion:(UBMVoidBlock)completion;
+- (void)applyReadNotifyRoute:(provenance::ValueUpdateRoute)route
+                pendingReads:(NSMutableDictionary<NSString *, UBMDataBlock> *)pendingReads
+                         key:(NSString *)key
+               notifyHandler:(UBMNotifyBlock)notifyHandler
+                       error:(NSError *)error
+                       value:(NSData *)value;
 - (void)invalidate:(nullable UBMVoidBlock)completion;
 @end
 
@@ -619,17 +628,32 @@ characteristicUUID:(NSString *)characteristicUUID
 
 - (NSError *)independentReadWhileNotifyingError {
   return [NSError errorWithDomain:@"UBMCoreBluetooth"
-                             code:413
+                             code:provenance::kIndependentReadElectronCode
                          userInfo:@{
                            NSLocalizedDescriptionKey :
                                @"Independent read is ambiguous while this characteristic is notifying"
                          }];
 }
 
+- (NSError *)overlappingReadError {
+  return [NSError errorWithDomain:@"UBMCoreBluetooth"
+                             code:provenance::kOverlappingReadElectronCode
+                         userInfo:@{NSLocalizedDescriptionKey : @"A read is already pending for this characteristic"}];
+}
+
+- (NSError *)subscribeWhileReadPendingError {
+  return [NSError errorWithDomain:@"UBMCoreBluetooth"
+                             code:provenance::kSubscribeWhileReadElectronCode
+                         userInfo:@{
+                           NSLocalizedDescriptionKey :
+                               @"A notification state change cannot start while a read is pending for this characteristic"
+                         }];
+}
+
 - (BOOL)independentReadIsAmbiguousForCharacteristic:(BOOL)isNotifying
                                       notifyHandler:(UBMNotifyBlock)notifyHandler
                                 pendingNotifyEnable:(BOOL)pendingNotifyEnable {
-  return isNotifying || notifyHandler != nil || pendingNotifyEnable;
+  return provenance::independentReadIsAmbiguous(isNotifying, notifyHandler != nil, pendingNotifyEnable, false);
 }
 
 - (void)failPendingIndependentReadAt:(NSString *)directKey {
@@ -672,6 +696,10 @@ characteristicUUID:(NSString *)characteristicUUID
       return;
     }
     NSString *key = [self directCharacteristicKey:deviceId characteristic:characteristic];
+    if (self.pendingReadAt[key]) {
+      completion([self subscribeWhileReadPendingError]);
+      return;
+    }
     UBMVoidBlock prior = self.pendingNotifyEnableAt[key];
     self.notifyHandlersAt[key] = handler;
     self.pendingNotifyEnableAt[key] = completion;
@@ -715,6 +743,10 @@ characteristicUUID:(NSString *)characteristicUUID
                                             notifyHandler:self.notifyHandlersAt[directKey]
                                       pendingNotifyEnable:self.pendingNotifyEnableAt[directKey] != nil]) {
       completion(nil, [self independentReadWhileNotifyingError]);
+      return;
+    }
+    if (self.pendingReadAt[directKey]) {
+      completion(nil, [self overlappingReadError]);
       return;
     }
     self.pendingReadAt[directKey] = completion;
@@ -1226,6 +1258,10 @@ characteristicUUID:(NSString *)characteristicUUID
       completion(nil, [self independentReadWhileNotifyingError]);
       return;
     }
+    if (self.pendingRead[key]) {
+      completion(nil, [self overlappingReadError]);
+      return;
+    }
     self.pendingRead[key] = completion;
     [p readValueForCharacteristic:ch];
   });
@@ -1322,6 +1358,10 @@ characteristicUUID:(NSString *)characteristicUUID
       return;
     }
     NSString *key = [self notifyKey:deviceId service:serviceUUID char:characteristicUUID];
+    if (self.pendingRead[key]) {
+      completion([self subscribeWhileReadPendingError]);
+      return;
+    }
     // Complete only from didUpdateNotificationStateForCharacteristic (CCCD enable result).
     UBMVoidBlock priorEnable = self.pendingNotifyEnable[key];
     self.notifyHandlers[key] = handler;
@@ -1346,6 +1386,7 @@ characteristicUUID:(NSString *)characteristicUUID
     CBPeripheral *p = [self requireConnected:deviceId error:&err];
     NSString *key = [self notifyKey:deviceId service:serviceUUID char:characteristicUUID];
     [self.notifyHandlers removeObjectForKey:key];
+    [self failPendingIndependentRead:key];
     // If enable was still pending, reject it so JS does not hang.
     UBMVoidBlock pendingEnable = self.pendingNotifyEnable[key];
     if (pendingEnable) {
@@ -1401,6 +1442,7 @@ characteristicUUID:(NSString *)characteristicUUID
     }
     NSString *key = [self directCharacteristicKey:deviceId characteristic:characteristic];
     [self.notifyHandlersAt removeObjectForKey:key];
+    [self failPendingIndependentReadAt:key];
     UBMVoidBlock pending = self.pendingNotifyEnableAt[key];
     if (pending) {
       [self.pendingNotifyEnableAt removeObjectForKey:key];
@@ -1643,64 +1685,82 @@ characteristicUUID:(NSString *)characteristicUUID
   done(uuids, nil);
 }
 
+- (void)applyReadNotifyRoute:(provenance::ValueUpdateRoute)route
+                pendingReads:(NSMutableDictionary<NSString *, UBMDataBlock> *)pendingReads
+                         key:(NSString *)key
+               notifyHandler:(UBMNotifyBlock)notifyHandler
+                       error:(NSError *)error
+                       value:(NSData *)value {
+  switch (route) {
+    case provenance::ValueUpdateRoute::CompletePendingRead: {
+      UBMDataBlock done = pendingReads[key];
+      if (!done) return;
+      [pendingReads removeObjectForKey:key];
+      if (error) done(nil, error);
+      else done(value ?: [NSData data], nil);
+      return;
+    }
+    case provenance::ValueUpdateRoute::RejectPendingRead:
+      if (pendingReads == self.pendingReadAt) {
+        [self failPendingIndependentReadAt:key];
+      } else {
+        [self failPendingIndependentRead:key];
+      }
+      return;
+    case provenance::ValueUpdateRoute::DeliverNotification:
+      if (notifyHandler && !error && value) notifyHandler(value);
+      return;
+    case provenance::ValueUpdateRoute::Ignore:
+      return;
+  }
+}
+
 - (void)peripheral:(CBPeripheral *)peripheral
     didUpdateValueForCharacteristic:(CBCharacteristic *)characteristic
                               error:(NSError *)error {
   NSString *deviceId = peripheral.identifier.UUIDString;
   NSString *directKey = [self directCharacteristicKey:deviceId characteristic:characteristic];
-  BOOL directAmbiguous = [self independentReadIsAmbiguousForCharacteristic:characteristic.isNotifying
-                                                            notifyHandler:self.notifyHandlersAt[directKey]
-                                                      pendingNotifyEnable:self.pendingNotifyEnableAt[directKey] != nil];
-  if (directAmbiguous) {
-    UBMDataBlock stolenDirectRead = self.pendingReadAt[directKey];
-    if (stolenDirectRead) {
-      [self.pendingReadAt removeObjectForKey:directKey];
-      stolenDirectRead(nil, [self independentReadWhileNotifyingError]);
-    }
-    UBMNotifyBlock directNotify = self.notifyHandlersAt[directKey];
-    if (directNotify && !error && characteristic.value) {
-      directNotify(characteristic.value);
-      return;
-    }
-  } else {
-    UBMDataBlock directReadDone = self.pendingReadAt[directKey];
-    if (directReadDone) {
-      [self.pendingReadAt removeObjectForKey:directKey];
-      if (error) directReadDone(nil, error);
-      else directReadDone(characteristic.value ?: [NSData data], nil);
-      return;
-    }
-    UBMNotifyBlock directNotify = self.notifyHandlersAt[directKey];
-    if (directNotify && !error && characteristic.value) {
-      directNotify(characteristic.value);
-      return;
-    }
+  const bool occurrenceStatePresent = self.pendingReadAt[directKey] != nil ||
+      self.notifyHandlersAt[directKey] != nil || self.pendingNotifyEnableAt[directKey] != nil;
+  const bool occurrenceAmbiguous = provenance::independentReadIsAmbiguous(
+      characteristic.isNotifying,
+      self.notifyHandlersAt[directKey] != nil,
+      self.pendingNotifyEnableAt[directKey] != nil,
+      false);
+  const auto occurrenceRoute = provenance::routeValueUpdate(
+      self.pendingReadAt[directKey] != nil,
+      characteristic.isNotifying,
+      self.notifyHandlersAt[directKey] != nil,
+      self.pendingNotifyEnableAt[directKey] != nil,
+      false,
+      error != nil,
+      characteristic.value != nil);
+  [self applyReadNotifyRoute:occurrenceRoute
+                pendingReads:self.pendingReadAt
+                         key:directKey
+               notifyHandler:self.notifyHandlersAt[directKey]
+                       error:error
+                       value:characteristic.value];
+  if (provenance::occurrenceValueUpdateShouldReturn(occurrenceAmbiguous, occurrenceStatePresent)) {
+    return;
   }
   NSString *sUUID = NormalizeUUID(characteristic.service.UUID.UUIDString);
   NSString *cUUID = NormalizeUUID(characteristic.UUID.UUIDString);
   NSString *key = [self notifyKey:deviceId service:sUUID char:cUUID];
-  BOOL uuidAmbiguous = [self independentReadIsAmbiguousForCharacteristic:characteristic.isNotifying
-                                                           notifyHandler:self.notifyHandlers[key]
-                                                     pendingNotifyEnable:self.pendingNotifyEnable[key] != nil];
-  if (uuidAmbiguous) {
-    UBMDataBlock stolenRead = self.pendingRead[key];
-    if (stolenRead) {
-      [self.pendingRead removeObjectForKey:key];
-      stolenRead(nil, [self independentReadWhileNotifyingError]);
-    }
-    UBMNotifyBlock notify = self.notifyHandlers[key];
-    if (notify && !error && characteristic.value) notify(characteristic.value);
-    return;
-  }
-  UBMDataBlock readDone = self.pendingRead[key];
-  if (readDone) {
-    [self.pendingRead removeObjectForKey:key];
-    if (error) readDone(nil, error);
-    else readDone(characteristic.value ?: [NSData data], nil);
-    return;
-  }
-  UBMNotifyBlock notify = self.notifyHandlers[key];
-  if (notify && !error && characteristic.value) notify(characteristic.value);
+  const auto uuidRoute = provenance::routeValueUpdate(
+      self.pendingRead[key] != nil,
+      characteristic.isNotifying,
+      self.notifyHandlers[key] != nil,
+      self.pendingNotifyEnable[key] != nil,
+      false,
+      error != nil,
+      characteristic.value != nil);
+  [self applyReadNotifyRoute:uuidRoute
+                pendingReads:self.pendingRead
+                         key:key
+               notifyHandler:self.notifyHandlers[key]
+                       error:error
+                       value:characteristic.value];
 }
 
 - (void)peripheral:(CBPeripheral *)peripheral
@@ -2112,6 +2172,11 @@ static void CallJs(Napi::Env env, Napi::Function jsCallback, JsCallbackData *dat
       napi_value msg, err;
       napi_create_string_utf8(env, data->message.c_str(), NAPI_AUTO_LENGTH, &msg);
       napi_create_error(env, nullptr, msg, &err);
+      if (data->number != INT_MIN) {
+        napi_value code;
+        napi_create_int32(env, data->number, &code);
+        napi_set_named_property(env, err, "code", code);
+      }
       napi_reject_deferred(env, data->deferred, err);
     } else if (data->type == "resolve_undefined") {
       napi_value u;
@@ -2171,6 +2236,7 @@ static void CompleteVoid(Napi::ThreadSafeFunction tsfn, napi_deferred deferred, 
   if (error) {
     data->type = "reject";
     data->message = error.localizedDescription ? [error.localizedDescription UTF8String] : "error";
+    data->number = static_cast<int>(error.code);
   } else {
     data->type = "resolve_undefined";
   }
@@ -2571,6 +2637,7 @@ class CoreBluetoothAddon : public Napi::ObjectWrap<CoreBluetoothAddon> {
                         data->type = "reject";
                         data->message =
                             error.localizedDescription ? [error.localizedDescription UTF8String] : "read failed";
+                        data->number = static_cast<int>(error.code);
                       } else {
                         data->type = "resolve_buffer";
                         auto *bytes = (const uint8_t *)dataBytes.bytes;
@@ -2638,6 +2705,7 @@ class CoreBluetoothAddon : public Napi::ObjectWrap<CoreBluetoothAddon> {
                         if (error) {
                           data->type = "reject";
                           data->message = error.localizedDescription ? [error.localizedDescription UTF8String] : "readCharacteristicAt failed";
+                          data->number = static_cast<int>(error.code);
                         } else {
                           data->type = "resolve_buffer";
                           const auto *bytes = static_cast<const uint8_t *>(dataBytes.bytes);

@@ -55,7 +55,12 @@ No changes yet.
   waiting under a filter that cannot observe the target.
 - Apple CoreBluetooth rejects an independent GATT read while that characteristic
   is notifying, because `didUpdateValueFor` cannot distinguish a read response
-  from a notification. Electron/Node CoreBluetooth uses the same policy.
+  from a notification. Electron/Node CoreBluetooth uses the same policy. A read
+  admitted while idle still completes from its ATT response if CCCD enable
+  races it; overlapping reads and subscribe-while-read are rejected; fused
+  values that cannot be attributed are dropped. Remaining native reject codes
+  (iOS 1031/1011/1032, Electron 413/414/415) map to `gatt.read-failed` or
+  `gatt.subscribe-failed`, not `platform.failure`.
 - Android `setCharacteristicNotification(...) == false` is a local registration
   failure, not proven link loss. Generation-matched disconnect and GATT status 19
   remain the physical-loss authority. The 4.0.22 250 ms CCCD/disconnect two-signal

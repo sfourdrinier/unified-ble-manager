@@ -52,6 +52,7 @@ extension OwnedCoreBluetoothProtocolRadio {
     descriptorOperations.cancel(operationIdentifier)
     for (address, pending) in pendingNotify where pending.operationIdentifier == operationIdentifier {
       pendingNotify.removeValue(forKey: address)
+      failPendingIndependentRead(for: address)
       // `subscriptions` remains installed while an unsubscribe is pending.  Its
       // cancellation therefore restores CCCD rather than disabling it.
       cleanup.notificationDesiredStates[address] = pending.enabled ? false : true
@@ -308,8 +309,15 @@ extension OwnedCoreBluetoothProtocolRadio {
     OwnedCoreBluetoothReadNotifyProvenance.independentReadIsAmbiguous(
       isNotifying: characteristic.isNotifying,
       hasInstalledSubscription: subscriptions[address] != nil,
-      pendingNotifyEnable: pendingNotify[address]?.enabled == true
+      pendingNotifyEnable: pendingNotify[address] != nil,
+      pendingCancellationCleanup: hasPendingCancellationCleanup(for: address)
     )
+  }
+
+  func hasPendingCancellationCleanup(for address: CharacteristicAddress) -> Bool {
+    pendingCancellationCleanup.values.contains { cleanup in
+      cleanup.notificationDesiredStates[address] != nil || cleanup.notificationAwaitingCallbacks.contains(address)
+    }
   }
 
   func failPendingIndependentRead(for address: CharacteristicAddress) {
@@ -327,6 +335,7 @@ extension OwnedCoreBluetoothProtocolRadio {
       isNotifying: characteristic.isNotifying,
       hasInstalledSubscription: subscriptions[address] != nil,
       pendingNotifyEnable: pendingNotify[address]?.enabled == true,
+      pendingCancellationCleanup: hasPendingCancellationCleanup(for: address),
       hasError: error != nil,
       hasValue: characteristic.value != nil
     )
@@ -335,9 +344,8 @@ extension OwnedCoreBluetoothProtocolRadio {
       if let pending = pendingRead.removeValue(forKey: address) {
         pending.completion(characteristic.value as NSData?, error as NSError?)
       }
-    case .rejectPendingReadAndDeliverNotification:
+    case .rejectPendingRead:
       failPendingIndependentRead(for: address)
-      fallthrough
     case .deliverNotification:
       let pendingSubscriptionIdentifier = pendingNotify[address].flatMap { pending in
         pending.enabled ? pending.subscriptionIdentifier : nil

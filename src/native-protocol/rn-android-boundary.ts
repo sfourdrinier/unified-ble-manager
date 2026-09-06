@@ -1,6 +1,7 @@
 // src/native-protocol/rn-android-boundary.ts
 
 import { contractError } from '../backend-contract/errors'
+import { bleErrorCodeForCoreBluetoothNativeCode } from '../backends/corebluetooth/corebluetooth-read-notify-provenance'
 import type { SecurityPairOptions } from '../backend-contract/security'
 import {
   MAXIMUM_REQUESTED_ATT_MTU,
@@ -1469,6 +1470,15 @@ function nativeOperationFailure(error: NativeProtocolRecord | null, operation: s
       domain: nativeDomain,
       code: nativeCode,
       safeMessage: safeMessage ?? `Native ${operation} operation ended because the connection was lost`,
+      metadata
+    })
+  }
+  const readNotifyCode = bleErrorCodeForCoreBluetoothNativeCode(nativeCode)
+  if (readNotifyCode !== null) {
+    return contractError(readNotifyCode, 'gatt', `rn-android-boundary.${operation}`, {
+      domain: nativeDomain,
+      code: nativeCode,
+      safeMessage: safeMessage ?? `Native ${operation} operation failed`,
       metadata
     })
   }

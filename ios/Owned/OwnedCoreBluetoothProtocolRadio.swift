@@ -688,6 +688,10 @@ public final class OwnedCoreBluetoothProtocolRadio: NSObject, CBPeripheralDelega
         completion(self.error(code: 1017, message: "The generation-bound characteristic path is stale"))
         return
       }
+      guard self.pendingRead[address] == nil else {
+        completion(self.error(code: 1032, message: OwnedCoreBluetoothReadNotifyProvenance.subscribeWhileReadPendingMessage))
+        return
+      }
       guard self.pendingNotify[address] == nil else {
         completion(self.error(code: 1018, message: "A notification state change is already pending for this characteristic"))
         return

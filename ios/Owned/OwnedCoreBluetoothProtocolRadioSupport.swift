@@ -107,24 +107,43 @@ enum OwnedCoreBluetoothProtocolRadioSupport {
 /// CoreBluetooth fuses ATT reads and notifications into `didUpdateValueFor`.
 /// An independent `read()` while that characteristic is notifying cannot be
 /// attributed, so the radio rejects it rather than guessing callback order.
+/// A read admitted while idle still owns its ATT response if CCCD enable races
+/// it before `isNotifying` flips; fused values that cannot be attributed are
+/// dropped instead of being re-emitted as notifications.
 enum OwnedCoreBluetoothReadNotifyProvenance {
   static let independentReadWhileNotifyingCode = 1031
   static let independentReadWhileNotifyingMessage =
     "Independent read is ambiguous while this characteristic is notifying"
+  static let subscribeWhileReadPendingCode = 1032
+  static let subscribeWhileReadPendingMessage =
+    "A notification state change cannot start while a read is pending for this characteristic"
 
   static func independentReadIsAmbiguous(
     isNotifying: Bool,
     hasInstalledSubscription: Bool,
-    pendingNotifyEnable: Bool
+    pendingNotifyEnable: Bool,
+    pendingCancellationCleanup: Bool
   ) -> Bool {
-    isNotifying || hasInstalledSubscription || pendingNotifyEnable
+    isNotifying || hasInstalledSubscription || pendingNotifyEnable || pendingCancellationCleanup
   }
 
   enum ValueUpdateRoute: Equatable {
     case completePendingRead
-    case rejectPendingReadAndDeliverNotification
+    case rejectPendingRead
     case deliverNotification
     case ignore
+  }
+
+  enum SubscribeAdmission: Equatable {
+    case admit
+    case rejectPendingRead
+    case rejectPendingNotify
+  }
+
+  static func admitSubscribe(hasPendingRead: Bool, hasPendingNotify: Bool) -> SubscribeAdmission {
+    if hasPendingRead { return .rejectPendingRead }
+    if hasPendingNotify { return .rejectPendingNotify }
+    return .admit
   }
 
   static func routeValueUpdate(
@@ -132,29 +151,26 @@ enum OwnedCoreBluetoothReadNotifyProvenance {
     isNotifying: Bool,
     hasInstalledSubscription: Bool,
     pendingNotifyEnable: Bool,
+    pendingCancellationCleanup: Bool,
     hasError: Bool,
     hasValue: Bool
   ) -> ValueUpdateRoute {
-    let notifying = independentReadIsAmbiguous(
-      isNotifying: isNotifying,
-      hasInstalledSubscription: hasInstalledSubscription,
-      pendingNotifyEnable: pendingNotifyEnable
-    )
-    if notifying {
-      if hasPendingRead {
-        return .rejectPendingReadAndDeliverNotification
-      }
-      if !hasError && hasValue && (hasInstalledSubscription || pendingNotifyEnable) {
-        return .deliverNotification
-      }
-      return .ignore
-    }
-    if hasPendingRead {
+    if hasPendingRead && !isNotifying && !hasInstalledSubscription && !pendingCancellationCleanup {
       return .completePendingRead
     }
-    if !hasError && hasValue && (hasInstalledSubscription || pendingNotifyEnable) {
+    if hasPendingRead {
+      return .rejectPendingRead
+    }
+    if !hasError && hasValue && (hasInstalledSubscription || pendingNotifyEnable) && !pendingCancellationCleanup {
       return .deliverNotification
     }
     return .ignore
+  }
+
+  static func occurrenceValueUpdateShouldReturn(
+    occurrenceAmbiguous: Bool,
+    occurrenceStatePresent: Bool
+  ) -> Bool {
+    occurrenceAmbiguous || occurrenceStatePresent
   }
 }

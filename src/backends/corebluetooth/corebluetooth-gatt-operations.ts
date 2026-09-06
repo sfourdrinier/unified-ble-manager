@@ -2,6 +2,7 @@
 
 import type { BackendConnection, BackendSubscription } from '../../backend-contract/backend'
 import { contractError, type CleanupRecord } from '../../backend-contract/errors'
+import { mapCoreBluetoothNativeFailure } from './corebluetooth-read-notify-provenance'
 import type { CharacteristicPath, DatabasePath, DescriptorPath, GattDatabase } from '../../backend-contract/gatt'
 import type {
   BackendOperationDispatch,
@@ -99,10 +100,16 @@ export class CoreBluetoothGattOperations {
     return this.backend.dispatcher.dispatch(
       request.operation,
       'direct-gatt.gatt.read',
-      async () => ({
-        value: ownBytes(await this.backend.boundary.read(address), maximumValueBytes),
-        terminal: successfulTerminal(request.operation)
-      }),
+      async () => {
+        try {
+          return {
+            value: ownBytes(await this.backend.boundary.read(address), maximumValueBytes),
+            terminal: successfulTerminal(request.operation)
+          }
+        } catch (error) {
+          throw mapCoreBluetoothNativeFailure(error, 'direct-gatt.gatt.read', 'gatt.read-failed')
+        }
+      },
       String(path.connectionId)
     )
   }
@@ -243,7 +250,7 @@ export class CoreBluetoothGattOperations {
             if (this.backend.subscriptions.get(key) === enabling) {
               this.backend.subscriptions.delete(key)
             }
-            throw error
+            throw mapCoreBluetoothNativeFailure(error, 'direct-gatt.gatt.subscribe', 'gatt.subscribe-failed')
           }
           if (
             this.backend.subscriptions.get(key) !== enabling ||
