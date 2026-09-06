@@ -200,22 +200,17 @@ async function discoverBluezAddressDevice(
   clientId: ClientId<string, string>,
   options: PublicOperationOptions
 ): Promise<void> {
-  const group = runtime.scanGroup
-  if (group !== null) {
-    if (!group.startupComplete) {
-      await awaitSharedBluezTransition(group.startupSettled, options, runtime.now, 'bluez.connect.address-scan-start')
+  await waitForBluezScanGroupToSettle(runtime, options)
+  const current = runtime.scanGroup
+  if (current !== null && isReusableBluezScanGroup(current)) {
+    const owner = current.consumers.get(String(current.ownerLeaseId))
+    if (owner !== undefined && scanFilterObservesAddress(owner.options, target)) {
+      await waitForBluezInterfacePresence(runtime, devicePath, BLUEZ_DEVICE_INTERFACE, options)
+      return
     }
-    const current = runtime.scanGroup
-    if (current !== null) {
-      const owner = current.consumers.get(String(current.ownerLeaseId))
-      if (owner !== undefined && scanFilterObservesAddress(owner.options, target)) {
-        await waitForBluezInterfacePresence(runtime, devicePath, BLUEZ_DEVICE_INTERFACE, options)
-        return
-      }
-      if (owner !== undefined) {
-        await widenBluezScanForAddress(runtime, current, owner, devicePath, options)
-        return
-      }
+    if (owner !== undefined) {
+      await widenBluezScanForAddress(runtime, current, owner, devicePath, options)
+      return
     }
   }
   const lease = await startBluezScan(runtime, addressDiscoveryScanOptions(target, options), clientId)
@@ -228,6 +223,37 @@ async function discoverBluezAddressDevice(
       console.error('[connectBluezConnection] Address bootstrap discovery stop failed:', stopError)
     }
   }
+}
+
+function isReusableBluezScanGroup(group: BluezScanGroup): boolean {
+  return group.state === 'active' && !group.stopRequested
+}
+
+async function waitForBluezScanGroupToSettle(
+  runtime: BluezBackendRuntime,
+  options: PublicOperationOptions
+): Promise<void> {
+  const group = runtime.scanGroup
+  if (group === null) {
+    return
+  }
+  if (!group.startupComplete) {
+    await awaitSharedBluezTransition(group.startupSettled, options, runtime.now, 'bluez.connect.address-scan-start')
+  }
+  const current = runtime.scanGroup
+  if (current === null || isReusableBluezScanGroup(current)) {
+    return
+  }
+  const owner = current.consumers.get(String(current.ownerLeaseId))
+  if (owner === undefined) {
+    return
+  }
+  await awaitSharedBluezTransition(
+    runtime.stopScan(owner).then(() => undefined),
+    options,
+    runtime.now,
+    'bluez.connect.address-scan-stop'
+  )
 }
 
 async function widenBluezScanForAddress(
