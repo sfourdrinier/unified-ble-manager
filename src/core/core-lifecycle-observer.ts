@@ -1,16 +1,32 @@
 // src/core/core-lifecycle-observer.ts
 
 import { BackendContractError, contractError } from '../backend-contract/errors'
-import type { CleanupRecord } from '../backend-contract/errors'
+import type { CleanupFailure, CleanupRecord } from '../backend-contract/errors'
 import { CoreTraceRecorder } from './trace-recorder'
 import type { CoreTraceResource } from './trace-recorder'
 
+export interface RetainedCleanup {
+  readonly resourceKind: CoreTraceResource
+  readonly transition: string
+  retry(): Promise<CleanupRecord>
+}
+
 /** Records asynchronous lifecycle cleanup without allowing background failures to escape unchecked. */
 export class CoreLifecycleObserver {
+  private readonly retainedCleanups = new Set<RetainedCleanup>()
+
   constructor(
     private readonly trace: CoreTraceRecorder,
     private readonly now: () => number
   ) {}
+
+  retainCleanup(cleanup: RetainedCleanup): void {
+    this.retainedCleanups.add(cleanup)
+  }
+
+  dropCleanup(cleanup: RetainedCleanup): void {
+    this.retainedCleanups.delete(cleanup)
+  }
 
   observeCleanup(cleanup: Promise<CleanupRecord>, transition: string): void {
     cleanup.then(
@@ -55,6 +71,19 @@ export class CoreLifecycleObserver {
         ]
       }
     }
+  }
+
+  async retryRetainedCleanups(): Promise<CleanupRecord> {
+    const failures: CleanupFailure[] = []
+    for (const cleanup of [...this.retainedCleanups]) {
+      const result = await this.captureCleanup(cleanup.retry(), cleanup.resourceKind, cleanup.transition)
+      if (result.state === 'released') {
+        this.retainedCleanups.delete(cleanup)
+      } else {
+        failures.push(...result.failures)
+      }
+    }
+    return failures.length === 0 ? { state: 'released', failures: [] } : { state: 'release-failed', failures }
   }
 
   private record(

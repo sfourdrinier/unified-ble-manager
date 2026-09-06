@@ -45,7 +45,7 @@ import { CoreBoundedStream } from './bounded-stream'
 import { CoreOperationCoordinator } from './operation-coordinator'
 import { ResourceLedger } from './resource-ledger'
 import { CoreSubscription, SubscriptionRegistry } from './subscription-registry'
-import { CoreTraceRecorder } from './trace-recorder'
+import { CoreTraceRecorder, type CoreTraceResource } from './trace-recorder'
 import { CoreLifecycleObserver } from './core-lifecycle-observer'
 import { CoreConnection, CoreGattDatabase } from './core-gatt-handles'
 import { readCoreAdapterState } from './core-adapter-state'
@@ -121,6 +121,11 @@ interface TrackedScan<Attachment extends string> extends CoreScanSession<Attachm
   activeDeadline: CoreDeadlineHandle | null
 }
 
+interface CoreGattDiscovery<Attachment extends string, Identity extends BackendIdentity<Attachment>> {
+  readonly kind: 'discover' | 'rediscover'
+  readonly promise: Promise<CoreGattDatabase<Attachment, Identity>>
+}
+
 interface TrackedAdapterStateWatch<Attachment extends string> {
   readonly initial: AdapterStateSnapshot<Attachment>
   readonly values: BoundedAsyncStream<AdapterStateSnapshot<Attachment>>
@@ -153,9 +158,11 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
   private destroyResult: Promise<CleanupRecord> | null = null
   private resourceReleaseResult: Promise<CleanupRecord> | null = null
   private backendDestroyResult: Promise<CleanupRecord> | null = null
-  private readonly discoveries = new Map<string, Promise<CoreGattDatabase<Attachment, Identity>>>()
+  private readonly discoveries = new Map<string, CoreGattDiscovery<Attachment, Identity>>()
   private readonly adapterStateWatches = new Set<TrackedAdapterStateWatch<Attachment>>()
   private readonly pendingAdapterStateWatches = new Set<(error: BackendContractError) => void>()
+  private readonly pendingScanAcquisitions = new Set<(error: BackendContractError) => void>()
+  private readonly pendingConnectAcquisitions = new Set<(error: BackendContractError) => void>()
   private admissionEpoch = 1
   private nextOperation = 1
 
@@ -451,67 +458,65 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
       options.delivery.overflowPolicy
     )
     this.aggregateQuota.register(stream)
-    let lease: ScanLease<Attachment, string>
-    try {
-      if (options.sharing.mode === 'owner') {
-        const ownerOptions: OwnerScanOptions<Attachment, string> = { ...options, sharing: options.sharing }
-        lease = await this.backend.scanner.start(ownerOptions, this.construction.clientId)
-      } else {
-        lease = await this.backend.scanner.join(
-          options.sharing.sharedLeaseId,
-          options.sharing.token,
-          this.construction.clientId
-        )
+    return new Promise((resolve, reject) => {
+      let cancelled = false
+      const cancel = (error: BackendContractError) => {
+        if (cancelled) {
+          return
+        }
+        cancelled = true
+        options.signal?.removeEventListener('abort', onAbort)
+        reject(error)
       }
-    } catch (error) {
-      this.aggregateQuota.unregister(stream)
-      if (error instanceof BackendContractError) {
-        throw error
+      const onAbort = () => cancel(contractError('operation.aborted', 'core', 'scan'))
+      this.pendingScanAcquisitions.add(cancel)
+      options.signal?.addEventListener('abort', onAbort, { once: true })
+      const acquire = async () => {
+        const releaseStream = () => {
+          stream.closeWithReason('owner-released')
+          this.aggregateQuota.unregister(stream)
+        }
+        try {
+          let lease: ScanLease<Attachment, string>
+          try {
+            lease = await this.startOrJoinScan(options)
+          } catch (error) {
+            releaseStream()
+            throw error instanceof BackendContractError
+              ? error
+              : contractError('scan.start-failed', 'scan', 'unified-core.scan')
+          }
+          if (
+            cancelled ||
+            this.coreState !== 'ready' ||
+            this.admissionEpoch !== admissionEpoch ||
+            abortRequested(options.signal)
+          ) {
+            releaseStream()
+            if (!cancelled) {
+              cancel(
+                abortRequested(options.signal)
+                  ? contractError('operation.aborted', 'core', 'scan')
+                  : contractError('operation.cancelled-by-destroy', 'core', 'scan')
+              )
+            }
+            await this.compensateUnadoptedLease(lease.stop.bind(lease), 'scan', 'scan-stale-admission-release')
+            return
+          }
+          resolve(this.adoptScan(lease, stream, options))
+        } catch (error) {
+          if (!cancelled) {
+            reject(error)
+          } else {
+            throw error
+          }
+        } finally {
+          this.pendingScanAcquisitions.delete(cancel)
+          options.signal?.removeEventListener('abort', onAbort)
+        }
       }
-      throw contractError('scan.start-failed', 'scan', 'unified-core.scan')
-    }
-    try {
-      this.assertAdmissionCurrent(admissionEpoch, options, 'scan')
-    } catch (error) {
-      stream.closeWithReason('owner-released')
-      this.aggregateQuota.unregister(stream)
-      await this.lifecycleObserver.captureCleanup(lease.stop(), 'scan', 'scan-stale-admission-release')
-      throw error
-    }
-    const tracked: TrackedScan<Attachment> = {
-      scanSessionId: lease.scanSessionId,
-      leaseId: lease.leaseId,
-      shareToken: lease.shareToken,
-      observations: stream,
-      lease,
-      stream,
-      ownsPhysicalController: options.sharing.mode === 'owner',
-      stopInFlight: null,
-      released: false,
-      activeAbortListener: null,
-      activeAbortSignal: null,
-      activeDeadline: null,
-      stop: () => this.stopScan(tracked)
-    }
-    this.scans.set(String(lease.leaseId), tracked)
-    this.resourceLedger.increment('scanConsumers')
-    if (tracked.ownsPhysicalController) {
-      this.resourceLedger.increment('activeScanControllers')
-    }
-    activateScanLifetime(
-      tracked,
-      options,
-      this.options.now,
-      this.options.timer,
-      () => this.stopScan(tracked),
-      (cleanup, transition) => this.lifecycleObserver.observeCleanup(cleanup, transition)
-    )
-    this.lifecycleObserver.observeBackground(
-      this.forwardScanSource(tracked, lease.observations),
-      'scan',
-      'scan-source-pump'
-    )
-    return tracked
+      this.lifecycleObserver.observeBackground(acquire(), 'scan', 'scan-acquisition')
+    })
   }
 
   planScan(query: NormalizedScanQuery): ScanPlan | null {
@@ -523,25 +528,66 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
     this.assertReady('connect')
     this.assertOperationAdmission(options, 'connect')
     const admissionEpoch = this.admissionEpoch
-    let lease: ConnectionLease<Attachment, string, string>
-    try {
-      lease = await this.backend.connections.connect(peerId, this.construction.clientId, options)
-    } catch (error) {
-      if (error instanceof BackendContractError) {
-        throw error
+    return new Promise((resolve, reject) => {
+      let cancelled = false
+      const cancel = (error: BackendContractError) => {
+        if (cancelled) {
+          return
+        }
+        cancelled = true
+        options.signal?.removeEventListener('abort', onAbort)
+        reject(error)
       }
-      throw contractError('connection.failed', 'connection', 'unified-core.connect')
-    }
-    try {
-      this.assertAdmissionCurrent(admissionEpoch, options, 'connect')
-    } catch (error) {
-      await this.lifecycleObserver.captureCleanup(lease.release(), 'connection', 'connect-stale-admission-release')
-      throw error
-    }
-    const connection = new CoreConnection(this, lease, this.connectionControls)
-    this.connections.set(String(lease.connection.connectionId), connection)
-    this.resourceLedger.increment('connectionLeases')
-    return connection
+      const onAbort = () => cancel(contractError('operation.aborted', 'core', 'connect'))
+      this.pendingConnectAcquisitions.add(cancel)
+      options.signal?.addEventListener('abort', onAbort, { once: true })
+      const acquire = async () => {
+        try {
+          let lease: ConnectionLease<Attachment, string, string>
+          try {
+            lease = await this.backend.connections.connect(peerId, this.construction.clientId, options)
+          } catch (error) {
+            throw error instanceof BackendContractError
+              ? error
+              : contractError('connection.failed', 'connection', 'unified-core.connect')
+          }
+          if (
+            cancelled ||
+            this.coreState !== 'ready' ||
+            this.admissionEpoch !== admissionEpoch ||
+            abortRequested(options.signal)
+          ) {
+            if (!cancelled) {
+              cancel(
+                abortRequested(options.signal)
+                  ? contractError('operation.aborted', 'core', 'connect')
+                  : contractError('operation.cancelled-by-destroy', 'core', 'connect')
+              )
+            }
+            await this.compensateUnadoptedLease(
+              lease.release.bind(lease),
+              'connection',
+              'connect-stale-admission-release'
+            )
+            return
+          }
+          const connection = new CoreConnection(this, lease, this.connectionControls)
+          this.connections.set(String(lease.connection.connectionId), connection)
+          this.resourceLedger.increment('connectionLeases')
+          resolve(connection)
+        } catch (error) {
+          if (!cancelled) {
+            reject(error)
+          } else {
+            throw error
+          }
+        } finally {
+          this.pendingConnectAcquisitions.delete(cancel)
+          options.signal?.removeEventListener('abort', onAbort)
+        }
+      }
+      this.lifecycleObserver.observeBackground(acquire(), 'connection', 'connect-acquisition')
+    })
   }
 
   async destroy(): Promise<CleanupRecord> {
@@ -612,11 +658,11 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
     const key = String(connection.resource.connectionId)
     const existing = this.discoveries.get(key)
     if (existing !== undefined) {
-      const database = await awaitWithOperationAdmission(existing, options, this.options.now, 'discover')
+      const database = await awaitWithOperationAdmission(existing.promise, options, this.options.now, 'discover')
       database.assertCurrent()
       return database
     }
-    const discovery = discoverCoreGattDatabase(
+    const promise = discoverCoreGattDatabase(
       this,
       this.backend,
       this.resourceLedger,
@@ -629,9 +675,10 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
       null,
       null
     )
+    const discovery: CoreGattDiscovery<Attachment, Identity> = { kind: 'discover', promise }
     this.discoveries.set(key, discovery)
     try {
-      return await discovery
+      return await promise
     } finally {
       if (this.discoveries.get(key) === discovery) {
         this.discoveries.delete(key)
@@ -649,14 +696,46 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
   ): Promise<CoreGattDatabase<Attachment, Identity>> {
     this.assertReady('rediscover')
     this.assertOperationAdmission(options, 'rediscover')
+    connection.assertCurrent()
     const key = String(connection.resource.connectionId)
+    const connectionGeneration = connection.resource.connectionGeneration
+    const startingDatabaseGeneration = connection.database?.path.databaseGeneration ?? null
     const existing = this.discoveries.get(key)
     if (existing !== undefined) {
-      const database = await awaitWithOperationAdmission(existing, options, this.options.now, 'rediscover')
+      try {
+        await awaitWithOperationAdmission(existing.promise, options, this.options.now, 'rediscover')
+      } catch (error) {
+        if (isRediscoverCallerTerminal(error, options)) {
+          throw error
+        }
+      }
+    }
+    const registered = this.discoveries.get(key)
+    if (registered !== undefined && registered !== existing) {
+      const database = await awaitWithOperationAdmission(registered.promise, options, this.options.now, 'rediscover')
       database.assertCurrent()
+      return database
+    }
+    this.assertReady('rediscover')
+    this.assertOperationAdmission(options, 'rediscover')
+    connection.assertCurrent()
+    if (connection.resource.connectionGeneration !== connectionGeneration) {
+      throw contractError('connection.stale', 'connection', 'core-connection.current')
+    }
+    const current = connection.database
+    if (current !== null && current.isCurrent()) {
+      if (existing?.kind === 'rediscover') {
+        return current
+      }
+      if (
+        startingDatabaseGeneration !== null &&
+        String(current.path.databaseGeneration) !== String(startingDatabaseGeneration)
+      ) {
+        return current
+      }
     }
     this.operationCoordinator.cancelQueue(key, 'disconnected')
-    const discovery = discoverCoreGattDatabase(
+    const promise = discoverCoreGattDatabase(
       this,
       this.backend,
       this.resourceLedger,
@@ -674,9 +753,10 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
         })
       }
     )
+    const discovery: CoreGattDiscovery<Attachment, Identity> = { kind: 'rediscover', promise }
     this.discoveries.set(key, discovery)
     try {
-      return await discovery
+      return await promise
     } finally {
       if (this.discoveries.get(key) === discovery) {
         this.discoveries.delete(key)
@@ -1115,6 +1195,70 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
     }
   }
 
+  private async startOrJoinScan(options: ScanOptions<Attachment, string>): Promise<ScanLease<Attachment, string>> {
+    if (options.sharing.mode === 'owner') {
+      const ownerOptions: OwnerScanOptions<Attachment, string> = { ...options, sharing: options.sharing }
+      return this.backend.scanner.start(ownerOptions, this.construction.clientId)
+    }
+    return this.backend.scanner.join(options.sharing.sharedLeaseId, options.sharing.token, this.construction.clientId)
+  }
+
+  private adoptScan(
+    lease: ScanLease<Attachment, string>,
+    stream: CoreBoundedStream<AdvertisementObservation<Attachment>>,
+    options: ScanOptions<Attachment, string>
+  ): TrackedScan<Attachment> {
+    const tracked: TrackedScan<Attachment> = {
+      scanSessionId: lease.scanSessionId,
+      leaseId: lease.leaseId,
+      shareToken: lease.shareToken,
+      observations: stream,
+      lease,
+      stream,
+      ownsPhysicalController: options.sharing.mode === 'owner',
+      stopInFlight: null,
+      released: false,
+      activeAbortListener: null,
+      activeAbortSignal: null,
+      activeDeadline: null,
+      stop: () => this.stopScan(tracked)
+    }
+    this.scans.set(String(lease.leaseId), tracked)
+    this.resourceLedger.increment('scanConsumers')
+    if (tracked.ownsPhysicalController) {
+      this.resourceLedger.increment('activeScanControllers')
+    }
+    activateScanLifetime(
+      tracked,
+      options,
+      this.options.now,
+      this.options.timer,
+      () => this.stopScan(tracked),
+      (cleanup, transition) => this.lifecycleObserver.observeCleanup(cleanup, transition)
+    )
+    this.lifecycleObserver.observeBackground(
+      this.forwardScanSource(tracked, lease.observations),
+      'scan',
+      'scan-source-pump'
+    )
+    return tracked
+  }
+
+  private async compensateUnadoptedLease(
+    retry: () => Promise<CleanupRecord>,
+    resourceKind: CoreTraceResource,
+    transition: string
+  ): Promise<void> {
+    const retained = { resourceKind, transition, retry }
+    this.lifecycleObserver.retainCleanup(retained)
+    const cleanup = retry()
+    this.lifecycleObserver.observeCleanup(cleanup, transition)
+    const result = await this.lifecycleObserver.captureCleanup(cleanup, resourceKind, transition)
+    if (result.state === 'released') {
+      this.lifecycleObserver.dropCleanup(retained)
+    }
+  }
+
   private async destroyOwnedResources(cause: ConnectionLifecycleTerminalCause): Promise<CleanupRecord> {
     const failures: CleanupFailure[] = []
     const eventClose = this.closeBackendEventStream()
@@ -1129,6 +1273,30 @@ export class UnifiedBleCore<Attachment extends string, Identity extends BackendI
         ).failures
       )
     }
+    const pendingScanCancels = [...this.pendingScanAcquisitions]
+    for (const cancel of pendingScanCancels) {
+      cancel(contractError('operation.cancelled-by-destroy', 'core', 'scan'))
+    }
+    if (this.pendingScanAcquisitions.size > 0) {
+      failures.push(
+        ...cleanupFailure('scan', contractError('lifecycle.invalid-state', 'cleanup', 'scan.acquisition-pending'))
+          .failures
+      )
+    }
+    const pendingConnectCancels = [...this.pendingConnectAcquisitions]
+    for (const cancel of pendingConnectCancels) {
+      cancel(contractError('operation.cancelled-by-destroy', 'core', 'connect'))
+    }
+    if (this.pendingConnectAcquisitions.size > 0) {
+      failures.push(
+        ...cleanupFailure(
+          'connection',
+          contractError('lifecycle.invalid-state', 'cleanup', 'connect.acquisition-pending')
+        ).failures
+      )
+    }
+    const retained = await this.lifecycleObserver.retryRetainedCleanups()
+    failures.push(...retained.failures)
     for (const watch of [...this.adapterStateWatches]) {
       const result = await this.lifecycleObserver.captureCleanup(watch.stop(), 'manager', 'destroy-adapter-states')
       failures.push(...result.failures)
@@ -1279,6 +1447,18 @@ function resolveLongWriteChunkSize(observedMaximum: number, requestedChunkSize: 
 
 function abortRequested(signal: AbortSignal | null | undefined): boolean {
   return signal !== null && signal !== undefined && signal.aborted
+}
+
+function isRediscoverCallerTerminal(error: unknown, options: PublicOperationOptions): boolean {
+  if (!(error instanceof BackendContractError)) {
+    return false
+  }
+  const code = error.normalized.code
+  return (
+    (code === 'operation.aborted' && abortRequested(options.signal)) ||
+    code === 'operation.timed-out' ||
+    code === 'operation.cancelled-by-destroy'
+  )
 }
 
 function closeAdapterStateStream(stream: BoundedAsyncStream<unknown>): Promise<CleanupRecord> {
