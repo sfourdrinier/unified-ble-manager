@@ -289,9 +289,30 @@ struct DatabaseResource {
 
 struct SubscriptionResource {
     database_handle: String,
-    peripheral: Peripheral,
-    characteristic: Characteristic,
+    body: SubscriptionBody,
     task: TauriJoinHandle<()>,
+}
+
+enum SubscriptionBody {
+    Native {
+        peripheral: Peripheral,
+        characteristic: Characteristic,
+    },
+    #[cfg(test)]
+    StandIn,
+}
+
+impl SubscriptionResource {
+    fn native(&self) -> Option<(&Peripheral, &Characteristic)> {
+        match &self.body {
+            SubscriptionBody::Native {
+                peripheral,
+                characteristic,
+            } => Some((peripheral, characteristic)),
+            #[cfg(test)]
+            SubscriptionBody::StandIn => None,
+        }
+    }
 }
 
 struct ConnectionEventResource {
@@ -1654,6 +1675,56 @@ impl BtleplugDispatcher {
         }
     }
 
+    async fn compensate_unowned_subscription(
+        &self,
+        peripheral: &Peripheral,
+        characteristic: &Characteristic,
+        stream_id: &str,
+        expected_generation: &str,
+    ) -> Option<String> {
+        let outcome = peripheral
+            .unsubscribe(characteristic)
+            .await
+            .map_err(|error| error.to_string());
+        self.settle_orphan_subscription(outcome, stream_id, expected_generation)
+            .await
+    }
+
+    async fn settle_orphan_subscription(
+        &self,
+        outcome: Result<(), String>,
+        stream_id: &str,
+        expected_generation: &str,
+    ) -> Option<String> {
+        let mut state = self.inner.lock().await;
+        match outcome {
+            Ok(()) => {
+                let generation_matches = state
+                    .orphan_subscription_owners
+                    .get(stream_id)
+                    .is_some_and(|orphan| orphan.lease_generation == expected_generation);
+                if !generation_matches {
+                    return None;
+                }
+                state.orphan_subscription_owners.remove(stream_id);
+                state.orphan_subscription_resources.remove(stream_id);
+                None
+            }
+            Err(error) => {
+                if let Some(orphan) = state.orphan_subscription_owners.get_mut(stream_id) {
+                    if orphan.lease_generation == expected_generation {
+                        orphan.attempts = orphan.attempts.saturating_add(1);
+                    }
+                }
+                eprintln!(
+                    "[unified-ble:tauri] compensating unsubscribe for {stream_id} did not confirm \
+                     release, so the orphan owner is retained for retry: {error}"
+                );
+                Some(error)
+            }
+        }
+    }
+
     async fn disconnect(
         &self,
         caller: &AuthenticatedCaller,
@@ -2350,31 +2421,81 @@ impl BtleplugDispatcher {
         let mut state = self.inner.lock().await;
         let Some(caller_state) = state.callers.get_mut(&caller_key(caller)) else {
             task.abort();
+            retain_orphan_subscription(
+                &mut state,
+                OrphanSubscriptionOwner {
+                    caller_key: caller_key(caller),
+                    lease_id: expected_lease_id.clone(),
+                    lease_generation: expected_lease_generation.clone(),
+                    stream_id: handle.clone(),
+                    attempts: 0,
+                },
+                Some(SubscriptionResource {
+                    database_handle: database_handle.clone(),
+                    body: SubscriptionBody::Native {
+                        peripheral: peripheral.clone(),
+                        characteristic: characteristic.clone(),
+                    },
+                    task,
+                }),
+            );
             drop(state);
-            peripheral.unsubscribe(&characteristic).await.ok();
-            return Err(DispatchError::new(
-                "ownership.denied",
-                "gatt",
+            let residue = self
+                .compensate_unowned_subscription(
+                    &peripheral,
+                    &characteristic,
+                    &handle,
+                    &expected_lease_generation,
+                )
+                .await;
+            return Err(subscription_compensation_failure(
                 "tauri.subscribe-owner",
+                residue,
             ));
         };
         if !expected_lease_matches(caller_state, &payload) {
-            task.abort();
             let _ = caller_state;
+            task.abort();
+            retain_orphan_subscription(
+                &mut state,
+                OrphanSubscriptionOwner {
+                    caller_key: caller_key(caller),
+                    lease_id: expected_lease_id.clone(),
+                    lease_generation: expected_lease_generation.clone(),
+                    stream_id: handle.clone(),
+                    attempts: 0,
+                },
+                Some(SubscriptionResource {
+                    database_handle: database_handle.clone(),
+                    body: SubscriptionBody::Native {
+                        peripheral: peripheral.clone(),
+                        characteristic: characteristic.clone(),
+                    },
+                    task,
+                }),
+            );
             drop(state);
-            peripheral.unsubscribe(&characteristic).await.ok();
-            return Err(DispatchError::new(
-                "ownership.denied",
-                "gatt",
+            let residue = self
+                .compensate_unowned_subscription(
+                    &peripheral,
+                    &characteristic,
+                    &handle,
+                    &expected_lease_generation,
+                )
+                .await;
+            return Err(subscription_compensation_failure(
                 "tauri.subscribe-stale-lease",
+                residue,
             ));
         }
         caller_state.subscriptions.insert(
             handle.clone(),
             SubscriptionResource {
                 database_handle,
-                peripheral,
-                characteristic,
+                body: SubscriptionBody::Native {
+                    peripheral,
+                    characteristic,
+                },
                 task,
             },
         );
@@ -2409,12 +2530,14 @@ impl BtleplugDispatcher {
                     "tauri.unsubscribe-stale-lease",
                 ));
             }
-            caller_state.subscriptions.get(&handle).map(|subscription| {
-                (
-                    subscription.peripheral.clone(),
-                    subscription.characteristic.clone(),
-                )
-            })
+            caller_state
+                .subscriptions
+                .get(&handle)
+                .and_then(|subscription| {
+                    subscription.native().map(|(peripheral, characteristic)| {
+                        (peripheral.clone(), characteristic.clone())
+                    })
+                })
         };
         if let Some(subscription) = subscription {
             subscription
@@ -3099,12 +3222,16 @@ impl BtleplugDispatcher {
         };
         if let Some(subscription) = subscription {
             subscription.task.abort();
-            if subscription
-                .peripheral
-                .unsubscribe(&subscription.characteristic)
-                .await
-                .is_err()
-            {
+            let native = subscription
+                .native()
+                .map(|(peripheral, characteristic)| (peripheral.clone(), characteristic.clone()));
+            let failed = match native {
+                Some((peripheral, characteristic)) => {
+                    peripheral.unsubscribe(&characteristic).await.is_err()
+                }
+                None => true,
+            };
+            if failed {
                 let mut state = self.inner.lock().await;
                 retain_failed_subscription(
                     &mut state,
@@ -3228,18 +3355,23 @@ impl BtleplugDispatcher {
                 continue;
             };
             subscription.task.abort();
-            match subscription
-                .peripheral
-                .unsubscribe(&subscription.characteristic)
-                .await
-            {
-                Ok(()) => {
-                    caller.subscriptions.remove(&handle);
+            match subscription.native() {
+                Some((peripheral, characteristic)) => {
+                    match peripheral.unsubscribe(characteristic).await {
+                        Ok(()) => {
+                            caller.subscriptions.remove(&handle);
+                        }
+                        Err(error) => failures.push(cleanup_failure(
+                            "subscription",
+                            "tauri.release.subscription",
+                            error.to_string(),
+                        )),
+                    }
                 }
-                Err(error) => failures.push(cleanup_failure(
+                None => failures.push(cleanup_failure(
                     "subscription",
                     "tauri.release.subscription",
-                    error.to_string(),
+                    "pending subscription has no native resource to release".to_owned(),
                 )),
             }
         }
@@ -3363,15 +3495,35 @@ impl BtleplugDispatcher {
                 ));
                 continue;
             };
-            match subscription
-                .peripheral
-                .unsubscribe(&subscription.characteristic)
-                .await
-            {
+            let native = subscription
+                .native()
+                .map(|(peripheral, characteristic)| (peripheral.clone(), characteristic.clone()));
+            let Some((peripheral, characteristic)) = native else {
+                let mut state = self.inner.lock().await;
+                state
+                    .orphan_subscription_resources
+                    .insert(stream_id.clone(), subscription);
+                failures.push(cleanup_failure(
+                    "subscription",
+                    "tauri.release.orphan-subscription",
+                    format!("pending subscription {stream_id} has no native resource to release"),
+                ));
+                continue;
+            };
+            match peripheral.unsubscribe(&characteristic).await {
                 Ok(()) => {
-                    let mut state = self.inner.lock().await;
-                    state.orphan_subscription_owners.remove(&stream_id);
-                    state.orphan_subscription_resources.remove(&stream_id);
+                    let generation = {
+                        let state = self.inner.lock().await;
+                        state
+                            .orphan_subscription_owners
+                            .get(&stream_id)
+                            .map(|orphan| orphan.lease_generation.clone())
+                    };
+                    if let Some(generation) = generation {
+                        let _ = self
+                            .settle_orphan_subscription(Ok(()), &stream_id, &generation)
+                            .await;
+                    }
                 }
                 Err(error) => {
                     let mut state = self.inner.lock().await;
@@ -3451,6 +3603,16 @@ fn compensation_failure(operation: &str, residue: Option<String>) -> DispatchErr
         None => error,
         Some(detail) => error.platform(format!(
             "the peer could not be confirmed released, so its reservation is retained: {detail}"
+        )),
+    }
+}
+
+fn subscription_compensation_failure(operation: &str, residue: Option<String>) -> DispatchError {
+    let error = DispatchError::new("ownership.denied", "gatt", operation);
+    match residue {
+        None => error,
+        Some(detail) => error.platform(format!(
+            "the subscription could not be confirmed released, so its orphan owner is retained: {detail}"
         )),
     }
 }
@@ -3611,6 +3773,22 @@ fn retain_orphan_connection(state: &mut DispatcherState, owner: OrphanConnection
         .insert(owner.peer_id.clone(), owner);
 }
 
+fn retain_orphan_subscription(
+    state: &mut DispatcherState,
+    owner: OrphanSubscriptionOwner,
+    resource: Option<SubscriptionResource>,
+) {
+    let stream_id = owner.stream_id.clone();
+    state
+        .orphan_subscription_owners
+        .insert(stream_id.clone(), owner);
+    if let Some(resource) = resource {
+        state
+            .orphan_subscription_resources
+            .insert(stream_id, resource);
+    }
+}
+
 fn scan_start_blocked(state: &DispatcherState) -> bool {
     state.scan_owner.is_some() || state.stopping_scan.is_some()
 }
@@ -3749,8 +3927,8 @@ fn retain_failed_subscription(
         }
         return;
     }
-    state.orphan_subscription_owners.insert(
-        stream_id.to_owned(),
+    retain_orphan_subscription(
+        state,
         OrphanSubscriptionOwner {
             caller_key: caller_key.to_owned(),
             lease_id: expected_lease.0.to_owned(),
@@ -3758,12 +3936,8 @@ fn retain_failed_subscription(
             stream_id: stream_id.to_owned(),
             attempts: 1,
         },
+        subscription,
     );
-    if let Some(subscription) = subscription {
-        state
-            .orphan_subscription_resources
-            .insert(stream_id.to_owned(), subscription);
-    }
 }
 
 fn merge_cleanup(left: IpcValue, right: IpcValue) -> IpcValue {
@@ -4936,7 +5110,7 @@ mod tests {
         }
 
         let residue = dispatcher
-            .apply_compensation_outcome(Err("still connected".to_owned()), "peer-1", true)
+            .settle_orphan_connection(Err("still connected".to_owned()), "peer-1", "generation-1")
             .await;
 
         assert_eq!(residue.as_deref(), Some("still connected"));
@@ -5133,6 +5307,127 @@ mod tests {
         assert!(!super::scan_start_blocked(&state));
     }
 
+    fn stand_in_subscription() -> super::SubscriptionResource {
+        super::SubscriptionResource {
+            database_handle: "db-stand-in".to_owned(),
+            body: super::SubscriptionBody::StandIn,
+            task: tauri::async_runtime::spawn(async {}),
+        }
+    }
+
+    fn subscription_orphan(stream_id: &str, generation: &str) -> super::OrphanSubscriptionOwner {
+        super::OrphanSubscriptionOwner {
+            caller_key: "caller-a".to_owned(),
+            lease_id: "lease-1".to_owned(),
+            lease_generation: generation.to_owned(),
+            stream_id: stream_id.to_owned(),
+            attempts: 0,
+        }
+    }
+
+    /// After native subscribe succeeds, a gone/replaced caller must keep an
+    /// inspectable orphan so a failed compensating unsubscribe can retry.
+    /// The original path discarded that outcome with `.await.ok()`.
+    #[tokio::test]
+    async fn failed_subscribe_compensation_keeps_an_inspectable_orphan_subscription() {
+        let dispatcher = BtleplugDispatcher::new(BtleplugDispatcherOptions { adapter_id: None });
+        {
+            let mut state = dispatcher.inner.lock().await;
+            super::retain_orphan_subscription(
+                &mut state,
+                subscription_orphan("sub-1", "generation-1"),
+                Some(stand_in_subscription()),
+            );
+        }
+
+        let residue = dispatcher
+            .settle_orphan_subscription(
+                Err("cccd still enabled".to_owned()),
+                "sub-1",
+                "generation-1",
+            )
+            .await;
+
+        assert_eq!(residue.as_deref(), Some("cccd still enabled"));
+        let state = dispatcher.inner.lock().await;
+        let orphan = state
+            .orphan_subscription_owners
+            .get("sub-1")
+            .expect("failed compensating unsubscribe must keep an inspectable orphan owner");
+        assert_eq!(orphan.lease_generation, "generation-1");
+        assert!(
+            orphan.attempts >= 1,
+            "failed compensating unsubscribe must record retry state"
+        );
+        assert!(
+            state.orphan_subscription_resources.contains_key("sub-1"),
+            "the native subscription resource must remain with the orphan for retry"
+        );
+        assert!(
+            state
+                .callers
+                .get("caller-a")
+                .map_or(true, |caller| caller.subscriptions.is_empty()),
+            "compensation must not insert the old subscription into a replacement caller"
+        );
+    }
+
+    #[tokio::test]
+    async fn successful_subscribe_compensation_releases_the_matching_orphan_subscription() {
+        let dispatcher = BtleplugDispatcher::new(BtleplugDispatcherOptions { adapter_id: None });
+        {
+            let mut state = dispatcher.inner.lock().await;
+            super::retain_orphan_subscription(
+                &mut state,
+                subscription_orphan("sub-1", "generation-1"),
+                Some(stand_in_subscription()),
+            );
+        }
+
+        let residue = dispatcher
+            .settle_orphan_subscription(Ok(()), "sub-1", "generation-1")
+            .await;
+
+        assert!(residue.is_none());
+        let state = dispatcher.inner.lock().await;
+        assert!(
+            !state.orphan_subscription_owners.contains_key("sub-1"),
+            "proven unsubscribe must drop the orphan owner"
+        );
+        assert!(
+            !state.orphan_subscription_resources.contains_key("sub-1"),
+            "proven unsubscribe must drop the orphan resource"
+        );
+    }
+
+    #[tokio::test]
+    async fn old_subscribe_compensation_does_not_drop_a_newer_generation_orphan() {
+        let dispatcher = BtleplugDispatcher::new(BtleplugDispatcherOptions { adapter_id: None });
+        {
+            let mut state = dispatcher.inner.lock().await;
+            super::retain_orphan_subscription(
+                &mut state,
+                subscription_orphan("sub-1", "generation-2"),
+                Some(stand_in_subscription()),
+            );
+        }
+
+        dispatcher
+            .settle_orphan_subscription(Ok(()), "sub-1", "generation-1")
+            .await;
+
+        let state = dispatcher.inner.lock().await;
+        let orphan = state
+            .orphan_subscription_owners
+            .get("sub-1")
+            .expect("newer generation orphan must remain");
+        assert_eq!(orphan.lease_generation, "generation-2");
+        assert!(
+            state.orphan_subscription_resources.contains_key("sub-1"),
+            "old cleanup must not drop a newer generation's subscription resource"
+        );
+    }
+
     /// After unsubscribe fails, the old subscription must not land in a
     /// replacement lease. The original fail_subscription_stream reinserted
     /// into `callers[key]` with no generation check after the await.
@@ -5150,7 +5445,7 @@ mod tests {
             "caller-a",
             ("lease-1", "generation-1"),
             "sub-1",
-            None,
+            Some(stand_in_subscription()),
         );
 
         let caller = state
@@ -5168,6 +5463,10 @@ mod tests {
             .expect("old resource must keep a retry owner on the old generation");
         assert_eq!(orphan.lease_id, "lease-1");
         assert_eq!(orphan.lease_generation, "generation-1");
+        assert!(
+            state.orphan_subscription_resources.contains_key("sub-1"),
+            "the stand-in resource must stay on the old generation, not the replacement caller"
+        );
     }
 
     #[tokio::test]
@@ -5183,12 +5482,19 @@ mod tests {
             "caller-a",
             ("lease-1", "generation-1"),
             "sub-1",
-            None,
+            Some(stand_in_subscription()),
         );
 
         assert!(
             !state.orphan_subscription_owners.contains_key("sub-1"),
             "a still-current lease must not quarantine its own live subscription"
+        );
+        assert!(
+            state
+                .callers
+                .get("caller-a")
+                .is_some_and(|caller| caller.subscriptions.contains_key("sub-1")),
+            "the still-current lease must keep the live subscription resource"
         );
     }
 
