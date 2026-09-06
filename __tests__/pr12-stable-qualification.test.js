@@ -8,8 +8,8 @@ const pkg = JSON.parse(read('package.json'))
 
 describe('PR12 stable 4.0.0 qualification', () => {
   test('package identity is stable 4.0.0 without a prerelease suffix', () => {
-    expect(pkg.version).toBe('4.0.23')
-    expect(UNIFIED_BLE_IMPLEMENTATION_VERSION).toBe('4.0.23')
+    expect(pkg.version).toBe('4.0.24')
+    expect(UNIFIED_BLE_IMPLEMENTATION_VERSION).toBe('4.0.24')
   })
 
   test('consumer docs identify the stable source without inventing publication or backend support', () => {

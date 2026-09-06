@@ -6,6 +6,21 @@ All notable changes to `unified-ble-manager` are documented here.
 
 No changes yet.
 
+## [4.0.24] - 2026-09-05
+
+### Fixes
+
+- Arbitrate an Android characteristic-write callback failure against an
+  already-in-flight disconnect callback. A provisional write status such as
+  133 is retained for a bounded 250 ms evidence window, allowing the
+  authoritative connection-state callback to report typed `connection.lost`
+  without relabeling an isolated status 133 as link loss.
+- Preserve the Android GATT operation and status for synchronous and
+  asynchronous characteristic-write failures that are not proven link loss.
+- Make exact and UUID-keyed pending-write cleanup identity-safe so stale
+  teardown and late callbacks cannot settle a replacement write or remove its
+  payload.
+
 ## [4.0.23] - 2026-09-05
 
 ### Fixes
