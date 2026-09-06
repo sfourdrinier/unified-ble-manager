@@ -97,10 +97,20 @@ struct DispatcherState {
     callers: HashMap<String, CallerState>,
     scan_owner: Option<String>,
     stopping_scan: Option<StoppingScan>,
+    next_scan_stop_attempt: u64,
     peer_owners: HashMap<String, String>,
     orphan_connections: HashMap<String, OrphanConnectionOwner>,
     orphan_subscription_owners: HashMap<String, OrphanSubscriptionOwner>,
     orphan_subscription_resources: HashMap<String, SubscriptionResource>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ScanStopAttempt {
+    caller_key: String,
+    lease_id: String,
+    lease_generation: String,
+    handle: String,
+    attempt_id: u64,
 }
 
 #[derive(Clone)]
@@ -109,6 +119,20 @@ struct StoppingScan {
     lease_id: String,
     lease_generation: String,
     handle: String,
+    attempt_id: u64,
+    in_flight: bool,
+}
+
+impl StoppingScan {
+    fn attempt(&self) -> ScanStopAttempt {
+        ScanStopAttempt {
+            caller_key: self.caller_key.clone(),
+            lease_id: self.lease_id.clone(),
+            lease_generation: self.lease_generation.clone(),
+            handle: self.handle.clone(),
+            attempt_id: self.attempt_id,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -423,6 +447,7 @@ impl BtleplugDispatcher {
                 callers: HashMap::new(),
                 scan_owner: None,
                 stopping_scan: None,
+                next_scan_stop_attempt: 1,
                 peer_owners: HashMap::new(),
                 orphan_connections: HashMap::new(),
                 orphan_subscription_owners: HashMap::new(),
@@ -1296,26 +1321,27 @@ impl BtleplugDispatcher {
             if let Some(caller_state) = state.callers.get_mut(&key) {
                 caller_state.scan_admitting = false;
             }
-            if scan_owner_matches {
-                state.stopping_scan = Some(StoppingScan {
-                    caller_key: key.clone(),
-                    lease_id: expected_lease_id.clone(),
-                    lease_generation: expected_lease_generation.clone(),
-                    handle: handle.clone(),
-                });
-            }
-            drop(state);
-            let outcome = if scan_owner_matches {
-                adapter.stop_scan().await.map_err(|error| error.to_string())
+            let stop_attempt = if scan_owner_matches {
+                Some(claim_stopping_scan(
+                    &mut state,
+                    key.clone(),
+                    expected_lease_id.clone(),
+                    expected_lease_generation.clone(),
+                    handle.clone(),
+                ))
             } else {
-                Ok(())
+                None
             };
-            let mut state = self.inner.lock().await;
-            if let Err(error) = apply_scan_stop_outcome(&mut state, outcome) {
-                eprintln!(
-                    "[unified-ble:tauri] scan stop after stale-lease start failed, \
-                     resource retained for retry: {error}"
-                );
+            drop(state);
+            if let Some(attempt) = stop_attempt {
+                let outcome = adapter.stop_scan().await.map_err(|error| error.to_string());
+                let mut state = self.inner.lock().await;
+                if let Err(error) = apply_scan_stop_outcome(&mut state, &attempt, outcome) {
+                    eprintln!(
+                        "[unified-ble:tauri] scan stop after stale-lease start failed, \
+                         resource retained for retry: {error}"
+                    );
+                }
             }
             return Err(DispatchError::new(
                 "ownership.denied",
@@ -1325,22 +1351,27 @@ impl BtleplugDispatcher {
         }
         let Some(caller_state) = state.callers.get_mut(&key) else {
             task.abort();
-            if state.scan_owner.as_deref() == Some(&key) {
-                state.stopping_scan = Some(StoppingScan {
-                    caller_key: key.clone(),
-                    lease_id: expected_lease_id.clone(),
-                    lease_generation: expected_lease_generation.clone(),
-                    handle: handle.clone(),
-                });
-            }
+            let stop_attempt = if state.scan_owner.as_deref() == Some(&key) {
+                Some(claim_stopping_scan(
+                    &mut state,
+                    key.clone(),
+                    expected_lease_id.clone(),
+                    expected_lease_generation.clone(),
+                    handle.clone(),
+                ))
+            } else {
+                None
+            };
             drop(state);
-            let outcome = adapter.stop_scan().await.map_err(|error| error.to_string());
-            let mut state = self.inner.lock().await;
-            if let Err(error) = apply_scan_stop_outcome(&mut state, outcome) {
-                eprintln!(
-                    "[unified-ble:tauri] scan stop after missing caller failed, \
-                     resource retained for retry: {error}"
-                );
+            if let Some(attempt) = stop_attempt {
+                let outcome = adapter.stop_scan().await.map_err(|error| error.to_string());
+                let mut state = self.inner.lock().await;
+                if let Err(error) = apply_scan_stop_outcome(&mut state, &attempt, outcome) {
+                    eprintln!(
+                        "[unified-ble:tauri] scan stop after missing caller failed, \
+                         resource retained for retry: {error}"
+                    );
+                }
             }
             return Err(DispatchError::new(
                 "ownership.denied",
@@ -1374,7 +1405,7 @@ impl BtleplugDispatcher {
             "__expectedLeaseGeneration",
             "tauri.scan-stop-lease",
         )?;
-        {
+        let attempt = {
             let mut state = self.inner.lock().await;
             match begin_scan_stop(
                 &mut state,
@@ -1383,10 +1414,12 @@ impl BtleplugDispatcher {
                 &handle,
                 true,
             )? {
-                ScanStopBegin::AlreadyReleased => return Ok(released()),
-                ScanStopBegin::Started => {}
+                ScanStopBegin::AlreadyReleased | ScanStopBegin::Joining => {
+                    return Ok(released());
+                }
+                ScanStopBegin::Started(attempt) => attempt,
             }
-        }
+        };
         let outcome = self
             .adapter()
             .await?
@@ -1394,7 +1427,7 @@ impl BtleplugDispatcher {
             .await
             .map_err(|error| error.to_string());
         let mut state = self.inner.lock().await;
-        apply_scan_stop_outcome(&mut state, outcome).map_err(|error| {
+        apply_scan_stop_outcome(&mut state, &attempt, outcome).map_err(|error| {
             DispatchError::new("scan.stop-failed", "scan", "tauri.scan-stop").platform(error)
         })?;
         Ok(released())
@@ -3189,16 +3222,13 @@ impl BtleplugDispatcher {
         expected_lease: (&str, &str),
         stream_id: &str,
     ) {
-        let should_stop = {
+        let attempt = {
             let mut state = self.inner.lock().await;
-            matches!(
-                begin_scan_stop(&mut state, caller_key, expected_lease, stream_id, false),
-                Ok(ScanStopBegin::Started)
-            )
+            match begin_scan_stop(&mut state, caller_key, expected_lease, stream_id, false) {
+                Ok(ScanStopBegin::Started(attempt)) => attempt,
+                _ => return,
+            }
         };
-        if !should_stop {
-            return;
-        }
         let outcome = match self.adapter().await {
             Ok(adapter) => adapter.stop_scan().await.map_err(|error| error.to_string()),
             Err(error) => Err(error
@@ -3206,7 +3236,7 @@ impl BtleplugDispatcher {
                 .unwrap_or_else(|| "adapter unavailable".to_owned())),
         };
         let mut state = self.inner.lock().await;
-        if let Err(error) = apply_scan_stop_outcome(&mut state, outcome) {
+        if let Err(error) = apply_scan_stop_outcome(&mut state, &attempt, outcome) {
             eprintln!(
                 "[unified-ble:tauri] scan stream stop failed, resource retained for retry: {error}"
             );
@@ -3315,27 +3345,27 @@ impl BtleplugDispatcher {
         caller.operations.clear();
         if caller.scan_admitting {
             caller.scan_admitting = false;
-            let should_stop = {
+            let stop_attempt = {
                 let mut state = self.inner.lock().await;
                 if state
                     .stopping_scan
                     .as_ref()
                     .is_some_and(|stopping| stopping.caller_key == key)
                 {
-                    false
+                    None
                 } else if state.scan_owner.as_deref() == Some(key) {
-                    state.stopping_scan = Some(StoppingScan {
-                        caller_key: key.to_owned(),
-                        lease_id: caller.lease_id.clone(),
-                        lease_generation: caller.lease_generation.clone(),
-                        handle: String::new(),
-                    });
-                    true
+                    Some(claim_stopping_scan(
+                        &mut state,
+                        key.to_owned(),
+                        caller.lease_id.clone(),
+                        caller.lease_generation.clone(),
+                        String::new(),
+                    ))
                 } else {
-                    false
+                    None
                 }
             };
-            if should_stop {
+            if let Some(attempt) = stop_attempt {
                 let outcome = match self.adapter().await {
                     Ok(adapter) => adapter.stop_scan().await.map_err(|error| error.to_string()),
                     Err(error) => Err(error
@@ -3343,7 +3373,7 @@ impl BtleplugDispatcher {
                         .unwrap_or_else(|| "adapter unavailable".to_owned())),
                 };
                 let mut state = self.inner.lock().await;
-                if let Err(error) = apply_scan_stop_outcome(&mut state, outcome) {
+                if let Err(error) = apply_scan_stop_outcome(&mut state, &attempt, outcome) {
                     failures.push(cleanup_failure(
                         "scan",
                         "tauri.release.scan-admitting",
@@ -3435,35 +3465,34 @@ impl BtleplugDispatcher {
 
     async fn settle_orphans(&self, key: &str) -> IpcValue {
         let mut failures = Vec::new();
-        let stopping = {
-            let state = self.inner.lock().await;
-            state
-                .stopping_scan
-                .as_ref()
-                .is_some_and(|stopping| stopping.caller_key == key)
+        let stop_attempt = {
+            let mut state = self.inner.lock().await;
+            let retry_identity = state.stopping_scan.as_ref().and_then(|stopping| {
+                if stopping.caller_key == key && !stopping.in_flight {
+                    Some((
+                        stopping.caller_key.clone(),
+                        stopping.lease_id.clone(),
+                        stopping.lease_generation.clone(),
+                        stopping.handle.clone(),
+                    ))
+                } else {
+                    None
+                }
+            });
+            retry_identity.map(|(caller_key, lease_id, lease_generation, handle)| {
+                claim_stopping_scan(&mut state, caller_key, lease_id, lease_generation, handle)
+            })
         };
-        if stopping {
-            match self.adapter().await {
-                Ok(adapter) => match adapter.stop_scan().await {
-                    Ok(()) => {
-                        let mut state = self.inner.lock().await;
-                        if let Err(error) = apply_scan_stop_outcome(&mut state, Ok(())) {
-                            failures.push(cleanup_failure("scan", "tauri.release.scan", error));
-                        }
-                    }
-                    Err(error) => failures.push(cleanup_failure(
-                        "scan",
-                        "tauri.release.scan",
-                        error.to_string(),
-                    )),
-                },
-                Err(error) => failures.push(cleanup_failure(
-                    "scan",
-                    "tauri.release.scan-adapter",
-                    error
-                        .platform
-                        .unwrap_or_else(|| "adapter unavailable".to_owned()),
-                )),
+        if let Some(attempt) = stop_attempt {
+            let outcome = match self.adapter().await {
+                Ok(adapter) => adapter.stop_scan().await.map_err(|error| error.to_string()),
+                Err(error) => Err(error
+                    .platform
+                    .unwrap_or_else(|| "adapter unavailable".to_owned())),
+            };
+            let mut state = self.inner.lock().await;
+            if let Err(error) = apply_scan_stop_outcome(&mut state, &attempt, outcome) {
+                failures.push(cleanup_failure("scan", "tauri.release.scan", error));
             }
         }
         let orphans = {
@@ -3829,8 +3858,39 @@ fn scan_start_blocked(state: &DispatcherState) -> bool {
 }
 
 enum ScanStopBegin {
-    Started,
+    Started(ScanStopAttempt),
+    Joining,
     AlreadyReleased,
+}
+
+fn claim_stopping_scan(
+    state: &mut DispatcherState,
+    caller_key: String,
+    lease_id: String,
+    lease_generation: String,
+    handle: String,
+) -> ScanStopAttempt {
+    let attempt = ScanStopAttempt {
+        caller_key: caller_key.clone(),
+        lease_id: lease_id.clone(),
+        lease_generation: lease_generation.clone(),
+        handle: handle.clone(),
+        attempt_id: state.next_scan_stop_attempt,
+    };
+    state.next_scan_stop_attempt = state.next_scan_stop_attempt.wrapping_add(1);
+    state.stopping_scan = Some(StoppingScan {
+        caller_key,
+        lease_id,
+        lease_generation,
+        handle,
+        attempt_id: attempt.attempt_id,
+        in_flight: true,
+    });
+    attempt
+}
+
+fn scan_stop_attempt_matches(stopping: &StoppingScan, attempt: &ScanStopAttempt) -> bool {
+    stopping.attempt() == *attempt
 }
 
 fn begin_scan_stop(
@@ -3840,26 +3900,40 @@ fn begin_scan_stop(
     stream_id: &str,
     abort_pump: bool,
 ) -> Result<ScanStopBegin, DispatchError> {
+    let mut retry_failed_stop = false;
     if let Some(stopping) = state.stopping_scan.as_ref() {
-        if stopping.caller_key == caller_key
+        let same_scan = stopping.caller_key == caller_key
             && stopping.lease_id == expected_lease.0
             && stopping.lease_generation == expected_lease.1
-            && stopping.handle == stream_id
-        {
-            return Ok(ScanStopBegin::Started);
-        }
-        if stopping.caller_key == caller_key && stopping.handle != stream_id {
+            && stopping.handle == stream_id;
+        if same_scan {
+            if stopping.in_flight {
+                return Ok(ScanStopBegin::Joining);
+            }
+            retry_failed_stop = true;
+        } else if stopping.caller_key == caller_key && stopping.handle != stream_id {
             return Err(DispatchError::new(
                 "ownership.denied",
                 "scan",
                 "tauri.scan-stop-handle",
             ));
+        } else {
+            return Err(DispatchError::new(
+                "scan.already-active",
+                "scan",
+                "tauri.scan-stop-in-progress",
+            ));
         }
-        return Err(DispatchError::new(
-            "scan.already-active",
-            "scan",
-            "tauri.scan-stop-in-progress",
-        ));
+    }
+    if retry_failed_stop {
+        let attempt = claim_stopping_scan(
+            state,
+            caller_key.to_owned(),
+            expected_lease.0.to_owned(),
+            expected_lease.1.to_owned(),
+            stream_id.to_owned(),
+        );
+        return Ok(ScanStopBegin::Started(attempt));
     }
     let scan = {
         let Some(caller) = state.callers.get_mut(caller_key) else {
@@ -3883,13 +3957,14 @@ fn begin_scan_stop(
             if abort_pump {
                 scan.task.abort();
             }
-            state.stopping_scan = Some(StoppingScan {
-                caller_key: caller_key.to_owned(),
-                lease_id: expected_lease.0.to_owned(),
-                lease_generation: expected_lease.1.to_owned(),
-                handle: stream_id.to_owned(),
-            });
-            Ok(ScanStopBegin::Started)
+            let attempt = claim_stopping_scan(
+                state,
+                caller_key.to_owned(),
+                expected_lease.0.to_owned(),
+                expected_lease.1.to_owned(),
+                stream_id.to_owned(),
+            );
+            Ok(ScanStopBegin::Started(attempt))
         }
         Some(scan) => {
             if let Some(caller) = state.callers.get_mut(caller_key) {
@@ -3907,13 +3982,19 @@ fn begin_scan_stop(
 
 fn apply_scan_stop_outcome(
     state: &mut DispatcherState,
+    attempt: &ScanStopAttempt,
     outcome: Result<(), String>,
 ) -> Result<(), String> {
+    if !state
+        .stopping_scan
+        .as_ref()
+        .is_some_and(|stopping| scan_stop_attempt_matches(stopping, attempt))
+    {
+        return Ok(());
+    }
     match outcome {
         Ok(()) => {
-            let Some(stopping) = state.stopping_scan.take() else {
-                return Ok(());
-            };
+            let stopping = state.stopping_scan.take().expect("matched stopping scan");
             let protect_replacement =
                 state
                     .callers
@@ -3941,7 +4022,12 @@ fn apply_scan_stop_outcome(
             }
             Ok(())
         }
-        Err(error) => Err(error),
+        Err(error) => {
+            if let Some(stopping) = state.stopping_scan.as_mut() {
+                stopping.in_flight = false;
+            }
+            Err(error)
+        }
     }
 }
 
@@ -5418,22 +5504,45 @@ mod tests {
             .callers
             .insert("caller-a".to_owned(), caller_state_with_scan("scan-1"));
         state.scan_owner = Some("caller-a".to_owned());
-        super::begin_scan_stop(
+        let super::ScanStopBegin::Started(attempt) = super::begin_scan_stop(
             &mut state,
             "caller-a",
             ("lease-1", "generation-1"),
             "scan-1",
             true,
         )
-        .expect("owned scan must be claimable for stop");
+        .expect("owned scan must be claimable for stop") else {
+            panic!("first stop request must start the native stop");
+        };
 
-        let error = super::apply_scan_stop_outcome(&mut state, Err("adapter busy".to_owned()))
-            .expect_err("failed stop must be retained, not discarded");
+        let error =
+            super::apply_scan_stop_outcome(&mut state, &attempt, Err("adapter busy".to_owned()))
+                .expect_err("failed stop must be retained, not discarded");
         assert_eq!(error, "adapter busy");
         assert_eq!(state.scan_owner.as_deref(), Some("caller-a"));
         assert!(
             state.stopping_scan.is_some(),
             "failed stop must keep the original resource available for retry"
+        );
+        assert!(
+            state
+                .stopping_scan
+                .as_ref()
+                .is_some_and(|stopping| !stopping.in_flight),
+            "a failed attempt must settle before a retry can start another native stop"
+        );
+
+        let retry = super::begin_scan_stop(
+            &mut state,
+            "caller-a",
+            ("lease-1", "generation-1"),
+            "scan-1",
+            true,
+        )
+        .expect("failed stop must become retryable after it settles");
+        assert!(
+            matches!(retry, super::ScanStopBegin::Started(_)),
+            "retry after a failed settle must start a new native stop"
         );
     }
 
@@ -5445,16 +5554,18 @@ mod tests {
             .callers
             .insert("caller-a".to_owned(), caller_state_with_scan("scan-1"));
         state.scan_owner = Some("caller-a".to_owned());
-        super::begin_scan_stop(
+        let super::ScanStopBegin::Started(attempt) = super::begin_scan_stop(
             &mut state,
             "caller-a",
             ("lease-1", "generation-1"),
             "scan-1",
             true,
         )
-        .expect("owned scan must be claimable for stop");
+        .expect("owned scan must be claimable for stop") else {
+            panic!("first stop request must start the native stop");
+        };
 
-        super::apply_scan_stop_outcome(&mut state, Ok(()))
+        super::apply_scan_stop_outcome(&mut state, &attempt, Ok(()))
             .expect("confirmed stop must release the stopping owner");
         assert!(state.scan_owner.is_none());
         assert!(state.stopping_scan.is_none());
@@ -5660,27 +5771,136 @@ mod tests {
             .callers
             .insert("caller-a".to_owned(), caller_state_with_scan("scan-1"));
         state.scan_owner = Some("caller-a".to_owned());
-        super::begin_scan_stop(
+        let super::ScanStopBegin::Started(attempt) = super::begin_scan_stop(
             &mut state,
             "caller-a",
             ("lease-1", "generation-1"),
             "scan-1",
             true,
         )
-        .expect("owned scan must be claimable for stop");
+        .expect("owned scan must be claimable for stop") else {
+            panic!("first stop request must start the native stop");
+        };
 
         let mut replacement = caller_state_with_scan("scan-2");
         replacement.lease_id = "lease-2".to_owned();
         replacement.lease_generation = "generation-2".to_owned();
         state.callers.insert("caller-a".to_owned(), replacement);
 
-        super::apply_scan_stop_outcome(&mut state, Ok(()))
+        super::apply_scan_stop_outcome(&mut state, &attempt, Ok(()))
             .expect("old stop success must not fail closed on a replaced lease");
         let caller = state.callers.get("caller-a").expect("replacement remains");
         assert_eq!(
             caller.scan.as_ref().map(|scan| scan.handle.as_str()),
             Some("scan-2"),
             "successful old stop must not take a replacement caller's scan"
+        );
+    }
+
+    /// Overlapping stop(A) used to return Started twice, so two native
+    /// adapter.stop_scan() calls ran. The first completion took A's
+    /// stopping_scan; a replacement scan B could then begin stopping; the
+    /// late A completion took B's record and cleared B's owner.
+    #[tokio::test]
+    async fn overlapping_scan_stops_must_not_clear_a_replacement_scans_owner() {
+        let dispatcher = BtleplugDispatcher::new(BtleplugDispatcherOptions { adapter_id: None });
+        let mut state = dispatcher.inner.lock().await;
+        state
+            .callers
+            .insert("caller-a".to_owned(), caller_state_with_scan("scan-1"));
+        state.scan_owner = Some("caller-a".to_owned());
+
+        let super::ScanStopBegin::Started(first_attempt) = super::begin_scan_stop(
+            &mut state,
+            "caller-a",
+            ("lease-1", "generation-1"),
+            "scan-1",
+            true,
+        )
+        .expect("owned scan must be claimable for stop") else {
+            panic!("first stop request must start the native stop");
+        };
+
+        let second = super::begin_scan_stop(
+            &mut state,
+            "caller-a",
+            ("lease-1", "generation-1"),
+            "scan-1",
+            true,
+        )
+        .expect("overlapping stop of the same scan must join, not error");
+        assert!(
+            matches!(second, super::ScanStopBegin::Joining),
+            "overlapping stop must not start a second native stop"
+        );
+        assert_eq!(
+            state
+                .stopping_scan
+                .as_ref()
+                .map(super::StoppingScan::attempt),
+            Some(first_attempt.clone()),
+            "overlapping stop must join the in-flight attempt, not mint a new token"
+        );
+        assert!(
+            super::scan_start_blocked(&state),
+            "scan start must stay blocked while a stop is outstanding"
+        );
+
+        super::apply_scan_stop_outcome(&mut state, &first_attempt, Ok(()))
+            .expect("first A completion must settle the in-flight stop");
+
+        let mut replacement = caller_state_with_scan("scan-2");
+        replacement.lease_id = "lease-2".to_owned();
+        replacement.lease_generation = "generation-2".to_owned();
+        state.callers.insert("caller-a".to_owned(), replacement);
+        state.scan_owner = Some("caller-a".to_owned());
+        let super::ScanStopBegin::Started(b_attempt) = super::begin_scan_stop(
+            &mut state,
+            "caller-a",
+            ("lease-2", "generation-2"),
+            "scan-2",
+            true,
+        )
+        .expect("replacement scan must be claimable for stop") else {
+            panic!("replacement scan stop must start a native stop");
+        };
+        assert_ne!(
+            b_attempt, first_attempt,
+            "B's stop must carry a distinct attempt token from A"
+        );
+        assert_eq!(
+            state.scan_owner.as_deref(),
+            Some("caller-a"),
+            "B must own the scan while its stop is outstanding"
+        );
+        let stopping_b = state
+            .stopping_scan
+            .as_ref()
+            .expect("B must be in a stopping state");
+        assert_eq!(stopping_b.handle, "scan-2");
+        assert_eq!(stopping_b.lease_id, "lease-2");
+        assert_eq!(stopping_b.lease_generation, "generation-2");
+        assert_eq!(stopping_b.attempt_id, b_attempt.attempt_id);
+
+        super::apply_scan_stop_outcome(&mut state, &first_attempt, Ok(()))
+            .expect("late A completion must not fail closed on B's stop");
+
+        assert_eq!(
+            state.scan_owner.as_deref(),
+            Some("caller-a"),
+            "late A stop must not clear B's scan_owner"
+        );
+        let stopping = state
+            .stopping_scan
+            .as_ref()
+            .expect("B's outstanding stop must survive a late A completion");
+        assert_eq!(stopping.handle, "scan-2");
+        assert_eq!(stopping.lease_id, "lease-2");
+        assert_eq!(stopping.lease_generation, "generation-2");
+        assert_eq!(stopping.attempt_id, b_attempt.attempt_id);
+        assert!(
+            super::scan_start_blocked(&state),
+            "B's outstanding stop must keep scan start blocked"
         );
     }
 
