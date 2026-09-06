@@ -1,5 +1,9 @@
+import type { NormalizedBleError } from '../backend-contract/errors'
 import type { StreamTerminalNotice } from '../backend-contract/streams'
 import type { ScanStateEvent } from './ble-manager'
+
+type ScanSourceTerminalError = NormalizedBleError | null | undefined
+type ScanSourceTerminalObserver = (reason: StreamTerminalNotice['reason'], error?: ScanSourceTerminalError) => void
 
 export interface ScanStateController {
   readonly stream: AsyncIterable<ScanStateEvent>
@@ -22,10 +26,7 @@ export function projectScanDeliveryTerminal(reason: StreamTerminalNotice['reason
 }
 
 /** Observes producer-side terminal methods so state updates without an iterator. */
-export function bindScanSourceTerminal(
-  source: object,
-  onTerminal: (reason: StreamTerminalNotice['reason']) => void
-): void {
+export function bindScanSourceTerminal(source: object, onTerminal: ScanSourceTerminalObserver): void {
   bindScanSourceTerminalMethod(source, 'finishWithReason', onTerminal)
   bindScanSourceTerminalMethod(source, 'closeWithReason', onTerminal)
   const already = readScanSourceTerminalReason(source)
@@ -55,13 +56,13 @@ function isStreamTerminalReason(value: unknown): value is StreamTerminalNotice['
 function bindScanSourceTerminalMethod(
   source: object,
   methodName: 'finishWithReason' | 'closeWithReason',
-  onTerminal: (reason: StreamTerminalNotice['reason']) => void
+  onTerminal: ScanSourceTerminalObserver
 ): void {
   const method = Reflect.get(source, methodName)
   if (typeof method !== 'function') return
-  Reflect.set(source, methodName, (reason: StreamTerminalNotice['reason']) => {
-    method.call(source, reason)
-    onTerminal(reason)
+  Reflect.set(source, methodName, (reason: StreamTerminalNotice['reason'], error?: ScanSourceTerminalError) => {
+    method.call(source, reason, error)
+    onTerminal(reason, error)
   })
 }
 

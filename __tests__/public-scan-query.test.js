@@ -841,6 +841,61 @@ describe('canonical public ScanQuery v1', () => {
     await scan.stop()
   })
 
+  test('forwards a structured source-failed error through public scan observations', async () => {
+    const source = new CoreBoundedStream(
+      { itemCapacity: capacity(8), byteCapacity: capacity(4096), reservedControlCapacity: capacity(1) },
+      'drop-oldest'
+    )
+    const error = {
+      code: 'platform.transport',
+      domain: 'stream',
+      operation: 'scan.source-failed',
+      platform: {
+        domain: 'btleplug',
+        code: 'native-error',
+        safeMessage: 'native scan channel closed',
+        metadata: {}
+      },
+      retryability: 'never'
+    }
+    const internal = {
+      identity: null,
+      attachedBackend: undefined,
+      supports: () => true,
+      capability: () => null,
+      capabilities: () => [],
+      scan: jest.fn(async () => ({
+        observations: source,
+        stop: async () => ({ state: 'released', failures: [] })
+      })),
+      connect: jest.fn(),
+      destroy: jest.fn(async () => ({ state: 'released', failures: [] }))
+    }
+    const manager = await createPublicBleManager(internal, () => 0)
+    const scan = await manager.scan()
+    const states = scan.state[Symbol.asyncIterator]()
+    await expect(states.next()).resolves.toMatchObject({ value: { state: 'active' } })
+    source.emit(scanAdvertisement('failed-peer'), 32)
+    source.finishWithReason('source-failed', error)
+
+    const stateTerminal = await awaitSignal(states.next(), 'scan state to fail with source-failed')
+    expect(stateTerminal.value).toMatchObject({ state: 'failed', reason: 'source-failed' })
+
+    const observations = scan.observations[Symbol.asyncIterator]()
+    await expect(observations.next()).resolves.toMatchObject({
+      value: { kind: 'value', value: { peer: { id: 'failed-peer' } } }
+    })
+    await expect(observations.next()).resolves.toEqual({
+      done: false,
+      value: expect.objectContaining({
+        kind: 'terminal',
+        reason: 'source-failed',
+        error
+      })
+    })
+    await scan.stop()
+  })
+
   test('bounds retained lost-peer state while retaining explicit timer cancellation', async () => {
     const source = new CoreBoundedStream(
       { itemCapacity: capacity(512), byteCapacity: capacity(1024 * 1024), reservedControlCapacity: capacity(1) },
