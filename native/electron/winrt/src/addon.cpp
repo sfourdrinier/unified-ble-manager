@@ -640,6 +640,7 @@ void RequireSuccess(GattCommunicationStatus status, const char* operation) {
 
 struct CharacteristicAddress {
   std::string peer;
+  std::string connection_generation;
   std::string service_uuid;
   uint32_t service_occurrence;
   std::string characteristic_uuid;
@@ -678,6 +679,7 @@ CharacteristicAddress ReadCharacteristicAddress(const Napi::Value& value) {
   const Napi::Object object = value.As<Napi::Object>();
   return {
       RequiredString(object, "nativePeerId"),
+      RequiredString(object, "connectionGeneration"),
       RequiredString(object, "serviceUuid"),
       RequiredOccurrence(object, "serviceOccurrence"),
       RequiredString(object, "characteristicUuid"),
@@ -692,6 +694,7 @@ DescriptorAddress ReadDescriptorAddress(const Napi::Value& value) {
   CharacteristicAddress characteristic = ReadCharacteristicAddress(value);
   return {
       {characteristic.peer,
+       characteristic.connection_generation,
        characteristic.service_uuid,
        characteristic.service_occurrence,
        characteristic.characteristic_uuid,
@@ -1351,6 +1354,8 @@ Napi::Value ToJsDiscovery(Napi::Env env, const DiscoveryView& discovery) {
 std::string CharacteristicKey(const CharacteristicAddress& address) {
   std::string key = address.peer;
   key.push_back('\0');
+  key.append(address.connection_generation);
+  key.push_back('\0');
   key.append(address.service_uuid);
   key.push_back('\0');
   key.append(std::to_string(address.service_occurrence));
@@ -1359,6 +1364,20 @@ std::string CharacteristicKey(const CharacteristicAddress& address) {
   key.push_back('\0');
   key.append(std::to_string(address.characteristic_occurrence));
   return key;
+}
+
+std::string NotificationCharacteristicIdentity(const std::string& key) {
+  const auto peer_end = key.find('\0');
+  if (peer_end == std::string::npos) {
+    return key;
+  }
+  const auto generation_end = key.find('\0', peer_end + 1);
+  if (generation_end == std::string::npos) {
+    return key;
+  }
+  std::string identity = key.substr(0, peer_end + 1);
+  identity.append(key.substr(generation_end + 1));
+  return identity;
 }
 
 #include "winrt-boundary.inc"

@@ -129,17 +129,45 @@ export async function stopWinRtPhysicalSubscriptionAfterEnable(
       physical.removalPhase = null
     }
   }
-  if (!winRtPhysicalOwnsCurrentGeneration(backend, physical)) {
-    // Native StopNotify is keyed only by peer+characteristic. A replacement generation
-    // may already own that CCCD; disabling it would drop the live subscription.
+  if (winRtReplacementOccupiesNativeNotification(backend, physical)) {
+    // Native CCCD is one value per characteristic. A replacement generation that
+    // already started notify owns that CCCD; disabling it would drop the live
+    // subscription. Generation-keyed StopNotify still runs when the native key is vacant.
     releaseWinRtPhysicalSubscriptionRecord(backend, physical)
     return releasedCleanup
   }
   return stopWinRtPhysicalSubscription(backend, physical)
 }
 
-function winRtPhysicalOwnsCurrentGeneration(backend: WinRtBackend, physical: WinRtPhysicalSubscription): boolean {
-  return backend.connectionOwnsGeneration(physical.address.nativePeerId, physical.connectionGeneration)
+function winRtReplacementOccupiesNativeNotification(
+  backend: WinRtBackend,
+  physical: WinRtPhysicalSubscription
+): boolean {
+  for (const candidate of backend.subscriptions.values()) {
+    if (
+      candidate !== physical &&
+      !candidate.invalidated &&
+      candidate.connectionGeneration !== physical.connectionGeneration &&
+      (candidate.state === 'enabling' || candidate.state === 'ready') &&
+      winRtPhysicalSharesNativeCharacteristic(candidate, physical)
+    ) {
+      return true
+    }
+  }
+  return false
+}
+
+function winRtPhysicalSharesNativeCharacteristic(
+  left: WinRtPhysicalSubscription,
+  right: WinRtPhysicalSubscription
+): boolean {
+  return (
+    left.address.nativePeerId === right.address.nativePeerId &&
+    left.address.serviceUuid === right.address.serviceUuid &&
+    left.address.serviceOccurrence === right.address.serviceOccurrence &&
+    left.address.characteristicUuid === right.address.characteristicUuid &&
+    left.address.characteristicOccurrence === right.address.characteristicOccurrence
+  )
 }
 
 function releaseWinRtPhysicalSubscriptionRecord(backend: WinRtBackend, physical: WinRtPhysicalSubscription): void {
@@ -334,7 +362,7 @@ export function emitWinRtNotification(
   if (physical.invalidated || physical.state === 'removing' || physical.state === 'cleanup-pending') {
     return
   }
-  if (physical.state === 'enabling' || (physical.state === 'ready' && physical.consumers.size === 0)) {
+  if (physical.state === 'enabling') {
     stageWinRtNotification(backend, physical, source)
     return
   }
@@ -342,7 +370,13 @@ export function emitWinRtNotification(
     return
   }
   try {
-    deliverWinRtNotification(backend, physical, copyWinRtNotificationBytes(source))
+    const copied = copyWinRtNotificationBytes(source)
+    if (physical.consumers.size > 0) {
+      deliverWinRtNotification(backend, physical, copied)
+    }
+    if (physical.pendingConsumers.size > 0 || physical.consumers.size === 0) {
+      stageCopiedWinRtNotification(physical, copied)
+    }
   } catch (error) {
     terminalizeWinRtNotificationIngressFailure(
       backend,
@@ -362,19 +396,7 @@ function copyWinRtNotificationBytes(source: unknown): OwnedBytes {
 
 function stageWinRtNotification(backend: WinRtBackend, physical: WinRtPhysicalSubscription, source: unknown): void {
   try {
-    const copied = copyWinRtNotificationBytes(source)
-    if (physical.stagingOverflowed) {
-      return
-    }
-    if (
-      physical.stagedValues.length >= WINRT_ENABLEMENT_STAGING_ITEM_LIMIT ||
-      physical.stagedBytes + copied.byteLength > WINRT_ENABLEMENT_STAGING_BYTE_LIMIT
-    ) {
-      physical.stagingOverflowed = true
-      return
-    }
-    physical.stagedValues.push(copied)
-    physical.stagedBytes += copied.byteLength
+    stageCopiedWinRtNotification(physical, copyWinRtNotificationBytes(source))
   } catch (error) {
     terminalizeWinRtNotificationIngressFailure(
       backend,
@@ -384,17 +406,32 @@ function stageWinRtNotification(backend: WinRtBackend, physical: WinRtPhysicalSu
   }
 }
 
+function stageCopiedWinRtNotification(physical: WinRtPhysicalSubscription, copied: OwnedBytes): void {
+  if (physical.stagingOverflowed) {
+    return
+  }
+  if (
+    physical.stagedValues.length >= WINRT_ENABLEMENT_STAGING_ITEM_LIMIT ||
+    physical.stagedBytes + copied.byteLength > WINRT_ENABLEMENT_STAGING_BYTE_LIMIT
+  ) {
+    physical.stagingOverflowed = true
+    return
+  }
+  physical.stagedValues.push(copied)
+  physical.stagedBytes += copied.byteLength
+}
+
 function flushWinRtStagedNotifications(
   backend: WinRtBackend,
   physical: WinRtPhysicalSubscription,
   subscription: WinRtBackendSubscription
 ): void {
+  const snapshot = physical.stagedValues.slice()
   try {
-    for (const copied of physical.stagedValues) {
+    for (const copied of snapshot) {
       const emission = emitWinRtCopiedNotification(subscription, physical, copied)
       if (emission.terminated && subscription.stream.overflowPolicy === 'error') {
         releaseWinRtOverflowedSubscription(backend, subscription)
-        discardWinRtStagedNotifications(physical)
         return
       }
     }

@@ -14,6 +14,7 @@ import type { FirstPartyBackendTckRegistration } from './first-party-tck-registr
 export interface DeterministicWinRtBoundary extends WinRtBoundary {
   emitAdvertisement(): void
   emitNotification(address: WinRtCharacteristicAddress, bytes: Uint8Array): void
+  connectionGenerationFor?(nativePeerId: string): string | undefined
   prepareSecurityCancellation?(): void
 }
 
@@ -120,9 +121,14 @@ function createWinRtController(
         return
       }
       if (action === 'emit-notification') {
+        const connectionGeneration = boundary.connectionGenerationFor?.(nativePeerId)
+        if (typeof connectionGeneration !== 'string' || connectionGeneration.length === 0) {
+          throw new Error('WinRT TCK emit-notification requires the live connectionGeneration')
+        }
         boundary.emitNotification(
           {
             nativePeerId,
+            connectionGeneration,
             serviceUuid: stringField(action, input, 'serviceUuid'),
             serviceOccurrence: nonNegativeIntegerField(action, input, 'serviceOccurrence'),
             characteristicUuid: stringField(action, input, 'characteristicUuid'),

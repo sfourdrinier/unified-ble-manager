@@ -403,6 +403,7 @@ export class WinRtGattDatabase implements GattDatabase<string, string, string> {
     }
     return Object.freeze({
       nativePeerId: this.connectionRecord.nativePeerId,
+      connectionGeneration: String(this.connectionRecord.connectionGeneration),
       serviceUuid: service.uuid,
       serviceOccurrence: service.occurrence,
       characteristicUuid: characteristic.uuid,
@@ -503,6 +504,7 @@ export function successfulTerminal(
 export function characteristicAddressKey(address: WinRtCharacteristicAddress): string {
   return [
     address.nativePeerId,
+    address.connectionGeneration,
     address.serviceUuid,
     String(address.serviceOccurrence),
     address.characteristicUuid,

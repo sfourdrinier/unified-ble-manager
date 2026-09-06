@@ -713,6 +713,7 @@ class DeterministicWinRtBoundary {
     this.databaseListeners = new Set()
     this.scanTerminalListeners = new Set()
     this.adapterListeners = new Set()
+    this.connectionGenerations = new Map()
   }
 
   listAdapters() {
@@ -748,8 +749,12 @@ class DeterministicWinRtBoundary {
     this.scanTerminalListeners.add(listener)
     return () => this.scanTerminalListeners.delete(listener)
   }
-  connect() {
+  connect(nativePeerId, connectionGeneration) {
+    this.connectionGenerations.set(nativePeerId, connectionGeneration)
     return winRtOperation(undefined)
+  }
+  connectionGenerationFor(nativePeerId) {
+    return this.connectionGenerations.get(nativePeerId)
   }
   disconnect() {
     return winRtOperation(undefined)
@@ -928,6 +933,7 @@ function winRtOperation(value) {
 function winRtAddressKey(address) {
   return [
     address.nativePeerId,
+    address.connectionGeneration,
     address.serviceUuid,
     address.serviceOccurrence,
     address.characteristicUuid,
