@@ -374,6 +374,75 @@ describe('BlueZ peer:address-targeting', () => {
     }
   })
 
+  test('retries late ConnectDevice compensation after the first compensating Disconnect fails', async () => {
+    jest.useFakeTimers({ now: 1_000 })
+    let backend
+    try {
+      const fixtureResult = await backendFixture([adapterObject()])
+      backend = fixtureResult.backend
+      const { boundary } = fixtureResult
+      let releaseConnectDevice
+      const connectDeviceGate = new Promise(resolve => {
+        releaseConnectDevice = resolve
+      })
+      boundary.onCall(adapterPath, BLUEZ_ADAPTER_INTERFACE, 'ConnectDevice', async () => {
+        await connectDeviceGate
+        boundary.objectManager.objects.push(deviceObject(true))
+        boundary.objectManager.emitInterfacesAdded(devicePath, [deviceInterface(true)])
+      })
+      let disconnectAttempts = 0
+      boundary.onCall(devicePath, BLUEZ_DEVICE_INTERFACE, 'Disconnect', async () => {
+        disconnectAttempts += 1
+        if (disconnectAttempts === 1) {
+          throw new BluezDbusMethodError({
+            name: 'org.bluez.Error.Failed',
+            message: 'late ConnectDevice compensation disconnect failed',
+            safeDetails: {}
+          })
+        }
+      })
+
+      const peerId = backend.connections.peerFromAddress({ address, addressType: 'public' })
+      let firstOutcome = 'pending'
+      const first = backend.connections.connect(peerId, clientId, { signal: null, deadline: Date.now() + 20 })
+      first.then(
+        () => {
+          firstOutcome = 'resolved'
+        },
+        error => {
+          firstOutcome = error.normalized?.code ?? 'rejected'
+        }
+      )
+      await jest.advanceTimersByTimeAsync(0)
+      expect(boundary.calls.filter(call => call.method === 'ConnectDevice')).toHaveLength(1)
+      await jest.advanceTimersByTimeAsync(20)
+      expect(firstOutcome).toBe('operation.timed-out')
+      await expect(first).rejects.toMatchObject({ normalized: { code: 'operation.timed-out' } })
+
+      releaseConnectDevice()
+      for (let ordinal = 0; ordinal < 16; ordinal += 1) {
+        await Promise.resolve()
+      }
+      expect(boundary.calls.filter(call => call.method === 'Disconnect')).toHaveLength(1)
+      expectConsoleErrorMatching(
+        '[connectBluezConnection] Late ConnectDevice compensation failed:',
+        expect.objectContaining({
+          name: 'BluezDbusMethodError',
+          message: 'org.bluez.Error.Failed: late ConnectDevice compensation disconnect failed'
+        })
+      )
+
+      await expect(backend.destroy()).resolves.toEqual({ state: 'released', failures: [] })
+      expect(boundary.calls.filter(call => call.method === 'Disconnect')).toHaveLength(2)
+      expect(disconnectAttempts).toBe(2)
+    } finally {
+      jest.useRealTimers()
+      if (backend !== undefined) {
+        await backend.destroy().catch(() => undefined)
+      }
+    }
+  })
+
   test('widens an excluding live scan so address fallback can observe the target', async () => {
     const heartRateUuid = '0000180d-0000-1000-8000-00805f9b34fb'
     const polarPath = `${adapterPath}/dev_AA_BB_CC_DD_EE_FF`

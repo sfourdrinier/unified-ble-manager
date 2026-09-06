@@ -68,6 +68,8 @@ export interface BluezAddressAcquisition {
   readonly completion: Promise<void>
   waiters: number
   connectDevice: Promise<void> | null
+  /** Owned compensating Disconnect after a late ConnectDevice; null means retryable. */
+  compensation: Promise<CleanupRecord> | null
 }
 
 export interface BluezConnectionRecord {

@@ -42,6 +42,9 @@ No changes yet.
   `StopNotify` owner instead of orphaning the notify session.
 - BlueZ `SetDiscoveryFilter`, `StartDiscovery`, and `ConnectDevice` honor caller
   deadline/abort without dropping a later native allocation.
+- BlueZ keeps a retryable compensating `Disconnect` when `ConnectDevice`
+  succeeds after the caller is gone. A failed first Disconnect is retried on
+  destroy instead of being logged and forgotten.
 - BlueZ address-connect fallback checks scan-plan compatibility, waits out a
   stopping scan, and widens an excluding live scan (then restores it) instead of
   waiting under a filter that cannot observe the target.

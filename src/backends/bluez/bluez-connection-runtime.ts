@@ -2,13 +2,19 @@
 
 import type { OwnerScanOptions } from '../../backend-contract/advertisement'
 import type { PeerAddressDescriptor } from '../../backend-contract/backend'
-import { BackendContractError, contractError, type CleanupRecord } from '../../backend-contract/errors'
+import {
+  BackendContractError,
+  contractError,
+  type CleanupFailure,
+  type CleanupRecord
+} from '../../backend-contract/errors'
 import type { PublicOperationOptions } from '../../backend-contract/operations'
 import { capacity, deadline, opaqueId, type ClientId, type PeerId } from '../../backend-contract/primitives'
 import { BLUEZ_ADAPTER_INTERFACE, BLUEZ_DEVICE_INTERFACE, BluezDbusMethodError } from './bluez-dbus-contract'
 import { BluezConnection, BluezConnectionLease, releasedBluezCleanup } from './bluez-backend-handles'
 import type { BluezBackendRuntime } from './bluez-backend-runtime'
 import {
+  captureCleanup,
   createPendingConnectionRecord,
   requireRecordConnection,
   scanFilterObservesAddress,
@@ -29,6 +35,21 @@ import type { BluezAddressAcquisition, BluezConnectionRecord, BluezScanGroup } f
 const CONNECTION_OPERATION_DRAIN_TIMEOUT_MS = 1_000
 const DISCONNECT_CONFIRMATION_TIMEOUT_MS = 1_000
 const ADDRESS_CONNECT_RETRY_DELAY_MS = 250
+
+export async function destroyBluezAddressAcquisitions(runtime: BluezBackendRuntime): Promise<CleanupRecord> {
+  const failures: CleanupFailure[] = []
+  for (const [devicePath, acquisition] of [...runtime.addressAcquisitions.entries()]) {
+    const cleanup = await captureCleanup(
+      compensateOrphanedBluezAddressAcquisition(runtime, devicePath, acquisition),
+      'connection',
+      'bluez.destroy.address-acquisition'
+    )
+    failures.push(...cleanup.failures)
+  }
+  return failures.length === 0
+    ? releasedBluezCleanup
+    : Object.freeze({ state: 'release-failed', failures: Object.freeze(failures) })
+}
 
 export async function connectBluezConnection(
   runtime: BluezBackendRuntime,
@@ -75,6 +96,7 @@ async function connectBluezAddressTarget(
       // pending; the caller must mint a new address peer against the new generation.
       throw contractError('connection.not-found', 'connection', 'bluez.connect.address')
     }
+    await settleRetainedBluezAddressCompensation(runtime, devicePath)
     if (!runtime.store.hasInterface(devicePath, BLUEZ_DEVICE_INTERFACE)) {
       await materializeBluezAddressDevice(runtime, devicePath, target, clientId, options)
       continue
@@ -158,7 +180,8 @@ function adoptBluezAddressAcquisition(
   const acquisition: BluezAddressAcquisition = {
     completion: connectDevice,
     waiters: 0,
-    connectDevice
+    connectDevice,
+    compensation: null
   }
   runtime.addressAcquisitions.set(devicePath, acquisition)
   return acquisition
@@ -174,16 +197,16 @@ function scheduleOrphanedBluezAddressAcquisition(
       if (acquisition.waiters > 0 || runtime.addressAcquisitions.get(devicePath) !== acquisition) {
         return
       }
-      runtime.addressAcquisitions.delete(devicePath)
-      if (
-        runtime.connectionRecords.has(devicePath) ||
-        !runtime.store.hasInterface(devicePath, BLUEZ_DEVICE_INTERFACE)
-      ) {
-        return
-      }
-      runtime.boundary.methods.callVoid(devicePath, BLUEZ_DEVICE_INTERFACE, 'Disconnect', []).catch(error => {
-        console.error('[connectBluezConnection] Late ConnectDevice compensation failed:', error)
-      })
+      compensateOrphanedBluezAddressAcquisition(runtime, devicePath, acquisition).then(
+        cleanup => {
+          if (cleanup.state === 'release-failed') {
+            console.error('[connectBluezConnection] Late ConnectDevice compensation failed:', cleanup.failures)
+          }
+        },
+        error => {
+          console.error('[connectBluezConnection] Late ConnectDevice compensation failed:', error)
+        }
+      )
     },
     () => {
       if (acquisition.waiters === 0 && runtime.addressAcquisitions.get(devicePath) === acquisition) {
@@ -191,6 +214,99 @@ function scheduleOrphanedBluezAddressAcquisition(
       }
     }
   )
+}
+
+async function settleRetainedBluezAddressCompensation(runtime: BluezBackendRuntime, devicePath: string): Promise<void> {
+  const acquisition = runtime.addressAcquisitions.get(devicePath)
+  if (acquisition === undefined || acquisition.waiters > 0) {
+    return
+  }
+  if (acquisition.compensation === null && !runtime.store.hasInterface(devicePath, BLUEZ_DEVICE_INTERFACE)) {
+    return
+  }
+  const cleanup = await compensateOrphanedBluezAddressAcquisition(runtime, devicePath, acquisition)
+  if (cleanup.state !== 'released') {
+    throw contractError('platform.failure', 'cleanup', 'bluez.connect.address-compensation')
+  }
+}
+
+async function compensateOrphanedBluezAddressAcquisition(
+  runtime: BluezBackendRuntime,
+  devicePath: string,
+  acquisition: BluezAddressAcquisition
+): Promise<CleanupRecord> {
+  if (acquisition.compensation !== null) {
+    return acquisition.compensation
+  }
+  const compensation = disconnectOrphanedBluezAddressDevice(runtime, devicePath, acquisition)
+  acquisition.compensation = compensation
+  try {
+    const cleanup = await compensation
+    if (cleanup.state === 'released') {
+      if (runtime.addressAcquisitions.get(devicePath) === acquisition) {
+        runtime.addressAcquisitions.delete(devicePath)
+      }
+    } else if (acquisition.compensation === compensation) {
+      acquisition.compensation = null
+    }
+    return cleanup
+  } catch (error) {
+    if (acquisition.compensation === compensation) {
+      acquisition.compensation = null
+    }
+    throw error
+  }
+}
+
+async function disconnectOrphanedBluezAddressDevice(
+  runtime: BluezBackendRuntime,
+  devicePath: string,
+  acquisition: BluezAddressAcquisition
+): Promise<CleanupRecord> {
+  try {
+    await awaitBluezNativePromise(acquisition.completion, runtime.now, 'bluez.connect.address-compensation')
+  } catch (error) {
+    if (error instanceof BackendContractError && error.normalized.code === 'operation.timed-out') {
+      return pendingBluezConnectionCleanup('bluez.connect.address-compensation')
+    }
+    if (acquisition.waiters === 0 && runtime.addressAcquisitions.get(devicePath) === acquisition) {
+      runtime.addressAcquisitions.delete(devicePath)
+    }
+    return releasedBluezCleanup
+  }
+  if (acquisition.waiters > 0 || runtime.addressAcquisitions.get(devicePath) !== acquisition) {
+    return releasedBluezCleanup
+  }
+  if (runtime.connectionRecords.has(devicePath) || !runtime.store.hasInterface(devicePath, BLUEZ_DEVICE_INTERFACE)) {
+    runtime.addressAcquisitions.delete(devicePath)
+    return releasedBluezCleanup
+  }
+  try {
+    const disconnectMethod = runtime.boundary.methods.callVoid(devicePath, BLUEZ_DEVICE_INTERFACE, 'Disconnect', [])
+    await awaitBluezNativePromise(disconnectMethod, runtime.now, 'bluez.connect.address-compensation')
+    await waitForBluezBoolean(runtime, devicePath, BLUEZ_DEVICE_INTERFACE, 'Connected', false, {
+      signal: null,
+      deadline: deadline(runtime.now() + DISCONNECT_CONFIRMATION_TIMEOUT_MS)
+    })
+  } catch (error) {
+    if (
+      runtime.addressAcquisitions.get(devicePath) !== acquisition ||
+      !runtime.store.hasInterface(devicePath, BLUEZ_DEVICE_INTERFACE)
+    ) {
+      if (runtime.addressAcquisitions.get(devicePath) === acquisition) {
+        runtime.addressAcquisitions.delete(devicePath)
+      }
+      return releasedBluezCleanup
+    }
+    if (error instanceof BackendContractError && error.normalized.code === 'operation.timed-out') {
+      return pendingBluezConnectionCleanup('bluez.connect.address-compensation')
+    }
+    throw error
+  }
+  if (runtime.addressAcquisitions.get(devicePath) === acquisition) {
+    runtime.addressAcquisitions.delete(devicePath)
+  }
+  return releasedBluezCleanup
 }
 
 async function discoverBluezAddressDevice(

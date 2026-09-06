@@ -63,7 +63,11 @@ import {
 import type { BluezObjectStoreObserver } from './bluez-object-store'
 import { BluezObjectStore } from './bluez-object-store'
 import { BluezOperationDispatcher, type BluezOperationDispatch } from './bluez-operation-dispatcher'
-import { connectBluezConnection, disconnectBluezConnection } from './bluez-connection-runtime'
+import {
+  connectBluezConnection,
+  destroyBluezAddressAcquisitions,
+  disconnectBluezConnection
+} from './bluez-connection-runtime'
 import {
   dispatchBluezCharacteristicRead,
   dispatchBluezCharacteristicWrite,
@@ -1133,6 +1137,7 @@ export class BluezBackendRuntime implements BluezObjectStoreObserver {
         )
       }
     }
+    failures.push(...(await destroyBluezAddressAcquisitions(this)).failures)
     if (failures.length > 0) {
       return Object.freeze({ state: 'release-failed', failures: Object.freeze(failures) })
     }
