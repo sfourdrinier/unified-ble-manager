@@ -200,6 +200,7 @@ export class WebBluetoothBackend
   private availabilityEventSilenceTimer: WebBluetoothTimerHandle | null = null
   private availabilityChangeObserved = false
   private availabilitySampleGeneration = 0
+  private appliedAvailabilitySampleGeneration = 0
 
   constructor(
     private readonly boundary: WebBluetoothBoundary,
@@ -575,9 +576,10 @@ export class WebBluetoothBackend
   }
 
   private applyAvailabilitySample(generation: number, available: boolean): void {
-    if (generation !== this.availabilitySampleGeneration) {
+    if (generation < this.appliedAvailabilitySampleGeneration) {
       return
     }
+    this.appliedAvailabilitySampleGeneration = generation
     this.refreshAttachmentAvailability(available)
   }
 

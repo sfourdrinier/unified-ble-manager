@@ -555,6 +555,42 @@ describe('WebBluetoothBackend availability and attachment lifecycle', () => {
     await backend.destroy()
   })
 
+  test('does not reject attach when a completed available sample is overtaken by an outstanding newer probe', async () => {
+    let available = true
+    const mock = createBoundary()
+    mock.boundary.bluetoothAvailable = async () => available
+    const provider = createWebBluetoothProvider(mock.boundary)
+    const [adapter] = await provider.listAdapters()
+    const backend = await provider.create({ selectedAdapterId: adapter.adapterId })
+    available = false
+    await backend.adapter.currentState()
+    expect(backend.attachment.adapter.state).toMatchObject({
+      availability: 'unavailable',
+      authorization: 'unavailable',
+      power: 'unsupported'
+    })
+
+    const probes = deferBluetoothAvailable(mock.boundary)
+    const attach = backend.attach({ coreCompatibility: provider.descriptor.compatibility })
+    await probes.waitUntilCount(1)
+    const current = backend.adapter.currentState()
+    await probes.waitUntilCount(2)
+
+    probes.resolve(0, true)
+    try {
+      await expect(attach).resolves.toMatchObject({ attachment: expect.any(Object) })
+    } finally {
+      probes.resolve(1, true)
+      await current
+    }
+    expect(backend.attachment.adapter.state).toMatchObject({
+      availability: 'available',
+      authorization: 'not-determined',
+      power: 'unknown'
+    })
+    await backend.destroy()
+  })
+
   test('releases the shared availabilitychanged listener after the last watch closes and after destroy', async () => {
     const mock = createBoundary({ availabilityChangeSource: true })
     const { backend } = await attachAvailableBackend(mock)
