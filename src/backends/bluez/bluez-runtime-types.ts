@@ -17,6 +17,7 @@ import type {
 import { capacity } from '../../backend-contract/primitives'
 import { CoreBoundedStream } from '../../core/bounded-stream'
 import type { BluezConnection, BluezConnectionLease, BluezGattDatabase } from './bluez-backend-handles'
+import type { BluezVariant } from './bluez-dbus-contract'
 
 export const bluezEventLimits = Object.freeze({
   itemCapacity: capacity(64),
@@ -57,6 +58,8 @@ export interface BluezScanGroup {
   stopDiscovery: Promise<void> | null
   filterClearRequested: boolean
   filterClear: Promise<void> | null
+  /** Owner filter that still needs SetDiscoveryFilter after a failed address-widen restore. */
+  pendingFilterRestore: BluezVariant | null
   stopRequested: boolean
   resetRequested: boolean
   startupComplete: boolean

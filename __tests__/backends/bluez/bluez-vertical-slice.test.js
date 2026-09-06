@@ -1105,6 +1105,65 @@ describe('BlueZ contract-v1 vertical slice', () => {
     }
   })
 
+  test('does not promote a removing physical to ready when StartNotify confirmation succeeds late', async () => {
+    jest.useFakeTimers({ now: 1_000 })
+    try {
+      const { backend, boundary } = await backendFixture(() => Date.now())
+      const { database } = await connectedDatabase(backend)
+      const characteristic = (await database.snapshot()).characteristics[0].path
+      const characteristicPath = characteristicObjectPath(characteristic)
+      boundary.onCall(characteristicPath, BLUEZ_GATT_CHARACTERISTIC_INTERFACE, 'StartNotify', async () => false)
+      const stopGate = deferred()
+      boundary.onCall(characteristicPath, BLUEZ_GATT_CHARACTERISTIC_INTERFACE, 'StopNotify', async () => {
+        await stopGate.promise
+        return false
+      })
+
+      const subscribing = database.subscribe(characteristic, {
+        ...operation(),
+        deadline: Date.now() + 20,
+        delivery: delivery()
+      })
+      const timedOut = expect(subscribing).rejects.toMatchObject({ normalized: { code: 'operation.timed-out' } })
+      await flushMicrotasks()
+      expect(boundary.calls.filter(call => call.method === 'StartNotify')).toHaveLength(1)
+      await jest.advanceTimersByTimeAsync(20)
+      await timedOut
+      await flushMicrotasks()
+      expect(boundary.calls.filter(call => call.method === 'StopNotify')).toHaveLength(1)
+
+      boundary.objectManager.emitPropertiesChanged(characteristicPath, BLUEZ_GATT_CHARACTERISTIC_INTERFACE, {
+        Notifying: { signature: 'b', value: true }
+      })
+      await flushMicrotasks()
+
+      let secondSettled = false
+      const second = database.subscribe(characteristic, { ...operation(), delivery: delivery() }).then(subscription => {
+        secondSettled = true
+        return subscription
+      })
+      await flushMicrotasks()
+      expect(secondSettled).toBe(false)
+      expect(boundary.calls.filter(call => call.method === 'StartNotify')).toHaveLength(1)
+
+      stopGate.resolve()
+      await flushMicrotasks()
+      expect(boundary.calls.filter(call => call.method === 'StartNotify')).toHaveLength(2)
+      boundary.objectManager.emitPropertiesChanged(characteristicPath, BLUEZ_GATT_CHARACTERISTIC_INTERFACE, {
+        Notifying: { signature: 'b', value: true }
+      })
+      const secondSubscription = await second
+      expect(secondSettled).toBe(true)
+      expect(Number(backend.resourceCounters().physicalCccdEnablements)).toBe(1)
+
+      await expect(secondSubscription.remove()).resolves.toEqual({ state: 'released', failures: [] })
+      expect(boundary.calls.filter(call => call.method === 'StopNotify')).toHaveLength(2)
+      await expect(backend.destroy()).resolves.toEqual({ state: 'released', failures: [] })
+    } finally {
+      jest.useRealTimers()
+    }
+  })
+
   test('bounds native disconnect confirmation and retries without issuing a second Disconnect', async () => {
     jest.useFakeTimers({ now: 1_000 })
     try {

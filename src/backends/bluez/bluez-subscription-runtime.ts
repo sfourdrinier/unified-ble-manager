@@ -47,7 +47,11 @@ export async function subscribeBluez(
     const enabling = physical
     enabling.enablement.then(
       () => {
-        if (runtime.physicalSubscriptions.get(objectPath) === enabling) {
+        if (
+          runtime.physicalSubscriptions.get(objectPath) === enabling &&
+          enabling.state === 'enabling' &&
+          enabling.removal === null
+        ) {
           enabling.state = 'ready'
         }
       },

@@ -330,14 +330,21 @@ async function discoverBluezAddressDevice(
     }
   }
   const lease = await startBluezScan(runtime, addressDiscoveryScanOptions(target, options), clientId)
+  let presenceError: unknown = null
   try {
     await waitForBluezInterfacePresence(runtime, devicePath, BLUEZ_DEVICE_INTERFACE, options)
-  } finally {
-    try {
-      await lease.stop()
-    } catch (stopError) {
-      console.error('[connectBluezConnection] Address bootstrap discovery stop failed:', stopError)
+  } catch (error) {
+    presenceError = error
+  }
+  const cleanup = await captureCleanup(lease.stop(), 'scan', 'bluez.connect.address-scan-stop')
+  if (cleanup.state !== 'released') {
+    if (presenceError !== null) {
+      throw presenceError
     }
+    throw contractError('scan.stop-failed', 'scan', 'bluez.connect.address-scan-stop')
+  }
+  if (presenceError !== null) {
+    throw presenceError
   }
 }
 
@@ -395,7 +402,9 @@ async function widenBluezScanForAddress(
   } catch (error) {
     if (!adopted) {
       widen.then(
-        () => restoreBluezScanFilter(runtime, group, original),
+        () => {
+          restoreBluezScanFilter(runtime, group, original).catch(() => undefined)
+        },
         () => undefined
       )
     }
@@ -412,9 +421,14 @@ async function restoreBluezScanFilter(
   group: BluezScanGroup,
   original: ReturnType<typeof scanFilterVariant>
 ): Promise<void> {
-  if (runtime.scanGroup !== group || group.state !== 'active' || group.stopRequested) {
+  if (runtime.scanGroup !== group) {
     return
   }
+  if (group.state !== 'active' || group.stopRequested) {
+    group.pendingFilterRestore = original
+    return
+  }
+  group.pendingFilterRestore = original
   try {
     const restore = runtime.boundary.methods.callVoid(
       String(runtime.selectedAdapter.adapterId),
@@ -423,12 +437,19 @@ async function restoreBluezScanFilter(
       [original]
     )
     group.setFilter = restore
+    group.filterSettled = false
     await awaitBluezNativePromise(restore, runtime.now, 'bluez.connect.address-restore')
+    group.filterSettled = true
+    group.setFilter = null
+    group.pendingFilterRestore = null
   } catch (error) {
+    group.filterSettled = true
+    group.setFilter = null
     console.error(
       '[connectBluezConnection] Failed to restore the BlueZ discovery filter after address widening:',
       error
     )
+    throw error
   }
 }
 
