@@ -49,6 +49,61 @@ internal data class OwnedRadioTeardownResult(
     get() = failures.isEmpty()
 }
 
+/** Identity-bearing owner for the legacy UUID-keyed characteristic-write path. */
+internal class AndroidPendingWriteOwner<Key>(
+  val deviceKeyUpper: String,
+  val attribute: Key,
+  val value: ByteArray,
+  val callback: (Result<ByteArray?>) -> Unit
+)
+
+/**
+ * Keeps replacement writes isolated when their legacy string key is reused.
+ * Teardown must remove the exact owner it observed, never a newer operation.
+ */
+internal class AndroidPendingWriteRegistry<Key> {
+  private val entries = ConcurrentHashMap<String, AndroidPendingWriteOwner<Key>>()
+
+  fun putIfAbsent(key: String, owner: AndroidPendingWriteOwner<Key>): Boolean =
+    entries.putIfAbsent(key, owner) == null
+
+  fun get(key: String): AndroidPendingWriteOwner<Key>? = entries[key]
+
+  fun remove(key: String, owner: AndroidPendingWriteOwner<Key>): Boolean =
+    entries.remove(key, owner)
+
+  /** Completes only the currently registered attribute, rejecting stale callbacks. */
+  fun complete(
+    key: String,
+    attribute: Key,
+    result: Result<ByteArray?>
+  ): Boolean {
+    val owner = entries[key] ?: return false
+    if (owner.attribute !== attribute) return false
+    if (!entries.remove(key, owner)) return false
+    owner.callback(result)
+    return true
+  }
+
+  fun remove(key: String): AndroidPendingWriteOwner<Key>? = entries.remove(key)
+
+  fun entriesForDevice(deviceKeyUpper: String): List<Pair<String, AndroidPendingWriteOwner<Key>>> =
+    entries.entries
+      .filter { entry -> entry.value.deviceKeyUpper == deviceKeyUpper }
+      .map { entry -> entry.key to entry.value }
+
+  fun clear() {
+    entries.clear()
+  }
+}
+
+/** Removes an exact-write payload only when it is still the observed payload. */
+internal fun <Key> removeAndroidWritePayloadIfSame(
+  values: ConcurrentHashMap<Key, ByteArray>,
+  key: Key,
+  expected: ByteArray?
+): Boolean = expected != null && values.remove(key, expected)
+
 /**
  * Tracks exact native notification registrations by GATT generation.
  *
@@ -112,7 +167,7 @@ internal class OwnedAndroidSubscriptionOwnership<K> {
 /**
  * Preserves the Android GATT callback status when an asynchronous operation
  * terminates. Status 19 means that the peer terminated the link; keeping that
- * distinction typed prevents a CCCD race from being flattened to a generic
+ * distinction typed prevents a GATT operation race from being flattened to a generic
  * platform failure before the later connection-state callback arrives.
  */
 internal class AndroidGattOperationFailure(
@@ -135,35 +190,49 @@ internal fun classifyAndroidNotificationRegistrationFailure(
 ): AndroidGattOperationFailure = AndroidGattOperationFailure(operation, null, isLinkLoss = true)
 
 /**
- * Android may deliver an ordinary CCCD callback immediately before the
- * authoritative status-19 connection callback for the same GATT generation.
- * Keep only that provisional result pending long enough for lifecycle evidence
- * already in flight to claim it. Descriptor writes and already-typed link loss
- * are never delayed.
+ * Android may deliver an ordinary CCCD or characteristic-write callback
+ * immediately before authoritative connection-loss evidence for the same GATT
+ * generation. Keep only that provisional result pending long enough for the
+ * lifecycle evidence already in flight to claim it. Descriptor writes and
+ * already-typed link loss are never delayed.
  */
 internal fun shouldAwaitAndroidCccdDisconnectEvidence(failure: Throwable): Boolean =
   failure is AndroidGattOperationFailure &&
     failure.operation == "cccd-write" &&
     !failure.isLinkLoss
 
-private const val ANDROID_CCCD_DISCONNECT_EVIDENCE_GRACE_MS = 250L
+internal fun shouldAwaitAndroidWriteDisconnectEvidence(failure: Throwable): Boolean =
+  failure is AndroidGattOperationFailure &&
+    failure.operation == "characteristic-write" &&
+    !failure.isLinkLoss
 
-internal class AndroidCccdTerminalArbiter<Key>(
+private const val ANDROID_GATT_DISCONNECT_EVIDENCE_GRACE_MS = 250L
+
+/**
+ * Holds an asynchronous GATT callback failure briefly so a connection-state
+ * callback already in flight can provide the authoritative terminal. The
+ * first failure is retained and each key can be claimed only once.
+ */
+internal class AndroidGattTerminalArbiter<Key>(
   private val schedule: (delayMs: Long, action: () -> Unit) -> Boolean,
   private val onFallback: (key: Key, failure: AndroidGattOperationFailure) -> Unit
 ) {
-  private val provisionalFailures = ConcurrentHashMap<Key, AndroidGattOperationFailure>()
+  private data class DeferredFailure(
+    val failure: AndroidGattOperationFailure
+  )
+
+  private val provisionalFailures = ConcurrentHashMap<Key, DeferredFailure>()
 
   fun defer(key: Key, failure: AndroidGattOperationFailure) {
-    if (provisionalFailures.putIfAbsent(key, failure) != null) return
+    val deferred = DeferredFailure(failure)
+    if (provisionalFailures.putIfAbsent(key, deferred) != null) return
     val fallback: () -> Unit = {
-      val retained = provisionalFailures.remove(key)
-      if (retained != null) onFallback(key, retained)
+      if (provisionalFailures.remove(key, deferred)) onFallback(key, deferred.failure)
     }
-    if (!schedule(ANDROID_CCCD_DISCONNECT_EVIDENCE_GRACE_MS, fallback)) fallback()
+    if (!schedule(ANDROID_GATT_DISCONNECT_EVIDENCE_GRACE_MS, fallback)) fallback()
   }
 
-  fun claim(key: Key): AndroidGattOperationFailure? = provisionalFailures.remove(key)
+  fun claim(key: Key): AndroidGattOperationFailure? = provisionalFailures.remove(key)?.failure
 
   fun isPending(key: Key): Boolean = provisionalFailures.containsKey(key)
 
@@ -171,6 +240,26 @@ internal class AndroidCccdTerminalArbiter<Key>(
     provisionalFailures.clear()
   }
 }
+
+/**
+ * Applies the characteristic-write callback policy at the radio boundary.
+ * Returns true when the callback was deferred for lifecycle arbitration.
+ */
+internal fun <Key> AndroidGattTerminalArbiter<Key>.deferCharacteristicWriteFailure(
+  key: Key,
+  status: Int
+): Boolean {
+  val failure = classifyAndroidGattOperationFailure("characteristic-write", status)
+  if (!shouldAwaitAndroidWriteDisconnectEvidence(failure)) return false
+  defer(key, failure)
+  return true
+}
+
+/** Kept as a descriptive alias for existing CCCD callers and tests. */
+internal typealias AndroidCccdTerminalArbiter<Key> = AndroidGattTerminalArbiter<Key>
+
+/** Descriptive alias for characteristic-write terminal arbitration. */
+internal typealias AndroidWriteTerminalArbiter<Key> = AndroidGattTerminalArbiter<Key>
 
 /** Synchronous API rejection after local CCCD registration, before Android starts ATT work. */
 internal class AndroidCccdSubmissionFailure(
@@ -361,8 +450,8 @@ class OwnedAndroidGattRadio(private val context: Context) {
   private val pendingPhyRequests = ConcurrentHashMap<String, (Result<OwnedAndroidPhy?>) -> Unit>()
   private val pendingDesc = ConcurrentHashMap<String, (Result<Unit>) -> Unit>()
   private val pendingDescRead = ConcurrentHashMap<String, (Result<ByteArray?>) -> Unit>()
-  /** Stashed write payloads so API-33 callbacks need not read deprecated characteristic.value. */
-  private val pendingWriteValues = ConcurrentHashMap<String, ByteArray>()
+  /** Identity-bearing owners for the legacy UUID-keyed write callback path. */
+  private val pendingWriteRegistry = AndroidPendingWriteRegistry<BluetoothGattCharacteristic>()
   private val pendingBondPairs =
     ConcurrentHashMap<String, (String, OwnedAndroidSecurityState) -> Unit>()
 
@@ -402,6 +491,22 @@ class OwnedAndroidGattRadio(private val context: Context) {
     onFallback = fallback@ { descriptor, failure ->
       val pending = exactCccdPending.remove(descriptor) ?: return@fallback
       completeExactUnit(pending, Result.failure(failure))
+    }
+  )
+  private val exactWriteTerminalArbiter = AndroidWriteTerminalArbiter<BluetoothGattCharacteristic>(
+    schedule = { delayMs, action -> mainHandler.postDelayed(action, delayMs) },
+    onFallback = fallback@ { characteristic, failure ->
+      val observedPayload = exactWriteValues[characteristic]
+      val pending = exactWritePending.remove(characteristic) ?: return@fallback
+      removeAndroidWritePayloadIfSame(exactWriteValues, characteristic, observedPayload)
+      completeExactByte(pending, Result.failure(failure))
+    }
+  )
+  private val writeTerminalArbiter = AndroidWriteTerminalArbiter<String>(
+    schedule = { delayMs, action -> mainHandler.postDelayed(action, delayMs) },
+    onFallback = fallback@ { key, failure ->
+      val owner = pendingWriteRegistry.remove(key) ?: return@fallback
+      owner.callback(Result.failure(failure))
     }
   )
   private val exactDescriptorReadPending = ConcurrentHashMap<BluetoothGattDescriptor, ExactBytePending>()
@@ -1302,23 +1407,29 @@ class OwnedAndroidGattRadio(private val context: Context) {
         else BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
       ch.writeType = writeType
       val key = pendingCharKey("write", deviceId, serviceUuid, charUuid)
-      // Stash payload for callback success (API 33 does not require ch.value).
-      pendingWriteValues[key] = value
-      pending[key] = { r ->
+      val owner = AndroidPendingWriteOwner(
+        deviceKeyUpper = deviceId.uppercase(),
+        attribute = ch,
+        value = value.copyOf()
+      ) { r ->
         if (!token.isPubliclySettled()) {
           onResult(r)
         }
         done()
       }
+      if (!pendingWriteRegistry.putIfAbsent(key, owner)) {
+        onResult(Result.failure(IllegalStateException("characteristic write is already pending")))
+        done()
+        return@enqueue
+      }
       if (Build.VERSION.SDK_INT >= 33) {
         val status = gatt.writeCharacteristic(ch, value, writeType)
         if (!acceptApi33WriteStatus(status)) {
-          pending.remove(key)
-          pendingWriteValues.remove(key)
-          onResult(
-            Result.failure(IllegalStateException("writeCharacteristic failed to start status=$status"))
-          )
-          done()
+          if (pendingWriteRegistry.remove(key, owner)) {
+            owner.callback(
+              Result.failure(classifyAndroidGattOperationFailure("characteristic-write", status))
+            )
+          }
         }
       } else {
         @Suppress("DEPRECATION")
@@ -1326,10 +1437,9 @@ class OwnedAndroidGattRadio(private val context: Context) {
         @Suppress("DEPRECATION")
         val started = gatt.writeCharacteristic(ch)
         if (!started) {
-          pending.remove(key)
-          pendingWriteValues.remove(key)
-          onResult(Result.failure(IllegalStateException("writeCharacteristic failed to start")))
-          done()
+          if (pendingWriteRegistry.remove(key, owner)) {
+            owner.callback(Result.failure(IllegalStateException("writeCharacteristic failed to start")))
+          }
         }
       }
     }
@@ -1416,11 +1526,12 @@ class OwnedAndroidGattRadio(private val context: Context) {
       if (Build.VERSION.SDK_INT >= 33) {
         val status = gatt.writeCharacteristic(characteristic, value, writeType)
         if (!acceptApi33WriteStatus(status)) {
-          exactWriteValues.remove(characteristic)
+          val observedPayload = exactWriteValues[characteristic]
           if (exactWritePending.remove(characteristic, pending)) {
+            removeAndroidWritePayloadIfSame(exactWriteValues, characteristic, observedPayload)
             completeExactByte(
               pending,
-              Result.failure(IllegalStateException("writeCharacteristic failed to start status=$status"))
+              Result.failure(classifyAndroidGattOperationFailure("characteristic-write", status))
             )
           }
         }
@@ -1430,8 +1541,9 @@ class OwnedAndroidGattRadio(private val context: Context) {
         @Suppress("DEPRECATION")
         val started = gatt.writeCharacteristic(characteristic)
         if (!started) {
-          exactWriteValues.remove(characteristic)
+          val observedPayload = exactWriteValues[characteristic]
           if (exactWritePending.remove(characteristic, pending)) {
+            removeAndroidWritePayloadIfSame(exactWriteValues, characteristic, observedPayload)
             completeExactByte(
               pending,
               Result.failure(IllegalStateException("writeCharacteristic failed to start"))
@@ -2166,12 +2278,14 @@ class OwnedAndroidGattRadio(private val context: Context) {
       pendingPhyRequests.clear()
       pendingDesc.clear()
       pendingDescRead.clear()
-      pendingWriteValues.clear()
+      pendingWriteRegistry.clear()
       exactReadPending.clear()
       exactWritePending.clear()
       exactWriteValues.clear()
       exactCccdPending.clear()
       exactCccdTerminalArbiter.clear()
+      exactWriteTerminalArbiter.clear()
+      writeTerminalArbiter.clear()
       exactDescriptorReadPending.clear()
       exactDescriptorWritePending.clear()
       activeNativeSubscriptionOwnership.clear()
@@ -2240,9 +2354,10 @@ class OwnedAndroidGattRadio(private val context: Context) {
     val failBytes = Result.failure<ByteArray?>(IllegalStateException(reason))
     val failInt = Result.failure<Int>(IllegalStateException(reason))
     val failUnit = Result.failure<Unit>(IllegalStateException(reason))
-    // A peer link-loss callback can win the race with onDescriptorWrite. Keep
-    // that exact Android status on pending CCCD work so the protocol boundary
-    // reports connectionLost instead of flattening the race to platformFailure.
+    // A peer link-loss callback can win the race with an asynchronous GATT
+    // callback. Keep that exact Android status on pending CCCD work so the
+    // protocol boundary reports connectionLost instead of flattening the race
+    // to platformFailure.
     val failCccd: Result<Unit> = if (gattStatus == ANDROID_GATT_LINK_LOSS_STATUS) {
       Result.failure(classifyAndroidGattOperationFailure("cccd-write", gattStatus))
     } else {
@@ -2251,11 +2366,12 @@ class OwnedAndroidGattRadio(private val context: Context) {
     pending.keys
       .filter { key ->
         keyBelongsToDevice(key, "discover", deviceKeyUpper) ||
-          keyBelongsToDevice(key, "read", deviceKeyUpper) ||
-          keyBelongsToDevice(key, "write", deviceKeyUpper)
+          keyBelongsToDevice(key, "read", deviceKeyUpper)
       }
       .toList()
-      .forEach { key -> pending.remove(key)?.invoke(failBytes) }
+      .forEach { key ->
+        pending.remove(key)?.invoke(failBytes)
+      }
     pendingMtu.remove("mtu:$deviceKeyUpper")?.invoke(failInt)
     pendingRssi.remove("rssi:$deviceKeyUpper")?.invoke(failInt)
     pendingPhyReads.remove("phyRead:$deviceKeyUpper")?.invoke(
@@ -2277,10 +2393,14 @@ class OwnedAndroidGattRadio(private val context: Context) {
       .filter { key -> keyBelongsToDevice(key, "descRead", deviceKeyUpper) }
       .toList()
       .forEach { key -> pendingDescRead.remove(key)?.invoke(failBytes) }
-    pendingWriteValues.keys
-      .filter { key -> keyBelongsToDevice(key, "write", deviceKeyUpper) }
-      .toList()
-      .forEach { key -> pendingWriteValues.remove(key) }
+    // Remove only the owner observed by this teardown. A queued replacement
+    // may reuse the same UUID key while the old disconnect callback drains.
+    pendingWriteRegistry.entriesForDevice(deviceKeyUpper).forEach { (key, owner) ->
+      if (pendingWriteRegistry.remove(key, owner)) {
+        writeTerminalArbiter.claim(key)
+        owner.callback(failBytes)
+      }
+    }
     exactReadPending.entries
       .filter { it.value.deviceKeyUpper == deviceKeyUpper }
       .forEach { entry ->
@@ -2291,8 +2411,10 @@ class OwnedAndroidGattRadio(private val context: Context) {
     exactWritePending.entries
       .filter { it.value.deviceKeyUpper == deviceKeyUpper }
       .forEach { entry ->
-        exactWriteValues.remove(entry.key)
+        val observedPayload = exactWriteValues[entry.key]
         if (exactWritePending.remove(entry.key, entry.value)) {
+          removeAndroidWritePayloadIfSame(exactWriteValues, entry.key, observedPayload)
+          exactWriteTerminalArbiter.claim(entry.key)
           completeExactByte(entry.value, failBytes)
         }
       }
@@ -2826,34 +2948,48 @@ class OwnedAndroidGattRadio(private val context: Context) {
       status: Int
     ) {
       if (!isCurrentGattCallback(gatt)) return
-      exactWritePending.remove(characteristic)?.let { pending ->
+      // A provisional callback failure must remain pending while lifecycle
+      // evidence already in flight gets a chance to claim the terminal.
+      if (exactWriteTerminalArbiter.isPending(characteristic)) return
+      exactWritePending[characteristic]?.let { pending ->
+        val observedPayload = exactWriteValues[characteristic]
         if (!isCurrentGatt(pending.deviceKeyUpper, gatt, pending.gattGeneration)) {
-          exactWriteValues.remove(characteristic)
-          pending.done()
+          if (exactWritePending.remove(characteristic, pending)) {
+            exactWriteTerminalArbiter.claim(characteristic)
+            removeAndroidWritePayloadIfSame(exactWriteValues, characteristic, observedPayload)
+            pending.done()
+          }
           return@let
         }
-        val written = exactWriteValues.remove(characteristic)
         if (status == BluetoothGatt.GATT_SUCCESS) {
-          completeExactByte(pending, Result.success(written?.copyOf()))
+          if (exactWritePending.remove(characteristic, pending)) {
+            removeAndroidWritePayloadIfSame(exactWriteValues, characteristic, observedPayload)
+            completeExactByte(pending, Result.success(observedPayload?.copyOf()))
+          }
         } else {
-          completeExactByte(pending, Result.failure(IllegalStateException("write status=$status")))
+          if (exactWriteTerminalArbiter.deferCharacteristicWriteFailure(characteristic, status)) {
+            return@let
+          }
+          val failure = classifyAndroidGattOperationFailure("characteristic-write", status)
+          if (exactWritePending.remove(characteristic, pending)) {
+            removeAndroidWritePayloadIfSame(exactWriteValues, characteristic, observedPayload)
+            completeExactByte(pending, Result.failure(failure))
+          }
         }
         return
       }
       val id = gatt.device.address.uppercase()
       val key = charPendingKeyFromGatt("write", id, characteristic) ?: return
-      val stashed = pendingWriteValues.remove(key)
+      if (writeTerminalArbiter.isPending(key)) return
       if (status == BluetoothGatt.GATT_SUCCESS) {
-        // Prefer stashed payload (API 33 path never wrote ch.value).
-        val value =
-          stashed
-            ?: run {
-              @Suppress("DEPRECATION")
-              characteristic.value
-            }
-        pending.remove(key)?.invoke(Result.success(value))
+        // The owner retains the API-33 payload and rejects stale callbacks
+        // after a same-key replacement has taken ownership.
+        val owner = pendingWriteRegistry.get(key) ?: return
+        pendingWriteRegistry.complete(key, characteristic, Result.success(owner.value.copyOf()))
       } else {
-        pending.remove(key)?.invoke(Result.failure(IllegalStateException("write status=$status")))
+        if (writeTerminalArbiter.deferCharacteristicWriteFailure(key, status)) return
+        val failure = classifyAndroidGattOperationFailure("characteristic-write", status)
+        pendingWriteRegistry.complete(key, characteristic, Result.failure(failure))
       }
     }
 
