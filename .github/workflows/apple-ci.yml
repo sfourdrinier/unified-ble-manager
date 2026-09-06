@@ -21,7 +21,7 @@ jobs:
       RCT_NEW_ARCH_ENABLED: '1'
     steps:
       - name: Checkout
-        uses: actions/checkout@v7.0.0
+        uses: actions/checkout@v7.0.1
 
       - name: Select Xcode
         uses: ./.github/actions/select-xcode
@@ -72,7 +72,7 @@ jobs:
       NODE_OPTIONS: --max-old-space-size=8192
     steps:
       - name: Checkout
-        uses: actions/checkout@v7.0.0
+        uses: actions/checkout@v7.0.1
 
       - name: Select Xcode
         uses: ./.github/actions/select-xcode
@@ -140,7 +140,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Checkout
-        uses: actions/checkout@v7.0.0
+        uses: actions/checkout@v7.0.1
 
       - name: Select Xcode
         uses: ./.github/actions/select-xcode
