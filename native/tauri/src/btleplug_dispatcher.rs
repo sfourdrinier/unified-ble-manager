@@ -96,7 +96,37 @@ struct DispatcherState {
     attachment: Option<Attachment>,
     callers: HashMap<String, CallerState>,
     scan_owner: Option<String>,
+    stopping_scan: Option<StoppingScan>,
     peer_owners: HashMap<String, String>,
+    orphan_connections: HashMap<String, OrphanConnectionOwner>,
+    orphan_subscription_owners: HashMap<String, OrphanSubscriptionOwner>,
+    orphan_subscription_resources: HashMap<String, SubscriptionResource>,
+}
+
+#[derive(Clone)]
+struct StoppingScan {
+    caller_key: String,
+    lease_id: String,
+    lease_generation: String,
+    handle: String,
+}
+
+#[derive(Clone)]
+struct OrphanConnectionOwner {
+    caller_key: String,
+    lease_id: String,
+    lease_generation: String,
+    peer_id: String,
+    peripheral: Option<Peripheral>,
+    attempts: u32,
+}
+
+struct OrphanSubscriptionOwner {
+    caller_key: String,
+    lease_id: String,
+    lease_generation: String,
+    stream_id: String,
+    attempts: u32,
 }
 
 #[derive(Clone)]
@@ -316,6 +346,11 @@ impl DispatchError {
         self
     }
 
+    fn retryable(mut self) -> Self {
+        self.retryable = true;
+        self
+    }
+
     fn into_response(self) -> IpcValue {
         let platform = self.platform.map_or(IpcValue::Null, |message| {
             object([
@@ -363,7 +398,11 @@ impl BtleplugDispatcher {
                 attachment: None,
                 callers: HashMap::new(),
                 scan_owner: None,
+                stopping_scan: None,
                 peer_owners: HashMap::new(),
+                orphan_connections: HashMap::new(),
+                orphan_subscription_owners: HashMap::new(),
+                orphan_subscription_resources: HashMap::new(),
             })),
             bootstrap_admission: Arc::new(Mutex::new(())),
             next_id: Arc::new(AtomicU64::new(1)),
@@ -597,6 +636,7 @@ impl BtleplugDispatcher {
                 &caller_state.operations,
                 &mut caller_state.completed_correlations,
                 &correlation,
+                &command,
                 Instant::now(),
             )?;
             caller_state
@@ -1052,7 +1092,7 @@ impl BtleplugDispatcher {
         let requested_services = service_uuids.clone();
         {
             let mut state = self.inner.lock().await;
-            if state.scan_owner.is_some() {
+            if scan_start_blocked(&state) {
                 return Err(DispatchError::new(
                     "scan.already-active",
                     "scan",
@@ -1229,12 +1269,29 @@ impl BtleplugDispatcher {
             .is_some_and(|caller_state| !expected_lease_matches(caller_state, &payload));
         if stale_lease {
             task.abort();
+            if let Some(caller_state) = state.callers.get_mut(&key) {
+                caller_state.scan_admitting = false;
+            }
             if scan_owner_matches {
-                state.scan_owner = None;
+                state.stopping_scan = Some(StoppingScan {
+                    caller_key: key.clone(),
+                    lease_id: expected_lease_id.clone(),
+                    lease_generation: expected_lease_generation.clone(),
+                    handle: handle.clone(),
+                });
             }
             drop(state);
-            if scan_owner_matches {
-                adapter.stop_scan().await.ok();
+            let outcome = if scan_owner_matches {
+                adapter.stop_scan().await.map_err(|error| error.to_string())
+            } else {
+                Ok(())
+            };
+            let mut state = self.inner.lock().await;
+            if let Err(error) = apply_scan_stop_outcome(&mut state, outcome) {
+                eprintln!(
+                    "[unified-ble:tauri] scan stop after stale-lease start failed, \
+                     resource retained for retry: {error}"
+                );
             }
             return Err(DispatchError::new(
                 "ownership.denied",
@@ -1245,10 +1302,22 @@ impl BtleplugDispatcher {
         let Some(caller_state) = state.callers.get_mut(&key) else {
             task.abort();
             if state.scan_owner.as_deref() == Some(&key) {
-                state.scan_owner = None;
+                state.stopping_scan = Some(StoppingScan {
+                    caller_key: key.clone(),
+                    lease_id: expected_lease_id.clone(),
+                    lease_generation: expected_lease_generation.clone(),
+                    handle: handle.clone(),
+                });
             }
             drop(state);
-            adapter.stop_scan().await.ok();
+            let outcome = adapter.stop_scan().await.map_err(|error| error.to_string());
+            let mut state = self.inner.lock().await;
+            if let Err(error) = apply_scan_stop_outcome(&mut state, outcome) {
+                eprintln!(
+                    "[unified-ble:tauri] scan stop after missing caller failed, \
+                     resource retained for retry: {error}"
+                );
+            }
             return Err(DispatchError::new(
                 "ownership.denied",
                 "scan",
@@ -1274,34 +1343,35 @@ impl BtleplugDispatcher {
     ) -> Result<IpcValue, DispatchError> {
         let handle = required_string(&payload, "scanHandle", "tauri.scan-stop")?;
         let key = caller_key(caller);
+        let expected_lease_id =
+            required_string(&payload, "__expectedLeaseId", "tauri.scan-stop-lease")?;
+        let expected_lease_generation = required_string(
+            &payload,
+            "__expectedLeaseGeneration",
+            "tauri.scan-stop-lease",
+        )?;
         {
-            let state = self.inner.lock().await;
-            let caller_state = state.callers.get(&key).ok_or_else(|| {
-                DispatchError::new("ownership.denied", "scan", "tauri.scan-stop-owner")
-            })?;
-            match caller_state.scan.as_ref() {
-                Some(scan) if scan.handle == handle => scan.task.abort(),
-                Some(_) => {
-                    return Err(DispatchError::new(
-                        "ownership.denied",
-                        "scan",
-                        "tauri.scan-stop-handle",
-                    ))
-                }
-                None => return Ok(released()),
+            let mut state = self.inner.lock().await;
+            match begin_scan_stop(
+                &mut state,
+                &key,
+                (&expected_lease_id, &expected_lease_generation),
+                &handle,
+            )? {
+                ScanStopBegin::AlreadyReleased => return Ok(released()),
+                ScanStopBegin::Started => {}
             }
         }
-        self.adapter().await?.stop_scan().await.map_err(|error| {
-            DispatchError::new("scan.stop-failed", "scan", "tauri.scan-stop")
-                .platform(error.to_string())
-        })?;
+        let outcome = self
+            .adapter()
+            .await?
+            .stop_scan()
+            .await
+            .map_err(|error| error.to_string());
         let mut state = self.inner.lock().await;
-        if let Some(caller_state) = state.callers.get_mut(&key) {
-            caller_state.scan.take();
-        }
-        if state.scan_owner.as_deref() == Some(&key) {
-            state.scan_owner = None;
-        }
+        apply_scan_stop_outcome(&mut state, outcome).map_err(|error| {
+            DispatchError::new("scan.stop-failed", "scan", "tauri.scan-stop").platform(error)
+        })?;
         Ok(released())
     }
 
@@ -1380,18 +1450,62 @@ impl BtleplugDispatcher {
             .peer_owners
             .get(&peer_id)
             .is_some_and(|owner| owner == &key);
+        let expected_lease = (
+            payload
+                .get("__expectedLeaseId")
+                .and_then(as_string)
+                .unwrap_or_default()
+                .to_owned(),
+            payload
+                .get("__expectedLeaseGeneration")
+                .and_then(as_string)
+                .unwrap_or_default()
+                .to_owned(),
+        );
         let Some(caller_state) = state.callers.get_mut(&key) else {
+            retain_orphan_connection(
+                &mut state,
+                OrphanConnectionOwner {
+                    caller_key: key.clone(),
+                    lease_id: expected_lease.0.clone(),
+                    lease_generation: expected_lease.1.clone(),
+                    peer_id: peer_id.clone(),
+                    peripheral: Some(peripheral.clone()),
+                    attempts: 0,
+                },
+            );
             drop(state);
             let residue = self
-                .compensate_unowned_connection(&peripheral, &peer_id, true)
+                .compensate_unowned_connection(
+                    &peripheral,
+                    &peer_id,
+                    true,
+                    Some(expected_lease.1.as_str()),
+                )
                 .await;
             return Err(compensation_failure("tauri.connect-owner", residue));
         };
         if !expected_lease_matches(caller_state, &payload) {
             let _ = caller_state;
+            retain_orphan_connection(
+                &mut state,
+                OrphanConnectionOwner {
+                    caller_key: key.clone(),
+                    lease_id: expected_lease.0.clone(),
+                    lease_generation: expected_lease.1.clone(),
+                    peer_id: peer_id.clone(),
+                    peripheral: Some(peripheral.clone()),
+                    attempts: 0,
+                },
+            );
             drop(state);
             let residue = self
-                .compensate_unowned_connection(&peripheral, &peer_id, peer_owner_matches)
+                .compensate_unowned_connection(
+                    &peripheral,
+                    &peer_id,
+                    peer_owner_matches,
+                    Some(expected_lease.1.as_str()),
+                )
                 .await;
             return Err(compensation_failure("tauri.connect-stale-lease", residue));
         }
@@ -1435,6 +1549,7 @@ impl BtleplugDispatcher {
         peripheral: &Peripheral,
         peer_id: &str,
         owner_matches: bool,
+        expected_generation: Option<&str>,
     ) -> Option<String> {
         let outcome = disconnect_with_state_check(
             async {
@@ -1447,8 +1562,13 @@ impl BtleplugDispatcher {
         )
         .await;
 
-        self.apply_compensation_outcome(outcome, peer_id, owner_matches)
-            .await
+        if let Some(expected_generation) = expected_generation {
+            self.settle_orphan_connection(outcome, peer_id, expected_generation)
+                .await
+        } else {
+            self.apply_compensation_outcome(outcome, peer_id, owner_matches)
+                .await
+        }
     }
 
     /// Settle the reservation from a compensating disconnect's outcome.
@@ -1467,6 +1587,7 @@ impl BtleplugDispatcher {
             Ok(()) => {
                 if owner_matches {
                     state.peer_owners.remove(peer_id);
+                    state.orphan_connections.remove(peer_id);
                 }
                 None
             }
@@ -1474,6 +1595,56 @@ impl BtleplugDispatcher {
                 // Deliberately NOT removing the reservation: the peer may still
                 // be connected, and an owner-less connected peer cannot be
                 // reached or retried until the process restarts.
+                if let Some(orphan) = state.orphan_connections.get_mut(peer_id) {
+                    orphan.attempts = orphan.attempts.saturating_add(1);
+                }
+                eprintln!(
+                    "[unified-ble:tauri] compensating disconnect for {peer_id} did not confirm \
+                     release, so the reservation is retained for retry: {error}"
+                );
+                Some(error)
+            }
+        }
+    }
+
+    async fn settle_orphan_connection(
+        &self,
+        outcome: Result<(), String>,
+        peer_id: &str,
+        expected_generation: &str,
+    ) -> Option<String> {
+        let mut state = self.inner.lock().await;
+        match outcome {
+            Ok(()) => {
+                let generation_matches = state
+                    .orphan_connections
+                    .get(peer_id)
+                    .is_some_and(|orphan| orphan.lease_generation == expected_generation);
+                if !generation_matches {
+                    return None;
+                }
+                let caller_key = state
+                    .orphan_connections
+                    .get(peer_id)
+                    .map(|orphan| orphan.caller_key.clone());
+                state.orphan_connections.remove(peer_id);
+                if let Some(caller_key) = caller_key {
+                    if state
+                        .peer_owners
+                        .get(peer_id)
+                        .is_some_and(|owner| owner == &caller_key)
+                    {
+                        state.peer_owners.remove(peer_id);
+                    }
+                }
+                None
+            }
+            Err(error) => {
+                if let Some(orphan) = state.orphan_connections.get_mut(peer_id) {
+                    if orphan.lease_generation == expected_generation {
+                        orphan.attempts = orphan.attempts.saturating_add(1);
+                    }
+                }
                 eprintln!(
                     "[unified-ble:tauri] compensating disconnect for {peer_id} did not confirm \
                      release, so the reservation is retained for retry: {error}"
@@ -2217,11 +2388,27 @@ impl BtleplugDispatcher {
     ) -> Result<IpcValue, DispatchError> {
         let handle = required_string(&payload, "subscriptionHandle", "tauri.unsubscribe")?;
         let key = caller_key(caller);
+        let expected_lease_id =
+            required_string(&payload, "__expectedLeaseId", "tauri.unsubscribe-lease")?;
+        let expected_lease_generation = required_string(
+            &payload,
+            "__expectedLeaseGeneration",
+            "tauri.unsubscribe-lease",
+        )?;
         let subscription = {
             let state = self.inner.lock().await;
             let caller_state = state.callers.get(&key).ok_or_else(|| {
                 DispatchError::new("ownership.denied", "gatt", "tauri.unsubscribe-owner")
             })?;
+            if caller_state.lease_id != expected_lease_id
+                || caller_state.lease_generation != expected_lease_generation
+            {
+                return Err(DispatchError::new(
+                    "ownership.denied",
+                    "gatt",
+                    "tauri.unsubscribe-stale-lease",
+                ));
+            }
             caller_state.subscriptions.get(&handle).map(|subscription| {
                 (
                     subscription.peripheral.clone(),
@@ -2240,8 +2427,12 @@ impl BtleplugDispatcher {
                 })?;
             let mut state = self.inner.lock().await;
             if let Some(caller_state) = state.callers.get_mut(&key) {
-                if let Some(subscription) = caller_state.subscriptions.remove(&handle) {
-                    subscription.task.abort();
+                if caller_state.lease_id == expected_lease_id
+                    && caller_state.lease_generation == expected_lease_generation
+                {
+                    if let Some(subscription) = caller_state.subscriptions.remove(&handle) {
+                        subscription.task.abort();
+                    }
                 }
             }
         }
@@ -2532,6 +2723,13 @@ impl BtleplugDispatcher {
                 return;
             }
             caller_state.scan_admitting = false;
+        }
+        if state
+            .stopping_scan
+            .as_ref()
+            .is_some_and(|stopping| stopping.caller_key == key)
+        {
+            return;
         }
         if state.scan_owner.as_deref() == Some(key) {
             state.scan_owner = None;
@@ -2861,35 +3059,25 @@ impl BtleplugDispatcher {
     ) {
         let should_stop = {
             let mut state = self.inner.lock().await;
-            let lease_matches = state.callers.get(caller_key).is_some_and(|caller| {
-                caller.lease_id == expected_lease.0 && caller.lease_generation == expected_lease.1
-            });
-            if !lease_matches {
-                return;
-            }
-            let scan = state
-                .callers
-                .get_mut(caller_key)
-                .and_then(|caller| caller.scan.take());
-            let owned = scan.as_ref().is_some_and(|scan| scan.handle == stream_id);
-            if !owned {
-                if let Some(scan) = scan {
-                    if let Some(caller) = state.callers.get_mut(caller_key) {
-                        caller.scan = Some(scan);
-                    }
-                }
-                false
-            } else {
-                if state.scan_owner.as_deref() == Some(caller_key) {
-                    state.scan_owner = None;
-                }
-                true
-            }
+            matches!(
+                begin_scan_stop(&mut state, caller_key, expected_lease, stream_id),
+                Ok(ScanStopBegin::Started)
+            )
         };
-        if should_stop {
-            if let Ok(adapter) = self.adapter().await {
-                adapter.stop_scan().await.ok();
-            }
+        if !should_stop {
+            return;
+        }
+        let outcome = match self.adapter().await {
+            Ok(adapter) => adapter.stop_scan().await.map_err(|error| error.to_string()),
+            Err(error) => Err(error
+                .platform
+                .unwrap_or_else(|| "adapter unavailable".to_owned())),
+        };
+        let mut state = self.inner.lock().await;
+        if let Err(error) = apply_scan_stop_outcome(&mut state, outcome) {
+            eprintln!(
+                "[unified-ble:tauri] scan stream stop failed, resource retained for retry: {error}"
+            );
         }
     }
 
@@ -2918,26 +3106,31 @@ impl BtleplugDispatcher {
                 .is_err()
             {
                 let mut state = self.inner.lock().await;
-                if let Some(caller) = state.callers.get_mut(caller_key) {
-                    caller
-                        .subscriptions
-                        .insert(stream_id.to_owned(), subscription);
-                }
+                retain_failed_subscription(
+                    &mut state,
+                    caller_key,
+                    expected_lease,
+                    stream_id,
+                    Some(subscription),
+                );
             }
         }
     }
 
     async fn release(&self, key: &str) -> IpcValue {
         let caller = self.inner.lock().await.callers.remove(key);
-        let Some(mut caller) = caller else {
-            return released();
+        let caller_cleanup = if let Some(mut caller) = caller {
+            let cleanup = self.settle_caller(key, &mut caller).await;
+            if !is_released(&cleanup) {
+                let mut state = self.inner.lock().await;
+                state.callers.entry(key.to_owned()).or_insert(caller);
+            }
+            cleanup
+        } else {
+            released()
         };
-        let cleanup = self.settle_caller(key, &mut caller).await;
-        if !is_released(&cleanup) {
-            let mut state = self.inner.lock().await;
-            state.callers.entry(key.to_owned()).or_insert(caller);
-        }
-        cleanup
+        let orphan_cleanup = self.settle_orphans(key).await;
+        merge_cleanup(caller_cleanup, orphan_cleanup)
     }
 
     fn is_revoked(&self, key: &str) -> bool {
@@ -2988,7 +3181,12 @@ impl BtleplugDispatcher {
         if caller.scan_admitting {
             caller.scan_admitting = false;
             let mut state = self.inner.lock().await;
-            if state.scan_owner.as_deref() == Some(key) {
+            if !state
+                .stopping_scan
+                .as_ref()
+                .is_some_and(|stopping| stopping.caller_key == key)
+                && state.scan_owner.as_deref() == Some(key)
+            {
                 state.scan_owner = None;
             }
         }
@@ -3063,6 +3261,132 @@ impl BtleplugDispatcher {
                     "tauri.release.connection",
                     error.to_string(),
                 )),
+            }
+        }
+        cleanup_record(failures)
+    }
+
+    async fn settle_orphans(&self, key: &str) -> IpcValue {
+        let mut failures = Vec::new();
+        let stopping = {
+            let state = self.inner.lock().await;
+            state
+                .stopping_scan
+                .as_ref()
+                .is_some_and(|stopping| stopping.caller_key == key)
+        };
+        if stopping {
+            match self.adapter().await {
+                Ok(adapter) => match adapter.stop_scan().await {
+                    Ok(()) => {
+                        let mut state = self.inner.lock().await;
+                        if let Err(error) = apply_scan_stop_outcome(&mut state, Ok(())) {
+                            failures.push(cleanup_failure("scan", "tauri.release.scan", error));
+                        }
+                    }
+                    Err(error) => failures.push(cleanup_failure(
+                        "scan",
+                        "tauri.release.scan",
+                        error.to_string(),
+                    )),
+                },
+                Err(error) => failures.push(cleanup_failure(
+                    "scan",
+                    "tauri.release.scan-adapter",
+                    error
+                        .platform
+                        .unwrap_or_else(|| "adapter unavailable".to_owned()),
+                )),
+            }
+        }
+        let orphans = {
+            let state = self.inner.lock().await;
+            state
+                .orphan_connections
+                .values()
+                .filter(|orphan| orphan.caller_key == key)
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        for orphan in orphans {
+            if let Some(peripheral) = orphan.peripheral.clone() {
+                let outcome = disconnect_with_state_check(
+                    async {
+                        peripheral
+                            .disconnect()
+                            .await
+                            .map_err(|error| error.to_string())
+                    },
+                    || connected_after_failed_disconnect(&peripheral),
+                )
+                .await;
+                if let Some(error) = self
+                    .settle_orphan_connection(outcome, &orphan.peer_id, &orphan.lease_generation)
+                    .await
+                {
+                    failures.push(cleanup_failure(
+                        "connection",
+                        "tauri.release.orphan-connection",
+                        error,
+                    ));
+                }
+            } else {
+                failures.push(cleanup_failure(
+                    "connection",
+                    "tauri.release.orphan-connection",
+                    format!(
+                        "pending connection for {} has no peripheral to release",
+                        orphan.peer_id
+                    ),
+                ));
+            }
+        }
+        let subscription_orphans = {
+            let state = self.inner.lock().await;
+            state
+                .orphan_subscription_owners
+                .values()
+                .filter(|orphan| orphan.caller_key == key)
+                .map(|orphan| orphan.stream_id.clone())
+                .collect::<Vec<_>>()
+        };
+        for stream_id in subscription_orphans {
+            let resource = {
+                let mut state = self.inner.lock().await;
+                state.orphan_subscription_resources.remove(&stream_id)
+            };
+            let Some(subscription) = resource else {
+                failures.push(cleanup_failure(
+                    "subscription",
+                    "tauri.release.orphan-subscription",
+                    format!("pending subscription {stream_id} has no resource to release"),
+                ));
+                continue;
+            };
+            match subscription
+                .peripheral
+                .unsubscribe(&subscription.characteristic)
+                .await
+            {
+                Ok(()) => {
+                    let mut state = self.inner.lock().await;
+                    state.orphan_subscription_owners.remove(&stream_id);
+                    state.orphan_subscription_resources.remove(&stream_id);
+                }
+                Err(error) => {
+                    let mut state = self.inner.lock().await;
+                    state
+                        .orphan_subscription_resources
+                        .insert(stream_id.clone(), subscription);
+                    if let Some(owner) = state.orphan_subscription_owners.get_mut(&stream_id) {
+                        owner.attempts = owner.attempts.saturating_add(1);
+                    }
+                    failures.push(cleanup_failure(
+                        "subscription",
+                        "tauri.release.orphan-subscription",
+                        error.to_string(),
+                    ));
+                }
             }
         }
         cleanup_record(failures)
@@ -3281,15 +3605,196 @@ fn quarantine_handle(payload: &BTreeMap<String, IpcValue>) -> Option<String> {
     .find_map(|key| payload.get(key).and_then(as_string).map(ToOwned::to_owned))
 }
 
+fn retain_orphan_connection(state: &mut DispatcherState, owner: OrphanConnectionOwner) {
+    state
+        .orphan_connections
+        .insert(owner.peer_id.clone(), owner);
+}
+
+fn scan_start_blocked(state: &DispatcherState) -> bool {
+    state.scan_owner.is_some() || state.stopping_scan.is_some()
+}
+
+enum ScanStopBegin {
+    Started,
+    AlreadyReleased,
+}
+
+fn begin_scan_stop(
+    state: &mut DispatcherState,
+    caller_key: &str,
+    expected_lease: (&str, &str),
+    stream_id: &str,
+) -> Result<ScanStopBegin, DispatchError> {
+    if let Some(stopping) = state.stopping_scan.as_ref() {
+        if stopping.caller_key == caller_key
+            && stopping.lease_id == expected_lease.0
+            && stopping.lease_generation == expected_lease.1
+            && stopping.handle == stream_id
+        {
+            return Ok(ScanStopBegin::Started);
+        }
+        if stopping.caller_key == caller_key && stopping.handle != stream_id {
+            return Err(DispatchError::new(
+                "ownership.denied",
+                "scan",
+                "tauri.scan-stop-handle",
+            ));
+        }
+        return Err(DispatchError::new(
+            "scan.already-active",
+            "scan",
+            "tauri.scan-stop-in-progress",
+        ));
+    }
+    let scan = {
+        let Some(caller) = state.callers.get_mut(caller_key) else {
+            return Err(DispatchError::new(
+                "ownership.denied",
+                "scan",
+                "tauri.scan-stop-owner",
+            ));
+        };
+        if caller.lease_id != expected_lease.0 || caller.lease_generation != expected_lease.1 {
+            return Err(DispatchError::new(
+                "ownership.denied",
+                "scan",
+                "tauri.scan-stop-owner",
+            ));
+        }
+        caller.scan.take()
+    };
+    match scan {
+        Some(scan) if scan.handle == stream_id => {
+            scan.task.abort();
+            state.stopping_scan = Some(StoppingScan {
+                caller_key: caller_key.to_owned(),
+                lease_id: expected_lease.0.to_owned(),
+                lease_generation: expected_lease.1.to_owned(),
+                handle: stream_id.to_owned(),
+            });
+            Ok(ScanStopBegin::Started)
+        }
+        Some(scan) => {
+            if let Some(caller) = state.callers.get_mut(caller_key) {
+                caller.scan = Some(scan);
+            }
+            Err(DispatchError::new(
+                "ownership.denied",
+                "scan",
+                "tauri.scan-stop-handle",
+            ))
+        }
+        None => Ok(ScanStopBegin::AlreadyReleased),
+    }
+}
+
+fn apply_scan_stop_outcome(
+    state: &mut DispatcherState,
+    outcome: Result<(), String>,
+) -> Result<(), String> {
+    match outcome {
+        Ok(()) => {
+            let Some(stopping) = state.stopping_scan.take() else {
+                return Ok(());
+            };
+            let protect_replacement =
+                state
+                    .callers
+                    .get(&stopping.caller_key)
+                    .is_some_and(|caller| {
+                        (caller.lease_id != stopping.lease_id
+                            || caller.lease_generation != stopping.lease_generation)
+                            && caller.scan.is_some()
+                    });
+            if state.scan_owner.as_deref() == Some(stopping.caller_key.as_str())
+                && !protect_replacement
+            {
+                state.scan_owner = None;
+            }
+            if let Some(caller) = state.callers.get_mut(&stopping.caller_key) {
+                if caller.lease_id == stopping.lease_id
+                    && caller.lease_generation == stopping.lease_generation
+                    && caller
+                        .scan
+                        .as_ref()
+                        .is_some_and(|scan| scan.handle == stopping.handle)
+                {
+                    caller.scan.take();
+                }
+            }
+            Ok(())
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn retain_failed_subscription(
+    state: &mut DispatcherState,
+    caller_key: &str,
+    expected_lease: (&str, &str),
+    stream_id: &str,
+    subscription: Option<SubscriptionResource>,
+) {
+    let lease_matches = state.callers.get(caller_key).is_some_and(|caller| {
+        caller.lease_id == expected_lease.0 && caller.lease_generation == expected_lease.1
+    });
+    if lease_matches {
+        if let Some(subscription) = subscription {
+            if let Some(caller) = state.callers.get_mut(caller_key) {
+                caller
+                    .subscriptions
+                    .insert(stream_id.to_owned(), subscription);
+            }
+        }
+        return;
+    }
+    state.orphan_subscription_owners.insert(
+        stream_id.to_owned(),
+        OrphanSubscriptionOwner {
+            caller_key: caller_key.to_owned(),
+            lease_id: expected_lease.0.to_owned(),
+            lease_generation: expected_lease.1.to_owned(),
+            stream_id: stream_id.to_owned(),
+            attempts: 1,
+        },
+    );
+    if let Some(subscription) = subscription {
+        state
+            .orphan_subscription_resources
+            .insert(stream_id.to_owned(), subscription);
+    }
+}
+
+fn merge_cleanup(left: IpcValue, right: IpcValue) -> IpcValue {
+    let mut failures = Vec::new();
+    for value in [left, right] {
+        if let IpcValue::Object(record) = value {
+            if let Some(IpcValue::Array(existing)) = record.get("failures") {
+                failures.extend(existing.iter().cloned());
+            }
+        }
+    }
+    cleanup_record(failures)
+}
+
 fn prune_completed_correlations(completed: &mut HashMap<String, Instant>, now: Instant) {
     completed
         .retain(|_, completed_at| now.duration_since(*completed_at) < COMPLETED_CORRELATION_TTL);
+}
+
+fn is_cleanup_command(command: &str) -> bool {
+    matches!(
+        command,
+        "scan.stop" | "gatt.unsubscribe" | "connection.disconnect"
+    )
 }
 
 fn admit_caller_correlation(
     operations: &HashMap<String, CancellationToken>,
     completed: &mut HashMap<String, Instant>,
     correlation: &str,
+    command: &str,
     now: Instant,
 ) -> Result<(), DispatchError> {
     prune_completed_correlations(completed, now);
@@ -3300,12 +3805,13 @@ fn admit_caller_correlation(
             "tauri.correlation-replay",
         ));
     }
-    if operations.len() + completed.len() >= MAX_CORRELATIONS {
-        return Err(DispatchError::new(
-            "protocol.violation",
-            "ipc",
-            "tauri.correlation-window",
-        ));
+    if is_cleanup_command(command) {
+        return Ok(());
+    }
+    if operations.len() >= MAX_CORRELATIONS {
+        return Err(
+            DispatchError::new("stream.quota", "ipc", "tauri.correlation-busy").retryable(),
+        );
     }
     Ok(())
 }
@@ -4404,6 +4910,319 @@ mod tests {
         );
     }
 
+    fn orphan_owner(peer_id: &str, generation: &str) -> super::OrphanConnectionOwner {
+        super::OrphanConnectionOwner {
+            caller_key: "caller-a".to_owned(),
+            lease_id: "lease-1".to_owned(),
+            lease_generation: generation.to_owned(),
+            peer_id: peer_id.to_owned(),
+            peripheral: None,
+            attempts: 0,
+        }
+    }
+
+    /// Failed compensating disconnect must keep both the reservation and an
+    /// inspectable cleanup owner. The original path retained `peer_owners`
+    /// while dropping the Peripheral, so later release could not retry.
+    #[tokio::test]
+    async fn failed_compensation_keeps_an_inspectable_orphan_owner() {
+        let dispatcher = BtleplugDispatcher::new(BtleplugDispatcherOptions { adapter_id: None });
+        {
+            let mut state = dispatcher.inner.lock().await;
+            state
+                .peer_owners
+                .insert("peer-1".to_owned(), "caller-a".to_owned());
+            super::retain_orphan_connection(&mut state, orphan_owner("peer-1", "generation-1"));
+        }
+
+        let residue = dispatcher
+            .apply_compensation_outcome(Err("still connected".to_owned()), "peer-1", true)
+            .await;
+
+        assert_eq!(residue.as_deref(), Some("still connected"));
+        let state = dispatcher.inner.lock().await;
+        assert_eq!(
+            state.peer_owners.get("peer-1").map(String::as_str),
+            Some("caller-a"),
+            "a peer that may still be connected must keep its reservation"
+        );
+        let orphan = state
+            .orphan_connections
+            .get("peer-1")
+            .expect("failed compensation must keep an inspectable pending cleanup owner");
+        assert_eq!(orphan.lease_id, "lease-1");
+        assert_eq!(orphan.lease_generation, "generation-1");
+        assert!(
+            orphan.attempts >= 1,
+            "failed compensation must record retry state"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_later_cleanup_retry_releases_the_orphan_and_reservation() {
+        let dispatcher = BtleplugDispatcher::new(BtleplugDispatcherOptions { adapter_id: None });
+        {
+            let mut state = dispatcher.inner.lock().await;
+            state
+                .peer_owners
+                .insert("peer-1".to_owned(), "caller-a".to_owned());
+            super::retain_orphan_connection(&mut state, orphan_owner("peer-1", "generation-1"));
+        }
+
+        let residue = dispatcher
+            .settle_orphan_connection(Ok(()), "peer-1", "generation-1")
+            .await;
+
+        assert!(residue.is_none());
+        let state = dispatcher.inner.lock().await;
+        assert!(
+            !state.peer_owners.contains_key("peer-1"),
+            "proven release must drop the reservation"
+        );
+        assert!(
+            !state.orphan_connections.contains_key("peer-1"),
+            "proven release must drop the orphan owner together with the reservation"
+        );
+    }
+
+    #[tokio::test]
+    async fn old_orphan_cleanup_does_not_release_a_newer_generations_reservation() {
+        let dispatcher = BtleplugDispatcher::new(BtleplugDispatcherOptions { adapter_id: None });
+        {
+            let mut state = dispatcher.inner.lock().await;
+            state
+                .peer_owners
+                .insert("peer-1".to_owned(), "caller-a".to_owned());
+            super::retain_orphan_connection(&mut state, orphan_owner("peer-1", "generation-2"));
+        }
+
+        dispatcher
+            .settle_orphan_connection(Ok(()), "peer-1", "generation-1")
+            .await;
+
+        let state = dispatcher.inner.lock().await;
+        assert_eq!(
+            state.peer_owners.get("peer-1").map(String::as_str),
+            Some("caller-a"),
+            "old cleanup must not release a newer generation's reservation"
+        );
+        let orphan = state
+            .orphan_connections
+            .get("peer-1")
+            .expect("newer generation orphan must remain");
+        assert_eq!(orphan.lease_generation, "generation-2");
+    }
+
+    #[tokio::test]
+    async fn release_without_a_caller_still_observes_orphan_connections() {
+        let dispatcher = BtleplugDispatcher::new(BtleplugDispatcherOptions { adapter_id: None });
+        {
+            let mut state = dispatcher.inner.lock().await;
+            state
+                .peer_owners
+                .insert("peer-1".to_owned(), "caller-a".to_owned());
+            super::retain_orphan_connection(&mut state, orphan_owner("peer-1", "generation-1"));
+        }
+
+        let cleanup = dispatcher.release("caller-a").await;
+        let state = dispatcher.inner.lock().await;
+        assert!(
+            state.orphan_connections.contains_key("peer-1"),
+            "release must keep an orphan whose physical release is unproven"
+        );
+        assert_eq!(
+            state.peer_owners.get("peer-1").map(String::as_str),
+            Some("caller-a")
+        );
+        assert!(
+            !super::is_released(&cleanup),
+            "unproven orphan cleanup cannot report a clean release that forgets the resource"
+        );
+    }
+
+    fn caller_state_with_scan(handle: &str) -> CallerState {
+        let mut caller = caller_state_with_no_connections();
+        caller.scan = Some(super::ScanResource {
+            handle: handle.to_owned(),
+            task: tokio::spawn(std::future::pending()),
+        });
+        caller
+    }
+
+    /// fail_scan_stream used to take the scan, clear scan_owner, then
+    /// `stop_scan().await.ok()`. The owner must stay until native stop
+    /// settles so a second scan cannot cover an outstanding stop.
+    #[tokio::test]
+    async fn fail_scan_keeps_owner_until_native_stop_completes() {
+        let dispatcher = BtleplugDispatcher::new(BtleplugDispatcherOptions { adapter_id: None });
+        let mut state = dispatcher.inner.lock().await;
+        state
+            .callers
+            .insert("caller-a".to_owned(), caller_state_with_scan("scan-1"));
+        state.scan_owner = Some("caller-a".to_owned());
+
+        super::begin_scan_stop(
+            &mut state,
+            "caller-a",
+            ("lease-1", "generation-1"),
+            "scan-1",
+        )
+        .expect("owned scan must be claimable for stop");
+
+        assert_eq!(
+            state.scan_owner.as_deref(),
+            Some("caller-a"),
+            "must not clear scan_owner before native stop completes"
+        );
+        assert!(
+            super::scan_start_blocked(&state),
+            "a second scan must not be admitted over an outstanding stop"
+        );
+        assert!(
+            state.stopping_scan.is_some(),
+            "the exact scan owner must remain in a stopping state"
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_scan_stop_remains_retryable() {
+        let dispatcher = BtleplugDispatcher::new(BtleplugDispatcherOptions { adapter_id: None });
+        let mut state = dispatcher.inner.lock().await;
+        state
+            .callers
+            .insert("caller-a".to_owned(), caller_state_with_scan("scan-1"));
+        state.scan_owner = Some("caller-a".to_owned());
+        super::begin_scan_stop(
+            &mut state,
+            "caller-a",
+            ("lease-1", "generation-1"),
+            "scan-1",
+        )
+        .expect("owned scan must be claimable for stop");
+
+        let error = super::apply_scan_stop_outcome(&mut state, Err("adapter busy".to_owned()))
+            .expect_err("failed stop must be retained, not discarded");
+        assert_eq!(error, "adapter busy");
+        assert_eq!(state.scan_owner.as_deref(), Some("caller-a"));
+        assert!(
+            state.stopping_scan.is_some(),
+            "failed stop must keep the original resource available for retry"
+        );
+    }
+
+    #[tokio::test]
+    async fn successful_scan_stop_releases_owner() {
+        let dispatcher = BtleplugDispatcher::new(BtleplugDispatcherOptions { adapter_id: None });
+        let mut state = dispatcher.inner.lock().await;
+        state
+            .callers
+            .insert("caller-a".to_owned(), caller_state_with_scan("scan-1"));
+        state.scan_owner = Some("caller-a".to_owned());
+        super::begin_scan_stop(
+            &mut state,
+            "caller-a",
+            ("lease-1", "generation-1"),
+            "scan-1",
+        )
+        .expect("owned scan must be claimable for stop");
+
+        super::apply_scan_stop_outcome(&mut state, Ok(()))
+            .expect("confirmed stop must release the stopping owner");
+        assert!(state.scan_owner.is_none());
+        assert!(state.stopping_scan.is_none());
+        assert!(!super::scan_start_blocked(&state));
+    }
+
+    /// After unsubscribe fails, the old subscription must not land in a
+    /// replacement lease. The original fail_subscription_stream reinserted
+    /// into `callers[key]` with no generation check after the await.
+    #[tokio::test]
+    async fn failed_unsubscribe_does_not_reinsert_into_a_replacement_lease() {
+        let dispatcher = BtleplugDispatcher::new(BtleplugDispatcherOptions { adapter_id: None });
+        let mut state = dispatcher.inner.lock().await;
+        let mut replacement = caller_state_with_no_connections();
+        replacement.lease_id = "lease-2".to_owned();
+        replacement.lease_generation = "generation-2".to_owned();
+        state.callers.insert("caller-a".to_owned(), replacement);
+
+        super::retain_failed_subscription(
+            &mut state,
+            "caller-a",
+            ("lease-1", "generation-1"),
+            "sub-1",
+            None,
+        );
+
+        let caller = state
+            .callers
+            .get("caller-a")
+            .expect("replacement caller remains");
+        assert!(
+            caller.subscriptions.is_empty(),
+            "must not insert an old-generation subscription into the replacement caller"
+        );
+        assert_eq!(caller.lease_id, "lease-2");
+        let orphan = state
+            .orphan_subscription_owners
+            .get("sub-1")
+            .expect("old resource must keep a retry owner on the old generation");
+        assert_eq!(orphan.lease_id, "lease-1");
+        assert_eq!(orphan.lease_generation, "generation-1");
+    }
+
+    #[tokio::test]
+    async fn failed_unsubscribe_reinserts_only_when_the_same_lease_still_owns_the_caller() {
+        let dispatcher = BtleplugDispatcher::new(BtleplugDispatcherOptions { adapter_id: None });
+        let mut state = dispatcher.inner.lock().await;
+        state
+            .callers
+            .insert("caller-a".to_owned(), caller_state_with_no_connections());
+
+        super::retain_failed_subscription(
+            &mut state,
+            "caller-a",
+            ("lease-1", "generation-1"),
+            "sub-1",
+            None,
+        );
+
+        assert!(
+            !state.orphan_subscription_owners.contains_key("sub-1"),
+            "a still-current lease must not quarantine its own live subscription"
+        );
+    }
+
+    #[tokio::test]
+    async fn stop_scan_after_await_does_not_steal_a_replacement_callers_scan() {
+        let dispatcher = BtleplugDispatcher::new(BtleplugDispatcherOptions { adapter_id: None });
+        let mut state = dispatcher.inner.lock().await;
+        state
+            .callers
+            .insert("caller-a".to_owned(), caller_state_with_scan("scan-1"));
+        state.scan_owner = Some("caller-a".to_owned());
+        super::begin_scan_stop(
+            &mut state,
+            "caller-a",
+            ("lease-1", "generation-1"),
+            "scan-1",
+        )
+        .expect("owned scan must be claimable for stop");
+
+        let mut replacement = caller_state_with_scan("scan-2");
+        replacement.lease_id = "lease-2".to_owned();
+        replacement.lease_generation = "generation-2".to_owned();
+        state.callers.insert("caller-a".to_owned(), replacement);
+
+        super::apply_scan_stop_outcome(&mut state, Ok(()))
+            .expect("old stop success must not fail closed on a replaced lease");
+        let caller = state.callers.get("caller-a").expect("replacement remains");
+        assert_eq!(
+            caller.scan.as_ref().map(|scan| scan.handle.as_str()),
+            Some("scan-2"),
+            "successful old stop must not take a replacement caller's scan"
+        );
+    }
+
     /// Builds the error btleplug actually delivers when BlueZ has dropped a
     /// device object, by the same conversions the real path uses.
     ///
@@ -4856,8 +5675,9 @@ mod tests {
             "c1".to_owned(),
             now,
         );
-        let error = super::admit_caller_correlation(&operations, &mut completed, "c1", now)
-            .expect_err("completed correlation replay must fail");
+        let error =
+            super::admit_caller_correlation(&operations, &mut completed, "c1", "gatt.read", now)
+                .expect_err("completed correlation replay must fail");
         assert_eq!(error.code, "protocol.violation");
         assert_eq!(error.operation, "tauri.correlation-replay");
     }
@@ -4869,9 +5689,14 @@ mod tests {
         let now = std::time::Instant::now();
         for correlation in ["scan-c1", "subscribe-c1"] {
             completed.insert(correlation.to_owned(), now);
-            let error =
-                super::admit_caller_correlation(&operations, &mut completed, correlation, now)
-                    .expect_err("completed scan/subscribe replay must fail");
+            let error = super::admit_caller_correlation(
+                &operations,
+                &mut completed,
+                correlation,
+                "scan.start",
+                now,
+            )
+            .expect_err("completed scan/subscribe replay must fail");
             assert_eq!(error.operation, "tauri.correlation-replay");
         }
     }
@@ -4885,6 +5710,7 @@ mod tests {
             &operations,
             &mut completed,
             "c1",
+            "gatt.read",
             std::time::Instant::now(),
         )
         .expect_err("in-flight duplicate must fail");
@@ -4897,7 +5723,7 @@ mod tests {
         let mut completed = std::collections::HashMap::new();
         let now = std::time::Instant::now();
         completed.insert("c1".to_owned(), now);
-        super::admit_caller_correlation(&operations, &mut completed, "c2", now)
+        super::admit_caller_correlation(&operations, &mut completed, "c2", "gatt.read", now)
             .expect("a fresh correlation must admit");
     }
 
@@ -4911,6 +5737,7 @@ mod tests {
             &std::collections::HashMap::new(),
             &mut completed,
             "c1",
+            "gatt.read",
             std::time::Instant::now(),
         )
         .expect("a new lease must not inherit the prior replay window");
@@ -4922,44 +5749,129 @@ mod tests {
         let mut completed = std::collections::HashMap::new();
         let now = std::time::Instant::now();
         completed.insert("c1".to_owned(), now - std::time::Duration::from_secs(31));
-        super::admit_caller_correlation(&operations, &mut completed, "c1", now)
+        super::admit_caller_correlation(&operations, &mut completed, "c1", "gatt.read", now)
             .expect("expired completed correlations must leave the window");
         assert!(!completed.contains_key("c1"));
     }
 
     #[test]
-    fn full_replay_window_rejects_new_work_without_evicting_a_live_tombstone() {
+    fn cleanup_still_admits_after_more_than_256_unique_completed_routes() {
         let operations = std::collections::HashMap::new();
         let mut completed = std::collections::HashMap::new();
         let now = std::time::Instant::now();
-        for index in 0..super::MAX_CORRELATIONS {
-            completed.insert(format!("c{index}"), now);
+        for index in 0..=super::MAX_CORRELATIONS {
+            completed.insert(format!("done-{index}"), now);
         }
-        let error = super::admit_caller_correlation(&operations, &mut completed, "fresh", now)
-            .expect_err("a full window must reject new work");
-        assert_eq!(error.operation, "tauri.correlation-window");
-        assert_eq!(completed.len(), super::MAX_CORRELATIONS);
-        assert!(completed.contains_key("c0"));
+        assert!(completed.len() > super::MAX_CORRELATIONS);
+        super::admit_caller_correlation(
+            &operations,
+            &mut completed,
+            "scan-stop-1",
+            "scan.stop",
+            now,
+        )
+        .expect("scan.stop must remain usable after more than 256 completed routes");
+        super::admit_caller_correlation(
+            &operations,
+            &mut completed,
+            "unsubscribe-1",
+            "gatt.unsubscribe",
+            now,
+        )
+        .expect("gatt.unsubscribe must remain usable after more than 256 completed routes");
+        super::admit_caller_correlation(
+            &operations,
+            &mut completed,
+            "disconnect-1",
+            "connection.disconnect",
+            now,
+        )
+        .expect("connection.disconnect must remain usable after more than 256 completed routes");
     }
 
     #[test]
-    fn in_flight_plus_completed_correlations_never_exceed_256() {
+    fn replay_of_an_old_correlation_still_rejects_after_more_than_256_completed_routes() {
+        let operations = std::collections::HashMap::new();
+        let mut completed = std::collections::HashMap::new();
+        let now = std::time::Instant::now();
+        for index in 0..=super::MAX_CORRELATIONS {
+            completed.insert(format!("done-{index}"), now);
+        }
+        let error = super::admit_caller_correlation(
+            &operations,
+            &mut completed,
+            "done-0",
+            "scan.stop",
+            now,
+        )
+        .expect_err("replay of an old correlation must still reject");
+        assert_eq!(error.code, "protocol.violation");
+        assert_eq!(error.operation, "tauri.correlation-replay");
+    }
+
+    #[test]
+    fn live_operation_exhaustion_is_backpressure_not_protocol_violation() {
         let mut operations = std::collections::HashMap::new();
         let mut completed = std::collections::HashMap::new();
         let now = std::time::Instant::now();
-        for index in 0..200 {
-            completed.insert(format!("done-{index}"), now);
-        }
-        for index in 0..56 {
+        for index in 0..super::MAX_CORRELATIONS {
             operations.insert(
                 format!("live-{index}"),
                 tokio_util::sync::CancellationToken::new(),
             );
         }
-        let error = super::admit_caller_correlation(&operations, &mut completed, "overflow", now)
-            .expect_err("in-flight plus completed must stay within 256");
-        assert_eq!(error.operation, "tauri.correlation-window");
-        assert_eq!(operations.len() + completed.len(), super::MAX_CORRELATIONS);
+        let error = super::admit_caller_correlation(
+            &operations,
+            &mut completed,
+            "overflow",
+            "gatt.read",
+            now,
+        )
+        .expect_err("live exhaustion must reject new ordinary work");
+        assert_eq!(error.code, "stream.quota");
+        assert_eq!(error.operation, "tauri.correlation-busy");
+        assert!(
+            error.retryable,
+            "live exhaustion is backpressure, not a protocol violation"
+        );
+        assert_eq!(operations.len(), super::MAX_CORRELATIONS);
+    }
+
+    #[test]
+    fn cleanup_still_admits_when_live_operations_are_exhausted() {
+        let mut operations = std::collections::HashMap::new();
+        let mut completed = std::collections::HashMap::new();
+        let now = std::time::Instant::now();
+        for index in 0..super::MAX_CORRELATIONS {
+            operations.insert(
+                format!("live-{index}"),
+                tokio_util::sync::CancellationToken::new(),
+            );
+        }
+        super::admit_caller_correlation(
+            &operations,
+            &mut completed,
+            "scan-stop-cleanup",
+            "scan.stop",
+            now,
+        )
+        .expect("scan.stop must reserve admission when live work is at capacity");
+        super::admit_caller_correlation(
+            &operations,
+            &mut completed,
+            "unsubscribe-cleanup",
+            "gatt.unsubscribe",
+            now,
+        )
+        .expect("gatt.unsubscribe must reserve admission when live work is at capacity");
+        super::admit_caller_correlation(
+            &operations,
+            &mut completed,
+            "disconnect-cleanup",
+            "connection.disconnect",
+            now,
+        )
+        .expect("connection.disconnect must reserve admission when live work is at capacity");
     }
 
     fn quarantine_key(command: &str, handle: &str) -> super::QuarantineKey {
