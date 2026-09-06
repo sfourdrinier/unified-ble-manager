@@ -116,6 +116,14 @@ when the peer refused, `'cancelled'` when the cancellation stopped it, and
 get an invented outcome - `cancelPairing()` rejects with the same error the
 pairing rejected with.
 
+An abort or deadline on `cancelPairing()` itself is admitted before any native
+cancellation is issued and bounds the whole wait, acknowledgement and pairing
+result included. A timed-out or aborted wait reports `operation.timed-out` /
+`operation.aborted` rather than inventing `'cancelled'` from an acknowledgement,
+and the in-flight pairing stays owned so `state()`/`watch()` (and a later
+`cancelPairing()` that waits long enough) can still observe the pairing's own
+result.
+
 Two limits are deliberate rather than overlooked. `'not-pairing'` carries a
 narrow race of its own: the pairing can settle between the lookup and the
 caller's call, and that instant reports `'not-pairing'`. And `pair()`'s abort

@@ -227,7 +227,7 @@ export class ReactNativeAndroidSecurityBackend implements SecurityBackend {
     return completion
   }
 
-  async cancelPairing(peerId: string, _options: PublicOperationOptions): Promise<SecurityCancelPairingResult> {
+  async cancelPairing(peerId: string, options: PublicOperationOptions): Promise<SecurityCancelPairingResult> {
     this.assertOpen('android.security.cancel-pairing')
     if (!this.boundary.securityCancellationAvailable) {
       throw contractError('capability.unsupported', 'capability', 'android.security.cancel-pairing')
@@ -239,12 +239,24 @@ export class ReactNativeAndroidSecurityBackend implements SecurityBackend {
     if (nativePeerId === undefined) return { outcome: 'not-pairing' }
     const result = this.activeResults.get(peerId)
     if (result === undefined) return { outcome: 'not-pairing' }
-    await this.boundary.cancelPairing(nativePeerId)
-    // Ask the pairing what happened to it. A failed pairing propagates its
-    // error rather than being reported as a cancellation we did not achieve,
-    // and concurrent callers all await the same promise, so they cannot get
-    // different answers.
-    return cancelOutcomeForPairResult(await result)
+    if (options.signal?.aborted === true) {
+      throw contractError('operation.aborted', 'core', 'android.security.cancel-pairing')
+    }
+    if (options.deadline !== null && options.deadline <= this.now()) {
+      throw contractError('operation.timed-out', 'core', 'android.security.cancel-pairing')
+    }
+    // Bound the whole cancellation transaction (native ack AND the pairing's
+    // own result). A timed-out wait is not a successful physical cancellation,
+    // and giving up the wait does not drop the in-flight pairing.
+    return settleAndroidOperation(
+      (async () => {
+        await this.boundary.cancelPairing(nativePeerId)
+        return cancelOutcomeForPairResult(await result)
+      })(),
+      options,
+      this.now,
+      'android.security.cancel-pairing'
+    )
   }
 
   async unpair(peerId: string, _options: PublicOperationOptions): Promise<SecurityUnpairResult> {
