@@ -25,6 +25,9 @@ No changes yet.
   Old-generation resources quarantine instead of attaching to a replacement
   caller. Compensating unsubscribe after subscribe success uses the same orphan
   owner instead of discarding the outcome.
+- Tauri: overlapping stop requests for the same scan join one native
+  `stop_scan()`. Completions carry an attempt token, so a late stop of scan A
+  cannot take scan B’s stopping owner.
 - Core: retain unadopted scan/connect leases when stale-admission `stop`/`release`
   fails, and retry that exact lease on later manager cleanup. Aborted, destroyed,
   or deadline-expired callers settle promptly; native work stays owned until
@@ -42,7 +45,10 @@ No changes yet.
   without `stop()`. An already-terminal source never publishes `active`; the
   first state is the projected terminal (`failed` for `source-failed` /
   `connection-lost` / `overflow`, `stopped` for ordinary close). That event is
-  ended delivery; `stop()` remains the physical cleanup path.
+  ended delivery; `stop()` remains the physical cleanup path. The data pump
+  still drains advertisements already accepted by `finishWithReason` before
+  the observation terminal. Structured `source-failed` errors survive scan-state
+  binding and reach `scan.observations`.
 - BlueZ `StopDiscovery` / `StopNotify` release this client’s session even if
   another D-Bus client keeps `Discovering` / `Notifying` true.
 - BlueZ `StartNotify` confirmation failure after native accept keeps a retryable
@@ -89,7 +95,10 @@ No changes yet.
   `cancelPairing()`.
 - Web adapter `watchState()` follows browser `availabilitychanged` instead of
   staying stale until another API samples availability. When that event is
-  missing, watches share one bounded `getAvailability()` poll.
+  missing, watches share one bounded `getAvailability()` poll. A completed
+  availability sample is applied unless a newer sample has already been applied,
+  so an outstanding later probe cannot make `attach()` throw `adapter.unavailable`
+  from a stale unavailable cache.
 
 ## [4.0.24] - 2026-09-05
 
