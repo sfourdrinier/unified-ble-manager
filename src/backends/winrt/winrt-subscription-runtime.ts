@@ -3,7 +3,7 @@
 import type { CleanupFailure, CleanupRecord } from '../../backend-contract/errors'
 import type { CharacteristicPath } from '../../backend-contract/gatt'
 import type { OperationTerminalRecord } from '../../backend-contract/operations'
-import { byteLimit, ownBytes } from '../../backend-contract/primitives'
+import { byteLimit, ownBytes, type GenerationId, type OwnedBytes } from '../../backend-contract/primitives'
 import {
   WinRtBackendSubscription,
   WinRtSubscriptionStream,
@@ -21,7 +21,16 @@ import {
 } from './winrt-backend-helpers'
 
 const maximumValueBytes = byteLimit(512 * 1024)
+const WINRT_ENABLEMENT_STAGING_ITEM_LIMIT = 16
+const WINRT_ENABLEMENT_STAGING_BYTE_LIMIT = 64 * 1024
 const latestPhysicalCleanupFailure = new WeakMap<WinRtPhysicalSubscription, CleanupRecord>()
+
+export function physicalSubscriptionKey(
+  address: WinRtCharacteristicAddress,
+  connectionGeneration: GenerationId<'connection-generation', string>
+): string {
+  return `${characteristicAddressKey(address)}\u0000${String(connectionGeneration)}`
+}
 
 /** Owns the physical CCCD reference count and retryable native disable cleanup. */
 export function stopWinRtPhysicalSubscription(
@@ -130,6 +139,7 @@ export async function invalidateWinRtPhysicalSubscription(
   terminalError: Error
 ): Promise<CleanupRecord> {
   physical.invalidated = true
+  discardWinRtStagedNotifications(physical)
   for (const waiter of physical.pendingConsumers) {
     if (waiter.state !== 'pending') {
       continue
@@ -144,7 +154,14 @@ export async function invalidateWinRtPhysicalSubscription(
   const cleanup = stopWinRtPhysicalSubscription(backend, physical)
   const failures: CleanupFailure[] = []
   try {
-    await cancellation
+    const cancelled = await waitForWinRtValue(
+      cancellation,
+      backend.now() + WINRT_NATIVE_CLEANUP_TIMEOUT_MS,
+      backend.now
+    )
+    if (cancelled.state === 'timed-out') {
+      failures.push(...timedOutWinRtCleanup('operation', 'winrt.gatt.start-notify.cancel').failures)
+    }
   } catch (error) {
     failures.push(...cleanupFailure('operation', 'winrt.gatt.start-notify.cancel', error).failures)
   }
@@ -152,28 +169,34 @@ export async function invalidateWinRtPhysicalSubscription(
   failures.push(...initialCleanup.failures)
   const enablement = physical.enablement
   if (enablement !== null) {
-    try {
-      await enablement
-    } catch {
-      // The subscription operation owns the enablement terminal. Cleanup truth is carried by
-      // the retained physical record and its exact latest disable receipt below.
-    }
-    const terminalCleanup = latestPhysicalCleanupFailure.get(physical)
-    if (terminalCleanup !== undefined && terminalCleanup !== initialCleanup) {
-      failures.push(...terminalCleanup.failures)
-    }
-  }
-  if (
-    backend.subscriptions.get(physical.key) === physical &&
-    latestPhysicalCleanupFailure.get(physical) === undefined
-  ) {
-    failures.push(
-      ...cleanupFailure(
-        'subscription',
-        'winrt.gatt.stop-notify',
-        new Error('WinRT physical subscription remained owned after terminal enablement settlement')
-      ).failures
+    const settled = await waitForWinRtValue(
+      enablement.then(
+        () => undefined,
+        () => undefined
+      ),
+      backend.now() + WINRT_NATIVE_CLEANUP_TIMEOUT_MS,
+      backend.now
     )
+    if (settled.state === 'timed-out') {
+      failures.push(...timedOutWinRtCleanup('subscription', 'winrt.gatt.start-notify.enablement').failures)
+    } else {
+      const terminalCleanup = latestPhysicalCleanupFailure.get(physical)
+      if (terminalCleanup !== undefined && terminalCleanup !== initialCleanup) {
+        failures.push(...terminalCleanup.failures)
+      }
+      if (
+        backend.subscriptions.get(physical.key) === physical &&
+        latestPhysicalCleanupFailure.get(physical) === undefined
+      ) {
+        failures.push(
+          ...cleanupFailure(
+            'subscription',
+            'winrt.gatt.stop-notify',
+            new Error('WinRT physical subscription remained owned after terminal enablement settlement')
+          ).failures
+        )
+      }
+    }
   }
   return failures.length === 0
     ? releasedCleanup
@@ -249,20 +272,24 @@ export function createWinRtSubscription(
   backend.nextSubscription += 1
   physical.consumers.add(subscription)
   stream.bindOwnerRemoval(() => removeWinRtSubscription(backend, subscription))
+  flushWinRtStagedNotifications(backend, physical, subscription)
   return subscription
 }
 
 export function createWinRtPhysicalSubscription(
   backend: WinRtBackend,
   address: WinRtCharacteristicAddress,
-  mode: 'notify' | 'indicate'
+  mode: 'notify' | 'indicate',
+  connectionGeneration: GenerationId<'connection-generation', string>
 ): WinRtPhysicalSubscription {
   const physical: WinRtPhysicalSubscription = {
-    key: characteristicAddressKey(address),
+    key: physicalSubscriptionKey(address, connectionGeneration),
     address,
+    connectionGeneration,
     mode,
     consumers: new Set(),
     pendingConsumers: new Set(),
+    stagedValues: [],
     state: 'enabling',
     enableConfirmed: false,
     enableOutcome: 'pending',
@@ -273,7 +300,9 @@ export function createWinRtPhysicalSubscription(
     enableCancellation: null,
     removal: null,
     removalSettlement: null,
-    removalPhase: null
+    removalPhase: null,
+    stagedBytes: 0,
+    stagingOverflowed: false
   }
   backend.subscriptions.set(physical.key, physical)
   return physical
@@ -285,24 +314,18 @@ export function emitWinRtNotification(
   physical: WinRtPhysicalSubscription,
   source: unknown
 ): void {
+  if (physical.invalidated || physical.state === 'removing' || physical.state === 'cleanup-pending') {
+    return
+  }
+  if (physical.state === 'enabling' || (physical.state === 'ready' && physical.consumers.size === 0)) {
+    stageWinRtNotification(backend, physical, source)
+    return
+  }
   if (physical.state !== 'ready') {
     return
   }
   try {
-    // The N-API callback runs in this V8 realm, so this exact check excludes wider views and array-like values.
-    if (!(source instanceof Uint8Array)) {
-      throw new TypeError('WinRT notification ingress payload must be a Uint8Array')
-    }
-    const copied = ownBytes(source, maximumValueBytes)
-    for (const consumer of physical.consumers) {
-      const emission = consumer.stream.emit(
-        Object.freeze({ value: ownBytes(copied, maximumValueBytes), indication: physical.mode === 'indicate' }),
-        copied.byteLength
-      )
-      if (emission.terminated && consumer.stream.overflowPolicy === 'error') {
-        releaseWinRtOverflowedSubscription(backend, consumer)
-      }
-    }
+    deliverWinRtNotification(backend, physical, copyWinRtNotificationBytes(source))
   } catch (error) {
     terminalizeWinRtNotificationIngressFailure(
       backend,
@@ -310,6 +333,96 @@ export function emitWinRtNotification(
       winRtPlatformError('gatt.subscribe-failed', 'gatt', 'winrt.gatt.notify.ingress', error)
     )
   }
+}
+
+function copyWinRtNotificationBytes(source: unknown): OwnedBytes {
+  // The N-API callback runs in this V8 realm, so this exact check excludes wider views and array-like values.
+  if (!(source instanceof Uint8Array)) {
+    throw new TypeError('WinRT notification ingress payload must be a Uint8Array')
+  }
+  return ownBytes(source, maximumValueBytes)
+}
+
+function stageWinRtNotification(
+  backend: WinRtBackend,
+  physical: WinRtPhysicalSubscription,
+  source: unknown
+): void {
+  try {
+    const copied = copyWinRtNotificationBytes(source)
+    if (physical.stagingOverflowed) {
+      return
+    }
+    if (
+      physical.stagedValues.length >= WINRT_ENABLEMENT_STAGING_ITEM_LIMIT ||
+      physical.stagedBytes + copied.byteLength > WINRT_ENABLEMENT_STAGING_BYTE_LIMIT
+    ) {
+      physical.stagingOverflowed = true
+      return
+    }
+    physical.stagedValues.push(copied)
+    physical.stagedBytes += copied.byteLength
+  } catch (error) {
+    terminalizeWinRtNotificationIngressFailure(
+      backend,
+      physical,
+      winRtPlatformError('gatt.subscribe-failed', 'gatt', 'winrt.gatt.notify.ingress', error)
+    )
+  }
+}
+
+function flushWinRtStagedNotifications(
+  backend: WinRtBackend,
+  physical: WinRtPhysicalSubscription,
+  subscription: WinRtBackendSubscription
+): void {
+  try {
+    for (const copied of physical.stagedValues) {
+      const emission = emitWinRtCopiedNotification(subscription, physical, copied)
+      if (emission.terminated && subscription.stream.overflowPolicy === 'error') {
+        releaseWinRtOverflowedSubscription(backend, subscription)
+        discardWinRtStagedNotifications(physical)
+        return
+      }
+    }
+    if (physical.stagingOverflowed) {
+      subscription.stream.finishWithReason('overflow')
+    }
+  } finally {
+    if (physical.pendingConsumers.size === 0) {
+      discardWinRtStagedNotifications(physical)
+    }
+  }
+}
+
+function deliverWinRtNotification(
+  backend: WinRtBackend,
+  physical: WinRtPhysicalSubscription,
+  copied: OwnedBytes
+): void {
+  for (const consumer of physical.consumers) {
+    const emission = emitWinRtCopiedNotification(consumer, physical, copied)
+    if (emission.terminated && consumer.stream.overflowPolicy === 'error') {
+      releaseWinRtOverflowedSubscription(backend, consumer)
+    }
+  }
+}
+
+function emitWinRtCopiedNotification(
+  consumer: WinRtBackendSubscription,
+  physical: WinRtPhysicalSubscription,
+  copied: OwnedBytes
+) {
+  return consumer.stream.emit(
+    Object.freeze({ value: ownBytes(copied, maximumValueBytes), indication: physical.mode === 'indicate' }),
+    copied.byteLength
+  )
+}
+
+export function discardWinRtStagedNotifications(physical: WinRtPhysicalSubscription): void {
+  physical.stagedValues.length = 0
+  physical.stagedBytes = 0
+  physical.stagingOverflowed = false
 }
 
 /** Removes just an overflow-terminal consumer; the last consumer owns physical CCCD teardown. */

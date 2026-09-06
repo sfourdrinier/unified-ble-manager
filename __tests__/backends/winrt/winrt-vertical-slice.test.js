@@ -141,6 +141,22 @@ async function flushMicrotasks() {
   }
 }
 
+async function expectSettledIteratorResult(iterator, expected) {
+  const pending = iterator.next()
+  let settled = false
+  pending.then(
+    () => {
+      settled = true
+    },
+    () => {
+      settled = true
+    }
+  )
+  await flushMicrotasks()
+  expect(settled).toBe(true)
+  await expect(pending).resolves.toMatchObject(expected)
+}
+
 function expectContractError(call, code) {
   try {
     call()
@@ -202,6 +218,7 @@ class DeterministicWinRtBoundary {
     this.emitConnectionLossDuringNextStartNotify = false
     this.emitDatabaseChangedDuringNextStartNotify = false
     this.emitAdapterLossDuringNextStartNotify = false
+    this.emitNotificationDuringNextStartNotify = null
     this.throwNextScanStart = false
     this.throwNextConnect = false
     this.throwNextConnectAfterCleanupFailure = false
@@ -564,6 +581,11 @@ class DeterministicWinRtBoundary {
   startNotify(address, _mode, handler) {
     this.startNotifyCalls += 1
     this.notificationHandlers.set(addressKey(address), handler)
+    if (this.emitNotificationDuringNextStartNotify !== null) {
+      const value = this.emitNotificationDuringNextStartNotify
+      this.emitNotificationDuringNextStartNotify = null
+      handler(new Uint8Array(value))
+    }
     if (this.emitConnectionLossDuringNextStartNotify) {
       this.emitConnectionLossDuringNextStartNotify = false
       this.emitConnectionLoss()
@@ -1569,6 +1591,128 @@ describe('WinRT contract-v2 deterministic native-boundary vertical slice', () =>
     expect(Object.values(backend.resourceCounters()).every(value => Number(value) === 0)).toBe(true)
   })
 
+  test('delivers notifications emitted synchronously and asynchronously before CCCD enablement completes, once and in order', async () => {
+    const { backend, boundary, lease, database, snapshot } = await connectedDatabaseFixture(
+      'enablement-ingress-order'
+    )
+    const characteristic = snapshot.characteristics[0].path
+    const enable = deferred()
+    boundary.setStartNotifyGate(enable.promise)
+    boundary.emitNotificationDuringNextStartNotify = new Uint8Array([1])
+    const subscriptionPromise = database.subscribe(characteristic, { ...operation(), delivery: delivery() })
+
+    await flushMicrotasks()
+    const physical = [...backend.subscriptions.values()][0]
+    boundary.emitNotification(physical.address, new Uint8Array([2]))
+    boundary.emitNotification(physical.address, new Uint8Array([3]))
+    enable.resolve()
+
+    const subscription = await subscriptionPromise
+    const iterator = subscription.values[Symbol.asyncIterator]()
+    await expectSettledIteratorResult(iterator, {
+      value: { kind: 'value', value: { value: new Uint8Array([1]) } }
+    })
+    await expectSettledIteratorResult(iterator, {
+      value: { kind: 'value', value: { value: new Uint8Array([2]) } }
+    })
+    await expectSettledIteratorResult(iterator, {
+      value: { kind: 'value', value: { value: new Uint8Array([3]) } }
+    })
+    boundary.emitNotification(physical.address, new Uint8Array([4]))
+    await expectSettledIteratorResult(iterator, {
+      value: { kind: 'value', value: { value: new Uint8Array([4]) } }
+    })
+
+    await expect(subscription.remove()).resolves.toEqual({ state: 'released', failures: [] })
+    await expect(lease.release()).resolves.toEqual({ state: 'released', failures: [] })
+    await backend.destroy()
+    expect(Object.values(backend.resourceCounters()).every(value => Number(value) === 0)).toBe(true)
+  })
+
+  test('flushes enablement-time notifications only to admitted subscribers and discards them on cancel', async () => {
+    const { backend, boundary, lease, database, snapshot } = await connectedDatabaseFixture(
+      'enablement-ingress-cancel'
+    )
+    const characteristic = snapshot.characteristics[0].path
+    const enable = deferred()
+    boundary.setStartNotifyGate(enable.promise)
+    boundary.emitNotificationDuringNextStartNotify = new Uint8Array([9])
+    const controller = new AbortController()
+    const aborted = database.subscribe(characteristic, {
+      ...operation(controller.signal),
+      delivery: delivery()
+    })
+
+    await flushMicrotasks()
+    const physical = [...backend.subscriptions.values()][0]
+    boundary.emitNotification(physical.address, new Uint8Array([10]))
+    controller.abort()
+    await expect(aborted).rejects.toMatchObject({ normalized: { code: 'operation.aborted' } })
+
+    enable.resolve()
+    await flushMicrotasks()
+    expectConsoleInfo('[WinRtBackend] Late WinRT completion quarantined: winrt.gatt.subscribe')
+    expect(boundary.stopNotifyCalls).toBe(1)
+    expect(backend.subscriptions.size).toBe(0)
+    expect(backend.resourceCounters().subscriptionConsumers).toBe(0)
+
+    const admitted = await database.subscribe(characteristic, { ...operation(), delivery: delivery() })
+    const iterator = admitted.values[Symbol.asyncIterator]()
+    const replacementPhysical = [...backend.subscriptions.values()][0]
+    boundary.emitNotification(replacementPhysical.address, new Uint8Array([11]))
+    await expectSettledIteratorResult(iterator, {
+      value: { kind: 'value', value: { value: new Uint8Array([11]) } }
+    })
+
+    await expect(admitted.remove()).resolves.toEqual({ state: 'released', failures: [] })
+    await expect(lease.release()).resolves.toEqual({ state: 'released', failures: [] })
+    await backend.destroy()
+    expect(Object.values(backend.resourceCounters()).every(value => Number(value) === 0)).toBe(true)
+  })
+
+  test('terminalizes enablement-time staging overflow instead of dropping early values silently', async () => {
+    const { backend, boundary, lease, database, snapshot } = await connectedDatabaseFixture(
+      'enablement-ingress-overflow'
+    )
+    const characteristic = snapshot.characteristics[0].path
+    const enable = deferred()
+    boundary.setStartNotifyGate(enable.promise)
+    const subscriptionPromise = database.subscribe(characteristic, {
+      ...operation(),
+      delivery: {
+        itemCapacity: capacity(32),
+        byteCapacity: capacity(128 * 1024),
+        reservedControlCapacity: capacity(1),
+        overflowPolicy: 'error'
+      }
+    })
+
+    await flushMicrotasks()
+    const physical = [...backend.subscriptions.values()][0]
+    boundary.emitNotification(physical.address, new Uint8Array([1]))
+    boundary.emitNotification(physical.address, new Uint8Array(64 * 1024 + 1))
+    enable.resolve()
+
+    const subscription = await subscriptionPromise
+    const iterator = subscription.values[Symbol.asyncIterator]()
+    await expectSettledIteratorResult(iterator, {
+      value: { kind: 'value', value: { value: new Uint8Array([1]) } }
+    })
+    await expectSettledIteratorResult(iterator, {
+      value: { kind: 'terminal', reason: 'overflow' }
+    })
+    await flushMicrotasks()
+    expect(boundary.stopNotifyCalls).toBe(0)
+    expect(backend.subscriptions.size).toBe(1)
+
+    await expect(subscription.remove()).resolves.toEqual({ state: 'released', failures: [] })
+    expect(boundary.stopNotifyCalls).toBe(1)
+    expect(backend.subscriptions.size).toBe(0)
+    await expect(lease.release()).resolves.toEqual({ state: 'released', failures: [] })
+    await backend.destroy()
+    expect(Object.values(backend.resourceCounters()).every(value => Number(value) === 0)).toBe(true)
+  })
+
   test.each([
     ['connection loss', 'operation.disconnected', 'operation.disconnected', 'emitConnectionLossDuringNextStartNotify'],
     ['database change', 'gatt.stale-handle', 'gatt.stale-handle', 'emitDatabaseChangedDuringNextStartNotify'],
@@ -2157,6 +2301,91 @@ describe('WinRT contract-v2 deterministic native-boundary vertical slice', () =>
       expect(Object.values(backend.resourceCounters()).every(value => Number(value) === 0)).toBe(true)
     }
   )
+
+  test('disconnects within the cleanup budget when subscription enablement never settles', async () => {
+    jest.useFakeTimers()
+    const enable = deferred()
+    let backend = null
+    let replacement = null
+    try {
+      const fixture = await connectedDatabaseFixture('never-settle-enable-disconnect')
+      backend = fixture.backend
+      const { boundary, lease, database, snapshot } = fixture
+      const peerId = lease.connection.peerId
+      boundary.setStartNotifyGate(enable.promise)
+      const subscription = database.subscribe(snapshot.characteristics[0].path, {
+        ...operation(),
+        delivery: delivery()
+      })
+
+      await flushMicrotasks()
+      expect(boundary.startNotifyCalls).toBe(1)
+      let releaseResult = null
+      const release = lease.release()
+      release.then(result => {
+        releaseResult = result
+      })
+      await expect(subscription).rejects.toMatchObject({ normalized: { code: 'operation.disconnected' } })
+      await flushMicrotasks()
+      expect(releaseResult).toBeNull()
+      expect(boundary.startNotifyCancelCalls).toBe(1)
+      expect(boundary.disconnectCalls).toBe(0)
+
+      jest.advanceTimersByTime(1001)
+      await flushMicrotasks()
+      jest.advanceTimersByTime(1001)
+      await flushMicrotasks()
+      expect(releaseResult).toMatchObject({
+        state: 'release-failed',
+        failures: [expect.objectContaining({ resourceKind: 'subscription' })]
+      })
+      expect(boundary.disconnectCalls).toBe(1)
+
+      replacement = await backend.connections.connect(
+        peerId,
+        opaqueId('never-settle-replacement-client', 'client', 'winrt:never-settle-enable-disconnect'),
+        operation()
+      )
+      enable.resolve()
+      await flushMicrotasks()
+      expectConsoleInfo('[WinRtBackend] Late WinRT completion quarantined: winrt.gatt.subscribe')
+      expect(backend.resourceCounters().subscriptionConsumers).toBe(0)
+
+      const replacementDatabase = await backend.gatt.discover(replacement.connection, operation())
+      const admitted = await replacementDatabase.subscribe(
+        (await replacementDatabase.snapshot()).characteristics[0].path,
+        { ...operation(), delivery: delivery() }
+      )
+      expect(backend.resourceCounters().subscriptionConsumers).toBe(1)
+      const iterator = admitted.values[Symbol.asyncIterator]()
+      const replacementPhysical = [...backend.subscriptions.values()].find(
+        physical => physical.consumers.size > 0
+      )
+      expect(replacementPhysical).toBeDefined()
+      boundary.emitNotification(replacementPhysical.address, new Uint8Array([7]))
+      await expectSettledIteratorResult(iterator, {
+        value: { kind: 'value', value: { value: new Uint8Array([7]) } }
+      })
+
+      await expect(admitted.remove()).resolves.toEqual({ state: 'released', failures: [] })
+      await expect(replacement.release()).resolves.toEqual({ state: 'released', failures: [] })
+      replacement = null
+      await expect(lease.release()).resolves.toEqual({ state: 'released', failures: [] })
+      await expect(backend.destroy()).resolves.toEqual({ state: 'released', failures: [] })
+      expect(Object.values(backend.resourceCounters()).every(value => Number(value) === 0)).toBe(true)
+    } finally {
+      jest.useRealTimers()
+      enable.resolve()
+      await flushMicrotasks()
+      try {
+        expectConsoleInfo('[WinRtBackend] Late WinRT completion quarantined: winrt.gatt.subscribe')
+      } catch {
+        // The success path already consumed this diagnostic.
+      }
+      if (replacement !== null) await replacement.release().catch(() => undefined)
+      if (backend !== null) await backend.destroy().catch(() => undefined)
+    }
+  })
 
   test('normalizes native WinRT GATT status details instead of leaking raw boundary errors', async () => {
     const { backend, boundary } = await backendFixture()
