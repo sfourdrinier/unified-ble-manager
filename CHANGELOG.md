@@ -38,9 +38,10 @@ No changes yet.
 - Public scan observation overflow is subscriber-local. Consuming only `events`
   at full speed with `duplicates: 'all'` and `overflowPolicy: 'error'` no longer
   terminates the scan because an unused observation queue filled.
-- Subscriber or source overflow that fail-closes a consumed public scan view
-  projects `failed`/`overflow` instead of `stopping` then `stopped`. Physical
-  stop remains cleanup.
+- Drop-policy public scan overflow (`balanced` / `latest` / drop-*) reports an
+  overflow notice and keeps scanning. The radio stays up. `overflowPolicy:
+  'error'` (`lossless-bounded`) still fail-closes the consumed view as
+  `failed`/`overflow`; physical `stop()` remains cleanup.
 - In-process and IPC scan sessions leave `active` when the host source ends
   without `stop()`. An already-terminal source never publishes `active`; the
   first state is the projected terminal (`failed` for `source-failed` /

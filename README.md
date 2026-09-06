@@ -243,7 +243,7 @@ Web Bluetooth replaces the scan with `ble.choose(...)` from a user gesture. The 
 
 | Member         | Use                                                                                                                                                  |
 | -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `observations` | Bounded stream: `value`, `overflow`, or `terminal`                                                                                                   |
+| `observations` | Bounded stream: `value`, `overflow`, or `terminal`. Drop-policy overflow means ads were missed; the scan stays up. `error` fail-closes.              |
 | `events`       | Optional derived current-view events: `observed` and monotonic `lost` (`observation.reportLostAfterMs`); unsupported host façades reject this option |
 | `plan`         | Host-owned native/residual planning diagnostics, or `null` when this host has no planner                                                             |
 | `stop()`       | End the scan and return a cleanup receipt. `find` already does this.                                                                                 |

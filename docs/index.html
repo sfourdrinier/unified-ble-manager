@@ -212,6 +212,12 @@
                 the session ends.
               </li>
               <li>
+                On Apple / Electron CoreBluetooth, do not <code>read()</code> a characteristic while it is notifying.
+                <code>didUpdateValueFor</code> cannot tell a read response from a notification, so the read is
+                <code>gatt.read-failed</code>. Use the subscription stream, or unsubscribe, wait until notify is off,
+                then read. Android and WinRT still allow read-while-notifying.
+              </li>
+              <li>
                 <code>requiredHardware: true</code> only marks the Android BLE hardware feature. It does not start a
                 foreground service.
               </li>

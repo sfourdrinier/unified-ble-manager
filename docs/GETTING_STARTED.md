@@ -205,6 +205,7 @@ Each `timeoutMs` is scoped to its public operation. More recipes: [`TUTORIALS.md
 - Android 12 without the runtime permission fails the first scan with `permission.denied`. Android 11 and below need `ACCESS_FINE_LOCATION`. `neverForLocation: true` is only honest if you do not use BLE for location.
 - Bare React Native still needs `NSBluetoothAlwaysUsageDescription` in Info.plist. The Expo plugin writes that for Expo apps.
 - Creating a new manager on every render leaks the radio. Create one, await `destroy()` when the session ends.
+- On Apple / Electron CoreBluetooth, do not `read()` a characteristic while it is notifying. `didUpdateValueFor` cannot tell a read response from a notification, so the read is `gatt.read-failed`. Use the subscription stream, or unsubscribe, wait until notify is off, then read. Android and WinRT still allow read-while-notifying.
 - `requiredHardware: true` only marks the Android BLE hardware feature. It does not start a foreground service.
 
 ## Coming from react-native-ble-plx
