@@ -129,7 +129,31 @@ export async function stopWinRtPhysicalSubscriptionAfterEnable(
       physical.removalPhase = null
     }
   }
+  if (!winRtPhysicalOwnsCurrentGeneration(backend, physical)) {
+    // Native StopNotify is keyed only by peer+characteristic. A replacement generation
+    // may already own that CCCD; disabling it would drop the live subscription.
+    releaseWinRtPhysicalSubscriptionRecord(backend, physical)
+    return releasedCleanup
+  }
   return stopWinRtPhysicalSubscription(backend, physical)
+}
+
+function winRtPhysicalOwnsCurrentGeneration(
+  backend: WinRtBackend,
+  physical: WinRtPhysicalSubscription
+): boolean {
+  const record = backend.connectionsByNativeId.get(physical.address.nativePeerId)
+  return record !== undefined && record.connectionGeneration === physical.connectionGeneration
+}
+
+function releaseWinRtPhysicalSubscriptionRecord(
+  backend: WinRtBackend,
+  physical: WinRtPhysicalSubscription
+): void {
+  if (backend.subscriptions.get(physical.key) === physical) {
+    backend.subscriptions.delete(physical.key)
+  }
+  physical.removalPhase = null
 }
 
 /** Invalidates every pending waiter before starting retryable physical teardown. */

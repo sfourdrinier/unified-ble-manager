@@ -2387,6 +2387,90 @@ describe('WinRT contract-v2 deterministic native-boundary vertical slice', () =>
     }
   })
 
+  test('does not stopNotify a replacement generation when a late CCCD enable completes', async () => {
+    jest.useFakeTimers()
+    const enable = deferred()
+    let backend = null
+    let replacement = null
+    try {
+      const fixture = await connectedDatabaseFixture('late-enable-replacement-cccd')
+      backend = fixture.backend
+      const { boundary, lease, database, snapshot } = fixture
+      const peerId = lease.connection.peerId
+      boundary.setStartNotifyGate(enable.promise)
+      const subscription = database.subscribe(snapshot.characteristics[0].path, {
+        ...operation(),
+        delivery: delivery()
+      })
+
+      await flushMicrotasks()
+      const release = lease.release()
+      await expect(subscription).rejects.toMatchObject({ normalized: { code: 'operation.disconnected' } })
+      jest.advanceTimersByTime(1001)
+      await flushMicrotasks()
+      jest.advanceTimersByTime(1001)
+      await flushMicrotasks()
+      await expect(release).resolves.toMatchObject({
+        state: 'release-failed',
+        failures: [expect.objectContaining({ resourceKind: 'subscription' })]
+      })
+      expect(boundary.disconnectCalls).toBe(1)
+      const stopNotifyCallsAfterDisconnect = boundary.stopNotifyCalls
+
+      replacement = await backend.connections.connect(
+        peerId,
+        opaqueId('late-enable-replacement-client', 'client', 'winrt:late-enable-replacement-cccd'),
+        operation()
+      )
+      boundary.setStartNotifyGate(null)
+      const replacementDatabase = await backend.gatt.discover(replacement.connection, operation())
+      const admitted = await replacementDatabase.subscribe(
+        (await replacementDatabase.snapshot()).characteristics[0].path,
+        { ...operation(), delivery: delivery() }
+      )
+      expect(backend.resourceCounters().subscriptionConsumers).toBe(1)
+      expect(boundary.notificationHandlers.size).toBe(1)
+      const iterator = admitted.values[Symbol.asyncIterator]()
+      const replacementPhysical = [...backend.subscriptions.values()].find(
+        physical => physical.consumers.size > 0
+      )
+      expect(replacementPhysical).toBeDefined()
+      boundary.emitNotification(replacementPhysical.address, new Uint8Array([7]))
+      await expectSettledIteratorResult(iterator, {
+        value: { kind: 'value', value: { value: new Uint8Array([7]) } }
+      })
+
+      enable.resolve()
+      await flushMicrotasks()
+      expectConsoleInfo('[WinRtBackend] Late WinRT completion quarantined: winrt.gatt.subscribe')
+      expect(boundary.stopNotifyCalls).toBe(stopNotifyCallsAfterDisconnect)
+      expect(boundary.notificationHandlers.size).toBe(1)
+      expect(backend.resourceCounters().subscriptionConsumers).toBe(1)
+      boundary.emitNotification(replacementPhysical.address, new Uint8Array([8]))
+      await expectSettledIteratorResult(iterator, {
+        value: { kind: 'value', value: { value: new Uint8Array([8]) } }
+      })
+
+      await expect(admitted.remove()).resolves.toEqual({ state: 'released', failures: [] })
+      await expect(replacement.release()).resolves.toEqual({ state: 'released', failures: [] })
+      replacement = null
+      await expect(lease.release()).resolves.toEqual({ state: 'released', failures: [] })
+      await expect(backend.destroy()).resolves.toEqual({ state: 'released', failures: [] })
+      expect(Object.values(backend.resourceCounters()).every(value => Number(value) === 0)).toBe(true)
+    } finally {
+      jest.useRealTimers()
+      enable.resolve()
+      await flushMicrotasks()
+      try {
+        expectConsoleInfo('[WinRtBackend] Late WinRT completion quarantined: winrt.gatt.subscribe')
+      } catch {
+        // The success path already consumed this diagnostic.
+      }
+      if (replacement !== null) await replacement.release().catch(() => undefined)
+      if (backend !== null) await backend.destroy().catch(() => undefined)
+    }
+  })
+
   test('normalizes native WinRT GATT status details instead of leaking raw boundary errors', async () => {
     const { backend, boundary } = await backendFixture()
     const peerId = await observedPeerId(backend, boundary)
