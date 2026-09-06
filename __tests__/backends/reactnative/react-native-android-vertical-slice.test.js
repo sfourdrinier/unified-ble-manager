@@ -189,6 +189,13 @@ describe('React Native Android canonical protocol vertical slice', () => {
     const other = await fixture.manager.connect(otherPeer, { intent: 'when-available' })
     await other.release()
     await expect(fixture.manager.destroy()).resolves.toMatchObject({ state: 'released', failures: [] })
+    await new Promise(resolve => {
+      setImmediate(resolve)
+    })
+    expectConsoleInfo(
+      '[unified-ble:android-gatt.connect] Cancelled native connection cleanup is not yet confirmed; quarantine retained:',
+      'AA:BB'
+    )
   })
 
   test.each([

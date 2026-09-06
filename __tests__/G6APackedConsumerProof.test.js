@@ -13,6 +13,7 @@ const {
 } = require('../scripts/ci/g6a-packed-consumer-proof')
 const {
   assertChildProcessResult,
+  G6A_CHILD_TIMEOUT_MS,
   PACK_INSTALL_CHILD_TIMEOUT_MS,
   run: runCanonicalChild
 } = require('../scripts/ci/pack-install-smoke')
@@ -278,6 +279,9 @@ describe('G6A packed independent-consumer proof fixture', () => {
     const smokeSource = fs.readFileSync(path.join(root, 'scripts', 'ci', 'pack-install-smoke.js'), 'utf8')
 
     expect(PACK_INSTALL_CHILD_TIMEOUT_MS).toBe(600000)
+    // npm pack runs prepack then prepare; 120s was below a measured 142s pack.
+    expect(G6A_CHILD_TIMEOUT_MS).toBeGreaterThanOrEqual(300000)
+    expect(G6A_CHILD_TIMEOUT_MS).toBeLessThanOrEqual(PACK_INSTALL_CHILD_TIMEOUT_MS)
     expect(smokeSource).toContain('/** Maximum duration for one normal-mode npm pack/install subprocess. */')
 
     expect(smokeSource).toMatch(
