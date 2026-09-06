@@ -110,7 +110,9 @@ interface BrowserBluetooth {
   requestDevice(options?: BrowserBluetoothRequestOptions): Promise<BrowserBluetoothDevice>
   addEventListener?(type: 'availabilitychanged', listener: BrowserBluetoothAvailabilityListener): void
   removeEventListener?(type: 'availabilitychanged', listener: BrowserBluetoothAvailabilityListener): void
-  onavailabilitychanged?: BrowserBluetoothAvailabilityListener | null
+  // Match spec Bluetooth: the property is an Event listener. Feature-detect
+  // with `'onavailabilitychanged' in bluetooth`, not this callable type.
+  onavailabilitychanged?: ((event: Event) => unknown) | null
 }
 
 type BrowserBluetoothAvailabilityEventTarget = BrowserBluetooth & {
