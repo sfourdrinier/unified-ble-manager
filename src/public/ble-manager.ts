@@ -6,7 +6,8 @@ import type { ConnectionLifecycleCause, ConnectionLifecycleEvent } from '../back
 import {
   BackendContractError,
   contractError,
-  type CleanupRecord as BackendCleanupRecord
+  type CleanupRecord as BackendCleanupRecord,
+  type NormalizedBleError
 } from '../backend-contract/errors'
 import type { BackendIdentity } from '../backend-contract/identity'
 import {
@@ -548,7 +549,10 @@ type PublicScanEventTerminalReason = 'closed' | 'source-failed' | 'overflow' | '
 
 class PublicScanEventBroadcast implements AsyncIterable<DiscoveryEvent> {
   private readonly subscribers = new Set<CoreBoundedStream<DiscoveryEvent>>()
-  private terminalReason: PublicScanEventTerminalReason | null = null
+  private terminal: {
+    readonly mode: 'close' | 'finish'
+    readonly reason: PublicScanEventTerminalReason
+  } | null = null
 
   constructor(
     private readonly startPump: () => void,
@@ -557,11 +561,13 @@ class PublicScanEventBroadcast implements AsyncIterable<DiscoveryEvent> {
 
   [Symbol.asyncIterator](): AsyncIterableIterator<DiscoveryEvent> {
     const stream = new CoreBoundedStream<DiscoveryEvent>(this.delivery, this.delivery.overflowPolicy)
-    if (this.terminalReason === null) {
+    if (this.terminal === null) {
       this.subscribers.add(stream)
       this.startPump()
+    } else if (this.terminal.mode === 'finish') {
+      stream.finishWithReason(this.terminal.reason)
     } else {
-      stream.closeWithReason(this.terminalReason)
+      stream.closeWithReason(this.terminal.reason)
     }
     const iterator = stream[Symbol.asyncIterator]()
     return {
@@ -600,9 +606,18 @@ class PublicScanEventBroadcast implements AsyncIterable<DiscoveryEvent> {
     return terminated
   }
 
+  finish(reason: PublicScanEventTerminalReason): void {
+    if (this.terminal !== null) return
+    this.terminal = { mode: 'finish', reason }
+    for (const subscriber of this.subscribers) {
+      subscriber.finishWithReason(reason)
+      this.subscribers.delete(subscriber)
+    }
+  }
+
   close(reason: PublicScanEventTerminalReason): void {
-    if (this.terminalReason !== null) return
-    this.terminalReason = reason
+    if (this.terminal !== null) return
+    this.terminal = { mode: 'close', reason }
     for (const subscriber of this.subscribers) {
       subscriber.closeWithReason(reason)
       this.subscribers.delete(subscriber)
@@ -615,6 +630,7 @@ class PublicScanObservationBroadcast {
   private terminal: {
     readonly mode: 'close' | 'finish'
     readonly reason: StreamTerminalNotice['reason']
+    readonly error?: NormalizedBleError | null
   } | null = null
 
   constructor(
@@ -628,9 +644,9 @@ class PublicScanObservationBroadcast {
       this.subscribers.add(stream)
       this.startPump()
     } else if (this.terminal.mode === 'finish') {
-      stream.finishWithReason(this.terminal.reason)
+      stream.finishWithReason(this.terminal.reason, this.terminal.error ?? null)
     } else {
-      stream.closeWithReason(this.terminal.reason)
+      stream.closeWithReason(this.terminal.reason, this.terminal.error ?? null)
     }
     const iterator = stream[Symbol.asyncIterator]()
     return {
@@ -663,20 +679,20 @@ class PublicScanObservationBroadcast {
     }
   }
 
-  finishWithReason(reason: StreamTerminalNotice['reason']): void {
+  finishWithReason(reason: StreamTerminalNotice['reason'], error?: NormalizedBleError | null): void {
     if (this.terminal !== null) return
-    this.terminal = { mode: 'finish', reason }
+    this.terminal = { mode: 'finish', reason, error }
     for (const subscriber of [...this.subscribers]) {
-      subscriber.finishWithReason(reason)
+      subscriber.finishWithReason(reason, error ?? null)
       this.subscribers.delete(subscriber)
     }
   }
 
-  closeWithReason(reason: StreamTerminalNotice['reason']): void {
+  closeWithReason(reason: StreamTerminalNotice['reason'], error?: NormalizedBleError | null): void {
     if (this.terminal !== null) return
-    this.terminal = { mode: 'close', reason }
+    this.terminal = { mode: 'close', reason, error }
     for (const subscriber of [...this.subscribers]) {
-      subscriber.closeWithReason(reason)
+      subscriber.closeWithReason(reason, error ?? null)
       this.subscribers.delete(subscriber)
     }
   }
@@ -718,7 +734,7 @@ class PublicScanSessionController<Attachment extends string> {
     this.eventBroadcast = new PublicScanEventBroadcast(() => this.start(), delivery)
     this.events = this.eventBroadcast
     bindScanSourceTerminal(source, reason => {
-      this.finish(reason)
+      this.onDeliveryEnded(reason)
     })
   }
 
@@ -767,7 +783,7 @@ class PublicScanSessionController<Attachment extends string> {
           return
         }
         if (item.value.kind === 'terminal') {
-          this.finish(item.value.reason)
+          this.finish(item.value.reason, item.value.error)
           return
         }
         this.accept(item.value.value)
@@ -932,20 +948,19 @@ class PublicScanSessionController<Attachment extends string> {
     }
   }
 
-  private finish(reason: StreamTerminalNotice['reason']): void {
-    this.endDelivery(reason, 'finish')
+  private finish(reason: StreamTerminalNotice['reason'], error?: NormalizedBleError | null): void {
+    this.endDelivery(reason, 'finish', error)
   }
 
-  private endDelivery(reason: StreamTerminalNotice['reason'], observationMode: 'finish' | 'close'): void {
+  private endDelivery(
+    reason: StreamTerminalNotice['reason'],
+    observationMode: 'finish' | 'close',
+    error?: NormalizedBleError | null
+  ): void {
     if (this.closed) return
     this.closed = true
     this.cancelPresenceTimers()
-    if (observationMode === 'close') {
-      this.observationBroadcast.closeWithReason(reason)
-    } else {
-      this.observationBroadcast.finishWithReason(reason)
-    }
-    this.eventBroadcast.close(
+    const eventReason: PublicScanEventTerminalReason =
       reason === 'source-failed'
         ? 'source-failed'
         : reason === 'overflow'
@@ -953,7 +968,13 @@ class PublicScanSessionController<Attachment extends string> {
           : reason === 'owner-released'
             ? 'owner-released'
             : 'closed'
-    )
+    if (observationMode === 'close') {
+      this.observationBroadcast.closeWithReason(reason, error)
+      this.eventBroadcast.close(eventReason)
+    } else {
+      this.observationBroadcast.finishWithReason(reason, error)
+      this.eventBroadcast.finish(eventReason)
+    }
     this.onDeliveryEnded(reason)
   }
 }
