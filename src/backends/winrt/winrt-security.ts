@@ -277,7 +277,15 @@ export class WinRtSecurityBackend implements SecurityBackend {
       return Promise.reject(contractError('ownership.denied', 'platform', 'winrt.security.pair.arbitration'))
     }
     const nativePeerId = this.nativePeerIdForPeerId(peerId, 'winrt.security.pair')
-    const operation = this.dispatcher.dispatch(options, 'winrt.security.pair', () => this.boundary.pair(nativePeerId))
+    let lateNative: WinRtPairResult | undefined
+    const operation = this.dispatcher.dispatch(
+      options,
+      'winrt.security.pair',
+      () => this.boundary.pair(nativePeerId),
+      async value => {
+        lateNative = value
+      }
+    )
     const settle = () => {
       const active = this.activePairings.get(peerId)
       if (active?.operation === operation) {
@@ -291,7 +299,17 @@ export class WinRtSecurityBackend implements SecurityBackend {
         await operation.physicalSettlement
         return snapshot
       })
-      .catch(error => {
+      .catch(async error => {
+        // Dispatcher abort/deadline is prompt; a later native paired/rejected is
+        // still the pairing's own answer. Inventing 'cancelled' here would
+        // disagree with cancelPairing() and state() after a lost cancel race.
+        await operation.physicalSettlement
+        if (lateNative !== undefined) {
+          const adopted = this.snapshotPairResult(lateNative)
+          if (adopted.outcome !== 'cancelled') {
+            return adopted
+          }
+        }
         if (error instanceof BackendContractError && error.normalized.code === 'operation.aborted') {
           return { outcome: 'cancelled' as const }
         }
