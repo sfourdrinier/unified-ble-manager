@@ -1,3 +1,4 @@
+import { contractError } from './errors'
 import type { Limitation } from './capabilities'
 import type { PublicOperationOptions } from './operations'
 import type { BoundedAsyncStream } from './streams'
@@ -141,7 +142,17 @@ export function cancelOutcomeForPairResult(result: SecurityPairResult): Security
       return { outcome: 'rejected', reason: result.reason }
     case 'cancelled':
       return { outcome: 'cancelled' }
+    default:
+      return unreachableCancelPairOutcome(result)
   }
+}
+
+function unreachableCancelPairOutcome(_result: never): never {
+  // Unreachable for a compliant backend. Typing `_result` as `never` keeps a
+  // new SecurityPairResult variant a compile error; types erase, so a
+  // third-party invented outcome still throws instead of returning `undefined`
+  // and a raw TypeError several frames away.
+  throw contractError('protocol.violation', 'core', 'security.cancel-pairing.outcome')
 }
 
 export interface SecurityBackend {
