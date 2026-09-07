@@ -1,3 +1,4 @@
+import { contractError } from './errors'
 import type { Limitation } from './capabilities'
 import type { PublicOperationOptions } from './operations'
 import type { BoundedAsyncStream } from './streams'
@@ -141,6 +142,13 @@ export function cancelOutcomeForPairResult(result: SecurityPairResult): Security
       return { outcome: 'rejected', reason: result.reason }
     case 'cancelled':
       return { outcome: 'cancelled' }
+    default:
+      // Unreachable for a compliant backend - the switch above is exhaustive
+      // and a new SecurityPairResult variant is a compile error here. This
+      // exists for a THIRD-PARTY backend that returns something outside the
+      // contract: without it the caller gets `undefined` and a raw TypeError
+      // several frames away, instead of being told which contract was broken.
+      throw contractError('protocol.violation', 'core', 'security.cancel-pairing.outcome')
   }
 }
 

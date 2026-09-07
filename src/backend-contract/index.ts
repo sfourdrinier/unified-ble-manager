@@ -94,6 +94,7 @@ export type {
   SecureConnectionsState,
   SecurityBackend
 } from './security'
+export { cancelOutcomeForPairResult } from './security'
 export {
   assertPeerReference,
   decodePeerReference,
