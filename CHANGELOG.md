@@ -6,6 +6,17 @@ All notable changes to `unified-ble-manager` are documented here.
 
 No changes yet.
 
+## [4.0.27] - 2026-09-06
+
+### Fixes
+
+- Tauri continuous scans now pace synthetic peripheral-inventory snapshots at
+  two-second intervals instead of replaying the full inventory four times per
+  second. Real btleplug advertisement events remain event-driven. This keeps
+  discovery live when platform events are silent or closed while sharply reducing
+  bounded IPC pressure without suppressing real `duplicates: "all"` reports.
+  Slow inventory work delays the next poll instead of triggering catch-up bursts.
+
 ## [4.0.26] - 2026-09-06
 
 ### Fixes

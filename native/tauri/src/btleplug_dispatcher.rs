@@ -32,7 +32,7 @@ const MAX_CORRELATIONS: usize = 256;
 const COMPLETED_CORRELATION_TTL: Duration = Duration::from_secs(30);
 const MAX_QUARANTINE_WORKERS: usize = 4;
 const MAX_QUARANTINE_ATTEMPTS: u32 = 8;
-const SCAN_POLL_INTERVAL: Duration = Duration::from_millis(250);
+const SCAN_POLL_INTERVAL: Duration = Duration::from_secs(2);
 /// Safety bound, not host policy.
 ///
 /// btleplug's CoreBluetooth `disconnect()` never resolves when the peripheral
@@ -1189,7 +1189,7 @@ impl BtleplugDispatcher {
             if started_tx.send(Ok(())).is_err() {
                 return;
             }
-            let mut interval = tokio::time::interval(SCAN_POLL_INTERVAL);
+            let mut interval = scan_poll_interval();
             let mut events_open = true;
             let mut polls: u32 = 0;
             loop {
@@ -4227,6 +4227,12 @@ fn scan_event_peripheral_id(event: CentralEvent) -> Option<btleplug::platform::P
     }
 }
 
+fn scan_poll_interval() -> tokio::time::Interval {
+    let mut interval = tokio::time::interval(SCAN_POLL_INTERVAL);
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    interval
+}
+
 fn scan_properties_match(
     properties: &btleplug::api::PeripheralProperties,
     requested_services: &[Uuid],
@@ -5010,7 +5016,7 @@ mod tests {
     use super::error_confirms_device_released;
     use super::{
         characteristic_properties, disconnect_with_state_check, negotiate_ipc_versions, object,
-        released, resolve_disconnect_failure, scan_properties_match_optional,
+        released, resolve_disconnect_failure, scan_poll_interval, scan_properties_match_optional,
         should_clear_peer_owner, string, BtleplugDispatcher, BtleplugDispatcherOptions,
         CallerState, DispatchError, IpcEventSink, QuarantineScheduler,
         DISCONNECT_COMPLETION_TIMEOUT,
@@ -5024,6 +5030,15 @@ mod tests {
         assert_eq!(
             characteristic_properties(CharPropFlags::READ | CharPropFlags::NOTIFY),
             super::IpcValue::Array(vec![string("read"), string("notify")])
+        );
+    }
+
+    #[tokio::test]
+    async fn scan_inventory_polling_is_paced_without_catch_up_bursts() {
+        assert_eq!(super::SCAN_POLL_INTERVAL, std::time::Duration::from_secs(2));
+        assert_eq!(
+            scan_poll_interval().missed_tick_behavior(),
+            tokio::time::MissedTickBehavior::Delay
         );
     }
 
