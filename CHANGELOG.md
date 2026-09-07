@@ -6,6 +6,25 @@ All notable changes to `unified-ble-manager` are documented here.
 
 No changes yet.
 
+## [4.0.26] - 2026-09-06
+
+### Fixes
+
+- A third-party backend can now follow, and pass, the cancellation contract
+  4.0.7 introduced. `cancelOutcomeForPairResult` was exported from
+  `backend-contract/security` but re-exported type-only from the barrel, so it
+  never reached `/backend-sdk`; first-party backends imported it by deep
+  relative path and nothing failed. The TCK still hard-required
+  `outcome === 'cancelled'` from both `pair()` and `cancelPairing()`, so a
+  backend that correctly reported `'paired'` when the bond won the race failed
+  `security-pairing-cancellation-cleans-up` while conforming. The scenario now
+  asserts that the two calls do not contradict each other about one pairing,
+  checked through the shared mapper rather than against a fixed word.
+  `cancelOutcomeForPairResult` also gains a `default` branch so an out-of-contract
+  outcome from a third-party backend is named as `protocol.violation` instead of
+  surfacing as `undefined` and a raw TypeError several frames away. Compile-time
+  exhaustiveness remains the primary defence (#167).
+
 ## [4.0.25] - 2026-09-05
 
 ### Fixes
