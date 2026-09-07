@@ -22,8 +22,9 @@ No changes yet.
   checked through the shared mapper rather than against a fixed word.
   `cancelOutcomeForPairResult` also gains a `default` branch so an out-of-contract
   outcome from a third-party backend is named as `protocol.violation` instead of
-  surfacing as `undefined` and a raw TypeError several frames away. Compile-time
-  exhaustiveness remains the primary defence (#167).
+  surfacing as `undefined` and a raw TypeError several frames away. The `default`
+  routes through a `never` parameter, so a new first-party `SecurityPairResult`
+  variant is still a compile error (#167).
 
 ## [4.0.25] - 2026-09-05
 

@@ -27,8 +27,27 @@ describe('a third-party backend can follow the cancellation contract', () => {
    */
   test('an out-of-contract outcome is named as a protocol violation, not a TypeError', () => {
     expect(() => cancelOutcomeForPairResult({ outcome: 'invented-by-a-third-party' })).toThrow(
+      expect.objectContaining({
+        normalized: expect.objectContaining({
+          code: 'protocol.violation',
+          domain: 'core',
+          operation: 'security.cancel-pairing.outcome'
+        })
+      })
+    )
+    expect(() => backendSdk.cancelOutcomeForPairResult({ outcome: 'invented-by-a-third-party' })).toThrow(
       expect.objectContaining({ normalized: expect.objectContaining({ code: 'protocol.violation' }) })
     )
+  })
+
+  test('the TCK consistency rule accepts a bond that won the race and rejects a contradiction', () => {
+    const cancellationIsConsistent = (cancelled, cancelledPair) =>
+      cancelOutcomeForPairResult(cancelledPair).outcome === cancelled.outcome
+    const bonded = { outcome: 'paired', state: {} }
+    expect(cancellationIsConsistent({ outcome: 'paired' }, bonded)).toBe(true)
+    expect(cancellationIsConsistent({ outcome: 'cancelled' }, { outcome: 'cancelled' })).toBe(true)
+    expect(cancellationIsConsistent({ outcome: 'cancelled' }, bonded)).toBe(false)
+    expect(cancellationIsConsistent({ outcome: 'paired' }, { outcome: 'cancelled' })).toBe(false)
   })
 
   /**
