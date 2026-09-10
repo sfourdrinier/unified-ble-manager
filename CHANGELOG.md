@@ -6,6 +6,20 @@ All notable changes to `unified-ble-manager` are documented here.
 
 No changes yet.
 
+## [4.0.28] - 2026-09-09
+
+### Fixes
+
+- React Native Apple hosts now keep one process-owned CoreBluetooth restoration
+  radio for each immutable native configuration. Reconstructing the TurboModule
+  borrows that radio instead of registering another `CBCentralManager` with the
+  same restoration identifier, avoiding duplicate-restoration ownership and
+  preserving the OS restoration provider across JavaScript runtime replacement.
+- Apple protocol attachments claim callback delivery exclusively and fail closed
+  if another attachment is active. Closing or invalidating an attachment releases
+  only that borrower's scans, subscriptions, pending operations, and non-restored
+  connections; it no longer destroys the process-owned restoration provider.
+
 ## [4.0.27] - 2026-09-06
 
 ### Fixes

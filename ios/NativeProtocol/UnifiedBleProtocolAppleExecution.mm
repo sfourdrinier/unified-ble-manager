@@ -191,15 +191,24 @@ namespace unified_ble::apple_protocol {
 
 AppleNativeProtocolExecution::State::State(
     std::shared_ptr<protocol::NativeProtocolControlRuntime> runtimeValue,
-    void* radioValue)
-    : runtime(std::move(runtimeValue)), radio(radioValue) {}
+    void* radioValue,
+    void* radioBorrowerValue)
+    : runtime(std::move(runtimeValue)), radio(radioValue), radioBorrower(radioBorrowerValue) {
+  if (radioBorrower != nullptr) CFRetain(radioBorrower);
+}
 
-AppleNativeProtocolExecution::State::~State() = default;
+AppleNativeProtocolExecution::State::~State() {
+  if (radioBorrower != nullptr) CFRelease(radioBorrower);
+}
 
 namespace {
 
 OwnedCoreBluetoothProtocolRadio* radioFor(const std::shared_ptr<AppleNativeProtocolExecution::State>& state) {
   return (__bridge OwnedCoreBluetoothProtocolRadio*)state->radio;
+}
+
+id radioBorrowerFor(const std::shared_ptr<AppleNativeProtocolExecution::State>& state) {
+  return (__bridge id)state->radioBorrower;
 }
 
 bool boundedBufferCanAdmit(
@@ -466,7 +475,10 @@ void failAttachmentAfterTerminalAdmissionFailure(
     notifyJavaScriptFatalSink(state, context, fatalAttachmentGeneration);
     if (releaseRadio) {
       @try {
-        [radioFor(state) releaseProtocolClientWithCompletion:^(NSError* error) {
+        [OwnedCoreBluetoothProtocolRadioOwner
+            releaseBorrowerWithRadio:radioFor(state)
+            delegate:radioBorrowerFor(state)
+            completion:^(NSError* error) {
           if (error != nil) {
             NSLog(@"[UnifiedBleProtocolAppleExecution] %s radio release failed: %@", context, error.localizedDescription);
           }
@@ -1348,7 +1360,10 @@ void dispatchCommand(
     return;
   }
   if (kind == "destroy") {
-    [radio releaseProtocolClientWithCompletion:^(NSError* error) {
+    [OwnedCoreBluetoothProtocolRadioOwner
+        releaseBorrowerWithRadio:radio
+        delegate:radioBorrowerFor(state)
+        completion:^(NSError* error) {
       if (error == nil) static_cast<void>(success(state, command));
       else fail(state, command, "destroyFailed", error);
     }];
@@ -1745,8 +1760,9 @@ void logAppleNativeFailure(const char* context, const std::exception& error) {
 
 AppleNativeProtocolExecution::AppleNativeProtocolExecution(
     std::shared_ptr<protocol::NativeProtocolControlRuntime> runtime,
-    void* radio)
-    : state_(std::make_shared<State>(std::move(runtime), radio)) {}
+    void* radio,
+    void* radioBorrower)
+    : state_(std::make_shared<State>(std::move(runtime), radio, radioBorrower)) {}
 
 AppleNativeProtocolExecution::~AppleNativeProtocolExecution() {
   close();

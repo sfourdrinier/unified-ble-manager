@@ -256,6 +256,10 @@ extension OwnedCoreBluetoothProtocolRadio {
         completion(error)
         return
       }
+      if error != nil && !destroyRadio {
+        completion(error)
+        return
+      }
       for (identifier, peripheral) in self.peripheralByIdentifier where !restoredIdentifiers.contains(identifier) {
         peripheral.delegate = nil
       }

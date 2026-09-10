@@ -22,7 +22,8 @@ class AppleNativeProtocolExecution final {
 
   AppleNativeProtocolExecution(
       std::shared_ptr<native_protocol::v2::NativeProtocolControlRuntime> runtime,
-      void* radio);
+      void* radio,
+      void* radioBorrower = nullptr);
   ~AppleNativeProtocolExecution();
 
   AppleNativeProtocolExecution(const AppleNativeProtocolExecution&) = delete;

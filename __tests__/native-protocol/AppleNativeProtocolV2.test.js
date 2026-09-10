@@ -13,7 +13,8 @@ function read(relativePath) {
 function readAppleRadio() {
   return [
     read('ios/Owned/OwnedCoreBluetoothProtocolRadio.swift'),
-    read('ios/Owned/OwnedCoreBluetoothProtocolRadioCancellation.swift')
+    read('ios/Owned/OwnedCoreBluetoothProtocolRadioCancellation.swift'),
+    read('ios/Owned/OwnedCoreBluetoothProtocolRadioOwner.swift')
   ].join('\n')
 }
 
@@ -64,6 +65,53 @@ describe('Apple Native Protocol v2 radio boundary', () => {
     expect(execution).toContain('receiveNotification')
     expect(execution).toContain('recordsAwaitingSink')
     expect(execution).toContain('runtime->settleResult(*terminalResults[index])')
+  })
+
+  test('shares one process-owned restoration radio across TurboModule borrowers', () => {
+    const radio = readAppleRadio()
+    const control = read('ios/UnifiedBleProtocolControl.mm')
+    const podspec = read('unified-ble-manager.podspec')
+    const tvosCheck = read('scripts/ci/check-tvos-library.sh')
+
+    expect(radio).toContain('OwnedCoreBluetoothProtocolRadioOwner')
+    expect(radio).toContain('public static func acquire(')
+    expect(radio).toContain('releaseBorrower')
+    expect(radio).toContain('releaseBorrowerIfCurrent')
+    expect(radio).toContain('OwnedCoreBluetoothBorrowerReleaseCoordinator')
+    expect(control).toContain('acquireWithRestoreIdentifierKey:')
+    expect(control).toContain('releaseBorrowerWithRadio:')
+    expect(control).not.toContain('[[OwnedCoreBluetoothProtocolRadio alloc]')
+    expect(control).not.toContain('[_radio destroyWithCompletion:')
+    expect(control).not.toContain('_radio.delegate =')
+    expect(podspec).toContain('"ios/Owned/OwnedCoreBluetoothProtocolRadioOwner.swift"')
+    expect(tvosCheck).toContain('"$OWNED_DIR/OwnedCoreBluetoothProtocolRadioOwner.swift"')
+  })
+
+  test('keeps the active borrower attached until its asynchronous radio cleanup is terminal', () => {
+    const owner = read('ios/Owned/OwnedCoreBluetoothProtocolRadioOwner.swift')
+    const release = owner.slice(owner.indexOf('@objc public func releaseBorrowerIfCurrent'))
+    const physicalCleanup = release.indexOf('releaseProtocolClient')
+    const delegateClear = release.indexOf('delegate = nil', physicalCleanup)
+
+    expect(release).toContain('borrowerRelease.beginRelease(candidate, completion: completion)')
+    expect(release).toContain('case .joined:')
+    expect(release).toContain('if error == nil')
+    expect(release).toContain('scheduleBorrowerReleaseRetry(candidate)')
+    expect(physicalCleanup).toBeGreaterThanOrEqual(0)
+    expect(delegateClear).toBeGreaterThan(physicalCleanup)
+  })
+
+  test('fails attachment closed while cleanup is active or awaiting a successful retry', () => {
+    const owner = read('ios/Owned/OwnedCoreBluetoothProtocolRadioOwner.swift')
+    const cancellation = read('ios/Owned/OwnedCoreBluetoothProtocolRadioCancellation.swift')
+    const execution = read('ios/NativeProtocol/UnifiedBleProtocolAppleExecution.mm')
+
+    expect(owner).toContain('guard borrowerRelease.attach(candidate) else { return false }')
+    expect(owner).toContain('borrowerReleaseRetryScheduled')
+    expect(cancellation).toContain('if error != nil && !destroyRadio')
+    expect(execution).not.toContain('[radio releaseProtocolClientWithCompletion:')
+    expect(execution).not.toContain('[radioFor(state) releaseProtocolClientWithCompletion:')
+    expect(execution.match(/releaseBorrowerWithRadio:/g)).toHaveLength(2)
   })
 
   test('reports the generated ABI while preserving control-surface v2 in the handshake response', () => {
@@ -131,8 +179,17 @@ describe('Apple Native Protocol v2 radio boundary', () => {
       /if \(_runtime->open\(\)\) \{\s+_runtime->close\(nativeAttachmentValue\);\s+\}/
     )
     const runtimeClose = closeAttachment.indexOf('_runtime->close(nativeAttachmentValue);')
-    expect(closeAttachment.indexOf('_attachment = nil;', runtimeClose)).toBeGreaterThan(runtimeClose)
-    expect(closeAttachment.indexOf('resolve(nil);', runtimeClose)).toBeGreaterThan(runtimeClose)
+    const borrowerRelease = closeAttachment.indexOf(
+      '[OwnedCoreBluetoothProtocolRadioOwner releaseBorrowerWithRadio:',
+      runtimeClose
+    )
+    const attachmentClear = closeAttachment.indexOf('_attachment = nil;', borrowerRelease)
+    const resolve = closeAttachment.indexOf('resolve(nil);', attachmentClear)
+
+    expect(closeAttachment).not.toContain('[_radio detachDelegateIfCurrent:')
+    expect(borrowerRelease).toBeGreaterThan(runtimeClose)
+    expect(attachmentClear).toBeGreaterThan(borrowerRelease)
+    expect(resolve).toBeGreaterThan(attachmentClear)
   })
 
   test('invalidates Apple execution, runtime, and radio ownership in a retry-safe order', () => {
@@ -150,14 +207,17 @@ describe('Apple Native Protocol v2 radio boundary', () => {
     const executionClose = invalidate.indexOf('_execution->close();')
     const runtimeGuard = invalidate.indexOf('_runtime->open()', executionClose)
     const runtimeClose = invalidate.indexOf('_runtime->close(nativeAttachment(', runtimeGuard)
-    const radioDestroy = invalidate.indexOf('[_radio destroyWithCompletion:', runtimeClose)
-    const attachmentClear = invalidate.indexOf('if (runtimeClosed) _attachment = nil;', radioDestroy)
+    const borrowerRelease = invalidate.indexOf(
+      '[OwnedCoreBluetoothProtocolRadioOwner releaseBorrowerWithRadio:',
+      runtimeClose
+    )
+    const attachmentClear = invalidate.indexOf('if (runtimeClosed) _attachment = nil;', borrowerRelease)
 
     expect(executionClose).toBeGreaterThanOrEqual(0)
     expect(runtimeGuard).toBeGreaterThan(executionClose)
     expect(runtimeClose).toBeGreaterThan(runtimeGuard)
-    expect(radioDestroy).toBeGreaterThan(runtimeClose)
-    expect(attachmentClear).toBeGreaterThan(radioDestroy)
+    expect(borrowerRelease).toBeGreaterThan(runtimeClose)
+    expect(attachmentClear).toBeGreaterThan(borrowerRelease)
   })
 
   test('fails the pre-JavaScript stream closed with generation-safe sink ownership and observable counters', () => {
@@ -201,7 +261,7 @@ describe('Apple Native Protocol v2 radio boundary', () => {
     expect(control).toContain('_restorationId = configuredInfoString(@"UnifiedBleProtocolRestorationId");')
     expect(control).toContain('_restorationGeneration = configuredInfoString(@"UnifiedBleProtocolRestorationGeneration");')
     expect(control).toContain('derivedRestorationIdentity(applicationId, _restorationId, _restorationGeneration)')
-    expect(control).toContain('initWithRestoreIdentifierKey:(')
+    expect(control).toContain('acquireWithRestoreIdentifierKey:(')
     expect(control).toContain('? _restorationRestoreIdentifier')
     expect(control).toContain(': nil)\n        showPowerAlert:showPowerAlert];')
     expect(control).toContain('if (hasCompleteRestorationConfiguration(')

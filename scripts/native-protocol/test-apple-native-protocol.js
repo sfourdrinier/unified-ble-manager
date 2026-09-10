@@ -33,13 +33,15 @@ const temporaryDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'unified-ble-ap
 const executable = path.join(temporaryDirectory, 'AppleCoreBluetoothScanParserHarness')
 const provenanceExecutable = path.join(temporaryDirectory, 'AppleCoreBluetoothReadNotifyProvenanceHarness')
 const ingressExecutable = path.join(temporaryDirectory, 'AppleNativeIngressOrdinalHarness')
+const borrowerOwnerExecutable = path.join(temporaryDirectory, 'AppleCoreBluetoothBorrowerOwnerHarness')
 const executionExecutable = path.join(temporaryDirectory, 'AppleNativeProtocolExecutionHarness')
 const ownedRadioSources = [
   path.join(root, 'ios/Owned/OwnedCoreBluetoothProtocolRadioSupport.swift'),
   path.join(root, 'ios/Owned/OwnedCoreBluetoothCentralDelegate.swift'),
   path.join(root, 'ios/Owned/OwnedCoreBluetoothProtocolRadio.swift'),
   path.join(root, 'ios/Owned/OwnedCoreBluetoothProtocolRadioCancellation.swift'),
-  path.join(root, 'ios/Owned/OwnedCoreBluetoothProtocolRadioDescriptors.swift')
+  path.join(root, 'ios/Owned/OwnedCoreBluetoothProtocolRadioDescriptors.swift'),
+  path.join(root, 'ios/Owned/OwnedCoreBluetoothProtocolRadioOwner.swift')
 ]
 
 try {
@@ -64,6 +66,16 @@ try {
     provenanceExecutable
   ])
   run(provenanceExecutable, [])
+  run('xcrun', [
+    '--sdk',
+    'macosx',
+    'swiftc',
+    ...ownedRadioSources,
+    path.join(root, 'native/protocol/tests/AppleCoreBluetoothBorrowerOwnerHarness.swift'),
+    '-o',
+    borrowerOwnerExecutable
+  ])
+  run(borrowerOwnerExecutable, [])
   run('xcrun', [
     '--sdk',
     'macosx',
