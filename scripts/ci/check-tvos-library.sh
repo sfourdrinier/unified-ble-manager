@@ -57,6 +57,7 @@ SWIFT_FILES=(
   "$OWNED_DIR/OwnedCoreBluetoothProtocolRadioDescriptors.swift"
   "$OWNED_DIR/OwnedCoreBluetoothProtocolRadioCancellation.swift"
   "$OWNED_DIR/OwnedCoreBluetoothProtocolRadio.swift"
+  "$OWNED_DIR/OwnedCoreBluetoothProtocolRadioOwner.swift"
 )
 
 for swift_file in "${SWIFT_FILES[@]}"; do

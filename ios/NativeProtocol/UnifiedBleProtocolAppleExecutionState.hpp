@@ -39,11 +39,15 @@ class AppleNativeProtocolExecution::State final : public std::enable_shared_from
     std::optional<native_protocol::v2::ProtocolRecord> error;
   };
 
-  State(std::shared_ptr<native_protocol::v2::NativeProtocolControlRuntime> runtimeValue, void* radioValue);
+  State(
+      std::shared_ptr<native_protocol::v2::NativeProtocolControlRuntime> runtimeValue,
+      void* radioValue,
+      void* radioBorrowerValue = nullptr);
   ~State();
 
   std::shared_ptr<native_protocol::v2::NativeProtocolControlRuntime> runtime;
   void* radio;
+  void* radioBorrower;
   std::shared_ptr<facebook::react::CallInvoker> callInvoker;
   std::shared_ptr<facebook::jsi::Function> eventSink;
   std::shared_ptr<facebook::jsi::Function> fatalSink;

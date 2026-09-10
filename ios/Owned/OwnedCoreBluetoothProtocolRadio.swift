@@ -25,6 +25,8 @@ public final class OwnedCoreBluetoothProtocolRadio: NSObject, CBPeripheralDelega
   )
 
   @objc public weak var delegate: OwnedCoreBluetoothProtocolRadioDelegate?
+  let borrowerRelease = OwnedCoreBluetoothBorrowerReleaseCoordinator()
+  var borrowerReleaseRetryScheduled = false
 
   let queue: DispatchQueue
   var central: CBCentralManager!

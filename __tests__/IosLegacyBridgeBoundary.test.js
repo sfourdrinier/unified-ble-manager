@@ -39,7 +39,8 @@ const requiredProtocolPaths = Object.freeze([
   'ios/NativeProtocol/UnifiedBleProtocolAppleBinaryDelivery.mm',
   'ios/Owned/OwnedCoreBluetoothCentralDelegate.swift',
   'ios/Owned/OwnedCoreBluetoothProtocolRadio.swift',
-  'ios/Owned/OwnedCoreBluetoothProtocolRadioSupport.swift'
+  'ios/Owned/OwnedCoreBluetoothProtocolRadioSupport.swift',
+  'ios/Owned/OwnedCoreBluetoothProtocolRadioOwner.swift'
 ])
 
 describe('iOS Native Protocol 4.0 source boundary', () => {
@@ -65,6 +66,7 @@ describe('iOS Native Protocol 4.0 source boundary', () => {
     expect(podspec).toContain('ios/NativeProtocol/**/*.{h,m,mm}')
     expect(podspec).toContain('ios/Owned/OwnedCoreBluetoothProtocolRadio.swift')
     expect(podspec).toContain('ios/Owned/OwnedCoreBluetoothProtocolRadioSupport.swift')
+    expect(podspec).toContain('ios/Owned/OwnedCoreBluetoothProtocolRadioOwner.swift')
     expect(podspec).not.toMatch(/BlePlx(?:TurboModule|RuntimeDispatch|Restoration|RadioQueue|DebugLogging)/)
     expect(podspec).not.toContain('MultiplatformBleAdapter')
     expect(podspec).not.toContain('subspec "Restoration"')

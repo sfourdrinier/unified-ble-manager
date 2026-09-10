@@ -351,8 +351,8 @@ RCT_EXPORT_MODULE(UnifiedBleProtocolControl)
     _restorationClientId = derived[@"clientId"];
     _restorationHostSessionScope = derived[@"hostSessionScope"];
     NSNumber *showPowerAlert = configuredInfoBool(@"UnifiedBleProtocolShowPowerAlert");
-    _radio = [[OwnedCoreBluetoothProtocolRadio alloc]
-        initWithRestoreIdentifierKey:(
+    _radio = [OwnedCoreBluetoothProtocolRadioOwner
+        acquireWithRestoreIdentifierKey:(
             hasCompleteRestorationConfiguration(
                 _restorationRestoreIdentifier,
                 _restorationNamespace,
@@ -362,10 +362,11 @@ RCT_EXPORT_MODULE(UnifiedBleProtocolControl)
                 ? _restorationRestoreIdentifier
                 : nil)
         showPowerAlert:showPowerAlert];
+    _radioDelegate = [UnifiedBleProtocolAppleRadioDelegate new];
     _execution = std::make_shared<unified_ble::apple_protocol::AppleNativeProtocolExecution>(
         _runtime,
-        (__bridge void *)_radio);
-    _radioDelegate = [UnifiedBleProtocolAppleRadioDelegate new];
+        (__bridge void *)_radio,
+        (__bridge void *)_radioDelegate);
     _radioDelegate.execution = _execution.get();
   }
   return self;
@@ -508,8 +509,13 @@ RCT_EXPORT_MODULE(UnifiedBleProtocolControl)
       return;
     }
   }
+  if (![_radio attachDelegateIfAvailable:_radioDelegate]) {
+    _execution->detachAttachment();
+    _runtime->close(attachment);
+    rejectControl(reject, @"nativeProtocolHandshake", @"The process-owned Apple radio already has an attached protocol client");
+    return;
+  }
   _attachment = [requestedAttachment copy];
-  _radio.delegate = _radioDelegate;
   _execution->receiveAdapterState((__bridge void *)[_radio adapterSnapshot]);
   resolve(@{
     @"nativeProtocol": @2,
@@ -713,14 +719,21 @@ RCT_EXPORT_MODULE(UnifiedBleProtocolControl)
         attachment.backendGeneration(),
         attachment.adapterId(),
         attachment.adapterGeneration());
-    _radio.delegate = nil;
     _radioDelegate.execution = nullptr;
     _execution->detachAttachment();
     if (_runtime->open()) {
       _runtime->close(nativeAttachmentValue);
     }
-    _attachment = nil;
-    resolve(nil);
+    [OwnedCoreBluetoothProtocolRadioOwner releaseBorrowerWithRadio:_radio delegate:_radioDelegate completion:^(NSError *error) {
+      if (error != nil) {
+        rejectControl(reject, @"nativeProtocolClose", error.localizedDescription);
+        return;
+      }
+      if ([_attachment isEqualToDictionary:requestedAttachment]) {
+        _attachment = nil;
+      }
+      resolve(nil);
+    }];
   } catch (const std::exception& error) {
     rejectControl(reject, @"nativeProtocolClose", [NSString stringWithUTF8String:error.what()]);
   }
@@ -728,7 +741,6 @@ RCT_EXPORT_MODULE(UnifiedBleProtocolControl)
 
 - (void)invalidate {
   NSDictionary *attachment = [_attachment copy];
-  _radio.delegate = nil;
   _radioDelegate.execution = nullptr;
   _execution->close();
   BOOL runtimeClosed = !_runtime->open();
@@ -747,9 +759,9 @@ RCT_EXPORT_MODULE(UnifiedBleProtocolControl)
       NSLog(@"[UnifiedBleProtocolControl] native runtime close during invalidation failed with an unknown exception");
     }
   }
-  [_radio destroyWithCompletion:^(NSError *error) {
+  [OwnedCoreBluetoothProtocolRadioOwner releaseBorrowerWithRadio:_radio delegate:_radioDelegate completion:^(NSError *error) {
     if (error != nil) {
-      NSLog(@"[UnifiedBleProtocolControl] radio destruction during invalidation failed: %@", error.localizedDescription);
+      NSLog(@"[UnifiedBleProtocolControl] radio borrower release during invalidation failed: %@", error.localizedDescription);
     }
   }];
   if (runtimeClosed) _attachment = nil;

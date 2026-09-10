@@ -23,6 +23,19 @@
 - (NSArray<NSString*>*)restorationPeerIdentifiers;
 @end
 
+static BOOL borrowerLifetimeProbeDeallocated = NO;
+
+@interface BorrowerLifetimeProbe : NSObject
+@end
+
+@implementation BorrowerLifetimeProbe
+
+- (void)dealloc {
+  borrowerLifetimeProbeDeallocated = YES;
+}
+
+@end
+
 @interface ImmediateDisconnectRadio : NSObject
 @end
 
@@ -36,6 +49,23 @@
                  operationIdentifier:(NSString*)operation
                           completion:(void (^)(NSError*))completion {
   completion(nil);
+}
+
+@end
+
+@interface OwnedCoreBluetoothProtocolRadioOwner : NSObject
++ (void)releaseBorrowerWithRadio:(OwnedCoreBluetoothProtocolRadio*)radio
+                        delegate:(id)delegate
+                      completion:(void (^)(NSError*))completion;
+@end
+
+@implementation OwnedCoreBluetoothProtocolRadioOwner
+
++ (void)releaseBorrowerWithRadio:(OwnedCoreBluetoothProtocolRadio*)radio
+                        delegate:(id)delegate
+                      completion:(void (^)(NSError*))completion {
+  (void)delegate;
+  [radio releaseProtocolClientWithCompletion:completion];
 }
 
 @end
@@ -290,6 +320,23 @@ int runAppleNativeProtocolExecutionHarness() {
     // implicit and JSC found a dangling API object during its destructor.
     @autoreleasepool {
     harnessResult = [&]() -> int {
+    __weak BorrowerLifetimeProbe* weakBorrower = nil;
+    std::shared_ptr<AppleNativeProtocolExecution::State> borrowerLifetimeState;
+    @autoreleasepool {
+      BorrowerLifetimeProbe* borrower = [BorrowerLifetimeProbe new];
+      weakBorrower = borrower;
+      borrowerLifetimeState = std::make_shared<AppleNativeProtocolExecution::State>(
+          openedRuntime(),
+          nullptr,
+          (__bridge void*)borrower);
+      borrower = nil;
+    }
+    if (!require(weakBorrower != nil && !borrowerLifetimeProbeDeallocated,
+                 "Apple execution state did not retain its borrower identity")) return 1;
+    borrowerLifetimeState.reset();
+    if (!require(weakBorrower == nil && borrowerLifetimeProbeDeallocated,
+                 "Apple execution state did not release its borrower identity")) return 1;
+
     std::atomic<std::size_t> delivered{0U};
     const auto sink = std::make_shared<Function>(Function::createFromHostFunction(
         *runtime,
