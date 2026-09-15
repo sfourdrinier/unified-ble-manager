@@ -93,6 +93,8 @@ and coding agents should read [`../AGENTS.md`](../AGENTS.md) first.
 | [`../RELEASE.md`](../RELEASE.md) | Canonical tag-driven release procedure and invariants | Current |
 | [`../SECURITY.md`](../SECURITY.md) | Vulnerability reporting policy | Current |
 | [`../SUPPORT.md`](../SUPPORT.md) | Support policy: package SemVer vs evidence-backed backend labels | Current |
+| [`../LICENSE-UBM-SOURCE-AVAILABLE-1.0.md`](../LICENSE-UBM-SOURCE-AVAILABLE-1.0.md) | UBM Source Available License 1.0 text, package authority for new 5.0 material (source-available, not OSI-approved open source) | Current |
+| [`../UBM-CONTRIBUTION-TERMS-1.0.md`](../UBM-CONTRIBUTION-TERMS-1.0.md) | Contribution terms 1.0 for new 5.0 contributions with explicit assent record | Current |
 | [`security/UNIFIED_BLE_4.0_THREAT_MODEL.md`](security/UNIFIED_BLE_4.0_THREAT_MODEL.md) | Repo-wide threat model: trust boundaries, attacker classes, objectives | Current |
 | [`DEPENDENCY_AND_ARTIFACT_POLICY.md`](DEPENDENCY_AND_ARTIFACT_POLICY.md) | SBOM and third-party license generation and policy | Current |
 | [`../CHANGELOG.md`](../CHANGELOG.md) | Active 4.x changelog | Current |

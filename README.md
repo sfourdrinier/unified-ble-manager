@@ -384,4 +384,13 @@ Contract, evidence, and release process live in [`docs/UNIFIED_BLE_4.0_IMPLEMENT
 
 ## License
 
-Apache License 2.0. See [`LICENSE`](LICENSE) and [`THIRD_PARTY_LICENSES.json`](THIRD_PARTY_LICENSES.json).
+New UBM 5.0 material is made available under the UBM Source Available License 1.0
+(`LicenseRef-UBM-Source-Available-1.0`), a commercial source-available license —
+not an OSI-approved open-source license. See
+[`LICENSE-UBM-SOURCE-AVAILABLE-1.0.md`](LICENSE-UBM-SOURCE-AVAILABLE-1.0.md) and
+[`NOTICE`](NOTICE).
+
+Material inherited from the 4.x Apache baseline stays under its Apache License 2.0
+grant; see [`LICENSE`](LICENSE). Existing rights are unaffected. New contributions
+follow the assent path in [`CONTRIBUTING.md`](CONTRIBUTING.md). Third-party material
+is listed in [`THIRD_PARTY_LICENSES.json`](THIRD_PARTY_LICENSES.json).

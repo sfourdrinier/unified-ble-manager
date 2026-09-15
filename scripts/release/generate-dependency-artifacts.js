@@ -7,6 +7,19 @@ const { parse: parseYaml } = require('yaml')
 
 const repositoryRoot = path.resolve(__dirname, '..', '..')
 const artifactNames = ['SBOM.cdx.json', 'THIRD_PARTY_LICENSES.json']
+// Package authority for new UBM 5.0 material. The custom license has no OSI
+// SPDX identifier, so npm metadata uses the supported SEE LICENSE IN form and
+// SPDX/SBOM reports use the LicenseRef identifier (see NOTICE).
+const salLicenseFile = 'LICENSE-UBM-SOURCE-AVAILABLE-1.0.md'
+const salLicenseRef = 'LicenseRef-UBM-Source-Available-1.0'
+
+function rootLicenseExpression(rootPackage) {
+  if (rootPackage.license === `SEE LICENSE IN ${salLicenseFile}`) {
+    return salLicenseRef
+  }
+  if (typeof rootPackage.license === 'string') return rootPackage.license
+  return 'Unknown'
+}
 const allowedLicenses = new Set([
   '(AFL-2.1 OR BSD-3-Clause)',
   '(Apache-2.0 OR MIT)',
@@ -310,7 +323,7 @@ function dependencyArtifacts() {
         'bom-ref': rootPurl,
         name: rootPackage.name,
         version: rootPackage.version,
-        licenses: [{ expression: rootPackage.license }],
+        licenses: [{ expression: rootLicenseExpression(rootPackage) }],
         purl: rootPurl,
       },
       properties: [

@@ -25,6 +25,9 @@
     "SUPPORT.md",
     "SBOM.cdx.json",
     "THIRD_PARTY_LICENSES.json",
+    "LICENSE-UBM-SOURCE-AVAILABLE-1.0.md",
+    "NOTICE",
+    "UBM-CONTRIBUTION-TERMS-1.0.md",
     "plugin/build",
     "app.plugin.js",
     "*.podspec",
@@ -125,7 +128,7 @@
     "url": "git+https://github.com/sfourdrinier/unified-ble-manager.git"
   },
   "author": "sfourdrinier",
-  "license": "Apache-2.0",
+  "license": "SEE LICENSE IN LICENSE-UBM-SOURCE-AVAILABLE-1.0.md",
   "bugs": {
     "url": "https://github.com/sfourdrinier/unified-ble-manager/issues"
   },

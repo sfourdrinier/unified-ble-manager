@@ -11,7 +11,7 @@
       "version": "4.0.28",
       "licenses": [
         {
-          "expression": "Apache-2.0"
+          "expression": "LicenseRef-UBM-Source-Available-1.0"
         }
       ],
       "purl": "pkg:npm/unified-ble-manager@4.0.28"
