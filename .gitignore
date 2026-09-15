@@ -71,6 +71,11 @@ native/tauri/Cargo.lock
 example-tauri/src-tauri/target/
 example-tauri/src-tauri/gen/
 
+# UBM 5.0 Rust workspace build trees (root workspace, crates, bindings).
+/target/
+crates/*/target/
+bindings/*/target/
+
 # Bundle artifact
 *.jsbundle
 /.artifacts/
