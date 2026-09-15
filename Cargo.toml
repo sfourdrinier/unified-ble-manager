@@ -1,0 +1,4 @@
+[workspace]
+resolver = "2"
+members = ["crates/ubm-core"]
+exclude = ["native/tauri", "example-tauri/src-tauri"]
