@@ -3,7 +3,7 @@
 name: CI
 
 # Cost policy (#20):
-# - package: every PR/main push (cheap Ubuntu)
+# - package: every PR push, plus pushes to main, release/**, and the 5.0.0 lane base (cheap Ubuntu)
 # - expo-cng-android: only when Android/native-related paths change (or manual)
 # - Apple (macOS): NOT on every PR commit. Runs on:
 #     • push to main when Apple-related paths change
@@ -19,6 +19,9 @@ on:
       # release branch accumulates several merged PRs, and the combination is
       # what ships, so the integrated branch has to be gated in its own right.
       - 'release/**'
+      # UBM 5.0 lane base: worker branches target 5.0.0 (never main), so the
+      # lane base gets the same push gating as main and release branches.
+      - '5.0.0'
   pull_request:
     branches:
       - main
@@ -27,6 +30,8 @@ on:
       # CI from it: no workflow triggers, `gh pr checks` reports nothing, and
       # the PR still shows the stale green from when it targeted main.
       - 'release/**'
+      # UBM 5.0 lane: PRs targeting the 5.0.0 base get the normal checks.
+      - '5.0.0'
     types: [opened, reopened, synchronize, ready_for_review, labeled]
   workflow_dispatch:
 
