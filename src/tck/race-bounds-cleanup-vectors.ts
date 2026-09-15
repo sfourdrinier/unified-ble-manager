@@ -7,6 +7,7 @@
 // No replacement DSL, no second TCK.
 
 import type { BleCentralBackend } from '../backend-contract/backend'
+import type { CleanupRecord } from '../backend-contract/errors'
 import type { BackendIdentity } from '../backend-contract/identity'
 import type { SerializableRecord } from '../backend-contract/primitives'
 import { createAttachmentBoundIdFactory, version, versionRange } from '../backend-contract/primitives'
@@ -142,6 +143,21 @@ function makeObservation(vectorId: RaceBoundsCleanupVectorId, holds: boolean, de
   return Object.freeze({ vectorId, holds, detail: Object.freeze(detail) })
 }
 
+/**
+ * Compares cleanup records by contract value (release state plus the ordered
+ * failure identities), never by object identity: the idempotency contract is
+ * "both released + admission rejected", not memoization of one record.
+ */
+export function cleanupRecordsDeepEqual(first: CleanupRecord, second: CleanupRecord): boolean {
+  if (first.state !== second.state || first.failures.length !== second.failures.length) {
+    return false
+  }
+  return first.failures.every((failure, index) => {
+    const other = second.failures[index]
+    return other !== undefined && failure.resourceKind === other.resourceKind && failure.error.code === other.error.code
+  })
+}
+
 async function vectorFailedCleanupRetainsAndReports<
   Attachment extends string,
   Identity extends BackendIdentity<Attachment>,
@@ -168,7 +184,7 @@ async function vectorFailedCleanupRetainsAndReports<
     )
     const subscriptionPromise = connected.database.subscribe(
       characteristic.path,
-      subscriptionOptions('drop-oldest', 4, 32)
+      subscriptionOptions('drop-oldest', 4, 128)
     )
     await fixture.controller.perform('advance-time', Object.freeze({ milliseconds: 10 }))
     const subscription = await fixture.controller.settle(subscriptionPromise)
@@ -183,10 +199,24 @@ async function vectorFailedCleanupRetainsAndReports<
       failureReported = true
       silentCleanRelease = false
     }
-    const holds = failureReported && !silentCleanRelease
+    // Retained, not dropped: the failed cleanup keeps the subscription tracked
+    // (still consuming its consumer slot) instead of silently releasing it.
+    const retainedSubscriptionConsumers = Number(fixture.backend.resourceCounters().subscriptionConsumers)
+    const retained = failureReported && retainedSubscriptionConsumers > 0
+    // The injected failure is one-shot: a follow-up remove() completes the
+    // release cleanly, proving the retained resource is still manageable.
+    const followUp = await fixture.controller.settle(subscription.remove())
+    const followUpReleased = followUp.state === 'released' && followUp.failures.length === 0
+    const holds = failureReported && !silentCleanRelease && retained && followUpReleased
     await fixture.controller.settle(connected.connection.release().catch(() => ({ state: 'released', failures: [] })))
     await fixture.controller.settle(manager.destroy())
-    return makeObservation(vectorId, holds, { failureReported, silentCleanRelease })
+    return makeObservation(vectorId, holds, {
+      failureReported,
+      silentCleanRelease,
+      retained,
+      retainedSubscriptionConsumers,
+      followUpReleased
+    })
   } catch (error) {
     await fixture.controller.settle(manager.destroy().catch(() => ({ state: 'released', failures: [] })))
     throw error
@@ -206,16 +236,18 @@ async function vectorDuplicateDestroyIsIdempotent<
   const secondPromise = manager.destroy()
   const first = await fixture.controller.settle(firstPromise)
   const second = await fixture.controller.settle(secondPromise)
-  const sameRecord = first === second
+  const equalCleanupRecords = cleanupRecordsDeepEqual(first, second)
   const bothReleased = first.state === 'released' && second.state === 'released'
   let admissionRejected = false
   try {
-    admissionRejected = await rejectsWithCode(manager.scan(scanOptions(false)), 'lifecycle.destroyed')
+    admissionRejected = await fixture.controller.settle(
+      rejectsWithCode(manager.scan(scanOptions(false)), 'lifecycle.destroyed')
+    )
   } catch {
     admissionRejected = false
   }
-  const holds = sameRecord && bothReleased && admissionRejected
-  return makeObservation(vectorId, holds, { sameCleanupRecord: sameRecord, bothReleased, admissionRejected })
+  const holds = equalCleanupRecords && bothReleased && admissionRejected
+  return makeObservation(vectorId, holds, { equalCleanupRecords, bothReleased, admissionRejected })
 }
 
 async function vectorStalePathRejectsBeforeDispatch<
@@ -247,9 +279,8 @@ async function vectorStalePathRejectsBeforeDispatch<
     const before = manager
       .traces()
       .filter(entry => entry.resource === 'operation' && entry.transition === 'dispatched').length
-    const staleRejected = await rejectsWithCode(
-      connected.database.read(characteristic.path, operationOptions),
-      'gatt.stale-handle'
+    const staleRejected = await fixture.controller.settle(
+      rejectsWithCode(connected.database.read(characteristic.path, operationOptions), 'gatt.stale-handle')
     )
     const after = manager
       .traces()
@@ -285,6 +316,13 @@ async function vectorDuplicateCompletionSettlesOnce<
     if (characteristic === undefined) {
       throw new Error('duplicate-completion vector discovery returned no characteristic')
     }
+    // Two backend completions are queued for ONE read. The read is aborted after
+    // dispatch, so the first completion arrives late, after the caller already
+    // settled with the abort: the caller count is re-read after the late
+    // delivery, so a double settlement would be observed. The abort-then-late
+    // ordering must pass through quarantine exactly once (proving the late
+    // path was exercised, not skipped), and the leftover completion proves
+    // the channel stays healthy for the next operation.
     await fixture.controller.perform(
       'queue-operation-completion',
       Object.freeze({ stage: 'read', delayMilliseconds: 10 })
@@ -293,50 +331,52 @@ async function vectorDuplicateCompletionSettlesOnce<
       'queue-operation-completion',
       Object.freeze({ stage: 'read', delayMilliseconds: 10 })
     )
-    const firstRead = connected.database.read(characteristic.path, operationOptions)
-    const secondRead = connected.database.read(characteristic.path, operationOptions)
+    const cancellation = new AbortController()
+    const read = connected.database.read(characteristic.path, {
+      signal: cancellation.signal,
+      deadline: null
+    })
+    let callerSettlements = 0
+    const trackedSettlement = rejectsWithCode(
+      read.then(
+        value => {
+          callerSettlements += 1
+          return value
+        },
+        error => {
+          callerSettlements += 1
+          throw error
+        }
+      ),
+      'operation.aborted'
+    )
+    await fixture.controller.perform('advance-time', Object.freeze({ milliseconds: 0 }))
+    cancellation.abort()
+    await fixture.controller.flush()
+    const callerAborted = await fixture.controller.settle(trackedSettlement)
     await fixture.controller.perform('advance-time', Object.freeze({ milliseconds: 10 }))
-    let firstSettlements = 0
-    let secondSettlements = 0
-    const firstOutcome = await fixture.controller.settle(
-      firstRead.then(
-        value => {
-          firstSettlements += 1
-          return value
-        },
-        error => {
-          firstSettlements += 1
-          throw error
-        }
-      )
-    )
-    const secondOutcome = await fixture.controller.settle(
-      secondRead.then(
-        value => {
-          secondSettlements += 1
-          return value
-        },
-        error => {
-          secondSettlements += 1
-          throw error
-        }
-      )
-    )
-    const bothValuesNonEmpty = firstOutcome.byteLength > 0 && secondOutcome.byteLength > 0
-    const settledOnce = firstSettlements === 1 && secondSettlements === 1 && bothValuesNonEmpty
+    await fixture.controller.flush()
+    // The late duplicate has now been delivered: the caller count is re-read
+    // here (not just at abort time) so a double settlement would be observed.
+    const settledOnce = callerSettlements === 1 && callerAborted
     const traces = manager.traces().filter(entry => entry.resource === 'operation')
     const late = traces.filter(
       entry => entry.transition === 'late-success' || entry.transition === 'late-failure'
     ).length
-    const noDoubleSettlement = settledOnce && late <= 2
-    const holds = settledOnce && noDoubleSettlement
+    const exactlyOneLateAcknowledgement = late === 1
+    const noDoubleSettlement = settledOnce && exactlyOneLateAcknowledgement
+    const followUp = await fixture.controller.settle(connected.database.read(characteristic.path, operationOptions))
+    const followUpHealthy = followUp.byteLength > 0
+    const holds = settledOnce && noDoubleSettlement && followUpHealthy
     await fixture.controller.settle(connected.connection.release())
     await fixture.controller.settle(manager.destroy())
     return makeObservation(vectorId, holds, {
       settledOnce,
+      callerAborted,
       noDoubleSettlement,
       lateAcknowledgements: late,
-      bothValuesNonEmpty
+      exactlyOneLateAcknowledgement,
+      followUpHealthy
     })
   } catch (error) {
     await fixture.controller.settle(manager.destroy().catch(() => ({ state: 'released', failures: [] })))
@@ -364,8 +404,12 @@ async function vectorOverflowIsBoundedAndTerminal<
     if (characteristic === undefined) {
       throw new Error('overflow vector discovery returned no characteristic')
     }
+    // Post-R12 limits: the byte budget must exceed the 64-byte control reserve
+    // (frozen validateStreamLimits fails closed with stream.quota otherwise),
+    // so the data pool is 128 - 64 while itemCapacity 1 still forces the item
+    // overflow. The terminal drop counts are asserted exactly (R-TCK2).
     const probe = await fixture.controller.settle(
-      connected.database.subscribe(characteristic.path, subscriptionOptions('error', 1, 8))
+      connected.database.subscribe(characteristic.path, subscriptionOptions('error', 1, 128))
     )
     await fixture.controller.perform('emit-notification', notificationInput(characteristic.path, new Uint8Array([4])))
     await fixture.controller.perform('emit-notification', notificationInput(characteristic.path, new Uint8Array([5])))
@@ -446,13 +490,27 @@ async function vectorCancelAcrossAdmissionCompletion<
     const callerCancelled = await fixture.controller.settle(settlement)
     await fixture.controller.perform('advance-time', Object.freeze({ milliseconds: 10 }))
     await fixture.controller.flush()
+    // Re-read after the late completion is delivered: a double settlement
+    // would increment the counter here, and the late acknowledgement must be
+    // recorded exactly once rather than lost.
     const settledOnce = callerSettlements === 1 && callerCancelled
+    const late = manager
+      .traces()
+      .filter(entry => entry.resource === 'operation')
+      .filter(entry => entry.transition === 'late-success' || entry.transition === 'late-failure').length
+    const lateAcknowledgedOnce = late === 1
     const persisted = await fixture.controller.settle(connected.database.read(characteristic.path, operationOptions))
     const completionBoundaryClean = persisted.byteLength > 0
-    const holds = settledOnce && completionBoundaryClean
+    const holds = settledOnce && lateAcknowledgedOnce && completionBoundaryClean
     await fixture.controller.settle(connected.connection.release())
     await fixture.controller.settle(manager.destroy())
-    return makeObservation(vectorId, holds, { settledOnce, callerCancelled, completionBoundaryClean })
+    return makeObservation(vectorId, holds, {
+      settledOnce,
+      callerCancelled,
+      lateAcknowledgements: late,
+      lateAcknowledgedOnce,
+      completionBoundaryClean
+    })
   } catch (error) {
     await fixture.controller.settle(manager.destroy().catch(() => ({ state: 'released', failures: [] })))
     throw error
@@ -479,27 +537,28 @@ async function vectorServiceChangeInvalidatesGeneration<
       'trigger-services-changed',
       Object.freeze({ peerId: String(connected.connection.peerId) })
     )
-    const snapshotInvalidated = await rejectsWithCode(connected.database.snapshot(), 'gatt.stale-handle')
+    const snapshotInvalidated = await fixture.controller.settle(
+      rejectsWithCode(connected.database.snapshot(), 'gatt.stale-handle')
+    )
     const rediscovered = await fixture.controller.settle(connected.connection.discover(operationOptions))
     const rediscoverySnapshot = await rediscovered.snapshot()
-    const newGenerationReads =
-      rediscoverySnapshot.characteristics.length > 0 &&
-      (
-        await fixture.controller.settle(
-          rediscovered.read(
-            rediscoverySnapshot.characteristics[0]?.path ??
-              connected.snapshot.characteristics[0]?.path ??
-              (() => {
-                throw new Error('no characteristic')
-              })(),
-            operationOptions
-          )
-        )
-      ).byteLength >= 0
+    const newGenerationValue = await fixture.controller.settle(
+      rediscovered.read(
+        rediscoverySnapshot.characteristics[0]?.path ??
+          connected.snapshot.characteristics[0]?.path ??
+          (() => {
+            throw new Error('no characteristic')
+          })(),
+        operationOptions
+      )
+    )
+    // Strict: a zero-length read must not satisfy the new-generation check.
+    const newGenerationByteLength = newGenerationValue.byteLength
+    const newGenerationReads = rediscoverySnapshot.characteristics.length > 0 && newGenerationByteLength > 0
     const holds = snapshotInvalidated && newGenerationReads
     await fixture.controller.settle(connected.connection.release())
     await fixture.controller.settle(manager.destroy())
-    return makeObservation(vectorId, holds, { snapshotInvalidated, newGenerationReads })
+    return makeObservation(vectorId, holds, { snapshotInvalidated, newGenerationReads, newGenerationByteLength })
   } catch (error) {
     await fixture.controller.settle(manager.destroy().catch(() => ({ state: 'released', failures: [] })))
     throw error

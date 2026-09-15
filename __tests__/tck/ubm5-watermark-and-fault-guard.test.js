@@ -64,10 +64,29 @@ describe('UBM5 TCK causal-watermark drains', () => {
       }
       const scan = await fixture.controller.settle(manager.scan(scanOptions(false)))
       const firstRead = connected.database.read(characteristic.path, operationOptions)
+      let readSettled = false
+      firstRead.then(
+        () => {
+          readSettled = true
+        },
+        () => {
+          readSettled = true
+        }
+      )
       watermark.markSubmitted('first-read')
-      const drained = await drainToWatermark(fixture.controller, watermark, [firstRead])
+      let flushCalls = 0
+      const countingController = {
+        ...fixture.controller,
+        flush: async () => {
+          flushCalls += 1
+          return fixture.controller.flush()
+        }
+      }
+      const drained = await drainToWatermark(countingController, watermark, [firstRead])
       expect(drained.drainedToSequence).toBe(1)
       expect(drained.globalIdlenessWaited).toBe(false)
+      expect(readSettled).toBe(true)
+      expect(flushCalls).toBeLessThanOrEqual(2)
       const value = await fixture.controller.settle(firstRead)
       expect(value.byteLength).toBeGreaterThan(0)
       const observations = scan.observations[Symbol.asyncIterator]()
@@ -138,7 +157,83 @@ describe('UBM5 TCK test-only fault/time hooks shipping guard', () => {
     }
   })
 
+  test('emitNotification observably delivers instead of silently succeeding', async () => {
+    globalThis[TCK_TEST_ONLY_MARKER] = true
+    process.env.NODE_ENV = 'test'
+    const factory = createDeterministicBackendTckFactory()
+    const fixture = await factory.create(
+      Object.freeze({ scenarioId: 'scenario.scan-connect-discover-read-notify-destroy' })
+    )
+    const { attachBleBackend, createBleManager, createManagerOwnershipAuthority, DEFAULT_BLE_MANAGER_OPTIONS } =
+      require('../../src/manager/ble-manager')
+    const { createAttachmentBoundIdFactory, version, versionRange } = require('../../src/backend-contract/primitives')
+    const { connectAndDiscover, notificationInput, subscriptionOptions } =
+      require('../../src/tck/runner-public-scenario-support')
+    const attached = await attachBleBackend(fixture.backend, {
+      backendContract: versionRange(version('backend-contract', 1), version('backend-contract', 1)),
+      capabilitySchema: versionRange(version('capability-schema', 1), version('capability-schema', 1)),
+      eventSchema: versionRange(version('event-schema', 1), version('event-schema', 1)),
+      traceFormat: versionRange(version('trace-format', 1), version('trace-format', 1))
+    })
+    const attachment = attached.attachment.attachment
+    const ids = createAttachmentBoundIdFactory({
+      attachmentId: attachment.attachmentId,
+      backendInstanceId: attachment.backendInstanceId,
+      backendGeneration: attachment.backendGeneration,
+      adapterId: attachment.adapter.adapterId,
+      adapterGeneration: attachment.adapter.adapterGeneration
+    })
+    const authority = createManagerOwnershipAuthority(attached)
+    const manager = await createBleManager(
+      {
+        attachedBackend: attached,
+        clientId: ids.clientId('tck-emit-notification-client'),
+        managerId: ids.managerId('tck-emit-notification-manager'),
+        ownerMode: 'owning'
+      },
+      authority,
+      { ...DEFAULT_BLE_MANAGER_OPTIONS, now: () => fixture.controller.now() }
+    )
+    try {
+      const connected = await connectAndDiscover(manager, fixture, {
+        id: 'scenario.scan-connect-discover-read-notify-destroy',
+        execution: 'base',
+        requiredFacts: [],
+        requiredControllerActions: []
+      })
+      const characteristic = connected.snapshot.characteristics[0]
+      if (characteristic === undefined) {
+        throw new Error('emit-notification probe discovery returned no characteristic')
+      }
+      const hooks = createTestOnlyFaultHooks({ controller: fixture.controller, factory })
+      const subscription = await fixture.controller.settle(
+        connected.database.subscribe(characteristic.path, subscriptionOptions('drop-oldest', 4, 128))
+      )
+      const delivered = [9, 8, 7]
+      await hooks.emitNotification(notificationInput(characteristic.path, new Uint8Array(delivered)))
+      await fixture.controller.flush()
+      const iterator = subscription.values[Symbol.asyncIterator]()
+      const observed = await fixture.controller.settle(iterator.next())
+      expect(observed.done).toBe(false)
+      expect(observed.value.kind).toBe('value')
+      expect([...observed.value.value.value]).toEqual(delivered)
+      await fixture.controller.settle(subscription.remove())
+      await fixture.controller.settle(connected.connection.release())
+    } finally {
+      await fixture.controller.settle(manager.destroy())
+      expect(await fixture.dispose()).toEqual({ state: 'released', failures: [] })
+    }
+  })
+
   test('no reference/fault exports enter the production package entry', () => {
     expect(isProductionEntryCleanOfTestOnlyFaultExports()).toBe(true)
+  })
+
+  test('production entry check fails closed when the loader fails', () => {
+    expect(
+      isProductionEntryCleanOfTestOnlyFaultExports(() => {
+        throw new Error('simulated production entry load failure')
+      })
+    ).toBe(false)
   })
 })

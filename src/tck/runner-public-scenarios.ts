@@ -64,6 +64,7 @@ import { executeDescriptorOperationsScenario } from './runner-public-descriptor-
 import { executePublicWebChooserVerticalSlice } from './runner-public-web-chooser-vertical-scenario'
 import { executePublicWebUnsupportedCapabilitiesScenario } from './runner-public-web-unsupported-capabilities-scenario'
 import type { PublicManagerSeamOption } from './public-manager-seam-option'
+import { createTsReferenceManagerSeam } from './public-manager-seam'
 
 const publicScenarioId = 'manager.scan-connect-discover-read-notify-destroy'
 const publicScenarioFact = 'scan-connect-discover-read-notify-destroy-completes'
@@ -100,6 +101,12 @@ export async function executePublicTckScenario<
 ): Promise<readonly TckFact[]> {
   if (seam !== undefined && seam.kind === 'rust-stub') {
     throw new TckAssertionError(definition.id, 'rust-backend-unimplemented: no Rust central exists in this slice')
+  }
+  if (seam !== undefined && seam.kind === 'ts-reference') {
+    // The reference seam option observably enters the seam binding (pin check
+    // plus delegation to the runner-owned path), so this branch can never
+    // silently degrade to the default path.
+    return createTsReferenceManagerSeam().runPublicScenario(_factory, fixture, definition)
   }
   if (definition.id === 'adapter.atomic-snapshot-and-watch') {
     return executeAdapterWatchScenario(fixture, definition)

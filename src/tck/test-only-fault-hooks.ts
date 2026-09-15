@@ -75,8 +75,15 @@ export function createTestOnlyFaultHooks<
       }
       await controller.perform('advance-time', Object.freeze({ milliseconds }))
     },
-    emitNotification: async (_input: import('../backend-contract/primitives').SerializableRecord): Promise<void> => {
+    emitNotification: async (
+      notification: import('../backend-contract/primitives').SerializableRecord
+    ): Promise<void> => {
       assertTestOnlyFaultContext('emitNotification')
+      // Really emits through the scenario controller: well-formed inputs are
+      // delivered as notifications, malformed inputs reject loudly in
+      // perform(). A silent no-op here would let a test believe it injected a
+      // notification while nothing happened.
+      await controller.perform('emit-notification', notification)
     },
     queueAdvertisement: async (): Promise<void> => {
       assertTestOnlyFaultContext('queueAdvertisement')
@@ -88,11 +95,19 @@ export function createTestOnlyFaultHooks<
 /**
  * Proves no reference/fault exports entered the production package entries.
  * The production root (src/index.ts) and backend-sdk entry must not expose
- * test-only fault construction.
+ * test-only fault construction. Fails closed: any loader failure, or any
+ * entry that is not an inspectable object, reports "not clean".
  */
-export function isProductionEntryCleanOfTestOnlyFaultExports(): boolean {
+export function isProductionEntryCleanOfTestOnlyFaultExports(
+  loader: (specifier: string) => unknown = require
+): boolean {
   const forbidden = ['createTestOnlyFaultHooks', 'TCK_TEST_ONLY_MARKER', 'assertTestOnlyFaultContext']
-  const entries: readonly object[] = [requireProductionEntry('../index'), requireProductionEntry('../backend-sdk')]
+  let entries: readonly object[]
+  try {
+    entries = [requireProductionEntry(loader, '../index'), requireProductionEntry(loader, '../backend-sdk')]
+  } catch {
+    return false
+  }
   for (const entry of entries) {
     for (const name of forbidden) {
       if (name in entry) {
@@ -103,16 +118,12 @@ export function isProductionEntryCleanOfTestOnlyFaultExports(): boolean {
   return true
 }
 
-function requireProductionEntry(specifier: string): object {
-  try {
-    const loaded: unknown = require(specifier)
-    if (typeof loaded === 'object' && loaded !== null) {
-      return loaded
-    }
-    return Object.freeze({})
-  } catch {
-    return Object.freeze({})
+function requireProductionEntry(loader: (specifier: string) => unknown, specifier: string): object {
+  const loaded: unknown = loader(specifier)
+  if (typeof loaded === 'object' && loaded !== null) {
+    return loaded
   }
+  throw new Error(`tck-test-only-fault-hooks: production entry ${specifier} did not load an inspectable object`)
 }
 
 export type { BackendTckFixture }
