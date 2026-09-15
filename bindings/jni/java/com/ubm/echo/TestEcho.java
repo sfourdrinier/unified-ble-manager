@@ -137,6 +137,12 @@ public final class TestEcho {
         final long closedFinal = session;
         expectWire("post-close bytes", () -> EchoBridge.nativeEchoBytes(closedFinal, new byte[] {1}),
                 "lifecycle.destroyed|core|echo-bytes|unknown-or-closed-handle");
+        // M1: uniform post-close cancel rejects like every other call on a
+        // destroyed handle (napi/uniffi agree).
+        expectWire("post-close cancel", () -> {
+            EchoBridge.nativeCancel(closedFinal);
+            return null;
+        }, "lifecycle.destroyed|core|cancel-inflight|unknown-or-closed-handle");
         expectWire("double close", () -> {
             EchoBridge.nativeClose(closedFinal);
             return null;

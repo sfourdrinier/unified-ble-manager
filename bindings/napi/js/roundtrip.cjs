@@ -66,6 +66,15 @@ async function main() {
   const asyncOut = await session.echoBytesAsync(Buffer.from([7, 8, 9]), 4);
   assert.deepEqual([...asyncOut], [7, 8, 9]);
   await rejectsWithCode(session.echoBytesAsync(Buffer.from([1]), 0), 'argument.invalid', 'core');
+  // L3: one async operation label. The pre-queue validation and the worker
+  // share `echo-bytes-async`, so oversize async input carries that label.
+  // (Pre-queue failures throw synchronously, like the other sync calls
+  // above, hence the async-IIFE wrap; worker failures reject.)
+  await assert.rejects((async () => session.echoBytesAsync(Buffer.alloc(MAX + 1), 4))(), err => {
+    const got = codeOf(err);
+    return got.code === 'bytes.too-large' && got.domain === 'core'
+      && got.operation === 'echo-bytes-async';
+  }, 'oversize async must carry echo-bytes-async operation');
 
   // Cancel-before-start aborts deterministically.
   session.cancelInflight();
@@ -117,6 +126,14 @@ async function main() {
     'lifecycle.destroyed', 'core');
   await rejectsWithCode((async () => session.echoCounter('1'))(),
     'lifecycle.destroyed', 'core');
+  // M1: uniform post-close cancel. `close` invalidates EVERY later call, so
+  // a post-close cancelInflight rejects `lifecycle.destroyed` (uniffi/JNI
+  // agree; the close docstring stands).
+  await assert.rejects((async () => session.cancelInflight())(), err => {
+    const got = codeOf(err);
+    return got.code === 'lifecycle.destroyed' && got.domain === 'core'
+      && got.operation === 'cancel-inflight';
+  }, 'post-close cancelInflight must reject lifecycle.destroyed');
 
   // Panic probes were deleted from production paths by the wiring slice:
   // no feasibility-only export may ship. Containment rests on the

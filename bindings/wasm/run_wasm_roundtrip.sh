@@ -10,6 +10,9 @@ cd "$(dirname "$0")"
 ROOT="../.."
 WASM="$ROOT/target/wasm32-unknown-unknown/debug/ubm5_wasm_echo.wasm"
 
+echo "--- wasm: production guards (L1 safe-Rust + L2 doc names)"
+python3 "$ROOT/bindings/guard_wiring.py"
+
 echo "--- wasm: native unit tests"
 cargo test -p ubm5_wasm_echo --locked
 

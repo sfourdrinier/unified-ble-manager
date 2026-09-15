@@ -27,7 +27,7 @@ envelope is a limitation, not a pass.
   here, and the default build has zero imports (proven: `WebAssembly.Module.
   imports()` is empty), so no host runtime, scheduler, or JS glue can run
   anything behind the caller's back.
-- Module-global state (`EchoCore`, last-error slot/text) lives behind
+- Module-global state (`CoreSession`, last-error slot/text) lives behind
   `std::sync::Mutex` statics. On this target the mutex never contends; on a
   threaded host build the same code stays data-race-free (locks, never
   `static mut`). Multi-threaded SharedArrayBuffer hosts are untested —
@@ -121,7 +121,7 @@ envelope is a limitation, not a pass.
   names present (`echoBytes`, `echoCounterU64`, `initContract`,
   `describeJson`). In-process unit tests are impossible for wasm-bindgen
   shims (they abort outside a module instance) — stated, not skipped: the
-  conversion logic is the unit-tested `echo_core`, the shims add types only.
+  conversion logic is the unit-tested `core_backend`, the shims add types only.
 
 ## Limitations (explicit, not passes)
 

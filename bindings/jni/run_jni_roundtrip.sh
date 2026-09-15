@@ -12,6 +12,9 @@ ROOT="../.."
 command -v javac >/dev/null 2>&1 || { echo "NO JDK: javac missing (recorded limitation)"; exit 1; }
 command -v java >/dev/null 2>&1 || { echo "NO JDK: java missing (recorded limitation)"; exit 1; }
 
+echo "--- jni: production guards (L1 safe-Rust + L2 doc names)"
+python3 "$ROOT/bindings/guard_wiring.py"
+
 echo "--- jni: Rust gates"
 cargo fmt --check
 cargo check -p ubm5_jni_echo --locked

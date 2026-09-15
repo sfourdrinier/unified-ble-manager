@@ -3,7 +3,7 @@ package com.ubm.echo;
 /**
  * Feasibility JNI bridge for the UBM 5.0 FFI slice (FFI-NATIVE card).
  *
- * <p>Sessions are native {@code EchoCore} values behind {@code long} handles.
+ * <p>Sessions are native {@code CoreSession} values behind {@code long} handles.
  * Every method throws {@link EchoException} (typed {@code code}/{@code domain}/
  * {@code operation} plus the wire message) instead of returning error codes:
  * unimplemented or invalid paths reject loudly, never silently.

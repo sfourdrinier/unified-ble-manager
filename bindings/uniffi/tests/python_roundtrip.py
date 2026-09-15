@@ -103,7 +103,10 @@ s4 = ubm_echo.EchoSession(REV)
 check("close ok", s4.close().ok)
 check("close idempotent", s4.close().ok)
 for op, rec in [("echo-bytes", s4.echo_bytes(b"\x01")),
-                 ("echo-counter", s4.echo_counter("1"))]:
+                 ("echo-counter", s4.echo_counter("1")),
+                 # M1: uniform post-close cancel rejects like every other
+                 # call on a destroyed session (napi/JNI agree).
+                 ("cancel-inflight", s4.cancel_inflight())]:
     check(f"post-close {op}", (not rec.ok)
           and wire_of(rec) == f"lifecycle.destroyed|core|{op}", wire_of(rec))
 

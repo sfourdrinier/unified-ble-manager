@@ -204,8 +204,12 @@ impl CoreSession {
     /// `operation.aborted` at the next chunk boundary; when no work is in
     /// flight, the next dispatched unit reports `operation.aborted` on entry.
     /// Either way the abort disarms the flag, so the session stays usable.
-    pub fn cancel_inflight(&self) {
+    /// After `close` this rejects with `lifecycle.destroyed` like every
+    /// other call on a destroyed session (uniform with uniffi/JNI).
+    pub fn cancel_inflight(&self, operation: &'static str) -> Result<(), EchoError> {
+        self.check_usable(operation)?;
         self.cancel.cancel();
+        Ok(())
     }
 
     pub fn cancel_flag(&self) -> Arc<CancelFlag> {
@@ -396,7 +400,7 @@ mod tests {
     #[test]
     fn cancel_before_start_aborts() {
         let core = CoreSession::open(REV).unwrap();
-        core.cancel_inflight();
+        core.cancel_inflight("cancel-inflight").unwrap();
         let flag = core.cancel_flag();
         let err = echo_bytes_chunked(&[1, 2, 3], 10, &flag, "echo-bytes-async")
             .expect_err("cancelled work must abort");
@@ -406,7 +410,7 @@ mod tests {
     #[test]
     fn armed_cancel_aborts_next_dispatch() {
         let core = CoreSession::open(REV).unwrap();
-        core.cancel_inflight();
+        core.cancel_inflight("cancel-inflight").unwrap();
         let flag = core.cancel_flag();
         assert!(flag.is_armed());
         let err = echo_bytes_chunked(&[9u8; 64], 1_000, &flag, "echo-bytes-async")
@@ -439,6 +443,26 @@ mod tests {
             .expect_err("must abort");
         assert_eq!((err.code, err.domain), ("operation.aborted", "core"));
         assert!(!flag.is_armed(), "abort disarms the flag");
+    }
+
+    #[test]
+    fn cancel_after_close_rejects_destroyed() {
+        // M1: `close` invalidates EVERY later call, including cancellation
+        // (uniform with uniffi/JNI; the close docstring stands).
+        let mut core = CoreSession::open(REV).unwrap();
+        core.close();
+        let err = core
+            .cancel_inflight("cancel-inflight")
+            .expect_err("closed cancel must reject");
+        assert_eq!(
+            (err.code, err.domain, err.operation, err.detail),
+            (
+                "lifecycle.destroyed",
+                "core",
+                "cancel-inflight",
+                "session-closed"
+            )
+        );
     }
 
     #[test]

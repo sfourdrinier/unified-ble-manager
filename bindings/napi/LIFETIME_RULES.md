@@ -51,7 +51,9 @@ Anything outside this envelope is a limitation, not a pass.
   Deterministic in every single-flight interleaving; proven by unit tests
   (including a threaded mid-flight abort) and the JS exchange.
 - `close()` during flight aborts the pending call with `operation.aborted`;
-  later calls reject with `lifecycle.destroyed`.
+  later calls reject with `lifecycle.destroyed` — including
+  `cancelInflight()` after `close`
+  (`lifecycle.destroyed|core|cancel-inflight|…`, uniform with uniffi/JNI).
 
 ## Panic containment
 
@@ -83,7 +85,7 @@ Anything outside this envelope is a limitation, not a pass.
 - Every rejection message is `code|domain|operation|detail` with frozen
   C-UBM codes (`protocol.incompatible`, `bytes.too-large`, `bytes.invalid`,
   `argument.invalid`, `operation.aborted`, `lifecycle.destroyed`,
-  `lifecycle.invalid-state` via `EchoCore::check_usable`,
+  `lifecycle.invalid-state` via `CoreSession::check_usable`,
   `lifecycle.invariant-violation` for poisoned locks).
 
 ## Limitations (explicit, not passes)

@@ -218,6 +218,11 @@ function finish(h) {
   assert.ok(!finish(h).ok, 'cancelled finish must fail');
   assert.equal(ex.ubm_echo_last_error(), CODE.ABORTED);
   assert.ok(lastText().startsWith('operation.aborted|core|echo-stream-finish|'));
+  // M1 analogue (no session close on this boundary): cancel on the consumed
+  // handle rejects loudly, never a silent replay or second abort.
+  assert.equal(ex.ubm_echo_stream_cancel(h), CODE.STATE);
+  assert.ok(lastText().startsWith('lifecycle.invalid-state|core|echo-stream-cancel|'),
+    lastText());
   assert.ok(!finish(h).ok, 'consumed handle must fail again');
   assert.equal(ex.ubm_echo_last_error(), CODE.STATE);
 }

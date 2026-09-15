@@ -167,9 +167,10 @@ pub unsafe extern "C" fn ubm_echo_init(rev_ptr: *const u8, rev_len: usize) -> u3
         },
         Err(err) => return set_last_error(err) as u32,
     };
-    let check = check_revision(&revision, op);
-    if check.is_err() {
-        return set_last_error(check.expect_err("checked")) as u32;
+    // L1: `match`, never `expect`, on this fallible path (the revision
+    // literal above cannot fail validation, but the rule is absolute).
+    if let Err(err) = check_revision(&revision, op) {
+        return set_last_error(err) as u32;
     }
     let mut guard = match core().lock() {
         Ok(guard) => guard,

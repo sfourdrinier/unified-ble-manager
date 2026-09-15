@@ -262,10 +262,14 @@ impl SharedCore {
         Ok(())
     }
 
-    pub fn close(&self) {
-        if let Ok(mut guard) = self.inner.lock() {
-            guard.close();
-        }
+    /// Destroys the session. A poisoned lock maps to a loud
+    /// `lifecycle.invariant-violation` like every other lock path (L4:
+    /// napi reports poison loudly; swallowing it here would skip the
+    /// destroy silently).
+    pub fn close(&self) -> Result<(), EchoError> {
+        let mut guard = self.lock("close")?;
+        guard.close();
+        Ok(())
     }
 
     fn lock(
@@ -398,8 +402,8 @@ mod tests {
     #[test]
     fn close_invalidates_loudly_and_idempotently() {
         let core = CoreSession::open(REV).into_shared();
-        core.close();
-        core.close();
+        core.close().unwrap();
+        core.close().unwrap();
         assert_eq!(
             core.echo_bytes(&[1]).expect_err("closed").code,
             "lifecycle.destroyed"
@@ -407,6 +411,32 @@ mod tests {
         assert_eq!(
             core.echo_counter("1").expect_err("closed").code,
             "lifecycle.destroyed"
+        );
+        assert_eq!(
+            core.cancel_inflight().expect_err("closed").code,
+            "lifecycle.destroyed"
+        );
+    }
+
+    #[test]
+    fn close_maps_poison_loudly() {
+        // L4: a poisoned lock must fail the destroy loudly (napi reports
+        // poison loudly); silently skipping the destroy is not an option.
+        let core = CoreSession::open(REV).into_shared();
+        let injected = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _held = core.inner.lock().unwrap();
+            panic!("poison-injection");
+        }));
+        assert!(injected.is_err(), "injection must poison the lock");
+        let err = core.close().expect_err("poisoned close must be loud");
+        assert_eq!(
+            (err.code, err.domain, err.operation, err.detail),
+            (
+                "lifecycle.invariant-violation",
+                "core",
+                "close",
+                "lock-poisoned"
+            )
         );
     }
 
