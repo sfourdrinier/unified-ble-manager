@@ -1,0 +1,51 @@
+// UBM 5.0 FFI feasibility: UniFFI interface for the echo scaffold
+// (FFI-NATIVE card). Echo-only: proves owned bytes, lossless u64 counters,
+// typed C-UBM failures, cancellation, and close invalidation across the
+// generated UniFFI boundary. NOT BLE functionality.
+//
+// Failure mapping (deliberate feasibility choice, documented in
+// LIFETIME_RULES.md): methods return result records carrying the frozen
+// C-UBM `code` + `domain` + `operation` wire form instead of throwing a
+// narrowed enum, so every rejection keeps its exact contract identity across
+// Swift/Kotlin/Python. A production binding would layer `[Throws]` on top;
+// the wire form stays identical.
+//
+// Init contract (PKG-02): the constructor never fails, but EVERY method
+// gates on the revision first. A foreign revision fails closed with
+// `protocol.incompatible` on every call: no effect without valid init.
+
+namespace ubm_echo {
+};
+
+dictionary EchoBytesResult {
+    boolean ok;
+    bytes data;
+    string code;
+    string domain;
+    string operation;
+};
+
+dictionary EchoCounterResult {
+    boolean ok;
+    string value;
+    string code;
+    string domain;
+    string operation;
+};
+
+dictionary EchoStatus {
+    boolean ok;
+    string code;
+    string domain;
+    string operation;
+};
+
+interface EchoSession {
+    constructor(string revision);
+    EchoBytesResult echo_bytes(bytes input);
+    EchoCounterResult echo_counter(string decimal);
+    EchoBytesResult echo_bytes_chunked(bytes input, u32 chunks);
+    EchoStatus cancel_inflight();
+    EchoStatus close();
+    EchoStatus panic_probe();
+};

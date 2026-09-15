@@ -1,0 +1,17 @@
+[package]
+name = "ubm5_uniffi_echo"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.98.1"
+description = "UBM 5.0 FFI feasibility: UniFFI echo scaffold (trackourhealth/bun-mono#1188, FFI-NATIVE card). Echo-only stand-in; NOT BLE functionality."
+license = "MIT"
+
+[lib]
+name = "ubm5_uniffi_echo"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+uniffi = { version = "=0.32.1", features = ["build"] }
+
+[build-dependencies]
+uniffi = { version = "=0.32.1", features = ["build"] }

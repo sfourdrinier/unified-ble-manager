@@ -1,0 +1,313 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+
+// Portable WASM exchange: instantiates the real built module with an EMPTY
+// import object (zero-import portability proof) and drives the full protocol
+// through linear memory. Fails loudly; no skips.
+const WASM_PATH = process.argv[2];
+assert.ok(WASM_PATH, 'usage: roundtrip.mjs <module.wasm>');
+
+const REV = 'C-UBM.0.1.0-DRAFT';
+const MAX = 524288;
+const CODE = { OK: 0, ARG: 1, BYTES_INVALID: 2, TOO_LARGE: 3, ABORTED: 4, STATE: 5, INCOMPAT: 6 };
+
+const bytes = await fs.promises.readFile(WASM_PATH);
+const mod = await WebAssembly.compile(bytes);
+
+// Zero-import instantiation: the portable build must not require any host
+// function (no Tokio/fs/radio shims, no JS glue imports).
+const instance = await WebAssembly.instantiate(mod, {});
+const ex = instance.exports;
+for (const name of ['memory', 'ubm_echo_alloc', 'ubm_echo_free', 'ubm_echo_init',
+  'ubm_echo_run', 'ubm_echo_counter', 'ubm_echo_last_error', 'ubm_echo_last_error_text',
+  'ubm_echo_stream_begin', 'ubm_echo_stream_push', 'ubm_echo_stream_cancel',
+  'ubm_echo_stream_finish', 'ubm_echo_describe_json']) {
+  assert.ok(ex[name], `missing export ${name}`);
+}
+
+let mem = () => new Uint8Array(ex.memory.buffer);
+let view = () => new DataView(ex.memory.buffer);
+// Byte-ownership ledger. Two pointer kinds cross the boundary: explicit
+// allocs and module-published outputs. Every obtained pointer is freed
+// exactly once through its kind's releaser; live counters must never go
+// negative (double-free) and must end at zero (unbalanced bookkeeping).
+// Null results (empty echoes) are never freed by construction.
+let liveAlloc = 0;
+let ownershipCycles = 0;
+const enc = new TextEncoder(), dec = new TextDecoder();
+
+function alloc(n) {
+  const ptr = ex.ubm_echo_alloc(n);
+  assert.notEqual(ptr, 0, `alloc(${n}) must succeed`);
+  liveAlloc++;
+  return ptr;
+}
+function freeAlloc(ptr, len) {
+  if (ptr === 0) return;
+  liveAlloc--;
+  assert.ok(liveAlloc >= 0, 'double-free of an alloc');
+  ex.ubm_echo_free(ptr, len);
+  ownershipCycles++;
+}
+function takePublished(ptr, len) {
+  // Single choke point for published buffers: copy out, then release.
+  // Published pointers never escape this function, so each published buffer
+  // is freed exactly once; a forgotten take would leak module memory, which
+  // the growth probe at the end detects.
+  if (ptr === 0) return null;
+  const bytes = mem().slice(ptr, ptr + len);
+  ex.ubm_echo_free(ptr, len);
+  ownershipCycles++;
+  return bytes;
+}
+function writeInput(bytesIn) {
+  if (bytesIn.length === 0) return 0; // empty inputs cross as (null, 0)
+  const ptr = alloc(bytesIn.length);
+  mem().set(bytesIn, ptr);
+  return ptr;
+}
+function readOut(ptr, len) {
+  return mem().slice(ptr, ptr + len);
+}
+function lastText() {
+  const scratch = alloc(8);
+  const ptr = ex.ubm_echo_last_error_text(scratch);
+  const len = view().getUint32(scratch, true);
+  freeAlloc(scratch, 8);
+  assert.notEqual(ptr, 0);
+  return dec.decode(readOut(ptr, len)); // static slot: copied, never freed
+}
+function checkOk() {
+  assert.equal(ex.ubm_echo_last_error(), CODE.OK,
+    `expected no error, wired: ${ex.ubm_echo_last_error()}`);
+}
+function strBytes(s) { return enc.encode(s); }
+
+// Scratch cell for out_len params.
+const scratch = alloc(8);
+const setOut = v => view().setUint32(scratch, v, true);
+const getOut = () => view().getUint32(scratch, true);
+
+function runBytes(input) {
+  const inPtr = input.length === 0 ? 0 : writeInput(input);
+  setOut(0xdeadbeef);
+  const outPtr = ex.ubm_echo_run(inPtr, input.length, scratch);
+  const outLen = getOut();
+  if (inPtr !== 0) freeAlloc(inPtr, input.length);
+  const out = takePublished(outPtr, outLen);
+  if (out === null) return { ok: outLen === 0 && ex.ubm_echo_last_error() === 0, bytes: new Uint8Array(0) };
+  return { ok: true, bytes: out };
+}
+
+function runCounter(decimal) {
+  const data = strBytes(decimal);
+  const inPtr = writeInput(data);
+  setOut(0);
+  const outPtr = ex.ubm_echo_counter(inPtr, data.length, scratch);
+  const outLen = getOut();
+  freeAlloc(inPtr, data.length);
+  const out = takePublished(outPtr, outLen);
+  if (out === null) return { ok: false };
+  return { ok: true, text: dec.decode(out) };
+}
+
+function initWith(rev) {
+  const data = strBytes(rev);
+  const ptr = writeInput(data);
+  const code = ex.ubm_echo_init(ptr, data.length);
+  freeAlloc(ptr, data.length);
+  return code;
+}
+
+// --- Fresh instance: operations before init fail closed. ---
+assert.equal(ex.ubm_echo_last_error(), CODE.OK);
+{
+  setOut(0);
+  const inPtr = writeInput(new Uint8Array([1]));
+  assert.equal(ex.ubm_echo_run(inPtr, 1, scratch), 0);
+  freeAlloc(inPtr, 1);
+  assert.equal(ex.ubm_echo_last_error(), CODE.STATE);
+  assert.ok(lastText().startsWith('lifecycle.invalid-state|core|echo-bytes|'),
+    lastText());
+  assert.equal(ex.ubm_echo_stream_begin(), 0n);
+  assert.equal(ex.ubm_echo_last_error(), CODE.STATE);
+}
+
+// --- Init contract (PKG-02 / WEB preloading). ---
+assert.equal(initWith('C-UBM.9.9.9-DRAFT'), CODE.INCOMPAT);
+assert.ok(lastText().startsWith('protocol.incompatible|core|echo-init|'));
+assert.equal(initWith(REV), CODE.OK);
+checkOk();
+assert.equal(initWith(REV), CODE.OK, 'same-revision re-init is a no-op');
+assert.equal(initWith('C-UBM.0.2.0-DRAFT'), CODE.INCOMPAT,
+  'identity change after init fails closed');
+assert.ok(runBytes(new Uint8Array([9])).ok, 'failed re-init must not de-init');
+
+// --- Owned byte batches. ---
+assert.deepEqual([...runBytes(new Uint8Array([0, 1, 2, 250, 255])).bytes],
+  [0, 1, 2, 250, 255]);
+assert.ok(runBytes(new Uint8Array(0)).ok, 'empty batch echoes as length 0');
+{
+  const big = new Uint8Array(MAX).fill(0xab);
+  const { ok, bytes: echoed } = runBytes(big);
+  assert.ok(ok && echoed.length === MAX && echoed[0] === 0xab && echoed[MAX - 1] === 0xab);
+}
+assert.equal(ex.ubm_echo_alloc(MAX + 1), 0, 'over-cap alloc refuses (null)');
+assert.equal(ex.ubm_echo_alloc(0), 0, 'zero alloc refuses (null)');
+
+// --- DATA-02 lossless u64 counters via BigInt <-> decimal. ---
+for (const n of [0n, 1n, 9007199254740993n, 9223372036854775807n, 18446744073709551615n]) {
+  const r = runCounter(n.toString());
+  assert.ok(r.ok, `counter ${n}`);
+  assert.equal(BigInt(r.text), n, `counter ${n} lossless`);
+}
+assert.equal(runCounter('00042').text, '42');
+for (const bad of ['', '-1', '+5', '12a34', ' 42', '4.0', '0x10', '18446744073709551616']) {
+  const r = runCounter(bad);
+  assert.ok(!r.ok, `counter ${JSON.stringify(bad)} must fail`);
+  assert.equal(ex.ubm_echo_last_error(), CODE.BYTES_INVALID);
+  assert.ok(lastText().startsWith('bytes.invalid|core|echo-counter|'), lastText());
+}
+
+// --- Streaming echo + cooperative cancellation. ---
+function begin() {
+  const h = ex.ubm_echo_stream_begin();
+  assert.notEqual(h, 0n, 'begin must succeed once initialised');
+  checkOk();
+  return h;
+}
+function push(h, chunk) {
+  const ptr = writeInput(chunk);
+  const total = ex.ubm_echo_stream_push(h, ptr, chunk.length);
+  freeAlloc(ptr, chunk.length);
+  return total;
+}
+function finish(h) {
+  setOut(0);
+  const ptr = ex.ubm_echo_stream_finish(h, scratch);
+  const len = getOut();
+  const out = takePublished(ptr, len);
+  if (out === null) return { ok: false };
+  return { ok: true, bytes: out };
+}
+{
+  const h = begin();
+  assert.equal(push(h, new Uint8Array([1, 2])), 2);
+  assert.equal(push(h, new Uint8Array(0)), 2, 'empty push is a no-op success');
+  checkOk();
+  assert.equal(push(h, new Uint8Array([3])), 3);
+  const r = finish(h);
+  assert.ok(r.ok && [...r.bytes].join(',') === '1,2,3');
+  checkOk();
+  assert.ok(!finish(h).ok, 'second finish must fail');
+  assert.equal(ex.ubm_echo_last_error(), CODE.STATE);
+  assert.ok(lastText().startsWith('lifecycle.invalid-state|core|echo-stream-finish|'));
+  // usize::MAX on wasm32 (u32) signals push failure.
+  assert.equal(push(h, new Uint8Array([9])), -1);
+  assert.equal(ex.ubm_echo_last_error(), CODE.STATE);
+}
+
+// Cancel: push-after-cancel and finish-after-cancel report aborted exactly
+// once; the consumed handle then rejects loudly.
+{
+  const h = begin();
+  push(h, new Uint8Array([5, 6]));
+  assert.equal(ex.ubm_echo_stream_cancel(h), CODE.OK);
+  assert.equal(push(h, new Uint8Array([7])), -1);
+  assert.equal(ex.ubm_echo_last_error(), CODE.ABORTED);
+  assert.ok(!finish(h).ok, 'cancelled finish must fail');
+  assert.equal(ex.ubm_echo_last_error(), CODE.ABORTED);
+  assert.ok(lastText().startsWith('operation.aborted|core|echo-stream-finish|'));
+  assert.ok(!finish(h).ok, 'consumed handle must fail again');
+  assert.equal(ex.ubm_echo_last_error(), CODE.STATE);
+}
+
+// Unknown and null handles reject loudly, never alias a live stream.
+{
+  setOut(0);
+  assert.equal(ex.ubm_echo_stream_finish(999999n, scratch), 0);
+  assert.equal(ex.ubm_echo_last_error(), CODE.STATE);
+  const ptr = writeInput(new Uint8Array([1]));
+  assert.equal(ex.ubm_echo_stream_push(999999n, ptr, 1), -1);
+  freeAlloc(ptr, 1);
+  assert.equal(ex.ubm_echo_last_error(), CODE.STATE);
+  assert.equal(ex.ubm_echo_stream_cancel(999999n), CODE.STATE);
+}
+
+// Cap enforcement over the boundary: accumulation past MAX rejects
+// bytes.too-large but keeps the stream usable.
+{
+  const h = begin();
+  const quarter = new Uint8Array(131072).fill(0x11);
+  for (let i = 0; i < 3; i++) push(h, quarter); // 393216 of 524288
+  const over = new Uint8Array(131073).fill(0xff);
+  const overPtr = writeInput(over);
+  assert.equal(ex.ubm_echo_stream_push(h, overPtr, over.length), -1);
+  freeAlloc(overPtr, over.length);
+  assert.equal(ex.ubm_echo_last_error(), CODE.TOO_LARGE);
+  assert.ok(lastText().startsWith('bytes.too-large|core|echo-stream-push|'));
+  assert.equal(push(h, new Uint8Array([0x22])), 393217, 'stream usable after refused push');
+  const r = finish(h);
+  assert.ok(r.ok && r.bytes.length === 393217 && r.bytes[393216] === 0x22);
+}
+
+// Interleaved streams stay independent (synchronous reentrancy: no shared
+// mutable cursor, each call completes fully before returning).
+{
+  const a = begin(), b = begin();
+  assert.notEqual(a, b);
+  push(a, new Uint8Array([1]));
+  push(b, new Uint8Array([2, 3]));
+  push(a, new Uint8Array([4]));
+  assert.equal(ex.ubm_echo_stream_cancel(a), CODE.OK);
+  assert.ok(!finish(a).ok && ex.ubm_echo_last_error() === CODE.ABORTED);
+  const rb = finish(b);
+  assert.ok(rb.ok && [...rb.bytes].join(',') === '2,3');
+}
+
+// JSON bridge document.
+{
+  setOut(0);
+  const ptr = ex.ubm_echo_describe_json(scratch);
+  const len = getOut();
+  assert.notEqual(ptr, 0);
+  const doc = JSON.parse(dec.decode(takePublished(ptr, len)));
+  assert.equal(doc.revision, REV);
+  assert.equal(doc.maxBytes, MAX);
+  assert.equal(BigInt(doc.u64max), 18446744073709551615n);
+}
+
+// Panic probe: a Rust panic traps catchably; the host survives and the
+// module keeps serving afterwards.
+{
+  let trapped = null;
+  try {
+    ex.ubm_echo_panic_probe();
+  } catch (err) {
+    trapped = err;
+  }
+  assert.ok(trapped instanceof WebAssembly.RuntimeError,
+    `panic must trap catchably, got: ${trapped}`);
+  assert.ok(runBytes(new Uint8Array([1, 2])).ok, 'module usable after trap');
+}
+
+// Byte ownership accounting: every alloc and every published buffer freed
+// exactly once (empty/null results are never freed by construction).
+// Leak probe: repeat identical fixed-size ownership cycles; module memory
+// must not grow (freed blocks are reused). A 4 KiB x 100 leak would add
+// ~800 KiB (>= 12 pages); clean reuse adds zero bytes.
+{
+  const cycle = new Uint8Array(4096).fill(0x77);
+  const before = ex.memory.buffer.byteLength;
+  for (let i = 0; i < 100; i++) {
+    const r = runBytes(cycle);
+    assert.ok(r.ok && r.bytes.length === 4096 && r.bytes[0] === 0x77);
+  }
+  const after = ex.memory.buffer.byteLength;
+  assert.equal(after, before, `module memory grew ${before} -> ${after}: leak`);
+}
+freeAlloc(scratch, 8);
+assert.equal(liveAlloc, 0, `alloc ledger must balance, live=${liveAlloc}`);
+assert.ok(ownershipCycles > 100, 'harness must exercise many ownership cycles');
+
+console.log('wasm-roundtrip: OK');

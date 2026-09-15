@@ -1,4 +1,4 @@
 [workspace]
 resolver = "2"
 members = ["crates/ubm-core"]
-exclude = ["native/tauri", "example-tauri/src-tauri"]
+exclude = ["native/tauri", "example-tauri/src-tauri", "bindings/jni", "bindings/napi", "bindings/uniffi", "bindings/wasm"]
