@@ -2,7 +2,7 @@
 // Generic peripheral extension primitives: no commercial or physiological content.
 
 import {
-  PERIPHERAL_FORBIDDEN_KEY_SUBSTRINGS,
+  GENERIC_PERIPHERAL_ALLOWED_KEYS,
   arbitrateServerResponse,
   assertAdvertisementWithinLimits,
   assertAtomicCommit,
@@ -38,8 +38,14 @@ describe('generic peripheral declarations', () => {
     for (const key of ['ecgSample', 'paymentSku', 'heartRate']) {
       expect(() => assertGenericPeripheralDecl({ [key]: [1, 2] })).toThrow('argument.invalid');
     }
-    expect(PERIPHERAL_FORBIDDEN_KEY_SUBSTRINGS.includes('ecg')).toBe(true);
-    expect(PERIPHERAL_FORBIDDEN_KEY_SUBSTRINGS.includes('payment')).toBe(true);
+    expect(GENERIC_PERIPHERAL_ALLOWED_KEYS.includes('octetPayload')).toBe(true);
+    expect(GENERIC_PERIPHERAL_ALLOWED_KEYS.includes('ecgSample')).toBe(false);
+  });
+
+  test('fail-closed allowlist rejects unlisted physiological keys', () => {
+    for (const key of ['spo2Sample', 'sleepStage', 'glucoseMgDl', 'ouraReadiness', 'dexcomG6', 'vo2maxEstimate', 'bloodPressure']) {
+      expect(() => assertGenericPeripheralDecl({ [key]: [1, 2] })).toThrow('argument.invalid');
+    }
   });
 
   test('accepts generic byte payloads', () => {

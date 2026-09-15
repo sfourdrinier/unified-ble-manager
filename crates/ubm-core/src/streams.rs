@@ -20,6 +20,8 @@ use crate::contracts::{
 
 /// Reserved control item slots per stream (C-UBM `RESERVED_CONTROL_CAPACITY`).
 pub const RESERVED_CONTROL_CAPACITY: u64 = 1;
+/// Reserved control byte budget per stream (C-UBM `RESERVED_CONTROL_BYTES`).
+pub const RESERVED_CONTROL_BYTES: u64 = 64;
 /// Kernel-local bound on streams per set.
 pub const STREAM_SET_MAX_STREAMS: usize = 16;
 
@@ -29,16 +31,20 @@ pub struct StreamLimits {
     item_capacity: u64,
     byte_capacity: u64,
     reserved_control_capacity: u64,
+    reserved_control_bytes: u64,
 }
 
 impl StreamLimits {
-    /// Validate budgets. Mirrors C-UBM `validateStreamLimits`, including the
-    /// mixed-units comparison of byte capacity against the reserved-control
-    /// (item) count (discrepancy D3, mirrored, not reinterpreted).
+    /// Validate budgets. Mirrors C-UBM `validateStreamLimits` with
+    /// like-with-like comparison (D3 fixed in C-UBM 0.1.1): bytes against
+    /// the reserved byte budget. Data and control draw from separate item
+    /// pools sharing one byte budget, so no item-against-item quota applies
+    /// beyond the range checks.
     pub fn new(
         item_capacity: u64,
         byte_capacity: u64,
         reserved_control_capacity: u64,
+        reserved_control_bytes: u64,
     ) -> Result<Self, CoreError> {
         let item_capacity = assert_item_capacity(item_capacity, "stream.limits.item-capacity")?;
         let byte_capacity = assert_byte_capacity(byte_capacity, "stream.limits.byte-capacity")?;
@@ -46,7 +52,11 @@ impl StreamLimits {
             reserved_control_capacity,
             "stream.limits.reserved-control-capacity",
         )?;
-        if byte_capacity <= reserved_control_capacity {
+        let reserved_control_bytes = assert_byte_capacity(
+            reserved_control_bytes,
+            "stream.limits.reserved-control-bytes",
+        )?;
+        if byte_capacity <= reserved_control_bytes {
             return Err(CoreError::new(
                 BleErrorCode::StreamQuota,
                 BleErrorDomain::Stream,
@@ -57,6 +67,7 @@ impl StreamLimits {
             item_capacity,
             byte_capacity,
             reserved_control_capacity,
+            reserved_control_bytes,
         })
     }
 
@@ -76,6 +87,12 @@ impl StreamLimits {
     #[must_use]
     pub const fn reserved_control_capacity(&self) -> u64 {
         self.reserved_control_capacity
+    }
+
+    /// Control-only byte budget within the shared byte capacity.
+    #[must_use]
+    pub const fn reserved_control_bytes(&self) -> u64 {
+        self.reserved_control_bytes
     }
 }
 
@@ -201,6 +218,10 @@ pub struct StreamDefault {
     pub item_capacity: u64,
     /// Default byte capacity.
     pub byte_capacity: u64,
+    /// Default reserved control item slots.
+    pub reserved_control_capacity: u64,
+    /// Default reserved control byte budget.
+    pub reserved_control_bytes: u64,
     /// Default overflow policy.
     pub policy: OverflowPolicy,
 }
@@ -211,30 +232,40 @@ pub const STREAM_DEFAULTS: [StreamDefault; 5] = [
         stream: StreamName::ScanObservation,
         item_capacity: 1,
         byte_capacity: 524_288,
+        reserved_control_capacity: RESERVED_CONTROL_CAPACITY,
+        reserved_control_bytes: RESERVED_CONTROL_BYTES,
         policy: OverflowPolicy::Latest,
     },
     StreamDefault {
         stream: StreamName::Notification,
         item_capacity: 64,
         byte_capacity: 1_048_576,
+        reserved_control_capacity: RESERVED_CONTROL_CAPACITY,
+        reserved_control_bytes: RESERVED_CONTROL_BYTES,
         policy: OverflowPolicy::DropOldest,
     },
     StreamDefault {
         stream: StreamName::AdapterState,
         item_capacity: 64,
         byte_capacity: 65_536,
+        reserved_control_capacity: RESERVED_CONTROL_CAPACITY,
+        reserved_control_bytes: RESERVED_CONTROL_BYTES,
         policy: OverflowPolicy::Latest,
     },
     StreamDefault {
         stream: StreamName::Diagnostics,
         item_capacity: 256,
         byte_capacity: 524_288,
+        reserved_control_capacity: RESERVED_CONTROL_CAPACITY,
+        reserved_control_bytes: RESERVED_CONTROL_BYTES,
         policy: OverflowPolicy::DropOldest,
     },
     StreamDefault {
         stream: StreamName::RestorationReplay,
         item_capacity: 64,
         byte_capacity: 262_144,
+        reserved_control_capacity: RESERVED_CONTROL_CAPACITY,
+        reserved_control_bytes: RESERVED_CONTROL_BYTES,
         policy: OverflowPolicy::Error,
     },
 ];
@@ -405,14 +436,15 @@ impl Stream {
         }
     }
 
-    /// Build a stream from a frozen default plus the reserved control slot.
+    /// Build a stream from a frozen default including reserved control budgets.
     pub fn from_default(name: StreamName) -> Result<Self, CoreError> {
         for default in &STREAM_DEFAULTS {
             if default.stream == name {
                 let limits = StreamLimits::new(
                     default.item_capacity,
                     default.byte_capacity,
-                    RESERVED_CONTROL_CAPACITY,
+                    default.reserved_control_capacity,
+                    default.reserved_control_bytes,
                 )?;
                 return Ok(Self::new(limits, default.policy));
             }
@@ -773,21 +805,22 @@ impl StreamSet {
 #[cfg(test)]
 mod tests {
     use super::{
-        AdmissionDecision, OverflowPolicy, RESERVED_CONTROL_CAPACITY, STREAM_DEFAULTS,
-        STREAM_SET_MAX_STREAMS, Stream, StreamAccounting, StreamLimits, StreamName, StreamSet,
-        apply_admission,
+        AdmissionDecision, OverflowPolicy, RESERVED_CONTROL_BYTES, RESERVED_CONTROL_CAPACITY,
+        STREAM_DEFAULTS, STREAM_SET_MAX_STREAMS, Stream, StreamAccounting, StreamLimits,
+        StreamName, StreamSet, apply_admission,
     };
     use crate::check;
     use crate::contracts::{BleErrorCode, CLIENT_AGGREGATE_BYTES};
 
     fn limits(item: u64, bytes: u64, reserved: u64) -> Option<StreamLimits> {
-        StreamLimits::new(item, bytes, reserved).ok()
+        StreamLimits::new(item, bytes, reserved, RESERVED_CONTROL_BYTES).ok()
     }
 
     #[test]
     fn frozen_stream_defaults() {
         assert_eq!(STREAM_DEFAULTS.len(), 5);
         assert_eq!(RESERVED_CONTROL_CAPACITY, 1);
+        assert_eq!(RESERVED_CONTROL_BYTES, 64);
         let table: &[(StreamName, u64, u64, OverflowPolicy)] = &[
             (
                 StreamName::ScanObservation,
@@ -820,6 +853,14 @@ mod tests {
             assert_eq!(STREAM_DEFAULTS[index].item_capacity, *items);
             assert_eq!(STREAM_DEFAULTS[index].byte_capacity, *bytes);
             assert_eq!(STREAM_DEFAULTS[index].policy, *policy);
+            assert_eq!(
+                STREAM_DEFAULTS[index].reserved_control_capacity,
+                RESERVED_CONTROL_CAPACITY
+            );
+            assert_eq!(
+                STREAM_DEFAULTS[index].reserved_control_bytes,
+                RESERVED_CONTROL_BYTES
+            );
         }
         for default in &STREAM_DEFAULTS {
             match Stream::from_default(default.stream) {
@@ -829,6 +870,10 @@ mod tests {
                     assert_eq!(
                         stream.limits().reserved_control_capacity(),
                         RESERVED_CONTROL_CAPACITY
+                    );
+                    assert_eq!(
+                        stream.limits().reserved_control_bytes(),
+                        RESERVED_CONTROL_BYTES
                     );
                     assert_eq!(stream.policy(), default.policy);
                 }
@@ -884,20 +929,24 @@ mod tests {
 
     #[test]
     fn limit_validation_boundaries() {
-        // Mirrors the stream-limits fixtures: (64, 1MiB, 1) and (1, 2, 1).
+        // Mirrors the stream-limits fixtures: (64, 1MiB, 1, 64) and (1, 2, 1, 1).
         assert!(limits(64, 1_048_576, 1).is_some());
-        assert!(limits(1, 2, 1).is_some());
+        assert!(limits(1, 2, 1).is_none());
         assert!(limits(0, 1_048_576, 1).is_none());
         assert!(limits(65_537, 1_048_576, 1).is_none());
         assert!(limits(64, 0, 1).is_none());
         assert!(limits(64, 4_194_305, 1).is_none());
         assert!(limits(64, 1_048_576, 0).is_none());
-        // Byte capacity at or below the reserved count is quota (D3).
-        assert!(limits(64, 1, 1).is_none());
-        assert!(limits(64, 2, 2).is_none());
-        match StreamLimits::new(64, 4_194_305, 1) {
+        // Like-with-like quota: bytes at/below the reserved byte budget.
+        assert!(limits(64, 64, 1).is_none());
+        assert!(StreamLimits::new(1, 2, 1, 1).is_ok());
+        match StreamLimits::new(64, 4_194_305, 1, RESERVED_CONTROL_BYTES) {
             Err(error) => assert_eq!(error.code(), BleErrorCode::StreamQuota),
             Ok(_) => check(false, "byte ceiling breach is quota"),
+        }
+        match StreamLimits::new(64, 64, 1, 64) {
+            Err(error) => assert_eq!(error.code(), BleErrorCode::StreamQuota),
+            Ok(_) => check(false, "reserved byte budget breach is quota"),
         }
     }
 

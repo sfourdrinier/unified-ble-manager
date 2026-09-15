@@ -7,6 +7,7 @@
 // (read-only reference).
 
 import { assertTimeoutMs } from './bounds';
+import { freezeTable } from './freeze';
 import { canonicalUuidValue } from './identities';
 import type { GattPath } from './identities';
 import { contractError } from './outcomes';
@@ -33,10 +34,8 @@ export function validateScanRequest(input: {
   readonly unsupportedFilterFields?: readonly unknown[];
 }): ScanRequest {
   const unsupported = input.unsupportedFilterFields ?? [];
-  for (const field of unsupported) {
-    if (typeof field === 'string' && field.length > 0) {
-      throw contractError('capability.unsupported', 'scan', 'scan.filter');
-    }
+  if (unsupported.length > 0) {
+    throw contractError('capability.unsupported', 'scan', 'scan.filter');
   }
   const serviceUuids: string[] = [];
   for (const uuid of input.serviceUuids) {
@@ -155,7 +154,7 @@ export interface CentralControl {
 // A request and an observation are different facts. Accepted means the
 // backend accepted the request for dispatch; it MUST NOT be presented as
 // proof that the controller or peer selected the requested parameters.
-export const CENTRAL_CONTROLS: readonly CentralControl[] = [
+export const CENTRAL_CONTROLS: readonly CentralControl[] = freezeTable([
   { method: 'readRssi', capabilityId: 'connection:rssi', acceptanceIsProof: false },
   { method: 'effectiveMtu', capabilityId: 'connection:effective-mtu', acceptanceIsProof: false },
   { method: 'requestMtu', capabilityId: 'connection:request-mtu', acceptanceIsProof: false },
@@ -170,4 +169,4 @@ export const CENTRAL_CONTROLS: readonly CentralControl[] = [
     capabilityId: 'gatt:write-without-response-readiness',
     acceptanceIsProof: false,
   },
-] satisfies readonly CentralControl[];
+] satisfies readonly CentralControl[]);

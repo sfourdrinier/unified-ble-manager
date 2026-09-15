@@ -62,6 +62,8 @@
     "test": "pnpm test:package",
     "pretest:package": "pnpm prepack",
     "test:package": "jest --config jest.config.js",
+    "contracts:test": "jest --config contracts/jest.config.cjs",
+    "contracts:typecheck": "tsc --noEmit -p contracts/tsconfig.json",
     "native-protocol:generate": "node scripts/native-protocol/generate-native-protocol.js",
     "native-protocol:check": "node scripts/native-protocol/generate-native-protocol.js --check",
     "test:native-protocol": "node scripts/native-protocol/test-native-protocol.js",

@@ -1,6 +1,7 @@
 // contracts/src/fixtures/invalid.ts — C-UBM DRAFT invalid fixtures.
 // Each entry must throw its frozen code; enforced by fixtures-roundtrip.test.ts.
 
+import { freezeTable } from '../freeze';
 import { assertBytesWithinLimit, assertItemCapacity, assertTimeoutMs, parseI64Decimal, parseU64Decimal } from '../bounds';
 import { assertCapabilityAllows, makeCapabilityDescriptor } from '../capabilities';
 import { validateScanRequest } from '../central';
@@ -30,7 +31,7 @@ const BASE_ATTACHMENT = {
   adapterGeneration: 'ag-2',
 };
 
-export const INVALID_FIXTURES: readonly InvalidFixture[] = [
+export const INVALID_FIXTURES: readonly InvalidFixture[] = freezeTable([
   { name: 'empty-attachment-id', expectedCode: 'argument.invalid', check: () => { createAttachmentTuple({ ...BASE_ATTACHMENT, attachmentId: '' }); } },
   { name: 'uuid-garbage', expectedCode: 'argument.invalid', check: () => { canonicalUuidValue('not-a-uuid'); } },
   { name: 'uuid-bad-length', expectedCode: 'argument.invalid', check: () => { canonicalUuidValue('123'); } },
@@ -74,4 +75,4 @@ export const INVALID_FIXTURES: readonly InvalidFixture[] = [
   { name: 'i64-overflow', expectedCode: 'bytes.invalid', check: () => { parseI64Decimal('9223372036854775808'); } },
   { name: 'i64-underflow', expectedCode: 'bytes.invalid', check: () => { parseI64Decimal('-9223372036854775809'); } },
   { name: 'i64-hex', expectedCode: 'bytes.invalid', check: () => { parseI64Decimal('0x10'); } },
-] satisfies readonly InvalidFixture[];
+] satisfies readonly InvalidFixture[]);

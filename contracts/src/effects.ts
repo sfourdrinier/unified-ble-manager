@@ -5,6 +5,7 @@
 // A signal requests; the result reports what happened. Native callback
 // arrival alone is not success: only a complete validated response contends.
 
+import { freezeTable } from './freeze';
 import { contractError } from './outcomes';
 import type { HandshakeState } from './version';
 import { assertHandshakeComplete } from './version';
@@ -31,6 +32,7 @@ export function makeEffect(kind: EffectKind, operationId: string, detail: string
 
 export type ContenderKind =
   | 'success'
+  | 'failure'
   | 'abort'
   | 'timeout'
   | 'disconnect'
@@ -48,6 +50,7 @@ export interface Contender {
 
 export type CompletionTerminal =
   | 'succeeded'
+  | 'failed'
   | 'aborted'
   | 'timed-out'
   | 'disconnected'
@@ -71,6 +74,8 @@ function terminalForWinner(kind: ContenderKind): CompletionTerminal {
   switch (kind) {
     case 'success':
       return 'succeeded';
+    case 'failure':
+      return 'failed';
     case 'abort':
       return 'aborted';
     case 'timeout':
@@ -155,7 +160,7 @@ export function arbitrateContenders(input: {
 
 export type HappensBeforePair = readonly [string, string];
 
-export const HAPPENS_BEFORE: readonly HappensBeforePair[] = [
+export const HAPPENS_BEFORE: readonly HappensBeforePair[] = freezeTable([
   ['negotiated-version', 'all-work'],
   ['ownership-verification', 'admission'],
   ['generation-invalidation', 'terminal-event'],
@@ -166,7 +171,7 @@ export const HAPPENS_BEFORE: readonly HappensBeforePair[] = [
   ['final-overflow-counters', 'stream-terminal'],
   ['cleanup-completion', 'ownership-release'],
   ['backend-generation-publication', 'work-under-generation'],
-] satisfies readonly HappensBeforePair[];
+] satisfies readonly HappensBeforePair[]);
 
 // Runs the effect only after a verified handshake. The dispatch callback is
 // never invoked on rejection, so nothing reaches the radio (PKG-02, OPS-01).

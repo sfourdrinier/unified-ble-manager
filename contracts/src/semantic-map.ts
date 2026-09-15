@@ -5,6 +5,8 @@
 // are recorded as approved corrections against the protocol/contract, never
 // as silent equality.
 
+import { freezeTable } from './freeze';
+
 export type MapDisposition = 'retained' | 'corrected' | 'extended' | 'noted';
 
 export interface SemanticMapping {
@@ -16,22 +18,22 @@ export interface SemanticMapping {
   readonly note: string;
 }
 
-export const SEMANTIC_MAP: readonly SemanticMapping[] = [
+export const SEMANTIC_MAP: readonly SemanticMapping[] = freezeTable([
   { section: 1, subject: 'authority, inert entry, structural records', disposition: 'retained', cubmModule: 'version, identities', correctionId: null, note: 'package version is not a handshake axis' },
   { section: 2, subject: 'vocabulary, identity, version negotiation', disposition: 'corrected', cubmModule: 'version, identities', correctionId: 'AC-01', note: 'structural records; revision equality explicit' },
   { section: 3, subject: 'ownership and multi-client arbitration', disposition: 'retained', cubmModule: 'hosts, transitions', correctionId: null, note: 'OWN-01 rulings frozen' },
   { section: 4, subject: 'lifecycle state machines', disposition: 'retained', cubmModule: 'transitions', correctionId: null, note: 'all nine machines frozen' },
   { section: 5, subject: 'adapter state, permission, reset', disposition: 'retained', cubmModule: 'hosts', correctionId: null, note: 'single isAuthorizationBlocking predicate' },
-  { section: 6, subject: 'scan sessions', disposition: 'retained', cubmModule: 'central, streams', correctionId: null, note: 'unsupported filters reject' },
+  { section: 6, subject: 'scan sessions', disposition: 'corrected', cubmModule: 'central, streams', correctionId: 'AC-06', note: 'admission boundary only; pushdown stays backend-internal' },
   { section: 7, subject: 'chooser sessions', disposition: 'retained', cubmModule: 'transitions', correctionId: null, note: 'chooser distinct from scan' },
   { section: 8, subject: 'connections, adoption, disconnect', disposition: 'retained', cubmModule: 'hosts, identities', correctionId: null, note: 'generations invalidate before terminal' },
-  { section: 9, subject: 'discovery, database epochs, paths', disposition: 'retained', cubmModule: 'identities, central', correctionId: null, note: 'occurrence identity; UUID canonicalization' },
-  { section: 10, subject: 'GATT I/O, descriptors, subscriptions', disposition: 'retained', cubmModule: 'central, peripheral', correctionId: null, note: 'mandatory write mode; managed CCCD' },
+  { section: 9, subject: 'discovery, database epochs, paths', disposition: 'corrected', cubmModule: 'identities, central', correctionId: 'AC-02', note: 'structural records; occurrence identity; UUID canonicalization' },
+  { section: 10, subject: 'GATT I/O, descriptors, subscriptions', disposition: 'corrected', cubmModule: 'central, peripheral', correctionId: 'AC-05', note: 'mandatory write mode; managed CCCD; generic peripheral primitives' },
   { section: 11, subject: 'bounded streams and overflow', disposition: 'retained', cubmModule: 'streams, bounds', correctionId: null, note: 'STR-01 defaults frozen' },
   { section: 12, subject: 'bytes, ownership, boundary limits', disposition: 'corrected', cubmModule: 'bounds', correctionId: 'AC-03', note: '524288 effective ceiling; decimal-string u64' },
-  { section: 13, subject: 'operations, cancellation, deadlines', disposition: 'retained', cubmModule: 'effects, bounds, outcomes', correctionId: null, note: 'OPS-01/OPS-02 arbitration' },
+  { section: 13, subject: 'operations, cancellation, deadlines', disposition: 'corrected', cubmModule: 'effects, bounds, outcomes', correctionId: 'AC-04', note: 'OPS-01/OPS-02 arbitration; dispositions frozen, payloads in operation result' },
   { section: 14, subject: 'race arbitration and happens-before', disposition: 'retained', cubmModule: 'effects', correctionId: null, note: 'first valid contender wins' },
-  { section: 15, subject: 'errors and platform detail', disposition: 'retained', cubmModule: 'outcomes', correctionId: null, note: 'full code catalog; safe detail only' },
+  { section: 15, subject: 'errors and platform detail', disposition: 'corrected', cubmModule: 'outcomes', correctionId: 'AC-04', note: 'full code catalog; dispositions frozen verbatim; safe detail only' },
   { section: 16, subject: 'capabilities, limitations, evidence', disposition: 'retained', cubmModule: 'capabilities', correctionId: null, note: 'four-state vocabulary; runtime authority' },
   { section: 17, subject: 'permission, background, bond, MTU, RSSI', disposition: 'retained', cubmModule: 'central, capabilities', correctionId: null, note: 'request vs observation distinct' },
   { section: 18, subject: 'restoration and exact replay', disposition: 'retained', cubmModule: 'streams, transitions', correctionId: null, note: 'error-policy replay stream' },
@@ -42,7 +44,7 @@ export const SEMANTIC_MAP: readonly SemanticMapping[] = [
   { section: 23, subject: 'deterministic and live proof', disposition: 'retained', cubmModule: 'capabilities', correctionId: null, note: 'evidence levels; blocked stays blocked' },
   { section: 24, subject: 'absent/unsupported/unavailable, prohibitions', disposition: 'retained', cubmModule: 'capabilities, outcomes', correctionId: null, note: 'states never interchangeable' },
   { section: 25, subject: 'coverage ledger and validation', disposition: 'corrected', cubmModule: 'semantic-map', correctionId: 'AC-07', note: 'this ledger replaces checker-only coverage' },
-] satisfies readonly SemanticMapping[];
+] satisfies readonly SemanticMapping[]);
 
 export interface ApprovedCorrection {
   readonly id: string;
@@ -52,7 +54,7 @@ export interface ApprovedCorrection {
   readonly rationale: string;
 }
 
-export const APPROVED_CORRECTIONS: readonly ApprovedCorrection[] = [
+export const APPROVED_CORRECTIONS: readonly ApprovedCorrection[] = freezeTable([
   {
     id: 'AC-01',
     area: 'version axes',
@@ -102,9 +104,9 @@ export const APPROVED_CORRECTIONS: readonly ApprovedCorrection[] = [
     cubmDecision: 'C-UBM keeps the behavioral fixtures and adds this executable map: every section resolves to a module, corrections resolve to log entries, enforced by test',
     rationale: 'removing a category must fail the contract suite, not just document lint',
   },
-] satisfies readonly ApprovedCorrection[];
+] satisfies readonly ApprovedCorrection[]);
 
-export const MANDATORY_SCENARIOS: readonly string[] = [
+export const MANDATORY_SCENARIOS: readonly string[] = freezeTable([
   'OWN-01',
   'OWN-02',
   'CLN-01',
@@ -112,7 +114,7 @@ export const MANDATORY_SCENARIOS: readonly string[] = [
   'OPS-02',
   'STR-01',
   'PKG-02',
-] satisfies readonly string[];
+] satisfies readonly string[]);
 
 export function correctionForMapping(mapping: SemanticMapping): ApprovedCorrection | null {
   if (mapping.correctionId === null) {

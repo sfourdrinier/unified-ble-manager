@@ -49,4 +49,16 @@ describe('4.x semantic map', () => {
       expect(MANDATORY_SCENARIOS.includes(id)).toBe(true);
     }
   });
+
+  test('every approved correction is referenced bidirectionally (AC-02/04/05/06 included)', () => {
+    for (const correction of APPROVED_CORRECTIONS) {
+      const referencing = SEMANTIC_MAP.filter(entry => entry.correctionId === correction.id);
+      if (referencing.length === 0) {
+        throw new Error(`correction ${correction.id} has no referencing semantic-map entry`);
+      }
+      for (const entry of referencing) {
+        expect(correctionForMapping(entry)?.id).toBe(correction.id);
+      }
+    }
+  });
 });

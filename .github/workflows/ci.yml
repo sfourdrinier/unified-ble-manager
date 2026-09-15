@@ -343,6 +343,28 @@ jobs:
         if: runner.os == 'Linux' && matrix.node == '22'
         run: node scripts/ci/g6a-packed-consumer-proof.js
 
+  # UBM 5.0 contract-freeze gate (U1): strict typecheck plus the frozen
+  # contract suite. Runs on every CI invocation like `package`; see
+  # contracts/README.md and contracts/RED_BASELINE.md.
+  contracts:
+    name: UBM 5.0 contracts (tsc + jest)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.0
+
+      - name: Setup JS package
+        uses: ./.github/actions/setup-js-package
+        with:
+          prepack: 'false'
+          node-version: '22'
+
+      - name: Contracts typecheck
+        run: pnpm contracts:typecheck
+
+      - name: Contracts tests
+        run: pnpm contracts:test
+
   changes:
     name: Detect path changes
     if: |

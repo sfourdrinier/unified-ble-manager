@@ -5,6 +5,7 @@
 // (read-only reference). Cleanup never swallows an error or treats a failed
 // release as success.
 
+import { freezeTable } from './freeze';
 import { contractError } from './outcomes';
 import { ContractError } from './outcomes';
 
@@ -132,7 +133,7 @@ export interface EarlyExitRow {
   readonly resourceAction: string;
 }
 
-export const EARLY_EXIT_CLEANUP: readonly EarlyExitRow[] = [
+export const EARLY_EXIT_CLEANUP: readonly EarlyExitRow[] = freezeTable([
   { path: 'validation-failure', resourceAction: 'allocate-nothing' },
   { path: 'pre-abort', resourceAction: 'allocate-nothing' },
   { path: 'queue-abort', resourceAction: 'remove-queue-node-release-input' },
@@ -148,5 +149,5 @@ export const EARLY_EXIT_CLEANUP: readonly EarlyExitRow[] = [
   { path: 'destroy', resourceAction: 'close-admission-drain-retain-bounded-cleanup' },
   { path: 'reload', resourceAction: 'close-admission-release-old-client' },
   { path: 'late-callback', resourceAction: 'suppress-release-temporary-change-nothing' },
-] satisfies readonly EarlyExitRow[];
+] satisfies readonly EarlyExitRow[]);
 
