@@ -47,7 +47,7 @@ Consumer: `com.ubmprobe` debug APK built from `emulator-probe/consumer`
 |---|---|---|---|
 | PRE identity/preconditions | pass | 3/3 | sdk_gphone64_x86_64, BT manager queryable, clean slate via uninstall |
 | T1 install | pass | 3/3 | `install → Success`, package listed, v1/min24/target36 |
-| T2 native-lib surface | pass | 4/4 | `primaryCpuAbi=x86_64`, nativeLibraryDir declared, `extractNativeLibs=false` (mmap-from-APK; hence device maps name segments `base.apk`, not the `.so` name), run-as debuggable access |
+| T2 native-lib surface | pass | 4/4 | `primaryCpuAbi=x86_64`, nativeLibraryDir declared, `extractNativeLibs=false` (mmap-from-APK), run-as debuggable access. Named-`.so` dlopen is NOT directly proven (no `/proc/<pid>/maps` capture is committed); native load stands on the SoLoader `DirectApkSoSource[…/base.apk!/lib/x86_64]` lines plus the T8 TurboModule-bridge round-trips (`manager-created`, `bonded-count=0`, typed `BleError`s) with no `UnsatisfiedLinkError`. Correct-PID maps capture is a battery-v2 follow-up |
 | T3 launch/identity | pass | 5/5 | activity starts + resumes (`topResumedActivity`, API-34 field name), process alive, no FATAL, no `UnsatisfiedLinkError` |
 | T4 setup-teardown | pass | 3/3 | force-stop clears process, no UBM service lingers |
 | T5 foreground-background | pass | 5/5 | HOME keeps PID, activity unr
@@ -55,7 +55,7 @@ esumes, relaunch re-resumes |
 | T6 denied/revoked | pass | 7/7 | revoke → `granted=false`; denial ping → `BleError permission.denied: rn-android-boundary.enumerateBondedPeers` (explicit, never empty); grant restores; `bonded-count=0` |
 | T6b revoke-kill | pass | 3/3 | revocation kills the process (platform-owned teardown); clean relaunch, new PID |
 | T7 kill-relaunch | pass | 4/4 | `run-as kill -9` own PID → gone → relaunch with fresh PID (no immortal handles) |
-| T8 JS-driven native battery | pass | 10/10 | Metro reachable; `app-mounted`; manager created; adapter round-trips (`unknown` on virtual adapter, never blocking); `bonded-count=0` (native bond-table read); pre-aborted find → `operation.aborted`; live scan settles with an explicit typed error |
+| T8 JS-driven native battery | pass | 10/10 | Metro reachable (HOST-JVM host-side curl, not device-observed); `app-mounted`; runtime permissions granted evidenced by device-observed `permission-ok=true` / `scan=granted connect=granted` (`T8-2.log`); manager created; adapter round-trips (`unknown` on virtual adapter, never blocking); `bonded-count=0` (native bond-table read); pre-aborted find → `operation.aborted`; live scan settles with an explicit typed error |
 | T9 service refusal | pass | 1/1 | external `start-foreground-service` refused (service undeclared in bare consumer; in-app lease needs JS) |
 | T10 adapter loss | pass | 4/4 | `svc bluetooth disable` → OFF observable → process survives → enable restores |
 | T11 bounded delivery | boundary | 0/0 | no burst drivable without peers; covered host-side (deterministic TCK overflow vector + unit suite) |
@@ -71,7 +71,8 @@ Supporting host-side runs: harness unit tests 17/17
 (`node --test emulator-probe/tests/battery-lib.test.js`); android unit suite
 **104/104 across 7 suites**
 (`:unified-ble-manager:testDebugUnitTest`, HOST-JVM, not emulator);
-APK contains `lib/x86_64/libunified_ble_native_protocol.so` (unzip -l).
+APK lists `lib/x86_64/libunified_ble_native_protocol.so` (host-side
+`unzip -l` observation, no log committed — capture it in battery-v2).
 
 ## 4. Boundaries (emulator cannot do these; not failures)
 
@@ -109,6 +110,11 @@ APK contains `lib/x86_64/libunified_ble_native_protocol.so` (unzip -l).
 
 ## 6. Follow-ups
 
+- Battery-v2 evidence (neither is committed in v1; the stale `T8-11`
+  maps attempt was deleted, not evidenced): a correct-PID
+  `run-as <pkg> cat /proc/<probe-pid>/maps` capture naming the loaded
+  `.so`, plus committed `unzip -l app-debug.apk | grep 'lib/x86_64/'`
+  output.
 - U-ANDROID-PHYSICAL: pending-scan cancel, queue fill, lease-loss, OEM matrix.
 - Re-run this identical battery against the 5.0 Rust artifact at the
   documented swap-in point (`README.md` §5.0 Rust swap-in) for U7 equivalence.

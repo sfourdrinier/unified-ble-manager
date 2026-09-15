@@ -677,9 +677,9 @@
       },
       "checks": [
         {
-          "check": "metro packager reachable",
+          "check": "metro packager reachable [HOST-JVM host-side]",
           "pass": true,
-          "detail": "http://127.0.0.1:8081/status"
+          "detail": "host-side curl http://127.0.0.1:8081/status (not device-observed)"
         },
         {
           "check": "JS bundle executed (app-mounted)",
@@ -697,9 +697,9 @@
           "detail": "host-matched over full logcat"
         },
         {
-          "check": "runtime permission dialog answered (fresh install) or already granted",
+          "check": "runtime permissions granted (dialog answered or already granted)",
           "pass": true,
-          "detail": "no dialog (already granted)"
+          "detail": "no dialog (already granted); I/ReactNativeJS(11507): [UBM_PROBE] scan=granted connect=granted I/ReactNativeJS(11507): [UBM_PROBE] permission-ok=true"
         },
         {
           "check": "manager created through the native bridge",
