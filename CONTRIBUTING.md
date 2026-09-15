@@ -97,6 +97,21 @@ Do not open a public issue containing vulnerability details. Follow [`SECURITY.m
 
 ## Licensing
 
-The project is licensed under the **Apache License 2.0**. Unless explicitly agreed otherwise, contributions intentionally submitted for inclusion in this repository are provided under the same Apache-2.0 terms, consistent with the repository [`LICENSE`](LICENSE).
+The 4.x line is licensed under the **Apache License 2.0**; see [`LICENSE`](LICENSE)
+and [`NOTICE`](NOTICE). Unless explicitly agreed otherwise, contributions
+intentionally submitted for inclusion in the 4.x line are provided under the
+same Apache-2.0 terms. That Apache default is retained for 4.x material.
+
+New UBM 5.0 material is made available under the **UBM Source Available
+License 1.0** (`LicenseRef-UBM-Source-Available-1.0`); see
+[`LICENSE-UBM-SOURCE-AVAILABLE-1.0.md`](LICENSE-UBM-SOURCE-AVAILABLE-1.0.md)
+and [`NOTICE`](NOTICE). Contributions intended for the 5.0 line are accepted
+only under [`UBM-CONTRIBUTION-TERMS-1.0.md`](UBM-CONTRIBUTION-TERMS-1.0.md)
+and only with an explicit assent record identifying the contributor, the
+contribution, and the terms version. A DCO sign-off alone is not assent to
+those additional commercial sublicensing terms: the retained record must show
+the contributor agreed to UBM-CONTRIBUTION-TERMS-1.0 for that contribution.
+Existing contributions remain governed by their original grants unless their
+rightsholders separately agree otherwise.
 
 By contributing, you confirm that you have the right to submit the contribution and that required third-party attribution/license notices are preserved.
