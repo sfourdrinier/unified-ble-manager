@@ -92,6 +92,8 @@ and coding agents should read [`../AGENTS.md`](../AGENTS.md) first.
 | [`../GOVERNANCE.md`](../GOVERNANCE.md) | Maintainer roles, decision process, ADR requirement | Current |
 | [`../RELEASE.md`](../RELEASE.md) | Canonical tag-driven release procedure and invariants | Current |
 | [`5.0.0-LANE.md`](5.0.0-LANE.md) | UBM 5.0 lane rules: `codex/ubm5-*` workers on the `5.0.0` base, no merge to `main`, no `v*` tags, no publish | Current |
+| [`5.0.0-U0-BASELINE.md`](5.0.0-U0-BASELINE.md) | UBM 5.0 U0 baseline manifest: retained entrypoints/targets/capabilities, identities, toolchain, boundary | Current |
+| [`5.0.0-GATE-LEDGER.md`](5.0.0-GATE-LEDGER.md) | UBM 5.0 gate ledger: U-LICENSE + U0–U12 owners, states, evidence, limitations | Current |
 | [`../SECURITY.md`](../SECURITY.md) | Vulnerability reporting policy | Current |
 | [`../SUPPORT.md`](../SUPPORT.md) | Support policy: package SemVer vs evidence-backed backend labels | Current |
 | [`security/UNIFIED_BLE_4.0_THREAT_MODEL.md`](security/UNIFIED_BLE_4.0_THREAT_MODEL.md) | Repo-wide threat model: trust boundaries, attacker classes, objectives | Current |
