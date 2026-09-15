@@ -10,14 +10,20 @@
 //! memory; JS never views Rust memory without a copy.
 //!
 //! Panic containment: every export is `#[napi(catch_unwind)]`, so a Rust panic
-//! becomes a rejected JS `Error`, never an abort across the ABI. Proven by
-//! `__feasibilityPanicProbe` (test-only; remove before any production use).
+//! becomes a rejected JS `Error`, never an abort across the ABI. The former
+//! test-only `__feasibilityPanicProbe` was deleted by the wiring slice:
+//! probes must not ship in production paths, so containment now rests on the
+//! `catch_unwind` attribute present on every export.
+//!
+//! The binding talks to the core ONLY through `CoreBackend`, implemented for
+//! the ubm-core-backed [`core_backend::CoreSession`] (one implementation in
+//! this crate; contract truth is single-owned by `ubm-core`).
 
-mod echo_core;
+mod core_backend;
 
 use std::sync::Mutex;
 
-use echo_core::{check_revision, CoreBackend, EchoCore, EchoError};
+use core_backend::{check_revision, CoreBackend, CoreSession, EchoError};
 use napi::bindgen_prelude::{AsyncTask, Buffer, Env, Result, Task};
 use napi::threadsafe_function::{
     ThreadSafeCallContext, ThreadsafeFunction, ThreadsafeFunctionCallMode,
@@ -32,7 +38,7 @@ fn to_napi_error(err: EchoError) -> Error {
 }
 
 struct SessionInner {
-    core: Mutex<EchoCore>,
+    core: Mutex<CoreSession>,
     events: Mutex<Option<ThreadsafeFunction<String>>>,
 }
 
@@ -50,7 +56,7 @@ impl EchoSession {
         check_revision(&revision, "echo-session.open").map_err(to_napi_error)?;
         Ok(Self {
             inner: SessionInner {
-                core: Mutex::new(EchoCore::open(&revision).map_err(to_napi_error)?),
+                core: Mutex::new(CoreSession::open(&revision).map_err(to_napi_error)?),
                 events: Mutex::new(None),
             },
         })
@@ -214,7 +220,7 @@ impl EchoSession {
 pub struct EchoAsyncTask {
     input: Vec<u8>,
     chunks: u32,
-    cancel: std::sync::Arc<echo_core::CancelFlag>,
+    cancel: std::sync::Arc<core_backend::CancelFlag>,
 }
 
 impl Task for EchoAsyncTask {
@@ -222,7 +228,7 @@ impl Task for EchoAsyncTask {
     type JsValue = Buffer;
 
     fn compute(&mut self) -> napi::Result<Self::Output> {
-        echo_core::echo_bytes_chunked(&self.input, self.chunks, &self.cancel, "echo-bytes-async")
+        core_backend::echo_bytes_chunked(&self.input, self.chunks, &self.cancel, "echo-bytes-async")
             .map_err(to_napi_error)
     }
 
@@ -231,22 +237,15 @@ impl Task for EchoAsyncTask {
     }
 }
 
-/// Test-only panic probe: proves `catch_unwind` containment converts a Rust
-/// panic into a rejected JS `Error` instead of aborting the process.
-/// MUST NOT ship in any production binding.
-#[napi(catch_unwind, js_name = "__feasibilityPanicProbe")]
-pub fn __feasibility_panic_probe() -> Result<String> {
-    panic!("feasibility panic probe: must surface as a JS error, never abort");
-}
-
-/// Contract revision this binding speaks (PKG-01 artifact identity).
+/// Contract revision this binding speaks (PKG-01 artifact identity),
+/// single-owned by `ubm-core`.
 #[napi(catch_unwind)]
 pub fn echo_revision() -> String {
-    echo_core::CONTRACT_REVISION.to_string()
+    core_backend::CONTRACT_REVISION.to_string()
 }
 
-/// Maximum byte-batch length (mirror of `MAX_OPERATION_BYTES`).
+/// Maximum byte-batch length (single-owned `MAX_OPERATION_BYTES`).
 #[napi(catch_unwind)]
 pub fn echo_max_bytes() -> u32 {
-    echo_core::MAX_OPERATION_BYTES as u32
+    core_backend::MAX_OPERATION_BYTES as u32
 }

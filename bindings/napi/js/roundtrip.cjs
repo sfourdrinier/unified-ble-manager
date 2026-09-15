@@ -9,7 +9,7 @@ const ADDON = process.env.UBM_NAPI_ADDON ||
   path.join(__dirname, '..', 'ubm_echo.linux-x64.node');
 const addon = require(ADDON);
 
-const REV = 'C-UBM.0.1.0-DRAFT';
+const REV = 'C-UBM.0.1.1-DRAFT';
 const MAX = 524288;
 
 function codeOf(err) {
@@ -118,10 +118,11 @@ async function main() {
   await rejectsWithCode((async () => session.echoCounter('1'))(),
     'lifecycle.destroyed', 'core');
 
-  // Panic containment: a Rust panic must surface as a JS throw, never abort.
-  // (Sync exports throw synchronously; the process survives either way.)
-  assert.throws(() => addon.__feasibilityPanicProbe(),
-    err => /feasibility panic probe/.test(String(err && err.message)));
+  // Panic probes were deleted from production paths by the wiring slice:
+  // no feasibility-only export may ship. Containment rests on the
+  // `catch_unwind` attribute present on every export (see LIFETIME_RULES.md).
+  assert.equal(typeof addon.__feasibilityPanicProbe, 'undefined',
+    'panic probe must not exist on the production addon');
 
   console.log('napi-roundtrip: OK');
 }

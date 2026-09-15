@@ -20,7 +20,7 @@ assert os.path.isfile(os.path.join(BIND_DIR, "libubm5_uniffi_echo.so")), f"cdyli
 sys.path.insert(0, BIND_DIR)
 import ubm_echo
 
-REV = "C-UBM.0.1.0-DRAFT"
+REV = "C-UBM.0.1.1-DRAFT"
 MAX_BYTES = 524288
 PASS = 0
 
@@ -107,18 +107,11 @@ for op, rec in [("echo-bytes", s4.echo_bytes(b"\x01")),
     check(f"post-close {op}", (not rec.ok)
           and wire_of(rec) == f"lifecycle.destroyed|core|{op}", wire_of(rec))
 
-print("== panic containment through the real scaffolding ==")
+print("== production surface exposes no panic probe ==")
 s5 = ubm_echo.EchoSession(REV)
-trapped = None
-try:
-    s5.panic_probe()
-except Exception as err:  # noqa: BLE001 - must catch whatever the scaffolding raises
-    trapped = err
-check("panic surfaces, process alive", trapped is not None, repr(trapped))
-check("panic type is a UniFFI error", type(trapped).__name__ in ("InternalError", "UnexpectedError"),
-      type(trapped).__name__)
+check("panic probe deleted from production surface", not hasattr(s5, "panic_probe"))
 r = ubm_echo.EchoSession(REV).echo_bytes(b"\x07")
-check("usable after trapped panic", r.ok and bytes(r.data) == b"\x07")
+check("surface usable", r.ok and bytes(r.data) == b"\x07")
 
 print("== codegen/runtime mismatch rejects loudly ==")
 # The generator emits a live contract-version check at import (the

@@ -2,8 +2,13 @@
 # UniFFI binding test: Rust gates, scaffolding proof, pinned codegen for
 # Kotlin/Swift/Python, reproducibility diff, and the real Python exchange
 # through the generated scaffolding. Fails loudly on any step.
+# Workspace layout: this crate is a member of the root workspace, so the
+# cdylib lands in the workspace target dir and the lockfile is the unified
+# root Cargo.lock.
 set -eu
 cd "$(dirname "$0")"
+
+ROOT="../.."
 
 BINDGEN="${UNIFFI_BINDGEN:-/tmp/ubm-tools/bin/uniffi-bindgen}"
 if ! [ -x "$BINDGEN" ]; then
@@ -14,13 +19,13 @@ fi
 
 echo "--- uniffi: Rust gates"
 cargo fmt --check
-cargo check
-cargo clippy --all-targets -- -D warnings
-cargo test
+cargo check -p ubm5_uniffi_echo --locked
+cargo clippy -p ubm5_uniffi_echo --all-targets --locked -- -D warnings
+cargo test -p ubm5_uniffi_echo --locked
 
 echo "--- uniffi: build cdylib + generate bindings (pinned codegen)"
-cargo build
-LIB=target/debug/libubm5_uniffi_echo.so
+cargo build -p ubm5_uniffi_echo --locked
+LIB="$ROOT/target/debug/libubm5_uniffi_echo.so"
 REGEN=target/regen-bindings
 rm -rf "$REGEN"
 mkdir -p "$REGEN/kotlin" "$REGEN/swift" "$REGEN/python"
@@ -45,4 +50,4 @@ echo "--- uniffi: versions"
 rustc --version
 cargo --version
 python3 --version
-grep -A2 'name = "uniffi"' Cargo.lock | head -3
+grep -A2 'name = "uniffi"' "$ROOT/Cargo.lock" | head -3

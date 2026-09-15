@@ -47,5 +47,4 @@ interface EchoSession {
     EchoBytesResult echo_bytes_chunked(bytes input, u32 chunks);
     EchoStatus cancel_inflight();
     EchoStatus close();
-    EchoStatus panic_probe();
 };

@@ -1,30 +1,30 @@
-//! Echo-only feasibility core for the WASM binding (portable, no threads,
+//! Core-backed binding core for the WASM binding (portable, no threads,
 //! no Tokio, no filesystem, no radio).
 //!
-//! STAND-IN behind the `CoreBackend` seam: this module proves the boundary
-//! exchange (owned byte batches, lossless u64 counters, typed C-UBM error
-//! identities, init contract, cooperative streaming cancellation). It is NOT
-//! BLE functionality.
+//! The `CoreBackend` seam is implemented for [`CoreSession`], whose contract
+//! truth is single-owned by `ubm-core` (frozen `C-UBM.0.1.1-DRAFT`): the
+//! revision identity, the byte ceiling, and the decimal-string counter
+//! parsing all come from `ubm_core::contracts`. No contract constant or
+//! validator is duplicated here — the previous echo-only stand-in
+//! (`echo_core.rs`) is deleted, so there are no dual owners.
 //!
-//! FOLLOW-UP (explicit): replace `EchoCore` with a real `ubm-core` handle by
-//! implementing `CoreBackend` for it once `crates/ubm-core` exists in-tree.
-//!
-//! Contract mirror (C-UBM.0.1.0-DRAFT, pending U1 acceptance):
-//! - `contracts/src/bounds.ts`: `MAX_OPERATION_BYTES = 524288`; u64 values
-//!   cross as decimal strings (`parseU64Decimal`); oversize is `bytes.too-large`.
-//! - `contracts/src/outcomes.ts`: frozen `code` + `domain` identities below.
-//! - `contracts/src/version.ts`: `CONTRACT_REVISION`; revision mismatch fails
-//!   closed (`protocol.incompatible`); no effect before init
-//!   (`lifecycle.invalid-state`, mirrors `assertHandshakeComplete`).
+//! The streaming-echo table stays here: it is per-boundary cooperative
+//! plumbing (single-threaded by construction), not contract truth. Wiring
+//! real kernel transitions through this seam is later U7 scope.
 
-/// Frozen contract revision this feasibility slice speaks.
-pub const CONTRACT_REVISION: &str = "C-UBM.0.1.0-DRAFT";
+/// Frozen contract revision, single-owned by `ubm-core`.
+pub use ubm_core::contracts::CONTRACT_REVISION;
 
-/// Mirror of `MAX_OPERATION_BYTES` (contracts/src/bounds.ts).
-pub const MAX_OPERATION_BYTES: usize = 524288;
+/// Mirror of the single-owned `MAX_OPERATION_BYTES`, adapted to `usize` for
+/// indexing. The value lives in `ubm-core`; this is a type adaptation, not a
+/// second pin.
+pub const MAX_OPERATION_BYTES: usize = ubm_core::contracts::MAX_OPERATION_BYTES as usize;
 
-/// Largest u64 value, decimal form (DATA-02 lossless-counter mapping).
-pub const U64_MAX_DECIMAL: &str = "18446744073709551615";
+/// Largest u64 wire value as decimal text (DATA-02 mapping), rendered from
+/// the single-owned `ubm-core` constant — no duplicated literal.
+pub fn u64_max_decimal() -> String {
+    ubm_core::contracts::U64_MAX.to_string()
+}
 
 /// Numeric error codes for the raw integer ABI. The full typed identity
 /// (`code|domain|operation|detail`) is always available alongside.
@@ -143,31 +143,32 @@ impl std::fmt::Display for EchoError {
     }
 }
 
-/// Seam for `ubm-core` wiring (explicit follow-up): the real core implements
-/// this trait and the binding calls it instead of [`EchoCore`]. The binding
-/// surface calls the core ONLY through this trait, so wiring `ubm-core` later
-/// touches one `impl`, not every call site.
+/// Seam to the real core: the binding surface calls the core ONLY through
+/// this trait. [`CoreSession`] below is the one implementation in this
+/// crate; wiring deeper kernel transitions later touches this `impl`, not
+/// every call site.
 pub trait CoreBackend: Send + Sync {
     fn echo_bytes(&self, input: &[u8], operation: &'static str) -> Result<Vec<u8>, EchoError>;
     fn echo_counter(&self, decimal: &str, operation: &'static str) -> Result<String, EchoError>;
 }
 
-/// Validate the init revision before any effect (PKG-02 gate).
+/// Validate the init revision before any effect (PKG-02 gate), single-sourced
+/// from `ubm-core`.
 pub fn check_revision(revision: &str, operation: &'static str) -> Result<(), EchoError> {
-    if revision == CONTRACT_REVISION {
-        Ok(())
-    } else {
-        Err(EchoError::incompatible(
+    match ubm_core::contracts::assert_contract_revision_equal(CONTRACT_REVISION, revision) {
+        Ok(()) => Ok(()),
+        Err(_) => Err(EchoError::incompatible(
             operation,
             "contract-revision.mismatch",
-        ))
+        )),
     }
 }
 
-/// Owned byte-batch echo: the input is copied on entry, the output is a fresh
-/// allocation. The binding must never retain a borrow of caller memory.
+/// Owned byte-batch echo against the single-owned ceiling: the input is
+/// copied on entry, the output is a fresh allocation. The binding must never
+/// retain a borrow of caller memory.
 pub fn echo_bytes(input: &[u8], operation: &'static str) -> Result<Vec<u8>, EchoError> {
-    if input.len() > MAX_OPERATION_BYTES {
+    if input.len() as u64 > ubm_core::contracts::MAX_OPERATION_BYTES {
         return Err(EchoError::bytes_too_large(
             operation,
             "exceeds-max-operation-bytes",
@@ -176,31 +177,28 @@ pub fn echo_bytes(input: &[u8], operation: &'static str) -> Result<Vec<u8>, Echo
     Ok(input.to_vec())
 }
 
-/// Lossless u64 echo over decimal strings (DATA-02): values above
-/// `Number.MAX_SAFE_INTEGER` cross without precision loss. Returns the
-/// canonical decimal form (no leading zeros). Anything else is `bytes.invalid`.
+/// Lossless u64 echo over decimal strings (DATA-02), parsed by `ubm-core`.
+/// `ubm-core` reports shape violations as `u64.input` and overflow as
+/// `u64.range` in its error operation; both surface here as the detail.
 pub fn echo_counter(decimal: &str, operation: &'static str) -> Result<String, EchoError> {
-    if decimal.is_empty()
-        || decimal.len() > U64_MAX_DECIMAL.len()
-        || !decimal.bytes().all(|b| b.is_ascii_digit())
-    {
-        return Err(EchoError::bytes_invalid(operation, "u64.input"));
+    match ubm_core::contracts::parse_u64_decimal(decimal) {
+        Ok(value) => Ok(value.to_string()),
+        Err(core) => Err(EchoError::bytes_invalid(
+            operation,
+            if core.operation() == "u64.range" {
+                "u64.range"
+            } else {
+                "u64.input"
+            },
+        )),
     }
-    let stripped = decimal.trim_start_matches('0');
-    let canonical = if stripped.is_empty() { "0" } else { stripped };
-    if canonical.len() > U64_MAX_DECIMAL.len()
-        || (canonical.len() == U64_MAX_DECIMAL.len() && canonical > U64_MAX_DECIMAL)
-    {
-        return Err(EchoError::bytes_invalid(operation, "u64.range"));
-    }
-    Ok(canonical.to_string())
 }
 
-/// Feasibility stand-in core: init state plus a streaming-echo table for
+/// Core-backed session: init state plus a streaming-echo table for
 /// cooperative cancellation. Every method fails closed outside its valid
 /// lifetime. Single-threaded by construction (WASM has no threads here).
 #[derive(Debug, Default)]
-pub struct EchoCore {
+pub struct CoreSession {
     initialized_revision: Option<&'static str>,
     next_stream: u64,
     streams: std::collections::HashMap<u64, StreamState>,
@@ -212,7 +210,7 @@ struct StreamState {
     cancelled: bool,
 }
 
-impl EchoCore {
+impl CoreSession {
     pub fn new() -> Self {
         Self::default()
     }
@@ -288,7 +286,8 @@ impl EchoCore {
         if stream.cancelled {
             return Err(EchoError::aborted(operation, "stream-cancelled"));
         }
-        if stream.data.len().saturating_add(chunk.len()) > MAX_OPERATION_BYTES {
+        if stream.data.len() as u64 + chunk.len() as u64 > ubm_core::contracts::MAX_OPERATION_BYTES
+        {
             return Err(EchoError::bytes_too_large(
                 operation,
                 "exceeds-max-operation-bytes",
@@ -328,7 +327,7 @@ impl EchoCore {
     }
 }
 
-impl CoreBackend for EchoCore {
+impl CoreBackend for CoreSession {
     fn echo_bytes(&self, input: &[u8], operation: &'static str) -> Result<Vec<u8>, EchoError> {
         self.check_usable(operation)?;
         echo_bytes(input, operation)
@@ -346,15 +345,22 @@ mod tests {
 
     const OP: &str = "test-op";
 
-    fn initialized() -> EchoCore {
-        let mut core = EchoCore::new();
+    fn initialized() -> CoreSession {
+        let mut core = CoreSession::new();
         core.init(CONTRACT_REVISION).unwrap();
         core
     }
 
     #[test]
+    fn revision_is_the_frozen_contract() {
+        assert_eq!(CONTRACT_REVISION, "C-UBM.0.1.1-DRAFT");
+        assert_eq!(CONTRACT_REVISION, ubm_core::contracts::CONTRACT_REVISION);
+        assert_eq!(u64_max_decimal(), "18446744073709551615");
+    }
+
+    #[test]
     fn foreign_revision_rejects_closed() {
-        let mut core = EchoCore::new();
+        let mut core = CoreSession::new();
         let err = core.init("C-UBM.9.9.9-DRAFT").expect_err("must reject");
         assert_eq!(
             (err.code, err.name),
@@ -368,6 +374,18 @@ mod tests {
                 .code,
             EchoCode::InvalidState
         );
+    }
+
+    #[test]
+    fn superseded_revision_rejects_closed() {
+        // The 0.1.0 feasibility revision is no longer spoken: contract truth
+        // moved to ubm-core at 0.1.1, and the old pin fails closed.
+        let mut core = CoreSession::new();
+        let err = core
+            .init("C-UBM.0.1.0-DRAFT")
+            .expect_err("old revision must reject");
+        assert_eq!(err.code, EchoCode::ProtocolIncompatible);
+        assert!(!core.is_initialized());
     }
 
     #[test]
@@ -438,6 +456,16 @@ mod tests {
     }
 
     #[test]
+    fn u64_range_detail_marks_overflow() {
+        let core = initialized();
+        let err =
+            CoreBackend::echo_counter(&core, "18446744073709551616", OP).expect_err("overflow");
+        assert_eq!(err.detail, "u64.range");
+        let err = CoreBackend::echo_counter(&core, "12a34", OP).expect_err("shape");
+        assert_eq!(err.detail, "u64.input");
+    }
+
+    #[test]
     fn stream_round_trip_then_consumed() {
         let mut core = initialized();
         let h = core.stream_begin(OP).unwrap();
@@ -469,7 +497,7 @@ mod tests {
 
     #[test]
     fn stream_guards_reject_loudly() {
-        let mut core = EchoCore::new();
+        let mut core = CoreSession::new();
         assert_eq!(
             core.stream_begin(OP).expect_err("uninit").code,
             EchoCode::InvalidState
@@ -511,7 +539,7 @@ mod tests {
     }
 
     #[test]
-    fn seam_holds_for_ubm_core_wiring() {
+    fn seam_holds_for_the_wired_core() {
         fn assert_backend<T: CoreBackend>(_: &T) {}
         assert_backend(&initialized());
     }

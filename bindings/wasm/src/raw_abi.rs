@@ -10,12 +10,12 @@
 //! `unsafe` below is confined to this boundary module: each block documents
 //! its contract in a `SAFETY` comment. Everything else is safe Rust.
 
-use crate::echo_core::{check_revision, CoreBackend, EchoCode, EchoCore, EchoError};
+use crate::core_backend::{check_revision, CoreBackend, CoreSession, EchoCode, EchoError};
 use std::sync::{Mutex, OnceLock};
 
-fn core() -> &'static Mutex<EchoCore> {
-    static CORE: OnceLock<Mutex<EchoCore>> = OnceLock::new();
-    CORE.get_or_init(|| Mutex::new(EchoCore::new()))
+fn core() -> &'static Mutex<CoreSession> {
+    static CORE: OnceLock<Mutex<CoreSession>> = OnceLock::new();
+    CORE.get_or_init(|| Mutex::new(CoreSession::new()))
 }
 
 fn set_last_error(err: EchoError) -> EchoCode {
@@ -62,10 +62,11 @@ fn lock_failed(operation: &'static str) -> EchoError {
 
 /// Exposes the shared core to the optional `js-glue` mapping so both
 /// surfaces speak one init state. `pub(crate)` only: never a public export.
+/// Returns `None` when the core lock is poisoned (a prior panic while held);
+/// callers fail the JS call loudly instead of panicking.
 #[cfg(feature = "js-glue")]
-pub(crate) fn with_core<R>(f: impl FnOnce(&mut EchoCore) -> R) -> R {
-    let mut guard = core().lock().expect("core lock poisoned");
-    f(&mut guard)
+pub(crate) fn with_core<R>(f: impl FnOnce(&mut CoreSession) -> R) -> Option<R> {
+    core().lock().ok().map(|mut guard| f(&mut guard))
 }
 
 /// Test-only serialisation: the raw ABI keeps process-global state, so
@@ -80,7 +81,7 @@ pub(crate) static TEST_LOCK: Mutex<()> = Mutex::new(());
 /// batches need no allocation: pass a null pointer with length 0).
 #[no_mangle]
 pub extern "C" fn ubm_echo_alloc(len: usize) -> *mut u8 {
-    if len == 0 || len > crate::echo_core::MAX_OPERATION_BYTES {
+    if len == 0 || len > crate::core_backend::MAX_OPERATION_BYTES {
         return std::ptr::null_mut();
     }
     // Boxed slice: exact-length layout, so ubm_echo_free(ptr, len) reclaims
@@ -120,7 +121,7 @@ fn read_host(ptr: *const u8, len: usize, operation: &'static str) -> Result<Vec<
     if ptr.is_null() {
         return Err(EchoError::argument_invalid(operation, "null-pointer"));
     }
-    if len > crate::echo_core::MAX_OPERATION_BYTES {
+    if len > crate::core_backend::MAX_OPERATION_BYTES {
         return Err(EchoError::argument_invalid(operation, "length-range"));
     }
     // SAFETY: non-null + bounded length per the host contract; the host
@@ -466,25 +467,18 @@ pub unsafe extern "C" fn ubm_echo_describe_json(out_len: *mut usize) -> *mut u8 
     }
     let doc = format!(
         "{{\"revision\":\"{}\",\"maxBytes\":{},\"u64max\":\"{}\"}}",
-        crate::echo_core::CONTRACT_REVISION,
-        crate::echo_core::MAX_OPERATION_BYTES,
-        crate::echo_core::U64_MAX_DECIMAL
+        crate::core_backend::CONTRACT_REVISION,
+        crate::core_backend::MAX_OPERATION_BYTES,
+        crate::core_backend::u64_max_decimal()
     );
     clear_last_error();
     publish_owned(doc.into_bytes(), out_len)
 }
 
-/// Panic probe: traps the module. The host must observe a catchable
-/// `WebAssembly.RuntimeError`, never a host crash. Test-only.
-#[no_mangle]
-pub extern "C" fn ubm_echo_panic_probe() -> u32 {
-    panic!("feasibility panic probe: must trap catchably, never crash the host");
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::echo_core::CONTRACT_REVISION;
+    use crate::core_backend::CONTRACT_REVISION;
 
     /// Calls the raw ABI the way a host does: bytes in, copied bytes out,
     /// every allocation freed exactly once.

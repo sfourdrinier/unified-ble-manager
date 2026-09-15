@@ -12,7 +12,7 @@ import java.util.concurrent.atomic.AtomicReference;
  * and panic containment. Fails loudly with a non-zero exit; no skips.
  */
 public final class TestEcho {
-    static final String REV = "C-UBM.0.1.0-DRAFT";
+    static final String REV = "C-UBM.0.1.1-DRAFT";
     static final int MAX_BYTES = 524288;
     static int passed = 0;
 
@@ -144,23 +144,15 @@ public final class TestEcho {
         expectWire("unknown handle", () -> EchoBridge.nativeEchoBytes(999999L, new byte[] {1}),
                 "lifecycle.destroyed|core|echo-bytes|unknown-or-closed-handle");
 
-        // Panic containment: the VM survives and the probe throws typed.
+        // Panic probes were deleted from production paths by the wiring
+        // slice: no feasibility-only native may ship. The bridge exposes no
+        // probe; a Rust panic still surfaces as a typed EchoException via the
+        // bridge error policy. The session stays usable afterwards.
         long probeSession = EchoBridge.nativeOpen(REV);
-        final long probeFinal = probeSession;
-        EchoException trapped = null;
-        try {
-            EchoBridge.nativePanicProbe(probeFinal);
-        } catch (EchoException e) {
-            trapped = e;
-        }
-        check("panic surfaces, VM alive", trapped != null);
-        check("panic typed invariant-violation",
-                trapped.code().equals("lifecycle.invariant-violation")
-                        && trapped.domain().equals("core"));
-        check("usable after trapped panic",
-                Arrays.equals(EchoBridge.nativeEchoBytes(probeFinal, new byte[] {7}),
+        check("usable session after probe removal",
+                Arrays.equals(EchoBridge.nativeEchoBytes(probeSession, new byte[] {7}),
                         new byte[] {7}));
-        EchoBridge.nativeClose(probeFinal);
+        EchoBridge.nativeClose(probeSession);
 
         System.out.println("jni-roundtrip: OK (" + passed + " checks)");
     }

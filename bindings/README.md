@@ -6,19 +6,28 @@ lossless u64 counters, async/cooperative cancellation, callback/close
 invalidation, init contract, panic containment, clean process behaviour).
 No BLE functionality is reported from these tests.
 
-## Layout (exclusive to this slice; no `crates/` dependency exists or is used)
+## Layout (exclusive to this slice; wired to `crates/ubm-core`)
+
+Each binding links `ubm-core` as a workspace path dependency and implements
+its `CoreBackend` seam for the ubm-core-backed `CoreSession`
+(`src/core_backend.rs`, one implementation per binding). Contract truth —
+revision `C-UBM.0.1.1-DRAFT`, `MAX_OPERATION_BYTES`, decimal-string counter
+parsing — is single-owned by `ubm-core`; the former echo-only stand-ins
+(`echo_core.rs`) are deleted, so there are no dual owners. The echo
+transport itself stays feasibility-echo (NOT BLE functionality); wiring real
+kernel transitions through these seams is later U7 scope. All four binding
+crates are members of the root workspace with one unified `Cargo.lock`.
 
 | Dir | Card | Proves |
 |---|---|---|
-| `napi/` | FFI-NAPI | Real `.node` addon: sync/async echo, TSFN callback invalidation, mid-flight + close-during-flight cancel, panic probe, clean exit |
-| `wasm/` | FFI-WASM | Zero-import portable module in Node with empty imports; streaming cancel; BigInt/JSON mapping; `js-glue` mapping compile + export proof |
-| `uniffi/` | FFI-NATIVE | UDL scaffold; pinned Kotlin/Swift/Python codegen (reproducibility-diffed); 35-check Python exchange through the real scaffolding |
-| `jni/` | FFI-NATIVE | Real JVM exchange through JNI: sessions, typed exceptions, threaded cancel, panic containment in-VM |
+| `napi/` | FFI-NAPI | Real `.node` addon: sync/async echo, TSFN callback invalidation, mid-flight + close-during-flight cancel, clean exit (probe deleted; absence asserted) |
+| `wasm/` | FFI-WASM | Zero-import portable module in Node with empty imports; streaming cancel; BigInt/JSON mapping; `js-glue` mapping compile + export proof (probe deleted; absence asserted) |
+| `uniffi/` | FFI-NATIVE | UDL scaffold; pinned Kotlin/Swift/Python codegen (reproducibility-diffed); 34-check Python exchange through the real scaffolding (probe deleted; absence asserted) |
+| `jni/` | FFI-NATIVE | Real JVM exchange through JNI: sessions, typed exceptions, threaded cancel (probe deleted; bridge policy retained) |
 
-Each binding owns a `CoreBackend` seam: the surface calls an echo-only
-stand-in core ONLY through that trait. Wiring the real `ubm-core` later
-touches one `impl` per binding (explicit follow-up; `crates/ubm-core` is
-built in a parallel slice and nothing here depends on it).
+Each binding owns a `CoreBackend` seam: the surface calls the ubm-core-backed
+`CoreSession` ONLY through that trait (one `impl` per binding; deeper
+kernel-transition wiring later touches that `impl`, not every call site).
 
 Each binding has `LIFETIME_RULES.md` (thread/runtime lifetimes, callback
 invalidation, panic containment per tested build, byte ownership) and a
@@ -40,10 +49,12 @@ regardless (recorded, not attempted).
 - uniffi: `uniffi =0.32.1` (+`build` feature); codegen `uniffi-bindgen 0.32.1`
 - jni: `jni =0.22.4`
 
-## Gates (per crate, all observed green)
+## Gates (workspace, all observed green)
 
-`cargo fmt --check` · `cargo check` · `cargo clippy --all-targets -- -D warnings`
-· `cargo test` · `run_*_roundtrip.sh` (real host exchange).
+`cargo fmt --check` · `cargo check --locked` (workspace) ·
+`cargo clippy --all-targets -- -D warnings` (workspace) ·
+`cargo test --locked` (workspace) · `wasm32` check for `ubm-core` ·
+`run_*_roundtrip.sh` (real host exchange, one per binding).
 
 ## Notable findings
 
@@ -58,10 +69,13 @@ regardless (recorded, not attempted).
   arrive signed in JS; wasm-bindgen shims abort outside a module instance
   (all recorded in the respective rules).
 
-## Explicit follow-ups (not done here)
+## Explicit follow-ups
 
-1. Wire each `CoreBackend` seam to the real `ubm-core` handle.
-2. Remove test-only panic probes before any production-shaped use.
+1. DONE (wiring slice): each `CoreBackend` seam is implemented for the
+   ubm-core-backed `CoreSession`; echo stand-ins deleted.
+2. DONE (wiring slice): test-only panic probes deleted from all production
+   paths (absence asserted by every exchange); containment mechanisms
+   recorded per binding in `LIFETIME_RULES.md`.
 3. HOST-WEB AbortSignal wrapper over the wasm stream protocol.
 4. Android ART + ABI matrix; Wear OS direct-call path; supported-ABI list.
 5. Swift/Kotlin consumer compiles (U-APPLE boundary).

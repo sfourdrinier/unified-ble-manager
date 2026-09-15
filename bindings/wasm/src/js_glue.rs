@@ -20,9 +20,9 @@
 //! boundary. The runner asserts `cargo check --target
 //! wasm32-unknown-unknown --features js-glue` plus the presence of the
 //! mapped export names in the built module. All conversion logic lives in
-//! `echo_core` and is unit-tested there; this module adds types only.
+//! `core_backend` and is unit-tested there; this module adds types only.
 
-use crate::echo_core::{CoreBackend, EchoError};
+use crate::core_backend::{CoreBackend, EchoError};
 use crate::raw_abi::with_core;
 use wasm_bindgen::prelude::*;
 
@@ -30,24 +30,52 @@ fn err_to_js(err: EchoError) -> JsValue {
     JsValue::from_str(&err.wire_message())
 }
 
+/// A poisoned core lock (a prior panic while held) fails the JS call loudly,
+/// never panics across the boundary.
+fn lock_poisoned(operation: &'static str) -> JsValue {
+    // Same wire shape as the raw ABI's `lock_failed`: the semantic code
+    // travels in the name slot, the numeric code stays `InvalidState`.
+    JsValue::from_str(
+        &EchoError::new(
+            crate::core_backend::EchoCode::InvalidState,
+            "lifecycle.invariant-violation",
+            "core",
+            operation,
+            "lock-poisoned",
+        )
+        .wire_message(),
+    )
+}
+
 /// Initialises the binding (PKG-02 / WEB init contract). Foreign revisions
 /// fail closed with `protocol.incompatible`.
 #[wasm_bindgen(js_name = initContract)]
 pub fn init_contract(revision: String) -> Result<(), JsValue> {
-    with_core(|core| core.init(&revision).map_err(err_to_js))
+    match with_core(|core| core.init(&revision).map_err(err_to_js)) {
+        Some(result) => result,
+        None => Err(lock_poisoned("echo-init")),
+    }
 }
 
 /// Owned byte-batch echo as `Uint8Array` round-trip.
 #[wasm_bindgen(js_name = echoBytes)]
 pub fn echo_bytes_js(input: &[u8]) -> Result<Vec<u8>, JsValue> {
-    with_core(|core| CoreBackend::echo_bytes(core, input, "echo-bytes").map_err(err_to_js))
+    match with_core(|core| CoreBackend::echo_bytes(core, input, "echo-bytes").map_err(err_to_js)) {
+        Some(result) => result,
+        None => Err(lock_poisoned("echo-bytes")),
+    }
 }
 
 /// Lossless u64 echo over decimal strings (`BigInt(n).toString()` in,
 /// `BigInt(text)` out).
 #[wasm_bindgen(js_name = echoCounterU64)]
 pub fn echo_counter_js(decimal: String) -> Result<String, JsValue> {
-    with_core(|core| CoreBackend::echo_counter(core, &decimal, "echo-counter").map_err(err_to_js))
+    match with_core(|core| {
+        CoreBackend::echo_counter(core, &decimal, "echo-counter").map_err(err_to_js)
+    }) {
+        Some(result) => result,
+        None => Err(lock_poisoned("echo-counter")),
+    }
 }
 
 /// JSON bridge document for `JSON.parse` (static metadata, no init needed).
@@ -55,8 +83,8 @@ pub fn echo_counter_js(decimal: String) -> Result<String, JsValue> {
 pub fn describe_json_js() -> String {
     format!(
         "{{\"revision\":\"{}\",\"maxBytes\":{},\"u64max\":\"{}\"}}",
-        crate::echo_core::CONTRACT_REVISION,
-        crate::echo_core::MAX_OPERATION_BYTES,
-        crate::echo_core::U64_MAX_DECIMAL
+        crate::core_backend::CONTRACT_REVISION,
+        crate::core_backend::MAX_OPERATION_BYTES,
+        crate::core_backend::u64_max_decimal()
     )
 }

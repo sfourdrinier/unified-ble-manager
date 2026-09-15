@@ -2,8 +2,19 @@
 
 Tested build: `jni =0.22.4`, `rustc 1.98.1 (48a229cea 2026-09-01)`, Linux
 x86_64 cdylib driven from `javac/java 21.0.12` (OpenJDK 64-Bit Server VM)
-through real JNI. Proven by `cargo test` and `run_jni_roundtrip.sh`
-(35 JVM checks). Anything outside this envelope is a limitation.
+through real JNI. Contract `C-UBM.0.1.1-DRAFT`, single-owned by `ubm-core`
+(workspace member). Proven by `cargo test` and `run_jni_roundtrip.sh`
+(33 JVM checks). Anything outside this envelope is a limitation.
+
+## Core wiring (UBM 5.0 wiring slice)
+
+- `CoreBackend` is implemented for the ubm-core-backed `CoreSession`
+  (`src/core_backend.rs`, the one implementation in this crate). Revision
+  identity, the byte ceiling, and decimal-string counter parsing come from
+  `ubm_core::contracts`; no contract constant is duplicated here. The former
+  echo-only stand-in (`echo_core.rs`) is deleted — no dual owners.
+- The echo transport itself stays feasibility-echo (NOT BLE functionality);
+  wiring real kernel transitions through this seam is later U7 scope.
 
 ## Thread / runtime lifetimes
 
@@ -43,14 +54,17 @@ through real JNI. Proven by `cargo test` and `run_jni_roundtrip.sh`
   the session stays usable. Proven from Java threads (worker + `cancel`,
   worker + `close`), strictly asserted with wide timing margins.
 
-## Panic containment (proven in-VM)
+## Panic containment
 
 - Every native entry upgrades via `EnvUnowned::with_env` (which contains
   unwinds) and resolves through a custom `ErrorPolicy` mapping panics to
-  `lifecycle.invariant-violation`. `nativePanicProbe` proves the VM SURVIVES
-  a Rust panic, Java receives the TYPED `EchoException`, and the session
-  stays usable. (The panic message still reaches stderr via the Rust hook:
-  containment, not silence.)
+  `lifecycle.invariant-violation`. The former test-only `nativePanicProbe`
+  was deleted by the wiring slice (native entry, `EchoBridge` declaration,
+  and JVM assertions all removed): probes must not ship in production paths,
+  so no live in-VM trap evidence remains — containment rests on the
+  `with_env` + `ErrorPolicy` mechanism, recorded here as a mechanism, not a
+  pass. (Observation from the deleted probe: the panic message still reached
+  stderr via the Rust hook: containment, not silence.)
 
 ## Byte ownership
 
@@ -93,9 +107,9 @@ through real JNI. Proven by `cargo test` and `run_jni_roundtrip.sh`
 - Tested on desktop OpenJDK 21 x86_64 only. Android ART behaviour, ABI
   splits, and the Wear OS direct-call path are unproven (FFI-NATIVE
   follow-up on real Android tooling); nothing here implies ART acceptance.
-- `nativePanicProbe` is test-only and must be deleted before any
-  production-shaped use.
-- No `ubm-core` wiring yet: the surface calls the core ONLY through the
-  `CoreBackend` seam (explicit follow-up).
+- The test-only `nativePanicProbe` was deleted by the wiring slice.
+- `ubm-core` wiring is DONE (see above): the surface calls the core ONLY
+  through the `CoreBackend` seam; deeper kernel-transition wiring later
+  touches the one `impl`.
 - Supported-ABI list is undecided pending real consumers (FFI-NATIVE card);
   this slice proves the mechanism on one host ABI only.

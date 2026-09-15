@@ -30,8 +30,5 @@ public final class EchoBridge {
 
     public static native void nativeClose(long handle);
 
-    /** Test-only panic probe: must throw, never abort the VM. */
-    public static native void nativePanicProbe(long handle);
-
     public static native String nativeRevision();
 }

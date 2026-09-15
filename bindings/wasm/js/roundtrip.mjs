@@ -7,7 +7,7 @@ import fs from 'node:fs';
 const WASM_PATH = process.argv[2];
 assert.ok(WASM_PATH, 'usage: roundtrip.mjs <module.wasm>');
 
-const REV = 'C-UBM.0.1.0-DRAFT';
+const REV = 'C-UBM.0.1.1-DRAFT';
 const MAX = 524288;
 const CODE = { OK: 0, ARG: 1, BYTES_INVALID: 2, TOO_LARGE: 3, ABORTED: 4, STATE: 5, INCOMPAT: 6 };
 
@@ -277,18 +277,14 @@ function finish(h) {
   assert.equal(BigInt(doc.u64max), 18446744073709551615n);
 }
 
-// Panic probe: a Rust panic traps catchably; the host survives and the
-// module keeps serving afterwards.
+// Panic probes were deleted from production paths by the wiring slice: no
+// feasibility-only export may ship. The production module exposes no trap
+// probe; a panic still traps the module (documented institute behaviour),
+// and hosts treat a trap as session-fatal for the in-flight call.
 {
-  let trapped = null;
-  try {
-    ex.ubm_echo_panic_probe();
-  } catch (err) {
-    trapped = err;
-  }
-  assert.ok(trapped instanceof WebAssembly.RuntimeError,
-    `panic must trap catchably, got: ${trapped}`);
-  assert.ok(runBytes(new Uint8Array([1, 2])).ok, 'module usable after trap');
+  assert.equal(ex.ubm_echo_panic_probe, undefined,
+    'panic probe must not exist on the production module');
+  assert.ok(runBytes(new Uint8Array([1, 2])).ok, 'module serves after the probe check');
 }
 
 // Byte ownership accounting: every alloc and every published buffer freed

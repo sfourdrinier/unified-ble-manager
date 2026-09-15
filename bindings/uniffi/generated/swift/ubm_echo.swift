@@ -581,8 +581,6 @@ public protocol EchoSessionProtocol: AnyObject, Sendable {
     
     func echoCounter(decimal: String)  -> EchoCounterResult
     
-    func panicProbe()  -> EchoStatus
-    
 }
 open class EchoSession: EchoSessionProtocol, @unchecked Sendable {
     fileprivate let handle: UInt64
@@ -691,15 +689,6 @@ open func echoCounter(decimal: String) -> EchoCounterResult  {
     uniffi_ubm5_uniffi_echo_fn_method_echosession_echo_counter(
             self.uniffiCloneHandle(),
         FfiConverterString.lower(decimal),uniffiCallStatus
-    )
-})
-}
-    
-open func panicProbe() -> EchoStatus  {
-    return try!  FfiConverterTypeEchoStatus_lift(try! rustCall() {
-        uniffiCallStatus in
-    uniffi_ubm5_uniffi_echo_fn_method_echosession_panic_probe(
-            self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
 }
@@ -973,9 +962,6 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_ubm5_uniffi_echo_checksum_method_echosession_echo_counter() != 38882) {
-        return InitializationResult.apiChecksumMismatch
-    }
-    if (uniffi_ubm5_uniffi_echo_checksum_method_echosession_panic_probe() != 55503) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_ubm5_uniffi_echo_checksum_constructor_echosession_new() != 28077) {

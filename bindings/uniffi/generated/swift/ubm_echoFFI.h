@@ -283,11 +283,6 @@ RustBuffer uniffi_ubm5_uniffi_echo_fn_method_echosession_echo_bytes_chunked(uint
 RustBuffer uniffi_ubm5_uniffi_echo_fn_method_echosession_echo_counter(uint64_t ptr, RustBuffer decimal, RustCallStatus *_Nonnull out_status
 );
 #endif
-#ifndef UNIFFI_FFIDEF_UNIFFI_UBM5_UNIFFI_ECHO_FN_METHOD_ECHOSESSION_PANIC_PROBE
-#define UNIFFI_FFIDEF_UNIFFI_UBM5_UNIFFI_ECHO_FN_METHOD_ECHOSESSION_PANIC_PROBE
-RustBuffer uniffi_ubm5_uniffi_echo_fn_method_echosession_panic_probe(uint64_t ptr, RustCallStatus *_Nonnull out_status
-);
-#endif
 #ifndef UNIFFI_FFIDEF_FFI_UBM5_UNIFFI_ECHO_RUSTBUFFER_ALLOC
 #define UNIFFI_FFIDEF_FFI_UBM5_UNIFFI_ECHO_RUSTBUFFER_ALLOC
 RustBuffer ffi_ubm5_uniffi_echo_rustbuffer_alloc(uint64_t size, RustCallStatus *_Nonnull out_status
@@ -575,12 +570,6 @@ uint16_t uniffi_ubm5_uniffi_echo_checksum_method_echosession_echo_bytes_chunked(
 #ifndef UNIFFI_FFIDEF_UNIFFI_UBM5_UNIFFI_ECHO_CHECKSUM_METHOD_ECHOSESSION_ECHO_COUNTER
 #define UNIFFI_FFIDEF_UNIFFI_UBM5_UNIFFI_ECHO_CHECKSUM_METHOD_ECHOSESSION_ECHO_COUNTER
 uint16_t uniffi_ubm5_uniffi_echo_checksum_method_echosession_echo_counter(void
-    
-);
-#endif
-#ifndef UNIFFI_FFIDEF_UNIFFI_UBM5_UNIFFI_ECHO_CHECKSUM_METHOD_ECHOSESSION_PANIC_PROBE
-#define UNIFFI_FFIDEF_UNIFFI_UBM5_UNIFFI_ECHO_CHECKSUM_METHOD_ECHOSESSION_PANIC_PROBE
-uint16_t uniffi_ubm5_uniffi_echo_checksum_method_echosession_panic_probe(void
     
 );
 #endif

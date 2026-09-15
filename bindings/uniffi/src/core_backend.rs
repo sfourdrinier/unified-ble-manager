@@ -1,33 +1,26 @@
-//! Echo-only feasibility core for the UniFFI scaffold (no Tokio, no
+//! Core-backed binding core for the UniFFI scaffold (no Tokio, no
 //! filesystem, no radio).
 //!
-//! STAND-IN behind the `CoreBackend` seam: this module proves the boundary
-//! exchange (owned byte batches, lossless u64 counters, typed C-UBM error
-//! identities, init contract, cooperative cancellation). It is NOT BLE
-//! functionality.
+//! The `CoreBackend` seam is implemented for [`CoreSession`], whose contract
+//! truth is single-owned by `ubm-core` (frozen `C-UBM.0.1.1-DRAFT`): the
+//! revision identity, the byte ceiling, and the decimal-string counter
+//! parsing all come from `ubm_core::contracts`. No contract constant or
+//! validator is duplicated here — the previous echo-only stand-in
+//! (`echo_core.rs`) is deleted, so there are no dual owners.
 //!
-//! FOLLOW-UP (explicit): replace `EchoCore` with a real `ubm-core` handle by
-//! implementing `CoreBackend` for it once `crates/ubm-core` exists in-tree.
+//! The echo transport itself stays feasibility-echo (NOT BLE functionality);
+//! wiring real kernel transitions through this seam is later U7 scope.
 //!
-//! Contract mirror (C-UBM.0.1.0-DRAFT, pending U1 acceptance):
-//! - `contracts/src/bounds.ts`: `MAX_OPERATION_BYTES = 524288`; u64 values
-//!   cross as decimal strings (`parseU64Decimal`); oversize is `bytes.too-large`.
-//! - `contracts/src/outcomes.ts`: frozen `code` + `domain` identities below.
-//! - `contracts/src/version.ts`: `CONTRACT_REVISION`; revision mismatch fails
-//!   closed (`protocol.incompatible`); no effect before init
-//!   (`lifecycle.invalid-state`, mirrors `assertHandshakeComplete`).
+//! Init contract note: the UDL constructor cannot fail, so the revision gate
+//! runs on EVERY method — a foreign revision fails closed with
+//! `protocol.incompatible` on every call (no effect without valid init).
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use std::sync::Mutex;
 
-/// Frozen contract revision this feasibility slice speaks.
-pub const CONTRACT_REVISION: &str = "C-UBM.0.1.0-DRAFT";
-
-/// Mirror of `MAX_OPERATION_BYTES` (contracts/src/bounds.ts).
-pub const MAX_OPERATION_BYTES: usize = 524288;
-
-/// Largest u64 value, decimal form (DATA-02 lossless-counter mapping).
-pub const U64_MAX_DECIMAL: &str = "18446744073709551615";
+/// Frozen contract revision, single-owned by `ubm-core`.
+pub use ubm_core::contracts::CONTRACT_REVISION;
 
 /// Typed failure carrying a frozen C-UBM `code` + `domain` plus the operation
 /// under test. Never silent: every rejection names its identity.
@@ -55,10 +48,10 @@ impl EchoError {
     }
 }
 
-/// Seam for `ubm-core` wiring (explicit follow-up): the real core implements
-/// this trait and the binding calls it instead of [`EchoCore`]. The binding
-/// surface calls the core ONLY through this trait, so wiring `ubm-core` later
-/// touches one `impl`, not every call site.
+/// Seam to the real core: the binding surface calls the core ONLY through
+/// this trait. [`CoreSession`] below is the one implementation in this
+/// crate; wiring deeper kernel transitions later touches this `impl`, not
+/// every call site.
 pub trait CoreBackend: Send + Sync {
     fn echo_bytes(&self, input: &[u8], operation: &'static str) -> Result<Vec<u8>, EchoError>;
     fn echo_counter(&self, decimal: &str, operation: &'static str) -> Result<String, EchoError>;
@@ -98,7 +91,7 @@ pub fn echo_bytes_chunked(
     cancel: &CancelFlag,
     operation: &'static str,
 ) -> Result<Vec<u8>, EchoError> {
-    if input.len() > MAX_OPERATION_BYTES {
+    if input.len() as u64 > ubm_core::contracts::MAX_OPERATION_BYTES {
         return Err(EchoError::new(
             "bytes.too-large",
             "core",
@@ -141,21 +134,24 @@ pub fn echo_bytes_chunked(
     Ok(input.to_vec())
 }
 
-/// Feasibility stand-in core. The revision gate runs on EVERY call (the UDL
+/// Core-backed session. The revision gate runs on EVERY call (the UDL
 /// constructor cannot fail, so fail-closed init lives at the method level);
 /// `close` destroys the session and every later call reports
-/// `lifecycle.destroyed`.
+/// `lifecycle.destroyed`. Contract validation delegates to `ubm-core`.
 #[derive(Debug)]
-pub struct EchoCore {
+pub struct CoreSession {
     revision_valid: bool,
     destroyed: bool,
     cancel: Arc<CancelFlag>,
 }
 
-impl EchoCore {
+impl CoreSession {
     pub fn open(revision: &str) -> Self {
+        let revision_valid =
+            ubm_core::contracts::assert_contract_revision_equal(CONTRACT_REVISION, revision)
+                .is_ok();
         Self {
-            revision_valid: revision == CONTRACT_REVISION,
+            revision_valid,
             destroyed: false,
             cancel: Arc::new(CancelFlag::default()),
         }
@@ -202,10 +198,10 @@ impl EchoCore {
     }
 }
 
-impl CoreBackend for EchoCore {
+impl CoreBackend for CoreSession {
     fn echo_bytes(&self, input: &[u8], operation: &'static str) -> Result<Vec<u8>, EchoError> {
         self.check_usable(operation)?;
-        if input.len() > MAX_OPERATION_BYTES {
+        if input.len() as u64 > ubm_core::contracts::MAX_OPERATION_BYTES {
             return Err(EchoError::new(
                 "bytes.too-large",
                 "core",
@@ -218,36 +214,25 @@ impl CoreBackend for EchoCore {
 
     fn echo_counter(&self, decimal: &str, operation: &'static str) -> Result<String, EchoError> {
         self.check_usable(operation)?;
-        if decimal.is_empty()
-            || decimal.len() > U64_MAX_DECIMAL.len()
-            || !decimal.bytes().all(|b| b.is_ascii_digit())
-        {
-            return Err(EchoError::new(
+        match ubm_core::contracts::parse_u64_decimal(decimal) {
+            Ok(value) => Ok(value.to_string()),
+            Err(core) => Err(EchoError::new(
                 "bytes.invalid",
                 "core",
                 operation,
-                "u64.input",
-            ));
+                if core.operation() == "u64.range" {
+                    "u64.range"
+                } else {
+                    "u64.input"
+                },
+            )),
         }
-        let stripped = decimal.trim_start_matches('0');
-        let canonical = if stripped.is_empty() { "0" } else { stripped };
-        if canonical.len() > U64_MAX_DECIMAL.len()
-            || (canonical.len() == U64_MAX_DECIMAL.len() && canonical > U64_MAX_DECIMAL)
-        {
-            return Err(EchoError::new(
-                "bytes.invalid",
-                "core",
-                operation,
-                "u64.range",
-            ));
-        }
-        Ok(canonical.to_string())
     }
 }
 
 /// Thread-safe shell: the exact object type the UDL interface exposes.
 pub struct SharedCore {
-    inner: Mutex<EchoCore>,
+    inner: Mutex<CoreSession>,
 }
 
 impl SharedCore {
@@ -286,7 +271,7 @@ impl SharedCore {
     fn lock(
         &self,
         operation: &'static str,
-    ) -> Result<std::sync::MutexGuard<'_, EchoCore>, EchoError> {
+    ) -> Result<std::sync::MutexGuard<'_, CoreSession>, EchoError> {
         self.inner.lock().map_err(|_| {
             EchoError::new(
                 "lifecycle.invariant-violation",
@@ -305,8 +290,29 @@ mod tests {
     const REV: &str = CONTRACT_REVISION;
 
     #[test]
+    fn revision_is_the_frozen_contract() {
+        assert_eq!(REV, "C-UBM.0.1.1-DRAFT");
+        assert_eq!(REV, ubm_core::contracts::CONTRACT_REVISION);
+    }
+
+    #[test]
+    fn superseded_revision_fails_closed_on_every_call() {
+        // The 0.1.0 feasibility revision is no longer spoken: contract truth
+        // moved to ubm-core at 0.1.1, and the old pin fails closed.
+        let core = CoreSession::open("C-UBM.0.1.0-DRAFT").into_shared();
+        for err in [
+            core.echo_bytes(&[1]).expect_err("init gate"),
+            core.echo_counter("1").expect_err("init gate"),
+            core.echo_bytes_chunked(&[1], 1).expect_err("init gate"),
+            core.cancel_inflight().expect_err("init gate"),
+        ] {
+            assert_eq!((err.code, err.domain), ("protocol.incompatible", "core"));
+        }
+    }
+
+    #[test]
     fn foreign_revision_fails_closed_on_every_call() {
-        let core = EchoCore::open("C-UBM.9.9.9-DRAFT").into_shared();
+        let core = CoreSession::open("C-UBM.9.9.9-DRAFT").into_shared();
         for err in [
             core.echo_bytes(&[1]).expect_err("init gate"),
             core.echo_counter("1").expect_err("init gate"),
@@ -319,21 +325,24 @@ mod tests {
 
     #[test]
     fn byte_batch_round_trip_is_owned() {
-        let core = EchoCore::open(REV).into_shared();
+        let core = CoreSession::open(REV).into_shared();
         let input = vec![0u8, 1, 2, 250, 255];
         let out = core.echo_bytes(&input).unwrap();
         assert_eq!(out, input);
         assert_ne!(out.as_ptr(), input.as_ptr());
         assert_eq!(core.echo_bytes(&[]).unwrap(), Vec::<u8>::new());
         let err = core
-            .echo_bytes(&vec![0u8; MAX_OPERATION_BYTES + 1])
+            .echo_bytes(&vec![
+                0u8;
+                ubm_core::contracts::MAX_OPERATION_BYTES as usize + 1
+            ])
             .expect_err("oversize");
         assert_eq!(err.code, "bytes.too-large");
     }
 
     #[test]
     fn u64_extremes_lossless_garbage_rejects() {
-        let core = EchoCore::open(REV).into_shared();
+        let core = CoreSession::open(REV).into_shared();
         for (input, expected) in [
             ("0", "0"),
             ("00042", "42"),
@@ -351,8 +360,17 @@ mod tests {
     }
 
     #[test]
+    fn u64_range_detail_marks_overflow() {
+        let core = CoreSession::open(REV).into_shared();
+        let err = core
+            .echo_counter("18446744073709551616")
+            .expect_err("overflow");
+        assert_eq!(err.detail, "u64.range");
+    }
+
+    #[test]
     fn cancel_armed_aborts_next_chunked_call() {
-        let core = EchoCore::open(REV).into_shared();
+        let core = CoreSession::open(REV).into_shared();
         core.cancel_inflight().unwrap();
         let err = core.echo_bytes_chunked(&[1, 2, 3], 10).expect_err("abort");
         assert_eq!(err.code, "operation.aborted");
@@ -361,7 +379,7 @@ mod tests {
 
     #[test]
     fn cancel_mid_flight_aborts_worker_thread() {
-        let core = EchoCore::open(REV).into_shared();
+        let core = CoreSession::open(REV).into_shared();
         let flag = {
             let guard = core.inner.lock().unwrap();
             guard.cancel_flag()
@@ -379,7 +397,7 @@ mod tests {
 
     #[test]
     fn close_invalidates_loudly_and_idempotently() {
-        let core = EchoCore::open(REV).into_shared();
+        let core = CoreSession::open(REV).into_shared();
         core.close();
         core.close();
         assert_eq!(
@@ -393,14 +411,14 @@ mod tests {
     }
 
     #[test]
-    fn seam_holds_for_ubm_core_wiring() {
+    fn seam_holds_for_the_wired_core() {
         fn assert_backend<T: CoreBackend>(_: &T) {}
-        assert_backend(&EchoCore::open(REV));
+        assert_backend(&CoreSession::open(REV));
     }
 
     // NOTE: no wire-join helper lives here on purpose. UniFFI splits the
     // failure into record fields; the Python exchange test reconstructs
-    // `code|domain|operation|detail` from LIVE record fields and asserts the
+    // `code|domain|operation` from LIVE record fields and asserts the
     // exact literal, which is the real proof (a Rust-side join of constants
     // would prove nothing about the boundary).
 }
