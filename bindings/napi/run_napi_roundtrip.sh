@@ -9,8 +9,11 @@ cd "$(dirname "$0")"
 
 ROOT="../.."
 
+echo "--- napi: production guards (L1 safe-Rust + L2 doc names)"
+python3 "$ROOT/bindings/guard_wiring.py"
+
 echo "--- napi: build addon"
-cargo build -p ubm5_napi_echo
+cargo build -p ubm5_napi_echo --locked
 cp "$ROOT/target/debug/libubm5_napi_echo.so" ubm_echo.linux-x64.node
 
 echo "--- napi: round-trip exchange"

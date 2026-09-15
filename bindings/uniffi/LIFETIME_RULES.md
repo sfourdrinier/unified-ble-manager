@@ -20,7 +20,7 @@ built cdylib. Contract `C-UBM.0.1.1-DRAFT`, single-owned by `ubm-core`
 ## Thread / runtime lifetimes
 
 - `EchoSession` is a UniFFI `Object` (reference-counted, `Send + Sync`
-  via an internal `Mutex<EchoCore>`). Foreign threads may share one session;
+  via an internal `Mutex<CoreSession>`). Foreign threads may share one session;
   the table lock is never held across the chunked worker, so `cancel`/`close`
   from another thread stay effective mid-call (proven by the threaded
   mid-flight abort through the real scaffolding).

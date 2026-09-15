@@ -17,6 +17,9 @@ if ! [ -x "$BINDGEN" ]; then
 fi
 "$BINDGEN" --version
 
+echo "--- uniffi: production guards (L1 safe-Rust + L2 doc names)"
+python3 "$ROOT/bindings/guard_wiring.py"
+
 echo "--- uniffi: Rust gates"
 cargo fmt --check
 cargo check -p ubm5_uniffi_echo --locked

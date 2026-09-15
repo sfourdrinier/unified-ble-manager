@@ -81,3 +81,11 @@ regardless (recorded, not attempted).
 5. Swift/Kotlin consumer compiles (U-APPLE boundary).
 6. Re-check `jni` throw semantics on version bump; per-method checksum
    enforcement if uniffi re-enables it.
+7. Pending contract freeze (recorded here; `contracts/**` stays untouched):
+   the wire codec introduces two wire-layer operation strings with no frozen
+   TS counterpart — `cleanup.wire.input` (oversize `bytes.too-large` plus
+   every malformed-shape `protocol.malformed|boundary` except an empty
+   operation id) and `cleanup.wire.operation-id` (empty `operationId`
+   string). Both are consistently `cleanup.wire.*`-namespaced. They must be
+   frozen at contract acceptance so a future TS validator does not treat
+   them as foreign operations.

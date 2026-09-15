@@ -18,7 +18,7 @@ through real JNI. Contract `C-UBM.0.1.1-DRAFT`, single-owned by `ubm-core`
 
 ## Thread / runtime lifetimes
 
-- Sessions are `Arc<Mutex<EchoCore>>` behind a process-global handle table
+- Sessions are `Arc<Mutex<CoreSession>>` behind a process-global handle table
   (`long` handles; `0` is never valid). Lookup clones the `Arc` WITHOUT
   holding the table lock during the body, so `close`/`cancel` from another
   Java thread stay effective mid-call (proven: close-during-flight aborts).

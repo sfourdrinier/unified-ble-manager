@@ -106,9 +106,10 @@ impl EchoSession {
             )
         })?;
         // Fail closed before queueing: destroyed sessions and oversize input
-        // reject synchronously instead of settling later.
-        let owned: Vec<u8> =
-            CoreBackend::echo_bytes(&*core, input.as_ref(), "echo-bytes").map_err(to_napi_error)?;
+        // reject synchronously instead of settling later. The pre-check
+        // shares the worker label `echo-bytes-async` (L3: one async label).
+        let owned: Vec<u8> = CoreBackend::echo_bytes(&*core, input.as_ref(), "echo-bytes-async")
+            .map_err(to_napi_error)?;
         let task = EchoAsyncTask {
             input: owned,
             chunks: chunks.unwrap_or(64),
@@ -119,6 +120,8 @@ impl EchoSession {
     }
 
     /// Requests cancellation of in-flight async work started by this session.
+    /// After `close` this rejects with `lifecycle.destroyed` like every
+    /// other call (M1: uniform post-close cancel with uniffi/JNI).
     #[napi(catch_unwind)]
     pub fn cancel_inflight(&self) -> Result<()> {
         let core = self.inner.core.lock().map_err(|_| {
@@ -127,7 +130,8 @@ impl EchoSession {
                 "lifecycle.invariant-violation|core|cancel-inflight|lock-poisoned",
             )
         })?;
-        core.cancel_inflight();
+        core.cancel_inflight("cancel-inflight")
+            .map_err(to_napi_error)?;
         Ok(())
     }
 

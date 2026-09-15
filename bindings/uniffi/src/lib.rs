@@ -149,8 +149,10 @@ impl EchoSession {
     }
 
     pub fn close(&self) -> EchoStatus {
-        self.inner.close();
-        ok_status()
+        match self.inner.close() {
+            Ok(()) => ok_status(),
+            Err(err) => err_status(err),
+        }
     }
 }
 
@@ -193,8 +195,14 @@ mod tests {
     #[test]
     fn production_surface_has_no_panic_probe() {
         // The wiring slice deleted the test-only probe: no feasibility-only
-        // method may ship on the UDL surface. The UDL below is the whole
-        // interface; `panic_probe` must not resolve to a method.
+        // method may ship on the UDL surface. The UDL text below IS the
+        // whole interface, so asserting on it (not just on a live call) is
+        // the real proof; the Python exchange asserts `not hasattr` live.
+        const UDL: &str = include_str!("ubm_echo.udl");
+        assert!(
+            !UDL.contains("panic_probe"),
+            "UDL must not expose panic_probe"
+        );
         let session = EchoSession::new(REV.to_string());
         let out = session.echo_bytes(vec![7]);
         assert!(out.ok && out.data == vec![7]);
