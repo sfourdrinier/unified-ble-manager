@@ -10,16 +10,45 @@
 import type { BleCentralBackend } from '../backend-contract/backend'
 import type { BackendIdentity } from '../backend-contract/identity'
 import type { SerializableRecord } from '../backend-contract/primitives'
-import { UNIFIED_BLE_IMPLEMENTATION_VERSION } from '../implementation-version'
-import type { BackendTckFactory, BackendTckFixture, TckFact, TckScenarioDefinition } from './contracts'
+import {
+  TckAssertionError,
+  type BackendTckFactory,
+  type BackendTckFixture,
+  type TckFact,
+  type TckScenarioDefinition
+} from './contracts'
 
-/** Pinned TypeScript reference, recorded outside the shipped graph. */
+/**
+ * Pinned TypeScript reference, recorded outside the shipped graph. The
+ * implementation version is a historical literal on purpose: it must never
+ * silently follow a version bump, and the seam binding below fails closed
+ * when the running backend reports anything else.
+ */
 export const PINNED_TS_REFERENCE = Object.freeze({
   kind: 'ts-reference',
   baseSha: '8c8195dd0430ff847d9492ce32f4e63ea3a5df1d',
   baseShortSha: '8c8195dd',
-  implementationVersion: UNIFIED_BLE_IMPLEMENTATION_VERSION
+  implementationVersion: '4.0.28'
 })
+
+/**
+ * Fails closed unless the attached backend reports the pinned implementation
+ * version. A reference that advanced without a reviewed pin update must never
+ * be misattributed to (or from) a future Rust backend.
+ */
+function assertPinnedBackendVersion<
+  Attachment extends string,
+  Identity extends BackendIdentity<Attachment>,
+  Backend extends BleCentralBackend<Attachment, Identity>
+>(fixture: BackendTckFixture<Attachment, Identity, Backend>, definition: TckScenarioDefinition): void {
+  const reported: unknown = fixture.backend.identity.runtime.implementationVersion
+  if (reported !== PINNED_TS_REFERENCE.implementationVersion) {
+    throw new TckAssertionError(
+      definition.id,
+      `ts-reference-pin-mismatch: backend reports ${String(reported)} but the pinned reference is ${PINNED_TS_REFERENCE.implementationVersion}`
+    )
+  }
+}
 
 export type PublicManagerSeamKind = 'ts-reference' | 'rust-stub'
 
@@ -58,6 +87,7 @@ export interface RustBackendStubSeam {
 /** Binds the seam to the pinned TypeScript reference construction. */
 export function createTsReferenceManagerSeam(): TsReferenceManagerSeam {
   const runPublicScenario: TsReferenceManagerSeam['runPublicScenario'] = async (factory, fixture, definition) => {
+    assertPinnedBackendVersion(fixture, definition)
     // Lazy require avoids a static cycle with the runner, which owns the
     // scenario executors. The seam delegates to the SAME runner-owned path.
 

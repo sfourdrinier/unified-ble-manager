@@ -46,9 +46,13 @@ export function createCausalWatermark(): CausalWatermark {
 }
 
 /**
- * Drains only work submitted up to the watermark's current sequence. Uses
- * bounded controller flushes (microtask turns) and never performs a global
- * idle drain, so an intentionally live scan or stream stays open.
+ * Drains only work submitted up to the watermark's current sequence. The
+ * causally-submitted promises are observed (settledness flags, no floating
+ * promises), given bounded microtask flushes tied to the submitted depth, and
+ * then actually settled through the controller one by one. Never performs a
+ * global idle drain, so an intentionally live scan or stream stays open.
+ * Fail-closed: work that cannot settle rejects here instead of racing a
+ * downstream assertion.
  */
 export async function drainToWatermark(
   controller: TckScenarioController,
@@ -57,11 +61,30 @@ export async function drainToWatermark(
 ): Promise<WatermarkDrainReceipt> {
   const target = watermark.sequence
   const labels = [...watermark.submitted]
-  for (const pending of causallySubmitted) {
-    pending.catch(() => undefined)
-  }
-  for (let turn = 0; turn < 4; turn += 1) {
+  const tracked = causallySubmitted.map(promise => {
+    let settled = false
+    const observed = promise.then(
+      () => {
+        settled = true
+      },
+      () => {
+        settled = true
+      }
+    )
+    return {
+      isSettled: (): boolean => settled,
+      observed
+    }
+  })
+  const flushBound = causallySubmitted.length + 1
+  for (let turn = 0; turn < flushBound; turn += 1) {
+    if (tracked.every(entry => entry.isSettled())) {
+      break
+    }
     await controller.flush()
+  }
+  for (const entry of tracked) {
+    await controller.settle(entry.observed)
   }
   return Object.freeze({
     drainedToSequence: target,
