@@ -6,6 +6,7 @@
 // fields, not string-brand intersections, so the frozen wire form carries its
 // scope explicitly and needs no type-system assertion to construct.
 
+import { freezeTable } from './freeze';
 import { contractError } from './outcomes';
 
 export function isNonEmptyId(value: unknown): value is string {
@@ -73,13 +74,13 @@ export type PeerIdentityDomain =
   | 'platform-guid'
   | 'opaque-token';
 
-export const PEER_IDENTITY_DOMAINS: readonly PeerIdentityDomain[] = [
+export const PEER_IDENTITY_DOMAINS: readonly PeerIdentityDomain[] = freezeTable([
   'public-address',
   'static-random-address',
   'resolvable-private-address',
   'platform-guid',
   'opaque-token',
-] satisfies readonly PeerIdentityDomain[];
+] satisfies readonly PeerIdentityDomain[]);
 
 export interface PeerIdentity {
   readonly attachment: AttachmentTuple;
@@ -95,16 +96,26 @@ export function createPeerIdentity(
   if (typeof domain !== 'string' || !PEER_IDENTITY_DOMAINS.some(candidate => candidate === domain)) {
     throw contractError('argument.invalid', 'core', 'peer-identity.domain');
   }
-  const resolved: PeerIdentityDomain =
-    domain === 'public-address'
-      ? 'public-address'
-      : domain === 'static-random-address'
-        ? 'static-random-address'
-        : domain === 'resolvable-private-address'
-          ? 'resolvable-private-address'
-          : domain === 'platform-guid'
-            ? 'platform-guid'
-            : 'opaque-token';
+  let resolved: PeerIdentityDomain;
+  switch (domain) {
+    case 'public-address':
+      resolved = 'public-address';
+      break;
+    case 'static-random-address':
+      resolved = 'static-random-address';
+      break;
+    case 'resolvable-private-address':
+      resolved = 'resolvable-private-address';
+      break;
+    case 'platform-guid':
+      resolved = 'platform-guid';
+      break;
+    case 'opaque-token':
+      resolved = 'opaque-token';
+      break;
+    default:
+      throw contractError('argument.invalid', 'core', 'peer-identity.domain');
+  }
   return Object.freeze({ attachment, domain: resolved, value: requireId(value, 'peer-identity.value') });
 }
 
@@ -142,6 +153,9 @@ function requireOccurrence(value: unknown, path: string): number {
 }
 
 // Occurrence selects among duplicate UUIDs; UUID-only selection is prohibited.
+// A characteristic UUID requires its occurrence and vice versa; the same
+// pairing holds for descriptors. A descriptor requires a characteristic, and
+// the path attachment must equal the peer attachment scope.
 export function createGattPath(input: {
   readonly attachment: AttachmentTuple;
   readonly peer: PeerIdentity;
@@ -171,6 +185,18 @@ export function createGattPath(input: {
     input.descriptorOccurrence === undefined || input.descriptorOccurrence === null
       ? null
       : requireOccurrence(input.descriptorOccurrence, 'gatt-path.descriptor-occurrence');
+  if ((characteristicUuid === null) !== (characteristicOccurrence === null)) {
+    throw contractError('argument.invalid', 'core', 'gatt-path.characteristic-pairing');
+  }
+  if ((descriptorUuid === null) !== (descriptorOccurrence === null)) {
+    throw contractError('argument.invalid', 'core', 'gatt-path.descriptor-pairing');
+  }
+  if (descriptorUuid !== null && characteristicUuid === null) {
+    throw contractError('argument.invalid', 'core', 'gatt-path.descriptor-without-characteristic');
+  }
+  if (!attachmentTuplesEqual(input.attachment, input.peer.attachment)) {
+    throw contractError('peer.scope-mismatch', 'connection', 'gatt-path.peer-scope');
+  }
   return Object.freeze({
     attachment: input.attachment,
     peer: input.peer,

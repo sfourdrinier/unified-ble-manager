@@ -2,6 +2,7 @@
 // Mandatory scenario link: STR-01.
 
 import {
+  RESERVED_CONTROL_BYTES,
   RESERVED_CONTROL_CAPACITY,
   STREAM_DEFAULTS,
   applyStreamAdmission,
@@ -16,6 +17,8 @@ describe('bounded stream defaults', () => {
     }
     expect(scan.itemCapacity).toBe(1);
     expect(scan.byteCapacity).toBe(524288);
+    expect(scan.reservedControlCapacity).toBe(1);
+    expect(scan.reservedControlBytes).toBe(64);
     expect(scan.policy).toBe('latest');
     const notification = STREAM_DEFAULTS.find(entry => entry.stream === 'notification');
     if (notification === undefined) {
@@ -23,6 +26,8 @@ describe('bounded stream defaults', () => {
     }
     expect(notification.itemCapacity).toBe(64);
     expect(notification.byteCapacity).toBe(1048576);
+    expect(notification.reservedControlCapacity).toBe(1);
+    expect(notification.reservedControlBytes).toBe(64);
     expect(notification.policy).toBe('drop-oldest');
     const replay = STREAM_DEFAULTS.find(entry => entry.stream === 'restoration-replay');
     if (replay === undefined) {
@@ -33,18 +38,22 @@ describe('bounded stream defaults', () => {
 
   test('reserves one control slot so loss accounting survives saturation', () => {
     expect(RESERVED_CONTROL_CAPACITY).toBe(1);
+    expect(RESERVED_CONTROL_BYTES).toBe(64);
   });
 
   test('validates limits before registration', () => {
     expect(() =>
-      validateStreamLimits({ itemCapacity: 64, byteCapacity: 65536, reservedControlCapacity: 1 }),
+      validateStreamLimits({ itemCapacity: 64, byteCapacity: 65536, reservedControlCapacity: 1, reservedControlBytes: 64 }),
     ).not.toThrow();
     expect(() =>
-      validateStreamLimits({ itemCapacity: 0, byteCapacity: 65536, reservedControlCapacity: 1 }),
+      validateStreamLimits({ itemCapacity: 0, byteCapacity: 65536, reservedControlCapacity: 1, reservedControlBytes: 64 }),
     ).toThrow('argument.invalid');
     expect(() =>
-      validateStreamLimits({ itemCapacity: 64, byteCapacity: 1, reservedControlCapacity: 1 }),
+      validateStreamLimits({ itemCapacity: 64, byteCapacity: 64, reservedControlCapacity: 1, reservedControlBytes: 64 }),
     ).toThrow('stream.quota');
+    expect(() =>
+      validateStreamLimits({ itemCapacity: 1, byteCapacity: 2, reservedControlCapacity: 1, reservedControlBytes: 1 }),
+    ).not.toThrow();
   });
 });
 

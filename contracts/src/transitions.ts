@@ -4,6 +4,8 @@
 // from docs/UNIFIED_SEMANTICS.md §3/§4/§14 (read-only reference). A stale
 // object is never revived; recovery creates a new generation.
 
+import { freezeTable } from './freeze';
+
 export type MachineName =
   | 'provider'
   | 'backend'
@@ -28,7 +30,7 @@ export interface MachineTable {
   readonly terminals: readonly string[];
 }
 
-export const TRANSITION_TABLES: readonly MachineTable[] = [
+export const TRANSITION_TABLES: readonly MachineTable[] = freezeTable([
   {
     machine: 'provider',
     states: ['ready', 'closing', 'closed'],
@@ -198,7 +200,7 @@ export const TRANSITION_TABLES: readonly MachineTable[] = [
     ],
     terminals: ['removed', 'failed', 'invalid'],
   },
-] satisfies readonly MachineTable[];
+] satisfies readonly MachineTable[]);
 
 function tableFor(machine: MachineName): MachineTable | null {
   for (const table of TRANSITION_TABLES) {
@@ -236,7 +238,7 @@ export interface ContentionRuling {
   readonly rejection: string | null;
 }
 
-export const CONTENTION_RULINGS: readonly ContentionRuling[] = [
+export const CONTENTION_RULINGS: readonly ContentionRuling[] = freezeTable([
   {
     resource: 'ordinary-scan',
     ruling: 'one-physical-scan-controller',
@@ -263,4 +265,4 @@ export const CONTENTION_RULINGS: readonly ContentionRuling[] = [
     ruling: 'shared-enablement-per-consumer-streams',
     rejection: null,
   },
-] satisfies readonly ContentionRuling[];
+] satisfies readonly ContentionRuling[]);

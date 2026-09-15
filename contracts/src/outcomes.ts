@@ -6,6 +6,8 @@
 // The code and domain sets below are retained verbatim; recovery keeps the
 // 4.x disposition per code with action kinds only (see semantic-map AC-04).
 
+import { freezeTable } from './freeze';
+
 export type BleErrorCode =
   | 'protocol.incompatible'
   | 'protocol.malformed'
@@ -75,7 +77,7 @@ export type BleErrorCode =
   | 'platform.security'
   | 'platform.transport';
 
-export const ERROR_CODE_LIST: readonly BleErrorCode[] = [
+export const ERROR_CODE_LIST: readonly BleErrorCode[] = freezeTable([
   'protocol.incompatible',
   'protocol.malformed',
   'protocol.violation',
@@ -143,7 +145,7 @@ export const ERROR_CODE_LIST: readonly BleErrorCode[] = [
   'platform.failure',
   'platform.security',
   'platform.transport',
-] satisfies readonly BleErrorCode[];
+] satisfies readonly BleErrorCode[]);
 
 export function isBleErrorCode(value: unknown): value is BleErrorCode {
   return typeof value === 'string' && ERROR_CODE_LIST.some(code => code === value);
@@ -164,7 +166,7 @@ export type BleErrorDomain =
   | 'ipc'
   | 'platform';
 
-export const ERROR_DOMAIN_LIST: readonly BleErrorDomain[] = [
+export const ERROR_DOMAIN_LIST: readonly BleErrorDomain[] = freezeTable([
   'core',
   'adapter',
   'scan',
@@ -178,7 +180,7 @@ export const ERROR_DOMAIN_LIST: readonly BleErrorDomain[] = [
   'restoration',
   'ipc',
   'platform',
-] satisfies readonly BleErrorDomain[];
+] satisfies readonly BleErrorDomain[]);
 
 export function isBleErrorDomain(value: unknown): value is BleErrorDomain {
   return typeof value === 'string' && ERROR_DOMAIN_LIST.some(domain => domain === value);
@@ -379,7 +381,7 @@ export type OperationTerminalKind =
   | 'adapter-unavailable'
   | 'destroyed';
 
-export const OPERATION_TERMINAL_KINDS: readonly OperationTerminalKind[] = [
+export const OPERATION_TERMINAL_KINDS: readonly OperationTerminalKind[] = freezeTable([
   'succeeded',
   'failed',
   'aborted',
@@ -388,7 +390,7 @@ export const OPERATION_TERMINAL_KINDS: readonly OperationTerminalKind[] = [
   'reset',
   'adapter-unavailable',
   'destroyed',
-] satisfies readonly OperationTerminalKind[];
+] satisfies readonly OperationTerminalKind[]);
 
 export interface TerminalRecord {
   readonly operationId: string;

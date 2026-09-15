@@ -6,9 +6,10 @@
 // Approved correction AC-01: the package/build version is observability only
 // and MUST NOT satisfy a runtime handshake.
 
+import { freezeTable } from './freeze';
 import { contractError } from './outcomes';
 
-export const CONTRACT_REVISION: 'C-UBM.0.1.0-DRAFT' = 'C-UBM.0.1.0-DRAFT';
+export const CONTRACT_REVISION: 'C-UBM.0.1.1-DRAFT' = 'C-UBM.0.1.1-DRAFT';
 export const CONTRACT_STATUS: 'DRAFT' = 'DRAFT';
 export const CONTRACT_ACCEPTANCE_GATE: 'U1' = 'U1';
 export const BUILD_VERSION_IS_HANDSHAKE_AXIS: false = false;
@@ -20,6 +21,19 @@ export type RuntimeAxis =
   | 'trace-format'
   | 'native-protocol'
   | 'ipc-protocol';
+
+export const RUNTIME_AXES: readonly RuntimeAxis[] = freezeTable([
+  'backend-contract',
+  'capability-schema',
+  'event-schema',
+  'trace-format',
+  'native-protocol',
+  'ipc-protocol',
+] satisfies readonly RuntimeAxis[]);
+
+export function isRuntimeAxis(value: unknown): value is RuntimeAxis {
+  return typeof value === 'string' && RUNTIME_AXES.some(axis => axis === value);
+}
 
 export interface VersionSpan {
   readonly axis: RuntimeAxis;
@@ -73,7 +87,10 @@ function assertSpanNumber(value: unknown, path: string): number {
   return value;
 }
 
-export function makeVersionSpan(axis: RuntimeAxis, minimum: unknown, maximum: unknown): VersionSpan {
+export function makeVersionSpan(axis: unknown, minimum: unknown, maximum: unknown): VersionSpan {
+  if (!isRuntimeAxis(axis)) {
+    throw contractError('protocol.malformed', 'core', 'version-span.axis');
+  }
   const low = assertSpanNumber(minimum, `version-span.${axis}.minimum`);
   const high = assertSpanNumber(maximum, `version-span.${axis}.maximum`);
   if (low > high) {
@@ -86,6 +103,9 @@ export function makeVersionSpan(axis: RuntimeAxis, minimum: unknown, maximum: un
 // implicit downgrade, and negotiation completes before either party sends
 // mutable work.
 export function negotiateVersionSpan(local: VersionSpan, remote: VersionSpan): NegotiatedAxis {
+  if (!isRuntimeAxis(local.axis) || !isRuntimeAxis(remote.axis)) {
+    throw contractError('protocol.malformed', 'core', 'version-negotiate.axis');
+  }
   if (local.axis !== remote.axis) {
     throw contractError('protocol.malformed', 'core', 'version-negotiate.axes');
   }
@@ -113,6 +133,9 @@ export function negotiateVersionSpan(local: VersionSpan, remote: VersionSpan): N
 // A negotiated selection binds only to an offer that contains it. An
 // attachment that receives an unoffered version terminates.
 export function assertNegotiatedWithinOffer(selected: NegotiatedAxis, offer: VersionSpan): void {
+  if (!isRuntimeAxis(selected.axis) || !isRuntimeAxis(offer.axis)) {
+    throw contractError('protocol.malformed', 'core', 'version-accepted.axis');
+  }
   if (selected.axis !== offer.axis) {
     throw contractError('protocol.malformed', 'core', 'version-accepted.axes');
   }

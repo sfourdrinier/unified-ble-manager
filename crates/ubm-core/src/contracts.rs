@@ -1,6 +1,7 @@
-//! C-UBM DRAFT mirror: identities, generations, errors, outcomes, bounds.
+//! C-UBM DRAFT mirror: identities, generations, errors, outcomes, bounds,
+//! GATT paths, generic-peripheral allowlist, version axes, streams.
 //!
-//! Derived from `contracts/src/{identities,outcomes,bounds,effects,version}.ts`
+//! Derived from `contracts/src/{identities,outcomes,bounds,effects,version,peripheral,streams}.ts`
 //! at [`CONTRACT_REVISION`] (pending U1 acceptance). Names are translated from
 //! `dotted.code`/`camelCase` to Rust conventions; [`BleErrorCode::as_str`]
 //! preserves every frozen wire string verbatim, and `from_str` round-trips it.
@@ -10,17 +11,20 @@
 //!   numbers; sub-millisecond precision is truncated by hosts at the boundary.
 //! - `to_deadline` overflow fails closed in both: C-UBM via non-finite `f64`,
 //!   here via `checked_add`.
-//! - [`CompletionTerminal`] has no `Failed` variant, mirroring C-UBM exactly:
-//!   `ContenderKind` offers no failure contender even though the operation
-//!   machine has a `publish-failure -> failed` edge and `OperationTerminalKind`
-//!   has `Failed` (discrepancy D1, reported to the contract owners, not forked).
-//! - `validate_stream_limits` keeps the C-UBM comparison of byte capacity
-//!   against the reserved-control (item) count, including its mixed units
-//!   (discrepancy D3, mirrored, not reinterpreted).
+//! - D1 (fixed in C-UBM 0.1.1): `CompletionTerminal::Failed` and
+//!   `ContenderKind::Failure` serve the operation machine's
+//!   `publish-failure -> failed` edge.
+//! - D3 (fixed in C-UBM 0.1.1): stream limits compare like-with-like
+//!   (items against reserved item counts, bytes against reserved byte
+//!   budgets); `StreamLimits` lives in the `streams` module.
 //! - Recovery keeps dispositions verbatim with action kinds only (per AC-04).
+//! - Rust tables are `const` and owned values move by value: deep-freeze
+//!   (R2) and copy-and-freeze limits (R3) hold by construction.
+//! - Canonical decimal form (`^-?[0-9]+$`, no plus/whitespace, 20-digit cap)
+//!   is enforced identically in `parse_u64_decimal`/`parse_i64_decimal`.
 
 /// Frozen contract revision this crate mirrors.
-pub const CONTRACT_REVISION: &str = "C-UBM.0.1.0-DRAFT";
+pub const CONTRACT_REVISION: &str = "C-UBM.0.1.1-DRAFT";
 /// Contract acceptance status.
 pub const CONTRACT_STATUS: &str = "DRAFT";
 /// Acceptance gate that freezes this draft.
@@ -516,6 +520,7 @@ impl TerminalRecord {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ContenderKind {
     Success,
+    Failure,
     Abort,
     Timeout,
     Disconnect,
@@ -532,6 +537,7 @@ impl ContenderKind {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Success => "success",
+            Self::Failure => "failure",
             Self::Abort => "abort",
             Self::Timeout => "timeout",
             Self::Disconnect => "disconnect",
@@ -577,11 +583,11 @@ impl CommitState {
     }
 }
 
-/// Completion terminal, verbatim from C-UBM `CompletionTerminal`. Note the
-/// absence of `Failed`: see discrepancy D1 in the module docs.
+/// Completion terminal, verbatim from C-UBM `CompletionTerminal`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CompletionTerminal {
     Succeeded,
+    Failed,
     Aborted,
     TimedOut,
     Disconnected,
@@ -596,6 +602,7 @@ impl CompletionTerminal {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Succeeded => "succeeded",
+            Self::Failed => "failed",
             Self::Aborted => "aborted",
             Self::TimedOut => "timed-out",
             Self::Disconnected => "disconnected",
@@ -612,6 +619,7 @@ impl CompletionTerminal {
 pub const fn terminal_for_winner(kind: ContenderKind) -> CompletionTerminal {
     match kind {
         ContenderKind::Success | ContenderKind::DispatchBegin => CompletionTerminal::Succeeded,
+        ContenderKind::Failure => CompletionTerminal::Failed,
         ContenderKind::Abort | ContenderKind::SessionStop => CompletionTerminal::Aborted,
         ContenderKind::Timeout => CompletionTerminal::TimedOut,
         ContenderKind::Disconnect => CompletionTerminal::Disconnected,
@@ -1000,6 +1008,190 @@ pub fn assert_same_attachment(
     Ok(())
 }
 
+/// GATT occurrence path with construction invariants (R9): a characteristic
+/// UUID requires its occurrence and vice versa, the same pairing holds for
+/// descriptors, a descriptor requires a characteristic, and the path
+/// attachment must equal the peer attachment scope.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GattPath {
+    attachment: AttachmentTuple,
+    peer: PeerIdentity,
+    connection_generation: Generation,
+    database_generation: Generation,
+    service_uuid: String,
+    service_occurrence: u64,
+    characteristic_uuid: Option<String>,
+    characteristic_occurrence: Option<u64>,
+    descriptor_uuid: Option<String>,
+    descriptor_occurrence: Option<u64>,
+    owner_lease: LeaseId,
+}
+
+/// Validated inputs for [`GattPath::new`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GattPathParams {
+    /// Path attachment scope.
+    pub attachment: AttachmentTuple,
+    /// Peer identity carrying its own attachment scope.
+    pub peer: PeerIdentity,
+    /// Connection generation.
+    pub connection_generation: Generation,
+    /// Database generation.
+    pub database_generation: Generation,
+    /// Service UUID (non-empty; wire canonicalization at the TS boundary).
+    pub service_uuid: String,
+    /// Service occurrence.
+    pub service_occurrence: u64,
+    /// Characteristic UUID and occurrence (paired).
+    pub characteristic_uuid: Option<String>,
+    /// Characteristic UUID and occurrence (paired).
+    pub characteristic_occurrence: Option<u64>,
+    /// Descriptor UUID and occurrence (paired; requires a characteristic).
+    pub descriptor_uuid: Option<String>,
+    /// Descriptor UUID and occurrence (paired; requires a characteristic).
+    pub descriptor_occurrence: Option<u64>,
+    /// Owner lease.
+    pub owner_lease: LeaseId,
+}
+
+impl GattPath {
+    /// Validate and build a path. UUID strings must be non-empty (wire
+    /// canonicalization is enforced at the TS boundary); pairing and scope
+    /// are enforced here.
+    pub fn new(params: GattPathParams) -> Result<Self, CoreError> {
+        let GattPathParams {
+            attachment,
+            peer,
+            connection_generation,
+            database_generation,
+            service_uuid,
+            service_occurrence,
+            characteristic_uuid,
+            characteristic_occurrence,
+            descriptor_uuid,
+            descriptor_occurrence,
+            owner_lease,
+        } = params;
+        if service_uuid.is_empty() {
+            return Err(CoreError::new(
+                BleErrorCode::ArgumentInvalid,
+                BleErrorDomain::Core,
+                "gatt-path.service-uuid",
+            ));
+        }
+        if characteristic_uuid.as_ref().is_some_and(String::is_empty) {
+            return Err(CoreError::new(
+                BleErrorCode::ArgumentInvalid,
+                BleErrorDomain::Core,
+                "gatt-path.characteristic-uuid",
+            ));
+        }
+        if descriptor_uuid.as_ref().is_some_and(String::is_empty) {
+            return Err(CoreError::new(
+                BleErrorCode::ArgumentInvalid,
+                BleErrorDomain::Core,
+                "gatt-path.descriptor-uuid",
+            ));
+        }
+        if characteristic_uuid.is_some() != characteristic_occurrence.is_some() {
+            return Err(CoreError::new(
+                BleErrorCode::ArgumentInvalid,
+                BleErrorDomain::Core,
+                "gatt-path.characteristic-pairing",
+            ));
+        }
+        if descriptor_uuid.is_some() != descriptor_occurrence.is_some() {
+            return Err(CoreError::new(
+                BleErrorCode::ArgumentInvalid,
+                BleErrorDomain::Core,
+                "gatt-path.descriptor-pairing",
+            ));
+        }
+        if descriptor_uuid.is_some() && characteristic_uuid.is_none() {
+            return Err(CoreError::new(
+                BleErrorCode::ArgumentInvalid,
+                BleErrorDomain::Core,
+                "gatt-path.descriptor-without-characteristic",
+            ));
+        }
+        if !attachment.equals(peer.attachment()) {
+            return Err(CoreError::new(
+                BleErrorCode::PeerScopeMismatch,
+                BleErrorDomain::Connection,
+                "gatt-path.peer-scope",
+            ));
+        }
+        Ok(Self {
+            attachment,
+            peer,
+            connection_generation,
+            database_generation,
+            service_uuid,
+            service_occurrence,
+            characteristic_uuid,
+            characteristic_occurrence,
+            descriptor_uuid,
+            descriptor_occurrence,
+            owner_lease,
+        })
+    }
+
+    /// Borrow the path attachment scope.
+    #[must_use]
+    pub const fn attachment(&self) -> &AttachmentTuple {
+        &self.attachment
+    }
+
+    /// Borrow the peer identity.
+    #[must_use]
+    pub const fn peer(&self) -> &PeerIdentity {
+        &self.peer
+    }
+
+    /// Borrow the owner lease.
+    #[must_use]
+    pub const fn owner_lease(&self) -> &LeaseId {
+        &self.owner_lease
+    }
+}
+
+/// Fail-closed generic-shape allowlist (R8): only the frozen generic keys
+/// are admitted; any unlisted key — including physiological or commercial
+/// keys — is rejected. Mirrors C-UBM `GENERIC_PERIPHERAL_ALLOWED_KEYS`.
+pub const GENERIC_PERIPHERAL_ALLOWED_KEYS: [&str; 10] = [
+    "octetPayload",
+    "serviceUuids",
+    "manufacturerId",
+    "manufacturerPayload",
+    "serviceDataUuid",
+    "serviceDataPayload",
+    "localName",
+    "txPowerLevel",
+    "flags",
+    "appearance",
+];
+
+/// Reject any declaration key outside the generic allowlist.
+pub fn assert_generic_peripheral_decl(keys: &[&str]) -> Result<(), CoreError> {
+    for key in keys {
+        let mut allowed = false;
+        for candidate in GENERIC_PERIPHERAL_ALLOWED_KEYS {
+            if string_eq(key, candidate) {
+                allowed = true;
+                break;
+            }
+        }
+        if !allowed {
+            return Err(CoreError::new(
+                BleErrorCode::ArgumentInvalid,
+                BleErrorDomain::Core,
+                "peripheral.generic-decl",
+            ));
+        }
+    }
+    Ok(())
+}
+
 // Frozen numeric production limits, verbatim from C-UBM `bounds.ts`.
 /// Maximum stream item capacity.
 pub const MAX_STREAM_ITEM_CAPACITY: u64 = 65_536;
@@ -1097,11 +1289,12 @@ pub const fn earliest_deadline(first: MonotonicTime, second: MonotonicTime) -> M
     if first < second { first } else { second }
 }
 
-/// The effective maximum is the minimum of the declared maxima. An
-/// unavailable or unmeasured maximum is not infinity: callers must pass only
-/// measured values and surface `None` earlier as `capability.unavailable`.
+/// The effective maximum is the minimum of the declared maxima, clamped to
+/// the frozen operation ceiling. An unavailable or unmeasured maximum is not
+/// infinity: callers must pass only measured values and surface `None`
+/// earlier as `capability.unavailable`.
 pub fn effective_max_bytes(maxima: &[u64]) -> Result<u64, CoreError> {
-    let mut effective = MAX_OPERATION_BYTES.saturating_add(1);
+    let mut effective = MAX_OPERATION_BYTES;
     let mut seen = false;
     for maximum in maxima {
         if *maximum == 0 {
@@ -1133,9 +1326,9 @@ pub fn assert_bytes_within_limit(
     maxima: &[Option<u64>],
     operation: &str,
 ) -> Result<(), CoreError> {
-    // The effective ceiling is the minimum of the measured maxima; the list
-    // is scanned without allocation.
-    let mut running_min = MAX_OPERATION_BYTES.saturating_add(1);
+    // The effective ceiling is the minimum of the measured maxima, clamped
+    // to the frozen operation ceiling; the list is scanned without allocation.
+    let mut running_min = MAX_OPERATION_BYTES;
     let mut any = false;
     for maximum in maxima {
         let Some(bound) = maximum else {
@@ -1182,12 +1375,23 @@ pub const U64_MIN: u64 = u64::MIN;
 pub const I64_MAX: i64 = i64::MAX;
 /// Minimum `i64` wire value.
 pub const I64_MIN: i64 = i64::MIN;
+/// Canonical decimal digit cap (excluding an optional leading `-`).
+/// Mirrors C-UBM `MAX_DECIMAL_DIGITS`.
+pub const MAX_DECIMAL_DIGITS: usize = 20;
 
-/// Parse a decimal-string `u64` wire value (DATA-02). Only ASCII digits;
-/// anything else, including signs, hex, fractions, and empties, is
-/// `bytes.invalid`. Out-of-range is `bytes.invalid`, never a wrap.
+/// Parse a decimal-string `u64` wire value (DATA-02). Canonical form is
+/// `^[0-9]+$` with no plus sign, no whitespace, and at most
+/// `MAX_DECIMAL_DIGITS` digits; anything else is `bytes.invalid`.
+/// Out-of-range is `bytes.invalid`, never a wrap.
 pub fn parse_u64_decimal(value: &str) -> Result<u64, CoreError> {
     if value.is_empty() {
+        return Err(CoreError::new(
+            BleErrorCode::BytesInvalid,
+            BleErrorDomain::Core,
+            "u64.input",
+        ));
+    }
+    if value.len() > MAX_DECIMAL_DIGITS {
         return Err(CoreError::new(
             BleErrorCode::BytesInvalid,
             BleErrorDomain::Core,
@@ -1218,8 +1422,10 @@ pub fn parse_u64_decimal(value: &str) -> Result<u64, CoreError> {
     Ok(result)
 }
 
-/// Parse a decimal-string `i64` wire value (DATA-02). An optional leading
-/// `-` is the only accepted sign; out-of-range is `bytes.invalid`.
+/// Parse a decimal-string `i64` wire value (DATA-02). Canonical form is
+/// `^-?[0-9]+$`: an optional leading `-` is the only accepted sign (no plus,
+/// no whitespace), with at most `MAX_DECIMAL_DIGITS` digits; out-of-range is
+/// `bytes.invalid`.
 pub fn parse_i64_decimal(value: &str) -> Result<i64, CoreError> {
     let stripped = value.strip_prefix('-');
     let digits = match stripped {
@@ -1228,6 +1434,13 @@ pub fn parse_i64_decimal(value: &str) -> Result<i64, CoreError> {
     };
     let negative = digits.len() != value.len();
     if digits.is_empty() {
+        return Err(CoreError::new(
+            BleErrorCode::BytesInvalid,
+            BleErrorDomain::Core,
+            "i64.input",
+        ));
+    }
+    if digits.len() > MAX_DECIMAL_DIGITS {
         return Err(CoreError::new(
             BleErrorCode::BytesInvalid,
             BleErrorDomain::Core,
@@ -1291,7 +1504,9 @@ pub fn parse_i64_decimal(value: &str) -> Result<i64, CoreError> {
     }
 }
 
-/// Runtime handshake axis under negotiation.
+/// Runtime handshake axis under negotiation. The six-axis list is closed:
+/// unknown wire strings are rejected by [`RuntimeAxis::from_str`], mirroring
+/// C-UBM `isRuntimeAxis` (R4).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum RuntimeAxis {
     BackendContract,
@@ -1300,6 +1515,41 @@ pub enum RuntimeAxis {
     TraceFormat,
     NativeProtocol,
     IpcProtocol,
+}
+
+impl RuntimeAxis {
+    /// Frozen wire string for this axis.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::BackendContract => "backend-contract",
+            Self::CapabilitySchema => "capability-schema",
+            Self::EventSchema => "event-schema",
+            Self::TraceFormat => "trace-format",
+            Self::NativeProtocol => "native-protocol",
+            Self::IpcProtocol => "ipc-protocol",
+        }
+    }
+
+    /// Parse a frozen wire string. Returns `None` for unknown axes.
+    #[must_use]
+    pub const fn from_str(value: &str) -> Option<Self> {
+        if string_eq(value, "backend-contract") {
+            Some(Self::BackendContract)
+        } else if string_eq(value, "capability-schema") {
+            Some(Self::CapabilitySchema)
+        } else if string_eq(value, "event-schema") {
+            Some(Self::EventSchema)
+        } else if string_eq(value, "trace-format") {
+            Some(Self::TraceFormat)
+        } else if string_eq(value, "native-protocol") {
+            Some(Self::NativeProtocol)
+        } else if string_eq(value, "ipc-protocol") {
+            Some(Self::IpcProtocol)
+        } else {
+            None
+        }
+    }
 }
 
 /// One offered version span on an axis.
@@ -1479,7 +1729,7 @@ mod tests {
 
     #[test]
     fn frozen_revision_constants() {
-        assert_eq!(CONTRACT_REVISION, "C-UBM.0.1.0-DRAFT");
+        assert_eq!(CONTRACT_REVISION, "C-UBM.0.1.1-DRAFT");
         assert_eq!(CONTRACT_STATUS, "DRAFT");
         assert_eq!(CONTRACT_ACCEPTANCE_GATE, "U1");
     }
@@ -1855,6 +2105,7 @@ mod tests {
                 CompletionTerminal::Succeeded,
                 "succeeded",
             ),
+            (ContenderKind::Failure, CompletionTerminal::Failed, "failed"),
             (
                 ContenderKind::DispatchBegin,
                 CompletionTerminal::Succeeded,
@@ -1924,7 +2175,9 @@ mod tests {
             CommitState::Released
         );
         assert_eq!(ContenderKind::Success.as_str(), "success");
+        assert_eq!(ContenderKind::Failure.as_str(), "failure");
         assert_eq!(ContenderKind::AdapterLoss.as_str(), "adapter-loss");
+        assert_eq!(CompletionTerminal::Failed.as_str(), "failed");
         assert_eq!(CommitState::NotDispatched.as_str(), "not-dispatched");
     }
 
@@ -2097,5 +2350,109 @@ mod tests {
         };
         assert_eq!(negotiated.selected, 2);
         assert_eq!(negotiated.axis, RuntimeAxis::EventSchema);
+    }
+
+    #[test]
+    fn contract_fix_rulings() {
+        use super::{
+            GENERIC_PERIPHERAL_ALLOWED_KEYS, GattPath, GattPathParams, MAX_DECIMAL_DIGITS,
+            MAX_OPERATION_BYTES, RuntimeAxis, assert_generic_peripheral_decl, effective_max_bytes,
+        };
+        // R1: a 1MiB declaration clamps to the frozen ceiling.
+        match effective_max_bytes(&[1_048_576]) {
+            Ok(effective) => assert_eq!(effective, MAX_OPERATION_BYTES),
+            Err(_) => check(false, "1MiB max must clamp to the ceiling"),
+        }
+        assert!(super::assert_bytes_within_limit(524_289, &[Some(1_048_576)], "write").is_err());
+        // R4: unknown axes are rejected at the wire boundary.
+        assert_eq!(
+            RuntimeAxis::from_str("backend-contract"),
+            Some(RuntimeAxis::BackendContract)
+        );
+        assert_eq!(RuntimeAxis::from_str("future-axis"), None);
+        assert_eq!(RuntimeAxis::BackendContract.as_str(), "backend-contract");
+        // R8: fail-closed generic allowlist.
+        assert!(assert_generic_peripheral_decl(&["octetPayload"]).is_ok());
+        assert!(assert_generic_peripheral_decl(&["spo2Sample"]).is_err());
+        assert!(assert_generic_peripheral_decl(&["sleepStage"]).is_err());
+        assert!(GENERIC_PERIPHERAL_ALLOWED_KEYS.contains(&"octetPayload"));
+        // R9: paired uuid/occurrence plus attachment scope.
+        let attachment = match attachment_fixture() {
+            Some(attachment) => attachment,
+            None => {
+                check(false, "attachment fixture must validate");
+                return;
+            }
+        };
+        let peer = match PeerIdentity::new(
+            attachment.clone(),
+            PeerIdentityDomain::PublicAddress,
+            "AA:BB:CC:DD:EE:FF",
+        ) {
+            Ok(peer) => peer,
+            Err(_) => {
+                check(false, "peer fixture must validate");
+                return;
+            }
+        };
+        let lease = match LeaseId::new("lease-1") {
+            Ok(lease) => lease,
+            Err(_) => {
+                check(false, "lease fixture must validate");
+                return;
+            }
+        };
+        let connection_generation = match Generation::new("cg-1") {
+            Ok(generation) => generation,
+            Err(_) => {
+                check(false, "generation fixture must validate");
+                return;
+            }
+        };
+        let database_generation = match Generation::new("dg-1") {
+            Ok(generation) => generation,
+            Err(_) => {
+                check(false, "generation fixture must validate");
+                return;
+            }
+        };
+        assert!(
+            GattPath::new(GattPathParams {
+                attachment: attachment.clone(),
+                peer: peer.clone(),
+                connection_generation: connection_generation.clone(),
+                database_generation: database_generation.clone(),
+                service_uuid: String::from("180D"),
+                service_occurrence: 0,
+                characteristic_uuid: Some(String::from("2A37")),
+                characteristic_occurrence: None,
+                descriptor_uuid: None,
+                descriptor_occurrence: None,
+                owner_lease: lease.clone(),
+            })
+            .is_err()
+        );
+        assert!(
+            GattPath::new(GattPathParams {
+                attachment: attachment.clone(),
+                peer: peer.clone(),
+                connection_generation: connection_generation.clone(),
+                database_generation: database_generation.clone(),
+                service_uuid: String::from("180D"),
+                service_occurrence: 0,
+                characteristic_uuid: None,
+                characteristic_occurrence: None,
+                descriptor_uuid: Some(String::from("2902")),
+                descriptor_occurrence: Some(0),
+                owner_lease: lease.clone(),
+            })
+            .is_err()
+        );
+        // R14: canonical decimal cap.
+        assert_eq!(MAX_DECIMAL_DIGITS, 20);
+        assert!(super::parse_u64_decimal("+1").is_err());
+        assert!(super::parse_u64_decimal(" 1").is_err());
+        assert!(super::parse_i64_decimal("+1").is_err());
+        assert!(super::parse_u64_decimal("111111111111111111111").is_err());
     }
 }

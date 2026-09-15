@@ -2,14 +2,18 @@
 // The single entrypoint for the frozen contract draft. No imports from
 // src/**, no private app-model content, no RxJS.
 
+export { freezeTable } from './freeze';
+
 export {
   BUILD_VERSION_IS_HANDSHAKE_AXIS,
   CONTRACT_ACCEPTANCE_GATE,
   CONTRACT_REVISION,
   CONTRACT_STATUS,
+  RUNTIME_AXES,
   assertContractRevisionEqual,
   assertHandshakeComplete,
   assertNegotiatedWithinOffer,
+  isRuntimeAxis,
   makeVersionSpan,
   negotiateCoreOffer,
   negotiateIpcOffer,
@@ -84,6 +88,7 @@ export {
   CLIENT_AGGREGATE_BYTES,
   I64_MAX,
   I64_MIN,
+  MAX_DECIMAL_DIGITS,
   MAX_IPC_LEASES_PER_IDENTITY,
   MAX_OPERATION_BYTES,
   MAX_SCAN_STATE_BYTES,
@@ -177,7 +182,7 @@ export type {
 } from './central';
 
 export {
-  PERIPHERAL_FORBIDDEN_KEY_SUBSTRINGS,
+  GENERIC_PERIPHERAL_ALLOWED_KEYS,
   arbitrateServerResponse,
   assertAdvertisementWithinLimits,
   assertAtomicCommit,
@@ -217,6 +222,7 @@ export type {
 
 export {
   OVERFLOW_POLICIES,
+  RESERVED_CONTROL_BYTES,
   RESERVED_CONTROL_CAPACITY,
   STREAM_DEFAULTS,
   applyStreamAdmission,

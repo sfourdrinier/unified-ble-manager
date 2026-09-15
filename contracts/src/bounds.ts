@@ -88,12 +88,13 @@ export function earliestDeadline(first: number, second: number): number {
 }
 
 // The effective maximum is the minimum of the operation, negotiated, adapter,
-// and protocol maxima. An unavailable or unmeasured maximum is not infinity.
+// and protocol maxima, clamped to the frozen operation ceiling. An
+// unavailable or unmeasured maximum is not infinity.
 export function effectiveMaxBytes(maxima: readonly number[]): number {
   if (maxima.length === 0) {
     throw contractError('argument.invalid', 'core', 'bytes.maxima');
   }
-  let effective = MAX_OPERATION_BYTES + 1;
+  let effective: number = MAX_OPERATION_BYTES;
   for (const maximum of maxima) {
     if (typeof maximum !== 'number' || !Number.isSafeInteger(maximum) || maximum <= 0) {
       throw contractError('argument.invalid', 'core', 'bytes.maxima');
@@ -128,19 +129,32 @@ export function assertBytesWithinLimit(
 // DATA-02: large counters and fractional aligned times cross bindings without
 // precision loss. JS integers stay within the safe range; 64-bit wire values
 // cross as decimal strings and validate as bigint.
+//
+// Canonical decimal form: `^-?[0-9]+$` with no plus sign, no whitespace, no
+// hex/fraction/exponent, and at most MAX_DECIMAL_DIGITS digits excluding an
+// optional leading `-`. Longer digit strings are rejected as `bytes.invalid`
+// before range checks; the Rust mirror enforces the identical form.
 export const U64_MAX: bigint = 18446744073709551615n;
 export const U64_MIN: bigint = 0n;
 export const I64_MAX: bigint = 9223372036854775807n;
 export const I64_MIN: bigint = -9223372036854775808n;
+export const MAX_DECIMAL_DIGITS: 20 = 20;
 
 export function isSafeJsInteger(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value);
+}
+
+function assertDecimalDigitCap(digits: string, path: string): void {
+  if (digits.length > MAX_DECIMAL_DIGITS) {
+    throw contractError('bytes.invalid', 'core', path);
+  }
 }
 
 export function parseU64Decimal(value: unknown): bigint {
   if (typeof value !== 'string' || !/^[0-9]+$/.test(value)) {
     throw contractError('bytes.invalid', 'core', 'u64.input');
   }
+  assertDecimalDigitCap(value, 'u64.input');
   const parsed = BigInt(value);
   if (parsed < U64_MIN || parsed > U64_MAX) {
     throw contractError('bytes.invalid', 'core', 'u64.range');
@@ -152,6 +166,8 @@ export function parseI64Decimal(value: unknown): bigint {
   if (typeof value !== 'string' || !/^-?[0-9]+$/.test(value)) {
     throw contractError('bytes.invalid', 'core', 'i64.input');
   }
+  const digits = value.startsWith('-') ? value.slice(1) : value;
+  assertDecimalDigitCap(digits, 'i64.input');
   const parsed = BigInt(value);
   if (parsed < I64_MIN || parsed > I64_MAX) {
     throw contractError('bytes.invalid', 'core', 'i64.range');

@@ -12,6 +12,7 @@ import {
   makeTerminalRecord,
   recoveryFor,
 } from '../src/index';
+import { BLE_ERROR_CODES } from '../../src/backend-contract/errors';
 
 const REQUIRED_BASE_CODES = [
   'protocol.incompatible',
@@ -96,6 +97,13 @@ describe('error identity catalog', () => {
     for (const code of ERROR_CODE_LIST) {
       expect(isBleErrorCode(code)).toBe(true);
     }
+  });
+
+  test('matches the 4.x oracle catalog verbatim (67/67, LOW-1)', () => {
+    const oracle: readonly string[] = BLE_ERROR_CODES;
+    expect(oracle.length).toBe(67);
+    expect(ERROR_CODE_LIST.length).toBe(67);
+    expect([...ERROR_CODE_LIST]).toEqual([...oracle]);
   });
 });
 

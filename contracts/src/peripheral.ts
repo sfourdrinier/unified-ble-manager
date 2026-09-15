@@ -5,6 +5,7 @@
 // truthful role concurrency, shared lifecycle primitives) WITHOUT embedding
 // commercial or physiological behavior. See semantic-map AC-05.
 
+import { freezeTable } from './freeze';
 import { canonicalUuidValue } from './identities';
 import { contractError } from './outcomes';
 
@@ -255,26 +256,29 @@ export function validateTargetedNotification(input: {
   });
 }
 
-// Generic UBM carries no product policy: declarations with commercial or
-// physiological keys are rejected at the boundary.
-export const PERIPHERAL_FORBIDDEN_KEY_SUBSTRINGS: readonly string[] = [
-  'ecg',
-  'heart',
-  'physio',
-  'rr-interval',
-  'contact',
-  'payment',
-  'sku',
-  'subscription',
-] satisfies readonly string[];
+// Generic UBM carries no product policy: only the frozen generic shape is
+// admitted at the boundary. The allowlist is fail-closed: any key not listed
+// here — including commercial or physiological keys such as spo2, glucose,
+// sleep, heart, ecg, blood-pressure, oura, dexcom, vo2max, payment, sku, or
+// subscription — is rejected with `argument.invalid`. Additions to the
+// generic shape require a contract revision, never silent passthrough.
+export const GENERIC_PERIPHERAL_ALLOWED_KEYS: readonly string[] = freezeTable([
+  'octetPayload',
+  'serviceUuids',
+  'manufacturerId',
+  'manufacturerPayload',
+  'serviceDataUuid',
+  'serviceDataPayload',
+  'localName',
+  'txPowerLevel',
+  'flags',
+  'appearance',
+] satisfies readonly string[]);
 
 export function assertGenericPeripheralDecl(declaration: { readonly [key: string]: unknown }): void {
   for (const key of Object.keys(declaration)) {
-    const lowered = key.toLowerCase();
-    for (const forbidden of PERIPHERAL_FORBIDDEN_KEY_SUBSTRINGS) {
-      if (lowered.includes(forbidden)) {
-        throw contractError('argument.invalid', 'core', 'peripheral.generic-decl');
-      }
+    if (!GENERIC_PERIPHERAL_ALLOWED_KEYS.some(allowed => allowed === key)) {
+      throw contractError('argument.invalid', 'core', 'peripheral.generic-decl');
     }
   }
 }

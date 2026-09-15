@@ -1190,6 +1190,7 @@ impl Kernel {
 const fn terminal_kind_from_completion(terminal: CompletionTerminal) -> OperationTerminalKind {
     match terminal {
         CompletionTerminal::Succeeded => OperationTerminalKind::Succeeded,
+        CompletionTerminal::Failed => OperationTerminalKind::Failed,
         CompletionTerminal::Aborted => OperationTerminalKind::Aborted,
         CompletionTerminal::TimedOut => OperationTerminalKind::TimedOut,
         CompletionTerminal::Disconnected => OperationTerminalKind::Disconnected,
@@ -1202,6 +1203,7 @@ const fn terminal_kind_from_completion(terminal: CompletionTerminal) -> Operatio
 fn cause_for(kind: ContenderKind) -> Option<BleErrorCode> {
     match kind {
         ContenderKind::Success | ContenderKind::DispatchBegin => None,
+        ContenderKind::Failure => Some(BleErrorCode::PlatformFailure),
         ContenderKind::Abort | ContenderKind::SessionStop => Some(BleErrorCode::OperationAborted),
         ContenderKind::Timeout => Some(BleErrorCode::OperationTimedOut),
         ContenderKind::Disconnect => Some(BleErrorCode::OperationDisconnected),

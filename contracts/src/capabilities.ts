@@ -5,16 +5,17 @@
 // (read-only reference). Capability data is runtime information from the
 // instantiated backend, never a static platform matrix.
 
+import { freezeTable } from './freeze';
 import { contractError } from './outcomes';
 
 export type CapabilityState = 'supported' | 'limited' | 'unsupported' | 'unavailable';
 
-export const CAPABILITY_STATES: readonly CapabilityState[] = [
+export const CAPABILITY_STATES: readonly CapabilityState[] = freezeTable([
   'supported',
   'limited',
   'unsupported',
   'unavailable',
-] satisfies readonly CapabilityState[];
+] satisfies readonly CapabilityState[]);
 
 export interface Limitation {
   readonly code: string;
@@ -106,14 +107,23 @@ export function makeCapabilityDescriptor(input: {
   if (typeof input.state !== 'string' || !CAPABILITY_STATES.some(state => state === input.state)) {
     throw contractError('argument.invalid', 'capability', 'capability.state');
   }
-  const state: CapabilityState =
-    input.state === 'supported'
-      ? 'supported'
-      : input.state === 'limited'
-        ? 'limited'
-        : input.state === 'unsupported'
-          ? 'unsupported'
-          : 'unavailable';
+  let state: CapabilityState;
+  switch (input.state) {
+    case 'supported':
+      state = 'supported';
+      break;
+    case 'limited':
+      state = 'limited';
+      break;
+    case 'unsupported':
+      state = 'unsupported';
+      break;
+    case 'unavailable':
+      state = 'unavailable';
+      break;
+    default:
+      throw contractError('argument.invalid', 'capability', 'capability.state');
+  }
   const limitations: Limitation[] = [];
   for (const entry of input.limitations) {
     limitations.push(requireLimitation(entry, 'capability.limitation'));
@@ -148,7 +158,7 @@ export function makeCapabilityDescriptor(input: {
   return Object.freeze({
     id: input.id,
     state,
-    limits: input.limits,
+    limits: Object.freeze({ ...input.limits }),
     limitations: Object.freeze(limitations),
     evidence: Object.freeze({
       receiptId: input.evidence.receiptId,
@@ -180,7 +190,7 @@ export function assertCapabilityAllows(
   }
 }
 
-export const BUILT_IN_CAPABILITY_IDS: readonly string[] = [
+export const BUILT_IN_CAPABILITY_IDS: readonly string[] = freezeTable([
   'central.scan',
   'central.connect',
   'central.discover',
@@ -199,7 +209,7 @@ export const BUILT_IN_CAPABILITY_IDS: readonly string[] = [
   'peripheral.advertise',
   'peripheral.respond',
   'peripheral.notify',
-] satisfies readonly string[];
+] satisfies readonly string[]);
 
 export function isBuiltInCapabilityId(value: unknown): value is string {
   return typeof value === 'string' && BUILT_IN_CAPABILITY_IDS.some(id => id === value);
