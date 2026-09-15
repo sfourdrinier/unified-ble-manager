@@ -1,0 +1,252 @@
+//! N-API binding surface for the UBM 5.0 FFI feasibility slice.
+//!
+//! Exchange proven here (FFI-NAPI card, DATA-02 / PKG-01 / PKG-02 / PKG-04):
+//! typed C-UBM errors, owned byte batches, lossless u64 counters, async
+//! cancellation, callback invalidation, and clean process exit.
+//!
+//! Byte ownership: every `Buffer` crossing is copied into an owned `Vec<u8>`
+//! on entry (`AsRef<[u8]>` borrow ends before return) and fresh `Buffer`s are
+//! built from owned `Vec<u8>` on exit. Rust never retains a borrow of JS
+//! memory; JS never views Rust memory without a copy.
+//!
+//! Panic containment: every export is `#[napi(catch_unwind)]`, so a Rust panic
+//! becomes a rejected JS `Error`, never an abort across the ABI. Proven by
+//! `__feasibilityPanicProbe` (test-only; remove before any production use).
+
+mod echo_core;
+
+use std::sync::Mutex;
+
+use echo_core::{check_revision, CoreBackend, EchoCore, EchoError};
+use napi::bindgen_prelude::{AsyncTask, Buffer, Env, Result, Task};
+use napi::threadsafe_function::{
+    ThreadSafeCallContext, ThreadsafeFunction, ThreadsafeFunctionCallMode,
+};
+use napi::{Error, Status};
+use napi_derive::napi;
+
+/// Encode a typed [`EchoError`] as a JS `Error` whose message carries the
+/// frozen `code|domain|operation|detail` wire form.
+fn to_napi_error(err: EchoError) -> Error {
+    Error::new(Status::GenericFailure, err.wire_message())
+}
+
+struct SessionInner {
+    core: Mutex<EchoCore>,
+    events: Mutex<Option<ThreadsafeFunction<String>>>,
+}
+
+/// Feasibility echo session. `open` enforces the init contract (PKG-02):
+/// a foreign `CONTRACT_REVISION` fails closed with `protocol.incompatible`.
+#[napi]
+pub struct EchoSession {
+    inner: SessionInner,
+}
+
+#[napi]
+impl EchoSession {
+    #[napi(constructor, catch_unwind)]
+    pub fn open(revision: String) -> Result<Self> {
+        check_revision(&revision, "echo-session.open").map_err(to_napi_error)?;
+        Ok(Self {
+            inner: SessionInner {
+                core: Mutex::new(EchoCore::open(&revision).map_err(to_napi_error)?),
+                events: Mutex::new(None),
+            },
+        })
+    }
+
+    /// Synchronous owned byte-batch round-trip.
+    #[napi(catch_unwind)]
+    pub fn echo_bytes(&self, input: Buffer) -> Result<Buffer> {
+        let owned: Vec<u8> = {
+            let core = self.inner.core.lock().map_err(|_| {
+                Error::new(
+                    Status::GenericFailure,
+                    "lifecycle.invariant-violation|core|echo-bytes|lock-poisoned",
+                )
+            })?;
+            CoreBackend::echo_bytes(&*core, input.as_ref(), "echo-bytes").map_err(to_napi_error)?
+        };
+        Ok(owned.into())
+    }
+
+    /// Lossless u64 round-trip over decimal strings (`BigInt(n).toString()`
+    /// in, `BigInt(out)` out). Values above `Number.MAX_SAFE_INTEGER` survive.
+    #[napi(catch_unwind)]
+    pub fn echo_counter(&self, decimal: String) -> Result<String> {
+        let core = self.inner.core.lock().map_err(|_| {
+            Error::new(
+                Status::GenericFailure,
+                "lifecycle.invariant-violation|core|echo-counter|lock-poisoned",
+            )
+        })?;
+        CoreBackend::echo_counter(&*core, &decimal, "echo-counter").map_err(to_napi_error)
+    }
+
+    /// Async echo on the libuv threadpool. `chunks` is a test hook bounding
+    /// the work loop (1..=1_000_000); cancellation observed at any chunk
+    /// boundary rejects with `operation.aborted`.
+    #[napi(catch_unwind)]
+    pub fn echo_bytes_async(
+        &self,
+        input: Buffer,
+        chunks: Option<u32>,
+    ) -> Result<AsyncTask<EchoAsyncTask>> {
+        let core = self.inner.core.lock().map_err(|_| {
+            Error::new(
+                Status::GenericFailure,
+                "lifecycle.invariant-violation|core|echo-bytes-async|lock-poisoned",
+            )
+        })?;
+        // Fail closed before queueing: destroyed sessions and oversize input
+        // reject synchronously instead of settling later.
+        let owned: Vec<u8> =
+            CoreBackend::echo_bytes(&*core, input.as_ref(), "echo-bytes").map_err(to_napi_error)?;
+        let task = EchoAsyncTask {
+            input: owned,
+            chunks: chunks.unwrap_or(64),
+            cancel: core.cancel_flag(),
+        };
+        drop(core);
+        Ok(AsyncTask::new(task))
+    }
+
+    /// Requests cancellation of in-flight async work started by this session.
+    #[napi(catch_unwind)]
+    pub fn cancel_inflight(&self) -> Result<()> {
+        let core = self.inner.core.lock().map_err(|_| {
+            Error::new(
+                Status::GenericFailure,
+                "lifecycle.invariant-violation|core|cancel-inflight|lock-poisoned",
+            )
+        })?;
+        core.cancel_inflight();
+        Ok(())
+    }
+
+    /// Registers the event callback. Registering twice replaces the previous
+    /// registration (the old one is aborted first: no double delivery).
+    #[napi(catch_unwind)]
+    pub fn on_event(&self, env: Env, callback: napi::JsFunction) -> Result<()> {
+        let tsfn: ThreadsafeFunction<String> =
+            callback.create_threadsafe_function(0, |ctx: ThreadSafeCallContext<String>| {
+                ctx.env.create_string(ctx.value.as_str()).map(|v| vec![v])
+            })?;
+        let mut slot = self.inner.events.lock().map_err(|_| {
+            Error::new(
+                Status::GenericFailure,
+                "lifecycle.invariant-violation|core|on-event|lock-poisoned",
+            )
+        })?;
+        if let Some(previous) = slot.take() {
+            let _ = previous.abort();
+        }
+        *slot = Some(tsfn);
+        let _ = env;
+        Ok(())
+    }
+
+    /// Delivers one event to the registered callback. Rejects loudly with
+    /// `lifecycle.destroyed` when no live registration exists (notably after
+    /// `close`): a callback after client close never fires silently.
+    #[napi(catch_unwind)]
+    pub fn emit_test_event(&self, payload: String) -> Result<()> {
+        let slot = self.inner.events.lock().map_err(|_| {
+            Error::new(
+                Status::GenericFailure,
+                "lifecycle.invariant-violation|core|emit-test-event|lock-poisoned",
+            )
+        })?;
+        match slot.as_ref() {
+            None => Err(Error::new(
+                Status::GenericFailure,
+                "lifecycle.destroyed|core|emit-test-event|no-live-callback",
+            )),
+            Some(tsfn) => {
+                if tsfn.aborted() {
+                    return Err(Error::new(
+                        Status::GenericFailure,
+                        "lifecycle.destroyed|core|emit-test-event|callback-aborted",
+                    ));
+                }
+                let status = tsfn.call(Ok(payload), ThreadsafeFunctionCallMode::NonBlocking);
+                if status != Status::Ok {
+                    return Err(Error::new(
+                        Status::GenericFailure,
+                        format!(
+                            "lifecycle.destroyed|core|emit-test-event|delivery-status-{status:?}"
+                        ),
+                    ));
+                }
+                Ok(())
+            }
+        }
+    }
+
+    /// Destroys the session: aborts the callback registration, cancels
+    /// in-flight work, and invalidates every later call with
+    /// `lifecycle.destroyed`. Idempotent.
+    #[napi(catch_unwind)]
+    pub fn close(&self) -> Result<()> {
+        let mut core = self.inner.core.lock().map_err(|_| {
+            Error::new(
+                Status::GenericFailure,
+                "lifecycle.invariant-violation|core|close|lock-poisoned",
+            )
+        })?;
+        core.close();
+        drop(core);
+        let mut slot = self.inner.events.lock().map_err(|_| {
+            Error::new(
+                Status::GenericFailure,
+                "lifecycle.invariant-violation|core|close|lock-poisoned",
+            )
+        })?;
+        if let Some(tsfn) = slot.take() {
+            let _ = tsfn.abort();
+        }
+        Ok(())
+    }
+}
+
+/// Threadpool work item for [`EchoSession::echo_bytes_async`].
+pub struct EchoAsyncTask {
+    input: Vec<u8>,
+    chunks: u32,
+    cancel: std::sync::Arc<echo_core::CancelFlag>,
+}
+
+impl Task for EchoAsyncTask {
+    type Output = Vec<u8>;
+    type JsValue = Buffer;
+
+    fn compute(&mut self) -> napi::Result<Self::Output> {
+        echo_core::echo_bytes_chunked(&self.input, self.chunks, &self.cancel, "echo-bytes-async")
+            .map_err(to_napi_error)
+    }
+
+    fn resolve(&mut self, _env: Env, output: Vec<u8>) -> napi::Result<Buffer> {
+        Ok(output.into())
+    }
+}
+
+/// Test-only panic probe: proves `catch_unwind` containment converts a Rust
+/// panic into a rejected JS `Error` instead of aborting the process.
+/// MUST NOT ship in any production binding.
+#[napi(catch_unwind, js_name = "__feasibilityPanicProbe")]
+pub fn __feasibility_panic_probe() -> Result<String> {
+    panic!("feasibility panic probe: must surface as a JS error, never abort");
+}
+
+/// Contract revision this binding speaks (PKG-01 artifact identity).
+#[napi(catch_unwind)]
+pub fn echo_revision() -> String {
+    echo_core::CONTRACT_REVISION.to_string()
+}
+
+/// Maximum byte-batch length (mirror of `MAX_OPERATION_BYTES`).
+#[napi(catch_unwind)]
+pub fn echo_max_bytes() -> u32 {
+    echo_core::MAX_OPERATION_BYTES as u32
+}

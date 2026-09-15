@@ -1,0 +1,19 @@
+[package]
+name = "ubm5_wasm_echo"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.98.1"
+description = "UBM 5.0 FFI feasibility: portable WASM echo (trackourhealth/bun-mono#1188, FFI-WASM card). Echo-only stand-in; NOT BLE functionality."
+license = "MIT"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+# Ergonomic JS mapping (Uint8Array/BigInt/wire-string errors) on top of the
+# raw ABI. Off by default so the portable build has zero imports.
+default = []
+js-glue = ["dep:wasm-bindgen"]
+
+[dependencies]
+wasm-bindgen = { version = "=0.2.128", optional = true }

@@ -1,0 +1,420 @@
+//! JNI bridge for the UBM 5.0 FFI feasibility slice (`com.ubm.echo`).
+//!
+//! Written in the `jni` 0.22 idiom: native entries take `EnvUnowned` (the
+//! FFI-safe type) and upgrade via `with_env`, which contains panics; a
+//! custom [`ErrorPolicy`] maps every failure to a typed `EchoException`
+//! (code/domain/operation fields + wire message) and panics to
+//! `lifecycle.invariant-violation`. The JVM process always survives.
+//!
+//! Sessions are `EchoCore` values behind process-global handle-table slots
+//! (`long` handles; `0` is never valid). Inputs cross by COPY (Java
+//! arrays/strings are never borrowed past the call); results are fresh Java
+//! objects. The core is called ONLY through `CoreBackend` (same seam as
+//! every other binding; wiring `ubm-core` later touches one `impl`).
+
+mod echo_core;
+
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, MutexGuard};
+
+use echo_core::{echo_bytes_chunked, CoreBackend, EchoCore, EchoError, CONTRACT_REVISION};
+use jni::errors::{Error as JniError, ErrorPolicy};
+use jni::objects::{JByteArray, JClass, JString, Reference as _};
+use jni::strings::JNIString;
+use jni::sys::{jbyteArray, jint, jlong, jstring};
+use jni::{Env, EnvUnowned};
+
+const EXCEPTION_CLASS: &str = "com/ubm/echo/EchoException";
+
+type Session = Arc<Mutex<EchoCore>>;
+
+struct Table {
+    next: u64,
+    sessions: HashMap<u64, Session>,
+}
+
+fn table() -> &'static Mutex<Table> {
+    static TABLE: std::sync::OnceLock<Mutex<Table>> = std::sync::OnceLock::new();
+    TABLE.get_or_init(|| {
+        Mutex::new(Table {
+            next: 1,
+            sessions: HashMap::new(),
+        })
+    })
+}
+
+fn lock_failed(operation: &'static str) -> EchoError {
+    EchoError::new(
+        "lifecycle.invariant-violation",
+        "core",
+        operation,
+        "lock-poisoned",
+    )
+}
+
+/// Error flowing through native bodies: a typed echo failure, or a JNI-level
+/// failure (mapped to `platform.failure` at the throw site).
+#[derive(Debug)]
+enum BridgeError {
+    Echo(EchoError),
+    Jni(JniError),
+}
+
+impl From<JniError> for BridgeError {
+    fn from(err: JniError) -> Self {
+        Self::Jni(err)
+    }
+}
+
+impl BridgeError {
+    fn echo(err: EchoError) -> Self {
+        Self::Echo(err)
+    }
+
+    fn jni_failed(operation: &'static str, detail: &'static str) -> Self {
+        Self::Echo(EchoError::new(
+            "platform.failure",
+            "platform",
+            operation,
+            detail,
+        ))
+    }
+}
+
+/// Throws a typed `EchoException`. Falls back to a plain `RuntimeException`
+/// only when the typed throw itself fails (double fault).
+fn throw_echo(env: &mut Env, err: &EchoError) {
+    // Typed construction via `throw_new` on the EchoException class, which
+    // calls its single-string wire constructor: fields are parsed views of
+    // the message, so typing and wire can never disagree.
+    //
+    // NOTE (jni 0.22.4, pinned): `Env::throw_new` reports `Err(JavaException)`
+    // even when it successfully throws (proven: the typed exception IS
+    // pending afterwards). Success is therefore read from OBSERVABLE JVM
+    // state — a pending exception after the call means the throw landed —
+    // never from the crate's return value. The fallback runs ONLY when
+    // nothing is pending (genuine failure); running it unconditionally would
+    // clobber a correctly thrown typed exception with a RuntimeException.
+    // (`Env::throw` has the same inverted fate and is not used at all.)
+    let result = env.throw_new(
+        JNIString::from(EXCEPTION_CLASS),
+        JNIString::from(err.wire_message()),
+    );
+    if result.is_err() && !env.exception_check() {
+        let _ = env.throw_new(
+            JNIString::from("java/lang/RuntimeException"),
+            JNIString::from(err.wire_message()),
+        );
+    }
+}
+
+/// Policy: every `Err` and every panic becomes a typed `EchoException`;
+/// native methods return their default (`0`/`null`/void).
+struct ThrowEchoAndDefault;
+
+impl<T: Default> ErrorPolicy<T, BridgeError> for ThrowEchoAndDefault {
+    type Captures<'unowned_env_local: 'native_method, 'native_method> = &'static str;
+
+    fn on_error<'unowned_env_local: 'native_method, 'native_method>(
+        env: &mut Env<'unowned_env_local>,
+        operation: &mut Self::Captures<'unowned_env_local, 'native_method>,
+        err: BridgeError,
+    ) -> jni::errors::Result<T> {
+        match err {
+            BridgeError::Echo(echo) => throw_echo(env, &echo),
+            BridgeError::Jni(jni_err) => {
+                // The typed exception carries the stable identity; the
+                // underlying JNI error goes to stderr for diagnosis.
+                eprintln!("jni bridge [{operation}]: underlying JNI error: {jni_err:?}");
+                throw_echo(
+                    env,
+                    &EchoError::new("platform.failure", "platform", operation, "jni-call-failed"),
+                );
+            }
+        }
+        Ok(T::default())
+    }
+
+    fn on_panic<'unowned_env_local: 'native_method, 'native_method>(
+        env: &mut Env<'unowned_env_local>,
+        operation: &mut Self::Captures<'unowned_env_local, 'native_method>,
+        _payload: Box<dyn std::any::Any + Send + 'static>,
+    ) -> jni::errors::Result<T> {
+        throw_echo(
+            env,
+            &EchoError::new(
+                "lifecycle.invariant-violation",
+                "core",
+                operation,
+                "rust-panic-contained",
+            ),
+        );
+        Ok(T::default())
+    }
+}
+
+type BridgeResult<T> = Result<T, BridgeError>;
+
+/// Looks up a live session WITHOUT holding the table lock during the body,
+/// so `close`/`cancel` from another thread stay effective mid-call. Unknown
+/// or closed handles fail loudly with `lifecycle.destroyed`.
+fn lookup_session(handle: jlong, operation: &'static str) -> BridgeResult<Session> {
+    let table = table()
+        .lock()
+        .map_err(|_| BridgeError::echo(lock_failed(operation)))?;
+    table
+        .sessions
+        .get(&(handle as u64))
+        .cloned()
+        .ok_or_else(|| {
+            BridgeError::echo(EchoError::new(
+                "lifecycle.destroyed",
+                "core",
+                operation,
+                "unknown-or-closed-handle",
+            ))
+        })
+}
+
+fn lock_session<'a>(
+    session: &'a Session,
+    operation: &'static str,
+) -> BridgeResult<MutexGuard<'a, EchoCore>> {
+    session
+        .lock()
+        .map_err(|_| BridgeError::echo(lock_failed(operation)))
+}
+
+fn read_bytes(env: &mut Env, input: &JByteArray, operation: &'static str) -> BridgeResult<Vec<u8>> {
+    if input.as_raw().is_null() {
+        return Err(BridgeError::echo(EchoError::new(
+            "argument.invalid",
+            "core",
+            operation,
+            "null-array",
+        )));
+    }
+    env.convert_byte_array(input)
+        .map_err(|_| BridgeError::jni_failed(operation, "array-read-failed"))
+}
+
+fn read_string(env: &mut Env, input: &JString, operation: &'static str) -> BridgeResult<String> {
+    if input.as_raw().is_null() {
+        return Err(BridgeError::echo(EchoError::new(
+            "argument.invalid",
+            "core",
+            operation,
+            "null-string",
+        )));
+    }
+    input.try_to_string(env).map_err(|_| {
+        BridgeError::echo(EchoError::new(
+            "bytes.invalid",
+            "core",
+            operation,
+            "string-utf8",
+        ))
+    })
+}
+
+fn publish_bytes(
+    env: &mut Env,
+    bytes: Vec<u8>,
+    operation: &'static str,
+) -> BridgeResult<jbyteArray> {
+    env.byte_array_from_slice(&bytes)
+        .map(|array| array.into_raw())
+        .map_err(|_| BridgeError::jni_failed(operation, "array-alloc-failed"))
+}
+
+fn publish_string(env: &mut Env, text: String, operation: &'static str) -> BridgeResult<jstring> {
+    env.new_string(text)
+        .map(|string| string.into_raw())
+        .map_err(|_| BridgeError::jni_failed(operation, "string-alloc-failed"))
+}
+
+/// Opens a session; returns the handle, or `0` with a pending
+/// `EchoException` on failure. A foreign revision fails closed with
+/// `protocol.incompatible` (PKG-02 init contract).
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_ubm_echo_EchoBridge_nativeOpen<'caller>(
+    mut unowned_env: EnvUnowned<'caller>,
+    _class: JClass<'caller>,
+    revision: JString<'caller>,
+) -> jlong {
+    unowned_env
+        .with_env(|env| -> BridgeResult<jlong> {
+            const OP: &str = "echo-session.open";
+            let text = read_string(env, &revision, OP)?;
+            let core = EchoCore::open(&text).map_err(BridgeError::echo)?;
+            let mut table = table()
+                .lock()
+                .map_err(|_| BridgeError::echo(lock_failed(OP)))?;
+            let handle = table.next.max(1);
+            table.next = handle.wrapping_add(1).max(1);
+            table.sessions.insert(handle, Arc::new(Mutex::new(core)));
+            Ok(handle as jlong)
+        })
+        .resolve_with::<ThrowEchoAndDefault, _>(|| "echo-session.open")
+}
+
+/// Synchronous owned byte-batch echo. Null input fails `argument.invalid`;
+/// oversize fails `bytes.too-large`; unknown/closed handles fail
+/// `lifecycle.destroyed`.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_ubm_echo_EchoBridge_nativeEchoBytes<'caller>(
+    mut unowned_env: EnvUnowned<'caller>,
+    _class: JClass<'caller>,
+    handle: jlong,
+    input: JByteArray<'caller>,
+) -> jbyteArray {
+    unowned_env
+        .with_env(|env| -> BridgeResult<jbyteArray> {
+            const OP: &str = "echo-bytes";
+            let session = lookup_session(handle, OP)?;
+            let bytes = read_bytes(env, &input, OP)?;
+            let out = {
+                let core = lock_session(&session, OP)?;
+                CoreBackend::echo_bytes(&*core, &bytes, OP).map_err(BridgeError::echo)?
+            };
+            publish_bytes(env, out, OP)
+        })
+        .resolve_with::<ThrowEchoAndDefault, _>(|| "echo-bytes")
+}
+
+/// Chunked echo with cooperative cancellation (foreign callers cancel from
+/// another thread). Counts above 1_000_000 fail `argument.invalid`.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_ubm_echo_EchoBridge_nativeEchoBytesChunked<'caller>(
+    mut unowned_env: EnvUnowned<'caller>,
+    _class: JClass<'caller>,
+    handle: jlong,
+    input: JByteArray<'caller>,
+    chunks: jint,
+) -> jbyteArray {
+    unowned_env
+        .with_env(|env| -> BridgeResult<jbyteArray> {
+            const OP: &str = "echo-bytes-chunked";
+            let session = lookup_session(handle, OP)?;
+            let bytes = read_bytes(env, &input, OP)?;
+            // Clone the flag under lock, then release before the long run so
+            // close/cancel from another thread stay effective mid-call. A
+            // close that lands first arms the flag: the worker entry-take
+            // aborts instead of operating on a dead session.
+            let flag = {
+                let core = lock_session(&session, OP)?;
+                core.cancel_flag()
+            };
+            let out =
+                echo_bytes_chunked(&bytes, chunks as u32, &flag, OP).map_err(BridgeError::echo)?;
+            publish_bytes(env, out, OP)
+        })
+        .resolve_with::<ThrowEchoAndDefault, _>(|| "echo-bytes-chunked")
+}
+
+/// Lossless u64 echo over decimal strings (`BigInteger.toString()` in,
+/// `new BigInteger(text)` out). Invalid input fails `bytes.invalid`.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_ubm_echo_EchoBridge_nativeEchoCounter<'caller>(
+    mut unowned_env: EnvUnowned<'caller>,
+    _class: JClass<'caller>,
+    handle: jlong,
+    decimal: JString<'caller>,
+) -> jstring {
+    unowned_env
+        .with_env(|env| -> BridgeResult<jstring> {
+            const OP: &str = "echo-counter";
+            let session = lookup_session(handle, OP)?;
+            let text = read_string(env, &decimal, OP)?;
+            let out = {
+                let core = lock_session(&session, OP)?;
+                CoreBackend::echo_counter(&*core, &text, OP).map_err(BridgeError::echo)?
+            };
+            publish_string(env, out, OP)
+        })
+        .resolve_with::<ThrowEchoAndDefault, _>(|| "echo-counter")
+}
+
+/// Arms session cancellation. The next chunked unit reports
+/// `operation.aborted` and disarms, so the session stays usable.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_ubm_echo_EchoBridge_nativeCancel<'caller>(
+    mut unowned_env: EnvUnowned<'caller>,
+    _class: JClass<'caller>,
+    handle: jlong,
+) {
+    unowned_env
+        .with_env(|env| -> BridgeResult<()> {
+            const OP: &str = "cancel-inflight";
+            let _ = env;
+            let session = lookup_session(handle, OP)?;
+            lock_session(&session, OP)?.cancel_inflight();
+            Ok(())
+        })
+        .resolve_with::<ThrowEchoAndDefault, _>(|| "cancel-inflight")
+}
+
+/// Destroys the session: cancels in-flight work and invalidates the handle.
+/// Unknown handles fail `lifecycle.destroyed` loudly, never silently.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_ubm_echo_EchoBridge_nativeClose<'caller>(
+    mut unowned_env: EnvUnowned<'caller>,
+    _class: JClass<'caller>,
+    handle: jlong,
+) {
+    unowned_env
+        .with_env(|env| -> BridgeResult<()> {
+            const OP: &str = "close";
+            let _ = env;
+            let mut guard_table = table()
+                .lock()
+                .map_err(|_| BridgeError::echo(lock_failed(OP)))?;
+            match guard_table.sessions.remove(&(handle as u64)) {
+                // Destroy the core itself: arms cancellation so in-flight
+                // chunked work holding a clone aborts at the next boundary.
+                Some(session) => {
+                    if let Ok(mut core) = session.lock() {
+                        core.close();
+                    }
+                    Ok(())
+                }
+                None => Err(BridgeError::echo(EchoError::new(
+                    "lifecycle.destroyed",
+                    "core",
+                    OP,
+                    "unknown-handle",
+                ))),
+            }
+        })
+        .resolve_with::<ThrowEchoAndDefault, _>(|| "close")
+}
+
+/// Test-only panic probe: a Rust panic MUST surface as
+/// `lifecycle.invariant-violation`, never abort the VM. MUST NOT ship.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_ubm_echo_EchoBridge_nativePanicProbe<'caller>(
+    mut unowned_env: EnvUnowned<'caller>,
+    _class: JClass<'caller>,
+    _handle: jlong,
+) {
+    unowned_env
+        .with_env(|env| -> BridgeResult<()> {
+            let _ = env;
+            panic!("feasibility panic probe: must throw, never abort the VM");
+        })
+        .resolve_with::<ThrowEchoAndDefault, _>(|| "panic-probe")
+}
+
+/// Contract revision this binding speaks (PKG-01 artifact identity).
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_ubm_echo_EchoBridge_nativeRevision<'caller>(
+    mut unowned_env: EnvUnowned<'caller>,
+    _class: JClass<'caller>,
+) -> jstring {
+    unowned_env
+        .with_env(|env| -> BridgeResult<jstring> {
+            const OP: &str = "echo-revision";
+            publish_string(env, CONTRACT_REVISION.to_string(), OP)
+        })
+        .resolve_with::<ThrowEchoAndDefault, _>(|| "echo-revision")
+}

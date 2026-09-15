@@ -1,0 +1,2 @@
+# Regenerable build/test output (reproduce via run_uniffi_roundtrip.sh).
+/target/
