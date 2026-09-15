@@ -1,0 +1,14 @@
+{
+  "suite": "ubm5-android-emulator-example-consumer-finding-v1",
+  "avd": "ubm5-emu-probe",
+  "serial": "emulator-5554",
+  "package": "com.bleplxexample",
+  "consumer": "example/android debug APK built from UNMODIFIED lane sources (x86_64)",
+  "install": "Success (pm install -r)",
+  "launch": "FATAL EXCEPTION on every launch; Application never attaches",
+  "exception": "java.lang.RuntimeException: Unable to instantiate application com.bleplxexample.MainApplication: java.lang.NullPointerException: Attempt to invoke virtual method 'android.content.Context android.content.Context.getApplicationContext()' on a null object reference",
+  "rootCause": "example/android/app/src/main/java/com/bleplxexample/MainApplication.kt:19-25 initializes `reactHost` as an eager property with `applicationContext`, which is null in the Application constructor (before attach()). Crashes on any device/ABI, not emulator-specific; invisible to assemble-only CI.",
+  "ownership": "example/android is outside this slice's allowed paths (reverted per scope correction); fix belongs to the owning slice. The probe consumer (com.ubmprobe) carries the corrected `by lazy` pattern in a slice-owned file.",
+  "origin": "REAL-EMULATOR",
+  "evidence": ["logs/EXAMPLE-CRASH-logcat.log"]
+}

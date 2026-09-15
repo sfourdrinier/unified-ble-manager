@@ -1,0 +1,31 @@
+$ dumpsys bluetooth_manager after disable
+[exit=0]
+Bluetooth Status
+  enabled: false
+  state: OFF
+  address: <REDACTED-MAC>
+  name: sdk_gphone64_x86_64
+
+Enable log:
+  09-15 15:32:23.589  Enabled  due to SYSTEM_BOOT by android
+  09-15 15:39:21.241 Disabled  due to APPLICATION_REQUEST by android
+  09-15 15:39:24.288  Enabled  due to APPLICATION_REQUEST by android
+  09-15 15:43:35.184 Disabled  due to APPLICATION_REQUEST by android
+  09-15 15:43:38.229  Enabled  due to APPLICATION_REQUEST by android
+  09-15 16:21:13.346 Disabled  due to APPLICATION_REQUEST by android
+  09-15 16:21:16.393  Enabled  due to APPLICATION_REQUEST by android
+  09-15 16:31:42.558 Disabled  due to APPLICATION_REQUEST by android
+
+Bluetooth crashed 0 times
+
+0 BLE apps registered
+
+BluetoothManagerService:
+  mEnable:false
+  mQuietEnable:false
+  mEnableExternal:false
+  mQuietEnableExternal:false
+
+Bluetooth Service not connected
+
+

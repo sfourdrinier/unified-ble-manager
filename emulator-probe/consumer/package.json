@@ -1,0 +1,30 @@
+{
+  "name": "ubm5-emu-probe-consumer",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Minimal UBM-owned emulator consumer for the UBM 5.0 U-ANDROID-EMULATOR slice. Runs the real 4.x native module path (UnifiedBleProtocolControl via BlePlxPackage) on a task-owned AVD. Not Expo Go, no JS mocks.",
+  "scripts": {
+    "android": "react-native run-android",
+    "start": "react-native start"
+  },
+  "dependencies": {
+    "text-encoding": "^0.7.0",
+    "react": "~19.2.0",
+    "react-native": "~0.86.2",
+    "unified-ble-manager": "file:../.."
+  },
+  "devDependencies": {
+    "@babel/core": "^7.25.2",
+    "@babel/preset-env": "^7.25.3",
+    "@babel/runtime": "^7.25.0",
+    "@react-native-community/cli": "^20.0.0",
+    "@react-native-community/cli-platform-android": "^20.0.0",
+    "@react-native/babel-preset": "~0.86.2",
+    "@react-native/gradle-plugin": "~0.86.2",
+    "@react-native/metro-config": "~0.86.2",
+    "metro-config": "^0.84.6"
+  },
+  "engines": {
+    "node": "^20.19.4 || ^22.13.0 || ^24.3.0 || >=25.0.0"
+  }
+}

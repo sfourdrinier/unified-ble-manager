@@ -1,0 +1,5 @@
+$ adb uninstall (idempotent reruns)
+[exit=0]
+Success
+
+

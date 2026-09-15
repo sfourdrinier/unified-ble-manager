@@ -1,0 +1,411 @@
+$ logcat reload poll 3
+[exit=0]
+--------- beginning of system
+D/CoreBackPreview(  542): Window{131318 u0 com.ubmprobe/com.ubmprobe.MainActivity}: Setting back callback OnBackInvokedCallbackInfo{mCallback=android.window.IOnBackInvokedCallback$Stub$Proxy@b248c4, mPriority=0, mIsAnimationCallback=false}
+--------- beginning of main
+D/TrafficStats(11507): tagSocket(119) with statsTag=0xffffffff, statsUid=-1
+D/EGL_emulation(11507): app_time_stats: avg=13373.65ms min=16.11ms max=227085.89ms count=17
+D/StatusBarIconController(  885): ignoring old pipeline callbacks, because the new mobile icons are enabled
+D/EGL_emulation(11507): app_time_stats: avg=523.91ms min=4.64ms max=1512.04ms count=3
+D/AndroidRuntime(11789): >>>>>> START com.android.internal.os.RuntimeInit uid 2000 <<<<<<
+I/AndroidRuntime(11789): Using default boot image
+I/AndroidRuntime(11789): Leaving lock profiling enabled
+I/app_process(11789): Core platform API reporting enabled, enforcing=false
+I/app_process(11789): Using CollectorTypeCC GC.
+D/nativeloader(11789): InitDefaultPublicLibraries for_preload=1: libandroid.so:libaaudio.so:libamidi.so:libbinder_ndk.so:libc.so:libcamera2ndk.so:libdl.so:libEGL.so:libGLESv1_CM.so:libGLESv2.so:libGLESv3.so:libicu.so:libicui18n.so:libicuuc.so:libjnigraphics.so:liblog.so:libmediandk.so:libm.so:libnativehelper.so:libnativewindow.so:libOpenMAXAL.so:libOpenSLES.so:libRS.so:libstdc++.so:libsync.so:libvulkan.so:libwebviewchromium_plat_support.so:libz.so
+D/app_process(11789): Time zone APEX ICU file found: /apex/com.android.tzdata/etc/icu/icu_tzdata.dat
+D/app_process(11789): I18n APEX ICU file found: /apex/com.android.i18n/etc/icu/icudt72l.dat
+W/app_process(11789): Unexpected CPU variant for x86: x86_64.
+W/app_process(11789): Known variants: atom, sandybridge, silvermont, goldmont, goldmont-plus, tremont, kabylake, default
+W/app_process(11789): ClassLoaderContext shared library size mismatch. Expected=2, found=0 (PCL[]{PCL[/system/framework/android.test.base.jar*836642756]#PCL[/system/framework/android.test.mock.jar*3186112116]} | PCL[])
+W/app_process(11789): ClassLoaderContext classpath size mismatch. expected=0, found=1 (PCL[]{PCL[/system/framework/android.test.runner.jar*4168958247]{PCL[/system/framework/android.test.base.jar*836642756]#PCL[/system/framework/android.test.mock.jar*3186112116]}#PCL[/system/framework/android.test.base.jar*836642756]} | PCL[/system/framework/android.test.runner.jar*4168958247])
+W/libc    (11789): Access denied finding property "ro.product.name_for_attestation"
+W/libc    (11789): Access denied finding property "ro.product.brand_for_attestation"
+W/libc    (11789): Access denied finding property "ro.product.model_for_attestation"
+D/AndroidRuntime(11789): Calling main entry com.android.commands.uiautomator.Launcher
+W/main    (11789): type=1400 audit(0.0:145): avc:  denied  { read } for  name="u:object_r:build_attestation_prop:s0" dev="tmpfs" ino=86 scontext=u:r:shell:s0 tcontext=u:object_r:build_attestation_prop:s0 tclass=file permissive=0
+D/UiAutomationConnection(11789): Created on user UserHandle{0}
+I/UiAutomation(11789): Initialized for user 0 on display 0
+W/UiAutomation(11789): Created with deprecatead constructor, assumes DEFAULT_DISPLAY
+D/AccessibilityManagerService(  542): changeCurrentUserForTestAutomationIfNeededLocked(0): ignoring because device doesn't support visible background users
+I/UiAutomationManager(  542): Registering UiTestAutomationService (id=com.android.server.accessibility/UiAutomation) when called by user 0
+W/main    (11789): type=1400 audit(0.0:146): avc:  denied  { read } for  name="u:object_r:build_attestation_prop:s0" dev="tmpfs" ino=86 scontext=u:r:shell:s0 tcontext=u:object_r:build_attestation_prop:s0 tclass=file permissive=0
+W/WindowMagnificationMgr(  542): requestConnection duplicated request: connect=false, mConnectionState=DISCONNECTED
+I/AiAiEcho( 1703): Settings changed for uri: content://settings/secure/accessibility_enabled
+V/UiAutomation(11789): Init UiAutomation@8abed2c[id=13, displayId=0, flags=0]
+I/AiAiEcho( 1703): Predicting[0]: 
+I/AiAiEcho( 1703): EchoTargets: 
+I/AiAiEcho( 1703): Filtered by AiAi flag check: 
+I/AiAiEcho( 1703): Ranked targets strategy: SORT, count: 0, ranking metadata: 
+I/AiAiEcho( 1703): Predicting[0]: 
+W/WindowMagnificationMgr(  542): requestConnection duplicated request: connect=false, mConnectionState=DISCONNECTED
+I/AiAiEcho( 1703): EchoTargets: 
+I/AiAiEcho( 1703): Filtered by AiAi flag check: 
+I/AiAiEcho( 1703): Ranked targets strategy: SORT, count: 0, ranking metadata: 
+I/AiAiEcho( 1703): #postPredictionTargets: Sending updates to UISurface lockscreen with targets# 0 (types=[])
+I/AiAiEcho( 1703): #postPredictionTargets: Sending updates to UISurface home with targets# 0 (types=[])
+W/PageIndicator(  885): Total number of pages invalid: 0. Assuming 1 page.
+W/main    (11789): type=1400 audit(0.0:147): avc:  denied  { read } for  name="u:object_r:build_attestation_prop:s0" dev="tmpfs" ino=86 scontext=u:r:shell:s0 tcontext=u:object_r:build_attestation_prop:s0 tclass=file permissive=0
+I/A       ( 1959): NGA disabled since it's running Panthera and at least one a11y feature is on.
+I/A       ( 1959): Nga state changed to NgaStateDetails{state=DISABLED, isSpecialExperience=false}
+I/AiAiEcho( 1703): Settings changed for uri: content://settings/secure/accessibility_enabled
+I/AiAiEcho( 1703): Predicting[0]: 
+I/AiAiEcho( 1703): EchoTargets: 
+I/AiAiEcho( 1703): Filtered by AiAi flag check: 
+I/AiAiEcho( 1703): Ranked targets strategy: SORT, count: 0, ranking metadata: 
+I/AiAiEcho( 1703): Predicting[0]: 
+I/AiAiEcho( 1703): EchoTargets: 
+I/AiAiEcho( 1703): Filtered by AiAi flag check: 
+I/AiAiEcho( 1703): Ranked targets strategy: SORT, count: 0, ranking metadata: 
+I/AiAiEcho( 1703): #postPredictionTargets: Sending updates to UISurface lockscreen with targets# 0 (types=[])
+I/AiAiEcho( 1703): #postPredictionTargets: Sending updates to UISurface home with targets# 0 (types=[])
+W/PageIndicator(  885): Total number of pages invalid: 0. Assuming 1 page.
+I/A       ( 1763): APA or Classic session decision: SessionDecision(sessionVariance=CLASSIC, platformVariance=CLASSIC, justification=CURRENT_PLATFORM_VARIANCE).
+I/A       ( 1763): Unsubscribed to apa or classic variant change.
+I/A       ( 1763): [Memory] eligibility: StashEligibility{4}
+D/BatterySaverPolicy(  542): accessibility changed to true, updating policy.
+W/AccessibilityNodeInfoDumper(11789): Fetch time: 6ms
+W/WindowMagnificationMgr(  542): requestConnection duplicated request: connect=false, mConnectionState=DISCONNECTED
+D/AccessibilityManagerService(  542): restoreCurrentUserForTestAutomationIfNeededLocked(): ignoring because device doesn't support visible background users
+I/AiAiEcho( 1703): Settings changed for uri: content://settings/secure/accessibility_enabled
+I/AiAiEcho( 1703): Predicting[0]: 
+I/AiAiEcho( 1703): EchoTargets: 
+I/AiAiEcho( 1703): Filtered by AiAi flag check: 
+D/AndroidRuntime(11789): Shutting down VM
+I/AiAiEcho( 1703): Ranked targets strategy: SORT, count: 0, ranking metadata: 
+I/AiAiEcho( 1703): Predicting[0]: 
+I/AiAiEcho( 1703): EchoTargets: 
+I/AiAiEcho( 1703): Filtered by AiAi flag check: 
+I/AiAiEcho( 1703): Ranked targets strategy: SORT, count: 0, ranking metadata: 
+I/AiAiEcho( 1703): #postPredictionTargets: Sending updates to UISurface lockscreen with targets# 0 (types=[])
+I/AiAiEcho( 1703): #postPredictionTargets: Sending updates to UISurface home with targets# 0 (types=[])
+W/PageIndicator(  885): Total number of pages invalid: 0. Assuming 1 page.
+D/BatterySaverPolicy(  542): accessibility changed to false, updating policy.
+I/A       ( 1959): NGA enabled in interactor.
+I/A       ( 1959): Nga state changed to NgaStateDetails{state=ENABLED, isSpecialExperience=false}
+I/A       ( 1763): Initializing all components
+I/A       ( 1763): onIsEnabledChanged, isEnabled: false
+I/A       ( 1763): APA or Classic session decision: SessionDecision(sessionVariance=CLASSIC, platformVariance=CLASSIC, justification=CURRENT_PLATFORM_VARIANCE).
+W/A       ( 1763): Disposing empty manager. Did you forgot to subscribe observables?
+W/A       ( 1763): Disposing empty manager. Did you forgot to subscribe observables?
+I/A       ( 1763): [Memory] eligibility: StashEligibility{6}
+W/A       ( 1763): Disposing empty manager. Did you forgot to subscribe observables?
+W/A       ( 1763): Disposing empty manager. Did you forgot to subscribe observables?
+W/A       ( 1763): Disposing empty manager. Did you forgot to subscribe observables?
+W/A       ( 1763): Disposing empty manager. Did you forgot to subscribe observables?
+W/A       ( 1763): Disposing empty manager. Did you forgot to subscribe observables?
+W/A       ( 1763): Disposing empty manager. Did you forgot to subscribe observables?
+W/A       ( 1763): Disposing empty manager. Did you forgot to subscribe observables?
+W/A       ( 1763): Disposing empty manager. Did you forgot to subscribe observables?
+I/A       ( 1763): onOpaVisibilityChanged: false
+W/A       ( 1763): Disposing empty manager. Did you forgot to subscribe observables?
+W/A       ( 1763): Disposing empty manager. Did you forgot to subscribe observables?
+W/A       ( 1763): Disposing empty manager. Did you forgot to subscribe observables?
+W/A       ( 1763): Disposing empty manager. Did you forgot to subscribe observables?
+W/A       ( 1763): Disposing empty manager. Did you forgot to subscribe observables?
+W/A       ( 1763): Disposing empty manager. Did you forgot to subscribe observables?
+I/A       ( 1763): Setting session to type: NO_SESSION
+W/A       ( 1763): Disposing empty manager. Did you forgot to subscribe observables?
+W/A       ( 1763): Disposing empty manager. Did you forgot to subscribe observables?
+W/A       ( 1763): Disposing empty manager. Did you forgot to subscribe observables?
+W/A       ( 1763): Disposing empty manager. Did you forgot to subscribe observables?
+W/A       ( 1763): Disposing empty manager. Did you forgot to subscribe observables?
+W/A       ( 1763): Disposing empty manager. Did you forgot to subscribe observables?
+W/A       ( 1763): Disposing empty manager. Did you forgot to subscribe observables?
+W/A       ( 1763): Disposing empty manager. Did you forgot to subscribe observables?
+I/A       ( 1763): setNavBarVisible: GestureNavBarVisible{navbarVisible=true}
+W/A       ( 1763): Disposing empty manager. Did you forgot to subscribe observables?
+W/A       ( 1763): Disposing empty manager. Did you forgot to subscribe observables?
+W/A       ( 1763): Disposing empty manager. Did you forgot to subscribe observables?
+W/A       ( 1763): Disposing empty manager. Did you forgot to subscribe observables?
+W/A       ( 1763): Disposing empty manager. Did you forgot to subscribe observables?
+W/A       ( 1763): Disposing empty manager. Did you forgot to subscribe observables?
+I/A       ( 1763): onDisabled. Registered: false
+I/A       ( 1763): State changed: IDLE => IDLE by NGA_STATE_CHANGED and N/A with Optional.empty
+I/A       ( 1763): Recognizer choice: (recognizer_type: 1, recognizer_mode: 1, choice_reason: 4)
+I/A       ( 1763): onActiveStateChangeEvent: IDLE => IDLE
+I/A       ( 1763): #onActiveStateChangeEvent, newState: IDLE, previousState: IDLE.
+I/A       ( 1763): on opa visibility changed false
+I/A       ( 1763): on opa visibility changed false
+I/A       ( 1763): stopListening(NGA_PAUSED_UNKNOWN_REASON, NGA_CREATE), idleOverride=NOT_LISTENING
+I/NgaEntryPointEventSendr( 1763): setupConnection
+I/A       ( 1763): Initialize
+W/ProcessStats(  542): Tracking association SourceState{b2b13b7 com.google.android.googlequicksearchbox:interactor/10132 BFgs #15252} whose proc state 4 is better than process ProcessState{d1131dc com.google.android.googlequicksearchbox:search/10132 pkg=com.google.android.googlequicksearchbox} proc state 14 (7 skipped)
+I/NgaEntryPointEventSendr( 1763): State changed: Disconnected => Connecting
+I/A       ( 1959): Creating pss binder().
+I/NgaEntryPointEventSendr( 1763): onServiceConnected
+I/A       ( 1959): Calling beginBinderSession().
+I/A       ( 1959): beginBinderSession(): calling binder
+I/A       ( 1763): Successfully initialized all components
+I/NgaEntryPointEventSendr( 1763): State changed: Connecting => Ready
+I/A       ( 1959): Using proto config with mendel
+I/A       ( 1959): Using proto config with mendel
+I/A       ( 1959): Using proto config with mendel
+I/A       ( 1959): Merging legacy hotword config map with new proto.
+I/A       ( 1959): Adding from config to map. Locale: cmn-Hant-TW modelPrefix: x_google Location:4e7cae00daee30ec565c34e3aa67a51f isSpeakerIdSupported: true
+I/A       ( 1959): Adding from config to map. Locale: id-ID modelPrefix: x_google Location:cfffcc1a4c1c084c003c8eb27f73d770 isSpeakerIdSupported: true
+I/A       ( 1959): Adding from config to map. Locale: ko-KR modelPrefix: x_google Location:0b132163a2eb2c1194b202067475724b isSpeakerIdSupported: true
+I/A       ( 1959): Skipping. Expected model: 2 Found: 1
+I/A       ( 1959): Adding from config to map. Locale: zh-TW modelPrefix: x_google Location:4e7cae00daee30ec565c34e3aa67a51f isSpeakerIdSupported: true
+I/A       ( 1959): Using proto config with mendel
+I/A       ( 1959): Using proto config with mendel
+I/A       ( 1959): Using proto config with mendel
+W/A       ( 1959): Queue length for executor EventBus is now 11. Perhaps some tasks are too long, or the pool is too small.
+W/CorpusConfigHelper( 1959): Invalid input from icing corpus JSON flag.
+W/CorpusConfigHelper( 1959): android.util.MalformedJsonException: Use JsonReader.setLenient(true) to accept malformed JSON at line 123 column 2
+W/CorpusConfigHelper( 1959): 	at android.util.JsonReader.syntaxError(JsonReader.java:1162)
+W/CorpusConfigHelper( 1959): 	at android.util.JsonReader.checkLenient(JsonReader.java:840)
+W/CorpusConfigHelper( 1959): 	at android.util.JsonReader.nextInArray(JsonReader.java:615)
+W/CorpusConfigHelper( 1959): 	at android.util.JsonReader.peek(JsonReader.java:345)
+W/CorpusConfigHelper( 1959): 	at android.util.JsonReader.hasNext(JsonReader.java:321)
+W/CorpusConfigHelper( 1959): 	at com.google.android.apps.gsa.searchbox.c.b.b.k.c(PG:7)
+W/CorpusConfigHelper( 1959): 	at com.google.android.apps.gsa.searchbox.c.b.b.k.<init>(PG:5)
+W/CorpusConfigHelper( 1959): 	at com.google.android.apps.gsa.staticplugins.searchboxroot.features.n.a.c.<init>(PG:16)
+W/CorpusConfigHelper( 1959): 	at com.google.android.apps.gsa.staticplugins.searchboxroot.b.a(PG:14)
+W/CorpusConfigHelper( 1959): 	at com.google.android.apps.gsa.staticplugins.searchboxroot.x.<init>(PG:7)
+W/CorpusConfigHelper( 1959): 	at com.google.android.apps.gsa.binaries.velvet.app.akd.b(PG:15)
+W/CorpusConfigHelper( 1959): 	at dagger.a.e.b(PG:1)
+W/CorpusConfigHelper( 1959): 	at com.google.android.apps.gsa.staticplugins.searchboxroot.a.a.a(PG:3)
+W/CorpusConfigHelper( 1959): 	at com.google.android.apps.gsa.binaries.velvet.app.ok.f(Unknown Source:2541)
+W/CorpusConfigHelper( 1959): 	at com.google.android.apps.gsa.binaries.velvet.app.ok.b(PG:1)
+W/CorpusConfigHelper( 1959): 	at com.google.android.apps.gsa.search.core.service.g.a.c.a(PG:2)
+W/CorpusConfigHelper( 1959): 	at com.google.android.libraries.gsa.k.a.f.a(PG:2)
+W/CorpusConfigHelper( 1959): 	at com.google.common.util.concurrent.dx.a(PG:1)
+W/CorpusConfigHelper( 1959): 	at com.google.common.util.concurrent.cv.run(PG:4)
+W/CorpusConfigHelper( 1959): 	at com.google.common.util.concurrent.dz.run(PG:1)
+W/CorpusConfigHelper( 1959): 	at com.google.android.libraries.i.ae.run(PG:1)
+W/CorpusConfigHelper( 1959): 	at java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1145)
+W/CorpusConfigHelper( 1959): 	at java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:644)
+W/CorpusConfigHelper( 1959): 	at com.google.android.libraries.i.k.run(PG:2)
+W/CorpusConfigHelper( 1959): 	at com.google.android.libraries.i.p.run(PG:4)
+W/CorpusConfigHelper( 1959): 	at java.lang.Thread.run(Thread.java:1012)
+W/ActivityManager(  542): Unable to start service Intent { cmp=com.google.android.apps.tachyon/.clientapi.ClientApiService } U=0: not found
+I/NgaEntryPointEventSendr( 1763): State changed: Ready => Disconnected (onOpaDisconnected)
+W/A       ( 1959): UiCallbackStub-onGenericEvent[ServiceEvent = 111] task was not run. Callback from Service received after client was disposed.
+I/MicroDetectionState( 1959): Should stop hotword detection immediately - true
+W/A       ( 1959): UiCallbackStub-onGenericEvent[ServiceEvent = 241] task was not run. Callback from Service received after client was disposed.
+W/A       ( 1959): UiCallbackStub-onGenericEvent[ServiceEvent = 241] task was not run. Callback from Service received after client was disposed.
+I/PBSessionCacheImpl( 1959): Deleted sessionId[8617562626799807] from persistence.
+W/SearchServiceCore( 1959): Abort, client detached.
+I/MicroDetectionState( 1959): Should stop hotword detection immediately - true
+I/A       ( 1959): Using proto config with mendel
+I/A       ( 1959): Using proto config with mendel
+D/ActivityManager(  542): sync unfroze 5144 com.google.android.gms for 6
+I/Icing   ( 5144): IndexChimeraService.getServiceInterface callingPackage=com.google.android.googlequicksearchbox componentName=null serviceId=36
+D/BoundBrokerSvc( 5144): onBind: Intent { act=com.google.android.gms.feedback.internal.IFeedbackService dat=chimera-action:/... cmp=com.google.android.gms/.chimera.GmsBoundBrokerService }
+D/BoundBrokerSvc( 5144): Loading bound service for intent: Intent { act=com.google.android.gms.feedback.internal.IFeedbackService dat=chimera-action:/... cmp=com.google.android.gms/.chimera.GmsBoundBrokerService }
+I/Icing   ( 5144): Usage reports ok 0, Failed Usage reports 0, indexed 0, rejected 0
+I/Icing   ( 5144): IndexChimeraService.getServiceInterface callingPackage=com.google.android.gms componentName=null serviceId=30
+I/Icing   ( 5144): Usage reports ok 0, Failed Usage reports 0, indexed 0, rejected 0
+D/TaplEvents( 1156): TIS / TouchInteractionService.onInputEvent: MotionEvent { action=ACTION_DOWN, actionButton=0, id[0]=0, x[0]=160.0, y[0]=224.0, toolType[0]=TOOL_TYPE_FINGER, buttonState=0, classification=NONE, metaState=0, flags=0x0, edgeFlags=0x0, pointerCount=1, historySize=0, eventTime=3951811, downTime=3951811, deviceId=-1, source=0x1002, displayId=0, eventId=-610680676 }
+D/TaplEvents( 1156): TIS / TouchInteractionService.onInputEvent: MotionEvent { action=ACTION_UP, actionButton=0, id[0]=0, x[0]=160.0, y[0]=224.0, toolType[0]=TOOL_TYPE_FINGER, buttonState=0, classification=NONE, metaState=0, flags=0x0, edgeFlags=0x0, pointerCount=1, historySize=0, eventTime=3951811, downTime=3951811, deviceId=-1, source=0x1002, displayId=0, eventId=-858608233 }
+D/EGL_emulation(11507): app_time_stats: avg=259.63ms min=14.83ms max=4149.06ms count=17
+W/unknown:BridgelessReact(11507): ReactHost{0}.getOrCreateReloadTask()
+W/WindowOnBackDispatcher(11507): sendCancelIfRunning: isInProgress=falsecallback=android.view.ViewRootImpl$$ExternalSyntheticLambda17@938247d
+D/audioserver(  420): FGS Logger Transaction failed
+D/audioserver(  420): -129
+W/unknown:BridgelessReact(11507): ReactHost{0}.getOrCreateReloadTask(): Resetting createReactInstance task ref
+D/CoreBackPreview(  542): Window{131318 u0 com.ubmprobe/com.ubmprobe.MainActivity}: Setting back callback null
+D/OpenGLRenderer(11507): endAllActiveAnimators on 0x73b58af0f000 (AlertController$RecycleListView) with handle 0x73b52af1c210
+W/InputManager-JNI(  542): Input channel object '131318 com.ubmprobe/com.ubmprobe.MainActivity (client)' was disposed without first being removed with the input manager!
+V/WindowManager(  542): Unknown focus tokens, dropping reportFocusChanged
+W/unknown:BridgelessReact(11507): ReactHost{0}.getOrCreateReloadTask(): Starting React Native reload
+W/unknown:BridgelessReact(11507): ReactHost{0}.getOrCreateReloadTask(): Calling ReactContext.onHostPause()
+W/unknown:BridgelessReact(11507): ReactHost{0}.raiseSoftException(callWithExistingReactInstance(callFunctionOnModule("RCTDeviceEventEmitter", "emit"))): Execute: reactInstance is null. Dropping work.
+E/unknown:ReactHost(11507): Unhandled SoftException
+E/unknown:ReactHost(11507): com.facebook.react.bridge.ReactNoCrashSoftException: raiseSoftException(callWithExistingReactInstance(callFunctionOnModule("RCTDeviceEventEmitter", "emit"))): Execute: reactInstance is null. Dropping work.
+E/unknown:ReactHost(11507): 	at com.facebook.react.runtime.ReactHostImpl.raiseSoftException(ReactHostImpl.kt:919)
+E/unknown:ReactHost(11507): 	at com.facebook.react.runtime.ReactHostImpl.raiseSoftException$default(ReactHostImpl.kt:910)
+E/unknown:ReactHost(11507): 	at com.facebook.react.runtime.ReactHostImpl.callWithExistingReactInstance$lambda$32(ReactHostImpl.kt:935)
+E/unknown:ReactHost(11507): 	at com.facebook.react.runtime.ReactHostImpl.$r8$lambda$OnkS1FVBHx0tAZXPMEZwFodv3co(Unknown Source:0)
+E/unknown:ReactHost(11507): 	at com.facebook.react.runtime.ReactHostImpl$$ExternalSyntheticLambda31.then(D8$$SyntheticClass:0)
+E/unknown:ReactHost(11507): 	at com.facebook.react.runtime.internal.bolts.Task$Companion.completeImmediately$lambda$3(Task.kt:360)
+E/unknown:ReactHost(11507): 	at com.facebook.react.runtime.internal.bolts.Task$Companion.$r8$lambda$b7MTC0ufkn_2TjF4BGcNqGR9qK0(Unknown Source:0)
+E/unknown:ReactHost(11507): 	at com.facebook.react.runtime.internal.bolts.Task$Companion$$ExternalSyntheticLambda3.run(D8$$SyntheticClass:0)
+E/unknown:ReactHost(11507): 	at com.facebook.react.runtime.internal.bolts.Executors$ImmediateExecutor.execute(Executors.kt:41)
+E/unknown:ReactHost(11507): 	at com.facebook.react.runtime.internal.bolts.Task$Companion.completeImmediately(Task.kt:358)
+E/unknown:ReactHost(11507): 	at com.facebook.react.runtime.internal.bolts.Task$Companion.access$completeImmediately(Task.kt:254)
+E/unknown:ReactHost(11507): 	at com.facebook.react.runtime.internal.bolts.Task.continueWith(Task.kt:133)
+E/unknown:ReactHost(11507): 	at com.facebook.react.runtime.internal.bolts.Task.continueWith$default(Task.kt:117)
+E/unknown:ReactHost(11507): 	at com.facebook.react.runtime.internal.bolts.Task.onSuccess$lambda$12(Task.kt:176)
+E/unknown:ReactHost(11507): 	at com.facebook.react.runtime.internal.bolts.Task.$r8$lambda$l0wwo5AvbHxlwfI1R7CH_codxoo(Unknown Source:0)
+E/unknown:ReactHost(11507): 	at com.facebook.react.runtime.internal.bolts.Task$$ExternalSyntheticLambda2.then(D8$$SyntheticClass:0)
+E/unknown:ReactHost(11507): 	at com.facebook.react.runtime.internal.bolts.Task$Companion.completeAfterTask$lambda$5(Task.kt:394)
+E/unknown:ReactHost(11507): 	at com.facebook.react.runtime.internal.bolts.Task$Companion.$r8$lambda$IPpysnehFwANEiW061YzapkMdoE(Unknown Source:0)
+E/unknown:ReactHost(11507): 	at com.facebook.react.runtime.internal.bolts.Task$Companion$$ExternalSyntheticLambda4.run(D8$$SyntheticClass:0)
+E/unknown:ReactHost(11507): 	at com.facebook.react.runtime.internal.bolts.Executors$ImmediateExecutor.execute(Executors.kt:41)
+E/unknown:ReactHost(11507): 	at com.facebook.react.runtime.internal.bolts.Task$Companion.completeAfterTask(Task.kt:392)
+E/unknown:ReactHost(11507): 	at com.facebook.react.runtime.internal.bolts.Task$Companion.access$completeAfterTask(Task.kt:254)
+E/unknown:ReactHost(11507): 	at com.facebook.react.runtime.internal.bolts.Task.continueWithTask(Task.kt:158)
+E/unknown:ReactHost(11507): 	at com.facebook.react.runtime.internal.bolts.Task.onSuccess(Task.kt:171)
+E/unknown:ReactHost(11507): 	at com.facebook.react.runtime.ReactHostImpl.callWithExistingReactInstance(ReactHostImpl.kt:931)
+E/unknown:ReactHost(11507): 	at com.facebook.react.runtime.ReactHostImpl.callWithExistingReactInstance$default(ReactHostImpl.kt:924)
+E/unknown:ReactHost(11507): 	at com.facebook.react.runtime.ReactHostImpl.callFunctionOnModule$ReactAndroid_debug(ReactHostImpl.kt:812)
+E/unknown:ReactHost(11507): 	at com.facebook.react.runtime.BridgelessReactContext.emitDeviceEvent(BridgelessReactContext.kt:157)
+E/unknown:ReactHost(11507): 	at com.facebook.react.modules.appstate.AppStateModule.sendEvent(AppStateModule.kt:71)
+E/unknown:ReactHost(11507): 	at com.facebook.react.modules.appstate.AppStateModule.sendAppStateChangeEvent(AppStateModule.kt:75)
+E/unknown:ReactHost(11507): 	at com.facebook.react.modules.appstate.AppStateModule.onHostPause(AppStateModule.kt:48)
+E/unknown:ReactHost(11507): 	at com.facebook.react.bridge.ReactContext.onHostPause(ReactContext.java:318)
+E/unknown:ReactHost(11507): 	at com.facebook.react.runtime.ReactHostImpl.getOrCreateReloadTask$lambda$52(ReactHostImpl.kt:1349)
+E/unknown:ReactHost(11507): 	at com.facebook.react.runtime.ReactHostImpl.$r8$lambda$l1fxX8_xmQbS6fhL4w41CLdUIX0(Unknown Source:0)
+E/unknown:ReactHost(11507): 	at com.facebook.react.runtime.ReactHostImpl$$ExternalSyntheticLambda7.then(D8$$SyntheticClass:0)
+E/unknown:ReactHost(11507): 	at com.facebook.react.runtime.internal.bolts.Task$Companion.completeAfterTask$lambda$5(Task.kt:394)
+E/unknown:ReactHost(11507): 	at com.facebook.react.runtime.internal.bolts.Task$Companion.$r8$lambda$IPpysnehFwANEiW061YzapkMdoE(Unknown Source:0)
+E/unknown:ReactHost(11507): 	at com.facebook.react.runtime.internal.bolts.Task$Companion$$ExternalSyntheticLambda4.run(D8$$SyntheticClass:0)
+E/unknown:ReactHost(11507): 	at android.os.Handler.handleCallback(Handler.java:958)
+E/unknown:ReactHost(11507): 	at android.os.Handler.dispatchMessage(Handler.java:99)
+E/unknown:ReactHost(11507): 	at android.os.Looper.loopOnce(Looper.java:205)
+E/unknown:ReactHost(11507): 	at android.os.Looper.loop(Looper.java:294)
+E/unknown:ReactHost(11507): 	at android.app.ActivityThread.main(ActivityThread.java:8177)
+E/unknown:ReactHost(11507): 	at java.lang.reflect.Method.invoke(Native Method)
+E/unknown:ReactHost(11507): 	at com.android.internal.os.RuntimeInit$MethodAndArgsCaller.run(RuntimeInit.java:552)
+E/unknown:ReactHost(11507): 	at com.android.internal.os.ZygoteInit.main(ZygoteInit.java:971)
+W/unknown:BridgelessReact(11507): ReactHost{0}.getOrCreateReloadTask(): Stopping all React Native surfaces
+E/unknown:SurfaceMountingManager(11507): Stopping surface [1]
+E/unknown:SurfaceMountingManager(11507): Surface [1] was stopped on SurfaceMountingManager.
+W/unknown:BridgelessReact(11507): ReactHost{0}.getOrCreateReloadTask(): Removing memory pressure listener
+W/unknown:BridgelessReact(11507): ReactHost{0}.getOrCreateReloadTask(): Resetting ReactContext ref
+W/unknown:BridgelessReact(11507): ReactHost{0}.getOrCreateReloadTask(): Destroying ReactContext
+W/unknown:BridgelessReact(11507): ReactHost{0}.getOrCreateReloadTask(): Calling DevSupportManager.onReactInstanceDestroyed(reactContext)
+W/unknown:ReactNative(11507): Packager connection already open, nooping.
+W/unknown:BridgelessReact(11507): ReactHost{0}.getOrCreateReloadTask(): Resetting ReactInstance ptr
+W/unknown:BridgelessReact(11507): ReactHost{0}.getOrCreateReloadTask(): Destroying ReactInstance
+E/unknown:ReactNative(11507): Tried to remove non-existent frame callback
+W/unknown:ReactNative(11507): Tried to enqueue runnable on already finished thread: 'v_native... dropping Runnable.
+W/unknown:ReactNative(11507): Tried to enqueue runnable on already finished thread: 'v_native... dropping Runnable.
+W/unknown:ReactNative(11507): Tried to enqueue runnable on already finished thread: 'v_native... dropping Runnable.
+W/unknown:ReactNative(11507): Tried to enqueue runnable on already finished thread: 'v_native... dropping Runnable.
+W/unknown:ReactNative(11507): Tried to enqueue runnable on already finished thread: 'v_native... dropping Runnable.
+W/unknown:ReactNative(11507): Tried to enqueue runnable on already finished thread: 'v_native... dropping Runnable.
+W/unknown:ReactNative(11507): Tried to enqueue runnable on already finished thread: 'v_native... dropping Runnable.
+W/unknown:ReactNative(11507): Tried to enqueue runnable on already finished thread: 'v_native... dropping Runnable.
+W/unknown:ReactNative(11507): Tried to enqueue runnable on already finished thread: 'v_native... dropping Runnable.
+W/unknown:ReactNative(11507): Tried to enqueue runnable on already finished thread: 'v_native... dropping Runnable.
+W/unknown:ReactNative(11507): Tried to enqueue runnable on already finished thread: 'v_native... dropping Runnable.
+W/unknown:ReactNative(11507): Tried to enqueue runnable on already finished thread: 'v_native... dropping Runnable.
+W/unknown:ReactNative(11507): Tried to enqueue runnable on already finished thread: 'v_native... dropping Runnable.
+W/unknown:ReactNative(11507): Tried to enqueue runnable on already finished thread: 'v_native... dropping Runnable.
+W/unknown:ReactNative(11507): Tried to enqueue runnable on already finished thread: 'v_native... dropping Runnable.
+W/unknown:ReactNative(11507): Tried to enqueue runnable on already finished thread: 'v_native... dropping Runnable.
+W/unknown:ReactNative(11507): Tried to enqueue runnable on already finished thread: 'v_native... dropping Runnable.
+D/EGL_emulation(11507): app_time_stats: avg=863.97ms min=12.39ms max=5949.85ms count=7
+W/unknown:BridgelessReact(11507): ReactHost{0}.raiseSoftException(onWindowFocusChange(hasFocus = "true")): Tried to access onWindowFocusChange while context is not ready
+E/unknown:ReactHost(11507): Unhandled SoftException
+E/unknown:ReactHost(11507): com.facebook.react.bridge.ReactNoCrashSoftException: raiseSoftException(onWindowFocusChange(hasFocus = "true")): Tried to access onWindowFocusChange while context is not ready
+E/unknown:ReactHost(11507): 	at com.facebook.react.runtime.ReactHostImpl.raiseSoftException(ReactHostImpl.kt:919)
+E/unknown:ReactHost(11507): 	at com.facebook.react.runtime.ReactHostImpl.raiseSoftException$default(ReactHostImpl.kt:910)
+E/unknown:ReactHost(11507): 	at com.facebook.react.runtime.ReactHostImpl.onWindowFocusChange(ReactHostImpl.kt:682)
+E/unknown:ReactHost(11507): 	at com.facebook.react.ReactDelegate.onWindowFocusChanged(ReactDelegate.kt:229)
+E/unknown:ReactHost(11507): 	at com.facebook.react.ReactActivityDelegate.onWindowFocusChanged(ReactActivityDelegate.java:235)
+E/unknown:ReactHost(11507): 	at com.facebook.react.ReactActivity.onWindowFocusChanged(ReactActivity.java:161)
+E/unknown:ReactHost(11507): 	at androidx.appcompat.view.WindowCallbackWrapper.onWindowFocusChanged(WindowCallbackWrapper.java:124)
+E/unknown:ReactHost(11507): 	at com.android.internal.policy.DecorView.onWindowFocusChanged(DecorView.java:1788)
+E/unknown:ReactHost(11507): 	at android.view.View.dispatchWindowFocusChanged(View.java:15933)
+E/unknown:ReactHost(11507): 	at android.view.ViewGroup.dispatchWindowFocusChanged(ViewGroup.java:1509)
+E/unknown:ReactHost(11507): 	at android.view.ViewRootImpl.dispatchFocusEvent(ViewRootImpl.java:4059)
+E/unknown:ReactHost(11507): 	at android.view.ViewRootImpl.handleWindowFocusChanged(ViewRootImpl.java:3963)
+E/unknown:ReactHost(11507): 	at android.view.ViewRootImpl.-$$Nest$mhandleWindowFocusChanged(Unknown Source:0)
+E/unknown:ReactHost(11507): 	at android.view.ViewRootImpl$ViewRootHandler.handleMessageImpl(ViewRootImpl.java:5954)
+E/unknown:ReactHost(11507): 	at android.view.ViewRootImpl$ViewRootHandler.handleMessage(ViewRootImpl.java:5862)
+E/unknown:ReactHost(11507): 	at android.os.Handler.dispatchMessage(Handler.java:106)
+E/unknown:ReactHost(11507): 	at android.os.Looper.loopOnce(Looper.java:205)
+E/unknown:ReactHost(11507): 	at android.os.Looper.loop(Looper.java:294)
+E/unknown:ReactHost(11507): 	at android.app.ActivityThread.main(ActivityThread.java:8177)
+E/unknown:ReactHost(11507): 	at java.lang.reflect.Method.invoke(Native Method)
+E/unknown:ReactHost(11507): 	at com.android.internal.os.RuntimeInit$MethodAndArgsCaller.run(RuntimeInit.java:552)
+E/unknown:ReactHost(11507): 	at com.android.internal.os.ZygoteInit.main(ZygoteInit.java:971)
+I/ImeTracker(  542): com.ubmprobe:51b3ea41: onRequestHide at ORIGIN_SERVER_HIDE_INPUT reason HIDE_SAME_WINDOW_FOCUSED_WITHOUT_EDITOR
+I/ImeTracker(  542): com.ubmprobe:51b3ea41: onCancelled at PHASE_SERVER_SHOULD_HIDE
+I/GoogleInputMethodService( 1574): GoogleInputMethodService.onFinishInput():3227 
+I/GoogleInputMethodService( 1574): GoogleInputMethodService.updateDeviceLockedStatus():2087 repeatCheckTimes = 0, unlocked = true
+I/GoogleInputMethodService( 1574): GoogleInputMethodService.onStartInput():1877 onStartInput(EditorInfo{inputType=0x0(NULL) imeOptions=0x0 privateImeOptions=null actionName=UNSPECIFIED actionLabel=null actionId=0 initialSelStart=-1 initialSelEnd=-1 initialCapsMode=0x0 hintText=null label=null packageName=com.ubmprobe fieldId=0 fieldName=null extras=null}, false)
+I/GoogleInputMethodService( 1574): GoogleInputMethodService.shouldHideHeaderOnInitialState():4008 ShouldHideHeaderOnInitialState = false
+I/GoogleInputMethodService( 1574): GoogleInputMethodService.updateDeviceLockedStatus():2087 repeatCheckTimes = 2, unlocked = true
+D/AudioFlinger(  420): mixer(0x77fc40373930) throttle end: throttle time(33)
+W/unknown:BridgelessReact(11507): ReactHost{0}.getOrCreateReloadTask(): Resetting start task ref
+W/unknown:BridgelessReact(11507): ReactHost{0}.getOrCreateReactInstanceTask()
+W/unknown:BridgelessReact(11507): ReactHost{0}.getOrCreateReactInstanceTask(): Start
+W/unknown:BridgelessReact(11507): ReactHost{0}.getJSBundleLoader()
+W/unknown:BridgelessReact(11507): ReactHost{0}.isMetroRunning()
+D/TrafficStats(11507): tagSocket(81) with statsTag=0xffffffff, statsUid=-1
+D/audioserver(  420): FGS Logger Transaction failed
+D/audioserver(  420): -129
+W/unknown:BridgelessReact(11507): ReactHost{0}.isMetroRunning(): Async result = true
+W/unknown:BridgelessReact(11507): ReactHost{0}.loadJSBundleFromMetro()
+D/CoreBackPreview(  542): Window{fd4f2aa u0 PopupWindow:520420b}: Setting back callback OnBackInvokedCallbackInfo{mCallback=android.window.IOnBackInvokedCallback$Stub$Proxy@fc1e238, mPriority=0, mIsAnimationCallback=false}
+W/WindowOnBackDispatcher(11507): sendCancelIfRunning: isInProgress=falsecallback=android.view.ViewRootImpl$$ExternalSyntheticLambda17@48ef3e7
+W/unknown:BridgelessReact(11507): ReactHost{0}.loadJSBundleFromMetro(): Creating BundleLoader
+D/CoreBackPreview(  542): Window{fd4f2aa u0 PopupWindow:520420b}: Setting back callback null
+W/unknown:BridgelessReact(11507): ReactHost{0}.getOrCreateReactInstanceTask(): Creating BridgelessReactContext
+W/unknown:BridgelessReact(11507): ReactHost{0}.getOrCreateReactInstanceTask(): Creating ReactInstance
+W/unknown:ReactNative(11507): Inspector connection already open, nooping.
+W/InputManager-JNI(  542): Input channel object 'fd4f2aa PopupWindow:520420b (client)' was disposed without first being removed with the input manager!
+W/unknown:BridgelessReact(11507): ReactHost{0}.getOrCreateReactInstanceTask(): Loading JS Bundle
+W/unknown:BridgelessReact(11507): ReactHost{0}.getOrCreateReactInstanceTask(): DevSupportManager.onNewReactContextCreated()
+W/unknown:ReactNative(11507): Packager connection already open, nooping.
+W/unknown:BridgelessReact(11507): ReactHost{0}.ReactContext.onHostResume()
+W/unknown:BridgelessReact(11507): ReactHost{0}.getOrCreateReloadTask(): Restarting previously running React Native Surfaces
+W/unknown:BridgelessReact(11507): ReactHost{0}.getOrCreateReactInstanceTask(): Executing ReactInstanceEventListeners
+W/unknown:BridgelessReact(11507): ReactHost{0}.getOrCreateReloadTask(): Resetting reload task ref
+I/wpa_supplicant(  872): wlan0: CTRL-EVENT-BEACON-LOSS 
+D/TrafficStats(11507): tagSocket(98) with statsTag=0xffffffff, statsUid=-1
+I/ReactNativeJS(11507): Running "UbmProbe" with {"rootTag":1,"initialProps":{},"fabric":true}
+W/unknown:ViewManagerPropertyUpdater(11507): Could not find generated setter for class com.facebook.react.views.debuggingoverlay.DebuggingOverlayManager
+W/unknown:ViewManagerPropertyUpdater(11507): Could not find generated setter for class com.facebook.react.uimanager.LayoutShadowNode
+W/unknown:ViewManagerPropertyUpdater(11507): Could not find generated setter for class com.facebook.react.views.safeareaview.ReactSafeAreaViewManager
+W/unknown:ViewManagerPropertyUpdater(11507): Could not find generated setter for class com.facebook.react.views.modal.ReactModalHostManager
+W/unknown:ViewManagerPropertyUpdater(11507): Could not find generated setter for class com.facebook.react.views.progressbar.ReactProgressBarViewManager
+W/unknown:ViewManagerPropertyUpdater(11507): Could not find generated setter for class com.facebook.react.views.scroll.ReactHorizontalScrollViewManager
+W/unknown:ViewManagerPropertyUpdater(11507): Could not find generated setter for class com.facebook.react.views.image.ReactImageManager
+W/unknown:ViewManagerPropertyUpdater(11507): Could not find generated setter for class com.facebook.react.views.text.ReactTextViewManager
+W/unknown:ViewManagerPropertyUpdater(11507): Could not find generated setter for class com.facebook.react.views.scroll.ReactHorizontalScrollContainerViewManager
+W/unknown:ViewManagerPropertyUpdater(11507): Could not find generated setter for class com.facebook.react.views.unimplementedview.ReactUnimplementedViewManager
+W/unknown:ViewManagerPropertyUpdater(11507): Could not find generated setter for class com.facebook.react.views.scroll.ReactScrollViewManager
+W/unknown:ViewManagerPropertyUpdater(11507): Could not find generated setter for class com.facebook.react.views.view.ReactViewManager
+W/unknown:ViewManagerPropertyUpdater(11507): Could not find generated setter for class com.facebook.react.views.drawer.ReactDrawerLayoutManager
+W/unknown:ViewManagerPropertyUpdater(11507): Could not find generated setter for class com.facebook.react.views.switchview.ReactSwitchManager
+W/unknown:ViewManagerPropertyUpdater(11507): Could not find generated setter for class com.facebook.react.views.swiperefresh.SwipeRefreshLayoutManager
+W/unknown:ViewManagerPropertyUpdater(11507): Could not find generated setter for class com.facebook.react.views.textinput.ReactTextInputManager
+W/unknown:ViewManagerPropertyUpdater(11507): Could not find generated setter for class com.facebook.react.views.text.SelectableTextViewManager
+W/unknown:ViewManagerPropertyUpdater(11507): Could not find generated setter for class com.facebook.react.views.virtual.view.ReactVirtualViewManager
+D/TrafficStats(11507): tagSocket(120) with statsTag=0xffffffff, statsUid=-1
+I/ReactNativeJS(11507): [UBM_PROBE] app-mounted
+D/EGL_emulation(11507): app_time_stats: avg=1543.30ms min=1543.30ms max=1543.30ms count=1
+I/netd    (  358): tetherGetStats() -> {[]} <0.34ms>
+I/netd    (  358): bandwidthSetGlobalAlert(2097152) <0.08ms>
+I/netd    (  358): bandwidthRemoveInterfaceQuota(eth0) <0.40ms>
+I/netd    (  358): bandwidthSetInterfaceQuota(eth0, 9223372036854775807) <0.32ms>
+I/netd    (  358): bandwidthRemoveInterfaceQuota(eth0) <0.34ms>
+I/netd    (  358): bandwidthSetInterfaceQuota(eth0, 9223372036854775807) <0.31ms>
+D/android.hardware.audio@7.1-impl.ranchu(  364): threadLoop: entering standby, frames: 4173568
+D/EGL_emulation(11507): app_time_stats: avg=261.90ms min=10.45ms max=1499.31ms count=6
+D/StatusBarIconController(  885): ignoring old pipeline callbacks, because the new mobile icons are enabled
+D/CompatibilityChangeReporter(  542): Compat change id reported: 218533173; UID 10196; state: ENABLED
+D/CompatibilityChangeReporter(  542): Compat change id reported: 262645982; UID 10196; state: ENABLED
+I/AiAiEcho( 1703): Predicting[0]: 
+I/AiAiEcho( 1703): EchoTargets: 
+I/AiAiEcho( 1703): Filtered by AiAi flag check: 
+I/AiAiEcho( 1703): Ranked targets strategy: SORT, count: 0, ranking metadata: 
+I/AiAiEcho( 1703): #postPredictionTargets: Sending updates to UISurface lockscreen with targets# 0 (types=[])
+D/EGL_emulation(  885): app_time_stats: avg=60000.01ms min=60000.01ms max=60000.01ms count=1
+W/PageIndicator(  885): Total number of pages invalid: 0. Assuming 1 page.
+W/ProcessStats(  542): Tracking association SourceState{e2866d com.google.android.gms.persistent/10128 BFgs #15284} whose proc state 4 is better than process ProcessState{52f0419 com.google.android.gms/10128 pkg=com.google.android.gms} proc state 8 (42 skipped)
+I/wpa_supplicant(  872): wlan0: CTRL-EVENT-BEACON-LOSS 
+--------- beginning of kernel
+I/logd    (    0): logdr: UID=2000 GID=2000 PID=11827 n tail=0 logMask=99 pid=0 start=0ns deadline=0ns
+D/StatusBarIconController(  885): ignoring old pipeline callbacks, because the new mobile icons are enabled
+I/wpa_supplicant(  872): wlan0: CTRL-EVENT-BEACON-LOSS 
+W/healthd (    0): battery l=100 v=5000 t=25.0 h=2 st=2 c=900000 fc=3000000 cc=10 chg=a
+I/WorkerManager( 1959): dispose()
+W/A       ( 1959): Queue length for executor EventBus is now 11. Perhaps some tasks are too long, or the pool is too small.
+I/logd    (    0): logdr: UID=2000 GID=2000 PID=11830 n tail=0 logMask=99 pid=0 start=0ns deadline=0ns
+D/StatusBarIconController(  885): ignoring old pipeline callbacks, because the new mobile icons are enabled
+D/EGL_emulation(  885): app_time_stats: avg=16481.96ms min=16481.96ms max=16481.96ms count=1
+I/wpa_supplicant(  872): wlan0: CTRL-EVENT-BEACON-LOSS 
+E/A       ( 1959): disposing SearchServiceClient after timeout []
+W/ProcessStats(  542): Tracking association SourceState{e2866d com.google.android.gms.persistent/10128 BFgs #15291} whose proc state 4 is better than process ProcessState{52f0419 com.google.android.gms/10128 pkg=com.google.android.gms} proc state 8 (20 skipped)
+I/logd    (    0): logdr: UID=2000 GID=2000 PID=11833 n tail=0 logMask=99 pid=0 start=0ns deadline=0ns
+I/wpa_supplicant(  872): wlan0: CTRL-EVENT-BEACON-LOSS 
+D/StatusBarIconController(  885): ignoring old pipeline callbacks, because the new mobile icons are enabled
+
+

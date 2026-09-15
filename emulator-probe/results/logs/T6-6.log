@@ -1,0 +1,4 @@
+$ pm grant BLUETOOTH_SCAN
+[exit=0]
+
+

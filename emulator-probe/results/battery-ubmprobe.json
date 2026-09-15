@@ -1,0 +1,858 @@
+{
+  "suite": "ubm5-android-emulator-battery-v1",
+  "avd": "ubm5-emu-probe",
+  "serial": "emulator-5554",
+  "package": "com.ubmprobe",
+  "consumer": "com.ubmprobe debug APK built from emulator-probe/consumer (real 4.x native module path; Expo Go and JS mocks excluded)",
+  "nativeModule": "UnifiedBleProtocolControl via BlePlxPackage; libunified_ble_native_protocol.so (x86_64)",
+  "rustSwapInPoint": "emulator-probe/README.md documents substituting the 5.0 Rust artifact for android/ JNI libs",
+  "startedAt": "2026-09-15T23:34:25.146Z",
+  "records": [
+    {
+      "id": "PRE",
+      "name": "device identity + preconditions",
+      "origin": "REAL-EMULATOR",
+      "assertions": {
+        "passed": 3,
+        "total": 3
+      },
+      "checks": [
+        {
+          "check": "device reachable (sdk_gphone64_x86_64)",
+          "pass": true,
+          "detail": "google/sdk_gphone64_x86_64/emu64xa:14/UE1A.230829.050/12077443:userdebug/dev-keys sdk=34 abi=x86_64"
+        },
+        {
+          "check": "bluetooth_manager queryable",
+          "pass": true,
+          "detail": "  enabled: true   state: ON   address: <REDACTED-MAC>"
+        },
+        {
+          "check": "package absent before install",
+          "pass": true,
+          "detail": "pm list packages scanned on host"
+        }
+      ],
+      "evidence": [
+        {
+          "command": "adb uninstall (idempotent reruns)",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/PRE-0.log"
+        },
+        {
+          "command": "adb shell getprop fingerprint/sdk/abi/release",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/PRE-1.log"
+        },
+        {
+          "command": "adb shell dumpsys bluetooth_manager",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/PRE-2.log"
+        },
+        {
+          "command": "pre-install package check",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/PRE-3.log"
+        }
+      ],
+      "result": "pass"
+    },
+    {
+      "id": "T1",
+      "name": "install UBM consumer APK (real 4.x native module path)",
+      "origin": "REAL-EMULATOR",
+      "assertions": {
+        "passed": 3,
+        "total": 3
+      },
+      "checks": [
+        {
+          "check": "install reports Success",
+          "pass": true,
+          "detail": "Success"
+        },
+        {
+          "check": "package listed after install",
+          "pass": true,
+          "detail": "package:com.ubmprobe"
+        },
+        {
+          "check": "package info queryable (v1/min24/target36)",
+          "pass": true,
+          "detail": "    versionCode=1 minSdk=24 targetSdk=36"
+        }
+      ],
+      "evidence": [
+        {
+          "command": "adb install -r app-debug.apk",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/T1-0.log"
+        },
+        {
+          "command": "pm list packages (host-matched)",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/T1-1.log"
+        },
+        {
+          "command": "dumpsys package (host-matched)",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/T1-2.log"
+        }
+      ],
+      "result": "pass"
+    },
+    {
+      "id": "T2",
+      "name": "native library load surface (x86_64 ABI matched to host KVM)",
+      "origin": "REAL-EMULATOR",
+      "assertions": {
+        "passed": 4,
+        "total": 4
+      },
+      "checks": [
+        {
+          "check": "primary ABI is x86_64",
+          "pass": true,
+          "detail": "    primaryCpuAbi=x86_64     secondaryCpuAbi=null"
+        },
+        {
+          "check": "nativeLibraryDir declared",
+          "pass": true,
+          "detail": "    legacyNativeLibraryDir=/data/app/~~OVA5MXGJe0NpolzK_Qgm0A==/com.ubmprobe-WdfAGJyKfNCl7uoG6kgGOg==/lib"
+        },
+        {
+          "check": "extractNativeLibs=false (mmap-from-APK loading)",
+          "pass": true,
+          "detail": "see log"
+        },
+        {
+          "check": "app data dir accessible via run-as",
+          "pass": true,
+          "detail": "/data/user/0/com.ubmprobe"
+        }
+      ],
+      "evidence": [
+        {
+          "command": "dumpsys package (host-matched ABI lines)",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/T2-0.log"
+        },
+        {
+          "command": "run-as pwd (debuggable access)",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/T2-1.log"
+        }
+      ],
+      "result": "pass"
+    },
+    {
+      "id": "T3",
+      "name": "binding identity: launch, resumed, no crash, no link errors",
+      "origin": "REAL-EMULATOR",
+      "assertions": {
+        "passed": 5,
+        "total": 5
+      },
+      "checks": [
+        {
+          "check": "start accepted",
+          "pass": true,
+          "detail": "Starting: Intent { cmp=com.ubmprobe/.MainActivity }"
+        },
+        {
+          "check": "process running after launch",
+          "pass": true,
+          "detail": "pid=10790"
+        },
+        {
+          "check": "no FATAL EXCEPTION for consumer",
+          "pass": true,
+          "detail": "clean"
+        },
+        {
+          "check": "example activity resumed",
+          "pass": true,
+          "detail": "    topResumedActivity=ActivityRecord{8bbad80 u0 com.ubmprobe/.MainActivity t38}"
+        },
+        {
+          "check": "no UnsatisfiedLinkError",
+          "pass": true,
+          "detail": "host-matched over full logcat"
+        }
+      ],
+      "evidence": [
+        {
+          "command": "am start com.ubmprobe/.MainActivity",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/T3-0.log"
+        },
+        {
+          "command": "pidof after launch",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/T3-1.log"
+        },
+        {
+          "command": "logcat after launch",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/T3-2.log"
+        },
+        {
+          "command": "dumpsys activity activities",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/T3-3.log"
+        }
+      ],
+      "result": "pass"
+    },
+    {
+      "id": "T4",
+      "name": "setup-teardown: force-stop clears process and UBM service",
+      "origin": "REAL-EMULATOR",
+      "assertions": {
+        "passed": 3,
+        "total": 3
+      },
+      "checks": [
+        {
+          "check": "force-stop exits 0",
+          "pass": true,
+          "detail": "ok"
+        },
+        {
+          "check": "process gone after teardown",
+          "pass": true,
+          "detail": "pidof=''"
+        },
+        {
+          "check": "no UBM service lingering",
+          "pass": true,
+          "detail": "host-matched over full dump"
+        }
+      ],
+      "evidence": [
+        {
+          "command": "am force-stop",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/T4-0.log"
+        },
+        {
+          "command": "pidof after force-stop",
+          "exit": 1,
+          "timedOut": false,
+          "log": "logs/T4-1.log"
+        },
+        {
+          "command": "dumpsys activity services",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/T4-2.log"
+        }
+      ],
+      "result": "pass"
+    },
+    {
+      "id": "T5",
+      "name": "foreground-background: home keeps process, relaunch resumes",
+      "origin": "REAL-EMULATOR",
+      "assertions": {
+        "passed": 5,
+        "total": 5
+      },
+      "checks": [
+        {
+          "check": "baseline PID captured",
+          "pass": true,
+          "detail": "pid=10899"
+        },
+        {
+          "check": "home key exits 0",
+          "pass": true,
+          "detail": "ok"
+        },
+        {
+          "check": "process survives backgrounding",
+          "pass": true,
+          "detail": "pid=10899"
+        },
+        {
+          "check": "example activity no longer resumed",
+          "pass": true,
+          "detail": "      topResumedActivity=ActivityRecord{54ca9d9 u0 com.google.android.apps.nexuslauncher/.NexusLauncherActivity t7}"
+        },
+        {
+          "check": "relaunch resumes example activity",
+          "pass": true,
+          "detail": "see log"
+        }
+      ],
+      "evidence": [
+        {
+          "command": "baseline pidof",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/T5-0.log"
+        },
+        {
+          "command": "input KEYCODE_HOME (background)",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/T5-1.log"
+        },
+        {
+          "command": "pidof while backgrounded",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/T5-2.log"
+        },
+        {
+          "command": "dumpsys activities while backgrounded",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/T5-3.log"
+        },
+        {
+          "command": "relaunch to foreground",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/T5-4.log"
+        },
+        {
+          "command": "dumpsys activities after relaunch",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/T5-5.log"
+        }
+      ],
+      "result": "pass"
+    },
+    {
+      "id": "T6",
+      "name": "denied-revoked permissions: revoke kills process, denial surfaces as permission.denied, grant restores",
+      "origin": "REAL-EMULATOR",
+      "assertions": {
+        "passed": 7,
+        "total": 7
+      },
+      "checks": [
+        {
+          "check": "PackageManager reports SCAN not granted",
+          "pass": true,
+          "detail": "      android.permission.BLUETOOTH_SCAN         android.permission.BLUETOOTH_SCAN: granted=false, flags=[ USER_SENSITIVE_WHEN_GRANTED|USER_SENSITIVE_WHEN_DENIED]"
+        },
+        {
+          "check": "PackageManager reports CONNECT not granted",
+          "pass": true,
+          "detail": "      android.permission.BLUETOOTH_CONNECT         android.permission.BLUETOOTH_CONNECT: granted=false, flags=[ USER_SENSITIVE_WHEN_GRANTED|USER_SENSITIVE_WHEN_DENIED]"
+        },
+        {
+          "check": "app relaunches after revocation kill (no crash loop)",
+          "pass": true,
+          "detail": "pid=11019"
+        },
+        {
+          "check": "native boundary reports permission.denied (never empty)",
+          "pass": true,
+          "detail": "I/ReactNativeJS(11019): [UBM_PROBE] bonded-error name=BleError code=permission.denied message=permission.denied: rn-android-boundary.enumerateBondedPeers"
+        },
+        {
+          "check": "PackageManager reports SCAN granted after restore",
+          "pass": true,
+          "detail": "see log"
+        },
+        {
+          "check": "PackageManager reports CONNECT granted after restore",
+          "pass": true,
+          "detail": "see log"
+        },
+        {
+          "check": "bonded ping succeeds after grant (bonded-count=0)",
+          "pass": true,
+          "detail": "I/ReactNativeJS(11118): [UBM_PROBE] bonded-count=0"
+        }
+      ],
+      "evidence": [
+        {
+          "command": "pm revoke BLUETOOTH_SCAN",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/T6-0.log"
+        },
+        {
+          "command": "pm revoke BLUETOOTH_CONNECT",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/T6-1.log"
+        },
+        {
+          "command": "dumpsys package after revoke",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/T6-2.log"
+        },
+        {
+          "command": "launch after revoke",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/T6-3.log"
+        },
+        {
+          "command": "pidof after revoke-launch",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/T6-4.log"
+        },
+        {
+          "command": "logcat denial ping",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/T6-5.log"
+        },
+        {
+          "command": "pm grant BLUETOOTH_SCAN",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/T6-6.log"
+        },
+        {
+          "command": "pm grant BLUETOOTH_CONNECT",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/T6-7.log"
+        },
+        {
+          "command": "dumpsys package after grant",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/T6-8.log"
+        },
+        {
+          "command": "launch after grant",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/T6-9.log"
+        },
+        {
+          "command": "logcat restored ping",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/T6-10.log"
+        }
+      ],
+      "result": "pass"
+    },
+    {
+      "id": "T6b",
+      "name": "revocation kills the app process (platform-owned teardown)",
+      "origin": "REAL-EMULATOR",
+      "assertions": {
+        "passed": 3,
+        "total": 3
+      },
+      "checks": [
+        {
+          "check": "live process before revoke",
+          "pass": true,
+          "detail": "pid=11118"
+        },
+        {
+          "check": "process gone after revoke (platform kills on revocation)",
+          "pass": true,
+          "detail": "pidof=''"
+        },
+        {
+          "check": "app relaunches cleanly after revoke-kill",
+          "pass": true,
+          "detail": "11118 -> 11216"
+        }
+      ],
+      "evidence": [
+        {
+          "command": "pidof before revoke",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/T6b-0.log"
+        },
+        {
+          "command": "pm revoke BLUETOOTH_CONNECT (kill probe)",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/T6b-1.log"
+        },
+        {
+          "command": "pidof after revoke",
+          "exit": 1,
+          "timedOut": false,
+          "log": "logs/T6b-2.log"
+        },
+        {
+          "command": "pm grant BLUETOOTH_CONNECT (restore)",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/T6b-3.log"
+        },
+        {
+          "command": "relaunch after revoke-kill",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/T6b-4.log"
+        },
+        {
+          "command": "pidof after relaunch",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/T6b-5.log"
+        }
+      ],
+      "result": "pass"
+    },
+    {
+      "id": "T7",
+      "name": "process kill-relaunch: SIGKILL own PID, fresh PID on relaunch",
+      "origin": "REAL-EMULATOR",
+      "assertions": {
+        "passed": 4,
+        "total": 4
+      },
+      "checks": [
+        {
+          "check": "baseline PID captured",
+          "pass": true,
+          "detail": "pid=11216"
+        },
+        {
+          "check": "SIGKILL own process exits 0",
+          "pass": true,
+          "detail": "ok"
+        },
+        {
+          "check": "old PID gone",
+          "pass": true,
+          "detail": "pidof=''"
+        },
+        {
+          "check": "new PID differs (fresh process, no immortal handles)",
+          "pass": true,
+          "detail": "11216 -> 11295"
+        }
+      ],
+      "evidence": [
+        {
+          "command": "baseline pidof",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/T7-0.log"
+        },
+        {
+          "command": "run-as kill -9 11216",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/T7-1.log"
+        },
+        {
+          "command": "pidof after kill",
+          "exit": 1,
+          "timedOut": false,
+          "log": "logs/T7-2.log"
+        },
+        {
+          "command": "relaunch after kill",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/T7-3.log"
+        },
+        {
+          "command": "pidof after relaunch",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/T7-4.log"
+        }
+      ],
+      "result": "pass"
+    },
+    {
+      "id": "T9",
+      "name": "service-execution loss: external foreground-service start refused",
+      "origin": "REAL-EMULATOR",
+      "assertions": {
+        "passed": 1,
+        "total": 1
+      },
+      "checks": [
+        {
+          "check": "external service start refused (undeclared in bare consumer)",
+          "pass": true,
+          "detail": "Starting service: Intent { cmp=com.ubmprobe/com.sfourdrinier.unifiedblemanager.BlePlxForegroundService }  Error: Not found; no service started."
+        }
+      ],
+      "evidence": [
+        {
+          "command": "am start-foreground-service (external)",
+          "exit": 255,
+          "timedOut": false,
+          "log": "logs/T9-0.log"
+        }
+      ],
+      "result": "pass",
+      "boundaryReason": "In-app lease acquire/release needs JS driving (probe UI via Metro); external injection is refused because the bare consumer manifest does not declare the plugin-managed service. Behavior under an active lease remains a U-ANDROID-PHYSICAL follow-up."
+    },
+    {
+      "id": "T10",
+      "name": "error projection: adapter disable/enable round-trip, no crash",
+      "origin": "REAL-EMULATOR",
+      "assertions": {
+        "passed": 4,
+        "total": 4
+      },
+      "checks": [
+        {
+          "check": "disable command accepted",
+          "pass": true,
+          "detail": "ok"
+        },
+        {
+          "check": "adapter loss observable",
+          "pass": true,
+          "detail": "  enabled: false   state: OFF"
+        },
+        {
+          "check": "app survives adapter loss (no crash)",
+          "pass": true,
+          "detail": "pid=11295"
+        },
+        {
+          "check": "enable command accepted",
+          "pass": true,
+          "detail": "ok"
+        }
+      ],
+      "evidence": [
+        {
+          "command": "svc bluetooth disable",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/T10-0.log"
+        },
+        {
+          "command": "dumpsys bluetooth_manager after disable",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/T10-1.log"
+        },
+        {
+          "command": "pidof after adapter loss",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/T10-2.log"
+        },
+        {
+          "command": "svc bluetooth enable (restore)",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/T10-3.log"
+        }
+      ],
+      "result": "pass"
+    },
+    {
+      "id": "T8",
+      "name": "JS-driven native battery: init/adapters/bonded/abort/scan through the real module",
+      "origin": "REAL-EMULATOR",
+      "assertions": {
+        "passed": 10,
+        "total": 10
+      },
+      "checks": [
+        {
+          "check": "metro packager reachable",
+          "pass": true,
+          "detail": "http://127.0.0.1:8081/status"
+        },
+        {
+          "check": "JS bundle executed (app-mounted)",
+          "pass": true,
+          "detail": "I/ReactNativeJS(11507): [UBM_PROBE] app-mounted"
+        },
+        {
+          "check": "no FATAL EXCEPTION for consumer",
+          "pass": true,
+          "detail": "host-matched over full logcat"
+        },
+        {
+          "check": "no UnsatisfiedLinkError",
+          "pass": true,
+          "detail": "host-matched over full logcat"
+        },
+        {
+          "check": "runtime permission dialog answered (fresh install) or already granted",
+          "pass": true,
+          "detail": "no dialog (already granted)"
+        },
+        {
+          "check": "manager created through the native bridge",
+          "pass": true,
+          "detail": "I/ReactNativeJS(11507): [UBM_PROBE] manager-created"
+        },
+        {
+          "check": "adapter state round-trips (unknowns on virtual adapter, never blocking)",
+          "pass": true,
+          "detail": "I/ReactNativeJS(11507): [UBM_PROBE] adapter power=unknown availability=unknown authorization=unknown"
+        },
+        {
+          "check": "bonded ping reads the native bond table (empty on emulator)",
+          "pass": true,
+          "detail": "I/ReactNativeJS(11507): [UBM_PROBE] bonded-count=0"
+        },
+        {
+          "check": "pre-aborted find settles as operation.aborted on-device",
+          "pass": true,
+          "detail": "I/ReactNativeJS(11507): [UBM_PROBE] aborted-find-settled name=BleError code=operation.aborted message=operation.aborted: scan"
+        },
+        {
+          "check": "scan settles with an explicit typed error (no hang, nothing swallowed)",
+          "pass": true,
+          "detail": "I/ReactNativeJS(11507): [UBM_PROBE] find-settled name=AggregateError code=undefined message=BLE operation and cleanup both failed"
+        }
+      ],
+      "evidence": [
+        {
+          "command": "launch on Metro",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/T8-0.log"
+        },
+        {
+          "command": "logcat after launch",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/T8-1.log"
+        },
+        {
+          "command": "logcat after init",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/T8-2.log"
+        },
+        {
+          "command": "logcat after bonded",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/T8-3.log"
+        },
+        {
+          "command": "logcat after aborted find",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/T8-4.log"
+        },
+        {
+          "command": "logcat after scan",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/T8-5.log"
+        }
+      ],
+      "result": "pass",
+      "boundaryReason": "Mid-scan AbortSignal cancellation needs a pending scan; scans reject immediately on the virtual adapter, so no native queue forms. Pending-scan cancellation stays a U-ANDROID-PHYSICAL follow-up."
+    },
+    {
+      "id": "T11",
+      "name": "bounded byte delivery (512 records / 1 MiB ingress bound)",
+      "origin": "REAL-EMULATOR",
+      "assertions": {
+        "passed": 0,
+        "total": 0
+      },
+      "checks": [],
+      "evidence": [],
+      "result": "boundary",
+      "boundaryReason": "No notification burst can be driven on the virtual adapter (no peers, scans reject fast), so the bounded ingress queue cannot fill on-emulator. Overflow semantics are covered host-side by the deterministic TCK vector deterministic-tck-subscription-overflow.ts plus the 104-test android unit suite; filling the queue needs a chatty physical peripheral (U-ANDROID-PHYSICAL)."
+    },
+    {
+      "id": "T12",
+      "name": "JS reload: dev-menu Reload re-mounts and rebinds the native module in-process",
+      "origin": "REAL-EMULATOR",
+      "assertions": {
+        "passed": 5,
+        "total": 5
+      },
+      "checks": [
+        {
+          "check": "live process before reload",
+          "pass": true,
+          "detail": "pid=11507"
+        },
+        {
+          "check": "dev-menu Reload tapped",
+          "pass": true,
+          "detail": "Reload at 160,224"
+        },
+        {
+          "check": "app-mounted after Reload (fresh JS + native rebind)",
+          "pass": true,
+          "detail": "app-mounted x1"
+        },
+        {
+          "check": "same process across reload (in-process rebind, no relaunch)",
+          "pass": true,
+          "detail": "11507 -> 11507"
+        },
+        {
+          "check": "no FATAL EXCEPTION across reload",
+          "pass": true,
+          "detail": "host-matched over full logcat"
+        }
+      ],
+      "evidence": [
+        {
+          "command": "pidof before reload",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/T12-0.log"
+        },
+        {
+          "command": "open dev menu (KEYCODE_MENU)",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/T12-1.log"
+        },
+        {
+          "command": "logcat reload poll 0",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/T12-2.log"
+        },
+        {
+          "command": "pidof after reload",
+          "exit": 0,
+          "timedOut": false,
+          "log": "logs/T12-3.log"
+        }
+      ],
+      "result": "pass"
+    }
+  ],
+  "summary": {
+    "tests": 14,
+    "assertionsPassed": 57,
+    "assertionsTotal": 57,
+    "byResult": {
+      "pass": 13,
+      "boundary": 1
+    }
+  },
+  "mergedRuns": "T12 re-executed standalone (same AVD serial, same APK, same Metro session) after a harness assertion fix; record replaced and summary recomputed."
+}
