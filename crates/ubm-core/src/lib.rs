@@ -11,6 +11,7 @@
 //! `std` collections only (`Vec`, `String`), so the crate also checks for
 //! `wasm32-unknown-unknown`.
 
+pub mod central;
 pub mod codec;
 pub mod contracts;
 pub mod ownership;

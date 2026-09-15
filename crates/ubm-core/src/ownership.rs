@@ -416,6 +416,23 @@ pub struct CleanupFailure {
 }
 
 impl CleanupFailure {
+    /// Build one retained failure for a named resource kind. This is the
+    /// revival path for a wire cleanup record: an empty kind fails closed
+    /// instead of constructing a meaningless failure.
+    pub fn new(resource_kind: String, code: BleErrorCode) -> Result<Self, CoreError> {
+        if resource_kind.is_empty() {
+            return Err(CoreError::new(
+                BleErrorCode::ArgumentInvalid,
+                BleErrorDomain::Core,
+                "cleanup.failure",
+            ));
+        }
+        Ok(Self {
+            resource_kind,
+            code,
+        })
+    }
+
     /// Borrow the resource kind.
     #[must_use]
     pub fn resource_kind(&self) -> &str {
@@ -2417,6 +2434,18 @@ mod tests {
             .is_err()
         );
         assert!(CleanupRecord::new(None, CleanupState::ReleaseFailed, Vec::new()).is_err());
+    }
+
+    #[test]
+    fn cleanup_failure_new_round_trips_revival_fields() {
+        let built =
+            super::CleanupFailure::new(String::from("operation"), BleErrorCode::PlatformFailure);
+        assert!(built.is_ok());
+        if let Ok(failure) = built {
+            assert_eq!(failure.resource_kind(), "operation");
+            assert_eq!(failure.code(), BleErrorCode::PlatformFailure);
+        }
+        assert!(super::CleanupFailure::new(String::new(), BleErrorCode::PlatformFailure).is_err());
     }
 
     #[test]
