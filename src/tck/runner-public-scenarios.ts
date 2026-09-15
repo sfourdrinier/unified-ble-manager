@@ -63,6 +63,7 @@ import { executeDiagnosticsScenario, executeLifecycleScenario } from './runner-p
 import { executeDescriptorOperationsScenario } from './runner-public-descriptor-scenario'
 import { executePublicWebChooserVerticalSlice } from './runner-public-web-chooser-vertical-scenario'
 import { executePublicWebUnsupportedCapabilitiesScenario } from './runner-public-web-unsupported-capabilities-scenario'
+import type { PublicManagerSeamOption } from './public-manager-seam-option'
 
 const publicScenarioId = 'manager.scan-connect-discover-read-notify-destroy'
 const publicScenarioFact = 'scan-connect-discover-read-notify-destroy-completes'
@@ -94,8 +95,12 @@ export async function executePublicTckScenario<
 >(
   _factory: BackendTckFactory<Attachment, Identity, Backend>,
   fixture: BackendTckFixture<Attachment, Identity, Backend>,
-  definition: TckScenarioDefinition
+  definition: TckScenarioDefinition,
+  seam: PublicManagerSeamOption | undefined = undefined
 ): Promise<readonly TckFact[]> {
+  if (seam !== undefined && seam.kind === 'rust-stub') {
+    throw new TckAssertionError(definition.id, 'rust-backend-unimplemented: no Rust central exists in this slice')
+  }
   if (definition.id === 'adapter.atomic-snapshot-and-watch') {
     return executeAdapterWatchScenario(fixture, definition)
   }
