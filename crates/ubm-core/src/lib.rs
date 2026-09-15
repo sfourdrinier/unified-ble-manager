@@ -11,9 +11,12 @@
 //! `std` collections only (`Vec`, `String`), so the crate also checks for
 //! `wasm32-unknown-unknown`.
 
+pub mod codec;
 pub mod contracts;
 pub mod ownership;
 pub mod streams;
+
+pub use codec::{MAX_WIRE_BYTES, WireCleanupFailure, WireCleanupRecord, decode, encode};
 
 /// Test-only failure marker. A literal false assertion trips
 /// `clippy::assertions_on_constants`, and halting macros stay off fallible

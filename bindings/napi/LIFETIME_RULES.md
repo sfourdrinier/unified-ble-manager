@@ -2,9 +2,20 @@
 
 Tested build: `napi =2.16.17 + napi4 feature`, `rustc 1.98.1
 (48a229cea 2026-09-01)`, Node `v22.21.1`, Linux x86_64, debug cdylib loaded
-as `ubm_echo.linux-x64.node`. Proven by `js/roundtrip.cjs`,
-`js/exit_probe.cjs`, and `cargo test`. Anything outside this envelope is a
-limitation, not a pass.
+as `ubm_echo.linux-x64.node`. Contract `C-UBM.0.1.1-DRAFT`, single-owned by
+`ubm-core` (workspace member; this crate links it — see the wiring note
+below). Proven by `js/roundtrip.cjs`, `js/exit_probe.cjs`, and `cargo test`.
+Anything outside this envelope is a limitation, not a pass.
+
+## Core wiring (UBM 5.0 wiring slice)
+
+- `CoreBackend` is implemented for the ubm-core-backed `CoreSession`
+  (`src/core_backend.rs`, the one implementation in this crate). Revision
+  identity, the byte ceiling, and decimal-string counter parsing come from
+  `ubm_core::contracts`; no contract constant is duplicated here. The former
+  echo-only stand-in (`echo_core.rs`) is deleted — no dual owners.
+- The echo transport itself stays feasibility-echo (NOT BLE functionality);
+  wiring real kernel transitions through this seam is later U7 scope.
 
 ## Thread / runtime lifetimes
 
@@ -42,15 +53,19 @@ limitation, not a pass.
 - `close()` during flight aborts the pending call with `operation.aborted`;
   later calls reject with `lifecycle.destroyed`.
 
-## Panic containment (tested)
+## Panic containment
 
-- Every export is `#[napi(catch_unwind)]`. The `__feasibilityPanicProbe`
-  (test-only, pinned `js_name`, MUST NOT ship) proves a Rust panic surfaces
-  as a JS `Error` and the process survives. Observation: the panic message is
-  still printed to stderr (Rust default hook) — containment means no abort,
-  not silence. Sync exports throw synchronously; async `Task::compute`
-  panics reject the promise (same `catch_unwind` wrapper; not separately
-  probed — follow-up if production use is ever considered).
+- Every export is `#[napi(catch_unwind)]`, so a Rust panic becomes a rejected
+  JS `Error`, never an abort across the ABI. The former test-only
+  `__feasibilityPanicProbe` was deleted by the wiring slice and the exchange
+  asserts its absence (`typeof addon.__feasibilityPanicProbe ===
+  'undefined'`): probes must not ship in production paths, so no live trap
+  evidence remains — containment rests on the attribute, recorded here as a
+  mechanism, not a pass. Observation from the deleted probe: the panic
+  message still reached stderr (Rust default hook) — containment means no
+  abort, not silence. Sync exports throw synchronously; async
+  `Task::compute` panics reject the promise (same `catch_unwind` wrapper;
+  not separately probed — follow-up if production use is ever considered).
 
 ## Byte ownership
 
@@ -77,8 +92,9 @@ limitation, not a pass.
   (Windows/macOS/Electron exact-ABI addons) are unbuilt and explicitly
   blocked until produced on those hosts — no fallback implied.
 - `napi4` cargo feature floors the runtime at N-API version 4.
-- `__feasibilityPanicProbe` is test-only and must be deleted before any
-  production-shaped use; feasibility-only exports never enter production.
-- No `ubm-core` wiring yet: `EchoSession` talks to `EchoCore` through the
-  `CoreBackend` seam; swapping in the real core touches one `impl`
-  (explicit follow-up).
+- The test-only panic probe was deleted by the wiring slice (absence
+  asserted by the exchange); feasibility-only exports never enter
+  production.
+- `ubm-core` wiring is DONE (see above): `EchoSession` talks to
+  `CoreSession` through the `CoreBackend` seam; deeper kernel-transition
+  wiring later touches the one `impl`.

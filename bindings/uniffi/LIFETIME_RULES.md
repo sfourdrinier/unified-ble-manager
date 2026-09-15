@@ -3,8 +3,19 @@
 Tested build: `uniffi =0.32.1 + build feature`, `rustc 1.98.1
 (48a229cea 2026-09-01)`, Linux x86_64; codegen `uniffi-bindgen 0.32.1`;
 Python `3.10.10` driving the REAL generated `ubm_echo.py` against the REAL
-built cdylib. Proven by `cargo test` and `run_uniffi_roundtrip.sh`
-(35 foreign checks). Anything outside this envelope is a limitation.
+built cdylib. Contract `C-UBM.0.1.1-DRAFT`, single-owned by `ubm-core`
+(workspace member). Proven by `cargo test` and `run_uniffi_roundtrip.sh`
+(34 foreign checks). Anything outside this envelope is a limitation.
+
+## Core wiring (UBM 5.0 wiring slice)
+
+- `CoreBackend` is implemented for the ubm-core-backed `CoreSession`
+  (`src/core_backend.rs`, the one implementation in this crate). Revision
+  identity, the byte ceiling, and decimal-string counter parsing come from
+  `ubm_core::contracts`; no contract constant is duplicated here. The former
+  echo-only stand-in (`echo_core.rs`) is deleted — no dual owners.
+- The echo transport itself stays feasibility-echo (NOT BLE functionality);
+  wiring real kernel transitions through this seam is later U7 scope.
 
 ## Thread / runtime lifetimes
 
@@ -45,16 +56,19 @@ built cdylib. Proven by `cargo test` and `run_uniffi_roundtrip.sh`
   and disarms, so the session stays usable. Proven in-process (threaded)
   and foreign (Python thread + ctypes GIL release).
 
-## Panic containment (proven through the real scaffolding)
+## Panic containment
 
-- The `panic_probe` method panics. Called from Python through the generated
-  scaffolding, the process SURVIVES and Python receives a UniFFI error
-  (`InternalError`); a fresh session stays usable afterwards. Containment
-  lives in `uniffi_core::ffi::rustcalls::rust_call` (`catch_unwind` at the
-  pinned version) — evidenced by source at the pinned version AND executed
-  end-to-end, not merely inspected.
-- Observation: like all bindings, the panic message still reaches stderr
-  via the Rust default hook — containment means no abort, not silence.
+- The former test-only `panic_probe` UDL method was deleted by the wiring
+  slice (Rust method, UDL entry, regenerated Kotlin/Swift/Python recipe, and
+  Python assertions all removed; the exchange asserts
+  `not hasattr(session, 'panic_probe')`): probes must not ship in production
+  paths, so no live trap evidence remains. Containment at the generated
+  boundary rests on `uniffi_core::ffi::rustcalls::rust_call`
+  (`catch_unwind` at the pinned version) — recorded here as a mechanism, not
+  a pass.
+- Observation from the deleted probe: like all bindings, the panic message
+  still reached stderr via the Rust default hook — containment means no
+  abort, not silence.
 
 ## Byte ownership
 
@@ -97,10 +111,11 @@ built cdylib. Proven by `cargo test` and `run_uniffi_roundtrip.sh`
   unproven. Generated sources are recipe artifacts, not compile evidence.
   Python execution proves the shared scaffolding + Rust core, not the
   Swift/Kotlin emitters.
-- `panic_probe` is test-only and must be deleted before any
-  production-shaped use.
-- No `ubm-core` wiring yet: the surface calls the core ONLY through the
-  `CoreBackend` seam (explicit follow-up).
+- The test-only `panic_probe` was deleted by the wiring slice (absence
+  asserted by the exchange).
+- `ubm-core` wiring is DONE (see above): the surface calls the core ONLY
+  through the `CoreBackend` seam; deeper kernel-transition wiring later
+  touches the one `impl`.
 - `clippy::large_const_arrays` is allowed crate-wide with justification:
   the lint fires only on the GENERATED metadata const, which cannot be
   fixed in-tree.

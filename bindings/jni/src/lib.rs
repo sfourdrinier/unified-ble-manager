@@ -6,18 +6,23 @@
 //! (code/domain/operation fields + wire message) and panics to
 //! `lifecycle.invariant-violation`. The JVM process always survives.
 //!
-//! Sessions are `EchoCore` values behind process-global handle-table slots
+//! Sessions are `CoreSession` values behind process-global handle-table slots
 //! (`long` handles; `0` is never valid). Inputs cross by COPY (Java
 //! arrays/strings are never borrowed past the call); results are fresh Java
-//! objects. The core is called ONLY through `CoreBackend` (same seam as
-//! every other binding; wiring `ubm-core` later touches one `impl`).
+//! objects. The core is called ONLY through `CoreBackend`, implemented for
+//! the ubm-core-backed [`core_backend::CoreSession`] (one implementation;
+//! contract truth is single-owned by `ubm-core`).
+//!
+//! The former test-only `nativePanicProbe` was deleted by the wiring slice:
+//! probes must not ship in production paths. A Rust panic still surfaces as
+//! a typed `EchoException` via the `ThrowEchoAndDefault` policy below.
 
-mod echo_core;
+mod core_backend;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use echo_core::{echo_bytes_chunked, CoreBackend, EchoCore, EchoError, CONTRACT_REVISION};
+use core_backend::{echo_bytes_chunked, CoreBackend, CoreSession, EchoError, CONTRACT_REVISION};
 use jni::errors::{Error as JniError, ErrorPolicy};
 use jni::objects::{JByteArray, JClass, JString, Reference as _};
 use jni::strings::JNIString;
@@ -26,7 +31,7 @@ use jni::{Env, EnvUnowned};
 
 const EXCEPTION_CLASS: &str = "com/ubm/echo/EchoException";
 
-type Session = Arc<Mutex<EchoCore>>;
+type Session = Arc<Mutex<CoreSession>>;
 
 struct Table {
     next: u64,
@@ -179,7 +184,7 @@ fn lookup_session(handle: jlong, operation: &'static str) -> BridgeResult<Sessio
 fn lock_session<'a>(
     session: &'a Session,
     operation: &'static str,
-) -> BridgeResult<MutexGuard<'a, EchoCore>> {
+) -> BridgeResult<MutexGuard<'a, CoreSession>> {
     session
         .lock()
         .map_err(|_| BridgeError::echo(lock_failed(operation)))
@@ -246,7 +251,7 @@ pub extern "system" fn Java_com_ubm_echo_EchoBridge_nativeOpen<'caller>(
         .with_env(|env| -> BridgeResult<jlong> {
             const OP: &str = "echo-session.open";
             let text = read_string(env, &revision, OP)?;
-            let core = EchoCore::open(&text).map_err(BridgeError::echo)?;
+            let core = CoreSession::open(&text).map_err(BridgeError::echo)?;
             let mut table = table()
                 .lock()
                 .map_err(|_| BridgeError::echo(lock_failed(OP)))?;
@@ -389,23 +394,8 @@ pub extern "system" fn Java_com_ubm_echo_EchoBridge_nativeClose<'caller>(
         .resolve_with::<ThrowEchoAndDefault, _>(|| "close")
 }
 
-/// Test-only panic probe: a Rust panic MUST surface as
-/// `lifecycle.invariant-violation`, never abort the VM. MUST NOT ship.
-#[unsafe(no_mangle)]
-pub extern "system" fn Java_com_ubm_echo_EchoBridge_nativePanicProbe<'caller>(
-    mut unowned_env: EnvUnowned<'caller>,
-    _class: JClass<'caller>,
-    _handle: jlong,
-) {
-    unowned_env
-        .with_env(|env| -> BridgeResult<()> {
-            let _ = env;
-            panic!("feasibility panic probe: must throw, never abort the VM");
-        })
-        .resolve_with::<ThrowEchoAndDefault, _>(|| "panic-probe")
-}
-
-/// Contract revision this binding speaks (PKG-01 artifact identity).
+/// Contract revision this binding speaks (PKG-01 artifact identity),
+/// single-owned by `ubm-core`.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_ubm_echo_EchoBridge_nativeRevision<'caller>(
     mut unowned_env: EnvUnowned<'caller>,

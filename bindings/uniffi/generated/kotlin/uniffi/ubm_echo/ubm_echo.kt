@@ -683,8 +683,6 @@ internal object IntegrityCheckingUniffiLib {
     ): Int
     external fun uniffi_ubm5_uniffi_echo_checksum_method_echosession_echo_counter(
     ): Int
-    external fun uniffi_ubm5_uniffi_echo_checksum_method_echosession_panic_probe(
-    ): Int
     external fun uniffi_ubm5_uniffi_echo_checksum_constructor_echosession_new(
     ): Int
     external fun ffi_ubm5_uniffi_echo_uniffi_contract_version(
@@ -720,8 +718,6 @@ internal object UniffiLib {
     external fun uniffi_ubm5_uniffi_echo_fn_method_echosession_echo_bytes_chunked(`ptr`: Long,`input`: RustBuffer.ByValue,`chunks`: Int,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
     external fun uniffi_ubm5_uniffi_echo_fn_method_echosession_echo_counter(`ptr`: Long,`decimal`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
-    ): RustBuffer.ByValue
-    external fun uniffi_ubm5_uniffi_echo_fn_method_echosession_panic_probe(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
     external fun ffi_ubm5_uniffi_echo_rustbuffer_alloc(`size`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
@@ -855,9 +851,6 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_echosession_echo_counter() and 0xFFFF) != 38882) {
-        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
-    }
-    if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_echosession_panic_probe() and 0xFFFF) != 55503) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if ((lib.uniffi_ubm5_uniffi_echo_checksum_constructor_echosession_new() and 0xFFFF) != 28077) {
@@ -1250,8 +1243,6 @@ public interface EchoSessionInterface {
     
     fun `echoCounter`(`decimal`: kotlin.String): EchoCounterResult
     
-    fun `panicProbe`(): EchoStatus
-    
     companion object
 }
 
@@ -1428,19 +1419,6 @@ open class EchoSession: Disposable, AutoCloseable, EchoSessionInterface
         it,
         
         FfiConverterString.lower(`decimal`),_status)
-}
-    }
-    )
-    }
-    
-
-    override fun `panicProbe`(): EchoStatus {
-            return FfiConverterTypeEchoStatus.lift(
-    callWithHandle {
-    uniffiRustCall() { _status ->
-    UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_echosession_panic_probe(
-        it,
-        _status)
 }
     }
     )

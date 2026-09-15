@@ -17,3 +17,4 @@ js-glue = ["dep:wasm-bindgen"]
 
 [dependencies]
 wasm-bindgen = { version = "=0.2.128", optional = true }
+ubm-core = { path = "../../crates/ubm-core" }

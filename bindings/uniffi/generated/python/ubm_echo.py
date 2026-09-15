@@ -534,8 +534,6 @@ def _uniffi_check_api_checksums(lib):
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     if lib.uniffi_ubm5_uniffi_echo_checksum_method_echosession_echo_counter() != 38882:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
-    if lib.uniffi_ubm5_uniffi_echo_checksum_method_echosession_panic_probe() != 55503:
-        raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     if lib.uniffi_ubm5_uniffi_echo_checksum_constructor_echosession_new() != 28077:
         raise InternalError("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
 
@@ -582,9 +580,6 @@ _UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_echosession_echo_bytes_chunke
 _UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_echosession_echo_counter.argtypes = (
 )
 _UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_echosession_echo_counter.restype = ctypes.c_uint16
-_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_echosession_panic_probe.argtypes = (
-)
-_UniffiLib.uniffi_ubm5_uniffi_echo_checksum_method_echosession_panic_probe.restype = ctypes.c_uint16
 _UniffiLib.uniffi_ubm5_uniffi_echo_checksum_constructor_echosession_new.argtypes = (
 )
 _UniffiLib.uniffi_ubm5_uniffi_echo_checksum_constructor_echosession_new.restype = ctypes.c_uint16
@@ -617,11 +612,6 @@ _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_echosession_echo_counter.argtypes =
     ctypes.POINTER(_UniffiRustCallStatus),
 )
 _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_echosession_echo_counter.restype = _UniffiRustBuffer
-_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_echosession_panic_probe.argtypes = (
-    ctypes.c_uint64,
-    ctypes.POINTER(_UniffiRustCallStatus),
-)
-_UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_echosession_panic_probe.restype = _UniffiRustBuffer
 _UniffiLib.uniffi_ubm5_uniffi_echo_fn_constructor_echosession_new.argtypes = (
     _UniffiRustBuffer,
     ctypes.POINTER(_UniffiRustCallStatus),
@@ -901,8 +891,6 @@ class EchoSessionProtocol(typing.Protocol):
         raise NotImplementedError
     def echo_counter(self, decimal: str) -> EchoCounterResult:
         raise NotImplementedError
-    def panic_probe(self, ) -> EchoStatus:
-        raise NotImplementedError
 
 class EchoSession(EchoSessionProtocol):
     
@@ -1008,18 +996,6 @@ class EchoSession(EchoSessionProtocol):
         _uniffi_ffi_result = _uniffi_rust_call_with_error(
             _uniffi_error_converter,
             _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_echosession_echo_counter,
-            *_uniffi_lowered_args,
-        )
-        return _uniffi_lift_return(_uniffi_ffi_result)
-    def panic_probe(self, ) -> EchoStatus:
-        _uniffi_lowered_args = (
-            self._uniffi_clone_handle(),
-        )
-        _uniffi_lift_return = _UniffiFfiConverterTypeEchoStatus.lift
-        _uniffi_error_converter = None
-        _uniffi_ffi_result = _uniffi_rust_call_with_error(
-            _uniffi_error_converter,
-            _UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_echosession_panic_probe,
             *_uniffi_lowered_args,
         )
         return _uniffi_lift_return(_uniffi_ffi_result)

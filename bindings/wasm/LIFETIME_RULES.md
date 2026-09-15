@@ -1,10 +1,25 @@
 # LIFETIME_RULES — bindings/wasm (UBM 5.0 FFI feasibility)
 
-Tested builds: default (zero-dep) `wasm32-unknown-unknown` on `rustc 1.98.1
-(48a229cea 2026-09-01)`, driven in Node `v22.21.1` via `js/roundtrip.mjs`;
-`js-glue` (`wasm-bindgen =0.2.128`) compile-checked for wasm32 plus export
-presence. Proven by `cargo test` and `run_wasm_roundtrip.sh`. Anything
-outside this envelope is a limitation, not a pass.
+Tested builds: default `wasm32-unknown-unknown` on `rustc 1.98.1
+(48a229cea 2026-09-01)` (zero imports; the only dependency is the portable
+`ubm-core`), driven in Node `v22.21.1` via `js/roundtrip.mjs`; `js-glue`
+(`wasm-bindgen =0.2.128`) compile-checked for wasm32 plus export presence.
+Contract `C-UBM.0.1.1-DRAFT`, single-owned by `ubm-core` (workspace member).
+Proven by `cargo test` and `run_wasm_roundtrip.sh`. Anything outside this
+envelope is a limitation, not a pass.
+
+## Core wiring (UBM 5.0 wiring slice)
+
+- `CoreBackend` is implemented for the ubm-core-backed `CoreSession`
+  (`src/core_backend.rs`, the one implementation in this crate). Revision
+  identity, the byte ceiling, the u64-max document value, and
+  decimal-string counter parsing come from `ubm_core::contracts`; no
+  contract constant is duplicated here. The former echo-only stand-in
+  (`echo_core.rs`) is deleted — no dual owners. The portable build still
+  instantiates with an empty import object (proven on every run), so the
+  `ubm-core` link adds no host imports.
+- The echo transport itself stays feasibility-echo (NOT BLE functionality);
+  wiring real kernel transitions through this seam is later U7 scope.
 
 ## Thread / runtime lifetimes
 
@@ -54,14 +69,15 @@ outside this envelope is a limitation, not a pass.
 - Cancellation completion: the abort is reported at the call that observes
   it; no background work exists to outlive the call.
 
-## Panic containment (tested)
+## Panic containment
 
-- `panic = unwind` is NOT relied on: a Rust panic traps the module.
-  `ubm_echo_panic_probe` proves the host observes a catchable
-  `WebAssembly.RuntimeError`, the Node process survives, and the module
-  keeps serving afterwards. A panic still poisons in-progress Rust state
-  behind the trap (documented institute behaviour); hosts must treat a trap
-  as session-fatal for the in-flight call and re-drive from the last
+- `panic = unwind` is NOT relied on: a Rust panic traps the module. The
+  former test-only `ubm_echo_panic_probe` was deleted by the wiring slice
+  and the exchange asserts its absence (`ex.ubm_echo_panic_probe ===
+  undefined`): probes must not ship in production paths, so no live trap
+  evidence remains. A panic still poisons in-progress Rust state behind the
+  trap (documented institute behaviour); hosts must treat a trap as
+  session-fatal for the in-flight call and re-drive from the last
   acknowledged state — follow-up for the HOST-WEB consumer contract.
 
 ## Byte ownership
@@ -113,5 +129,6 @@ outside this envelope is a limitation, not a pass.
   background/service-worker limits) are HOST-WEB scope, not proven here —
   no peripheral or background promise is made.
 - No async JS wrapper ships: cancellation maps to streams, not AbortSignal.
-- No `ubm-core` wiring yet: the surface calls the core ONLY through the
-  `CoreBackend` seam (explicit follow-up).
+- `ubm-core` wiring is DONE (see above): the surface calls the core ONLY
+  through the `CoreBackend` seam; deeper kernel-transition wiring later
+  touches the one `impl`.

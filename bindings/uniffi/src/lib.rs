@@ -1,17 +1,23 @@
 //! UniFFI echo scaffold: the exact Rust surface the UDL exposes.
 //!
-//! The binding talks to the feasibility core ONLY through `CoreBackend`
-//! (same seam as every other binding). Failures cross as result records
-//! carrying the frozen C-UBM wire form — see the UDL header note.
+//! The binding talks to the core ONLY through `CoreBackend`, implemented for
+//! the ubm-core-backed [`core_backend::CoreSession`] (one implementation;
+//! contract truth is single-owned by `ubm-core`). Failures cross as result
+//! records carrying the frozen C-UBM wire form — see the UDL header note.
+//!
+//! The former test-only `panic_probe` was deleted by the wiring slice:
+//! probes must not ship in production paths. Containment at the generated
+//! boundary rests on `uniffi_core::ffi::rustcalls::rust_call`
+//! (`catch_unwind` at the pinned version).
 
 // Allowed: generated scaffolding (`ubm_echo.uniffi.rs`, included below)
 // defines a large metadata const that trips `large_const_arrays`. The lint
 // fires only on generated code; nothing else in this crate is affected.
 #![allow(clippy::large_const_arrays)]
 
-mod echo_core;
+mod core_backend;
 
-use echo_core::{EchoCore, EchoError, SharedCore};
+use core_backend::{CoreSession, EchoError, SharedCore};
 
 uniffi::include_scaffolding!("ubm_echo");
 
@@ -110,7 +116,7 @@ impl EchoSession {
     /// `protocol.incompatible` on every call (no effect without valid init).
     pub fn new(revision: String) -> Self {
         Self {
-            inner: EchoCore::open(&revision).into_shared(),
+            inner: CoreSession::open(&revision).into_shared(),
         }
     }
 
@@ -146,21 +152,13 @@ impl EchoSession {
         self.inner.close();
         ok_status()
     }
-
-    /// Test-only panic probe: proves the probe panics (in-process test
-    /// asserts the unwind); containment at the generated boundary is
-    /// evidenced by scaffolding inspection (see LIFETIME_RULES.md).
-    /// MUST NOT ship in any production binding.
-    pub fn panic_probe(&self) -> EchoStatus {
-        panic!("feasibility panic probe: scaffolding must contain this unwind");
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    const REV: &str = echo_core::CONTRACT_REVISION;
+    const REV: &str = core_backend::CONTRACT_REVISION;
 
     #[test]
     fn udl_surface_round_trips() {
@@ -193,14 +191,12 @@ mod tests {
     }
 
     #[test]
-    fn panic_probe_is_live() {
+    fn production_surface_has_no_panic_probe() {
+        // The wiring slice deleted the test-only probe: no feasibility-only
+        // method may ship on the UDL surface. The UDL below is the whole
+        // interface; `panic_probe` must not resolve to a method.
         let session = EchoSession::new(REV.to_string());
-        let probed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            session.panic_probe();
-        }));
-        assert!(
-            probed.is_err(),
-            "probe must panic so containment is meaningful"
-        );
+        let out = session.echo_bytes(vec![7]);
+        assert!(out.ok && out.data == vec![7]);
     }
 }
