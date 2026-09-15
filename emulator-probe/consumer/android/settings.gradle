@@ -1,0 +1,20 @@
+// emulator-probe/consumer/android/settings.gradle
+
+pluginManagement {
+    includeBuild("../node_modules/@react-native/gradle-plugin")
+    repositories {
+        gradlePluginPortal()
+        google()
+        mavenCentral()
+    }
+}
+
+plugins {
+    id("org.gradle.toolchains.foojay-resolver-convention").version("1.0.0")
+    id("com.facebook.react.settings")
+}
+
+extensions.configure(com.facebook.react.ReactSettingsExtension){ ex -> ex.autolinkLibrariesFromCommand() }
+rootProject.name = 'UbmProbe'
+include ':app'
+includeBuild('../node_modules/@react-native/gradle-plugin')

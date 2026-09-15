@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- emulator-probe/consumer debug overlay: allow cleartext to the host
+     Metro bundler (10.0.2.2 / adb reverse) in debug builds only. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW"/>
+
+    <application
+        android:usesCleartextTraffic="true"
+        tools:targetApi="28"
+        tools:ignore="GoogleAppIndexingWarning">
+        <activity android:name="com.facebook.react.devsupport.DevSettingsActivity" android:exported="false" />
+    </application>
+</manifest>

@@ -1,0 +1,6 @@
+$ am start-foreground-service (external)
+[exit=255]
+Starting service: Intent { cmp=com.ubmprobe/com.sfourdrinier.unifiedblemanager.BlePlxForegroundService }
+
+Error: Not found; no service started.
+

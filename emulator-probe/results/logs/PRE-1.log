@@ -1,0 +1,5 @@
+$ adb shell getprop fingerprint/sdk/abi/release
+[exit=0]
+google/sdk_gphone64_x86_64/emu64xa:14/UE1A.230829.050/12077443:userdebug/dev-keys
+
+
