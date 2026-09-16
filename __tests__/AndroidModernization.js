@@ -96,9 +96,11 @@ describe('Android RN 0.86 unified protocol boundary', () => {
       'protocol/UnifiedBleProtocolControlModule.java',
       'protocol/UnifiedBleProtocolJsiBinding.java',
       'protocol/generated/NativeProtocolV2Schema.kt',
+      'radio/GattCentralWire.kt',
       'radio/GattOccurrenceResolver.kt',
       'radio/OwnedAndroidLog.kt',
-      'radio/OwnedAndroidGattRadio.kt'
+      'radio/OwnedAndroidGattRadio.kt',
+      'radio/UbmGattCentralBridge.kt'
     ].sort())
     const protocolDispatcher = read(
       'android/src/main/java/com/sfourdrinier/unifiedblemanager/protocol/UnifiedBleProtocolAndroidDispatcher.kt'

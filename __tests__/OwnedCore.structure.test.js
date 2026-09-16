@@ -50,9 +50,11 @@ describe('Unified Android native protocol structure', () => {
       'protocol/UnifiedBleProtocolControlModule.java',
       'protocol/UnifiedBleProtocolJsiBinding.java',
       'protocol/generated/NativeProtocolV2Schema.kt',
+      'radio/GattCentralWire.kt',
       'radio/GattOccurrenceResolver.kt',
       'radio/OwnedAndroidGattRadio.kt',
-      'radio/OwnedAndroidLog.kt'
+      'radio/OwnedAndroidLog.kt',
+      'radio/UbmGattCentralBridge.kt'
     ])
     expect(dispatcher).toContain('OwnedAndroidGattRadio')
     expect(dispatcher).not.toMatch(/com\.sfourdrinier\.unifiedblemanager\.(adapter|converter)|Base64|BlePlxModule/)
