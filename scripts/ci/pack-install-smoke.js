@@ -884,6 +884,12 @@ function main(options = {}) {
       ...g6aPreflightOptions
     })
 
+    // UBM 5.0 PACKAGING slice: napi-artifact/dev-only-surface proof on the packed tarball.
+    run(process.execPath, ['scripts/ci/check-napi-artifact-packaging.js', '--tarball', rootTgz], {
+      cwd: root,
+      ...g6aPreflightOptions
+    })
+
     if (options.g6aOnly === true) {
       const proof = runG6APackedConsumerProof({
         tmp,
@@ -1077,6 +1083,10 @@ function main(options = {}) {
       "console.log('pack+install ESM imports ok: root, backend-sdk, cli, testing, codecs, profiles, web, react-native, node/bluez, node/corebluetooth, node/winrt, electron/main, electron/renderer');"
     ].join('\n')
     run(process.execPath, ['--input-type=module', '-e', esmAssertScript], { cwd: consumer })
+    // UBM 5.0 PACKAGING slice: napi-artifact consumer check against the installed packed tree.
+    run(process.execPath, ['scripts/ci/check-napi-artifact-packaging.js', '--consumer', consumer], {
+      cwd: root
+    })
     verifyInstalledPublishedHostDependencies(consumer)
     verifyInstalledNativeTooling(consumer)
     buildAndLoadInstalledCoreBluetoothAddon(consumer)
