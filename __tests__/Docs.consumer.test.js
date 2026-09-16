@@ -12,9 +12,12 @@ const read = relativePath => fs.readFileSync(path.join(root, relativePath), 'utf
 const packageVersion = JSON.parse(read('package.json')).version
 const stable40 = /^4\.0\.\d+$/u.test(packageVersion)
 const rcVersionMatch = /^4\.0\.0-rc\.\d+(?:\.\d+)?$/u.exec(packageVersion)
+const rc50VersionMatch = /^5\.0\.0-rc\.\d+$/u.exec(packageVersion)
 const alphaVersionMatch = /^4\.0\.0-alpha\.(\d+)$/u.exec(packageVersion)
-if (!stable40 && rcVersionMatch === null && alphaVersionMatch === null) {
-  throw new Error(`Expected a 4.0.x stable, a 4.0 RC, or a 4.0 alpha package version, received ${packageVersion}`)
+if (!stable40 && rcVersionMatch === null && rc50VersionMatch === null && alphaVersionMatch === null) {
+  throw new Error(
+    `Expected a 4.0.x stable, a 4.0 RC, a 5.0 RC, or a 4.0 alpha package version, received ${packageVersion}`
+  )
 }
 const currentAlpha = alphaVersionMatch === null ? null : Number(alphaVersionMatch[1])
 const previousAlphaVersion = currentAlpha === null ? null : `v4.0.0-alpha.${String(currentAlpha - 1)}`
@@ -70,8 +73,8 @@ const deletedTransitionalAdrs = [
 
 describe('consumer documentation matches the published package', () => {
   test('current public documentation follows the package release channel', () => {
-    if (stable40 || rcVersionMatch) {
-      expect(packageVersion).toMatch(/^4\.0\.\d+(?:-rc\.\d+(?:\.\d+)?)?$/u)
+    if (stable40 || rcVersionMatch || rc50VersionMatch) {
+      expect(packageVersion).toMatch(/^(?:4\.0\.\d+(?:-rc\.\d+(?:\.\d+)?)?|5\.0\.0-rc\.\d+)$/u)
       return
     }
     for (const document of architectureAuthorityDocuments) {

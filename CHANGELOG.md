@@ -6,6 +6,30 @@ All notable changes to `unified-ble-manager` are documented here.
 
 No changes yet.
 
+## [5.0.0-rc.0] - 2026-09-16 (prerelease candidate, unpublished)
+
+First 5.0.0 prerelease candidate: the Rust-first distributable. The npm
+artifact now ships the Rust workspace sources (`crates/`, `bindings/`) plus
+committed Android native prebuilds (`arm64-v8a`, `x86_64`), so packed
+consumers build and load the shared core instead of skipping it; the N-API
+`UbmCentral` dispatch routes scan/connect/discover/read/write/subscribe/
+timeout/dispose through `DesktopCentral`, with failure identities issued by
+the shared core; the Tauri plugin emits frozen `ubm-core` error identities
+and admits only hosts linked against the pinned contract revision at
+bootstrap; the React Native shared-core seam (selection, binding
+resolution, revision admission) fails loudly instead of substituting the
+TypeScript manager; the 5.x podspec selects the UniFFI Rust core beside the
+Owned radio; the JNI drain surfaces kernel effects and typed observations
+instead of discarding them; scan observations preserve the full discovery
+fact set (local name, service UUIDs, manufacturer data with payload bytes,
+RSSI) for the consumer matcher; and the build seal
+(`lib/ubm-build-fingerprint.json`) replaces timestamp freshness heuristics
+for linked-checkout qualification. The 4.x TypeScript manager remains for
+compatibility during cutover; the Tauri dispatcher authority migration, the
+React Native binding-backed backend (blocked on the JNI/UniFFI op surface),
+tvOS Rust coverage, and Apple device-matrix load qualification are open
+follow-ups (see the 5.0.0 gate ledger and `docs/5.0.0-PACKAGING.md`).
+
 ## [4.0.28] - 2026-09-09
 
 ### Fixes

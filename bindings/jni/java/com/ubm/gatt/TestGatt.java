@@ -28,6 +28,9 @@ public final class TestGatt {
         check("depth observes one", GattBridge.nativeGattQueueDepth(session) == 1);
         String sweepProbe = GattBridge.nativeDrainGattEvents(session);
         check("harmless probe drains", sweepProbe.contains("\"ok\":true"), sweepProbe);
+        check("quiet line surfaces empty effect sections",
+                sweepProbe.contains("\"effects\":[]") && sweepProbe.contains("\"observations\":[]"),
+                sweepProbe);
         expectWire("enqueue empty rejects", () -> GattBridge.nativeEnqueueGattEvent(session, ""),
                 "argument.invalid|core|gatt-enqueue|event-empty");
         expectWire("enqueue unknown kind drains fail-closed", () -> {
@@ -45,6 +48,10 @@ public final class TestGatt {
         setup.add("scan.start|owner-a|5000|1000||all|none");
         String scanOut = drainSingle(session, setup.get(0));
         String scanOp = opOf(scanOut);
+        check("admission surfaces its timer effect",
+                scanOut.contains("\"effects\":[{\"kind\":\"timer.schedule\""), scanOut);
+        check("admission surfaces its typed observation",
+                scanOut.contains("\"observations\":[{\"kind\":\"central.scan-start\""), scanOut);
         drainSingle(session, "scan.platform-started|" + scanOp);
         String peerOut = drainSingle(session, "peer.resolve|public-address|AA:BB:CC:DD:EE:FF");
         check("peer key scoped", peerOut.contains("\"peer\":\"public-address:"));
@@ -60,7 +67,13 @@ public final class TestGatt {
         check("path registered at zero", pathOut.contains("\"path\":0"));
         String readOut = drainSingle(session, "read.start|0|5000|1000");
         String readOp = opOf(readOut);
-        drainSingle(session, "op.dispatch|" + readOp);
+        String dispatched = drainSingle(session, "op.dispatch|" + readOp);
+        int radioAt = dispatched.indexOf("\"kind\":\"radio.dispatch\"");
+        int publishAt = dispatched.indexOf("\"kind\":\"state.publish\"");
+        check("dispatch surfaces radio effect then state publish",
+                radioAt >= 0 && publishAt > radioAt, dispatched);
+        check("effects bind the driving op",
+                dispatched.contains("\"op\":\"" + readOp + "\""), dispatched);
         String settled = drainSingle(session,
                 "op.settle|" + readOp + "|success|true|7|1000");
         check("IO settles succeeded", settled.contains("succeeded"));

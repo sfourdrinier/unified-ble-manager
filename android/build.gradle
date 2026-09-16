@@ -117,34 +117,47 @@ react {
   codegenJavaPackageName = "com.sfourdrinier.unifiedblemanager"
 }
 
-// HOST-ANDROID (UBM 5.0, trackourhealth/bun-mono#1188): build the Rust cdylib
-// (bindings/jni, `libubm5_jni_echo.so`) for the emulator ABI list and stage
-// it per-variant so the GATT bridge natives resolve at runtime.
+// HOST-ANDROID (UBM 5.0, trackourhealth/bun-mono#1188): the Rust cdylib
+// (bindings/jni, `libubm5_jni_echo.so`) for the app ABI list, staged
+// per-variant so the GATT bridge natives resolve at runtime.
 //
-// ABI list (recorded): x86_64 ONLY — KVM host-matched emulator ABI
-// (system-images;android-34;google_apis;x86_64). arm64-v8a/armeabi-v7a are a
-// documented boundary (no physical devices on this lane), not a failure.
+// ABI list (recorded): arm64-v8a (physical devices — the ABI the apps
+// ship) plus x86_64 (KVM host-matched emulator ABI,
+// system-images;android-34;google_apis;x86_64). armeabi-v7a stays a
+// documented boundary (no 32-bit ARM device on this lane), not a failure.
 // Toolchain is pinned (1.98.1) and targets are explicit rustc targets inside
 // android/build-rust-cdylib.sh (single source of truth, shared with the
 // five0 probe-app build); no cargo-ndk required.
 //
+// Two contexts, one loader (F01):
+//   * Dev checkout (Rust sources AND ../.git present): build from source
+//     per profile/ABI exactly as below (F20 semantics preserved).
+//   * Packed consumer (Expo CNG, node_modules — no ../.git): the npm
+//     artifact ships COMMITTED release prebuilts under src/main/jniLibs
+//     plus build-identity.txt. The tasks VERIFY them (presence, bytes,
+//     sha256 vs the identity file) and the variants package them — the
+//     bridge natives LOAD in packed consumers, never skip. A packed tree
+//     without prebuilts fails LOUD (broken artifact), never silently.
+//
 // F20: one task per profile (no task-name sniffing — a joint
 // `assembleDebug assembleRelease` builds each profile for its own
 // variant), the COMPLETE Rust input graph declared, and ABI/profile
-// outputs isolated under build/ (never a shared tree). Each variant
-// packages ONLY its own profile's staging via per-variant jniLibs
-// srcDirs. The legacy src/main/jniLibs staging is NOT packaged anymore:
-// any .so left there by older builds is inert (still gitignored).
-def ubmRustAbis = ["x86_64"]
+// outputs isolated under build/ (never a shared tree). Source builds
+// package ONLY their own profile's staging via per-variant jniLibs
+// srcDirs; packed builds package the committed src/main/jniLibs tree.
+def ubmRustAbis = ["arm64-v8a", "x86_64"]
 def ubmRustScript = file("build-rust-cdylib.sh")
 // projectDir-relative: rootDir is example/android when the library is
 // included as a module, so repo-root paths must go through ../.
 def ubmRustSrcDir = projectDir.toPath().resolve("../bindings/jni/src").toFile()
 def ubmRustManifest = projectDir.toPath().resolve("../bindings/jni/Cargo.toml").toFile()
-// Packed consumers (Expo CNG, node_modules) have no Rust sources: bindings/
-// is intentionally NOT shipped. The tasks skip loudly there instead of
-// failing; the bridge classes must not be loaded in that context.
 def ubmRustSourcesPresent = ubmRustSrcDir.isDirectory() && ubmRustManifest.isFile()
+// The npm artifact ships sources (for cargo path-deps) AND prebuilts; only
+// a development checkout carries .git, so .git — not source presence —
+// selects source builds. Packed consumers must never need NDK/Rust.
+def ubmRustDevCheckout = ubmRustSourcesPresent && projectDir.toPath().resolve("../.git").toFile().exists()
+def ubmRustPrebuiltDir = file("src/main/jniLibs")
+def ubmRustPrebuiltIdentity = new File(ubmRustPrebuiltDir, "build-identity.txt")
 // Complete Rust input graph (F20): the cdylib crate plus its transitive
 // path dependencies, exactly as pinned in bindings/jni/Cargo.toml
 // [dependencies] (ubm-core, ubm-fake-radio; ubm-fake-radio itself
@@ -170,12 +183,12 @@ def ubmRustInputFiles = [
   def taskName = "buildUbmRustCdylib${ubmRustProfile.capitalize()}"
   def stagingDir = file("${buildDir}/ubmRustCdylib/${ubmRustProfile}")
   tasks.register(taskName) {
-    description = "Builds the UBM 5.0 Rust cdylib (${ubmRustProfile}) for ${ubmRustAbis} via android/build-rust-cdylib.sh."
+    description = "UBM 5.0 Rust cdylib (${ubmRustProfile}) for ${ubmRustAbis}: builds from source in a dev checkout, verifies committed prebuilts in a packed consumer."
     inputs.property("ubmRustProfile", ubmRustProfile)
     inputs.property("ubmRustAbis", ubmRustAbis)
-    inputs.property("ubmRustSourcesPresent", ubmRustSourcesPresent)
+    inputs.property("ubmRustDevCheckout", ubmRustDevCheckout)
     inputs.file(ubmRustScript)
-    if (ubmRustSourcesPresent) {
+    if (ubmRustDevCheckout) {
       ubmRustInputDirs.each { dir ->
         if (dir.isDirectory()) {
           inputs.dir(dir)
@@ -186,12 +199,13 @@ def ubmRustInputFiles = [
           inputs.file(manifest)
         }
       }
+    } else if (ubmRustPrebuiltDir.isDirectory()) {
+      inputs.dir(ubmRustPrebuiltDir)
     }
     outputs.dir(stagingDir)
     doLast {
-      if (!ubmRustSourcesPresent) {
-        logger.lifecycle("${taskName} SKIPPED: no Rust sources at ${ubmRustSrcDir} " +
-          "(packed-consumer context — bridge natives unavailable, bridge classes must not be loaded).")
+      if (!ubmRustDevCheckout) {
+        verifyUbmRustPrebuilts(taskName, stagingDir)
         return
       }
       def identity = new StringBuilder()
@@ -211,7 +225,7 @@ def ubmRustInputFiles = [
             "${taskName} FAILED for ABI ${abi} (exit ${result.exitValue}). " +
             "Run sh ${ubmRustScript} --abi ${abi} --profile ${ubmRustProfile} " +
             "--libdir <dir> from the repo root for the actionable diagnostic " +
-            "(NDK 27.x, pinned Rust from rust-toolchain.toml + x86_64-linux-android target).")
+            "(NDK 27.x, pinned Rust from rust-toolchain.toml + aarch64-linux-android and x86_64-linux-android targets).")
         }
         def staged = new File(libDir, "libubm5_jni_echo.so")
         if (!staged.isFile()) {
@@ -230,9 +244,62 @@ def ubmRustInputFiles = [
   }
 }
 
-// Back-compat lifecycle task: builds both profiles (direct invocation).
+// Packed-consumer path (F01): verify the committed release prebuilts the
+// npm artifact ships — presence, non-empty bytes, and sha256 against
+// build-identity.txt — then record the receipt under the variant staging
+// dir. The variants package src/main/jniLibs itself (see below), so this
+// copies nothing: a second copy of the same SONAME would collide at merge.
+// Missing or mismatched prebuilts fail LOUD: a packed tree without a
+// loadable Rust library is a broken artifact, never a silent skip.
+// A closure (not a `def` method) so the script-local prebuilt paths above
+// stay visible: Gradle script methods cannot capture script locals.
+def verifyUbmRustPrebuilts = { String taskName, File stagingDir ->
+  if (!ubmRustPrebuiltIdentity.isFile()) {
+    throw new GradleException(
+      "${taskName} FAILED: packed-consumer context (no ../.git) but no committed prebuilts at ${ubmRustPrebuiltDir} " +
+      "(build-identity.txt missing). The npm artifact must ship src/main/jniLibs/<abi>/libubm5_jni_echo.so for ${ubmRustAbis}.")
+  }
+  def expected = [:]
+  ubmRustPrebuiltIdentity.eachLine { line ->
+    def matcher = line =~ /^abi=(\S+) sha256=([0-9a-f]{64}) bytes=(\d+) file=(\S+)$/
+    if (matcher.matches()) {
+      expected[matcher.group(1)] = [sha256: matcher.group(2), bytes: matcher.group(3).toLong(), file: matcher.group(4)]
+    }
+  }
+  def receipt = new StringBuilder()
+  receipt.append("context=packed-prebuilt\n")
+  ubmRustAbis.each { abi ->
+    def want = expected[abi]
+    if (want == null) {
+      throw new GradleException(
+        "${taskName} FAILED: build-identity.txt has no entry for ABI ${abi} (expected one abi= line per ABI in ${ubmRustAbis}).")
+    }
+    def prebuilt = new File(new File(ubmRustPrebuiltDir, abi), want.file)
+    if (!prebuilt.isFile() || prebuilt.length() == 0) {
+      throw new GradleException(
+        "${taskName} FAILED: committed prebuilt missing or empty at ${prebuilt} for ABI ${abi}.")
+    }
+    if (prebuilt.length() != want.bytes) {
+      throw new GradleException(
+        "${taskName} FAILED: prebuilt ${prebuilt} is ${prebuilt.length()} bytes, identity says ${want.bytes} — stale or tampered prebuilt.")
+    }
+    def digest = java.security.MessageDigest.getInstance("SHA-256")
+    prebuilt.eachByte(65536) { buf, len -> digest.update(buf, 0, len) }
+    def actual = digest.digest().encodeHex().toString()
+    if (actual != want.sha256) {
+      throw new GradleException(
+        "${taskName} FAILED: prebuilt ${prebuilt} sha256 ${actual} does not match build-identity.txt (${want.sha256}).")
+    }
+    receipt.append("abi=${abi} sha256=${actual} bytes=${prebuilt.length()} file=${want.file}\n")
+  }
+  stagingDir.mkdirs()
+  new File(stagingDir, "packed-prebuilt-receipt.txt").text = receipt.toString()
+  logger.lifecycle("${taskName} verified packed prebuilts at ${ubmRustPrebuiltDir}:\n${receipt}")
+}
+
+// Back-compat lifecycle task: builds (dev) or verifies (packed) both profiles.
 tasks.register("buildUbmRustCdylib") {
-  description = "Builds the UBM 5.0 Rust cdylib (debug + release) via android/build-rust-cdylib.sh."
+  description = "UBM 5.0 Rust cdylib (debug + release): source builds in a dev checkout, prebuilt verification in a packed consumer."
   dependsOn("buildUbmRustCdylibDebug", "buildUbmRustCdylibRelease")
 }
 
@@ -244,8 +311,15 @@ afterEvaluate {
   tasks.named("preDebugBuild") { dependsOn("buildUbmRustCdylibDebug") }
   tasks.named("preReleaseBuild") { dependsOn("buildUbmRustCdylibRelease") }
 }
-android.sourceSets.debug.jniLibs.srcDirs += file("${buildDir}/ubmRustCdylib/debug")
-android.sourceSets.release.jniLibs.srcDirs += file("${buildDir}/ubmRustCdylib/release")
-// The legacy src/main/jniLibs tree is no longer a packaging input: stale
-// .so files left there by older builds must never merge into a variant.
-android.sourceSets.main.jniLibs.srcDirs = []
+if (ubmRustDevCheckout) {
+  android.sourceSets.debug.jniLibs.srcDirs += file("${buildDir}/ubmRustCdylib/debug")
+  android.sourceSets.release.jniLibs.srcDirs += file("${buildDir}/ubmRustCdylib/release")
+  // Source builds never merge the committed prebuilt tree: each variant
+  // packages ONLY its own profile's staging.
+  android.sourceSets.main.jniLibs.srcDirs = []
+} else {
+  // Packed consumers package the committed release prebuilts: the bridge
+  // natives load from the AAR, no NDK/Rust required. Verified per-variant
+  // by the tasks above; a missing tree fails loud there, never here.
+  android.sourceSets.main.jniLibs.srcDirs = [file("src/main/jniLibs")]
+}

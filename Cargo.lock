@@ -658,6 +658,7 @@ dependencies = [
  "napi-derive",
  "napi-sys",
  "once_cell",
+ "tokio",
 ]
 
 [[package]]
@@ -1247,6 +1248,7 @@ version = "0.1.0"
 dependencies = [
  "btleplug",
  "futures-util",
+ "serde_json",
  "tokio",
  "ubm-core",
  "uuid",
@@ -1275,7 +1277,9 @@ dependencies = [
  "napi",
  "napi-build",
  "napi-derive",
+ "tokio",
  "ubm-core",
+ "ubm-desktop",
  "ubm-fake-radio",
 ]
 

@@ -28,8 +28,8 @@ use futures_util::StreamExt;
 use tokio::sync::{Mutex, mpsc};
 
 use crate::boundary::{
-    CharacteristicSnapshot, DescriptorSnapshot, InstanceKey, PeerSnapshot, PropertyFlags,
-    RadioBoundary, RadioEvent, ScanFilterSpec, ServiceSnapshot,
+    CharacteristicSnapshot, DescriptorSnapshot, InstanceKey, ManufacturerData, PeerSnapshot,
+    PropertyFlags, RadioBoundary, RadioEvent, ScanFilterSpec, ServiceData, ServiceSnapshot,
 };
 use crate::errors::DesktopError;
 use ubm_core::central::{
@@ -176,18 +176,23 @@ impl BtleplugRadio {
 
     async fn snapshot(&self, peripheral: &Peripheral) -> PeerSnapshot {
         let properties = peripheral.properties().await.ok().flatten();
-        let (service_uuids, rssi) = properties
-            .map(|facts| {
-                (
-                    facts
-                        .services
-                        .into_iter()
-                        .map(|uuid| uuid.to_string())
-                        .collect(),
-                    facts.rssi,
-                )
-            })
-            .unwrap_or_default();
+        let (service_uuids, rssi, local_name, manufacturer_data, service_data, tx_power_level) =
+            properties
+                .map(|facts| {
+                    (
+                        facts
+                            .services
+                            .into_iter()
+                            .map(|uuid| uuid.to_string())
+                            .collect(),
+                        facts.rssi,
+                        facts.local_name,
+                        sorted_manufacturer_data(&facts.manufacturer_data),
+                        sorted_service_data(&facts.service_data),
+                        facts.tx_power_level,
+                    )
+                })
+                .unwrap_or_default();
         // btleplug exposes the address type opaquely per platform; report the
         // string, never guess public-vs-random (see PARITY_GAPS.md).
         let address = {
@@ -203,6 +208,10 @@ impl BtleplugRadio {
             address,
             service_uuids,
             rssi,
+            local_name,
+            manufacturer_data,
+            service_data,
+            tx_power_level,
         }
     }
 
@@ -468,6 +477,38 @@ fn property_flags(flags: CharPropFlags) -> PropertyFlags {
         notify: flags.contains(CharPropFlags::NOTIFY),
         indicate: flags.contains(CharPropFlags::INDICATE),
     }
+}
+
+/// Translate one btleplug manufacturer-data map into snapshot sections
+/// (F22): company IDs plus payload bytes verbatim, sorted by company ID
+/// so the unordered OS map yields a deterministic snapshot. Empty payloads
+/// are preserved (section present), never dropped.
+fn sorted_manufacturer_data(sections: &HashMap<u16, Vec<u8>>) -> Vec<ManufacturerData> {
+    let mut entries: Vec<ManufacturerData> = sections
+        .iter()
+        .map(|(company_id, payload)| ManufacturerData {
+            company_id: *company_id,
+            payload: payload.clone(),
+        })
+        .collect();
+    entries.sort_by_key(|entry| entry.company_id);
+    entries
+}
+
+/// Translate one btleplug service-data map into snapshot sections (F22):
+/// UUIDs plus payload bytes verbatim, sorted by UUID so the unordered OS
+/// map yields a deterministic snapshot. Empty payloads are preserved
+/// (section present), never dropped.
+fn sorted_service_data(sections: &HashMap<uuid::Uuid, Vec<u8>>) -> Vec<ServiceData> {
+    let mut entries: Vec<ServiceData> = sections
+        .iter()
+        .map(|(uuid, payload)| ServiceData {
+            uuid: uuid.to_string(),
+            payload: payload.clone(),
+        })
+        .collect();
+    entries.sort_by(|left, right| left.uuid.cmp(&right.uuid));
+    entries
 }
 
 fn property_bits(flags: PropertyFlags) -> u8 {
@@ -1026,14 +1067,14 @@ pub fn core_property_bits(flags: PropertyFlags) -> u8 {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeSet;
+    use std::collections::{BTreeSet, HashMap};
 
     use btleplug::api::{CharPropFlags, Characteristic, Descriptor, Service, ValueNotification};
 
     use super::{
         ForwarderEntry, NotificationRoute, apply_enable_stream_failure, apply_unsubscribe_outcome,
         core_property_bits, forwarder_key, live_scopes, route_is_ambiguous, select_characteristic,
-        select_descriptor, select_service,
+        select_descriptor, select_service, sorted_manufacturer_data, sorted_service_data,
     };
     use crate::boundary::PropertyFlags;
     use ubm_core::central::{
@@ -1083,6 +1124,47 @@ mod tests {
         assert!(
             select_characteristic(&service, HRM_MEASUREMENT, 2).is_none(),
             "missing instance selects nothing, never instance 0"
+        );
+    }
+
+    #[test]
+    fn manufacturer_sections_sort_by_company_with_verbatim_payloads() {
+        let sections = HashMap::from([
+            (0x02b2u16, vec![0xb2, 0x02, 0x01]),
+            (0x006bu16, vec![]),
+            (0xffffu16, vec![0x00]),
+        ]);
+        let sorted = sorted_manufacturer_data(&sections);
+        let ids: Vec<u16> = sorted.iter().map(|entry| entry.company_id).collect();
+        assert_eq!(ids, vec![0x006b, 0x02b2, 0xffff]);
+        assert_eq!(sorted[0].payload, Vec::<u8>::new());
+        assert_eq!(sorted[1].payload, vec![0xb2, 0x02, 0x01]);
+        assert_eq!(sorted[2].payload, vec![0x00]);
+        assert!(
+            sorted_manufacturer_data(&HashMap::new()).is_empty(),
+            "no sections is empty, never synthesized"
+        );
+    }
+
+    #[test]
+    fn service_sections_sort_by_uuid_with_verbatim_payloads() {
+        let high = uuid::Uuid::parse_str("0000fef5-0000-1000-8000-00805f9b34fb").expect("uuid");
+        let low = uuid::Uuid::parse_str("0000180d-0000-1000-8000-00805f9b34fb").expect("uuid");
+        let sections = HashMap::from([(high, vec![0x01]), (low, vec![])]);
+        let sorted = sorted_service_data(&sections);
+        let uuids: Vec<&str> = sorted.iter().map(|entry| entry.uuid.as_str()).collect();
+        assert_eq!(
+            uuids,
+            vec![
+                "0000180d-0000-1000-8000-00805f9b34fb",
+                "0000fef5-0000-1000-8000-00805f9b34fb",
+            ]
+        );
+        assert_eq!(sorted[0].payload, Vec::<u8>::new());
+        assert_eq!(sorted[1].payload, vec![0x01]);
+        assert!(
+            sorted_service_data(&HashMap::new()).is_empty(),
+            "no sections is empty, never synthesized"
         );
     }
 

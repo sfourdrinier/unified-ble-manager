@@ -513,6 +513,7 @@ function isBootstrap<Attachment extends string, Client extends string>(
     !isIpcVersionAxes(record.versions) ||
     !isCapabilitySnapshot(record.capabilities, wireRecord(record.attachment)?.backendGeneration) ||
     (record.discovery !== undefined && !isDiscoveryDescriptor(record.discovery)) ||
+    (record.core !== undefined && !isCoreIdentity(record.core)) ||
     !isRenderer(record.renderer) ||
     !isLease(record.rendererLease)
   ) {
@@ -527,9 +528,20 @@ function hasBootstrapKeys(record: Record<string, unknown>): boolean {
   const keys = Object.keys(record).sort()
   const required = ['attachment', 'attachmentId', 'capabilities', 'renderer', 'rendererLease', 'versions']
   const withDiscovery = [...required, 'discovery'].sort()
+  const withCore = [...required, 'core'].sort()
+  const withBoth = [...required, 'core', 'discovery'].sort()
+  const matches = (expected: string[]): boolean =>
+    keys.length === expected.length && keys.every((key, index) => key === expected[index])
+  return matches(required.sort()) || matches(withDiscovery) || matches(withCore) || matches(withBoth)
+}
+
+function isCoreIdentity(value: unknown): boolean {
+  const record = wireRecord(value)
   return (
-    (keys.length === required.length && keys.every((key, index) => key === required.sort()[index])) ||
-    (keys.length === withDiscovery.length && keys.every((key, index) => key === withDiscovery[index]))
+    record !== null &&
+    exactKeys(record, ['contractRevision', 'implementationVersion']) &&
+    nonEmptyString(record.contractRevision) &&
+    nonEmptyString(record.implementationVersion)
   )
 }
 

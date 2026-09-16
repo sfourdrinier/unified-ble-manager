@@ -19,6 +19,9 @@ cp "$ROOT/target/debug/libubm5_napi_echo.so" ubm_echo.linux-x64.node
 echo "--- napi: round-trip exchange"
 node js/roundtrip.cjs
 
+echo "--- napi: dispatch round-trip (F01 UbmCentral over ubm-desktop)"
+node js/dispatch_roundtrip.cjs
+
 echo "--- napi: process-exit (10s budget)"
 timeout 10 node js/exit_probe.cjs
 

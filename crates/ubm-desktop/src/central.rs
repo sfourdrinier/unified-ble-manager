@@ -12,7 +12,7 @@
 //! must run on the shared handle. There is no BLE hardware on the
 //! qualification host: physical proof stays queued (see `PARITY_GAPS.md`).
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{
     Arc, OnceLock,
     atomic::{AtomicBool, AtomicU64, Ordering},
@@ -47,6 +47,13 @@ const DEFAULT_SUB_BYTE_CAP: u64 = 8192;
 /// opcode/handle). A protocol constant, not a measurement: the OS-measured
 /// MTU still gates every write through [`Central::maximum_write_length`].
 const ATT_MAX_WRITE: u64 = 509;
+/// Bound for the per-central scan-observation queue (F22): every
+/// advertisement the event loop ingests stays pollable FIFO until the host
+/// takes it. Beyond this the oldest observation evicts and every eviction
+/// counts through [`DesktopCentral::advertisement_overflow_count`], never
+/// silently: a host that polls slower than the radio sees the loss
+/// explicitly instead of an unbounded queue.
+const ADVERTISEMENT_CAP: usize = 256;
 
 static EPOCH: OnceLock<Instant> = OnceLock::new();
 static OPEN_COUNTER: AtomicU64 = AtomicU64::new(1);
@@ -241,6 +248,27 @@ pub struct DiscoveryReport {
     pub skipped: Vec<(String, String)>,
 }
 
+/// One registered discovery path in the current snapshot (F01). Consumers
+/// build [`PathSelector`] values and render databases from this whole-tree
+/// read; `discover` alone returns counts only.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiscoveredPath {
+    /// Canonical service UUID.
+    pub service_uuid: String,
+    /// Service occurrence among duplicate UUIDs.
+    pub service_occurrence: u64,
+    /// Characteristic UUID (`None` = service-level path).
+    pub characteristic_uuid: Option<String>,
+    /// Characteristic occurrence (`None` = service-level path).
+    pub characteristic_occurrence: Option<u64>,
+    /// Descriptor UUID (`None` = no descriptor level).
+    pub descriptor_uuid: Option<String>,
+    /// Descriptor occurrence (`None` = no descriptor level).
+    pub descriptor_occurrence: Option<u64>,
+    /// GATT property bits (`GATT_PROP_*`, characteristic level only).
+    pub properties: u8,
+}
+
 /// Typed notification poll outcome (F17): empty-but-live is distinct from
 /// terminal/closed, and exactly one overflow terminal stays observable even
 /// when data capacity is exhausted. Values drain before the terminal; the
@@ -301,6 +329,15 @@ struct Inner<B> {
     /// retry through `unsubscribe`. A pending key fails new subscribes
     /// closed until the disable completes.
     failed_disables: Mutex<HashSet<InstanceKey>>,
+    /// Scan observations ingested by the event loop, FIFO (F22): the full
+    /// [`PeerSnapshot`] facts (name, services, manufacturer data, RSSI)
+    /// the host matcher consumes. Bounded by [`ADVERTISEMENT_CAP`]; the
+    /// oldest evicts past the cap and every eviction counts in
+    /// `advertisement_drops`.
+    advertisements: Mutex<VecDeque<PeerSnapshot>>,
+    /// Observations evicted past [`ADVERTISEMENT_CAP`] (F22): bounded
+    /// ingress never grows memory, and drops are counted, never silent.
+    advertisement_drops: AtomicU64,
     shut_down: AtomicBool,
     /// Stop signal for the central-lifetime event loop.
     loop_stop: watch::Sender<bool>,
@@ -384,6 +421,8 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             subscriptions: Mutex::new(HashMap::new()),
             epochs: Mutex::new(HashMap::new()),
             failed_disables: Mutex::new(HashSet::new()),
+            advertisements: Mutex::new(VecDeque::new()),
+            advertisement_drops: AtomicU64::new(0),
             shut_down: AtomicBool::new(false),
             loop_stop,
             loop_done: Mutex::new(None),
@@ -464,6 +503,26 @@ impl<B: RadioBoundary> DesktopCentral<B> {
     /// Core session peer key for a radio peripheral id, if resolved.
     pub async fn peer_key_for(&self, peer_id: &str) -> Option<String> {
         self.inner.peers.lock().await.get(peer_id).cloned()
+    }
+
+    /// Take one ingested scan observation, FIFO arrival order (F22): the
+    /// full [`PeerSnapshot`] facts (name, services, manufacturer data,
+    /// RSSI) the host matcher consumes. `None` means no observation is
+    /// waiting. Observations queue from central open onward (the boundary
+    /// only emits while its radio is active). Shutdown seals the queue —
+    /// the event loop is joined, so no new observation can arrive — and
+    /// already-queued observations stay drainable, so a racing host never
+    /// loses the terminal sighting.
+    pub async fn take_advertisement(&self) -> Option<PeerSnapshot> {
+        self.inner.advertisements.lock().await.pop_front()
+    }
+
+    /// Observations evicted past the queue cap (F22): a host that polls
+    /// slower than the radio sees the loss explicitly here, never as
+    /// silent memory growth or silent drops.
+    #[must_use]
+    pub fn advertisement_overflow_count(&self) -> u64 {
+        self.inner.advertisement_drops.load(Ordering::Relaxed)
     }
 
     /// Current subscription epoch for a radio peer (F10): the generation
@@ -1008,6 +1067,33 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             }
         }
         Ok(report)
+    }
+
+    /// Read the peer's current discovery tree in registration order (F01).
+    /// Pure read like [`Self::peer_key_for`]: no admission, no radio. An
+    /// unknown peer fails with `peer.not-found`; a peer off-`current`
+    /// fails with `gatt.discovery-required` (or `gatt.stale-handle` after
+    /// a service change) — never an empty list mistaken for an empty
+    /// database.
+    pub async fn discovered_paths(
+        &self,
+        peer_id: &str,
+    ) -> Result<Vec<DiscoveredPath>, DesktopError> {
+        let peer_key = self.known_peer_key(peer_id).await?;
+        let core = self.inner.core.lock().await;
+        let stored = core.snapshot_paths(&peer_key).map_err(DesktopError::from)?;
+        Ok(stored
+            .iter()
+            .map(|path| DiscoveredPath {
+                service_uuid: path.service_uuid().to_owned(),
+                service_occurrence: path.service_occurrence(),
+                characteristic_uuid: path.characteristic_uuid().map(str::to_owned),
+                characteristic_occurrence: path.characteristic_occurrence(),
+                descriptor_uuid: path.descriptor_uuid().map(str::to_owned),
+                descriptor_occurrence: path.descriptor_occurrence(),
+                properties: path.properties(),
+            })
+            .collect())
     }
 
     /// GATT read through a validated path: freshness, discovery, lease, and
@@ -2329,6 +2415,15 @@ async fn ingest_advertisement<B: RadioBoundary>(inner: &Arc<Inner<B>>, snapshot:
             .await
             .insert(snapshot.id.clone(), peer_key);
     }
+    // F22: every advertisement stays pollable with its full facts until the
+    // host takes it. Bounded FIFO: past the cap the oldest evicts and the
+    // eviction counts, so a slow host sees loss explicitly.
+    let mut queue = inner.advertisements.lock().await;
+    if queue.len() >= ADVERTISEMENT_CAP {
+        queue.pop_front();
+        inner.advertisement_drops.fetch_add(1, Ordering::Relaxed);
+    }
+    queue.push_back(snapshot.clone());
 }
 
 async fn reconcile_connected<B: RadioBoundary>(inner: &Arc<Inner<B>>, peer_id: &str) {
@@ -2504,6 +2599,10 @@ mod adapter_tests {
             address: None,
             service_uuids: vec![HRM_SERVICE.to_owned()],
             rssi: Some(-60),
+            local_name: None,
+            manufacturer_data: Vec::new(),
+            service_data: Vec::new(),
+            tx_power_level: None,
         })
     }
 

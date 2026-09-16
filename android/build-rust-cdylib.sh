@@ -8,12 +8,13 @@
 # five0 probe-app build; this script is the single source of truth so the
 # two call sites cannot drift.
 #
-# Supported ABI list (recorded): x86_64 only — KVM host-matched emulator ABI
-# (system-images;android-34;google_apis;x86_64). arm64-v8a/armeabi-v7a are
-# NOT wired: no physical devices exist on this lane, so they are a
-# documented boundary, not a failure.
+# Supported ABI list (recorded): arm64-v8a (physical devices — the ABI the
+# apps ship) plus x86_64 (KVM host-matched emulator ABI,
+# system-images;android-34;google_apis;x86_64). armeabi-v7a stays unwired:
+# no 32-bit ARM device exists on this lane, so it is a documented boundary,
+# not a failure.
 #
-# Usage: build-rust-cdylib.sh --abi x86_64 --profile debug|release \
+# Usage: build-rust-cdylib.sh --abi arm64-v8a|x86_64 --profile debug|release \
 #          --libdir <dir> [--minsdk 24]
 # Every failure is actionable: the exact missing piece (NDK dir, linker,
 # toolchain target, cargo) plus the command that failed.
@@ -39,9 +40,9 @@ done
 
 fail() { echo "build-rust-cdylib: FAIL $1" >&2; exit 1; }
 
-[ -n "$ABI" ] || fail "missing --abi (supported: x86_64)"
+[ -n "$ABI" ] || fail "missing --abi (supported: arm64-v8a x86_64)"
 [ -n "$LIBDIR" ] || fail "missing --libdir (staging directory)"
-[ "$ABI" = "x86_64" ] || fail "unsupported ABI '$ABI' (supported: x86_64; arm64-v8a/armeabi-v7a need physical devices — documented boundary)"
+[ "$ABI" = "x86_64" ] || [ "$ABI" = "arm64-v8a" ] || fail "unsupported ABI '$ABI' (supported: arm64-v8a x86_64; armeabi-v7a is a documented boundary — no 32-bit ARM device on this lane)"
 [ "$PROFILE" = "debug" ] || [ "$PROFILE" = "release" ] || fail "--profile must be debug|release, got '$PROFILE'"
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -51,6 +52,7 @@ LIB="lib${CRATE}.so"
 
 case "$ABI" in
   x86_64) TARGET="x86_64-linux-android" ;;
+  arm64-v8a) TARGET="aarch64-linux-android" ;;
 esac
 
 # --- NDK resolution (actionable when absent) ---
@@ -76,8 +78,10 @@ echo "build-rust-cdylib: abi=$ABI target=$TARGET profile=$PROFILE ndk=$NDK minsd
 PROFILE_FLAG=""
 [ "$PROFILE" = "release" ] && PROFILE_FLAG="--release"
 
+# Linker env var is per-target (uppercase, hyphens to underscores).
+LINKER_ENV="$(printf 'CARGO_TARGET_%s_LINKER' "$(printf '%s' "$TARGET" | tr '[:lower:]-' '[:upper:]_')")"
 # shellcheck disable=SC2086
-CARGO_TARGET_X86_64_LINUX_ANDROID_LINKER="$LINKER" \
+env "${LINKER_ENV}=${LINKER}" \
   rustup run "$PINNED_TOOLCHAIN" cargo build -p "$CRATE" --locked --target "$TARGET" $PROFILE_FLAG \
   || fail "cargo build failed for $TARGET/$PROFILE (pinned $PINNED_TOOLCHAIN). See the cargo output above; common causes: stale Cargo.lock (run cargo update -p $CRATE on the host target first) or a missing NDK platform for minsdk $MINSDK."
 

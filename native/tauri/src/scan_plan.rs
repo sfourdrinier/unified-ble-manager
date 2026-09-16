@@ -588,7 +588,7 @@ fn common_required_services(any_of: Option<&[Clause]>) -> Vec<String> {
             clause
                 .services
                 .as_ref()
-                .map_or(true, |services| services.all.is_empty())
+                .is_none_or(|services| services.all.is_empty())
         })
     {
         return Vec::new();

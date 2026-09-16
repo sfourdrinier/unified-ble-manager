@@ -40,7 +40,40 @@ pub struct ScanFilterSpec {
     pub service_uuids: Vec<String>,
 }
 
+/// One manufacturer-data section of an advertisement: the SIG company ID
+/// plus the raw payload bytes verbatim. An empty payload is preserved as
+/// empty (not dropped): vendor decoders distinguish "section present with
+/// no payload" from "section absent" (no entry at all).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManufacturerData {
+    /// SIG company identifier (e.g. `0x006b` Polar, `0x02b2` Oura).
+    pub company_id: u16,
+    /// Raw section payload bytes, verbatim.
+    pub payload: Vec<u8>,
+}
+
+/// One service-data section of an advertisement: the service UUID plus the
+/// raw payload bytes verbatim. Same empty-payload rule as
+/// [`ManufacturerData`]: present-with-empty is preserved, never dropped.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServiceData {
+    /// Service UUID (canonical string).
+    pub uuid: String,
+    /// Raw section payload bytes, verbatim.
+    pub payload: Vec<u8>,
+}
+
 /// One observed peer: radio identity plus latest advertisement facts.
+///
+/// Carries the complete discovery fact set the public observation contract
+/// needs (`localName`, `serviceUuids`, `manufacturerData`, `serviceData`,
+/// `rssi`, `txPowerLevel` per `CompactScanAdvertisement`; the device-kind
+/// matcher consumes the first three): null/unknown/empty distinctions are
+/// preserved (`local_name: None` vs `Some("")`, empty vs populated
+/// vectors), and section payload bytes cross verbatim. One boundary note:
+/// btleplug reports services as a plain vector, so "no services observed"
+/// is always `[]` (unknown collapses to empty); the matcher treats `[]`
+/// like `null` (no match), so no verdict changes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PeerSnapshot {
     /// btleplug peripheral id (opaque platform handle string).
@@ -52,6 +85,20 @@ pub struct PeerSnapshot {
     pub service_uuids: Vec<String>,
     /// Last RSSI in dBm, when measured.
     pub rssi: Option<i16>,
+    /// Complete or shortened local name, when the advertisement carries
+    /// one (`None` when absent; `Some("")` is preserved, never coerced).
+    pub local_name: Option<String>,
+    /// Manufacturer-data sections, payload bytes verbatim. The production
+    /// backend sorts by company ID (btleplug reports a map); scripted
+    /// boundaries preserve push order.
+    pub manufacturer_data: Vec<ManufacturerData>,
+    /// Service-data sections, payload bytes verbatim. The production
+    /// backend sorts by UUID (btleplug reports a map); scripted boundaries
+    /// preserve push order.
+    pub service_data: Vec<ServiceData>,
+    /// Advertised TX power level in dBm, when the advertisement carries
+    /// one (`None` when absent).
+    pub tx_power_level: Option<i16>,
 }
 
 /// GATT property flags for one characteristic snapshot.

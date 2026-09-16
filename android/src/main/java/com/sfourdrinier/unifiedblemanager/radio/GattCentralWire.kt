@@ -253,60 +253,155 @@ object GattCentralWire {
   }
 
   private fun parseOne(line: String): GattObservation {
-    fun field(name: String): String? {
-      val key = "\"$name\":\""
-      val start = line.indexOf(key)
-      if (start < 0) return null
-      val from = start + key.length
-      // Full JSON string unescape (Rust's json_escape_into emits \" \\ \n
-      // \r \t plus \uXXXX): identity fields round-trip exactly.
-      val out = StringBuilder()
-      var i = from
-      while (i < line.length) {
-        val c = line[i]
-        if (c == '\\' && i + 1 < line.length) {
-          when (val e = line[i + 1]) {
-            'n' -> out.append('\n')
-            'r' -> out.append('\r')
-            't' -> out.append('\t')
-            'b' -> out.append('\b')
-            'f' -> out.append('\u000C')
-            '/' -> out.append('/')
-            'u' -> {
-              val hex = line.substring(i + 2, minOf(i + 6, line.length))
-              val code = hex.toIntOrNull(16)
-              if (hex.length == 4 && code != null) {
-                out.append(code.toChar())
-                i += 6
-                continue
-              }
-              out.append(e)
-            }
-            else -> out.append(e)
-          }
-          i += 2
-          continue
-        }
-        if (c == '"') break
-        out.append(c)
-        i++
-      }
-      return out.toString()
-    }
+    fun field(name: String): String? = fieldIn(line, name)
     // Anchored: a `"ok":true` substring inside a string field must not flip
     // the verdict. Rust emits {"ok":true,...} / {"ok":false,...} exactly.
     val ok = line.startsWith("{\"ok\":true") && (line.length == 10 || line[10] == ',' || line[10] == '}')
+    val event = field("event") ?: ""
+    // F01: kernel effects plus typed observations ride every drained line.
+    // A present-but-malformed section fails the line closed (a truncated
+    // section must never read as "no effects"); absent sections parse as
+    // empty (pre-F01 lines only).
+    val effects = parseEffectSection(line, "effects")
+      ?: return GattObservation(false, event, "platform.failure", "gatt", "gatt-drain", "effects-malformed", line)
+    val observations = parseEffectSection(line, "observations")
+      ?: return GattObservation(false, event, "platform.failure", "gatt", "gatt-drain", "observations-malformed", line)
     return GattObservation(
       ok = ok,
-      event = field("event") ?: "",
+      event = event,
       code = field("code"),
       domain = field("domain"),
       operation = field("operation"),
       detail = field("detail"),
-      raw = line
+      raw = line,
+      effects = effects,
+      observations = observations
     )
   }
+
+  private fun fieldIn(text: String, name: String): String? {
+    val key = "\"$name\":\""
+    val start = text.indexOf(key)
+    if (start < 0) return null
+    val from = start + key.length
+    // Full JSON string unescape (Rust's json_escape_into emits \" \\ \n
+    // \r \t plus \uXXXX): identity fields round-trip exactly.
+    val out = StringBuilder()
+    var i = from
+    while (i < text.length) {
+      val c = text[i]
+      if (c == '\\' && i + 1 < text.length) {
+        when (val e = text[i + 1]) {
+          'n' -> out.append('\n')
+          'r' -> out.append('\r')
+          't' -> out.append('\t')
+          'b' -> out.append('\b')
+          'f' -> out.append(12.toChar())
+          '/' -> out.append('/')
+          'u' -> {
+            val hex = text.substring(i + 2, minOf(i + 6, text.length))
+            val code = hex.toIntOrNull(16)
+            if (hex.length == 4 && code != null) {
+              out.append(code.toChar())
+              i += 6
+              continue
+            }
+            out.append(e)
+          }
+          else -> out.append(e)
+        }
+        i += 2
+        continue
+      }
+      if (c == '"') break
+      out.append(c)
+      i++
+    }
+    return out.toString()
+  }
+
+  /**
+   * Parses one `"key":[{"kind","op","detail"},...]` section. Returns null
+   * when the section is present but malformed (the line then fails closed);
+   * an absent section returns empty (pre-F01 lines). Never throws.
+   */
+  private fun parseEffectSection(line: String, key: String): List<GattEffect>? {
+    val anchor = "\"$key\":["
+    val from = line.indexOf(anchor)
+    if (from < 0) return emptyList()
+    var i = from + anchor.length
+    val entries = mutableListOf<GattEffect>()
+    fun skipGaps() {
+      while (i < line.length && (line[i] == ' ' || line[i] == '\t')) i++
+    }
+    skipGaps()
+    if (i < line.length && line[i] == ']') return entries
+    while (true) {
+      if (i >= line.length || line[i] != '{') return null
+      // String-aware object extent: braces inside quoted values (details
+      // may carry JSON) must not end the scan.
+      var j = i
+      var inString = false
+      var escaped = false
+      var depth = 0
+      var end = -1
+      while (j < line.length) {
+        val c = line[j]
+        if (escaped) {
+          escaped = false
+        } else if (c == '\\' && inString) {
+          escaped = true
+        } else if (c == '"') {
+          inString = !inString
+        } else if (!inString && c == '{') {
+          depth++
+        } else if (!inString && c == '}') {
+          depth--
+          if (depth == 0) {
+            end = j
+            break
+          }
+        }
+        j++
+      }
+      if (end < 0) return null
+      val entry = line.substring(i, end + 1)
+      val kind = fieldIn(entry, "kind") ?: return null
+      val op = fieldIn(entry, "op") ?: return null
+      val detail = fieldIn(entry, "detail") ?: return null
+      entries.add(GattEffect(kind, op, detail))
+      i = end + 1
+      skipGaps()
+      if (i >= line.length) return null
+      if (line[i] == ']') return entries
+      if (line[i] != ',') return null
+      i++
+      skipGaps()
+    }
+  }
 }
+
+/**
+ * One kernel effect or typed observation surfaced on a drained line (F01).
+ *
+ * Both sections share the `{"kind","op","detail"}` shape. `effects` are
+ * MUST-EXECUTE for the host owner, in order (see the per-kind contract):
+ * - `radio.dispatch` — perform the admitted radio op, then feed the outcome
+ *   back through the matching wire verb (`op.settle`, `link.established`,
+ *   ...); the op id binds the feedback.
+ * - `timer.schedule` — arm the kernel deadline in `detail`, then post
+ *   `expire-sweep` when it fires; `timer.cancel` disarms it.
+ * - `state.publish` — surface the lifecycle fact in `detail` to the owner.
+ * - `cleanup.release` — settle the recorded destroy and report it;
+ *   `observation.deliver` — deliver the payload to the consumer.
+ * `observations` are typed central facts (`central.scan-start`, ...) to
+ * publish. Neither section is ever dropped: quiet lines emit empty arrays.
+ */
+data class GattEffect(
+  val kind: String,
+  val op: String,
+  val detail: String
+)
 
 /** One parsed drain observation line. */
 data class GattObservation(
@@ -316,5 +411,7 @@ data class GattObservation(
   val domain: String?,
   val operation: String?,
   val detail: String?,
-  val raw: String
+  val raw: String,
+  val effects: List<GattEffect> = emptyList(),
+  val observations: List<GattEffect> = emptyList()
 )

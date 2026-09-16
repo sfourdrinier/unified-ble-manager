@@ -20,6 +20,7 @@ use serde_json::Number;
 use tauri::async_runtime::JoinHandle as TauriJoinHandle;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
+use ubm_core::contracts::BleErrorCode;
 use uuid::Uuid;
 
 use crate::capabilities;
@@ -363,7 +364,10 @@ struct ScanObservation<'a> {
 
 #[derive(Debug)]
 struct DispatchError {
-    code: &'static str,
+    // F01: the frozen code identity is single-owned by `ubm-core`
+    // (`BleErrorCode`); the plugin never spells code strings. The domain
+    // stays plugin-local (`ipc` has no frozen member).
+    code: BleErrorCode,
     domain: &'static str,
     operation: String,
     platform: Option<String>,
@@ -371,13 +375,16 @@ struct DispatchError {
 }
 
 impl DispatchError {
-    fn new(code: &'static str, domain: &'static str, operation: impl Into<String>) -> Self {
+    fn new(code: BleErrorCode, domain: &'static str, operation: impl Into<String>) -> Self {
         Self {
             code,
             domain,
             operation: operation.into(),
             platform: None,
-            retryable: matches!(code, "operation.aborted" | "operation.timed-out"),
+            retryable: matches!(
+                code,
+                BleErrorCode::OperationAborted | BleErrorCode::OperationTimedOut
+            ),
         }
     }
 
@@ -401,7 +408,7 @@ impl DispatchError {
             ])
         });
         object([
-            ("code", string(self.code)),
+            ("code", string(self.code.as_str())),
             ("domain", string(self.domain)),
             ("operation", string(self.operation.clone())),
             ("platform", platform),
@@ -469,7 +476,7 @@ impl BtleplugDispatcher {
         let kind = required_string(&request, "kind", "tauri.request-kind")?;
         if kind != ATTACH_REQUEST_KIND && self.is_revoked(&caller_key(&caller)) {
             return Err(DispatchError::new(
-                "ownership.denied",
+                BleErrorCode::OwnershipDenied,
                 "ipc",
                 "tauri.caller-revoked",
             ));
@@ -480,7 +487,11 @@ impl BtleplugDispatcher {
                 // caller that omits it could never receive events, so refuse
                 // rather than attach a mute lease.
                 let event_sink = event_sink.ok_or_else(|| {
-                    DispatchError::new("protocol.malformed", "ipc", "tauri.bootstrap-event-channel")
+                    DispatchError::new(
+                        BleErrorCode::ProtocolMalformed,
+                        "ipc",
+                        "tauri.bootstrap-event-channel",
+                    )
                 })?;
                 let offer = into_object(
                     required_value(&request, "offer", "tauri.bootstrap-offer")?.clone(),
@@ -492,7 +503,7 @@ impl BtleplugDispatcher {
             "event.ack" => self.acknowledge(caller, request).await,
             "release" => self.release_request(caller, request).await,
             _ => Err(DispatchError::new(
-                "protocol.malformed",
+                BleErrorCode::ProtocolMalformed,
                 "ipc",
                 "tauri.request-kind",
             )),
@@ -512,7 +523,7 @@ impl BtleplugDispatcher {
             .spawn(async move { open_btleplug_adapter(requested).await })
             .await
             .map_err(|error| {
-                DispatchError::new("adapter.unavailable", "adapter", "tauri.runtime")
+                DispatchError::new(BleErrorCode::AdapterUnavailable, "adapter", "tauri.runtime")
                     .platform(error.to_string())
             })??;
         let attachment = Attachment {
@@ -545,7 +556,7 @@ impl BtleplugDispatcher {
         let cleanup = self.release(&key).await;
         if !is_released(&cleanup) {
             return Err(DispatchError::new(
-                "platform.failure",
+                BleErrorCode::PlatformFailure,
                 "cleanup",
                 "tauri.bootstrap-prior-release",
             ));
@@ -597,6 +608,7 @@ impl BtleplugDispatcher {
                         "capabilities",
                         capabilities::snapshot(&attachment.backend_generation),
                     ),
+                    ("core", core_identity()),
                     ("discovery", object([("kind", string("continuous-scan"))])),
                     ("renderer", renderer),
                     (
@@ -640,7 +652,7 @@ impl BtleplugDispatcher {
             Some(IpcValue::Null) | None => None,
             _ => {
                 return Err(DispatchError::new(
-                    "bytes.invalid",
+                    BleErrorCode::BytesInvalid,
                     "ipc",
                     "tauri.route-binary",
                 ))
@@ -652,7 +664,7 @@ impl BtleplugDispatcher {
             let target = required_string(&payload, "targetCorrelation", "tauri.cancel")?;
             let state = self.inner.lock().await;
             let caller_state = state.callers.get(&caller_key(&caller)).ok_or_else(|| {
-                DispatchError::new("ownership.denied", "ipc", "tauri.cancel-owner")
+                DispatchError::new(BleErrorCode::OwnershipDenied, "ipc", "tauri.cancel-owner")
             })?;
             let cancellation = caller_state.operations.get(&target);
             if let Some(cancellation) = cancellation {
@@ -672,7 +684,7 @@ impl BtleplugDispatcher {
         {
             let mut state = self.inner.lock().await;
             let caller_state = state.callers.get_mut(&caller_key(&caller)).ok_or_else(|| {
-                DispatchError::new("ownership.denied", "ipc", "tauri.route-owner")
+                DispatchError::new(BleErrorCode::OwnershipDenied, "ipc", "tauri.route-owner")
             })?;
             admit_caller_correlation(
                 &caller_state.operations,
@@ -702,7 +714,7 @@ impl BtleplugDispatcher {
         });
         let result = tokio::select! {
             result = &mut operation => result.map_err(|error| {
-                DispatchError::new("platform.failure", "ipc", format!("tauri.{command}.join"))
+                DispatchError::new(BleErrorCode::PlatformFailure, "ipc", format!("tauri.{command}.join"))
                     .platform(error.to_string())
             })?,
             () = cancellation.cancelled() => {
@@ -721,7 +733,7 @@ impl BtleplugDispatcher {
                             .await;
                     }
                 });
-                Err(DispatchError::new("operation.aborted", "ipc", format!("tauri.{command}")))
+                Err(DispatchError::new(BleErrorCode::OperationAborted, "ipc", format!("tauri.{command}")))
             },
         };
         if let Some(caller_state) = self
@@ -871,7 +883,7 @@ impl BtleplugDispatcher {
                     self.complete_quarantine(caller, &key, true).await;
                     return;
                 }
-                Err(error) if error.code == "ownership.denied" => {
+                Err(error) if error.code == BleErrorCode::OwnershipDenied => {
                     self.complete_quarantine(caller, &key, true).await;
                     return;
                 }
@@ -960,7 +972,11 @@ impl BtleplugDispatcher {
         let versions = required_value(envelope, "versions", "tauri.route-versions")?;
         let mut state = self.inner.lock().await;
         let attachment = state.attachment.as_ref().ok_or_else(|| {
-            DispatchError::new("lifecycle.invalid-state", "ipc", "tauri.route-bootstrap")
+            DispatchError::new(
+                BleErrorCode::LifecycleInvalidState,
+                "ipc",
+                "tauri.route-bootstrap",
+            )
         })?;
         let expected_attachment = into_object(
             attachment_record(attachment),
@@ -970,18 +986,17 @@ impl BtleplugDispatcher {
             || !same_attachment_identity(&envelope_attachment, &expected_attachment)
         {
             return Err(DispatchError::new(
-                "protocol.violation",
+                BleErrorCode::ProtocolViolation,
                 "ipc",
                 "tauri.route-attachment",
             ));
         }
-        let caller_state = state
-            .callers
-            .get_mut(&caller_key(caller))
-            .ok_or_else(|| DispatchError::new("ownership.denied", "ipc", "tauri.route-caller"))?;
+        let caller_state = state.callers.get_mut(&caller_key(caller)).ok_or_else(|| {
+            DispatchError::new(BleErrorCode::OwnershipDenied, "ipc", "tauri.route-caller")
+        })?;
         if caller_state.lease_id != lease_id || caller_state.lease_generation != lease_generation {
             return Err(DispatchError::new(
-                "ownership.denied",
+                BleErrorCode::OwnershipDenied,
                 "ipc",
                 "tauri.route-lease",
             ));
@@ -995,7 +1010,7 @@ impl BtleplugDispatcher {
                 != caller_state.lease_generation
         {
             return Err(DispatchError::new(
-                "protocol.violation",
+                BleErrorCode::ProtocolViolation,
                 "ipc",
                 "tauri.route-authority",
             ));
@@ -1018,13 +1033,17 @@ impl BtleplugDispatcher {
             required_string(payload, "__expectedLeaseGeneration", "tauri.execute-lease")?;
         let state = self.inner.lock().await;
         let caller_state = state.callers.get(&caller_key(caller)).ok_or_else(|| {
-            DispatchError::new("ownership.denied", "ipc", "tauri.execute-lease-owner")
+            DispatchError::new(
+                BleErrorCode::OwnershipDenied,
+                "ipc",
+                "tauri.execute-lease-owner",
+            )
         })?;
         if caller_state.lease_id != expected_id
             || caller_state.lease_generation != expected_generation
         {
             return Err(DispatchError::new(
-                "ownership.denied",
+                BleErrorCode::OwnershipDenied,
                 "ipc",
                 "tauri.execute-lease-stale",
             ));
@@ -1064,7 +1083,7 @@ impl BtleplugDispatcher {
             "gatt.descriptor.read" => self.read_descriptor(caller, payload).await,
             "gatt.descriptor.write" => self.write_descriptor(caller, payload, binary_payload).await,
             _ => Err(DispatchError::new(
-                "argument.invalid",
+                BleErrorCode::ArgumentInvalid,
                 "ipc",
                 "tauri.route-command",
             )),
@@ -1075,7 +1094,11 @@ impl BtleplugDispatcher {
         let attachment = {
             let state = self.inner.lock().await;
             state.attachment.clone().ok_or_else(|| {
-                DispatchError::new("adapter.unavailable", "adapter", "tauri.adapter-state")
+                DispatchError::new(
+                    BleErrorCode::AdapterUnavailable,
+                    "adapter",
+                    "tauri.adapter-state",
+                )
             })?
         };
         let adapter = self.adapter().await?;
@@ -1085,7 +1108,7 @@ impl BtleplugDispatcher {
             Ok(_) => "unknown",
             Err(error) => {
                 return Err(DispatchError::new(
-                    "adapter.unavailable",
+                    BleErrorCode::AdapterUnavailable,
                     "adapter",
                     "tauri.adapter-power",
                 )
@@ -1096,7 +1119,7 @@ impl BtleplugDispatcher {
             Ok(peripherals) => i64::try_from(peripherals.len()).unwrap_or(i64::MAX),
             Err(error) => {
                 return Err(DispatchError::new(
-                    "adapter.unavailable",
+                    BleErrorCode::AdapterUnavailable,
                     "adapter",
                     "tauri.adapter-heard",
                 )
@@ -1112,10 +1135,15 @@ impl BtleplugDispatcher {
         payload: BTreeMap<String, IpcValue>,
     ) -> Result<IpcValue, DispatchError> {
         let query_value = payload.get("query").ok_or_else(|| {
-            DispatchError::new("protocol.violation", "scan", "tauri.scan-query-required")
+            DispatchError::new(
+                BleErrorCode::ProtocolViolation,
+                "scan",
+                "tauri.scan-query-required",
+            )
         })?;
         let decoded_query = decode_normalized_scan_query(query_value).map_err(|error| {
-            DispatchError::new("protocol.malformed", "scan", "tauri.scan-query").platform(error)
+            DispatchError::new(BleErrorCode::ProtocolMalformed, "scan", "tauri.scan-query")
+                .platform(error)
         })?;
         let service_uuids = decoded_query
             .native_service_uuids
@@ -1136,17 +1164,17 @@ impl BtleplugDispatcher {
             let mut state = self.inner.lock().await;
             if scan_start_blocked(&state) {
                 return Err(DispatchError::new(
-                    "scan.already-active",
+                    BleErrorCode::ScanAlreadyActive,
                     "scan",
                     "tauri.scan-global-owner",
                 ));
             }
             let caller_state = state.callers.get_mut(&key).ok_or_else(|| {
-                DispatchError::new("ownership.denied", "scan", "tauri.scan-owner")
+                DispatchError::new(BleErrorCode::OwnershipDenied, "scan", "tauri.scan-owner")
             })?;
             if caller_state.scan_admitting || caller_state.scan.is_some() {
                 return Err(DispatchError::new(
-                    "scan.already-active",
+                    BleErrorCode::ScanAlreadyActive,
                     "scan",
                     "tauri.scan-start",
                 ));
@@ -1192,7 +1220,7 @@ impl BtleplugDispatcher {
                             continue;
                         };
                         polls = polls.saturating_add(1);
-                        if polls % 20 == 0 {
+                        if polls.is_multiple_of(20) {
                             eprintln!(
                                 "ubm scan poll peripherals={} events_open={}",
                                 peripherals.len(),
@@ -1288,16 +1316,18 @@ impl BtleplugDispatcher {
             Ok(Err(error)) => {
                 self.abort_scan_admission(&key, (&expected_lease_id, &expected_lease_generation))
                     .await;
-                return Err(
-                    DispatchError::new("scan.start-failed", "scan", "tauri.scan-start")
-                        .platform(error),
-                );
+                return Err(DispatchError::new(
+                    BleErrorCode::ScanStartFailed,
+                    "scan",
+                    "tauri.scan-start",
+                )
+                .platform(error));
             }
             Err(_) => {
                 self.abort_scan_admission(&key, (&expected_lease_id, &expected_lease_generation))
                     .await;
                 return Err(DispatchError::new(
-                    "scan.start-failed",
+                    BleErrorCode::ScanStartFailed,
                     "scan",
                     "tauri.scan-runtime",
                 ));
@@ -1337,7 +1367,7 @@ impl BtleplugDispatcher {
                 }
             }
             return Err(DispatchError::new(
-                "ownership.denied",
+                BleErrorCode::OwnershipDenied,
                 "scan",
                 "tauri.scan-stale-lease",
             ));
@@ -1367,7 +1397,7 @@ impl BtleplugDispatcher {
                 }
             }
             return Err(DispatchError::new(
-                "ownership.denied",
+                BleErrorCode::OwnershipDenied,
                 "scan",
                 "tauri.scan-owner",
             ));
@@ -1421,7 +1451,8 @@ impl BtleplugDispatcher {
             .map_err(|error| error.to_string());
         let mut state = self.inner.lock().await;
         apply_scan_stop_outcome(&mut state, &attempt, outcome).map_err(|error| {
-            DispatchError::new("scan.stop-failed", "scan", "tauri.scan-stop").platform(error)
+            DispatchError::new(BleErrorCode::ScanStopFailed, "scan", "tauri.scan-stop")
+                .platform(error)
         })?;
         Ok(released())
     }
@@ -1435,7 +1466,7 @@ impl BtleplugDispatcher {
         let adapter = self.adapter().await?;
         let peripherals = adapter.peripherals().await.map_err(|error| {
             DispatchError::new(
-                "connection.failed",
+                BleErrorCode::ConnectionFailed,
                 "connection",
                 "tauri.connect-peripherals",
             )
@@ -1445,21 +1476,25 @@ impl BtleplugDispatcher {
             .into_iter()
             .find(|peripheral| peripheral_id(peripheral) == peer_id)
             .ok_or_else(|| {
-                DispatchError::new("connection.not-found", "connection", "tauri.connect-peer")
+                DispatchError::new(
+                    BleErrorCode::ConnectionNotFound,
+                    "connection",
+                    "tauri.connect-peer",
+                )
             })?;
         let key = caller_key(caller);
         {
             let mut state = self.inner.lock().await;
             if state.peer_owners.contains_key(&peer_id) {
                 return Err(DispatchError::new(
-                    "connection.already-owned",
+                    BleErrorCode::ConnectionAlreadyOwned,
                     "connection",
                     "tauri.connect-peer-owner",
                 ));
             }
             if !state.callers.contains_key(&key) {
                 return Err(DispatchError::new(
-                    "ownership.denied",
+                    BleErrorCode::OwnershipDenied,
                     "connection",
                     "tauri.connect-owner",
                 ));
@@ -1471,7 +1506,7 @@ impl BtleplugDispatcher {
             Err(error) => {
                 self.clear_peer_owner(&peer_id, &key).await;
                 return Err(DispatchError::new(
-                    "connection.failed",
+                    BleErrorCode::ConnectionFailed,
                     "connection",
                     "tauri.connect-state",
                 )
@@ -1481,17 +1516,19 @@ impl BtleplugDispatcher {
         if already_connected {
             self.clear_peer_owner(&peer_id, &key).await;
             return Err(DispatchError::new(
-                "connection.already-owned",
+                BleErrorCode::ConnectionAlreadyOwned,
                 "connection",
                 "tauri.connect-existing-link",
             ));
         }
         if let Err(error) = peripheral.connect().await {
             self.clear_peer_owner(&peer_id, &key).await;
-            return Err(
-                DispatchError::new("connection.failed", "connection", "tauri.connect")
-                    .platform(error.to_string()),
-            );
+            return Err(DispatchError::new(
+                BleErrorCode::ConnectionFailed,
+                "connection",
+                "tauri.connect",
+            )
+            .platform(error.to_string()));
         }
         let handle = self.id("connection");
         let connection_id = self.id("connection-id");
@@ -1765,7 +1802,11 @@ impl BtleplugDispatcher {
         let connection = {
             let state = self.inner.lock().await;
             let caller_state = state.callers.get(&key).ok_or_else(|| {
-                DispatchError::new("ownership.denied", "connection", "tauri.disconnect-owner")
+                DispatchError::new(
+                    BleErrorCode::OwnershipDenied,
+                    "connection",
+                    "tauri.disconnect-owner",
+                )
             })?;
             let Some(connection) = caller_state.connections.get(&handle) else {
                 return Ok(released());
@@ -1781,8 +1822,12 @@ impl BtleplugDispatcher {
         disconnect_peripheral(&connection.peripheral)
             .await
             .map_err(|error| {
-                DispatchError::new("platform.failure", "connection", "tauri.disconnect")
-                    .platform(error)
+                DispatchError::new(
+                    BleErrorCode::PlatformFailure,
+                    "connection",
+                    "tauri.disconnect",
+                )
+                .platform(error)
             })?;
         let resources = self
             .remove_connection_resources(&key, &handle, &connection.peer_id)
@@ -1882,14 +1927,14 @@ impl BtleplugDispatcher {
         let mut state = self.inner.lock().await;
         let caller_state = state.callers.get_mut(&key).ok_or_else(|| {
             DispatchError::new(
-                "ownership.denied",
+                BleErrorCode::OwnershipDenied,
                 "connection",
                 "tauri.connection-events-owner",
             )
         })?;
         if caller_state.connection_events.contains_key(&stream_handle) {
             return Err(DispatchError::new(
-                "protocol.violation",
+                BleErrorCode::ProtocolViolation,
                 "connection",
                 "tauri.connection-events-duplicate",
             ));
@@ -1937,14 +1982,14 @@ impl BtleplugDispatcher {
             let mut state = self.inner.lock().await;
             let attachment = state.attachment.clone().ok_or_else(|| {
                 DispatchError::new(
-                    "lifecycle.invalid-state",
+                    BleErrorCode::LifecycleInvalidState,
                     "connection",
                     "tauri.connection-events-attachment",
                 )
             })?;
             let caller_state = state.callers.get_mut(&key).ok_or_else(|| {
                 DispatchError::new(
-                    "ownership.denied",
+                    BleErrorCode::OwnershipDenied,
                     "connection",
                     "tauri.connection-events-ready-owner",
                 )
@@ -1954,14 +1999,14 @@ impl BtleplugDispatcher {
                 .get_mut(&stream_handle)
                 .ok_or_else(|| {
                     DispatchError::new(
-                        "gatt.stale-handle",
+                        BleErrorCode::GattStaleHandle,
                         "connection",
                         "tauri.connection-events-ready-handle",
                     )
                 })?;
             if resource.active {
                 return Err(DispatchError::new(
-                    "lifecycle.invalid-state",
+                    BleErrorCode::LifecycleInvalidState,
                     "connection",
                     "tauri.connection-events-ready-state",
                 ));
@@ -1974,7 +2019,7 @@ impl BtleplugDispatcher {
                 .map(|connection| connection.peripheral.clone())
                 .ok_or_else(|| {
                     DispatchError::new(
-                        "connection.stale",
+                        BleErrorCode::ConnectionStale,
                         "connection",
                         "tauri.connection-events-connection",
                     )
@@ -2123,7 +2168,7 @@ impl BtleplugDispatcher {
         let mut state = self.inner.lock().await;
         let caller_state = state.callers.get_mut(&caller_key(caller)).ok_or_else(|| {
             DispatchError::new(
-                "ownership.denied",
+                BleErrorCode::OwnershipDenied,
                 "connection",
                 "tauri.connection-events-unsubscribe-owner",
             )
@@ -2147,8 +2192,12 @@ impl BtleplugDispatcher {
             .await?
             .peripheral;
         peripheral.discover_services().await.map_err(|error| {
-            DispatchError::new("gatt.discovery-required", "gatt", "tauri.discover")
-                .platform(error.to_string())
+            DispatchError::new(
+                BleErrorCode::GattDiscoveryRequired,
+                "gatt",
+                "tauri.discover",
+            )
+            .platform(error.to_string())
         })?;
         let database_handle = self.id("database");
         let database_id = self.id("database-id");
@@ -2213,11 +2262,15 @@ impl BtleplugDispatcher {
         }
         let mut state = self.inner.lock().await;
         let caller_state = state.callers.get_mut(&caller_key(caller)).ok_or_else(|| {
-            DispatchError::new("ownership.denied", "gatt", "tauri.discover-owner")
+            DispatchError::new(
+                BleErrorCode::OwnershipDenied,
+                "gatt",
+                "tauri.discover-owner",
+            )
         })?;
         if !expected_lease_matches(caller_state, &payload) {
             return Err(DispatchError::new(
-                "ownership.denied",
+                BleErrorCode::OwnershipDenied,
                 "gatt",
                 "tauri.discover-stale-lease",
             ));
@@ -2258,7 +2311,11 @@ impl BtleplugDispatcher {
         let key = caller_key(caller);
         let mut state = self.inner.lock().await;
         let caller_state = state.callers.get_mut(&key).ok_or_else(|| {
-            DispatchError::new("ownership.denied", "gatt", "tauri.database-release-owner")
+            DispatchError::new(
+                BleErrorCode::OwnershipDenied,
+                "gatt",
+                "tauri.database-release-owner",
+            )
         })?;
         caller_state.databases.remove(&handle);
         Ok(released())
@@ -2271,7 +2328,7 @@ impl BtleplugDispatcher {
     ) -> Result<IpcValue, DispatchError> {
         let (peripheral, characteristic) = self.characteristic(caller, &payload).await?;
         let value = peripheral.read(&characteristic).await.map_err(|error| {
-            DispatchError::new("gatt.read-failed", "gatt", "tauri.gatt-read")
+            DispatchError::new(BleErrorCode::GattReadFailed, "gatt", "tauri.gatt-read")
                 .platform(error.to_string())
         })?;
         Ok(object([("value", IpcValue::Bytes(value))]))
@@ -2283,15 +2340,16 @@ impl BtleplugDispatcher {
         payload: BTreeMap<String, IpcValue>,
         bytes: Option<Vec<u8>>,
     ) -> Result<IpcValue, DispatchError> {
-        let bytes = bytes
-            .ok_or_else(|| DispatchError::new("bytes.invalid", "gatt", "tauri.gatt-write-bytes"))?;
+        let bytes = bytes.ok_or_else(|| {
+            DispatchError::new(BleErrorCode::BytesInvalid, "gatt", "tauri.gatt-write-bytes")
+        })?;
         let mode = required_string(&payload, "mode", "tauri.gatt-write-mode")?;
         let write_type = match mode.as_str() {
             "with-response" => WriteType::WithResponse,
             "without-response" => WriteType::WithoutResponse,
             _ => {
                 return Err(DispatchError::new(
-                    "argument.invalid",
+                    BleErrorCode::ArgumentInvalid,
                     "gatt",
                     "tauri.gatt-write-mode",
                 ))
@@ -2302,7 +2360,7 @@ impl BtleplugDispatcher {
             .write(&characteristic, &bytes, write_type)
             .await
             .map_err(|error| {
-                DispatchError::new("gatt.write-failed", "gatt", "tauri.gatt-write")
+                DispatchError::new(BleErrorCode::GattWriteFailed, "gatt", "tauri.gatt-write")
                     .platform(error.to_string())
             })?;
         let write_correlation = self.id("write-operation");
@@ -2340,14 +2398,14 @@ impl BtleplugDispatcher {
                     if !characteristic.properties.contains(CharPropFlags::NOTIFY) =>
                 {
                     return Err(DispatchError::new(
-                        "gatt.property-not-supported",
+                        BleErrorCode::GattPropertyNotSupported,
                         "gatt",
                         "tauri.subscribe.notification",
                     ));
                 }
                 "require-indication" => {
                     return Err(DispatchError::new(
-                        "capability.limited",
+                        BleErrorCode::CapabilityLimited,
                         "gatt",
                         "tauri.subscribe.indication-selection",
                     ));
@@ -2355,7 +2413,7 @@ impl BtleplugDispatcher {
                 "prefer-notification" | "prefer-indication" | "require-notification" => {}
                 _ => {
                     return Err(DispatchError::new(
-                        "argument.invalid",
+                        BleErrorCode::ArgumentInvalid,
                         "gatt",
                         "tauri.subscribe.delivery-mode",
                     ));
@@ -2363,14 +2421,18 @@ impl BtleplugDispatcher {
             }
         }
         let mut notifications = peripheral.notifications().await.map_err(|error| {
-            DispatchError::new("gatt.subscribe-failed", "gatt", "tauri.notifications")
-                .platform(error.to_string())
+            DispatchError::new(
+                BleErrorCode::GattSubscribeFailed,
+                "gatt",
+                "tauri.notifications",
+            )
+            .platform(error.to_string())
         })?;
         peripheral
             .subscribe(&characteristic)
             .await
             .map_err(|error| {
-                DispatchError::new("gatt.subscribe-failed", "gatt", "tauri.subscribe")
+                DispatchError::new(BleErrorCode::GattSubscribeFailed, "gatt", "tauri.subscribe")
                     .platform(error.to_string())
             })?;
         let handle = self.id("subscription");
@@ -2551,13 +2613,17 @@ impl BtleplugDispatcher {
         let subscription = {
             let state = self.inner.lock().await;
             let caller_state = state.callers.get(&key).ok_or_else(|| {
-                DispatchError::new("ownership.denied", "gatt", "tauri.unsubscribe-owner")
+                DispatchError::new(
+                    BleErrorCode::OwnershipDenied,
+                    "gatt",
+                    "tauri.unsubscribe-owner",
+                )
             })?;
             if caller_state.lease_id != expected_lease_id
                 || caller_state.lease_generation != expected_lease_generation
             {
                 return Err(DispatchError::new(
-                    "ownership.denied",
+                    BleErrorCode::OwnershipDenied,
                     "gatt",
                     "tauri.unsubscribe-stale-lease",
                 ));
@@ -2577,8 +2643,12 @@ impl BtleplugDispatcher {
                 .unsubscribe(&subscription.1)
                 .await
                 .map_err(|error| {
-                    DispatchError::new("gatt.subscribe-failed", "gatt", "tauri.unsubscribe")
-                        .platform(error.to_string())
+                    DispatchError::new(
+                        BleErrorCode::GattSubscribeFailed,
+                        "gatt",
+                        "tauri.unsubscribe",
+                    )
+                    .platform(error.to_string())
                 })?;
             let mut state = self.inner.lock().await;
             if let Some(caller_state) = state.callers.get_mut(&key) {
@@ -2604,8 +2674,12 @@ impl BtleplugDispatcher {
             .read_descriptor(&descriptor)
             .await
             .map_err(|error| {
-                DispatchError::new("gatt.read-failed", "gatt", "tauri.descriptor-read")
-                    .platform(error.to_string())
+                DispatchError::new(
+                    BleErrorCode::GattReadFailed,
+                    "gatt",
+                    "tauri.descriptor-read",
+                )
+                .platform(error.to_string())
             })?;
         Ok(object([("value", IpcValue::Bytes(value))]))
     }
@@ -2619,21 +2693,29 @@ impl BtleplugDispatcher {
         let mode = required_string(&payload, "mode", "tauri.descriptor-write-mode")?;
         if mode != "with-response" {
             return Err(DispatchError::new(
-                "argument.invalid",
+                BleErrorCode::ArgumentInvalid,
                 "gatt",
                 "tauri.descriptor-write-mode",
             ));
         }
         let bytes = bytes.ok_or_else(|| {
-            DispatchError::new("bytes.invalid", "gatt", "tauri.descriptor-write-bytes")
+            DispatchError::new(
+                BleErrorCode::BytesInvalid,
+                "gatt",
+                "tauri.descriptor-write-bytes",
+            )
         })?;
         let (peripheral, descriptor) = self.descriptor(caller, &payload).await?;
         peripheral
             .write_descriptor(&descriptor, &bytes)
             .await
             .map_err(|error| {
-                DispatchError::new("gatt.write-failed", "gatt", "tauri.descriptor-write")
-                    .platform(error.to_string())
+                DispatchError::new(
+                    BleErrorCode::GattWriteFailed,
+                    "gatt",
+                    "tauri.descriptor-write",
+                )
+                .platform(error.to_string())
             })?;
         Ok(object([
             (
@@ -2660,7 +2742,7 @@ impl BtleplugDispatcher {
             .await?
             .peripheral;
         let rssi = peripheral.read_rssi().await.map_err(|error| {
-            DispatchError::new("platform.failure", "connection", "tauri.rssi")
+            DispatchError::new(BleErrorCode::PlatformFailure, "connection", "tauri.rssi")
                 .platform(error.to_string())
         })?;
         Ok(object([("rssi", number(i64::from(rssi)))]))
@@ -2680,12 +2762,9 @@ impl BtleplugDispatcher {
     }
 
     async fn adapter(&self) -> Result<Adapter, DispatchError> {
-        self.inner
-            .lock()
-            .await
-            .adapter
-            .clone()
-            .ok_or_else(|| DispatchError::new("adapter.unavailable", "adapter", "tauri.adapter"))
+        self.inner.lock().await.adapter.clone().ok_or_else(|| {
+            DispatchError::new(BleErrorCode::AdapterUnavailable, "adapter", "tauri.adapter")
+        })
     }
 
     async fn clear_peer_owner(&self, peer_id: &str, owner: &str) {
@@ -2707,14 +2786,12 @@ impl BtleplugDispatcher {
     ) -> Result<ConnectionResource, DispatchError> {
         let handle = required_string(payload, "connectionHandle", operation)?;
         let state = self.inner.lock().await;
-        let caller_state = state
-            .callers
-            .get(&caller_key(caller))
-            .ok_or_else(|| DispatchError::new("ownership.denied", "connection", operation))?;
-        let connection = caller_state
-            .connections
-            .get(&handle)
-            .ok_or_else(|| DispatchError::new("connection.not-found", "connection", operation))?;
+        let caller_state = state.callers.get(&caller_key(caller)).ok_or_else(|| {
+            DispatchError::new(BleErrorCode::OwnershipDenied, "connection", operation)
+        })?;
+        let connection = caller_state.connections.get(&handle).ok_or_else(|| {
+            DispatchError::new(BleErrorCode::ConnectionNotFound, "connection", operation)
+        })?;
         validate_connection_identity(payload, connection, &caller_state.lease_id, operation)?;
         Ok(connection.clone())
     }
@@ -2733,17 +2810,25 @@ impl BtleplugDispatcher {
         )?;
         let state = self.inner.lock().await;
         let caller_state = state.callers.get(&caller_key(caller)).ok_or_else(|| {
-            DispatchError::new("ownership.denied", "gatt", "tauri.characteristic-owner")
+            DispatchError::new(
+                BleErrorCode::OwnershipDenied,
+                "gatt",
+                "tauri.characteristic-owner",
+            )
         })?;
         let database = caller_state
             .databases
             .get(&database_handle)
             .ok_or_else(|| {
-                DispatchError::new("gatt.stale-handle", "gatt", "tauri.characteristic-database")
+                DispatchError::new(
+                    BleErrorCode::GattStaleHandle,
+                    "gatt",
+                    "tauri.characteristic-database",
+                )
             })?;
         if !database.valid {
             return Err(DispatchError::new(
-                "gatt.stale-handle",
+                BleErrorCode::GattStaleHandle,
                 "gatt",
                 "tauri.characteristic-database-generation",
             ));
@@ -2754,14 +2839,18 @@ impl BtleplugDispatcher {
             .get(&characteristic_handle)
             .cloned()
             .ok_or_else(|| {
-                DispatchError::new("gatt.not-found", "gatt", "tauri.characteristic-handle")
+                DispatchError::new(
+                    BleErrorCode::GattNotFound,
+                    "gatt",
+                    "tauri.characteristic-handle",
+                )
             })?;
         let connection = caller_state
             .connections
             .get(&database.connection_handle)
             .ok_or_else(|| {
                 DispatchError::new(
-                    "connection.stale",
+                    BleErrorCode::ConnectionStale,
                     "connection",
                     "tauri.characteristic-connection",
                 )
@@ -2786,17 +2875,25 @@ impl BtleplugDispatcher {
             required_string(payload, "descriptorHandle", "tauri.descriptor-handle")?;
         let state = self.inner.lock().await;
         let caller_state = state.callers.get(&caller_key(caller)).ok_or_else(|| {
-            DispatchError::new("ownership.denied", "gatt", "tauri.descriptor-owner")
+            DispatchError::new(
+                BleErrorCode::OwnershipDenied,
+                "gatt",
+                "tauri.descriptor-owner",
+            )
         })?;
         let database = caller_state
             .databases
             .get(&database_handle)
             .ok_or_else(|| {
-                DispatchError::new("gatt.stale-handle", "gatt", "tauri.descriptor-database")
+                DispatchError::new(
+                    BleErrorCode::GattStaleHandle,
+                    "gatt",
+                    "tauri.descriptor-database",
+                )
             })?;
         if !database.valid {
             return Err(DispatchError::new(
-                "gatt.stale-handle",
+                BleErrorCode::GattStaleHandle,
                 "gatt",
                 "tauri.descriptor-database-generation",
             ));
@@ -2807,14 +2904,18 @@ impl BtleplugDispatcher {
             .get(&descriptor_handle)
             .cloned()
             .ok_or_else(|| {
-                DispatchError::new("gatt.not-found", "gatt", "tauri.descriptor-handle")
+                DispatchError::new(
+                    BleErrorCode::GattNotFound,
+                    "gatt",
+                    "tauri.descriptor-handle",
+                )
             })?;
         let connection = caller_state
             .connections
             .get(&database.connection_handle)
             .ok_or_else(|| {
                 DispatchError::new(
-                    "connection.stale",
+                    BleErrorCode::ConnectionStale,
                     "connection",
                     "tauri.descriptor-connection",
                 )
@@ -2837,12 +2938,16 @@ impl BtleplugDispatcher {
         let lease = required_lease(&request, "tauri.event-ack-lease")?;
         let mut state = self.inner.lock().await;
         let caller_state = state.callers.get_mut(&caller_key(&caller)).ok_or_else(|| {
-            DispatchError::new("ownership.denied", "ipc", "tauri.event-ack-owner")
+            DispatchError::new(
+                BleErrorCode::OwnershipDenied,
+                "ipc",
+                "tauri.event-ack-owner",
+            )
         })?;
         validate_lease(caller_state, &lease, "tauri.event-ack-lease")?;
         if !caller_state.pending_events.remove(&event_id) {
             return Err(DispatchError::new(
-                "protocol.violation",
+                BleErrorCode::ProtocolViolation,
                 "ipc",
                 "tauri.event-ack-id",
             ));
@@ -2861,7 +2966,7 @@ impl BtleplugDispatcher {
         {
             let state = self.inner.lock().await;
             let caller_state = state.callers.get(&key).ok_or_else(|| {
-                DispatchError::new("ownership.denied", "ipc", "tauri.release-owner")
+                DispatchError::new(BleErrorCode::OwnershipDenied, "ipc", "tauri.release-owner")
             })?;
             validate_lease(caller_state, &lease, "tauri.release-lease")?;
         }
@@ -2902,13 +3007,13 @@ impl BtleplugDispatcher {
         let (sink, lease_id, lease_generation, event_id) = {
             let mut state = self.inner.lock().await;
             let caller_state = state.callers.get_mut(caller_key).ok_or_else(|| {
-                DispatchError::new("ownership.denied", "stream", "tauri.event-owner")
+                DispatchError::new(BleErrorCode::OwnershipDenied, "stream", "tauri.event-owner")
             })?;
             if expected_lease.is_some_and(|lease| {
                 caller_state.lease_id != lease.0 || caller_state.lease_generation != lease.1
             }) {
                 return Err(DispatchError::new(
-                    "ownership.denied",
+                    BleErrorCode::OwnershipDenied,
                     "stream",
                     "tauri.event-stale-lease",
                 ));
@@ -2916,13 +3021,13 @@ impl BtleplugDispatcher {
             if caller_state.pending_events.len() >= MAX_PENDING_EVENTS {
                 if drop_if_full {
                     return Err(DispatchError::new(
-                        "stream.quota",
+                        BleErrorCode::StreamQuota,
                         "stream",
                         "tauri.event-retention",
                     ));
                 }
                 return Err(DispatchError::new(
-                    "stream.quota",
+                    BleErrorCode::StreamQuota,
                     "stream",
                     "tauri.event-retention",
                 ));
@@ -2962,8 +3067,12 @@ impl BtleplugDispatcher {
             }
         }
         send_result.map_err(|error| {
-            DispatchError::new("platform.transport", "stream", "tauri.event-send")
-                .platform(error.to_string())
+            DispatchError::new(
+                BleErrorCode::PlatformTransport,
+                "stream",
+                "tauri.event-send",
+            )
+            .platform(error.to_string())
         })
     }
 
@@ -2995,21 +3104,21 @@ impl BtleplugDispatcher {
             let mut state = self.inner.lock().await;
             let attachment = state.attachment.clone().ok_or_else(|| {
                 DispatchError::new(
-                    "lifecycle.invalid-state",
+                    BleErrorCode::LifecycleInvalidState,
                     "connection",
                     "tauri.connection-events-attachment",
                 )
             })?;
             let caller = state.callers.get_mut(caller_key).ok_or_else(|| {
                 DispatchError::new(
-                    "ownership.denied",
+                    BleErrorCode::OwnershipDenied,
                     "connection",
                     "tauri.connection-events-owner",
                 )
             })?;
             if caller.lease_id != expected_lease.0 || caller.lease_generation != expected_lease.1 {
                 return Err(DispatchError::new(
-                    "ownership.denied",
+                    BleErrorCode::OwnershipDenied,
                     "connection",
                     "tauri.connection-events-stale-lease",
                 ));
@@ -3019,7 +3128,7 @@ impl BtleplugDispatcher {
                 .get_mut(identity.stream_id)
                 .ok_or_else(|| {
                     DispatchError::new(
-                        "gatt.stale-handle",
+                        BleErrorCode::GattStaleHandle,
                         "connection",
                         "tauri.connection-events-stream",
                     )
@@ -3078,7 +3187,7 @@ impl BtleplugDispatcher {
                 .await
             {
                 Ok(()) => break Ok(()),
-                Err(error) if error.code == "ownership.denied" => break Err(error),
+                Err(error) if error.code == BleErrorCode::OwnershipDenied => break Err(error),
                 Err(_error) => {
                     tokio::time::sleep(terminal_delay).await;
                     terminal_delay =
@@ -3108,13 +3217,17 @@ impl BtleplugDispatcher {
         {
             let state = self.inner.lock().await;
             let caller = state.callers.get(request.owner).ok_or_else(|| {
-                DispatchError::new("ownership.denied", "stream", "tauri.scan-event-owner")
+                DispatchError::new(
+                    BleErrorCode::OwnershipDenied,
+                    "stream",
+                    "tauri.scan-event-owner",
+                )
             })?;
             if caller.lease_id != request.expected_lease.0
                 || caller.lease_generation != request.expected_lease.1
             {
                 return Err(DispatchError::new(
-                    "ownership.denied",
+                    BleErrorCode::OwnershipDenied,
                     "stream",
                     "tauri.scan-event-stale-lease",
                 ));
@@ -3157,13 +3270,17 @@ impl BtleplugDispatcher {
         let (sink, lease_id, lease_generation, event_id) = {
             let mut state = self.inner.lock().await;
             let caller_state = state.callers.get_mut(caller_key).ok_or_else(|| {
-                DispatchError::new("ownership.denied", "stream", "tauri.terminal-owner")
+                DispatchError::new(
+                    BleErrorCode::OwnershipDenied,
+                    "stream",
+                    "tauri.terminal-owner",
+                )
             })?;
             if caller_state.lease_id != expected_lease.0
                 || caller_state.lease_generation != expected_lease.1
             {
                 return Err(DispatchError::new(
-                    "ownership.denied",
+                    BleErrorCode::OwnershipDenied,
                     "stream",
                     "tauri.terminal-stale-lease",
                 ));
@@ -3204,8 +3321,12 @@ impl BtleplugDispatcher {
             }
         }
         send_result.map_err(|error| {
-            DispatchError::new("platform.transport", "stream", "tauri.terminal-send")
-                .platform(error.to_string())
+            DispatchError::new(
+                BleErrorCode::PlatformTransport,
+                "stream",
+                "tauri.terminal-send",
+            )
+            .platform(error.to_string())
         })
     }
 
@@ -3655,7 +3776,7 @@ async fn connected_after_failed_disconnect(peripheral: &Peripheral) -> Result<bo
 /// left connected on its behalf - that is the difference between "try again"
 /// and "a peer is stranded until something reclaims it".
 fn compensation_failure(operation: &str, residue: Option<String>) -> DispatchError {
-    let error = DispatchError::new("ownership.denied", "connection", operation);
+    let error = DispatchError::new(BleErrorCode::OwnershipDenied, "connection", operation);
     match residue {
         None => error,
         Some(detail) => error.platform(format!(
@@ -3665,7 +3786,7 @@ fn compensation_failure(operation: &str, residue: Option<String>) -> DispatchErr
 }
 
 fn subscription_compensation_failure(operation: &str, residue: Option<String>) -> DispatchError {
-    let error = DispatchError::new("ownership.denied", "gatt", operation);
+    let error = DispatchError::new(BleErrorCode::OwnershipDenied, "gatt", operation);
     match residue {
         None => error,
         Some(detail) => error.platform(format!(
@@ -3906,13 +4027,13 @@ fn begin_scan_stop(
             retry_failed_stop = true;
         } else if stopping.caller_key == caller_key && stopping.handle != stream_id {
             return Err(DispatchError::new(
-                "ownership.denied",
+                BleErrorCode::OwnershipDenied,
                 "scan",
                 "tauri.scan-stop-handle",
             ));
         } else {
             return Err(DispatchError::new(
-                "scan.already-active",
+                BleErrorCode::ScanAlreadyActive,
                 "scan",
                 "tauri.scan-stop-in-progress",
             ));
@@ -3931,14 +4052,14 @@ fn begin_scan_stop(
     let scan = {
         let Some(caller) = state.callers.get_mut(caller_key) else {
             return Err(DispatchError::new(
-                "ownership.denied",
+                BleErrorCode::OwnershipDenied,
                 "scan",
                 "tauri.scan-stop-owner",
             ));
         };
         if caller.lease_id != expected_lease.0 || caller.lease_generation != expected_lease.1 {
             return Err(DispatchError::new(
-                "ownership.denied",
+                BleErrorCode::OwnershipDenied,
                 "scan",
                 "tauri.scan-stop-owner",
             ));
@@ -3964,7 +4085,7 @@ fn begin_scan_stop(
                 caller.scan = Some(scan);
             }
             Err(DispatchError::new(
-                "ownership.denied",
+                BleErrorCode::OwnershipDenied,
                 "scan",
                 "tauri.scan-stop-handle",
             ))
@@ -4091,7 +4212,7 @@ fn admit_caller_correlation(
     prune_completed_correlations(completed, now);
     if operations.contains_key(correlation) || completed.contains_key(correlation) {
         return Err(DispatchError::new(
-            "protocol.violation",
+            BleErrorCode::ProtocolViolation,
             "ipc",
             "tauri.correlation-replay",
         ));
@@ -4101,7 +4222,8 @@ fn admit_caller_correlation(
     }
     if operations.len() >= MAX_CORRELATIONS {
         return Err(
-            DispatchError::new("stream.quota", "ipc", "tauri.correlation-busy").retryable(),
+            DispatchError::new(BleErrorCode::StreamQuota, "ipc", "tauri.correlation-busy")
+                .retryable(),
         );
     }
     Ok(())
@@ -4137,7 +4259,11 @@ fn validate_lease(
     operation: &'static str,
 ) -> Result<(), DispatchError> {
     if caller.lease_id != lease.0 || caller.lease_generation != lease.1 {
-        return Err(DispatchError::new("ownership.denied", "ipc", operation));
+        return Err(DispatchError::new(
+            BleErrorCode::OwnershipDenied,
+            "ipc",
+            operation,
+        ));
     }
     Ok(())
 }
@@ -4157,16 +4283,20 @@ async fn open_btleplug_adapter(
     requested: Option<String>,
 ) -> Result<(Manager, Adapter, String), DispatchError> {
     let manager = Manager::new().await.map_err(|error| {
-        DispatchError::new("adapter.unavailable", "adapter", "tauri.manager")
+        DispatchError::new(BleErrorCode::AdapterUnavailable, "adapter", "tauri.manager")
             .platform(error.to_string())
     })?;
     let adapters = manager.adapters().await.map_err(|error| {
-        DispatchError::new("adapter.unavailable", "adapter", "tauri.adapters")
-            .platform(error.to_string())
+        DispatchError::new(
+            BleErrorCode::AdapterUnavailable,
+            "adapter",
+            "tauri.adapters",
+        )
+        .platform(error.to_string())
     })?;
     if adapters.is_empty() {
         return Err(DispatchError::new(
-            "adapter.unavailable",
+            BleErrorCode::AdapterUnavailable,
             "adapter",
             "tauri.adapters-empty",
         ));
@@ -4174,8 +4304,12 @@ async fn open_btleplug_adapter(
     let mut candidates = Vec::with_capacity(adapters.len());
     for adapter in adapters {
         let info = adapter.adapter_info().await.map_err(|error| {
-            DispatchError::new("adapter.unavailable", "adapter", "tauri.adapter-info")
-                .platform(error.to_string())
+            DispatchError::new(
+                BleErrorCode::AdapterUnavailable,
+                "adapter",
+                "tauri.adapter-info",
+            )
+            .platform(error.to_string())
         })?;
         candidates.push((info, adapter));
     }
@@ -4185,7 +4319,7 @@ async fn open_btleplug_adapter(
             .find(|(info, _)| info == &requested)
             .ok_or_else(|| {
                 DispatchError::new(
-                    "adapter.selection-required",
+                    BleErrorCode::AdapterSelectionRequired,
                     "adapter",
                     "tauri.adapter-selection",
                 )
@@ -4193,7 +4327,7 @@ async fn open_btleplug_adapter(
         None if candidates.len() == 1 => candidates.remove(0),
         None => {
             return Err(DispatchError::new(
-                "adapter.ambiguous",
+                BleErrorCode::AdapterAmbiguous,
                 "adapter",
                 "tauri.adapter-selection",
             ))
@@ -4256,7 +4390,7 @@ fn scan_properties_match(
                 filter
                     .data_prefix
                     .as_ref()
-                    .map_or(true, |prefix| data.starts_with(prefix))
+                    .is_none_or(|prefix| data.starts_with(prefix))
             })
     })
 }
@@ -4360,12 +4494,27 @@ fn parse_uuid(value: &str, operation: &'static str) -> Result<Uuid, DispatchErro
         _ => value.to_owned(),
     };
     Uuid::parse_str(&canonical)
-        .map_err(|_| DispatchError::new("scan.filter-invalid", "scan", operation))
+        .map_err(|_| DispatchError::new(BleErrorCode::ScanFilterInvalid, "scan", operation))
 }
 
 struct ManufacturerFilter {
     company_id: u16,
     data_prefix: Option<Vec<u8>>,
+}
+
+/// F01 shared-core identity reported at bootstrap: the linked `ubm-core`
+/// contract revision plus this plugin's implementation version. The
+/// TypeScript factory admits the exact pinned pair and fails loudly
+/// otherwise, so a silently substituted (non-candidate) native host cannot
+/// serve traffic.
+fn core_identity() -> IpcValue {
+    object([
+        (
+            "contractRevision",
+            string(ubm_core::contracts::CONTRACT_REVISION),
+        ),
+        ("implementationVersion", string(env!("CARGO_PKG_VERSION"))),
+    ])
 }
 
 fn attachment_record(attachment: &Attachment) -> IpcValue {
@@ -4689,7 +4838,7 @@ fn negotiate_ipc_versions(
         .all(|key| remote_offer.contains_key(*key))
     {
         return Err(DispatchError::new(
-            "protocol.malformed",
+            BleErrorCode::ProtocolMalformed,
             "ipc",
             "tauri.bootstrap-offer-shape",
         ));
@@ -4730,7 +4879,7 @@ fn negotiate_axis(
     )?;
     if range.len() != 3 || required_string(&range, "axis", "tauri.bootstrap-offer-axis")? != axis {
         return Err(DispatchError::new(
-            "protocol.malformed",
+            BleErrorCode::ProtocolMalformed,
             "ipc",
             "tauri.bootstrap-offer-range",
         ));
@@ -4739,14 +4888,14 @@ fn negotiate_axis(
     let maximum = offered_version(&range, "maximum", axis)?;
     if minimum > maximum {
         return Err(DispatchError::new(
-            "protocol.malformed",
+            BleErrorCode::ProtocolMalformed,
             "ipc",
             "tauri.bootstrap-offer-range-order",
         ));
     }
     if local_value < minimum || local_value > maximum {
         return Err(DispatchError::new(
-            "protocol.incompatible",
+            BleErrorCode::ProtocolIncompatible,
             "ipc",
             format!("tauri.bootstrap-version-{axis}"),
         ));
@@ -4787,7 +4936,7 @@ fn offered_version(
         || required_string(&version, "axis", "tauri.bootstrap-offer-version")? != axis
     {
         return Err(DispatchError::new(
-            "protocol.malformed",
+            BleErrorCode::ProtocolMalformed,
             "ipc",
             "tauri.bootstrap-offer-version",
         ));
@@ -4795,11 +4944,15 @@ fn offered_version(
     match version.get("value") {
         Some(IpcValue::Number(value)) => {
             value.as_i64().filter(|value| *value >= 0).ok_or_else(|| {
-                DispatchError::new("protocol.malformed", "ipc", "tauri.bootstrap-offer-version")
+                DispatchError::new(
+                    BleErrorCode::ProtocolMalformed,
+                    "ipc",
+                    "tauri.bootstrap-offer-version",
+                )
             })
         }
         _ => Err(DispatchError::new(
-            "protocol.malformed",
+            BleErrorCode::ProtocolMalformed,
             "ipc",
             "tauri.bootstrap-offer-version",
         )),
@@ -4849,7 +5002,7 @@ fn cleanup_failure(resource_kind: &str, operation: &str, message: String) -> Ipc
         (
             "error",
             object([
-                ("code", string("platform.failure")),
+                ("code", string(BleErrorCode::PlatformFailure.as_str())),
                 ("domain", string("cleanup")),
                 ("operation", string(operation)),
                 (
@@ -4945,7 +5098,7 @@ fn validate_connection_identity(
         Ok(())
     } else {
         Err(DispatchError::new(
-            "protocol.violation",
+            BleErrorCode::ProtocolViolation,
             "connection",
             operation,
         ))
@@ -4964,7 +5117,11 @@ fn validate_database_identity(
     if matches {
         Ok(())
     } else {
-        Err(DispatchError::new("protocol.violation", "gatt", operation))
+        Err(DispatchError::new(
+            BleErrorCode::ProtocolViolation,
+            "gatt",
+            operation,
+        ))
     }
 }
 
@@ -4978,7 +5135,11 @@ fn into_object(
 ) -> Result<BTreeMap<String, IpcValue>, DispatchError> {
     match value {
         IpcValue::Object(object) => Ok(object),
-        _ => Err(DispatchError::new("protocol.malformed", "ipc", operation)),
+        _ => Err(DispatchError::new(
+            BleErrorCode::ProtocolMalformed,
+            "ipc",
+            operation,
+        )),
     }
 }
 
@@ -4989,7 +5150,7 @@ fn required_value<'a>(
 ) -> Result<&'a IpcValue, DispatchError> {
     object
         .get(key)
-        .ok_or_else(|| DispatchError::new("protocol.malformed", "ipc", operation))
+        .ok_or_else(|| DispatchError::new(BleErrorCode::ProtocolMalformed, "ipc", operation))
 }
 
 fn required_string(
@@ -4999,7 +5160,11 @@ fn required_string(
 ) -> Result<String, DispatchError> {
     match object.get(key) {
         Some(IpcValue::String(value)) if !value.is_empty() => Ok(value.clone()),
-        _ => Err(DispatchError::new("protocol.malformed", "ipc", operation)),
+        _ => Err(DispatchError::new(
+            BleErrorCode::ProtocolMalformed,
+            "ipc",
+            operation,
+        )),
     }
 }
 
@@ -5008,15 +5173,16 @@ mod tests {
     #[cfg(target_os = "linux")]
     use super::error_confirms_device_released;
     use super::{
-        characteristic_properties, disconnect_with_state_check, negotiate_ipc_versions, object,
-        released, resolve_disconnect_failure, scan_poll_interval, scan_properties_match_optional,
-        should_clear_peer_owner, string, BtleplugDispatcher, BtleplugDispatcherOptions,
-        CallerState, DispatchError, IpcEventSink, QuarantineScheduler,
+        characteristic_properties, core_identity, disconnect_with_state_check,
+        negotiate_ipc_versions, object, released, resolve_disconnect_failure, scan_poll_interval,
+        scan_properties_match_optional, should_clear_peer_owner, string, BtleplugDispatcher,
+        BtleplugDispatcherOptions, CallerState, DispatchError, IpcEventSink, QuarantineScheduler,
         DISCONNECT_COMPLETION_TIMEOUT,
     };
     use btleplug::api::CharPropFlags;
     use std::collections::{HashMap, HashSet};
     use std::{cell::Cell, cell::RefCell, rc::Rc};
+    use ubm_core::contracts::BleErrorCode;
 
     #[test]
     fn capability_projection_is_data_only() {
@@ -5037,8 +5203,12 @@ mod tests {
 
     #[test]
     fn native_dispatch_error_keeps_structured_platform_diagnostics_for_terminals() {
-        let error = DispatchError::new("platform.transport", "stream", "tauri.event-send")
-            .platform("native channel closed");
+        let error = DispatchError::new(
+            BleErrorCode::PlatformTransport,
+            "stream",
+            "tauri.event-send",
+        )
+        .platform("native channel closed");
         let super::IpcValue::Object(record) = error.normalized_error() else {
             panic!("normalized error must be an object");
         };
@@ -5640,7 +5810,7 @@ mod tests {
             state
                 .callers
                 .get("caller-a")
-                .map_or(true, |caller| caller.subscriptions.is_empty()),
+                .is_none_or(|caller| caller.subscriptions.is_empty()),
             "compensation must not insert the old subscription into a replacement caller"
         );
     }
@@ -6281,12 +6451,30 @@ mod tests {
         let mut incompatible = current_offer();
         incompatible.insert("ipcProtocol".to_owned(), offer_range("ipc-protocol", 1));
         let error = negotiate_ipc_versions(&incompatible).expect_err("disjoint offers must fail");
-        assert_eq!(error.code, "protocol.incompatible");
+        assert_eq!(error.code, BleErrorCode::ProtocolIncompatible);
 
         let mut malformed = current_offer();
         malformed.remove("traceFormat");
         let error = negotiate_ipc_versions(&malformed).expect_err("missing axes must fail");
-        assert_eq!(error.code, "protocol.malformed");
+        assert_eq!(error.code, BleErrorCode::ProtocolMalformed);
+    }
+
+    #[test]
+    fn bootstrap_core_identity_reports_the_linked_contract() {
+        // F01: the revision is the LINKED ubm-core value, never a
+        // plugin-spelled string; a drifted literal fails here.
+        let identity = core_identity();
+        let super::IpcValue::Object(fields) = &identity else {
+            panic!("core identity must be an object");
+        };
+        assert_eq!(
+            fields.get("contractRevision"),
+            Some(&string(ubm_core::contracts::CONTRACT_REVISION))
+        );
+        assert_eq!(
+            fields.get("implementationVersion"),
+            Some(&string(env!("CARGO_PKG_VERSION")))
+        );
     }
 
     #[test]
@@ -6367,7 +6555,7 @@ mod tests {
         let error =
             super::admit_caller_correlation(&operations, &mut completed, "c1", "gatt.read", now)
                 .expect_err("completed correlation replay must fail");
-        assert_eq!(error.code, "protocol.violation");
+        assert_eq!(error.code, BleErrorCode::ProtocolViolation);
         assert_eq!(error.operation, "tauri.correlation-replay");
     }
 
@@ -6494,7 +6682,7 @@ mod tests {
             now,
         )
         .expect_err("replay of an old correlation must still reject");
-        assert_eq!(error.code, "protocol.violation");
+        assert_eq!(error.code, BleErrorCode::ProtocolViolation);
         assert_eq!(error.operation, "tauri.correlation-replay");
     }
 
@@ -6517,7 +6705,7 @@ mod tests {
             now,
         )
         .expect_err("live exhaustion must reject new ordinary work");
-        assert_eq!(error.code, "stream.quota");
+        assert_eq!(error.code, BleErrorCode::StreamQuota);
         assert_eq!(error.operation, "tauri.correlation-busy");
         assert!(
             error.retryable,

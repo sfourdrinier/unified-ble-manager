@@ -91,12 +91,29 @@ function assertTauriCreateOptions(options: BleManagerCreateOptions, ipc: IpcBleM
 
 async function admitTauriCompatibility(ipc: IpcBleManager): Promise<void> {
   const selected = ipc.bootstrap.versions.ipcProtocol.selected.value
-  if (selected === TAURI_PLUGIN_COMPATIBILITY.ipcProtocol) {
+  if (selected !== TAURI_PLUGIN_COMPATIBILITY.ipcProtocol) {
+    return rejectTauriCompatibility(
+      ipc,
+      `[unified-ble-manager/tauri] incompatible IPC protocol: host selected ${String(selected)}, npm package requires ${String(TAURI_PLUGIN_COMPATIBILITY.ipcProtocol)}`
+    )
+  }
+  // F01: the factory serves traffic only from a host linked against the
+  // pinned shared-core revision. A missing identity is a legacy (or
+  // substituted) host, never an implicit pass.
+  const reported = ipc.bootstrap.core?.contractRevision
+  if (reported === TAURI_PLUGIN_COMPATIBILITY.contractRevision) {
     return
   }
-  const error = new Error(
-    `[unified-ble-manager/tauri] incompatible IPC protocol: host selected ${String(selected)}, npm package requires ${String(TAURI_PLUGIN_COMPATIBILITY.ipcProtocol)}`
+  return rejectTauriCompatibility(
+    ipc,
+    reported === undefined
+      ? '[unified-ble-manager/tauri] incompatible native host: bootstrap carries no shared-core contract revision'
+      : `[unified-ble-manager/tauri] incompatible contract revision: host linked ${String(reported)}, npm package requires ${String(TAURI_PLUGIN_COMPATIBILITY.contractRevision)}`
   )
+}
+
+async function rejectTauriCompatibility(ipc: IpcBleManager, message: string): Promise<void> {
+  const error = new Error(message)
   try {
     const cleanup = await ipc.destroy()
     if (cleanup.state === 'release-failed') {

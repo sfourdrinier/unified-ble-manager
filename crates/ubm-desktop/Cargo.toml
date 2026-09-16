@@ -16,3 +16,6 @@ uuid = { version = "1", default-features = false, features = ["std"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["macros", "rt", "time", "test-util"] }
+# F22 fixture replay only: the shared vendor advertisement JSON also feeds
+# the consumer matcher suite in bun-mono. Never a runtime dependency.
+serde_json = "1"

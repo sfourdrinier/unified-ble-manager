@@ -111,6 +111,12 @@ function bootstrap() {
       ipcProtocol: negotiated('ipc-protocol')
     },
     capabilities: capabilitySnapshot(backendGeneration),
+    // F01: the 5.0 lane plugin always reports its linked shared-core
+    // identity; fixtures simulate the lane plugin, not a legacy host.
+    core: {
+      contractRevision: 'C-UBM.0.1.2-DRAFT',
+      implementationVersion: '5.0.0-rc.0'
+    },
     renderer: {
       clientId: 'tauri-client-1',
       windowScope: 'main',
@@ -978,5 +984,67 @@ describe('Tauri v2 public manager', () => {
       expect(String(error)).not.toMatch(/Tauri/i)
       expect(error).not.toBeInstanceOf(TypeError)
     })
+  })
+})
+
+describe('Tauri shared-core admission (F01)', () => {
+  const { CONTRACT_REVISION } = require('../contracts/src/version')
+  const { TAURI_PLUGIN_COMPATIBILITY } = require('../src/tauri')
+
+  function invokeWithBootstrap(bootstrapValue) {
+    return jest.fn(async (_command, args) => {
+      const request = args.request
+      if (request.kind === 'bootstrap') return { kind: 'bootstrap', bootstrap: bootstrapValue }
+      if (request.kind === 'event.ack') return { kind: 'event.ack' }
+      if (request.kind === 'release') return { kind: 'release', cleanup: { state: 'released', failures: [] } }
+      throw new Error(`unexpected route ${request.kind}`)
+    })
+  }
+
+  test('compatibility pins the frozen contract revision', () => {
+    expect(TAURI_PLUGIN_COMPATIBILITY.contractRevision).toBe(CONTRACT_REVISION)
+  })
+
+  test('admits the candidate plugin identity', async () => {
+    const { createTauriBleManagerWithEnvironment } = require('../src/tauri')
+    const manager = await createTauriBleManagerWithEnvironment({
+      invoke: invokeWithBootstrap(bootstrap()),
+      Channel: FakeChannel
+    })
+    await manager.destroy()
+  })
+
+  test('rejects a bootstrap without core identity and releases it', async () => {
+    const { createTauriBleManagerWithEnvironment } = require('../src/tauri')
+    const { core, ...legacy } = bootstrap()
+    expect(core).toBeDefined()
+    const invoke = invokeWithBootstrap(legacy)
+    await expect(createTauriBleManagerWithEnvironment({ invoke, Channel: FakeChannel })).rejects.toThrow(
+      /contract revision/i
+    )
+    expect(invoke.mock.calls.map(([, args]) => args.request.kind)).toEqual(['bootstrap', 'release'])
+  })
+
+  test('rejects a foreign contract revision and releases it', async () => {
+    const { createTauriBleManagerWithEnvironment } = require('../src/tauri')
+    const foreign = {
+      ...bootstrap(),
+      core: { contractRevision: 'C-UBM.9.9.9-DRAFT', implementationVersion: '5.0.0-rc.0' }
+    }
+    const invoke = invokeWithBootstrap(foreign)
+    await expect(createTauriBleManagerWithEnvironment({ invoke, Channel: FakeChannel })).rejects.toThrow(
+      /contract revision/i
+    )
+    expect(invoke.mock.calls.map(([, args]) => args.request.kind)).toEqual(['bootstrap', 'release'])
+  })
+
+  test('rejects a malformed core identity at the transport before attach', async () => {
+    const { createTauriBleManagerWithEnvironment } = require('../src/tauri')
+    const malformed = { ...bootstrap(), core: { contractRevision: 42 } }
+    const invoke = invokeWithBootstrap(malformed)
+    await expect(
+      createTauriBleManagerWithEnvironment({ invoke, Channel: FakeChannel })
+    ).rejects.toThrow()
+    expect(invoke.mock.calls.map(([, args]) => args.request.kind)).toEqual(['bootstrap'])
   })
 })

@@ -35,9 +35,11 @@ through real JNI. Contract `C-UBM.0.1.2-DRAFT`, single-owned by `ubm-core`
     never silent or faked; empty names are `argument.invalid`.
 - The echo transport itself stays feasibility-echo (NOT BLE functionality).
   Follow-ups: unique per-instance attachment identity (fixed scope labels
-  this slice); surfacing staged kernel effects to a host executor (driven
-  batches are bounded and dropped after the call — nothing is staged yet,
-  so nothing is lost yet).
+  this slice). Staged kernel effects ARE surfaced (F01): every drained line
+  carries `effects` (must-execute, in order) plus `observations` (typed
+  central facts) — success or rejection — parsed by
+  `GattCentralWire` into `GattObservation.effects`; quiet lines emit empty
+  arrays, never missing sections. Nothing staged is dropped after the call.
 
 ## Thread / runtime lifetimes
 

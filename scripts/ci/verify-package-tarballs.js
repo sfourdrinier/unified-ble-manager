@@ -570,7 +570,9 @@ function verifyRootTarball(tarballPath) {
     'package/lib/commonjs/package.json',
     'package/lib/module/package.json',
     'package/lib/typescript/commonjs/package.json',
-    'package/lib/typescript/module/package.json'
+    'package/lib/typescript/module/package.json',
+    // F23 build seal: packed with lib/ so consumers qualify the candidate.
+    'package/lib/ubm-build-fingerprint.json'
   ])
   for (const sourceFile of sourceFiles) {
     for (const artifactPath of sourceArtifactPaths(sourceFile)) {

@@ -39,7 +39,7 @@ export function isElectronConnectionEventsStreamHandle(handle: string): boolean
 - `ElectronReleaseResponse :: { readonly kind: "release"; readonly cleanup: CleanupRecord }`
 - `ElectronRendererBleClient :: typeof ElectronRendererBleClient`
 - `ElectronRendererBleManagerEnvironment :: { readonly transport: IpcClientTransport<string, string> }`
-- `ElectronRendererBootstrap :: { readonly attachment: AttachmentRecord<Attachment>; readonly attachmentId: AttachmentId<Attachment>; readonly versions: IpcVersionAxes; readonly capabilities: CapabilitySnapshot; readonly discovery?: IpcDiscoveryDescriptor | undefined; readonly renderer: IpcClientIdentity<Attachment, Client>; readonly rendererLease: RendererLeaseIdentity }`
+- `ElectronRendererBootstrap :: { readonly attachment: AttachmentRecord<Attachment>; readonly attachmentId: AttachmentId<Attachment>; readonly versions: IpcVersionAxes; readonly capabilities: CapabilitySnapshot; readonly discovery?: IpcDiscoveryDescriptor | undefined; readonly core?: IpcCoreIdentity | undefined; readonly renderer: IpcClientIdentity<Attachment, Client>; readonly rendererLease: RendererLeaseIdentity }`
 - `ElectronRendererIpcTransport :: { invoke<Operation extends string>(request: IpcBleRequest<Attachment, Client, Operation>): Promise<IpcBleResponse<Attachment, Client>>; subscribe(listener: (event: IpcBleEvent) => void): () => void; acknowledge(rendererLease: RendererLeaseIdentity, eventId: string): Promise<IpcEventAcknowledgeResponse | IpcFailureResponse> }`
 - `ElectronRouteRequest :: { readonly kind: "route"; readonly envelope: IpcEnvelope<Attachment, Client, Operation>; readonly signal?: AbortSignal | null | undefined }`
 - `ElectronRouteResponse :: { readonly kind: "route"; readonly payload: SerializableRecord }`

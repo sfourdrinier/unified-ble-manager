@@ -2933,6 +2933,50 @@ impl Central {
         }
     }
 
+    /// Read the current snapshot paths in registration order (F01: the
+    /// dispatch surface renders databases and builds selectors from this,
+    /// not from counts). Same guards as [`Self::snapshot_path_count`]: a
+    /// `changed` database fails with `gatt.stale-handle`, anything else
+    /// off-`current` with `gatt.discovery-required`. Only paths under the
+    /// peer's current generations are returned (F04), never historical
+    /// entries.
+    pub fn snapshot_paths(&self, peer_key: &str) -> Result<Vec<StoredPath>, CoreError> {
+        let index = self.connection_position(peer_key).ok_or_else(|| {
+            err(
+                BleErrorCode::ConnectionNotFound,
+                BleErrorDomain::Connection,
+                "discovery.snapshot",
+            )
+        })?;
+        match self.connections[index].db_state {
+            DatabaseState::Current => {
+                let connection = &self.connections[index];
+                Ok(self
+                    .paths
+                    .iter()
+                    .filter(|path| {
+                        path.peer_key == peer_key
+                            && path.attachment == self.attachment
+                            && path.connection_generation
+                                == connection.connection_generation.as_str()
+                            && path.database_generation == connection.database_generation.as_str()
+                    })
+                    .cloned()
+                    .collect())
+            }
+            DatabaseState::Changed => Err(err(
+                BleErrorCode::GattStaleHandle,
+                BleErrorDomain::Gatt,
+                "discovery.snapshot",
+            )),
+            _ => Err(err(
+                BleErrorCode::GattDiscoveryRequired,
+                BleErrorDomain::Gatt,
+                "discovery.snapshot",
+            )),
+        }
+    }
+
     /// Live (fresh-handle) paths across all peers. Stale generations are
     /// history, not capacity: the path bound counts this, never the raw
     /// table length (F04).

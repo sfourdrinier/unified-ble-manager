@@ -84,7 +84,7 @@ release plan. RC2, RC3, RC4, `4.0.0-rc.4.1`, and RC5 are already immutable
 once tagged. Stable `4.0.0` through `4.0.20` are immutable. The unpublished
 `v4.0.21` tag is also immutable after its cancelled workflow. `4.0.22`,
 `4.0.23`, `4.0.24`, `4.0.25`, `4.0.26`, and `4.0.27` are immutable tagged
-history. This branch prepares `4.0.28`.
+history. `4.0.28` is immutable tagged history. This branch prepares `5.0.0-rc.0`.
 
 ```sh
 release_candidate=4.0.0-rc.N
@@ -112,13 +112,22 @@ The first stable tag `v4.0.0` is immutable published history. Do not recreate or
 git tag -a v4.0.0 -m "v4.0.0"
 ```
 
+## Releasing 5.0.0-rc.0
+
+Release `v5.0.0-rc.0` only from the exact `5.0.0` branch tip after its
+canonical CI succeeds. Verify `package.json` is `5.0.0-rc.0`, the worktree is
+clean, and release-note extraction finds `## [5.0.0-rc.0]`. Push a new
+annotated `v5.0.0-rc.0` tag with the GitHub Release marked prerelease and the
+npm dist-tag `next` (never `latest` for a 5.0 RC). The candidate must pack
+the Rust workspace sources plus the committed Android native prebuilds, and
+the F01 runtime proof must pass against the packed artifact. Follow the
+required local validation, publish workflow, and registry verification below.
+
 ## Releasing 4.0.28
 
-Release `v4.0.28` only from the exact current `main` commit after its canonical
-CI succeeds. Verify `package.json` is `4.0.28`, the worktree is clean, and
-release-note extraction finds `## [4.0.28]`. Push a new annotated `v4.0.28`
-tag; never move the immutable `v4.0.27` tag. Follow the required local validation,
-publish workflow, and registry verification below.
+`v4.0.28` is immutable tagged history. It was released only from the exact
+current `main` commit after its canonical CI succeeded. Never move the
+immutable `v4.0.28` tag.
 
 ## Releasing 4.0.27
 

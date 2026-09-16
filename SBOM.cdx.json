@@ -6,15 +6,15 @@
   "metadata": {
     "component": {
       "type": "library",
-      "bom-ref": "pkg:npm/unified-ble-manager@4.0.28",
+      "bom-ref": "pkg:npm/unified-ble-manager@5.0.0-rc.0",
       "name": "unified-ble-manager",
-      "version": "4.0.28",
+      "version": "5.0.0-rc.0",
       "licenses": [
         {
           "expression": "LicenseRef-UBM-Source-Available-1.0"
         }
       ],
-      "purl": "pkg:npm/unified-ble-manager@4.0.28"
+      "purl": "pkg:npm/unified-ble-manager@5.0.0-rc.0"
     },
     "properties": [
       {
@@ -27,7 +27,7 @@
       },
       {
         "name": "unified-ble-manager:cargo-lock-sha256",
-        "value": "91adb82b45b552e03b8b122d20844aa61c80a7b842a8957d4277958e0c2d407d"
+        "value": "a94e19e685cefd3b927f2955880a5d212901c99b56b4d5c5ff8d23e5229440e0"
       },
       {
         "name": "unified-ble-manager:rust-dependency-scope",
@@ -3731,7 +3731,7 @@
       "dependsOn": []
     },
     {
-      "ref": "pkg:npm/unified-ble-manager@4.0.28",
+      "ref": "pkg:npm/unified-ble-manager@5.0.0-rc.0",
       "dependsOn": [
         "pkg:npm/%40babel/runtime@7.29.7",
         "pkg:npm/node-addon-api@8.9.0",
@@ -4257,7 +4257,8 @@
         "pkg:cargo/ctor@0.2.9",
         "pkg:cargo/napi-derive@2.16.13",
         "pkg:cargo/napi-sys@2.4.0",
-        "pkg:cargo/once_cell@1.21.4"
+        "pkg:cargo/once_cell@1.21.4",
+        "pkg:cargo/tokio@1.53.1"
       ]
     },
     {
@@ -4647,6 +4648,7 @@
       "dependsOn": [
         "pkg:cargo/btleplug@0.12.0",
         "pkg:cargo/futures-util@0.3.34",
+        "pkg:cargo/serde_json@1.0.151",
         "pkg:cargo/tokio@1.53.1",
         "pkg:cargo/ubm-core@0.1.0",
         "pkg:cargo/uuid@1.26.1"
@@ -4672,7 +4674,9 @@
         "pkg:cargo/napi-build@2.4.2",
         "pkg:cargo/napi-derive@2.16.13",
         "pkg:cargo/napi@2.16.17",
+        "pkg:cargo/tokio@1.53.1",
         "pkg:cargo/ubm-core@0.1.0",
+        "pkg:cargo/ubm-desktop@0.1.0",
         "pkg:cargo/ubm-fake-radio@0.1.0"
       ]
     },

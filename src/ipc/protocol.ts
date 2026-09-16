@@ -121,6 +121,17 @@ export interface IpcDiscoveryDescriptor extends SerializableRecord {
   readonly kind: 'continuous-scan' | 'system-chooser' | 'hybrid'
 }
 
+/**
+ * Shared-core identity issued by the native host: the linked `ubm-core`
+ * contract revision plus the host implementation version. The 5.0 lane
+ * Tauri plugin always sends it; older native attachments omit it and the
+ * 5.0 factory refuses them (F01).
+ */
+export interface IpcCoreIdentity extends SerializableRecord {
+  readonly contractRevision: string
+  readonly implementationVersion: string
+}
+
 /** Immutable bootstrap data issued by the host after it authenticates a client. */
 export interface IpcClientBootstrap<Attachment extends string, Client extends string> {
   readonly attachment: AttachmentRecord<Attachment>
@@ -129,6 +140,8 @@ export interface IpcClientBootstrap<Attachment extends string, Client extends st
   readonly capabilities: IpcCapabilitySnapshotV2
   /** Host-issued discovery model. Older native attachments may omit it; the client then derives it from capabilities. */
   readonly discovery?: IpcDiscoveryDescriptor
+  /** Shared-core identity. Older native attachments may omit it; the 5.0 Tauri factory then refuses admission. */
+  readonly core?: IpcCoreIdentity
   readonly renderer: IpcClientIdentity<Attachment, Client>
   readonly rendererLease: IpcClientLeaseIdentity
 }

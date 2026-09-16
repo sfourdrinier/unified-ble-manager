@@ -31,5 +31,8 @@ run(pnpm, ['run', 'native-protocol:check'])
 run(pnpm, ['run', 'validate:evidence'])
 run(pnpm, ['run', 'build:plugin'])
 run(pnpm, ['exec', 'bob', 'build'])
+// F23: seal the exact input set that produced lib/ before anything verifies
+// it. verify-package-artifacts expects the seal as a build artifact.
+run(process.execPath, ['scripts/release/generate-build-fingerprint.js'])
 run(pnpm, ['run', 'docs:check'])
 run(process.execPath, ['scripts/ci/verify-package-artifacts.js'])

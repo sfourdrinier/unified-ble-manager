@@ -252,7 +252,7 @@ fn scan_event(name: &str) -> Result<ScanPlatformEvent, EchoError> {
 
 /// Minimal JSON string escaper for observation values (ids carry no quotes
 /// by construction, but never trust the host).
-fn json_escape_into(out: &mut String, text: &str) {
+pub(crate) fn json_escape_into(out: &mut String, text: &str) {
     for ch in text.chars() {
         match ch {
             '"' => out.push_str("\\\""),
@@ -292,13 +292,25 @@ fn err_line(kind: &str, err: &EchoError) -> String {
     out
 }
 
+/// Splice an `,"effects":[...],"observations":[...]` fragment into a
+/// rendered `{...}` line before its closing brace. Total: a rendering that
+/// somehow lacks the brace keeps its bytes and gains the fragment plus a
+/// closing brace, so effects still surface instead of panicking the drain.
+fn splice_fragment(rendered: &str, fragment: &str) -> String {
+    let mut merged = String::with_capacity(rendered.len() + fragment.len() + 1);
+    merged.push_str(rendered.strip_suffix('}').unwrap_or(rendered));
+    merged.push_str(fragment);
+    merged.push('}');
+    merged
+}
+
 impl CoreSession {
     /// Applies every queued line FIFO to the session-owned central and
     /// returns newline-joined JSON observations. Each line drives with a
-    /// fresh cap-64 batch that is drained after the line (per-line kernel
-    /// effects are intentionally not surfaced yet — executor follow-up —
-    /// while the per-line JSON observation carries what the host needs);
-    /// the cross-line typed-effect ledger is recycled the same way.
+    /// fresh cap-64 batch, then surfaces BOTH the staged kernel effects
+    /// (`effects`, for the host to execute) and the drained typed-effect
+    /// ledger (`observations`, to publish) on that same line — success or
+    /// rejection. Nothing staged is ever counted and dropped.
     pub fn drain_gatt_events(&mut self, operation: &'static str) -> Result<String, EchoError> {
         self.check_usable(operation)?;
         let mut lines: Vec<String> = Vec::new();
@@ -311,21 +323,32 @@ impl CoreSession {
     }
 
     fn apply_gatt_line(&mut self, kind: &str, parts: &[&str]) -> String {
+        // One batch per line, including arity rejections: whatever the core
+        // stages while driving — success or rejection — surfaces on THIS
+        // line via drain_effects_json. Errors never swallow staged effects.
+        let mut out = EffectBatch::new(DRIVE_EFFECT_CAP);
         if let Some(expected) = expected_arity(kind) {
             if parts.len() != expected {
-                return err_line(kind, &missing("event-arity"));
+                let fragment = self.drain_effects_json(&mut out);
+                return splice_fragment(&err_line(kind, &missing("event-arity")), &fragment);
             }
         }
-        match self.drive_gatt_line(kind, parts) {
+        let rendered = match self.drive_gatt_line(kind, parts, &mut out) {
             Ok(body) => ok_line(kind, &body),
             Err(err) => err_line(kind, &err),
-        }
+        };
+        let fragment = self.drain_effects_json(&mut out);
+        splice_fragment(&rendered, &fragment)
     }
 
     #[allow(clippy::too_many_lines)]
-    fn drive_gatt_line(&mut self, kind: &str, parts: &[&str]) -> Result<String, EchoError> {
+    fn drive_gatt_line(
+        &mut self,
+        kind: &str,
+        parts: &[&str],
+        out: &mut EffectBatch,
+    ) -> Result<String, EchoError> {
         const OP: &str = "gatt-drain";
-        let mut out = EffectBatch::new(DRIVE_EFFECT_CAP);
         match kind {
             "scan.start" => {
                 let owner = arg(parts, 1, "scan-owner")?;
@@ -343,9 +366,8 @@ impl CoreSession {
                     .map_err(|core| central_error(core, OP))?;
                 let id = self
                     .central_mut()
-                    .start_scan(&request, None, owner, now_ms, &mut out)
+                    .start_scan(&request, None, owner, now_ms, &mut *out)
                     .map_err(|core| central_error(core, OP))?;
-                self.count_effects(&mut out);
                 Ok(format!(",\"op\":\"{id}\""))
             }
             "scan.platform-started" => {
@@ -353,16 +375,14 @@ impl CoreSession {
                 self.central_mut()
                     .platform_scan_started(&op)
                     .map_err(|core| central_error(core, OP))?;
-                self.count_effects(&mut out);
                 Ok(String::new())
             }
             "scan.stop" => {
                 let op = operation_id(arg(parts, 1, "scan-op")?)?;
                 let now_ms = parse_u64(arg(parts, 2, "scan-now")?, "scan-now")?;
                 self.central_mut()
-                    .stop_scan(&op, now_ms, &mut out)
+                    .stop_scan(&op, now_ms, &mut *out)
                     .map_err(|core| central_error(core, OP))?;
-                self.count_effects(&mut out);
                 Ok(String::new())
             }
             "scan.platform-event" => {
@@ -371,9 +391,8 @@ impl CoreSession {
                 let now_ms = parse_u64(arg(parts, 3, "scan-now")?, "scan-now")?;
                 let state = self
                     .central_mut()
-                    .note_scan_platform(&op, event, now_ms, &mut out)
+                    .note_scan_platform(&op, event, now_ms, &mut *out)
                     .map_err(|core| central_error(core, OP))?;
-                self.count_effects(&mut out);
                 Ok(format!(",\"state\":\"{}\"", state.as_str()))
             }
             "peer.resolve" => {
@@ -395,9 +414,8 @@ impl CoreSession {
                 let now_ms = parse_u64(arg(parts, 4, "connect-now")?, "connect-now")?;
                 let id = self
                     .central_mut()
-                    .connect(peer, lease, timeout_ms, now_ms, &mut out)
+                    .connect(peer, lease, timeout_ms, now_ms, &mut *out)
                     .map_err(|core| central_error(core, OP))?;
-                self.count_effects(&mut out);
                 Ok(format!(",\"op\":\"{id}\""))
             }
             "link.established" => {
@@ -419,9 +437,8 @@ impl CoreSession {
                 let lease = arg(parts, 2, "lease")?;
                 let now_ms = parse_u64(arg(parts, 3, "disconnect-now")?, "disconnect-now")?;
                 self.central_mut()
-                    .disconnect(peer, lease, now_ms, &mut out)
+                    .disconnect(peer, lease, now_ms, &mut *out)
                     .map_err(|core| central_error(core, OP))?;
-                self.count_effects(&mut out);
                 Ok(String::new())
             }
             "peer.loss" => {
@@ -429,9 +446,8 @@ impl CoreSession {
                 let now_ms = parse_u64(arg(parts, 2, "peer-loss-now")?, "peer-loss-now")?;
                 let state = self
                     .central_mut()
-                    .note_peer_loss(peer, now_ms, &mut out)
+                    .note_peer_loss(peer, now_ms, &mut *out)
                     .map_err(|core| central_error(core, OP))?;
-                self.count_effects(&mut out);
                 Ok(format!(",\"state\":\"{}\"", state.as_str()))
             }
             "discovery.begin" => {
@@ -489,9 +505,8 @@ impl CoreSession {
                 let now_ms = parse_u64(arg(parts, 3, "read-now")?, "read-now")?;
                 let id = self
                     .central_mut()
-                    .start_read(path, timeout_ms, now_ms, &mut out)
+                    .start_read(path, timeout_ms, now_ms, &mut *out)
                     .map_err(|core| central_error(core, OP))?;
-                self.count_effects(&mut out);
                 Ok(format!(",\"op\":\"{id}\""))
             }
             "write.start" => {
@@ -505,18 +520,16 @@ impl CoreSession {
                 let id = self
                     .central_mut()
                     .start_write(
-                        path, mode, value_len, maximum, supported, timeout_ms, now_ms, &mut out,
+                        path, mode, value_len, maximum, supported, timeout_ms, now_ms, &mut *out,
                     )
                     .map_err(|core| central_error(core, OP))?;
-                self.count_effects(&mut out);
                 Ok(format!(",\"op\":\"{id}\""))
             }
             "op.dispatch" => {
                 let op = operation_id(arg(parts, 1, "op-id")?)?;
                 self.central_mut()
-                    .dispatch_op(&op, &mut out)
+                    .dispatch_op(&op, &mut *out)
                     .map_err(|core| central_error(core, OP))?;
-                self.count_effects(&mut out);
                 Ok(String::new())
             }
             "op.settle" => {
@@ -527,9 +540,8 @@ impl CoreSession {
                 let now_ms = parse_u64(arg(parts, 5, "settle-now")?, "settle-now")?;
                 let outcome = self
                     .central_mut()
-                    .settle_op(&op, kind, valid, ordinal, now_ms, &mut out)
+                    .settle_op(&op, kind, valid, ordinal, now_ms, &mut *out)
                     .map_err(|core| central_error(core, OP))?;
-                self.count_effects(&mut out);
                 Ok(format!(",\"outcome\":\"{}\"", completion_label(&outcome)))
             }
             "op.cancel" => {
@@ -537,9 +549,8 @@ impl CoreSession {
                 let now_ms = parse_u64(arg(parts, 2, "cancel-now")?, "cancel-now")?;
                 let outcome = self
                     .central_mut()
-                    .cancel_op(&op, now_ms, &mut out)
+                    .cancel_op(&op, now_ms, &mut *out)
                     .map_err(|core| central_error(core, OP))?;
-                self.count_effects(&mut out);
                 Ok(format!(",\"outcome\":\"{}\"", completion_label(&outcome)))
             }
             "subscribe" => {
@@ -554,10 +565,9 @@ impl CoreSession {
                 let id = self
                     .central_mut()
                     .subscribe(
-                        path, policy, items, bytes, consumer, timeout_ms, now_ms, &mut out,
+                        path, policy, items, bytes, consumer, timeout_ms, now_ms, &mut *out,
                     )
                     .map_err(|core| central_error(core, OP))?;
-                self.count_effects(&mut out);
                 Ok(format!(",\"op\":\"{id}\""))
             }
             "subscribe.enable-settled" => {
@@ -565,9 +575,8 @@ impl CoreSession {
                 let success = parse_bool(arg(parts, 2, "enable-success")?, "enable-success")?;
                 let now_ms = parse_u64(arg(parts, 3, "enable-now")?, "enable-now")?;
                 self.central_mut()
-                    .settle_subscribe_enable(path, success, now_ms, &mut out)
+                    .settle_subscribe_enable(path, success, now_ms, &mut *out)
                     .map_err(|core| central_error(core, OP))?;
-                self.count_effects(&mut out);
                 Ok(String::new())
             }
             "unsubscribe" => {
@@ -576,18 +585,16 @@ impl CoreSession {
                 let now_ms = parse_u64(arg(parts, 3, "unsubscribe-now")?, "unsubscribe-now")?;
                 let disabled = self
                     .central_mut()
-                    .unsubscribe(path, consumer, now_ms, &mut out)
+                    .unsubscribe(path, consumer, now_ms, &mut *out)
                     .map_err(|core| central_error(core, OP))?;
-                self.count_effects(&mut out);
                 Ok(format!(",\"physical-disable\":{disabled}"))
             }
             "subscribe.disable-settled" => {
                 let path = parse_usize(arg(parts, 1, "path-index")?, "path-index")?;
                 let now_ms = parse_u64(arg(parts, 2, "disable-now")?, "disable-now")?;
                 self.central_mut()
-                    .settle_subscribe_disable(path, now_ms, &mut out)
+                    .settle_subscribe_disable(path, now_ms, &mut *out)
                     .map_err(|core| central_error(core, OP))?;
-                self.count_effects(&mut out);
                 Ok(String::new())
             }
             "notify.deliver" => {
@@ -618,24 +625,20 @@ impl CoreSession {
                 let now_ms = parse_u64(arg(parts, 1, "sweep-now")?, "sweep-now")?;
                 let (settled, truncated) = self
                     .central_mut()
-                    .expire_sweep(now_ms, &mut out)
+                    .expire_sweep(now_ms, &mut *out)
                     .map_err(|core| central_error(core, OP))?;
-                self.count_effects(&mut out);
                 Ok(format!(",\"settled\":{settled},\"truncated\":{truncated}"))
             }
             "adapter.reset" => {
                 let now_ms = parse_u64(arg(parts, 1, "reset-now")?, "reset-now")?;
-                let settled = self.drive_adapter_reset(now_ms, &mut out)?;
-                self.count_effects(&mut out);
+                let settled = self.drive_adapter_reset(now_ms, &mut *out)?;
                 Ok(format!(",\"settled\":{settled}"))
             }
             "release" => {
-                let mut release_out = EffectBatch::new(DRIVE_EFFECT_CAP);
                 let record = self
                     .central_mut()
-                    .destroy(&mut release_out)
+                    .destroy(out)
                     .map_err(|core| central_error(core, OP))?;
-                self.drained_effects(&mut release_out);
                 Ok(format!(
                     ",\"state\":\"{}\"",
                     match record.state() {
@@ -997,5 +1000,81 @@ mod tests {
             "peer.resolve|public-address|AA:BB:CC:DD:EE:FF",
         );
         assert!(resolve.contains("\"ok\":true"), "{resolve}");
+    }
+
+    /// Count the `{"kind":...}` entries of one named array section in a
+    /// drained line (`effects` or `observations`).
+    fn count_section(line: &str, section: &str) -> usize {
+        let key = format!("\"{section}\":[");
+        let start = line
+            .find(&key)
+            .unwrap_or_else(|| panic!("line must carry {section}: {line}"))
+            + key.len();
+        let end = line[start..].find(']').expect("section must terminate");
+        line[start..start + end].matches("{\"kind\":").count()
+    }
+
+    #[test]
+    fn drain_surfaces_kernel_effects_and_typed_observations_without_discard() {
+        let mut session = open_session();
+        // Admission stages a kernel timer.schedule effect plus the typed
+        // central.scan-start observation: both must reach the host.
+        let scan = drain_ok(&mut session, "scan.start|owner-a|5000|1000||all|none");
+        assert!(
+            scan.contains("\"effects\":[{\"kind\":\"timer.schedule\""),
+            "admission effect must surface: {scan}"
+        );
+        assert!(
+            scan.contains("\"observations\":[{\"kind\":\"central.scan-start\""),
+            "typed observation must surface: {scan}"
+        );
+        // Dispatch stages radio.dispatch plus state.publish on the SAME op
+        // the observation belongs to: kinds, op binding, and order survive.
+        let op = op_of(&scan);
+        let dispatch = drain_ok(&mut session, &format!("op.dispatch|{op}"));
+        let radio = dispatch
+            .find("\"kind\":\"radio.dispatch\"")
+            .expect("radio.dispatch must surface");
+        let publish = dispatch
+            .find("\"kind\":\"state.publish\"")
+            .expect("state.publish must surface");
+        assert!(radio < publish, "dispatch order survives: {dispatch}");
+        assert!(
+            dispatch.contains(&format!("\"op\":\"{op}\"")),
+            "effects bind the driving op: {dispatch}"
+        );
+        // A quiet line surfaces empty sections (never missing, never null):
+        // the host parses unconditionally, with no presence probing.
+        let sweep = drain_ok(&mut session, "expire-sweep|1000");
+        assert!(sweep.contains("\"effects\":[]"), "{sweep}");
+        assert!(sweep.contains("\"observations\":[]"), "{sweep}");
+        // Nothing double-counted or dropped: every drained line in a mixed
+        // cycle carries both sections exactly once.
+        for wire in [
+            "peer.resolve|public-address|AA:BB:CC:DD:EE:FF",
+            "scan.platform-started|op-1",
+        ] {
+            enqueue_event(&mut session.gatt_queue, wire).expect("enqueue must accept");
+        }
+        let out = session
+            .drain_gatt_events("gatt-drain")
+            .expect("drain lifetime must hold");
+        for line in out.split('\n') {
+            assert_eq!(line.matches("\"effects\":[").count(), 1, "{line}");
+            assert_eq!(line.matches("\"observations\":[").count(), 1, "{line}");
+            let _ = count_section(line, "effects");
+            let _ = count_section(line, "observations");
+        }
+    }
+
+    #[test]
+    fn drain_surfaces_effects_on_core_rejections_too() {
+        let mut session = open_session();
+        // A rejected line still drains whatever the core staged before the
+        // rejection: errors never silently swallow effects.
+        let line = drain_one(&mut session, "op.dispatch|op-unknown");
+        assert!(line.contains("\"ok\":false"), "{line}");
+        assert_eq!(line.matches("\"effects\":[").count(), 1, "{line}");
+        assert_eq!(line.matches("\"observations\":[").count(), 1, "{line}");
     }
 }

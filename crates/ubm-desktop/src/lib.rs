@@ -21,14 +21,16 @@ pub mod executor;
 
 pub use boundary::{
     CharacteristicSnapshot, DescriptorKey, DescriptorSnapshot, FakeRadio, FaultOp, InstanceKey,
-    PeerSnapshot, PropertyFlags, RadioBoundary, RadioEvent, ScanFilterSpec, ServiceSnapshot,
+    ManufacturerData, PeerSnapshot, PropertyFlags, RadioBoundary, RadioEvent, ScanFilterSpec,
+    ServiceData, ServiceSnapshot,
 };
 pub use btleplug_backend::BtleplugRadio;
 pub use capabilities::{
     CapabilityVerdict, DESKTOP_CAPABILITIES, DesktopCapability, register_desktop_capabilities,
 };
 pub use central::{
-    ConnectionHandle, DesktopCentral, DiscoveryReport, NotificationPoll, ScanSession,
+    ConnectionHandle, DesktopCentral, DiscoveredPath, DiscoveryReport, NotificationPoll,
+    ScanSession,
 };
 pub use errors::DesktopError;
 pub use ubm_core::central::{CompletionOutcome, PathSelector};

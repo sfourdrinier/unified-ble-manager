@@ -210,7 +210,9 @@ function main() {
     'commonjs/package.json',
     'module/package.json',
     'typescript/commonjs/package.json',
-    'typescript/module/package.json'
+    'typescript/module/package.json',
+    // F23 build seal: written by prepack after bob, verified by consumers.
+    'ubm-build-fingerprint.json'
   ])
   for (const sourceFile of sourceFiles) {
     for (const artifactPath of sourceArtifactPaths(sourceFile)) {

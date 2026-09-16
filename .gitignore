@@ -76,9 +76,18 @@ example-tauri/src-tauri/gen/
 crates/*/target/
 bindings/*/target/
 
-# HOST-ANDROID (UBM 5.0): staged Rust cdylib outputs for the GATT bridge are
-# build artifacts, never sources (built by android/build-rust-cdylib.sh).
-android/src/main/jniLibs/
+# HOST-ANDROID (UBM 5.0): the library's committed release prebuilts ship to
+# packed consumers (built by android/refresh-prebuilt-jniLibs.sh); only the
+# exact shipped paths are tracked, everything else under jniLibs stays out.
+android/src/main/jniLibs/*
+!android/src/main/jniLibs/build-identity.txt
+!android/src/main/jniLibs/arm64-v8a/
+!android/src/main/jniLibs/x86_64/
+android/src/main/jniLibs/arm64-v8a/*
+!android/src/main/jniLibs/arm64-v8a/libubm5_jni_echo.so
+android/src/main/jniLibs/x86_64/*
+!android/src/main/jniLibs/x86_64/libubm5_jni_echo.so
+# The probe app stages its own cdylib per build: still untracked outputs.
 emulator-probe/five0/probe-app/app/src/main/jniLibs/
 # HOST-ANDROID (UBM 5.0): five0 battery raw logs are local evidence only;
 # the committed record is results-five0.json. Never commit logs/.

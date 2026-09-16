@@ -63,4 +63,25 @@ Pod::Spec.new do |s|
     s.dependency "RCTTypeSafety"
     s.dependency "ReactCommon/turbomodule/core"
   end
+
+  # F01: the 5.x lane selects the shared Rust core alongside the Owned
+  # radio above. The UniFFI staticlib XCFramework is built from the shipped
+  # bindings/uniffi sources by ios/build-rust-core.sh at pod install (never
+  # a stale prebuilt); the generated Swift joins the pod module; the Owned
+  # CoreBluetooth radio stays the thin platform adapter calling into it.
+  # 4.x keeps the Owned-only selection (no Rust core).
+  if package["version"].start_with?("5.")
+    s.prepare_command = 'sh ios/build-rust-core.sh'
+    s.source_files += ['bindings/uniffi/generated/swift/ubm_echo.swift']
+    s.vendored_frameworks = ['ios/RustCore/RustCore.xcframework']
+    s.preserve_paths += [
+      'bindings/uniffi/generated/swift/ubm_echoFFI.h',
+      'bindings/uniffi/generated/swift/ubm_echoFFI.modulemap'
+    ]
+    # s.xcconfig (unset above) merges with pod_target_xcconfig at build
+    # time without clobbering the React Native branch assignments.
+    s.xcconfig = {
+      'SWIFT_INCLUDE_PATHS' => '$(PODS_TARGET_SRCROOT)/bindings/uniffi/generated/swift'
+    }
+  end
 end

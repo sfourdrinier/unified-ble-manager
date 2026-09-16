@@ -33,6 +33,10 @@ async fn shutdown_stops_scan_and_refuses_new_work() {
             address: None,
             service_uuids: vec![HRM_SERVICE.to_owned()],
             rssi: Some(-60),
+            local_name: None,
+            manufacturer_data: Vec::new(),
+            service_data: Vec::new(),
+            tx_power_level: None,
         }));
     central
         .connect("peer-1", "lease-a", 5000)

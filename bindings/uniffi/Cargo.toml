@@ -10,7 +10,9 @@ repository = "https://github.com/sfourdrinier/unified-ble-manager"
 
 [lib]
 name = "ubm5_uniffi_echo"
-crate-type = ["cdylib", "rlib"]
+# F01 iOS lane: the pod-selected Rust core links as a staticlib slice of
+# the RustCore.xcframework (built by ios/build-rust-core.sh).
+crate-type = ["cdylib", "rlib", "staticlib"]
 
 [dependencies]
 uniffi = { version = "=0.32.1", features = ["build"] }

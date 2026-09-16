@@ -19,7 +19,7 @@ use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use crate::gatt_queue::GattQueue;
+use crate::gatt_queue::{json_escape_into, GattQueue};
 
 use ubm_core::central::{Central, CentralConfig};
 use ubm_core::contracts::{
@@ -277,19 +277,46 @@ impl CoreSession {
         &mut self.central
     }
 
-    /// Recycles the per-line staging after a driven GATT line: takes the
-    /// staged kernel effects out of the batch (intentionally not surfaced
-    /// yet — executor follow-up; the per-line JSON observation already
-    /// carries what the host needs) and drains the retained typed-effect
-    /// ledger, so both bounded caps recycle across long drains.
-    pub(crate) fn count_effects(&mut self, batch: &mut EffectBatch) {
-        let _ = batch.drain();
-        let _ = self.central.drain_typed_effects();
-    }
-
-    pub(crate) fn drained_effects(&mut self, batch: &mut EffectBatch) {
-        let _ = batch.drain();
-        let _ = self.central.drain_typed_effects();
+    /// Drain the per-line kernel batch plus the retained typed-effect
+    /// ledger into the JSON fragment the host executes and publishes
+    /// (F01): `,"effects":[...],"observations":[...]`. Every staged entry
+    /// surfaces exactly once, in stage order — nothing is counted and
+    /// dropped; quiet lines emit empty arrays (never missing, never null)
+    /// so the host parses unconditionally. Both bounded caps recycle here
+    /// across long drains.
+    pub(crate) fn drain_effects_json(&mut self, batch: &mut EffectBatch) -> String {
+        let mut fragment = String::from(",\"effects\":[");
+        let mut first = true;
+        for effect in batch.drain() {
+            if !first {
+                fragment.push(',');
+            }
+            first = false;
+            fragment.push_str("{\"kind\":\"");
+            fragment.push_str(effect.kind().as_str());
+            fragment.push_str("\",\"op\":\"");
+            fragment.push_str(effect.operation_id().as_str());
+            fragment.push_str("\",\"detail\":\"");
+            json_escape_into(&mut fragment, effect.detail());
+            fragment.push_str("\"}");
+        }
+        fragment.push_str("],\"observations\":[");
+        first = true;
+        for observation in self.central_mut().drain_typed_effects() {
+            if !first {
+                fragment.push(',');
+            }
+            first = false;
+            fragment.push_str("{\"kind\":\"");
+            fragment.push_str(observation.kind().as_str());
+            fragment.push_str("\",\"op\":\"");
+            fragment.push_str(observation.operation_id().as_str());
+            fragment.push_str("\",\"detail\":\"");
+            json_escape_into(&mut fragment, observation.detail());
+            fragment.push_str("\"}");
+        }
+        fragment.push(']');
+        fragment
     }
 
     pub fn cancel_inflight(&self) {

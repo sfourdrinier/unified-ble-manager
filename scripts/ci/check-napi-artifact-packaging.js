@@ -2,8 +2,16 @@
 // scripts/ci/check-napi-artifact-packaging.js
 //
 // UBM 5.0 PACKAGING slice (trackourhealth/bun-mono#1188, U8 vehicle).
-// Candidate-only proof: the 5.0 candidate is identified by branch+SHA, never
-// by a version bump, and nothing here publishes, tags, or merges.
+// F01 prerelease lane: the 5.0 candidate is a real 5.0.0-rc.N artifact with
+// an explicit native distribution strategy, and nothing here publishes,
+// tags, or merges.
+//
+// Native distribution strategy (F01): the packed tarball ships the Rust
+// sources (crates/ + bindings/), the committed Android jniLibs prebuilts,
+// and the F23 content-fingerprint seal. Packed consumers build dispatch
+// addons from those shipped sources and verify package/core/fingerprint
+// identity at runtime; no stray prebuilt .node binary rides along, and the
+// Rust trees stay off the npm export map (direct-path loads only).
 //
 // What this proves (fail-closed, offline unless a tarball/consumer is given):
 //   A. every new 5.0 Rust crate carries publish=false + a resolvable SAL
@@ -12,13 +20,15 @@
 //      bindings/uniffi);
 //   B. the npm export map ships none of the 5.0 dev-only surfaces (napi/wasm
 //      artifacts, ubm-desktop consumers, TCK rust-driver, test-only fault
-//      hooks, contracts) and the lane version makes no 5.0 release claim;
-//   C. (--tarball) the packed tarball contains no bindings//crates trees, no
-//      stray .node binaries, the license trio, and the same export guard on
-//      the packed manifest;
+//      hooks, contracts) and the lane version is exactly a 5.0.0-rc.N
+//      prerelease (never a final 5.x shipment claim, never an older lane);
+//   C. (--tarball) the packed tarball contains the Rust source trees, the
+//      fingerprint seal, no stray .node binaries, the license trio, and the
+//      same export guard on the packed manifest;
 //   D. (--consumer) an installed packed consumer cannot resolve the dev-only
 //      subpaths, the shipped ./testing entry exposes no Rust/fault-hook
-//      constructors, and the license trio is installed.
+//      constructors, the Rust source trees are installed for dispatch
+//      builds, and the license trio is installed.
 //
 // Usage:
 //   node scripts/ci/check-napi-artifact-packaging.js [--tarball <tgz>] [--consumer <dir>]
@@ -37,7 +47,8 @@ const NOTICE_FILE = 'NOTICE'
 const CONTRIBUTION_TERMS_FILE = 'UBM-CONTRIBUTION-TERMS-1.0.md'
 const CANONICAL_REPOSITORY = 'https://github.com/sfourdrinier/unified-ble-manager'
 
-// New 5.0 Rust crates: the npm-published JS surface never ships them, but
+// New 5.0 Rust crates: the packed tarball ships their SOURCES (F01 native
+// distribution strategy) while the npm export map never exposes them, and
 // their metadata must stay coherent so they can never leak onto crates.io
 // with a wrong license.
 const NEW_RUST_CRATES = Object.freeze([
@@ -50,11 +61,13 @@ const NEW_RUST_CRATES = Object.freeze([
   'bindings/uniffi'
 ])
 
-// 5.0 dev-only surfaces that must never become resolvable npm subpaths.
-// contracts/ is a dev-time freeze, not runtime; napi/wasm are echo-only
-// feasibility stand-ins (NOT BLE functionality); ubm-desktop is consumed via
-// cargo, not npm; the TCK rust-driver needs the unpacked .node build; fault
-// hooks are test infrastructure. See docs/5.0.0-PACKAGING.md.
+// 5.0 surfaces that must never become resolvable npm subpaths, even though
+// the packed tarball ships their sources (F01). contracts/ is a dev-time
+// freeze, not runtime; the napi dispatch addon is built from shipped
+// sources and loaded via direct path, never via an export subpath; wasm is
+// an echo-only feasibility stand-in (NOT BLE functionality); ubm-desktop is
+// consumed via cargo, not npm; the TCK rust-driver needs the unpacked .node
+// build; fault hooks are test infrastructure. See docs/5.0.0-PACKAGING.md.
 const FORBIDDEN_EXPORT_SUBPATHS = Object.freeze([
   './napi',
   './wasm',
@@ -168,10 +181,10 @@ function checkSourceExportMap() {
   if (typeof packageJson.version !== 'string' || packageJson.version.length === 0) {
     fail('package.json version must be a non-empty string')
   }
-  if (/^5\./.test(packageJson.version)) {
+  if (!/^5\.0\.0-rc\.\d+$/.test(packageJson.version)) {
     fail(
-      `package.json version ${packageJson.version} claims a 5.0 shipment; ` +
-        'the 5.0 candidate is identified by branch+SHA, never by a version bump'
+      `package.json version ${packageJson.version} is not the 5.0 prerelease lane; ` +
+        'F01 requires exactly 5.0.0-rc.N (never a final 5.x shipment claim, never an older lane)'
     )
   }
   for (const artifact of [SAL_LICENSE_FILE, NOTICE_FILE, CONTRIBUTION_TERMS_FILE]) {
@@ -181,7 +194,7 @@ function checkSourceExportMap() {
   }
   console.log(
     `napi-artifact-packaging-proof: source export map clean ` +
-      `(${Object.keys(packageJson.exports).length} subpaths, no dev-only surface; version ${packageJson.version} makes no 5.0 claim)`
+      `(${Object.keys(packageJson.exports).length} subpaths, no dev-only surface; version ${packageJson.version} is the 5.0.0-rc prerelease lane)`
   )
 }
 
@@ -192,15 +205,19 @@ function checkPackedTarball(tarballPath) {
   const allowedPrebuilds = new Set(NATIVE_PREBUILD_TARGETS.map(target => `package/${target.prebuildPath}`))
   const files = readTarball(path.resolve(tarballPath))
   for (const entryPath of files.keys()) {
-    if (entryPath === 'package/bindings' || entryPath.startsWith('package/bindings/')) {
-      fail(`packed tarball must not contain N-API/WASM binding material: ${entryPath}`)
-    }
-    if (entryPath === 'package/crates' || entryPath.startsWith('package/crates/')) {
-      fail(`packed tarball must not contain Rust crate sources: ${entryPath}`)
-    }
     if (entryPath.endsWith('.node') && !allowedPrebuilds.has(entryPath)) {
       fail(`packed tarball contains a non-prebuild native binary: ${entryPath}`)
     }
+  }
+  // F01 native distribution: packed consumers build dispatch addons from
+  // the shipped Rust sources, so every 5.0 crate manifest must be present.
+  for (const crate of NEW_RUST_CRATES) {
+    if (!files.has(`package/${crate}/Cargo.toml`)) {
+      fail(`packed tarball is missing Rust source manifest package/${crate}/Cargo.toml`)
+    }
+  }
+  if (!files.has('package/lib/ubm-build-fingerprint.json')) {
+    fail('packed tarball is missing the F23 fingerprint seal package/lib/ubm-build-fingerprint.json')
   }
   for (const artifact of [SAL_LICENSE_FILE, NOTICE_FILE, CONTRIBUTION_TERMS_FILE, 'LICENSE']) {
     if (!files.has(`package/${artifact}`)) {
@@ -216,7 +233,7 @@ function checkPackedTarball(tarballPath) {
     )
   }
   console.log(
-    `napi-artifact-packaging-proof: tarball clean (${files.size} entries, no bindings//crates trees, no stray .node, license trio present)`
+    `napi-artifact-packaging-proof: tarball clean (${files.size} entries, Rust sources + fingerprint seal present, no stray .node, license trio present)`
   )
 }
 
@@ -261,11 +278,14 @@ function checkPackedConsumer(consumerDir) {
     }
   }
   for (const tree of ['bindings', 'crates']) {
-    if (fs.existsSync(path.join(packageRoot, tree))) {
-      fail(`installed packed consumer must not contain ${tree}/`)
+    if (!fs.existsSync(path.join(packageRoot, tree))) {
+      fail(`installed packed consumer is missing ${tree}/ (F01 ships Rust sources for dispatch builds)`)
     }
   }
-  console.log('napi-artifact-packaging-proof: consumer license trio installed, no bindings//crates trees')
+  if (!fs.existsSync(path.join(packageRoot, 'lib', 'ubm-build-fingerprint.json'))) {
+    fail('installed packed consumer is missing lib/ubm-build-fingerprint.json (F23 seal)')
+  }
+  console.log('napi-artifact-packaging-proof: consumer license trio installed, Rust sources + seal present')
 }
 
 function runNapiArtifactPackagingProof(options = {}) {

@@ -431,6 +431,92 @@ class GattCentralBridgeTest {
   }
 
   @Test
+  fun f01ParseSurfacesEffectsAndObservationsExactly() {
+    // F01: kernel effects plus typed observations ride every drained line
+    // and must reach the owner exactly (kinds, op binding, details with
+    // escapes decoded) — never counted and dropped.
+    val parsed = GattCentralWire.parseObservations(
+      "{\"ok\":true,\"event\":\"scan.start\",\"op\":\"central-op-0\"," +
+        "\"effects\":[{\"kind\":\"timer.schedule\",\"op\":\"central-op-0\"," +
+        "\"detail\":\"deadline:6000\"}]," +
+        "\"observations\":[{\"kind\":\"central.scan-start\",\"op\":\"central-op-0\"," +
+        "\"detail\":\"scan.start\\nowner\"}]}"
+    )
+    assertEquals(1, parsed.size)
+    assertTrue(parsed[0].ok)
+    assertEquals(
+      listOf(GattEffect("timer.schedule", "central-op-0", "deadline:6000")),
+      parsed[0].effects
+    )
+    assertEquals(
+      listOf(GattEffect("central.scan-start", "central-op-0", "scan.start\nowner")),
+      parsed[0].observations
+    )
+  }
+
+  @Test
+  fun f01MissingSectionsParseAsEmptyForPreF01Lines() {
+    val parsed = GattCentralWire.parseObservations("{\"ok\":true,\"event\":\"probe\"}")
+    assertEquals(1, parsed.size)
+    assertTrue(parsed[0].ok)
+    assertTrue(parsed[0].effects.isEmpty())
+    assertTrue(parsed[0].observations.isEmpty())
+  }
+
+  @Test
+  fun f01EmptySectionsParseAsEmpty() {
+    val parsed = GattCentralWire.parseObservations(
+      "{\"ok\":true,\"event\":\"expire-sweep\",\"settled\":0,\"truncated\":false," +
+        "\"effects\":[],\"observations\":[]}"
+    )
+    assertEquals(1, parsed.size)
+    assertTrue(parsed[0].ok)
+    assertTrue(parsed[0].effects.isEmpty())
+    assertTrue(parsed[0].observations.isEmpty())
+  }
+
+  @Test
+  fun f01MalformedEffectsFailTheLineClosed() {
+    // A line whose effects section cannot be parsed fails closed (the host
+    // must never mistake a truncated section for "no effects"); the raw
+    // line is preserved for forensics.
+    val raw =
+      "{\"ok\":true,\"event\":\"scan.start\",\"effects\":[{\"kind\":\"timer.schedule\","
+    val parsed = GattCentralWire.parseObservations(raw)
+    assertEquals(1, parsed.size)
+    assertFalse(parsed[0].ok)
+    assertEquals("platform.failure", parsed[0].code)
+    assertEquals(raw, parsed[0].raw)
+  }
+
+  @Test
+  fun f01BridgeForwardsEffectsToTheOwner() {
+    val seen = mutableListOf<GattObservation>()
+    val bridge = UbmGattCentralBridge(
+      enqueue = { 1 },
+      drain = {
+        "{\"ok\":true,\"event\":\"op.dispatch\",\"op\":\"central-op-3\"," +
+          "\"effects\":[{\"kind\":\"radio.dispatch\",\"op\":\"central-op-3\"," +
+          "\"detail\":\"radio.dispatch\"}," +
+          "{\"kind\":\"state.publish\",\"op\":\"central-op-3\"," +
+          "\"detail\":\"state.dispatched\"}],\"observations\":[]}"
+      },
+      hasBlePermissions = { true },
+      onObservations = { seen.addAll(it) },
+      worker = direct
+    )
+    bridge.postEvent(GattCentralWire.expireSweep(1000))
+    assertEquals(1, seen.size)
+    assertEquals(
+      listOf(
+        GattEffect("radio.dispatch", "central-op-3", "radio.dispatch"),
+        GattEffect("state.publish", "central-op-3", "state.dispatched")
+      ),
+      seen[0].effects
+    )
+  }
+
+  @Test
   fun wireBuildersRejectCommaAndNegativesFailFast() {
     try {
       GattCentralWire.scanStart("o", 1, 1, listOf("180d,180f"), "all", "none")

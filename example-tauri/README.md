@@ -6,7 +6,7 @@ This small checkout app uses `createTauriBleManager()` from
 subscribe. A successful click is not live-radio evidence.
 
 The Cargo recipe you can copy today is the checkout path
-(`path = "../../native/tauri"`). `cargo add tauri-plugin-unified-ble-manager@4.0.0`
+(`path = "../../native/tauri"`). `cargo add tauri-plugin-unified-ble-manager@5.0.0-rc.0`
 is the published recipe once the crate exists; it fails until then.
 See [`../docs/TAURI.md`](../docs/TAURI.md).
 

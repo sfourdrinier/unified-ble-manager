@@ -18,8 +18,13 @@
 //! The binding talks to the core ONLY through `CoreBackend`, implemented for
 //! the ubm-core-backed [`core_backend::CoreSession`] (one implementation in
 //! this crate; contract truth is single-owned by `ubm-core`).
+//!
+//! F01 dispatch ([`dispatch::UbmCentral`]) is the packed-consumer BLE path:
+//! every op executes in `ubm-desktop`/`ubm-core` (Rust), never in
+//! TypeScript. The echo session above stays the feasibility surface.
 
 mod core_backend;
+mod dispatch;
 
 use std::sync::Mutex;
 
