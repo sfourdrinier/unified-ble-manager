@@ -122,6 +122,13 @@ pub const DESKTOP_CAPABILITIES: &[DesktopCapability] = &[
         limitation: Some("shell-owned-auth"),
     },
     DesktopCapability {
+        id: "peer:restored",
+        verdict: CapabilityVerdict::NarrowOsAdapterNeeded,
+        scenario: "peer.restored",
+        note: "Desktop processes start without restored BLE handles; adopting OS-restored peers needs a narrow restoration adapter per platform.",
+        limitation: None,
+    },
+    DesktopCapability {
         id: "connection:direct",
         verdict: CapabilityVerdict::BtleplugProvides,
         scenario: "connection.lease-joins-borrowing-transfer-and-revocation",
@@ -146,7 +153,7 @@ pub const DESKTOP_CAPABILITIES: &[DesktopCapability] = &[
         id: "connection:effective-mtu",
         verdict: CapabilityVerdict::NarrowOsAdapterNeeded,
         scenario: "connection.rssi-and-att-mtu-capability-contract",
-        note: "Negotiated ATT MTU needs wiring btleplug mtu() into maximum-write-length; not yet connected.",
+        note: "The OS-measured MTU already feeds every write through mtu()-3 into the core maximum-write-length (fail-closed when unmeasured); exposing the negotiated value as a host read needs an adapter.",
         limitation: None,
     },
     DesktopCapability {
@@ -236,8 +243,8 @@ pub const DESKTOP_CAPABILITIES: &[DesktopCapability] = &[
     DesktopCapability {
         id: "gatt:indications",
         verdict: CapabilityVerdict::BtleplugProvides,
-        scenario: "gatt.reads-descriptors-write-policy-and-dispatched-cancellation",
-        note: "The btleplug notification stream does not distinguish indications from notifications; delivery is reported as unknown.",
+        scenario: "gatt.indications",
+        note: "Subscribed notification values buffer per consumer and are observable through the take API; the btleplug stream does not distinguish indications from notifications, so delivery kind is reported as unknown.",
         limitation: Some("delivery-kind-unknown"),
     },
     DesktopCapability {
@@ -251,7 +258,7 @@ pub const DESKTOP_CAPABILITIES: &[DesktopCapability] = &[
         id: "gatt:maximum-write-length",
         verdict: CapabilityVerdict::NarrowOsAdapterNeeded,
         scenario: "gatt.maximum-write-length",
-        note: "Negotiated limits need wiring btleplug mtu() into the core maximum-write-length path.",
+        note: "Measured MTU is wired into the core maximum-write-length on every characteristic/descriptor write (fail-closed when unmeasured); a dedicated maximumWriteLength host query needs an adapter.",
         limitation: None,
     },
     DesktopCapability {
@@ -393,6 +400,120 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// Machine-checked parity (L7): the code table, the committed
+    /// `PARITY_GAPS.md` report, and the frozen backend-contract matrix
+    /// agree. A dropped row (L1), a dangling scenario link (L3), or count
+    /// drift fails here instead of shipping silently.
+    #[test]
+    fn parity_report_matches_code_and_frozen_matrix() {
+        use std::collections::HashSet;
+
+        use super::CapabilityVerdict;
+
+        let report = include_str!("../PARITY_GAPS.md");
+        // Every code row appears in the report with its scenario.
+        for capability in DESKTOP_CAPABILITIES {
+            assert!(
+                report.contains(capability.id),
+                "report drops row {}",
+                capability.id
+            );
+            assert!(
+                report.contains(capability.scenario),
+                "report drops scenario {} for {}",
+                capability.scenario,
+                capability.id
+            );
+        }
+        // The Counts section matches the code table exactly.
+        let mut provides = 0usize;
+        let mut narrow = 0usize;
+        let mut limitation = 0usize;
+        for capability in DESKTOP_CAPABILITIES {
+            match capability.verdict {
+                CapabilityVerdict::BtleplugProvides => provides += 1,
+                CapabilityVerdict::NarrowOsAdapterNeeded => narrow += 1,
+                CapabilityVerdict::LimitationCandidate => limitation += 1,
+            }
+        }
+        let total = DESKTOP_CAPABILITIES.len();
+        for expected in [
+            format!("{total} required desktop rows"),
+            format!("{provides} btleplug-provides"),
+            format!("{narrow} narrow-OS-adapter-needed"),
+            format!("{limitation} preapproved-limitation-candidate"),
+        ] {
+            assert!(
+                report.contains(&expected),
+                "report counts drifted: missing `{expected}`"
+            );
+        }
+        // The desktop set covers the frozen matrix minus the explicitly
+        // scoped-out mobile roles (read-only reference: the frozen file
+        // is never modified by this crate).
+        let frozen = include_str!("../../../src/backend-contract/capabilities.ts");
+        let mut frozen_ids: HashSet<&str> = HashSet::new();
+        let mut quoted = false;
+        let mut start = 0usize;
+        let bytes = frozen.as_bytes();
+        let mut index = 0usize;
+        while index < bytes.len() {
+            if bytes[index] == b'\'' {
+                if quoted {
+                    let token = &frozen[start..index];
+                    if is_capability_id(token) {
+                        frozen_ids.insert(token);
+                    }
+                    quoted = false;
+                } else {
+                    start = index + 1;
+                    quoted = true;
+                }
+            }
+            index += 1;
+        }
+        assert_eq!(
+            frozen_ids.len(),
+            38,
+            "frozen matrix changed size: update this test and the desktop rows together"
+        );
+        let scoped_out = [
+            "background:apple-restoration",
+            "background:android-connected-device-service",
+        ];
+        for scoped in scoped_out {
+            assert!(
+                frozen_ids.contains(scoped),
+                "frozen matrix lost scoped row {scoped}"
+            );
+        }
+        let desktop_ids: HashSet<&str> = DESKTOP_CAPABILITIES.iter().map(|row| row.id).collect();
+        let expected_ids: HashSet<&str> = frozen_ids
+            .difference(&scoped_out.into_iter().collect())
+            .copied()
+            .collect();
+        assert_eq!(
+            desktop_ids, expected_ids,
+            "desktop rows diverged from the frozen matrix"
+        );
+    }
+
+    /// Frozen capability ids are `namespace:name` (lowercase, dashes).
+    fn is_capability_id(token: &str) -> bool {
+        let mut parts = token.split(':');
+        let head = parts.next().unwrap_or_default();
+        let tail = parts.next().unwrap_or_default();
+        !(parts.next().is_some()
+            || head.is_empty()
+            || tail.is_empty()
+            || !head
+                .chars()
+                .all(|cell| cell.is_ascii_lowercase() || cell == '-')
+            || !tail
+                .chars()
+                .all(|cell| cell.is_ascii_lowercase() || cell == '-'))
     }
 
     #[test]

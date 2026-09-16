@@ -5,7 +5,13 @@
 //! shutdown latch: running it inside the lib test process would refuse
 //! admission for every other test there. No radio is touched.
 
-use ubm_desktop::{DesktopCentral, FakeRadio};
+use ubm_desktop::{
+    CharacteristicSnapshot, DescriptorSnapshot, DesktopCentral, FakeRadio, PeerSnapshot,
+    PropertyFlags, RadioEvent, ServiceSnapshot,
+};
+
+const HRM_SERVICE: &str = "0000180d-0000-1000-8000-00805f9b34fb";
+const HRM_MEASUREMENT: &str = "00002a37-0000-1000-8000-00805f9b34fb";
 
 #[tokio::test]
 async fn shutdown_stops_scan_and_refuses_new_work() {
@@ -18,6 +24,64 @@ async fn shutdown_stops_scan_and_refuses_new_work() {
         .expect("start scan");
     assert!(central.has_active_scan().await);
 
+    // M3 setup: one live subscription before teardown.
+    central
+        .boundary()
+        .push_event(RadioEvent::Advertisement(PeerSnapshot {
+            id: "peer-1".to_owned(),
+            address: None,
+            service_uuids: vec![HRM_SERVICE.to_owned()],
+            rssi: Some(-60),
+        }));
+    central
+        .connect("peer-1", "lease-a", 5000)
+        .await
+        .expect("connect");
+    central.boundary().set_services(
+        "peer-1",
+        vec![ServiceSnapshot {
+            uuid: HRM_SERVICE.to_owned(),
+            occurrence: 0,
+            characteristics: vec![CharacteristicSnapshot {
+                uuid: HRM_MEASUREMENT.to_owned(),
+                occurrence: 0,
+                properties: PropertyFlags {
+                    read: true,
+                    write: false,
+                    write_without_response: false,
+                    notify: true,
+                    indicate: false,
+                },
+                descriptors: vec![DescriptorSnapshot {
+                    uuid: "00002901-0000-1000-8000-00805f9b34fb".to_owned(),
+                    occurrence: 0,
+                }],
+            }],
+        }],
+    );
+    central
+        .discover("peer-1", "lease-a")
+        .await
+        .expect("discover");
+    let selector = DesktopCentral::<FakeRadio>::selector(
+        HRM_SERVICE,
+        Some(0),
+        Some(HRM_MEASUREMENT),
+        Some(0),
+        None,
+        None,
+    )
+    .expect("selector");
+    central
+        .subscribe("peer-1", &selector, "consumer-a", 5000)
+        .await
+        .expect("subscribe");
+    assert_eq!(
+        central.boundary().live_subscription_count(),
+        1,
+        "one live CCCD before shutdown"
+    );
+
     central.shutdown().await;
 
     assert!(central.is_shut_down(), "shutdown recorded");
@@ -28,6 +92,16 @@ async fn shutdown_stops_scan_and_refuses_new_work() {
     assert!(
         !central.boundary().scan_active(),
         "OS scan stopped by shutdown"
+    );
+    // M3: no live OS subscription outlives the central.
+    assert_eq!(
+        central.boundary().live_subscription_count(),
+        0,
+        "zero live CCCDs after shutdown"
+    );
+    assert!(
+        central.boundary().calls().contains(&"close".to_owned()),
+        "shutdown drives the boundary teardown hook"
     );
     let error = central
         .start_scan("owner-a", &[], 5000)
@@ -43,4 +117,11 @@ async fn shutdown_stops_scan_and_refuses_new_work() {
     // Idempotent: a second shutdown is safe cleanup, not a second record.
     central.shutdown().await;
     assert!(central.is_shut_down());
+
+    // L4: a post-shutdown open fails closed instead of building a zombie
+    // central whose ops refuse admission.
+    match DesktopCentral::open(FakeRadio::new(), "test-host").await {
+        Ok(_) => panic!("no new centrals after executor shutdown"),
+        Err(error) => assert_eq!(error.code_str(), "adapter.unavailable"),
+    }
 }

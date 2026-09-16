@@ -20,8 +20,8 @@ pub mod errors;
 pub mod executor;
 
 pub use boundary::{
-    CharacteristicSnapshot, DescriptorSnapshot, FakeRadio, FaultOp, PeerSnapshot, PropertyFlags,
-    RadioBoundary, RadioEvent, ScanFilterSpec, ServiceSnapshot,
+    CharacteristicSnapshot, DescriptorSnapshot, FakeRadio, FaultOp, InstanceKey, PeerSnapshot,
+    PropertyFlags, RadioBoundary, RadioEvent, ScanFilterSpec, ServiceSnapshot,
 };
 pub use btleplug_backend::BtleplugRadio;
 pub use capabilities::{

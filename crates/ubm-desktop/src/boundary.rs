@@ -8,10 +8,10 @@
 //! the physical central slice stays explicitly queued (see
 //! `PARITY_GAPS.md`).
 
-use std::collections::{HashMap, VecDeque};
-use std::sync::Mutex as StdMutex;
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::{Arc, Mutex as StdMutex};
 
-use tokio::sync::mpsc;
+use tokio::sync::{Notify, mpsc};
 
 use crate::errors::DesktopError;
 
@@ -27,6 +27,10 @@ pub enum FaultOp {
     Write,
     Subscribe,
     Unsubscribe,
+    /// OS-reported ATT MTU lookup (`mtu()` returns `None`, as withheld).
+    Mtu,
+    /// Adapter identity readout (`adapter_name()` fails).
+    AdapterName,
 }
 
 /// Service filter for scan start, mirroring the validated core request.
@@ -60,10 +64,15 @@ pub struct PropertyFlags {
     pub indicate: bool,
 }
 
-/// One descriptor snapshot (UUID only; values travel read/write calls).
+/// One descriptor snapshot (UUID plus occurrence; values travel
+/// read/write calls).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DescriptorSnapshot {
     pub uuid: String,
+    /// Occurrence among duplicate descriptor UUIDs under one
+    /// characteristic instance (0-based per-UUID count, matching the
+    /// central's registration order).
+    pub occurrence: u64,
 }
 
 /// One characteristic snapshot with occurrence index (duplicates stay
@@ -90,9 +99,20 @@ pub enum RadioEvent {
     Advertisement(PeerSnapshot),
     Connected(String),
     Disconnected(String),
+    /// The OS reports the GATT database changed underneath discovery:
+    /// paths invalidate and rediscovery is required (never silently
+    /// re-read through stale handles).
+    ServicesChanged(String),
     Notification {
         peer_id: String,
+        /// Owning service instance: UUID plus occurrence among duplicate
+        /// service UUIDs.
+        service_uuid: String,
+        service_occurrence: u64,
         characteristic_uuid: String,
+        /// Occurrence among duplicate characteristic UUIDs under the
+        /// service instance. UUID alone never identifies the instance.
+        characteristic_occurrence: u64,
         value: Vec<u8>,
     },
 }
@@ -122,35 +142,60 @@ pub trait RadioBoundary: Send + Sync + 'static {
         &'a self,
         peer_id: &'a str,
     ) -> impl Future<Output = Result<Vec<ServiceSnapshot>, DesktopError>> + Send + 'a;
+    /// Read one characteristic instance. Occurrence selects among
+    /// duplicate UUIDs under the service instance (0-based per-UUID
+    /// count); UUID alone never identifies the instance.
     fn read_characteristic<'a>(
         &'a self,
         peer_id: &'a str,
+        service_uuid: &'a str,
+        service_occurrence: u64,
         characteristic_uuid: &'a str,
+        characteristic_occurrence: u64,
     ) -> impl Future<Output = Result<Vec<u8>, DesktopError>> + Send + 'a;
+    #[allow(clippy::too_many_arguments)]
     fn write_characteristic<'a>(
         &'a self,
         peer_id: &'a str,
+        service_uuid: &'a str,
+        service_occurrence: u64,
         characteristic_uuid: &'a str,
+        characteristic_occurrence: u64,
         value: Vec<u8>,
         with_response: bool,
     ) -> impl Future<Output = Result<(), DesktopError>> + Send + 'a;
+    #[allow(clippy::too_many_arguments)]
     fn read_descriptor<'a>(
         &'a self,
         peer_id: &'a str,
+        service_uuid: &'a str,
+        service_occurrence: u64,
         characteristic_uuid: &'a str,
+        characteristic_occurrence: u64,
         descriptor_uuid: &'a str,
+        descriptor_occurrence: u64,
     ) -> impl Future<Output = Result<Vec<u8>, DesktopError>> + Send + 'a;
+    #[allow(clippy::too_many_arguments)]
     fn write_descriptor<'a>(
         &'a self,
         peer_id: &'a str,
+        service_uuid: &'a str,
+        service_occurrence: u64,
         characteristic_uuid: &'a str,
+        characteristic_occurrence: u64,
         descriptor_uuid: &'a str,
+        descriptor_occurrence: u64,
         value: Vec<u8>,
     ) -> impl Future<Output = Result<(), DesktopError>> + Send + 'a;
+    /// Toggle notifications on one characteristic instance (per-instance
+    /// keying: duplicate UUIDs never share a forwarder).
     fn set_notifications<'a>(
         &'a self,
         peer_id: &'a str,
+        service_uuid: &'a str,
+        service_occurrence: u64,
         characteristic_uuid: &'a str,
+        characteristic_occurrence: u64,
         enable: bool,
     ) -> impl Future<Output = Result<(), DesktopError>> + Send + 'a;
     /// OS-reported ATT MTU for one peer, or `None` when the OS withholds
@@ -161,6 +206,11 @@ pub trait RadioBoundary: Send + Sync + 'static {
     /// cleanup path). Cancellation is owned by the caller: drop/stop the
     /// future rather than expecting the boundary to abort it.
     fn next_event(&self) -> impl Future<Output = Option<RadioEvent>> + Send + '_;
+    /// Teardown hook: abort live notification forwarders and best-effort
+    /// release OS-side CCCDs. Wired into central shutdown so no live OS
+    /// subscription outlives the central. Infallible by contract:
+    /// teardown reports facts, never new failures.
+    fn close(&self) -> impl Future<Output = ()> + Send + '_;
 }
 
 /// Deterministic scriptable boundary for unit tests. Faults are injected per
@@ -175,6 +225,10 @@ pub struct FakeRadio {
     events_rx: tokio::sync::Mutex<mpsc::UnboundedReceiver<RadioEvent>>,
 }
 
+/// One characteristic instance address: (peer, service uuid, service
+/// occurrence, characteristic uuid, characteristic occurrence).
+pub type InstanceKey = (String, String, u64, String, u64);
+
 struct FakeInner {
     faults: HashMap<FaultOp, VecDeque<String>>,
     events_tx: Option<mpsc::UnboundedSender<RadioEvent>>,
@@ -184,6 +238,16 @@ struct FakeInner {
     scan_active: bool,
     services: HashMap<String, Vec<ServiceSnapshot>>,
     mtu: HashMap<String, u16>,
+    /// Per-instance read payloads: values returned for one addressed
+    /// characteristic instance (unset instances return the canned default).
+    values: HashMap<InstanceKey, Vec<u8>>,
+    /// Live notification registrations: (peer, service, svc occ, char,
+    /// char occ) with the CCCD currently enabled. [`FakeRadio::close`]
+    /// releases all of them, modelling OS-side unsubscribe at teardown.
+    live: HashSet<InstanceKey>,
+    /// Closed operation gates: an entry means calls to that op wait until
+    /// [`FakeRadio::unblock_op`] (contention/failure-injection tests).
+    gates: HashMap<FaultOp, Arc<Notify>>,
 }
 
 impl Default for FakeRadio {
@@ -205,6 +269,9 @@ impl FakeRadio {
                 scan_active: false,
                 services: HashMap::new(),
                 mtu: HashMap::new(),
+                values: HashMap::new(),
+                live: HashSet::new(),
+                gates: HashMap::new(),
             }),
             events_rx: tokio::sync::Mutex::new(events_rx),
         }
@@ -272,6 +339,81 @@ impl FakeRadio {
             .insert(peer_id.to_owned(), services);
     }
 
+    /// Script the read payload for one characteristic instance. Reads of
+    /// unset instances return the canned default (`0x42`).
+    pub fn set_characteristic_value(
+        &self,
+        peer_id: &str,
+        service_uuid: &str,
+        service_occurrence: u64,
+        characteristic_uuid: &str,
+        characteristic_occurrence: u64,
+        value: Vec<u8>,
+    ) {
+        self.state.lock().expect("fake radio state").values.insert(
+            (
+                peer_id.to_owned(),
+                service_uuid.to_owned(),
+                service_occurrence,
+                characteristic_uuid.to_owned(),
+                characteristic_occurrence,
+            ),
+            value,
+        );
+    }
+
+    /// Number of live notification registrations (CCCDs the fake believes
+    /// are OS-enabled). Teardown must drive this to zero.
+    pub fn live_subscription_count(&self) -> usize {
+        self.state.lock().expect("fake radio state").live.len()
+    }
+
+    /// Close the gate on `op`: calls to it wait until
+    /// [`FakeRadio::unblock_op`]. Models a stuck OS call for contention
+    /// tests (M1/M2/L5/L7).
+    pub fn block_op(&self, op: FaultOp) {
+        self.state
+            .lock()
+            .expect("fake radio state")
+            .gates
+            .entry(op)
+            .or_insert_with(|| Arc::new(Notify::new()));
+    }
+
+    /// Open the gate on `op`, releasing one waiter (call again per
+    /// waiter).
+    pub fn unblock_op(&self, op: FaultOp) {
+        let notify = self
+            .state
+            .lock()
+            .expect("fake radio state")
+            .gates
+            .remove(&op);
+        if let Some(notify) = notify {
+            notify.notify_one();
+        }
+    }
+
+    /// Wait while the gate on `op` is closed. The check-then-wait loop is
+    /// race-free: `unblock_op` both removes the entry and delivers a
+    /// stored permit, so a concurrent unblock either breaks the loop or
+    /// releases the wait immediately.
+    async fn gate(&self, op: FaultOp) {
+        loop {
+            let notify = self
+                .state
+                .lock()
+                .expect("fake radio state")
+                .gates
+                .get(&op)
+                .cloned();
+            match notify {
+                None => break,
+                Some(notify) => notify.notified().await,
+            }
+        }
+    }
+
     fn take_fault(&self, op: FaultOp) -> Option<String> {
         self.state
             .lock()
@@ -293,6 +435,9 @@ impl FakeRadio {
 impl RadioBoundary for FakeRadio {
     async fn adapter_name(&self) -> Result<String, DesktopError> {
         self.record("adapter_name");
+        if let Some(detail) = self.take_fault(FaultOp::AdapterName) {
+            return Err(DesktopError::adapter_unavailable("adapter.name").with_detail(detail));
+        }
         Ok("fake-desktop-adapter".to_owned())
     }
 
@@ -342,6 +487,7 @@ impl RadioBoundary for FakeRadio {
             )
             .with_detail(detail));
         }
+        self.gate(FaultOp::Disconnect).await;
         Ok(())
     }
 
@@ -367,20 +513,40 @@ impl RadioBoundary for FakeRadio {
 
     async fn read_characteristic(
         &self,
-        _peer_id: &str,
-        _characteristic_uuid: &str,
+        peer_id: &str,
+        service_uuid: &str,
+        service_occurrence: u64,
+        characteristic_uuid: &str,
+        characteristic_occurrence: u64,
     ) -> Result<Vec<u8>, DesktopError> {
         self.record("read_characteristic");
         if let Some(detail) = self.take_fault(FaultOp::Read) {
             return Err(DesktopError::read_failed(detail));
         }
-        Ok(vec![0x42])
+        self.gate(FaultOp::Read).await;
+        Ok(self
+            .state
+            .lock()
+            .expect("fake radio state")
+            .values
+            .get(&(
+                peer_id.to_owned(),
+                service_uuid.to_owned(),
+                service_occurrence,
+                characteristic_uuid.to_owned(),
+                characteristic_occurrence,
+            ))
+            .cloned()
+            .unwrap_or_else(|| vec![0x42]))
     }
 
     async fn write_characteristic(
         &self,
         _peer_id: &str,
+        _service_uuid: &str,
+        _service_occurrence: u64,
         _characteristic_uuid: &str,
+        _characteristic_occurrence: u64,
         _value: Vec<u8>,
         _with_response: bool,
     ) -> Result<(), DesktopError> {
@@ -394,8 +560,12 @@ impl RadioBoundary for FakeRadio {
     async fn read_descriptor(
         &self,
         _peer_id: &str,
+        _service_uuid: &str,
+        _service_occurrence: u64,
         _characteristic_uuid: &str,
+        _characteristic_occurrence: u64,
         _descriptor_uuid: &str,
+        _descriptor_occurrence: u64,
     ) -> Result<Vec<u8>, DesktopError> {
         self.record("read_descriptor");
         if let Some(detail) = self.take_fault(FaultOp::Read) {
@@ -407,8 +577,12 @@ impl RadioBoundary for FakeRadio {
     async fn write_descriptor(
         &self,
         _peer_id: &str,
+        _service_uuid: &str,
+        _service_occurrence: u64,
         _characteristic_uuid: &str,
+        _characteristic_occurrence: u64,
         _descriptor_uuid: &str,
+        _descriptor_occurrence: u64,
         _value: Vec<u8>,
     ) -> Result<(), DesktopError> {
         self.record("write_descriptor");
@@ -421,18 +595,40 @@ impl RadioBoundary for FakeRadio {
     async fn set_notifications(
         &self,
         peer_id: &str,
+        service_uuid: &str,
+        service_occurrence: u64,
         characteristic_uuid: &str,
+        characteristic_occurrence: u64,
         enable: bool,
     ) -> Result<(), DesktopError> {
         self.record("set_notifications");
-        if let Some(detail) = self.take_fault(FaultOp::Subscribe) {
+        // Enable and disable faults inject independently: a CCCD-enable
+        // refusal must not mask the disable-failure path under test.
+        let fault = if enable {
+            FaultOp::Subscribe
+        } else {
+            FaultOp::Unsubscribe
+        };
+        if let Some(detail) = self.take_fault(fault) {
             return Err(DesktopError::subscribe_failed(detail));
         }
-        self.state
-            .lock()
-            .expect("fake radio state")
+        self.gate(fault).await;
+        let key = (
+            peer_id.to_owned(),
+            service_uuid.to_owned(),
+            service_occurrence,
+            characteristic_uuid.to_owned(),
+            characteristic_occurrence,
+        );
+        let mut state = self.state.lock().expect("fake radio state");
+        state
             .notifications
             .push((peer_id.to_owned(), characteristic_uuid.to_owned(), enable));
+        if enable {
+            state.live.insert(key);
+        } else {
+            state.live.remove(&key);
+        }
         Ok(())
     }
 
@@ -443,12 +639,21 @@ impl RadioBoundary for FakeRadio {
 
     async fn mtu(&self, peer_id: &str) -> Option<u16> {
         self.record("mtu");
+        if self.take_fault(FaultOp::Mtu).is_some() {
+            return None;
+        }
+        self.gate(FaultOp::Mtu).await;
         self.state
             .lock()
             .expect("fake radio state")
             .mtu
             .get(peer_id)
             .copied()
+    }
+
+    async fn close(&self) {
+        self.record("close");
+        self.state.lock().expect("fake radio state").live.clear();
     }
 }
 
@@ -467,6 +672,44 @@ mod tests {
         assert_eq!(error.code_str(), "scan.start-failed");
         assert_eq!(radio.calls(), vec!["start_scan".to_owned()]);
         assert!(!radio.scan_active(), "failed start leaves scan inactive");
+    }
+
+    #[tokio::test]
+    async fn close_releases_all_live_subscriptions() {
+        let radio = FakeRadio::new();
+        radio
+            .set_notifications("peer-1", "svc", 0, "char", 0, true)
+            .await
+            .expect("enable 0");
+        radio
+            .set_notifications("peer-1", "svc", 0, "char", 1, true)
+            .await
+            .expect("enable 1");
+        assert_eq!(radio.live_subscription_count(), 2, "two live CCCDs");
+        radio.close().await;
+        assert_eq!(
+            radio.live_subscription_count(),
+            0,
+            "teardown releases every live CCCD"
+        );
+        // Disabling one instance leaves the other live.
+        radio
+            .set_notifications("peer-1", "svc", 0, "char", 0, true)
+            .await
+            .expect("re-enable 0");
+        radio
+            .set_notifications("peer-1", "svc", 0, "char", 1, true)
+            .await
+            .expect("re-enable 1");
+        radio
+            .set_notifications("peer-1", "svc", 0, "char", 0, false)
+            .await
+            .expect("disable 0");
+        assert_eq!(
+            radio.live_subscription_count(),
+            1,
+            "per-instance disable releases only its own CCCD"
+        );
     }
 
     #[tokio::test]
