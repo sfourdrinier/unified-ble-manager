@@ -1,0 +1,207 @@
+{
+  "battery": "u9",
+  "avd": "ubm5-emu-u9",
+  "serial": "emulator-5556",
+  "summary": {
+    "tests": 6,
+    "assertionsPassed": 24,
+    "assertionsTotal": 24,
+    "byResult": {
+      "pass": 6
+    }
+  },
+  "records": [
+    {
+      "id": "PRE",
+      "name": "emulator identity",
+      "origin": "REAL-EMULATOR",
+      "result": "pass",
+      "assertions": {
+        "total": 3,
+        "passed": 3
+      },
+      "checks": [
+        {
+          "check": "emulator reachable",
+          "pass": true,
+          "detail": "google/sdk_gphone64_x86_64/emu64xa:14/UE1A.230829.050/12077443:userdebug/dev-keys"
+        },
+        {
+          "check": "example APK installs",
+          "pass": true,
+          "detail": "Success"
+        },
+        {
+          "check": "activity launches (out of stopped state)",
+          "pass": true,
+          "detail": "Starting: Intent { cmp=com.bleplxexample/.MainActivity }"
+        }
+      ]
+    },
+    {
+      "id": "U9-1",
+      "name": "service start persists session-intent flag",
+      "origin": "REAL-EMULATOR",
+      "result": "pass",
+      "assertions": {
+        "total": 4,
+        "passed": 4
+      },
+      "checks": [
+        {
+          "check": "start accepted",
+          "pass": true,
+          "detail": "Starting service: Intent { act=com.sfourdrinier.unifiedblemanager.background.START cmp=com.bleplxexample/com.sfourdrinier.unifiedblemanager.BlePlxForegroundServ"
+        },
+        {
+          "check": "service running",
+          "pass": true,
+          "detail": "dumpsys activity services"
+        },
+        {
+          "check": "flag persisted true",
+          "pass": true,
+          "detail": "flag=true"
+        },
+        {
+          "check": "no app FATAL",
+          "pass": true,
+          "detail": "fatal=0"
+        }
+      ]
+    },
+    {
+      "id": "U9-2",
+      "name": "process death keeps the flag (durable)",
+      "origin": "REAL-EMULATOR",
+      "result": "pass",
+      "assertions": {
+        "total": 3,
+        "passed": 3
+      },
+      "checks": [
+        {
+          "check": "process dead after force-stop",
+          "pass": true,
+          "detail": "pid=(none)"
+        },
+        {
+          "check": "flag still true after death",
+          "pass": true,
+          "detail": "flag=true"
+        },
+        {
+          "check": "relaunch clears stopped state",
+          "pass": true,
+          "detail": "pre-reboot precondition"
+        }
+      ]
+    },
+    {
+      "id": "U9-3",
+      "name": "reboot auto-restarts service iff flag set",
+      "origin": "REAL-EMULATOR",
+      "result": "pass",
+      "assertions": {
+        "total": 4,
+        "passed": 4
+      },
+      "checks": [
+        {
+          "check": "reboot completed",
+          "pass": true,
+          "detail": "waited=0s"
+        },
+        {
+          "check": "service auto-restarted after reboot",
+          "pass": true,
+          "detail": "dumpsys activity services (polled 90s)"
+        },
+        {
+          "check": "flag still true",
+          "pass": true,
+          "detail": "flag=true"
+        },
+        {
+          "check": "no app FATAL across reboot",
+          "pass": true,
+          "detail": "fatal=0"
+        }
+      ]
+    },
+    {
+      "id": "U9-4",
+      "name": "no flag → no restart (fail closed)",
+      "origin": "REAL-EMULATOR",
+      "result": "pass",
+      "assertions": {
+        "total": 5,
+        "passed": 5
+      },
+      "checks": [
+        {
+          "check": "flag cleared",
+          "pass": true,
+          "detail": "flag=absent"
+        },
+        {
+          "check": "relaunch clears stopped state (negative is meaningful)",
+          "pass": true,
+          "detail": "receiver will fire and must refuse"
+        },
+        {
+          "check": "second reboot completed",
+          "pass": true,
+          "detail": "waited=0s"
+        },
+        {
+          "check": "service NOT restarted without flag",
+          "pass": true,
+          "detail": "dumpsys activity services"
+        },
+        {
+          "check": "no app FATAL",
+          "pass": true,
+          "detail": "fatal=0"
+        }
+      ]
+    },
+    {
+      "id": "U9-5",
+      "name": "START_STICKY recreates service after kill (null-intent path)",
+      "origin": "REAL-EMULATOR",
+      "result": "pass",
+      "assertions": {
+        "total": 5,
+        "passed": 5
+      },
+      "checks": [
+        {
+          "check": "service (re)started",
+          "pass": true,
+          "detail": "restartSticky=true"
+        },
+        {
+          "check": "flag true",
+          "pass": true,
+          "detail": "flag=true"
+        },
+        {
+          "check": "service recreated after kill",
+          "pass": true,
+          "detail": "dumpsys activity services (polled 120s)"
+        },
+        {
+          "check": "flag still true",
+          "pass": true,
+          "detail": "flag=true"
+        },
+        {
+          "check": "no app FATAL",
+          "pass": true,
+          "detail": "fatal=0"
+        }
+      ]
+    }
+  ]
+}
