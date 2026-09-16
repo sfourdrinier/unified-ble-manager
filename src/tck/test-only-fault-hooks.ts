@@ -104,7 +104,11 @@ export function isProductionEntryCleanOfTestOnlyFaultExports(
   const forbidden = ['createTestOnlyFaultHooks', 'TCK_TEST_ONLY_MARKER', 'assertTestOnlyFaultContext']
   let entries: readonly object[]
   try {
-    entries = [requireProductionEntry(loader, '../index'), requireProductionEntry(loader, '../backend-sdk'), requireProductionEntry(loader, '../testing')]
+    entries = [
+      requireProductionEntry(loader, '../index'),
+      requireProductionEntry(loader, '../backend-sdk'),
+      requireProductionEntry(loader, '../testing')
+    ]
   } catch {
     return false
   }

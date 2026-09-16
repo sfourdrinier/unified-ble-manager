@@ -27,7 +27,7 @@
       },
       {
         "name": "unified-ble-manager:cargo-lock-sha256",
-        "value": "40a5835d71a9a5686547cdf3ef8929f336b0303aaad141e853d8b3b4b6242f35"
+        "value": "91adb82b45b552e03b8b122d20844aa61c80a7b842a8957d4277958e0c2d407d"
       },
       {
         "name": "unified-ble-manager:rust-dependency-scope",
@@ -2860,6 +2860,28 @@
     },
     {
       "type": "library",
+      "bom-ref": "pkg:cargo/ubm-fake-radio@0.1.0",
+      "name": "ubm-fake-radio",
+      "version": "0.1.0",
+      "licenses": [
+        {
+          "expression": "LicenseRef-UBM-Source-Available-1.0"
+        }
+      ],
+      "purl": "pkg:cargo/ubm-fake-radio@0.1.0",
+      "properties": [
+        {
+          "name": "unified-ble-manager:license-source",
+          "value": "cargo-manifest-license-file"
+        },
+        {
+          "name": "unified-ble-manager:license-file",
+          "value": "LICENSE-UBM-SOURCE-AVAILABLE-1.0.md"
+        }
+      ]
+    },
+    {
+      "type": "library",
       "bom-ref": "pkg:cargo/ubm5_jni_echo@0.1.0",
       "name": "ubm5_jni_echo",
       "version": "0.1.0",
@@ -4631,10 +4653,17 @@
       ]
     },
     {
+      "ref": "pkg:cargo/ubm-fake-radio@0.1.0",
+      "dependsOn": [
+        "pkg:cargo/ubm-core@0.1.0"
+      ]
+    },
+    {
       "ref": "pkg:cargo/ubm5_jni_echo@0.1.0",
       "dependsOn": [
         "pkg:cargo/jni@0.22.4",
-        "pkg:cargo/ubm-core@0.1.0"
+        "pkg:cargo/ubm-core@0.1.0",
+        "pkg:cargo/ubm-fake-radio@0.1.0"
       ]
     },
     {
@@ -4643,20 +4672,23 @@
         "pkg:cargo/napi-build@2.4.2",
         "pkg:cargo/napi-derive@2.16.13",
         "pkg:cargo/napi@2.16.17",
-        "pkg:cargo/ubm-core@0.1.0"
+        "pkg:cargo/ubm-core@0.1.0",
+        "pkg:cargo/ubm-fake-radio@0.1.0"
       ]
     },
     {
       "ref": "pkg:cargo/ubm5_uniffi_echo@0.1.0",
       "dependsOn": [
         "pkg:cargo/ubm-core@0.1.0",
+        "pkg:cargo/ubm-fake-radio@0.1.0",
         "pkg:cargo/uniffi@0.32.1"
       ]
     },
     {
       "ref": "pkg:cargo/ubm5_wasm_echo@0.1.0",
       "dependsOn": [
-        "pkg:cargo/ubm-core@0.1.0"
+        "pkg:cargo/ubm-core@0.1.0",
+        "pkg:cargo/ubm-fake-radio@0.1.0"
       ]
     },
     {

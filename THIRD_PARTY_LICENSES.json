@@ -11,7 +11,7 @@
     "lockfile": "pnpm-lock.yaml",
     "lockfileSha256": "fea8b9fea3dca31d966c33e5942c5fb0f179c492a8462f90482d0c5dc1bd86d2",
     "cargoLockfile": "Cargo.lock",
-    "cargoLockfileSha256": "40a5835d71a9a5686547cdf3ef8929f336b0303aaad141e853d8b3b4b6242f35"
+    "cargoLockfileSha256": "91adb82b45b552e03b8b122d20844aa61c80a7b842a8957d4277958e0c2d407d"
   },
   "reviewedOverrides": [
     {
@@ -1308,6 +1308,16 @@
         "fileName": "LICENSE-UBM-SOURCE-AVAILABLE-1.0.md"
       },
       "purl": "pkg:cargo/ubm-desktop@0.1.0"
+    },
+    {
+      "name": "ubm-fake-radio",
+      "version": "0.1.0",
+      "license": "LicenseRef-UBM-Source-Available-1.0",
+      "licenseSource": "cargo-manifest-license-file",
+      "evidence": {
+        "fileName": "LICENSE-UBM-SOURCE-AVAILABLE-1.0.md"
+      },
+      "purl": "pkg:cargo/ubm-fake-radio@0.1.0"
     },
     {
       "name": "ubm5_jni_echo",
