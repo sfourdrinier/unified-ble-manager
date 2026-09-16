@@ -147,24 +147,44 @@ class GattCentralBridgeTest {
     assertEquals(listOf("release"), queued.toList())
     assertEquals(1, drains)
     assertEquals("release", observations.single().event)
-    // Worker stays stopped after destroy: later posts enqueue but schedule
-    // nothing (no second drain).
-    bridge.postEvent(GattCentralWire.expireSweep(2000))
+    // Worker stays stopped after destroy: later posts are refused outright
+    // (never enqueued, no second drain, no misleading success).
+    val refused = bridge.postEvent(GattCentralWire.expireSweep(2000))
+    assertTrue(refused is UbmGattCentralBridge.PostResult.Shutdown)
+    assertEquals(listOf("release"), queued.toList())
     assertEquals(1, drains)
   }
 
   @Test
-  fun releaseOnDestroyWithoutPermissionReportsIdentity() {
+  fun releaseOnDestroyProceedsWithoutPermission() {
+    val queued = ArrayDeque<String>()
     val bridge = UbmGattCentralBridge(
-      enqueue = { 1 },
-      drain = { "" },
+      enqueue = { wire -> queued.add(wire); queued.size },
+      drain = { "{\"ok\":true,\"event\":\"release\",\"state\":\"released\"}" },
       hasBlePermissions = { false },
       worker = direct
     )
+    // Teardown is not a radio op: a missing permission must not skip it.
     val observations = bridge.releaseOnDestroy()
-    assertEquals(1, observations.size)
-    assertFalse(observations[0].ok)
-    assertEquals("permission.denied", observations[0].code)
+    assertEquals(listOf("release"), queued.toList())
+    assertEquals("released", observations.single().let {
+      assertTrue(it.ok); it.raw.substringAfter("\"state\":\"").substringBefore("\"")
+    })
+  }
+
+  @Test
+  fun shutdownIsIdempotentAndRefusesPosts() {
+    var drains = 0
+    val bridge = UbmGattCentralBridge(
+      enqueue = { 1 },
+      drain = { drains++; "" },
+      hasBlePermissions = { true },
+      worker = direct
+    )
+    bridge.shutdown()
+    bridge.shutdown()
+    assertTrue(bridge.postEvent(GattCentralWire.release()) is UbmGattCentralBridge.PostResult.Shutdown)
+    assertEquals(0, drains)
   }
 
   @Test
@@ -182,5 +202,49 @@ class GattCentralBridgeTest {
     assertEquals("gatt", parsed[1].domain)
     assertEquals("empty drain parses to no observations", 0,
       GattCentralWire.parseObservations("").size)
+  }
+
+  @Test
+  fun parseObservationsDropsBlankLinesAndDecodesEscapes() {
+    val parsed = GattCentralWire.parseObservations(
+      "{\"ok\":true,\"event\":\"x\",\"detail\":\"a\\nB\\u0041\"}\n" +
+        "{\"ok\":false,\"event\":\"y\",\"code\":\"c\"}\n" +
+        "\n"
+    )
+    assertEquals("trailing/blank lines must not phantom", 2, parsed.size)
+    assertTrue(parsed[0].ok)
+    assertEquals("a\nBA", parsed[0].detail)
+    assertFalse(parsed[1].ok)
+  }
+
+  @Test
+  fun parseVerdictIsAnchoredNotSubstring() {
+    val parsed = GattCentralWire.parseObservations(
+      "{\"ok\":false,\"event\":\"z\",\"detail\":\"saw {\\\"ok\\\":true} inside\"}"
+    )
+    assertEquals(1, parsed.size)
+    assertFalse("embedded ok:true must not flip the verdict", parsed[0].ok)
+  }
+
+  @Test
+  fun wireBuildersRejectCommaAndNegativesFailFast() {
+    try {
+      GattCentralWire.scanStart("o", 1, 1, listOf("180d,180f"), "all", "none")
+      fail("comma in serviceUuid must reject")
+    } catch (expected: IllegalArgumentException) {
+      assertTrue(expected.message!!.contains("must not contain ','"))
+    }
+    try {
+      GattCentralWire.pathRegister("p", "180d", 0, "2a37", -1, null, null, 11, "l")
+      fail("negative occurrence must reject")
+    } catch (expected: IllegalArgumentException) {
+      assertTrue(expected.message!!.contains("non-negative"))
+    }
+    try {
+      GattCentralWire.writeStart(0, "m", 4, -5, true, 5000, 1000)
+      fail("negative maximum must reject")
+    } catch (expected: IllegalArgumentException) {
+      assertTrue(expected.message!!.contains("non-negative"))
+    }
   }
 }

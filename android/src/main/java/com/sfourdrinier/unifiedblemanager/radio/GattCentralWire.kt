@@ -49,6 +49,9 @@ object GattCentralWire {
   private fun opt(value: String?, field: String): String =
     if (value.isNullOrEmpty() || value == "-") "-" else arg(value, field)
 
+  private fun optU64(value: Long?, field: String): String =
+    if (value == null) "-" else u64(value, field)
+
   /** Encodes bytes as lowercase hex for [notifyDeliver]. */
   fun hexOf(bytes: ByteArray): String {
     val chars = CharArray(bytes.size * 2)
@@ -73,7 +76,10 @@ object GattCentralWire {
     arg(owner, "owner"),
     u64(timeoutMs, "timeoutMs"),
     u64(nowMs, "nowMs"),
-    serviceUuids.joinToString(",") { arg(it, "serviceUuid") },
+    serviceUuids.joinToString(",") {
+      require(!it.contains(',')) { "GATT wire field serviceUuid must not contain ','" }
+      arg(it, "serviceUuid")
+    },
     arg(duplicatePolicy, "duplicatePolicy"),
     arg(mergePolicy, "mergePolicy")
   ).joinToString("|")
@@ -136,9 +142,9 @@ object GattCentralWire {
       arg(serviceUuid, "serviceUuid"),
       u64(serviceOccurrence, "serviceOccurrence"),
       opt(characteristicUuid, "characteristicUuid"),
-      characteristicOccurrence?.toString() ?: "-",
+      optU64(characteristicOccurrence, "characteristicOccurrence"),
       opt(descriptorUuid, "descriptorUuid"),
-      descriptorOccurrence?.toString() ?: "-",
+      optU64(descriptorOccurrence, "descriptorOccurrence"),
       properties.toString(),
       arg(lease, "lease")
     ).joinToString("|")
@@ -161,7 +167,7 @@ object GattCentralWire {
     u64(pathIndex, "pathIndex"),
     arg(mode, "mode"),
     u64(valueLength, "valueLength"),
-    maximum?.toString() ?: "-",
+    optU64(maximum, "maximum"),
     modeSupported.toString(),
     u64(timeoutMs, "timeoutMs"),
     u64(nowMs, "nowMs")
@@ -241,7 +247,9 @@ object GattCentralWire {
    */
   fun parseObservations(drained: String): List<GattObservation> {
     if (drained.isEmpty()) return emptyList()
-    return drained.split('\n').map { parseOne(it) }
+    // Blank lines (e.g. a trailing newline) are never observations; dropping
+    // them beats a phantom ok=false record.
+    return drained.split('\n').filter { it.isNotBlank() }.map { parseOne(it) }
   }
 
   private fun parseOne(line: String): GattObservation {
@@ -250,13 +258,32 @@ object GattCentralWire {
       val start = line.indexOf(key)
       if (start < 0) return null
       val from = start + key.length
-      // Values escape '"' and '\'; unescape minimally for identity fields.
+      // Full JSON string unescape (Rust's json_escape_into emits \" \\ \n
+      // \r \t plus \uXXXX): identity fields round-trip exactly.
       val out = StringBuilder()
       var i = from
       while (i < line.length) {
         val c = line[i]
         if (c == '\\' && i + 1 < line.length) {
-          out.append(line[i + 1])
+          when (val e = line[i + 1]) {
+            'n' -> out.append('\n')
+            'r' -> out.append('\r')
+            't' -> out.append('\t')
+            'b' -> out.append('\b')
+            'f' -> out.append('\u000C')
+            '/' -> out.append('/')
+            'u' -> {
+              val hex = line.substring(i + 2, minOf(i + 6, line.length))
+              val code = hex.toIntOrNull(16)
+              if (hex.length == 4 && code != null) {
+                out.append(code.toChar())
+                i += 6
+                continue
+              }
+              out.append(e)
+            }
+            else -> out.append(e)
+          }
           i += 2
           continue
         }
@@ -266,7 +293,9 @@ object GattCentralWire {
       }
       return out.toString()
     }
-    val ok = line.contains("\"ok\":true")
+    // Anchored: a `"ok":true` substring inside a string field must not flip
+    // the verdict. Rust emits {"ok":true,...} / {"ok":false,...} exactly.
+    val ok = line.startsWith("{\"ok\":true") && (line.length == 10 || line[10] == ',' || line[10] == '}')
     return GattObservation(
       ok = ok,
       event = field("event") ?: "",
