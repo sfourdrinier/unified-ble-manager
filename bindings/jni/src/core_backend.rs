@@ -15,8 +15,11 @@
 //! transitions through it. BLE transitions beyond the driven slice reject
 //! loudly with contract identities; nothing unimplemented passes silently.
 
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+
+use crate::gatt_queue::GattQueue;
 
 use ubm_core::central::{Central, CentralConfig};
 use ubm_core::contracts::{
@@ -157,7 +160,7 @@ pub fn echo_bytes_chunked(
 /// Effect-batch capacity for driven kernel transitions (same bound as the
 /// sibling bindings; the U7 slice admits no operations, so sweeps and
 /// destroy stage nothing yet, but the bound still holds).
-const DRIVE_EFFECT_CAP: usize = 64;
+pub(crate) const DRIVE_EFFECT_CAP: usize = 64;
 
 /// Construction of the session-owned transition core failed: the binding
 /// cannot establish its core invariant.
@@ -192,7 +195,7 @@ fn construct_central(operation: &'static str) -> Result<Central, EchoError> {
 /// Maps a core rejection to the binding wire form. The frozen contract
 /// identity (code + domain) is preserved verbatim; the operation names the
 /// binding call under test and the detail names the rejector.
-fn central_error(core: CoreError, operation: &'static str) -> EchoError {
+pub(crate) fn central_error(core: CoreError, operation: &'static str) -> EchoError {
     EchoError::new(
         core.code().as_str(),
         core.domain().as_str(),
@@ -230,6 +233,8 @@ pub struct CoreSession {
     cancel: Arc<CancelFlag>,
     central: Central,
     staged: StagedDriver,
+    pub(crate) gatt_queue: GattQueue,
+    pub(crate) gatt_resets: u64,
 }
 
 impl CoreSession {
@@ -244,6 +249,8 @@ impl CoreSession {
                 cancel: Arc::new(CancelFlag::default()),
                 central: construct_central("echo-session.open")?,
                 staged: StagedDriver::open().map_err(|_| construct_failed("echo-session.open"))?,
+                gatt_queue: VecDeque::new(),
+                gatt_resets: 0,
             }),
             Err(_) => Err(EchoError::new(
                 "protocol.incompatible",
@@ -254,7 +261,7 @@ impl CoreSession {
         }
     }
 
-    fn check_usable(&self, operation: &'static str) -> Result<(), EchoError> {
+    pub(crate) fn check_usable(&self, operation: &'static str) -> Result<(), EchoError> {
         if self.destroyed {
             return Err(EchoError::new(
                 "lifecycle.destroyed",
@@ -264,6 +271,25 @@ impl CoreSession {
             ));
         }
         Ok(())
+    }
+
+    pub(crate) fn central_mut(&mut self) -> &mut Central {
+        &mut self.central
+    }
+
+    /// Recycles the per-line staging after a driven GATT line: takes the
+    /// staged kernel effects out of the batch (intentionally not surfaced
+    /// yet — executor follow-up; the per-line JSON observation already
+    /// carries what the host needs) and drains the retained typed-effect
+    /// ledger, so both bounded caps recycle across long drains.
+    pub(crate) fn count_effects(&mut self, batch: &mut EffectBatch) {
+        let _ = batch.drain();
+        let _ = self.central.drain_typed_effects();
+    }
+
+    pub(crate) fn drained_effects(&mut self, batch: &mut EffectBatch) {
+        let _ = batch.drain();
+        let _ = self.central.drain_typed_effects();
     }
 
     pub fn cancel_inflight(&self) {

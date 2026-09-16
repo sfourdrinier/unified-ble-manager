@@ -125,11 +125,48 @@ through real JNI. Contract `C-UBM.0.1.2-DRAFT`, single-owned by `ubm-core`
   this version); `unsafe` is confined to `extern "system"` entry signatures
   as the API requires. No raw-pointer code of our own.
 
+## HOST-ANDROID GATT bridge (U5/U9/U10 slice)
+
+- `src/gatt_queue.rs` + `com.ubm.gatt.GattBridge`: Android binder threads
+  (GATT/scan callbacks) never drive the core or wait on radio I/O (enqueue
+  takes the session mutex, which a worker drain holds for its run, so "never
+  block" would overclaim — no I/O waits, only a short in-memory critical
+  section). `nativeEnqueueGattEvent` only validates (`argument.invalid` on
+  empty/oversize lines, `bytes.too-large` past the wire ceiling,
+  `stream.quota` past 1024 queued lines) and stores; a worker thread applies
+  the queue FIFO with `nativeDrainGattEvents` against the REAL
+  session-owned `Central` (scan/discover/connect/IO/notify/service-change +
+  `expire-sweep`, `adapter.reset`, `release`), returning one JSON observation
+  object per line. Step-level core rejections are DATA (`ok:false` with the
+  frozen contract `code` + `domain`); only the session lifetime throws
+  (`lifecycle.destroyed` on unknown/closed handles, including post-close
+  enqueue/drain/depth). Known kinds enforce exact positional arity
+  (short/over-long lines reject `argument.invalid` as DATA before any core
+  transition); unknown kinds fail closed `capability.unsupported|capability`,
+  never silently or faked.
+- `release` drives the REAL destroy transition (idempotent
+  `released`/`release-failed`); like `nativeDestroy` it shuts the kernel
+  down, so post-release admission verbs (scan/connect/IO start) fail
+  `lifecycle.destroyed` as data. Non-admit verbs differ: `peer.resolve`
+  still succeeds, and `adapter.reset` replaces the kernel outright (reviving
+  admission while the destroy record stays cached). Native session teardown
+  is `nativeClose` (handle invalidation + cancel arming); the Kotlin owner
+  calls `release` first, then closes.
+- Proven by `cargo test -p ubm5_jni_echo` (GATT queue unit vectors) and the
+  `com.ubm.gatt.TestGatt` JVM exchange (44 checks) in
+  `run_jni_roundtrip.sh`, plus the 5.0-artifact emulator battery
+  (`emulator-probe/five0/`).
+- Peer domains are the frozen vocabulary (`public-address`,
+  `static-random-address`, ...): Android real-world addresses map to
+  `static-random-address`; the harness uses `public-address`.
+
 ## Limitations (explicit, not passes)
 
-- Tested on desktop OpenJDK 21 x86_64 only. Android ART behaviour, ABI
-  splits, and the Wear OS direct-call path are unproven (FFI-NATIVE
-  follow-up on real Android tooling); nothing here implies ART acceptance.
+- Tested on desktop OpenJDK 21 x86_64 (JVM exchange) plus the 5.0-artifact
+  emulator battery (`emulator-probe/five0/`, x86_64 AVD, virtual BT adapter
+  only — no BLE peers exist there). ART behaviour beyond that battery, other
+  ABI splits (arm64-v8a/armeabi-v7a — no physical devices on this lane), and
+  the Wear OS direct-call path remain unproven; nothing here implies them.
 - The test-only `nativePanicProbe` was deleted by the wiring slice.
 - `ubm-core` wiring is DONE (see above): the surface calls the core ONLY
   through the `CoreBackend` seam; deeper kernel-transition wiring later

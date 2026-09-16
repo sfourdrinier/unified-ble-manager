@@ -23,6 +23,7 @@
 //! loud-rejection path for unwired BLE transitions. See `core_backend`.
 
 mod core_backend;
+mod gatt_queue;
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -30,6 +31,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use core_backend::{
     echo_bytes_chunked, CoreBackend, CoreSession, EchoError, StagedError, CONTRACT_REVISION,
 };
+use gatt_queue::enqueue_event;
 use jni::errors::{Error as JniError, ErrorPolicy};
 use jni::objects::{JByteArray, JClass, JString, Reference as _};
 use jni::strings::JNIString;
@@ -532,6 +534,81 @@ pub extern "system" fn Java_com_ubm_echo_EchoBridge_nativeStagedCounters<'caller
             publish_string(env, out, OP)
         })
         .resolve_with::<ThrowEchoAndDefault, _>(|| "staged-counters")
+}
+
+/// Enqueues one HOST-ANDROID GATT wire line (`kind|arg|...`, see
+/// `gatt_queue`) for later application to the REAL session central.
+/// Binder threads call this and return: it only validates and stores, never
+/// drives the core. Returns the queue depth. Unknown/closed handles and
+/// invalid lines fail `EchoException` loudly, never silently.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_ubm_gatt_GattBridge_nativeEnqueueGattEvent<'caller>(
+    mut unowned_env: EnvUnowned<'caller>,
+    _class: JClass<'caller>,
+    handle: jlong,
+    wire: JString<'caller>,
+) -> jint {
+    unowned_env
+        .with_env(|env| -> BridgeResult<jint> {
+            const OP: &str = "gatt-enqueue";
+            let session = lookup_session(handle, OP)?;
+            let text = read_string(env, &wire, OP)?;
+            let depth = {
+                let mut core = lock_session(&session, OP)?;
+                core.check_usable(OP).map_err(BridgeError::echo)?;
+                enqueue_event(&mut core.gatt_queue, &text).map_err(BridgeError::echo)?
+            };
+            Ok(depth as jint)
+        })
+        .resolve_with::<ThrowEchoAndDefault, _>(|| "gatt-enqueue")
+}
+
+/// Applies every queued GATT line FIFO to the REAL session central (worker
+/// thread, never a binder thread) and returns newline-joined JSON
+/// observations, one per line. Step-level core rejections are data
+/// (`{"ok":false,...}`); only the session lifetime throws
+/// (`lifecycle.destroyed`). Unknown/closed handles throw
+/// `lifecycle.destroyed`.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_ubm_gatt_GattBridge_nativeDrainGattEvents<'caller>(
+    mut unowned_env: EnvUnowned<'caller>,
+    _class: JClass<'caller>,
+    handle: jlong,
+) -> jstring {
+    unowned_env
+        .with_env(|env| -> BridgeResult<jstring> {
+            const OP: &str = "gatt-drain";
+            let session = lookup_session(handle, OP)?;
+            let out = {
+                let mut core = lock_session(&session, OP)?;
+                core.drain_gatt_events(OP).map_err(BridgeError::echo)?
+            };
+            publish_string(env, out, OP)
+        })
+        .resolve_with::<ThrowEchoAndDefault, _>(|| "gatt-drain")
+}
+
+/// Observes the queued (not yet applied) GATT line count. Unknown/closed
+/// handles fail `lifecycle.destroyed`.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_ubm_gatt_GattBridge_nativeGattQueueDepth<'caller>(
+    mut unowned_env: EnvUnowned<'caller>,
+    _class: JClass<'caller>,
+    handle: jlong,
+) -> jint {
+    unowned_env
+        .with_env(|env| -> BridgeResult<jint> {
+            const OP: &str = "gatt-queue-depth";
+            let _ = env;
+            let session = lookup_session(handle, OP)?;
+            let depth = {
+                let core = lock_session(&session, OP)?;
+                core.check_usable(OP).map_err(BridgeError::echo)?;
+                core.gatt_queue.len()
+            };
+            Ok(depth as jint)
+        })
+        .resolve_with::<ThrowEchoAndDefault, _>(|| "gatt-queue-depth")
 }
 
 /// Arms session cancellation. The next chunked unit reports
