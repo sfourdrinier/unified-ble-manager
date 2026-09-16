@@ -94,9 +94,9 @@ export function createTestOnlyFaultHooks<
 
 /**
  * Proves no reference/fault exports entered the production package entries.
- * The production root (src/index.ts) and backend-sdk entry must not expose
- * test-only fault construction. Fails closed: any loader failure, or any
- * entry that is not an inspectable object, reports "not clean".
+ * The production root (src/index.ts), backend-sdk entry, and testing entry
+ * must not expose test-only fault construction. Fails closed: any loader
+ * failure, or any entry that is not an inspectable object, reports "not clean".
  */
 export function isProductionEntryCleanOfTestOnlyFaultExports(
   loader: (specifier: string) => unknown = require
@@ -104,7 +104,7 @@ export function isProductionEntryCleanOfTestOnlyFaultExports(
   const forbidden = ['createTestOnlyFaultHooks', 'TCK_TEST_ONLY_MARKER', 'assertTestOnlyFaultContext']
   let entries: readonly object[]
   try {
-    entries = [requireProductionEntry(loader, '../index'), requireProductionEntry(loader, '../backend-sdk')]
+    entries = [requireProductionEntry(loader, '../index'), requireProductionEntry(loader, '../backend-sdk'), requireProductionEntry(loader, '../testing')]
   } catch {
     return false
   }
