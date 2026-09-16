@@ -1224,6 +1224,23 @@ pub enum CompletionOutcome {
     ContenderIgnored,
 }
 
+/// Progress of one incremental destroy step (F15).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DestroyProgress {
+    /// Queued ops settled as destroyed by this step.
+    pub settled_queued: usize,
+    /// True when the batch filled before all queued work settled; the host
+    /// drains the batch and calls again.
+    pub truncated: bool,
+    /// Live (queued or dispatched) ops still owned.
+    pub live_operations: usize,
+    /// Terminal ops awaiting host `report_release_*`.
+    pub terminal_pending_release: usize,
+    /// True when no live work, no terminal pending, and no truncation: the
+    /// host may take the final record via `destroy_record`.
+    pub done: bool,
+}
+
 /// Path selector. Occurrence selects among duplicate UUIDs; a selector that
 /// omits an occurrence while several candidates share the UUIDs fails with
 /// `gatt.ambiguous-path` instead of guessing (GATT-01).
@@ -1910,6 +1927,39 @@ impl Central {
     #[must_use]
     pub fn operation_state(&self, id: &OperationId) -> Option<OpStateView> {
         self.kernel.operation_state(id)
+    }
+
+    /// Terminal operation ids awaiting host release (F02). The host reports
+    /// the actual cleanup outcome per id via `report_release_success` or
+    /// `report_release_failure`; this accessor never mutates.
+    #[must_use]
+    pub fn terminal_operation_ids(&self) -> Vec<OperationId> {
+        self.op_ids
+            .iter()
+            .filter(|id| {
+                matches!(
+                    self.kernel.operation_state(id),
+                    Some(OpStateView::Terminal(_))
+                )
+            })
+            .cloned()
+            .collect()
+    }
+
+    /// Live (queued or dispatched) operation ids (F03 testability): hosts use
+    /// this to locate an in-flight op for cancellation races without guessing.
+    #[must_use]
+    pub fn live_operation_ids(&self) -> Vec<OperationId> {
+        self.op_ids
+            .iter()
+            .filter(|id| {
+                matches!(
+                    self.kernel.operation_state(id),
+                    Some(OpStateView::Queued) | Some(OpStateView::Dispatched)
+                )
+            })
+            .cloned()
+            .collect()
     }
 
     /// Late callbacks suppressed for one operation, if present.
@@ -4539,10 +4589,102 @@ impl Central {
         })
     }
 
+    /// One incremental destroy step (F15): settle some queued work as
+    /// destroyed and request release for dispatched work, staging effects
+    /// into `out` (bounded by the batch and `max_effects_per_call`). The host
+    /// executes `out` outside the core lock — settling dispatched work via
+    /// `settle_op(Destroy)` when needed and acknowledging every terminal via
+    /// `report_release_success/failure` — drains `out`, and calls again until
+    /// `progress.done`. Effects are never dropped on the floor: a truncated
+    /// step reports progress and the host resumes with a drained batch.
+    pub fn destroy_step(&mut self, out: &mut EffectBatch) -> Result<DestroyProgress, CoreError> {
+        if self.destroy_record.is_some() {
+            // Already finalized: no further effects, done when nothing pends.
+            let live = self.live_operation_ids().len();
+            let terminal = self.terminal_operation_ids().len();
+            return Ok(DestroyProgress {
+                settled_queued: 0,
+                truncated: false,
+                live_operations: live,
+                terminal_pending_release: terminal,
+                done: live == 0 && terminal == 0,
+            });
+        }
+        let (settled_queued, truncated) = match self.kernel.handle(KernelInput::Shutdown, 0, out)? {
+            HandleOutcome::ShutDown {
+                settled_queued,
+                truncated,
+                ..
+            } => (settled_queued, truncated),
+            _ => {
+                return Err(err(
+                    BleErrorCode::LifecycleInvalidState,
+                    BleErrorDomain::Core,
+                    "central.destroy.unexpected",
+                ));
+            }
+        };
+        let live = self.live_operation_ids().len();
+        let terminal = self.terminal_operation_ids().len();
+        Ok(DestroyProgress {
+            settled_queued,
+            truncated,
+            live_operations: live,
+            terminal_pending_release: terminal,
+            done: !truncated && live == 0 && terminal == 0,
+        })
+    }
+
+    /// Final authoritative cleanup record, available only after incremental
+    /// destruction completes (no live work and no terminal pending release).
+    /// Returns `lifecycle.invalid-state` while work pends; caches and returns
+    /// the same record on repeat calls. `Released` only when disconnect
+    /// failures and retained release failures are all absent; otherwise
+    /// `ReleaseFailed` with every failure preserved.
+    pub fn destroy_record(&mut self) -> Result<CleanupRecord, CoreError> {
+        if let Some(record) = self.destroy_record.clone() {
+            return Ok(record);
+        }
+        if !self.live_operation_ids().is_empty() || !self.terminal_operation_ids().is_empty() {
+            return Err(err(
+                BleErrorCode::LifecycleInvalidState,
+                BleErrorDomain::Core,
+                "central.destroy.pending",
+            ));
+        }
+        let mut failures: Vec<CleanupFailure> = Vec::new();
+        for retained in self.disconnect_failures.iter() {
+            for failure in retained.failures().iter() {
+                failures.push(failure.clone());
+            }
+        }
+        for retained in self.kernel.drain_cleanup(usize::MAX) {
+            if retained.state() == CleanupState::ReleaseFailed {
+                for failure in retained.failures().iter() {
+                    failures.push(failure.clone());
+                }
+            }
+        }
+        let state = if failures.is_empty() {
+            CleanupState::Released
+        } else {
+            CleanupState::ReleaseFailed
+        };
+        let record = CleanupRecord::new(None, state, failures)?;
+        self.destroy_record = Some(record.clone());
+        Ok(record)
+    }
+
     /// Destroy (OPS-04/CLN-05): admission stops, queued work settles as
     /// destroyed with bounded termination, and one authoritative record is
     /// returned. A second destroy returns the same record; retained
     /// disconnect failures are reported, never bypassed.
+    ///
+    /// Legacy convenience for hosts that cannot drive incremental steps
+    /// (e.g. process teardown with no live radio work): loops with a drained
+    /// batch so a filled batch recycles instead of truncating forever (F15).
+    /// Hosts with live dispatched work should prefer `destroy_step` plus
+    /// explicit per-op acknowledgements and `destroy_record`.
     pub fn destroy(&mut self, out: &mut EffectBatch) -> Result<CleanupRecord, CoreError> {
         if let Some(record) = self.destroy_record.clone() {
             return Ok(record);
@@ -4563,6 +4705,10 @@ impl Central {
                     ));
                 }
             }
+            // F15: recycle the batch so the next pass has room. The caller
+            // observes only the final pass's effects; incremental hosts use
+            // `destroy_step` to execute every batch.
+            let _ = out.drain();
             if budget == 0 {
                 return Err(err(
                     BleErrorCode::StreamQuota,
@@ -7458,6 +7604,166 @@ mod tests {
         check(
             central.consumer_state(path, "app-a") == Some(ConsumerState::Enabling),
             "resubscribe works after cycles",
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn f15_destroy_progresses_with_small_batches() -> Result<(), CoreError> {
+        use crate::contracts::ContenderKind;
+        use crate::ownership::EffectBatch;
+
+        let config = CentralConfig::new(16, 16, 128, 32, 64, 256, KernelConfig::default())?;
+        let mut central = Central::new(fixture_attachment()?, Generation::new("g1")?, config)?;
+        let mut out = batch();
+        let (_peer, path) = live_characteristic(&mut central, &mut out)?;
+        // Release the setup connect op so the destroy workload is exactly the
+        // 33 subscribes below (plus none leftover).
+        for id in central.terminal_operation_ids() {
+            central.report_release_success(&id)?;
+        }
+        let _ = central.drain_typed_effects();
+        let _ = out.drain();
+        // 33 queued subscribes across distinct owners (consumers), 5 of them
+        // dispatched to cover both queued and dispatched destroy paths.
+        let mut ops = Vec::new();
+        for i in 0..33u64 {
+            let consumer = format!("consumer-{i}");
+            let op =
+                central.subscribe(path, "error", 4, 512, &consumer, 5000, 2000 + i, &mut out)?;
+            let _ = out.drain();
+            let _ = central.drain_typed_effects();
+            if i < 5 {
+                central.dispatch_op(&op, &mut out)?;
+                let _ = out.drain();
+            }
+            ops.push(op);
+        }
+        check(
+            central.live_operation_ids().len() == 33,
+            "33 live ops before destroy",
+        );
+        // Incremental destruction with a small 16-effect batch: 8 queued
+        // settlements per pass, so several passes are required. The host
+        // executes each batch outside the lock (here: drain), settles
+        // dispatched work as destroyed, and acks every terminal — one failure
+        // among successes so the test never blind-acks.
+        let mut destroy_out = EffectBatch::new(16);
+        let mut steps = 0usize;
+        let mut released = 0usize;
+        let mut failed_one = false;
+        loop {
+            let progress = central.destroy_step(&mut destroy_out)?;
+            steps += 1;
+            // Execute effects outside the lock: drain the batch (the test
+            // boundary has no OS work for these logical ops).
+            let _effects = destroy_out.drain();
+            // Settle dispatched remainders as destroyed before acking.
+            for id in central.live_operation_ids() {
+                if central.operation_state(&id) == Some(OpStateView::Dispatched) {
+                    let mut settle_out = EffectBatch::new(64);
+                    central.settle_op(
+                        &id,
+                        ContenderKind::Destroy,
+                        true,
+                        0,
+                        5000,
+                        &mut settle_out,
+                    )?;
+                    let _ = settle_out.drain();
+                }
+            }
+            // Ack every terminal: exactly one failure, rest success.
+            for id in central.terminal_operation_ids() {
+                if !failed_one {
+                    central.report_release_failure(&id, BleErrorCode::PlatformFailure)?;
+                    failed_one = true;
+                } else {
+                    central.report_release_success(&id)?;
+                }
+                released += 1;
+            }
+            let _ = central.drain_typed_effects();
+            if progress.done {
+                break;
+            }
+            check(steps < 20, "finite progress, no infinite truncation");
+            check(
+                progress.truncated
+                    || progress.terminal_pending_release > 0
+                    || progress.live_operations > 0,
+                "progress reports pending work",
+            );
+        }
+        check(steps > 1, "small batch requires more than one pass");
+        check(released == 33, "all 33 releases acked exactly once");
+        check(central.live_operation_count() == 0, "no live ops remain");
+        let record = central.destroy_record()?;
+        check(
+            record.state() == CleanupState::ReleaseFailed,
+            "one failed release preserves ReleaseFailed",
+        );
+        check(
+            record.failures().len() == 1,
+            "exactly one failure preserved",
+        );
+        // Legacy `destroy` with a small batch also progresses (drained loop),
+        // never `central.destroy.truncated`.
+        let mut central2 = fixture_central()?;
+        let mut out2 = batch();
+        let (_peer2, _path2) = live_characteristic(&mut central2, &mut out2)?;
+        let mut small = EffectBatch::new(8);
+        let _record2 = central2.destroy(&mut small)?;
+        Ok(())
+    }
+
+    #[test]
+    fn f25_invalid_contender_cannot_settle_live_work() -> Result<(), CoreError> {
+        let mut central = fixture_central()?;
+        let mut out = batch();
+        let (_peer, path) = live_characteristic(&mut central, &mut out)?;
+        let first = central.start_read(path, 5000, 2000, &mut out)?;
+        central.dispatch_op(&first, &mut out)?;
+        let second = central.start_read(path, 5000, 2001, &mut out)?;
+        central.dispatch_op(&second, &mut out)?;
+        let outcome =
+            central.settle_op(&first, ContenderKind::Failure, false, 0, 2002, &mut out)?;
+        check(
+            outcome == CompletionOutcome::ContenderIgnored,
+            "invalid contender ignored",
+        );
+        check(
+            matches!(
+                central.operation_state(&first),
+                Some(OpStateView::Dispatched)
+            ),
+            "live op stays dispatched after invalid contender",
+        );
+        check(
+            matches!(
+                central.operation_state(&second),
+                Some(OpStateView::Dispatched)
+            ),
+            "unrelated live work untouched",
+        );
+        let outcome = central.settle_op(&first, ContenderKind::Failure, true, 1, 2003, &mut out)?;
+        check(
+            matches!(
+                outcome,
+                CompletionOutcome::Settled {
+                    kind: OperationTerminalKind::Failed,
+                    ..
+                }
+            ),
+            "genuine valid failure settles",
+        );
+        central.report_release_success(&first)?;
+        check(
+            matches!(
+                central.operation_state(&second),
+                Some(OpStateView::Dispatched)
+            ),
+            "second op still live after first settles",
         );
         Ok(())
     }

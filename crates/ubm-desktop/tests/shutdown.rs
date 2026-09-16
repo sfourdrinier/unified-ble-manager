@@ -1,9 +1,10 @@
-//! Explicit-shutdown receipt for the desktop central (HOST-DESKTOP).
+//! Per-central shutdown receipt for the desktop central (HOST-DESKTOP).
 //!
-//! Lives in its own test binary (separate process) because
-//! [`DesktopCentral::shutdown`] records the process-global executor
-//! shutdown latch: running it inside the lib test process would refuse
-//! admission for every other test there. No radio is touched.
+//! Lives in its own test binary (separate process) because the final step
+//! records the explicit process-global executor shutdown latch: running it
+//! inside the lib test process would refuse admission for every other test
+//! there. No radio is touched. Per-central shutdown itself (F14) never sets
+//! that latch — other managers keep working and new managers can open.
 
 use ubm_desktop::{
     CharacteristicSnapshot, DescriptorSnapshot, DesktopCentral, FakeRadio, PeerSnapshot,
@@ -118,10 +119,15 @@ async fn shutdown_stops_scan_and_refuses_new_work() {
     central.shutdown().await;
     assert!(central.is_shut_down());
 
-    // L4: a post-shutdown open fails closed instead of building a zombie
-    // central whose ops refuse admission.
+    // F14: per-central shutdown never latches the process executor — a new
+    // central opens fine afterwards. Only the explicit process-owner step
+    // closes admission globally.
+    DesktopCentral::open(FakeRadio::new(), "test-host")
+        .await
+        .expect("new central opens after per-central shutdown");
+    ubm_desktop::executor::shutdown_desktop_runtime();
     match DesktopCentral::open(FakeRadio::new(), "test-host").await {
-        Ok(_) => panic!("no new centrals after executor shutdown"),
+        Ok(_) => panic!("no new centrals after process shutdown"),
         Err(error) => assert_eq!(error.code_str(), "adapter.unavailable"),
     }
 }

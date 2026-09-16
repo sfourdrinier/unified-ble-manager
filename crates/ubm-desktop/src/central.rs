@@ -21,11 +21,13 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::{Mutex, watch};
 use ubm_core::central::{
-    Central, CentralEffectKind, PathSelector, StoredPath, canonical_uuid, validate_scan_request,
+    Central, CentralEffectKind, CompletionOutcome, PathSelector, StoredPath, canonical_uuid,
+    validate_scan_request,
 };
 use ubm_core::contracts::{
     AdapterGeneration, AdapterId, AttachmentId, AttachmentTuple, BackendGeneration,
     BackendInstanceId, BleErrorCode, BleErrorDomain, ContenderKind, Generation, OperationId,
+    OperationTerminalKind,
 };
 use ubm_core::ownership::EffectBatch;
 
@@ -57,6 +59,141 @@ fn now_ms() -> u64 {
 
 fn batch() -> EffectBatch {
     EffectBatch::new(EFFECT_BATCH_CAP)
+}
+
+/// Drain typed observations to recycle ledger capacity (F02). Observations are
+/// not hidden: callers needing them (F11) inspect the staged suffix before
+/// this drain runs.
+fn recycle_observations(core: &mut Central) {
+    let _ = core.drain_typed_effects();
+}
+
+/// Report the actual host release for a terminal op (F02). Live ops stay live
+/// (a release would fail with `live`); already-reaped ops are ignored so the
+/// canceller and the op driver may both attempt the report idempotently.
+fn report_terminal_release(
+    core: &mut Central,
+    op: &OperationId,
+    ok: bool,
+    code: Option<BleErrorCode>,
+) {
+    let terminal = matches!(
+        core.operation_state(op),
+        Some(ubm_core::ownership::OpStateView::Terminal(_))
+    );
+    if !terminal {
+        return;
+    }
+    let _ = if ok {
+        core.report_release_success(op)
+    } else {
+        core.report_release_failure(op, code.unwrap_or(BleErrorCode::PlatformFailure))
+    };
+}
+
+/// Map an authoritative core terminal to a caller error (F03). The radio
+/// result lost the race; the core outcome is the only caller result.
+fn terminal_to_error(kind: OperationTerminalKind, operation: &'static str) -> DesktopError {
+    match kind {
+        OperationTerminalKind::Succeeded => contract_error(
+            BleErrorCode::LifecycleInvalidState,
+            BleErrorDomain::Core,
+            operation,
+        )
+        .with_detail("core succeeded without a radio value"),
+        OperationTerminalKind::Failed => contract_error(
+            BleErrorCode::PlatformFailure,
+            BleErrorDomain::Core,
+            operation,
+        ),
+        OperationTerminalKind::Aborted => DesktopError::cancelled(operation),
+        OperationTerminalKind::TimedOut => contract_error(
+            BleErrorCode::OperationTimedOut,
+            BleErrorDomain::Connection,
+            operation,
+        ),
+        OperationTerminalKind::Disconnected => contract_error(
+            BleErrorCode::OperationDisconnected,
+            BleErrorDomain::Connection,
+            operation,
+        ),
+        OperationTerminalKind::Reset => contract_error(
+            BleErrorCode::OperationReset,
+            BleErrorDomain::Connection,
+            operation,
+        ),
+        OperationTerminalKind::AdapterUnavailable => contract_error(
+            BleErrorCode::OperationAdapterUnavailable,
+            BleErrorDomain::Connection,
+            operation,
+        ),
+        OperationTerminalKind::Destroyed => contract_error(
+            BleErrorCode::LifecycleDestroyed,
+            BleErrorDomain::Core,
+            operation,
+        ),
+    }
+}
+
+/// Observe the current terminal kind for an op already settled (duplicate
+/// settlement path). Returns `None` when the op is live or already reaped.
+fn terminal_kind_of(core: &Central, op: &OperationId) -> Option<OperationTerminalKind> {
+    match core.operation_state(op) {
+        Some(ubm_core::ownership::OpStateView::Terminal(kind)) => Some(kind),
+        _ => None,
+    }
+}
+
+/// Settle one op with a genuine valid contender, recycle observations, and
+/// report the actual host release (F02/F25). Genuine radio outcomes are always
+/// valid contenders; `invalid` is reserved for stale generations the core must
+/// ignore. Returns the authoritative settlement outcome. A fresh settlement
+/// releases immediately; a duplicate leaves the terminal in place so the caller
+/// can observe the winning kind before reporting the release itself.
+fn settle_and_release(
+    core: &mut Central,
+    op: &OperationId,
+    kind: ContenderKind,
+    cleanup_ok: bool,
+    cleanup_code: Option<BleErrorCode>,
+    out: &mut EffectBatch,
+) -> Result<CompletionOutcome, DesktopError> {
+    let outcome = core
+        .settle_op(op, kind, true, 0, now_ms(), out)
+        .map_err(DesktopError::from)?;
+    let _ = out.drain();
+    recycle_observations(core);
+    if matches!(outcome, CompletionOutcome::Settled { .. }) {
+        report_terminal_release(core, op, cleanup_ok, cleanup_code);
+    }
+    Ok(outcome)
+}
+
+/// Settle one op, then report the duplicate path's release after the caller
+/// observes the winning terminal (F03). Returns the pre-release terminal kind.
+fn release_duplicate(
+    core: &mut Central,
+    op: &OperationId,
+    cleanup_ok: bool,
+    cleanup_code: Option<BleErrorCode>,
+) -> Option<OperationTerminalKind> {
+    let kind = terminal_kind_of(core, op);
+    report_terminal_release(core, op, cleanup_ok, cleanup_code);
+    recycle_observations(core);
+    kind
+}
+
+/// Release every terminal op whose cleanup already succeeded (F02): joiners
+/// settled by a shared enable, immediate-success shares on an enabled hub,
+/// and disable tickets settled by `settle_subscribe_disable`. Each has no
+/// per-op OS resource beyond the shared CCCD the driver already handled, so
+/// success is the truthful receipt. Ops with failed cleanup are reported by
+/// their own driver with failure and are already gone from this list.
+fn sweep_terminal_successes(core: &mut Central) {
+    for id in core.terminal_operation_ids() {
+        let _ = core.report_release_success(&id);
+    }
+    recycle_observations(core);
 }
 
 fn contract_error(code: BleErrorCode, domain: BleErrorDomain, operation: &str) -> DesktopError {
@@ -102,6 +239,25 @@ pub struct DiscoveryReport {
     pub paths_registered: usize,
     /// `(uuid, code)` for every skipped entry, in discovery order.
     pub skipped: Vec<(String, String)>,
+}
+
+/// Typed notification poll outcome (F17): empty-but-live is distinct from
+/// terminal/closed, and exactly one overflow terminal stays observable even
+/// when data capacity is exhausted. Values drain before the terminal; the
+/// terminal is observed once, then the stream reports closed, never
+/// live-empty again.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NotificationPoll {
+    /// One buffered value (FIFO arrival order).
+    Value(Vec<u8>),
+    /// No value waiting, stream still live.
+    Empty,
+    /// Overflow terminal with loss details (exactly once).
+    Terminal(ubm_core::central::SubscriptionTerminal),
+    /// Hub invalidated (service change/disconnect): stale, resubscribe.
+    Invalidated,
+    /// Consumer removed/closed or failed terminal already consumed.
+    Closed,
 }
 
 struct ActiveScan {
@@ -253,6 +409,47 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         Ok(())
     }
 
+    /// Settle a dispatched op that hit its end-to-end deadline (F03) and map
+    /// the authoritative outcome to the caller error. A duplicate (already
+    /// terminal via cancel/disconnect) returns the winning terminal, never a
+    /// synthesized timeout.
+    async fn settle_timeout(&self, operation: &OperationId, op_name: &'static str) -> DesktopError {
+        let mut core = self.inner.core.lock().await;
+        let mut out = batch();
+        let outcome = settle_and_release(
+            &mut core,
+            operation,
+            ContenderKind::Timeout,
+            true,
+            None,
+            &mut out,
+        );
+        match outcome {
+            Ok(CompletionOutcome::Settled {
+                kind: OperationTerminalKind::TimedOut,
+                ..
+            })
+            | Ok(CompletionOutcome::ContenderIgnored)
+            | Err(_) => contract_error(
+                BleErrorCode::OperationTimedOut,
+                BleErrorDomain::Connection,
+                op_name,
+            ),
+            Ok(CompletionOutcome::Settled { kind, .. }) => terminal_to_error(kind, op_name),
+            Ok(CompletionOutcome::DuplicateSuppressed { .. }) => {
+                let kind = release_duplicate(&mut core, operation, true, None);
+                match kind {
+                    Some(winner) => terminal_to_error(winner, op_name),
+                    None => contract_error(
+                        BleErrorCode::OperationTimedOut,
+                        BleErrorDomain::Connection,
+                        op_name,
+                    ),
+                }
+            }
+        }
+    }
+
     /// Whether explicit shutdown has been recorded.
     #[must_use]
     pub fn is_shut_down(&self) -> bool {
@@ -332,7 +529,22 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             core.start_scan(&request, None, owner, now_ms(), &mut out)
                 .map_err(DesktopError::from)?
         };
-        if let Err(error) = self.inner.boundary.start_scan(filter).await {
+        // F03: the OS start races the op deadline; a stuck start becomes a
+        // start failure, not a hang.
+        let start_outcome = tokio::time::timeout(
+            Duration::from_millis(timeout_ms),
+            self.inner.boundary.start_scan(filter),
+        )
+        .await;
+        let start_outcome = match start_outcome {
+            Ok(outcome) => outcome,
+            Err(_) => Err(contract_error(
+                BleErrorCode::OperationTimedOut,
+                BleErrorDomain::Connection,
+                "scan.start",
+            )),
+        };
+        if let Err(error) = start_outcome {
             let mut core = self.inner.core.lock().await;
             let mut out = batch();
             let _ = core.note_scan_platform(
@@ -341,7 +553,11 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                 now_ms(),
                 &mut out,
             );
-            let _ = core.settle_op(&id, ContenderKind::Failure, false, 0, now_ms(), &mut out);
+            let _ = out.drain();
+            let _ = core.settle_op(&id, ContenderKind::Failure, true, 0, now_ms(), &mut out);
+            let _ = out.drain();
+            report_terminal_release(&mut core, &id, true, None);
+            recycle_observations(&mut core);
             return Err(error);
         }
         {
@@ -356,16 +572,26 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         Ok(ScanSession { id })
     }
 
-    /// Stop the owned scan (idempotent): stop the OS scan, then settle the
-    /// core session. An OS stop failure still settles the core session as
-    /// failed and reports `scan.stop-failed` instead of swallowing cleanup.
-    /// The central-lifetime event loop keeps running for connection events;
-    /// it is joined only at [`DesktopCentral::shutdown`].
+    /// Stop the owned scan (idempotent): move the core session to stopping,
+    /// stop the OS scan, then settle the core session. An OS stop failure
+    /// still settles the core session as failed and reports `scan.stop-failed`
+    /// instead of swallowing cleanup. The central-lifetime event loop keeps
+    /// running for connection events; it is joined only at
+    /// [`DesktopCentral::shutdown`].
     pub async fn stop_scan(&self) -> Result<(), DesktopError> {
         let active = self.inner.scan.lock().await.take();
         let Some(active) = active else {
             return Ok(());
         };
+        // Core first: Active -> Stopping, outside the radio await so a stuck
+        // OS stop never holds the core lock. Best-effort: a session already
+        // settled via source-close has nothing to stop.
+        {
+            let mut core = self.inner.core.lock().await;
+            let mut out = batch();
+            let _ = core.stop_scan(&active.id, now_ms(), &mut out);
+            let _ = out.drain();
+        }
         let stop_outcome = self.inner.boundary.stop_scan().await;
         let mut core = self.inner.core.lock().await;
         let mut out = batch();
@@ -377,6 +603,10 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                     now_ms(),
                     &mut out,
                 );
+                let _ = out.drain();
+                // `note_scan_platform` already settled the kernel op for the
+                // terminal session; the follow-up settle is a duplicate that
+                // only observes, then the actual OS-stop success releases.
                 let _ = core.settle_op(
                     &active.id,
                     ContenderKind::Success,
@@ -385,6 +615,9 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                     now_ms(),
                     &mut out,
                 );
+                let _ = out.drain();
+                report_terminal_release(&mut core, &active.id, true, None);
+                recycle_observations(&mut core);
                 Ok(())
             }
             Err(error) => {
@@ -394,14 +627,18 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                     now_ms(),
                     &mut out,
                 );
+                let _ = out.drain();
                 let _ = core.settle_op(
                     &active.id,
                     ContenderKind::Failure,
-                    false,
+                    true,
                     0,
                     now_ms(),
                     &mut out,
                 );
+                let _ = out.drain();
+                report_terminal_release(&mut core, &active.id, false, Some(error.code()));
+                recycle_observations(&mut core);
                 Err(error)
             }
         }
@@ -441,49 +678,114 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                 .map_err(DesktopError::from)?;
             id
         };
-        match self.inner.boundary.connect(peer_id).await {
-            Ok(()) => {
+        let deadline = Duration::from_millis(timeout_ms);
+        match tokio::time::timeout(deadline, self.inner.boundary.connect(peer_id)).await {
+            Ok(Ok(())) => {
                 let mut core = self.inner.core.lock().await;
                 let mut out = batch();
                 // Best-effort: the event loop may have recorded the
                 // DeviceConnected event first.
                 let _ = core.note_link_established(&peer_key);
-                let _ = core.settle_op(
+                let outcome = settle_and_release(
+                    &mut core,
                     &operation,
                     ContenderKind::Success,
                     true,
-                    0,
-                    now_ms(),
+                    None,
                     &mut out,
-                );
-                let connection_generation = core.connection_generation(&peer_key);
-                Ok(ConnectionHandle {
-                    peer_key,
-                    connection_generation,
-                })
+                )?;
+                match outcome {
+                    CompletionOutcome::Settled {
+                        kind: OperationTerminalKind::Succeeded,
+                        ..
+                    } => {
+                        let connection_generation = core.connection_generation(&peer_key);
+                        Ok(ConnectionHandle {
+                            peer_key,
+                            connection_generation,
+                        })
+                    }
+                    CompletionOutcome::Settled { kind, .. } => {
+                        Err(terminal_to_error(kind, "connection.connect"))
+                    }
+                    CompletionOutcome::DuplicateSuppressed { .. } => {
+                        let kind = release_duplicate(&mut core, &operation, true, None);
+                        match kind {
+                            Some(OperationTerminalKind::Succeeded) => {
+                                let connection_generation = core.connection_generation(&peer_key);
+                                Ok(ConnectionHandle {
+                                    peer_key,
+                                    connection_generation,
+                                })
+                            }
+                            Some(winner) => Err(terminal_to_error(winner, "connection.connect")),
+                            None => Err(DesktopError::cancelled("connection.connect")),
+                        }
+                    }
+                    CompletionOutcome::ContenderIgnored => Err(contract_error(
+                        BleErrorCode::LifecycleInvalidState,
+                        BleErrorDomain::Core,
+                        "connection.connect",
+                    )),
+                }
             }
-            Err(error) => {
-                let mut core = self.inner.core.lock().await;
-                let mut out = batch();
-                let _ = core.note_peer_loss(&peer_key, now_ms(), &mut out);
-                let _ = core.settle_op(
-                    &operation,
-                    ContenderKind::Failure,
-                    false,
-                    0,
-                    now_ms(),
-                    &mut out,
-                );
+            Ok(Err(error)) => {
+                // Settle under the lock, then drop the guard before awaiting
+                // the compensating radio disconnect (F24): a stuck cleanup
+                // must never block unrelated peers behind the core lock.
+                let error_code = error.code();
+                {
+                    let mut core = self.inner.core.lock().await;
+                    let mut out = batch();
+                    let _ = core.note_peer_loss(&peer_key, now_ms(), &mut out);
+                    let _ = out.drain();
+                    let _ = settle_and_release(
+                        &mut core,
+                        &operation,
+                        ContenderKind::Failure,
+                        true,
+                        None,
+                        &mut out,
+                    );
+                }
                 // Partial-failure cleanup: a half-opened OS link must not
                 // linger without an owner. Bounded by the same 1 s
                 // discipline as explicit disconnect (L5): a stuck radio
-                // wait never hangs the failing connect.
+                // wait never hangs the failing connect. The core lock is not
+                // held across this await.
+                let cleanup = tokio::time::timeout(
+                    DISCONNECT_COMPLETION_TIMEOUT,
+                    self.inner.boundary.disconnect(peer_id),
+                )
+                .await;
+                // Feed the actual compensation outcome back: a failed
+                // half-open cleanup retains a failure receipt instead of a
+                // clean release. The op already settled as failed above; when
+                // compensation failed, retain that fact.
+                if !matches!(cleanup, Ok(Ok(()))) {
+                    let mut core = self.inner.core.lock().await;
+                    // The op was already released as success above; retain the
+                    // compensation failure as a disconnect failure so it is
+                    // visible, never hidden.
+                    let _ = core.report_disconnect_failure(&peer_key, error_code);
+                }
+                Err(error)
+            }
+            Err(_) => {
+                // Deadline won before the radio answered: mark loss, settle
+                // as timeout, and clean the half-open link outside the lock.
+                {
+                    let mut core = self.inner.core.lock().await;
+                    let mut out = batch();
+                    let _ = core.note_peer_loss(&peer_key, now_ms(), &mut out);
+                    let _ = out.drain();
+                }
                 let _ = tokio::time::timeout(
                     DISCONNECT_COMPLETION_TIMEOUT,
                     self.inner.boundary.disconnect(peer_id),
                 )
                 .await;
-                Err(error)
+                Err(self.settle_timeout(&operation, "connection.connect").await)
             }
         }
     }
@@ -718,7 +1020,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         timeout_ms: u64,
     ) -> Result<Vec<u8>, DesktopError> {
         self.admit("gatt.read")?;
-        let (operation, key) = {
+        let (operation, key, peer_key) = {
             let peer_key = self.known_peer_key(peer_id).await?;
             let mut core = self.inner.core.lock().await;
             let mut out = batch();
@@ -748,39 +1050,154 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                 .map_err(DesktopError::from)?;
             core.dispatch_op(&id, &mut out)
                 .map_err(DesktopError::from)?;
-            (id, instance_key(peer_id, &stored, &characteristic))
+            (
+                id,
+                instance_key(peer_id, &stored, &characteristic),
+                peer_key,
+            )
         };
-        match self
-            .inner
-            .boundary
-            .read_characteristic(peer_id, &key.1, key.2, &key.3, key.4)
-            .await
+        // F03: the op timeout is an end-to-end deadline for dispatched work.
+        // `expire_sweep` only covers queued ops, so dispatched reads race the
+        // radio against their own deadline; the winning core outcome is the
+        // only caller result.
+        let deadline = Duration::from_millis(timeout_ms);
+        match tokio::time::timeout(
+            deadline,
+            self.inner
+                .boundary
+                .read_characteristic(peer_id, &key.1, key.2, &key.3, key.4),
+        )
+        .await
         {
-            Ok(bytes) => {
+            Ok(Ok(bytes)) => {
                 let mut core = self.inner.core.lock().await;
+                // F03: a link that died mid-read wins over the late radio
+                // bytes. Generations alone cannot catch this (disconnect keeps
+                // them), so the live link state competes explicitly.
+                let link_live = matches!(
+                    core.connection_state(&peer_key),
+                    Some(ubm_core::central::ConnectionState::Connected)
+                );
+                if !link_live {
+                    let mut out = batch();
+                    let _ = settle_and_release(
+                        &mut core,
+                        &operation,
+                        ContenderKind::Disconnect,
+                        true,
+                        None,
+                        &mut out,
+                    );
+                    return Err(contract_error(
+                        BleErrorCode::OperationDisconnected,
+                        BleErrorDomain::Connection,
+                        "gatt.read",
+                    ));
+                }
                 let mut out = batch();
-                let _ = core.settle_op(
+                let outcome = settle_and_release(
+                    &mut core,
                     &operation,
                     ContenderKind::Success,
                     true,
-                    0,
-                    now_ms(),
+                    None,
                     &mut out,
-                );
-                Ok(bytes)
+                )?;
+                match outcome {
+                    CompletionOutcome::Settled {
+                        kind: OperationTerminalKind::Succeeded,
+                        ..
+                    } => Ok(bytes),
+                    CompletionOutcome::Settled { kind, cause, .. } => {
+                        if cause == Some(BleErrorCode::GattStaleHandle) {
+                            Err(contract_error(
+                                BleErrorCode::GattStaleHandle,
+                                BleErrorDomain::Gatt,
+                                "gatt.read",
+                            ))
+                        } else {
+                            Err(terminal_to_error(kind, "gatt.read"))
+                        }
+                    }
+                    CompletionOutcome::DuplicateSuppressed { .. } => {
+                        let kind = release_duplicate(&mut core, &operation, true, None);
+                        match kind {
+                            Some(OperationTerminalKind::Succeeded) => Ok(bytes),
+                            Some(winner) => Err(terminal_to_error(winner, "gatt.read")),
+                            None => Err(DesktopError::cancelled("gatt.read")),
+                        }
+                    }
+                    CompletionOutcome::ContenderIgnored => Err(contract_error(
+                        BleErrorCode::LifecycleInvalidState,
+                        BleErrorDomain::Core,
+                        "gatt.read",
+                    )),
+                }
             }
-            Err(error) => {
+            Ok(Err(error)) => {
                 let mut core = self.inner.core.lock().await;
                 let mut out = batch();
-                let _ = core.settle_op(
+                let outcome = settle_and_release(
+                    &mut core,
                     &operation,
                     ContenderKind::Failure,
-                    false,
-                    0,
-                    now_ms(),
+                    true,
+                    None,
                     &mut out,
-                );
-                Err(error)
+                )?;
+                match outcome {
+                    CompletionOutcome::Settled { .. } => Err(error),
+                    CompletionOutcome::DuplicateSuppressed { .. } => {
+                        let kind = release_duplicate(&mut core, &operation, true, None);
+                        match kind {
+                            Some(OperationTerminalKind::Failed) => Err(error),
+                            Some(winner) => Err(terminal_to_error(winner, "gatt.read")),
+                            None => Err(error),
+                        }
+                    }
+                    CompletionOutcome::ContenderIgnored => Err(error),
+                }
+            }
+            Err(_) => {
+                let mut core = self.inner.core.lock().await;
+                let mut out = batch();
+                let outcome = settle_and_release(
+                    &mut core,
+                    &operation,
+                    ContenderKind::Timeout,
+                    true,
+                    None,
+                    &mut out,
+                )?;
+                match outcome {
+                    CompletionOutcome::Settled {
+                        kind: OperationTerminalKind::TimedOut,
+                        ..
+                    } => Err(contract_error(
+                        BleErrorCode::OperationTimedOut,
+                        BleErrorDomain::Connection,
+                        "gatt.read",
+                    )),
+                    CompletionOutcome::Settled { kind, .. } => {
+                        Err(terminal_to_error(kind, "gatt.read"))
+                    }
+                    CompletionOutcome::DuplicateSuppressed { .. } => {
+                        let kind = release_duplicate(&mut core, &operation, true, None);
+                        match kind {
+                            Some(winner) => Err(terminal_to_error(winner, "gatt.read")),
+                            None => Err(contract_error(
+                                BleErrorCode::OperationTimedOut,
+                                BleErrorDomain::Connection,
+                                "gatt.read",
+                            )),
+                        }
+                    }
+                    CompletionOutcome::ContenderIgnored => Err(contract_error(
+                        BleErrorCode::OperationTimedOut,
+                        BleErrorDomain::Connection,
+                        "gatt.read",
+                    )),
+                }
             }
         }
     }
@@ -807,10 +1224,25 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         }
         let with_response = mode == "with-response";
         let value_len = value.len() as u64;
-        // M1: the unbounded OS MTU lookup runs before the core lock, so a
-        // stuck D-Bus round trip never stalls the event loop, cancel, or
-        // disconnect behind this write.
-        let measured_mtu = self.inner.boundary.mtu(peer_id).await;
+        // M1 + F03: the OS MTU lookup runs before the core lock (never stalls
+        // the loop), but inside the op deadline (never escapes it). A stuck
+        // D-Bus round trip becomes a timeout, not a hang.
+        let total = Duration::from_millis(timeout_ms);
+        let started = Instant::now();
+        let measured_mtu = match tokio::time::timeout(total, self.inner.boundary.mtu(peer_id)).await
+        {
+            Ok(mtu) => mtu,
+            Err(_) => {
+                return Err(contract_error(
+                    BleErrorCode::OperationTimedOut,
+                    BleErrorDomain::Connection,
+                    "gatt.write",
+                ));
+            }
+        };
+        let remaining = total
+            .checked_sub(started.elapsed())
+            .unwrap_or(Duration::from_millis(1));
         let (operation, key) = {
             let peer_key = self.known_peer_key(peer_id).await?;
             let mut core = self.inner.core.lock().await;
@@ -853,38 +1285,87 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                 .map_err(DesktopError::from)?;
             (id, instance_key(peer_id, &stored, &characteristic))
         };
-        match self
-            .inner
-            .boundary
-            .write_characteristic(peer_id, &key.1, key.2, &key.3, key.4, value, with_response)
-            .await
+        match tokio::time::timeout(
+            remaining,
+            self.inner.boundary.write_characteristic(
+                peer_id,
+                &key.1,
+                key.2,
+                &key.3,
+                key.4,
+                value,
+                with_response,
+            ),
+        )
+        .await
         {
-            Ok(()) => {
+            Ok(Ok(())) => {
                 let mut core = self.inner.core.lock().await;
                 let mut out = batch();
-                let _ = core.settle_op(
+                let outcome = settle_and_release(
+                    &mut core,
                     &operation,
                     ContenderKind::Success,
                     true,
-                    0,
-                    now_ms(),
+                    None,
                     &mut out,
-                );
-                Ok(())
+                )?;
+                match outcome {
+                    CompletionOutcome::Settled {
+                        kind: OperationTerminalKind::Succeeded,
+                        ..
+                    } => Ok(()),
+                    CompletionOutcome::Settled { kind, cause, .. } => {
+                        if cause == Some(BleErrorCode::GattStaleHandle) {
+                            Err(contract_error(
+                                BleErrorCode::GattStaleHandle,
+                                BleErrorDomain::Gatt,
+                                "gatt.write",
+                            ))
+                        } else {
+                            Err(terminal_to_error(kind, "gatt.write"))
+                        }
+                    }
+                    CompletionOutcome::DuplicateSuppressed { .. } => {
+                        let kind = release_duplicate(&mut core, &operation, true, None);
+                        match kind {
+                            Some(OperationTerminalKind::Succeeded) => Ok(()),
+                            Some(winner) => Err(terminal_to_error(winner, "gatt.write")),
+                            None => Err(DesktopError::cancelled("gatt.write")),
+                        }
+                    }
+                    CompletionOutcome::ContenderIgnored => Err(contract_error(
+                        BleErrorCode::LifecycleInvalidState,
+                        BleErrorDomain::Core,
+                        "gatt.write",
+                    )),
+                }
             }
-            Err(error) => {
+            Ok(Err(error)) => {
                 let mut core = self.inner.core.lock().await;
                 let mut out = batch();
-                let _ = core.settle_op(
+                let outcome = settle_and_release(
+                    &mut core,
                     &operation,
                     ContenderKind::Failure,
-                    false,
-                    0,
-                    now_ms(),
+                    true,
+                    None,
                     &mut out,
-                );
-                Err(error)
+                )?;
+                match outcome {
+                    CompletionOutcome::Settled { .. } => Err(error),
+                    CompletionOutcome::DuplicateSuppressed { .. } => {
+                        let kind = release_duplicate(&mut core, &operation, true, None);
+                        match kind {
+                            Some(OperationTerminalKind::Failed) => Err(error),
+                            Some(winner) => Err(terminal_to_error(winner, "gatt.write")),
+                            None => Err(error),
+                        }
+                    }
+                    CompletionOutcome::ContenderIgnored => Err(error),
+                }
             }
+            Err(_) => Err(self.settle_timeout(&operation, "gatt.write").await),
         }
     }
 
@@ -937,10 +1418,10 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             let descriptor_occurrence = stored.descriptor_occurrence().unwrap_or(0);
             (id, key, descriptor, descriptor_occurrence)
         };
-        match self
-            .inner
-            .boundary
-            .read_descriptor(
+        let deadline = Duration::from_millis(timeout_ms);
+        match tokio::time::timeout(
+            deadline,
+            self.inner.boundary.read_descriptor(
                 peer_id,
                 &key.1,
                 key.2,
@@ -948,35 +1429,79 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                 key.4,
                 &descriptor,
                 descriptor_occurrence,
-            )
-            .await
+            ),
+        )
+        .await
         {
-            Ok(bytes) => {
+            Ok(Ok(bytes)) => {
                 let mut core = self.inner.core.lock().await;
                 let mut out = batch();
-                let _ = core.settle_op(
+                let outcome = settle_and_release(
+                    &mut core,
                     &operation,
                     ContenderKind::Success,
                     true,
-                    0,
-                    now_ms(),
+                    None,
                     &mut out,
-                );
-                Ok(bytes)
+                )?;
+                match outcome {
+                    CompletionOutcome::Settled {
+                        kind: OperationTerminalKind::Succeeded,
+                        ..
+                    } => Ok(bytes),
+                    CompletionOutcome::Settled { kind, cause, .. } => {
+                        if cause == Some(BleErrorCode::GattStaleHandle) {
+                            Err(contract_error(
+                                BleErrorCode::GattStaleHandle,
+                                BleErrorDomain::Gatt,
+                                "gatt.read-descriptor",
+                            ))
+                        } else {
+                            Err(terminal_to_error(kind, "gatt.read-descriptor"))
+                        }
+                    }
+                    CompletionOutcome::DuplicateSuppressed { .. } => {
+                        let kind = release_duplicate(&mut core, &operation, true, None);
+                        match kind {
+                            Some(OperationTerminalKind::Succeeded) => Ok(bytes),
+                            Some(winner) => Err(terminal_to_error(winner, "gatt.read-descriptor")),
+                            None => Err(DesktopError::cancelled("gatt.read-descriptor")),
+                        }
+                    }
+                    CompletionOutcome::ContenderIgnored => Err(contract_error(
+                        BleErrorCode::LifecycleInvalidState,
+                        BleErrorDomain::Core,
+                        "gatt.read-descriptor",
+                    )),
+                }
             }
-            Err(error) => {
+            Ok(Err(error)) => {
                 let mut core = self.inner.core.lock().await;
                 let mut out = batch();
-                let _ = core.settle_op(
+                let outcome = settle_and_release(
+                    &mut core,
                     &operation,
                     ContenderKind::Failure,
-                    false,
-                    0,
-                    now_ms(),
+                    true,
+                    None,
                     &mut out,
-                );
-                Err(error)
+                )?;
+                match outcome {
+                    CompletionOutcome::Settled { .. } => Err(error),
+                    CompletionOutcome::DuplicateSuppressed { .. } => {
+                        let kind = release_duplicate(&mut core, &operation, true, None);
+                        match kind {
+                            Some(OperationTerminalKind::Failed) => Err(error),
+                            Some(winner) => Err(terminal_to_error(winner, "gatt.read-descriptor")),
+                            None => Err(error),
+                        }
+                    }
+                    CompletionOutcome::ContenderIgnored => Err(error),
+                }
             }
+            Err(_) => Err(self
+                .settle_timeout(&operation, "gatt.read-descriptor")
+                .await),
         }
     }
 
@@ -992,9 +1517,23 @@ impl<B: RadioBoundary> DesktopCentral<B> {
     ) -> Result<(), DesktopError> {
         self.admit("gatt.write-descriptor")?;
         let value_len = value.len() as u64;
-        // M1: the unbounded OS MTU lookup runs before the core lock (see
-        // `write`).
-        let measured_mtu = self.inner.boundary.mtu(peer_id).await;
+        // M1 + F03: MTU inside the op deadline (see `write`).
+        let total = Duration::from_millis(timeout_ms);
+        let started = Instant::now();
+        let measured_mtu = match tokio::time::timeout(total, self.inner.boundary.mtu(peer_id)).await
+        {
+            Ok(mtu) => mtu,
+            Err(_) => {
+                return Err(contract_error(
+                    BleErrorCode::OperationTimedOut,
+                    BleErrorDomain::Connection,
+                    "gatt.write-descriptor",
+                ));
+            }
+        };
+        let remaining = total
+            .checked_sub(started.elapsed())
+            .unwrap_or(Duration::from_millis(1));
         let (operation, key, descriptor, descriptor_occurrence) = {
             let peer_key = self.known_peer_key(peer_id).await?;
             let mut core = self.inner.core.lock().await;
@@ -1044,10 +1583,9 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             let descriptor_occurrence = stored.descriptor_occurrence().unwrap_or(0);
             (id, key, descriptor, descriptor_occurrence)
         };
-        match self
-            .inner
-            .boundary
-            .write_descriptor(
+        match tokio::time::timeout(
+            remaining,
+            self.inner.boundary.write_descriptor(
                 peer_id,
                 &key.1,
                 key.2,
@@ -1056,35 +1594,79 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                 &descriptor,
                 descriptor_occurrence,
                 value,
-            )
-            .await
+            ),
+        )
+        .await
         {
-            Ok(()) => {
+            Ok(Ok(())) => {
                 let mut core = self.inner.core.lock().await;
                 let mut out = batch();
-                let _ = core.settle_op(
+                let outcome = settle_and_release(
+                    &mut core,
                     &operation,
                     ContenderKind::Success,
                     true,
-                    0,
-                    now_ms(),
+                    None,
                     &mut out,
-                );
-                Ok(())
+                )?;
+                match outcome {
+                    CompletionOutcome::Settled {
+                        kind: OperationTerminalKind::Succeeded,
+                        ..
+                    } => Ok(()),
+                    CompletionOutcome::Settled { kind, cause, .. } => {
+                        if cause == Some(BleErrorCode::GattStaleHandle) {
+                            Err(contract_error(
+                                BleErrorCode::GattStaleHandle,
+                                BleErrorDomain::Gatt,
+                                "gatt.write-descriptor",
+                            ))
+                        } else {
+                            Err(terminal_to_error(kind, "gatt.write-descriptor"))
+                        }
+                    }
+                    CompletionOutcome::DuplicateSuppressed { .. } => {
+                        let kind = release_duplicate(&mut core, &operation, true, None);
+                        match kind {
+                            Some(OperationTerminalKind::Succeeded) => Ok(()),
+                            Some(winner) => Err(terminal_to_error(winner, "gatt.write-descriptor")),
+                            None => Err(DesktopError::cancelled("gatt.write-descriptor")),
+                        }
+                    }
+                    CompletionOutcome::ContenderIgnored => Err(contract_error(
+                        BleErrorCode::LifecycleInvalidState,
+                        BleErrorDomain::Core,
+                        "gatt.write-descriptor",
+                    )),
+                }
             }
-            Err(error) => {
+            Ok(Err(error)) => {
                 let mut core = self.inner.core.lock().await;
                 let mut out = batch();
-                let _ = core.settle_op(
+                let outcome = settle_and_release(
+                    &mut core,
                     &operation,
                     ContenderKind::Failure,
-                    false,
-                    0,
-                    now_ms(),
+                    true,
+                    None,
                     &mut out,
-                );
-                Err(error)
+                )?;
+                match outcome {
+                    CompletionOutcome::Settled { .. } => Err(error),
+                    CompletionOutcome::DuplicateSuppressed { .. } => {
+                        let kind = release_duplicate(&mut core, &operation, true, None);
+                        match kind {
+                            Some(OperationTerminalKind::Failed) => Err(error),
+                            Some(winner) => Err(terminal_to_error(winner, "gatt.write-descriptor")),
+                            None => Err(error),
+                        }
+                    }
+                    CompletionOutcome::ContenderIgnored => Err(error),
+                }
             }
+            Err(_) => Err(self
+                .settle_timeout(&operation, "gatt.write-descriptor")
+                .await),
         }
     }
 
@@ -1213,18 +1795,35 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             .await
             .insert(key.clone(), (path_index, epoch));
         if !drive_enable {
+            // Joiners never touch the radio (F11): an immediate-success share
+            // on an enabled hub is already terminal and releases now; a
+            // pending join stays live for the enabler to settle and sweep.
+            let mut core = self.inner.core.lock().await;
+            report_terminal_release(&mut core, &operation, true, None);
+            recycle_observations(&mut core);
             return Ok(());
         }
-        match self
-            .inner
-            .boundary
-            .set_notifications(peer_id, &key.1, key.2, &key.3, key.4, true, epoch)
-            .await
+        let deadline = Duration::from_millis(timeout_ms);
+        match tokio::time::timeout(
+            deadline,
+            self.inner
+                .boundary
+                .set_notifications(peer_id, &key.1, key.2, &key.3, key.4, true, epoch),
+        )
+        .await
         {
-            Ok(()) => {
+            Ok(Ok(())) => {
                 let mut core = self.inner.core.lock().await;
                 let mut out = batch();
+                let effects_before = core.typed_effects().len();
                 let _ = core.settle_subscribe_enable(path_index, true, now_ms(), &mut out);
+                let _ = out.drain();
+                // A late success with nobody eligible stages a compensating
+                // physical disable (F12): the OS enable is live with no
+                // owner, so it must be torn down, not leaked.
+                let compensating = core.typed_effects()[effects_before..]
+                    .iter()
+                    .any(|effect| effect.kind() == CentralEffectKind::SubscribeDisable);
                 let _ = core.settle_op(
                     &operation,
                     ContenderKind::Success,
@@ -1233,22 +1832,76 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                     now_ms(),
                     &mut out,
                 );
-                Ok(())
+                let _ = out.drain();
+                let own_kind = terminal_kind_of(&core, &operation);
+                sweep_terminal_successes(&mut core);
+                if compensating {
+                    // Drop the core lock before the compensating radio
+                    // disable; re-lock to settle it.
+                    drop(core);
+                    let _ = self
+                        .inner
+                        .boundary
+                        .set_notifications(peer_id, &key.1, key.2, &key.3, key.4, false, epoch)
+                        .await;
+                    let mut core = self.inner.core.lock().await;
+                    let mut out = batch();
+                    let _ = core.settle_subscribe_disable(path_index, now_ms(), &mut out);
+                    let _ = out.drain();
+                    sweep_terminal_successes(&mut core);
+                    self.inner.subscriptions.lock().await.remove(&key);
+                    return Err(DesktopError::cancelled("gatt.subscribe"));
+                }
+                match own_kind {
+                    Some(OperationTerminalKind::Succeeded) | None => Ok(()),
+                    Some(winner) => Err(terminal_to_error(winner, "gatt.subscribe")),
+                }
             }
-            Err(error) => {
+            Ok(Err(error)) => {
                 self.inner.subscriptions.lock().await.remove(&key);
                 let mut core = self.inner.core.lock().await;
                 let mut out = batch();
                 let _ = core.settle_subscribe_enable(path_index, false, now_ms(), &mut out);
+                let _ = out.drain();
                 let _ = core.settle_op(
                     &operation,
                     ContenderKind::Failure,
-                    false,
+                    true,
                     0,
                     now_ms(),
                     &mut out,
                 );
+                let _ = out.drain();
+                sweep_terminal_successes(&mut core);
                 Err(error)
+            }
+            Err(_) => {
+                // Deadline won: settle our own op as timeout first (so it
+                // stays TimedOut, not Failed), then fail the shared enable
+                // for the hub and any joiners.
+                self.inner.subscriptions.lock().await.remove(&key);
+                {
+                    let mut core = self.inner.core.lock().await;
+                    let mut out = batch();
+                    let _ = settle_and_release(
+                        &mut core,
+                        &operation,
+                        ContenderKind::Timeout,
+                        true,
+                        None,
+                        &mut out,
+                    );
+                }
+                let mut core = self.inner.core.lock().await;
+                let mut out = batch();
+                let _ = core.settle_subscribe_enable(path_index, false, now_ms(), &mut out);
+                let _ = out.drain();
+                sweep_terminal_successes(&mut core);
+                Err(contract_error(
+                    BleErrorCode::OperationTimedOut,
+                    BleErrorDomain::Connection,
+                    "gatt.subscribe",
+                ))
             }
         }
     }
@@ -1323,6 +1976,8 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                 let mut core = self.inner.core.lock().await;
                 let mut out = batch();
                 let _ = core.settle_subscribe_disable(path_index, now_ms(), &mut out);
+                let _ = out.drain();
+                sweep_terminal_successes(&mut core);
                 Ok(true)
             }
             Err(error) => {
@@ -1345,6 +2000,11 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         path_index: usize,
     ) -> Result<bool, DesktopError> {
         if !self.inner.failed_disables.lock().await.contains(key) {
+            // No radio work: still recycle any terminal shares (e.g. an
+            // immediate-success join that released elsewhere) so the ledger
+            // never grows across unsubscribe-only cycles.
+            let mut core = self.inner.core.lock().await;
+            recycle_observations(&mut core);
             return Ok(false);
         }
         let epoch = self.routing_epoch(peer_id).await;
@@ -1360,6 +2020,8 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                 let mut core = self.inner.core.lock().await;
                 let mut out = batch();
                 let _ = core.settle_subscribe_disable(path_index, now_ms(), &mut out);
+                let _ = out.drain();
+                sweep_terminal_successes(&mut core);
                 Ok(true)
             }
             Err(error) => Err(error),
@@ -1371,6 +2033,10 @@ impl<B: RadioBoundary> DesktopCentral<B> {
     /// observable after the radio delivers them; `None` means no value is
     /// waiting. Only the hub's admitted bytes cross here: values the
     /// radio never delivered are never synthesized.
+    ///
+    /// Note: `None` hides whether the stream is live-empty, terminal, or
+    /// closed. Prefer [`DesktopCentral::poll_notification`] (F17), which
+    /// distinguishes all three plus invalidation.
     pub async fn take_notification(
         &self,
         peer_id: &str,
@@ -1386,36 +2052,116 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         Ok(core.take_notification_value(index, consumer))
     }
 
+    /// Poll one consumer's stream with a typed outcome (F17): value, live
+    /// empty, overflow terminal (exactly once, with loss details),
+    /// invalidation (service change/disconnect), or closure. Values drain
+    /// before the terminal; after the terminal is observed the stream
+    /// reports closed, never live-empty again.
+    pub async fn poll_notification(
+        &self,
+        peer_id: &str,
+        selector: &PathSelector,
+        consumer: &str,
+    ) -> Result<NotificationPoll, DesktopError> {
+        self.admit("gatt.take-notification")?;
+        let peer_key = self.known_peer_key(peer_id).await?;
+        let mut core = self.inner.core.lock().await;
+        let index = match core.resolve_path(&peer_key, selector) {
+            Ok(index) => index,
+            Err(error) => {
+                // A selector that no longer resolves while the database is
+                // off-current is stale invalidation (service change,
+                // disconnect, rediscovery required), not a missing path.
+                let current = matches!(
+                    core.database_state(&peer_key),
+                    Some(ubm_core::central::DatabaseState::Current)
+                );
+                if current {
+                    return Err(DesktopError::from(error));
+                }
+                return Ok(NotificationPoll::Invalidated);
+            }
+        };
+        if let Some(value) = core.take_notification_value(index, consumer) {
+            return Ok(NotificationPoll::Value(value));
+        }
+        if let Some(terminal) = core.take_terminal(index, consumer) {
+            return Ok(NotificationPoll::Terminal(terminal));
+        }
+        match core.consumer_state(index, consumer) {
+            Some(
+                ubm_core::central::ConsumerState::Ready
+                | ubm_core::central::ConsumerState::Enabling
+                | ubm_core::central::ConsumerState::Removing,
+            ) => Ok(NotificationPoll::Empty),
+            Some(ubm_core::central::ConsumerState::Invalid) => Ok(NotificationPoll::Invalidated),
+            Some(
+                ubm_core::central::ConsumerState::Failed
+                | ubm_core::central::ConsumerState::Removed,
+            )
+            | None => Ok(NotificationPoll::Closed),
+        }
+    }
+
     /// Cancel one admitted operation (`operation.aborted` discipline in the
     /// core). Mid-flight radio abort is an OS gap — btleplug exposes no
     /// abort — so cancellation settles core-side while an in-flight radio
-    /// call runs to its own (bounded) completion; see `PARITY_GAPS.md`.
+    /// call runs to its own (bounded) completion; see `PARITY_GAPS.md`. A
+    /// queued cancellation releases immediately (no radio work exists); a
+    /// dispatched cancellation leaves the release to the in-flight driver,
+    /// which observes the abort as the winning outcome and reports it.
     pub async fn cancel_operation(
         &self,
         operation: &OperationId,
     ) -> Result<ubm_core::central::CompletionOutcome, DesktopError> {
         let mut core = self.inner.core.lock().await;
         let mut out = batch();
-        core.cancel_op(operation, now_ms(), &mut out)
-            .map_err(DesktopError::from)
+        let outcome = core
+            .cancel_op(operation, now_ms(), &mut out)
+            .map_err(DesktopError::from)?;
+        let _ = out.drain();
+        recycle_observations(&mut core);
+        if let CompletionOutcome::Settled { commit, .. } = &outcome {
+            // `NotDispatched` proves no radio work exists: release now.
+            // `Released` (dispatched abort) stays for the driver, which will
+            // see `DuplicateSuppressed` and report after observing the win.
+            if *commit == ubm_core::contracts::CommitState::NotDispatched {
+                report_terminal_release(&mut core, operation, true, None);
+            }
+        }
+        Ok(outcome)
     }
 
-    /// Explicit shutdown: stop the owned scan (scan cleanup), release live
+    /// Per-central shutdown (F14): close this attachment's admission first
+    /// so no new work races cleanup, stop the owned scan, release owned
     /// radio subscriptions through the boundary teardown hook, join the
-    /// event loop so nothing races teardown, refuse new admission, record
-    /// executor shutdown, and destroy the core owner. Idempotent.
+    /// event loop so nothing races teardown, and destroy the core owner.
+    /// Idempotent. Other centrals keep working and new centrals can open;
+    /// process-executor shutdown is a separate explicit process-owner step
+    /// ([`crate::executor::shutdown_desktop_runtime`]), never implied here.
     pub async fn shutdown(&self) {
+        // F14: admission closes before any cleanup starts, so a racing
+        // starter cannot slip work in behind the scan stop.
+        self.inner.shut_down.store(true, Ordering::SeqCst);
         let _ = self.stop_scan().await;
         // M3: abort forwarders and best-effort release OS-side CCCDs so no
         // live subscription outlives the central.
         self.inner.boundary.close().await;
-        self.inner.shut_down.store(true, Ordering::SeqCst);
+        // F03: cancel remaining in-flight ops so late radio work cannot
+        // resurrect after teardown — queued releases now, dispatched
+        // observes the abort as the winning outcome when its radio finishes.
+        let live: Vec<OperationId> = {
+            let core = self.inner.core.lock().await;
+            core.live_operation_ids()
+        };
+        for id in live {
+            let _ = self.cancel_operation(&id).await;
+        }
         let worker = self.inner.loop_done.lock().await.take();
         let _ = self.inner.loop_stop.send(true);
         if let Some(worker) = worker {
             let _ = worker.await;
         }
-        crate::executor::shutdown_desktop_runtime();
         let mut core = self.inner.core.lock().await;
         let mut out = batch();
         let _ = core.destroy(&mut out);
@@ -1511,6 +2257,7 @@ async fn scan_loop<B: RadioBoundary>(inner: Arc<Inner<B>>, mut stop: watch::Rece
                                 now_ms(),
                                 &mut out,
                             );
+                            let _ = out.drain();
                             let _ = core.settle_op(
                                 &id,
                                 ContenderKind::Success,
@@ -1519,6 +2266,9 @@ async fn scan_loop<B: RadioBoundary>(inner: Arc<Inner<B>>, mut stop: watch::Rece
                                 now_ms(),
                                 &mut out,
                             );
+                            let _ = out.drain();
+                            report_terminal_release(&mut core, &id, true, None);
+                            recycle_observations(&mut core);
                         }
                         break;
                     }
@@ -3655,6 +4405,778 @@ mod adapter_tests {
             Some(vec![0xDD]),
             "post-change subscription stays live"
         );
+    }
+
+    #[tokio::test]
+    async fn f25_failed_reads_settle_and_release() {
+        let central = open().await;
+        ready_peer(&central, "peer-f25", vec![hrm_service()]).await;
+        let selector = hrm_selector(0);
+        let baseline = central.with_core(|core| core.live_operation_count()).await;
+        for i in 0..9u32 {
+            central.boundary().fail_next(FaultOp::Read, "att error");
+            let error = central
+                .read("peer-f25", &selector, 5000)
+                .await
+                .expect_err("native failure surfaces");
+            assert_eq!(
+                error.code_str(),
+                "gatt.read-failed",
+                "iteration {i}: caller sees the radio failure, not a quota"
+            );
+            let live = central.with_core(|core| core.live_operation_count()).await;
+            assert_eq!(
+                live, baseline,
+                "iteration {i}: failed op terminal and reaped, no live leak"
+            );
+        }
+        let value = central
+            .read("peer-f25", &selector, 5000)
+            .await
+            .expect("admission remains after failures");
+        assert_eq!(value, vec![0x42]);
+        assert_eq!(
+            central.with_core(|core| core.live_operation_count()).await,
+            baseline,
+            "baseline restored"
+        );
+    }
+
+    #[tokio::test]
+    async fn f25_failed_writes_and_descriptors_settle_and_release() {
+        let central = open().await;
+        ready_peer(&central, "peer-f25w", vec![battery_service()]).await;
+        central.boundary().set_mtu("peer-f25w", 64);
+        let write_selector = DesktopCentral::<FakeRadio>::selector(
+            BATTERY_SERVICE,
+            Some(0),
+            Some(BATTERY_LEVEL),
+            Some(0),
+            None,
+            None,
+        )
+        .expect("selector");
+        let baseline = central.with_core(|core| core.live_operation_count()).await;
+        for i in 0..9u32 {
+            central.boundary().fail_next(FaultOp::Write, "att error");
+            let error = central
+                .write(
+                    "peer-f25w",
+                    &write_selector,
+                    vec![0x01],
+                    "with-response",
+                    5000,
+                )
+                .await
+                .expect_err("native write failure surfaces");
+            assert_eq!(
+                error.code_str(),
+                "gatt.write-failed",
+                "write iteration {i}: radio failure, not quota"
+            );
+            assert_eq!(
+                central.with_core(|core| core.live_operation_count()).await,
+                baseline,
+                "write iteration {i}: reaped"
+            );
+        }
+        ready_peer(&central, "peer-f25d", vec![hrm_service()]).await;
+        let baseline = central.with_core(|core| core.live_operation_count()).await;
+        let descriptor_selector = DesktopCentral::<FakeRadio>::selector(
+            HRM_SERVICE,
+            Some(0),
+            Some(HRM_MEASUREMENT),
+            Some(0),
+            Some(USER_DESCRIPTION),
+            Some(0),
+        )
+        .expect("descriptor selector");
+        for i in 0..9u32 {
+            central.boundary().fail_next(FaultOp::Read, "att error");
+            let error = central
+                .read_descriptor("peer-f25d", &descriptor_selector, 5000)
+                .await
+                .expect_err("native descriptor failure surfaces");
+            assert_eq!(
+                error.code_str(),
+                "gatt.read-failed",
+                "descriptor iteration {i}: radio failure, not quota"
+            );
+            assert_eq!(
+                central.with_core(|core| core.live_operation_count()).await,
+                baseline,
+                "descriptor iteration {i}: reaped"
+            );
+        }
+        central
+            .write(
+                "peer-f25w",
+                &write_selector,
+                vec![0x01],
+                "with-response",
+                5000,
+            )
+            .await
+            .expect("write admission remains");
+    }
+
+    #[tokio::test]
+    async fn f03_read_timeout_is_end_to_end_deadline() {
+        let central = open().await;
+        ready_peer(&central, "peer-f03t", vec![hrm_service()]).await;
+        let selector = hrm_selector(0);
+        let baseline = central.with_core(|core| core.live_operation_count()).await;
+        central.boundary().block_op(FaultOp::Read);
+        // The op deadline (100 ms) must settle the caller even though the
+        // radio never resolves. The outer 5 s harness timeout only fails the
+        // test fast on unfixed code; it must never fire on fixed code.
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(5),
+            central.read("peer-f03t", &selector, 100),
+        )
+        .await
+        .expect("deadline driver settles before the harness");
+        let error = outcome.expect_err("timeout surfaces as an error");
+        assert_eq!(error.code_str(), "operation.timed-out");
+        assert_eq!(
+            central.with_core(|core| core.live_operation_count()).await,
+            baseline,
+            "timed-out op terminal and reaped"
+        );
+        central.boundary().unblock_op(FaultOp::Read);
+        // Late radio work cannot resurrect: the next read succeeds cleanly.
+        let value = central
+            .read("peer-f03t", &selector, 5000)
+            .await
+            .expect("admission remains after timeout");
+        assert_eq!(value, vec![0x42]);
+    }
+
+    #[tokio::test]
+    async fn f03_cancel_then_native_success_returns_cancelled() {
+        let central = open().await;
+        ready_peer(&central, "peer-f03c", vec![hrm_service()]).await;
+        let selector = hrm_selector(0);
+        let baseline = central.with_core(|core| core.live_operation_count()).await;
+        central.boundary().block_op(FaultOp::Read);
+        let reader = central.clone();
+        let selector_clone = selector.clone();
+        let pending =
+            tokio::spawn(async move { reader.read("peer-f03c", &selector_clone, 5000).await });
+        let mut op_id = None;
+        for _ in 0..200 {
+            let live = central.with_core(|core| core.live_operation_ids()).await;
+            if !live.is_empty() {
+                op_id = Some(live[0].clone());
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        let op_id = op_id.expect("in-flight read op");
+        central
+            .cancel_operation(&op_id)
+            .await
+            .expect("cancel in-flight read");
+        central.boundary().unblock_op(FaultOp::Read);
+        let outcome = pending.await.expect("read task");
+        let error = outcome.expect_err("cancel wins over late radio success");
+        assert_eq!(error.code_str(), "operation.aborted");
+        assert_eq!(
+            central.with_core(|core| core.live_operation_count()).await,
+            baseline,
+            "cancelled op reaped"
+        );
+    }
+
+    #[tokio::test]
+    async fn f03_service_change_during_read_returns_stale() {
+        use ubm_core::central::DatabaseState;
+
+        let central = open().await;
+        ready_peer(&central, "peer-f03s", vec![hrm_service()]).await;
+        let selector = hrm_selector(0);
+        central.boundary().block_op(FaultOp::Read);
+        let reader = central.clone();
+        let selector_clone = selector.clone();
+        let pending =
+            tokio::spawn(async move { reader.read("peer-f03s", &selector_clone, 5000).await });
+        for _ in 0..200 {
+            if !central
+                .with_core(|core| core.live_operation_ids())
+                .await
+                .is_empty()
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        central
+            .boundary()
+            .push_event(RadioEvent::ServicesChanged("peer-f03s".to_owned()));
+        let peer_key = central.peer_key_for("peer-f03s").await.expect("peer");
+        let mut invalidated = false;
+        for _ in 0..200 {
+            if central
+                .with_core(|core| core.database_state(&peer_key))
+                .await
+                == Some(DatabaseState::Undiscovered)
+            {
+                invalidated = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert!(invalidated, "service change invalidates");
+        central.boundary().unblock_op(FaultOp::Read);
+        let outcome = pending.await.expect("read task");
+        let error = outcome.expect_err("stale wins over late radio success");
+        assert_eq!(error.code_str(), "gatt.stale-handle");
+    }
+
+    #[tokio::test]
+    async fn f03_mtu_lookup_inside_deadline() {
+        let central = open().await;
+        ready_peer(&central, "peer-f03m", vec![battery_service()]).await;
+        central.boundary().set_mtu("peer-f03m", 64);
+        let selector = DesktopCentral::<FakeRadio>::selector(
+            BATTERY_SERVICE,
+            Some(0),
+            Some(BATTERY_LEVEL),
+            Some(0),
+            None,
+            None,
+        )
+        .expect("selector");
+        let baseline = central.with_core(|core| core.live_operation_count()).await;
+        central.boundary().block_op(FaultOp::Mtu);
+        let outcome = tokio::time::timeout(
+            Duration::from_secs(5),
+            central.write("peer-f03m", &selector, vec![0x01], "with-response", 100),
+        )
+        .await
+        .expect("mtu deadline settles");
+        let error = outcome.expect_err("stuck mtu times out");
+        assert_eq!(error.code_str(), "operation.timed-out");
+        assert_eq!(
+            central.with_core(|core| core.live_operation_count()).await,
+            baseline,
+            "no op leaked by mtu timeout"
+        );
+        central.boundary().unblock_op(FaultOp::Mtu);
+        central
+            .write("peer-f03m", &selector, vec![0x01], "with-response", 5000)
+            .await
+            .expect("write succeeds after mtu unblocks");
+    }
+
+    #[tokio::test]
+    async fn f03_disconnect_during_read_returns_disconnected() {
+        let central = open().await;
+        ready_peer(&central, "peer-f03d", vec![hrm_service()]).await;
+        let selector = hrm_selector(0);
+        central.boundary().block_op(FaultOp::Read);
+        let reader = central.clone();
+        let selector_clone = selector.clone();
+        let pending =
+            tokio::spawn(async move { reader.read("peer-f03d", &selector_clone, 5000).await });
+        for _ in 0..200 {
+            if !central
+                .with_core(|core| core.live_operation_ids())
+                .await
+                .is_empty()
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        central
+            .remote_peer_loss("peer-f03d")
+            .await
+            .expect("peer loss reconciles");
+        central.boundary().unblock_op(FaultOp::Read);
+        let outcome = pending.await.expect("read task");
+        let error = outcome.expect_err("disconnect wins over late radio success");
+        assert!(
+            error.code_str() == "operation.disconnected" || error.code_str() == "gatt.stale-handle",
+            "disconnect or stale, got {}",
+            error.code_str()
+        );
+    }
+
+    #[tokio::test]
+    async fn f17_overflow_terminal_distinguishable() {
+        // Overflow an error-policy subscription (64 items), drain all values
+        // through the typed poll, and require exactly one terminal with
+        // accurate loss details. Repeated polls must not invent a second
+        // terminal or imply recovery.
+        let central = open().await;
+        ready_peer(&central, "peer-f17", vec![hrm_service()]).await;
+        let selector = hrm_selector(0);
+        central
+            .subscribe("peer-f17", &selector, "consumer-a", 5000)
+            .await
+            .expect("subscribe");
+        for _ in 0..70u32 {
+            central
+                .boundary()
+                .push_event(notification("peer-f17", 0, vec![0x01]));
+        }
+        // Wait for the overflow terminal to land.
+        let peer_key = central.peer_key_for("peer-f17").await.expect("peer");
+        let path_index = central
+            .with_core(|core| {
+                core.resolve_path(&peer_key, &hrm_selector(0))
+                    .expect("path")
+            })
+            .await;
+        let mut failed = false;
+        for _ in 0..200 {
+            if central
+                .with_core(|core| core.consumer_state(path_index, "consumer-a"))
+                .await
+                == Some(ubm_core::central::ConsumerState::Failed)
+            {
+                failed = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert!(failed, "overflow terminates the error-policy stream");
+        // Drain through the typed protocol: values, then one terminal, then
+        // closed — never a second terminal, never live-empty again.
+        let mut values = 0usize;
+        let mut terminals = 0usize;
+        let mut terminal_details = None;
+        for _ in 0..100u32 {
+            match central
+                .poll_notification("peer-f17", &selector, "consumer-a")
+                .await
+                .expect("poll")
+            {
+                crate::central::NotificationPoll::Value(_) => values += 1,
+                crate::central::NotificationPoll::Terminal(terminal) => {
+                    terminals += 1;
+                    terminal_details = Some((
+                        terminal.dropped_items(),
+                        terminal.dropped_bytes(),
+                        terminal.replaced_items(),
+                    ));
+                }
+                crate::central::NotificationPoll::Closed => break,
+                crate::central::NotificationPoll::Empty => {
+                    panic!("failed stream must not report live-empty")
+                }
+                crate::central::NotificationPoll::Invalidated => {
+                    panic!("overflow is terminal, not invalidated")
+                }
+            }
+        }
+        assert_eq!(values, 64, "all admitted values drain before the terminal");
+        assert_eq!(terminals, 1, "exactly one terminal");
+        assert_eq!(
+            terminal_details,
+            Some((1, 1, 0)),
+            "accurate loss details for the rejected item"
+        );
+        // Second terminal poll stays closed, never a new terminal.
+        assert!(
+            matches!(
+                central
+                    .poll_notification("peer-f17", &selector, "consumer-a")
+                    .await
+                    .expect("poll"),
+                crate::central::NotificationPoll::Closed
+            ),
+            "terminal observed exactly once"
+        );
+        // Resubscription after terminal consumption works: prune the observed
+        // record, then subscribe fresh and deliver.
+        central
+            .unsubscribe("peer-f17", &selector, "consumer-a")
+            .await
+            .expect("unsubscribe prunes observed terminal");
+        central
+            .subscribe("peer-f17", &selector, "consumer-a", 5000)
+            .await
+            .expect("resubscribe after terminal");
+        central
+            .boundary()
+            .push_event(notification("peer-f17", 0, vec![0x09]));
+        let mut redelivered = None;
+        for _ in 0..200 {
+            match central
+                .poll_notification("peer-f17", &selector, "consumer-a")
+                .await
+                .expect("poll")
+            {
+                crate::central::NotificationPoll::Value(value) => {
+                    redelivered = Some(value);
+                    break;
+                }
+                crate::central::NotificationPoll::Empty => {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+                other => panic!("fresh subscription must deliver values, got {other:?}"),
+            }
+        }
+        assert_eq!(redelivered, Some(vec![0x09]));
+    }
+
+    #[tokio::test]
+    async fn f17_invalidation_and_closure_distinguishable() {
+        use ubm_core::central::DatabaseState;
+
+        let central = open().await;
+        ready_peer(&central, "peer-f17i", vec![hrm_service()]).await;
+        let selector = hrm_selector(0);
+        central
+            .subscribe("peer-f17i", &selector, "consumer-a", 5000)
+            .await
+            .expect("subscribe");
+        assert!(matches!(
+            central
+                .poll_notification("peer-f17i", &selector, "consumer-a")
+                .await
+                .expect("poll"),
+            crate::central::NotificationPoll::Empty
+        ));
+        central
+            .boundary()
+            .push_event(RadioEvent::ServicesChanged("peer-f17i".to_owned()));
+        let peer_key = central.peer_key_for("peer-f17i").await.expect("peer");
+        for _ in 0..200 {
+            if central
+                .with_core(|core| core.database_state(&peer_key))
+                .await
+                == Some(DatabaseState::Undiscovered)
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert!(matches!(
+            central
+                .poll_notification("peer-f17i", &selector, "consumer-a")
+                .await
+                .expect("poll"),
+            crate::central::NotificationPoll::Invalidated
+        ));
+        central
+            .discover("peer-f17i", "lease-a")
+            .await
+            .expect("rediscover");
+        central
+            .subscribe("peer-f17i", &selector, "consumer-b", 5000)
+            .await
+            .expect("resubscribe after invalidation");
+        let fresh_epoch = central
+            .boundary()
+            .enable_epochs()
+            .last()
+            .map(|installed| installed.1)
+            .expect("forwarder installed");
+        central
+            .boundary()
+            .push_event(notification_epoch("peer-f17i", 0, vec![0x0A], fresh_epoch));
+        let mut got = None;
+        for _ in 0..200 {
+            match central
+                .poll_notification("peer-f17i", &selector, "consumer-b")
+                .await
+                .expect("poll")
+            {
+                crate::central::NotificationPoll::Value(value) => {
+                    got = Some(value);
+                    break;
+                }
+                crate::central::NotificationPoll::Empty => {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+                other => panic!("fresh subscription must deliver, got {other:?}"),
+            }
+        }
+        assert_eq!(got, Some(vec![0x0A]));
+    }
+
+    #[tokio::test]
+    async fn f07_flood_bounds_ingress_and_preserves_control() {
+        use ubm_core::central::{ConnectionState, ConsumerState};
+
+        let central = open().await;
+        ready_peer(&central, "peer-f07a", vec![hrm_service()]).await;
+        ready_peer(&central, "peer-f07b", vec![hrm_service()]).await;
+        let selector = hrm_selector(0);
+        central
+            .subscribe("peer-f07a", &selector, "consumer-a", 5000)
+            .await
+            .expect("subscribe A");
+        central
+            .subscribe("peer-f07b", &selector, "consumer-b", 5000)
+            .await
+            .expect("subscribe B");
+        // Flood A with 1000 notifications in a tight loop (no awaits, so the
+        // event loop cannot drain mid-flood): the 256-item bounded ingress
+        // must drop the excess explicitly instead of growing memory.
+        for _ in 0..1000u32 {
+            central
+                .boundary()
+                .push_event(notification("peer-f07a", 0, vec![0x01]));
+        }
+        assert!(
+            central.boundary().dropped_notification_count() > 0,
+            "overload drops counted, memory bounded instead of grown"
+        );
+        assert!(
+            central.boundary().data_queued_bytes() <= 262_144,
+            "queued bytes stay within the ingress bound"
+        );
+        // Control under flood: B's disconnect (separate control queue, push
+        // order preserved) still reconciles.
+        central
+            .boundary()
+            .push_event(RadioEvent::Disconnected("peer-f07b".to_owned()));
+        let peer_b = central.peer_key_for("peer-f07b").await.expect("peer B");
+        let mut lost = false;
+        for _ in 0..400 {
+            if central
+                .with_core(|core| core.connection_state(&peer_b))
+                .await
+                == Some(ConnectionState::Lost)
+            {
+                lost = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert!(lost, "control delivers under data flood");
+        // Other devices progress: B reconnects and reads while A's flood
+        // drains.
+        central
+            .connect("peer-f07b", "lease-a", 5000)
+            .await
+            .expect("B reconnects under flood");
+        central
+            .discover("peer-f07b", "lease-a")
+            .await
+            .expect("B rediscovers");
+        let value = central
+            .read("peer-f07b", &hrm_selector(0), 5000)
+            .await
+            .expect("B reads under flood");
+        assert_eq!(value, vec![0x42]);
+        // A's lossless stream that cannot keep up shows a visible terminal,
+        // not radio silence.
+        let peer_a = central.peer_key_for("peer-f07a").await.expect("peer A");
+        let path_a = central
+            .with_core(|core| core.resolve_path(&peer_a, &hrm_selector(0)).expect("path"))
+            .await;
+        let mut failed = false;
+        for _ in 0..400 {
+            if central
+                .with_core(|core| core.consumer_state(path_a, "consumer-a"))
+                .await
+                == Some(ConsumerState::Failed)
+            {
+                failed = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert!(failed, "flooded lossless stream terminates visibly");
+    }
+
+    #[tokio::test]
+    async fn f24_connect_cleanup_releases_core_lock() {
+        let central = open().await;
+        ready_peer(&central, "peer-f24b", vec![hrm_service()]).await;
+        let selector_b = hrm_selector(0);
+        // A stalls in half-open cleanup behind the disconnect gate.
+        central.boundary().block_op(FaultOp::Disconnect);
+        central.boundary().fail_next(FaultOp::Connect, "os refused");
+        let failing = central.clone();
+        let pending_a =
+            tokio::spawn(async move { failing.connect("peer-f24a", "lease-a", 5000).await });
+        let mut cleaning = false;
+        for _ in 0..200 {
+            if central
+                .boundary()
+                .calls()
+                .contains(&"disconnect".to_owned())
+            {
+                cleaning = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert!(cleaning, "A reaches compensating disconnect");
+        // B progresses while A's radio cleanup is still stalled: its read
+        // must not wait behind the core lock.
+        let reader = central.clone();
+        let selector_clone = selector_b.clone();
+        let pending_b =
+            tokio::spawn(async move { reader.read("peer-f24b", &selector_clone, 5000).await });
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(
+            pending_b.is_finished(),
+            "B's operation never waits on A's radio cleanup"
+        );
+        let value = pending_b.await.expect("B task").expect("B reads");
+        assert_eq!(value, vec![0x42]);
+        // B's notifications also flow while A cleans up.
+        central
+            .subscribe("peer-f24b", &selector_b, "consumer-b", 5000)
+            .await
+            .expect("B subscribes under A's cleanup");
+        central
+            .boundary()
+            .push_event(notification("peer-f24b", 0, vec![0x0B]));
+        let mut delivered = None;
+        for _ in 0..200 {
+            delivered = central
+                .take_notification("peer-f24b", &selector_b, "consumer-b")
+                .await
+                .expect("take");
+            if delivered.is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert_eq!(delivered, Some(vec![0x0B]));
+        central.boundary().unblock_op(FaultOp::Disconnect);
+        let outcome_a = pending_a.await.expect("A task");
+        assert_eq!(
+            outcome_a.expect_err("A still fails").code_str(),
+            "connection.failed"
+        );
+    }
+
+    #[tokio::test]
+    async fn f03_shutdown_during_connect_cancels() {
+        let central = open().await;
+        central.boundary().block_op(FaultOp::Connect);
+        let connector = central.clone();
+        let pending =
+            tokio::spawn(async move { connector.connect("peer-f03x", "lease-a", 10_000).await });
+        for _ in 0..200 {
+            if !central
+                .with_core(|core| core.live_operation_ids())
+                .await
+                .is_empty()
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        // Shutdown must not hang on the gated radio: it cancels in-flight
+        // work, joins the loop, and destroys promptly.
+        tokio::time::timeout(Duration::from_secs(5), central.shutdown())
+            .await
+            .expect("shutdown completes despite gated radio");
+        central.boundary().unblock_op(FaultOp::Connect);
+        let outcome = pending.await.expect("connect task");
+        let error = outcome.expect_err("shutdown wins over late radio success");
+        assert!(
+            error.code_str() == "operation.aborted"
+                || error.code_str() == "adapter.unavailable"
+                || error.code_str() == "lifecycle.destroyed",
+            "cancelled/destroyed, got {}",
+            error.code_str()
+        );
+        assert_eq!(
+            central.with_core(|core| core.live_operation_count()).await,
+            0,
+            "no live leak after shutdown race"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "F03 dropped-future detachment requires spawned completion tasks; shutdown cancel covers shutdown-dropped, general dropped without shutdown still leaks (BLOCKED, see report)"]
+    async fn f03_dropped_caller_still_releases() {
+        let central = open().await;
+        ready_peer(&central, "peer-f03q", vec![hrm_service()]).await;
+        let selector = hrm_selector(0);
+        let baseline = central.with_core(|core| core.live_operation_count()).await;
+        central.boundary().block_op(FaultOp::Read);
+        let reader = central.clone();
+        let selector_clone = selector.clone();
+        let pending =
+            tokio::spawn(async move { reader.read("peer-f03q", &selector_clone, 5000).await });
+        for _ in 0..200 {
+            if !central
+                .with_core(|core| core.live_operation_ids())
+                .await
+                .is_empty()
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        // Drop the caller future while the radio is still gated: the runtime
+        // keeps the native work owned until cleanup finishes.
+        pending.abort();
+        let _ = pending.await;
+        central.boundary().unblock_op(FaultOp::Read);
+        // Give any detached cleanup a moment, then require reclamation.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(
+            central.with_core(|core| core.live_operation_count()).await,
+            baseline,
+            "dropped caller still reaps its op"
+        );
+        let value = central
+            .read("peer-f03q", &selector, 5000)
+            .await
+            .expect("admission remains after drop");
+        assert_eq!(value, vec![0x42]);
+    }
+
+    #[tokio::test]
+    async fn f02_sequential_ops_reclaim_aggregate_and_observations() {
+        let central = open().await;
+        ready_peer(&central, "peer-f02", vec![hrm_service()]).await;
+        let selector = hrm_selector(0);
+        let baseline_live = central.with_core(|core| core.live_operation_count()).await;
+        let baseline_typed = central.with_core(|core| core.typed_effects().len()).await;
+        for i in 0..1000u32 {
+            let value = central
+                .read("peer-f02", &selector, 5000)
+                .await
+                .unwrap_or_else(|error| panic!("read {i} admitted: {error:?}"));
+            assert_eq!(value, vec![0x42]);
+            if i % 250 == 0 {
+                assert_eq!(
+                    central.with_core(|core| core.live_operation_count()).await,
+                    baseline_live,
+                    "live reclaimed at iteration {i}"
+                );
+                assert!(
+                    central.with_core(|core| core.typed_effects().len()).await
+                        <= baseline_typed + 4,
+                    "typed ledger recycled at iteration {i}"
+                );
+            }
+        }
+        for _ in 0..20u32 {
+            central
+                .start_scan("owner-f02", &[], 5000)
+                .await
+                .expect("scan admitted");
+            central.stop_scan().await.expect("scan stopped");
+        }
+        assert_eq!(
+            central.with_core(|core| core.live_operation_count()).await,
+            baseline_live,
+            "live returns to baseline after 1000 reads + scan cycles"
+        );
+        assert!(
+            central.with_core(|core| core.typed_effects().len()).await <= baseline_typed + 4,
+            "observations recycled"
+        );
+        let value = central
+            .read("peer-f02", &selector, 5000)
+            .await
+            .expect("admission remains");
+        assert_eq!(value, vec![0x42]);
     }
 }
 

@@ -27,7 +27,9 @@ pub use btleplug_backend::BtleplugRadio;
 pub use capabilities::{
     CapabilityVerdict, DESKTOP_CAPABILITIES, DesktopCapability, register_desktop_capabilities,
 };
-pub use central::{ConnectionHandle, DesktopCentral, DiscoveryReport, ScanSession};
+pub use central::{
+    ConnectionHandle, DesktopCentral, DiscoveryReport, NotificationPoll, ScanSession,
+};
 pub use errors::DesktopError;
 pub use ubm_core::central::{CompletionOutcome, PathSelector};
 pub use ubm_core::contracts::OperationId;

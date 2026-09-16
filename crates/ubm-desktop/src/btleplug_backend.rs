@@ -14,7 +14,10 @@
 //! `PARITY_GAPS.md`).
 
 use std::collections::{BTreeSet, HashMap};
-use std::sync::Mutex as StdMutex;
+use std::sync::{
+    Arc, Mutex as StdMutex,
+    atomic::{AtomicU64, Ordering},
+};
 
 use btleplug::api::{
     Central as _, CentralEvent, CharPropFlags, Characteristic, Descriptor, Manager as _,
@@ -50,14 +53,23 @@ struct ForwarderEntry {
     characteristic_occurrence: u64,
 }
 
+/// Bounded notification ingress (F07): 256 items / 256 KiB bytes at the first
+/// owned handoff. Forwarders `try_send` (never block the runtime worker);
+/// overload drops are counted, never silent, and adapter control (connect,
+/// disconnect, service-change) travels a separate stream so it never starves.
+const NOTIFICATION_CAP: usize = 256;
+const NOTIFICATION_BYTES: u64 = 262_144;
+
 /// Production radio backend over one btleplug adapter.
 pub struct BtleplugRadio {
     adapter: Adapter,
     adapter_label: String,
     spawn: tokio::runtime::Handle,
     events: Mutex<Option<EventStream>>,
-    notifications: mpsc::UnboundedSender<RadioEvent>,
-    notification_rx: Mutex<mpsc::UnboundedReceiver<RadioEvent>>,
+    notifications: mpsc::Sender<RadioEvent>,
+    notification_rx: Mutex<mpsc::Receiver<RadioEvent>>,
+    ingress_bytes: Arc<AtomicU64>,
+    ingress_dropped: Arc<AtomicU64>,
     forwarders: StdMutex<HashMap<String, ForwarderEntry>>,
 }
 
@@ -98,7 +110,7 @@ impl BtleplugRadio {
         let events = adapter.events().await.map_err(|error| {
             DesktopError::adapter_unavailable("adapter.events").with_detail(error.to_string())
         })?;
-        let (notifications, notification_rx) = mpsc::unbounded_channel();
+        let (notifications, notification_rx) = mpsc::channel(NOTIFICATION_CAP);
         Ok(Self {
             adapter,
             adapter_label,
@@ -106,8 +118,22 @@ impl BtleplugRadio {
             events: Mutex::new(Some(events)),
             notifications,
             notification_rx: Mutex::new(notification_rx),
+            ingress_bytes: Arc::new(AtomicU64::new(0)),
+            ingress_dropped: Arc::new(AtomicU64::new(0)),
             forwarders: StdMutex::new(HashMap::new()),
         })
+    }
+
+    /// Bytes currently queued in the bounded notification ingress (F07).
+    #[must_use]
+    pub fn ingress_queued_bytes(&self) -> u64 {
+        self.ingress_bytes.load(Ordering::Relaxed)
+    }
+
+    /// Notifications dropped by explicit ingress overload (F07).
+    #[must_use]
+    pub fn ingress_dropped(&self) -> u64 {
+        self.ingress_dropped.load(Ordering::Relaxed)
     }
 
     async fn peripheral_by_id(&self, peer_id: &str) -> Result<Peripheral, DesktopError> {
@@ -190,7 +216,12 @@ impl BtleplugRadio {
 
     async fn recv_notification(&self) -> Option<RadioEvent> {
         let mut queue = self.notification_rx.lock().await;
-        queue.recv().await
+        let event = queue.recv().await?;
+        if let RadioEvent::Notification { ref value, .. } = event {
+            self.ingress_bytes
+                .fetch_sub(value.len() as u64, Ordering::Relaxed);
+        }
+        Some(event)
     }
 
     /// Abort every live forwarder for one peer (F10): after a disconnect
@@ -631,6 +662,8 @@ impl RadioBoundary for BtleplugRadio {
                 .await
                 .map_err(|error| DesktopError::subscribe_failed(error.to_string()))?;
             let sender = self.notifications.clone();
+            let queued_bytes = Arc::clone(&self.ingress_bytes);
+            let dropped = Arc::clone(&self.ingress_dropped);
             let peer = peer_id.to_owned();
             let service = service_uuid.to_owned();
             let instance_characteristic = characteristic_uuid.to_owned();
@@ -650,6 +683,16 @@ impl RadioBoundary for BtleplugRadio {
                     if note.uuid != own_uuid {
                         continue;
                     }
+                    // F07: bounded ingress at the first owned handoff —
+                    // `try_send` never blocks the runtime worker, overload
+                    // drops are counted (never silent), and the CCCD stays
+                    // enabled so later values still flow after the drain.
+                    let len = note.value.len() as u64;
+                    if queued_bytes.load(Ordering::Relaxed).saturating_add(len) > NOTIFICATION_BYTES
+                    {
+                        dropped.fetch_add(1, Ordering::Relaxed);
+                        continue;
+                    }
                     let event = RadioEvent::Notification {
                         peer_id: peer.clone(),
                         service_uuid: service.clone(),
@@ -659,10 +702,14 @@ impl RadioBoundary for BtleplugRadio {
                         epoch: installed_epoch,
                         value: note.value,
                     };
-                    // The CCCD stays enabled on send failure; the event loop
-                    // being gone is a host-teardown fact, not a radio error.
-                    if sender.send(event).is_err() {
-                        break;
+                    match sender.try_send(event) {
+                        Ok(()) => {
+                            queued_bytes.fetch_add(len, Ordering::Relaxed);
+                        }
+                        Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                            dropped.fetch_add(1, Ordering::Relaxed);
+                        }
+                        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => break,
                     }
                 }
             });

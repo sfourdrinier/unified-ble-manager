@@ -11,7 +11,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::{Arc, Mutex as StdMutex};
 
-use tokio::sync::{Notify, mpsc};
+use tokio::sync::Notify;
 
 use crate::errors::DesktopError;
 
@@ -226,16 +226,26 @@ pub trait RadioBoundary: Send + Sync + 'static {
     fn close(&self) -> impl Future<Output = ()> + Send + '_;
 }
 
+/// Test ingress bounds (F07): data (notifications) and control
+/// (advertisements, connection, service-change) travel separate bounded
+/// queues so a data flood can neither exhaust memory nor starve control.
+/// 256 data items / 256 KiB bytes holds every existing test workload (max
+/// 200 flood events) while proving overload drops under larger floods;
+/// 64 control events never fills in tests (control is low-volume).
+const FAKE_DATA_CAP: usize = 256;
+const FAKE_DATA_BYTES: u64 = 262_144;
+const FAKE_CONTROL_CAP: usize = 64;
+
 /// Deterministic scriptable boundary for unit tests. Faults are injected per
 /// operation with [`FakeRadio::fail_next`]; queued events are replayed in
-/// order through [`FakeRadio::push_event`]. Like a real OS event stream,
-/// [`RadioBoundary::next_event`] pends while the queue is empty and returns
+/// push order through [`FakeRadio::push_event`]. Like a real OS event stream,
+/// [`RadioBoundary::next_event`] pends while the queues are empty and returns
 /// `None` only after [`FakeRadio::close_events`] drops the source. Every
 /// call is recorded so tests can assert cleanup ordering (e.g. stop-scan
 /// after start failure never fires twice).
 pub struct FakeRadio {
     state: StdMutex<FakeInner>,
-    events_rx: tokio::sync::Mutex<mpsc::UnboundedReceiver<RadioEvent>>,
+    notify: Arc<Notify>,
 }
 
 /// One characteristic instance address: (peer, service uuid, service
@@ -248,7 +258,20 @@ pub type DescriptorKey = (InstanceKey, String, u64);
 
 struct FakeInner {
     faults: HashMap<FaultOp, VecDeque<String>>,
-    events_tx: Option<mpsc::UnboundedSender<RadioEvent>>,
+    /// Separate bounded queues (F07) with a shared push sequence: data
+    /// (notifications) bounded by items+bytes with explicit drops, control
+    /// (advertisements, connection, service-change) bounded by items. Drain
+    /// order follows the shared sequence (push order), so a disconnect never
+    /// jumps ahead of earlier data, yet never drops because data is full.
+    control: VecDeque<(u64, RadioEvent)>,
+    data: VecDeque<(u64, RadioEvent)>,
+    seq: u64,
+    events_closed: bool,
+    /// Bytes currently queued in the data queue (F07 item+byte bound).
+    data_bytes: u64,
+    /// Data notifications dropped by explicit overload (F07): bounded
+    /// ingress never grows memory, and drops are counted, never silent.
+    dropped_data: u64,
     calls: Vec<String>,
     connected: Vec<String>,
     notifications: Vec<(String, String, bool)>,
@@ -284,11 +307,15 @@ impl Default for FakeRadio {
 
 impl FakeRadio {
     pub fn new() -> Self {
-        let (events_tx, events_rx) = mpsc::unbounded_channel();
         Self {
             state: StdMutex::new(FakeInner {
                 faults: HashMap::new(),
-                events_tx: Some(events_tx),
+                control: VecDeque::new(),
+                data: VecDeque::new(),
+                seq: 0,
+                events_closed: false,
+                data_bytes: 0,
+                dropped_data: 0,
                 calls: Vec::new(),
                 connected: Vec::new(),
                 notifications: Vec::new(),
@@ -303,7 +330,7 @@ impl FakeRadio {
                 enable_epochs: Vec::new(),
                 gates: HashMap::new(),
             }),
-            events_rx: tokio::sync::Mutex::new(events_rx),
+            notify: Arc::new(Notify::new()),
         }
     }
 
@@ -329,25 +356,58 @@ impl FakeRadio {
     }
 
     /// Queue one radio event for the next [`RadioBoundary::next_event`].
-    /// Events pushed with no receiver waiting buffer in order; pushes after
-    /// [`FakeRadio::close_events`] are dropped, like OS events after the
-    /// source closes.
+    /// Data (notifications) travel a bounded item+byte queue with explicit
+    /// overload drops (counted via [`FakeRadio::dropped_notification_count`]);
+    /// control travels a separate bounded queue so a data flood can neither
+    /// drop control nor reorder it ahead of earlier data: drain follows push
+    /// order (F07). Pushes after [`FakeRadio::close_events`] are dropped,
+    /// like OS events after the source closes.
     pub fn push_event(&self, event: RadioEvent) {
-        if let Some(sender) = self
-            .state
-            .lock()
-            .expect("fake radio state")
-            .events_tx
-            .clone()
-        {
-            let _ = sender.send(event);
+        let mut state = self.state.lock().expect("fake radio state");
+        if state.events_closed {
+            return;
         }
+        let seq = state.seq.saturating_add(1);
+        state.seq = seq;
+        match event {
+            RadioEvent::Notification { ref value, .. } => {
+                let value_len = value.len() as u64;
+                if state.data.len() >= FAKE_DATA_CAP
+                    || state.data_bytes.saturating_add(value_len) > FAKE_DATA_BYTES
+                {
+                    state.dropped_data = state.dropped_data.saturating_add(1);
+                    return;
+                }
+                state.data_bytes = state.data_bytes.saturating_add(value_len);
+                state.data.push_back((seq, event));
+            }
+            control => {
+                if state.control.len() >= FAKE_CONTROL_CAP {
+                    return;
+                }
+                state.control.push_back((seq, control));
+            }
+        }
+        drop(state);
+        self.notify.notify_one();
     }
 
     /// Close the event source: a pending [`RadioBoundary::next_event`]
-    /// resolves to `None`, modelling OS event-source teardown.
+    /// resolves to `None` once both queues drain, modelling OS event-source
+    /// teardown.
     pub fn close_events(&self) {
-        self.state.lock().expect("fake radio state").events_tx = None;
+        self.state.lock().expect("fake radio state").events_closed = true;
+        self.notify.notify_one();
+    }
+
+    /// Data notifications dropped by explicit ingress overload (F07).
+    pub fn dropped_notification_count(&self) -> u64 {
+        self.state.lock().expect("fake radio state").dropped_data
+    }
+
+    /// Bytes currently queued in the data ingress (F07 bound evidence).
+    pub fn data_queued_bytes(&self) -> u64 {
+        self.state.lock().expect("fake radio state").data_bytes
     }
 
     /// Recorded call names in order (`"start_scan"`, `"stop_scan"`, ...).
@@ -557,6 +617,7 @@ impl RadioBoundary for FakeRadio {
         if let Some(detail) = self.take_fault(FaultOp::Connect) {
             return Err(DesktopError::connection_failed(detail));
         }
+        self.gate(FaultOp::Connect).await;
         self.state
             .lock()
             .expect("fake radio state")
@@ -759,8 +820,40 @@ impl RadioBoundary for FakeRadio {
     }
 
     async fn next_event(&self) -> Option<RadioEvent> {
-        let mut queue = self.events_rx.lock().await;
-        queue.recv().await
+        // F07: drain follows push order across the separate queues — earlier
+        // data delivers before a later disconnect (causality preserved), yet
+        // a full data queue never drops control.
+        loop {
+            {
+                let mut state = self.state.lock().expect("fake radio state");
+                let control_seq = state.control.front().map(|(seq, _)| *seq);
+                let data_seq = state.data.front().map(|(seq, _)| *seq);
+                let take_control = match (control_seq, data_seq) {
+                    (Some(c), Some(d)) => c < d,
+                    (Some(_), None) => true,
+                    (None, Some(_)) => false,
+                    (None, None) => {
+                        if state.events_closed {
+                            return None;
+                        }
+                        false
+                    }
+                };
+                if control_seq.is_some() || data_seq.is_some() {
+                    if take_control {
+                        let (_, event) = state.control.pop_front().expect("control head");
+                        return Some(event);
+                    }
+                    let (_, event) = state.data.pop_front().expect("data head");
+                    if let RadioEvent::Notification { ref value, .. } = event {
+                        let len = value.len() as u64;
+                        state.data_bytes = state.data_bytes.saturating_sub(len);
+                    }
+                    return Some(event);
+                }
+            }
+            self.notify.notified().await;
+        }
     }
 
     async fn mtu(&self, peer_id: &str) -> Option<u16> {
