@@ -198,7 +198,13 @@ async function main() {
 
   if (want('T2')) check(records, 'T2', 'native library load surface (x86_64 ABI matched to host KVM)', 'REAL-EMULATOR', (ctx) => {
     // extractNativeLibs=false: .so files mmap-load from the APK at first use.
-    // Actual dlopen is proven in T8 via /proc/<pid>/maps.
+    // NOTE (emu-review fix): no /proc/<pid>/maps capture is committed, so a
+    // named-.so dlopen is NOT directly proven here. Native load stands on the
+    // SoLoader DirectApkSoSource[.../base.apk!/lib/x86_64] lines plus the
+    // TurboModule-bridge round-trips in T8 (manager-created, bonded-count=0,
+    // typed BleErrors) with no UnsatisfiedLinkError. A correct-PID maps
+    // capture (run-as <pkg> cat /proc/<probe-pid>/maps) is a battery-v2
+    // follow-up; the stale T8-11 maps attempt was deleted, not evidenced.
     const info = ctx.snap('dumpsys package (host-matched ABI lines)', sh(args.serial, `dumpsys package ${PKG}`, { timeoutMs: 30000 }));
     if (info.timedOut) return ctx.hung(`adb -s ${args.serial} shell dumpsys package ${PKG}`);
     ctx.note('primary ABI is x86_64', /primaryCpuAbi=x86_64/.test(info.output), grepLines(info.output, /CpuAbi/, 3).join(' '));
@@ -355,7 +361,7 @@ async function main() {
         ctx.boundary('Needs the probe Metro (`npx react-native start --port 8081` in emulator-probe/consumer + `adb reverse tcp:8081 tcp:8081`); rerun with --attempt-metro. Dev APK has no embedded bundle.');
         return;
       }
-      ctx.note('metro packager reachable', metroUpSync(), 'http://127.0.0.1:8081/status');
+      ctx.note('metro packager reachable [HOST-JVM host-side]', metroUpSync(), 'host-side curl http://127.0.0.1:8081/status (not device-observed)');
       sh(args.serial, `am force-stop ${PKG}`, { timeoutMs: 30000 });
       sleepMs(2000);
       sh(args.serial, 'logcat -c', { timeoutMs: 20000 });
@@ -365,13 +371,17 @@ async function main() {
       ctx.note('JS bundle executed (app-mounted)', /app-mounted/.test(log), grepLines(log, /app-mounted/, 1).join(' ').slice(0, 160));
       ctx.note('no FATAL EXCEPTION for consumer', !new RegExp(`Process: ${PKG}`).test(log), 'host-matched over full logcat');
       ctx.note('no UnsatisfiedLinkError', !/UnsatisfiedLinkError/.test(log), 'host-matched over full logcat');
-      // First launch after install shows the runtime permission dialog.
+      // First launch after install may show the runtime permission dialog.
+      // The grant state is asserted from the device-observed logcat below
+      // ([UBM_PROBE] permission-ok=true), never from the tap outcome: a
+      // missing dialog means already-granted, which the log confirms.
       tap(args.serial, ...PROBE_TAP.init);
       sleepMs(6000);
       const allowed = tapText(args.serial, ctx, 'T8', 'Allow');
-      ctx.note('runtime permission dialog answered (fresh install) or already granted', true, allowed ? `Allow tapped at ${allowed}` : 'no dialog (already granted)');
       sleepMs(16000);
       log = logcatDump(args.serial, ctx, 'logcat after init');
+      const permLine = grepLines(log, /permission-ok=|scan=granted/, 2).join(' ');
+      ctx.note('runtime permissions granted (dialog answered or already granted)', /permission-ok=true/.test(log), `${allowed ? `Allow tapped at ${allowed}; ` : 'no dialog (already granted); '}${permLine || 'no permission line'}`);
       ctx.note('manager created through the native bridge', /manager-created/.test(log), grepLines(log, /manager-created|init-error/, 1).join(' ').slice(0, 200));
       ctx.note('adapter state round-trips (unknowns on virtual adapter, never blocking)', /adapter power=/.test(log), grepLines(log, /adapter power=/, 1).join(' ').slice(0, 200));
       tap(args.serial, ...PROBE_TAP.bonded);

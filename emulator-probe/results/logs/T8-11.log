@@ -1,5 +1,0 @@
-$ proc maps (host-matched)
-[exit=1]
-
-cat: /proc/7546/maps: Permission denied
-

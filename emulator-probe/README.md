@@ -56,11 +56,17 @@ yes | sdkmanager --install "system-images;android-34;google_apis;x86_64"
 # 2. Task-owned AVD in a temp dir (never touches existing AVDs)
 export ANDROID_AVD_HOME=/tmp/ubm5-emu-avd; mkdir -p $ANDROID_AVD_HOME
 echo no | avdmanager create avd -n ubm5-emu-probe \
-  -k "system-images;android-34;google_apis;x86_64"
+  -k "system-images;android-34;google_apis;x86_64" -d pixel
 
 # 3. Boot headless, explicit adb port (serial becomes emulator-5554)
 emulator -avd ubm5-emu-probe -no-window -no-audio -no-boot-anim \
   -gpu swiftshader_indirect -no-snapshot-save -port 5554
+
+# 3b. Wait for boot completion before any install/launch (never skip:
+#     installs against a half-booted emulator flake or hang the battery)
+timeout 300 adb -s emulator-5554 wait-for-device
+timeout 300 adb -s emulator-5554 shell 'while [ "$(getprop sys.boot_completed)" != "1" ]; do sleep 2; done'
+adb -s emulator-5554 shell getprop sys.boot_completed
 
 # 4. Build the probe consumer for the emulator ABI (needs consumer/node_modules;
 #    see consumer/README.md). Uses the cached Gradle 8.13 distribution so no
