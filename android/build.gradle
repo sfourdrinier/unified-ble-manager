@@ -119,75 +119,133 @@ react {
 
 // HOST-ANDROID (UBM 5.0, trackourhealth/bun-mono#1188): build the Rust cdylib
 // (bindings/jni, `libubm5_jni_echo.so`) for the emulator ABI list and stage
-// it into jniLibs so the GATT bridge natives resolve at runtime.
+// it per-variant so the GATT bridge natives resolve at runtime.
 //
 // ABI list (recorded): x86_64 ONLY — KVM host-matched emulator ABI
 // (system-images;android-34;google_apis;x86_64). arm64-v8a/armeabi-v7a are a
 // documented boundary (no physical devices on this lane), not a failure.
 // Toolchain is pinned (1.98.1) and targets are explicit rustc targets inside
 // android/build-rust-cdylib.sh (single source of truth, shared with the
-// five0 probe-app build); no cargo-ndk required. The staged .so files are
-// build outputs and must stay uncommitted (see .gitignore).
-// Limitation: profile detection below is substring-based ("Release" in any
-// task name), so a joint `assembleDebug assembleRelease` invocation builds
-// one profile for both variants. Single-variant lane: fine; multi-variant
-// callers must build one profile per invocation.
+// five0 probe-app build); no cargo-ndk required.
+//
+// F20: one task per profile (no task-name sniffing — a joint
+// `assembleDebug assembleRelease` builds each profile for its own
+// variant), the COMPLETE Rust input graph declared, and ABI/profile
+// outputs isolated under build/ (never a shared tree). Each variant
+// packages ONLY its own profile's staging via per-variant jniLibs
+// srcDirs. The legacy src/main/jniLibs staging is NOT packaged anymore:
+// any .so left there by older builds is inert (still gitignored).
 def ubmRustAbis = ["x86_64"]
 def ubmRustScript = file("build-rust-cdylib.sh")
-def ubmRustJniLibs = file("src/main/jniLibs")
-def ubmRustProfile = gradle.startParameter.taskNames.any { it.contains("Release") } ? "release" : "debug"
 // projectDir-relative: rootDir is example/android when the library is
 // included as a module, so repo-root paths must go through ../.
 def ubmRustSrcDir = projectDir.toPath().resolve("../bindings/jni/src").toFile()
 def ubmRustManifest = projectDir.toPath().resolve("../bindings/jni/Cargo.toml").toFile()
 // Packed consumers (Expo CNG, node_modules) have no Rust sources: bindings/
-// is intentionally NOT shipped. The task skips loudly there instead of
+// is intentionally NOT shipped. The tasks skip loudly there instead of
 // failing; the bridge classes must not be loaded in that context.
 def ubmRustSourcesPresent = ubmRustSrcDir.isDirectory() && ubmRustManifest.isFile()
+// Complete Rust input graph (F20): the cdylib crate plus its transitive
+// path dependencies, exactly as pinned in bindings/jni/Cargo.toml
+// [dependencies] (ubm-core, ubm-fake-radio; ubm-fake-radio itself
+// path-depends on ubm-core), the workspace manifest + lockfile, and the
+// toolchain pin. A core edit, a lock change, or a toolchain change all
+// invalidate the staged .so. Keep this list in sync with the manifest's
+// path-deps when they change.
+def ubmRustInputDirs = [
+  ubmRustSrcDir,
+  projectDir.toPath().resolve("../crates/ubm-core/src").toFile(),
+  projectDir.toPath().resolve("../crates/ubm-fake-radio/src").toFile(),
+]
+def ubmRustInputFiles = [
+  ubmRustManifest,
+  projectDir.toPath().resolve("../crates/ubm-core/Cargo.toml").toFile(),
+  projectDir.toPath().resolve("../crates/ubm-fake-radio/Cargo.toml").toFile(),
+  projectDir.toPath().resolve("../Cargo.toml").toFile(),
+  projectDir.toPath().resolve("../Cargo.lock").toFile(),
+  projectDir.toPath().resolve("../rust-toolchain.toml").toFile(),
+]
 
-tasks.register("buildUbmRustCdylib") {
-  description = "Builds the UBM 5.0 Rust cdylib for ${ubmRustAbis} via android/build-rust-cdylib.sh."
-  // Declared inputs so profile switches (debug<->release) and Rust edits
-  // rebuild instead of silently reusing a stale staged .so.
-  inputs.property("ubmRustProfile", ubmRustProfile)
-  inputs.property("ubmRustAbis", ubmRustAbis)
-  inputs.property("ubmRustSourcesPresent", ubmRustSourcesPresent)
-  inputs.file(ubmRustScript)
-  if (ubmRustSourcesPresent) {
-    inputs.dir(ubmRustSrcDir)
-    inputs.file(ubmRustManifest)
-  }
-  outputs.dir(ubmRustJniLibs)
-  doLast {
-    if (!ubmRustSourcesPresent) {
-      logger.lifecycle("buildUbmRustCdylib SKIPPED: no Rust sources at ${ubmRustSrcDir} " +
-        "(packed-consumer context — bridge natives unavailable, bridge classes must not be loaded).")
-      return
+["debug", "release"].each { ubmRustProfile ->
+  def taskName = "buildUbmRustCdylib${ubmRustProfile.capitalize()}"
+  def stagingDir = file("${buildDir}/ubmRustCdylib/${ubmRustProfile}")
+  tasks.register(taskName) {
+    description = "Builds the UBM 5.0 Rust cdylib (${ubmRustProfile}) for ${ubmRustAbis} via android/build-rust-cdylib.sh."
+    inputs.property("ubmRustProfile", ubmRustProfile)
+    inputs.property("ubmRustAbis", ubmRustAbis)
+    inputs.property("ubmRustSourcesPresent", ubmRustSourcesPresent)
+    inputs.file(ubmRustScript)
+    if (ubmRustSourcesPresent) {
+      ubmRustInputDirs.each { dir ->
+        if (dir.isDirectory()) {
+          inputs.dir(dir)
+        }
+      }
+      ubmRustInputFiles.each { manifest ->
+        if (manifest.isFile()) {
+          inputs.file(manifest)
+        }
+      }
     }
-    ubmRustAbis.each { abi ->
-      def libDir = new File(ubmRustJniLibs, abi)
-      def result = providers.exec {
-        commandLine("sh", ubmRustScript.absolutePath,
-          "--abi", abi,
-          "--profile", ubmRustProfile,
-          "--libdir", libDir.absolutePath)
-        workingDir(rootDir)
-      }.result.get()
-      if (result.exitValue != 0) {
-        throw new GradleException(
-          "buildUbmRustCdylib FAILED for ABI ${abi} (exit ${result.exitValue}). " +
-          "Run sh ${ubmRustScript} --abi ${abi} --profile ${ubmRustProfile} " +
-          "--libdir <dir> from the repo root for the actionable diagnostic " +
-          "(NDK 27.x, pinned Rust from rust-toolchain.toml + x86_64-linux-android target).")
+    outputs.dir(stagingDir)
+    doLast {
+      if (!ubmRustSourcesPresent) {
+        logger.lifecycle("${taskName} SKIPPED: no Rust sources at ${ubmRustSrcDir} " +
+          "(packed-consumer context — bridge natives unavailable, bridge classes must not be loaded).")
+        return
       }
-      def staged = new File(libDir, "libubm5_jni_echo.so")
-      if (!staged.isFile()) {
-        throw new GradleException(
-          "buildUbmRustCdylib FAILED: staged cdylib missing at ${staged} " +
-          "despite exit 0 — re-run the script by hand for diagnostics.")
+      def identity = new StringBuilder()
+      identity.append("profile=${ubmRustProfile}\n")
+      identity.append("abis=${ubmRustAbis.join(',')}\n")
+      ubmRustAbis.each { abi ->
+        def libDir = new File(stagingDir, abi)
+        def result = providers.exec {
+          commandLine("sh", ubmRustScript.absolutePath,
+            "--abi", abi,
+            "--profile", ubmRustProfile,
+            "--libdir", libDir.absolutePath)
+          workingDir(rootDir)
+        }.result.get()
+        if (result.exitValue != 0) {
+          throw new GradleException(
+            "${taskName} FAILED for ABI ${abi} (exit ${result.exitValue}). " +
+            "Run sh ${ubmRustScript} --abi ${abi} --profile ${ubmRustProfile} " +
+            "--libdir <dir> from the repo root for the actionable diagnostic " +
+            "(NDK 27.x, pinned Rust from rust-toolchain.toml + x86_64-linux-android target).")
+        }
+        def staged = new File(libDir, "libubm5_jni_echo.so")
+        if (!staged.isFile()) {
+          throw new GradleException(
+            "${taskName} FAILED: staged cdylib missing at ${staged} " +
+            "despite exit 0 — re-run the script by hand for diagnostics.")
+        }
+        def digest = java.security.MessageDigest.getInstance("SHA-256")
+        staged.eachByte(65536) { buf, len -> digest.update(buf, 0, len) }
+        identity.append("abi=${abi} sha256=${digest.digest().encodeHex().toString()} " +
+          "bytes=${staged.length()} file=libubm5_jni_echo.so\n")
       }
+      new File(stagingDir, "build-identity.txt").text = identity.toString()
+      logger.lifecycle("${taskName} staged ${stagingDir}:\n${identity}")
     }
   }
 }
 
-preBuild.dependsOn("buildUbmRustCdylib")
+// Back-compat lifecycle task: builds both profiles (direct invocation).
+tasks.register("buildUbmRustCdylib") {
+  description = "Builds the UBM 5.0 Rust cdylib (debug + release) via android/build-rust-cdylib.sh."
+  dependsOn("buildUbmRustCdylibDebug", "buildUbmRustCdylibRelease")
+}
+
+// Per-variant wiring (F20): each variant builds (and packages) only its
+// own profile — no sniffing, no shared outputs. AGP registers the
+// per-variant lifecycle tasks in its own afterEvaluate (which runs before
+// this one), so the wiring resolves here and fails loudly if absent.
+afterEvaluate {
+  tasks.named("preDebugBuild") { dependsOn("buildUbmRustCdylibDebug") }
+  tasks.named("preReleaseBuild") { dependsOn("buildUbmRustCdylibRelease") }
+}
+android.sourceSets.debug.jniLibs.srcDirs += file("${buildDir}/ubmRustCdylib/debug")
+android.sourceSets.release.jniLibs.srcDirs += file("${buildDir}/ubmRustCdylib/release")
+// The legacy src/main/jniLibs tree is no longer a packaging input: stale
+// .so files left there by older builds must never merge into a variant.
+android.sourceSets.main.jniLibs.srcDirs = []

@@ -49,7 +49,7 @@ capability truth matches this report row for row.
 | `connection:direct` | connection.lease-joins-borrowing-transfer-and-revocation | Direct connect plus ownership cleanup (`deterministic-only`); half-open radio links are disconnected on failure; disconnect waits are bounded (1 s) and failures retained, never reported clean. |
 | `connection:rssi` | connection.rssi-and-att-mtu-capability-contract | RSSI reported only when the OS measures it (`deterministic-only`); absent values stay absent, never synthesized. |
 | `gatt:descriptors` | gatt.descriptor-discovery-read-write | Descriptor discovery/reads/writes with occurrence identity (`deterministic-only`); direct CCCD writes fail `gatt.cccd-managed`, sharing stays with subscribe/unsubscribe. |
-| `gatt:indications` | gatt.indications | Subscribed values buffer per consumer and are observable through the take API (`delivery-kind-unknown`: the btleplug stream does not distinguish indications from notifications). Per-instance routing by (service, occurrence, characteristic, occurrence); same-UUID duplicates fan out on the peripheral-wide OS stream. |
+| `gatt:indications` | gatt.indications | Subscribed values buffer per consumer and are observable through the take API (`delivery-kind-unknown`: the btleplug stream does not distinguish indications from notifications). Per-instance routing by (service, occurrence, characteristic, occurrence) filtered on the full (service, characteristic) identity; same-scope duplicate instances are rejected at enable time (`gatt.subscribe-failed`, ambiguous routing) because the peripheral-wide OS stream carries no occurrence identity — bytes are never fanned out to invented instances. |
 
 ## narrow-OS-adapter-needed (22)
 

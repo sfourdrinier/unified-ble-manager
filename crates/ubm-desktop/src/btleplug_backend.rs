@@ -13,7 +13,7 @@
 //! indications are indistinguishable from notifications on this stream (see
 //! `PARITY_GAPS.md`).
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::{
     Arc, Mutex as StdMutex,
     atomic::{AtomicU64, Ordering},
@@ -28,8 +28,8 @@ use futures_util::StreamExt;
 use tokio::sync::{Mutex, mpsc};
 
 use crate::boundary::{
-    CharacteristicSnapshot, DescriptorSnapshot, PeerSnapshot, PropertyFlags, RadioBoundary,
-    RadioEvent, ScanFilterSpec, ServiceSnapshot,
+    CharacteristicSnapshot, DescriptorSnapshot, InstanceKey, PeerSnapshot, PropertyFlags,
+    RadioBoundary, RadioEvent, ScanFilterSpec, ServiceSnapshot,
 };
 use crate::errors::DesktopError;
 use ubm_core::central::{
@@ -53,6 +53,19 @@ struct ForwarderEntry {
     characteristic_occurrence: u64,
 }
 
+impl ForwarderEntry {
+    /// Instance scope this forwarder owns, for ambiguity checks (F09).
+    fn scope(&self) -> InstanceKey {
+        (
+            self.peer_id.clone(),
+            self.service_uuid.clone(),
+            self.service_occurrence,
+            self.characteristic_uuid.clone(),
+            self.characteristic_occurrence,
+        )
+    }
+}
+
 /// Bounded notification ingress (F07): 256 items / 256 KiB bytes at the first
 /// owned handoff. Forwarders `try_send` (never block the runtime worker);
 /// overload drops are counted, never silent, and adapter control (connect,
@@ -71,6 +84,12 @@ pub struct BtleplugRadio {
     ingress_bytes: Arc<AtomicU64>,
     ingress_dropped: Arc<AtomicU64>,
     forwarders: StdMutex<HashMap<String, ForwarderEntry>>,
+    /// Cleanup debt (F13): scopes whose native CCCD may be live without
+    /// an installed forwarder — a failed setup rollback or a failed
+    /// consumer-less teardown. Retry and dispose keep attempting the
+    /// native release until it succeeds; the ambiguity check (F09)
+    /// treats debt as live because the CCCD may still emit.
+    cleanup_debt: StdMutex<HashSet<InstanceKey>>,
 }
 
 impl BtleplugRadio {
@@ -121,6 +140,7 @@ impl BtleplugRadio {
             ingress_bytes: Arc::new(AtomicU64::new(0)),
             ingress_dropped: Arc::new(AtomicU64::new(0)),
             forwarders: StdMutex::new(HashMap::new()),
+            cleanup_debt: StdMutex::new(HashSet::new()),
         })
     }
 
@@ -243,6 +263,13 @@ impl BtleplugRadio {
                 entry.task.abort();
             }
         }
+        // The dead handles settle any cleanup debt for this peer too: a
+        // lost link or a replaced GATT database releases the native
+        // CCCDs, so no retry/dispose unsubscribe is owed for them.
+        self.cleanup_debt
+            .lock()
+            .expect("cleanup debt")
+            .retain(|scope| scope.0 != peer_id);
     }
 
     fn find_descriptor(
@@ -278,6 +305,107 @@ fn forwarder_key(
     format!(
         "{peer_id}#{service_uuid}:{service_occurrence}#{characteristic_uuid}:{characteristic_occurrence}"
     )
+}
+
+/// Identity one notification forwarder routes by (F09): the owning
+/// service UUID plus the characteristic UUID — the full identity
+/// btleplug 0.12 exposes on [`ValueNotification`]. Occurrence levels
+/// are NOT on the wire: same-scope duplicate instances are
+/// indistinguishable here and must be rejected at enable time (see
+/// [`route_is_ambiguous`]), never fanned out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct NotificationRoute {
+    service_uuid: uuid::Uuid,
+    characteristic_uuid: uuid::Uuid,
+}
+
+impl NotificationRoute {
+    /// True when this notification belongs to the subscribed instance:
+    /// both the service and the characteristic identity must match, or
+    /// bytes for one service would misroute into another service's
+    /// same-UUID subscription.
+    fn matches(&self, note: &ValueNotification) -> bool {
+        note.service_uuid == self.service_uuid && note.uuid == self.characteristic_uuid
+    }
+}
+
+/// True when enabling one more subscription would create ambiguous
+/// routing (F09): `live_scopes` already holds the same (peer, service,
+/// characteristic) scope under a different instance. The native stream
+/// carries no occurrence/handle identity, so the second enablement must
+/// fail explicitly instead of receiving misattributed bytes. Re-enabling
+/// the exact same instance is not ambiguous (idempotent replace).
+fn route_is_ambiguous(
+    live_scopes: &[InstanceKey],
+    peer_id: &str,
+    service_uuid: &str,
+    service_occurrence: u64,
+    characteristic_uuid: &str,
+    characteristic_occurrence: u64,
+) -> bool {
+    live_scopes.iter().any(|scope| {
+        scope.0 == peer_id
+            && scope.1 == service_uuid
+            && scope.3 == characteristic_uuid
+            && (scope.2 != service_occurrence || scope.4 != characteristic_occurrence)
+    })
+}
+
+/// Scopes with a possibly-live native CCCD (F13): installed forwarders
+/// plus cleanup-debt entries (native enablements without a consumer
+/// after a failed setup or teardown). The ambiguity check (F09) must see
+/// both — a debt CCCD can still emit unattributable bytes.
+fn live_scopes(
+    forwarders: &HashMap<String, ForwarderEntry>,
+    debt: &HashSet<InstanceKey>,
+) -> Vec<InstanceKey> {
+    let mut scopes: Vec<InstanceKey> = forwarders.values().map(ForwarderEntry::scope).collect();
+    scopes.extend(debt.iter().cloned());
+    scopes
+}
+
+/// Fold one native-unsubscribe outcome into the forwarder table (F13).
+/// The forwarder is removed only when the native disable succeeds, so a
+/// still-enabled CCCD keeps its consumer and values keep flowing until a
+/// retry disables it (the central's L7 path relies on this). When no
+/// consumer exists to preserve, a failed disable parks the scope as
+/// cleanup debt for retry/dispose instead of vanishing.
+fn apply_unsubscribe_outcome(
+    forwarders: &mut HashMap<String, ForwarderEntry>,
+    debt: &mut HashSet<InstanceKey>,
+    key: &str,
+    scope: &InstanceKey,
+    unsubscribed: bool,
+) {
+    if unsubscribed {
+        if let Some(entry) = forwarders.remove(key) {
+            entry.task.abort();
+        }
+        debt.remove(scope);
+    } else if !forwarders.contains_key(key) {
+        // No consumer to preserve: retain the unresolved native
+        // resource as cleanup debt for retry/dispose.
+        debt.insert(scope.clone());
+    }
+    // Otherwise the forwarder stays installed: the CCCD is still live,
+    // so values must keep flowing until a retry disables it.
+}
+
+/// Fold one setup-rollback outcome into the cleanup debt (F13): after a
+/// successful native subscribe whose stream install failed, a failed
+/// compensating unsubscribe leaves a possibly-live CCCD with no
+/// consumer — parked as debt for retry/dispose. A successful rollback
+/// (or a later full enable) clears it.
+fn apply_enable_stream_failure(
+    debt: &mut HashSet<InstanceKey>,
+    scope: &InstanceKey,
+    rollback_ok: bool,
+) {
+    if rollback_ok {
+        debt.remove(scope);
+    } else {
+        debt.insert(scope.clone());
+    }
 }
 
 /// Select the `occurrence`-th service with `uuid` in canonical
@@ -645,6 +773,13 @@ impl RadioBoundary for BtleplugRadio {
                 "unknown characteristic {characteristic_uuid} occurrence {characteristic_occurrence}"
             ))
         })?;
+        let scope: InstanceKey = (
+            peer_id.to_owned(),
+            service_uuid.to_owned(),
+            service_occurrence,
+            characteristic_uuid.to_owned(),
+            characteristic_occurrence,
+        );
         let key = forwarder_key(
             peer_id,
             service_uuid,
@@ -653,26 +788,67 @@ impl RadioBoundary for BtleplugRadio {
             characteristic_occurrence,
         );
         if enable {
+            // F09: fail before touching the CCCD when a live subscription
+            // already owns this (peer, service, characteristic) scope under
+            // another instance — the native stream carries no occurrence
+            // identity, so a second forwarder could only fan out bytes.
+            // Debt counts as live (F13): the orphaned CCCD may still emit.
+            let ambiguous = {
+                let table = self.forwarders.lock().expect("forwarder table");
+                let debt = self.cleanup_debt.lock().expect("cleanup debt");
+                let live = live_scopes(&table, &debt);
+                route_is_ambiguous(
+                    &live,
+                    peer_id,
+                    service_uuid,
+                    service_occurrence,
+                    characteristic_uuid,
+                    characteristic_occurrence,
+                )
+            };
+            if ambiguous {
+                return Err(DesktopError::subscribe_failed(format!(
+                    "ambiguous notification routing: characteristic {characteristic_uuid} \
+                     under service {service_uuid} already has a live subscription on \
+                     another instance; the native stream carries no occurrence identity"
+                )));
+            }
             peripheral
                 .subscribe(&characteristic)
                 .await
                 .map_err(|error| DesktopError::subscribe_failed(error.to_string()))?;
-            let stream: NotificationStream = peripheral
-                .notifications()
-                .await
-                .map_err(|error| DesktopError::subscribe_failed(error.to_string()))?;
+            let stream: NotificationStream = match peripheral.notifications().await {
+                Ok(stream) => stream,
+                Err(error) => {
+                    // F13: the CCCD is already enabled with no forwarder to
+                    // consume it — roll back the native enablement so no
+                    // orphan subscription outlives this failure. A failed
+                    // rollback parks cleanup debt for retry/dispose.
+                    let rollback_ok = peripheral.unsubscribe(&characteristic).await.is_ok();
+                    apply_enable_stream_failure(
+                        &mut self.cleanup_debt.lock().expect("cleanup debt"),
+                        &scope,
+                        rollback_ok,
+                    );
+                    return Err(DesktopError::subscribe_failed(error.to_string()));
+                }
+            };
             let sender = self.notifications.clone();
             let queued_bytes = Arc::clone(&self.ingress_bytes);
             let dropped = Arc::clone(&self.ingress_dropped);
             let peer = peer_id.to_owned();
             let service = service_uuid.to_owned();
             let instance_characteristic = characteristic_uuid.to_owned();
-            // The btleplug stream is peripheral-wide: filter to this
-            // instance's UUID so one subscription never routes another
-            // UUID's values. Same-UUID duplicate instances stay
-            // indistinguishable on this stream (no handles exposed) and
-            // fan out to every same-UUID forwarder; see PARITY_GAPS.md.
-            let own_uuid = characteristic.uuid;
+            // The btleplug stream is peripheral-wide: filter on the full
+            // (service, characteristic) identity so one subscription never
+            // routes another scope's values. Same-scope duplicate
+            // instances stay indistinguishable on this stream (no handles
+            // exposed) and are rejected at enable time, never fanned
+            // out; see PARITY_GAPS.md.
+            let route = NotificationRoute {
+                service_uuid: characteristic.service_uuid,
+                characteristic_uuid: characteristic.uuid,
+            };
             // The subscription epoch is captured at install, never minted
             // at dequeue: every value this forwarder emits is attributable
             // to exactly the enablement that installed it (F10).
@@ -680,7 +856,7 @@ impl RadioBoundary for BtleplugRadio {
             let forwarder = self.spawn.spawn(async move {
                 let mut stream = stream;
                 while let Some(note) = stream.next().await {
-                    if note.uuid != own_uuid {
+                    if !route.matches(&note) {
                         continue;
                     }
                     // F07: bounded ingress at the first owned handoff —
@@ -729,26 +905,35 @@ impl RadioBoundary for BtleplugRadio {
             if let Some(stale) = replaced {
                 stale.task.abort();
             }
-        } else {
-            if let Some(entry) = self
-                .forwarders
+            // A full enable supersedes any parked setup debt for this
+            // scope: the new forwarder owns the native CCCD now.
+            self.cleanup_debt
                 .lock()
-                .expect("forwarder table")
-                .remove(&key)
-            {
-                entry.task.abort();
-            }
-            peripheral
-                .unsubscribe(&characteristic)
-                .await
-                .map_err(|error| DesktopError::subscribe_failed(error.to_string()))?;
+                .expect("cleanup debt")
+                .remove(&scope);
+        } else {
+            // F13: the native disable runs BEFORE the forwarder is
+            // touched — only a successful unsubscribe removes the
+            // consumer, so a still-enabled CCCD keeps forwarding until
+            // a retry disables it (the central's L7 path relies on
+            // values continuing to flow here).
+            let outcome = peripheral.unsubscribe(&characteristic).await;
+            apply_unsubscribe_outcome(
+                &mut self.forwarders.lock().expect("forwarder table"),
+                &mut self.cleanup_debt.lock().expect("cleanup debt"),
+                &key,
+                &scope,
+                outcome.is_ok(),
+            );
+            outcome.map_err(|error| DesktopError::subscribe_failed(error.to_string()))?;
         }
         Ok(())
     }
 
     /// Teardown hook (M3): abort every live forwarder and best-effort
-    /// release every OS-side CCCD. Failures are swallowed: teardown
-    /// reports facts, never new failures.
+    /// release every OS-side CCCD, including parked cleanup debt (F13):
+    /// an orphaned native enablement is still owed its unsubscribe.
+    /// Failures are swallowed: teardown reports facts, never new failures.
     async fn close(&self) {
         let entries: Vec<ForwarderEntry> = self
             .forwarders
@@ -760,17 +945,19 @@ impl RadioBoundary for BtleplugRadio {
         for entry in &entries {
             entry.task.abort();
         }
-        for entry in &entries {
-            let peripheral = match self.peripheral_by_id(&entry.peer_id).await {
+        let mut scopes: Vec<InstanceKey> = entries.iter().map(ForwarderEntry::scope).collect();
+        scopes.extend(self.cleanup_debt.lock().expect("cleanup debt").drain());
+        for scope in &scopes {
+            let peripheral = match self.peripheral_by_id(&scope.0).await {
                 Ok(peripheral) => peripheral,
                 Err(_) => continue,
             };
             let characteristic = match Self::find_characteristic(
                 &peripheral,
-                &entry.service_uuid,
-                entry.service_occurrence,
-                &entry.characteristic_uuid,
-                entry.characteristic_occurrence,
+                &scope.1,
+                scope.2,
+                &scope.3,
+                scope.4,
             ) {
                 Some(characteristic) => characteristic,
                 None => continue,
@@ -841,10 +1028,12 @@ pub fn core_property_bits(flags: PropertyFlags) -> u8 {
 mod tests {
     use std::collections::BTreeSet;
 
-    use btleplug::api::{CharPropFlags, Characteristic, Descriptor, Service};
+    use btleplug::api::{CharPropFlags, Characteristic, Descriptor, Service, ValueNotification};
 
     use super::{
-        core_property_bits, forwarder_key, select_characteristic, select_descriptor, select_service,
+        ForwarderEntry, NotificationRoute, apply_enable_stream_failure, apply_unsubscribe_outcome,
+        core_property_bits, forwarder_key, live_scopes, route_is_ambiguous, select_characteristic,
+        select_descriptor, select_service,
     };
     use crate::boundary::PropertyFlags;
     use ubm_core::central::{
@@ -853,6 +1042,7 @@ mod tests {
 
     const HRM_SERVICE: &str = "0000180d-0000-1000-8000-00805f9b34fb";
     const HRM_MEASUREMENT: &str = "00002a37-0000-1000-8000-00805f9b34fb";
+    const BATTERY_SERVICE: &str = "0000180f-0000-1000-8000-00805f9b34fb";
     const BATTERY_LEVEL: &str = "00002a19-0000-1000-8000-00805f9b34fb";
     const USER_DESCRIPTION: &str = "00002901-0000-1000-8000-00805f9b34fb";
 
@@ -1048,6 +1238,221 @@ mod tests {
             mapping(true, true),
             GATT_PROP_WRITE | GATT_PROP_WRITE_NO_RESPONSE,
             "both capabilities survive independently"
+        );
+    }
+
+    fn notification(service: &str, char: &str, value: Vec<u8>) -> ValueNotification {
+        ValueNotification {
+            uuid: uuid(char),
+            service_uuid: uuid(service),
+            value,
+        }
+    }
+
+    #[test]
+    fn f09_same_characteristic_uuid_under_two_services_routes_only_to_owner() {
+        // The same characteristic UUID appears under two services — the
+        // peripheral-wide OS stream delivers both to every forwarder, so
+        // each forwarder must filter on the service identity too. Bytes
+        // for service A must never reach the service B subscription.
+        let route_hrm = NotificationRoute {
+            service_uuid: uuid(HRM_SERVICE),
+            characteristic_uuid: uuid(HRM_MEASUREMENT),
+        };
+        let route_battery = NotificationRoute {
+            service_uuid: uuid(BATTERY_SERVICE),
+            characteristic_uuid: uuid(HRM_MEASUREMENT),
+        };
+        let note_hrm = notification(HRM_SERVICE, HRM_MEASUREMENT, vec![0x01]);
+        let note_battery = notification(BATTERY_SERVICE, HRM_MEASUREMENT, vec![0x02]);
+        assert!(
+            route_hrm.matches(&note_hrm),
+            "owner route accepts its own service bytes"
+        );
+        assert!(
+            route_battery.matches(&note_battery),
+            "owner route accepts its own service bytes"
+        );
+        assert!(
+            !route_hrm.matches(&note_battery),
+            "cross-service bytes must not route to the wrong subscription"
+        );
+        assert!(
+            !route_battery.matches(&note_hrm),
+            "cross-service bytes must not route to the wrong subscription"
+        );
+        let other_char = notification(HRM_SERVICE, BATTERY_LEVEL, vec![0x03]);
+        assert!(
+            !route_hrm.matches(&other_char),
+            "another characteristic under the same service still filters out"
+        );
+    }
+
+    #[test]
+    fn f09_duplicate_occurrence_enable_rejected_explicitly() {
+        // One live subscription owns (peer, service 0, char 0). The native
+        // stream carries no occurrence identity, so enabling a second
+        // instance of the same scope must report ambiguity explicitly —
+        // never install a second forwarder that would fan out bytes.
+        let live = [(
+            "peer-1".to_owned(),
+            HRM_SERVICE.to_owned(),
+            0u64,
+            HRM_MEASUREMENT.to_owned(),
+            0u64,
+        )];
+        assert!(
+            route_is_ambiguous(&live, "peer-1", HRM_SERVICE, 0, HRM_MEASUREMENT, 1),
+            "second characteristic occurrence of a live scope is ambiguous"
+        );
+        assert!(
+            route_is_ambiguous(&live, "peer-1", HRM_SERVICE, 1, HRM_MEASUREMENT, 0),
+            "same characteristic under a duplicate service occurrence is ambiguous"
+        );
+        assert!(
+            !route_is_ambiguous(&live, "peer-1", HRM_SERVICE, 0, HRM_MEASUREMENT, 0),
+            "re-enabling the exact same instance stays idempotent, not ambiguous"
+        );
+        assert!(
+            !route_is_ambiguous(&live, "peer-1", BATTERY_SERVICE, 0, HRM_MEASUREMENT, 0),
+            "same characteristic under a different service is a distinct scope"
+        );
+        assert!(
+            !route_is_ambiguous(&live, "peer-1", HRM_SERVICE, 0, BATTERY_LEVEL, 0),
+            "a different characteristic under the same service is a distinct scope"
+        );
+        assert!(
+            !route_is_ambiguous(&live, "peer-2", HRM_SERVICE, 0, HRM_MEASUREMENT, 1),
+            "another peer never collides with this peer's scopes"
+        );
+        assert!(
+            !route_is_ambiguous(&[], "peer-1", HRM_SERVICE, 0, HRM_MEASUREMENT, 0),
+            "first enablement of a scope is never ambiguous"
+        );
+    }
+
+    fn scope(
+        peer: &str,
+        service: &str,
+        service_occurrence: u64,
+        char: &str,
+        char_occurrence: u64,
+    ) -> crate::boundary::InstanceKey {
+        (
+            peer.to_owned(),
+            service.to_owned(),
+            service_occurrence,
+            char.to_owned(),
+            char_occurrence,
+        )
+    }
+
+    fn forwarder(
+        task: tokio::task::JoinHandle<()>,
+        scope: &crate::boundary::InstanceKey,
+    ) -> ForwarderEntry {
+        ForwarderEntry {
+            task,
+            peer_id: scope.0.clone(),
+            service_uuid: scope.1.clone(),
+            service_occurrence: scope.2,
+            characteristic_uuid: scope.3.clone(),
+            characteristic_occurrence: scope.4,
+        }
+    }
+
+    fn scope_key(scope: &crate::boundary::InstanceKey) -> String {
+        forwarder_key(&scope.0, &scope.1, scope.2, &scope.3, scope.4)
+    }
+
+    #[test]
+    fn f13_enable_stream_failure_rolls_back_or_records_debt() {
+        // Native subscribe succeeded but the stream install failed: a
+        // successful compensating unsubscribe leaves nothing behind,
+        // while a failed rollback parks the scope as cleanup debt for
+        // retry/dispose — it must never silently vanish.
+        let scope = scope("peer-1", HRM_SERVICE, 0, HRM_MEASUREMENT, 0);
+        let mut debt = std::collections::HashSet::new();
+        apply_enable_stream_failure(&mut debt, &scope, true);
+        assert!(
+            debt.is_empty(),
+            "successful rollback leaves no cleanup debt"
+        );
+        apply_enable_stream_failure(&mut debt, &scope, false);
+        assert_eq!(
+            debt,
+            std::collections::HashSet::from([scope.clone()]),
+            "failed rollback parks the orphaned native enablement as debt"
+        );
+        // A later successful rollback (retry/dispose) clears the debt.
+        apply_enable_stream_failure(&mut debt, &scope, true);
+        assert!(debt.is_empty(), "retry success clears the debt");
+    }
+
+    #[tokio::test]
+    async fn f13_disable_failure_preserves_forwarder() {
+        // The CCCD is still live when the native disable fails, so the
+        // forwarder must stay: values keep flowing until a retry
+        // disables it. Only a successful unsubscribe removes the
+        // consumer — and a retry then completes the teardown.
+        let scope = scope("peer-1", HRM_SERVICE, 0, HRM_MEASUREMENT, 0);
+        let key = scope_key(&scope);
+        let mut forwarders = std::collections::HashMap::new();
+        forwarders.insert(key.clone(), forwarder(tokio::spawn(async {}), &scope));
+        let mut debt = std::collections::HashSet::new();
+        apply_unsubscribe_outcome(&mut forwarders, &mut debt, &key, &scope, false);
+        assert!(
+            forwarders.contains_key(&key),
+            "failed disable keeps the forwarder: the CCCD is still live"
+        );
+        assert!(
+            debt.is_empty(),
+            "no separate debt while the retained forwarder owns cleanup"
+        );
+        apply_unsubscribe_outcome(&mut forwarders, &mut debt, &key, &scope, true);
+        assert!(
+            !forwarders.contains_key(&key),
+            "retry success removes the forwarder"
+        );
+        assert!(debt.is_empty(), "retry success holds no debt");
+    }
+
+    #[test]
+    fn f13_unresolved_teardown_without_consumer_parks_debt() {
+        // Disabling a scope with no installed forwarder (retry of a
+        // half-torn-down enablement): success clears any debt, failure
+        // parks it so dispose still attempts the native release.
+        let scope = scope("peer-1", HRM_SERVICE, 0, HRM_MEASUREMENT, 0);
+        let key = scope_key(&scope);
+        let mut forwarders = std::collections::HashMap::new();
+        let mut debt = std::collections::HashSet::new();
+        apply_unsubscribe_outcome(&mut forwarders, &mut debt, &key, &scope, false);
+        assert_eq!(
+            debt,
+            std::collections::HashSet::from([scope.clone()]),
+            "failed consumer-less disable retains the unresolved resource"
+        );
+        apply_unsubscribe_outcome(&mut forwarders, &mut debt, &key, &scope, true);
+        assert!(debt.is_empty(), "retry success clears the debt");
+    }
+
+    #[tokio::test]
+    async fn f13_debt_scope_counts_as_live_for_ambiguity() {
+        // A debt CCCD may still emit bytes the native stream cannot
+        // attribute, so it blocks an ambiguous sibling enablement
+        // exactly like an installed forwarder does.
+        let debt_scope = scope("peer-1", HRM_SERVICE, 0, HRM_MEASUREMENT, 0);
+        let forwarders = std::collections::HashMap::new();
+        let debt = std::collections::HashSet::from([debt_scope]);
+        let live = live_scopes(&forwarders, &debt);
+        assert_eq!(live.len(), 1, "debt scopes count as live");
+        assert!(
+            route_is_ambiguous(&live, "peer-1", HRM_SERVICE, 0, HRM_MEASUREMENT, 1),
+            "sibling occurrence of a debt scope is ambiguous"
+        );
+        assert!(
+            !route_is_ambiguous(&live, "peer-1", BATTERY_SERVICE, 0, HRM_MEASUREMENT, 0),
+            "unrelated scopes stay out of the debt's way"
         );
     }
 }

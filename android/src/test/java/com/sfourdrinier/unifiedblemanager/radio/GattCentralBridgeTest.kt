@@ -3,7 +3,12 @@
 package com.sfourdrinier.unifiedblemanager.radio
 
 import java.util.ArrayDeque
+import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executor
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -224,6 +229,205 @@ class GattCentralBridgeTest {
     )
     assertEquals(1, parsed.size)
     assertFalse("embedded ok:true must not flip the verdict", parsed[0].ok)
+  }
+
+  @Test
+  fun f21ExecutorRejectionSurfacesInsteadOfFalseQueued() {
+    // F21: when the worker executor rejects the drain task, the post
+    // must report the scheduling failure — never Queued for work
+    // nothing will drain. The line did reach the core queue (depth
+    // is reported), but no drain was scheduled for it.
+    val queued = ArrayDeque<String>()
+    val rejecting = Executor { throw java.util.concurrent.RejectedExecutionException("injected") }
+    val bridge = UbmGattCentralBridge(
+      enqueue = { wire -> queued.add(wire); queued.size },
+      drain = { "" },
+      hasBlePermissions = { true },
+      worker = rejecting
+    )
+    val result = bridge.postEvent(GattCentralWire.expireSweep(1000))
+    assertTrue(
+      "rejected schedule must surface, was $result",
+      result is UbmGattCentralBridge.PostResult.ScheduleFailed
+    )
+    assertEquals(1, (result as UbmGattCentralBridge.PostResult.ScheduleFailed).depth)
+    assertEquals(listOf(GattCentralWire.expireSweep(1000)), queued.toList())
+    // A later post with a live executor still schedules: rejection is
+    // per-post, and the stranded line drains with the next schedule.
+    val seen = mutableListOf<GattObservation>()
+    val revived = UbmGattCentralBridge(
+      enqueue = { wire -> queued.add(wire); queued.size },
+      drain = {
+        queued.map { "{\"ok\":true,\"event\":\"recovered\"}" }.joinToString("\n").also { queued.clear() }
+      },
+      hasBlePermissions = { true },
+      onObservations = { seen.addAll(it) },
+      worker = direct
+    )
+    assertEquals(UbmGattCentralBridge.PostResult.Queued(2), revived.postEvent("second"))
+    assertEquals(2, seen.size)
+  }
+
+  @Test
+  fun f21PermissionProviderExceptionFailsClosedWithoutThrowing() {
+    // F21: postEvent never throws — a throwing permission provider is a
+    // classified fail-closed refusal, and nothing is enqueued.
+    val queued = ArrayDeque<String>()
+    val bridge = UbmGattCentralBridge(
+      enqueue = { wire -> queued.add(wire); queued.size },
+      drain = { "" },
+      hasBlePermissions = { throw IllegalStateException("provider blew up") },
+      worker = direct
+    )
+    val result = try {
+      bridge.postEvent(GattCentralWire.linkEstablished("peer"))
+    } catch (th: Throwable) {
+      fail("postEvent must never throw, threw $th")
+      return
+    }
+    assertTrue(result is UbmGattCentralBridge.PostResult.PermissionDenied)
+    assertEquals(
+      UbmGattCentralBridge.PERMISSION_PROVIDER_FAILED_IDENTITY,
+      (result as UbmGattCentralBridge.PostResult.PermissionDenied).identity
+    )
+    assertTrue("refused event must not reach the core queue", queued.isEmpty())
+  }
+
+  @Test
+  fun f21PostRacingDestroyIsNeverStrandedAsQueued() {
+    // F21: a post that wins admission before destroy must have its line
+    // drained (by the worker or the destroy path) — never acknowledged
+    // as Queued and then stranded by a racing shutdown.
+    val queued = ConcurrentLinkedQueue<String>()
+    val seen = ConcurrentLinkedQueue<GattObservation>()
+    val inEnqueue = CountDownLatch(1)
+    val proceed = CountDownLatch(1)
+    val calls = AtomicInteger(0)
+    val threadPerTask = Executor { command -> Thread(command).start() }
+    val bridge = UbmGattCentralBridge(
+      enqueue = { wire ->
+        if (calls.getAndIncrement() == 0) {
+          inEnqueue.countDown()
+          assertTrue("test gate released", proceed.await(10, TimeUnit.SECONDS))
+        }
+        queued.add(wire)
+        queued.size
+      },
+      drain = {
+        synchronized(queued) {
+          queued.map { "{\"ok\":true,\"event\":\"$it\"}" }.joinToString("\n").also { queued.clear() }
+        }
+      },
+      hasBlePermissions = { true },
+      onObservations = { seen.addAll(it) },
+      worker = threadPerTask
+    )
+    val releaser = Executors.newSingleThreadExecutor()
+    try {
+      val posted = CountDownLatch(1)
+      var result: UbmGattCentralBridge.PostResult? = null
+      Thread {
+        result = bridge.postEvent("line-before-destroy")
+        posted.countDown()
+      }.start()
+      assertTrue("post reached the native enqueue", inEnqueue.await(10, TimeUnit.SECONDS))
+      // Destroy races the admitted post: the release path runs while the
+      // post is still inside its enqueue call. Every drain reports
+      // through onObservations, so `seen` alone is the delivery record
+      // (the release return value would double-count its own drain).
+      val released = releaser.submit<List<GattObservation>> { bridge.releaseOnDestroy() }
+      Thread.sleep(300)
+      proceed.countDown()
+      assertTrue("post completed", posted.await(10, TimeUnit.SECONDS))
+      released.get(10, TimeUnit.SECONDS)
+      assertTrue(
+        "admitted pre-destroy post must acknowledge Queued, was $result",
+        result is UbmGattCentralBridge.PostResult.Queued
+      )
+      val delivered = seen.map { it.event }
+      assertTrue(
+        "admitted line must be drained exactly once, delivered=$delivered",
+        delivered.count { it == "line-before-destroy" } == 1
+      )
+      assertTrue(
+        "release line must be drained, delivered=$delivered",
+        delivered.contains("release")
+      )
+      // After destroy, posts are refused outright — never queued.
+      val sizeBefore = queued.size
+      assertTrue(
+        bridge.postEvent(GattCentralWire.expireSweep(1))
+          is UbmGattCentralBridge.PostResult.Shutdown
+      )
+      assertEquals(sizeBefore, queued.size)
+    } finally {
+      releaser.shutdownNow()
+    }
+  }
+
+  @Test
+  fun f21ReleaseJoinsRunningDrainBeforeReturning() {
+    // F21: releaseOnDestroy establishes worker completion — it must not
+    // return (letting the owner close the native session) while a drain
+    // is still running, and no observation may arrive after it returns.
+    val queued = ConcurrentLinkedQueue<String>()
+    val seen = ConcurrentLinkedQueue<GattObservation>()
+    val drainEntered = CountDownLatch(1)
+    val drainProceed = CountDownLatch(1)
+    val drains = AtomicInteger(0)
+    val worker = Executors.newSingleThreadExecutor()
+    val bridge = UbmGattCentralBridge(
+      enqueue = { wire -> queued.add(wire); queued.size },
+      drain = {
+        if (drains.getAndIncrement() == 0) {
+          drainEntered.countDown()
+          assertTrue("test gate released", drainProceed.await(10, TimeUnit.SECONDS))
+        }
+        synchronized(queued) {
+          queued.map { "{\"ok\":true,\"event\":\"$it\"}" }.joinToString("\n").also { queued.clear() }
+        }
+      },
+      hasBlePermissions = { true },
+      onObservations = { seen.addAll(it) },
+      worker = worker
+    )
+    try {
+      val result = bridge.postEvent("line-during-drain")
+      assertEquals(UbmGattCentralBridge.PostResult.Queued(1), result)
+      assertTrue("worker drain started", drainEntered.await(10, TimeUnit.SECONDS))
+      val releaser = Executors.newSingleThreadExecutor()
+      try {
+        val released = releaser.submit<List<GattObservation>> { bridge.releaseOnDestroy() }
+        assertFalse(
+          "release must wait for the running drain, not return under it",
+          try {
+            released.get(300, TimeUnit.MILLISECONDS)
+            true
+          } catch (_: java.util.concurrent.TimeoutException) {
+            false
+          }
+        )
+        drainProceed.countDown()
+        released.get(10, TimeUnit.SECONDS)
+        // `seen` alone is the delivery record: the release return value
+        // would double-count the final drain's own observations.
+        assertEquals(
+          listOf("line-during-drain", "release"),
+          seen.map { it.event }.sorted()
+        )
+        val countAtReturn = seen.size
+        Thread.sleep(200)
+        assertEquals(
+          "no observation may arrive after the close barrier",
+          countAtReturn,
+          seen.size
+        )
+      } finally {
+        releaser.shutdownNow()
+      }
+    } finally {
+      worker.shutdownNow()
+    }
   }
 
   @Test
