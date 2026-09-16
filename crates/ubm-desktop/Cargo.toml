@@ -1,0 +1,17 @@
+[package]
+name = "ubm-desktop"
+version = "0.1.0"
+edition = "2024"
+license-file = "../../LICENSE-UBM-SOURCE-AVAILABLE-1.0.md"
+description = "Host-neutral desktop central radio/executor for UBM 5.0 (HOST-DESKTOP)"
+repository = "https://github.com/sfourdrinier/unified-ble-manager"
+
+[dependencies]
+ubm-core = { path = "../ubm-core" }
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"] }
+futures-util = "0.3"
+btleplug = "0.12"
+uuid = { version = "1", default-features = false, features = ["std"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt", "time", "test-util"] }

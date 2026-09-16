@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/ubm-core",
+    "crates/ubm-desktop",
     "bindings/jni",
     "bindings/napi",
     "bindings/uniffi",
