@@ -34,7 +34,7 @@ import {
 import { deterministicManagerOwnershipFacts } from './deterministic-tck-manager-ownership'
 import { deterministicLifecycleFacts, deterministicDiagnosticsFacts } from './deterministic-tck-lifecycle-diagnostics'
 import { deterministicSubscriptionOverflowFacts } from './deterministic-tck-subscription-overflow'
-import { traceDispatchCount } from './deterministic-tck-scenario-helpers'
+import { subscriptionOptions, traceDispatchCount } from './deterministic-tck-scenario-helpers'
 
 interface FactObservation {
   readonly id: TckFactId
@@ -414,7 +414,11 @@ async function subscriptionReadinessAndSharing(
     cancellable: false,
     deadlineOrder: 'completion-first'
   })
-  const firstPromise = connected.database.subscribe(characteristic.path, subscriptionOptions('drop-oldest', 4, 32))
+  // Post-R12 limits: byte budgets must exceed the 64-byte control reserve
+  // (frozen validateStreamLimits fails closed with stream.quota otherwise).
+  // The 1-byte readiness/fanout values fit either way, so the
+  // no-value-before-ready, shared-CCCD, and isolation proofs are unchanged.
+  const firstPromise = connected.database.subscribe(characteristic.path, subscriptionOptions('drop-oldest', 4, 128))
   fixture.controller.clock.advanceBy(0)
   fixture.controller.emitNotification(characteristicAddress(characteristic.path), new Uint8Array([1]))
   fixture.controller.clock.advanceBy(10)
@@ -422,7 +426,7 @@ async function subscriptionReadinessAndSharing(
   fixture.controller.emitNotification(characteristicAddress(characteristic.path), new Uint8Array([2]))
   const readyItem = await nextValue(first.values)
   const noValueBeforeReady = readyItem !== null && readyItem.value[0] === 2
-  const second = await connected.database.subscribe(characteristic.path, subscriptionOptions('drop-oldest', 4, 32))
+  const second = await connected.database.subscribe(characteristic.path, subscriptionOptions('drop-oldest', 4, 128))
   const sharedCccd =
     Number(fixture.backend.resourceCounters().physicalCccdEnablements) === 1 &&
     Number(fixture.backend.resourceCounters().subscriptionConsumers) === 2
@@ -472,9 +476,11 @@ async function verticalSlice(fixture: DeterministicBackendFixture): Promise<read
   const read = connected.database.read(characteristic.path, noOperationOptions())
   fixture.controller.clock.runUntilIdle()
   const value = await read
+  // Post-R12 limits: byte budget above the 64-byte control reserve; the
+  // single 1-byte notification fits either way, so the slice proof is unchanged.
   const subscriptionPromise = connected.database.subscribe(
     characteristic.path,
-    subscriptionOptions('drop-oldest', 2, 16)
+    subscriptionOptions('drop-oldest', 2, 128)
   )
   fixture.controller.clock.runUntilIdle()
   const subscription = await subscriptionPromise
@@ -573,19 +579,6 @@ function characteristicAddress(
     serviceOccurrence: Number(path.serviceOccurrence),
     characteristicUuid: path.characteristicUuid,
     characteristicOccurrence: Number(path.characteristicOccurrence)
-  }
-}
-
-function subscriptionOptions(overflowPolicy: 'drop-oldest' | 'error', itemCapacity: number, byteCapacity: number) {
-  return {
-    signal: null,
-    deadline: null,
-    delivery: {
-      itemCapacity: capacity(itemCapacity),
-      byteCapacity: capacity(byteCapacity),
-      reservedControlCapacity: capacity(1),
-      overflowPolicy
-    }
   }
 }
 
