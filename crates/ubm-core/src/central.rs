@@ -2070,6 +2070,7 @@ impl Central {
         let new_key = identity.session_key();
         if new_key != old_key && self.peer_position(&new_key).is_some() {
             self.peers.remove(index);
+            Self::merge_security_on_rekey(&mut self.security, old_key, &new_key);
             return Ok(new_key);
         }
         self.peers[index].session_key = new_key.clone();
@@ -2089,7 +2090,26 @@ impl Central {
                 path.peer_key = new_key.clone();
             }
         }
+        for exchange in self.security.iter_mut() {
+            if exchange.peer_key == old_key {
+                exchange.peer_key = new_key.clone();
+            }
+        }
         Ok(new_key)
+    }
+
+    /// Merge security exchanges on peer re-key collision: the surviving
+    /// key keeps its exchange, the orphaned key's exchange is dropped.
+    fn merge_security_on_rekey(security: &mut Vec<SecurityExchange>, old_key: &str, new_key: &str) {
+        let old_position = security.iter().position(|known| known.peer_key == old_key);
+        let Some(old_index) = old_position else {
+            return;
+        };
+        if security.iter().any(|known| known.peer_key == new_key) {
+            security.remove(old_index);
+        } else {
+            security[old_index].peer_key = String::from(new_key);
+        }
     }
 
     /// Connect as the physical owner (first lease) or fail closed with
@@ -2228,8 +2248,12 @@ impl Central {
         Ok(())
     }
 
-    /// Transfer a lease between authenticated clients. Empty fields fail with
-    /// `ownership.denied`; a stale generation fails with `connection.stale`.
+    /// Transfer a lease between authenticated clients. Empty fields (source,
+    /// destination, or generation) fail with `ownership.denied`; a stale
+    /// generation fails with `connection.stale`. The epoch mirrors the
+    /// frozen `ownership-transfer.epoch`: a `u64` is non-negative by type,
+    /// and values above the JS safe-integer ceiling fail with
+    /// `ownership.denied`.
     pub fn transfer_lease(
         &mut self,
         peer_key: &str,
@@ -2238,8 +2262,15 @@ impl Central {
         generation: &str,
         epoch: u64,
     ) -> Result<(), CoreError> {
-        let _ = epoch;
-        if source.is_empty() || dest.is_empty() {
+        const MAX_SAFE_EPOCH: u64 = 9_007_199_254_740_991;
+        if source.is_empty() || dest.is_empty() || generation.is_empty() {
+            return Err(err(
+                BleErrorCode::OwnershipDenied,
+                BleErrorDomain::Core,
+                "lease.transfer",
+            ));
+        }
+        if epoch > MAX_SAFE_EPOCH {
             return Err(err(
                 BleErrorCode::OwnershipDenied,
                 BleErrorDomain::Core,
@@ -2357,6 +2388,7 @@ impl Central {
         }
         let next = step_connection(self.connections[index].state, ConnectionEvent::Disconnect)?;
         self.connections[index].state = next;
+        self.invalidate_peer_hubs(peer_key);
         Ok(())
     }
 
@@ -2381,6 +2413,7 @@ impl Central {
         let next = step_connection(self.connections[index].state, ConnectionEvent::PeerLoss)?;
         self.connections[index].state = next;
         self.connections[index].db_state = DatabaseState::Invalid;
+        self.invalidate_peer_hubs(peer_key);
         Ok(next)
     }
 
@@ -2395,6 +2428,7 @@ impl Central {
         })?;
         let next = step_connection(self.connections[index].state, ConnectionEvent::LinkReleased)?;
         self.connections[index].state = next;
+        self.invalidate_peer_hubs(peer_key);
         Ok(())
     }
 
@@ -3793,6 +3827,11 @@ impl Central {
         if success {
             if !waiting {
                 self.hubs[hub_index].physical = CccdPhysical::Disabled;
+                for consumer in self.hubs[hub_index].consumers.iter_mut() {
+                    if consumer.state == ConsumerState::Removing {
+                        consumer.state = ConsumerState::Removed;
+                    }
+                }
                 return Ok(());
             }
             self.hubs[hub_index].physical = CccdPhysical::Enabled;
@@ -3834,18 +3873,17 @@ impl Central {
             Some(index) => index,
             None => return Ok(false),
         };
-        if self.hubs[hub_index].consumers[consumer_index]
-            .state
-            .is_terminal()
-        {
-            return Ok(false);
+        match self.hubs[hub_index].consumers[consumer_index].state {
+            ConsumerState::Enabling | ConsumerState::Ready => {}
+            ConsumerState::Removing => return Ok(false),
+            _ => return Ok(false),
         }
-        self.hubs[hub_index].consumers[consumer_index].state = ConsumerState::Removed;
-        let live = self.hubs[hub_index]
+        self.hubs[hub_index].consumers[consumer_index].state = ConsumerState::Removing;
+        let active = self.hubs[hub_index]
             .consumers
             .iter()
-            .any(|known| !known.state.is_terminal());
-        if self.hubs[hub_index].physical != CccdPhysical::Enabled || live {
+            .any(|known| matches!(known.state, ConsumerState::Enabling | ConsumerState::Ready));
+        if self.hubs[hub_index].physical != CccdPhysical::Enabled || active {
             return Ok(false);
         }
         let id = self.admit_op(consumer, 5000, now, out)?;
@@ -3907,6 +3945,11 @@ impl Central {
             }
         }
         self.hubs[hub_index].physical = CccdPhysical::Disabled;
+        for consumer in self.hubs[hub_index].consumers.iter_mut() {
+            if consumer.state == ConsumerState::Removing {
+                consumer.state = ConsumerState::Removed;
+            }
+        }
         Ok(())
     }
 
@@ -4068,6 +4111,13 @@ impl Central {
         Ok(record)
     }
 
+    /// Drop central-side tracking for one released operation.
+    fn prune_released_op(&mut self, id: &OperationId) {
+        self.op_ids.retain(|known| known != id);
+        self.op_paths.retain(|(known, _)| known != id);
+        self.op_peers.retain(|(known, _)| known != id);
+    }
+
     /// Report a host release result for a terminal operation. A failed
     /// release is retained and reported, never a silent clean release.
     pub fn report_release_failure(
@@ -4085,7 +4135,32 @@ impl Central {
             &mut EffectBatch::new(1),
         )? {
             HandleOutcome::ReleaseRecorded { .. } => {
-                self.op_ids.retain(|known| known != id);
+                self.prune_released_op(id);
+                Ok(())
+            }
+            _ => Err(err(
+                BleErrorCode::LifecycleInvalidState,
+                BleErrorDomain::Core,
+                "central.release.unexpected",
+            )),
+        }
+    }
+
+    /// Report a successful host release for a terminal operation. The
+    /// kernel reaps the entry and central prunes its operation tracking,
+    /// so aggregate admission reclaims (M1 liveness).
+    pub fn report_release_success(&mut self, id: &OperationId) -> Result<(), CoreError> {
+        match self.kernel.handle(
+            KernelInput::ReleaseReport {
+                operation_id: id.clone(),
+                ok: true,
+                code: None,
+            },
+            0,
+            &mut EffectBatch::new(1),
+        )? {
+            HandleOutcome::ReleaseRecorded { .. } => {
+                self.prune_released_op(id);
                 Ok(())
             }
             _ => Err(err(
@@ -4130,9 +4205,8 @@ impl Central {
         if self.connections[index].leases.is_empty() && !self.connections[index].state.is_terminal()
         {
             let state = self.connections[index].state;
-            if let Ok(next) = step_connection(state, ConnectionEvent::Disconnect) {
-                self.connections[index].state = next;
-            }
+            let next = step_connection(state, ConnectionEvent::Disconnect)?;
+            self.connections[index].state = next;
         }
         Ok(())
     }
@@ -4621,9 +4695,8 @@ mod tests {
             BleErrorDomain::Connection,
         )?;
         check(
-            central.connection_state(&peer).is_none()
-                || central.connection_state(&peer) == Some(ConnectionState::Invalid),
-            "old link invalidated",
+            central.connection_state(&peer).is_none(),
+            "old link cleared by reset",
         );
         // Fresh scope works again.
         let fresh = central.resolve_peer("public-address", "AA:BB:CC:DD:EE:77")?;
@@ -5474,6 +5547,10 @@ mod tests {
             central.subscribe(path, "drop-oldest", 4, 128, "app-a", 5000, 2000, &mut out)?;
         let disabled = central.unsubscribe(path, "app-a", 2001, &mut out)?;
         check(!disabled, "no disable while enabling");
+        check(
+            central.consumer_state(path, "app-a") == Some(ConsumerState::Removing),
+            "remove-during-enable parks in removing",
+        );
         // Late native success with no consumers left disables immediately:
         // no orphan live stream (CLN-03).
         central.settle_subscribe_enable(path, true, 2002, &mut out)?;
@@ -5518,7 +5595,7 @@ mod tests {
     }
 
     #[test]
-    fn bounds_overflow_is_bounded_and_terminal() -> Result<(), CoreError> {
+    fn str02_subscription_overflow_is_bounded_and_terminal() -> Result<(), CoreError> {
         let mut central = fixture_central()?;
         let mut out = batch();
         let (_peer, path) = live_characteristic(&mut central, &mut out)?;
@@ -5527,11 +5604,12 @@ mod tests {
         central.settle_subscribe_enable(path, true, 2001, &mut out)?;
         let first = central.deliver_notification(path, 1)?;
         check(first[0].1 == DeliveryOutcome::Delivered, "first admitted");
+        // Under the `error` policy the rejecting value still reports
+        // `Delivered` while raising the once-only overflow terminal.
         let second = central.deliver_notification(path, 1)?;
         check(
-            second[0].1 == DeliveryOutcome::DroppedLate
-                || second[0].1 == DeliveryOutcome::Delivered,
-            "terminal or held",
+            second[0].1 == DeliveryOutcome::Delivered,
+            "rejecting value reports delivered with terminal",
         );
         let terminal = central.take_terminal(path, "app-a");
         match terminal {
@@ -5762,6 +5840,339 @@ mod tests {
         check(
             correction_for("no.such-vector").is_none(),
             "unknown vector has no candidate",
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn m2_unsubscribe_ready_goes_through_removing() -> Result<(), CoreError> {
+        let mut central = fixture_central()?;
+        let mut out = batch();
+        let (_peer, path) = live_characteristic(&mut central, &mut out)?;
+        let _sub = central.subscribe(path, "drop-oldest", 4, 128, "app-a", 5000, 2000, &mut out)?;
+        central.settle_subscribe_enable(path, true, 2001, &mut out)?;
+        check(
+            central.consumer_state(path, "app-a") == Some(ConsumerState::Ready),
+            "ready before remove",
+        );
+        let disabled = central.unsubscribe(path, "app-a", 2002, &mut out)?;
+        check(disabled, "last removal issues disable");
+        check(
+            central.consumer_state(path, "app-a") == Some(ConsumerState::Removing),
+            "ready remove goes to removing",
+        );
+        let delivery = central.deliver_notification(path, 1)?;
+        check(
+            delivery[0].1 == DeliveryOutcome::Delivered,
+            "delivery during removing still delivers",
+        );
+        central.settle_subscribe_disable(path, 2003, &mut out)?;
+        check(
+            central.consumer_state(path, "app-a") == Some(ConsumerState::Removed),
+            "cccd-disabled completes to removed",
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn l1_peer_and_connection_bounds_reject_directly() -> Result<(), CoreError> {
+        let config = CentralConfig::new(1, 128, 32, 8, 256, KernelConfig::default())?;
+        let mut central = Central::new(fixture_attachment()?, Generation::new("g1")?, config)?;
+        let _a = central.resolve_peer("public-address", "AA:BB:CC:DD:EE:01")?;
+        expect_code(
+            central.resolve_peer("public-address", "AA:BB:CC:DD:EE:02"),
+            BleErrorCode::StreamQuota,
+            BleErrorDomain::Stream,
+        )?;
+        let config = CentralConfig::new(2, 128, 32, 8, 256, KernelConfig::default())?;
+        let mut central = Central::new(fixture_attachment()?, Generation::new("g1")?, config)?;
+        let mut out = batch();
+        let a = central.resolve_peer("public-address", "AA:BB:CC:DD:EE:01")?;
+        let b = central.resolve_peer("public-address", "AA:BB:CC:DD:EE:02")?;
+        let _ca = central.connect(&a, "client-1", 5000, 1000, &mut out)?;
+        let _cb = central.connect(&b, "client-2", 5000, 1001, &mut out)?;
+        let _merged = central.update_peer_canonical(&b, "public-address", "AA:BB:CC:DD:EE:01")?;
+        let c = central.resolve_peer("public-address", "AA:BB:CC:DD:EE:03")?;
+        expect_code(
+            central.connect(&c, "client-3", 5000, 1002, &mut out),
+            BleErrorCode::StreamQuota,
+            BleErrorDomain::Stream,
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn l1_path_bound_rejects_directly() -> Result<(), CoreError> {
+        let config = CentralConfig::new(16, 2, 32, 8, 256, KernelConfig::default())?;
+        let mut central = Central::new(fixture_attachment()?, Generation::new("g1")?, config)?;
+        let mut out = batch();
+        let (peer, _first) = live_characteristic(&mut central, &mut out)?;
+        let _second = central.register_path(
+            &peer,
+            "180D",
+            1,
+            Some("2A37"),
+            Some(0),
+            None,
+            None,
+            GATT_PROP_READ,
+            "lease-1",
+        )?;
+        expect_code(
+            central.register_path(
+                &peer,
+                "180D",
+                2,
+                Some("2A37"),
+                Some(0),
+                None,
+                None,
+                GATT_PROP_READ,
+                "lease-1",
+            ),
+            BleErrorCode::StreamQuota,
+            BleErrorDomain::Stream,
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn l1_subscription_hub_and_consumer_bounds_reject_directly() -> Result<(), CoreError> {
+        let config = CentralConfig::new(16, 8, 1, 8, 256, KernelConfig::default())?;
+        let mut central = Central::new(fixture_attachment()?, Generation::new("g1")?, config)?;
+        let mut out = batch();
+        let (peer, first) = live_characteristic(&mut central, &mut out)?;
+        let second = central.register_path(
+            &peer,
+            "180D",
+            1,
+            Some("2A37"),
+            Some(0),
+            None,
+            None,
+            GATT_PROP_READ | GATT_PROP_NOTIFY,
+            "lease-1",
+        )?;
+        let _sub =
+            central.subscribe(first, "drop-oldest", 4, 128, "app-a", 5000, 2000, &mut out)?;
+        expect_code(
+            central.subscribe(second, "drop-oldest", 4, 128, "app-b", 5000, 2001, &mut out),
+            BleErrorCode::StreamQuota,
+            BleErrorDomain::Stream,
+        )?;
+        let config = CentralConfig::new(16, 128, 32, 1, 256, KernelConfig::default())?;
+        let mut central = Central::new(fixture_attachment()?, Generation::new("g1")?, config)?;
+        let mut out = batch();
+        let (_peer, path) = live_characteristic(&mut central, &mut out)?;
+        let _sub = central.subscribe(path, "drop-oldest", 4, 128, "app-a", 5000, 2000, &mut out)?;
+        central.settle_subscribe_enable(path, true, 2001, &mut out)?;
+        expect_code(
+            central.subscribe(path, "drop-oldest", 4, 128, "app-b", 5000, 2002, &mut out),
+            BleErrorCode::StreamQuota,
+            BleErrorDomain::Stream,
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn l1_unbounded_tables_do_not_wedge_admission() -> Result<(), CoreError> {
+        let mut central = fixture_central()?;
+        let mut out = batch();
+        let (peer, path) = live_characteristic(&mut central, &mut out)?;
+        let request = validate_scan_request(&[], "all", "none", 5000, false, &[])?;
+        for round in 0..3u64 {
+            let base = 4000 + round * 10;
+            let scan = central.start_scan(&request, None, "owner-x", base, &mut out)?;
+            central.platform_scan_started(&scan)?;
+            central.stop_scan(&scan, base + 1, &mut out)?;
+            let terminal = central.note_scan_platform(
+                &scan,
+                ScanPlatformEvent::PlatformStopped,
+                base + 2,
+                &mut out,
+            )?;
+            check(
+                terminal == ScanSessionState::Stopped,
+                "scan reaches terminal",
+            );
+        }
+        for index in 0..5u64 {
+            let id = format!("central.extra-{index}");
+            central.register_capability(CapabilityDescriptor::new(
+                &id,
+                CapabilityState::Supported,
+                &[("max-bytes", 512)],
+                &[],
+                "receipt-x",
+                EvidenceLevel::Deterministic,
+                "ubm-core-0.1.0",
+                "digest-x",
+                &["scenario.scan-connect-discover-read-notify-destroy"],
+            )?)?;
+        }
+        central.set_security_available(true);
+        let _pair = central.start_security("pair", &peer, 5000, 5000, &mut out)?;
+        check(
+            central.settle_security(&peer, true)? == "paired",
+            "pair settles",
+        );
+        central.report_disconnect_failure(&peer, BleErrorCode::ConnectionLost)?;
+        central.report_disconnect_failure(&peer, BleErrorCode::ConnectionLost)?;
+        let read = central.start_read(path, 5000, 6000, &mut out)?;
+        central.dispatch_op(&read, &mut out)?;
+        let outcome = central.settle_op(&read, ContenderKind::Success, true, 99, 6001, &mut out)?;
+        match outcome {
+            CompletionOutcome::Settled { kind, .. } => {
+                check(
+                    kind == OperationTerminalKind::Succeeded,
+                    "admission not wedged",
+                );
+            }
+            _ => {
+                check(false, "read must settle");
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn l3_empty_generation_denied_and_epoch_bounded() -> Result<(), CoreError> {
+        let mut central = fixture_central()?;
+        let mut out = batch();
+        central.set_sharing_supported(true);
+        let peer = central.resolve_peer("public-address", "AA:BB:CC:DD:EE:01")?;
+        let _first = central.connect(&peer, "client-1", 5000, 1000, &mut out)?;
+        let generation = central.connection_generation(&peer).ok_or_else(|| {
+            CoreError::new(
+                BleErrorCode::ArgumentInvalid,
+                BleErrorDomain::Core,
+                "test.generation",
+            )
+        })?;
+        expect_code(
+            central.transfer_lease(&peer, "client-1", "client-9", "", 1),
+            BleErrorCode::OwnershipDenied,
+            BleErrorDomain::Core,
+        )?;
+        expect_code(
+            central.transfer_lease(
+                &peer,
+                "client-1",
+                "client-9",
+                &generation,
+                9_007_199_254_740_992,
+            ),
+            BleErrorCode::OwnershipDenied,
+            BleErrorDomain::Core,
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn l2_rekey_moves_security_exchange() -> Result<(), CoreError> {
+        let mut central = fixture_central()?;
+        let mut out = batch();
+        central.set_security_available(true);
+        let old = central.resolve_peer("resolvable-private-address", "rotating-1")?;
+        let _op = central.start_security("pair", &old, 5000, 1000, &mut out)?;
+        let new = central.update_peer_canonical(&old, "public-address", "AA:BB:CC:DD:EE:02")?;
+        let outcome = central.settle_security(&new, true)?;
+        check(
+            outcome == "paired",
+            "exchange survives re-key under new key",
+        );
+        expect_code(
+            central.settle_security(&old, true),
+            BleErrorCode::LifecycleInvalidState,
+            BleErrorDomain::Core,
+        )?;
+        Ok(())
+    }
+
+    #[test]
+    fn m2_disconnect_and_link_release_invalidate_hubs() -> Result<(), CoreError> {
+        let mut central = fixture_central()?;
+        let mut out = batch();
+        let (peer, path) = live_characteristic(&mut central, &mut out)?;
+        let _sub = central.subscribe(path, "drop-oldest", 4, 128, "app-a", 5000, 2000, &mut out)?;
+        central.settle_subscribe_enable(path, true, 2001, &mut out)?;
+        central.disconnect(&peer, "client-1", 2002, &mut out)?;
+        check(
+            central.consumer_state(path, "app-a") == Some(ConsumerState::Invalid),
+            "disconnect invalidates consumer",
+        );
+        check(
+            !central.physical_cccd_enabled(path),
+            "hub not enabled after disconnect",
+        );
+        let straggler = central.deliver_notification(path, 1)?;
+        check(
+            straggler[0].1 != DeliveryOutcome::Delivered,
+            "no delivered straggler after disconnect",
+        );
+        central.note_link_released(&peer)?;
+        check(
+            central.consumer_state(path, "app-a") == Some(ConsumerState::Invalid),
+            "link release keeps consumer invalid",
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn m2_peer_loss_invalidates_hubs_and_blocks_delivery() -> Result<(), CoreError> {
+        let mut central = fixture_central()?;
+        let mut out = batch();
+        let (peer, path) = live_characteristic(&mut central, &mut out)?;
+        let _sub = central.subscribe(path, "drop-oldest", 4, 128, "app-a", 5000, 2000, &mut out)?;
+        central.settle_subscribe_enable(path, true, 2001, &mut out)?;
+        check(
+            central.consumer_state(path, "app-a") == Some(ConsumerState::Ready),
+            "ready before loss",
+        );
+        check(
+            central.physical_cccd_enabled(path),
+            "cccd enabled before loss",
+        );
+        central.note_peer_loss(&peer, 2002, &mut out)?;
+        check(
+            central.consumer_state(path, "app-a") == Some(ConsumerState::Invalid),
+            "peer loss invalidates consumer",
+        );
+        check(
+            !central.physical_cccd_enabled(path),
+            "hub not enabled after loss",
+        );
+        let straggler = central.deliver_notification(path, 1)?;
+        check(
+            straggler[0].1 != DeliveryOutcome::Delivered,
+            "straggler delivery must not report delivered",
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn m1_success_release_reclaims_aggregate_admission() -> Result<(), CoreError> {
+        let config = CentralConfig::new(16, 128, 32, 8, 256, KernelConfig::new(4, 64, 8)?)?;
+        let mut central = Central::new(fixture_attachment()?, Generation::new("g1")?, config)?;
+        let mut out = batch();
+        let (_peer, path) = live_characteristic(&mut central, &mut out)?;
+        for index in 0..6u64 {
+            let read = central.start_read(path, 5000, 2000 + index, &mut out)?;
+            central.dispatch_op(&read, &mut out)?;
+            central.settle_op(
+                &read,
+                ContenderKind::Success,
+                true,
+                index,
+                2001 + index,
+                &mut out,
+            )?;
+            central.report_release_success(&read)?;
+        }
+        let again = central.start_read(path, 5000, 3000, &mut out)?;
+        check(
+            central.operation_state(&again).is_some(),
+            "admission still succeeds after success-release",
         );
         Ok(())
     }
