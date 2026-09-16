@@ -161,6 +161,9 @@ pub const GATT_PROP_INDICATE: u8 = 0x10;
 pub struct CentralConfig {
     /// Maximum concurrent connection records.
     pub max_connections: usize,
+    /// Maximum cached discovered peer identities (F16: independent of the
+    /// connection bound; unreferenced discoveries evict under pressure).
+    pub max_discovered_peers: usize,
     /// Maximum stored GATT paths.
     pub max_paths: usize,
     /// Maximum subscription hubs (one per subscribed path).
@@ -177,6 +180,7 @@ impl Default for CentralConfig {
     fn default() -> Self {
         Self {
             max_connections: 16,
+            max_discovered_peers: 16,
             max_paths: 128,
             max_subscriptions: 32,
             max_consumers_per_subscription: 8,
@@ -190,6 +194,7 @@ impl CentralConfig {
     /// Validate and build a configuration.
     pub fn new(
         max_connections: usize,
+        max_discovered_peers: usize,
         max_paths: usize,
         max_subscriptions: usize,
         max_consumers_per_subscription: usize,
@@ -197,6 +202,7 @@ impl CentralConfig {
         kernel: KernelConfig,
     ) -> Result<Self, CoreError> {
         if max_connections == 0
+            || max_discovered_peers == 0
             || max_paths == 0
             || max_subscriptions == 0
             || max_consumers_per_subscription == 0
@@ -210,6 +216,7 @@ impl CentralConfig {
         }
         Ok(Self {
             max_connections,
+            max_discovered_peers,
             max_paths,
             max_subscriptions,
             max_consumers_per_subscription,
@@ -1438,11 +1445,13 @@ struct ConsumerRecord {
     terminal_taken: bool,
     quarantined: u64,
     delivered: u64,
-    /// Buffered notification values in arrival order (M2 value delivery).
-    /// Entries exist only for stream-admitted values, so the queue stays
-    /// within the same item/byte bounds the stream enforces; popping
-    /// frees stream bytes so the bound recycles.
-    values: VecDeque<Vec<u8>>,
+    /// One slot per stream-ledger entry, in arrival order (M2 value
+    /// delivery): `Some` carries a value-carrying delivery's bytes, `None`
+    /// marks a length-only delivery. Payload retention and stream
+    /// accounting mutate together on every decision, so takes always pair
+    /// a value with its own ledger size; popping frees stream bytes so the
+    /// bound recycles.
+    slots: VecDeque<Option<Vec<u8>>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1761,6 +1770,43 @@ impl Central {
             .position(|hub| hub.path_index == path_index)
     }
 
+    /// Whether a hub is garbage: physically invalid with no live operation
+    /// and no untaken terminal anywhere in it (F04). Only such hubs
+    /// reclaim; anything an operation or observation still references is
+    /// kept, as is anything reusable (`Disabled`, `Failed`).
+    fn hub_reclaimable(&self, hub: &SubscriptionHub) -> bool {
+        if hub.physical != CccdPhysical::Invalid {
+            return false;
+        }
+        hub.consumers.iter().all(|consumer| {
+            let op_live = match &consumer.op {
+                Some(op) => matches!(
+                    self.kernel.operation_state(op),
+                    Some(OpStateView::Queued) | Some(OpStateView::Dispatched)
+                ),
+                None => false,
+            };
+            let terminal_owed = consumer.terminal.is_some() && !consumer.terminal_taken;
+            !op_live && !terminal_owed
+        })
+    }
+
+    /// Drop reclaimable hubs so invalidated subscriptions never accumulate
+    /// for the central's lifetime (F04). Runs at subscribe admission: after
+    /// input validation, before hub lookup, so a dead hub neither blocks
+    /// resubscribe nor consumes the hub bound.
+    fn sweep_reclaimable_hubs(&mut self) {
+        let mut dead: Vec<usize> = Vec::new();
+        for (index, hub) in self.hubs.iter().enumerate() {
+            if self.hub_reclaimable(hub) {
+                dead.push(index);
+            }
+        }
+        for index in dead.iter().rev() {
+            self.hubs.remove(*index);
+        }
+    }
+
     fn security_position(&self, peer_key: &str) -> Option<usize> {
         self.security
             .iter()
@@ -2004,9 +2050,25 @@ impl Central {
         self.scan_position(id).map(|index| self.scans[index].state)
     }
 
+    /// Whether a cached discovery may evict under pressure: no connection
+    /// record, no operation naming it, and no security exchange reference
+    /// it. Connected and selected peers pin; everything else rotates.
+    fn peer_evictable(&self, session_key: &str) -> bool {
+        self.connection_position(session_key).is_none()
+            && !self.op_peers.iter().any(|(_, peer)| peer == session_key)
+            && !self
+                .security
+                .iter()
+                .any(|exchange| exchange.peer_key == session_key)
+    }
+
     /// Resolve and register a peer identity; returns the session-scoped key
     /// (`domain:value`). Each unlinked identity stays distinct; address-like
     /// values are never treated as globally stable beyond their domain.
+    /// The discovery cache is bounded independently of the connection
+    /// bound: under pressure the oldest unreferenced discovery evicts
+    /// (F16), while connected/selected peers pin. A cache full of pinned
+    /// peers fails closed with an explicit quota.
     pub fn resolve_peer(&mut self, domain: &str, value: &str) -> Result<String, CoreError> {
         let Some(parsed) = PeerIdentityDomain::from_str(domain) else {
             return Err(err(
@@ -2020,12 +2082,23 @@ impl Central {
         if self.peer_position(&key).is_some() {
             return Ok(key);
         }
-        if self.peers.len() >= self.config.max_connections {
-            return Err(err(
-                BleErrorCode::StreamQuota,
-                BleErrorDomain::Stream,
-                "peer.bound",
-            ));
+        if self.peers.len() >= self.config.max_discovered_peers {
+            let victim = self
+                .peers
+                .iter()
+                .position(|peer| self.peer_evictable(&peer.session_key));
+            match victim {
+                Some(index) => {
+                    self.peers.remove(index);
+                }
+                None => {
+                    return Err(err(
+                        BleErrorCode::StreamQuota,
+                        BleErrorDomain::Stream,
+                        "peer.bound",
+                    ));
+                }
+            }
         }
         self.peers.push(PeerRecord {
             session_key: key.clone(),
@@ -2078,8 +2151,68 @@ impl Central {
         let identity = PeerIdentity::new(self.attachment.clone(), parsed, String::from(new_value))?;
         let new_key = identity.session_key();
         if new_key != old_key && self.peer_position(&new_key).is_some() {
-            self.peers.remove(index);
+            // Collision: two cached identities resolve to one survivor.
+            // Validate the merge BEFORE mutating (transactional): any veto
+            // leaves every record untouched.
+            let old_connection = self.connection_position(old_key);
+            let new_connection = self.connection_position(&new_key);
+            let mut drop_connection: Option<usize> = None;
+            if let (Some(old_index), Some(new_index)) = (old_connection, new_connection) {
+                let old_live = !self.connections[old_index].state.is_terminal();
+                let new_live = !self.connections[new_index].state.is_terminal();
+                if old_live && new_live {
+                    // Two live links cannot merge: no single survivor owns
+                    // both physical claims.
+                    return Err(err(
+                        BleErrorCode::OwnershipDenied,
+                        BleErrorDomain::Core,
+                        "peer.rekey-collision",
+                    ));
+                }
+                // At most one side is live: drop a terminal record so the
+                // survivor holds at most one link.
+                if old_live {
+                    drop_connection = Some(new_index);
+                } else {
+                    drop_connection = Some(old_index);
+                }
+            }
+            let old_security = self.security_position(old_key);
+            let new_security = self.security_position(&new_key);
+            if let (Some(old_index), Some(_)) = (old_security, new_security)
+                && self.security[old_index].state == PairState::Pairing
+            {
+                // The dropped exchange owns a live pairing op: merging
+                // would strand its settlement.
+                return Err(err(
+                    BleErrorCode::OwnershipDenied,
+                    BleErrorDomain::Core,
+                    "peer.rekey-collision",
+                ));
+            }
+            // Apply: every step below is infallible, so the collision
+            // migrates connections, operations, paths, and security
+            // together or not at all.
+            if let Some(drop) = drop_connection {
+                self.connections.remove(drop);
+            }
+            for connection in self.connections.iter_mut() {
+                if connection.peer_key == old_key {
+                    connection.peer_key = new_key.clone();
+                }
+            }
+            for (_, peer) in self.op_peers.iter_mut() {
+                if peer == old_key {
+                    *peer = new_key.clone();
+                }
+            }
+            for path in self.paths.iter_mut() {
+                if path.peer_key == old_key {
+                    path.peer_key = new_key.clone();
+                }
+            }
             Self::merge_security_on_rekey(&mut self.security, old_key, &new_key);
+            self.peers.remove(index);
             return Ok(new_key);
         }
         self.peers[index].session_key = new_key.clone();
@@ -2688,7 +2821,9 @@ impl Central {
 
     /// Read the current snapshot. A `changed` database fails with
     /// `gatt.stale-handle` (rediscover first); anything else off-`current`
-    /// fails with `gatt.discovery-required`. Returns the live path count.
+    /// fails with `gatt.discovery-required`. Returns the live path count:
+    /// only paths under the peer's current generations (F04), never
+    /// historical entries.
     pub fn snapshot_path_count(&self, peer_key: &str) -> Result<usize, CoreError> {
         let index = self.connection_position(peer_key).ok_or_else(|| {
             err(
@@ -2698,11 +2833,20 @@ impl Central {
             )
         })?;
         match self.connections[index].db_state {
-            DatabaseState::Current => Ok(self
-                .paths
-                .iter()
-                .filter(|path| path.peer_key == peer_key)
-                .count()),
+            DatabaseState::Current => {
+                let connection = &self.connections[index];
+                Ok(self
+                    .paths
+                    .iter()
+                    .filter(|path| {
+                        path.peer_key == peer_key
+                            && path.attachment == self.attachment
+                            && path.connection_generation
+                                == connection.connection_generation.as_str()
+                            && path.database_generation == connection.database_generation.as_str()
+                    })
+                    .count())
+            }
             DatabaseState::Changed => Err(err(
                 BleErrorCode::GattStaleHandle,
                 BleErrorDomain::Gatt,
@@ -2716,8 +2860,23 @@ impl Central {
         }
     }
 
+    /// Live (fresh-handle) paths across all peers. Stale generations are
+    /// history, not capacity: the path bound counts this, never the raw
+    /// table length (F04).
+    fn live_path_count(&self) -> usize {
+        self.paths
+            .iter()
+            .enumerate()
+            .filter(|(slot, _)| self.check_path_fresh(*slot).is_ok())
+            .count()
+    }
+
     /// Register one discovered occurrence path. Pairing and scope invariants
     /// are enforced here (UUID-only selection stays prohibited downstream).
+    /// Re-registering an identical selector revives its stale slot when no
+    /// unreleased operation references it (F04): same-table rediscovery
+    /// reuses indices instead of growing history; raw indices are never
+    /// recycled for a different selector.
     #[allow(clippy::too_many_arguments)]
     pub fn register_path(
         &mut self,
@@ -2773,7 +2932,7 @@ impl Central {
                 "path.owner",
             ));
         }
-        if self.paths.len() >= self.config.max_paths {
+        if self.live_path_count() >= self.config.max_paths {
             return Err(err(
                 BleErrorCode::StreamQuota,
                 BleErrorDomain::Stream,
@@ -2791,6 +2950,31 @@ impl Central {
         };
         let connection_generation = self.connections[index].connection_generation.to_string();
         let database_generation = self.connections[index].database_generation.to_string();
+        // Revive (F04): an identical selector in a stale slot reuses its
+        // index when no unreleased operation references it, so same-table
+        // rediscovery never grows history. Live identical slots still
+        // append (existing duplicate contract); op-referenced stale slots
+        // are left for a later revive to keep generation protection.
+        let revive = self.paths.iter().enumerate().position(|(slot, path)| {
+            path.peer_key == peer_key
+                && path.service_uuid == canonical_service
+                && path.service_occurrence == service_occurrence
+                && path.characteristic_uuid == canonical_characteristic
+                && path.characteristic_occurrence == characteristic_occurrence
+                && path.descriptor_uuid == canonical_descriptor
+                && path.descriptor_occurrence == descriptor_occurrence
+                && self.check_path_fresh(slot).is_err()
+                && !self.op_paths.iter().any(|(_, known)| *known == slot)
+        });
+        if let Some(slot) = revive {
+            let stored = &mut self.paths[slot];
+            stored.attachment = self.attachment.clone();
+            stored.connection_generation = connection_generation;
+            stored.database_generation = database_generation;
+            stored.properties = properties;
+            stored.owner_lease = String::from(owner_lease);
+            return Ok(slot);
+        }
         let stored = StoredPath {
             peer_key: String::from(peer_key),
             attachment: self.attachment.clone(),
@@ -2811,15 +2995,36 @@ impl Central {
 
     /// Resolve a selector to one stored path (GATT-01). UUID-only selection
     /// across duplicates fails with `gatt.ambiguous-path`; no match fails
-    /// with `gatt.not-found`.
+    /// with `gatt.not-found`. New selectors resolve ONLY against the
+    /// peer's current attachment/connection/database generation (F04):
+    /// stale snapshots never match, so rediscovery cannot report
+    /// ambiguity; old handles stay rejectable as stale via
+    /// [`Central::check_path_fresh`].
     pub fn resolve_path(
         &self,
         peer_key: &str,
         selector: &PathSelector,
     ) -> Result<usize, CoreError> {
+        let current = self
+            .connection_position(peer_key)
+            .and_then(|index| self.connections.get(index));
+        let Some(connection) = current else {
+            // No live snapshot: nothing is current for this peer.
+            return Err(err(
+                BleErrorCode::GattNotFound,
+                BleErrorDomain::Gatt,
+                "path.resolve",
+            ));
+        };
         let mut matches: Vec<usize> = Vec::new();
         for (index, path) in self.paths.iter().enumerate() {
             if path.peer_key != peer_key || path.service_uuid != selector.service_uuid {
+                continue;
+            }
+            if path.attachment != self.attachment
+                || path.connection_generation != connection.connection_generation.as_str()
+                || path.database_generation != connection.database_generation.as_str()
+            {
                 continue;
             }
             if let Some(occurrence) = selector.service_occurrence
@@ -3372,7 +3577,10 @@ impl Central {
     }
 
     /// Cancel one operation (OPS-01): a queued operation never reaches the
-    /// radio and queue ownership releases with phase receipts.
+    /// radio and queue ownership releases with phase receipts. Cancellation
+    /// also releases the operation's subscription wait: an `Enabling`
+    /// consumer owned by the cancelled op leaves the wait set, so a late
+    /// enable success can never revive it (F12).
     pub fn cancel_op(
         &mut self,
         id: &OperationId,
@@ -3392,6 +3600,17 @@ impl Central {
             HandleOutcome::Cancelled { receipt } => {
                 let settled = outcome_from_receipt(&receipt, false);
                 self.release_pending_connect_claim(id);
+                for hub in self.hubs.iter_mut() {
+                    for consumer in hub.consumers.iter_mut() {
+                        let owned = match &consumer.op {
+                            Some(op) => op == id,
+                            None => false,
+                        };
+                        if owned && consumer.state == ConsumerState::Enabling {
+                            consumer.state = ConsumerState::Removed;
+                        }
+                    }
+                }
                 Ok(settled)
             }
             HandleOutcome::DuplicateSuppressed => {
@@ -3691,6 +3910,7 @@ impl Central {
             RESERVED_CONTROL_CAPACITY,
             RESERVED_CONTROL_BYTES,
         )?;
+        self.sweep_reclaimable_hubs();
         let hub_index = match self.hub_position(path_index) {
             Some(index) => index,
             None => {
@@ -3780,7 +4000,7 @@ impl Central {
                 terminal_taken: false,
                 quarantined: 0,
                 delivered: 0,
-                values: VecDeque::new(),
+                slots: VecDeque::new(),
             });
             return Ok(id);
         }
@@ -3793,7 +4013,7 @@ impl Central {
             terminal_taken: false,
             quarantined: 0,
             delivered: 0,
-            values: VecDeque::new(),
+            slots: VecDeque::new(),
         });
         if physical == CccdPhysical::Disabled || physical == CccdPhysical::Failed {
             self.hubs[hub_index].physical = CccdPhysical::Enabling;
@@ -3803,8 +4023,14 @@ impl Central {
         Ok(id)
     }
 
-    /// Settle the physical CCCD enablement. A late success with no consumers
-    /// left immediately disables again: no orphan live stream (CLN-03).
+    /// Settle the physical CCCD enablement. Only `Enabling` consumers
+    /// whose op is still live ride the outcome: a cancelled or otherwise
+    /// settled op never revives its consumer (F12). A late success with no
+    /// eligible consumer left stages a real compensating physical disable
+    /// and holds `Disabling` until the OS confirms: no orphan live stream
+    /// (CLN-03), and never a premature `Disabled` report. The enable ticket
+    /// is consumed by the settle: a duplicate settle fails closed instead
+    /// of corrupting the hub.
     pub fn settle_subscribe_enable(
         &mut self,
         path_index: usize,
@@ -3827,6 +4053,34 @@ impl Central {
                 "subscribe.enable",
             ));
         }
+        // Snapshot eligibility before settling ops: an `Enabling` consumer
+        // owns a live op exactly when it still waits on this enablement.
+        let eligible: Vec<OperationId> = self.hubs[hub_index]
+            .consumers
+            .iter()
+            .filter(|consumer| consumer.state == ConsumerState::Enabling)
+            .filter_map(|consumer| consumer.op.clone())
+            .filter(|op| {
+                matches!(
+                    self.kernel.operation_state(op),
+                    Some(OpStateView::Queued) | Some(OpStateView::Dispatched)
+                )
+            })
+            .collect();
+        // A success with nobody eligible needs a compensating disable: the
+        // OS enable is live with no owner. Reserve effect room and kernel
+        // admission BEFORE any mutation so a full ledger fails closed and
+        // the host can retry the settle.
+        let compensating = if success && eligible.is_empty() {
+            self.check_effect_room()?;
+            let owner = match self.hubs[hub_index].consumers.first() {
+                Some(consumer) => consumer.lease.clone(),
+                None => String::from("subscribe-cleanup"),
+            };
+            Some(self.admit_op(&owner, 5000, now, out)?)
+        } else {
+            None
+        };
         let ordinal = self.next_ordinal();
         let generation = self.kernel_generation.clone();
         let live_ops: Vec<OperationId> = self.hubs[hub_index]
@@ -3869,29 +4123,45 @@ impl Central {
                 out,
             );
         }
-        let waiting = self.hubs[hub_index]
-            .consumers
-            .iter()
-            .any(|consumer| consumer.state == ConsumerState::Enabling);
         if success {
-            if !waiting {
-                self.hubs[hub_index].physical = CccdPhysical::Disabled;
+            if let Some(disable_id) = compensating {
+                self.hubs[hub_index].physical = CccdPhysical::Disabling;
+                self.hubs[hub_index].enable_op = None;
+                self.hubs[hub_index].disable_op = Some(disable_id.clone());
+                self.stage_effect(
+                    CentralEffectKind::SubscribeDisable,
+                    &disable_id,
+                    "subscribe.disable",
+                );
                 for consumer in self.hubs[hub_index].consumers.iter_mut() {
-                    if consumer.state == ConsumerState::Removing {
+                    if consumer.state == ConsumerState::Removing
+                        || consumer.state == ConsumerState::Enabling
+                    {
                         consumer.state = ConsumerState::Removed;
                     }
                 }
                 return Ok(());
             }
             self.hubs[hub_index].physical = CccdPhysical::Enabled;
+            self.hubs[hub_index].enable_op = None;
             for consumer in self.hubs[hub_index].consumers.iter_mut() {
-                if consumer.state == ConsumerState::Enabling {
-                    consumer.state = ConsumerState::Ready;
+                if consumer.state != ConsumerState::Enabling {
+                    continue;
                 }
+                let rides = match &consumer.op {
+                    Some(op) => eligible.contains(op),
+                    None => false,
+                };
+                consumer.state = if rides {
+                    ConsumerState::Ready
+                } else {
+                    ConsumerState::Removed
+                };
             }
             return Ok(());
         }
         self.hubs[hub_index].physical = CccdPhysical::Failed;
+        self.hubs[hub_index].enable_op = None;
         for consumer in self.hubs[hub_index].consumers.iter_mut() {
             if consumer.state == ConsumerState::Enabling {
                 consumer.state = ConsumerState::Failed;
@@ -4063,9 +4333,10 @@ impl Central {
     /// Deliver one native notification value to every consumer of a path:
     /// the same accounting as [`Central::deliver_notification`], plus the
     /// bytes buffer per stream-admitted consumer for later
-    /// [`Central::take_notification_value`]. Values buffer only on `Admit`,
-    /// after the stream enforces its item/byte bounds, so an oversized or
-    /// over-capacity value terminates instead of allocating unbounded.
+    /// [`Central::take_notification_value`]. Values buffer on `Admit` and
+    /// on retaining (`Replace`/`DropOldest`) decisions, after the stream
+    /// enforces its item/byte bounds, so an oversized or over-capacity
+    /// value drops or terminates instead of allocating unbounded.
     pub fn deliver_notification_value(
         &mut self,
         path_index: usize,
@@ -4106,10 +4377,24 @@ impl Central {
                             Ok(push) => match push.decision {
                                 crate::streams::AdmissionDecision::Admit => {
                                     consumer.delivered = consumer.delivered.saturating_add(1);
-                                    if let Some(bytes) = value {
-                                        consumer.values.push_back(bytes.to_vec());
-                                    }
+                                    consumer.slots.push_back(value.map(<[u8]>::to_vec));
                                     DeliveryOutcome::Delivered
+                                }
+                                crate::streams::AdmissionDecision::Replace
+                                | crate::streams::AdmissionDecision::DropOldest => {
+                                    // Retention and accounting are one atomic
+                                    // queue operation: drop exactly the slots
+                                    // the ledger evicted, then retain the
+                                    // newest alongside its ledger entry.
+                                    consumer.delivered = consumer.delivered.saturating_add(1);
+                                    let dropped =
+                                        (push.evicted_items as usize).min(consumer.slots.len());
+                                    consumer.slots.drain(0..dropped);
+                                    consumer.slots.push_back(value.map(<[u8]>::to_vec));
+                                    DeliveryOutcome::OverflowNoticed
+                                }
+                                crate::streams::AdmissionDecision::DropNewest => {
+                                    DeliveryOutcome::OverflowNoticed
                                 }
                                 crate::streams::AdmissionDecision::Terminate => {
                                     consumer.terminal = Some(SubscriptionTerminal {
@@ -4120,7 +4405,6 @@ impl Central {
                                     consumer.state = ConsumerState::Failed;
                                     DeliveryOutcome::Delivered
                                 }
-                                _ => DeliveryOutcome::OverflowNoticed,
                             },
                             Err(_) => DeliveryOutcome::DroppedLate,
                         }
@@ -4137,7 +4421,9 @@ impl Central {
     /// release values: bytes admitted before the terminal stay valid
     /// observations (drain, then take the terminal). `Invalid`/`Removed`
     /// consumers observe `None` so stale values never cross invalidation.
-    /// Popping frees the stream bytes so the bound recycles.
+    /// Popping frees the stream bytes so the bound recycles. Length-only
+    /// slots carry no bytes: takes skip past them (freeing their ledger
+    /// sizes) so every returned value pairs with its own size.
     pub fn take_notification_value(
         &mut self,
         path_index: usize,
@@ -4152,12 +4438,22 @@ impl Central {
             ConsumerState::Ready | ConsumerState::Removing | ConsumerState::Failed => {}
             _ => return None,
         }
-        let value = record.values.pop_front()?;
-        record.stream.release_oldest_data(1);
-        Some(value)
+        loop {
+            match record.slots.pop_front() {
+                None => return None,
+                Some(None) => {
+                    record.stream.release_oldest_data(1);
+                }
+                Some(Some(value)) => {
+                    record.stream.release_oldest_data(1);
+                    return Some(value);
+                }
+            }
+        }
     }
 
     /// Buffered values waiting for a consumer (observation without drain).
+    /// Length-only slots hold no bytes and are not counted.
     #[must_use]
     pub fn pending_value_count(&self, path_index: usize, consumer: &str) -> Option<u64> {
         let hub_index = self.hub_position(path_index)?;
@@ -4165,7 +4461,7 @@ impl Central {
             .consumers
             .iter()
             .find(|known| known.lease == consumer)
-            .map(|record| record.values.len() as u64)
+            .map(|record| record.slots.iter().filter(|slot| slot.is_some()).count() as u64)
     }
 
     /// Take one consumer's terminal overflow event, if present. A terminal
@@ -4940,6 +5236,200 @@ mod tests {
             BleErrorCode::ArgumentInvalid,
             BleErrorDomain::Core,
         )
+    }
+
+    /// F04 helper: the exact selector for `live_characteristic`'s path.
+    fn f04_selector() -> PathSelector {
+        PathSelector {
+            service_uuid: String::from("0000180d-0000-1000-8000-00805f9b34fb"),
+            service_occurrence: Some(0),
+            characteristic_uuid: Some(String::from("00002a37-0000-1000-8000-00805f9b34fb")),
+            characteristic_occurrence: Some(0),
+            descriptor_uuid: None,
+            descriptor_occurrence: None,
+        }
+    }
+
+    /// F04 helper: one subscribe/enable/release/unsubscribe/disable/release
+    /// cycle, releasing terminal ops the way a host does.
+    fn f04_cycle(
+        central: &mut Central,
+        out: &mut EffectBatch,
+        path: usize,
+        lease: &str,
+        base: u64,
+    ) -> Result<(), CoreError> {
+        let sub = central.subscribe(path, "drop-oldest", 4, 128, lease, 5000, base, out)?;
+        central.settle_subscribe_enable(path, true, base + 1, out)?;
+        central.report_release_success(&sub)?;
+        check(
+            central.consumer_state(path, lease) == Some(ConsumerState::Ready),
+            "cycle consumer ready",
+        );
+        let disabled = central.unsubscribe(path, lease, base + 2, out)?;
+        check(disabled, "cycle last removal disables");
+        let hub = central
+            .hubs
+            .iter()
+            .find(|known| known.path_index == path)
+            .ok_or_else(|| {
+                CoreError::new(
+                    BleErrorCode::ArgumentInvalid,
+                    BleErrorDomain::Core,
+                    "test.hub",
+                )
+            })?;
+        let disable = hub.disable_op.clone().ok_or_else(|| {
+            CoreError::new(
+                BleErrorCode::ArgumentInvalid,
+                BleErrorDomain::Core,
+                "test.disable-op",
+            )
+        })?;
+        central.settle_subscribe_disable(path, base + 3, out)?;
+        central.report_release_success(&disable)?;
+        Ok(())
+    }
+
+    /// F04 regression: rediscovering the same table keeps one current
+    /// snapshot: the selector resolves without ambiguity, the old handle
+    /// is stale (never ambiguous), and the live count excludes history.
+    #[test]
+    fn f04_rediscovery_resolves_current_without_ambiguity() -> Result<(), CoreError> {
+        let mut central = fixture_central()?;
+        let mut out = batch();
+        let (peer, first) = live_characteristic(&mut central, &mut out)?;
+        check(
+            central.resolve_path(&peer, &f04_selector())? == first,
+            "first snapshot resolves",
+        );
+        check(central.snapshot_path_count(&peer)? == 1, "one live path");
+        central.begin_discovery(&peer)?;
+        central.complete_discovery(&peer)?;
+        // The old handle is stale now; no current snapshot exists yet.
+        expect_code(
+            central.check_path_fresh(first),
+            BleErrorCode::GattStaleHandle,
+            BleErrorDomain::Gatt,
+        )?;
+        expect_code(
+            central.resolve_path(&peer, &f04_selector()),
+            BleErrorCode::GattNotFound,
+            BleErrorDomain::Gatt,
+        )?;
+        // Re-registering the same table revives its slot: no duplicate.
+        let second = central.register_path(
+            &peer,
+            "180D",
+            0,
+            Some("2A37"),
+            Some(0),
+            None,
+            None,
+            GATT_PROP_READ | GATT_PROP_WRITE | GATT_PROP_NOTIFY,
+            "lease-1",
+        )?;
+        check(second == first, "same table revives its slot");
+        check(central.paths.len() == 1, "no historical duplicate");
+        check(
+            central.resolve_path(&peer, &f04_selector())? == second,
+            "current snapshot resolves, never ambiguous",
+        );
+        check(central.snapshot_path_count(&peer)? == 1, "live count exact");
+        let read = central.start_read(second, 5000, 3000, &mut out)?;
+        central.dispatch_op(&read, &mut out)?;
+        let outcome = central.settle_op(&read, ContenderKind::Success, true, 9, 3001, &mut out)?;
+        match outcome {
+            CompletionOutcome::Settled { kind, .. } => {
+                check(
+                    kind == OperationTerminalKind::Succeeded,
+                    "current handle operates",
+                );
+            }
+            _ => {
+                check(false, "read must settle");
+            }
+        }
+        Ok(())
+    }
+
+    /// F04 regression: 150 rediscovery cycles (past the 128-path and
+    /// 32-hub defaults) with subscription churn and a mid-loop reconnect
+    /// stay bounded: one live path, one live hub, current selectors keep
+    /// resolving, and stale generations never match.
+    #[test]
+    fn f04_repeated_rediscovery_reclaims_paths_and_hubs() -> Result<(), CoreError> {
+        let mut central = fixture_central()?;
+        let mut out = batch();
+        let (peer, first) = live_characteristic(&mut central, &mut out)?;
+        central.report_release_success(
+            &central
+                .op_ids
+                .iter()
+                .find(|id| {
+                    central.operation_state(id)
+                        == Some(OpStateView::Terminal(OperationTerminalKind::Succeeded))
+                })
+                .cloned()
+                .ok_or_else(|| {
+                    CoreError::new(
+                        BleErrorCode::ArgumentInvalid,
+                        BleErrorDomain::Core,
+                        "test.connect-op",
+                    )
+                })?,
+        )?;
+        for round in 0..150u64 {
+            // A fresh effect batch per round, the way a host drains executed
+            // effects between calls: kernel admissions never wedge on a
+            // stale full batch.
+            let mut out = batch();
+            if round == 75 {
+                // Mid-loop reconnect: new connection generation, same table.
+                central.disconnect(&peer, "client-1", 9000, &mut out)?;
+                central.note_link_released(&peer)?;
+                let op = central.connect(&peer, "client-1", 5000, 9001, &mut out)?;
+                central.dispatch_op(&op, &mut out)?;
+                central.settle_op(&op, ContenderKind::Success, true, round, 9002, &mut out)?;
+                central.report_release_success(&op)?;
+                central.note_link_established(&peer)?;
+            }
+            central.begin_discovery(&peer)?;
+            central.complete_discovery(&peer)?;
+            let path = central.register_path(
+                &peer,
+                "180D",
+                0,
+                Some("2A37"),
+                Some(0),
+                None,
+                None,
+                GATT_PROP_READ | GATT_PROP_WRITE | GATT_PROP_NOTIFY,
+                "lease-1",
+            )?;
+            check(path == first, "slot revived every round");
+            check(
+                central.resolve_path(&peer, &f04_selector())? == first,
+                "current resolves every round",
+            );
+            check(
+                central.snapshot_path_count(&peer)? == 1,
+                "live count stays one",
+            );
+            if round % 25 == 0 {
+                f04_cycle(&mut central, &mut out, first, "app-a", 10_000 + round * 10)?;
+            }
+        }
+        let mut out = batch();
+        check(central.paths.len() == 1, "paths bounded past 128");
+        check(central.hubs.len() == 1, "hubs bounded past 32");
+        check(central.snapshot_path_count(&peer)? == 1, "final live count");
+        let read = central.start_read(first, 5000, 20_000, &mut out)?;
+        check(
+            central.operation_state(&read).is_some(),
+            "current handle still operates",
+        );
+        Ok(())
     }
 
     #[test]
@@ -5723,6 +6213,79 @@ mod tests {
         Ok(())
     }
 
+    /// F12 regression: cancelling the only subscribe operation during
+    /// enable leaves no waiters: the late native success revives nothing,
+    /// delivers nothing, and stages exactly one compensating physical
+    /// disable instead of silently reporting disabled.
+    #[test]
+    fn f12_cancelled_subscriber_never_revives() -> Result<(), CoreError> {
+        let mut central = fixture_central()?;
+        let mut out = batch();
+        let (_peer, path) = live_characteristic(&mut central, &mut out)?;
+        let sub = central.subscribe(path, "drop-oldest", 4, 128, "app-a", 5000, 2000, &mut out)?;
+        central.cancel_op(&sub, 2001, &mut out)?;
+        check(
+            central.consumer_state(path, "app-a") == Some(ConsumerState::Removed),
+            "cancel leaves the enable wait set",
+        );
+        let _ = central.drain_typed_effects();
+        central.settle_subscribe_enable(path, true, 2002, &mut out)?;
+        check(
+            central.consumer_state(path, "app-a") == Some(ConsumerState::Removed),
+            "late success revives nothing",
+        );
+        check(
+            !central.physical_cccd_enabled(path),
+            "no orphan live stream",
+        );
+        let staged = central.drain_typed_effects();
+        let disables = staged
+            .iter()
+            .filter(|effect| effect.kind() == CentralEffectKind::SubscribeDisable)
+            .count();
+        check(disables == 1, "exactly one compensating disable");
+        // The hub reports disabled only after the OS confirms the cleanup.
+        central.settle_subscribe_disable(path, 2003, &mut out)?;
+        let late = central.deliver_notification(path, 1)?;
+        check(
+            late[0].1 == DeliveryOutcome::DroppedRemoved,
+            "cancelled consumer receives nothing",
+        );
+        Ok(())
+    }
+
+    /// F12 regression: removing the last subscriber during enable, then
+    /// completing the native enable, stages a real compensating disable
+    /// (the CCCD is live with no owner) and finalizes the consumer only
+    /// after the OS confirms.
+    #[test]
+    fn f12_last_unsubscribe_during_enable_stages_real_disable() -> Result<(), CoreError> {
+        let mut central = fixture_central()?;
+        let mut out = batch();
+        let (_peer, path) = live_characteristic(&mut central, &mut out)?;
+        let _sub = central.subscribe(path, "drop-oldest", 4, 128, "app-a", 5000, 2000, &mut out)?;
+        let disabled = central.unsubscribe(path, "app-a", 2001, &mut out)?;
+        check(!disabled, "no disable while enabling");
+        let _ = central.drain_typed_effects();
+        central.settle_subscribe_enable(path, true, 2002, &mut out)?;
+        check(
+            central.consumer_state(path, "app-a") == Some(ConsumerState::Removed),
+            "consumer finalized",
+        );
+        let staged = central.drain_typed_effects();
+        let disables = staged
+            .iter()
+            .filter(|effect| effect.kind() == CentralEffectKind::SubscribeDisable)
+            .count();
+        check(disables == 1, "exactly one compensating disable");
+        central.settle_subscribe_disable(path, 2003, &mut out)?;
+        check(
+            !central.physical_cccd_enabled(path),
+            "cleanup confirmed disabled",
+        );
+        Ok(())
+    }
+
     #[test]
     fn gatt04_pre_ready_values_quarantine_never_deliver() -> Result<(), CoreError> {
         let mut central = fixture_central()?;
@@ -5879,7 +6442,7 @@ mod tests {
 
     #[test]
     fn ops03_contention_bounds_hold_and_cleanup_flows() -> Result<(), CoreError> {
-        let config = CentralConfig::new(16, 128, 32, 8, 256, KernelConfig::new(4, 64, 2)?)?;
+        let config = CentralConfig::new(16, 16, 128, 32, 8, 256, KernelConfig::new(4, 64, 2)?)?;
         let mut central = Central::new(fixture_attachment()?, Generation::new("g1")?, config)?;
         let mut out = batch();
         let request = validate_scan_request(&[], "all", "none", 5000, false, &[])?;
@@ -6032,36 +6595,123 @@ mod tests {
         Ok(())
     }
 
+    /// F16 regression: sixteen unrelated advertisers with zero active
+    /// connections must not lock out a target sensor. Unreferenced
+    /// discoveries evict oldest-first; the cache stays bounded and the
+    /// target remains discoverable and connectable.
     #[test]
-    fn l1_peer_and_connection_bounds_reject_directly() -> Result<(), CoreError> {
-        let config = CentralConfig::new(1, 128, 32, 8, 256, KernelConfig::default())?;
+    fn f16_discovery_pressure_keeps_target_admissible() -> Result<(), CoreError> {
+        let mut central = fixture_central()?;
+        let mut out = batch();
+        let mut oldest = String::new();
+        for index in 0..16u32 {
+            let value = format!("AA:BB:CC:DD:EE:{index:02X}");
+            let key = central.resolve_peer("public-address", &value)?;
+            if index == 0 {
+                oldest = key;
+            }
+        }
+        check(central.known_peer_count() == 16, "cache full, zero links");
+        let target = central.resolve_peer("public-address", "AA:BB:CC:DD:EE:FF")?;
+        check(central.known_peer_count() == 16, "cache stays bounded");
+        central.require_known_peer(&target)?;
+        expect_code(
+            central.require_known_peer(&oldest),
+            BleErrorCode::PeerNotFound,
+            BleErrorDomain::Connection,
+        )?;
+        // The target is connectable without a new manager.
+        let _op = central.connect(&target, "client-1", 5000, 1000, &mut out)?;
+        check(
+            central.connection_state(&target) == Some(ConnectionState::Connecting),
+            "target connects under pressure",
+        );
+        Ok(())
+    }
+
+    /// F16 regression: connected (pinned) peers survive discovery
+    /// pressure; eviction takes an unreferenced discovery instead.
+    #[test]
+    fn f16_connected_peers_pin_against_eviction() -> Result<(), CoreError> {
+        let mut central = fixture_central()?;
+        let mut out = batch();
+        let pinned = central.resolve_peer("public-address", "AA:BB:CC:DD:EE:01")?;
+        let _op = central.connect(&pinned, "client-1", 5000, 1000, &mut out)?;
+        for index in 2..17u32 {
+            let value = format!("AA:BB:CC:DD:EE:{index:02X}");
+            central.resolve_peer("public-address", &value)?;
+        }
+        check(central.known_peer_count() == 16, "cache full, one link");
+        let newcomer = central.resolve_peer("public-address", "AA:BB:CC:DD:EE:FF")?;
+        central.require_known_peer(&pinned)?;
+        central.require_known_peer(&newcomer)?;
+        check(central.known_peer_count() == 16, "bounded with pinning");
+        Ok(())
+    }
+
+    /// F16 regression: when every cached discovery is pinned, the next
+    /// discovery fails closed with an explicit quota instead of silently
+    /// losing the peer.
+    #[test]
+    fn f16_full_pinned_cache_reports_quota() -> Result<(), CoreError> {
+        let config = CentralConfig::new(1, 1, 128, 32, 8, 256, KernelConfig::default())?;
         let mut central = Central::new(fixture_attachment()?, Generation::new("g1")?, config)?;
-        let _a = central.resolve_peer("public-address", "AA:BB:CC:DD:EE:01")?;
+        let mut out = batch();
+        let pinned = central.resolve_peer("public-address", "AA:BB:CC:DD:EE:01")?;
+        let _op = central.connect(&pinned, "client-1", 5000, 1000, &mut out)?;
         expect_code(
             central.resolve_peer("public-address", "AA:BB:CC:DD:EE:02"),
             BleErrorCode::StreamQuota,
             BleErrorDomain::Stream,
         )?;
-        let config = CentralConfig::new(2, 128, 32, 8, 256, KernelConfig::default())?;
+        central.require_known_peer(&pinned)?;
+        Ok(())
+    }
+
+    #[test]
+    fn l1_peer_and_connection_bounds_reject_directly() -> Result<(), CoreError> {
+        // F16 contract change (justified update): the old assertion rejected
+        // a second discovery with zero connections, encoding the bug where
+        // the discovery cache shared the connection bound without eviction.
+        // Unreferenced discoveries now evict; rejection is direct only when
+        // every cached discovery is pinned (here: connected).
+        let config = CentralConfig::new(1, 1, 128, 32, 8, 256, KernelConfig::default())?;
+        let mut central = Central::new(fixture_attachment()?, Generation::new("g1")?, config)?;
+        let mut out = batch();
+        let a = central.resolve_peer("public-address", "AA:BB:CC:DD:EE:01")?;
+        let _ca = central.connect(&a, "client-1", 5000, 1000, &mut out)?;
+        expect_code(
+            central.resolve_peer("public-address", "AA:BB:CC:DD:EE:02"),
+            BleErrorCode::StreamQuota,
+            BleErrorDomain::Stream,
+        )?;
+        // F19 contract change (justified update): the old step rekeyed B
+        // onto A while both held live links, encoding the unsafe silent
+        // merge (B's peer record dropped while its live link kept the old
+        // key). That merge now fails explicitly; the connection bound is
+        // tested directly with three distinct peers.
+        let config = CentralConfig::new(2, 4, 128, 32, 8, 256, KernelConfig::default())?;
         let mut central = Central::new(fixture_attachment()?, Generation::new("g1")?, config)?;
         let mut out = batch();
         let a = central.resolve_peer("public-address", "AA:BB:CC:DD:EE:01")?;
         let b = central.resolve_peer("public-address", "AA:BB:CC:DD:EE:02")?;
+        let c = central.resolve_peer("public-address", "AA:BB:CC:DD:EE:03")?;
         let _ca = central.connect(&a, "client-1", 5000, 1000, &mut out)?;
         let _cb = central.connect(&b, "client-2", 5000, 1001, &mut out)?;
-        let _merged = central.update_peer_canonical(&b, "public-address", "AA:BB:CC:DD:EE:01")?;
-        let c = central.resolve_peer("public-address", "AA:BB:CC:DD:EE:03")?;
         expect_code(
             central.connect(&c, "client-3", 5000, 1002, &mut out),
             BleErrorCode::StreamQuota,
             BleErrorDomain::Stream,
         )?;
+        // The discovery cache is independent of the connection bound: with
+        // both links full, discoveries still admit.
+        let _d = central.resolve_peer("public-address", "AA:BB:CC:DD:EE:04")?;
         Ok(())
     }
 
     #[test]
     fn l1_path_bound_rejects_directly() -> Result<(), CoreError> {
-        let config = CentralConfig::new(16, 2, 32, 8, 256, KernelConfig::default())?;
+        let config = CentralConfig::new(16, 16, 2, 32, 8, 256, KernelConfig::default())?;
         let mut central = Central::new(fixture_attachment()?, Generation::new("g1")?, config)?;
         let mut out = batch();
         let (peer, _first) = live_characteristic(&mut central, &mut out)?;
@@ -6096,7 +6746,7 @@ mod tests {
 
     #[test]
     fn l1_subscription_hub_and_consumer_bounds_reject_directly() -> Result<(), CoreError> {
-        let config = CentralConfig::new(16, 8, 1, 8, 256, KernelConfig::default())?;
+        let config = CentralConfig::new(16, 16, 8, 1, 8, 256, KernelConfig::default())?;
         let mut central = Central::new(fixture_attachment()?, Generation::new("g1")?, config)?;
         let mut out = batch();
         let (peer, first) = live_characteristic(&mut central, &mut out)?;
@@ -6118,7 +6768,7 @@ mod tests {
             BleErrorCode::StreamQuota,
             BleErrorDomain::Stream,
         )?;
-        let config = CentralConfig::new(16, 128, 32, 1, 256, KernelConfig::default())?;
+        let config = CentralConfig::new(16, 16, 128, 32, 1, 256, KernelConfig::default())?;
         let mut central = Central::new(fixture_attachment()?, Generation::new("g1")?, config)?;
         let mut out = batch();
         let (_peer, path) = live_characteristic(&mut central, &mut out)?;
@@ -6226,6 +6876,171 @@ mod tests {
         Ok(())
     }
 
+    /// F19 regression: a connected provisional identity resolving to an
+    /// already-discovered canonical identity migrates every live reference
+    /// (connection, operations, paths, subscriptions, security) onto the
+    /// survivor; nothing dangles on the removed key.
+    #[test]
+    fn f19_collision_migrates_live_references() -> Result<(), CoreError> {
+        let mut central = fixture_central()?;
+        let mut out = batch();
+        let a = central.resolve_peer("resolvable-private-address", "rotating-1")?;
+        let conn_a = central.connect(&a, "client-1", 5000, 1000, &mut out)?;
+        central.dispatch_op(&conn_a, &mut out)?;
+        central.settle_op(&conn_a, ContenderKind::Success, true, 0, 1001, &mut out)?;
+        central.note_link_established(&a)?;
+        central.begin_discovery(&a)?;
+        central.complete_discovery(&a)?;
+        let path = central.register_path(
+            &a,
+            "180D",
+            0,
+            Some("2A37"),
+            Some(0),
+            None,
+            None,
+            GATT_PROP_READ | GATT_PROP_NOTIFY,
+            "lease-1",
+        )?;
+        let _sub = central.subscribe(path, "drop-oldest", 4, 128, "app-a", 5000, 1002, &mut out)?;
+        central.settle_subscribe_enable(path, true, 1003, &mut out)?;
+        central.set_security_available(true);
+        let _pair = central.start_security("pair", &a, 5000, 1004, &mut out)?;
+        let b = central.resolve_peer("public-address", "AA:BB:CC:DD:EE:02")?;
+        let merged = central.update_peer_canonical(&a, "public-address", "AA:BB:CC:DD:EE:02")?;
+        check(merged == b, "survivor is the canonical key");
+        central.require_known_peer(&b)?;
+        expect_code(
+            central.require_known_peer(&a),
+            BleErrorCode::PeerNotFound,
+            BleErrorDomain::Connection,
+        )?;
+        // Connection, operations, paths, subscriptions, security agree on B.
+        check(
+            central.connection_state(&b) == Some(ConnectionState::Connected),
+            "link follows the survivor",
+        );
+        check(
+            central.connection_state(&a).is_none(),
+            "nothing dangles on the removed key",
+        );
+        check(
+            central.op_peers.iter().all(|(_, peer)| peer != &a),
+            "no operation names the removed key",
+        );
+        check(
+            central
+                .op_peers
+                .iter()
+                .any(|(op, peer)| op == &conn_a && peer == &b),
+            "connect op migrated",
+        );
+        central.check_path_fresh(path)?;
+        let delivery = central.deliver_notification(path, 1)?;
+        check(
+            delivery[0].1 == DeliveryOutcome::Delivered,
+            "subscription follows the survivor",
+        );
+        check(
+            central.settle_security(&b, true)? == "paired",
+            "exchange follows the survivor",
+        );
+        central.disconnect(&b, "client-1", 1005, &mut out)?;
+        check(
+            central.connection_state(&b) == Some(ConnectionState::Disconnecting),
+            "disconnect works through the survivor",
+        );
+        Ok(())
+    }
+
+    /// F19 regression: when both identities hold live links, no safe merge
+    /// exists: the rekey fails explicitly and every record stays untouched.
+    #[test]
+    fn f19_collision_with_two_live_links_rejects() -> Result<(), CoreError> {
+        let mut central = fixture_central()?;
+        let mut out = batch();
+        let a = central.resolve_peer("resolvable-private-address", "rotating-1")?;
+        let _ca = central.connect(&a, "client-1", 5000, 1000, &mut out)?;
+        let b = central.resolve_peer("public-address", "AA:BB:CC:DD:EE:02")?;
+        let _cb = central.connect(&b, "client-2", 5000, 1001, &mut out)?;
+        expect_code(
+            central.update_peer_canonical(&a, "public-address", "AA:BB:CC:DD:EE:02"),
+            BleErrorCode::OwnershipDenied,
+            BleErrorDomain::Core,
+        )?;
+        // Transactional veto: both identities and both links survive intact.
+        central.require_known_peer(&a)?;
+        central.require_known_peer(&b)?;
+        check(
+            central.connection_state(&a) == Some(ConnectionState::Connecting),
+            "A link untouched",
+        );
+        check(
+            central.connection_state(&b) == Some(ConnectionState::Connecting),
+            "B link untouched",
+        );
+        check(central.known_peer_count() == 2, "no peer lost");
+        Ok(())
+    }
+
+    /// F19 regression: a live link wins over a terminal record: the dead
+    /// record drops and the live one rekeys onto the survivor.
+    #[test]
+    fn f19_collision_prefers_live_link_over_terminal() -> Result<(), CoreError> {
+        let mut central = fixture_central()?;
+        let mut out = batch();
+        let a = central.resolve_peer("resolvable-private-address", "rotating-1")?;
+        let _ca = central.connect(&a, "client-1", 5000, 1000, &mut out)?;
+        let b = central.resolve_peer("public-address", "AA:BB:CC:DD:EE:02")?;
+        let _cb = central.connect(&b, "client-2", 5000, 1001, &mut out)?;
+        central.disconnect(&b, "client-2", 1002, &mut out)?;
+        central.note_link_released(&b)?;
+        check(
+            central.connection_state(&b) == Some(ConnectionState::Disconnected),
+            "B terminal before merge",
+        );
+        let merged = central.update_peer_canonical(&a, "public-address", "AA:BB:CC:DD:EE:02")?;
+        check(merged == b, "survivor is the canonical key");
+        check(
+            central.connection_state(&b) == Some(ConnectionState::Connecting),
+            "live link rekeyed onto the survivor",
+        );
+        check(
+            central.connection_state(&a).is_none(),
+            "terminal record dropped, nothing dangles",
+        );
+        Ok(())
+    }
+
+    /// F19 regression: a live pairing exchange cannot merge into an
+    /// existing exchange: the rekey fails explicitly and both exchanges
+    /// stay usable under their own keys.
+    #[test]
+    fn f19_collision_with_live_security_on_both_rejects() -> Result<(), CoreError> {
+        let mut central = fixture_central()?;
+        let mut out = batch();
+        central.set_security_available(true);
+        let a = central.resolve_peer("resolvable-private-address", "rotating-1")?;
+        let _pair_a = central.start_security("pair", &a, 5000, 1000, &mut out)?;
+        let b = central.resolve_peer("public-address", "AA:BB:CC:DD:EE:02")?;
+        let _pair_b = central.start_security("pair", &b, 5000, 1001, &mut out)?;
+        check(
+            central.settle_security(&b, true)? == "paired",
+            "B bond won before merge",
+        );
+        expect_code(
+            central.update_peer_canonical(&a, "public-address", "AA:BB:CC:DD:EE:02"),
+            BleErrorCode::OwnershipDenied,
+            BleErrorDomain::Core,
+        )?;
+        check(
+            central.settle_security(&a, true)? == "paired",
+            "A exchange untouched",
+        );
+        check(central.cancel_pairing(&b)? == "paired", "B bond untouched");
+        Ok(())
+    }
+
     #[test]
     fn l2_rekey_moves_security_exchange() -> Result<(), CoreError> {
         let mut central = fixture_central()?;
@@ -6310,7 +7125,7 @@ mod tests {
 
     #[test]
     fn m1_success_release_reclaims_aggregate_admission() -> Result<(), CoreError> {
-        let config = CentralConfig::new(16, 128, 32, 8, 256, KernelConfig::new(4, 64, 8)?)?;
+        let config = CentralConfig::new(16, 16, 128, 32, 8, 256, KernelConfig::new(4, 64, 8)?)?;
         let mut central = Central::new(fixture_attachment()?, Generation::new("g1")?, config)?;
         let mut out = batch();
         let (_peer, path) = live_characteristic(&mut central, &mut out)?;
@@ -6365,6 +7180,145 @@ mod tests {
         check(
             central.take_notification_value(path, "app-a") == Some(vec![0x04]),
             "bound recycled",
+        );
+        Ok(())
+    }
+
+    /// F06 helper: white-box snapshot of one consumer's stream ledger
+    /// `(data_items, bytes)` alongside its buffered value count.
+    fn f06_ledger(
+        central: &Central,
+        path: usize,
+        lease: &str,
+    ) -> Result<(u64, u64, usize), CoreError> {
+        let hub = central
+            .hubs
+            .iter()
+            .find(|known| known.path_index == path)
+            .ok_or_else(|| {
+                CoreError::new(
+                    BleErrorCode::ArgumentInvalid,
+                    BleErrorDomain::Core,
+                    "test.hub",
+                )
+            })?;
+        let record = hub
+            .consumers
+            .iter()
+            .find(|known| known.lease == lease)
+            .ok_or_else(|| {
+                CoreError::new(
+                    BleErrorCode::ArgumentInvalid,
+                    BleErrorDomain::Core,
+                    "test.consumer",
+                )
+            })?;
+        Ok((
+            record.stream.data_items(),
+            record.stream.bytes(),
+            record.slots.len(),
+        ))
+    }
+
+    /// F06 regression: under a retaining policy the consumer receives the
+    /// newest bytes, not stale ones the ledger already evicted. Exact byte
+    /// sequences AND ledger sizes are asserted after every replacement,
+    /// including multi-item eviction and interleaved length-only delivery.
+    #[test]
+    fn f06_replacement_retains_newest_bytes() -> Result<(), CoreError> {
+        let mut central = fixture_central()?;
+        let mut out = batch();
+        let (_peer, path) = live_characteristic(&mut central, &mut out)?;
+        let _sub = central.subscribe(path, "drop-oldest", 2, 256, "app-a", 5000, 2000, &mut out)?;
+        central.settle_subscribe_enable(path, true, 2001, &mut out)?;
+        let first = central.deliver_notification_value(path, &[0x0a])?;
+        check(first[0].1 == DeliveryOutcome::Delivered, "A admitted");
+        let second = central.deliver_notification_value(path, &[0x0b, 0x0c])?;
+        check(second[0].1 == DeliveryOutcome::Delivered, "B admitted");
+        let (items, bytes, slots) = f06_ledger(&central, path, "app-a")?;
+        check(items == 2 && bytes == 3 && slots == 2, "A+B ledger exact");
+        // C replaces A: the ledger holds B+C and so does the value queue.
+        let third = central.deliver_notification_value(path, &[0x0d, 0x0e, 0x0f])?;
+        check(
+            third[0].1 == DeliveryOutcome::OverflowNoticed,
+            "C replaces with notice",
+        );
+        let (items, bytes, slots) = f06_ledger(&central, path, "app-a")?;
+        check(items == 2 && bytes == 5 && slots == 2, "B+C ledger exact");
+        check(
+            central.take_notification_value(path, "app-a") == Some(vec![0x0b, 0x0c]),
+            "oldest take is B, not stale A",
+        );
+        check(
+            central.take_notification_value(path, "app-a") == Some(vec![0x0d, 0x0e, 0x0f]),
+            "newest take is C",
+        );
+        check(
+            central.take_notification_value(path, "app-a").is_none(),
+            "drained exactly",
+        );
+        let (items, bytes, slots) = f06_ledger(&central, path, "app-a")?;
+        check(items == 0 && bytes == 0 && slots == 0, "drain recycles all");
+        // Repeated replacements keep serving the newest in FIFO order.
+        central.deliver_notification_value(path, &[0x01])?;
+        central.deliver_notification_value(path, &[0x02])?;
+        central.deliver_notification_value(path, &[0x03])?;
+        central.deliver_notification_value(path, &[0x04])?;
+        check(
+            central.take_notification_value(path, "app-a") == Some(vec![0x03]),
+            "repeated replace keeps newest window",
+        );
+        check(
+            central.take_notification_value(path, "app-a") == Some(vec![0x04]),
+            "repeated replace newest last",
+        );
+        // Length-only delivery occupies the ledger without a value slot;
+        // the next take still pairs the right value with the right size.
+        central.deliver_notification(path, 7)?;
+        central.deliver_notification_value(path, &[0x05, 0x06])?;
+        check(
+            central.pending_value_count(path, "app-a") == Some(1),
+            "one value buffered",
+        );
+        check(
+            central.take_notification_value(path, "app-a") == Some(vec![0x05, 0x06]),
+            "interleaved take pairs value with its size",
+        );
+        let (items, bytes, slots) = f06_ledger(&central, path, "app-a")?;
+        check(
+            items == 0 && bytes == 0 && slots == 0,
+            "interleave drains clean",
+        );
+        Ok(())
+    }
+
+    /// F06 regression: multi-item eviction drops the same payloads from the
+    /// value queue that the ledger evicts, so takes never serve bytes the
+    /// stream already forgot.
+    #[test]
+    fn f06_multi_eviction_drops_same_payloads() -> Result<(), CoreError> {
+        let mut central = fixture_central()?;
+        let mut out = batch();
+        let (_peer, path) = live_characteristic(&mut central, &mut out)?;
+        let _sub = central.subscribe(path, "latest", 4, 68, "app-a", 5000, 2000, &mut out)?;
+        central.settle_subscribe_enable(path, true, 2001, &mut out)?;
+        central.deliver_notification_value(path, &[0x0a; 30])?;
+        central.deliver_notification_value(path, &[0x0b; 30])?;
+        // 40 bytes fit only after evicting BOTH 30-byte payloads.
+        let outcome = central.deliver_notification_value(path, &[0x0c; 40])?;
+        check(
+            outcome[0].1 == DeliveryOutcome::OverflowNoticed,
+            "multi-evict replaces with notice",
+        );
+        let (items, bytes, slots) = f06_ledger(&central, path, "app-a")?;
+        check(items == 1 && bytes == 40 && slots == 1, "only C retained");
+        check(
+            central.take_notification_value(path, "app-a") == Some(vec![0x0c; 40]),
+            "take serves C, never evicted A/B",
+        );
+        check(
+            central.take_notification_value(path, "app-a").is_none(),
+            "nothing else retained",
         );
         Ok(())
     }

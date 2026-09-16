@@ -11,8 +11,9 @@
 //! occupancy model (which bytes are held) and [`StreamSet`] enforces an
 //! aggregate byte budget across streams. The C-UBM accounting rule counts the
 //! incoming bytes as dropped under both drop policies; occupancy additionally
-//! evicts the oldest held item under `latest`/`drop-oldest` so the byte
-//! budget stays truthful.
+//! evicts oldest-first until the push fits under `latest`/`drop-oldest` (or
+//! degrades to an explicit drop when it can never fit) so the byte budget
+//! stays truthful after every mutation.
 
 use crate::contracts::{
     BleErrorCode, BleErrorDomain, CoreError, assert_byte_capacity, assert_item_capacity,
@@ -408,6 +409,8 @@ pub struct PushEffect {
     pub admitted_bytes: u64,
     /// Bytes evicted from the queue.
     pub evicted_bytes: u64,
+    /// Data items evicted from the queue (oldest-first).
+    pub evicted_items: u64,
 }
 
 /// One bounded stream: data slots, additive control-only slots, and a shared
@@ -514,8 +517,38 @@ impl Stream {
             || self.bytes.saturating_add(incoming) > self.limits.byte_capacity
     }
 
+    /// Plan one data push under a retaining policy: oldest-first
+    /// `(evicted_items, evicted_bytes)` so the push fits both budgets, plus
+    /// whether it fits at all. Shared by [`Stream::push_data`] and the
+    /// [`StreamSet`] aggregate pre-check so prediction and execution agree
+    /// exactly: the aggregate math matches what the push will do.
+    fn plan_data_push(&self, incoming: u64) -> (u64, u64, bool) {
+        let mut count = 0u64;
+        let mut evicted = 0u64;
+        while (count as usize) < self.data_sizes.len() {
+            let items_after = self.data_sizes.len() as u64 - count + 1;
+            let bytes_after = self.bytes.saturating_sub(evicted).saturating_add(incoming);
+            if items_after <= self.limits.item_capacity()
+                && bytes_after <= self.limits.byte_capacity()
+            {
+                break;
+            }
+            evicted = evicted.saturating_add(self.data_sizes[count as usize]);
+            count += 1;
+        }
+        let items_after = self.data_items().saturating_sub(count) + 1;
+        let bytes_after = self.bytes.saturating_sub(evicted).saturating_add(incoming);
+        let fits = items_after <= self.limits.item_capacity()
+            && bytes_after <= self.limits.byte_capacity();
+        (count, evicted, fits)
+    }
+
     /// Push one data item. Control slots are never consumed by data: data
     /// contends only against the data item budget and the shared byte budget.
+    /// Retaining policies evict oldest-first until the push fits both
+    /// budgets; an item that can never fit (oversize, or control-held bytes
+    /// block it) degrades to an explicit `drop-newest` before accounting
+    /// runs, so the byte total stays truthful and the stream stays active.
     pub fn push_data(&mut self, incoming: u64) -> Result<PushEffect, CoreError> {
         if self.is_terminated() {
             return Err(CoreError::new(
@@ -524,24 +557,15 @@ impl Stream {
                 "stream.push",
             ));
         }
-        // Empty-queue eviction admits nothing: with no held data item to
-        // displace, `latest`/`drop-oldest` degrade to `drop-newest` before
-        // accounting runs, so the byte total stays truthful when control
-        // alone exhausts the shared budget.
+        let at_capacity = self.data_at_capacity(incoming);
+        let (evict_count, evict_bytes, fits) = self.plan_data_push(incoming);
         let policy = match self.policy {
-            OverflowPolicy::Latest | OverflowPolicy::DropOldest
-                if self.data_at_capacity(incoming) && self.data_sizes.is_empty() =>
-            {
+            OverflowPolicy::Latest | OverflowPolicy::DropOldest if at_capacity && !fits => {
                 OverflowPolicy::DropNewest
             }
             policy => policy,
         };
-        let admission = apply_admission(
-            &self.accounting,
-            policy,
-            self.data_at_capacity(incoming),
-            incoming,
-        );
+        let admission = apply_admission(&self.accounting, policy, at_capacity, incoming);
         self.accounting = admission.accounting;
         match admission.decision {
             AdmissionDecision::Admit => {
@@ -551,29 +575,32 @@ impl Stream {
                     decision: admission.decision,
                     admitted_bytes: incoming,
                     evicted_bytes: 0,
+                    evicted_items: 0,
                 })
             }
             AdmissionDecision::Replace | AdmissionDecision::DropOldest => {
-                // Evict the oldest held item to keep the newest: occupancy is
-                // unchanged, the byte total stays truthful, and the decision
-                // label plus counters tell the host which policy fired.
-                let evicted = if self.data_sizes.is_empty() {
-                    0
-                } else {
-                    self.data_sizes.remove(0)
-                };
+                // Evict oldest-first until the push fits both budgets: the
+                // plan above already proved this eviction suffices, the byte
+                // total stays truthful, and the decision label plus counters
+                // tell the host which policy fired.
+                self.data_sizes.drain(0..evict_count as usize);
                 self.data_sizes.push(incoming);
-                self.bytes = self.bytes.saturating_sub(evicted).saturating_add(incoming);
+                self.bytes = self
+                    .bytes
+                    .saturating_sub(evict_bytes)
+                    .saturating_add(incoming);
                 Ok(PushEffect {
                     decision: admission.decision,
                     admitted_bytes: incoming,
-                    evicted_bytes: evicted,
+                    evicted_bytes: evict_bytes,
+                    evicted_items: evict_count,
                 })
             }
             AdmissionDecision::DropNewest | AdmissionDecision::Terminate => Ok(PushEffect {
                 decision: admission.decision,
                 admitted_bytes: 0,
                 evicted_bytes: 0,
+                evicted_items: 0,
             }),
         }
     }
@@ -598,6 +625,7 @@ impl Stream {
                 decision: AdmissionDecision::Terminate,
                 admitted_bytes: 0,
                 evicted_bytes: 0,
+                evicted_items: 0,
             });
         }
         self.control_items = self.control_items.saturating_add(1);
@@ -607,6 +635,7 @@ impl Stream {
             decision: AdmissionDecision::Admit,
             admitted_bytes: incoming,
             evicted_bytes: 0,
+            evicted_items: 0,
         })
     }
 
@@ -712,25 +741,22 @@ impl StreamSet {
                 "stream.push",
             ));
         }
-        // Net aggregate delta accounts for the eviction that `latest` and
-        // `drop-oldest` perform on a full queue.
-        let evicted = match stream.policy {
-            OverflowPolicy::Latest | OverflowPolicy::DropOldest
-                if stream.data_at_capacity(incoming) && !stream.data_sizes.is_empty() =>
-            {
-                stream.oldest_data_bytes()
-            }
-            _ => 0,
-        };
-        let net = incoming.saturating_sub(evicted);
-        // `drop-newest` and `error` admit nothing on a full queue.
+        // Net aggregate delta mirrors `Stream::push_data` exactly via the
+        // shared retention plan: multi-item eviction under the retaining
+        // policies, zero when they degrade to `drop-newest`, and zero for
+        // `drop-newest`/`error` on a full queue.
+        let at_capacity = stream.data_at_capacity(incoming);
+        let (_, evicted, fits) = stream.plan_data_push(incoming);
         let admits = match stream.policy {
-            OverflowPolicy::DropNewest | OverflowPolicy::Error
-                if stream.data_at_capacity(incoming) =>
-            {
-                0
+            OverflowPolicy::Latest | OverflowPolicy::DropOldest if at_capacity => {
+                if fits {
+                    incoming.saturating_sub(evicted)
+                } else {
+                    0
+                }
             }
-            _ => net,
+            OverflowPolicy::DropNewest | OverflowPolicy::Error if at_capacity => 0,
+            _ => incoming,
         };
         if self.aggregate_bytes.saturating_add(admits) > self.aggregate_cap {
             return Err(CoreError::new(
@@ -1236,6 +1262,148 @@ mod tests {
             Err(_) => check(false, "net delta must fit"),
         }
         assert_eq!(set.aggregate_bytes(), 120);
+    }
+
+    /// F05 regression: the review's exact breach sequence. A 128-byte
+    /// capacity holding two 64-byte items must still hold the bound after a
+    /// 128-byte retaining push (evict 128, admit 128), and an oversize
+    /// single item must degrade to an explicit drop, never a breach.
+    #[test]
+    fn f05_retaining_push_evicts_until_fit_or_drops() {
+        for policy in [OverflowPolicy::Latest, OverflowPolicy::DropOldest] {
+            let Some(limit) = limits(4, 128, 1) else {
+                check(false, "limits must validate");
+                return;
+            };
+            let mut stream = Stream::new(limit, policy);
+            assert!(stream.push_data(64).is_ok());
+            assert!(stream.push_data(64).is_ok());
+            match stream.push_data(128) {
+                Ok(effect) => {
+                    assert_eq!(stream.bytes(), 128, "byte budget holds after replace");
+                    assert_eq!(stream.data_items(), 1, "one item retained");
+                    assert_eq!(effect.admitted_bytes, 128);
+                    assert_eq!(effect.evicted_bytes, 128);
+                    assert_eq!(effect.evicted_items, 2);
+                }
+                Err(_) => check(false, "retaining push must decide, not fail"),
+            }
+            // Oversize single item: cannot fit even empty, so it drops
+            // explicitly and the stream stays active with bounds intact.
+            let bytes_before = stream.bytes();
+            match stream.push_data(129) {
+                Ok(effect) => {
+                    assert_eq!(effect.decision, AdmissionDecision::DropNewest);
+                    assert_eq!(effect.admitted_bytes, 0);
+                    assert_eq!(effect.evicted_bytes, 0);
+                    assert!(!stream.is_terminated(), "drop policies stay active");
+                }
+                Err(_) => check(false, "oversize must drop, not fail"),
+            }
+            assert_eq!(stream.bytes(), bytes_before, "oversize changes nothing");
+            assert!(stream.bytes() <= 128);
+        }
+    }
+
+    /// F05 regression: deterministic variable-payload sweep across every
+    /// overflow policy with control occupancy and releases. Bounds hold
+    /// after EVERY mutation, not just at the end.
+    #[test]
+    fn f05_variable_payload_sweep_holds_bounds_every_step() {
+        let policies = [
+            OverflowPolicy::Latest,
+            OverflowPolicy::DropOldest,
+            OverflowPolicy::DropNewest,
+            OverflowPolicy::Error,
+        ];
+        for (slot, policy) in policies.iter().enumerate() {
+            let Some(limit) = limits(4, 128, 1) else {
+                check(false, "limits must validate");
+                return;
+            };
+            let mut stream = Stream::new(limit, *policy);
+            // Existing control occupancy shares the byte budget from the start.
+            assert!(stream.push_control(16).is_ok());
+            let mut state: u64 = 0x243F_6A88_85A3_08D3 ^ (slot as u64 + 1);
+            let mut next = move |bound: u64| {
+                state = state
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                (state >> 33) % bound
+            };
+            for _ in 0..600 {
+                let choice = next(10);
+                if choice < 7 {
+                    // Payloads 1..=200: small, exact-fit, and oversize.
+                    let size = next(200) + 1;
+                    let _ = stream.push_data(size);
+                } else {
+                    stream.release_oldest_data(next(4) as usize);
+                }
+                assert!(
+                    stream.bytes() <= stream.limits().byte_capacity(),
+                    "bytes {bytes} exceed cap {cap} under {policy:?}",
+                    bytes = stream.bytes(),
+                    cap = stream.limits().byte_capacity(),
+                    policy = policy,
+                );
+                assert!(
+                    stream.data_items() <= stream.limits().item_capacity(),
+                    "items exceed cap under {policy:?}",
+                    policy = policy,
+                );
+                if stream.is_terminated() {
+                    break;
+                }
+            }
+        }
+    }
+
+    /// F05 regression: the aggregate pre-check predicts multi-item eviction
+    /// exactly, so a retaining push with net-zero delta is admitted and the
+    /// aggregate total matches execution.
+    #[test]
+    fn f05_set_aggregate_matches_multi_eviction() {
+        let mut set = match StreamSet::new(150) {
+            Ok(set) => set,
+            Err(_) => {
+                check(false, "aggregate cap must validate");
+                return;
+            }
+        };
+        let Some(limit) = limits(4, 128, 1) else {
+            check(false, "limits must validate");
+            return;
+        };
+        let index = match set.add_stream(Stream::new(limit, OverflowPolicy::Latest)) {
+            Ok(index) => index,
+            Err(_) => {
+                check(false, "stream must fit the set");
+                return;
+            }
+        };
+        assert!(set.push_data(index, 32).is_ok());
+        assert!(set.push_data(index, 32).is_ok());
+        assert!(set.push_data(index, 32).is_ok());
+        assert!(set.push_data(index, 32).is_ok());
+        assert_eq!(set.aggregate_bytes(), 128);
+        // Retaining 64 evicts two 32s: net zero, admitted, aggregate exact.
+        match set.push_data(index, 64) {
+            Ok(effect) => {
+                assert_eq!(effect.decision, AdmissionDecision::Replace);
+                assert_eq!(effect.evicted_items, 2);
+                assert_eq!(effect.evicted_bytes, 64);
+            }
+            Err(_) => check(false, "net-zero replace must fit the aggregate"),
+        }
+        assert_eq!(set.aggregate_bytes(), 128);
+        match set.stream(index) {
+            Some(stream) => {
+                assert_eq!(stream.data_items(), 3);
+                assert_eq!(stream.bytes(), 128);
+            }
+            None => check(false, "member must exist"),
+        }
     }
 
     #[test]
