@@ -42,7 +42,7 @@ function loadRustAddon() {
   } catch (error) {
     throw new Error(
       `U7 parity needs the real napi build at ${ADDON_PATH} ` +
-        '(run bindings/napi/run_napi_roundtrip.sh first): ' +
+        '(run pnpm test:parity first): ' +
         (error && error.message)
     )
   }
