@@ -2,7 +2,7 @@
 //
 // SBOM-Rust slice for UBM 5.0 (trackourhealth/bun-mono#1188; closes packaging
 // open item 1, U-LICENSE/U8 gap): the generator merges the Cargo-resolved Rust
-// workspace graph (`cargo metadata --locked --offline`, 172 nodes) into
+// workspace graph (`cargo metadata --locked --offline`, 173 nodes) into
 // SBOM.cdx.json / THIRD_PARTY_LICENSES.json. License evidence is DECLARED
 // metadata only — never fabricated, never guessed: ambiguous declarations
 // stay NOASSERTION with a review flag.
@@ -122,13 +122,13 @@ describe('SBOM Rust workspace merge (UBM 5.0)', () => {
 
   test('covers the full cargo graph with pkg:cargo purls and exact pinned versions', () => {
     const metadata = cargoMetadata()
-    expect(metadata.packages).toHaveLength(172)
+    expect(metadata.packages).toHaveLength(173)
 
     const sbom = readJson('SBOM.cdx.json')
     const inventory = readJson('THIRD_PARTY_LICENSES.json')
     const cargoComponents = sbom.components.filter(component => component.purl.startsWith('pkg:cargo/'))
-    expect(cargoComponents).toHaveLength(172)
-    expect(new Set(cargoComponents.map(component => component['bom-ref'])).size).toBe(172)
+    expect(cargoComponents).toHaveLength(173)
+    expect(new Set(cargoComponents.map(component => component['bom-ref'])).size).toBe(173)
 
     const expectedPurls = new Set(metadata.packages.map(pkg => cargoPurl(pkg.name, pkg.version)))
     expect(new Set(cargoComponents.map(component => component.purl))).toEqual(expectedPurls)
