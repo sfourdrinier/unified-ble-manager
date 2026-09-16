@@ -1379,10 +1379,24 @@ impl StoredPath {
         self.characteristic_uuid.as_deref()
     }
 
+    /// Characteristic occurrence among duplicate UUIDs, if this is a
+    /// characteristic-level path.
+    #[must_use]
+    pub const fn characteristic_occurrence(&self) -> Option<u64> {
+        self.characteristic_occurrence
+    }
+
     /// Descriptor UUID, if this is a descriptor-level path.
     #[must_use]
     pub fn descriptor_uuid(&self) -> Option<&str> {
         self.descriptor_uuid.as_deref()
+    }
+
+    /// Descriptor occurrence among duplicate UUIDs, if this is a
+    /// descriptor-level path.
+    #[must_use]
+    pub const fn descriptor_occurrence(&self) -> Option<u64> {
+        self.descriptor_occurrence
     }
 
     /// Connection generation this path was discovered under.
@@ -1923,6 +1937,15 @@ impl Central {
     /// Drain staged typed observation effects, leaving the ledger empty.
     pub fn drain_typed_effects(&mut self) -> Vec<CentralEffect> {
         core::mem::take(&mut self.typed_effects)
+    }
+
+    /// Borrow staged typed observation effects without draining (F11): a
+    /// host snapshots the length, runs one call, and inspects only the
+    /// suffix that call staged — e.g. whether this `subscribe` issued the
+    /// physical enable — leaving other calls' observations untouched.
+    #[must_use]
+    pub fn typed_effects(&self) -> &[CentralEffect] {
+        &self.typed_effects
     }
 
     /// Start a scan: validate, arbitrate the one physical controller, and

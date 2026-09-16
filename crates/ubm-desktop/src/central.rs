@@ -20,7 +20,9 @@ use std::sync::{
 use std::time::{Duration, Instant};
 
 use tokio::sync::{Mutex, watch};
-use ubm_core::central::{Central, PathSelector, canonical_uuid, validate_scan_request};
+use ubm_core::central::{
+    Central, CentralEffectKind, PathSelector, StoredPath, canonical_uuid, validate_scan_request,
+};
 use ubm_core::contracts::{
     AdapterGeneration, AdapterId, AttachmentId, AttachmentTuple, BackendGeneration,
     BackendInstanceId, BleErrorCode, BleErrorDomain, ContenderKind, Generation, OperationId,
@@ -106,17 +108,20 @@ struct ActiveScan {
     id: OperationId,
 }
 
-/// Build the per-instance routing key for a resolved selector. Levels the
-/// selector leaves unspecified matched exactly one candidate during
-/// `resolve_path` (otherwise resolution fails `gatt.ambiguous-path`), so
-/// they are occurrence 0; specified levels carry the instance.
-fn instance_key(peer_id: &str, selector: &PathSelector, characteristic: &str) -> InstanceKey {
+/// Build the per-instance radio address from the resolved stored path
+/// (F18). A level the selector leaves unspecified still resolved to
+/// exactly one candidate, but that candidate is not necessarily occurrence
+/// 0 — a characteristic can live only under the second instance of a
+/// duplicated service — so the stored path carries the addressed
+/// instance, never the request. `characteristic` is the caller-validated
+/// characteristic UUID from that same stored path.
+fn instance_key(peer_id: &str, stored: &StoredPath, characteristic: &str) -> InstanceKey {
     (
         peer_id.to_owned(),
-        selector.service_uuid.clone(),
-        selector.service_occurrence.unwrap_or(0),
+        stored.service_uuid().to_owned(),
+        stored.service_occurrence(),
         characteristic.to_owned(),
-        selector.characteristic_occurrence.unwrap_or(0),
+        stored.characteristic_occurrence().unwrap_or(0),
     )
 }
 
@@ -128,8 +133,14 @@ struct Inner<B> {
     peers: Mutex<HashMap<String, String>>,
     /// Per-instance subscription routing: (peer, service uuid, service
     /// occurrence, characteristic uuid, characteristic occurrence) ->
-    /// core path. Duplicate UUIDs never share routing.
-    subscriptions: Mutex<HashMap<InstanceKey, usize>>,
+    /// (core path, subscription epoch at install). Duplicate UUIDs never
+    /// share routing, and a queued value whose epoch no longer matches the
+    /// live routing never delivers (F10).
+    subscriptions: Mutex<HashMap<InstanceKey, (usize, u64)>>,
+    /// Current subscription epoch per radio peer. Bumped every time the
+    /// peer's routing invalidates (disconnect, loss, service change), so
+    /// forwarders installed before the bump stamp a dead generation.
+    epochs: Mutex<HashMap<String, u64>>,
     /// Per-instance keys whose physical disable failed and is pending
     /// retry through `unsubscribe`. A pending key fails new subscribes
     /// closed until the disable completes.
@@ -215,6 +226,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             scan: Mutex::new(None),
             peers: Mutex::new(HashMap::new()),
             subscriptions: Mutex::new(HashMap::new()),
+            epochs: Mutex::new(HashMap::new()),
             failed_disables: Mutex::new(HashSet::new()),
             shut_down: AtomicBool::new(false),
             loop_stop,
@@ -255,6 +267,19 @@ impl<B: RadioBoundary> DesktopCentral<B> {
     /// Core session peer key for a radio peripheral id, if resolved.
     pub async fn peer_key_for(&self, peer_id: &str) -> Option<String> {
         self.inner.peers.lock().await.get(peer_id).cloned()
+    }
+
+    /// Current subscription epoch for a radio peer (F10): the generation
+    /// a forwarder installed now would capture. Fresh peers start at 0;
+    /// every routing invalidation bumps it.
+    async fn routing_epoch(&self, peer_id: &str) -> u64 {
+        *self
+            .inner
+            .epochs
+            .lock()
+            .await
+            .entry(peer_id.to_owned())
+            .or_insert(0)
     }
 
     /// Build a validated path selector with canonical UUIDs. Occurrence
@@ -700,22 +725,30 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             let index = core
                 .resolve_path(&peer_key, selector)
                 .map_err(DesktopError::from)?;
-            let characteristic = core
-                .stored_path(index)
-                .and_then(|path| path.characteristic_uuid().map(str::to_owned))
-                .ok_or_else(|| {
-                    contract_error(
-                        BleErrorCode::GattPropertyNotSupported,
-                        BleErrorDomain::Gatt,
-                        "gatt.read",
-                    )
-                })?;
+            let stored = core.stored_path(index).cloned().ok_or_else(|| {
+                contract_error(
+                    BleErrorCode::GattPropertyNotSupported,
+                    BleErrorDomain::Gatt,
+                    "gatt.read",
+                )
+            })?;
+            let characteristic =
+                stored
+                    .characteristic_uuid()
+                    .map(str::to_owned)
+                    .ok_or_else(|| {
+                        contract_error(
+                            BleErrorCode::GattPropertyNotSupported,
+                            BleErrorDomain::Gatt,
+                            "gatt.read",
+                        )
+                    })?;
             let id = core
                 .start_read(index, timeout_ms, now_ms(), &mut out)
                 .map_err(DesktopError::from)?;
             core.dispatch_op(&id, &mut out)
                 .map_err(DesktopError::from)?;
-            (id, instance_key(peer_id, selector, &characteristic))
+            (id, instance_key(peer_id, &stored, &characteristic))
         };
         match self
             .inner
@@ -786,16 +819,24 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                 .resolve_path(&peer_key, selector)
                 .map_err(DesktopError::from)?;
             let maximum = Self::write_maximum(&core, measured_mtu, "gatt.write")?;
-            let characteristic = core
-                .stored_path(index)
-                .and_then(|path| path.characteristic_uuid().map(str::to_owned))
-                .ok_or_else(|| {
-                    contract_error(
-                        BleErrorCode::GattPropertyNotSupported,
-                        BleErrorDomain::Gatt,
-                        "gatt.write",
-                    )
-                })?;
+            let stored = core.stored_path(index).cloned().ok_or_else(|| {
+                contract_error(
+                    BleErrorCode::GattPropertyNotSupported,
+                    BleErrorDomain::Gatt,
+                    "gatt.write",
+                )
+            })?;
+            let characteristic =
+                stored
+                    .characteristic_uuid()
+                    .map(str::to_owned)
+                    .ok_or_else(|| {
+                        contract_error(
+                            BleErrorCode::GattPropertyNotSupported,
+                            BleErrorDomain::Gatt,
+                            "gatt.write",
+                        )
+                    })?;
             let id = core
                 .start_write(
                     index,
@@ -810,7 +851,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                 .map_err(DesktopError::from)?;
             core.dispatch_op(&id, &mut out)
                 .map_err(DesktopError::from)?;
-            (id, instance_key(peer_id, selector, &characteristic))
+            (id, instance_key(peer_id, &stored, &characteristic))
         };
         match self
             .inner
@@ -862,7 +903,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             let index = core
                 .resolve_path(&peer_key, selector)
                 .map_err(DesktopError::from)?;
-            let stored = core.stored_path(index).ok_or_else(|| {
+            let stored = core.stored_path(index).cloned().ok_or_else(|| {
                 contract_error(
                     BleErrorCode::ArgumentInvalid,
                     BleErrorDomain::Core,
@@ -892,8 +933,8 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                 .map_err(DesktopError::from)?;
             core.dispatch_op(&id, &mut out)
                 .map_err(DesktopError::from)?;
-            let key = instance_key(peer_id, selector, &characteristic);
-            let descriptor_occurrence = selector.descriptor_occurrence.unwrap_or(0);
+            let key = instance_key(peer_id, &stored, &characteristic);
+            let descriptor_occurrence = stored.descriptor_occurrence().unwrap_or(0);
             (id, key, descriptor, descriptor_occurrence)
         };
         match self
@@ -961,7 +1002,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             let index = core
                 .resolve_path(&peer_key, selector)
                 .map_err(DesktopError::from)?;
-            let stored = core.stored_path(index).ok_or_else(|| {
+            let stored = core.stored_path(index).cloned().ok_or_else(|| {
                 contract_error(
                     BleErrorCode::ArgumentInvalid,
                     BleErrorDomain::Core,
@@ -999,8 +1040,8 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                 .map_err(DesktopError::from)?;
             core.dispatch_op(&id, &mut out)
                 .map_err(DesktopError::from)?;
-            let key = instance_key(peer_id, selector, &characteristic);
-            let descriptor_occurrence = selector.descriptor_occurrence.unwrap_or(0);
+            let key = instance_key(peer_id, &stored, &characteristic);
+            let descriptor_occurrence = stored.descriptor_occurrence().unwrap_or(0);
             (id, key, descriptor, descriptor_occurrence)
         };
         match self
@@ -1068,17 +1109,25 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             let index = core
                 .resolve_path(&peer_key, selector)
                 .map_err(DesktopError::from)?;
-            let characteristic = core
-                .stored_path(index)
-                .and_then(|path| path.characteristic_uuid().map(str::to_owned))
-                .ok_or_else(|| {
-                    contract_error(
-                        BleErrorCode::GattPropertyNotSupported,
-                        BleErrorDomain::Gatt,
-                        "gatt.subscribe",
-                    )
-                })?;
-            instance_key(peer_id, selector, &characteristic)
+            let stored = core.stored_path(index).cloned().ok_or_else(|| {
+                contract_error(
+                    BleErrorCode::GattPropertyNotSupported,
+                    BleErrorDomain::Gatt,
+                    "gatt.subscribe",
+                )
+            })?;
+            let characteristic =
+                stored
+                    .characteristic_uuid()
+                    .map(str::to_owned)
+                    .ok_or_else(|| {
+                        contract_error(
+                            BleErrorCode::GattPropertyNotSupported,
+                            BleErrorDomain::Gatt,
+                            "gatt.subscribe",
+                        )
+                    })?;
+            instance_key(peer_id, &stored, &characteristic)
         };
         // L7 resubscribe semantics: a pending failed disable fails the
         // resubscribe closed — complete the disable with `unsubscribe`
@@ -1091,27 +1140,40 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             )
             .with_detail("physical disable pending; complete it with unsubscribe"));
         }
-        let (operation, path_index, joined) = {
+        let (operation, path_index, drive_enable) = {
             let peer_key = self.known_peer_key(peer_id).await?;
             let mut core = self.inner.core.lock().await;
             let mut out = batch();
             let index = core
                 .resolve_path(&peer_key, selector)
                 .map_err(DesktopError::from)?;
-            let characteristic = core
-                .stored_path(index)
-                .and_then(|path| path.characteristic_uuid().map(str::to_owned))
-                .ok_or_else(|| {
-                    contract_error(
-                        BleErrorCode::GattPropertyNotSupported,
-                        BleErrorDomain::Gatt,
-                        "gatt.subscribe",
-                    )
-                })?;
-            debug_assert_eq!(key, instance_key(peer_id, selector, &characteristic));
-            // A live CCCD is shared, not re-enabled: joining admits a
-            // consumer the core completes immediately, with no radio toggle.
-            let joined = core.physical_cccd_enabled(index);
+            let stored = core.stored_path(index).cloned().ok_or_else(|| {
+                contract_error(
+                    BleErrorCode::GattPropertyNotSupported,
+                    BleErrorDomain::Gatt,
+                    "gatt.subscribe",
+                )
+            })?;
+            let characteristic =
+                stored
+                    .characteristic_uuid()
+                    .map(str::to_owned)
+                    .ok_or_else(|| {
+                        contract_error(
+                            BleErrorCode::GattPropertyNotSupported,
+                            BleErrorDomain::Gatt,
+                            "gatt.subscribe",
+                        )
+                    })?;
+            debug_assert_eq!(key, instance_key(peer_id, &stored, &characteristic));
+            // The physical enable is driven exactly once, by the caller
+            // whose subscribe staged the core's explicit enable effect
+            // (F11). A ready CCCD shares without an effect, a pending
+            // enablement joins it, and a repeated request reuses its op:
+            // none of them may touch the radio. Inferring any of this
+            // from `physical_cccd_enabled` would re-drive the enable for
+            // every joiner that arrives mid-flight.
+            let effects_before = core.typed_effects().len();
             let id = core
                 .subscribe(
                     index,
@@ -1124,6 +1186,9 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                     &mut out,
                 )
                 .map_err(DesktopError::from)?;
+            let drive_enable = core.typed_effects()[effects_before..].iter().any(|effect| {
+                effect.kind() == CentralEffectKind::SubscribeEnable && effect.operation_id() == &id
+            });
             // Dispatch only a freshly queued op: a joined consumer's op is
             // already complete, and a re-subscribed in-flight op is already
             // dispatched. Dispatching either again would fail closed.
@@ -1135,22 +1200,25 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                 core.dispatch_op(&id, &mut out)
                     .map_err(DesktopError::from)?;
             }
-            (id, index, joined)
+            (id, index, drive_enable)
         };
         // Route before the physical enable so values arriving mid-enable
-        // quarantine in the hub instead of dropping on the floor.
+        // quarantine in the hub instead of dropping on the floor. The
+        // routing carries the epoch the forwarder is about to capture, so
+        // a value queued under a dead generation never matches (F10).
+        let epoch = self.routing_epoch(peer_id).await;
         self.inner
             .subscriptions
             .lock()
             .await
-            .insert(key.clone(), path_index);
-        if joined {
+            .insert(key.clone(), (path_index, epoch));
+        if !drive_enable {
             return Ok(());
         }
         match self
             .inner
             .boundary
-            .set_notifications(peer_id, &key.1, key.2, &key.3, key.4, true)
+            .set_notifications(peer_id, &key.1, key.2, &key.3, key.4, true, epoch)
             .await
         {
             Ok(()) => {
@@ -1210,32 +1278,43 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             let index = core
                 .resolve_path(&peer_key, selector)
                 .map_err(DesktopError::from)?;
-            let characteristic = core
-                .stored_path(index)
-                .and_then(|path| path.characteristic_uuid().map(str::to_owned))
-                .ok_or_else(|| {
-                    contract_error(
-                        BleErrorCode::GattPropertyNotSupported,
-                        BleErrorDomain::Gatt,
-                        "gatt.unsubscribe",
-                    )
-                })?;
+            let stored = core.stored_path(index).cloned().ok_or_else(|| {
+                contract_error(
+                    BleErrorCode::GattPropertyNotSupported,
+                    BleErrorDomain::Gatt,
+                    "gatt.unsubscribe",
+                )
+            })?;
+            let characteristic =
+                stored
+                    .characteristic_uuid()
+                    .map(str::to_owned)
+                    .ok_or_else(|| {
+                        contract_error(
+                            BleErrorCode::GattPropertyNotSupported,
+                            BleErrorDomain::Gatt,
+                            "gatt.unsubscribe",
+                        )
+                    })?;
             let disable = core
                 .unsubscribe(index, consumer, now_ms(), &mut out)
                 .map_err(DesktopError::from)?;
             (
                 disable,
                 index,
-                instance_key(peer_id, selector, &characteristic),
+                instance_key(peer_id, &stored, &characteristic),
             )
         };
         if !disable_physical {
             return self.retry_failed_disable(peer_id, &key, path_index).await;
         }
+        // Teardown is keyed by instance: the boundary ignores the epoch on
+        // disable, so the current generation is passed through untouched.
+        let epoch = self.routing_epoch(peer_id).await;
         match self
             .inner
             .boundary
-            .set_notifications(peer_id, &key.1, key.2, &key.3, key.4, false)
+            .set_notifications(peer_id, &key.1, key.2, &key.3, key.4, false, epoch)
             .await
         {
             Ok(()) => {
@@ -1268,10 +1347,11 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         if !self.inner.failed_disables.lock().await.contains(key) {
             return Ok(false);
         }
+        let epoch = self.routing_epoch(peer_id).await;
         match self
             .inner
             .boundary
-            .set_notifications(peer_id, &key.1, key.2, &key.3, key.4, false)
+            .set_notifications(peer_id, &key.1, key.2, &key.3, key.4, false, epoch)
             .await
         {
             Ok(()) => {
@@ -1382,15 +1462,21 @@ impl<B: RadioBoundary> DesktopCentral<B> {
     }
 }
 
-/// Drop subscription routing and pending-disable retries for one peer.
-/// Late radio completions must not resurrect the link: the core already
-/// invalidated its hubs, and the adapter drops its routing alongside.
+/// Drop subscription routing and pending-disable retries for one peer,
+/// and bump the peer's subscription epoch (F10). Late radio completions
+/// must not resurrect the link: the core already invalidated its hubs,
+/// the adapter drops its routing alongside, and values still queued under
+/// the dead generation fail the routing check after resubscribe.
 async fn clear_peer_routing<B>(inner: &Arc<Inner<B>>, peer_id: &str) {
     let mut subscriptions = inner.subscriptions.lock().await;
     subscriptions.retain(|key, _| key.0 != peer_id);
     drop(subscriptions);
     let mut failed = inner.failed_disables.lock().await;
     failed.retain(|key| key.0 != peer_id);
+    drop(failed);
+    let mut epochs = inner.epochs.lock().await;
+    let epoch = epochs.entry(peer_id.to_owned()).or_insert(0);
+    *epoch = epoch.saturating_add(1);
 }
 
 /// Drive one central lifetime: resolve advertisements to platform-guid
@@ -1454,6 +1540,7 @@ async fn scan_loop<B: RadioBoundary>(inner: Arc<Inner<B>>, mut stop: watch::Rece
                         service_occurrence,
                         characteristic_uuid,
                         characteristic_occurrence,
+                        epoch,
                         value,
                     }) => {
                         deliver(
@@ -1463,6 +1550,7 @@ async fn scan_loop<B: RadioBoundary>(inner: Arc<Inner<B>>, mut stop: watch::Rece
                             service_occurrence,
                             &characteristic_uuid,
                             characteristic_occurrence,
+                            epoch,
                             value,
                         )
                         .await;
@@ -1514,7 +1602,11 @@ async fn reconcile_disconnected<B: RadioBoundary>(inner: &Arc<Inner<B>>, peer_id
 /// Route one radio notification into its per-instance hub with the full
 /// value bytes (M2). Events without routing (unknown or unsubscribed
 /// instance) drop on the floor: the hub never receives unattributable
-/// bytes.
+/// bytes. Events whose install-time epoch no longer matches the live
+/// routing are stale queue drainage from before a disconnect or service
+/// change, and drop the same way even when the instance key matches again
+/// (F10): the epoch is captured at forwarder install, never minted here.
+#[allow(clippy::too_many_arguments)]
 async fn deliver<B: RadioBoundary>(
     inner: &Arc<Inner<B>>,
     peer_id: &str,
@@ -1522,6 +1614,7 @@ async fn deliver<B: RadioBoundary>(
     service_occurrence: u64,
     characteristic_uuid: &str,
     characteristic_occurrence: u64,
+    epoch: u64,
     value: Vec<u8>,
 ) {
     let key = (
@@ -1531,11 +1624,15 @@ async fn deliver<B: RadioBoundary>(
         characteristic_uuid.to_owned(),
         characteristic_occurrence,
     );
-    let path_index = inner.subscriptions.lock().await.get(&key).copied();
-    if let Some(path_index) = path_index {
-        let mut core = inner.core.lock().await;
-        let _ = core.deliver_notification_value(path_index, &value);
+    let routed = inner.subscriptions.lock().await.get(&key).copied();
+    let Some((path_index, routing_epoch)) = routed else {
+        return;
+    };
+    if epoch != routing_epoch {
+        return;
     }
+    let mut core = inner.core.lock().await;
+    let _ = core.deliver_notification_value(path_index, &value);
 }
 
 /// Invalidate generations when the OS reports a changed GATT database
@@ -1576,6 +1673,8 @@ mod adapter_tests {
     const BATTERY_SERVICE: &str = "0000180f-0000-1000-8000-00805f9b34fb";
     const BATTERY_LEVEL: &str = "00002a19-0000-1000-8000-00805f9b34fb";
     const USER_DESCRIPTION: &str = "00002901-0000-1000-8000-00805f9b34fb";
+    const BODY_SENSOR_LOCATION: &str = "00002a38-0000-1000-8000-00805f9b34fb";
+    const HEART_RATE_CONTROL_POINT: &str = "00002a39-0000-1000-8000-00805f9b34fb";
 
     fn notify_props() -> PropertyFlags {
         PropertyFlags {
@@ -1694,12 +1793,22 @@ mod adapter_tests {
     }
 
     fn notification(peer_id: &str, characteristic_occurrence: u64, value: Vec<u8>) -> RadioEvent {
+        notification_epoch(peer_id, characteristic_occurrence, value, 0)
+    }
+
+    fn notification_epoch(
+        peer_id: &str,
+        characteristic_occurrence: u64,
+        value: Vec<u8>,
+        epoch: u64,
+    ) -> RadioEvent {
         RadioEvent::Notification {
             peer_id: peer_id.to_owned(),
             service_uuid: HRM_SERVICE.to_owned(),
             service_occurrence: 0,
             characteristic_uuid: HRM_MEASUREMENT.to_owned(),
             characteristic_occurrence,
+            epoch,
             value,
         }
     }
@@ -2860,6 +2969,691 @@ mod adapter_tests {
                 .count(),
             3,
             "enable, failed disable, retry disable"
+        );
+    }
+
+    /// One service with four characteristics covering every combination of
+    /// the two write capabilities (F08). Occurrences are 0 throughout:
+    /// distinct UUIDs keep the addressing out of the picture.
+    fn write_matrix_service() -> ServiceSnapshot {
+        let characteristic =
+            |uuid: &str, write: bool, without_response: bool| CharacteristicSnapshot {
+                uuid: uuid.to_owned(),
+                occurrence: 0,
+                properties: PropertyFlags {
+                    read: true,
+                    write,
+                    write_without_response: without_response,
+                    notify: false,
+                    indicate: false,
+                },
+                descriptors: Vec::new(),
+            };
+        ServiceSnapshot {
+            uuid: HRM_SERVICE.to_owned(),
+            occurrence: 0,
+            characteristics: vec![
+                characteristic(HRM_MEASUREMENT, false, false),
+                characteristic(BATTERY_LEVEL, true, false),
+                characteristic(BODY_SENSOR_LOCATION, false, true),
+                characteristic(HEART_RATE_CONTROL_POINT, true, true),
+            ],
+        }
+    }
+
+    fn write_matrix_selector(characteristic: &str) -> crate::central::PathSelector {
+        DesktopCentral::<FakeRadio>::selector(
+            HRM_SERVICE,
+            Some(0),
+            Some(characteristic),
+            Some(0),
+            None,
+            None,
+        )
+        .expect("selector")
+    }
+
+    #[tokio::test]
+    async fn f08_write_property_bits_gate_by_mode() {
+        use ubm_core::central::{GATT_PROP_READ, GATT_PROP_WRITE, GATT_PROP_WRITE_NO_RESPONSE};
+
+        let central = open().await;
+        ready_peer(&central, "peer-f08", vec![write_matrix_service()]).await;
+        central.boundary().set_mtu("peer-f08", 23);
+        let peer_key = central.peer_key_for("peer-f08").await.expect("peer");
+
+        // The mapped bitmask itself: each write capability lands on its own
+        // core bit, independently.
+        for (characteristic, expected) in [
+            (HRM_MEASUREMENT, GATT_PROP_READ),
+            (BATTERY_LEVEL, GATT_PROP_READ | GATT_PROP_WRITE),
+            (
+                BODY_SENSOR_LOCATION,
+                GATT_PROP_READ | GATT_PROP_WRITE_NO_RESPONSE,
+            ),
+            (
+                HEART_RATE_CONTROL_POINT,
+                GATT_PROP_READ | GATT_PROP_WRITE | GATT_PROP_WRITE_NO_RESPONSE,
+            ),
+        ] {
+            let selector = write_matrix_selector(characteristic);
+            let index = central
+                .with_core(|core| core.resolve_path(&peer_key, &selector).expect("path"))
+                .await;
+            assert_eq!(
+                central
+                    .with_core(|core| core.stored_path(index).map(|path| path.properties()))
+                    .await,
+                Some(expected),
+                "mapped bitmask for {characteristic}"
+            );
+        }
+
+        // A command-only characteristic accepts without-response and rejects
+        // with-response before dispatch; a request-only characteristic does
+        // the reverse.
+        central
+            .write(
+                "peer-f08",
+                &write_matrix_selector(BODY_SENSOR_LOCATION),
+                vec![1],
+                "without-response",
+                5000,
+            )
+            .await
+            .expect("command write on command-only");
+        assert_eq!(
+            central.boundary().writes().as_slice(),
+            &[(
+                (
+                    "peer-f08".to_owned(),
+                    HRM_SERVICE.to_owned(),
+                    0,
+                    BODY_SENSOR_LOCATION.to_owned(),
+                    0,
+                ),
+                false,
+            )],
+            "command write reaches the boundary without response"
+        );
+        let error = central
+            .write(
+                "peer-f08",
+                &write_matrix_selector(BODY_SENSOR_LOCATION),
+                vec![1],
+                "with-response",
+                5000,
+            )
+            .await
+            .expect_err("request write on command-only fails closed");
+        assert_eq!(error.code_str(), "gatt.property-not-supported");
+        assert_eq!(
+            central.boundary().writes().len(),
+            1,
+            "rejected write never dispatches to the radio"
+        );
+
+        central
+            .write(
+                "peer-f08",
+                &write_matrix_selector(BATTERY_LEVEL),
+                vec![1],
+                "with-response",
+                5000,
+            )
+            .await
+            .expect("request write on request-only");
+        assert_eq!(
+            central.boundary().writes().len(),
+            2,
+            "admitted write dispatches exactly once"
+        );
+        assert!(
+            central.boundary().writes()[1].1,
+            "request write reaches the boundary with response"
+        );
+        let error = central
+            .write(
+                "peer-f08",
+                &write_matrix_selector(BATTERY_LEVEL),
+                vec![1],
+                "without-response",
+                5000,
+            )
+            .await
+            .expect_err("command write on request-only fails closed");
+        assert_eq!(error.code_str(), "gatt.property-not-supported");
+        assert_eq!(
+            central.boundary().writes().len(),
+            2,
+            "rejected write never dispatches to the radio"
+        );
+
+        // Both capabilities: both modes dispatch with their own mode.
+        for (mode, with_response) in [("with-response", true), ("without-response", false)] {
+            central
+                .write(
+                    "peer-f08",
+                    &write_matrix_selector(HEART_RATE_CONTROL_POINT),
+                    vec![1],
+                    mode,
+                    5000,
+                )
+                .await
+                .expect("write on dual-capability");
+            assert_eq!(
+                central.boundary().writes().last().map(|write| write.1),
+                Some(with_response),
+                "boundary mode follows the requested mode ({mode})"
+            );
+        }
+        // Neither capability: both modes fail closed before dispatch.
+        let writes_before = central.boundary().writes().len();
+        for mode in ["with-response", "without-response"] {
+            let error = central
+                .write(
+                    "peer-f08",
+                    &write_matrix_selector(HRM_MEASUREMENT),
+                    vec![1],
+                    mode,
+                    5000,
+                )
+                .await
+                .expect_err("write on read-only fails closed");
+            assert_eq!(error.code_str(), "gatt.property-not-supported");
+        }
+        assert_eq!(
+            central.boundary().writes().len(),
+            writes_before,
+            "no dispatch for the read-only characteristic"
+        );
+    }
+
+    /// Duplicated service UUID where the target characteristic lives only
+    /// under the second instance (F18): occurrence-0 addressing can never
+    /// reach it, while an omitted service occurrence still resolves
+    /// unambiguously.
+    fn second_instance_service_pair() -> Vec<ServiceSnapshot> {
+        vec![
+            ServiceSnapshot {
+                uuid: HRM_SERVICE.to_owned(),
+                occurrence: 0,
+                characteristics: vec![CharacteristicSnapshot {
+                    uuid: BATTERY_LEVEL.to_owned(),
+                    occurrence: 0,
+                    properties: PropertyFlags {
+                        read: true,
+                        write: false,
+                        write_without_response: false,
+                        notify: false,
+                        indicate: false,
+                    },
+                    descriptors: Vec::new(),
+                }],
+            },
+            ServiceSnapshot {
+                uuid: HRM_SERVICE.to_owned(),
+                occurrence: 1,
+                characteristics: vec![CharacteristicSnapshot {
+                    uuid: HRM_MEASUREMENT.to_owned(),
+                    occurrence: 0,
+                    properties: PropertyFlags {
+                        read: true,
+                        write: true,
+                        write_without_response: false,
+                        notify: true,
+                        indicate: false,
+                    },
+                    descriptors: vec![DescriptorSnapshot {
+                        uuid: USER_DESCRIPTION.to_owned(),
+                        occurrence: 0,
+                    }],
+                }],
+            },
+        ]
+    }
+
+    fn second_instance_notification(
+        peer_id: &str,
+        service_occurrence: u64,
+        value: Vec<u8>,
+    ) -> RadioEvent {
+        RadioEvent::Notification {
+            peer_id: peer_id.to_owned(),
+            service_uuid: HRM_SERVICE.to_owned(),
+            service_occurrence,
+            characteristic_uuid: HRM_MEASUREMENT.to_owned(),
+            characteristic_occurrence: 0,
+            epoch: 0,
+            value,
+        }
+    }
+
+    #[tokio::test]
+    async fn f18_omitted_occurrence_addresses_resolved_instance() {
+        let central = open().await;
+        ready_peer(&central, "peer-f18", second_instance_service_pair()).await;
+        central.boundary().set_mtu("peer-f18", 23);
+        // Instance 1 answers distinctly; instance 0 has no such
+        // characteristic, so the canned default would expose misaddressing.
+        central.boundary().set_characteristic_value(
+            "peer-f18",
+            HRM_SERVICE,
+            1,
+            HRM_MEASUREMENT,
+            0,
+            vec![0xc4, 0x35],
+        );
+        let selector = DesktopCentral::<FakeRadio>::selector(
+            HRM_SERVICE,
+            None,
+            Some(HRM_MEASUREMENT),
+            None,
+            None,
+            None,
+        )
+        .expect("selector");
+        let descriptor_selector = DesktopCentral::<FakeRadio>::selector(
+            HRM_SERVICE,
+            None,
+            Some(HRM_MEASUREMENT),
+            None,
+            Some(USER_DESCRIPTION),
+            None,
+        )
+        .expect("descriptor selector");
+
+        // Read resolves the unique path and addresses instance 1.
+        let value = central
+            .read("peer-f18", &selector, 5000)
+            .await
+            .expect("read");
+        assert_eq!(
+            value,
+            vec![0xc4, 0x35],
+            "read addresses service occurrence 1, never the guessed 0"
+        );
+
+        // Write addresses instance 1 with the requested mode.
+        central
+            .write("peer-f18", &selector, vec![1], "with-response", 5000)
+            .await
+            .expect("write");
+        assert_eq!(
+            central.boundary().writes().as_slice(),
+            &[(
+                (
+                    "peer-f18".to_owned(),
+                    HRM_SERVICE.to_owned(),
+                    1,
+                    HRM_MEASUREMENT.to_owned(),
+                    0,
+                ),
+                true,
+            )],
+            "write addresses service occurrence 1"
+        );
+
+        // Descriptor operations address instance 1 as well.
+        central
+            .read_descriptor("peer-f18", &descriptor_selector, 5000)
+            .await
+            .expect("descriptor read");
+        assert_eq!(
+            central.boundary().descriptor_reads().as_slice(),
+            &[(
+                (
+                    "peer-f18".to_owned(),
+                    HRM_SERVICE.to_owned(),
+                    1,
+                    HRM_MEASUREMENT.to_owned(),
+                    0,
+                ),
+                USER_DESCRIPTION.to_owned(),
+                0,
+            )],
+            "descriptor read addresses service occurrence 1"
+        );
+        central
+            .write_descriptor("peer-f18", &descriptor_selector, vec![1], 5000)
+            .await
+            .expect("descriptor write");
+        assert_eq!(
+            central.boundary().descriptor_writes().len(),
+            1,
+            "descriptor write dispatches exactly once"
+        );
+        assert_eq!(
+            central.boundary().descriptor_writes()[0].0.2,
+            1,
+            "descriptor write addresses service occurrence 1"
+        );
+
+        // Subscription routing registers under instance 1: its values
+        // deliver, while instance-0 values for the same UUIDs do not.
+        central
+            .subscribe("peer-f18", &selector, "consumer-a", 5000)
+            .await
+            .expect("subscribe");
+        central
+            .boundary()
+            .push_event(second_instance_notification("peer-f18", 1, vec![0x09]));
+        let mut delivered = None;
+        for _ in 0..200 {
+            delivered = central
+                .take_notification("peer-f18", &selector, "consumer-a")
+                .await
+                .expect("take");
+            if delivered.is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert_eq!(
+            delivered,
+            Some(vec![0x09]),
+            "instance-1 values route to the subscriber"
+        );
+        central
+            .boundary()
+            .push_event(second_instance_notification("peer-f18", 0, vec![0x08]));
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(
+            central
+                .take_notification("peer-f18", &selector, "consumer-a")
+                .await
+                .expect("take"),
+            None,
+            "instance-0 values never reach the instance-1 routing"
+        );
+    }
+
+    #[tokio::test]
+    async fn f11_concurrent_subscribe_enables_once() {
+        use ubm_core::central::ConsumerState;
+
+        let central = open().await;
+        ready_peer(&central, "peer-f11", vec![hrm_service()]).await;
+        let selector = hrm_selector(0);
+        // Pause the first native enable behind the radio gate.
+        central.boundary().block_op(FaultOp::Subscribe);
+        let first = central.clone();
+        let selector_clone = selector.clone();
+        let pending_first = tokio::spawn(async move {
+            first
+                .subscribe("peer-f11", &selector_clone, "consumer-a", 5000)
+                .await
+        });
+        let mut reached_radio = false;
+        for _ in 0..200 {
+            if central
+                .boundary()
+                .calls()
+                .contains(&"set_notifications".to_owned())
+            {
+                reached_radio = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert!(reached_radio, "first enable attempted before joining");
+        assert!(
+            !pending_first.is_finished(),
+            "first subscribe pends on the stuck enable"
+        );
+
+        // A second consumer — and a repeat of the first — join the pending
+        // enablement instead of driving their own native enable.
+        let second = central.clone();
+        let selector_clone = selector.clone();
+        let pending_second = tokio::spawn(async move {
+            second
+                .subscribe("peer-f11", &selector_clone, "consumer-b", 5000)
+                .await
+        });
+        let repeat = central.clone();
+        let selector_clone = selector.clone();
+        let pending_repeat = tokio::spawn(async move {
+            repeat
+                .subscribe("peer-f11", &selector_clone, "consumer-a", 5000)
+                .await
+        });
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(
+            pending_second.is_finished(),
+            "joining consumer never waits on the radio"
+        );
+        assert!(
+            pending_repeat.is_finished(),
+            "repeated request never re-drives the radio"
+        );
+        assert_eq!(
+            central
+                .boundary()
+                .calls()
+                .iter()
+                .filter(|call| *call == "set_notifications")
+                .count(),
+            1,
+            "exactly one native enable for all concurrent subscribers"
+        );
+
+        // One release completes every waiter with consistent readiness.
+        central.boundary().unblock_op(FaultOp::Subscribe);
+        pending_first
+            .await
+            .expect("first task")
+            .expect("first subscribe");
+        pending_second
+            .await
+            .expect("second task")
+            .expect("second subscribe");
+        pending_repeat
+            .await
+            .expect("repeat task")
+            .expect("repeat subscribe");
+        let peer_key = central.peer_key_for("peer-f11").await.expect("peer");
+        let path_index = central
+            .with_core(|core| {
+                core.resolve_path(&peer_key, &hrm_selector(0))
+                    .expect("path")
+            })
+            .await;
+        for consumer in ["consumer-a", "consumer-b"] {
+            assert_eq!(
+                central
+                    .with_core(|core| core.consumer_state(path_index, consumer))
+                    .await,
+                Some(ConsumerState::Ready),
+                "{consumer} shares the one enablement"
+            );
+        }
+        // Both consumers observe the same live stream.
+        central
+            .boundary()
+            .push_event(notification("peer-f11", 0, vec![0x07]));
+        let mut first_value = None;
+        let mut second_value = None;
+        for _ in 0..200 {
+            if first_value.is_none() {
+                first_value = central
+                    .take_notification("peer-f11", &selector, "consumer-a")
+                    .await
+                    .expect("take a");
+            }
+            if second_value.is_none() {
+                second_value = central
+                    .take_notification("peer-f11", &selector, "consumer-b")
+                    .await
+                    .expect("take b");
+            }
+            if first_value.is_some() && second_value.is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert_eq!(first_value, Some(vec![0x07]));
+        assert_eq!(second_value, Some(vec![0x07]));
+        // Teardown stays single too: the shared CCCD disables once.
+        central
+            .unsubscribe("peer-f11", &selector, "consumer-a")
+            .await
+            .expect("unsubscribe a");
+        central
+            .unsubscribe("peer-f11", &selector, "consumer-b")
+            .await
+            .expect("unsubscribe b");
+        assert_eq!(
+            central
+                .boundary()
+                .calls()
+                .iter()
+                .filter(|call| *call == "set_notifications")
+                .count(),
+            2,
+            "enable once, disable once"
+        );
+    }
+
+    #[tokio::test]
+    async fn f10_stale_notification_rejected_after_reconnect() {
+        use ubm_core::central::DatabaseState;
+
+        let central = open().await;
+        ready_peer(&central, "peer-f10", vec![hrm_service()]).await;
+        let selector = hrm_selector(0);
+        central
+            .subscribe("peer-f10", &selector, "consumer-a", 5000)
+            .await
+            .expect("subscribe");
+        // The forwarder install captured this epoch; the held event was
+        // queued under it in native ingress and is released only later.
+        let installed = central.boundary().enable_epochs();
+        assert_eq!(installed.len(), 1, "one forwarder installed");
+        let stale_epoch = installed[0].1;
+        let stale = notification_epoch("peer-f10", 0, vec![0xAA], stale_epoch);
+
+        // Disconnect, reconnect, rediscover, resubscribe: same peripheral
+        // id, same instance key, new subscription under a new generation.
+        central
+            .disconnect("peer-f10", "lease-a")
+            .await
+            .expect("disconnect");
+        central
+            .connect("peer-f10", "lease-a", 5000)
+            .await
+            .expect("reconnect");
+        central
+            .discover("peer-f10", "lease-a")
+            .await
+            .expect("rediscover");
+        central
+            .subscribe("peer-f10", &selector, "consumer-b", 5000)
+            .await
+            .expect("resubscribe");
+        let reinstalled = central.boundary().enable_epochs();
+        assert_eq!(reinstalled.len(), 2, "resubscribe reinstalls the forwarder");
+        let fresh_epoch = reinstalled[1].1;
+
+        // Release the held old value: it must never enter the new stream,
+        // even though the peripheral id and instance key match again.
+        central.boundary().push_event(stale);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(
+            central
+                .take_notification("peer-f10", &selector, "consumer-b")
+                .await
+                .expect("take"),
+            None,
+            "stale queued value never reaches the new consumer"
+        );
+        assert_ne!(
+            fresh_epoch, stale_epoch,
+            "reinstall captures a new generation"
+        );
+        // The new subscription is live: current-generation values deliver.
+        central
+            .boundary()
+            .push_event(notification_epoch("peer-f10", 0, vec![0xBB], fresh_epoch));
+        let mut delivered = None;
+        for _ in 0..200 {
+            delivered = central
+                .take_notification("peer-f10", &selector, "consumer-b")
+                .await
+                .expect("take");
+            if delivered.is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert_eq!(delivered, Some(vec![0xBB]), "fresh values still deliver");
+
+        // Same protection across a service change: a value queued under
+        // the old database never enters the post-rediscovery subscription.
+        let pre_change = notification_epoch("peer-f10", 0, vec![0xCC], fresh_epoch);
+        central
+            .boundary()
+            .push_event(RadioEvent::ServicesChanged("peer-f10".to_owned()));
+        let peer_key = central.peer_key_for("peer-f10").await.expect("peer");
+        let mut invalidated = false;
+        for _ in 0..200 {
+            if central
+                .with_core(|core| core.database_state(&peer_key))
+                .await
+                == Some(DatabaseState::Undiscovered)
+            {
+                invalidated = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert!(invalidated, "database requires rediscovery after change");
+        central
+            .discover("peer-f10", "lease-a")
+            .await
+            .expect("rediscover after change");
+        central
+            .subscribe("peer-f10", &selector, "consumer-c", 5000)
+            .await
+            .expect("subscribe after change");
+        let current_epoch = central
+            .boundary()
+            .enable_epochs()
+            .last()
+            .map(|installed| installed.1)
+            .expect("forwarder installed");
+        assert_ne!(
+            current_epoch, fresh_epoch,
+            "post-change install captures a new generation"
+        );
+        central.boundary().push_event(pre_change);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(
+            central
+                .take_notification("peer-f10", &selector, "consumer-c")
+                .await
+                .expect("take"),
+            None,
+            "pre-change value never reaches the new subscription"
+        );
+        central
+            .boundary()
+            .push_event(notification_epoch("peer-f10", 0, vec![0xDD], current_epoch));
+        let mut redelivered = None;
+        for _ in 0..200 {
+            redelivered = central
+                .take_notification("peer-f10", &selector, "consumer-c")
+                .await
+                .expect("take");
+            if redelivered.is_some() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert_eq!(
+            redelivered,
+            Some(vec![0xDD]),
+            "post-change subscription stays live"
         );
     }
 }

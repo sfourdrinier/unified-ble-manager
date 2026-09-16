@@ -29,7 +29,10 @@ use crate::boundary::{
     RadioEvent, ScanFilterSpec, ServiceSnapshot,
 };
 use crate::errors::DesktopError;
-use ubm_core::central::{GATT_PROP_INDICATE, GATT_PROP_NOTIFY, GATT_PROP_READ, GATT_PROP_WRITE};
+use ubm_core::central::{
+    GATT_PROP_INDICATE, GATT_PROP_NOTIFY, GATT_PROP_READ, GATT_PROP_WRITE,
+    GATT_PROP_WRITE_NO_RESPONSE,
+};
 
 type EventStream = std::pin::Pin<Box<dyn futures_util::Stream<Item = CentralEvent> + Send>>;
 type NotificationStream =
@@ -190,6 +193,27 @@ impl BtleplugRadio {
         queue.recv().await
     }
 
+    /// Abort every live forwarder for one peer (F10): after a disconnect
+    /// or service change, the peer's old GATT handles are dead, so its
+    /// forwarders stop emitting rather than draining stale values into
+    /// the shared channel. Values already queued still carry the dead
+    /// install-time epoch and fail the central's routing check. Task abort
+    /// only: the link is gone (or the handles are), so no OS unsubscribe
+    /// is attempted here — resubscribe reinstalls through the normal path.
+    fn abort_peer_forwarders(&self, peer_id: &str) {
+        let mut table = self.forwarders.lock().expect("forwarder table");
+        let stale: Vec<String> = table
+            .iter()
+            .filter(|(_, entry)| entry.peer_id == peer_id)
+            .map(|(key, _)| key.clone())
+            .collect();
+        for key in &stale {
+            if let Some(entry) = table.remove(key) {
+                entry.task.abort();
+            }
+        }
+    }
+
     fn find_descriptor(
         peripheral: &Peripheral,
         service_uuid: &str,
@@ -296,9 +320,7 @@ fn property_bits(flags: PropertyFlags) -> u8 {
         bits |= GATT_PROP_WRITE;
     }
     if flags.write_without_response {
-        // Core models write-command readiness through the write-mode path;
-        // the bit survives here so discovery snapshots stay lossless.
-        bits |= GATT_PROP_WRITE;
+        bits |= GATT_PROP_WRITE_NO_RESPONSE;
     }
     if flags.notify {
         bits |= GATT_PROP_NOTIFY;
@@ -577,6 +599,7 @@ impl RadioBoundary for BtleplugRadio {
         characteristic_uuid: &str,
         characteristic_occurrence: u64,
         enable: bool,
+        epoch: u64,
     ) -> Result<(), DesktopError> {
         let peripheral = self.peripheral_by_id(peer_id).await?;
         let characteristic = Self::find_characteristic(
@@ -617,6 +640,10 @@ impl RadioBoundary for BtleplugRadio {
             // indistinguishable on this stream (no handles exposed) and
             // fan out to every same-UUID forwarder; see PARITY_GAPS.md.
             let own_uuid = characteristic.uuid;
+            // The subscription epoch is captured at install, never minted
+            // at dequeue: every value this forwarder emits is attributable
+            // to exactly the enablement that installed it (F10).
+            let installed_epoch = epoch;
             let forwarder = self.spawn.spawn(async move {
                 let mut stream = stream;
                 while let Some(note) = stream.next().await {
@@ -629,6 +656,7 @@ impl RadioBoundary for BtleplugRadio {
                         service_occurrence,
                         characteristic_uuid: instance_characteristic.clone(),
                         characteristic_occurrence,
+                        epoch: installed_epoch,
                         value: note.value,
                     };
                     // The CCCD stays enabled on send failure; the event loop
@@ -738,12 +766,14 @@ impl RadioBoundary for BtleplugRadio {
                 // generations instead of re-reading stale handles. The
                 // next discovery refreshes the snapshot.
                 Step::Adapter(Some(CentralEvent::DeviceServicesModified(id))) => {
+                    self.abort_peer_forwarders(&id.to_string());
                     return Some(RadioEvent::ServicesChanged(id.to_string()));
                 }
                 Step::Adapter(Some(CentralEvent::DeviceConnected(id))) => {
                     return Some(RadioEvent::Connected(id.to_string()));
                 }
                 Step::Adapter(Some(CentralEvent::DeviceDisconnected(id))) => {
+                    self.abort_peer_forwarders(&id.to_string());
                     return Some(RadioEvent::Disconnected(id.to_string()));
                 }
                 Step::Adapter(Some(_)) => {}
@@ -941,5 +971,36 @@ mod tests {
             indicate: false,
         });
         assert_eq!(bits, 0);
+    }
+
+    #[test]
+    fn f08_write_capabilities_map_to_independent_bits() {
+        use ubm_core::central::GATT_PROP_WRITE_NO_RESPONSE;
+
+        let mapping = |write: bool, without_response: bool| {
+            core_property_bits(PropertyFlags {
+                read: false,
+                write,
+                write_without_response: without_response,
+                notify: false,
+                indicate: false,
+            })
+        };
+        assert_eq!(mapping(false, false), 0, "neither capability sets no bit");
+        assert_eq!(
+            mapping(true, false),
+            GATT_PROP_WRITE,
+            "request-write sets only the write bit"
+        );
+        assert_eq!(
+            mapping(false, true),
+            GATT_PROP_WRITE_NO_RESPONSE,
+            "command-write sets only the no-response bit, never the write bit"
+        );
+        assert_eq!(
+            mapping(true, true),
+            GATT_PROP_WRITE | GATT_PROP_WRITE_NO_RESPONSE,
+            "both capabilities survive independently"
+        );
     }
 }
