@@ -1,0 +1,1 @@
+{"state":"release-failed","operationId":"op-1","failures":[{"resourceKind":"cccd","code":"gatt.subscribe-failed"}]}
