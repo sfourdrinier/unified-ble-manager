@@ -84,6 +84,7 @@ describe('Tauri v2 Rust plugin boundary', () => {
 
   test('scan follows adapter events, polls peripherals as a fallback, and drops observations instead of aborting when the event quota is full', () => {
     const dispatcher = read('native/tauri/src/btleplug_dispatcher.rs')
+    const executor = read('crates/ubm-desktop/src/executor.rs')
 
     expect(dispatcher).toContain('scan_adapter.events()')
     expect(dispatcher).toContain('DeviceDiscovered')
@@ -92,8 +93,14 @@ describe('Tauri v2 Rust plugin boundary', () => {
     expect(dispatcher).toContain('peripherals()')
     expect(dispatcher).toContain('for service in peripheral.services()')
     expect(dispatcher).toContain('("schemaVersion", number(2))')
-    expect(dispatcher).toContain('ubm-btleplug')
-    expect(dispatcher).toContain('new_multi_thread')
+    // Runtime construction moved to the shared desktop executor seam
+    // (HOST-DESKTOP extraction); the dispatcher must delegate and the
+    // executor must preserve the retained runtime shape and identity.
+    expect(dispatcher).toContain('desktop_executor_seam::desktop_runtime()')
+    expect(executor).toContain('new_multi_thread')
+    expect(executor).toContain('worker_threads(2)')
+    expect(executor).toContain('ubm-btleplug')
+    expect(executor).toContain('ubm-btleplug-worker')
     expect(dispatcher).toContain('btleplug_runtime().spawn')
     expect(dispatcher).toContain('heard')
     expect(dispatcher).toContain('adapter.adapter_state()')

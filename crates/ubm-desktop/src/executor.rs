@@ -30,21 +30,24 @@ pub fn desktop_runtime() -> tokio::runtime::Handle {
     SHARED_HANDLE
         .get_or_init(|| {
             let (tx, rx) = std::sync::mpsc::channel();
+            // Thread/panic identity is retained verbatim from the 4.x Tauri path
+            // (pinned by __tests__/TauriRustPlugin.test.js); revisit only if a
+            // second desktop client onboards this shared executor.
             std::thread::Builder::new()
-                .name("ubm-desktop".to_owned())
+                .name("ubm-btleplug".to_owned())
                 .spawn(move || {
                     let runtime = tokio::runtime::Builder::new_multi_thread()
                         .enable_all()
                         .worker_threads(2)
-                        .thread_name("ubm-desktop-worker")
+                        .thread_name("ubm-btleplug-worker")
                         .build()
-                        .expect("ubm-desktop executor runtime");
+                        .expect("unified-ble-manager btleplug runtime");
                     tx.send(runtime.handle().clone())
-                        .expect("ubm-desktop executor handle");
+                        .expect("unified-ble-manager btleplug handle");
                     runtime.block_on(std::future::pending::<()>());
                 })
-                .expect("ubm-desktop executor thread");
-            rx.recv().expect("ubm-desktop executor handle")
+                .expect("unified-ble-manager btleplug thread");
+            rx.recv().expect("unified-ble-manager btleplug handle")
         })
         .clone()
 }
