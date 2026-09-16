@@ -1,0 +1,19 @@
+// emulator-probe/five0/probe-app/settings.gradle — minimal 5.0-artifact probe app.
+// No React Native, no Metro: a bare activity + the Rust cdylib + the JNI
+// Java sources shared from bindings/jni (sourceDir reference, never copied).
+pluginManagement {
+  repositories {
+    google()
+    mavenCentral()
+    gradlePluginPortal()
+  }
+}
+dependencyResolutionManagement {
+  repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+  repositories {
+    google()
+    mavenCentral()
+  }
+}
+rootProject.name = 'UbmFive0Probe'
+include ':app'

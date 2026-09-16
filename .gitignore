@@ -76,6 +76,14 @@ example-tauri/src-tauri/gen/
 crates/*/target/
 bindings/*/target/
 
+# HOST-ANDROID (UBM 5.0): staged Rust cdylib outputs for the GATT bridge are
+# build artifacts, never sources (built by android/build-rust-cdylib.sh).
+android/src/main/jniLibs/
+emulator-probe/five0/probe-app/app/src/main/jniLibs/
+# HOST-ANDROID (UBM 5.0): five0 battery raw logs are local evidence only;
+# the committed record is results-five0.json. Never commit logs/.
+emulator-probe/five0/logs/
+
 # Bundle artifact
 *.jsbundle
 /.artifacts/

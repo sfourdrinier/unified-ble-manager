@@ -116,3 +116,62 @@ react {
   libraryName = "BlePlx"
   codegenJavaPackageName = "com.sfourdrinier.unifiedblemanager"
 }
+
+// HOST-ANDROID (UBM 5.0, trackourhealth/bun-mono#1188): build the Rust cdylib
+// (bindings/jni, `libubm5_jni_echo.so`) for the emulator ABI list and stage
+// it into jniLibs so the GATT bridge natives resolve at runtime.
+//
+// ABI list (recorded): x86_64 ONLY — KVM host-matched emulator ABI
+// (system-images;android-34;google_apis;x86_64). arm64-v8a/armeabi-v7a are a
+// documented boundary (no physical devices on this lane), not a failure.
+// Toolchain is pinned (1.98.1) and targets are explicit rustc targets inside
+// android/build-rust-cdylib.sh (single source of truth, shared with the
+// five0 probe-app build); no cargo-ndk required. The staged .so files are
+// build outputs and must stay uncommitted (see .gitignore).
+// Limitation: profile detection below is substring-based ("Release" in any
+// task name), so a joint `assembleDebug assembleRelease` invocation builds
+// one profile for both variants. Single-variant lane: fine; multi-variant
+// callers must build one profile per invocation.
+def ubmRustAbis = ["x86_64"]
+def ubmRustScript = file("build-rust-cdylib.sh")
+def ubmRustJniLibs = file("src/main/jniLibs")
+def ubmRustProfile = gradle.startParameter.taskNames.any { it.contains("Release") } ? "release" : "debug"
+
+tasks.register("buildUbmRustCdylib") {
+  description = "Builds the UBM 5.0 Rust cdylib for ${ubmRustAbis} via android/build-rust-cdylib.sh."
+  // Declared inputs so profile switches (debug<->release) and Rust edits
+  // rebuild instead of silently reusing a stale staged .so.
+  inputs.property("ubmRustProfile", ubmRustProfile)
+  inputs.property("ubmRustAbis", ubmRustAbis)
+  inputs.file(ubmRustScript)
+  inputs.dir(rootDir.toPath().resolve("bindings/jni/src").toFile())
+  inputs.file(rootDir.toPath().resolve("bindings/jni/Cargo.toml").toFile())
+  outputs.dir(ubmRustJniLibs)
+  doLast {
+    ubmRustAbis.each { abi ->
+      def libDir = new File(ubmRustJniLibs, abi)
+      def result = providers.exec {
+        commandLine("sh", ubmRustScript.absolutePath,
+          "--abi", abi,
+          "--profile", ubmRustProfile,
+          "--libdir", libDir.absolutePath)
+        workingDir(rootDir)
+      }.result.get()
+      if (result.exitValue != 0) {
+        throw new GradleException(
+          "buildUbmRustCdylib FAILED for ABI ${abi} (exit ${result.exitValue}). " +
+          "Run sh ${ubmRustScript} --abi ${abi} --profile ${ubmRustProfile} " +
+          "--libdir <dir> from the repo root for the actionable diagnostic " +
+          "(NDK 27.x, pinned Rust 1.98.1 + x86_64-linux-android target).")
+      }
+      def staged = new File(libDir, "libubm5_jni_echo.so")
+      if (!staged.isFile()) {
+        throw new GradleException(
+          "buildUbmRustCdylib FAILED: staged cdylib missing at ${staged} " +
+          "despite exit 0 — re-run the script by hand for diagnostics.")
+      }
+    }
+  }
+}
+
+preBuild.dependsOn("buildUbmRustCdylib")

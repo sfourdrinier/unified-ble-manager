@@ -30,10 +30,13 @@ test -f "$LIB"
 echo "--- jni: compile harness"
 rm -rf target/jvm-classes
 mkdir -p target/jvm-classes
-javac -d target/jvm-classes java/com/ubm/echo/EchoBridge.java java/com/ubm/echo/EchoException.java java/com/ubm/echo/TestEcho.java
+javac -d target/jvm-classes java/com/ubm/echo/EchoBridge.java java/com/ubm/echo/EchoException.java java/com/ubm/echo/TestEcho.java java/com/ubm/gatt/GattBridge.java java/com/ubm/gatt/TestGatt.java
 
 echo "--- jni: JVM exchange through JNI"
 java -Djava.library.path="$LIBDIR" -cp target/jvm-classes com.ubm.echo.TestEcho
+
+echo "--- jni: HOST-ANDROID GATT bridge exchange through JNI"
+java -Djava.library.path="$LIBDIR" -cp target/jvm-classes com.ubm.gatt.TestGatt
 
 echo "--- jni: versions"
 rustc --version
