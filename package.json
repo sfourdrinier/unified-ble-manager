@@ -47,6 +47,7 @@
     "!android/gradlew",
     "!android/gradlew.bat",
     "!android/local.properties",
+    "!android/src/main/jniLibs",
     "!native/**/build",
     "!native/**/target",
     "!native/**/obj.target",

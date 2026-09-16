@@ -136,6 +136,14 @@ def ubmRustAbis = ["x86_64"]
 def ubmRustScript = file("build-rust-cdylib.sh")
 def ubmRustJniLibs = file("src/main/jniLibs")
 def ubmRustProfile = gradle.startParameter.taskNames.any { it.contains("Release") } ? "release" : "debug"
+// projectDir-relative: rootDir is example/android when the library is
+// included as a module, so repo-root paths must go through ../.
+def ubmRustSrcDir = projectDir.toPath().resolve("../bindings/jni/src").toFile()
+def ubmRustManifest = projectDir.toPath().resolve("../bindings/jni/Cargo.toml").toFile()
+// Packed consumers (Expo CNG, node_modules) have no Rust sources: bindings/
+// is intentionally NOT shipped. The task skips loudly there instead of
+// failing; the bridge classes must not be loaded in that context.
+def ubmRustSourcesPresent = ubmRustSrcDir.isDirectory() && ubmRustManifest.isFile()
 
 tasks.register("buildUbmRustCdylib") {
   description = "Builds the UBM 5.0 Rust cdylib for ${ubmRustAbis} via android/build-rust-cdylib.sh."
@@ -143,13 +151,19 @@ tasks.register("buildUbmRustCdylib") {
   // rebuild instead of silently reusing a stale staged .so.
   inputs.property("ubmRustProfile", ubmRustProfile)
   inputs.property("ubmRustAbis", ubmRustAbis)
+  inputs.property("ubmRustSourcesPresent", ubmRustSourcesPresent)
   inputs.file(ubmRustScript)
-  // projectDir-relative: rootDir is example/android when the library is
-  // included as a module, so repo-root paths must go through ../.
-  inputs.dir(projectDir.toPath().resolve("../bindings/jni/src").toFile())
-  inputs.file(projectDir.toPath().resolve("../bindings/jni/Cargo.toml").toFile())
+  if (ubmRustSourcesPresent) {
+    inputs.dir(ubmRustSrcDir)
+    inputs.file(ubmRustManifest)
+  }
   outputs.dir(ubmRustJniLibs)
   doLast {
+    if (!ubmRustSourcesPresent) {
+      logger.lifecycle("buildUbmRustCdylib SKIPPED: no Rust sources at ${ubmRustSrcDir} " +
+        "(packed-consumer context — bridge natives unavailable, bridge classes must not be loaded).")
+      return
+    }
     ubmRustAbis.each { abi ->
       def libDir = new File(ubmRustJniLibs, abi)
       def result = providers.exec {
