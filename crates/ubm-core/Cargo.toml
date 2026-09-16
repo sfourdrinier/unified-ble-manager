@@ -2,6 +2,7 @@
 name = "ubm-core"
 version = "0.1.0"
 edition = "2024"
+publish = false
 license-file = "../../LICENSE-UBM-SOURCE-AVAILABLE-1.0.md"
 description = "Portable deterministic UBM 5.0 transition kernel (mirrors C-UBM DRAFT)"
 repository = "https://github.com/sfourdrinier/unified-ble-manager"

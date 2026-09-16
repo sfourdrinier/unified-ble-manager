@@ -3,9 +3,12 @@
 // Packaging PROOF for TCK test-only fault hooks (UBM 5.0 TCK card, review
 // follow-up item 5). Replaces the old flag-checking guard with evidence:
 //
-// 1. The built production entries (lib/commonjs/index.js and
-//    lib/commonjs/backend-sdk.js) never reach the test-only fault-hooks
-//    module: neither in their static require closure nor by string reference.
+// 1. The built production entries (lib/commonjs/index.js,
+//    lib/commonjs/backend-sdk.js, and lib/commonjs/testing.js) never reach
+//    the test-only fault-hooks module: neither in their static require
+//    closure nor by string reference. The testing entry is covered because
+//    it ships TCK content, so it is the entry most likely to absorb the
+//    hooks by accident (UBM 5.0 PACKAGING slice).
 // 2. The built entries do not export fault-hook construction at runtime.
 // 3. The production entry SOURCES do not reference the fault-hooks module.
 //
@@ -17,10 +20,12 @@ const fs = require('fs')
 const path = require('path')
 
 const repoRoot = path.resolve(__dirname, '..', '..')
-const builtEntries = ['lib/commonjs/index.js', 'lib/commonjs/backend-sdk.js'].map(relative =>
+const builtEntries = ['lib/commonjs/index.js', 'lib/commonjs/backend-sdk.js', 'lib/commonjs/testing.js'].map(
+  relative => path.join(repoRoot, relative)
+)
+const entrySources = ['src/index.ts', 'src/backend-sdk.ts', 'src/testing.ts'].map(relative =>
   path.join(repoRoot, relative)
 )
-const entrySources = ['src/index.ts', 'src/backend-sdk.ts'].map(relative => path.join(repoRoot, relative))
 const forbiddenModuleFragment = 'test-only-fault-hooks'
 const forbiddenExports = ['createTestOnlyFaultHooks', 'TCK_TEST_ONLY_MARKER', 'assertTestOnlyFaultContext']
 

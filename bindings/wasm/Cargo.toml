@@ -4,7 +4,9 @@ version = "0.1.0"
 edition = "2021"
 rust-version = "1.98.1"
 description = "UBM 5.0 FFI feasibility: portable WASM echo (trackourhealth/bun-mono#1188, FFI-WASM card). Echo-only stand-in; NOT BLE functionality."
-license = "MIT"
+publish = false
+license-file = "../../LICENSE-UBM-SOURCE-AVAILABLE-1.0.md"
+repository = "https://github.com/sfourdrinier/unified-ble-manager"
 
 [lib]
 crate-type = ["cdylib", "rlib"]
