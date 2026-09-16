@@ -48,10 +48,23 @@ describe('open-source release policies and dependency artifacts', () => {
     expect(sbom.metadata.component.version).toBe(require('../package.json').version)
     expect(sbom.components.length).toBeGreaterThan(0)
     expect(new Set(sbom.components.map(component => component['bom-ref'])).size).toBe(sbom.components.length)
-    expect(sbom.components.every(component => component.purl.startsWith('pkg:npm/'))).toBe(true)
+    expect(
+      sbom.components.every(
+        component => component.purl.startsWith('pkg:npm/') || component.purl.startsWith('pkg:cargo/')
+      )
+    ).toBe(true)
     expect(inventory.schema).toBe('unified-ble-manager/third-party-license-inventory')
-    expect(inventory.source.method).toBe('pnpm-lock production graph with installed-manifest license audit')
-    expect(inventory.unresolved).toEqual([])
+    expect(inventory.source.method).toBe(
+      'pnpm-lock production graph with installed-manifest license audit + cargo-metadata workspace graph (declared-license evidence only)'
+    )
+    // Declared-only Rust evidence: ambiguous cargo declarations stay NOASSERTION
+    // with a review flag (covered exactly by ReleaseArtifactsRust); the npm
+    // pipeline itself leaves nothing unresolved.
+    expect(
+      inventory.unresolved.every(
+        entry => entry.purl.startsWith('pkg:cargo/') && typeof entry.reason === 'string'
+      )
+    ).toBe(true)
     expect(inventory.packages.length).toBe(sbom.components.length)
     expect(sbom.dependencies).toHaveLength(sbom.components.length + 1)
     expect(sbom.dependencies.some(dependency => dependency.dependsOn.length > 0)).toBe(true)

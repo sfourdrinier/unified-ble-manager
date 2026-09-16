@@ -7,9 +7,11 @@
     "version": "4.0.28"
   },
   "source": {
-    "method": "pnpm-lock production graph with installed-manifest license audit",
+    "method": "pnpm-lock production graph with installed-manifest license audit + cargo-metadata workspace graph (declared-license evidence only)",
     "lockfile": "pnpm-lock.yaml",
-    "lockfileSha256": "fea8b9fea3dca31d966c33e5942c5fb0f179c492a8462f90482d0c5dc1bd86d2"
+    "lockfileSha256": "fea8b9fea3dca31d966c33e5942c5fb0f179c492a8462f90482d0c5dc1bd86d2",
+    "cargoLockfile": "Cargo.lock",
+    "cargoLockfileSha256": "40a5835d71a9a5686547cdf3ef8929f336b0303aaad141e853d8b3b4b6242f35"
   },
   "reviewedOverrides": [
     {
@@ -25,7 +27,63 @@
       "sha256": "8937affb1fac84258c98aa2351eb161405999975b602140c43bcbac23b22f1e9"
     }
   ],
-  "unresolved": [],
+  "unresolved": [
+    {
+      "purl": "pkg:cargo/btleplug@0.12.0",
+      "declared": "MIT/Apache-2.0/BSD-3-Clause",
+      "reason": "ambiguous license declaration \"MIT/Apache-2.0/BSD-3-Clause\"; recorded as NOASSERTION pending human review"
+    },
+    {
+      "purl": "pkg:cargo/cesu8@1.1.0",
+      "declared": "Apache-2.0/MIT",
+      "reason": "ambiguous license declaration \"Apache-2.0/MIT\"; recorded as NOASSERTION pending human review"
+    },
+    {
+      "purl": "pkg:cargo/dbus-tokio@0.7.6",
+      "declared": "Apache-2.0/MIT",
+      "reason": "ambiguous license declaration \"Apache-2.0/MIT\"; recorded as NOASSERTION pending human review"
+    },
+    {
+      "purl": "pkg:cargo/dbus@0.9.12",
+      "declared": "Apache-2.0/MIT",
+      "reason": "ambiguous license declaration \"Apache-2.0/MIT\"; recorded as NOASSERTION pending human review"
+    },
+    {
+      "purl": "pkg:cargo/jni@0.19.0",
+      "declared": "MIT/Apache-2.0",
+      "reason": "ambiguous license declaration \"MIT/Apache-2.0\"; recorded as NOASSERTION pending human review"
+    },
+    {
+      "purl": "pkg:cargo/libdbus-sys@0.2.7",
+      "declared": "Apache-2.0/MIT",
+      "reason": "ambiguous license declaration \"Apache-2.0/MIT\"; recorded as NOASSERTION pending human review"
+    },
+    {
+      "purl": "pkg:cargo/minimal-lexical@0.2.1",
+      "declared": "MIT/Apache-2.0",
+      "reason": "ambiguous license declaration \"MIT/Apache-2.0\"; recorded as NOASSERTION pending human review"
+    },
+    {
+      "purl": "pkg:cargo/plain@0.2.3",
+      "declared": "MIT/Apache-2.0",
+      "reason": "ambiguous license declaration \"MIT/Apache-2.0\"; recorded as NOASSERTION pending human review"
+    },
+    {
+      "purl": "pkg:cargo/same-file@1.0.6",
+      "declared": "Unlicense/MIT",
+      "reason": "ambiguous license declaration \"Unlicense/MIT\"; recorded as NOASSERTION pending human review"
+    },
+    {
+      "purl": "pkg:cargo/siphasher@1.0.3",
+      "declared": "MIT/Apache-2.0",
+      "reason": "ambiguous license declaration \"MIT/Apache-2.0\"; recorded as NOASSERTION pending human review"
+    },
+    {
+      "purl": "pkg:cargo/walkdir@2.5.0",
+      "declared": "Unlicense/MIT",
+      "reason": "ambiguous license declaration \"Unlicense/MIT\"; recorded as NOASSERTION pending human review"
+    }
+  ],
   "packages": [
     {
       "name": "@babel/runtime",
@@ -180,6 +238,1405 @@
       "license": "BlueOak-1.0.0",
       "licenseSource": "package-metadata",
       "purl": "pkg:npm/yallist@5.0.0"
+    },
+    {
+      "name": "aho-corasick",
+      "version": "1.1.5",
+      "license": "Unlicense OR MIT",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "Unlicense OR MIT",
+      "purl": "pkg:cargo/aho-corasick@1.1.5"
+    },
+    {
+      "name": "anyhow",
+      "version": "1.0.104",
+      "license": "MIT OR Apache-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT OR Apache-2.0",
+      "purl": "pkg:cargo/anyhow@1.0.104"
+    },
+    {
+      "name": "askama_derive",
+      "version": "0.16.1",
+      "license": "MIT OR Apache-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT OR Apache-2.0",
+      "purl": "pkg:cargo/askama_derive@0.16.1"
+    },
+    {
+      "name": "askama_macros",
+      "version": "0.16.1",
+      "license": "MIT OR Apache-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT OR Apache-2.0",
+      "purl": "pkg:cargo/askama_macros@0.16.1"
+    },
+    {
+      "name": "askama_parser",
+      "version": "0.16.1",
+      "license": "MIT OR Apache-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT OR Apache-2.0",
+      "purl": "pkg:cargo/askama_parser@0.16.1"
+    },
+    {
+      "name": "askama",
+      "version": "0.16.1",
+      "license": "MIT OR Apache-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT OR Apache-2.0",
+      "purl": "pkg:cargo/askama@0.16.1"
+    },
+    {
+      "name": "async-trait",
+      "version": "0.1.92",
+      "license": "MIT OR Apache-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT OR Apache-2.0",
+      "purl": "pkg:cargo/async-trait@0.1.92"
+    },
+    {
+      "name": "autocfg",
+      "version": "1.5.1",
+      "license": "Apache-2.0 OR MIT",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "Apache-2.0 OR MIT",
+      "purl": "pkg:cargo/autocfg@1.5.1"
+    },
+    {
+      "name": "basic-toml",
+      "version": "0.1.10",
+      "license": "MIT OR Apache-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT OR Apache-2.0",
+      "purl": "pkg:cargo/basic-toml@0.1.10"
+    },
+    {
+      "name": "bitflags",
+      "version": "2.13.2",
+      "license": "MIT OR Apache-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT OR Apache-2.0",
+      "purl": "pkg:cargo/bitflags@2.13.2"
+    },
+    {
+      "name": "block2",
+      "version": "0.5.1",
+      "license": "MIT",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT",
+      "purl": "pkg:cargo/block2@0.5.1"
+    },
+    {
+      "name": "bluez-async",
+      "version": "0.8.2",
+      "license": "MIT OR Apache-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT OR Apache-2.0",
+      "purl": "pkg:cargo/bluez-async@0.8.2"
+    },
+    {
+      "name": "bluez-generated",
+      "version": "0.4.0",
+      "license": "MIT OR Apache-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT OR Apache-2.0",
+      "purl": "pkg:cargo/bluez-generated@0.4.0"
+    },
+    {
+      "name": "btleplug",
+      "version": "0.12.0",
+      "license": "NOASSERTION",
+      "licenseSource": "cargo-manifest-license-ambiguous",
+      "reviewRequired": true,
+      "declared": "MIT/Apache-2.0/BSD-3-Clause",
+      "purl": "pkg:cargo/btleplug@0.12.0"
+    },
+    {
+      "name": "bumpalo",
+      "version": "3.20.3",
+      "license": "MIT OR Apache-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT OR Apache-2.0",
+      "purl": "pkg:cargo/bumpalo@3.20.3"
+    },
+    {
+      "name": "bytes",
+      "version": "1.12.1",
+      "license": "MIT",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT",
+      "purl": "pkg:cargo/bytes@1.12.1"
+    },
+    {
+      "name": "camino",
+      "version": "1.2.6",
+      "license": "MIT OR Apache-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT OR Apache-2.0",
+      "purl": "pkg:cargo/camino@1.2.6"
+    },
+    {
+      "name": "cargo_metadata",
+      "version": "0.23.1",
+      "license": "MIT",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT",
+      "purl": "pkg:cargo/cargo_metadata@0.23.1"
+    },
+    {
+      "name": "cargo-platform",
+      "version": "0.3.3",
+      "license": "MIT OR Apache-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT OR Apache-2.0",
+      "purl": "pkg:cargo/cargo-platform@0.3.3"
+    },
+    {
+      "name": "cesu8",
+      "version": "1.1.0",
+      "license": "NOASSERTION",
+      "licenseSource": "cargo-manifest-license-ambiguous",
+      "reviewRequired": true,
+      "declared": "Apache-2.0/MIT",
+      "purl": "pkg:cargo/cesu8@1.1.0"
+    },
+    {
+      "name": "cfg-if",
+      "version": "1.0.4",
+      "license": "MIT OR Apache-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT OR Apache-2.0",
+      "purl": "pkg:cargo/cfg-if@1.0.4"
+    },
+    {
+      "name": "combine",
+      "version": "4.6.8",
+      "license": "MIT",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT",
+      "purl": "pkg:cargo/combine@4.6.8"
+    },
+    {
+      "name": "convert_case",
+      "version": "0.6.0",
+      "license": "MIT",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT",
+      "purl": "pkg:cargo/convert_case@0.6.0"
+    },
+    {
+      "name": "crossbeam-utils",
+      "version": "0.8.23",
+      "license": "MIT OR Apache-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT OR Apache-2.0",
+      "purl": "pkg:cargo/crossbeam-utils@0.8.23"
+    },
+    {
+      "name": "ctor",
+      "version": "0.2.9",
+      "license": "Apache-2.0 OR MIT",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "Apache-2.0 OR MIT",
+      "purl": "pkg:cargo/ctor@0.2.9"
+    },
+    {
+      "name": "dashmap",
+      "version": "6.2.1",
+      "license": "MIT",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT",
+      "purl": "pkg:cargo/dashmap@6.2.1"
+    },
+    {
+      "name": "dbus-tokio",
+      "version": "0.7.6",
+      "license": "NOASSERTION",
+      "licenseSource": "cargo-manifest-license-ambiguous",
+      "reviewRequired": true,
+      "declared": "Apache-2.0/MIT",
+      "purl": "pkg:cargo/dbus-tokio@0.7.6"
+    },
+    {
+      "name": "dbus",
+      "version": "0.9.12",
+      "license": "NOASSERTION",
+      "licenseSource": "cargo-manifest-license-ambiguous",
+      "reviewRequired": true,
+      "declared": "Apache-2.0/MIT",
+      "purl": "pkg:cargo/dbus@0.9.12"
+    },
+    {
+      "name": "either",
+      "version": "1.18.0",
+      "license": "MIT OR Apache-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT OR Apache-2.0",
+      "purl": "pkg:cargo/either@1.18.0"
+    },
+    {
+      "name": "equivalent",
+      "version": "1.0.2",
+      "license": "Apache-2.0 OR MIT",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "Apache-2.0 OR MIT",
+      "purl": "pkg:cargo/equivalent@1.0.2"
+    },
+    {
+      "name": "errno",
+      "version": "0.3.14",
+      "license": "MIT OR Apache-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT OR Apache-2.0",
+      "purl": "pkg:cargo/errno@0.3.14"
+    },
+    {
+      "name": "fastrand",
+      "version": "2.5.0",
+      "license": "Apache-2.0 OR MIT",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "Apache-2.0 OR MIT",
+      "purl": "pkg:cargo/fastrand@2.5.0"
+    },
+    {
+      "name": "fs-err",
+      "version": "3.3.1",
+      "license": "MIT OR Apache-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT OR Apache-2.0",
+      "purl": "pkg:cargo/fs-err@3.3.1"
+    },
+    {
+      "name": "futures-channel",
+      "version": "0.3.34",
+      "license": "MIT OR Apache-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT OR Apache-2.0",
+      "purl": "pkg:cargo/futures-channel@0.3.34"
+    },
+    {
+      "name": "futures-core",
+      "version": "0.3.34",
+      "license": "MIT OR Apache-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT OR Apache-2.0",
+      "purl": "pkg:cargo/futures-core@0.3.34"
+    },
+    {
+      "name": "futures-executor",
+      "version": "0.3.34",
+      "license": "MIT OR Apache-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT OR Apache-2.0",
+      "purl": "pkg:cargo/futures-executor@0.3.34"
+    },
+    {
+      "name": "futures-io",
+      "version": "0.3.34",
+      "license": "MIT OR Apache-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT OR Apache-2.0",
+      "purl": "pkg:cargo/futures-io@0.3.34"
+    },
+    {
+      "name": "futures-macro",
+      "version": "0.3.34",
+      "license": "MIT OR Apache-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT OR Apache-2.0",
+      "purl": "pkg:cargo/futures-macro@0.3.34"
+    },
+    {
+      "name": "futures-sink",
+      "version": "0.3.34",
+      "license": "MIT OR Apache-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT OR Apache-2.0",
+      "purl": "pkg:cargo/futures-sink@0.3.34"
+    },
+    {
+      "name": "futures-task",
+      "version": "0.3.34",
+      "license": "MIT OR Apache-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT OR Apache-2.0",
+      "purl": "pkg:cargo/futures-task@0.3.34"
+    },
+    {
+      "name": "futures-util",
+      "version": "0.3.34",
+      "license": "MIT OR Apache-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT OR Apache-2.0",
+      "purl": "pkg:cargo/futures-util@0.3.34"
+    },
+    {
+      "name": "futures",
+      "version": "0.3.34",
+      "license": "MIT OR Apache-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT OR Apache-2.0",
+      "purl": "pkg:cargo/futures@0.3.34"
+    },
+    {
+      "name": "getrandom",
+      "version": "0.4.3",
+      "license": "MIT OR Apache-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT OR Apache-2.0",
+      "purl": "pkg:cargo/getrandom@0.4.3"
+    },
+    {
+      "name": "glob",
+      "version": "0.3.4",
+      "license": "MIT OR Apache-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT OR Apache-2.0",
+      "purl": "pkg:cargo/glob@0.3.4"
+    },
+    {
+      "name": "goblin",
+      "version": "0.8.2",
+      "license": "MIT",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT",
+      "purl": "pkg:cargo/goblin@0.8.2"
+    },
+    {
+      "name": "hashbrown",
+      "version": "0.14.5",
+      "license": "MIT OR Apache-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT OR Apache-2.0",
+      "purl": "pkg:cargo/hashbrown@0.14.5"
+    },
+    {
+      "name": "hashbrown",
+      "version": "0.17.1",
+      "license": "MIT OR Apache-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT OR Apache-2.0",
+      "purl": "pkg:cargo/hashbrown@0.17.1"
+    },
+    {
+      "name": "heck",
+      "version": "0.5.0",
+      "license": "MIT OR Apache-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT OR Apache-2.0",
+      "purl": "pkg:cargo/heck@0.5.0"
+    },
+    {
+      "name": "indexmap",
+      "version": "2.14.2",
+      "license": "Apache-2.0 OR MIT",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "Apache-2.0 OR MIT",
+      "purl": "pkg:cargo/indexmap@2.14.2"
+    },
+    {
+      "name": "itertools",
+      "version": "0.14.0",
+      "license": "MIT OR Apache-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT OR Apache-2.0",
+      "purl": "pkg:cargo/itertools@0.14.0"
+    },
+    {
+      "name": "itoa",
+      "version": "1.0.18",
+      "license": "MIT OR Apache-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT OR Apache-2.0",
+      "purl": "pkg:cargo/itoa@1.0.18"
+    },
+    {
+      "name": "jni-macros",
+      "version": "0.22.4",
+      "license": "MIT OR Apache-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT OR Apache-2.0",
+      "purl": "pkg:cargo/jni-macros@0.22.4"
+    },
+    {
+      "name": "jni-sys-macros",
+      "version": "0.4.1",
+      "license": "MIT OR Apache-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT OR Apache-2.0",
+      "purl": "pkg:cargo/jni-sys-macros@0.4.1"
+    },
+    {
+      "name": "jni-sys",
+      "version": "0.3.1",
+      "license": "MIT OR Apache-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT OR Apache-2.0",
+      "purl": "pkg:cargo/jni-sys@0.3.1"
+    },
+    {
+      "name": "jni-sys",
+      "version": "0.4.1",
+      "license": "MIT OR Apache-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT OR Apache-2.0",
+      "purl": "pkg:cargo/jni-sys@0.4.1"
+    },
+    {
+      "name": "jni",
+      "version": "0.19.0",
+      "license": "NOASSERTION",
+      "licenseSource": "cargo-manifest-license-ambiguous",
+      "reviewRequired": true,
+      "declared": "MIT/Apache-2.0",
+      "purl": "pkg:cargo/jni@0.19.0"
+    },
+    {
+      "name": "jni",
+      "version": "0.22.4",
+      "license": "MIT OR Apache-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT OR Apache-2.0",
+      "purl": "pkg:cargo/jni@0.22.4"
+    },
+    {
+      "name": "js-sys",
+      "version": "0.3.105",
+      "license": "MIT OR Apache-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT OR Apache-2.0",
+      "purl": "pkg:cargo/js-sys@0.3.105"
+    },
+    {
+      "name": "libc",
+      "version": "0.2.189",
+      "license": "MIT OR Apache-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT OR Apache-2.0",
+      "purl": "pkg:cargo/libc@0.2.189"
+    },
+    {
+      "name": "libdbus-sys",
+      "version": "0.2.7",
+      "license": "NOASSERTION",
+      "licenseSource": "cargo-manifest-license-ambiguous",
+      "reviewRequired": true,
+      "declared": "Apache-2.0/MIT",
+      "purl": "pkg:cargo/libdbus-sys@0.2.7"
+    },
+    {
+      "name": "libloading",
+      "version": "0.8.9",
+      "license": "ISC",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "ISC",
+      "purl": "pkg:cargo/libloading@0.8.9"
+    },
+    {
+      "name": "linux-raw-sys",
+      "version": "0.12.1",
+      "license": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT",
+      "purl": "pkg:cargo/linux-raw-sys@0.12.1"
+    },
+    {
+      "name": "lock_api",
+      "version": "0.4.14",
+      "license": "MIT OR Apache-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT OR Apache-2.0",
+      "purl": "pkg:cargo/lock_api@0.4.14"
+    },
+    {
+      "name": "log",
+      "version": "0.4.34",
+      "license": "MIT OR Apache-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT OR Apache-2.0",
+      "purl": "pkg:cargo/log@0.4.34"
+    },
+    {
+      "name": "memchr",
+      "version": "2.8.3",
+      "license": "Unlicense OR MIT",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "Unlicense OR MIT",
+      "purl": "pkg:cargo/memchr@2.8.3"
+    },
+    {
+      "name": "minimal-lexical",
+      "version": "0.2.1",
+      "license": "NOASSERTION",
+      "licenseSource": "cargo-manifest-license-ambiguous",
+      "reviewRequired": true,
+      "declared": "MIT/Apache-2.0",
+      "purl": "pkg:cargo/minimal-lexical@0.2.1"
+    },
+    {
+      "name": "mio",
+      "version": "1.2.3",
+      "license": "MIT",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT",
+      "purl": "pkg:cargo/mio@1.2.3"
+    },
+    {
+      "name": "napi-build",
+      "version": "2.4.2",
+      "license": "MIT",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT",
+      "purl": "pkg:cargo/napi-build@2.4.2"
+    },
+    {
+      "name": "napi-derive-backend",
+      "version": "1.0.75",
+      "license": "MIT",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT",
+      "purl": "pkg:cargo/napi-derive-backend@1.0.75"
+    },
+    {
+      "name": "napi-derive",
+      "version": "2.16.13",
+      "license": "MIT",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT",
+      "purl": "pkg:cargo/napi-derive@2.16.13"
+    },
+    {
+      "name": "napi-sys",
+      "version": "2.4.0",
+      "license": "MIT",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT",
+      "purl": "pkg:cargo/napi-sys@2.4.0"
+    },
+    {
+      "name": "napi",
+      "version": "2.16.17",
+      "license": "MIT",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT",
+      "purl": "pkg:cargo/napi@2.16.17"
+    },
+    {
+      "name": "nom",
+      "version": "7.1.3",
+      "license": "MIT",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT",
+      "purl": "pkg:cargo/nom@7.1.3"
+    },
+    {
+      "name": "objc-sys",
+      "version": "0.3.5",
+      "license": "MIT",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT",
+      "purl": "pkg:cargo/objc-sys@0.3.5"
+    },
+    {
+      "name": "objc2-core-bluetooth",
+      "version": "0.2.2",
+      "license": "MIT",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT",
+      "purl": "pkg:cargo/objc2-core-bluetooth@0.2.2"
+    },
+    {
+      "name": "objc2-encode",
+      "version": "4.1.0",
+      "license": "MIT",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT",
+      "purl": "pkg:cargo/objc2-encode@4.1.0"
+    },
+    {
+      "name": "objc2-foundation",
+      "version": "0.2.2",
+      "license": "MIT",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT",
+      "purl": "pkg:cargo/objc2-foundation@0.2.2"
+    },
+    {
+      "name": "objc2",
+      "version": "0.5.2",
+      "license": "MIT",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT",
+      "purl": "pkg:cargo/objc2@0.5.2"
+    },
+    {
+      "name": "once_cell",
+      "version": "1.21.4",
+      "license": "MIT OR Apache-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT OR Apache-2.0",
+      "purl": "pkg:cargo/once_cell@1.21.4"
+    },
+    {
+      "name": "parking_lot_core",
+      "version": "0.9.12",
+      "license": "MIT OR Apache-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT OR Apache-2.0",
+      "purl": "pkg:cargo/parking_lot_core@0.9.12"
+    },
+    {
+      "name": "percent-encoding",
+      "version": "2.3.2",
+      "license": "MIT OR Apache-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT OR Apache-2.0",
+      "purl": "pkg:cargo/percent-encoding@2.3.2"
+    },
+    {
+      "name": "pin-project-lite",
+      "version": "0.2.17",
+      "license": "Apache-2.0 OR MIT",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "Apache-2.0 OR MIT",
+      "purl": "pkg:cargo/pin-project-lite@0.2.17"
+    },
+    {
+      "name": "pkg-config",
+      "version": "0.3.34",
+      "license": "MIT OR Apache-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT OR Apache-2.0",
+      "purl": "pkg:cargo/pkg-config@0.3.34"
+    },
+    {
+      "name": "plain",
+      "version": "0.2.3",
+      "license": "NOASSERTION",
+      "licenseSource": "cargo-manifest-license-ambiguous",
+      "reviewRequired": true,
+      "declared": "MIT/Apache-2.0",
+      "purl": "pkg:cargo/plain@0.2.3"
+    },
+    {
+      "name": "proc-macro2",
+      "version": "1.0.107",
+      "license": "MIT OR Apache-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT OR Apache-2.0",
+      "purl": "pkg:cargo/proc-macro2@1.0.107"
+    },
+    {
+      "name": "quote",
+      "version": "1.0.47",
+      "license": "MIT OR Apache-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT OR Apache-2.0",
+      "purl": "pkg:cargo/quote@1.0.47"
+    },
+    {
+      "name": "r-efi",
+      "version": "6.0.0",
+      "license": "MIT OR Apache-2.0 OR LGPL-2.1-or-later",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT OR Apache-2.0 OR LGPL-2.1-or-later",
+      "purl": "pkg:cargo/r-efi@6.0.0"
+    },
+    {
+      "name": "redox_syscall",
+      "version": "0.5.18",
+      "license": "MIT",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT",
+      "purl": "pkg:cargo/redox_syscall@0.5.18"
+    },
+    {
+      "name": "regex-automata",
+      "version": "0.4.18",
+      "license": "MIT OR Apache-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT OR Apache-2.0",
+      "purl": "pkg:cargo/regex-automata@0.4.18"
+    },
+    {
+      "name": "regex-syntax",
+      "version": "0.8.11",
+      "license": "MIT OR Apache-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT OR Apache-2.0",
+      "purl": "pkg:cargo/regex-syntax@0.8.11"
+    },
+    {
+      "name": "regex",
+      "version": "1.13.1",
+      "license": "MIT OR Apache-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT OR Apache-2.0",
+      "purl": "pkg:cargo/regex@1.13.1"
+    },
+    {
+      "name": "rustc_version",
+      "version": "0.4.1",
+      "license": "MIT OR Apache-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT OR Apache-2.0",
+      "purl": "pkg:cargo/rustc_version@0.4.1"
+    },
+    {
+      "name": "rustc-hash",
+      "version": "2.1.3",
+      "license": "Apache-2.0 OR MIT",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "Apache-2.0 OR MIT",
+      "purl": "pkg:cargo/rustc-hash@2.1.3"
+    },
+    {
+      "name": "rustix",
+      "version": "1.1.4",
+      "license": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT",
+      "purl": "pkg:cargo/rustix@1.1.4"
+    },
+    {
+      "name": "rustversion",
+      "version": "1.0.23",
+      "license": "MIT OR Apache-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT OR Apache-2.0",
+      "purl": "pkg:cargo/rustversion@1.0.23"
+    },
+    {
+      "name": "same-file",
+      "version": "1.0.6",
+      "license": "NOASSERTION",
+      "licenseSource": "cargo-manifest-license-ambiguous",
+      "reviewRequired": true,
+      "declared": "Unlicense/MIT",
+      "purl": "pkg:cargo/same-file@1.0.6"
+    },
+    {
+      "name": "scopeguard",
+      "version": "1.2.0",
+      "license": "MIT OR Apache-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT OR Apache-2.0",
+      "purl": "pkg:cargo/scopeguard@1.2.0"
+    },
+    {
+      "name": "scroll_derive",
+      "version": "0.12.1",
+      "license": "MIT",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT",
+      "purl": "pkg:cargo/scroll_derive@0.12.1"
+    },
+    {
+      "name": "scroll",
+      "version": "0.12.0",
+      "license": "MIT",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT",
+      "purl": "pkg:cargo/scroll@0.12.0"
+    },
+    {
+      "name": "semver",
+      "version": "1.0.28",
+      "license": "MIT OR Apache-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT OR Apache-2.0",
+      "purl": "pkg:cargo/semver@1.0.28"
+    },
+    {
+      "name": "serde_core",
+      "version": "1.0.229",
+      "license": "MIT OR Apache-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT OR Apache-2.0",
+      "purl": "pkg:cargo/serde_core@1.0.229"
+    },
+    {
+      "name": "serde_derive",
+      "version": "1.0.229",
+      "license": "MIT OR Apache-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT OR Apache-2.0",
+      "purl": "pkg:cargo/serde_derive@1.0.229"
+    },
+    {
+      "name": "serde_json",
+      "version": "1.0.151",
+      "license": "MIT OR Apache-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT OR Apache-2.0",
+      "purl": "pkg:cargo/serde_json@1.0.151"
+    },
+    {
+      "name": "serde_spanned",
+      "version": "1.1.1",
+      "license": "MIT OR Apache-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT OR Apache-2.0",
+      "purl": "pkg:cargo/serde_spanned@1.1.1"
+    },
+    {
+      "name": "serde-xml-rs",
+      "version": "0.8.2",
+      "license": "MIT",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT",
+      "purl": "pkg:cargo/serde-xml-rs@0.8.2"
+    },
+    {
+      "name": "serde",
+      "version": "1.0.229",
+      "license": "MIT OR Apache-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT OR Apache-2.0",
+      "purl": "pkg:cargo/serde@1.0.229"
+    },
+    {
+      "name": "simd_cesu8",
+      "version": "1.2.0",
+      "license": "Apache-2.0 OR MIT",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "Apache-2.0 OR MIT",
+      "purl": "pkg:cargo/simd_cesu8@1.2.0"
+    },
+    {
+      "name": "simdutf8",
+      "version": "0.1.5",
+      "license": "MIT OR Apache-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT OR Apache-2.0",
+      "purl": "pkg:cargo/simdutf8@0.1.5"
+    },
+    {
+      "name": "siphasher",
+      "version": "1.0.3",
+      "license": "NOASSERTION",
+      "licenseSource": "cargo-manifest-license-ambiguous",
+      "reviewRequired": true,
+      "declared": "MIT/Apache-2.0",
+      "purl": "pkg:cargo/siphasher@1.0.3"
+    },
+    {
+      "name": "slab",
+      "version": "0.4.12",
+      "license": "MIT",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT",
+      "purl": "pkg:cargo/slab@0.4.12"
+    },
+    {
+      "name": "smallvec",
+      "version": "1.16.1",
+      "license": "MIT OR Apache-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT OR Apache-2.0",
+      "purl": "pkg:cargo/smallvec@1.16.1"
+    },
+    {
+      "name": "smawk",
+      "version": "0.3.3",
+      "license": "MIT",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT",
+      "purl": "pkg:cargo/smawk@0.3.3"
+    },
+    {
+      "name": "socket2",
+      "version": "0.6.5",
+      "license": "MIT OR Apache-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT OR Apache-2.0",
+      "purl": "pkg:cargo/socket2@0.6.5"
+    },
+    {
+      "name": "static_assertions",
+      "version": "1.1.0",
+      "license": "MIT OR Apache-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT OR Apache-2.0",
+      "purl": "pkg:cargo/static_assertions@1.1.0"
+    },
+    {
+      "name": "syn",
+      "version": "2.0.119",
+      "license": "MIT OR Apache-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT OR Apache-2.0",
+      "purl": "pkg:cargo/syn@2.0.119"
+    },
+    {
+      "name": "syn",
+      "version": "3.0.5",
+      "license": "MIT OR Apache-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT OR Apache-2.0",
+      "purl": "pkg:cargo/syn@3.0.5"
+    },
+    {
+      "name": "tempfile",
+      "version": "3.27.0",
+      "license": "MIT OR Apache-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT OR Apache-2.0",
+      "purl": "pkg:cargo/tempfile@3.27.0"
+    },
+    {
+      "name": "textwrap",
+      "version": "0.16.4",
+      "license": "MIT",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT",
+      "purl": "pkg:cargo/textwrap@0.16.4"
+    },
+    {
+      "name": "thiserror-impl",
+      "version": "1.0.69",
+      "license": "MIT OR Apache-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT OR Apache-2.0",
+      "purl": "pkg:cargo/thiserror-impl@1.0.69"
+    },
+    {
+      "name": "thiserror-impl",
+      "version": "2.0.20",
+      "license": "MIT OR Apache-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT OR Apache-2.0",
+      "purl": "pkg:cargo/thiserror-impl@2.0.20"
+    },
+    {
+      "name": "thiserror",
+      "version": "1.0.69",
+      "license": "MIT OR Apache-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT OR Apache-2.0",
+      "purl": "pkg:cargo/thiserror@1.0.69"
+    },
+    {
+      "name": "thiserror",
+      "version": "2.0.20",
+      "license": "MIT OR Apache-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT OR Apache-2.0",
+      "purl": "pkg:cargo/thiserror@2.0.20"
+    },
+    {
+      "name": "tokio-macros",
+      "version": "2.7.2",
+      "license": "MIT",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT",
+      "purl": "pkg:cargo/tokio-macros@2.7.2"
+    },
+    {
+      "name": "tokio-stream",
+      "version": "0.1.19",
+      "license": "MIT",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT",
+      "purl": "pkg:cargo/tokio-stream@0.1.19"
+    },
+    {
+      "name": "tokio-util",
+      "version": "0.7.19",
+      "license": "MIT",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT",
+      "purl": "pkg:cargo/tokio-util@0.7.19"
+    },
+    {
+      "name": "tokio",
+      "version": "1.53.1",
+      "license": "MIT",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT",
+      "purl": "pkg:cargo/tokio@1.53.1"
+    },
+    {
+      "name": "toml_datetime",
+      "version": "1.1.1+spec-1.1.0",
+      "license": "MIT OR Apache-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT OR Apache-2.0",
+      "purl": "pkg:cargo/toml_datetime@1.1.1%2Bspec-1.1.0"
+    },
+    {
+      "name": "toml_parser",
+      "version": "1.1.3+spec-1.1.0",
+      "license": "MIT OR Apache-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT OR Apache-2.0",
+      "purl": "pkg:cargo/toml_parser@1.1.3%2Bspec-1.1.0"
+    },
+    {
+      "name": "toml_writer",
+      "version": "1.1.2+spec-1.1.0",
+      "license": "MIT OR Apache-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT OR Apache-2.0",
+      "purl": "pkg:cargo/toml_writer@1.1.2%2Bspec-1.1.0"
+    },
+    {
+      "name": "toml",
+      "version": "1.1.6+spec-1.1.0",
+      "license": "MIT OR Apache-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT OR Apache-2.0",
+      "purl": "pkg:cargo/toml@1.1.6%2Bspec-1.1.0"
+    },
+    {
+      "name": "ubm-core",
+      "version": "0.1.0",
+      "license": "LicenseRef-UBM-Source-Available-1.0",
+      "licenseSource": "cargo-manifest-license-file",
+      "evidence": {
+        "fileName": "LICENSE-UBM-SOURCE-AVAILABLE-1.0.md"
+      },
+      "purl": "pkg:cargo/ubm-core@0.1.0"
+    },
+    {
+      "name": "ubm-desktop",
+      "version": "0.1.0",
+      "license": "LicenseRef-UBM-Source-Available-1.0",
+      "licenseSource": "cargo-manifest-license-file",
+      "evidence": {
+        "fileName": "LICENSE-UBM-SOURCE-AVAILABLE-1.0.md"
+      },
+      "purl": "pkg:cargo/ubm-desktop@0.1.0"
+    },
+    {
+      "name": "ubm5_jni_echo",
+      "version": "0.1.0",
+      "license": "LicenseRef-UBM-Source-Available-1.0",
+      "licenseSource": "cargo-manifest-license-file",
+      "evidence": {
+        "fileName": "LICENSE-UBM-SOURCE-AVAILABLE-1.0.md"
+      },
+      "purl": "pkg:cargo/ubm5_jni_echo@0.1.0"
+    },
+    {
+      "name": "ubm5_napi_echo",
+      "version": "0.1.0",
+      "license": "LicenseRef-UBM-Source-Available-1.0",
+      "licenseSource": "cargo-manifest-license-file",
+      "evidence": {
+        "fileName": "LICENSE-UBM-SOURCE-AVAILABLE-1.0.md"
+      },
+      "purl": "pkg:cargo/ubm5_napi_echo@0.1.0"
+    },
+    {
+      "name": "ubm5_uniffi_echo",
+      "version": "0.1.0",
+      "license": "LicenseRef-UBM-Source-Available-1.0",
+      "licenseSource": "cargo-manifest-license-file",
+      "evidence": {
+        "fileName": "LICENSE-UBM-SOURCE-AVAILABLE-1.0.md"
+      },
+      "purl": "pkg:cargo/ubm5_uniffi_echo@0.1.0"
+    },
+    {
+      "name": "ubm5_wasm_echo",
+      "version": "0.1.0",
+      "license": "LicenseRef-UBM-Source-Available-1.0",
+      "licenseSource": "cargo-manifest-license-file",
+      "evidence": {
+        "fileName": "LICENSE-UBM-SOURCE-AVAILABLE-1.0.md"
+      },
+      "purl": "pkg:cargo/ubm5_wasm_echo@0.1.0"
+    },
+    {
+      "name": "unicode-ident",
+      "version": "1.0.24",
+      "license": "(MIT OR Apache-2.0) AND Unicode-3.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "(MIT OR Apache-2.0) AND Unicode-3.0",
+      "purl": "pkg:cargo/unicode-ident@1.0.24"
+    },
+    {
+      "name": "unicode-segmentation",
+      "version": "1.13.3",
+      "license": "MIT OR Apache-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT OR Apache-2.0",
+      "purl": "pkg:cargo/unicode-segmentation@1.13.3"
+    },
+    {
+      "name": "unicode-width",
+      "version": "0.2.2",
+      "license": "MIT OR Apache-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT OR Apache-2.0",
+      "purl": "pkg:cargo/unicode-width@0.2.2"
+    },
+    {
+      "name": "uniffi_bindgen",
+      "version": "0.32.1",
+      "license": "MPL-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MPL-2.0",
+      "purl": "pkg:cargo/uniffi_bindgen@0.32.1"
+    },
+    {
+      "name": "uniffi_build",
+      "version": "0.32.1",
+      "license": "MPL-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MPL-2.0",
+      "purl": "pkg:cargo/uniffi_build@0.32.1"
+    },
+    {
+      "name": "uniffi_core",
+      "version": "0.32.1",
+      "license": "MPL-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MPL-2.0",
+      "purl": "pkg:cargo/uniffi_core@0.32.1"
+    },
+    {
+      "name": "uniffi_internal_macros",
+      "version": "0.32.1",
+      "license": "MPL-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MPL-2.0",
+      "purl": "pkg:cargo/uniffi_internal_macros@0.32.1"
+    },
+    {
+      "name": "uniffi_macros",
+      "version": "0.32.1",
+      "license": "MPL-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MPL-2.0",
+      "purl": "pkg:cargo/uniffi_macros@0.32.1"
+    },
+    {
+      "name": "uniffi_meta",
+      "version": "0.32.1",
+      "license": "MPL-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MPL-2.0",
+      "purl": "pkg:cargo/uniffi_meta@0.32.1"
+    },
+    {
+      "name": "uniffi_pipeline",
+      "version": "0.32.1",
+      "license": "MPL-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MPL-2.0",
+      "purl": "pkg:cargo/uniffi_pipeline@0.32.1"
+    },
+    {
+      "name": "uniffi_udl",
+      "version": "0.32.1",
+      "license": "MPL-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MPL-2.0",
+      "purl": "pkg:cargo/uniffi_udl@0.32.1"
+    },
+    {
+      "name": "uniffi",
+      "version": "0.32.1",
+      "license": "MPL-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MPL-2.0",
+      "purl": "pkg:cargo/uniffi@0.32.1"
+    },
+    {
+      "name": "uuid",
+      "version": "1.26.1",
+      "license": "Apache-2.0 OR MIT",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "Apache-2.0 OR MIT",
+      "purl": "pkg:cargo/uuid@1.26.1"
+    },
+    {
+      "name": "walkdir",
+      "version": "2.5.0",
+      "license": "NOASSERTION",
+      "licenseSource": "cargo-manifest-license-ambiguous",
+      "reviewRequired": true,
+      "declared": "Unlicense/MIT",
+      "purl": "pkg:cargo/walkdir@2.5.0"
+    },
+    {
+      "name": "wasi",
+      "version": "0.11.1+wasi-snapshot-preview1",
+      "license": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT",
+      "purl": "pkg:cargo/wasi@0.11.1%2Bwasi-snapshot-preview1"
+    },
+    {
+      "name": "wasm-bindgen-macro-support",
+      "version": "0.2.128",
+      "license": "MIT OR Apache-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT OR Apache-2.0",
+      "purl": "pkg:cargo/wasm-bindgen-macro-support@0.2.128"
+    },
+    {
+      "name": "wasm-bindgen-macro",
+      "version": "0.2.128",
+      "license": "MIT OR Apache-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT OR Apache-2.0",
+      "purl": "pkg:cargo/wasm-bindgen-macro@0.2.128"
+    },
+    {
+      "name": "wasm-bindgen-shared",
+      "version": "0.2.128",
+      "license": "MIT OR Apache-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT OR Apache-2.0",
+      "purl": "pkg:cargo/wasm-bindgen-shared@0.2.128"
+    },
+    {
+      "name": "wasm-bindgen",
+      "version": "0.2.128",
+      "license": "MIT OR Apache-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT OR Apache-2.0",
+      "purl": "pkg:cargo/wasm-bindgen@0.2.128"
+    },
+    {
+      "name": "weedle2",
+      "version": "5.0.0",
+      "license": "MIT",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT",
+      "purl": "pkg:cargo/weedle2@5.0.0"
+    },
+    {
+      "name": "winapi-util",
+      "version": "0.1.11",
+      "license": "Unlicense OR MIT",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "Unlicense OR MIT",
+      "purl": "pkg:cargo/winapi-util@0.1.11"
+    },
+    {
+      "name": "windows-collections",
+      "version": "0.3.2",
+      "license": "MIT OR Apache-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT OR Apache-2.0",
+      "purl": "pkg:cargo/windows-collections@0.3.2"
+    },
+    {
+      "name": "windows-core",
+      "version": "0.62.2",
+      "license": "MIT OR Apache-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT OR Apache-2.0",
+      "purl": "pkg:cargo/windows-core@0.62.2"
+    },
+    {
+      "name": "windows-future",
+      "version": "0.3.2",
+      "license": "MIT OR Apache-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT OR Apache-2.0",
+      "purl": "pkg:cargo/windows-future@0.3.2"
+    },
+    {
+      "name": "windows-implement",
+      "version": "0.60.2",
+      "license": "MIT OR Apache-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT OR Apache-2.0",
+      "purl": "pkg:cargo/windows-implement@0.60.2"
+    },
+    {
+      "name": "windows-interface",
+      "version": "0.59.3",
+      "license": "MIT OR Apache-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT OR Apache-2.0",
+      "purl": "pkg:cargo/windows-interface@0.59.3"
+    },
+    {
+      "name": "windows-link",
+      "version": "0.2.1",
+      "license": "MIT OR Apache-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT OR Apache-2.0",
+      "purl": "pkg:cargo/windows-link@0.2.1"
+    },
+    {
+      "name": "windows-numerics",
+      "version": "0.3.1",
+      "license": "MIT OR Apache-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT OR Apache-2.0",
+      "purl": "pkg:cargo/windows-numerics@0.3.1"
+    },
+    {
+      "name": "windows-result",
+      "version": "0.4.1",
+      "license": "MIT OR Apache-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT OR Apache-2.0",
+      "purl": "pkg:cargo/windows-result@0.4.1"
+    },
+    {
+      "name": "windows-strings",
+      "version": "0.5.1",
+      "license": "MIT OR Apache-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT OR Apache-2.0",
+      "purl": "pkg:cargo/windows-strings@0.5.1"
+    },
+    {
+      "name": "windows-sys",
+      "version": "0.61.2",
+      "license": "MIT OR Apache-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT OR Apache-2.0",
+      "purl": "pkg:cargo/windows-sys@0.61.2"
+    },
+    {
+      "name": "windows-threading",
+      "version": "0.2.1",
+      "license": "MIT OR Apache-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT OR Apache-2.0",
+      "purl": "pkg:cargo/windows-threading@0.2.1"
+    },
+    {
+      "name": "windows",
+      "version": "0.62.2",
+      "license": "MIT OR Apache-2.0",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT OR Apache-2.0",
+      "purl": "pkg:cargo/windows@0.62.2"
+    },
+    {
+      "name": "winnow",
+      "version": "1.0.4",
+      "license": "MIT",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT",
+      "purl": "pkg:cargo/winnow@1.0.4"
+    },
+    {
+      "name": "xml",
+      "version": "1.4.0",
+      "license": "MIT",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT",
+      "purl": "pkg:cargo/xml@1.4.0"
+    },
+    {
+      "name": "zmij",
+      "version": "1.0.23",
+      "license": "MIT",
+      "licenseSource": "cargo-manifest-license",
+      "declared": "MIT",
+      "purl": "pkg:cargo/zmij@1.0.23"
     }
   ]
 }
