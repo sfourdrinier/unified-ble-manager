@@ -94,6 +94,7 @@ and coding agents should read [`../AGENTS.md`](../AGENTS.md) first.
 | [`5.0.0-LANE.md`](5.0.0-LANE.md) | UBM 5.0 lane rules: `codex/ubm5-*` workers on the `5.0.0` base, no merge to `main`, no `v*` tags, no publish | Current |
 | [`5.0.0-U0-BASELINE.md`](5.0.0-U0-BASELINE.md) | UBM 5.0 U0 baseline manifest: retained entrypoints/targets/capabilities, identities, toolchain, boundary | Current |
 | [`5.0.0-GATE-LEDGER.md`](5.0.0-GATE-LEDGER.md) | UBM 5.0 gate ledger: U-LICENSE + U0–U12 owners, states, evidence, limitations | Current |
+| [`5.0.0-U12-HANDOFF.md`](5.0.0-U12-HANDOFF.md) | UBM 5.0 U12 candidate handoff: identity, gate mapping, reproduction, honest blockers | Current |
 | [`5.0.0-PACKAGING.md`](5.0.0-PACKAGING.md) | UBM 5.0 packaging slice: ship/dev-only surface decisions, license inclusion, SBOM/Rust status, 4.x→5.0 migration notes | Current |
 | [`../SECURITY.md`](../SECURITY.md) | Vulnerability reporting policy | Current |
 | [`../SUPPORT.md`](../SUPPORT.md) | Support policy: package SemVer vs evidence-backed backend labels | Current |
