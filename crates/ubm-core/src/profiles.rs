@@ -2,8 +2,12 @@
 //!
 //! Pure-codec mirror of the retained `src/profiles/**` oracle plus thin
 //! selectors over [`central::Central`](crate::central::Central). Codecs fail
-//! closed with [`ProfileCodecError`] (same `profile.codec.*` identities as
-//! the TypeScript oracle); path selection goes through the real
+//! closed with [`ProfileCodecError`]; the four `profile.codec.*` identities
+//! are frozen in the C-UBM contract catalog
+//! (`contracts/src/outcomes.ts#PROFILE_CODEC_ERROR_CODES`, C-UBM.0.1.2-DRAFT),
+//! which is the single source of truth. [`ProfileCodecCode`] mirrors that
+//! frozen table one-to-one with byte-identical wire strings, so there is no
+//! second wire vocabulary. Path selection goes through the real
 //! [`central::Central::resolve_path`] so there is no second lifecycle, no
 //! reconnect loop, and no stub backend. The caller owns connect/discover;
 //! this module only resolves a characteristic path and decodes its bytes.
@@ -30,7 +34,8 @@ pub struct ProfileCodecError {
     offset: Option<usize>,
 }
 
-/// Codec failure identity (wire strings match the TypeScript oracle).
+/// Codec failure identity: one-to-one mirror of the frozen C-UBM
+/// `PROFILE_CODEC_ERROR_CODES` catalog (byte-identical wire strings).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProfileCodecCode {
     Truncated,
@@ -40,6 +45,14 @@ pub enum ProfileCodecCode {
 }
 
 impl ProfileCodecCode {
+    /// Every frozen codec identity, in catalog order.
+    pub const ALL_CODES: [Self; 4] = [
+        Self::Truncated,
+        Self::Malformed,
+        Self::Reserved,
+        Self::InvalidValue,
+    ];
+
     /// Frozen wire string for this code.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
@@ -50,6 +63,43 @@ impl ProfileCodecCode {
             Self::InvalidValue => "profile.codec.invalid-value",
         }
     }
+
+    /// Parse a frozen wire string. Returns `None` for unknown codes.
+    #[must_use]
+    pub const fn from_str(value: &str) -> Option<Self> {
+        // `const` string equality keeps this usable in const contexts; the
+        // table order follows the frozen C-UBM catalog.
+        macro_rules! table {
+            ($(($text:literal, $variant:ident)),* $(,)?) => {{
+                $(if codec_wire_eq(value, $text) {
+                    return Some(Self::$variant);
+                })*
+                None
+            }};
+        }
+        table!(
+            ("profile.codec.truncated", Truncated),
+            ("profile.codec.malformed", Malformed),
+            ("profile.codec.reserved", Reserved),
+            ("profile.codec.invalid-value", InvalidValue),
+        )
+    }
+}
+
+const fn codec_wire_eq(left: &str, right: &str) -> bool {
+    let left = left.as_bytes();
+    let right = right.as_bytes();
+    if left.len() != right.len() {
+        return false;
+    }
+    let mut index = 0;
+    while index < left.len() {
+        if left[index] != right[index] {
+            return false;
+        }
+        index += 1;
+    }
+    true
 }
 
 impl ProfileCodecError {
@@ -1260,6 +1310,59 @@ mod tests {
             Ok(_) => {
                 check(false, what);
             }
+        }
+    }
+
+    #[test]
+    fn profile_codec_catalog_is_frozen_wire_exact_and_resolvable() {
+        // C-UBM 0.1.2: the frozen contract catalog
+        // (`contracts/src/outcomes.ts#PROFILE_CODEC_ERROR_CODES`) is the
+        // single source of truth. These wire strings must stay byte-identical;
+        // every identity must resolve.
+        check(
+            ProfileCodecCode::ALL_CODES.len() == 4,
+            "codec catalog holds four identities",
+        );
+        check(
+            ProfileCodecCode::Truncated.as_str() == "profile.codec.truncated",
+            "truncated wire string exact",
+        );
+        check(
+            ProfileCodecCode::Malformed.as_str() == "profile.codec.malformed",
+            "malformed wire string exact",
+        );
+        check(
+            ProfileCodecCode::Reserved.as_str() == "profile.codec.reserved",
+            "reserved wire string exact",
+        );
+        check(
+            ProfileCodecCode::InvalidValue.as_str() == "profile.codec.invalid-value",
+            "invalid-value wire string exact",
+        );
+        for code in ProfileCodecCode::ALL_CODES {
+            check(
+                ProfileCodecCode::from_str(code.as_str()) == Some(code),
+                "every frozen identity resolves",
+            );
+        }
+        check(
+            ProfileCodecCode::from_str("profile.codec.unknown").is_none(),
+            "unknown codec code rejected",
+        );
+        check(
+            ProfileCodecCode::from_str("Profile.Codec.Truncated").is_none(),
+            "case drift rejected",
+        );
+        check(
+            ProfileCodecCode::from_str("").is_none(),
+            "empty codec code rejected",
+        );
+        match parse_battery_level(&[101]) {
+            Err(error) => check(
+                error.code().as_str() == "profile.codec.invalid-value",
+                "live codec failure carries the frozen wire string",
+            ),
+            Ok(_) => check(false, "battery 101 must fail"),
         }
     }
 

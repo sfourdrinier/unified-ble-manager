@@ -21,7 +21,7 @@ import {
 
 describe('C-UBM contract revision identity', () => {
   test('marks the draft revision and pending acceptance gate', () => {
-    expect(CONTRACT_REVISION).toBe('C-UBM.0.1.1-DRAFT');
+    expect(CONTRACT_REVISION).toBe('C-UBM.0.1.2-DRAFT');
     expect(CONTRACT_STATUS).toBe('DRAFT');
     expect(CONTRACT_ACCEPTANCE_GATE).toBe('U1');
   });
@@ -110,11 +110,11 @@ describe('core/native/ipc handshake offers', () => {
 
 describe('contract revision equality is never silent', () => {
   test('equal revisions pass', () => {
-    expect(() => assertContractRevisionEqual('C-UBM.0.1.1-DRAFT', 'C-UBM.0.1.1-DRAFT')).not.toThrow();
+    expect(() => assertContractRevisionEqual('C-UBM.0.1.2-DRAFT', 'C-UBM.0.1.2-DRAFT')).not.toThrow();
   });
 
   test('different revisions fail closed', () => {
-    expect(() => assertContractRevisionEqual('C-UBM.0.1.1-DRAFT', 'C-UBM.0.2.0-DRAFT')).toThrow(
+    expect(() => assertContractRevisionEqual('C-UBM.0.1.2-DRAFT', 'C-UBM.0.2.0-DRAFT')).toThrow(
       'protocol.incompatible',
     );
   });

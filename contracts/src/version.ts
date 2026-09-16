@@ -9,7 +9,7 @@
 import { freezeTable } from './freeze';
 import { contractError } from './outcomes';
 
-export const CONTRACT_REVISION: 'C-UBM.0.1.1-DRAFT' = 'C-UBM.0.1.1-DRAFT';
+export const CONTRACT_REVISION: 'C-UBM.0.1.2-DRAFT' = 'C-UBM.0.1.2-DRAFT';
 export const CONTRACT_STATUS: 'DRAFT' = 'DRAFT';
 export const CONTRACT_ACCEPTANCE_GATE: 'U1' = 'U1';
 export const BUILD_VERSION_IS_HANDSHAKE_AXIS: false = false;

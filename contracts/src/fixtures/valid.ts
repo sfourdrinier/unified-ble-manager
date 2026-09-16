@@ -39,4 +39,8 @@ export const VALID_FIXTURES: readonly ValidFixture[] = freezeTable([
   { name: 'transfer-record', kind: 'ownership-transfer', value: { resourceKind: 'connection-lease', sourceClient: 'client-a', destinationClient: 'client-b', generation: 'cg-1', transferEpoch: 4 } },
   { name: 'peripheral-service', kind: 'peripheral-service', value: { uuid: '180D', primary: true, characteristics: [] } },
   { name: 'zero-length-write', kind: 'write-length', value: 0 },
+  { name: 'profile-codec-truncated', kind: 'profile-codec-code', value: 'profile.codec.truncated' },
+  { name: 'profile-codec-malformed', kind: 'profile-codec-code', value: 'profile.codec.malformed' },
+  { name: 'profile-codec-reserved', kind: 'profile-codec-code', value: 'profile.codec.reserved' },
+  { name: 'profile-codec-invalid-value', kind: 'profile-codec-code', value: 'profile.codec.invalid-value' },
 ] satisfies readonly ValidFixture[]);

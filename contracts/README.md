@@ -1,4 +1,4 @@
-# C-UBM contract draft `C-UBM.0.1.1-DRAFT`
+# C-UBM contract draft `C-UBM.0.1.2-DRAFT`
 
 Status: **DRAFT — pending U1 acceptance** (CON-UBM, trackourhealth/bun-mono#1188).
 This directory is the exclusive U1 contract-freeze area on `codex/ubm5-contract-fixes`.
@@ -12,7 +12,7 @@ executable generic kernel boundary:
 |---|---|
 | `src/version.ts` | runtime / contract / build version axes, handshake negotiation, PKG-02 gating |
 | `src/identities.ts` | attachment tuples, peer identities, GATT occurrence paths, handles, generations, UUID/address canonicalization |
-| `src/outcomes.ts` | full error-identity catalog, terminal records, recovery dispositions, redacted platform detail |
+| `src/outcomes.ts` | full error-identity catalog, frozen profile-codec identities (0.1.2), terminal records, recovery dispositions, redacted platform detail |
 | `src/bounds.ts` | numeric production limits, monotonic deadlines, u64/i64 decimal-string mappings |
 | `src/capabilities.ts` | four-state descriptors, limitations, evidence receipts, built-in catalog |
 | `src/hosts.ts` | host/lease/resource types, scan/connection arbitration (OWN-01), ownership transfer, authorization predicate |
@@ -36,10 +36,10 @@ against the protocol/contract — never as silent equality.
   or `ipc-protocol` where a native/IPC boundary applies. Highest common value
   wins; disjoint ranges fail `protocol.incompatible` before any effect.
   Unknown axis names are rejected with `protocol.malformed` (R4).
-- **Contract**: `C-UBM.0.1.1-DRAFT`, exact equality required.
+- **Contract**: `C-UBM.0.1.2-DRAFT`, exact equality required.
 - **Build** (e.g. npm `4.0.28`): observability only, never a handshake axis.
 
-## Frozen decisions (0.1.1)
+## Frozen decisions (0.1.1–0.1.2)
 
 - **R1**: `effectiveMaxBytes` seeds with `MAX_OPERATION_BYTES`, so a 1 MiB
   backend declaration clamps to the frozen 524288 ceiling.
@@ -77,6 +77,13 @@ against the protocol/contract — never as silent equality.
   whitespace, and at most `MAX_DECIMAL_DIGITS = 20` digits excluding an
   optional leading `-`. Enforced identically in TypeScript and the Rust
   mirror.
+- **R15 (0.1.2 additive amendment)**: the four `profile.codec.*` SIG
+  payload-codec identities (`truncated`, `malformed`, `reserved`,
+  `invalid-value`) are frozen as `PROFILE_CODEC_ERROR_CODES` plus the
+  `isProfileCodecErrorCode` guard, byte-identical to
+  `src/profiles/errors.ts`. Payload-codec failures carry no `BleErrorDomain`
+  and no recovery disposition, so they form their own table; the 67-code
+  `BleErrorCode` oracle catalog is unchanged.
 
 ## Strict TypeScript rules in this directory
 
