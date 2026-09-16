@@ -151,6 +151,31 @@ export function isBleErrorCode(value: unknown): value is BleErrorCode {
   return typeof value === 'string' && ERROR_CODE_LIST.some(code => code === value);
 }
 
+// C-UBM 0.1.2 additive amendment (trackourhealth/bun-mono#1188, ledger
+// follow-up #9): frozen SIG payload-codec identities. Derived from
+// src/profiles/errors.ts `ProfileCodecErrorCode` (read-only reference) with
+// byte-identical wire strings. These standards-level payload failures are
+// distinct from transport failures: they carry no `BleErrorDomain` and no
+// recovery disposition, so they live in their own frozen table. The 67-code
+// `BleErrorCode` oracle catalog above is unchanged (wire-compatible,
+// additive-only).
+export type ProfileCodecErrorCode =
+  | 'profile.codec.truncated'
+  | 'profile.codec.malformed'
+  | 'profile.codec.reserved'
+  | 'profile.codec.invalid-value';
+
+export const PROFILE_CODEC_ERROR_CODES: readonly ProfileCodecErrorCode[] = freezeTable([
+  'profile.codec.truncated',
+  'profile.codec.malformed',
+  'profile.codec.reserved',
+  'profile.codec.invalid-value',
+] satisfies readonly ProfileCodecErrorCode[]);
+
+export function isProfileCodecErrorCode(value: unknown): value is ProfileCodecErrorCode {
+  return typeof value === 'string' && PROFILE_CODEC_ERROR_CODES.some(code => code === value);
+}
+
 export type BleErrorDomain =
   | 'core'
   | 'adapter'

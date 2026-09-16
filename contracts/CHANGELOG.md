@@ -1,5 +1,35 @@
 # C-UBM contracts changelog
 
+## `C-UBM.0.1.2-DRAFT` (additive amendment, `codex/ubm5-contract-0.1.2`)
+
+Contract amendment slice for UBM 5.0 (trackourhealth/bun-mono#1188; ledger
+follow-up #9). Test-first; wire-compatible and additive-only: no frozen
+0.1.1 wire string changes, and the 67-code `BleErrorCode` oracle catalog is
+untouched (the 67/67 oracle-diff test passes unmodified).
+
+- **Freeze**: the four `profile.codec.*` SIG payload-codec identities
+  (`truncated`, `malformed`, `reserved`, `invalid-value`) into the contracts
+  error catalog as the frozen `PROFILE_CODEC_ERROR_CODES` table plus the
+  `isProfileCodecErrorCode` guard (`src/outcomes.ts`, exported via
+  `src/index.ts`). Wire strings are byte-identical to the retained oracle
+  (`src/profiles/errors.ts#ProfileCodecErrorCode`); payload-codec failures
+  carry no `BleErrorDomain` and no recovery disposition, so they live in
+  their own table rather than extending `BleErrorCode`.
+- **Fixtures + catalog tests**: four `profile-codec-code` valid fixtures
+  (one per identity, executed through the guard by kind) plus
+  `__tests__/profile-codec.test.ts` (exact table, per-identity
+  resolvability, case-drift/non-string rejection, frozenness, JSON wire
+  round trips).
+- **Rust mirror**: `crates/ubm-core/src/profiles.rs` adopts the frozen
+  catalog as the single source of truth (`ProfileCodecCode::ALL_CODES` plus
+  `from_str` round trip mirroring `BleErrorCode`, docs re-pointed at the
+  frozen catalog); all codec wire strings unchanged, with a wire-exact
+  catalog unit test.
+- **Not in this slice** (reported, not added): the Rust `contracts.rs`
+  mirror still pins `CONTRACT_REVISION = "C-UBM.0.1.1-DRAFT"` (outside this
+  slice's paths); syncing it to `0.1.2-DRAFT` belongs to a follow-up with
+  `contracts.rs` in scope.
+
 ## `C-UBM.0.1.1-DRAFT` (U1 review follow-up, `codex/ubm5-contract-fixes`)
 
 Contract-fix slice for UBM 5.0 (trackourhealth/bun-mono#1188): independent

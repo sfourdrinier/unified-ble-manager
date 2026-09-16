@@ -14,6 +14,7 @@ import {
   createGattPath,
   createPeerIdentity,
   isBleErrorCode,
+  isProfileCodecErrorCode,
   makeTerminalRecord,
   parseI64Decimal,
   parseU64Decimal,
@@ -163,6 +164,12 @@ function executeValidFixture(fixture: { readonly name: string; readonly kind: st
     }
     case 'i64': {
       parseI64Decimal(value);
+      return;
+    }
+    case 'profile-codec-code': {
+      if (!isProfileCodecErrorCode(value)) {
+        throw new Error(`fixture ${fixture.name} profile codec code must resolve`);
+      }
       return;
     }
     case 'write-length': {
