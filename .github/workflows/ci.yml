@@ -586,12 +586,15 @@ jobs:
           packages: 'platform-tools'
 
       - name: Install pinned Rust + Android target
-        # buildUbmRustCdylib compiles bindings/jni via rustup-run 1.98.1 for
-        # x86_64-linux-android; cargo --version resolves rust-toolchain.toml
-        # and installs the pinned toolchain when absent.
+        # buildUbmRustCdylib compiles bindings/jni via rustup-run on the
+        # pinned toolchain for x86_64-linux-android. The pin is
+        # single-sourced from rust-toolchain.toml (parsed here and by
+        # android/build-rust-cdylib.sh) — never hardcode a version.
         run: |
+          PINNED_TOOLCHAIN="$(grep -E '^channel[[:space:]]*=' rust-toolchain.toml | sed -E 's/.*"([^"]+)".*/\1/' || true)"
+          test -n "$PINNED_TOOLCHAIN" || { echo "could not parse pinned toolchain channel from rust-toolchain.toml"; exit 1; }
           cargo --version
-          rustup target add --toolchain 1.98.1 x86_64-linux-android
+          rustup target add --toolchain "$PINNED_TOOLCHAIN" x86_64-linux-android
 
       - name: Install classic example dependencies
         # example/.npmrc uses node-linker=hoisted so @react-native/gradle-plugin is at

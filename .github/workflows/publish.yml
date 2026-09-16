@@ -163,8 +163,23 @@ jobs:
       - name: Verify and bind complete native prebuild matrix
         run: pnpm native-prebuild:verify --require-all --write-manifest
 
+      - name: Install pinned Rust
+        # ReleaseArtifacts/License suites shell to
+        # `cargo metadata --locked --offline`; cargo --version resolves
+        # rust-toolchain.toml and installs the pinned toolchain when absent.
+        run: cargo --version
+
+      - name: Warm cargo cache for offline metadata
+        run: cargo fetch --locked
+
       - name: Run package tests
         run: pnpm test:package
+
+      - name: Run Rust/JS parity proofs
+        # test:package excludes the napi-addon suites (see
+        # jest.package.config.js); the shipping gate runs them here with
+        # the addon built first — same as the rust-parity-5-0 CI job.
+        run: pnpm test:parity
 
       - name: Validate current evidence records
         run: pnpm validate:evidence

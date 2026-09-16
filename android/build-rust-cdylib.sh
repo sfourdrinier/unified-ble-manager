@@ -2,8 +2,8 @@
 # android/build-rust-cdylib.sh — HOST-ANDROID (UBM 5.0) Rust cdylib builder.
 #
 # Builds the bindings/jni cdylib (`libubm5_jni_echo.so`) for Android ABI(s)
-# with EXPLICIT rustc targets on the PINNED toolchain (1.98.1, see
-# rust-toolchain.toml) — no cargo-ndk needed. Invoked by the
+# with EXPLICIT rustc targets on the PINNED toolchain (parsed from
+# rust-toolchain.toml at runtime) — no cargo-ndk needed. Invoked by the
 # `buildUbmRustCdylib` Gradle task in android/build.gradle and by the
 # five0 probe-app build; this script is the single source of truth so the
 # two call sites cannot drift.
@@ -23,7 +23,9 @@ ABI=""
 PROFILE="debug"
 LIBDIR=""
 MINSDK="24"
-PINNED_TOOLCHAIN="1.98.1"
+# Pinned toolchain single-sourced from rust-toolchain.toml (derived below
+# once ROOT is known) — never hardcode a version here.
+PINNED_TOOLCHAIN=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -43,6 +45,7 @@ fail() { echo "build-rust-cdylib: FAIL $1" >&2; exit 1; }
 [ "$PROFILE" = "debug" ] || [ "$PROFILE" = "release" ] || fail "--profile must be debug|release, got '$PROFILE'"
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+PINNED_TOOLCHAIN="$(grep -E '^channel[[:space:]]*=' "$ROOT/rust-toolchain.toml" | sed -E 's/.*"([^"]+)".*/\1/' || true)"
 CRATE="ubm5_jni_echo"
 LIB="lib${CRATE}.so"
 

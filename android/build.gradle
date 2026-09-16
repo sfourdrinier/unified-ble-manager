@@ -178,7 +178,7 @@ tasks.register("buildUbmRustCdylib") {
           "buildUbmRustCdylib FAILED for ABI ${abi} (exit ${result.exitValue}). " +
           "Run sh ${ubmRustScript} --abi ${abi} --profile ${ubmRustProfile} " +
           "--libdir <dir> from the repo root for the actionable diagnostic " +
-          "(NDK 27.x, pinned Rust 1.98.1 + x86_64-linux-android target).")
+          "(NDK 27.x, pinned Rust from rust-toolchain.toml + x86_64-linux-android target).")
       }
       def staged = new File(libDir, "libubm5_jni_echo.so")
       if (!staged.isFile()) {
