@@ -3,7 +3,7 @@ use std::{
     future::Future,
     sync::{
         atomic::{AtomicI64, AtomicU64, Ordering},
-        Arc, Mutex as SyncMutex, OnceLock,
+        Arc, Mutex as SyncMutex,
     },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -48,28 +48,21 @@ const SCAN_POLL_INTERVAL: Duration = Duration::from_secs(2);
 /// released.
 const DISCONNECT_COMPLETION_TIMEOUT: Duration = Duration::from_secs(1);
 
+/// Host-neutral desktop executor seam (HOST-DESKTOP extraction point).
+///
+/// This file is single-sourced from `crates/ubm-desktop/src/executor.rs` and
+/// included by path so desktop execution stays shared without a Tauri
+/// dependency in `ubm-desktop` and without touching this crate's manifest.
+/// It carries only `std` + `tokio`, so it compiles in both editions.
+#[path = "../../../crates/ubm-desktop/src/executor.rs"]
+#[allow(dead_code)]
+mod desktop_executor_seam;
+
 fn btleplug_runtime() -> tokio::runtime::Handle {
-    static HANDLE: OnceLock<tokio::runtime::Handle> = OnceLock::new();
-    HANDLE
-        .get_or_init(|| {
-            let (tx, rx) = std::sync::mpsc::channel();
-            std::thread::Builder::new()
-                .name("ubm-btleplug".to_owned())
-                .spawn(move || {
-                    let runtime = tokio::runtime::Builder::new_multi_thread()
-                        .enable_all()
-                        .worker_threads(2)
-                        .thread_name("ubm-btleplug-worker")
-                        .build()
-                        .expect("unified-ble-manager btleplug runtime");
-                    tx.send(runtime.handle().clone())
-                        .expect("unified-ble-manager btleplug handle");
-                    runtime.block_on(std::future::pending::<()>());
-                })
-                .expect("unified-ble-manager btleplug thread");
-            rx.recv().expect("unified-ble-manager btleplug handle")
-        })
-        .clone()
+    // Delegated: one shared desktop executor per process, owned by
+    // `ubm-desktop`. Behavior is unchanged (same dedicated thread, same two
+    // workers); only the owner moved.
+    desktop_executor_seam::desktop_runtime()
 }
 
 #[derive(Clone, Debug, Default)]
