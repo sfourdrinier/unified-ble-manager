@@ -56,4 +56,9 @@ interface EchoSession {
     EchoCounterResult drive_expire_sweep(string now_ms);
     EchoCounterResult drive_destroy();
     EchoStatus request_ble_transition(string transition);
+    // U7 staged-transition slice: scripted synthetic-radio steps in, JSON
+    // observations out (values travel in EchoCounterResult.value).
+    EchoCounterResult staged_step(string line);
+    EchoCounterResult staged_drain_log();
+    EchoCounterResult staged_counters();
 };

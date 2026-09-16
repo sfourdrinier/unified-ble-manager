@@ -628,6 +628,127 @@ pub unsafe extern "C" fn ubm_echo_ble_transition(name_ptr: *const u8, name_len: 
     }
 }
 
+/// Runs one scripted synthetic-radio staged step (U7 staged-transition
+/// slice): UTF-8 JSON object bytes in, one JSON observation object out as a
+/// host-owned buffer per [`publish_owned`]. Step-level core rejections come
+/// back as data; only the session lifetime fails (null + last error).
+#[no_mangle]
+///
+/// # Safety
+///
+/// When `line_len > 0`, `line_ptr` must span `line_len` readable bytes;
+/// `out_len` must be writable.
+pub unsafe extern "C" fn ubm_echo_staged_step(
+    line_ptr: *const u8,
+    line_len: usize,
+    out_len: *mut usize,
+) -> *mut u8 {
+    let op = "staged-step";
+    if out_len.is_null() {
+        set_last_error(EchoError::argument_invalid(op, "null-out-len"));
+        return std::ptr::null_mut();
+    }
+    let line_bytes = match read_host(line_ptr, line_len, op) {
+        Ok(bytes) => bytes,
+        Err(err) => {
+            set_last_error(err);
+            return std::ptr::null_mut();
+        }
+    };
+    let line = match String::from_utf8(line_bytes) {
+        Ok(text) => text,
+        Err(_) => {
+            set_last_error(EchoError::bytes_invalid(op, "staged-line-utf8"));
+            return std::ptr::null_mut();
+        }
+    };
+    let mut guard = match core().lock() {
+        Ok(guard) => guard,
+        Err(_) => {
+            set_last_error(lock_failed(op));
+            return std::ptr::null_mut();
+        }
+    };
+    match guard.staged_step(&line, op) {
+        Ok(observation) => {
+            clear_last_error();
+            drop(guard);
+            publish_owned(observation.into_bytes(), out_len)
+        }
+        Err(err) => {
+            set_last_error(err);
+            std::ptr::null_mut()
+        }
+    }
+}
+
+/// Drains the staged observation log (FIFO, newline-joined JSON lines) as a
+/// host-owned buffer per [`publish_owned`]. Returns null on error.
+#[no_mangle]
+///
+/// # Safety
+///
+/// `out_len` must be writable.
+pub unsafe extern "C" fn ubm_echo_staged_drain_log(out_len: *mut usize) -> *mut u8 {
+    let op = "staged-drain-log";
+    if out_len.is_null() {
+        set_last_error(EchoError::argument_invalid(op, "null-out-len"));
+        return std::ptr::null_mut();
+    }
+    let mut guard = match core().lock() {
+        Ok(guard) => guard,
+        Err(_) => {
+            set_last_error(lock_failed(op));
+            return std::ptr::null_mut();
+        }
+    };
+    match guard.staged_drain(op) {
+        Ok(log) => {
+            clear_last_error();
+            drop(guard);
+            publish_owned(log.into_bytes(), out_len)
+        }
+        Err(err) => {
+            set_last_error(err);
+            std::ptr::null_mut()
+        }
+    }
+}
+
+/// Observes the staged batch accounting as JSON (`staged_total`,
+/// `dropped_not_staged`, `truncated_sweeps`, `cap`) in a host-owned buffer
+/// per [`publish_owned`]. Returns null on error.
+#[no_mangle]
+///
+/// # Safety
+///
+/// `out_len` must be writable.
+pub unsafe extern "C" fn ubm_echo_staged_counters(out_len: *mut usize) -> *mut u8 {
+    let op = "staged-counters";
+    if out_len.is_null() {
+        set_last_error(EchoError::argument_invalid(op, "null-out-len"));
+        return std::ptr::null_mut();
+    }
+    let guard = match core().lock() {
+        Ok(guard) => guard,
+        Err(_) => {
+            set_last_error(lock_failed(op));
+            return std::ptr::null_mut();
+        }
+    };
+    match guard.staged_counters(op) {
+        Ok(counters) => {
+            clear_last_error();
+            drop(guard);
+            publish_owned(counters.into_bytes(), out_len)
+        }
+        Err(err) => {
+            set_last_error(err);
+            std::ptr::null_mut()
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

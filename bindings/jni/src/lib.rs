@@ -27,7 +27,9 @@ mod core_backend;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use core_backend::{echo_bytes_chunked, CoreBackend, CoreSession, EchoError, CONTRACT_REVISION};
+use core_backend::{
+    echo_bytes_chunked, CoreBackend, CoreSession, EchoError, StagedError, CONTRACT_REVISION,
+};
 use jni::errors::{Error as JniError, ErrorPolicy};
 use jni::objects::{JByteArray, JClass, JString, Reference as _};
 use jni::strings::JNIString;
@@ -67,6 +69,11 @@ fn lock_failed(operation: &'static str) -> EchoError {
 #[derive(Debug)]
 enum BridgeError {
     Echo(EchoError),
+    /// Pre-rendered staged wire message (`code|domain|operation|detail`).
+    /// Staged failures own their strings (session labels, rejector names),
+    /// so the wire is rendered at the seam and thrown verbatim; the Java
+    /// `EchoException` parses the same typed fields from the message.
+    Staged(String),
     Jni(JniError),
 }
 
@@ -79,6 +86,10 @@ impl From<JniError> for BridgeError {
 impl BridgeError {
     fn echo(err: EchoError) -> Self {
         Self::Echo(err)
+    }
+
+    fn staged(err: StagedError) -> Self {
+        Self::Staged(err.wire_message())
     }
 
     fn jni_failed(operation: &'static str, detail: &'static str) -> Self {
@@ -118,6 +129,18 @@ fn throw_echo(env: &mut Env, err: &EchoError) {
     }
 }
 
+/// Throws a pre-rendered wire message as a typed `EchoException` (staged
+/// failures own their strings, so the wire is rendered at the seam).
+fn throw_wire(env: &mut Env, wire: &str) {
+    let result = env.throw_new(JNIString::from(EXCEPTION_CLASS), JNIString::from(wire));
+    if result.is_err() && !env.exception_check() {
+        let _ = env.throw_new(
+            JNIString::from("java/lang/RuntimeException"),
+            JNIString::from(wire),
+        );
+    }
+}
+
 /// Policy: every `Err` and every panic becomes a typed `EchoException`;
 /// native methods return their default (`0`/`null`/void).
 struct ThrowEchoAndDefault;
@@ -132,6 +155,7 @@ impl<T: Default> ErrorPolicy<T, BridgeError> for ThrowEchoAndDefault {
     ) -> jni::errors::Result<T> {
         match err {
             BridgeError::Echo(echo) => throw_echo(env, &echo),
+            BridgeError::Staged(wire) => throw_wire(env, &wire),
             BridgeError::Jni(jni_err) => {
                 // The typed exception carries the stable identity; the
                 // underlying JNI error goes to stderr for diagnosis.
@@ -441,6 +465,73 @@ pub extern "system" fn Java_com_ubm_echo_EchoBridge_nativeBleTransition<'caller>
             Ok(())
         })
         .resolve_with::<ThrowEchoAndDefault, _>(|| "request-ble-transition")
+}
+
+/// Runs one scripted synthetic-radio staged step (U7 slice): a JSON object
+/// line in, one JSON observation object out. Step-level core rejections
+/// come back as data; only the session lifetime throws
+/// (`lifecycle.destroyed`). Unknown/closed handles throw
+/// `lifecycle.destroyed`.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_ubm_echo_EchoBridge_nativeStagedStep<'caller>(
+    mut unowned_env: EnvUnowned<'caller>,
+    _class: JClass<'caller>,
+    handle: jlong,
+    line: JString<'caller>,
+) -> jstring {
+    unowned_env
+        .with_env(|env| -> BridgeResult<jstring> {
+            const OP: &str = "staged-step";
+            let session = lookup_session(handle, OP)?;
+            let text = read_string(env, &line, OP)?;
+            let out = {
+                let mut core = lock_session(&session, OP)?;
+                core.staged_step(&text, OP).map_err(BridgeError::staged)?
+            };
+            publish_string(env, out, OP)
+        })
+        .resolve_with::<ThrowEchoAndDefault, _>(|| "staged-step")
+}
+
+/// Drains the staged observation log (FIFO, newline-joined JSON lines).
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_ubm_echo_EchoBridge_nativeStagedDrainLog<'caller>(
+    mut unowned_env: EnvUnowned<'caller>,
+    _class: JClass<'caller>,
+    handle: jlong,
+) -> jstring {
+    unowned_env
+        .with_env(|env| -> BridgeResult<jstring> {
+            const OP: &str = "staged-drain-log";
+            let session = lookup_session(handle, OP)?;
+            let out = {
+                let mut core = lock_session(&session, OP)?;
+                core.staged_drain(OP).map_err(BridgeError::staged)?
+            };
+            publish_string(env, out, OP)
+        })
+        .resolve_with::<ThrowEchoAndDefault, _>(|| "staged-drain-log")
+}
+
+/// Observes the staged batch accounting as JSON. Unknown/closed handles
+/// throw `lifecycle.destroyed`.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_ubm_echo_EchoBridge_nativeStagedCounters<'caller>(
+    mut unowned_env: EnvUnowned<'caller>,
+    _class: JClass<'caller>,
+    handle: jlong,
+) -> jstring {
+    unowned_env
+        .with_env(|env| -> BridgeResult<jstring> {
+            const OP: &str = "staged-counters";
+            let session = lookup_session(handle, OP)?;
+            let out = {
+                let core = lock_session(&session, OP)?;
+                core.staged_counters(OP).map_err(BridgeError::staged)?
+            };
+            publish_string(env, out, OP)
+        })
+        .resolve_with::<ThrowEchoAndDefault, _>(|| "staged-counters")
 }
 
 /// Arms session cancellation. The next chunked unit reports

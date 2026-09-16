@@ -1,0 +1,12 @@
+[package]
+name = "ubm-fake-radio"
+version = "0.1.0"
+edition = "2024"
+license-file = "../../LICENSE-UBM-SOURCE-AVAILABLE-1.0.md"
+description = "Deterministic synthetic-radio staged driver for UBM 5.0 (U7 slice, trackourhealth/bun-mono#1188)"
+repository = "https://github.com/sfourdrinier/unified-ble-manager"
+
+[dependencies]
+ubm-core = { path = "../ubm-core" }
+
+[dev-dependencies]

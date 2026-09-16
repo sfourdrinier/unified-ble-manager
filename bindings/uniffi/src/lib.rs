@@ -17,7 +17,7 @@
 
 mod core_backend;
 
-use core_backend::{CoreSession, EchoError, SharedCore};
+use core_backend::{CoreSession, EchoError, SharedCore, StagedError};
 
 uniffi::include_scaffolding!("ubm_echo");
 
@@ -84,6 +84,16 @@ fn err_counter(err: EchoError) -> EchoCounterResult {
         code: err.code.to_string(),
         domain: err.domain.to_string(),
         operation: err.operation.to_string(),
+    }
+}
+
+fn err_counter_staged(err: StagedError) -> EchoCounterResult {
+    EchoCounterResult {
+        ok: false,
+        value: String::new(),
+        code: err.code().to_string(),
+        domain: err.domain().to_string(),
+        operation: err.operation().to_string(),
     }
 }
 
@@ -191,6 +201,37 @@ impl EchoSession {
             Err(err) => err_status(err),
         }
     }
+
+    /// U7 staged-transition slice: runs one scripted synthetic-radio step
+    /// (a JSON object line) and carries one JSON observation object in
+    /// `value`. Step-level core rejections come back as data (`ok:true`
+    /// with `ok:false` inside the observation); only the session lifetime
+    /// fails the record.
+    pub fn staged_step(&self, line: String) -> EchoCounterResult {
+        match self.inner.staged_step(&line) {
+            Ok(observation) => ok_counter(observation),
+            Err(err) => err_counter_staged(err),
+        }
+    }
+
+    /// U7 staged-transition slice: drains the observation log (FIFO,
+    /// newline-joined JSON lines) into `value`.
+    pub fn staged_drain_log(&self) -> EchoCounterResult {
+        match self.inner.staged_drain_log() {
+            Ok(log) => ok_counter(log),
+            Err(err) => err_counter_staged(err),
+        }
+    }
+
+    /// U7 staged-transition slice: carries the batch accounting JSON
+    /// (`staged_total`, `dropped_not_staged`, `truncated_sweeps`, `cap`)
+    /// in `value`.
+    pub fn staged_counters(&self) -> EchoCounterResult {
+        match self.inner.staged_counters() {
+            Ok(counters) => ok_counter(counters),
+            Err(err) => err_counter_staged(err),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -227,6 +268,29 @@ mod tests {
         assert!(session.cancel_inflight().ok);
         let out = session.echo_bytes_chunked(vec![1, 2, 3], 10);
         assert!(!out.ok && out.code == "operation.aborted");
+    }
+
+    #[test]
+    fn udl_surface_drives_staged_synthetic_steps() {
+        let session = EchoSession::new(REV.to_string());
+        let scan = session.staged_step(
+            "{\"step\":\"scan.start\",\"op\":\"scan0\",\"owner\":\"owner-a\"}".to_string(),
+        );
+        assert!(scan.ok, "{}|{}|{}", scan.code, scan.domain, scan.operation);
+        assert!(scan.value.contains("central.scan-start"), "{}", scan.value);
+        let counters = session.staged_counters();
+        assert!(counters.ok);
+        assert!(
+            counters.value.contains("\"dropped_not_staged\":0"),
+            "{}",
+            counters.value
+        );
+        let loud = session.staged_step("not-json".to_string());
+        assert!(loud.ok);
+        assert!(loud.value.contains("\"ok\":false"), "{}", loud.value);
+        assert!(session.close().ok);
+        let after = session.staged_step("{\"step\":\"cap.project\"}".to_string());
+        assert!(!after.ok && after.code == "lifecycle.destroyed");
     }
 
     #[test]

@@ -15,6 +15,7 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 uniffi = { version = "=0.32.1", features = ["build"] }
 ubm-core = { path = "../../crates/ubm-core" }
+ubm-fake-radio = { path = "../../crates/ubm-fake-radio" }
 
 [build-dependencies]
 uniffi = { version = "=0.32.1", features = ["build"] }

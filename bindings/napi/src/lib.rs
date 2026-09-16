@@ -260,6 +260,50 @@ impl EchoSession {
         }
     }
 
+    /// Runs one scripted synthetic-radio staged step (a JSON object line)
+    /// against the session-owned staged transition core (U7 slice) and
+    /// returns one JSON observation object. Step-level core rejections come
+    /// back as data (`ok:false` with the frozen wire identity); only the
+    /// session lifetime rejects (`lifecycle.destroyed` after `close`).
+    #[napi(catch_unwind)]
+    pub fn staged_step(&self, line: String) -> Result<String> {
+        let mut core = self.inner.core.lock().map_err(|_| {
+            Error::new(
+                Status::GenericFailure,
+                "lifecycle.invariant-violation|core|staged-step|lock-poisoned",
+            )
+        })?;
+        core.staged_step(&line, "staged-step")
+            .map_err(|staged| Error::new(Status::GenericFailure, staged.wire_message()))
+    }
+
+    /// Drains the staged observation log (FIFO, newline-joined JSON lines).
+    #[napi(catch_unwind)]
+    pub fn staged_drain_log(&self) -> Result<String> {
+        let mut core = self.inner.core.lock().map_err(|_| {
+            Error::new(
+                Status::GenericFailure,
+                "lifecycle.invariant-violation|core|staged-drain-log|lock-poisoned",
+            )
+        })?;
+        core.staged_drain("staged-drain-log")
+            .map_err(|staged| Error::new(Status::GenericFailure, staged.wire_message()))
+    }
+
+    /// Observes the staged batch accounting as JSON (`staged_total`,
+    /// `dropped_not_staged`, `truncated_sweeps`, `cap`).
+    #[napi(catch_unwind)]
+    pub fn staged_counters(&self) -> Result<String> {
+        let core = self.inner.core.lock().map_err(|_| {
+            Error::new(
+                Status::GenericFailure,
+                "lifecycle.invariant-violation|core|staged-counters|lock-poisoned",
+            )
+        })?;
+        core.staged_counters("staged-counters")
+            .map_err(|staged| Error::new(Status::GenericFailure, staged.wire_message()))
+    }
+
     /// Destroys the session: aborts the callback registration, cancels
     /// in-flight work, and invalidates every later call with
     /// `lifecycle.destroyed`. Idempotent.

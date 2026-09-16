@@ -1253,11 +1253,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "ubm-fake-radio"
+version = "0.1.0"
+dependencies = [
+ "ubm-core",
+]
+
+[[package]]
 name = "ubm5_jni_echo"
 version = "0.1.0"
 dependencies = [
  "jni 0.22.4",
  "ubm-core",
+ "ubm-fake-radio",
 ]
 
 [[package]]
@@ -1268,6 +1276,7 @@ dependencies = [
  "napi-build",
  "napi-derive",
  "ubm-core",
+ "ubm-fake-radio",
 ]
 
 [[package]]
@@ -1275,6 +1284,7 @@ name = "ubm5_uniffi_echo"
 version = "0.1.0"
 dependencies = [
  "ubm-core",
+ "ubm-fake-radio",
  "uniffi",
 ]
 
@@ -1283,6 +1293,7 @@ name = "ubm5_wasm_echo"
 version = "0.1.0"
 dependencies = [
  "ubm-core",
+ "ubm-fake-radio",
  "wasm-bindgen",
 ]
 

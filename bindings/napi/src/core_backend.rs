@@ -38,6 +38,13 @@ use ubm_core::ownership::EffectBatch;
 /// Frozen contract revision, single-owned by `ubm-core`.
 pub use ubm_core::contracts::CONTRACT_REVISION;
 
+/// Synthetic-radio staged driver (U7 staged-transition slice): re-exported
+/// for the binding surface. The driver owns a second session-scoped REAL
+/// central driven from synthetic host events only; the primary
+/// session-owned central above keeps serving status/sweep/destroy
+/// untouched.
+pub use ubm_fake_radio::{StagedDriver, StagedError};
+
 /// Typed failure carrying a frozen C-UBM `code` + `domain` plus the operation
 /// under test. Never silent: every rejection names its identity.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -254,6 +261,7 @@ pub struct CoreSession {
     destroyed: bool,
     cancel: Arc<CancelFlag>,
     central: Central,
+    staged: StagedDriver,
 }
 
 impl CoreSession {
@@ -268,6 +276,7 @@ impl CoreSession {
             destroyed: false,
             cancel: Arc::new(CancelFlag::default()),
             central: construct_central("echo-session.open")?,
+            staged: StagedDriver::open().map_err(|_| construct_failed("echo-session.open"))?,
         })
     }
 
@@ -397,6 +406,63 @@ impl CoreSession {
     pub fn close(&mut self) {
         self.destroyed = true;
         self.cancel.cancel();
+    }
+
+    /// Runs one scripted synthetic-radio staged step (a JSON object line)
+    /// against the session-owned staged transition core and returns one
+    /// JSON observation object. Step-level core rejections come back as
+    /// data (`{"ok":false,"error":"code|domain|operation|detail"}`); only
+    /// the session lifetime fails closed here (`lifecycle.destroyed` after
+    /// `close`, like every call).
+    pub fn staged_step(
+        &mut self,
+        line: &str,
+        operation: &'static str,
+    ) -> Result<String, StagedError> {
+        if self.destroyed {
+            return Err(StagedError::new(
+                "lifecycle.destroyed",
+                "core",
+                operation,
+                "session-closed",
+            ));
+        }
+        Ok(self.staged.run_step(line))
+    }
+
+    /// Drains the staged observation log (FIFO, newline-joined JSON lines).
+    pub fn staged_drain(&mut self, operation: &'static str) -> Result<String, StagedError> {
+        if self.destroyed {
+            return Err(StagedError::new(
+                "lifecycle.destroyed",
+                "core",
+                operation,
+                "session-closed",
+            ));
+        }
+        Ok(self.staged.drain_log().join("\n"))
+    }
+
+    /// Observes the staged batch accounting as JSON
+    /// (`staged_total`, `dropped_not_staged`, `truncated_sweeps`, `cap`).
+    /// The `dropped_not_staged` counter is the preserved accounting for
+    /// bounded-batch overflow: a full batch fails loudly AND counts here.
+    pub fn staged_counters(&self, operation: &'static str) -> Result<String, StagedError> {
+        if self.destroyed {
+            return Err(StagedError::new(
+                "lifecycle.destroyed",
+                "core",
+                operation,
+                "session-closed",
+            ));
+        }
+        Ok(format!(
+            "{{\"staged_total\":{},\"dropped_not_staged\":{},\"truncated_sweeps\":{},\"cap\":{}}}",
+            self.staged.staged_total(),
+            self.staged.dropped_not_staged(),
+            self.staged.truncated_sweeps(),
+            self.staged.staged_cap()
+        ))
     }
 }
 
@@ -700,6 +766,41 @@ mod tests {
         assert_eq!(
             core.central_status("central-status").unwrap(),
             "{\"revision\":\"C-UBM.0.1.2-DRAFT\",\"live_operations\":0,\"retained_cleanup\":0}"
+        );
+    }
+
+    #[test]
+    fn staged_surface_drives_synthetic_scan_and_reports_accounting() {
+        // The staged drive surface runs synthetic-radio steps through the
+        // session-owned staged core and reports bounded-batch accounting.
+        // Step-level core rejections arrive as data; only the session
+        // lifetime fails closed.
+        let mut core = CoreSession::open(REV).unwrap();
+        let project = core
+            .staged_step("{\"step\":\"cap.project\"}", "staged-step")
+            .unwrap();
+        assert!(project.contains("\"ok\":true"), "{project}");
+        let scan = core
+            .staged_step(
+                "{\"step\":\"scan.start\",\"op\":\"scan0\",\"owner\":\"owner-a\"}",
+                "staged-step",
+            )
+            .unwrap();
+        assert!(scan.contains("\"ok\":true"), "{scan}");
+        assert!(scan.contains("central.scan-start"), "{scan}");
+        let counters = core.staged_counters("staged-counters").unwrap();
+        assert!(counters.contains("\"dropped_not_staged\":0"), "{counters}");
+        assert!(counters.contains("\"cap\":64"), "{counters}");
+        let loud = core.staged_step("not-json", "staged-step").unwrap();
+        assert!(loud.contains("\"ok\":false"), "{loud}");
+        assert!(loud.contains("staged-line-not-json"), "{loud}");
+        core.close();
+        let err = core
+            .staged_step("{\"step\":\"cap.project\"}", "staged-step")
+            .expect_err("closed session must reject");
+        assert_eq!(
+            err.wire_message(),
+            "lifecycle.destroyed|core|staged-step|session-closed"
         );
     }
 

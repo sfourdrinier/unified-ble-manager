@@ -39,4 +39,10 @@ public final class EchoBridge {
     public static native String nativeDestroy(long handle);
 
     public static native void nativeBleTransition(long handle, String transition);
+
+    public static native String nativeStagedStep(long handle, String line);
+
+    public static native String nativeStagedDrainLog(long handle);
+
+    public static native String nativeStagedCounters(long handle);
 }

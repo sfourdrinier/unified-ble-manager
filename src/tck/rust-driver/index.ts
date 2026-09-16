@@ -25,4 +25,17 @@ export {
   RUST_PARITY_UNWIRED_WIRE
 } from './corpus'
 export type { RustParityGapCandidate } from './correction-candidates'
-export { RUST_PARITY_GAP_CANDIDATES } from './correction-candidates'
+export { RUST_PARITY_GAP_CANDIDATES, RUST_PARITY_PROVEN_MARKER } from './correction-candidates'
+export type { StagedProgram, StagedScenarioRow, StayOpenProbe } from './staged'
+export {
+  normalizeStagedLines,
+  observeStagedScenario,
+  observeStayOpenProbe,
+  stableStringify,
+  stagedProgramFor,
+  stayOpenProbeFor,
+  STAGED_BATCH_CAP,
+  STAGED_CAPABILITY_ROWS,
+  STAGED_PROGRAMS,
+  STAY_OPEN_STAGED_PROBES
+} from './staged'

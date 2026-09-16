@@ -15,6 +15,7 @@ crate-type = ["cdylib", "rlib"]
 napi = { version = "=2.16.17", features = ["napi4"] }
 napi-derive = "=2.16.13"
 ubm-core = { path = "../../crates/ubm-core" }
+ubm-fake-radio = { path = "../../crates/ubm-fake-radio" }
 
 [build-dependencies]
 napi-build = "=2.4.2"
