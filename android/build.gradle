@@ -144,8 +144,10 @@ tasks.register("buildUbmRustCdylib") {
   inputs.property("ubmRustProfile", ubmRustProfile)
   inputs.property("ubmRustAbis", ubmRustAbis)
   inputs.file(ubmRustScript)
-  inputs.dir(rootDir.toPath().resolve("bindings/jni/src").toFile())
-  inputs.file(rootDir.toPath().resolve("bindings/jni/Cargo.toml").toFile())
+  // projectDir-relative: rootDir is example/android when the library is
+  // included as a module, so repo-root paths must go through ../.
+  inputs.dir(projectDir.toPath().resolve("../bindings/jni/src").toFile())
+  inputs.file(projectDir.toPath().resolve("../bindings/jni/Cargo.toml").toFile())
   outputs.dir(ubmRustJniLibs)
   doLast {
     ubmRustAbis.each { abi ->
