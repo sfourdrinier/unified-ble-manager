@@ -573,13 +573,21 @@ public protocol EchoSessionProtocol: AnyObject, Sendable {
     
     func cancelInflight()  -> EchoStatus
     
+    func centralStatus()  -> EchoCounterResult
+    
     func close()  -> EchoStatus
+    
+    func driveDestroy()  -> EchoCounterResult
+    
+    func driveExpireSweep(nowMs: String)  -> EchoCounterResult
     
     func echoBytes(input: Data)  -> EchoBytesResult
     
     func echoBytesChunked(input: Data, chunks: UInt32)  -> EchoBytesResult
     
     func echoCounter(decimal: String)  -> EchoCounterResult
+    
+    func requestBleTransition(transition: String)  -> EchoStatus
     
 }
 open class EchoSession: EchoSessionProtocol, @unchecked Sendable {
@@ -653,11 +661,39 @@ open func cancelInflight() -> EchoStatus  {
 })
 }
     
+open func centralStatus() -> EchoCounterResult  {
+    return try!  FfiConverterTypeEchoCounterResult_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_method_echosession_central_status(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
 open func close() -> EchoStatus  {
     return try!  FfiConverterTypeEchoStatus_lift(try! rustCall() {
         uniffiCallStatus in
     uniffi_ubm5_uniffi_echo_fn_method_echosession_close(
             self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+open func driveDestroy() -> EchoCounterResult  {
+    return try!  FfiConverterTypeEchoCounterResult_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_method_echosession_drive_destroy(
+            self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+open func driveExpireSweep(nowMs: String) -> EchoCounterResult  {
+    return try!  FfiConverterTypeEchoCounterResult_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_method_echosession_drive_expire_sweep(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(nowMs),uniffiCallStatus
     )
 })
 }
@@ -689,6 +725,16 @@ open func echoCounter(decimal: String) -> EchoCounterResult  {
     uniffi_ubm5_uniffi_echo_fn_method_echosession_echo_counter(
             self.uniffiCloneHandle(),
         FfiConverterString.lower(decimal),uniffiCallStatus
+    )
+})
+}
+    
+open func requestBleTransition(transition: String) -> EchoStatus  {
+    return try!  FfiConverterTypeEchoStatus_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_ubm5_uniffi_echo_fn_method_echosession_request_ble_transition(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(transition),uniffiCallStatus
     )
 })
 }
@@ -952,7 +998,16 @@ private let initializationResult: InitializationResult = {
     if (uniffi_ubm5_uniffi_echo_checksum_method_echosession_cancel_inflight() != 10905) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_ubm5_uniffi_echo_checksum_method_echosession_central_status() != 24094) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_ubm5_uniffi_echo_checksum_method_echosession_close() != 56816) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ubm5_uniffi_echo_checksum_method_echosession_drive_destroy() != 18422) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ubm5_uniffi_echo_checksum_method_echosession_drive_expire_sweep() != 20309) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_ubm5_uniffi_echo_checksum_method_echosession_echo_bytes() != 14153) {
@@ -962,6 +1017,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_ubm5_uniffi_echo_checksum_method_echosession_echo_counter() != 38882) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_ubm5_uniffi_echo_checksum_method_echosession_request_ble_transition() != 20292) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_ubm5_uniffi_echo_checksum_constructor_echosession_new() != 28077) {

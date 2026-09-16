@@ -88,3 +88,52 @@ pub fn describe_json_js() -> String {
         crate::core_backend::u64_max_decimal()
     )
 }
+
+/// Observes the session-owned transition core (U7): frozen revision plus
+/// live kernel counters as a JSON document (same shape as the sibling
+/// bindings). Fails closed before init.
+#[wasm_bindgen(js_name = centralStatus)]
+pub fn central_status_js() -> Result<String, JsValue> {
+    match with_core(|core| core.central_status("central-status").map_err(err_to_js)) {
+        Some(result) => result,
+        None => Err(lock_poisoned("central-status")),
+    }
+}
+
+/// Drives a REAL kernel expiry sweep (U7) at host-supplied monotonic time
+/// (decimal string, DATA-02 mapping); returns the settled-operation count
+/// as decimal.
+#[wasm_bindgen(js_name = driveExpireSweep)]
+pub fn drive_expire_sweep_js(now_ms_decimal: String) -> Result<String, JsValue> {
+    match with_core(|core| {
+        core.drive_expire_sweep(&now_ms_decimal, "central-expire-sweep")
+            .map(|settled| settled.to_string())
+            .map_err(err_to_js)
+    }) {
+        Some(result) => result,
+        None => Err(lock_poisoned("central-expire-sweep")),
+    }
+}
+
+/// Drives the REAL shutdown transition (U7); returns `released` on a clean
+/// release, `release-failed` otherwise. Idempotent.
+#[wasm_bindgen(js_name = driveDestroy)]
+pub fn drive_destroy_js() -> Result<String, JsValue> {
+    match with_core(|core| core.drive_destroy("central-destroy").map_err(err_to_js)) {
+        Some(result) => result.map(|state| state.to_string()),
+        None => Err(lock_poisoned("central-destroy")),
+    }
+}
+
+/// Loud rejection for BLE transitions beyond the driven slice (U7): every
+/// named transition fails closed with `capability.unsupported|capability`.
+#[wasm_bindgen(js_name = requestBleTransition)]
+pub fn request_ble_transition_js(transition: String) -> Result<(), JsValue> {
+    match with_core(|core| {
+        core.request_ble_transition(&transition, "request-ble-transition")
+            .map_err(err_to_js)
+    }) {
+        Some(result) => result,
+        None => Err(lock_poisoned("request-ble-transition")),
+    }
+}

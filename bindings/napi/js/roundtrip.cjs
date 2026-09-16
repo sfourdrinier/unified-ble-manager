@@ -105,6 +105,53 @@ async function main() {
   await rejectsWithCode((async () => session2.echoBytes(Buffer.from([1])))(),
     'lifecycle.destroyed', 'core');
 
+  // U7 transition-driving: the session holds and drives a REAL
+  // Kernel+Central (not feasibility-echo state). Fresh session per drive
+  // block, so driving observations stay isolated from the echo exchange.
+  const driver = new addon.EchoSession(REV);
+  assert.equal(driver.centralStatus(),
+    '{"revision":"C-UBM.0.1.1-DRAFT","live_operations":0,"retained_cleanup":0}');
+  // Real kernel expiry sweeps settle nothing on a fresh central (twice:
+  // driving is repeatable), over decimal-string host time (DATA-02 style).
+  assert.equal(driver.driveExpireSweep('0'), '0');
+  assert.equal(driver.driveExpireSweep('18446744073709551615'), '0');
+  await rejectsWithCode((async () => driver.driveExpireSweep('nope'))(),
+    'bytes.invalid', 'core');
+  await rejectsWithCode((async () => driver.driveExpireSweep('18446744073709551616'))(),
+    'bytes.invalid', 'core');
+  // Real shutdown transition: clean release, idempotent, and orthogonal to
+  // the binding lifetime (echo still works until close).
+  assert.equal(driver.driveDestroy(), 'released');
+  assert.equal(driver.driveDestroy(), 'released', 'destroy drive is idempotent');
+  assert.deepEqual([...driver.echoBytes(Buffer.from([1]))], [1],
+    'session usable for echo after destroy drive');
+  // No fake passes: unwired BLE transitions reject loudly with the frozen
+  // capability.unsupported|capability contract pairing.
+  for (const transition of ['scan.start', 'queue-advertisement', 'force-disconnect',
+    'advance-time', 'emit-notification']) {
+    await assert.rejects((async () => driver.requestBleTransition(transition))(), err => {
+      const got = codeOf(err);
+      return got.code === 'capability.unsupported' && got.domain === 'capability'
+        && got.operation === 'request-ble-transition';
+    }, `unwired transition ${transition} must reject capability.unsupported`);
+  }
+  await assert.rejects((async () => driver.requestBleTransition('scan.start'))(), err =>
+    String(err && err.message) ===
+    'capability.unsupported|capability|request-ble-transition|transition-not-wired-in-u7-slice',
+    'unwired transition must carry the exact wire identity');
+  await rejectsWithCode((async () => driver.requestBleTransition(''))(),
+    'argument.invalid', 'core');
+  driver.close();
+  driver.close(); // idempotent
+  await rejectsWithCode((async () => driver.centralStatus())(),
+    'lifecycle.destroyed', 'core');
+  await rejectsWithCode((async () => driver.driveExpireSweep('0'))(),
+    'lifecycle.destroyed', 'core');
+  await rejectsWithCode((async () => driver.driveDestroy())(),
+    'lifecycle.destroyed', 'core');
+  await rejectsWithCode((async () => driver.requestBleTransition('scan.start'))(),
+    'lifecycle.destroyed', 'core');
+
   // Callback registration, delivery, and invalidation on close. The binding
   // uses the default CalleeHandled strategy: delivery is Node-style (err, value).
   const seen = [];

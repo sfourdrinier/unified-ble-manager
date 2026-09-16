@@ -675,13 +675,21 @@ internal object IntegrityCheckingUniffiLib {
     }
     external fun uniffi_ubm5_uniffi_echo_checksum_method_echosession_cancel_inflight(
     ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_method_echosession_central_status(
+    ): Int
     external fun uniffi_ubm5_uniffi_echo_checksum_method_echosession_close(
+    ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_method_echosession_drive_destroy(
+    ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_method_echosession_drive_expire_sweep(
     ): Int
     external fun uniffi_ubm5_uniffi_echo_checksum_method_echosession_echo_bytes(
     ): Int
     external fun uniffi_ubm5_uniffi_echo_checksum_method_echosession_echo_bytes_chunked(
     ): Int
     external fun uniffi_ubm5_uniffi_echo_checksum_method_echosession_echo_counter(
+    ): Int
+    external fun uniffi_ubm5_uniffi_echo_checksum_method_echosession_request_ble_transition(
     ): Int
     external fun uniffi_ubm5_uniffi_echo_checksum_constructor_echosession_new(
     ): Int
@@ -711,13 +719,21 @@ internal object UniffiLib {
     ): Long
     external fun uniffi_ubm5_uniffi_echo_fn_method_echosession_cancel_inflight(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
+    external fun uniffi_ubm5_uniffi_echo_fn_method_echosession_central_status(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
     external fun uniffi_ubm5_uniffi_echo_fn_method_echosession_close(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    external fun uniffi_ubm5_uniffi_echo_fn_method_echosession_drive_destroy(`ptr`: Long,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    external fun uniffi_ubm5_uniffi_echo_fn_method_echosession_drive_expire_sweep(`ptr`: Long,`nowMs`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
     external fun uniffi_ubm5_uniffi_echo_fn_method_echosession_echo_bytes(`ptr`: Long,`input`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
     external fun uniffi_ubm5_uniffi_echo_fn_method_echosession_echo_bytes_chunked(`ptr`: Long,`input`: RustBuffer.ByValue,`chunks`: Int,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
     external fun uniffi_ubm5_uniffi_echo_fn_method_echosession_echo_counter(`ptr`: Long,`decimal`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+    ): RustBuffer.ByValue
+    external fun uniffi_ubm5_uniffi_echo_fn_method_echosession_request_ble_transition(`ptr`: Long,`transition`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
     external fun ffi_ubm5_uniffi_echo_rustbuffer_alloc(`size`: Long,uniffi_out_err: UniffiRustCallStatus, 
     ): RustBuffer.ByValue
@@ -841,7 +857,16 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_echosession_cancel_inflight() and 0xFFFF) != 10905) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_echosession_central_status() and 0xFFFF) != 24094) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_echosession_close() and 0xFFFF) != 56816) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_echosession_drive_destroy() and 0xFFFF) != 18422) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_echosession_drive_expire_sweep() and 0xFFFF) != 20309) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_echosession_echo_bytes() and 0xFFFF) != 14153) {
@@ -851,6 +876,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_echosession_echo_counter() and 0xFFFF) != 38882) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if ((lib.uniffi_ubm5_uniffi_echo_checksum_method_echosession_request_ble_transition() and 0xFFFF) != 20292) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if ((lib.uniffi_ubm5_uniffi_echo_checksum_constructor_echosession_new() and 0xFFFF) != 28077) {
@@ -1235,13 +1263,21 @@ public interface EchoSessionInterface {
     
     fun `cancelInflight`(): EchoStatus
     
+    fun `centralStatus`(): EchoCounterResult
+    
     fun `close`(): EchoStatus
+    
+    fun `driveDestroy`(): EchoCounterResult
+    
+    fun `driveExpireSweep`(`nowMs`: kotlin.String): EchoCounterResult
     
     fun `echoBytes`(`input`: kotlin.ByteArray): EchoBytesResult
     
     fun `echoBytesChunked`(`input`: kotlin.ByteArray, `chunks`: kotlin.UInt): EchoBytesResult
     
     fun `echoCounter`(`decimal`: kotlin.String): EchoCounterResult
+    
+    fun `requestBleTransition`(`transition`: kotlin.String): EchoStatus
     
     companion object
 }
@@ -1369,6 +1405,19 @@ open class EchoSession: Disposable, AutoCloseable, EchoSessionInterface
     }
     
 
+    override fun `centralStatus`(): EchoCounterResult {
+            return FfiConverterTypeEchoCounterResult.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_echosession_central_status(
+        it,
+        _status)
+}
+    }
+    )
+    }
+    
+
     override fun `close`(): EchoStatus {
             return FfiConverterTypeEchoStatus.lift(
     callWithHandle {
@@ -1376,6 +1425,33 @@ open class EchoSession: Disposable, AutoCloseable, EchoSessionInterface
     UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_echosession_close(
         it,
         _status)
+}
+    }
+    )
+    }
+    
+
+    override fun `driveDestroy`(): EchoCounterResult {
+            return FfiConverterTypeEchoCounterResult.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_echosession_drive_destroy(
+        it,
+        _status)
+}
+    }
+    )
+    }
+    
+
+    override fun `driveExpireSweep`(`nowMs`: kotlin.String): EchoCounterResult {
+            return FfiConverterTypeEchoCounterResult.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_echosession_drive_expire_sweep(
+        it,
+        
+        FfiConverterString.lower(`nowMs`),_status)
 }
     }
     )
@@ -1419,6 +1495,20 @@ open class EchoSession: Disposable, AutoCloseable, EchoSessionInterface
         it,
         
         FfiConverterString.lower(`decimal`),_status)
+}
+    }
+    )
+    }
+    
+
+    override fun `requestBleTransition`(`transition`: kotlin.String): EchoStatus {
+            return FfiConverterTypeEchoStatus.lift(
+    callWithHandle {
+    uniffiRustCall() { _status ->
+    UniffiLib.uniffi_ubm5_uniffi_echo_fn_method_echosession_request_ble_transition(
+        it,
+        
+        FfiConverterString.lower(`transition`),_status)
 }
     }
     )

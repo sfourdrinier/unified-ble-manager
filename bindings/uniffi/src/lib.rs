@@ -154,6 +154,43 @@ impl EchoSession {
             Err(err) => err_status(err),
         }
     }
+
+    /// U7: observes the session-owned REAL Central (frozen revision plus
+    /// live kernel counters as JSON, carried in `value`).
+    pub fn central_status(&self) -> EchoCounterResult {
+        match self.inner.central_status() {
+            Ok(json) => ok_counter(json),
+            Err(err) => err_counter(err),
+        }
+    }
+
+    /// U7: drives a real kernel expiry sweep at decimal-string host time;
+    /// the settled-operation count decimal travels in `value`.
+    pub fn drive_expire_sweep(&self, now_ms: String) -> EchoCounterResult {
+        match self.inner.drive_expire_sweep(&now_ms) {
+            Ok(settled) => ok_counter(settled),
+            Err(err) => err_counter(err),
+        }
+    }
+
+    /// U7: drives the real shutdown transition; `released` /
+    /// `release-failed` travels in `value`. Idempotent.
+    pub fn drive_destroy(&self) -> EchoCounterResult {
+        match self.inner.drive_destroy() {
+            Ok(state) => ok_counter(state.to_string()),
+            Err(err) => err_counter(err),
+        }
+    }
+
+    /// U7 loud rejection for BLE transitions beyond the driven slice:
+    /// `capability.unsupported|capability` in the status record, never
+    /// silent or faked.
+    pub fn request_ble_transition(&self, transition: String) -> EchoStatus {
+        match self.inner.request_ble_transition(&transition) {
+            Ok(()) => ok_status(),
+            Err(err) => err_status(err),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -190,6 +227,41 @@ mod tests {
         assert!(session.cancel_inflight().ok);
         let out = session.echo_bytes_chunked(vec![1, 2, 3], 10);
         assert!(!out.ok && out.code == "operation.aborted");
+    }
+
+    #[test]
+    fn udl_surface_drives_the_transition_core() {
+        let session = EchoSession::new(REV.to_string());
+        let status = session.central_status();
+        assert!(status.ok);
+        assert_eq!(
+            status.value,
+            "{\"revision\":\"C-UBM.0.1.1-DRAFT\",\"live_operations\":0,\"retained_cleanup\":0}"
+        );
+        let sweep = session.drive_expire_sweep("0".to_string());
+        assert!(sweep.ok && sweep.value == "0");
+        let bad = session.drive_expire_sweep("nope".to_string());
+        assert!(!bad.ok && bad.code == "bytes.invalid" && bad.domain == "core");
+        let destroy = session.drive_destroy();
+        assert!(destroy.ok && destroy.value == "released");
+        assert!(session.drive_destroy().ok, "destroy drive is idempotent");
+        let loud = session.request_ble_transition("scan.start".to_string());
+        assert!(!loud.ok);
+        assert_eq!(
+            (
+                loud.code.as_str(),
+                loud.domain.as_str(),
+                loud.operation.as_str()
+            ),
+            (
+                "capability.unsupported",
+                "capability",
+                "request-ble-transition"
+            )
+        );
+        assert!(session.close().ok);
+        assert!(!session.central_status().ok);
+        assert_eq!(session.central_status().code, "lifecycle.destroyed");
     }
 
     #[test]

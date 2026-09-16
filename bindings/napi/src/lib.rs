@@ -135,6 +135,72 @@ impl EchoSession {
         Ok(())
     }
 
+    /// Observes the session-owned REAL Central (U7 transition-driving): the
+    /// frozen revision plus live kernel counters as a JSON document.
+    /// Rejects with `lifecycle.destroyed` after `close` like every call.
+    #[napi(catch_unwind)]
+    pub fn central_status(&self) -> Result<String> {
+        let core = self.inner.core.lock().map_err(|_| {
+            Error::new(
+                Status::GenericFailure,
+                "lifecycle.invariant-violation|core|central-status|lock-poisoned",
+            )
+        })?;
+        core.central_status("central-status").map_err(to_napi_error)
+    }
+
+    /// Drives a REAL kernel expiry sweep of the session-owned central at
+    /// host-supplied monotonic time `now_ms_decimal` (decimal string,
+    /// DATA-02 mapping, lossless past `Number.MAX_SAFE_INTEGER`). Returns
+    /// the settled-operation count as decimal.
+    #[napi(catch_unwind)]
+    pub fn drive_expire_sweep(&self, now_ms_decimal: String) -> Result<String> {
+        let mut core = self.inner.core.lock().map_err(|_| {
+            Error::new(
+                Status::GenericFailure,
+                "lifecycle.invariant-violation|core|central-expire-sweep|lock-poisoned",
+            )
+        })?;
+        core.drive_expire_sweep(&now_ms_decimal, "central-expire-sweep")
+            .map(|settled| settled.to_string())
+            .map_err(to_napi_error)
+    }
+
+    /// Drives the REAL shutdown transition of the session-owned central.
+    /// Returns `released` on a clean release, `release-failed` otherwise.
+    /// Idempotent. Orthogonal to `close` (the session stays usable for echo
+    /// until `close` destroys the binding lifetime).
+    #[napi(catch_unwind)]
+    pub fn drive_destroy(&self) -> Result<String> {
+        let mut core = self.inner.core.lock().map_err(|_| {
+            Error::new(
+                Status::GenericFailure,
+                "lifecycle.invariant-violation|core|central-destroy|lock-poisoned",
+            )
+        })?;
+        core.drive_destroy("central-destroy")
+            .map(std::string::ToString::to_string)
+            .map_err(to_napi_error)
+    }
+
+    /// Loud rejection for BLE transitions beyond the driven slice (scan,
+    /// connect, GATT, subscribe, ...): this boundary has no radio/host, so
+    /// every named transition fails closed with
+    /// `capability.unsupported|capability`, never silently or faked. An
+    /// empty name is `argument.invalid`; after `close` this reports
+    /// `lifecycle.destroyed` like every call.
+    #[napi(catch_unwind)]
+    pub fn request_ble_transition(&self, transition: String) -> Result<()> {
+        let core = self.inner.core.lock().map_err(|_| {
+            Error::new(
+                Status::GenericFailure,
+                "lifecycle.invariant-violation|core|request-ble-transition|lock-poisoned",
+            )
+        })?;
+        core.request_ble_transition(&transition, "request-ble-transition")
+            .map_err(to_napi_error)
+    }
+
     /// Registers the event callback. Registering twice replaces the previous
     /// registration (the old one is aborted first: no double delivery).
     #[napi(catch_unwind)]
