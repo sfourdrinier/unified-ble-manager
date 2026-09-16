@@ -332,6 +332,13 @@ const STAGED_CAPABILITY_IDS: [&str; 6] = [
 /// deterministic observation log. Every `*_step` runs one core transition
 /// against a bounded [`EffectBatch`] and returns one JSON observation
 /// object (also appended to the log drained by [`StagedDriver::drain_log`]).
+///
+/// Registry bounds: the op/peer/read/log registries carry no explicit cap
+/// by design. Each driver instance is fresh per scenario (one session, one
+/// scripted program, then dropped), so registry growth is bounded by the
+/// script's own step count; every counter saturates instead of wrapping
+/// and the clock is monotonic. A cross-scenario driver would need caps —
+/// that reuse is out of scope for this slice.
 #[derive(Debug)]
 pub struct StagedDriver {
     central: Central,
@@ -399,7 +406,8 @@ impl StagedDriver {
 
     /// Effects that could not be staged because the batch was full.
     /// Preserved accounting: a full batch fails loudly AND counts here,
-    /// never silently.
+    /// never silently. Counts one per failed drive call (a full-batch
+    /// rejection), not per individual effect.
     pub const fn dropped_not_staged(&self) -> u64 {
         self.dropped_not_staged
     }
@@ -609,14 +617,16 @@ impl StagedDriver {
             && self.central.scan_session_state(&id)
                 == Some(ubm_core::central::ScanSessionState::Starting)
         {
+            self.central.platform_scan_started(&id).map_err(|core| {
+                self.note_batch_full(&core);
+                central_error(&core, OP)
+            })?;
+            // Re-read the session state uniformly (same fail-closed read as
+            // the Stop branch): the transition owns the state, never a
+            // hardcoded expectation here.
             self.central
-                .platform_scan_started(&id)
-                .map(|()| ubm_core::central::ScanSessionState::Active)
-                .map_err(|core| {
-                    self.note_batch_full(&core);
-                    central_error(&core, OP)
-                })?;
-            ubm_core::central::ScanSessionState::Active
+                .scan_session_state(&id)
+                .unwrap_or(ubm_core::central::ScanSessionState::Failed)
         } else if event == ScanPlatformEvent::Stop {
             self.central.stop_scan(&id, now, &mut out).map_err(|core| {
                 self.note_batch_full(&core);
@@ -822,7 +832,7 @@ impl StagedDriver {
                 })?;
             // The synthetic radio reports the link up: settle the staged
             // connect op as a radio success so receipts stay truthful.
-            if let Some(name) = obj.field("op").and_then(JsonValue::as_str) {
+            if obj.field("op").and_then(JsonValue::as_str).is_some() {
                 let id = self.op_id_of(obj, op)?;
                 let ordinal = self.next_ordinal();
                 self.central.dispatch_op(&id, &mut out).map_err(|core| {
@@ -837,7 +847,6 @@ impl StagedDriver {
                         central_error(&core, op)
                     })?;
                 render_outcome(&mut ob, &outcome);
-                let _ = name;
             }
         } else if step == "link.loss" {
             let state = self
@@ -1083,7 +1092,6 @@ impl StagedDriver {
                 }
             }
         }
-        let _ = descriptor;
         Ok(index)
     }
 
@@ -1162,6 +1170,19 @@ impl StagedDriver {
         op: &'static str,
     ) -> Result<String, StagedError> {
         let now = self.advance_clock(obj, op)?;
+        // Validate the settle mode BEFORE any core transition: an unknown
+        // mode rejects with zero side effects (no admitted op, no registry
+        // entry, no dispatch), so a retry under the same op name still
+        // admits and dispatches cleanly.
+        let settle = str_param_default(obj, "settle", "dispatched", op)?;
+        if settle != "admitted" && settle != "dispatched" && settle != "success" {
+            return Err(StagedError::new(
+                "argument.invalid",
+                "core",
+                op,
+                "staged-settle-mode",
+            ));
+        }
         let path_index = self.path_index_of(obj, op)?;
         let timeout_ms = u64_param(obj, "timeout_ms", Some(5_000), op)?;
         let hex = str_param_default(obj, "value", "", op)?;
@@ -1225,8 +1246,8 @@ impl StagedDriver {
         };
         self.register_op(&op_name, id.clone(), op)?;
         // The synthetic radio answers immediately: dispatch, then settle as
-        // a radio success unless the script names another contender.
-        let settle = str_param_default(obj, "settle", "dispatched", op)?;
+        // a radio success unless the script names another contender (`settle`
+        // was already validated above, so only the three modes reach here).
         let mut ob = ok_ob(step);
         ob.str_field("op_id", id.as_str());
         if settle != "admitted" {
@@ -1245,15 +1266,12 @@ impl StagedDriver {
                     central_error(&core, op)
                 })?;
             render_outcome(&mut ob, &outcome);
-        } else if settle != "admitted" && settle != "dispatched" {
-            return Err(StagedError::new(
-                "argument.invalid",
-                "core",
-                op,
-                "staged-settle-mode",
-            ));
         }
         if is_read {
+            // Driver-side echo: the scripted payload is retained verbatim
+            // for `read.taken` and reported as `bytes`. Read bytes never
+            // transit the core (unlike notifications, whose deliver-take
+            // path runs through the core stream).
             self.read_values.retain(|(known, _)| known != &op_name);
             self.read_values.push((op_name, payload.clone()));
             ob.str_field("bytes", &hex_of(&payload));
@@ -1284,16 +1302,20 @@ fn node_uuid(obj: &JsonValue) -> Option<String> {
     obj.require_str("uuid").ok().map(String::from)
 }
 
-fn node_occurrence(obj: &JsonValue) -> u64 {
+/// Read one snapshot `occurrence`: absent/null means 0, numbers and decimal
+/// strings must parse, anything else fails closed (never coerced to 0).
+fn node_occurrence(obj: &JsonValue) -> Result<u64, ()> {
     match obj.field("occurrence") {
-        Some(JsonValue::Number(raw)) => raw.parse::<u64>().unwrap_or(0),
-        _ => 0,
+        None | Some(JsonValue::Null) => Ok(0),
+        Some(JsonValue::Number(raw)) => raw.parse::<u64>().map_err(|_| ()),
+        Some(JsonValue::Str(text)) => text.parse::<u64>().map_err(|_| ()),
+        Some(_) => Err(()),
     }
 }
 
 fn parse_service_node(obj: &JsonValue) -> Result<SnapshotNode, ()> {
     let uuid = node_uuid(obj).ok_or(())?;
-    let occurrence = node_occurrence(obj);
+    let occurrence = node_occurrence(obj)?;
     let mut characteristics = Vec::new();
     if let Some(JsonValue::Array(items)) = obj.field("characteristics") {
         for item in items {
@@ -1311,7 +1333,7 @@ fn parse_service_node(obj: &JsonValue) -> Result<SnapshotNode, ()> {
 
 fn parse_char_node(obj: &JsonValue) -> Result<SnapshotNode, ()> {
     let uuid = node_uuid(obj).ok_or(())?;
-    let occurrence = node_occurrence(obj);
+    let occurrence = node_occurrence(obj)?;
     let properties = match obj.field("properties") {
         Some(JsonValue::Str(text)) => parse_properties(text).ok_or(())?,
         None | Some(JsonValue::Null) => 0,
@@ -1323,7 +1345,7 @@ fn parse_char_node(obj: &JsonValue) -> Result<SnapshotNode, ()> {
             let uuid = node_uuid(item).ok_or(())?;
             descriptors.push(SnapshotNode {
                 uuid,
-                occurrence: node_occurrence(item),
+                occurrence: node_occurrence(item)?,
                 properties: 0,
                 descriptors: Vec::new(),
                 characteristics: Vec::new(),
@@ -1343,12 +1365,10 @@ fn parse_char_node(obj: &JsonValue) -> Result<SnapshotNode, ()> {
 /// characteristic paths carry their flags, descriptor paths carry the
 /// parent characteristic flags (readability gate for descriptor IO).
 fn snapshot_properties(
-    service: &SnapshotNode,
+    _service: &SnapshotNode,
     characteristic: Option<&SnapshotNode>,
-    descriptor: Option<&SnapshotNode>,
+    _descriptor: Option<&SnapshotNode>,
 ) -> u8 {
-    let _ = service;
-    let _ = descriptor;
     characteristic.map(|node| node.properties).unwrap_or(0)
 }
 

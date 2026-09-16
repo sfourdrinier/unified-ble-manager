@@ -157,6 +157,130 @@ fn duplicate_completion_suppresses() {
     assert!(dup.contains("\"settle\":\"duplicate-suppressed\""), "{dup}");
 }
 
+/// `read.taken` reports the driver-side scripted echo — including after
+/// database invalidation (the echo never transits the core, so generation
+/// changes cannot alter it, even as the core path itself goes stale).
+#[test]
+fn read_taken_echoes_scripted_bytes_after_invalidation() {
+    let mut driver = driver();
+    setup_link(&mut driver);
+    let _ = discover_db(&mut driver);
+    let read = run(
+        &mut driver,
+        "{\"step\":\"gatt.read\",\"op\":\"read0\",\"path\":1,\"value\":\"aa\",\"settle\":\"admitted\"}",
+    );
+    assert!(ok(&read), "{read}");
+    let taken = run(&mut driver, "{\"step\":\"read.taken\",\"op\":\"read0\"}");
+    assert!(ok(&taken), "{taken}");
+    assert!(taken.contains("\"bytes\":\"aa\""), "{taken}");
+    let changed = run(
+        &mut driver,
+        "{\"step\":\"gatt.services-changed\",\"peer\":\"p\"}",
+    );
+    assert!(ok(&changed), "{changed}");
+    // Post-invalidation the echo is unchanged ...
+    let retaken = run(&mut driver, "{\"step\":\"read.taken\",\"op\":\"read0\"}");
+    assert!(ok(&retaken), "{retaken}");
+    assert!(retaken.contains("\"bytes\":\"aa\""), "{retaken}");
+    // ... while the core path itself went stale.
+    let dispatch = run(&mut driver, "{\"step\":\"op.dispatch\",\"op\":\"read0\"}");
+    assert!(ok(&dispatch), "{dispatch}");
+    let late = run(
+        &mut driver,
+        "{\"step\":\"op.settle\",\"op\":\"read0\",\"kind\":\"success\"}",
+    );
+    assert!(ok(&late), "{late}");
+    assert!(late.contains("\"terminal\":\"failed\""), "{late}");
+    // Unknown names read null, never an error.
+    let ghost = run(&mut driver, "{\"step\":\"read.taken\",\"op\":\"ghost\"}");
+    assert!(ok(&ghost), "{ghost}");
+    assert!(ghost.contains("\"bytes\":null"), "{ghost}");
+}
+
+/// A failed explicit disconnect on a LIVE link retains cleanup ownership
+/// per code: the link stays connected, and destroy later reports
+/// `release-failed` instead of a silent clean release.
+#[test]
+fn live_peer_disconnect_failure_reports_release_failed_terminal() {
+    for code in [
+        "connection-failed",
+        "connection-lost",
+        "operation-timed-out",
+        "adapter-unavailable",
+    ] {
+        let mut driver = driver();
+        setup_link(&mut driver);
+        let failed = run(
+            &mut driver,
+            &format!("{{\"step\":\"link.disconnect-failed\",\"peer\":\"p\",\"code\":\"{code}\"}}"),
+        );
+        assert!(ok(&failed), "{code}: {failed}");
+        assert!(
+            failed.contains("\"connection\":\"connected\""),
+            "{code}: {failed}"
+        );
+        // Retained ownership surfaces at destroy: never a clean release
+        // after a reported disconnect failure.
+        let destroy = run(&mut driver, "{\"step\":\"staged.destroy\"}");
+        assert!(ok(&destroy), "{code}: {destroy}");
+        assert!(
+            destroy.contains("\"state\":\"release-failed\""),
+            "{code}: {destroy}"
+        );
+    }
+    // An unknown code fails closed before touching the core.
+    let mut driver = driver();
+    setup_link(&mut driver);
+    let bad = run(
+        &mut driver,
+        "{\"step\":\"link.disconnect-failed\",\"peer\":\"p\",\"code\":\"nope\"}",
+    );
+    assert!(!ok(&bad), "{bad}");
+    assert!(bad.contains("staged-disconnect-code"), "{bad}");
+}
+
+/// Explicit settle ordinals order nothing by themselves: the first valid
+/// contender settles, an ignored contender (even with a higher ordinal)
+/// blocks nothing, and a descending ordinal after terminal suppresses as
+/// a duplicate instead of reordering.
+#[test]
+fn descending_settle_ordinals_suppress_after_terminal() {
+    let mut driver = driver();
+    setup_link(&mut driver);
+    let _ = discover_db(&mut driver);
+    let admitted = run(
+        &mut driver,
+        "{\"step\":\"gatt.read\",\"op\":\"read0\",\"path\":1,\"value\":\"aa\",\"settle\":\"dispatched\"}",
+    );
+    assert!(ok(&admitted), "{admitted}");
+    // A higher-ordinal but invalid contender is ignored and blocks nothing.
+    let ignored = run(
+        &mut driver,
+        "{\"step\":\"op.settle\",\"op\":\"read0\",\"kind\":\"timeout\",\"valid\":false,\"ordinal\":9}",
+    );
+    assert!(ok(&ignored), "{ignored}");
+    assert!(
+        ignored.contains("\"settle\":\"contender-ignored\""),
+        "{ignored}"
+    );
+    // A lower ordinal then settles truthfully ...
+    let first = run(
+        &mut driver,
+        "{\"step\":\"op.settle\",\"op\":\"read0\",\"kind\":\"success\",\"ordinal\":2}",
+    );
+    assert!(ok(&first), "{first}");
+    assert!(first.contains("\"settle\":\"settled\""), "{first}");
+    assert!(first.contains("\"terminal\":\"succeeded\""), "{first}");
+    // ... and a reordered duplicate suppresses without a second settlement.
+    let dup = run(
+        &mut driver,
+        "{\"step\":\"op.settle\",\"op\":\"read0\",\"kind\":\"success\",\"ordinal\":1}",
+    );
+    assert!(ok(&dup), "{dup}");
+    assert!(dup.contains("\"settle\":\"duplicate-suppressed\""), "{dup}");
+    assert!(dup.contains("\"suppressed\":1"), "{dup}");
+}
+
 /// Service change between admission and settlement settles truthfully
 /// (stale handle), then rediscovery re-arms the database.
 #[test]
@@ -241,7 +365,9 @@ fn overflow_terminal_is_observable() {
     assert!(terminal.contains("\"reason\":\"overflow\""), "{terminal}");
 }
 
-/// Link loss races explicit disconnect with exactly one terminal result.
+/// Link loss races explicit disconnect with exactly one terminal result:
+/// loss wins, and a later explicit disconnect fails closed (no double
+/// release, no resurrection).
 #[test]
 fn link_loss_reports_lost_state() {
     let mut driver = driver();
@@ -249,6 +375,19 @@ fn link_loss_reports_lost_state() {
     let loss = run(&mut driver, "{\"step\":\"link.loss\",\"peer\":\"p\"}");
     assert!(ok(&loss), "{loss}");
     assert!(loss.contains("\"state\":\"lost\""), "{loss}");
+    // The race is already decided: explicit disconnect after loss fails
+    // closed instead of producing a second terminal.
+    let disconnect = run(
+        &mut driver,
+        "{\"step\":\"link.disconnect\",\"peer\":\"p\",\"lease\":\"lease-a\"}",
+    );
+    assert!(!ok(&disconnect), "{disconnect}");
+    assert!(
+        disconnect.contains(
+            "lifecycle.invalid-state|core|staged-link-disconnect|central.connection.transition"
+        ),
+        "{disconnect}"
+    );
 }
 
 /// Capability projection reports the six staged rows as limited.
@@ -345,6 +484,59 @@ fn lease_borrow_transfer_release_flows() {
     assert!(ok(&release_last), "{release_last}");
     assert!(release_last.contains("\"released\":true"), "{release_last}");
     assert!(release_last.contains("\"lease_count\":0"), "{release_last}");
+}
+
+/// A snapshot `occurrence` that is not a number fails closed instead of
+/// coercing to 0 (path selectors already fail closed on bad numbers).
+#[test]
+fn snapshot_bad_occurrence_fails_closed() {
+    let mut driver = driver();
+    setup_link(&mut driver);
+    let garbage = run(
+        &mut driver,
+        &format!(
+            "{{\"step\":\"gatt.discover\",\"peer\":\"p\",\"owner\":\"lease-a\",\"services\":[{{\"uuid\":\"{SVC}\",\"occurrence\":\"not-a-number\"}}]}}"
+        ),
+    );
+    assert!(!ok(&garbage), "{garbage}");
+    assert!(garbage.contains("staged-bad-snapshot"), "{garbage}");
+    let negative = run(
+        &mut driver,
+        &format!(
+            "{{\"step\":\"gatt.discover\",\"peer\":\"p\",\"owner\":\"lease-a\",\"services\":[{{\"uuid\":\"{SVC}\",\"occurrence\":-1}}]}}"
+        ),
+    );
+    assert!(!ok(&negative), "{negative}");
+    assert!(negative.contains("staged-bad-snapshot"), "{negative}");
+}
+
+/// An invalid `settle` mode rejects with zero core side effects: no op is
+/// admitted, no name is registered, nothing dispatches — so a retry under
+/// the same name still admits and dispatches cleanly.
+#[test]
+fn invalid_settle_mode_rejects_before_any_core_transition() {
+    let mut driver = driver();
+    setup_link(&mut driver);
+    let _ = discover_db(&mut driver);
+    let bad = run(
+        &mut driver,
+        "{\"step\":\"gatt.read\",\"op\":\"read0\",\"path\":1,\"value\":\"aa\",\"settle\":\"bogus\"}",
+    );
+    assert!(!ok(&bad), "{bad}");
+    assert!(
+        bad.contains("argument.invalid|core|staged-gatt-read|staged-settle-mode"),
+        "{bad}"
+    );
+    // No half-admitted op leaks: the same name admits fresh ...
+    let retry = run(
+        &mut driver,
+        "{\"step\":\"gatt.read\",\"op\":\"read0\",\"path\":1,\"value\":\"aa\",\"settle\":\"admitted\"}",
+    );
+    assert!(ok(&retry), "{retry}");
+    // ... and still dispatches, proving the rejected step left nothing
+    // behind (never admitted, never dispatched).
+    let dispatch = run(&mut driver, "{\"step\":\"op.dispatch\",\"op\":\"read0\"}");
+    assert!(ok(&dispatch), "{dispatch}");
 }
 
 /// Timeouts settle via expiry sweep with truthful terminals.

@@ -4,16 +4,27 @@
 // hardware exists) plus pinned frozen-rule expectations, per frozen base
 // TCK scenario. Each program runs step-by-step against the REAL staged
 // transition core (the napi session's `StagedDriver`, which owns a real
-// `ubm-core` Central); the parity suite asserts EQUAL observations
-// ref-vs-Rust: same data bytes, same error wires, same receipts, same
-// sequencing.
+// `ubm-core` Central); the parity suite asserts each observation matches
+// its frozen-rule pin below (SINGLE-COLUMN comparison: one executor, the
+// napi staged core — there is no second staged executor, so these pins
+// are not mechanical ref-vs-Rust output).
+//
+// Read-echo caveat: `gatt.read`/`gatt.read-descriptor` `bytes` and every
+// `read.taken` observation are DRIVER-SIDE ECHO of the scripted `value`
+// (retained verbatim by the driver; see `StagedDriver` read handling).
+// Read bytes never transit the core, so byte equality here is
+// script-echo equality — including the post-invalidation pins, which
+// prove the echo survives while the core path itself goes stale.
+// Notifications are genuine: `sub.notify` deliver-take runs through the
+// core stream, and `sub.take` bytes are core observations.
 //
 // Pin provenance (read-only sources; nothing here is edited):
 // - Every expectation transcribes a frozen C-UBM.0.1.2-DRAFT rule as
 //   implemented by the untouched `ubm-core` (the independent oracle).
 //   Wires were captured from real staged runs in this slice and verified
 //   against the frozen tables before pinning; a mismatch fails the suite,
-//   never the pin.
+//   never the pin. Each program records its own capture source in its
+//   `provenance` field.
 // - Kernel op ids (`central-op-N`) are session-scoped serialization labels,
 //   not contract observations: both columns normalize them to first-seen
 //   `@opN` tokens (`normalizeStagedLines`), preserving identity relations
@@ -84,6 +95,12 @@ export interface StagedProgram {
   readonly steps: readonly string[]
   /** Normalized expected observations, one per step, in order. */
   readonly expected: readonly string[]
+  /**
+   * Where this program's pins came from: the frozen rule transcribed plus
+   * the staged run they were captured from. Single-column pins are only
+   * as honest as their provenance, so every program records its own.
+   */
+  readonly provenance: string
 }
 
 function step(line: string): string {
@@ -114,6 +131,9 @@ function capCheck(id: string): string {
 /** Staged program closing `capability.truth-limits-evidence-and-binding`. */
 export const PROGRAM_CAPABILITY: StagedProgram = {
   scenarioId: 'capability.truth-limits-evidence-and-binding',
+  provenance:
+    'Pins transcribe the capability projection table (six limited rows; unknown ids reject ' +
+    'capability.unavailable); captured from a staged run of this program and checked against the frozen table.',
   steps: [CAP_PROJECT, CAP_ROWS, capCheck('central.scan'), capCheck('central.teleport')],
   expected: [
     CAP_PROJECTED,
@@ -136,6 +156,9 @@ export const PROGRAM_CAPABILITY: StagedProgram = {
 /** Staged program closing `scan.owner-join-authority-and-signature`. */
 export const PROGRAM_SCAN_OWNER: StagedProgram = {
   scenarioId: 'scan.owner-join-authority-and-signature',
+  provenance:
+    'Pins transcribe the scan arbitration rule (a second owner fails scan.already-active; ' +
+    'stop settles through stopping to stopped); captured from a staged run of this program.',
   steps: [
     step('{"step":"scan.start","op":"scan0","owner":"owner-a"}'),
     step('{"step":"scan.platform","op":"scan0","event":"platform-started"}'),
@@ -196,6 +219,9 @@ export const PROGRAM_SCAN_OWNER: StagedProgram = {
 /** Staged program closing `scan.fairness-abort-deadline-and-final-cleanup`. */
 export const PROGRAM_SCAN_FAIRNESS: StagedProgram = {
   scenarioId: 'scan.fairness-abort-deadline-and-final-cleanup',
+  provenance:
+    'Pins transcribe cancel-before-dispatch receipts (commit not-dispatched) and expiry-sweep ' +
+    'settlement; captured from a staged run of this program.',
   steps: [
     step('{"step":"scan.start","op":"s0","owner":"owner-a","timeout_ms":5000,"now":100}'),
     step('{"step":"op.cancel","op":"s0"}'),
@@ -282,6 +308,9 @@ function discoverDb(owner: string): string {
 /** Staged program closing `connection.lease-joins-borrowing-transfer-and-revocation`. */
 export const PROGRAM_CONNECTION_LEASE: StagedProgram = {
   scenarioId: 'connection.lease-joins-borrowing-transfer-and-revocation',
+  provenance:
+    'Pins transcribe lease join/borrow/transfer/release counts (released flips only on the last ' +
+    'release) and the loss terminal; captured from a staged run of this program.',
   steps: [
     step('{"step":"link.sharing","supported":true}'),
     ADVERTISE_P,
@@ -394,6 +423,9 @@ export const PROGRAM_CONNECTION_LEASE: StagedProgram = {
 /** Staged program closing `connection.two-client-arbitration`. */
 export const PROGRAM_CONNECTION_ARBITRATION: StagedProgram = {
   scenarioId: 'connection.two-client-arbitration',
+  provenance:
+    'Pins transcribe connection arbitration (second lease fails connection.already-owned) and the ' +
+    'loss-vs-disconnect race (loss wins; disconnect fails lifecycle.invalid-state); captured from a staged run.',
   steps: [
     ADVERTISE_P,
     step('{"step":"link.connect","peer":"p","lease":"lease-a","op":"conn0"}'),
@@ -456,6 +488,10 @@ function discoverDupDb(owner: string): string {
 /** Staged program closing `gatt.discovery-complete-paths-and-services-changed`. */
 export const PROGRAM_GATT_DISCOVERY: StagedProgram = {
   scenarioId: 'gatt.discovery-complete-paths-and-services-changed',
+  provenance:
+    'Pins transcribe path resolution (ambiguous/not-found), stale-handle after services-changed, ' +
+    'rediscovery re-arming, and driver-side read echo (read.taken survives invalidation while the ' +
+    'core path stays stale); captured from a staged run of this program.',
   steps: [
     ADVERTISE_P,
     step('{"step":"link.connect","peer":"p","lease":"lease-a","op":"conn0"}'),
@@ -468,7 +504,12 @@ export const PROGRAM_GATT_DISCOVERY: StagedProgram = {
     step('{"step":"gatt.read","op":"r0","path":1,"value":"aa","settle":"success"}'),
     step('{"step":"gatt.require-rediscovery","peer":"p"}'),
     discoverDupDb('lease-a'),
-    step('{"step":"gatt.read","op":"r1","path":5,"value":"bb","settle":"success"}')
+    step('{"step":"gatt.read","op":"r1","path":5,"value":"bb","settle":"success"}'),
+    // Post-invalidation echo pin: `services-changed` stales the database,
+    // yet `read.taken` still mirrors the scripted `bb` — the echo never
+    // transits the core.
+    step('{"step":"gatt.services-changed","peer":"p"}'),
+    step('{"step":"read.taken","op":"r1"}')
   ],
   expected: [
     ADVERTISE_P_SEEN,
@@ -564,13 +605,26 @@ export const PROGRAM_GATT_DISCOVERY: StagedProgram = {
       bytes: 'bb',
       staged: 6,
       effects: 'central.read#@op1:gatt.read'
-    })
+    }),
+    norm({
+      step: 'gatt.services-changed',
+      ok: true,
+      peer_key: 'platform-guid:peer-1',
+      database: 'changed',
+      staged: 0,
+      effects: ''
+    }),
+    norm({ step: 'read.taken', ok: true, bytes: 'bb', staged: 0, effects: '' })
   ]
 }
 
 /** Staged program closing `gatt.reads-descriptors-write-policy-and-dispatched-cancellation`. */
 export const PROGRAM_GATT_IO: StagedProgram = {
   scenarioId: 'gatt.reads-descriptors-write-policy-and-dispatched-cancellation',
+  provenance:
+    'Pins transcribe write-mode/maximum gating, descriptor IO, cancel-before/after-dispatch commits, ' +
+    'and driver-side read echo (read.taken bytes mirror the scripted value, never the core); ' +
+    'captured from a staged run of this program.',
   steps: [
     ADVERTISE_P,
     step('{"step":"link.connect","peer":"p","lease":"lease-a","op":"conn0"}'),
@@ -590,7 +644,12 @@ export const PROGRAM_GATT_IO: StagedProgram = {
     step('{"step":"gatt.read","op":"r0","path":1,"value":"aa","settle":"dispatched"}'),
     step('{"step":"op.cancel","op":"r0"}'),
     step('{"step":"gatt.read","op":"r2","path":1,"value":"aa","settle":"admitted"}'),
-    step('{"step":"op.cancel","op":"r2"}')
+    step('{"step":"op.cancel","op":"r2"}'),
+    // Driver-side echo pins: `read.taken` mirrors the scripted value (`aa`
+    // for the admitted-then-cancelled `r2`), never the core; unknown names
+    // read null.
+    step('{"step":"read.taken","op":"r2"}'),
+    step('{"step":"read.taken","op":"ghost"}')
   ],
   expected: [
     ADVERTISE_P_SEEN,
@@ -717,7 +776,9 @@ export const PROGRAM_GATT_IO: StagedProgram = {
       suppressed: 0,
       staged: 3,
       effects: ''
-    })
+    }),
+    norm({ step: 'read.taken', ok: true, bytes: 'aa', staged: 0, effects: '' }),
+    norm({ step: 'read.taken', ok: true, bytes: null, staged: 0, effects: '' })
   ]
 }
 
@@ -759,6 +820,9 @@ function linkSetupSeen(opToken: string): string[] {
 /** Staged program closing `subscription.enable-ready-shared-cccd-and-fanout`. */
 export const PROGRAM_SUBSCRIPTION_FANOUT: StagedProgram = {
   scenarioId: 'subscription.enable-ready-shared-cccd-and-fanout',
+  provenance:
+    'Pins transcribe subscribe-enable fanout (one delivery per ready consumer; take bytes are core ' +
+    'observations, not echo); captured from a staged run of this program.',
   steps: [
     ...linkSetup('lease-a', 'conn0'),
     discoverDb('lease-a'),
@@ -843,6 +907,9 @@ const OVERFLOW_BYTES_200 = 'ab'.repeat(200)
 /** Staged program closing `subscription.pre-ready-overflow-controls-and-late-quarantine`. */
 export const PROGRAM_SUBSCRIPTION_OVERFLOW: StagedProgram = {
   scenarioId: 'subscription.pre-ready-overflow-controls-and-late-quarantine',
+  provenance:
+    'Pins transcribe pre-ready quarantine and error-policy overflow terminals; captured from a ' +
+    'staged run of this program.',
   steps: [
     ...linkSetup('lease-a', 'conn0'),
     discoverDb('lease-a'),
@@ -921,6 +988,9 @@ export const PROGRAM_SUBSCRIPTION_OVERFLOW: StagedProgram = {
 /** Staged program closing `lifecycle.destroy-idempotency-admission-and-exact-settlement`. */
 export const PROGRAM_LIFECYCLE_DESTROY: StagedProgram = {
   scenarioId: 'lifecycle.destroy-idempotency-admission-and-exact-settlement',
+  provenance:
+    'Pins transcribe destroy idempotency (released twice) and post-destroy arbitration; captured ' +
+    'from a staged run of this program.',
   steps: [
     step('{"step":"scan.start","op":"s0","owner":"owner-a"}'),
     step('{"step":"staged.destroy"}'),
@@ -951,6 +1021,9 @@ export const PROGRAM_LIFECYCLE_DESTROY: StagedProgram = {
 /** Staged program closing `scenario.scan-connect-discover-read-notify-destroy`. */
 export const PROGRAM_VERTICAL: StagedProgram = {
   scenarioId: 'scenario.scan-connect-discover-read-notify-destroy',
+  provenance:
+    'Pins transcribe the full scan-to-destroy vertical receipts (connect/read/subscribe/notify/take ' +
+    'sequencing); captured from a staged run of this program.',
   steps: [
     step('{"step":"scan.start","op":"scan0","owner":"owner-a"}'),
     step('{"step":"scan.platform","op":"scan0","event":"platform-started"}'),

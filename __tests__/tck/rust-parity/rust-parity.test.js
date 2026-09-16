@@ -1,17 +1,22 @@
 // __tests__/tck/rust-parity/rust-parity.test.js
 //
-// U7 parity slice: EQUAL contract-level observations ref-vs-Rust for every
-// frozen base TCK scenario, driven against the REAL napi `.node` build of
-// the transition-driving core (no mocks, no fallback backend).
+// U7 parity slice: contract-level observations for every frozen base TCK
+// scenario, driven against the REAL napi `.node` build of the
+// transition-driving core (no mocks, no fallback backend).
 //
-// Two columns per scenario:
-// - Closed (11): the scenario's BLE vocabulary runs through the
-//   session-owned staged transition core from deterministic SYNTHETIC host
-//   events only (no BLE hardware exists). The suite asserts EQUAL
-//   observations: same data bytes, same error wires, same settlement
-//   receipts, same effect sequencing, same bounded-batch accounting
-//   (`src/tck/rust-driver/staged.ts` pins the frozen-rule expectations;
-//   the untouched `ubm-core` is the independent oracle).
+// Two comparison shapes (do not conflate them):
+// - Genuine ref-vs-Rust (counter vectors, lifetime, corpus shape): the
+//   JS reference oracle (`referenceCounter`) and the Rust observation must
+//   agree EQUAL.
+// - Single-column frozen-rule pins (11 staged programs + 6 stay-open
+//   probes): the scenario's BLE vocabulary runs through the session-owned
+//   staged transition core from deterministic SYNTHETIC host events only
+//   (no BLE hardware exists; there is no second staged executor). The
+//   suite asserts each observation matches its pin in
+//   `src/tck/rust-driver/staged.ts`: same data bytes, same error wires,
+//   same settlement receipts, same effect sequencing, same bounded-batch
+//   accounting. The untouched `ubm-core` is the independent oracle the
+//   pins were transcribed from — a mismatch fails the suite, never the pin.
 // - Stay-open (6): scenarios that genuinely need real radio (adapter
 //   enumeration, peer handshakes, adapter state, trace sinks) keep pinning
 //   their loud `capability.unsupported|capability` rejection AND a staged
@@ -85,7 +90,7 @@ const OPEN_IDS = RUST_PARITY_GAP_CANDIDATES.filter(
   candidate => candidate.status === 'stays-open-real-radio'
 ).map(candidate => candidate.scenarioId)
 
-describe('U7 rust parity (ref-vs-Rust per base TCK scenario)', () => {
+describe('U7 rust parity (frozen-rule pins plus ref-vs-Rust vectors per base TCK scenario)', () => {
   test('the rust driver runs the same frozen base corpus as the reference runner', () => {
     expect(BASE_DEFINITIONS.length).toBe(17)
     expect(rustParityBaseScenarios().map(definition => definition.id)).toEqual(
@@ -172,13 +177,15 @@ describe('U7 rust parity (ref-vs-Rust per base TCK scenario)', () => {
   )
 
   test.each(STAGED_PROGRAMS.map(program => [program.scenarioId, program]))(
-    '%s: staged transitions prove EQUAL observations ref-vs-Rust',
+    '%s: staged transitions match frozen-rule pins (single-column)',
     (_scenarioId, program) => {
       const addon = loadRustAddon()
       const row = observeStagedScenario(addon, program)
 
-      // Same scripted program on both columns, in order: data bytes, error
-      // wires, settlement receipts, effect sequencing all EQUAL.
+      // Single-column pin comparison, in order: each observation matches
+      // its frozen-rule pin (data bytes, error wires, settlement
+      // receipts, effect sequencing). Read `bytes` pins are driver-side
+      // echo by design (see the staged.ts header caveat).
       expect(row.scenarioId).toBe(program.scenarioId)
       expect(row.observations.length).toBe(program.expected.length)
       for (let index = 0; index < program.expected.length; index += 1) {
@@ -307,6 +314,15 @@ describe('U7 rust parity (ref-vs-Rust per base TCK scenario)', () => {
       expect(candidate.enforcedBy.length).toBeGreaterThan(0)
       expect(candidate.recordedAt.length).toBeGreaterThan(0)
       expect(candidate.staged.length).toBeGreaterThan(0)
+    }
+  })
+
+  test('every staged program records its pin provenance', () => {
+    expect(STAGED_PROGRAMS.length).toBe(11)
+    for (const program of STAGED_PROGRAMS) {
+      expect(typeof program.provenance).toBe('string')
+      expect(program.provenance.length).toBeGreaterThan(0)
+      expect(program.provenance).toMatch('staged run')
     }
   })
 
