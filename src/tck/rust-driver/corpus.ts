@@ -6,7 +6,7 @@
 //
 // Provenance (read-only; nothing here is edited):
 // - Corpus: `src/tck/scenarios.ts` (`baseTckScenarios`).
-// - Revision pin `C-UBM.0.1.1-DRAFT`: frozen `contracts/src/version.ts`
+// - Revision pin `C-UBM.0.1.2-DRAFT`: frozen `contracts/src/version.ts`
 //   (`CONTRACT_REVISION`) and `ubm_core::contracts::CONTRACT_REVISION`.
 // - Byte ceiling `524288`: frozen `contracts/src/bounds.ts`
 //   (`MAX_OPERATION_BYTES`) and `ubm_core::contracts::MAX_OPERATION_BYTES`.
@@ -29,13 +29,13 @@ import type { RustNativeAddon, RustStringOutcome, RustVoidOutcome } from './rust
 import { RustBackendDriver } from './rust-driver'
 
 /** Frozen contract revision spoken by both backends. */
-export const RUST_PARITY_REVISION = 'C-UBM.0.1.1-DRAFT'
+export const RUST_PARITY_REVISION = 'C-UBM.0.1.2-DRAFT'
 
 /** Frozen maximum byte-batch length observed on both backends. */
 export const RUST_PARITY_MAX_BYTES = 524288
 
 /** Exact status document a fresh transition core reports on every binding. */
-export const RUST_PARITY_FRESH_STATUS = '{"revision":"C-UBM.0.1.1-DRAFT","live_operations":0,"retained_cleanup":0}'
+export const RUST_PARITY_FRESH_STATUS = '{"revision":"C-UBM.0.1.2-DRAFT","live_operations":0,"retained_cleanup":0}'
 
 /** Exact wire identity of the unwired-transition loud rejection. */
 export const RUST_PARITY_UNWIRED_WIRE =

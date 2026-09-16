@@ -2,7 +2,7 @@
 
 Tested build: `jni =0.22.4`, `rustc 1.98.1 (48a229cea 2026-09-01)`, Linux
 x86_64 cdylib driven from `javac/java 21.0.12` (OpenJDK 64-Bit Server VM)
-through real JNI. Contract `C-UBM.0.1.1-DRAFT`, single-owned by `ubm-core`
+through real JNI. Contract `C-UBM.0.1.2-DRAFT`, single-owned by `ubm-core`
 (workspace member). Proven by `cargo test` and `run_jni_roundtrip.sh`
 (51 JVM checks). Anything outside this envelope is a limitation.
 

@@ -7,7 +7,7 @@ import fs from 'node:fs';
 const WASM_PATH = process.argv[2];
 assert.ok(WASM_PATH, 'usage: roundtrip.mjs <module.wasm>');
 
-const REV = 'C-UBM.0.1.1-DRAFT';
+const REV = 'C-UBM.0.1.2-DRAFT';
 const MAX = 524288;
 const CODE = { OK: 0, ARG: 1, BYTES_INVALID: 2, TOO_LARGE: 3, ABORTED: 4, STATE: 5, INCOMPAT: 6, CAP: 7 };
 
@@ -219,7 +219,7 @@ for (const bad of ['', '-1', '+5', '12a34', ' 42', '4.0', '0x10', '1844674407370
   const status = statusJson();
   assert.ok(status.ok, 'status must succeed once initialised');
   assert.equal(status.text,
-    '{"revision":"C-UBM.0.1.1-DRAFT","live_operations":0,"retained_cleanup":0}');
+    '{"revision":"C-UBM.0.1.2-DRAFT","live_operations":0,"retained_cleanup":0}');
   checkOk();
   // Real kernel expiry sweeps settle nothing on a fresh central (twice),
   // over decimal-string host time (DATA-02 mapping, lossless past 2^53).

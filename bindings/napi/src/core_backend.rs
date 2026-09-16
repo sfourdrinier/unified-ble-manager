@@ -1,7 +1,7 @@
 //! Core-backed binding core for the N-API binding.
 //!
 //! The `CoreBackend` seam is implemented for [`CoreSession`], whose contract
-//! truth is single-owned by `ubm-core` (frozen `C-UBM.0.1.1-DRAFT`): the
+//! truth is single-owned by `ubm-core` (frozen `C-UBM.0.1.2-DRAFT`): the
 //! revision identity, the byte ceiling, and the decimal-string counter
 //! parsing all come from `ubm_core::contracts`. No contract constant or
 //! validator is duplicated here — the previous echo-only stand-in
@@ -17,7 +17,7 @@
 //! identities (`capability.unsupported`); nothing unimplemented passes
 //! silently.
 //!
-//! Contract mirror (single-sourced from `ubm-core`, frozen C-UBM.0.1.1-DRAFT):
+//! Contract mirror (single-sourced from `ubm-core`, frozen C-UBM.0.1.2-DRAFT):
 //! - `CONTRACT_REVISION`: revision mismatch fails closed
 //!   (`protocol.incompatible`); no effect before init
 //!   (`lifecycle.invalid-state`, mirrors `assertHandshakeComplete`).
@@ -476,7 +476,7 @@ mod tests {
 
     #[test]
     fn revision_is_the_frozen_contract() {
-        assert_eq!(REV, "C-UBM.0.1.1-DRAFT");
+        assert_eq!(REV, "C-UBM.0.1.2-DRAFT");
         assert_eq!(REV, ubm_core::contracts::CONTRACT_REVISION);
     }
 
@@ -673,7 +673,7 @@ mod tests {
         let core = CoreSession::open(REV).unwrap();
         assert_eq!(
             core.central_status("central-status").unwrap(),
-            "{\"revision\":\"C-UBM.0.1.1-DRAFT\",\"live_operations\":0,\"retained_cleanup\":0}"
+            "{\"revision\":\"C-UBM.0.1.2-DRAFT\",\"live_operations\":0,\"retained_cleanup\":0}"
         );
     }
 
@@ -699,7 +699,7 @@ mod tests {
         assert_eq!((err.code, err.detail), ("bytes.invalid", "u64.input"));
         assert_eq!(
             core.central_status("central-status").unwrap(),
-            "{\"revision\":\"C-UBM.0.1.1-DRAFT\",\"live_operations\":0,\"retained_cleanup\":0}"
+            "{\"revision\":\"C-UBM.0.1.2-DRAFT\",\"live_operations\":0,\"retained_cleanup\":0}"
         );
     }
 

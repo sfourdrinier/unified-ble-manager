@@ -3,7 +3,7 @@
 Tested build: `uniffi =0.32.1 + build feature`, `rustc 1.98.1
 (48a229cea 2026-09-01)`, Linux x86_64; codegen `uniffi-bindgen 0.32.1`;
 Python `3.10.10` driving the REAL generated `ubm_echo.py` against the REAL
-built cdylib. Contract `C-UBM.0.1.1-DRAFT`, single-owned by `ubm-core`
+built cdylib. Contract `C-UBM.0.1.2-DRAFT`, single-owned by `ubm-core`
 (workspace member). Proven by `cargo test` and `run_uniffi_roundtrip.sh`
 (58 foreign checks). Anything outside this envelope is a limitation.
 

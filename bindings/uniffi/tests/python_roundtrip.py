@@ -20,7 +20,7 @@ assert os.path.isfile(os.path.join(BIND_DIR, "libubm5_uniffi_echo.so")), f"cdyli
 sys.path.insert(0, BIND_DIR)
 import ubm_echo
 
-REV = "C-UBM.0.1.1-DRAFT"
+REV = "C-UBM.0.1.2-DRAFT"
 MAX_BYTES = 524288
 PASS = 0
 
@@ -118,7 +118,7 @@ print("== U7 transition-driving: REAL Kernel+Central ==")
 d = ubm_echo.EchoSession(REV)
 r = d.central_status()
 check("central status", r.ok and r.value ==
-      '{"revision":"C-UBM.0.1.1-DRAFT","live_operations":0,"retained_cleanup":0}', r.value)
+      '{"revision":"C-UBM.0.1.2-DRAFT","live_operations":0,"retained_cleanup":0}', r.value)
 r = d.drive_expire_sweep("0")
 check("sweep settles nothing fresh", r.ok and r.value == "0", r.value)
 r = d.drive_expire_sweep("18446744073709551615")

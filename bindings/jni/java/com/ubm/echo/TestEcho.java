@@ -12,7 +12,7 @@ import java.util.concurrent.atomic.AtomicReference;
  * and panic containment. Fails loudly with a non-zero exit; no skips.
  */
 public final class TestEcho {
-    static final String REV = "C-UBM.0.1.1-DRAFT";
+    static final String REV = "C-UBM.0.1.2-DRAFT";
     static final int MAX_BYTES = 524288;
     static int passed = 0;
 
@@ -136,7 +136,7 @@ public final class TestEcho {
         // Kernel+Central (not feasibility-echo state).
         long driver = EchoBridge.nativeOpen(REV);
         check("central status", EchoBridge.nativeCentralStatus(driver).equals(
-                "{\"revision\":\"C-UBM.0.1.1-DRAFT\",\"live_operations\":0,\"retained_cleanup\":0}"));
+                "{\"revision\":\"C-UBM.0.1.2-DRAFT\",\"live_operations\":0,\"retained_cleanup\":0}"));
         check("sweep settles nothing fresh",
                 EchoBridge.nativeExpireSweep(driver, "0").equals("0"));
         check("sweep u64max time",

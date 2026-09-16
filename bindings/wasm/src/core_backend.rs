@@ -2,7 +2,7 @@
 //! no Tokio, no filesystem, no radio).
 //!
 //! The `CoreBackend` seam is implemented for [`CoreSession`], whose contract
-//! truth is single-owned by `ubm-core` (frozen `C-UBM.0.1.1-DRAFT`): the
+//! truth is single-owned by `ubm-core` (frozen `C-UBM.0.1.2-DRAFT`): the
 //! revision identity, the byte ceiling, and the decimal-string counter
 //! parsing all come from `ubm_core::contracts`. No contract constant or
 //! validator is duplicated here — the previous echo-only stand-in
@@ -554,7 +554,7 @@ mod tests {
 
     #[test]
     fn revision_is_the_frozen_contract() {
-        assert_eq!(CONTRACT_REVISION, "C-UBM.0.1.1-DRAFT");
+        assert_eq!(CONTRACT_REVISION, "C-UBM.0.1.2-DRAFT");
         assert_eq!(CONTRACT_REVISION, ubm_core::contracts::CONTRACT_REVISION);
         assert_eq!(u64_max_decimal(), "18446744073709551615");
     }
@@ -761,7 +761,7 @@ mod tests {
         let core = initialized();
         assert_eq!(
             core.central_status("central-status").unwrap(),
-            "{\"revision\":\"C-UBM.0.1.1-DRAFT\",\"live_operations\":0,\"retained_cleanup\":0}"
+            "{\"revision\":\"C-UBM.0.1.2-DRAFT\",\"live_operations\":0,\"retained_cleanup\":0}"
         );
     }
 

@@ -236,7 +236,7 @@ mod tests {
         assert!(status.ok);
         assert_eq!(
             status.value,
-            "{\"revision\":\"C-UBM.0.1.1-DRAFT\",\"live_operations\":0,\"retained_cleanup\":0}"
+            "{\"revision\":\"C-UBM.0.1.2-DRAFT\",\"live_operations\":0,\"retained_cleanup\":0}"
         );
         let sweep = session.drive_expire_sweep("0".to_string());
         assert!(sweep.ok && sweep.value == "0");

@@ -4,7 +4,7 @@ Tested builds: default `wasm32-unknown-unknown` on `rustc 1.98.1
 (48a229cea 2026-09-01)` (zero imports; the only dependency is the portable
 `ubm-core`), driven in Node `v22.21.1` via `js/roundtrip.mjs`; `js-glue`
 (`wasm-bindgen =0.2.128`) compile-checked for wasm32 plus export presence.
-Contract `C-UBM.0.1.1-DRAFT`, single-owned by `ubm-core` (workspace member).
+Contract `C-UBM.0.1.2-DRAFT`, single-owned by `ubm-core` (workspace member).
 Proven by `cargo test` and `run_wasm_roundtrip.sh`. Anything outside this
 envelope is a limitation, not a pass.
 

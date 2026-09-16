@@ -1,6 +1,6 @@
 //! Central/GATT primitives over the ownership kernel (CORE-CENTRAL, UBM 5.0).
 //!
-//! Derived from C-UBM.0.1.1-DRAFT `central.ts` (scan/write/long-write/controls
+//! Derived from C-UBM.0.1.2-DRAFT `central.ts` (scan/write/long-write/controls
 //! validation), `hosts.ts` (scan/connection arbitration, transfer validation),
 //! `transitions.ts` (scan-session, connection, database, subscription machines
 //! plus contention rulings), `identities.ts` (attachment/peer/path/generation

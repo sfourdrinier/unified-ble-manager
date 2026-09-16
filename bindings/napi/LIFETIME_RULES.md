@@ -2,7 +2,7 @@
 
 Tested build: `napi =2.16.17 + napi4 feature`, `rustc 1.98.1
 (48a229cea 2026-09-01)`, Node `v22.21.1`, Linux x86_64, debug cdylib loaded
-as `ubm_echo.linux-x64.node`. Contract `C-UBM.0.1.1-DRAFT`, single-owned by
+as `ubm_echo.linux-x64.node`. Contract `C-UBM.0.1.2-DRAFT`, single-owned by
 `ubm-core` (workspace member; this crate links it — see the wiring note
 below). Proven by `js/roundtrip.cjs`, `js/exit_probe.cjs`, and `cargo test`.
 Anything outside this envelope is a limitation, not a pass.

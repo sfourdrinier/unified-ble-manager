@@ -11,7 +11,7 @@ No BLE functionality is reported from these tests.
 Each binding links `ubm-core` as a workspace path dependency and implements
 its `CoreBackend` seam for the ubm-core-backed `CoreSession`
 (`src/core_backend.rs`, one implementation per binding). Contract truth —
-revision `C-UBM.0.1.1-DRAFT`, `MAX_OPERATION_BYTES`, decimal-string counter
+revision `C-UBM.0.1.2-DRAFT`, `MAX_OPERATION_BYTES`, decimal-string counter
 parsing — is single-owned by `ubm-core`; the former echo-only stand-ins
 (`echo_core.rs`) are deleted, so there are no dual owners. The echo
 transport itself stays feasibility-echo (NOT BLE functionality); wiring real

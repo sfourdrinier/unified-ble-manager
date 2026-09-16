@@ -9,7 +9,7 @@ const ADDON = process.env.UBM_NAPI_ADDON ||
   path.join(__dirname, '..', 'ubm_echo.linux-x64.node');
 const addon = require(ADDON);
 
-const REV = 'C-UBM.0.1.1-DRAFT';
+const REV = 'C-UBM.0.1.2-DRAFT';
 const MAX = 524288;
 
 function codeOf(err) {
@@ -110,7 +110,7 @@ async function main() {
   // block, so driving observations stay isolated from the echo exchange.
   const driver = new addon.EchoSession(REV);
   assert.equal(driver.centralStatus(),
-    '{"revision":"C-UBM.0.1.1-DRAFT","live_operations":0,"retained_cleanup":0}');
+    '{"revision":"C-UBM.0.1.2-DRAFT","live_operations":0,"retained_cleanup":0}');
   // Real kernel expiry sweeps settle nothing on a fresh central (twice:
   // driving is repeatable), over decimal-string host time (DATA-02 style).
   assert.equal(driver.driveExpireSweep('0'), '0');
