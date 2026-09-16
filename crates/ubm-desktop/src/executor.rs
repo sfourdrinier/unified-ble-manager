@@ -14,7 +14,14 @@
 //! imports) and avoid syntax newer than Rust edition 2021 so it still
 //! compiles inside the Tauri crate (edition 2021).
 
+// N.B.: rustfmt is skipped on these imports on purpose. This file is
+// `#[path]`-included by the edition-2021 Tauri shell while living in an
+// edition-2024 crate, and the two style editions sort `OnceLock` vs
+// `atomic` in opposite orders — no single ordering satisfies both
+// `cargo fmt` scopes (workspace + `native/tauri` manifest, both CI-gated).
+#[rustfmt::skip]
 use std::sync::OnceLock;
+#[rustfmt::skip]
 use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Static handle for the one shared desktop runtime.
