@@ -365,6 +365,58 @@ jobs:
       - name: Contracts tests
         run: pnpm contracts:test
 
+  # UBM 5.0 Rust workspace (pinned toolchain via rust-toolchain.toml).
+  # Matrix covers all three hosted OSes; formatting is Linux-only (it is
+  # platform-independent — same convention as the Tauri job).
+  rust-5-0:
+    name: Rust 5.0 workspace (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.0
+
+      - name: Install pinned Rust components
+        # cargo --version resolves rust-toolchain.toml and installs the
+        # pinned toolchain when absent; components attach to it.
+        run: |
+          cargo --version
+          rustup component add rustfmt clippy
+
+      - name: Check Rust formatting (workspace scope)
+        if: runner.os == 'Linux'
+        run: cargo fmt --all -- --check
+
+      - name: Reject Rust warnings
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Test Rust workspace
+        run: cargo test --locked
+
+  # UBM 5.0 Rust/JS parity (napi roundtrip + staged-fault proofs). Linux-only:
+  # the napi toolchain build is host-sensitive and parity is OS-independent.
+  rust-parity-5-0:
+    name: Rust 5.0 parity (napi roundtrip)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.0
+
+      - name: Setup JS package
+        uses: ./.github/actions/setup-js-package
+        with:
+          prepack: 'false'
+          node-version: '22'
+
+      - name: Install pinned Rust
+        run: cargo --version
+
+      - name: Rust parity proofs
+        run: pnpm test:parity
+
   changes:
     name: Detect path changes
     if: |
