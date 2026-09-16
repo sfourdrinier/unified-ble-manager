@@ -13,12 +13,12 @@
 //! indications are indistinguishable from notifications on this stream (see
 //! `PARITY_GAPS.md`).
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Mutex as StdMutex;
 
 use btleplug::api::{
-    Central as _, CentralEvent, CharPropFlags, Manager as _, Peripheral as _, ScanFilter,
-    ValueNotification,
+    Central as _, CentralEvent, CharPropFlags, Characteristic, Descriptor, Manager as _,
+    Peripheral as _, ScanFilter, Service, ValueNotification,
 };
 use btleplug::platform::{Adapter, Manager, Peripheral, PeripheralId};
 use futures_util::StreamExt;
@@ -35,6 +35,18 @@ type EventStream = std::pin::Pin<Box<dyn futures_util::Stream<Item = CentralEven
 type NotificationStream =
     std::pin::Pin<Box<dyn futures_util::Stream<Item = ValueNotification> + Send>>;
 
+/// One live notification forwarder: the task fanning one characteristic
+/// instance into the shared event channel, plus the instance address for
+/// best-effort OS unsubscribe at teardown.
+struct ForwarderEntry {
+    task: tokio::task::JoinHandle<()>,
+    peer_id: String,
+    service_uuid: String,
+    service_occurrence: u64,
+    characteristic_uuid: String,
+    characteristic_occurrence: u64,
+}
+
 /// Production radio backend over one btleplug adapter.
 pub struct BtleplugRadio {
     adapter: Adapter,
@@ -43,7 +55,7 @@ pub struct BtleplugRadio {
     events: Mutex<Option<EventStream>>,
     notifications: mpsc::UnboundedSender<RadioEvent>,
     notification_rx: Mutex<mpsc::UnboundedReceiver<RadioEvent>>,
-    forwarders: StdMutex<HashMap<String, tokio::task::JoinHandle<()>>>,
+    forwarders: StdMutex<HashMap<String, ForwarderEntry>>,
 }
 
 impl BtleplugRadio {
@@ -64,10 +76,12 @@ impl BtleplugRadio {
         })?;
         let mut chosen: Option<(Adapter, String)> = None;
         for adapter in adapters {
-            let info = adapter
-                .adapter_info()
-                .await
-                .unwrap_or_else(|_| "unknown".to_owned());
+            // Never synthesize an adapter identity: when the OS withholds
+            // the info, the adapter is skipped, not labelled "unknown".
+            let info = match adapter.adapter_info().await {
+                Ok(info) => info,
+                Err(_) => continue,
+            };
             let wanted = adapter_id.as_deref().unwrap_or(info.as_str());
             if info == wanted {
                 chosen = Some((adapter, info));
@@ -153,14 +167,22 @@ impl BtleplugRadio {
         None
     }
 
+    /// Occurrence-aware instance lookup over the cached GATT database.
+    /// Services and characteristics iterate in btleplug's canonical order
+    /// (UUID-first), the same order [`RadioBoundary::discover`] numbers
+    /// occurrences in, so occurrence `n` selects the n-th same-UUID entry
+    /// in both paths. UUID alone never identifies an instance.
     fn find_characteristic(
         peripheral: &Peripheral,
+        service_uuid: &str,
+        service_occurrence: u64,
         characteristic_uuid: &str,
-    ) -> Option<btleplug::api::Characteristic> {
-        peripheral
-            .characteristics()
-            .into_iter()
-            .find(|known| known.uuid.to_string() == characteristic_uuid)
+        characteristic_occurrence: u64,
+    ) -> Option<Characteristic> {
+        let services = peripheral.services();
+        select_service(&services, service_uuid, service_occurrence).and_then(|service| {
+            select_characteristic(service, characteristic_uuid, characteristic_occurrence).cloned()
+        })
     }
 
     async fn recv_notification(&self) -> Option<RadioEvent> {
@@ -170,16 +192,81 @@ impl BtleplugRadio {
 
     fn find_descriptor(
         peripheral: &Peripheral,
+        service_uuid: &str,
+        service_occurrence: u64,
         characteristic_uuid: &str,
+        characteristic_occurrence: u64,
         descriptor_uuid: &str,
-    ) -> Option<btleplug::api::Descriptor> {
-        Self::find_characteristic(peripheral, characteristic_uuid).and_then(|characteristic| {
-            characteristic
-                .descriptors
-                .into_iter()
-                .find(|known| known.uuid.to_string() == descriptor_uuid)
+        descriptor_occurrence: u64,
+    ) -> Option<Descriptor> {
+        Self::find_characteristic(
+            peripheral,
+            service_uuid,
+            service_occurrence,
+            characteristic_uuid,
+            characteristic_occurrence,
+        )
+        .and_then(|characteristic| {
+            select_descriptor(&characteristic, descriptor_uuid, descriptor_occurrence).cloned()
         })
     }
+}
+
+/// Per-instance forwarder key: duplicate UUIDs never share a forwarder.
+fn forwarder_key(
+    peer_id: &str,
+    service_uuid: &str,
+    service_occurrence: u64,
+    characteristic_uuid: &str,
+    characteristic_occurrence: u64,
+) -> String {
+    format!(
+        "{peer_id}#{service_uuid}:{service_occurrence}#{characteristic_uuid}:{characteristic_occurrence}"
+    )
+}
+
+/// Select the `occurrence`-th service with `uuid` in canonical
+/// (UUID-first) order. `None` when the instance does not exist.
+fn select_service<'s>(
+    services: &'s BTreeSet<Service>,
+    uuid: &str,
+    occurrence: u64,
+) -> Option<&'s Service> {
+    let want = usize::try_from(occurrence).ok()?;
+    services
+        .iter()
+        .filter(|service| service.uuid.to_string() == uuid)
+        .nth(want)
+}
+
+/// Select the `occurrence`-th characteristic with `uuid` under one
+/// service instance, in canonical order.
+fn select_characteristic<'s>(
+    service: &'s Service,
+    uuid: &str,
+    occurrence: u64,
+) -> Option<&'s Characteristic> {
+    let want = usize::try_from(occurrence).ok()?;
+    service
+        .characteristics
+        .iter()
+        .filter(|characteristic| characteristic.uuid.to_string() == uuid)
+        .nth(want)
+}
+
+/// Select the `occurrence`-th descriptor with `uuid` under one
+/// characteristic instance, in canonical order.
+fn select_descriptor<'s>(
+    characteristic: &'s Characteristic,
+    uuid: &str,
+    occurrence: u64,
+) -> Option<&'s Descriptor> {
+    let want = usize::try_from(occurrence).ok()?;
+    characteristic
+        .descriptors
+        .iter()
+        .filter(|descriptor| descriptor.uuid.to_string() == uuid)
+        .nth(want)
 }
 
 fn map_radio(
@@ -297,31 +384,43 @@ impl RadioBoundary for BtleplugRadio {
             ubm_core::contracts::BleErrorCode::GattDiscoveryRequired,
             ubm_core::contracts::BleErrorDomain::Gatt,
         ))?;
-        let mut services: Vec<_> = peripheral.services().into_iter().collect();
-        services.sort_by_key(|service| service.uuid);
+        // The cached service set already iterates in canonical UUID-first
+        // order; occurrences count per UUID in that order so instance
+        // numbers agree with the occurrence-aware lookup path (H1).
+        let services = peripheral.services();
         let mut out = Vec::with_capacity(services.len());
-        for (service_occurrence, service) in services.iter().enumerate() {
-            let mut characteristics: Vec<_> = service.characteristics.iter().collect();
-            characteristics.sort_by_key(|characteristic| characteristic.uuid);
-            let mut chars_out = Vec::with_capacity(characteristics.len());
-            for (occurrence, characteristic) in characteristics.iter().enumerate() {
-                let mut descriptors: Vec<_> = characteristic.descriptors.iter().collect();
-                descriptors.sort_by_key(|descriptor| descriptor.uuid);
+        let mut service_counts: HashMap<uuid::Uuid, u64> = HashMap::new();
+        for service in &services {
+            let service_occurrence = service_counts.entry(service.uuid).or_insert(0);
+            let service_occ = *service_occurrence;
+            *service_occurrence += 1;
+            let mut chars_out = Vec::with_capacity(service.characteristics.len());
+            let mut char_counts: HashMap<uuid::Uuid, u64> = HashMap::new();
+            for characteristic in &service.characteristics {
+                let char_occurrence = char_counts.entry(characteristic.uuid).or_insert(0);
+                let char_occ = *char_occurrence;
+                *char_occurrence += 1;
+                let mut desc_counts: HashMap<uuid::Uuid, u64> = HashMap::new();
+                let mut descs_out = Vec::with_capacity(characteristic.descriptors.len());
+                for descriptor in &characteristic.descriptors {
+                    let desc_occurrence = desc_counts.entry(descriptor.uuid).or_insert(0);
+                    let desc_occ = *desc_occurrence;
+                    *desc_occurrence += 1;
+                    descs_out.push(DescriptorSnapshot {
+                        uuid: descriptor.uuid.to_string(),
+                        occurrence: desc_occ,
+                    });
+                }
                 chars_out.push(CharacteristicSnapshot {
                     uuid: characteristic.uuid.to_string(),
-                    occurrence: occurrence as u64,
+                    occurrence: char_occ,
                     properties: property_flags(characteristic.properties),
-                    descriptors: descriptors
-                        .iter()
-                        .map(|descriptor| DescriptorSnapshot {
-                            uuid: descriptor.uuid.to_string(),
-                        })
-                        .collect(),
+                    descriptors: descs_out,
                 });
             }
             out.push(ServiceSnapshot {
                 uuid: service.uuid.to_string(),
-                occurrence: service_occurrence as u64,
+                occurrence: service_occ,
                 characteristics: chars_out,
             });
         }
@@ -331,39 +430,58 @@ impl RadioBoundary for BtleplugRadio {
     async fn read_characteristic(
         &self,
         peer_id: &str,
+        service_uuid: &str,
+        service_occurrence: u64,
         characteristic_uuid: &str,
+        characteristic_occurrence: u64,
     ) -> Result<Vec<u8>, DesktopError> {
         let peripheral = self.peripheral_by_id(peer_id).await?;
-        let characteristic = Self::find_characteristic(&peripheral, characteristic_uuid)
-            .ok_or_else(|| {
-                DesktopError::new(
-                    ubm_core::contracts::BleErrorCode::GattNotFound,
-                    ubm_core::contracts::BleErrorDomain::Gatt,
-                    "gatt.read",
-                )
-            })?;
+        let characteristic = Self::find_characteristic(
+            &peripheral,
+            service_uuid,
+            service_occurrence,
+            characteristic_uuid,
+            characteristic_occurrence,
+        )
+        .ok_or_else(|| {
+            DesktopError::new(
+                ubm_core::contracts::BleErrorCode::GattNotFound,
+                ubm_core::contracts::BleErrorDomain::Gatt,
+                "gatt.read",
+            )
+        })?;
         peripheral
             .read(&characteristic)
             .await
             .map_err(|error| DesktopError::read_failed(error.to_string()))
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn write_characteristic(
         &self,
         peer_id: &str,
+        service_uuid: &str,
+        service_occurrence: u64,
         characteristic_uuid: &str,
+        characteristic_occurrence: u64,
         value: Vec<u8>,
         with_response: bool,
     ) -> Result<(), DesktopError> {
         let peripheral = self.peripheral_by_id(peer_id).await?;
-        let characteristic = Self::find_characteristic(&peripheral, characteristic_uuid)
-            .ok_or_else(|| {
-                DesktopError::new(
-                    ubm_core::contracts::BleErrorCode::GattNotFound,
-                    ubm_core::contracts::BleErrorDomain::Gatt,
-                    "gatt.write",
-                )
-            })?;
+        let characteristic = Self::find_characteristic(
+            &peripheral,
+            service_uuid,
+            service_occurrence,
+            characteristic_uuid,
+            characteristic_occurrence,
+        )
+        .ok_or_else(|| {
+            DesktopError::new(
+                ubm_core::contracts::BleErrorCode::GattNotFound,
+                ubm_core::contracts::BleErrorDomain::Gatt,
+                "gatt.write",
+            )
+        })?;
         let mode = if with_response {
             btleplug::api::WriteType::WithResponse
         } else {
@@ -375,15 +493,28 @@ impl RadioBoundary for BtleplugRadio {
             .map_err(|error| DesktopError::write_failed(error.to_string()))
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn read_descriptor(
         &self,
         peer_id: &str,
+        service_uuid: &str,
+        service_occurrence: u64,
         characteristic_uuid: &str,
+        characteristic_occurrence: u64,
         descriptor_uuid: &str,
+        descriptor_occurrence: u64,
     ) -> Result<Vec<u8>, DesktopError> {
         let peripheral = self.peripheral_by_id(peer_id).await?;
-        let descriptor = Self::find_descriptor(&peripheral, characteristic_uuid, descriptor_uuid)
-            .ok_or_else(|| {
+        let descriptor = Self::find_descriptor(
+            &peripheral,
+            service_uuid,
+            service_occurrence,
+            characteristic_uuid,
+            characteristic_occurrence,
+            descriptor_uuid,
+            descriptor_occurrence,
+        )
+        .ok_or_else(|| {
             DesktopError::new(
                 ubm_core::contracts::BleErrorCode::GattNotFound,
                 ubm_core::contracts::BleErrorDomain::Gatt,
@@ -396,16 +527,29 @@ impl RadioBoundary for BtleplugRadio {
             .map_err(|error| DesktopError::read_failed(error.to_string()))
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn write_descriptor(
         &self,
         peer_id: &str,
+        service_uuid: &str,
+        service_occurrence: u64,
         characteristic_uuid: &str,
+        characteristic_occurrence: u64,
         descriptor_uuid: &str,
+        descriptor_occurrence: u64,
         value: Vec<u8>,
     ) -> Result<(), DesktopError> {
         let peripheral = self.peripheral_by_id(peer_id).await?;
-        let descriptor = Self::find_descriptor(&peripheral, characteristic_uuid, descriptor_uuid)
-            .ok_or_else(|| {
+        let descriptor = Self::find_descriptor(
+            &peripheral,
+            service_uuid,
+            service_occurrence,
+            characteristic_uuid,
+            characteristic_occurrence,
+            descriptor_uuid,
+            descriptor_occurrence,
+        )
+        .ok_or_else(|| {
             DesktopError::new(
                 ubm_core::contracts::BleErrorCode::GattNotFound,
                 ubm_core::contracts::BleErrorDomain::Gatt,
@@ -428,17 +572,32 @@ impl RadioBoundary for BtleplugRadio {
     async fn set_notifications(
         &self,
         peer_id: &str,
+        service_uuid: &str,
+        service_occurrence: u64,
         characteristic_uuid: &str,
+        characteristic_occurrence: u64,
         enable: bool,
     ) -> Result<(), DesktopError> {
         let peripheral = self.peripheral_by_id(peer_id).await?;
-        let characteristic = Self::find_characteristic(&peripheral, characteristic_uuid)
-            .ok_or_else(|| {
-                DesktopError::subscribe_failed(format!(
-                    "unknown characteristic {characteristic_uuid}"
-                ))
-            })?;
-        let key = format!("{peer_id}#{characteristic_uuid}");
+        let characteristic = Self::find_characteristic(
+            &peripheral,
+            service_uuid,
+            service_occurrence,
+            characteristic_uuid,
+            characteristic_occurrence,
+        )
+        .ok_or_else(|| {
+            DesktopError::subscribe_failed(format!(
+                "unknown characteristic {characteristic_uuid} occurrence {characteristic_occurrence}"
+            ))
+        })?;
+        let key = forwarder_key(
+            peer_id,
+            service_uuid,
+            service_occurrence,
+            characteristic_uuid,
+            characteristic_occurrence,
+        );
         if enable {
             peripheral
                 .subscribe(&characteristic)
@@ -450,12 +609,26 @@ impl RadioBoundary for BtleplugRadio {
                 .map_err(|error| DesktopError::subscribe_failed(error.to_string()))?;
             let sender = self.notifications.clone();
             let peer = peer_id.to_owned();
+            let service = service_uuid.to_owned();
+            let instance_characteristic = characteristic_uuid.to_owned();
+            // The btleplug stream is peripheral-wide: filter to this
+            // instance's UUID so one subscription never routes another
+            // UUID's values. Same-UUID duplicate instances stay
+            // indistinguishable on this stream (no handles exposed) and
+            // fan out to every same-UUID forwarder; see PARITY_GAPS.md.
+            let own_uuid = characteristic.uuid;
             let forwarder = self.spawn.spawn(async move {
                 let mut stream = stream;
                 while let Some(note) = stream.next().await {
+                    if note.uuid != own_uuid {
+                        continue;
+                    }
                     let event = RadioEvent::Notification {
                         peer_id: peer.clone(),
-                        characteristic_uuid: note.uuid.to_string(),
+                        service_uuid: service.clone(),
+                        service_occurrence,
+                        characteristic_uuid: instance_characteristic.clone(),
+                        characteristic_occurrence,
                         value: note.value,
                     };
                     // The CCCD stays enabled on send failure; the event loop
@@ -465,18 +638,30 @@ impl RadioBoundary for BtleplugRadio {
                     }
                 }
             });
-            self.forwarders
-                .lock()
-                .expect("forwarder table")
-                .insert(key, forwarder);
+            // Defensive replace: a live entry under the same per-instance
+            // key is aborted before overwrite so no forwarder ever leaks.
+            let replaced = self.forwarders.lock().expect("forwarder table").insert(
+                key,
+                ForwarderEntry {
+                    task: forwarder,
+                    peer_id: peer_id.to_owned(),
+                    service_uuid: service_uuid.to_owned(),
+                    service_occurrence,
+                    characteristic_uuid: characteristic_uuid.to_owned(),
+                    characteristic_occurrence,
+                },
+            );
+            if let Some(stale) = replaced {
+                stale.task.abort();
+            }
         } else {
-            if let Some(worker) = self
+            if let Some(entry) = self
                 .forwarders
                 .lock()
                 .expect("forwarder table")
                 .remove(&key)
             {
-                worker.abort();
+                entry.task.abort();
             }
             peripheral
                 .unsubscribe(&characteristic)
@@ -484,6 +669,39 @@ impl RadioBoundary for BtleplugRadio {
                 .map_err(|error| DesktopError::subscribe_failed(error.to_string()))?;
         }
         Ok(())
+    }
+
+    /// Teardown hook (M3): abort every live forwarder and best-effort
+    /// release every OS-side CCCD. Failures are swallowed: teardown
+    /// reports facts, never new failures.
+    async fn close(&self) {
+        let entries: Vec<ForwarderEntry> = self
+            .forwarders
+            .lock()
+            .expect("forwarder table")
+            .drain()
+            .map(|(_, entry)| entry)
+            .collect();
+        for entry in &entries {
+            entry.task.abort();
+        }
+        for entry in &entries {
+            let peripheral = match self.peripheral_by_id(&entry.peer_id).await {
+                Ok(peripheral) => peripheral,
+                Err(_) => continue,
+            };
+            let characteristic = match Self::find_characteristic(
+                &peripheral,
+                &entry.service_uuid,
+                entry.service_occurrence,
+                &entry.characteristic_uuid,
+                entry.characteristic_occurrence,
+            ) {
+                Some(characteristic) => characteristic,
+                None => continue,
+            };
+            let _ = peripheral.unsubscribe(&characteristic).await;
+        }
     }
 
     async fn next_event(&self) -> Option<RadioEvent> {
@@ -498,8 +716,10 @@ impl RadioBoundary for BtleplugRadio {
             let step = {
                 let mut events = self.events.lock().await;
                 let stream = events.as_mut()?;
+                // Deliberately unbiased: a notification flood must never
+                // starve adapter events (a delayed DeviceDisconnected is
+                // a stale link, not a slow one).
                 tokio::select! {
-                    biased;
                     notified = self.recv_notification() => Step::Notification(notified),
                     event = stream.next() => Step::Adapter(event),
                 }
@@ -508,11 +728,17 @@ impl RadioBoundary for BtleplugRadio {
                 Step::Notification(notified) => return notified,
                 Step::Adapter(None) => return None,
                 Step::Adapter(Some(CentralEvent::DeviceDiscovered(id)))
-                | Step::Adapter(Some(CentralEvent::DeviceUpdated(id)))
-                | Step::Adapter(Some(CentralEvent::DeviceServicesModified(id))) => {
+                | Step::Adapter(Some(CentralEvent::DeviceUpdated(id))) => {
                     if let Some(event) = self.advertisement_for(&id).await {
                         return Some(event);
                     }
+                }
+                // A changed GATT database invalidates discovered paths:
+                // surface it as its own event so the central invalidates
+                // generations instead of re-reading stale handles. The
+                // next discovery refreshes the snapshot.
+                Step::Adapter(Some(CentralEvent::DeviceServicesModified(id))) => {
+                    return Some(RadioEvent::ServicesChanged(id.to_string()));
                 }
                 Step::Adapter(Some(CentralEvent::DeviceConnected(id))) => {
                     return Some(RadioEvent::Connected(id.to_string()));
@@ -536,11 +762,159 @@ pub fn core_property_bits(flags: PropertyFlags) -> u8 {
 
 #[cfg(test)]
 mod tests {
-    use super::core_property_bits;
+    use std::collections::BTreeSet;
+
+    use btleplug::api::{CharPropFlags, Characteristic, Descriptor, Service};
+
+    use super::{
+        core_property_bits, forwarder_key, select_characteristic, select_descriptor, select_service,
+    };
     use crate::boundary::PropertyFlags;
     use ubm_core::central::{
         GATT_PROP_INDICATE, GATT_PROP_NOTIFY, GATT_PROP_READ, GATT_PROP_WRITE,
     };
+
+    const HRM_SERVICE: &str = "0000180d-0000-1000-8000-00805f9b34fb";
+    const HRM_MEASUREMENT: &str = "00002a37-0000-1000-8000-00805f9b34fb";
+    const BATTERY_LEVEL: &str = "00002a19-0000-1000-8000-00805f9b34fb";
+    const USER_DESCRIPTION: &str = "00002901-0000-1000-8000-00805f9b34fb";
+
+    fn uuid(text: &str) -> uuid::Uuid {
+        uuid::Uuid::parse_str(text).expect("fixture uuid")
+    }
+
+    fn characteristic(service: &str, char: &str, flags: CharPropFlags) -> Characteristic {
+        Characteristic {
+            uuid: uuid(char),
+            service_uuid: uuid(service),
+            properties: flags,
+            descriptors: BTreeSet::new(),
+        }
+    }
+
+    fn service_with(uuid_text: &str, chars: Vec<Characteristic>) -> Service {
+        Service {
+            uuid: uuid(uuid_text),
+            primary: true,
+            characteristics: chars.into_iter().collect(),
+        }
+    }
+
+    #[test]
+    fn occurrence_selects_among_duplicate_characteristics() {
+        let service = service_with(
+            HRM_SERVICE,
+            vec![
+                characteristic(HRM_SERVICE, HRM_MEASUREMENT, CharPropFlags::READ),
+                characteristic(HRM_SERVICE, HRM_MEASUREMENT, CharPropFlags::NOTIFY),
+            ],
+        );
+        let first = select_characteristic(&service, HRM_MEASUREMENT, 0).expect("instance 0");
+        assert!(first.properties.contains(CharPropFlags::READ));
+        let second = select_characteristic(&service, HRM_MEASUREMENT, 1).expect("instance 1");
+        assert!(second.properties.contains(CharPropFlags::NOTIFY));
+        assert!(
+            select_characteristic(&service, HRM_MEASUREMENT, 2).is_none(),
+            "missing instance selects nothing, never instance 0"
+        );
+    }
+
+    #[test]
+    fn occurrence_counts_per_uuid_not_flat_index() {
+        // Flat indexing would number BATTERY_LEVEL as 2; per-UUID
+        // counting (matching discover()) numbers it 0.
+        let service = service_with(
+            HRM_SERVICE,
+            vec![
+                characteristic(HRM_SERVICE, HRM_MEASUREMENT, CharPropFlags::READ),
+                characteristic(HRM_SERVICE, HRM_MEASUREMENT, CharPropFlags::NOTIFY),
+                characteristic(HRM_SERVICE, BATTERY_LEVEL, CharPropFlags::READ),
+            ],
+        );
+        let battery = select_characteristic(&service, BATTERY_LEVEL, 0).expect("battery");
+        assert_eq!(battery.uuid, uuid(BATTERY_LEVEL));
+        assert!(
+            select_characteristic(&service, BATTERY_LEVEL, 1).is_none(),
+            "second battery instance does not exist"
+        );
+    }
+
+    #[test]
+    fn occurrence_selects_among_duplicate_services() {
+        let services: BTreeSet<Service> = [
+            service_with(
+                HRM_SERVICE,
+                vec![characteristic(
+                    HRM_SERVICE,
+                    HRM_MEASUREMENT,
+                    CharPropFlags::READ,
+                )],
+            ),
+            service_with(
+                HRM_SERVICE,
+                vec![characteristic(
+                    HRM_SERVICE,
+                    HRM_MEASUREMENT,
+                    CharPropFlags::NOTIFY,
+                )],
+            ),
+        ]
+        .into_iter()
+        .collect();
+        // The two services share a UUID but differ in characteristics, so
+        // the cache holds both: occurrence selects the instance.
+        assert_eq!(services.len(), 2, "distinct duplicates both survive");
+        let first = select_service(&services, HRM_SERVICE, 0).expect("instance 0");
+        let second = select_service(&services, HRM_SERVICE, 1).expect("instance 1");
+        assert_ne!(
+            first.characteristics, second.characteristics,
+            "occurrences address different instances"
+        );
+        assert!(
+            select_service(&services, HRM_SERVICE, 2).is_none(),
+            "missing instance selects nothing, never instance 0"
+        );
+    }
+
+    #[test]
+    fn occurrence_selects_among_duplicate_descriptors() {
+        let with_desc = |flags: CharPropFlags| {
+            let mut descriptors = BTreeSet::new();
+            descriptors.insert(Descriptor {
+                uuid: uuid(USER_DESCRIPTION),
+                service_uuid: uuid(HRM_SERVICE),
+                characteristic_uuid: uuid(HRM_MEASUREMENT),
+            });
+            Characteristic {
+                uuid: uuid(HRM_MEASUREMENT),
+                service_uuid: uuid(HRM_SERVICE),
+                properties: flags,
+                descriptors,
+            }
+        };
+        // Descriptors differing only by UUID-collapsed identity stay one
+        // entry; distinct-UUID descriptors number per UUID.
+        let characteristic = with_desc(CharPropFlags::READ);
+        assert!(
+            select_descriptor(&characteristic, USER_DESCRIPTION, 0).is_some(),
+            "descriptor instance 0"
+        );
+        assert!(
+            select_descriptor(&characteristic, USER_DESCRIPTION, 1).is_none(),
+            "no phantom descriptor instance"
+        );
+        assert!(
+            select_descriptor(&characteristic, BATTERY_LEVEL, 0).is_none(),
+            "unknown descriptor selects nothing"
+        );
+    }
+
+    #[test]
+    fn forwarder_keys_are_per_instance() {
+        let first = forwarder_key("peer", HRM_SERVICE, 0, HRM_MEASUREMENT, 0);
+        let second = forwarder_key("peer", HRM_SERVICE, 0, HRM_MEASUREMENT, 1);
+        assert_ne!(first, second, "duplicate UUIDs never share a forwarder");
+    }
 
     #[test]
     fn property_bits_cover_read_write_notify_indicate() {

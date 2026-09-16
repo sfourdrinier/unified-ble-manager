@@ -26,6 +26,8 @@
 //! any effect is staged, so a rejected request leaves state unchanged and
 //! emits no radio effect (OWN-02, stale-path vectors).
 
+use std::collections::VecDeque;
+
 use crate::contracts::{
     AttachmentTuple, BleErrorCode, BleErrorDomain, Contender, ContenderKind, CoreError, Generation,
     HandshakeState, LeaseId, MonotonicTime, OperationId, OperationTerminalKind, PeerIdentity,
@@ -1436,6 +1438,11 @@ struct ConsumerRecord {
     terminal_taken: bool,
     quarantined: u64,
     delivered: u64,
+    /// Buffered notification values in arrival order (M2 value delivery).
+    /// Entries exist only for stream-admitted values, so the queue stays
+    /// within the same item/byte bounds the stream enforces; popping
+    /// frees stream bytes so the bound recycles.
+    values: VecDeque<Vec<u8>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3694,6 +3701,16 @@ impl Central {
                 "subscribe.disabling",
             ));
         }
+        // Bound the consumer list (orphan-disable ticket): drop same-lease
+        // terminal records whose overflow terminal was observed (or never
+        // existed) before the cap check, so subscribe → overflow → take →
+        // unsubscribe cycles never grow the hub. An untaken overflow
+        // terminal is preserved: the host still owns that observation.
+        self.hubs[hub_index].consumers.retain(|record| {
+            !(record.lease == consumer
+                && record.state.is_terminal()
+                && (record.terminal_taken || record.terminal.is_none()))
+        });
         let known_op = self.hubs[hub_index]
             .consumers
             .iter()
@@ -3738,6 +3755,7 @@ impl Central {
                 terminal_taken: false,
                 quarantined: 0,
                 delivered: 0,
+                values: VecDeque::new(),
             });
             return Ok(id);
         }
@@ -3750,6 +3768,7 @@ impl Central {
             terminal_taken: false,
             quarantined: 0,
             delivered: 0,
+            values: VecDeque::new(),
         });
         if physical == CccdPhysical::Disabled || physical == CccdPhysical::Failed {
             self.hubs[hub_index].physical = CccdPhysical::Enabling;
@@ -3853,6 +3872,11 @@ impl Central {
 
     /// Remove one consumer. Removing one consumer never drops another's CCCD:
     /// returns true only when the last removal issues the physical disable.
+    /// A terminal consumer (`Failed` after overflow, `Invalid` after a
+    /// service change, `Removed`) prunes its record to bound the consumer
+    /// list and still releases an orphan live CCCD: when no live consumer
+    /// remains but the hub is physically enabled, the removal issues the
+    /// physical disable instead of leaking it (orphan-disable ticket).
     pub fn unsubscribe(
         &mut self,
         path_index: usize,
@@ -3876,9 +3900,23 @@ impl Central {
         match self.hubs[hub_index].consumers[consumer_index].state {
             ConsumerState::Enabling | ConsumerState::Ready => {}
             ConsumerState::Removing => return Ok(false),
-            _ => return Ok(false),
+            ConsumerState::Failed | ConsumerState::Invalid | ConsumerState::Removed => {
+                return self.remove_terminal_consumer(hub_index, consumer_index, now, out);
+            }
         }
         self.hubs[hub_index].consumers[consumer_index].state = ConsumerState::Removing;
+        self.issue_physical_disable(hub_index, consumer, now, out)
+    }
+
+    /// Shared tail of [`Central::unsubscribe`]: issue the physical disable
+    /// only for the last live removal on an enabled hub.
+    fn issue_physical_disable(
+        &mut self,
+        hub_index: usize,
+        consumer: &str,
+        now: MonotonicTime,
+        out: &mut EffectBatch,
+    ) -> Result<bool, CoreError> {
         let active = self.hubs[hub_index]
             .consumers
             .iter()
@@ -3895,6 +3933,30 @@ impl Central {
             "subscribe.disable",
         );
         Ok(true)
+    }
+
+    /// Remove a terminal consumer record and release an orphan live CCCD.
+    /// An untaken overflow terminal keeps its record: the host still owns
+    /// that observation, and takes it after the disable settles. Either
+    /// way the physical disable fires when no live consumer remains.
+    fn remove_terminal_consumer(
+        &mut self,
+        hub_index: usize,
+        consumer_index: usize,
+        now: MonotonicTime,
+        out: &mut EffectBatch,
+    ) -> Result<bool, CoreError> {
+        let lease = self.hubs[hub_index].consumers[consumer_index].lease.clone();
+        let keep_for_terminal = {
+            let record = &self.hubs[hub_index].consumers[consumer_index];
+            record.state == ConsumerState::Failed
+                && record.terminal.is_some()
+                && !record.terminal_taken
+        };
+        if !keep_for_terminal {
+            self.hubs[hub_index].consumers.remove(consumer_index);
+        }
+        self.issue_physical_disable(hub_index, &lease, now, out)
     }
 
     /// Settle the physical CCCD disablement.
@@ -3956,11 +4018,37 @@ impl Central {
     /// Deliver one native notification to every consumer of a path (GATT-04):
     /// pre-ready values quarantine, ready values enter bounded streams,
     /// removed/terminated consumers receive nothing. Returns per-consumer
-    /// outcomes in subscription order.
+    /// outcomes in subscription order. Length-only accounting: no value is
+    /// buffered (see [`Central::deliver_notification_value`] for the
+    /// value-carrying path).
     pub fn deliver_notification(
         &mut self,
         path_index: usize,
         value_len: u64,
+    ) -> Result<Vec<(String, DeliveryOutcome)>, CoreError> {
+        self.deliver_inner(path_index, value_len, None)
+    }
+
+    /// Deliver one native notification value to every consumer of a path:
+    /// the same accounting as [`Central::deliver_notification`], plus the
+    /// bytes buffer per stream-admitted consumer for later
+    /// [`Central::take_notification_value`]. Values buffer only on `Admit`,
+    /// after the stream enforces its item/byte bounds, so an oversized or
+    /// over-capacity value terminates instead of allocating unbounded.
+    pub fn deliver_notification_value(
+        &mut self,
+        path_index: usize,
+        value: &[u8],
+    ) -> Result<Vec<(String, DeliveryOutcome)>, CoreError> {
+        let value_len = value.len() as u64;
+        self.deliver_inner(path_index, value_len, Some(value))
+    }
+
+    fn deliver_inner(
+        &mut self,
+        path_index: usize,
+        value_len: u64,
+        value: Option<&[u8]>,
     ) -> Result<Vec<(String, DeliveryOutcome)>, CoreError> {
         let hub_index = self.hub_position(path_index).ok_or_else(|| {
             err(
@@ -3987,6 +4075,9 @@ impl Central {
                             Ok(push) => match push.decision {
                                 crate::streams::AdmissionDecision::Admit => {
                                     consumer.delivered = consumer.delivered.saturating_add(1);
+                                    if let Some(bytes) = value {
+                                        consumer.values.push_back(bytes.to_vec());
+                                    }
                                     DeliveryOutcome::Delivered
                                 }
                                 crate::streams::AdmissionDecision::Terminate => {
@@ -4008,6 +4099,42 @@ impl Central {
             outcomes.push((consumer.lease.clone(), outcome));
         }
         Ok(outcomes)
+    }
+
+    /// Take one buffered notification value for a consumer (FIFO arrival
+    /// order). `Ready`, `Removing`, and overflow-`Failed` consumers
+    /// release values: bytes admitted before the terminal stay valid
+    /// observations (drain, then take the terminal). `Invalid`/`Removed`
+    /// consumers observe `None` so stale values never cross invalidation.
+    /// Popping frees the stream bytes so the bound recycles.
+    pub fn take_notification_value(
+        &mut self,
+        path_index: usize,
+        consumer: &str,
+    ) -> Option<Vec<u8>> {
+        let hub_index = self.hub_position(path_index)?;
+        let record = self.hubs[hub_index]
+            .consumers
+            .iter_mut()
+            .find(|known| known.lease == consumer)?;
+        match record.state {
+            ConsumerState::Ready | ConsumerState::Removing | ConsumerState::Failed => {}
+            _ => return None,
+        }
+        let value = record.values.pop_front()?;
+        record.stream.release_oldest_data(1);
+        Some(value)
+    }
+
+    /// Buffered values waiting for a consumer (observation without drain).
+    #[must_use]
+    pub fn pending_value_count(&self, path_index: usize, consumer: &str) -> Option<u64> {
+        let hub_index = self.hub_position(path_index)?;
+        self.hubs[hub_index]
+            .consumers
+            .iter()
+            .find(|known| known.lease == consumer)
+            .map(|record| record.values.len() as u64)
     }
 
     /// Take one consumer's terminal overflow event, if present. A terminal
@@ -6173,6 +6300,156 @@ mod tests {
         check(
             central.operation_state(&again).is_some(),
             "admission still succeeds after success-release",
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn m2_notification_values_buffer_fifo_and_recycle() -> Result<(), CoreError> {
+        let mut central = fixture_central()?;
+        let mut out = batch();
+        let (_peer, path) = live_characteristic(&mut central, &mut out)?;
+        let _sub = central.subscribe(path, "error", 4, 256, "app-a", 5000, 2000, &mut out)?;
+        central.settle_subscribe_enable(path, true, 2001, &mut out)?;
+        central.deliver_notification_value(path, &[0x01])?;
+        central.deliver_notification_value(path, &[0x02, 0x03])?;
+        check(
+            central.pending_value_count(path, "app-a") == Some(2),
+            "two values buffered",
+        );
+        check(
+            central.take_notification_value(path, "app-a") == Some(vec![0x01]),
+            "fifo order",
+        );
+        check(
+            central.take_notification_value(path, "app-a") == Some(vec![0x02, 0x03]),
+            "second value",
+        );
+        check(
+            central.take_notification_value(path, "app-a").is_none(),
+            "drained exactly",
+        );
+        // Popping freed stream bytes: delivery works again after drain.
+        central.deliver_notification_value(path, &[0x04])?;
+        check(
+            central.take_notification_value(path, "app-a") == Some(vec![0x04]),
+            "bound recycled",
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn m2_length_only_delivery_buffers_nothing() -> Result<(), CoreError> {
+        let mut central = fixture_central()?;
+        let mut out = batch();
+        let (_peer, path) = live_characteristic(&mut central, &mut out)?;
+        let _sub = central.subscribe(path, "error", 4, 256, "app-a", 5000, 2000, &mut out)?;
+        central.settle_subscribe_enable(path, true, 2001, &mut out)?;
+        let outcomes = central.deliver_notification(path, 2)?;
+        check(
+            outcomes[0].1 == DeliveryOutcome::Delivered,
+            "accounting still delivers",
+        );
+        check(
+            central.pending_value_count(path, "app-a") == Some(0),
+            "no bytes buffered without values",
+        );
+        check(
+            central.take_notification_value(path, "app-a").is_none(),
+            "nothing to take",
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn m2_overflow_keeps_buffered_values_then_terminal() -> Result<(), CoreError> {
+        let mut central = fixture_central()?;
+        let mut out = batch();
+        let (_peer, path) = live_characteristic(&mut central, &mut out)?;
+        let _sub = central.subscribe(path, "error", 1, 128, "app-a", 5000, 2000, &mut out)?;
+        central.settle_subscribe_enable(path, true, 2001, &mut out)?;
+        central.deliver_notification_value(path, &[0x0a])?;
+        // Rejected value raises the terminal without displacing the buffer.
+        central.deliver_notification_value(path, &[0x0b])?;
+        check(
+            central.consumer_state(path, "app-a") == Some(ConsumerState::Failed),
+            "overflow parks the consumer in failed",
+        );
+        check(
+            central.take_notification_value(path, "app-a") == Some(vec![0x0a]),
+            "admitted bytes stay observable after the terminal",
+        );
+        check(
+            central.pending_value_count(path, "app-a") == Some(0),
+            "drained exactly",
+        );
+        check(
+            central.take_terminal(path, "app-a").is_some(),
+            "overflow terminal observed",
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn m5_terminal_removal_releases_orphan_cccd() -> Result<(), CoreError> {
+        let mut central = fixture_central()?;
+        let mut out = batch();
+        let (_peer, path) = live_characteristic(&mut central, &mut out)?;
+        let _sub = central.subscribe(path, "error", 1, 128, "app-a", 5000, 2000, &mut out)?;
+        central.settle_subscribe_enable(path, true, 2001, &mut out)?;
+        central.deliver_notification(path, 1)?;
+        central.deliver_notification(path, 1)?;
+        check(
+            central.consumer_state(path, "app-a") == Some(ConsumerState::Failed),
+            "overflow-terminal consumer",
+        );
+        check(central.physical_cccd_enabled(path), "cccd still live");
+        // Removing the terminal consumer issues the orphan disable instead
+        // of leaking the live CCCD.
+        let disabled = central.unsubscribe(path, "app-a", 2002, &mut out)?;
+        check(disabled, "orphan disable issued");
+        central.settle_subscribe_disable(path, 2003, &mut out)?;
+        check(!central.physical_cccd_enabled(path), "cccd released");
+        // The untaken terminal survived the disable: the host still owns
+        // that observation.
+        check(
+            central.take_terminal(path, "app-a").is_some(),
+            "terminal preserved across orphan disable",
+        );
+        // The next removal prunes the observed record and stays quiet.
+        let again = central.unsubscribe(path, "app-a", 2004, &mut out)?;
+        check(!again, "no second disable");
+        check(
+            central.consumer_state(path, "app-a").is_none(),
+            "record pruned, list bounded",
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn m5_subscribe_cycles_do_not_grow_the_consumer_list() -> Result<(), CoreError> {
+        let mut central = fixture_central()?;
+        let mut out = batch();
+        let (_peer, path) = live_characteristic(&mut central, &mut out)?;
+        for round in 0..3u64 {
+            let _sub =
+                central.subscribe(path, "error", 1, 128, "app-a", 5000, 2000 + round, &mut out)?;
+            central.settle_subscribe_enable(path, true, 2010 + round, &mut out)?;
+            central.deliver_notification(path, 1)?;
+            central.deliver_notification(path, 1)?;
+            check(
+                central.take_terminal(path, "app-a").is_some(),
+                "terminal observed each cycle",
+            );
+            let disabled = central.unsubscribe(path, "app-a", 2020 + round, &mut out)?;
+            check(disabled, "orphan disable each cycle");
+            central.settle_subscribe_disable(path, 2030 + round, &mut out)?;
+            let _pruned = central.unsubscribe(path, "app-a", 2040 + round, &mut out)?;
+        }
+        let _sub = central.subscribe(path, "error", 1, 128, "app-a", 5000, 3000, &mut out)?;
+        check(
+            central.consumer_state(path, "app-a") == Some(ConsumerState::Enabling),
+            "resubscribe works after cycles",
         );
         Ok(())
     }

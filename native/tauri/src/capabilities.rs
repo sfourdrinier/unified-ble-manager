@@ -51,12 +51,18 @@ const TAURI_CAPABILITIES: [&str; 38] = [
     "lifecycle:page-persistence",
 ];
 
-const TAURI_LIMITED_CAPABILITIES: [(&str, &str, &str, &str); 5] = [
+const TAURI_LIMITED_CAPABILITIES: [(&str, &str, &str, &str); 6] = [
     (
         "discovery:continuous-scan",
         "scan.owner-join-authority-and-signature",
         "one-global-scan-owner",
         "The dispatcher permits one physical scan owner at a time; it does not provide independent concurrent adapter scans.",
+    ),
+    (
+        "peer:resolve-reference",
+        "peer.resolve-reference",
+        "platform-guid-only",
+        "Platform-guid resolution for observed peers is implemented, but this receipt is deterministic host evidence rather than a physical-radio qualification; address domains need OS identity adapters.",
     ),
     (
         "connection:direct",
@@ -78,7 +84,7 @@ const TAURI_LIMITED_CAPABILITIES: [(&str, &str, &str, &str); 5] = [
     ),
     (
         "gatt:indications",
-        "gatt.reads-descriptors-write-policy-and-dispatched-cancellation",
+        "gatt.indications",
         "delivery-kind-unknown",
         "The btleplug notification stream does not distinguish indications from notifications, so delivery is reported as unknown.",
     ),
