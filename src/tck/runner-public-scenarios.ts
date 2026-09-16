@@ -1327,7 +1327,7 @@ async function executeSubscriptionSharingScenario<
     'queue-operation-completion',
     Object.freeze({ stage: 'subscribe', delayMilliseconds: 10 })
   )
-  const firstPromise = connected.database.subscribe(characteristic.path, subscriptionOptions('drop-oldest', 4, 32))
+  const firstPromise = connected.database.subscribe(characteristic.path, subscriptionOptions('drop-oldest', 4, 128))
   await fixture.controller.perform('emit-notification', notificationInput(characteristic.path, new Uint8Array([1])))
   await fixture.controller.perform('advance-time', Object.freeze({ milliseconds: 10 }))
   const first = await fixture.controller.settle(firstPromise)
@@ -1335,7 +1335,7 @@ async function executeSubscriptionSharingScenario<
   const ready = await fixture.controller.settle(first.values[Symbol.asyncIterator]().next())
   const noValueBeforeReady = !ready.done && ready.value.kind === 'value' && ready.value.value.value[0] === 2
   const second = await fixture.controller.settle(
-    connected.database.subscribe(characteristic.path, subscriptionOptions('drop-oldest', 4, 32))
+    connected.database.subscribe(characteristic.path, subscriptionOptions('drop-oldest', 4, 128))
   )
   const sharedCccd =
     Number(manager.localResourceCounters().physicalCccdEnablements) === 1 &&
