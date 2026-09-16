@@ -37,7 +37,7 @@
         {
           "check": "emulator spawned detached (owned pid)",
           "pass": true,
-          "detail": "pid=3050256"
+          "detail": "pid=3061862"
         },
         {
           "check": "boot completed within deadline",
@@ -83,7 +83,7 @@
         {
           "check": "bluetooth_manager queryable (virtual adapter, never physical)",
           "pass": true,
-          "detail": "  enabled: true   state: ON   time since enabled: 00:00:05.798"
+          "detail": "  enabled: true   state: ON   time since enabled: 00:00:06.908"
         },
         {
           "check": "package absent before install",
@@ -195,12 +195,12 @@
         {
           "check": "nativeLibraryDir declared",
           "pass": true,
-          "detail": "    legacyNativeLibraryDir=/data/app/~~eGaKqTq4sx010Tie0Smh1w==/com.ubmfive0probe-bT8MG0o-7mPx0t39RfEQ0g==/lib"
+          "detail": "    legacyNativeLibraryDir=/data/app/~~TypfBLrvMEqWADxQQFB48A==/com.ubmfive0probe-xqcz8fXpp1ejhrmo3o7JBg==/lib"
         },
         {
           "check": "apk path queryable",
           "pass": true,
-          "detail": "package:/data/app/~~eGaKqTq4sx010Tie0Smh1w==/com.ubmfive0probe-bT8MG0o-7mPx0t39RfEQ0g==/base.apk"
+          "detail": "package:/data/app/~~TypfBLrvMEqWADxQQFB48A==/com.ubmfive0probe-xqcz8fXpp1ejhrmo3o7JBg==/base.apk"
         }
       ],
       "evidence": [
@@ -236,7 +236,7 @@
         {
           "check": "process running after launch",
           "pass": true,
-          "detail": "pid=3520"
+          "detail": "pid=3703"
         },
         {
           "check": "no FATAL EXCEPTION for probe",
@@ -251,7 +251,7 @@
         {
           "check": "UBM5FIVE0-RESULT result ok",
           "pass": true,
-          "detail": "I/UBM5FIVE0( 3520): UBM5FIVE0-RESULT {\"result\":\"ok\",\"checks\":41,\"failures\":\"\",\"detail\":\"\"}"
+          "detail": "I/UBM5FIVE0( 3703): UBM5FIVE0-RESULT {\"result\":\"ok\",\"checks\":41,\"failures\":\"\",\"detail\":\"\"}"
         }
       ],
       "evidence": [
@@ -342,17 +342,17 @@
         {
           "check": "foreground pid captured",
           "pass": true,
-          "detail": "pid=5067"
+          "detail": "pid=5071"
         },
         {
           "check": "HOME keeps process (same pid)",
           "pass": true,
-          "detail": "pid=5067"
+          "detail": "pid=5071"
         },
         {
           "check": "probe activity re-resumed",
           "pass": true,
-          "detail": "    topResumedActivity=ActivityRecord{b309b0f u0 com.ubmfive0probe/.MainActivity t9}"
+          "detail": "    topResumedActivity=ActivityRecord{99f64be u0 com.ubmfive0probe/.MainActivity t9}"
         }
       ],
       "evidence": [
@@ -395,7 +395,7 @@
         {
           "check": "victim pid captured",
           "pass": true,
-          "detail": "pid=5067"
+          "detail": "pid=5071"
         },
         {
           "check": "kill accepted",
@@ -410,12 +410,12 @@
         {
           "check": "fresh pid after relaunch",
           "pass": true,
-          "detail": "pid=5923"
+          "detail": "pid=6202"
         },
         {
           "check": "RESULT ok after relaunch (no immortal handles)",
           "pass": true,
-          "detail": "I/UBM5FIVE0( 5923): UBM5FIVE0-RESULT {\"result\":\"ok\",\"checks\":41,\"failures\":\"\",\"detail\":\"\"}"
+          "detail": "I/UBM5FIVE0( 6202): UBM5FIVE0-RESULT {\"result\":\"ok\",\"checks\":41,\"failures\":\"\",\"detail\":\"\"}"
         },
         {
           "check": "no FATAL on relaunch",
@@ -480,7 +480,7 @@
         {
           "check": "denial observed with explicit identity",
           "pass": true,
-          "detail": "W/UBM5FIVE0( 5999): UBM5FIVE0-PERMISSION {\"result\":\"permission-denied:fail-closed\",\"checks\":2,\"failures\":\"\",\"detail\":\"permission.denied|rn-android-boundary|five0-gate|ble-permission-missing\"}I/UBM5FIVE0( 5999): UBM5FIVE0-RESULT {\"result\":\"permission-denied:fail-closed\",\"checks\":2,\"failures\":\"\",\"deta"
+          "detail": "W/UBM5FIVE0( 6267): UBM5FIVE0-PERMISSION {\"result\":\"permission-denied:fail-closed\",\"checks\":2,\"failures\":\"\",\"detail\":\"permission.denied|rn-android-boundary|five0-gate|ble-permission-missing\"}I/UBM5FIVE0( 6267): UBM5FIVE0-RESULT {\"result\":\"permission-denied:fail-closed\",\"checks\":2,\"failures\":\"\",\"deta"
         },
         {
           "check": "core cycle did not run while denied",
@@ -495,7 +495,7 @@
         {
           "check": "RESULT ok after re-grant",
           "pass": true,
-          "detail": "I/UBM5FIVE0( 6069): UBM5FIVE0-RESULT {\"result\":\"ok\",\"checks\":41,\"failures\":\"\",\"detail\":\"\"}"
+          "detail": "I/UBM5FIVE0( 6331): UBM5FIVE0-RESULT {\"result\":\"ok\",\"checks\":41,\"failures\":\"\",\"detail\":\"\"}"
         }
       ],
       "evidence": [
@@ -567,37 +567,37 @@
         {
           "check": "self-test RESULT ok",
           "pass": true,
-          "detail": "I/UBM5FIVE0( 6159): UBM5FIVE0-RESULT {\"result\":\"ok\",\"checks\":41,\"failures\":\"\",\"detail\":\"\"}"
+          "detail": "I/UBM5FIVE0( 6430): UBM5FIVE0-RESULT {\"result\":\"ok\",\"checks\":41,\"failures\":\"\",\"detail\":\"\"}"
         },
         {
           "check": "check queued-cancel-aborts PASS",
           "pass": true,
-          "detail": "I/UBM5FIVE0( 6159): check queued-cancel-aborts PASS {\"ok\":true,\"event\":\"op.cancel\",\"outcome\":\"aborted\"}"
+          "detail": "I/UBM5FIVE0( 6430): check queued-cancel-aborts PASS {\"ok\":true,\"event\":\"op.cancel\",\"outcome\":\"aborted\"}"
         },
         {
           "check": "check io-settled PASS",
           "pass": true,
-          "detail": "I/UBM5FIVE0( 6159): check io-settled PASS {\"ok\":true,\"event\":\"op.settle\",\"outcome\":\"succeeded\"}"
+          "detail": "I/UBM5FIVE0( 6430): check io-settled PASS {\"ok\":true,\"event\":\"op.settle\",\"outcome\":\"succeeded\"}"
         },
         {
           "check": "check release PASS",
           "pass": true,
-          "detail": "I/UBM5FIVE0( 6159): check release PASS {\"ok\":true,\"event\":\"release\",\"state\":\"released\"}"
+          "detail": "I/UBM5FIVE0( 6430): check release PASS {\"ok\":true,\"event\":\"release\",\"state\":\"released\"}"
         },
         {
           "check": "check post-close-enqueue-rejects PASS",
           "pass": true,
-          "detail": "I/UBM5FIVE0( 6159): check post-close-enqueue-rejects PASS lifecycle.destroyed|core|gatt-enqueue|unknown-or-closed-handle"
+          "detail": "I/UBM5FIVE0( 6430): check post-close-enqueue-rejects PASS lifecycle.destroyed|core|gatt-enqueue|unknown-or-closed-handle"
         },
         {
           "check": "check adapter-reset PASS",
           "pass": true,
-          "detail": "I/UBM5FIVE0( 6159): check adapter-reset PASS {\"ok\":true,\"event\":\"adapter.reset\",\"settled\":2}"
+          "detail": "I/UBM5FIVE0( 6430): check adapter-reset PASS {\"ok\":true,\"event\":\"adapter.reset\",\"settled\":2}"
         },
         {
           "check": "check expire-sweep PASS",
           "pass": true,
-          "detail": "I/UBM5FIVE0( 6159): check expire-sweep PASS {\"ok\":true,\"event\":\"expire-sweep\",\"settled\":0,\"truncated\":false}"
+          "detail": "I/UBM5FIVE0( 6430): check expire-sweep PASS {\"ok\":true,\"event\":\"expire-sweep\",\"settled\":0,\"truncated\":false}"
         }
       ],
       "evidence": [
@@ -639,27 +639,27 @@
         {
           "check": "self-test RESULT ok",
           "pass": true,
-          "detail": "I/UBM5FIVE0( 6224): UBM5FIVE0-RESULT {\"result\":\"ok\",\"checks\":41,\"failures\":\"\",\"detail\":\"\"}"
+          "detail": "I/UBM5FIVE0( 6492): UBM5FIVE0-RESULT {\"result\":\"ok\",\"checks\":41,\"failures\":\"\",\"detail\":\"\"}"
         },
         {
           "check": "check notify-delivered PASS",
           "pass": true,
-          "detail": "I/UBM5FIVE0( 6224): check notify-delivered PASS {\"ok\":true,\"event\":\"notify.deliver\",\"deliveries\":[{\"consumer\":\"five0-consumer\",\"outcome\":\"delivered\"}]}"
+          "detail": "I/UBM5FIVE0( 6492): check notify-delivered PASS {\"ok\":true,\"event\":\"notify.deliver\",\"deliveries\":[{\"consumer\":\"five0-consumer\",\"outcome\":\"delivered\"}]}"
         },
         {
           "check": "check notify-oversize-rejects PASS",
           "pass": true,
-          "detail": "I/UBM5FIVE0( 6224): check notify-oversize-rejects PASS bytes.too-large|core|gatt-enqueue|event-exceeds-wire-max"
+          "detail": "I/UBM5FIVE0( 6492): check notify-oversize-rejects PASS bytes.too-large|core|gatt-enqueue|event-exceeds-wire-max"
         },
         {
           "check": "check stale-handle-fails-closed PASS",
           "pass": true,
-          "detail": "I/UBM5FIVE0( 6224): check stale-handle-fails-closed PASS {\"ok\":false,\"event\":\"read.start\",\"code\":\"gatt.stale-handle\",\"domain\":\"gatt\",\"operation\":\"gatt-drain\",\"d"
+          "detail": "I/UBM5FIVE0( 6492): check stale-handle-fails-closed PASS {\"ok\":false,\"event\":\"read.start\",\"code\":\"gatt.stale-handle\",\"domain\":\"gatt\",\"operation\":\"gatt-drain\",\"d"
         },
         {
           "check": "check path-registered PASS",
           "pass": true,
-          "detail": "I/UBM5FIVE0( 6224): check path-registered PASS {\"ok\":true,\"event\":\"path.register\",\"path\":0}"
+          "detail": "I/UBM5FIVE0( 6492): check path-registered PASS {\"ok\":true,\"event\":\"path.register\",\"path\":0}"
         }
       ],
       "evidence": [
