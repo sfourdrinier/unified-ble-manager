@@ -9,7 +9,7 @@ assert.ok(WASM_PATH, 'usage: roundtrip.mjs <module.wasm>');
 
 const REV = 'C-UBM.0.1.1-DRAFT';
 const MAX = 524288;
-const CODE = { OK: 0, ARG: 1, BYTES_INVALID: 2, TOO_LARGE: 3, ABORTED: 4, STATE: 5, INCOMPAT: 6 };
+const CODE = { OK: 0, ARG: 1, BYTES_INVALID: 2, TOO_LARGE: 3, ABORTED: 4, STATE: 5, INCOMPAT: 6, CAP: 7 };
 
 const bytes = await fs.promises.readFile(WASM_PATH);
 const mod = await WebAssembly.compile(bytes);
@@ -21,7 +21,9 @@ const ex = instance.exports;
 for (const name of ['memory', 'ubm_echo_alloc', 'ubm_echo_free', 'ubm_echo_init',
   'ubm_echo_run', 'ubm_echo_counter', 'ubm_echo_last_error', 'ubm_echo_last_error_text',
   'ubm_echo_stream_begin', 'ubm_echo_stream_push', 'ubm_echo_stream_cancel',
-  'ubm_echo_stream_finish', 'ubm_echo_describe_json']) {
+  'ubm_echo_stream_finish', 'ubm_echo_describe_json',
+  'ubm_echo_central_status', 'ubm_echo_expire_sweep', 'ubm_echo_destroy',
+  'ubm_echo_ble_transition']) {
   assert.ok(ex[name], `missing export ${name}`);
 }
 
@@ -119,6 +121,40 @@ function initWith(rev) {
   return code;
 }
 
+// --- U7 transition-driving helpers (raw ABI, same shape as napi/uniffi/jni). ---
+function statusJson() {
+  setOut(0);
+  const ptr = ex.ubm_echo_central_status(scratch);
+  const len = getOut();
+  if (ptr === 0) return { ok: false };
+  return { ok: true, text: dec.decode(takePublished(ptr, len)) };
+}
+function sweep(nowDecimal) {
+  const data = strBytes(nowDecimal);
+  const inPtr = writeInput(data);
+  const cell = alloc(8);
+  view().setBigUint64(cell, 0n, true);
+  const code = ex.ubm_echo_expire_sweep(inPtr, data.length, cell);
+  const settled = view().getBigUint64(cell, true);
+  freeAlloc(cell, 8);
+  freeAlloc(inPtr, data.length);
+  return { code, settled };
+}
+function destroyCentral() {
+  setOut(0);
+  const ptr = ex.ubm_echo_destroy(scratch);
+  const len = getOut();
+  if (ptr === 0) return { ok: false };
+  return { ok: true, text: dec.decode(takePublished(ptr, len)) };
+}
+function bleTransition(name) {
+  const data = strBytes(name);
+  const ptr = writeInput(data);
+  const code = ex.ubm_echo_ble_transition(ptr, data.length);
+  freeAlloc(ptr, data.length);
+  return code;
+}
+
 // --- Fresh instance: operations before init fail closed. ---
 assert.equal(ex.ubm_echo_last_error(), CODE.OK);
 {
@@ -131,6 +167,15 @@ assert.equal(ex.ubm_echo_last_error(), CODE.OK);
     lastText());
   assert.equal(ex.ubm_echo_stream_begin(), 0n);
   assert.equal(ex.ubm_echo_last_error(), CODE.STATE);
+  // U7 driving fails closed before init like every other call.
+  assert.equal(statusJson().ok, false, 'status before init must fail');
+  assert.equal(ex.ubm_echo_last_error(), CODE.STATE);
+  assert.ok(lastText().startsWith('lifecycle.invalid-state|core|central-status|'));
+  assert.equal(sweep('0').code, CODE.STATE);
+  assert.equal(destroyCentral().ok, false, 'destroy before init must fail');
+  assert.equal(ex.ubm_echo_last_error(), CODE.STATE);
+  assert.equal(bleTransition('scan.start'), CODE.STATE);
+  assert.ok(lastText().startsWith('lifecycle.invalid-state|core|request-ble-transition|'));
 }
 
 // --- Init contract (PKG-02 / WEB preloading). ---
@@ -167,6 +212,42 @@ for (const bad of ['', '-1', '+5', '12a34', ' 42', '4.0', '0x10', '1844674407370
   assert.ok(!r.ok, `counter ${JSON.stringify(bad)} must fail`);
   assert.equal(ex.ubm_echo_last_error(), CODE.BYTES_INVALID);
   assert.ok(lastText().startsWith('bytes.invalid|core|echo-counter|'), lastText());
+}
+
+// --- U7 transition-driving: the binding holds and drives a REAL Kernel+Central. ---
+{
+  const status = statusJson();
+  assert.ok(status.ok, 'status must succeed once initialised');
+  assert.equal(status.text,
+    '{"revision":"C-UBM.0.1.1-DRAFT","live_operations":0,"retained_cleanup":0}');
+  checkOk();
+  // Real kernel expiry sweeps settle nothing on a fresh central (twice),
+  // over decimal-string host time (DATA-02 mapping, lossless past 2^53).
+  for (const now of ['0', '18446744073709551615']) {
+    const r = sweep(now);
+    assert.equal(r.code, CODE.OK, `sweep(${now})`);
+    assert.equal(r.settled, 0n, `sweep(${now}) settles nothing fresh`);
+  }
+  checkOk();
+  assert.equal(sweep('nope').code, CODE.BYTES_INVALID);
+  assert.ok(lastText().startsWith('bytes.invalid|core|central-expire-sweep|'));
+  // Real shutdown transition: clean release, idempotent.
+  for (let i = 0; i < 2; i++) {
+    const r = destroyCentral();
+    assert.ok(r.ok, 'destroy must succeed');
+    assert.equal(r.text, 'released', 'fresh central releases cleanly');
+  }
+  // No fake passes: unwired BLE transitions reject loudly with the frozen
+  // capability.unsupported|capability contract pairing.
+  for (const transition of ['scan.start', 'queue-advertisement', 'force-disconnect',
+    'advance-time', 'emit-notification']) {
+    assert.equal(bleTransition(transition), CODE.CAP, `unwired ${transition}`);
+    assert.equal(lastText(),
+      'capability.unsupported|capability|request-ble-transition|transition-not-wired-in-u7-slice');
+  }
+  assert.equal(bleTransition(''), CODE.ARG);
+  assert.ok(lastText().startsWith('argument.invalid|core|request-ble-transition|'));
+  assert.ok(runBytes(new Uint8Array([9])).ok, 'usable after destroy drive');
 }
 
 // --- Streaming echo + cooperative cancellation. ---

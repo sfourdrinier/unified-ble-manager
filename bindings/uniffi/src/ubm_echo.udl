@@ -47,4 +47,13 @@ interface EchoSession {
     EchoBytesResult echo_bytes_chunked(bytes input, u32 chunks);
     EchoStatus cancel_inflight();
     EchoStatus close();
+    // U7 transition-driving: the session holds and drives a REAL
+    // Kernel+Central. Status/sweep/destroy carry values in the shared
+    // result records; unwired BLE transitions report
+    // `capability.unsupported|capability` in the status record (no success
+    // value exists to report).
+    EchoCounterResult central_status();
+    EchoCounterResult drive_expire_sweep(string now_ms);
+    EchoCounterResult drive_destroy();
+    EchoStatus request_ble_transition(string transition);
 };

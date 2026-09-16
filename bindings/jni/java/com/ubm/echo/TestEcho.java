@@ -132,6 +132,53 @@ public final class TestEcho {
                 doomedOutcome.get() != null
                         && doomedOutcome.get().code().equals("operation.aborted"));
 
+        // U7 transition-driving: the session holds and drives a REAL
+        // Kernel+Central (not feasibility-echo state).
+        long driver = EchoBridge.nativeOpen(REV);
+        check("central status", EchoBridge.nativeCentralStatus(driver).equals(
+                "{\"revision\":\"C-UBM.0.1.1-DRAFT\",\"live_operations\":0,\"retained_cleanup\":0}"));
+        check("sweep settles nothing fresh",
+                EchoBridge.nativeExpireSweep(driver, "0").equals("0"));
+        check("sweep u64max time",
+                EchoBridge.nativeExpireSweep(driver, "18446744073709551615").equals("0"));
+        expectWire("sweep garbage rejects",
+                () -> EchoBridge.nativeExpireSweep(driver, "nope"),
+                "bytes.invalid|core|central-expire-sweep|u64.input");
+        check("destroy releases", EchoBridge.nativeDestroy(driver).equals("released"));
+        check("destroy idempotent", EchoBridge.nativeDestroy(driver).equals("released"));
+        check("usable after destroy drive",
+                Arrays.equals(EchoBridge.nativeEchoBytes(driver, new byte[] {9}),
+                        new byte[] {9}));
+        // No fake passes: unwired BLE transitions reject loudly with the
+        // frozen capability.unsupported|capability contract pairing.
+        for (String transition : new String[] {"scan.start", "queue-advertisement",
+                "force-disconnect", "advance-time", "emit-notification"}) {
+            final String name = transition;
+            expectWire("unwired " + name, () -> {
+                EchoBridge.nativeBleTransition(driver, name);
+                return null;
+            }, "capability.unsupported|capability|request-ble-transition|transition-not-wired-in-u7-slice");
+        }
+        expectWire("empty transition name", () -> {
+            EchoBridge.nativeBleTransition(driver, "");
+            return null;
+        }, "argument.invalid|core|request-ble-transition|transition-name-empty");
+        EchoBridge.nativeClose(driver);
+        final long driverFinal = driver;
+        expectWire("post-close status",
+                () -> EchoBridge.nativeCentralStatus(driverFinal),
+                "lifecycle.destroyed|core|central-status|unknown-or-closed-handle");
+        expectWire("post-close sweep",
+                () -> EchoBridge.nativeExpireSweep(driverFinal, "0"),
+                "lifecycle.destroyed|core|central-expire-sweep|unknown-or-closed-handle");
+        expectWire("post-close destroy",
+                () -> EchoBridge.nativeDestroy(driverFinal),
+                "lifecycle.destroyed|core|central-destroy|unknown-or-closed-handle");
+        expectWire("post-close ble transition", () -> {
+            EchoBridge.nativeBleTransition(driverFinal, "scan.start");
+            return null;
+        }, "lifecycle.destroyed|core|request-ble-transition|unknown-or-closed-handle");
+
         // Close invalidation.
         EchoBridge.nativeClose(session);
         final long closedFinal = session;

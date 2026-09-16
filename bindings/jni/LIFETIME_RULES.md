@@ -4,17 +4,40 @@ Tested build: `jni =0.22.4`, `rustc 1.98.1 (48a229cea 2026-09-01)`, Linux
 x86_64 cdylib driven from `javac/java 21.0.12` (OpenJDK 64-Bit Server VM)
 through real JNI. Contract `C-UBM.0.1.1-DRAFT`, single-owned by `ubm-core`
 (workspace member). Proven by `cargo test` and `run_jni_roundtrip.sh`
-(33 JVM checks). Anything outside this envelope is a limitation.
+(51 JVM checks). Anything outside this envelope is a limitation.
 
-## Core wiring (UBM 5.0 wiring slice)
+## Core wiring (UBM 5.0 wiring slice + U7 transition-driving)
 
 - `CoreBackend` is implemented for the ubm-core-backed `CoreSession`
   (`src/core_backend.rs`, the one implementation in this crate). Revision
   identity, the byte ceiling, and decimal-string counter parsing come from
   `ubm_core::contracts`; no contract constant is duplicated here. The former
   echo-only stand-in (`echo_core.rs`) is deleted — no dual owners.
-- The echo transport itself stays feasibility-echo (NOT BLE functionality);
-  wiring real kernel transitions through this seam is later U7 scope.
+- U7 transition-driving: `CoreSession` holds a REAL `ubm_core::central::Central`
+  (which owns the one scheduling `Kernel`), constructed at `open` for a
+  fixed binding-process attachment scope with a completed handshake
+  (PKG-02); construction failure fails `open` loudly
+  (`lifecycle.invariant-violation|core|echo-session.open|central-construct-failed`).
+  Driven natives (all throwing typed `EchoException` on failure, all gated
+  on live handles):
+  - `nativeCentralStatus` observes the core (frozen revision + live kernel
+    counters as JSON; fixed shape across bindings).
+  - `nativeExpireSweep(handle, nowMs)` drives a real kernel expiry sweep at
+    decimal-string host time (DATA-02 mapping, lossless via
+    `BigInteger.toString()`); gate-first ordering keeps post-close
+    semantics uniform even for garbage input.
+  - `nativeDestroy` drives the real shutdown transition
+    (`released` / `release-failed`); idempotent; orthogonal to
+    `nativeClose` (echo stays usable until close removes the handle).
+  - `nativeBleTransition(handle, transition)` is the loud-rejection path
+    for every BLE transition beyond the driven slice:
+    `capability.unsupported|capability` (the frozen contract pairing),
+    never silent or faked; empty names are `argument.invalid`.
+- The echo transport itself stays feasibility-echo (NOT BLE functionality).
+  Follow-ups: unique per-instance attachment identity (fixed scope labels
+  this slice); surfacing staged kernel effects to a host executor (driven
+  batches are bounded and dropped after the call — nothing is staged yet,
+  so nothing is lost yet).
 
 ## Thread / runtime lifetimes
 

@@ -31,4 +31,12 @@ public final class EchoBridge {
     public static native void nativeClose(long handle);
 
     public static native String nativeRevision();
+
+    public static native String nativeCentralStatus(long handle);
+
+    public static native String nativeExpireSweep(long handle, String nowMs);
+
+    public static native String nativeDestroy(long handle);
+
+    public static native void nativeBleTransition(long handle, String transition);
 }

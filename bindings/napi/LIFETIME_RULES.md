@@ -7,15 +7,38 @@ as `ubm_echo.linux-x64.node`. Contract `C-UBM.0.1.1-DRAFT`, single-owned by
 below). Proven by `js/roundtrip.cjs`, `js/exit_probe.cjs`, and `cargo test`.
 Anything outside this envelope is a limitation, not a pass.
 
-## Core wiring (UBM 5.0 wiring slice)
+## Core wiring (UBM 5.0 wiring slice + U7 transition-driving)
 
 - `CoreBackend` is implemented for the ubm-core-backed `CoreSession`
   (`src/core_backend.rs`, the one implementation in this crate). Revision
   identity, the byte ceiling, and decimal-string counter parsing come from
   `ubm_core::contracts`; no contract constant is duplicated here. The former
   echo-only stand-in (`echo_core.rs`) is deleted — no dual owners.
-- The echo transport itself stays feasibility-echo (NOT BLE functionality);
-  wiring real kernel transitions through this seam is later U7 scope.
+- U7 transition-driving: `CoreSession` holds a REAL `ubm_core::central::Central`
+  (which owns the one scheduling `Kernel`) — the feasibility-echo state is
+  replaced, not duplicated. Session `open` constructs it for a fixed
+  binding-process attachment scope with a completed handshake (PKG-02);
+  construction failure fails `open` loudly
+  (`lifecycle.invariant-violation|core|echo-session.open|central-construct-failed`).
+- Driven transitions (all gated by the lifetime rules below, all failing
+  closed with contract identities):
+  - `centralStatus()` observes the core (frozen revision + live kernel
+    counters as JSON; fixed shape across bindings).
+  - `driveExpireSweep(nowMs)` drives a real kernel expiry sweep at
+    host-supplied monotonic time (decimal string, DATA-02 mapping) and
+    reports the settled count.
+  - `driveDestroy()` drives the real shutdown transition and reports
+    `released` / `release-failed`; idempotent; orthogonal to `close` (echo
+    stays usable until `close` destroys the binding lifetime).
+  - `requestBleTransition(name)` is the loud-rejection path for every BLE
+    transition beyond the driven slice: `capability.unsupported|capability`
+    (the frozen contract pairing), never silent or faked; empty names are
+    `argument.invalid`.
+- The echo transport itself stays feasibility-echo (NOT BLE functionality).
+  Follow-ups: unique per-instance attachment identity (fixed scope labels
+  this slice); surfacing staged kernel effects to a host executor (driven
+  batches are bounded and dropped after the call — nothing is staged yet,
+  so nothing is lost yet).
 
 ## Thread / runtime lifetimes
 

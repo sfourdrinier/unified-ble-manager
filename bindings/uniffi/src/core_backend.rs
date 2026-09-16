@@ -8,16 +8,31 @@
 //! validator is duplicated here — the previous echo-only stand-in
 //! (`echo_core.rs`) is deleted, so there are no dual owners.
 //!
-//! The echo transport itself stays feasibility-echo (NOT BLE functionality);
-//! wiring real kernel transitions through this seam is later U7 scope.
+//! The echo transport itself stays feasibility-echo (NOT BLE functionality).
+//! U7 transition-driving (U7 slice): [`CoreSession`] additionally holds a
+//! REAL [`ubm_core::central::Central`] (owning the one scheduling kernel),
+//! constructed at `open`; the driving methods below run real kernel
+//! transitions through it. BLE transitions beyond the driven slice reject
+//! loudly with contract identities; nothing unimplemented passes silently.
 //!
 //! Init contract note: the UDL constructor cannot fail, so the revision gate
 //! runs on EVERY method — a foreign revision fails closed with
 //! `protocol.incompatible` on every call (no effect without valid init).
+//! The same fail-closed shape covers the transition core: when central
+//! construction cannot establish its invariant (unreachable with the fixed
+//! scope labels, but never assumed), every driving call reports
+//! `lifecycle.invariant-violation` instead of operating degraded.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
+
+use ubm_core::central::{Central, CentralConfig};
+use ubm_core::contracts::{
+    AdapterGeneration, AdapterId, AttachmentId, AttachmentTuple, BackendGeneration,
+    BackendInstanceId, CoreError, Generation,
+};
+use ubm_core::ownership::EffectBatch;
 
 /// Frozen contract revision, single-owned by `ubm-core`.
 pub use ubm_core::contracts::CONTRACT_REVISION;
@@ -134,15 +149,85 @@ pub fn echo_bytes_chunked(
     Ok(input.to_vec())
 }
 
+/// Effect-batch capacity for driven kernel transitions (same bound as the
+/// sibling bindings; the U7 slice admits no operations, so sweeps and
+/// destroy stage nothing yet, but the bound still holds).
+const DRIVE_EFFECT_CAP: usize = 64;
+
+/// Construction of the session-owned transition core failed: the binding
+/// cannot establish its core invariant.
+fn construct_failed(operation: &'static str) -> EchoError {
+    EchoError::new(
+        "lifecycle.invariant-violation",
+        "core",
+        operation,
+        "central-construct-failed",
+    )
+}
+
+/// Builds the session-owned transition core: one REAL [`Central`] (owning
+/// the one scheduling kernel) bound to this binding's fixed attachment
+/// scope with a completed handshake (PKG-02).
+fn construct_central(operation: &'static str) -> Result<Central, EchoError> {
+    let attachment = AttachmentTuple::new(
+        AttachmentId::new("ubm-binding-attachment").map_err(|_| construct_failed(operation))?,
+        BackendInstanceId::new("ubm-binding-instance").map_err(|_| construct_failed(operation))?,
+        BackendGeneration::new("ubm-binding-generation-0")
+            .map_err(|_| construct_failed(operation))?,
+        AdapterId::new("ubm-binding-adapter").map_err(|_| construct_failed(operation))?,
+        AdapterGeneration::new("ubm-binding-adapter-generation-0")
+            .map_err(|_| construct_failed(operation))?,
+    );
+    let generation = Generation::new("ubm-binding-kernel-generation-0")
+        .map_err(|_| construct_failed(operation))?;
+    Central::new(attachment, generation, CentralConfig::default())
+        .map_err(|_| construct_failed(operation))
+}
+
+/// Maps a core rejection to the binding wire form. The frozen contract
+/// identity (code + domain) is preserved verbatim; the operation names the
+/// binding call under test and the detail names the rejector.
+fn central_error(core: CoreError, operation: &'static str) -> EchoError {
+    EchoError::new(
+        core.code().as_str(),
+        core.domain().as_str(),
+        operation,
+        "central-rejected",
+    )
+}
+
+/// Parses a host-supplied monotonic millisecond reading over the
+/// single-owned decimal-string mapping (DATA-02); anything else is
+/// `bytes.invalid`, exactly like the counter path.
+pub fn parse_monotonic_ms(decimal: &str, operation: &'static str) -> Result<u64, EchoError> {
+    match ubm_core::contracts::parse_u64_decimal(decimal) {
+        Ok(value) => Ok(value),
+        Err(core) => Err(EchoError::new(
+            "bytes.invalid",
+            "core",
+            operation,
+            if core.operation() == "u64.range" {
+                "u64.range"
+            } else {
+                "u64.input"
+            },
+        )),
+    }
+}
+
 /// Core-backed session. The revision gate runs on EVERY call (the UDL
 /// constructor cannot fail, so fail-closed init lives at the method level);
 /// `close` destroys the session and every later call reports
-/// `lifecycle.destroyed`. Contract validation delegates to `ubm-core`.
+/// `lifecycle.destroyed`. Contract validation delegates to `ubm-core`. U7
+/// transition-driving: the session additionally holds the REAL
+/// session-owned [`Central`] (absent only when its construction could not
+/// establish the core invariant — every driving call then fails closed).
 #[derive(Debug)]
 pub struct CoreSession {
     revision_valid: bool,
     destroyed: bool,
     cancel: Arc<CancelFlag>,
+    central: Option<Central>,
 }
 
 impl CoreSession {
@@ -150,10 +235,17 @@ impl CoreSession {
         let revision_valid =
             ubm_core::contracts::assert_contract_revision_equal(CONTRACT_REVISION, revision)
                 .is_ok();
+        // Infallible constructor: construction failure is recorded as an
+        // absent core, and every driving call fails closed on it (documented
+        // above). The error itself is unreachable with the fixed scope
+        // labels; dropping it here never silences a reachable path because
+        // the absence is observed loudly at every use.
+        let central = construct_central("echo-session.open").ok();
         Self {
             revision_valid,
             destroyed: false,
             cancel: Arc::new(CancelFlag::default()),
+            central,
         }
     }
 
@@ -188,6 +280,105 @@ impl CoreSession {
     pub fn close(&mut self) {
         self.destroyed = true;
         self.cancel.cancel();
+    }
+
+    fn central_ref(&self, operation: &'static str) -> Result<&Central, EchoError> {
+        self.check_usable(operation)?;
+        self.central.as_ref().ok_or_else(|| {
+            EchoError::new(
+                "lifecycle.invariant-violation",
+                "core",
+                operation,
+                "central-missing",
+            )
+        })
+    }
+
+    fn central_mut(&mut self, operation: &'static str) -> Result<&mut Central, EchoError> {
+        self.check_usable(operation)?;
+        self.central.as_mut().ok_or_else(|| {
+            EchoError::new(
+                "lifecycle.invariant-violation",
+                "core",
+                operation,
+                "central-missing",
+            )
+        })
+    }
+
+    /// Observes the session-owned transition core: a JSON document with the
+    /// frozen revision plus the live kernel counters (`live_operations`,
+    /// `retained_cleanup`). Same shape as the sibling bindings.
+    pub fn central_status(&self, operation: &'static str) -> Result<String, EchoError> {
+        let central = self.central_ref(operation)?;
+        Ok(format!(
+            "{{\"revision\":\"{}\",\"live_operations\":{},\"retained_cleanup\":{}}}",
+            CONTRACT_REVISION,
+            central.live_operation_count(),
+            central.retained_cleanup_count()
+        ))
+    }
+
+    /// Drives a REAL kernel transition: an expiry sweep of the
+    /// session-owned central at host-supplied monotonic time (decimal
+    /// string, DATA-02 mapping). Returns the settled-operation count.
+    /// Lifetime gates run before input parsing (uniform post-close
+    /// semantics).
+    pub fn drive_expire_sweep(
+        &mut self,
+        now_ms_decimal: &str,
+        operation: &'static str,
+    ) -> Result<u64, EchoError> {
+        let central = self.central_mut(operation)?;
+        let now_ms = parse_monotonic_ms(now_ms_decimal, operation)?;
+        let mut out = EffectBatch::new(DRIVE_EFFECT_CAP);
+        match central.expire_sweep(now_ms, &mut out) {
+            Ok((settled, _truncated)) => Ok(settled as u64),
+            Err(core) => Err(central_error(core, operation)),
+        }
+    }
+
+    /// Drives the REAL shutdown transition of the session-owned central and
+    /// reports the retained cleanup state (`released` / `release-failed`).
+    /// Idempotent.
+    pub fn drive_destroy(&mut self, operation: &'static str) -> Result<&'static str, EchoError> {
+        let central = self.central_mut(operation)?;
+        let mut out = EffectBatch::new(DRIVE_EFFECT_CAP);
+        match central.destroy(&mut out) {
+            Ok(record) => Ok(match record.state() {
+                ubm_core::ownership::CleanupState::Released => "released",
+                ubm_core::ownership::CleanupState::ReleaseFailed => "release-failed",
+            }),
+            Err(core) => Err(central_error(core, operation)),
+        }
+    }
+
+    /// Loud rejection for BLE transitions beyond the driven slice (scan,
+    /// connect, GATT, subscribe, ...): this boundary has no radio/host, so
+    /// every named transition fails closed with
+    /// `capability.unsupported|capability` (the frozen contract pairing),
+    /// never a silent no-op or a faked success. An empty transition name is
+    /// `argument.invalid`.
+    pub fn request_ble_transition(
+        &self,
+        transition: &str,
+        operation: &'static str,
+    ) -> Result<(), EchoError> {
+        self.check_usable(operation)?;
+        if transition.is_empty() {
+            return Err(EchoError::new(
+                "argument.invalid",
+                "core",
+                operation,
+                "transition-name-empty",
+            ));
+        }
+        Err(EchoError::new(
+            "capability.unsupported",
+            "capability",
+            operation,
+            "transition-not-wired-in-u7-slice",
+        ))
     }
 
     /// Interior-mutability shell for UniFFI objects (shared across threads).
@@ -260,6 +451,45 @@ impl SharedCore {
         guard.check_usable("cancel-inflight")?;
         guard.cancel_inflight();
         Ok(())
+    }
+
+    /// U7: observes the session-owned REAL Central (frozen revision plus
+    /// live kernel counters as JSON).
+    pub fn central_status(&self) -> Result<String, EchoError> {
+        const OP: &str = "central-status";
+        let guard = self.lock(OP)?;
+        guard.central_status(OP)
+    }
+
+    /// U7: drives a real kernel expiry sweep at decimal-string host time;
+    /// returns the settled-operation count as decimal. The revision/close
+    /// gate runs before input parsing (uniform post-close semantics); the
+    /// inner drive re-checks harmlessly.
+    pub fn drive_expire_sweep(&self, now_ms_decimal: &str) -> Result<String, EchoError> {
+        const OP: &str = "central-expire-sweep";
+        let mut guard = self.lock(OP)?;
+        guard.check_usable(OP)?;
+        guard
+            .drive_expire_sweep(now_ms_decimal, OP)
+            .map(|settled| settled.to_string())
+    }
+
+    /// U7: drives the real shutdown transition; returns
+    /// `released` / `release-failed`. Idempotent.
+    pub fn drive_destroy(&self) -> Result<String, EchoError> {
+        const OP: &str = "central-destroy";
+        let mut guard = self.lock(OP)?;
+        guard
+            .drive_destroy(OP)
+            .map(std::string::ToString::to_string)
+    }
+
+    /// U7 loud rejection for BLE transitions beyond the driven slice:
+    /// `capability.unsupported|capability`, never silent or faked.
+    pub fn request_ble_transition(&self, transition: &str) -> Result<(), EchoError> {
+        const OP: &str = "request-ble-transition";
+        let guard = self.lock(OP)?;
+        guard.request_ble_transition(transition, OP)
     }
 
     /// Destroys the session. A poisoned lock maps to a loud
@@ -444,6 +674,93 @@ mod tests {
     fn seam_holds_for_the_wired_core() {
         fn assert_backend<T: CoreBackend>(_: &T) {}
         assert_backend(&CoreSession::open(REV));
+    }
+
+    #[test]
+    fn session_holds_a_real_central() {
+        // U7 transition-driving: open constructs a REAL Central (owning the
+        // one kernel): zero live operations, zero retained cleanup.
+        let core = CoreSession::open(REV).into_shared();
+        assert_eq!(
+            core.central_status().unwrap(),
+            "{\"revision\":\"C-UBM.0.1.1-DRAFT\",\"live_operations\":0,\"retained_cleanup\":0}"
+        );
+    }
+
+    #[test]
+    fn expire_sweep_drives_the_kernel() {
+        let core = CoreSession::open(REV).into_shared();
+        assert_eq!(core.drive_expire_sweep("0").unwrap(), "0");
+        assert_eq!(
+            core.drive_expire_sweep("18446744073709551615").unwrap(),
+            "0"
+        );
+        let err = core.drive_expire_sweep("nope").expect_err("garbage time");
+        assert_eq!((err.code, err.detail), ("bytes.invalid", "u64.input"));
+    }
+
+    #[test]
+    fn destroy_drives_shutdown_and_is_idempotent() {
+        let core = CoreSession::open(REV).into_shared();
+        assert_eq!(core.drive_destroy().unwrap(), "released");
+        assert_eq!(core.drive_destroy().unwrap(), "released");
+        assert_eq!(core.echo_bytes(&[9]).unwrap(), vec![9]);
+    }
+
+    #[test]
+    fn unwired_transitions_reject_with_capability_unsupported() {
+        let core = CoreSession::open(REV).into_shared();
+        for transition in ["scan.start", "queue-advertisement", "force-disconnect"] {
+            let err = core
+                .request_ble_transition(transition)
+                .expect_err("unwired transition must reject");
+            assert_eq!(
+                (err.code, err.domain, err.operation, err.detail),
+                (
+                    "capability.unsupported",
+                    "capability",
+                    "request-ble-transition",
+                    "transition-not-wired-in-u7-slice"
+                ),
+                "transition {transition}"
+            );
+        }
+        let err = core.request_ble_transition("").expect_err("empty name");
+        assert_eq!(
+            (err.code, err.domain, err.detail),
+            ("argument.invalid", "core", "transition-name-empty")
+        );
+    }
+
+    #[test]
+    fn driving_gates_on_revision_and_close() {
+        // The revision gate runs on EVERY driving call (foreign revision:
+        // protocol.incompatible, no effect). After close every driving call
+        // reports lifecycle.destroyed — including garbage sweep input
+        // (gate-first ordering, uniform post-close semantics).
+        let foreign = CoreSession::open("C-UBM.9.9.9-DRAFT").into_shared();
+        for err in [
+            foreign.central_status().expect_err("init gate"),
+            foreign.drive_expire_sweep("0").expect_err("init gate"),
+            foreign.drive_destroy().expect_err("init gate"),
+            foreign
+                .request_ble_transition("scan.start")
+                .expect_err("init gate"),
+        ] {
+            assert_eq!((err.code, err.domain), ("protocol.incompatible", "core"));
+        }
+        let core = CoreSession::open(REV).into_shared();
+        core.close().unwrap();
+        for err in [
+            core.central_status().expect_err("closed"),
+            core.drive_expire_sweep("0").expect_err("closed"),
+            core.drive_expire_sweep("nope").expect_err("closed"),
+            core.drive_destroy().expect_err("closed"),
+            core.request_ble_transition("scan.start")
+                .expect_err("closed"),
+        ] {
+            assert_eq!((err.code, err.domain), ("lifecycle.destroyed", "core"));
+        }
     }
 
     // NOTE: no wire-join helper lives here on purpose. UniFFI splits the

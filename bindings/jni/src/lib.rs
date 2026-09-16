@@ -16,6 +16,11 @@
 //! The former test-only `nativePanicProbe` was deleted by the wiring slice:
 //! probes must not ship in production paths. A Rust panic still surfaces as
 //! a typed `EchoException` via the `ThrowEchoAndDefault` policy below.
+//!
+//! U7 transition-driving (U7 slice): `CoreSession` holds and drives a REAL
+//! `ubm_core::central::Central` (owning the one scheduling kernel); the
+//! natives below expose status, expiry-sweep and destroy drives plus the
+//! loud-rejection path for unwired BLE transitions. See `core_backend`.
 
 mod core_backend;
 
@@ -338,6 +343,104 @@ pub extern "system" fn Java_com_ubm_echo_EchoBridge_nativeEchoCounter<'caller>(
             publish_string(env, out, OP)
         })
         .resolve_with::<ThrowEchoAndDefault, _>(|| "echo-counter")
+}
+
+/// Observes the session-owned transition core (U7): the frozen revision
+/// plus live kernel counters as JSON (same shape as the sibling bindings).
+/// Unknown/closed handles fail `lifecycle.destroyed`.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_ubm_echo_EchoBridge_nativeCentralStatus<'caller>(
+    mut unowned_env: EnvUnowned<'caller>,
+    _class: JClass<'caller>,
+    handle: jlong,
+) -> jstring {
+    unowned_env
+        .with_env(|env| -> BridgeResult<jstring> {
+            const OP: &str = "central-status";
+            let session = lookup_session(handle, OP)?;
+            let out = {
+                let core = lock_session(&session, OP)?;
+                core.central_status(OP).map_err(BridgeError::echo)?
+            };
+            publish_string(env, out, OP)
+        })
+        .resolve_with::<ThrowEchoAndDefault, _>(|| "central-status")
+}
+
+/// Drives a REAL kernel expiry sweep (U7) at host-supplied monotonic time
+/// (decimal string, DATA-02 mapping); returns the settled-operation count
+/// as decimal. Unknown/closed handles fail `lifecycle.destroyed`.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_ubm_echo_EchoBridge_nativeExpireSweep<'caller>(
+    mut unowned_env: EnvUnowned<'caller>,
+    _class: JClass<'caller>,
+    handle: jlong,
+    now_ms: JString<'caller>,
+) -> jstring {
+    unowned_env
+        .with_env(|env| -> BridgeResult<jstring> {
+            const OP: &str = "central-expire-sweep";
+            let session = lookup_session(handle, OP)?;
+            let text = read_string(env, &now_ms, OP)?;
+            let out = {
+                let mut core = lock_session(&session, OP)?;
+                core.drive_expire_sweep(&text, OP)
+                    .map(|settled| settled.to_string())
+                    .map_err(BridgeError::echo)?
+            };
+            publish_string(env, out, OP)
+        })
+        .resolve_with::<ThrowEchoAndDefault, _>(|| "central-expire-sweep")
+}
+
+/// Drives the REAL shutdown transition (U7); returns `released` on a clean
+/// release, `release-failed` otherwise. Idempotent. Unknown/closed handles
+/// fail `lifecycle.destroyed`.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_ubm_echo_EchoBridge_nativeDestroy<'caller>(
+    mut unowned_env: EnvUnowned<'caller>,
+    _class: JClass<'caller>,
+    handle: jlong,
+) -> jstring {
+    unowned_env
+        .with_env(|env| -> BridgeResult<jstring> {
+            const OP: &str = "central-destroy";
+            let session = lookup_session(handle, OP)?;
+            let out = {
+                let mut core = lock_session(&session, OP)?;
+                core.drive_destroy(OP)
+                    .map(std::string::ToString::to_string)
+                    .map_err(BridgeError::echo)?
+            };
+            publish_string(env, out, OP)
+        })
+        .resolve_with::<ThrowEchoAndDefault, _>(|| "central-destroy")
+}
+
+/// Loud rejection for BLE transitions beyond the driven slice (U7): every
+/// named transition fails closed with `capability.unsupported|capability`,
+/// never silently or faked. Unknown/closed handles fail
+/// `lifecycle.destroyed`.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_ubm_echo_EchoBridge_nativeBleTransition<'caller>(
+    mut unowned_env: EnvUnowned<'caller>,
+    _class: JClass<'caller>,
+    handle: jlong,
+    transition: JString<'caller>,
+) {
+    unowned_env
+        .with_env(|env| -> BridgeResult<()> {
+            const OP: &str = "request-ble-transition";
+            let session = lookup_session(handle, OP)?;
+            let name = read_string(env, &transition, OP)?;
+            {
+                let core = lock_session(&session, OP)?;
+                core.request_ble_transition(&name, OP)
+                    .map_err(BridgeError::echo)?;
+            }
+            Ok(())
+        })
+        .resolve_with::<ThrowEchoAndDefault, _>(|| "request-ble-transition")
 }
 
 /// Arms session cancellation. The next chunked unit reports

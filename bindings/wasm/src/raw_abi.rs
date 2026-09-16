@@ -476,6 +476,158 @@ pub unsafe extern "C" fn ubm_echo_describe_json(out_len: *mut usize) -> *mut u8 
     publish_owned(doc.into_bytes(), out_len)
 }
 
+/// Observes the session-owned transition core (U7): the frozen revision
+/// plus live kernel counters as a published JSON document (same shape as
+/// the sibling bindings). Returns null on error (see
+/// [`ubm_echo_last_error`]); otherwise a host-owned buffer published per
+/// [`publish_owned`].
+#[no_mangle]
+///
+/// # Safety
+///
+/// `out_len` must be writable.
+pub unsafe extern "C" fn ubm_echo_central_status(out_len: *mut usize) -> *mut u8 {
+    let op = "central-status";
+    if out_len.is_null() {
+        set_last_error(EchoError::argument_invalid(op, "null-out-len"));
+        return std::ptr::null_mut();
+    }
+    let guard = match core().lock() {
+        Ok(guard) => guard,
+        Err(_) => {
+            set_last_error(lock_failed(op));
+            return std::ptr::null_mut();
+        }
+    };
+    match guard.central_status(op) {
+        Ok(doc) => {
+            clear_last_error();
+            drop(guard);
+            publish_owned(doc.into_bytes(), out_len)
+        }
+        Err(err) => {
+            set_last_error(err);
+            std::ptr::null_mut()
+        }
+    }
+}
+
+/// Drives a REAL kernel expiry sweep (U7) of the session-owned central at
+/// host-supplied monotonic time (decimal UTF-8 milliseconds, DATA-02
+/// mapping, lossless past 2^53); writes the settled-operation count to
+/// `out_settled`. Returns an [`EchoCode`].
+#[no_mangle]
+///
+/// # Safety
+///
+/// When `now_len > 0`, `now_ptr` must span `now_len` readable bytes;
+/// `out_settled` must be writable.
+pub unsafe extern "C" fn ubm_echo_expire_sweep(
+    now_ptr: *const u8,
+    now_len: usize,
+    out_settled: *mut u64,
+) -> u32 {
+    let op = "central-expire-sweep";
+    if out_settled.is_null() {
+        return set_last_error(EchoError::argument_invalid(op, "null-out-settled")) as u32;
+    }
+    let now_bytes = match read_host(now_ptr, now_len, op) {
+        Ok(bytes) => bytes,
+        Err(err) => return set_last_error(err) as u32,
+    };
+    // Lifetime gates run inside the drive call before input parsing, so an
+    // uninitialised binding reports `lifecycle.invalid-state` even for
+    // garbage time. Non-UTF-8 time is `bytes.invalid` at the boundary.
+    let now_decimal = match String::from_utf8(now_bytes) {
+        Ok(text) => text,
+        Err(_) => return set_last_error(EchoError::bytes_invalid(op, "u64.input")) as u32,
+    };
+    let mut guard = match core().lock() {
+        Ok(guard) => guard,
+        Err(_) => return set_last_error(lock_failed(op)) as u32,
+    };
+    match guard.drive_expire_sweep(&now_decimal, op) {
+        Ok(settled) => {
+            clear_last_error();
+            // SAFETY: out_settled checked non-null; the host guarantees
+            // writability.
+            unsafe {
+                *out_settled = settled;
+            }
+            EchoCode::Ok as u32
+        }
+        Err(err) => set_last_error(err) as u32,
+    }
+}
+
+/// Drives the REAL shutdown transition (U7) of the session-owned central.
+/// Returns null on error; otherwise the retained cleanup state
+/// (`released` / `release-failed`) as a host-owned buffer per
+/// [`publish_owned`]. Idempotent.
+#[no_mangle]
+///
+/// # Safety
+///
+/// `out_len` must be writable.
+pub unsafe extern "C" fn ubm_echo_destroy(out_len: *mut usize) -> *mut u8 {
+    let op = "central-destroy";
+    if out_len.is_null() {
+        set_last_error(EchoError::argument_invalid(op, "null-out-len"));
+        return std::ptr::null_mut();
+    }
+    let mut guard = match core().lock() {
+        Ok(guard) => guard,
+        Err(_) => {
+            set_last_error(lock_failed(op));
+            return std::ptr::null_mut();
+        }
+    };
+    match guard.drive_destroy(op) {
+        Ok(state) => {
+            clear_last_error();
+            drop(guard);
+            publish_owned(state.as_bytes().to_vec(), out_len)
+        }
+        Err(err) => {
+            set_last_error(err);
+            std::ptr::null_mut()
+        }
+    }
+}
+
+/// Loud rejection for BLE transitions beyond the driven slice (U7): this
+/// boundary has no radio/host, so every named transition fails closed with
+/// `capability.unsupported|capability` (numeric [`EchoCode::CapabilityUnsupported`]),
+/// never silently or faked. Returns an [`EchoCode`] (never `Ok` in this
+/// slice: there is no success value to report).
+#[no_mangle]
+///
+/// # Safety
+///
+/// When `name_len > 0`, `name_ptr` must span `name_len` readable bytes.
+pub unsafe extern "C" fn ubm_echo_ble_transition(name_ptr: *const u8, name_len: usize) -> u32 {
+    let op = "request-ble-transition";
+    let name_bytes = match read_host(name_ptr, name_len, op) {
+        Ok(bytes) => bytes,
+        Err(err) => return set_last_error(err) as u32,
+    };
+    let name = match String::from_utf8(name_bytes) {
+        Ok(text) => text,
+        Err(_) => return set_last_error(EchoError::bytes_invalid(op, "transition-utf8")) as u32,
+    };
+    let guard = match core().lock() {
+        Ok(guard) => guard,
+        Err(_) => return set_last_error(lock_failed(op)) as u32,
+    };
+    match guard.request_ble_transition(&name, op) {
+        Ok(()) => {
+            clear_last_error();
+            EchoCode::Ok as u32
+        }
+        Err(err) => set_last_error(err) as u32,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

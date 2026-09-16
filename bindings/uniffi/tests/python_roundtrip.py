@@ -68,6 +68,10 @@ for name, rec in [
     ("counter", f.echo_counter("1")),
     ("chunked", f.echo_bytes_chunked(b"\x01", 1)),
     ("cancel", f.cancel_inflight()),
+    ("central-status", f.central_status()),
+    ("central-expire-sweep", f.drive_expire_sweep("0")),
+    ("central-destroy", f.drive_destroy()),
+    ("request-ble-transition", f.request_ble_transition("scan.start")),
 ]:
     check(f"foreign rev {name}", (not rec.ok) and rec.code == "protocol.incompatible"
           and rec.domain == "core", wire_of(rec))
@@ -107,6 +111,43 @@ for op, rec in [("echo-bytes", s4.echo_bytes(b"\x01")),
                  # M1: uniform post-close cancel rejects like every other
                  # call on a destroyed session (napi/JNI agree).
                  ("cancel-inflight", s4.cancel_inflight())]:
+    check(f"post-close {op}", (not rec.ok)
+          and wire_of(rec) == f"lifecycle.destroyed|core|{op}", wire_of(rec))
+
+print("== U7 transition-driving: REAL Kernel+Central ==")
+d = ubm_echo.EchoSession(REV)
+r = d.central_status()
+check("central status", r.ok and r.value ==
+      '{"revision":"C-UBM.0.1.1-DRAFT","live_operations":0,"retained_cleanup":0}', r.value)
+r = d.drive_expire_sweep("0")
+check("sweep settles nothing fresh", r.ok and r.value == "0", r.value)
+r = d.drive_expire_sweep("18446744073709551615")
+check("sweep u64max time", r.ok and r.value == "0", r.value)
+r = d.drive_expire_sweep("nope")
+check("sweep garbage rejects",
+      (not r.ok) and wire_of(r) == "bytes.invalid|core|central-expire-sweep", wire_of(r))
+r = d.drive_destroy()
+check("destroy releases", r.ok and r.value == "released", r.value)
+r = d.drive_destroy()
+check("destroy idempotent", r.ok and r.value == "released", r.value)
+r = d.echo_bytes(b"\x09")
+check("usable after destroy drive", r.ok and bytes(r.data) == b"\x09")
+for transition in ["scan.start", "queue-advertisement", "force-disconnect",
+                   "advance-time", "emit-notification"]:
+    r = d.request_ble_transition(transition)
+    check(f"unwired {transition}",
+          (not r.ok) and wire_of(r) == "capability.unsupported|capability|request-ble-transition",
+          wire_of(r))
+r = d.request_ble_transition("")
+check("empty transition name",
+      (not r.ok) and wire_of(r) == "argument.invalid|core|request-ble-transition", wire_of(r))
+check("drive close ok", d.close().ok)
+for op, rec in [("central-status", d.central_status()),
+                ("central-expire-sweep", d.drive_expire_sweep("0")),
+                # Gate-first: garbage sweep input still reports the lifetime.
+                ("central-expire-sweep", d.drive_expire_sweep("nope")),
+                ("central-destroy", d.drive_destroy()),
+                ("request-ble-transition", d.request_ble_transition("scan.start"))]:
     check(f"post-close {op}", (not rec.ok)
           and wire_of(rec) == f"lifecycle.destroyed|core|{op}", wire_of(rec))
 

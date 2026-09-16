@@ -5,17 +5,39 @@ Tested build: `uniffi =0.32.1 + build feature`, `rustc 1.98.1
 Python `3.10.10` driving the REAL generated `ubm_echo.py` against the REAL
 built cdylib. Contract `C-UBM.0.1.1-DRAFT`, single-owned by `ubm-core`
 (workspace member). Proven by `cargo test` and `run_uniffi_roundtrip.sh`
-(34 foreign checks). Anything outside this envelope is a limitation.
+(58 foreign checks). Anything outside this envelope is a limitation.
 
-## Core wiring (UBM 5.0 wiring slice)
+## Core wiring (UBM 5.0 wiring slice + U7 transition-driving)
 
 - `CoreBackend` is implemented for the ubm-core-backed `CoreSession`
   (`src/core_backend.rs`, the one implementation in this crate). Revision
   identity, the byte ceiling, and decimal-string counter parsing come from
   `ubm_core::contracts`; no contract constant is duplicated here. The former
   echo-only stand-in (`echo_core.rs`) is deleted — no dual owners.
-- The echo transport itself stays feasibility-echo (NOT BLE functionality);
-  wiring real kernel transitions through this seam is later U7 scope.
+- U7 transition-driving: `CoreSession` holds a REAL `ubm_core::central::Central`
+  (which owns the one scheduling `Kernel`), constructed at `open` for a
+  fixed binding-process attachment scope with a completed handshake
+  (PKG-02). The UDL constructor cannot fail, so construction failure is
+  recorded as an absent core and every driving call fails closed with
+  `lifecycle.invariant-violation` (unreachable with the fixed labels, never
+  assumed). Driven UDL methods (all gated by the revision/close rules
+  below, values in the shared result records):
+  - `central_status()` observes the core (frozen revision + live kernel
+    counters as JSON; fixed shape across bindings).
+  - `drive_expire_sweep(now_ms)` drives a real kernel expiry sweep at
+    decimal-string host time (DATA-02 mapping); gate-first ordering keeps
+    post-close semantics uniform even for garbage input.
+  - `drive_destroy()` drives the real shutdown transition
+    (`released` / `release-failed`); idempotent; orthogonal to `close`.
+  - `request_ble_transition(transition)` is the loud-rejection path for
+    every BLE transition beyond the driven slice:
+    `capability.unsupported|capability` (the frozen contract pairing),
+    never silent or faked; empty names are `argument.invalid`.
+- The echo transport itself stays feasibility-echo (NOT BLE functionality).
+  Follow-ups: unique per-instance attachment identity (fixed scope labels
+  this slice); surfacing staged kernel effects to a host executor (driven
+  batches are bounded and dropped after the call — nothing is staged yet,
+  so nothing is lost yet).
 
 ## Thread / runtime lifetimes
 
