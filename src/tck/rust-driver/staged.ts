@@ -210,7 +210,7 @@ export const PROGRAM_SCAN_OWNER: StagedProgram = {
       ok: true,
       event: 'platform-stopped',
       state: 'stopped',
-      staged: 3,
+      staged: 5,
       effects: 'central.scan-settled#@op0:scan.platform-event'
     })
   ]
@@ -868,7 +868,7 @@ export const PROGRAM_SUBSCRIPTION_FANOUT: StagedProgram = {
       ok: true,
       consumer: 'ready',
       cccd: true,
-      staged: 6,
+      staged: 10,
       effects: ''
     }),
     norm({
@@ -957,7 +957,7 @@ export const PROGRAM_SUBSCRIPTION_OVERFLOW: StagedProgram = {
       ok: true,
       consumer: 'ready',
       cccd: true,
-      staged: 3,
+      staged: 5,
       effects: ''
     }),
     norm({
@@ -1117,7 +1117,7 @@ export const PROGRAM_VERTICAL: StagedProgram = {
       ok: true,
       consumer: 'ready',
       cccd: true,
-      staged: 3,
+      staged: 5,
       effects: ''
     }),
     norm({
