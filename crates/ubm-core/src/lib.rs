@@ -1,6 +1,6 @@
 //! `ubm-core`: portable deterministic UBM 5.0 transition kernel.
 //!
-//! Mirrors C-UBM.0.1.1-DRAFT (U1 accepted); derivation notes live on
+//! Mirrors C-UBM.0.1.2-DRAFT (U1 accepted); derivation notes live on
 //! each module. Shape follows the BLE Rust convergence plan execution model:
 //! the core receives validated inputs plus a monotonic clock reading, advances
 //! bounded state, and appends concrete effects to a caller-provided batch. The

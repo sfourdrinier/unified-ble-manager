@@ -24,7 +24,7 @@
 //!   is enforced identically in `parse_u64_decimal`/`parse_i64_decimal`.
 
 /// Frozen contract revision this crate mirrors.
-pub const CONTRACT_REVISION: &str = "C-UBM.0.1.1-DRAFT";
+pub const CONTRACT_REVISION: &str = "C-UBM.0.1.2-DRAFT";
 /// Contract acceptance status.
 pub const CONTRACT_STATUS: &str = "DRAFT";
 /// Acceptance gate that freezes this draft.
@@ -1729,7 +1729,7 @@ mod tests {
 
     #[test]
     fn frozen_revision_constants() {
-        assert_eq!(CONTRACT_REVISION, "C-UBM.0.1.1-DRAFT");
+        assert_eq!(CONTRACT_REVISION, "C-UBM.0.1.2-DRAFT");
         assert_eq!(CONTRACT_STATUS, "DRAFT");
         assert_eq!(CONTRACT_ACCEPTANCE_GATE, "U1");
     }

@@ -1,6 +1,6 @@
 # C-UBM contract draft `C-UBM.0.1.2-DRAFT`
 
-Status: **DRAFT — pending U1 acceptance** (CON-UBM, trackourhealth/bun-mono#1188).
+Status: **ACCEPTED at C-UBM.0.1.2-DRAFT** (CON-UBM, trackourhealth/bun-mono#1188; U1 accepted; amendment 0.1.2 accepted by lane orchestrator as additive-only and wire-compatible).
 This directory is the exclusive U1 contract-freeze area on `codex/ubm5-contract-fixes`.
 
 ## What is frozen here
