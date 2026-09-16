@@ -1,24 +1,19 @@
 // contracts/__tests__/profile-codec.test.ts — C-UBM 0.1.2 additive amendment.
 //
 // Freezes the `profile.codec.*` SIG payload-codec identities into the contract
-// catalog with the exact wire strings of the retained oracle
-// (`src/profiles/errors.ts#ProfileCodecErrorCode`, read-only reference).
-// Test-first: every test below fails until contracts/src/outcomes.ts exposes
-// the frozen `PROFILE_CODEC_ERROR_CODES` table plus its guard.
+// catalog against the live retained oracle
+// (`src/profiles/errors.ts#PROFILE_CODEC_ERROR_CODES`): any oracle drift
+// fails closed here, mirroring the 67/67 live-oracle convention in
+// `outcomes-errors.test.ts`.
 
 import {
   PROFILE_CODEC_ERROR_CODES,
+  isBleErrorCode,
   isProfileCodecErrorCode,
+  recoveryFor,
+  type BleErrorCode,
 } from '../src/index';
-
-// Byte-identical copies of the retained oracle identities
-// (`src/profiles/errors.ts`). Any drift fails closed here.
-const ORACLE_WIRE_STRINGS: readonly string[] = [
-  'profile.codec.truncated',
-  'profile.codec.malformed',
-  'profile.codec.reserved',
-  'profile.codec.invalid-value',
-];
+import { PROFILE_CODEC_ERROR_CODES as LIVE_ORACLE_CODEC_CODES } from '../../src/profiles/errors';
 
 function cloneViaJson(value: unknown): unknown {
   return JSON.parse(JSON.stringify(value));
@@ -26,16 +21,29 @@ function cloneViaJson(value: unknown): unknown {
 
 describe('profile codec identity catalog (0.1.2 additive amendment)', () => {
   test('freezes exactly the four oracle identities in oracle order', () => {
-    expect([...PROFILE_CODEC_ERROR_CODES]).toEqual([...ORACLE_WIRE_STRINGS]);
+    expect([...PROFILE_CODEC_ERROR_CODES]).toEqual([...LIVE_ORACLE_CODEC_CODES]);
   });
 
   test('every identity resolves through the guard (wire-exact)', () => {
-    for (const code of ORACLE_WIRE_STRINGS) {
+    for (const code of LIVE_ORACLE_CODEC_CODES) {
       expect(isProfileCodecErrorCode(code)).toBe(true);
     }
     for (const code of PROFILE_CODEC_ERROR_CODES) {
       expect(isProfileCodecErrorCode(code)).toBe(true);
-      expect(ORACLE_WIRE_STRINGS.includes(code)).toBe(true);
+      expect(LIVE_ORACLE_CODEC_CODES.includes(code)).toBe(true);
+    }
+  });
+
+  test('codec identities stay disjoint from transport errors (LOW-2)', () => {
+    // Codec failures carry no domain and no recovery disposition: they must
+    // never resolve as `BleErrorCode` (which would route them through
+    // `recoveryFor` and invent a disposition).
+    for (const code of PROFILE_CODEC_ERROR_CODES) {
+      expect(isBleErrorCode(code)).toBe(false);
+      expect(recoveryFor(code as unknown as BleErrorCode)).toBeUndefined();
+    }
+    for (const code of LIVE_ORACLE_CODEC_CODES) {
+      expect(isBleErrorCode(code)).toBe(false);
     }
   });
 
@@ -46,6 +54,10 @@ describe('profile codec identity catalog (0.1.2 additive amendment)', () => {
     expect(isProfileCodecErrorCode('')).toBe(false);
     expect(isProfileCodecErrorCode(42)).toBe(false);
     expect(isProfileCodecErrorCode(null)).toBe(false);
+    expect(isProfileCodecErrorCode(undefined)).toBe(false);
+    expect(isProfileCodecErrorCode({})).toBe(false);
+    expect(isProfileCodecErrorCode([])).toBe(false);
+    expect(isProfileCodecErrorCode(['profile.codec.truncated'])).toBe(false);
   });
 
   test('the frozen table is runtime-immutable', () => {

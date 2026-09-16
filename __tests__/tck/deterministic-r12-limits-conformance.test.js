@@ -5,14 +5,18 @@
 // Frozen rule (contracts/src/streams.ts validateStreamLimits, R12
 // like-with-like): the byte budget is compared against the 64-byte control
 // reserve, so byteCapacity <= reservedControlBytes fails closed with
-// stream.quota. Central stands fail-closed; this slice conforms the
-// reference side: every subscribe issued by the deterministic TCK scenarios
-// and the runner-owned subscription-overflow scenario must satisfy the
-// frozen validator, and the single-value byte-overflow probe must pass on
-// BOTH the deterministic backend and central under valid limits with the
-// same corpus.
+// stream.quota. This slice conforms the reference side: every subscribe
+// issued by the deterministic TCK scenarios and the runner-owned
+// subscription-overflow scenario must satisfy the frozen validator, and the
+// single-value byte-overflow probe must pass via the direct-evidence and
+// runner harnesses on the deterministic backend under valid limits with the
+// same corpus. The shared corpus (plus the central-manager leg below, which
+// runs the same scenario through the public BleManager stack) enables U7
+// cross-backend work but does not prove it: no second BackendTckFactory
+// exists in this tree, so genuine cross-implementation proof stays pending.
 
 const { validateStreamLimits, RESERVED_CONTROL_BYTES } = require('../../contracts/src/streams')
+const { executePublicTckScenario } = require('../../src/tck/runner-public-scenarios')
 const deterministicHelpers = require('../../src/tck/deterministic/deterministic-tck-scenario-helpers')
 const runnerSupport = require('../../src/tck/runner-public-scenario-support')
 const { baseTckScenarios } = require('../../src/tck/scenarios')
@@ -44,8 +48,8 @@ function findScenario(id) {
 
 // Post-R12 valid budgets this slice pins: every scenario subscribe keeps its
 // item capacity and overflow policy and moves the byte budget above the
-// 64-byte control reserve. The byte-overflow probes share one corpus on both
-// backends: a single 128-byte value against a (4, 128) budget, so the
+// 64-byte control reserve. The byte-overflow probes share one corpus across
+// harnesses: a single 128-byte value against a (4, 128) budget, so the
 // overflow is byte-triggered (1 item retained capacity-wise) with exact
 // droppedItems/droppedBytes on each side.
 const EXPECTED_VALID_SUBSCRIBES = Object.freeze([
@@ -55,8 +59,11 @@ const EXPECTED_VALID_SUBSCRIBES = Object.freeze([
   Object.freeze({ overflowPolicy: 'drop-oldest', itemCapacity: 4, byteCapacity: 128 }),
   Object.freeze({ overflowPolicy: 'drop-oldest', itemCapacity: 2, byteCapacity: 128 }),
   // Runner aggregate probe: frozen MAX_STREAM_BYTE_CAPACITY (4 MiB) stream
-  // budget; the 4 MiB aggregate quota still trips first with the same exact
-  // terminal, so the quota-overflow proof is unchanged.
+  // budget tying the 4 MiB aggregate quota. At the tie the stream budget
+  // trips first (the control reserve squeezes stream-usable below the quota,
+  // so the quota projection goes small and passes) with the same exact
+  // terminal, so the overflow proof is unchanged. The aggregate-tie test
+  // below pins this cause explicitly.
   Object.freeze({ overflowPolicy: 'error', itemCapacity: 10, byteCapacity: 4 * 1024 * 1024 })
 ])
 
@@ -90,7 +97,7 @@ describe('deterministic-backend R12 limits conformance', () => {
 
   test('frozen R12 rule rejects the pre-fix tiny budgets (fail-closed oracle)', () => {
     expect(RESERVED_CONTROL_BYTES).toBe(64)
-    for (const byteCapacity of [3, 4, 8, 16, 32]) {
+    for (const byteCapacity of [3, 4, 8, 16, 32, 5 * 1024 * 1024]) {
       expect(() =>
         validateStreamLimits({
           itemCapacity: 1,
@@ -104,6 +111,15 @@ describe('deterministic-backend R12 limits conformance', () => {
       validateStreamLimits({
         itemCapacity: 1,
         byteCapacity: 128,
+        reservedControlCapacity: 1,
+        reservedControlBytes: RESERVED_CONTROL_BYTES
+      })
+    ).not.toThrow()
+    // The conformed aggregate budget sits exactly at the frozen ceiling.
+    expect(() =>
+      validateStreamLimits({
+        itemCapacity: 10,
+        byteCapacity: 4 * 1024 * 1024,
         reservedControlCapacity: 1,
         reservedControlBytes: RESERVED_CONTROL_BYTES
       })
@@ -200,7 +216,7 @@ describe('deterministic-backend R12 limits conformance', () => {
     expect(sharing).toHaveLength(2)
   })
 
-  test('single-value byte-overflow probe passes on both backends with the shared corpus', async () => {
+  test('single-value byte-overflow probe passes via direct and runner harnesses on the deterministic backend with the shared corpus', async () => {
     const factory = createDeterministicBackendTckFactory()
 
     const directFixture = createDeterministicTestBackend()
@@ -220,7 +236,13 @@ describe('deterministic-backend R12 limits conformance', () => {
     )
     expect(directOverflow).toMatchObject({
       holds: true,
-      detail: expect.objectContaining({ byteCapacityExactTerminal: true, byteCapacityOneTerminal: true })
+      detail: expect.objectContaining({
+        byteCapacityExactTerminal: true,
+        byteCapacityOneTerminal: true,
+        // Quota-first cause where it genuinely holds: the shrunken-quota
+        // aggregate probe trips stream.quota (not stream.overflow).
+        aggregateQuotaProbe: true
+      })
     })
 
     const runnerFixture = await factory.create(Object.freeze({ scenarioId: RUNNER_OVERFLOW_SCENARIO_ID }))
@@ -242,7 +264,7 @@ describe('deterministic-backend R12 limits conformance', () => {
       detail: expect.objectContaining({ byteExact: true, itemExact: true, aggregateExact: true })
     })
 
-    // Same corpus, both backends: the byte probe drops exactly the shared
+    // Same corpus across harnesses: the byte probe drops exactly the shared
     // single value on each side (each exact-terminal already encodes
     // droppedItems 1 / droppedBytes 128), and both sides requested the
     // identical (error, 4, 128) budget.
@@ -254,5 +276,97 @@ describe('deterministic-backend R12 limits conformance', () => {
     expect(byteProbeBudgets.map(subscribe => subscribe.source).sort()).toEqual(
       expect.arrayContaining(['deterministic-helpers', 'runner-support'])
     )
+  })
+
+  test('central-manager leg runs the shared overflow scenario with the same byte-exact terminal', async () => {
+    // MEDIUM-1 central leg: the same overflow scenario through the public
+    // BleManager (central) stack on its own fixture, asserting the same
+    // (1, 128) byte-exact terminal. Same-backend central-stack proof: it
+    // shares the deterministic backend implementation (no second
+    // BackendTckFactory exists), so this is not cross-implementation proof.
+    const factory = createDeterministicBackendTckFactory()
+    const centralFixture = await factory.create(
+      Object.freeze({ scenarioId: RUNNER_OVERFLOW_SCENARIO_ID })
+    )
+    try {
+      const centralFacts = await executePublicTckScenario(
+        factory,
+        centralFixture,
+        findScenario(RUNNER_OVERFLOW_SCENARIO_ID)
+      )
+      const centralOverflow = centralFacts.find(
+        fact => fact.id === 'subscription-overflow-quota-order-and-one-terminal-are-exact'
+      )
+      expect(centralOverflow).toMatchObject({
+        holds: true,
+        detail: expect.objectContaining({ byteExact: true, itemExact: true, aggregateExact: true })
+      })
+    } finally {
+      expect(await centralFixture.dispose()).toEqual({ state: 'released', failures: [] })
+    }
+    const centralByteProbe = recordedSubscribes.filter(
+      subscribe =>
+        subscribe.source === 'runner-support' &&
+        subscribe.overflowPolicy === 'error' &&
+        subscribe.itemCapacity === 4 &&
+        subscribe.byteCapacity === 128
+    )
+    expect(centralByteProbe).toHaveLength(1)
+  })
+
+  test('aggregate tie breaks toward the stream budget with the exact terminal (LOW-2)', async () => {
+    // LOW-2: at the 4 MiB stream-budget/aggregate-quota tie the stream
+    // budget trips first — the control reserve squeezes stream-usable below
+    // the quota, so the quota projection goes small and passes while the
+    // stream push overflows — with the exact (1, 524288) terminal. Pinning
+    // the cause (not just the counts) keeps any admission-path reordering
+    // loud: a reorder that let the quota trip first would flip this cause
+    // while the counts stayed green.
+    const tieFixture = createDeterministicTestBackend({ aggregateStreamByteQuota: 4 * 1024 * 1024 })
+    try {
+      const connected = await deterministicHelpers.connectAndDiscover(tieFixture, 'subscription-aggregate-tie')
+      const characteristic = connected.snapshot.characteristics[0]
+      if (characteristic === undefined) {
+        throw new Error('aggregate tie probe has no subscribable characteristic')
+      }
+      const address = deterministicHelpers.characteristicAddress(characteristic.path)
+      const subscriptionPromise = connected.database.subscribe(
+        characteristic.path,
+        deterministicHelpers.subscriptionOptions('error', 10, 4 * 1024 * 1024)
+      )
+      tieFixture.controller.clock.runUntilIdle()
+      const subscription = await subscriptionPromise
+      const traceStart = tieFixture.controller.traceSnapshot().length
+      for (let index = 0; index < 9; index += 1) {
+        tieFixture.controller.emitNotification(address, new Uint8Array(524288))
+      }
+      const terminal = await deterministicHelpers.nextStreamItem(subscription.values)
+      const afterTerminal = await deterministicHelpers.nextStreamItem(subscription.values)
+      await deterministicHelpers.drainVirtualClock(tieFixture)
+      const removal = subscription.remove()
+      await deterministicHelpers.drainVirtualClock(tieFixture)
+      await removal
+      expect(terminal).toMatchObject({
+        kind: 'terminal',
+        reason: 'overflow',
+        droppedItems: 1,
+        droppedBytes: 524288,
+        replacedItems: 0
+      })
+      expect(afterTerminal).toBeNull()
+      const tieTraces = tieFixture.controller
+        .traceSnapshot()
+        .slice(traceStart)
+        .filter(entry => entry.kind === 'stream' && entry.event === 'subscription-overflow-terminal')
+      expect(tieTraces).toHaveLength(1)
+      expect(tieTraces[0].cause).toBe('stream.overflow')
+      const counters = tieFixture.backend.resourceCounters()
+      expect(Number(counters.subscriptionConsumers)).toBe(0)
+      expect(Number(counters.physicalCccdEnablements)).toBe(0)
+      await deterministicHelpers.releaseConnection(tieFixture, connected.lease)
+    } finally {
+      tieFixture.controller.clock.runUntilIdle()
+      await tieFixture.backend.destroy()
+    }
   })
 })

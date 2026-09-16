@@ -1971,16 +1971,18 @@ impl Central {
         let next = step_scan_session(self.scans[index].state, event)?;
         let ordinal = self.next_ordinal();
         let generation = self.kernel_generation.clone();
+        let kind = match next {
+            ScanSessionState::Stopped => ContenderKind::Success,
+            ScanSessionState::Failed => ContenderKind::Failure,
+            _ => ContenderKind::SessionStop,
+        };
         let contender = Contender {
             ingress_ordinal: ordinal,
-            kind: match next {
-                ScanSessionState::Stopped => ContenderKind::Success,
-                ScanSessionState::Failed => ContenderKind::Failure,
-                _ => ContenderKind::SessionStop,
-            },
+            kind,
             valid: true,
         };
         if next.is_terminal() {
+            self.dispatch_before_success(id, kind, out)?;
             self.kernel.handle(
                 KernelInput::Complete {
                     operation_id: id.clone(),
@@ -3291,6 +3293,26 @@ impl Central {
         Ok(())
     }
 
+    /// Dispatch a queued operation before a success settlement. The frozen
+    /// operation machine reaches `succeeded` only via `dispatched→settling`,
+    /// so the kernel rejects an undispatched success; other contenders
+    /// settle from `queued` directly per the machine and pass through
+    /// untouched.
+    fn dispatch_before_success(
+        &mut self,
+        id: &OperationId,
+        kind: ContenderKind,
+        out: &mut EffectBatch,
+    ) -> Result<(), CoreError> {
+        if !matches!(kind, ContenderKind::Success | ContenderKind::DispatchBegin) {
+            return Ok(());
+        }
+        if self.kernel.operation_state(id) == Some(OpStateView::Queued) {
+            self.dispatch_op(id, out)?;
+        }
+        Ok(())
+    }
+
     /// Settle one operation with a contender. A path that went stale while
     /// dispatched settles truthfully and reports `gatt.stale-handle`; a
     /// duplicate completion suppresses without a second settlement.
@@ -3308,13 +3330,15 @@ impl Central {
             None => false,
         };
         let generation = self.kernel_generation.clone();
+        let effective = if stale_path {
+            ContenderKind::Failure
+        } else {
+            kind
+        };
+        self.dispatch_before_success(id, effective, out)?;
         let contender = Contender {
             ingress_ordinal: ordinal,
-            kind: if stale_path {
-                ContenderKind::Failure
-            } else {
-                kind
-            },
+            kind: effective,
             valid,
         };
         let outcome = self.kernel.handle(
@@ -3733,6 +3757,7 @@ impl Central {
         if physical == CccdPhysical::Enabled {
             let generation = self.kernel_generation.clone();
             let ordinal = self.next_ordinal();
+            self.dispatch_before_success(&id, ContenderKind::Success, out)?;
             self.kernel.handle(
                 KernelInput::Complete {
                     operation_id: id.clone(),
@@ -3820,13 +3845,18 @@ impl Central {
             if !live {
                 continue;
             }
+            let kind = if success {
+                ContenderKind::Success
+            } else {
+                ContenderKind::Failure
+            };
+            // Best-effort like the settlement below: a queued success
+            // dispatches first per the operation machine, a queued failure
+            // settles directly.
+            let _ = self.dispatch_before_success(op, kind, out);
             let contender = Contender {
                 ingress_ordinal: ordinal,
-                kind: if success {
-                    ContenderKind::Success
-                } else {
-                    ContenderKind::Failure
-                },
+                kind,
                 valid: true,
             };
             let _ = self.kernel.handle(
@@ -3991,6 +4021,7 @@ impl Central {
                 Some(OpStateView::Queued) | Some(OpStateView::Dispatched)
             );
             if live {
+                self.dispatch_before_success(&op, ContenderKind::Success, out)?;
                 self.kernel.handle(
                     KernelInput::Complete {
                         operation_id: op,

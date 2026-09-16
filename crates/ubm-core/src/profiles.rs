@@ -1345,6 +1345,18 @@ mod tests {
                 "every frozen identity resolves",
             );
         }
+        // LOW-3: pin catalog order literally — iteration order alone would
+        // let a reorder pass.
+        let wire: [&str; 4] = ProfileCodecCode::ALL_CODES.map(ProfileCodecCode::as_str);
+        check(
+            wire == [
+                "profile.codec.truncated",
+                "profile.codec.malformed",
+                "profile.codec.reserved",
+                "profile.codec.invalid-value",
+            ],
+            "codec catalog order frozen",
+        );
         check(
             ProfileCodecCode::from_str("profile.codec.unknown").is_none(),
             "unknown codec code rejected",
@@ -1363,6 +1375,30 @@ mod tests {
                 "live codec failure carries the frozen wire string",
             ),
             Ok(_) => check(false, "battery 101 must fail"),
+        }
+    }
+
+    #[test]
+    fn profile_codec_and_ble_error_identities_stay_disjoint() {
+        // LOW-2: codec failures carry no domain and no recovery disposition,
+        // so they must never resolve as `BleErrorCode` (which would route
+        // them through recovery and invent a disposition), and transport
+        // codes must never resolve as codec identities.
+        for code in ProfileCodecCode::ALL_CODES {
+            check(
+                BleErrorCode::from_str(code.as_str()).is_none(),
+                "codec identity is not a ble error code",
+            );
+        }
+        for wire in [
+            "protocol.incompatible",
+            "scan.already-active",
+            "platform.transport",
+        ] {
+            check(
+                ProfileCodecCode::from_str(wire).is_none(),
+                "ble error code is not a codec identity",
+            );
         }
     }
 
