@@ -1153,7 +1153,7 @@ export const PROGRAM_VERTICAL: StagedProgram = {
       ok: true,
       consumer: 'removed',
       cccd: false,
-      staged: 3,
+      staged: 5,
       effects: ''
     }),
     norm({ step: 'staged.destroy', ok: true, state: 'released', staged: 2, effects: '' })
