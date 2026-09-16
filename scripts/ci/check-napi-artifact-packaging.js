@@ -8,7 +8,8 @@
 // What this proves (fail-closed, offline unless a tarball/consumer is given):
 //   A. every new 5.0 Rust crate carries publish=false + a resolvable SAL
 //      license-file + repository pointer (crates/ubm-core, crates/ubm-desktop,
-//      bindings/napi, bindings/wasm, bindings/jni, bindings/uniffi);
+//      crates/ubm-fake-radio, bindings/napi, bindings/wasm, bindings/jni,
+//      bindings/uniffi);
 //   B. the npm export map ships none of the 5.0 dev-only surfaces (napi/wasm
 //      artifacts, ubm-desktop consumers, TCK rust-driver, test-only fault
 //      hooks, contracts) and the lane version makes no 5.0 release claim;
@@ -42,6 +43,7 @@ const CANONICAL_REPOSITORY = 'https://github.com/sfourdrinier/unified-ble-manage
 const NEW_RUST_CRATES = Object.freeze([
   'crates/ubm-core',
   'crates/ubm-desktop',
+  'crates/ubm-fake-radio',
   'bindings/napi',
   'bindings/wasm',
   'bindings/jni',
