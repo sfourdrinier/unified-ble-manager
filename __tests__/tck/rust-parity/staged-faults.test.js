@@ -1,11 +1,13 @@
 // __tests__/tck/rust-parity/staged-faults.test.js
 //
 // U7 staged race/fault vectors: duplicate completions, stale generations,
-// cancel-across-boundaries, overflow terminals, and invalidation mid-IO —
-// all driven through the REAL napi staged core from synthetic host events
-// (no BLE hardware exists). Every vector pins exact wires and receipts:
-// faults settle truthfully, never silently, and bounded-batch overflow
-// preserves dropped-not-staged accounting.
+// cancel-across-boundaries, overflow terminals, invalidation mid-IO,
+// live-peer disconnect failures (per code, through the release-failed
+// terminal), and out-of-order settle ordinals (first valid contender wins;
+// reordered duplicates suppress) — all driven through the REAL napi staged
+// core from synthetic host events (no BLE hardware exists). Every vector
+// pins exact wires and receipts: faults settle truthfully, never silently,
+// and bounded-batch overflow preserves dropped-not-staged accounting.
 
 const path = require('node:path')
 const {
@@ -179,7 +181,55 @@ describe('U7 staged race/fault vectors (synthetic radio, real core)', () => {
     driver.close()
   })
 
-  test('out-of-order and unknown inputs fail closed with exact identities', () => {
+  test('live-peer disconnect failures retain cleanup ownership per code', () => {
+    const addon = loadRustAddon()
+    for (const code of [
+      'connection-failed',
+      'connection-lost',
+      'operation-timed-out',
+      'adapter-unavailable'
+    ]) {
+      const driver = new RustBackendDriver(addon, RUST_PARITY_REVISION)
+      const run = line => {
+        const outcome = driver.stagedStep(line)
+        if (!outcome.ok) {
+          throw new Error(`binding-lifetime rejection for ${line}`)
+        }
+        return outcome.value
+      }
+      run('{"step":"peer.advertise","peer":"p","domain":"platform-guid","value":"peer-1"}')
+      run('{"step":"link.connect","peer":"p","lease":"lease-a","op":"conn0"}')
+      run('{"step":"link.established","peer":"p","op":"conn0"}')
+      const [failed] = normalized([
+        run(`{"step":"link.disconnect-failed","peer":"p","code":"${code}"}`)
+      ])
+      expect(JSON.parse(failed)).toMatchObject({ ok: true, connection: 'connected' })
+      const [destroy] = normalized([run('{"step":"staged.destroy"}')])
+      expect(JSON.parse(destroy)).toMatchObject({ state: 'release-failed' })
+      driver.close()
+    }
+  })
+
+  test('descending settle ordinals suppress after terminal instead of reordering', () => {
+    const addon = loadRustAddon()
+    const { driver, run } = linkDriver(addon)
+    run('{"step":"gatt.read","op":"r0","path":1,"value":"aa","settle":"dispatched"}')
+    const [ignored] = normalized([
+      run('{"step":"op.settle","op":"r0","kind":"timeout","valid":false,"ordinal":9}')
+    ])
+    expect(JSON.parse(ignored)).toMatchObject({ settle: 'contender-ignored' })
+    const [first] = normalized([
+      run('{"step":"op.settle","op":"r0","kind":"success","ordinal":2}')
+    ])
+    expect(JSON.parse(first)).toMatchObject({ settle: 'settled', terminal: 'succeeded' })
+    const [dup] = normalized([
+      run('{"step":"op.settle","op":"r0","kind":"success","ordinal":1}')
+    ])
+    expect(JSON.parse(dup)).toMatchObject({ settle: 'duplicate-suppressed', suppressed: 1 })
+    driver.close()
+  })
+
+  test('unknown inputs fail closed with exact identities', () => {
     const addon = loadRustAddon()
     const driver = new RustBackendDriver(addon, RUST_PARITY_REVISION)
     const run = line => {

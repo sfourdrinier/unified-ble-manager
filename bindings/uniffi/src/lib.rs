@@ -204,9 +204,9 @@ impl EchoSession {
 
     /// U7 staged-transition slice: runs one scripted synthetic-radio step
     /// (a JSON object line) and carries one JSON observation object in
-    /// `value`. Step-level core rejections come back as data (`ok:true`
-    /// with `ok:false` inside the observation); only the session lifetime
-    /// fails the record.
+    /// `value`. Step-level core rejections come back as data
+    /// (`{"ok":false,...}` with the frozen wire identity); only the session
+    /// lifetime fails the record.
     pub fn staged_step(&self, line: String) -> EchoCounterResult {
         match self.inner.staged_step(&line) {
             Ok(observation) => ok_counter(observation),
