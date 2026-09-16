@@ -1,0 +1,6 @@
+# Fuzzer working dirs (never checked in). The checked-in seed corpus lives
+# in corpus/<target>/ and is intentionally NOT ignored.
+target/
+artifacts/
+coverage/
+*.log

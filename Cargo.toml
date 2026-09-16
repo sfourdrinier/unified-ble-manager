@@ -9,4 +9,4 @@ members = [
     "bindings/uniffi",
     "bindings/wasm",
 ]
-exclude = ["native/tauri", "example-tauri/src-tauri"]
+exclude = ["native/tauri", "example-tauri/src-tauri", "fuzz"]
