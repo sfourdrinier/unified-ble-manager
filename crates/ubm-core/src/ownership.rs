@@ -17,8 +17,19 @@
 //! Admission order per input: shutdown gate, handshake gate (PKG-02/OPS-01),
 //! ownership/attachment verification (OWN-02) before admission, capacity and
 //! per-owner bounds, then deadline computation. Every early return leaves
-//! state unchanged; mutating inputs first prove effect-batch space so a
-//! settlement is never half-emitted.
+//! state unchanged; mutating inputs first prove `min(max_effects_per_call,
+//! batch.remaining())` space so a settlement is never half-emitted.
+//!
+//! Deferred mirror surfaces (tracked follow-ups, not yet ported):
+//! - `identities.ts`: `GattPath`/`HandleRef`, `canonicalUuidValue`,
+//!   `canonicalBleAddressValue`.
+//! - `hosts.ts`: `validateOwnershipTransfer`.
+//! - `cleanup.ts`: `combineCleanupRecords`, `CounterLedger`,
+//!   `EARLY_EXIT_CLEANUP`.
+//! - `transitions.ts`: `TRANSITION_TABLES`, `isTransitionAllowed`,
+//!   `CONTENTION_RULINGS`.
+//! - `outcomes.ts`: `PlatformDetail`.
+//! - `version.ts`: composite offer negotiators.
 //!
 //! Effect kinds mirror the C-UBM families plus `timer.cancel`, which the plan
 //! (§7.2 minimum effect families) requires explicitly.
@@ -46,7 +57,10 @@ pub const DEFAULT_MAX_OPERATIONS_PER_OWNER: usize = 8;
 pub struct KernelConfig {
     /// Maximum live operations.
     pub max_operations: usize,
-    /// Maximum effects appended per `handle` call.
+    /// Maximum effects appended per `handle` call. Every mutating path
+    /// enforces `min(max_effects_per_call, batch.remaining())`: bounded
+    /// loops truncate (the outcome reports `truncated` for a repeat call)
+    /// instead of emitting past the bound.
     pub max_effects_per_call: usize,
     /// Maximum live operations per owner lease.
     pub max_operations_per_owner: usize,
@@ -698,8 +712,10 @@ impl Kernel {
     }
 
     /// Advance one validated input at monotonic time `now`, appending effects
-    /// to `out`. The batch carries its own bound; when it fills, mutating
-    /// inputs stop before changing state and report truncation.
+    /// to `out`. The batch carries its own bound and the configuration
+    /// carries `max_effects_per_call`; mutating inputs prove space against
+    /// the smaller of the two before changing state, and bounded loops
+    /// truncate (never half-emit) when either bound runs out.
     pub fn handle(
         &mut self,
         input: KernelInput,
@@ -743,7 +759,7 @@ impl Kernel {
                 ok,
                 code,
             } => self.release_report(&operation_id, ok, code),
-            KernelInput::Shutdown => self.shutdown(out),
+            KernelInput::Shutdown => self.shutdown(now, out),
         }
     }
 
@@ -764,6 +780,15 @@ impl Kernel {
         let ordinal = self.authority;
         self.authority = self.authority.saturating_add(1);
         ordinal
+    }
+
+    /// Per-call emission budget: the documented `max_effects_per_call`
+    /// bound meets the caller-sized batch. Single-shot mutating paths prove
+    /// space against the smaller of the two before changing state; bounded
+    /// loops additionally cap their own staged count, so a host relying on
+    /// the documented bound never sees unbounded per-call emission.
+    fn effect_budget(&self, out: &EffectBatch) -> usize {
+        self.config.max_effects_per_call.min(out.remaining())
     }
 
     fn stage(
@@ -860,7 +885,7 @@ impl Kernel {
         }
         assert_timeout_ms(request.timeout_ms, "kernel.admit.timeout")?;
         let deadline = to_deadline(request.now, request.timeout_ms)?;
-        if out.remaining() < 1 {
+        if self.effect_budget(out) < 1 {
             return Err(CoreError::new(
                 BleErrorCode::StreamQuota,
                 BleErrorDomain::Stream,
@@ -905,7 +930,7 @@ impl Kernel {
                 ));
             }
         }
-        if out.remaining() < 2 {
+        if self.effect_budget(out) < 2 {
             return Err(CoreError::new(
                 BleErrorCode::StreamQuota,
                 BleErrorDomain::Stream,
@@ -945,7 +970,23 @@ impl Kernel {
         if !contender.valid {
             return Ok(HandleOutcome::ContenderIgnored);
         }
-        if out.remaining() < 3 {
+        // The frozen operation machine reaches `succeeded` only via
+        // `dispatched→settling`: a success or dispatch-begin contender for a
+        // queued operation names a transition that does not exist, so it
+        // fails closed instead of publishing an un-dispatched commit.
+        if matches!(self.ops[index].state, OpLifecycle::Queued)
+            && matches!(
+                contender.kind,
+                ContenderKind::Success | ContenderKind::DispatchBegin
+            )
+        {
+            return Err(CoreError::new(
+                BleErrorCode::LifecycleInvalidState,
+                BleErrorDomain::Core,
+                "kernel.complete.state",
+            ));
+        }
+        if self.effect_budget(out) < 3 {
             return Err(CoreError::new(
                 BleErrorCode::StreamQuota,
                 BleErrorDomain::Stream,
@@ -991,7 +1032,7 @@ impl Kernel {
         } else {
             CancelPhase::BeforeDispatch
         };
-        if out.remaining() < 3 {
+        if self.effect_budget(out) < 3 {
             return Err(CoreError::new(
                 BleErrorCode::StreamQuota,
                 BleErrorDomain::Stream,
@@ -1025,6 +1066,7 @@ impl Kernel {
     ) -> Result<HandleOutcome, CoreError> {
         let mut settled = 0usize;
         let mut truncated = false;
+        let mut staged = 0usize;
         let mut index = 0usize;
         while index < self.ops.len() {
             let due = matches!(self.ops[index].state, OpLifecycle::Queued)
@@ -1033,7 +1075,9 @@ impl Kernel {
                 index += 1;
                 continue;
             }
-            if out.remaining() < 2 {
+            // One expiry settlement stages two effects: stop at the smaller
+            // of the caller batch and the configured per-call bound.
+            if out.remaining() < 2 || staged.saturating_add(2) > self.config.max_effects_per_call {
                 truncated = true;
                 break;
             }
@@ -1053,6 +1097,7 @@ impl Kernel {
                 Ok(_) => {}
                 Err(error) => return Err(error),
             }
+            staged += 2;
             settled += 1;
             index += 1;
         }
@@ -1102,24 +1147,35 @@ impl Kernel {
         Ok(HandleOutcome::ReleaseRecorded { reaped: true })
     }
 
-    fn shutdown(&mut self, out: &mut EffectBatch) -> Result<HandleOutcome, CoreError> {
+    fn shutdown(
+        &mut self,
+        now: MonotonicTime,
+        out: &mut EffectBatch,
+    ) -> Result<HandleOutcome, CoreError> {
         self.admission_open = false;
         let mut settled_queued = 0usize;
         let mut truncated = false;
+        let mut staged = 0usize;
+        let max_effects = self.config.max_effects_per_call;
         let mut index = 0usize;
         while index < self.ops.len() {
             if !matches!(self.ops[index].state, OpLifecycle::Queued) {
                 index += 1;
                 continue;
             }
-            if out.remaining() < 2 || self.cleanup_retained.len() >= self.config.max_operations {
+            // One queued settlement stages two effects: stop at the smaller
+            // of the caller batch and the configured per-call bound.
+            if out.remaining() < 2
+                || staged.saturating_add(2) > max_effects
+                || self.cleanup_retained.len() >= self.config.max_operations
+            {
                 truncated = true;
                 break;
             }
             let ordinal = self.take_ordinal();
-            // Shutdown settles at the operation's own deadline instant: the
-            // record keeps `settled_at >= started_at` by construction.
-            let settled_at = self.ops[index].deadline.max(self.ops[index].started_at);
+            // Shutdown settles at the caller's clock reading: the record
+            // keeps `settled_at >= started_at` by construction.
+            let settled_at = now.max(self.ops[index].started_at);
             match self.settle_live(
                 index,
                 SettleRequest {
@@ -1138,6 +1194,7 @@ impl Kernel {
             let settled_id = self.ops[index].id.clone();
             let record = CleanupRecord::new(Some(settled_id), CleanupState::Released, Vec::new())?;
             self.cleanup_retained.push(record);
+            staged += 2;
             settled_queued += 1;
             index += 1;
         }
@@ -1147,17 +1204,20 @@ impl Kernel {
             if !matches!(entry.state, OpLifecycle::Dispatched) || entry.release_requested {
                 continue;
             }
-            if out.remaining() < 1 {
+            if out.remaining() < 1 || staged.saturating_add(1) > max_effects {
                 truncated = true;
                 break;
             }
-            let staged = out.push(Effect {
+            let pushed = out.push(Effect {
                 kind: EffectKind::CleanupRelease,
                 operation_id: entry.id.clone(),
                 detail: String::from("cleanup.release-request"),
             });
-            match staged {
-                Ok(()) => entry.release_requested = true,
+            match pushed {
+                Ok(()) => {
+                    entry.release_requested = true;
+                    staged += 1;
+                }
                 Err(_) => {
                     truncated = true;
                     break;
@@ -1262,43 +1322,58 @@ use crate::contracts::{
 #[cfg(test)]
 fn test_attachment_id() -> AttachmentId {
     // `AttachmentId::new` rejects only empty strings; the literal is
-    // non-empty, so the fallback always succeeds.
-    match AttachmentId::new("attach-01") {
-        Ok(id) => id,
-        Err(_) => test_attachment_id(),
-    }
+    // non-empty, so the error arm reports without recursing.
+    let Ok(id) = AttachmentId::new("attach-01") else {
+        crate::check(false, "test attachment literal must validate");
+        loop {
+            core::hint::spin_loop();
+        }
+    };
+    id
 }
 
 #[cfg(test)]
 fn test_instance_id() -> BackendInstanceId {
-    match BackendInstanceId::new("backend-01") {
-        Ok(id) => id,
-        Err(_) => test_instance_id(),
-    }
+    let Ok(id) = BackendInstanceId::new("backend-01") else {
+        crate::check(false, "test instance literal must validate");
+        loop {
+            core::hint::spin_loop();
+        }
+    };
+    id
 }
 
 #[cfg(test)]
 fn test_backend_generation() -> BackendGeneration {
-    match BackendGeneration::new("bg-3") {
-        Ok(generation) => generation,
-        Err(_) => test_backend_generation(),
-    }
+    let Ok(generation) = BackendGeneration::new("bg-3") else {
+        crate::check(false, "test backend generation literal must validate");
+        loop {
+            core::hint::spin_loop();
+        }
+    };
+    generation
 }
 
 #[cfg(test)]
 fn test_adapter_id() -> AdapterId {
-    match AdapterId::new("adapter-01") {
-        Ok(id) => id,
-        Err(_) => test_adapter_id(),
-    }
+    let Ok(id) = AdapterId::new("adapter-01") else {
+        crate::check(false, "test adapter literal must validate");
+        loop {
+            core::hint::spin_loop();
+        }
+    };
+    id
 }
 
 #[cfg(test)]
 fn test_adapter_generation() -> AdapterGeneration {
-    match AdapterGeneration::new("ag-2") {
-        Ok(generation) => generation,
-        Err(_) => test_adapter_generation(),
-    }
+    let Ok(generation) = AdapterGeneration::new("ag-2") else {
+        crate::check(false, "test adapter generation literal must validate");
+        loop {
+            core::hint::spin_loop();
+        }
+    };
+    generation
 }
 
 #[cfg(test)]
@@ -1314,26 +1389,35 @@ fn test_attachment() -> AttachmentTuple {
 
 #[cfg(test)]
 fn test_generation(value: &str) -> Generation {
-    match Generation::new(value) {
-        Ok(generation) => generation,
-        Err(_) => test_generation("test-generation"),
-    }
+    let Ok(generation) = Generation::new(value) else {
+        crate::check(false, "test generation literal must validate");
+        loop {
+            core::hint::spin_loop();
+        }
+    };
+    generation
 }
 
 #[cfg(test)]
 fn test_operation_id(value: &str) -> OperationId {
-    match OperationId::new(value) {
-        Ok(id) => id,
-        Err(_) => test_operation_id("test-operation"),
-    }
+    let Ok(id) = OperationId::new(value) else {
+        crate::check(false, "test operation literal must validate");
+        loop {
+            core::hint::spin_loop();
+        }
+    };
+    id
 }
 
 #[cfg(test)]
 fn test_lease(value: &str) -> LeaseId {
-    match LeaseId::new(value) {
-        Ok(lease) => lease,
-        Err(_) => test_lease("test-lease"),
-    }
+    let Ok(lease) = LeaseId::new(value) else {
+        crate::check(false, "test lease literal must validate");
+        loop {
+            core::hint::spin_loop();
+        }
+    };
+    lease
 }
 
 #[cfg(test)]
@@ -1442,6 +1526,10 @@ mod red_probes {
             &mut out,
         );
         assert!(admitted.is_ok());
+        // Success settles only after dispatch (M1 closure), so the probe
+        // dispatches before completing twice.
+        let dispatched = kernel.handle(KernelInput::dispatch_test_op("op-2", "gen-1"), 5, &mut out);
+        assert!(dispatched.is_ok());
         let first = kernel.handle(KernelInput::complete_test_op("op-2", "gen-1"), 10, &mut out);
         assert!(first.is_ok());
         let effects_after_first = out.len();
@@ -1535,7 +1623,11 @@ mod tests {
     }
 
     #[test]
-    fn success_before_dispatch_does_not_reach_radio() {
+    fn undispatched_success_is_rejected() {
+        // M1 closure: the frozen operation machine reaches `succeeded` only
+        // via `dispatched→settling` — no `queued→succeeded` edge exists — so
+        // a success (or dispatch-begin) contender for a queued operation
+        // fails closed with `lifecycle.invalid-state` and changes nothing.
         let mut kernel = Kernel::new_test();
         let mut out = EffectBatch::new(16);
         assert!(
@@ -1547,14 +1639,24 @@ mod tests {
                 )
                 .is_ok()
         );
+        assert_eq!(out.len(), 1);
         match kernel.handle(KernelInput::complete_test_op("op-1", "gen-1"), 5, &mut out) {
-            Ok(HandleOutcome::Settled { receipt }) => {
-                assert_eq!(receipt.kind(), OperationTerminalKind::Succeeded);
-                assert!(!receipt.reached_radio());
-                assert_eq!(receipt.commit_state(), CommitState::Committed);
-            }
-            _ => check(false, "queued success must settle"),
+            Err(error) => assert_eq!(error.code(), BleErrorCode::LifecycleInvalidState),
+            Ok(_) => check(false, "queued success must be rejected"),
         }
+        match kernel.handle(
+            KernelInput::complete_with("op-1", "gen-1", 2, ContenderKind::DispatchBegin, true),
+            6,
+            &mut out,
+        ) {
+            Err(error) => assert_eq!(error.code(), BleErrorCode::LifecycleInvalidState),
+            Ok(_) => check(false, "queued dispatch-begin must be rejected"),
+        }
+        assert_eq!(
+            kernel.operation_state(&test_operation_id("op-1")),
+            Some(OpStateView::Queued)
+        );
+        assert_eq!(out.len(), 1);
     }
 
     #[test]
@@ -2178,6 +2280,47 @@ mod tests {
         assert_eq!(drained[0].state(), CleanupState::Released);
         assert!(drained[0].failures().is_empty());
         assert_eq!(kernel.retained_cleanup_count(), 0);
+    }
+
+    #[test]
+    fn shutdown_honors_max_effects_per_call() {
+        // M3 closure: `max_effects_per_call` bounds every `handle` call at
+        // `min(config, batch)`. With bound 1 a shutdown settles no queued
+        // operation (one settlement needs two effects) and emits at most one
+        // effect, truncating so a repeat call can resume.
+        let config = match KernelConfig::new(256, 1, 8) {
+            Ok(config) => config,
+            Err(_) => {
+                check(false, "test config must validate");
+                return;
+            }
+        };
+        let mut kernel = super::Kernel::new_test_with(config);
+        let mut admit_out = EffectBatch::new(8);
+        for id in ["op-1", "op-2", "op-3"] {
+            assert!(
+                kernel
+                    .handle(
+                        KernelInput::admit_test_op(id, "gen-1", 5_000),
+                        0,
+                        &mut admit_out
+                    )
+                    .is_ok()
+            );
+        }
+        let mut out = EffectBatch::new(64);
+        match kernel.handle(super::KernelInput::Shutdown, 2, &mut out) {
+            Ok(HandleOutcome::ShutDown {
+                settled_queued,
+                truncated,
+                ..
+            }) => {
+                assert_eq!(settled_queued, 0);
+                assert!(truncated);
+            }
+            _ => check(false, "bound-1 shutdown must truncate"),
+        }
+        assert!(out.len() <= 1);
     }
 
     #[test]

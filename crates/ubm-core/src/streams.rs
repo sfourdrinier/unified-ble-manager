@@ -524,9 +524,21 @@ impl Stream {
                 "stream.push",
             ));
         }
+        // Empty-queue eviction admits nothing: with no held data item to
+        // displace, `latest`/`drop-oldest` degrade to `drop-newest` before
+        // accounting runs, so the byte total stays truthful when control
+        // alone exhausts the shared budget.
+        let policy = match self.policy {
+            OverflowPolicy::Latest | OverflowPolicy::DropOldest
+                if self.data_at_capacity(incoming) && self.data_sizes.is_empty() =>
+            {
+                OverflowPolicy::DropNewest
+            }
+            policy => policy,
+        };
         let admission = apply_admission(
             &self.accounting,
-            self.policy,
+            policy,
             self.data_at_capacity(incoming),
             incoming,
         );
@@ -1033,6 +1045,37 @@ mod tests {
             Err(_) => check(false, "byte overflow must replace"),
         }
         assert_eq!(stream.bytes(), 1);
+    }
+
+    #[test]
+    fn empty_queue_eviction_admits_nothing() {
+        // M2 closure (review probe): `AdapterState` default,
+        // `push_control(65536)`, `push_data(1)` must not admit over the
+        // 65536-byte cap when no data item is evictable. With nothing to
+        // displace, `latest` degrades to `drop-newest`: admit nothing so the
+        // byte total stays truthful.
+        let Ok(mut stream) = Stream::from_default(StreamName::AdapterState) else {
+            check(false, "adapter-state default must validate");
+            return;
+        };
+        match stream.push_control(65_536) {
+            Ok(_) => {}
+            Err(_) => {
+                check(false, "control must fit the reserved slot");
+                return;
+            }
+        }
+        assert_eq!(stream.bytes(), 65_536);
+        match stream.push_data(1) {
+            Ok(effect) => {
+                assert_eq!(effect.decision, AdmissionDecision::DropNewest);
+                assert_eq!(effect.admitted_bytes, 0);
+                assert_eq!(effect.evicted_bytes, 0);
+            }
+            Err(_) => check(false, "empty-queue eviction must decide, not fail"),
+        }
+        assert!(stream.bytes() <= stream.limits().byte_capacity());
+        assert_eq!(stream.data_items(), 0);
     }
 
     #[test]
