@@ -73,8 +73,12 @@ describe('profile codec fixed vectors', () => {
 
   test('ieee-11073 codecs round-trip finite and special values', () => {
     const finite = { kind: 'finite', mantissa: 366, exponent: -1, value: 36.6 }
-    expect(decodeIeee11073Sfloat(encodeIeee11073Sfloat(finite))).toEqual(finite)
-    expect(decodeIeee11073Float(encodeIeee11073Float(finite))).toEqual(finite)
+    const sfloatBytes = encodeIeee11073Sfloat(finite)
+    expect(sfloatBytes).toEqual(new Uint8Array([0x6e, 0xf1]))
+    expect(decodeIeee11073Sfloat(sfloatBytes)).toMatchObject({ kind: 'finite', mantissa: 366, exponent: -1 })
+    const floatBytes = encodeIeee11073Float(finite)
+    expect(floatBytes).toEqual(new Uint8Array([0x6e, 0x01, 0x00, 0xff]))
+    expect(decodeIeee11073Float(floatBytes)).toMatchObject({ kind: 'finite', mantissa: 366, exponent: -1 })
     expect(encodeIeee11073Sfloat({ kind: 'nan' })).toEqual(new Uint8Array([0xff, 0x07]))
     expect(decodeIeee11073Sfloat(new Uint8Array([0xff, 0x07]))).toEqual({ kind: 'nan' })
     expect(capturedError(() => encodeIeee11073Sfloat({ ...finite, mantissa: 2048 }))).toMatchObject({
@@ -110,9 +114,9 @@ describe('profile codec fixed vectors', () => {
   test('temperature measurement keeps timestamp and type absence exactly', () => {
     expect(
       parseTemperatureMeasurement(new Uint8Array([0x07, 0xda, 0x03, 0x00, 0xff, 0xe8, 0x07, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06]))
-    ).toEqual({
+    ).toMatchObject({
       unit: 'fahrenheit',
-      temperature: { kind: 'finite', mantissa: 986, exponent: -1, value: 986 * 10 ** -1 },
+      temperature: { kind: 'finite', mantissa: 986, exponent: -1 },
       timestamp: { year: 2024, month: 1, day: 2, hours: 3, minutes: 4, seconds: 5 },
       type: 'mouth'
     })

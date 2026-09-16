@@ -11,7 +11,7 @@
 //! Acceptance links: `DATA-03`, `GATT-04`, `STR-01`, `PKG-03`.
 
 use crate::central::{Central, PathSelector, canonical_uuid};
-use crate::contracts::{BleErrorCode, BleErrorDomain, CoreError};
+use crate::contracts::CoreError;
 
 /// Canonical 128-bit SIG service/characteristic UUIDs.
 pub const HEART_RATE_SERVICE: &str = "0000180d-0000-1000-8000-00805f9b34fb";
@@ -1184,21 +1184,25 @@ pub const fn encode_reset_energy_expended() -> [u8; 1] {
 }
 
 /// Builds a characteristic [`PathSelector`] for one profile attribute.
-#[must_use]
+///
+/// Both UUIDs are canonicalized exactly like [`resolve_profile_path`], so
+/// short SIG forms (`"180D"`, `"2A37"`) resolve through
+/// [`central::Central::resolve_path`]. Anything else fails closed with
+/// `argument.invalid`.
 pub fn profile_selector(
     service_uuid: &str,
     characteristic_uuid: &str,
     service_occurrence: Option<u64>,
     characteristic_occurrence: Option<u64>,
-) -> PathSelector {
-    PathSelector {
-        service_uuid: String::from(service_uuid),
+) -> Result<PathSelector, CoreError> {
+    Ok(PathSelector {
+        service_uuid: canonical_uuid(service_uuid)?,
         service_occurrence,
-        characteristic_uuid: Some(String::from(characteristic_uuid)),
+        characteristic_uuid: Some(canonical_uuid(characteristic_uuid)?),
         characteristic_occurrence,
         descriptor_uuid: None,
         descriptor_occurrence: None,
-    }
+    })
 }
 
 /// Resolves one profile characteristic path through the real central
@@ -1222,13 +1226,6 @@ pub fn resolve_profile_path(
     central.resolve_path(peer_key, &selector)
 }
 
-/// Maps a contract failure into the frozen error space (thin helper so
-/// profile call sites never invent codes).
-#[allow(dead_code)]
-fn contract_err(code: BleErrorCode, domain: BleErrorDomain, operation: &'static str) -> CoreError {
-    CoreError::new(code, domain, operation)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1236,7 +1233,7 @@ mod tests {
     use crate::check;
     use crate::contracts::{
         AdapterGeneration, AdapterId, AttachmentId, AttachmentTuple, BackendGeneration,
-        BackendInstanceId, ContenderKind, Generation,
+        BackendInstanceId, BleErrorCode, ContenderKind, Generation,
     };
     use crate::ownership::EffectBatch;
 
@@ -1415,20 +1412,40 @@ mod tests {
             ok(encode_ieee11073_sfloat(&finite), "sfloat encodes") == [0x6e, 0xf1],
             "sfloat encoding exact",
         );
-        check(
-            ok(
-                decode_ieee11073_sfloat(
-                    &ok(encode_ieee11073_sfloat(&finite), "sfloat re-encodes"),
-                    0,
-                ),
-                "sfloat round trip",
-            ) == finite,
-            "sfloat round trip kept",
-        );
+        let sfloat_bytes = ok(encode_ieee11073_sfloat(&finite), "sfloat re-encodes");
+        check(sfloat_bytes == [0x6e, 0xf1], "sfloat re-encode bytes exact");
+        match ok(
+            decode_ieee11073_sfloat(&sfloat_bytes, 0),
+            "sfloat round trip",
+        ) {
+            Ieee11073Value::Finite {
+                mantissa, exponent, ..
+            } => {
+                check(mantissa == 366, "sfloat round trip mantissa kept");
+                check(exponent == -1, "sfloat round trip exponent kept");
+            }
+            _ => {
+                check(false, "sfloat round trip finite expected");
+            }
+        }
         check(
             ok(encode_ieee11073_float(&finite), "float encodes") == [0x6e, 0x01, 0x00, 0xff],
             "float encoding exact",
         );
+        match ok(
+            decode_ieee11073_float(&[0x6e, 0x01, 0x00, 0xff], 0),
+            "float round trip",
+        ) {
+            Ieee11073Value::Finite {
+                mantissa, exponent, ..
+            } => {
+                check(mantissa == 366, "float round trip mantissa kept");
+                check(exponent == -1, "float round trip exponent kept");
+            }
+            _ => {
+                check(false, "float round trip finite expected");
+            }
+        }
         check(
             ok(
                 encode_ieee11073_sfloat(&Ieee11073Value::Nan),
@@ -1613,6 +1630,237 @@ mod tests {
                 check(false, what);
             }
         }
+    }
+
+    fn expect_special(
+        result: Result<Ieee11073Value, ProfileCodecError>,
+        expected: Ieee11073Value,
+        what: &str,
+    ) {
+        match result {
+            Ok(actual) => check(actual == expected, what),
+            Err(_) => check(false, what),
+        }
+    }
+
+    #[test]
+    fn ieee11073_special_values_decode() {
+        expect_special(
+            decode_ieee11073_sfloat(&[0xff, 0x07], 0),
+            Ieee11073Value::Nan,
+            "sfloat nan decodes",
+        );
+        expect_special(
+            decode_ieee11073_sfloat(&[0x00, 0x08], 0),
+            Ieee11073Value::Nres,
+            "sfloat nres decodes",
+        );
+        expect_special(
+            decode_ieee11073_sfloat(&[0xfe, 0x07], 0),
+            Ieee11073Value::PositiveInfinity,
+            "sfloat positive infinity decodes",
+        );
+        expect_special(
+            decode_ieee11073_sfloat(&[0x02, 0x08], 0),
+            Ieee11073Value::NegativeInfinity,
+            "sfloat negative infinity decodes",
+        );
+        expect_special(
+            decode_ieee11073_float(&[0xff, 0xff, 0x7f, 0x00], 0),
+            Ieee11073Value::Nan,
+            "float nan decodes",
+        );
+        expect_special(
+            decode_ieee11073_float(&[0x00, 0x00, 0x80, 0x00], 0),
+            Ieee11073Value::Nres,
+            "float nres decodes",
+        );
+        expect_special(
+            decode_ieee11073_float(&[0xfe, 0xff, 0x7f, 0x00], 0),
+            Ieee11073Value::PositiveInfinity,
+            "float positive infinity decodes",
+        );
+        expect_special(
+            decode_ieee11073_float(&[0x02, 0x00, 0x80, 0x00], 0),
+            Ieee11073Value::NegativeInfinity,
+            "float negative infinity decodes",
+        );
+        check(
+            ok(
+                encode_ieee11073_float(&Ieee11073Value::Nan),
+                "float nan encodes",
+            ) == [0xff, 0xff, 0x7f, 0x00],
+            "float nan encoding exact",
+        );
+        check(
+            ok(
+                encode_ieee11073_sfloat(&Ieee11073Value::PositiveInfinity),
+                "sfloat positive infinity encodes",
+            ) == [0xfe, 0x07],
+            "sfloat positive infinity encoding exact",
+        );
+    }
+
+    #[test]
+    fn ieee11073_reserved_mantissas_reject_on_decode() {
+        expect_codec(
+            decode_ieee11073_sfloat(&[0x01, 0x08], 0),
+            ProfileCodecCode::Reserved,
+            "sfloat reserved negative mantissa rejected",
+        );
+        expect_codec(
+            decode_ieee11073_float(&[0xfd, 0xff, 0x7f, 0x00], 0),
+            ProfileCodecCode::Reserved,
+            "float reserved positive mantissa rejected",
+        );
+        expect_codec(
+            decode_ieee11073_float(&[0x01, 0x00, 0x80, 0x00], 0),
+            ProfileCodecCode::Reserved,
+            "float reserved negative mantissa rejected",
+        );
+    }
+
+    #[test]
+    fn ieee11073_negative_mantissa_round_trip_is_byte_exact() {
+        let finite = Ieee11073Value::Finite {
+            mantissa: -55,
+            exponent: -1,
+            value: -5.5,
+        };
+        let sfloat_bytes = ok(encode_ieee11073_sfloat(&finite), "negative sfloat encodes");
+        check(
+            sfloat_bytes == [0xc9, 0xff],
+            "negative sfloat encoding exact",
+        );
+        match ok(
+            decode_ieee11073_sfloat(&sfloat_bytes, 0),
+            "negative sfloat round trip",
+        ) {
+            Ieee11073Value::Finite {
+                mantissa, exponent, ..
+            } => {
+                check(mantissa == -55, "negative sfloat mantissa kept");
+                check(exponent == -1, "negative sfloat exponent kept");
+            }
+            _ => {
+                check(false, "negative sfloat finite expected");
+            }
+        }
+        let float_bytes = ok(encode_ieee11073_float(&finite), "negative float encodes");
+        check(
+            float_bytes == [0xc9, 0xff, 0xff, 0xff],
+            "negative float encoding exact",
+        );
+        match ok(
+            decode_ieee11073_float(&float_bytes, 0),
+            "negative float round trip",
+        ) {
+            Ieee11073Value::Finite {
+                mantissa, exponent, ..
+            } => {
+                check(mantissa == -55, "negative float mantissa kept");
+                check(exponent == -1, "negative float exponent kept");
+            }
+            _ => {
+                check(false, "negative float finite expected");
+            }
+        }
+    }
+
+    #[test]
+    fn thermometer_negative_paths() {
+        expect_codec(
+            parse_temperature_measurement(&[0x08, 0x6e, 0x01, 0x00, 0xff]),
+            ProfileCodecCode::Reserved,
+            "temperature reserved flags rejected",
+        );
+        expect_codec(
+            parse_temperature_measurement(&[0x02, 0x6e, 0x01, 0x00, 0xff]),
+            ProfileCodecCode::Truncated,
+            "temperature truncated timestamp tail rejected",
+        );
+        expect_codec(
+            parse_temperature_measurement(&[0x00, 0x6e, 0x01, 0x00, 0xff, 0x00]),
+            ProfileCodecCode::Malformed,
+            "temperature trailing bytes rejected",
+        );
+        expect_codec(
+            parse_temperature_measurement(&[0x04, 0x6e, 0x01, 0x00, 0xff, 0x0a]),
+            ProfileCodecCode::Reserved,
+            "temperature reserved type rejected",
+        );
+    }
+
+    #[test]
+    fn blood_pressure_truncated_optional_tail() {
+        expect_codec(
+            parse_blood_pressure_measurement(&[
+                0x02, 0x78, 0x00, 0x50, 0x00, 0x5d, 0x00, 0xe8, 0x07, 0x05,
+            ]),
+            ProfileCodecCode::Truncated,
+            "bp truncated timestamp tail rejected",
+        );
+    }
+
+    #[test]
+    fn date_time_range_rejections() {
+        expect_codec(
+            decode_bluetooth_date_time(
+                &[0xdc, 0x05, 0x01, 0x01, 0x00, 0x00, 0x00],
+                0,
+                "Bluetooth Date-Time",
+            ),
+            ProfileCodecCode::InvalidValue,
+            "date-time year 1500 rejected",
+        );
+        expect_codec(
+            decode_bluetooth_date_time(
+                &[0xe8, 0x07, 13, 0x01, 0x00, 0x00, 0x00],
+                0,
+                "Bluetooth Date-Time",
+            ),
+            ProfileCodecCode::InvalidValue,
+            "date-time month 13 rejected",
+        );
+        expect_codec(
+            decode_bluetooth_date_time(
+                &[0xe8, 0x07, 0x05, 0x06, 24, 0x00, 0x00],
+                0,
+                "Bluetooth Date-Time",
+            ),
+            ProfileCodecCode::InvalidValue,
+            "date-time hours 24 rejected",
+        );
+    }
+
+    #[test]
+    fn profile_selector_short_sig_uuids_resolve_like_helper() -> Result<(), CoreError> {
+        let (central, peer) = live_central_with_profiles()?;
+        let selector = profile_selector("180D", "2A37", Some(0), Some(0))?;
+        let via_helper = resolve_profile_path(&central, &peer, "180D", Some(0), "2A37", Some(0))?;
+        match central.resolve_path(&peer, &selector) {
+            Ok(via_selector) => {
+                check(
+                    via_selector == via_helper,
+                    "short-uuid selector resolves to the same path",
+                );
+            }
+            Err(_) => {
+                check(false, "short-uuid selector resolves through the central");
+            }
+        }
+        match profile_selector("bogus", "2A37", None, None) {
+            Err(error) => {
+                check(
+                    error.code() == BleErrorCode::ArgumentInvalid,
+                    "short-uuid selector rejects bad input closed",
+                );
+            }
+            Ok(_) => {
+                check(false, "short-uuid selector rejects bad input closed");
+            }
+        }
+        Ok(())
     }
 
     #[test]

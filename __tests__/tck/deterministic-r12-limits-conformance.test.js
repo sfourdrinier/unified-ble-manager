@@ -157,6 +157,49 @@ describe('deterministic-backend R12 limits conformance', () => {
     }
   })
 
+  test('public sharing subscribes use post-R12 valid budgets with the same proof', async () => {
+    const { executePublicTckScenario } = require('../../src/tck/runner-public-scenarios')
+    const definition = findScenario('subscription.enable-ready-shared-cccd-and-fanout')
+    const factory = createDeterministicBackendTckFactory()
+    const fixture = await factory.create(Object.freeze({ scenarioId: definition.id }))
+    let facts
+    try {
+      facts = await executePublicTckScenario(factory, fixture, definition)
+    } finally {
+      expect(await fixture.dispose()).toEqual({ state: 'released', failures: [] })
+    }
+    expect(facts.filter(fact => !fact.holds)).toEqual([])
+    expect(facts.map(fact => fact.id).sort()).toEqual(
+      expect.arrayContaining([
+        'subscription-no-value-before-ready',
+        'subscription-shares-physical-cccd-with-consumer-refcount',
+        'subscription-fanout-is-consumer-isolated'
+      ])
+    )
+    expect(recordedSubscribes.length).toBeGreaterThan(0)
+    for (const subscribe of recordedSubscribes) {
+      expect(() =>
+        validateStreamLimits({
+          itemCapacity: subscribe.itemCapacity,
+          byteCapacity: subscribe.byteCapacity,
+          reservedControlCapacity: 1,
+          reservedControlBytes: RESERVED_CONTROL_BYTES
+        })
+      ).not.toThrow()
+    }
+    // The two conformed sharing subscribes keep their drop-oldest policy and
+    // item capacity and move the byte budget above the 64-byte control
+    // reserve; the fanout proof above is unchanged.
+    const sharing = recordedSubscribes.filter(
+      subscribe =>
+        subscribe.source === 'runner-support' &&
+        subscribe.overflowPolicy === 'drop-oldest' &&
+        subscribe.itemCapacity === 4 &&
+        subscribe.byteCapacity === 128
+    )
+    expect(sharing).toHaveLength(2)
+  })
+
   test('single-value byte-overflow probe passes on both backends with the shared corpus', async () => {
     const factory = createDeterministicBackendTckFactory()
 
