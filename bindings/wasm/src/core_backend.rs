@@ -25,6 +25,7 @@ use ubm_core::contracts::{
     BackendInstanceId, BleErrorCode, CoreError, Generation,
 };
 use ubm_core::ownership::EffectBatch;
+use ubm_fake_radio::StagedDriver;
 
 /// Mirror of the single-owned `MAX_OPERATION_BYTES`, adapted to `usize` for
 /// indexing. The value lives in `ubm-core`; this is a type adaptation, not a
@@ -313,6 +314,7 @@ pub struct CoreSession {
     next_stream: u64,
     streams: std::collections::HashMap<u64, StreamState>,
     central: Option<Central>,
+    staged: Option<StagedDriver>,
 }
 
 #[derive(Debug)]
@@ -341,6 +343,13 @@ impl CoreSession {
             return Ok(());
         }
         self.central = Some(construct_central("echo-init")?);
+        // The staged transition core (U7 staged-transition slice) follows
+        // the same init discipline: a second session-scoped REAL central
+        // driven from synthetic host events only.
+        self.staged =
+            Some(StagedDriver::open().map_err(|_| {
+                EchoError::invariant_violation("echo-init", "staged-construct-failed")
+            })?);
         self.initialized_revision = Some(CONTRACT_REVISION);
         Ok(())
     }
@@ -526,6 +535,52 @@ impl CoreSession {
             "transition-not-wired-in-u7-slice",
         ))
     }
+
+    fn staged_mut(&mut self, operation: &'static str) -> Result<&mut StagedDriver, EchoError> {
+        self.check_usable(operation)?;
+        self.staged
+            .as_mut()
+            .ok_or_else(|| EchoError::invariant_violation(operation, "staged-missing"))
+    }
+
+    fn staged_ref(&self, operation: &'static str) -> Result<&StagedDriver, EchoError> {
+        self.check_usable(operation)?;
+        self.staged
+            .as_ref()
+            .ok_or_else(|| EchoError::invariant_violation(operation, "staged-missing"))
+    }
+
+    /// Runs one scripted synthetic-radio staged step (a JSON object line,
+    /// U7 staged-transition slice) against the session-owned staged
+    /// transition core and returns one JSON observation object.
+    /// Step-level core rejections come back as data (`{"ok":false,...}`);
+    /// only the session lifetime fails closed here
+    /// (`lifecycle.invalid-state` before init, like every call).
+    pub fn staged_step(
+        &mut self,
+        line: &str,
+        operation: &'static str,
+    ) -> Result<String, EchoError> {
+        Ok(self.staged_mut(operation)?.run_step(line))
+    }
+
+    /// Drains the staged observation log (FIFO, newline-joined JSON lines).
+    pub fn staged_drain(&mut self, operation: &'static str) -> Result<String, EchoError> {
+        Ok(self.staged_mut(operation)?.drain_log().join("\n"))
+    }
+
+    /// Observes the staged batch accounting as JSON
+    /// (`staged_total`, `dropped_not_staged`, `truncated_sweeps`, `cap`).
+    pub fn staged_counters(&self, operation: &'static str) -> Result<String, EchoError> {
+        let driver = self.staged_ref(operation)?;
+        Ok(format!(
+            "{{\"staged_total\":{},\"dropped_not_staged\":{},\"truncated_sweeps\":{},\"cap\":{}}}",
+            driver.staged_total(),
+            driver.dropped_not_staged(),
+            driver.truncated_sweeps(),
+            driver.staged_cap()
+        ))
+    }
 }
 
 impl CoreBackend for CoreSession {
@@ -557,6 +612,31 @@ mod tests {
         assert_eq!(CONTRACT_REVISION, "C-UBM.0.1.2-DRAFT");
         assert_eq!(CONTRACT_REVISION, ubm_core::contracts::CONTRACT_REVISION);
         assert_eq!(u64_max_decimal(), "18446744073709551615");
+    }
+
+    #[test]
+    fn staged_surface_drives_synthetic_steps_and_accounting() {
+        let mut core = initialized();
+        let scan = core
+            .staged_step(
+                "{\"step\":\"scan.start\",\"op\":\"scan0\",\"owner\":\"owner-a\"}",
+                OP,
+            )
+            .unwrap();
+        assert!(scan.contains("\"ok\":true"), "{scan}");
+        assert!(scan.contains("central.scan-start"), "{scan}");
+        let counters = core.staged_counters(OP).unwrap();
+        assert!(counters.contains("\"dropped_not_staged\":0"), "{counters}");
+        assert!(counters.contains("\"cap\":64"), "{counters}");
+        // Before init the same surface fails closed, never silently.
+        let mut fresh = CoreSession::new();
+        assert_eq!(
+            fresh
+                .staged_step("{\"step\":\"cap.project\"}", OP)
+                .expect_err("uninit")
+                .code,
+            EchoCode::InvalidState
+        );
     }
 
     #[test]

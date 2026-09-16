@@ -37,6 +37,10 @@ use ubm_core::ownership::EffectBatch;
 /// Frozen contract revision, single-owned by `ubm-core`.
 pub use ubm_core::contracts::CONTRACT_REVISION;
 
+/// Synthetic-radio staged driver (U7 staged-transition slice): re-exported
+/// for the binding surface.
+pub use ubm_fake_radio::{StagedDriver, StagedError};
+
 /// Typed failure carrying a frozen C-UBM `code` + `domain` plus the operation
 /// under test. Never silent: every rejection names its identity.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -228,6 +232,7 @@ pub struct CoreSession {
     destroyed: bool,
     cancel: Arc<CancelFlag>,
     central: Option<Central>,
+    staged: Option<StagedDriver>,
 }
 
 impl CoreSession {
@@ -241,11 +246,16 @@ impl CoreSession {
         // labels; dropping it here never silences a reachable path because
         // the absence is observed loudly at every use.
         let central = construct_central("echo-session.open").ok();
+        // The staged transition core follows the same infallible-open
+        // discipline: construction failure is recorded as absence, and
+        // every staged call fails closed on it (see `staged_mut`).
+        let staged = StagedDriver::open().ok();
         Self {
             revision_valid,
             destroyed: false,
             cancel: Arc::new(CancelFlag::default()),
             central,
+            staged,
         }
     }
 
@@ -387,6 +397,82 @@ impl CoreSession {
             inner: Mutex::new(self),
         }
     }
+
+    fn staged_gate(&self, operation: &'static str) -> Result<(), StagedError> {
+        if self.destroyed {
+            return Err(StagedError::new(
+                "lifecycle.destroyed",
+                "core",
+                operation,
+                "session-closed",
+            ));
+        }
+        if !self.revision_valid {
+            return Err(StagedError::new(
+                "protocol.incompatible",
+                "core",
+                operation,
+                "contract-revision.mismatch",
+            ));
+        }
+        Ok(())
+    }
+
+    fn staged_mut(&mut self, operation: &'static str) -> Result<&mut StagedDriver, StagedError> {
+        self.staged_gate(operation)?;
+        match self.staged.as_mut() {
+            Some(driver) => Ok(driver),
+            None => Err(StagedError::new(
+                "lifecycle.invariant-violation",
+                "core",
+                operation,
+                "staged-missing",
+            )),
+        }
+    }
+
+    fn staged_ref(&self, operation: &'static str) -> Result<&StagedDriver, StagedError> {
+        self.staged_gate(operation)?;
+        match self.staged.as_ref() {
+            Some(driver) => Ok(driver),
+            None => Err(StagedError::new(
+                "lifecycle.invariant-violation",
+                "core",
+                operation,
+                "staged-missing",
+            )),
+        }
+    }
+
+    /// Runs one scripted synthetic-radio staged step (a JSON object line)
+    /// against the session-owned staged transition core and returns one
+    /// JSON observation object. Step-level core rejections come back as
+    /// data (`{"ok":false,...}`); only the session lifetime fails closed.
+    pub fn staged_step(
+        &mut self,
+        line: &str,
+        operation: &'static str,
+    ) -> Result<String, StagedError> {
+        Ok(self.staged_mut(operation)?.run_step(line))
+    }
+
+    /// Drains the staged observation log (FIFO, newline-joined JSON lines).
+    pub fn staged_drain(&mut self, operation: &'static str) -> Result<String, StagedError> {
+        Ok(self.staged_mut(operation)?.drain_log().join("\n"))
+    }
+
+    /// Observes the staged batch accounting as JSON
+    /// (`staged_total`, `dropped_not_staged`, `truncated_sweeps`, `cap`).
+    pub fn staged_counters(&self, operation: &'static str) -> Result<String, StagedError> {
+        let driver = self.staged_ref(operation)?;
+        Ok(format!(
+            "{{\"staged_total\":{},\"dropped_not_staged\":{},\"truncated_sweeps\":{},\"cap\":{}}}",
+            driver.staged_total(),
+            driver.dropped_not_staged(),
+            driver.truncated_sweeps(),
+            driver.staged_cap()
+        ))
+    }
 }
 
 impl CoreBackend for CoreSession {
@@ -490,6 +576,42 @@ impl SharedCore {
         const OP: &str = "request-ble-transition";
         let guard = self.lock(OP)?;
         guard.request_ble_transition(transition, OP)
+    }
+
+    /// U7 staged-transition slice: runs one scripted synthetic-radio step
+    /// and returns one JSON observation object.
+    pub fn staged_step(&self, line: &str) -> Result<String, StagedError> {
+        const OP: &str = "staged-step";
+        let mut guard = self.lock_staged(OP)?;
+        guard.staged_step(line, OP)
+    }
+
+    /// U7 staged-transition slice: drains the observation log.
+    pub fn staged_drain_log(&self) -> Result<String, StagedError> {
+        const OP: &str = "staged-drain-log";
+        let mut guard = self.lock_staged(OP)?;
+        guard.staged_drain(OP)
+    }
+
+    /// U7 staged-transition slice: observes the batch accounting as JSON.
+    pub fn staged_counters(&self) -> Result<String, StagedError> {
+        const OP: &str = "staged-counters";
+        let guard = self.lock_staged(OP)?;
+        guard.staged_counters(OP)
+    }
+
+    fn lock_staged(
+        &self,
+        operation: &'static str,
+    ) -> Result<std::sync::MutexGuard<'_, CoreSession>, StagedError> {
+        self.inner.lock().map_err(|_| {
+            StagedError::new(
+                "lifecycle.invariant-violation",
+                "core",
+                operation,
+                "lock-poisoned",
+            )
+        })
     }
 
     /// Destroys the session. A poisoned lock maps to a loud

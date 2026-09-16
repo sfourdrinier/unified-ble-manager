@@ -23,12 +23,14 @@ pub use core_backend::{
 pub use raw_abi::{
     ubm_echo_alloc, ubm_echo_ble_transition, ubm_echo_central_status, ubm_echo_counter,
     ubm_echo_describe_json, ubm_echo_destroy, ubm_echo_expire_sweep, ubm_echo_free, ubm_echo_init,
-    ubm_echo_last_error, ubm_echo_last_error_text, ubm_echo_run, ubm_echo_stream_begin,
-    ubm_echo_stream_cancel, ubm_echo_stream_finish, ubm_echo_stream_push,
+    ubm_echo_last_error, ubm_echo_last_error_text, ubm_echo_run, ubm_echo_staged_counters,
+    ubm_echo_staged_drain_log, ubm_echo_staged_step, ubm_echo_stream_begin, ubm_echo_stream_cancel,
+    ubm_echo_stream_finish, ubm_echo_stream_push,
 };
 
 #[cfg(feature = "js-glue")]
 pub use js_glue::{
     central_status_js, describe_json_js, drive_destroy_js, drive_expire_sweep_js, echo_bytes_js,
-    echo_counter_js, init_contract, request_ble_transition_js,
+    echo_counter_js, init_contract, request_ble_transition_js, staged_counters_js,
+    staged_drain_log_js, staged_step_js,
 };

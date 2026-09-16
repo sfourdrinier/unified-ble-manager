@@ -23,6 +23,9 @@ export interface RustNativeSession {
   driveDestroy(): string
   requestBleTransition(transition: string): void
   echoCounter(decimal: string): string
+  stagedStep(line: string): string
+  stagedDrainLog(): string
+  stagedCounters(): string
   close(): void
 }
 
@@ -147,6 +150,31 @@ export class RustBackendDriver {
   /** Loud-rejection path for BLE transitions beyond the driven slice. */
   bleTransition(transition: string): RustVoidOutcome {
     return captureVoid(() => this.session.requestBleTransition(transition))
+  }
+
+  /**
+   * Runs one scripted synthetic-radio staged step (a JSON object line)
+   * against the session-owned staged transition core. Step-level core
+   * rejections arrive as data (`ok:false` observations); only the session
+   * lifetime rejects (captured for exact-identity assertions).
+   */
+  stagedStep(line: string): RustStringOutcome {
+    return captureString(() => this.session.stagedStep(line))
+  }
+
+  /** Drains the staged observation log (FIFO, newline-joined JSON lines). */
+  stagedDrainLog(): RustStringOutcome {
+    return captureString(() => this.session.stagedDrainLog())
+  }
+
+  /** Observes the staged batch accounting as JSON. */
+  stagedCounters(): RustStringOutcome {
+    return captureString(() => this.session.stagedCounters())
+  }
+
+  /** Post-close staged probe (must reject `lifecycle.destroyed`). */
+  postCloseStagedStep(line: string): RustStringOutcome {
+    return captureString(() => this.session.stagedStep(line))
   }
 
   /** Destroys the binding lifetime. Idempotent. */

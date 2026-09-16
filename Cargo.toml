@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/ubm-core",
     "crates/ubm-desktop",
+    "crates/ubm-fake-radio",
     "bindings/jni",
     "bindings/napi",
     "bindings/uniffi",

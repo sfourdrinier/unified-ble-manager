@@ -28,6 +28,12 @@ use ubm_core::ownership::EffectBatch;
 /// Frozen contract revision, single-owned by `ubm-core`.
 pub use ubm_core::contracts::CONTRACT_REVISION;
 
+/// Synthetic-radio staged driver (U7 staged-transition slice): the session
+/// holds a second session-scoped REAL central driven from synthetic host
+/// events only; the primary central above keeps serving
+/// status/sweep/destroy untouched.
+pub use ubm_fake_radio::{StagedDriver, StagedError};
+
 /// Typed failure carrying a frozen C-UBM `code` + `domain` plus the operation
 /// under test. Never silent: every rejection names its identity.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -223,6 +229,7 @@ pub struct CoreSession {
     destroyed: bool,
     cancel: Arc<CancelFlag>,
     central: Central,
+    staged: StagedDriver,
 }
 
 impl CoreSession {
@@ -236,6 +243,7 @@ impl CoreSession {
                 destroyed: false,
                 cancel: Arc::new(CancelFlag::default()),
                 central: construct_central("echo-session.open")?,
+                staged: StagedDriver::open().map_err(|_| construct_failed("echo-session.open"))?,
             }),
             Err(_) => Err(EchoError::new(
                 "protocol.incompatible",
@@ -345,6 +353,51 @@ impl CoreSession {
         self.destroyed = true;
         self.cancel.cancel();
     }
+
+    /// Runs one scripted synthetic-radio staged step (a JSON object line)
+    /// against the session-owned staged transition core and returns one
+    /// JSON observation object. Step-level core rejections come back as
+    /// data (`{"ok":false,...}`); only the session lifetime fails closed
+    /// (`lifecycle.destroyed` after `close`, like every call).
+    pub fn staged_step(
+        &mut self,
+        line: &str,
+        operation: &'static str,
+    ) -> Result<String, StagedError> {
+        self.check_usable_staged(operation)?;
+        Ok(self.staged.run_step(line))
+    }
+
+    /// Drains the staged observation log (FIFO, newline-joined JSON lines).
+    pub fn staged_drain(&mut self, operation: &'static str) -> Result<String, StagedError> {
+        self.check_usable_staged(operation)?;
+        Ok(self.staged.drain_log().join("\n"))
+    }
+
+    /// Observes the staged batch accounting as JSON
+    /// (`staged_total`, `dropped_not_staged`, `truncated_sweeps`, `cap`).
+    pub fn staged_counters(&self, operation: &'static str) -> Result<String, StagedError> {
+        self.check_usable_staged(operation)?;
+        Ok(format!(
+            "{{\"staged_total\":{},\"dropped_not_staged\":{},\"truncated_sweeps\":{},\"cap\":{}}}",
+            self.staged.staged_total(),
+            self.staged.dropped_not_staged(),
+            self.staged.truncated_sweeps(),
+            self.staged.staged_cap()
+        ))
+    }
+
+    fn check_usable_staged(&self, operation: &'static str) -> Result<(), StagedError> {
+        if self.destroyed {
+            return Err(StagedError::new(
+                "lifecycle.destroyed",
+                "core",
+                operation,
+                "session-closed",
+            ));
+        }
+        Ok(())
+    }
 }
 
 impl CoreBackend for CoreSession {
@@ -389,6 +442,29 @@ mod tests {
     fn revision_is_the_frozen_contract() {
         assert_eq!(REV, "C-UBM.0.1.2-DRAFT");
         assert_eq!(REV, ubm_core::contracts::CONTRACT_REVISION);
+    }
+
+    #[test]
+    fn staged_surface_drives_synthetic_steps_and_accounting() {
+        let mut core = CoreSession::open(REV).unwrap();
+        let scan = core
+            .staged_step(
+                "{\"step\":\"scan.start\",\"op\":\"scan0\",\"owner\":\"owner-a\"}",
+                "staged-step",
+            )
+            .unwrap();
+        assert!(scan.contains("\"ok\":true"), "{scan}");
+        assert!(scan.contains("central.scan-start"), "{scan}");
+        let counters = core.staged_counters("staged-counters").unwrap();
+        assert!(counters.contains("\"dropped_not_staged\":0"), "{counters}");
+        core.close();
+        let err = core
+            .staged_step("{\"step\":\"cap.project\"}", "staged-step")
+            .expect_err("closed session must reject");
+        assert_eq!(
+            err.wire_message(),
+            "lifecycle.destroyed|core|staged-step|session-closed"
+        );
     }
 
     #[test]

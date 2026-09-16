@@ -12,3 +12,4 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 jni = "=0.22.4"
 ubm-core = { path = "../../crates/ubm-core" }
+ubm-fake-radio = { path = "../../crates/ubm-fake-radio" }

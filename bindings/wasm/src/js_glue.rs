@@ -137,3 +137,33 @@ pub fn request_ble_transition_js(transition: String) -> Result<(), JsValue> {
         None => Err(lock_poisoned("request-ble-transition")),
     }
 }
+
+/// U7 staged-transition slice: runs one scripted synthetic-radio step (a
+/// JSON object line) and returns one JSON observation object. Step-level
+/// core rejections come back as data; only the session lifetime rejects.
+#[wasm_bindgen(js_name = stagedStep)]
+pub fn staged_step_js(line: String) -> Result<String, JsValue> {
+    match with_core(|core| core.staged_step(&line, "staged-step").map_err(err_to_js)) {
+        Some(result) => result,
+        None => Err(lock_poisoned("staged-step")),
+    }
+}
+
+/// U7 staged-transition slice: drains the observation log (FIFO,
+/// newline-joined JSON lines).
+#[wasm_bindgen(js_name = stagedDrainLog)]
+pub fn staged_drain_log_js() -> Result<String, JsValue> {
+    match with_core(|core| core.staged_drain("staged-drain-log").map_err(err_to_js)) {
+        Some(result) => result,
+        None => Err(lock_poisoned("staged-drain-log")),
+    }
+}
+
+/// U7 staged-transition slice: observes the batch accounting as JSON.
+#[wasm_bindgen(js_name = stagedCounters)]
+pub fn staged_counters_js() -> Result<String, JsValue> {
+    match with_core(|core| core.staged_counters("staged-counters").map_err(err_to_js)) {
+        Some(result) => result,
+        None => Err(lock_poisoned("staged-counters")),
+    }
+}
