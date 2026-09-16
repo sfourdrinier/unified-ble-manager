@@ -585,6 +585,14 @@ jobs:
           # no longer exists upstream and fails install on new cmdline-tools.
           packages: 'platform-tools'
 
+      - name: Install pinned Rust + Android target
+        # buildUbmRustCdylib compiles bindings/jni via rustup-run 1.98.1 for
+        # x86_64-linux-android; cargo --version resolves rust-toolchain.toml
+        # and installs the pinned toolchain when absent.
+        run: |
+          cargo --version
+          rustup target add --toolchain 1.98.1 x86_64-linux-android
+
       - name: Install classic example dependencies
         # example/.npmrc uses node-linker=hoisted so @react-native/gradle-plugin is at
         # example/node_modules/@react-native/gradle-plugin (required by settings.gradle).
