@@ -137,6 +137,17 @@ jobs:
           prepack: 'false'
           node-version: ${{ matrix.node }}
 
+      - name: Install pinned Rust
+        # ReleaseArtifacts/License suites shell to
+        # `cargo metadata --locked --offline`; cargo --version resolves
+        # rust-toolchain.toml and installs the pinned toolchain when absent.
+        run: cargo --version
+
+      - name: Warm cargo cache for offline metadata
+        # No compilation (no sysdeps needed) — populates the cargo cache so
+        # offline metadata reads succeed on a fresh runner.
+        run: cargo fetch --locked
+
       - name: Run package tests
         run: pnpm test:package
 
@@ -386,6 +397,15 @@ jobs:
           cargo --version
           rustup component add rustfmt clippy
 
+      - name: Install Linux build sysdeps
+        # ubm-desktop -> btleplug -> bluez-async -> libdbus-sys needs
+        # pkg-config + D-Bus headers at compile time (same subset the
+        # Tauri job installs).
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y libdbus-1-dev pkg-config
+
       - name: Check Rust formatting (workspace scope)
         if: runner.os == 'Linux'
         run: cargo fmt --all -- --check
@@ -500,6 +520,10 @@ jobs:
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v4.0.1
+        with:
+          # Default is 'tools platform-tools'; the obsolete `tools` package
+          # no longer exists upstream and fails install on new cmdline-tools.
+          packages: 'platform-tools'
 
       - name: Install Expo example dependencies
         run: pnpm --dir example-expo install --no-frozen-lockfile
@@ -556,6 +580,10 @@ jobs:
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v4.0.1
+        with:
+          # Default is 'tools platform-tools'; the obsolete `tools` package
+          # no longer exists upstream and fails install on new cmdline-tools.
+          packages: 'platform-tools'
 
       - name: Install classic example dependencies
         # example/.npmrc uses node-linker=hoisted so @react-native/gradle-plugin is at
