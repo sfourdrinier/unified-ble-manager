@@ -28,7 +28,9 @@ export interface Spec extends TurboModule {
   openSession(owner: string): Promise<RustCoreSessionHandle>
   invoke(sessionId: string, op: string, argsJson: string): Promise<RustCoreInvokeResult>
   close(sessionId: string): Promise<void>
-  contractRevision(): string
+  // All-async by design: no sync bridge methods (same-name abstract
+  // mapping as the existing specs). The TS producer caches this at open.
+  contractRevision(): Promise<string>
 }
 
 export default TurboModuleRegistry.getEnforcing<Spec>('UnifiedBleRustCore')

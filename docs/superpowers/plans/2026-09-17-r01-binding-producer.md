@@ -79,7 +79,9 @@ export interface Spec extends TurboModule {
   openSession(owner: string): Promise<RustCoreSessionHandle>
   invoke(sessionId: string, op: string, argsJson: string): Promise<RustCoreInvokeResult>
   close(sessionId: string): Promise<void>
-  contractRevision(): string
+  // All-async by design: no sync bridge methods (same-name abstract
+  // mapping as the existing specs). The TS producer caches this at open.
+  contractRevision(): Promise<string>
 }
 
 export default TurboModuleRegistry.getEnforcing<Spec>('UnifiedBleRustCore')
@@ -209,8 +211,9 @@ export function createReactNativeRustCoreBinding(): ReactNativeRustCoreBinding {
   return {
     openSession: async owner => {
       const { sessionId } = await native.openSession(owner)
+      const revision = await native.contractRevision()
       return {
-        contractRevision: () => native.contractRevision(),
+        contractRevision: () => revision,
         invoke: (op, args) => native.invoke(sessionId, op, JSON.stringify(args)).then(r => r.value),
         close: () => native.close(sessionId)
       }
