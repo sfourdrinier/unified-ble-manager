@@ -71,6 +71,12 @@ describe('Unified Android native protocol structure', () => {
       // D3(a) production session facade (module shell + JVM-tested op
       // router over the JNI cdylib), covered by
       // `RustCoreSessionRouterTest`. Boundary member by design.
+      // R01 Phase 3 contract update (justified): `RustCoreAdapterStateReader`
+      // is the production platform read behind `adapter.state` (live
+      // BluetoothAdapter state, owned-radio mapping); the router stays
+      // dependency-free behind the injected reader seam. Boundary member
+      // by design.
+      'rustcore/RustCoreAdapterStateReader.java',
       'rustcore/RustCoreSessionRouter.java',
       'rustcore/UnifiedBleRustCoreModule.java'
     ])

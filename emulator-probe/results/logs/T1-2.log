@@ -3,54 +3,54 @@ $ dumpsys package (host-matched)
 Activity Resolver Table:
   Non-Data Actions:
       android.intent.action.MAIN:
-        a3d79b2 com.ubmprobe/.MainActivity filter 8ed3d03
+        3ac6ef9 com.ubmprobe/.MainActivity filter 7d14e3e
           Action: "android.intent.action.MAIN"
           Category: "android.intent.category.LAUNCHER"
 
 Receiver Resolver Table:
   Non-Data Actions:
       androidx.profileinstaller.action.SAVE_PROFILE:
-        8ec1480 com.ubmprobe/androidx.profileinstaller.ProfileInstallReceiver filter 77ca65f
+        be9649f com.ubmprobe/androidx.profileinstaller.ProfileInstallReceiver filter a90104a
           Action: "androidx.profileinstaller.action.SAVE_PROFILE"
       androidx.profileinstaller.action.INSTALL_PROFILE:
-        8ec1480 com.ubmprobe/androidx.profileinstaller.ProfileInstallReceiver filter 5c3eab9
+        be9649f com.ubmprobe/androidx.profileinstaller.ProfileInstallReceiver filter 10279ec
           Action: "androidx.profileinstaller.action.INSTALL_PROFILE"
       androidx.profileinstaller.action.SKIP_FILE:
-        8ec1480 com.ubmprobe/androidx.profileinstaller.ProfileInstallReceiver filter a057efe
+        be9649f com.ubmprobe/androidx.profileinstaller.ProfileInstallReceiver filter 7bc01b5
           Action: "androidx.profileinstaller.action.SKIP_FILE"
       androidx.profileinstaller.action.BENCHMARK_OPERATION:
-        8ec1480 com.ubmprobe/androidx.profileinstaller.ProfileInstallReceiver filter 73df8ac
+        be9649f com.ubmprobe/androidx.profileinstaller.ProfileInstallReceiver filter 789abbb
           Action: "androidx.profileinstaller.action.BENCHMARK_OPERATION"
 
 Domain verification status:
 
 Permissions:
-  Permission [com.ubmprobe.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION] (8538af9):
+  Permission [com.ubmprobe.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION] (71cf8cb):
     sourcePackage=com.ubmprobe
     uid=10196 gids=[] type=0 prot=signature
-    perm=PermissionInfo{34be09f com.ubmprobe.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION}
+    perm=PermissionInfo{2de3fc1 com.ubmprobe.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION}
     flags=0x0
 
 Registered ContentProviders:
   com.ubmprobe/androidx.startup.InitializationProvider:
-    Provider{5b8ddb5 com.ubmprobe/androidx.startup.InitializationProvider}
+    Provider{d8056a7 com.ubmprobe/androidx.startup.InitializationProvider}
 
 ContentProvider Authorities:
   [com.ubmprobe.androidx-startup]:
-    Provider{5b8ddb5 com.ubmprobe/androidx.startup.InitializationProvider}
-      applicationInfo=ApplicationInfo{241bc4a com.ubmprobe}
+    Provider{d8056a7 com.ubmprobe/androidx.startup.InitializationProvider}
+      applicationInfo=ApplicationInfo{635f754 com.ubmprobe}
 
 Key Set Manager:
   [com.ubmprobe]
       Signing KeySets: 60
 
 Packages:
-  Package [com.ubmprobe] (f9b2067):
+  Package [com.ubmprobe] (54e16fd):
     appId=10196
-    pkg=Package{5e6a031 com.ubmprobe}
-    codePath=/data/app/~~OVA5MXGJe0NpolzK_Qgm0A==/com.ubmprobe-WdfAGJyKfNCl7uoG6kgGOg==
-    resourcePath=/data/app/~~OVA5MXGJe0NpolzK_Qgm0A==/com.ubmprobe-WdfAGJyKfNCl7uoG6kgGOg==
-    legacyNativeLibraryDir=/data/app/~~OVA5MXGJe0NpolzK_Qgm0A==/com.ubmprobe-WdfAGJyKfNCl7uoG6kgGOg==/lib
+    pkg=Package{1ef0ff2 com.ubmprobe}
+    codePath=/data/app/~~lgztls_FEgpxGC91z4vIsQ==/com.ubmprobe-bLTFeWMKNR5a5jxS6DUsPg==
+    resourcePath=/data/app/~~lgztls_FEgpxGC91z4vIsQ==/com.ubmprobe-bLTFeWMKNR5a5jxS6DUsPg==
+    legacyNativeLibraryDir=/data/app/~~lgztls_FEgpxGC91z4vIsQ==/com.ubmprobe-bLTFeWMKNR5a5jxS6DUsPg==/lib
     extractNativeLibs=false
     primaryCpuAbi=x86_64
     secondaryCpuAbi=null
@@ -72,15 +72,15 @@ Packages:
     usesLibraryFiles:
       /system_ext/framework/androidx.window.extensions.jar
       /system_ext/framework/androidx.window.sidecar.jar
-    timeStamp=2026-09-15 16:27:59
-    lastUpdateTime=2026-09-15 16:27:59
+    timeStamp=2026-09-17 16:27:21
+    lastUpdateTime=2026-09-17 16:27:21
     installerPackageName=null
     installerPackageUid=-1
     initiatingPackageName=com.android.shell
     originatingPackageName=null
     packageSource=1
     appMetadataFilePath=null
-    signatures=PackageSignatures{c7d8aa2 version:2, signatures:[7b964403], past signatures:[]}
+    signatures=PackageSignatures{d1b643 version:2, signatures:[7b964403], past signatures:[]}
     installPermissionsFixed=true
     pkgFlags=[ DEBUGGABLE HAS_CODE ALLOW_CLEAR_USER_DATA ]
     privatePkgFlags=[ PRIVATE_FLAG_ACTIVITIES_RESIZE_MODE_RESIZEABLE_VIA_SDK_VERSION ALLOW_AUDIO_PLAYBACK_CAPTURE PRIVATE_FLAG_ALLOW_NATIVE_HEAP_POINTER_TAGGING ]
@@ -97,15 +97,15 @@ Packages:
       android.permission.SYSTEM_ALERT_WINDOW: granted=false
       android.permission.INTERNET: granted=true
       com.ubmprobe.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION: granted=true
-    User 0: ceDataInode=353446 installed=true hidden=false suspended=false distractionFlags=0 stopped=true notLaunched=true enabled=0 instant=false virtual=false
+    User 0: ceDataInode=327881 installed=true hidden=false suspended=false distractionFlags=0 stopped=true notLaunched=true enabled=0 instant=false virtual=false
       installReason=0
-      firstInstallTime=2026-09-15 16:27:59
+      firstInstallTime=2026-09-17 16:27:21
       uninstallReason=0
       overlay paths:
         /product/overlay/NavigationBarModeGestural/NavigationBarModeGesturalOverlay.apk
-        /data/resource-cache/com.android.systemui-neutral-ag9F.frro
-        /data/resource-cache/com.android.systemui-accent-TB3J.frro
-        /data/resource-cache/com.android.systemui-dynamic-LOWH.frro
+        /data/resource-cache/com.android.systemui-neutral-0cMw.frro
+        /data/resource-cache/com.android.systemui-accent-ILwU.frro
+        /data/resource-cache/com.android.systemui-dynamic-eFCN.frro
       legacy overlay paths:
         /product/overlay/NavigationBarModeGestural/NavigationBarModeGesturalOverlay.apk
       gids=[3003]
@@ -126,7 +126,7 @@ Queries:
 
 Dexopt state:
   [com.ubmprobe]
-    path: /data/app/~~OVA5MXGJe0NpolzK_Qgm0A==/com.ubmprobe-WdfAGJyKfNCl7uoG6kgGOg==/base.apk
+    path: /data/app/~~lgztls_FEgpxGC91z4vIsQ==/com.ubmprobe-bLTFeWMKNR5a5jxS6DUsPg==/base.apk
       x86_64: [status=run-from-apk] [reason=unknown] [primary-abi]
         [location is error]
 

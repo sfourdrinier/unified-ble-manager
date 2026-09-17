@@ -126,6 +126,10 @@ describe('Android RN 0.86 unified protocol boundary', () => {
       // router over the JNI cdylib), covered by
       // `RustCoreSessionRouterTest`. Current protocol graph member by
       // design, not legacy residue.
+      // R01 Phase 3 contract update (justified): `RustCoreAdapterStateReader`
+      // is the production platform read behind `adapter.state`. Current
+      // protocol graph member by design, not legacy residue.
+      'rustcore/RustCoreAdapterStateReader.java',
       'rustcore/RustCoreSessionRouter.java',
       'rustcore/UnifiedBleRustCoreModule.java'
     ].sort())

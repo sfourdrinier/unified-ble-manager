@@ -100,7 +100,6 @@ package:com.android.systemui.emulation.pixel_8
 package:com.android.role.notes.enabled
 package:com.google.android.apps.nexuslauncher
 package:com.google.mainline.adservices
-package:com.bleplxexample
 package:com.google.android.apps.wallpaper
 package:com.android.internal.emulation.pixel_6_pro
 package:com.google.android.federatedcompute

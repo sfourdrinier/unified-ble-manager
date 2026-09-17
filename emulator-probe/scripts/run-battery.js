@@ -446,6 +446,74 @@ async function main() {
     });
   }
 
+  if (want('R01FACTORY')) {
+    check(records, 'R01FACTORY', 'R01 flip: public no-options factory creates + adapter + destroy through the production binding', 'REAL-EMULATOR', (ctx) => {
+      if (!args.attemptMetro) {
+        ctx.boundary('Needs the probe Metro (`npx react-native start --port 8081` in emulator-probe/consumer + `adb reverse tcp:8081 tcp:8081`); rerun with --attempt-metro. Dev APK has no embedded bundle.');
+        return;
+      }
+      ctx.note('metro packager reachable [HOST-JVM host-side]', metroUpSync(), 'host-side curl http://127.0.0.1:8081/status (not device-observed)');
+      sh(args.serial, `am force-stop ${PKG}`, { timeoutMs: 30000 });
+      sleepMs(2000);
+      sh(args.serial, 'logcat -c', { timeoutMs: 20000 });
+      ctx.snap('launch on Metro', sh(args.serial, `am start -n ${ACTIVITY}`, { timeoutMs: 30000 }));
+      let log = '';
+      let mounted = false;
+      for (let i = 0; i < 9; i++) {
+        sleepMs(10000);
+        log = logcatDump(args.serial, ctx, `logcat mount poll ${i}`);
+        if (/app-mounted/.test(log)) { mounted = true; break; }
+      }
+      ctx.note('JS bundle executed (app-mounted)', mounted, grepLines(log, /app-mounted|init-error/, 2).join(' ').slice(0, 200) || 'no mount line');
+      if (!mounted) return;
+      // Tap by exact text (like RUSTCORE): PROBE_TAP coords predate this
+      // AVD boot's density and miss every button.
+      const inited = tapText(args.serial, ctx, 'R01FACTORY', 'INIT MANAGER');
+      ctx.note('Init button tapped', inited !== null, inited ? `tapped at ${inited}` : 'button text missing from UI dump');
+      if (!inited) return;
+      sleepMs(6000);
+      tapText(args.serial, ctx, 'R01FACTORY', 'Allow');
+      sleepMs(16000);
+      log = logcatDump(args.serial, ctx, 'logcat after init');
+      const created = /manager-created/.test(log);
+      ctx.note('manager created through the public no-options factory', created, grepLines(log, /manager-created|init-error/, 1).join(' ').slice(0, 220) || 'neither manager-created nor init-error');
+      ctx.note('runtime permissions granted (dialog answered)', /permission-ok=true/.test(log), grepLines(log, /permission-ok=|scan=granted/, 2).join(' ').slice(0, 220) || 'no permission line');
+      // Native-reader marker: with permissions granted the router's platform
+      // reader reports a concrete state (never unknown); the retired 4.x
+      // bridge historically reports unknowns on the virtual adapter.
+      const adapterLine = grepLines(log, /adapter power=/, 1).join(' ');
+      ctx.note(
+        'adapter state is a concrete platform read (native reader)',
+        /adapter power=(on|off|resetting|unsupported) availability=\S+ authorization=granted/.test(adapterLine),
+        adapterLine.slice(0, 220) || 'no adapter line'
+      );
+      ctx.note('no init-error', !/init-error/.test(log), grepLines(log, /init-error/, 1).join(' ').slice(0, 220) || 'clean');
+      if (!created) return;
+      const bondedTap = tapText(args.serial, ctx, 'R01FACTORY', 'BONDED PEERS');
+      ctx.note('Bonded button tapped', bondedTap !== null, bondedTap ? `tapped at ${bondedTap}` : 'button text missing from UI dump');
+      if (!bondedTap) return;
+      sleepMs(8000);
+      log = logcatDump(args.serial, ctx, 'logcat after bonded');
+      // Informational, not a route marker: the native provider reports the
+      // empty bond table locally (no core bond surface yet; R03), which
+      // coincides with the legacy empty-table receipt.
+      ctx.note(
+        'bonded reports the empty table without errors',
+        /bonded-count=0/.test(log) && !/bonded-error/.test(log),
+        grepLines(log, /bonded-(error|count)/, 1).join(' ').slice(0, 220) || 'no bonded line'
+      );
+      const torn = tapText(args.serial, ctx, 'R01FACTORY', 'TEARDOWN');
+      ctx.note('Teardown button tapped', torn !== null, torn ? `tapped at ${torn}` : 'button text missing from UI dump');
+      if (!torn) return;
+      sleepMs(8000);
+      log = logcatDump(args.serial, ctx, 'logcat after teardown');
+      ctx.note('manager destroyed through the production binding', /manager-destroyed/.test(log), grepLines(log, /manager-destroyed|teardown-error/, 1).join(' ').slice(0, 220) || 'no teardown line');
+      ctx.note('no teardown-error', !/teardown-error/.test(log), grepLines(log, /teardown-error/, 1).join(' ').slice(0, 220) || 'clean');
+      ctx.note('no FATAL EXCEPTION for consumer', !new RegExp(`Process: ${PKG}`).test(log), 'host-matched over full logcat');
+      ctx.note('no UnsatisfiedLinkError', !/UnsatisfiedLinkError/.test(log), 'host-matched over full logcat');
+    });
+  }
+
   if (want('T11')) {
     check(records, 'T11', 'bounded byte delivery (512 records / 1 MiB ingress bound)', 'REAL-EMULATOR', (ctx) => {
       ctx.boundary('No notification burst can be driven on the virtual adapter (no peers, scans reject fast), so the bounded ingress queue cannot fill on-emulator. Overflow semantics are covered host-side by the deterministic TCK vector deterministic-tck-subscription-overflow.ts plus the 104-test android unit suite; filling the queue needs a chatty physical peripheral (U-ANDROID-PHYSICAL).');

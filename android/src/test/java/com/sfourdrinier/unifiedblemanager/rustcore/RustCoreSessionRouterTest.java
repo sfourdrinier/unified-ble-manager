@@ -245,6 +245,60 @@ public final class RustCoreSessionRouterTest {
   }
 
   @Test
+  public void creationSurfaceServesAdapterCountersEventsCancel() {
+    RustCoreSessionRouter platformRouter =
+        new RustCoreSessionRouter(bridge, () -> "{\"availability\":\"available\"}");
+    String id = platformRouter.openSession("owner-a");
+    assertOk(
+        platformRouter.invoke(id, "adapter.state", "{}"), "{\"availability\":\"available\"}");
+    RustCoreSessionRouter.InvokeResult counters =
+        platformRouter.invoke(id, "counters.describe", "{}");
+    assertTrue(counters.ok);
+    for (String key :
+        new String[] {
+          "activeScanControllers",
+          "scanConsumers",
+          "chooserSessions",
+          "connectionLeases",
+          "physicalLinks",
+          "databaseSnapshots",
+          "physicalCccdEnablements",
+          "subscriptionConsumers",
+          "queuedOperations",
+          "dispatchedOperations",
+          "retainedByteBuffers",
+          "restorationRecords",
+          "orphanedIpcOwners"
+        }) {
+      assertTrue("missing counter " + key, counters.value.contains("\"" + key + "\":0"));
+    }
+    assertOk(platformRouter.invoke(id, "events.take", "{}"), "null");
+    assertOk(platformRouter.invoke(id, "op.cancel", "{\"operationId\":\"op-1\"}"), "{\"state\":\"not-cancellable\"}");
+  }
+
+  @Test
+  public void defaultAdapterReaderReportsHonestUnknowns() {
+    String id = router.openSession("owner-a");
+    RustCoreSessionRouter.InvokeResult result = router.invoke(id, "adapter.state", "{}");
+    assertTrue(result.ok);
+    assertTrue(result.value.contains("\"availability\":\"unknown\""));
+    assertTrue(result.value.contains("\"authorization\":\"unknown\""));
+    assertTrue(result.value.contains("\"power\":\"unknown\""));
+    assertTrue(result.value.contains("\"backendGeneration\":\"router-default\""));
+    assertTrue(result.value.contains("\"updatedAt\":"));
+    assertTrue(result.value.contains("\"safeReason\":\"no platform adapter reader installed\""));
+  }
+
+  @Test
+  public void disposeDrivesNativeDestroyAndSessionStillCloses() {
+    String id = router.openSession("owner-a");
+    assertOk(router.invoke(id, "session.dispose", "{}"), "{\"state\":\"released\"}");
+    assertTrue(bridge.calls.contains("destroy:101"));
+    router.closeSession(id);
+    assertTrue(bridge.calls.contains("close:101"));
+  }
+
+  @Test
   public void base64CodecMatchesKnownVectors() {
     assertEquals("aGk=", RustCoreSessionRouter.base64Encode("hi".getBytes(StandardCharsets.UTF_8)));
     assertEquals("", RustCoreSessionRouter.base64Encode(new byte[0]));

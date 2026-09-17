@@ -94,12 +94,55 @@ public final class RustCoreSessionRouter {
     String bleScanStop(long handle, String opId, String nowMs);
   }
 
+  /**
+   * Thin platform read behind {@code adapter.state}: returns the frozen
+   * adapter record JSON ({@code availability}, {@code authorization},
+   * {@code power}, {@code backendGeneration}, {@code updatedAt},
+   * {@code safeReason}). A separate seam (not the JNI bridge) because the
+   * value is live platform state, and because this router must stay
+   * dependency-free and JVM-testable: the Android production reader lives
+   * in {@code RustCoreAdapterStateReader}, never here.
+   */
+  public interface AdapterStateReader {
+    String readAdapterStateJson();
+  }
+
+  /**
+   * Zero resource counters: the router tracks no live core resources
+   * beyond open sessions, so every counter reads 0 honestly. Key set must
+   * match the provider's {@code parseResourceCounters} exactly.
+   */
+  static final String ZERO_COUNTERS_JSON =
+      "{\"activeScanControllers\":0,\"scanConsumers\":0,\"chooserSessions\":0,"
+          + "\"connectionLeases\":0,\"physicalLinks\":0,\"databaseSnapshots\":0,"
+          + "\"physicalCccdEnablements\":0,\"subscriptionConsumers\":0,\"queuedOperations\":0,"
+          + "\"dispatchedOperations\":0,\"retainedByteBuffers\":0,\"restorationRecords\":0,"
+          + "\"orphanedIpcOwners\":0}";
+
   private final Bridge bridge;
+  private final AdapterStateReader adapterStates;
   private final ConcurrentHashMap<String, Long> sessions = new ConcurrentHashMap<>();
   private final java.util.Set<String> closed = ConcurrentHashMap.newKeySet();
 
   public RustCoreSessionRouter(Bridge bridge) {
+    this(bridge, RustCoreSessionRouter::defaultAdapterStateJson);
+  }
+
+  public RustCoreSessionRouter(Bridge bridge, AdapterStateReader adapterStates) {
     this.bridge = bridge;
+    this.adapterStates = adapterStates;
+  }
+
+  /**
+   * Default reader (no platform view): honest unknowns. Production passes
+   * the platform reader; this exists so the router stays constructible
+   * without Android dependencies.
+   */
+  private static String defaultAdapterStateJson() {
+    return "{\"availability\":\"unknown\",\"authorization\":\"unknown\",\"power\":\"unknown\","
+        + "\"backendGeneration\":\"router-default\",\"updatedAt\":"
+        + System.currentTimeMillis()
+        + ",\"safeReason\":\"no platform adapter reader installed\"}";
   }
 
   /**
@@ -188,6 +231,17 @@ public final class RustCoreSessionRouter {
               bridge.bleScanStop(
                   handle, stringArg(argsJson, "opId", operation), stringArg(argsJson, "nowMs", operation)),
               operation);
+        case "adapter.state":
+          return InvokeResult.ok(adapterStates.readAdapterStateJson(), operation);
+        case "counters.describe":
+          return InvokeResult.ok(ZERO_COUNTERS_JSON, operation);
+        case "events.take":
+          return InvokeResult.ok("null", operation);
+        case "op.cancel":
+          return InvokeResult.ok("{\"state\":\"not-cancellable\"}", operation);
+        case "session.dispose":
+          bridge.destroy(handle);
+          return InvokeResult.ok("{\"state\":\"released\"}", operation);
         default:
           return InvokeResult.failure("capability.unsupported", "capability", operation);
       }

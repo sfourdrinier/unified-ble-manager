@@ -26,7 +26,8 @@ public class UnifiedBleRustCoreModule extends NativeUnifiedBleRustCoreSpec {
 
   public UnifiedBleRustCoreModule(ReactApplicationContext reactContext) {
     super(reactContext);
-    this.router = new RustCoreSessionRouter(new EchoBridgeAdapter());
+    this.router =
+        new RustCoreSessionRouter(new EchoBridgeAdapter(), new RustCoreAdapterStateReader(reactContext));
   }
 
   @NonNull
