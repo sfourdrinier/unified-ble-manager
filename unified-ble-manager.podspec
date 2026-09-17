@@ -99,17 +99,26 @@ Pod::Spec.new do |s|
       'bindings/uniffi/generated/swift/ubm_echoFFI.h',
       'bindings/uniffi/generated/swift/ubm_echoFFI.modulemap'
     ]
-    # ubm_echo.swift compiles in the POD target, so SWIFT_INCLUDE_PATHS
-    # (which exposes the ubm_echoFFI modulemap defining RustBuffer and
-    # friends) must be set here — s.xcconfig reaches only the consumer
-    # target and leaves `canImport(ubm_echoFFI)` false at pod compile
-    # time. Pod::Specification has no getters: read-modify-write via
+    # ubm_echo.swift compiles in the POD target, so the ubm_echoFFI
+    # modulemap (which defines RustBuffer and friends) must be visible
+    # here — s.xcconfig reaches only the consumer target and leaves
+    # `canImport(ubm_echoFFI)` false at pod compile time. SWIFT_INCLUDE_PATHS
+    # alone is not enough: Clang only auto-loads `module.modulemap` from
+    # search paths, never a custom-named `ubm_echoFFI.modulemap`, so the
+    # modulemap must also be passed explicitly via -fmodule-map-file.
+    # Pod::Specification has no getters: read-modify-write via
     # to_hash, the same pattern React Native's
     # install_modules_dependencies uses, so neither the helper branch
     # nor the legacy branch assignments are clobbered.
     ubm_pod_xcconfig = s.to_hash['pod_target_xcconfig'] || {}
+    ubm_module_map_flag = '-Xcc -fmodule-map-file=$(PODS_TARGET_SRCROOT)/bindings/uniffi/generated/swift/ubm_echoFFI.modulemap'
+    ubm_existing_swift_flags = ubm_pod_xcconfig['OTHER_SWIFT_FLAGS']
+    ubm_swift_flags = (ubm_existing_swift_flags.nil? || ubm_existing_swift_flags.empty?) \
+      ? ubm_module_map_flag \
+      : "#{ubm_existing_swift_flags} #{ubm_module_map_flag}"
     s.pod_target_xcconfig = ubm_pod_xcconfig.merge(
-      'SWIFT_INCLUDE_PATHS' => '$(PODS_TARGET_SRCROOT)/bindings/uniffi/generated/swift'
+      'SWIFT_INCLUDE_PATHS' => '$(PODS_TARGET_SRCROOT)/bindings/uniffi/generated/swift',
+      'OTHER_SWIFT_FLAGS' => ubm_swift_flags
     )
     # Mechanism-independent backstop: whatever produced ios/RustCore
     # (prepare_command above, an explicit contributor build, or CI

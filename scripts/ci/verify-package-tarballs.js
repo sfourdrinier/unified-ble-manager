@@ -23,6 +23,7 @@ const internalTypeOnlySourceFiles = Object.freeze([])
 const internalRuntimeSourceFiles = Object.freeze([
   'NativeUnifiedBleProtocolControl.ts',
   'NativeUnifiedBleExpoRuntime.ts',
+  'NativeUnifiedBleRustCore.ts',
   'expo-native-runtime.ts',
   'native-protocol/generated/native-protocol-v2-schema.ts',
   'native-protocol/rn-apple-boundary.ts',
