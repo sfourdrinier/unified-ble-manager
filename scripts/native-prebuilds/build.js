@@ -42,7 +42,9 @@ function runNodeGyp(target) {
 }
 
 function verifyLoad(target, binaryPath) {
-  // eslint-disable-next-line import/no-dynamic-require, global-require
+  // Dynamic require of the just-built prebuild under test (the retired
+  // import/no-dynamic-require suppression was removed: the rule no longer
+  // exists in the installed plugin and global-require is not enabled here).
   const nativeModule = require(binaryPath)
   if (target.backend === 'corebluetooth' && typeof nativeModule.createNativeRadio !== 'function') {
     throw new Error('CoreBluetooth prebuild does not export createNativeRadio')

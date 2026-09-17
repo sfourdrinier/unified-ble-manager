@@ -132,5 +132,54 @@ module.exports = [
     rules: {
       '@typescript-eslint/no-explicit-any': 'off'
     }
+  },
+  {
+    files: ['**/*.js', '**/*.jsx', '**/*.cjs', '**/*.mjs'],
+    rules: {
+      // eslint-plugin-ft-flow@2 (via @react-native) calls the ESLint-9-removed
+      // context.getAllComments(), crashing every JS lint. The repo carries no
+      // Flow pragmas, so these rules are dead weight even apart from the crash.
+      'ft-flow/define-flow-type': 'off',
+      'ft-flow/use-flow-type': 'off'
+    }
+  },
+  {
+    // Suites run under jest on node; scripts run on node. Without these
+    // environments every global reads as a no-undef error (config noise).
+    // The expectConsole* helpers are installed by
+    // __tests__/helpers/zero-diagnostic-guard.js via setupFilesAfterEnv.
+    files: [
+      '__tests__/**/*.js',
+      '__tests__/**/*.jsx',
+      '__tests__/**/*.cjs',
+      'scripts/**/*.js',
+      'scripts/**/*.jsx',
+      'scripts/**/*.cjs'
+    ],
+    languageOptions: {
+      ecmaVersion: 2022,
+      sourceType: 'commonjs',
+      globals: {
+        ...globals.node,
+        ...globals.jest,
+        expectConsoleError: 'readonly',
+        expectConsoleWarn: 'readonly',
+        expectConsoleInfo: 'readonly',
+        expectConsoleErrorMatching: 'readonly',
+        expectConsoleWarnMatching: 'readonly',
+        expectConsoleInfoMatching: 'readonly'
+      }
+    }
+  },
+  {
+    files: ['__tests__/**/*.mjs', 'scripts/**/*.mjs'],
+    languageOptions: {
+      ecmaVersion: 2022,
+      sourceType: 'module',
+      globals: {
+        ...globals.node,
+        ...globals.jest
+      }
+    }
   }
 ]
