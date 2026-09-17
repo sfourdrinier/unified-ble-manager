@@ -30,7 +30,8 @@ use tokio::sync::{Mutex, mpsc};
 
 use crate::boundary::{
     CharacteristicSnapshot, DescriptorSnapshot, InstanceKey, ManufacturerData, PeerSnapshot,
-    PropertyFlags, RadioBoundary, RadioEvent, ScanFilterSpec, ServiceData, ServiceSnapshot,
+    PropertyFlags, RadioBoundary, RadioCloseFailure, RadioEvent, ScanFilterSpec, ServiceData,
+    ServiceSnapshot,
 };
 use crate::errors::DesktopError;
 use ubm_core::central::{
@@ -111,6 +112,10 @@ pub struct BtleplugRadio {
     /// native release until it succeeds; the ambiguity check (F09)
     /// treats debt as live because the CCCD may still emit.
     cleanup_debt: StdMutex<HashSet<InstanceKey>>,
+    /// Close-time release failures retained by the last [`RadioBoundary::close`]
+    /// (F14 receipts): one entry per scope whose native unsubscribe did not
+    /// complete. Drained by `take_close_failures` into the shutdown report.
+    close_failures: StdMutex<Vec<RadioCloseFailure>>,
 }
 
 impl BtleplugRadio {
@@ -162,6 +167,7 @@ impl BtleplugRadio {
             ingress_dropped: Arc::new(AtomicU64::new(0)),
             forwarders: StdMutex::new(HashMap::new()),
             cleanup_debt: StdMutex::new(HashSet::new()),
+            close_failures: StdMutex::new(Vec::new()),
         })
     }
 
@@ -1266,7 +1272,11 @@ impl RadioBoundary for BtleplugRadio {
     /// Teardown hook (M3): abort every live forwarder and best-effort
     /// release every OS-side CCCD, including parked cleanup debt (F13):
     /// an orphaned native enablement is still owed its unsubscribe.
-    /// Failures are swallowed: teardown reports facts, never new failures.
+    /// Infallible by contract: per-scope release failures are retained as
+    /// receipts (F14), drained by `take_close_failures` into the shutdown
+    /// report. A peer that is already gone needs no release, so lookup and
+    /// characteristic misses are skipped without a receipt; only a refused
+    /// or errored native unsubscribe is a failure.
     async fn close(&self) {
         let entries: Vec<ForwarderEntry> = self
             .forwarders
@@ -1280,6 +1290,8 @@ impl RadioBoundary for BtleplugRadio {
         }
         let mut scopes: Vec<InstanceKey> = entries.iter().map(ForwarderEntry::scope).collect();
         scopes.extend(self.cleanup_debt.lock().expect("cleanup debt").drain());
+        scopes.sort();
+        let mut failures = Vec::new();
         for scope in &scopes {
             let peripheral = match self.peripheral_by_id(&scope.0).await {
                 Ok(peripheral) => peripheral,
@@ -1295,8 +1307,15 @@ impl RadioBoundary for BtleplugRadio {
                 Some(characteristic) => characteristic,
                 None => continue,
             };
-            let _ = peripheral.unsubscribe(&characteristic).await;
+            if let Err(error) = peripheral.unsubscribe(&characteristic).await {
+                failures.push(RadioCloseFailure::new(scope.clone(), error.to_string()));
+            }
         }
+        *self.close_failures.lock().expect("close failures") = failures;
+    }
+
+    fn take_close_failures(&self) -> Vec<RadioCloseFailure> {
+        std::mem::take(&mut self.close_failures.lock().expect("close failures"))
     }
 
     async fn next_event(&self) -> Option<RadioEvent> {

@@ -268,9 +268,18 @@ pub trait RadioBoundary: Send + Sync + 'static {
     fn next_event(&self) -> impl Future<Output = Option<RadioEvent>> + Send + '_;
     /// Teardown hook: abort live notification forwarders and best-effort
     /// release OS-side CCCDs. Wired into central shutdown so no live OS
-    /// subscription outlives the central. Infallible by contract:
-    /// teardown reports facts, never new failures.
+    /// subscription outlives the central. Infallible by contract: per-scope
+    /// release failures are retained, never raised — the host drains them
+    /// via [`RadioBoundary::take_close_failures`] into the shutdown report.
     fn close(&self) -> impl Future<Output = ()> + Send + '_;
+    /// Drain close-time release failures retained by the last [`RadioBoundary::close`]
+    /// (F14 receipts). Each entry names one characteristic scope whose native
+    /// release did not complete; an empty vec means every scope released (or
+    /// none was live). Radios without per-scope release accounting keep the
+    /// default empty vec.
+    fn take_close_failures(&self) -> Vec<RadioCloseFailure> {
+        Vec::new()
+    }
 }
 
 /// Test ingress bounds (F07): data (notifications) and control
@@ -302,6 +311,26 @@ pub type InstanceKey = (String, String, u64, String, u64);
 /// One descriptor address: characteristic instance plus descriptor
 /// uuid/occurrence.
 pub type DescriptorKey = (InstanceKey, String, u64);
+
+/// One characteristic scope whose close-time native release did not
+/// complete (F14 receipt). The scope stays live at the radio: a failed
+/// unsubscribe leaves the OS enablement behind, and the shutdown report
+/// must say so instead of claiming a clean release.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RadioCloseFailure {
+    /// Characteristic instance address (peer, service, occurrences).
+    pub scope: InstanceKey,
+    /// Radio-side reason (fault detail or OS error string).
+    pub detail: String,
+}
+
+impl RadioCloseFailure {
+    /// Record one unreleased scope with its reason.
+    #[must_use]
+    pub fn new(scope: InstanceKey, detail: String) -> Self {
+        Self { scope, detail }
+    }
+}
 
 struct FakeInner {
     faults: HashMap<FaultOp, VecDeque<String>>,
@@ -337,6 +366,10 @@ struct FakeInner {
     /// char occ) with the CCCD currently enabled. [`FakeRadio::close`]
     /// releases all of them, modelling OS-side unsubscribe at teardown.
     live: HashSet<InstanceKey>,
+    /// Close-time release failures retained by the last [`FakeRadio::close`]
+    /// (F14 receipts): one entry per scope whose unsubscribe fault fired.
+    /// Drained by `take_close_failures`; failed scopes stay in `live`.
+    close_failures: Vec<RadioCloseFailure>,
     /// Observed characteristic writes: addressed instance plus the
     /// response mode the adapter selected (`true` = with-response).
     writes: Vec<(InstanceKey, bool)>,
@@ -377,6 +410,7 @@ impl FakeRadio {
                 mtu: HashMap::new(),
                 values: HashMap::new(),
                 live: HashSet::new(),
+                close_failures: Vec::new(),
                 writes: Vec::new(),
                 descriptor_reads: Vec::new(),
                 descriptor_writes: Vec::new(),
@@ -936,7 +970,42 @@ impl RadioBoundary for FakeRadio {
 
     async fn close(&self) {
         self.record("close");
-        self.state.lock().expect("fake radio state").live.clear();
+        // Deterministic scope order: HashSet iteration is unstable, and
+        // close receipts must list scopes in a repeatable sequence.
+        let mut scopes: Vec<InstanceKey> = self
+            .state
+            .lock()
+            .expect("fake radio state")
+            .live
+            .iter()
+            .cloned()
+            .collect();
+        scopes.sort();
+        let mut state = self.state.lock().expect("fake radio state");
+        state.close_failures.clear();
+        for scope in scopes {
+            // One queued `Unsubscribe` fault fails one scope's release (F14
+            // injection): the failure is retained as a receipt and the
+            // scope stays live, like an OS enablement that survived.
+            let fault = state
+                .faults
+                .get_mut(&FaultOp::Unsubscribe)
+                .and_then(VecDeque::pop_front);
+            match fault {
+                Some(detail) => {
+                    state
+                        .close_failures
+                        .push(RadioCloseFailure::new(scope, detail));
+                }
+                None => {
+                    state.live.remove(&scope);
+                }
+            }
+        }
+    }
+
+    fn take_close_failures(&self) -> Vec<RadioCloseFailure> {
+        std::mem::take(&mut self.state.lock().expect("fake radio state").close_failures)
     }
 }
 
@@ -992,6 +1061,45 @@ mod tests {
             radio.live_subscription_count(),
             1,
             "per-instance disable releases only its own CCCD"
+        );
+    }
+
+    #[tokio::test]
+    async fn f14_close_retains_per_scope_receipts() {
+        let radio = FakeRadio::new();
+        radio
+            .set_notifications("peer-1", "svc", 0, "char", 0, true, 0)
+            .await
+            .expect("enable 0");
+        radio
+            .set_notifications("peer-1", "svc", 0, "char", 1, true, 0)
+            .await
+            .expect("enable 1");
+        // One queued unsubscribe fault fails exactly one scope's release.
+        radio.fail_next(FaultOp::Unsubscribe, "os stuck");
+        radio.close().await;
+        let failures = radio.take_close_failures();
+        assert_eq!(failures.len(), 1, "exactly one close receipt");
+        assert_eq!(
+            failures[0].scope,
+            (
+                "peer-1".to_owned(),
+                "svc".to_owned(),
+                0,
+                "char".to_owned(),
+                0
+            ),
+            "failed scope is the first in deterministic order"
+        );
+        assert_eq!(failures[0].detail, "os stuck");
+        assert_eq!(
+            radio.live_subscription_count(),
+            1,
+            "failed scope stays live like a surviving OS enablement"
+        );
+        assert!(
+            radio.take_close_failures().is_empty(),
+            "receipts drain exactly once"
         );
     }
 

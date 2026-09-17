@@ -26,7 +26,7 @@
 //! any effect is staged, so a rejected request leaves state unchanged and
 //! emits no radio effect (OWN-02, stale-path vectors).
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 
 use crate::contracts::{
     AttachmentTuple, BleErrorCode, BleErrorDomain, Contender, ContenderKind, CoreError, Generation,
@@ -1592,6 +1592,13 @@ pub struct Central {
     typed_effects: Vec<CentralEffect>,
     destroy_record: Option<CleanupRecord>,
     disconnect_failures: Vec<CleanupRecord>,
+    /// Shutdown-reaped terminal kinds (F15 tombstones): ops acked and reaped
+    /// by the shutdown destroy drive while their drivers might still await
+    /// a radio outcome. A late contender for a tombstoned op suppresses like
+    /// any terminal duplicate, and the winner stays observable via
+    /// `shutdown_terminal_kind` — so racing callers report
+    /// cancelled/destroyed, never `argument.invalid`.
+    shutdown_tombstones: HashMap<OperationId, OperationTerminalKind>,
     sharing_supported: bool,
     security_available: bool,
     restoration_authority: bool,
@@ -1684,6 +1691,7 @@ impl Central {
             typed_effects: Vec::new(),
             destroy_record: None,
             disconnect_failures: Vec::new(),
+            shutdown_tombstones: HashMap::new(),
             sharing_supported: false,
             security_available: false,
             restoration_authority: true,
@@ -2605,6 +2613,43 @@ impl Central {
         self.connections[index].state = next;
         self.invalidate_peer_hubs(peer_key);
         Ok(())
+    }
+
+    /// Shutdown link release (F14): move a live connection to `Disconnected`
+    /// without a lease check — the owner is being destroyed, so no lease
+    /// holder remains to authorize the transition. Mirrors the public
+    /// `disconnect` + `note_link_released` sequence (`Connected`/`Connecting`
+    /// via `Disconnecting`); an already-`Disconnecting` link just confirms.
+    /// The radio disconnect itself is the host's job; call this only after
+    /// the radio confirms release.
+    pub fn shutdown_release_link(&mut self, peer_key: &str) -> Result<(), CoreError> {
+        let index = self.connection_position(peer_key).ok_or_else(|| {
+            err(
+                BleErrorCode::ConnectionNotFound,
+                BleErrorDomain::Connection,
+                "connection.link-released",
+            )
+        })?;
+        if self.connections[index].state == ConnectionState::Disconnecting {
+            return self.note_link_released(peer_key);
+        }
+        let next = step_connection(self.connections[index].state, ConnectionEvent::Disconnect)?;
+        self.connections[index].state = next;
+        self.note_link_released(peer_key)
+    }
+
+    /// Shutdown link-release failure (F14): mark the connection
+    /// `Disconnecting` (release requested, unconfirmed — the link is no
+    /// longer healthy) and retain the failure for the final record. The
+    /// transition is best-effort: an already-terminal link just records.
+    pub fn note_shutdown_disconnect_failed(&mut self, peer_key: &str, code: BleErrorCode) {
+        if let Some(index) = self.connection_position(peer_key)
+            && let Ok(next) =
+                step_connection(self.connections[index].state, ConnectionEvent::Disconnect)
+        {
+            self.connections[index].state = next;
+        }
+        let _ = self.report_disconnect_failure(peer_key, code);
     }
 
     /// Link loss races explicit disconnect (CLN-02): exactly one terminal
@@ -3663,7 +3708,7 @@ impl Central {
             kind: effective,
             valid,
         };
-        let outcome = self.kernel.handle(
+        let outcome = match self.kernel.handle(
             KernelInput::Complete {
                 operation_id: id.clone(),
                 generation,
@@ -3671,7 +3716,22 @@ impl Central {
             },
             now,
             out,
-        )?;
+        ) {
+            Ok(outcome) => outcome,
+            Err(error)
+                if error.code() == BleErrorCode::ArgumentInvalid
+                    && self.shutdown_tombstones.contains_key(id) =>
+            {
+                // Late contender for a shutdown-reaped op: the terminal was
+                // acked and reaped by the shutdown destroy drive while this
+                // driver still awaited its radio. Suppress like any terminal
+                // duplicate — the winner stays observable via
+                // `shutdown_terminal_kind` — so the caller reports the
+                // genuine terminal, never `argument.invalid`.
+                HandleOutcome::DuplicateSuppressed
+            }
+            Err(error) => return Err(error),
+        };
         match outcome {
             HandleOutcome::Settled { receipt } => {
                 let settled = outcome_from_receipt(&receipt, stale_path);
@@ -4768,6 +4828,17 @@ impl Central {
                 failures.push(failure.clone());
             }
         }
+        // F15: merge retained release failures exactly like `destroy_record`,
+        // so the legacy record never claims clean while a reported release
+        // failed. Draining here is harmless for incremental hosts: release
+        // records only exist after the host reported them.
+        for retained in self.kernel.drain_cleanup(usize::MAX) {
+            if retained.state() == CleanupState::ReleaseFailed {
+                for failure in retained.failures().iter() {
+                    failures.push(failure.clone());
+                }
+            }
+        }
         let state = if failures.is_empty() {
             CleanupState::Released
         } else {
@@ -4816,6 +4887,39 @@ impl Central {
     /// Report a successful host release for a terminal operation. The
     /// kernel reaps the entry and central prunes its operation tracking,
     /// so aggregate admission reclaims (M1 liveness).
+    /// Report the host release for a terminal op during shutdown (F15):
+    /// like `report_release_success`, but the terminal kind is kept as a
+    /// tombstone for drivers still awaiting their radio outcome. Late
+    /// contenders suppress as duplicates and observe the memoized winner
+    /// via `shutdown_terminal_kind`. Refuses non-terminal ops: only settled
+    /// work may be acked.
+    pub fn report_shutdown_release(
+        &mut self,
+        id: &OperationId,
+    ) -> Result<OperationTerminalKind, CoreError> {
+        let kind = match self.operation_state(id) {
+            Some(OpStateView::Terminal(kind)) => kind,
+            _ => {
+                return Err(err(
+                    BleErrorCode::LifecycleInvalidState,
+                    BleErrorDomain::Core,
+                    "central.release-not-terminal",
+                ));
+            }
+        };
+        self.report_release_success(id)?;
+        self.shutdown_tombstones.insert(id.clone(), kind);
+        Ok(kind)
+    }
+
+    /// Terminal kind of a shutdown-reaped op (F15 tombstone), if the op was
+    /// acked by the shutdown destroy drive. Lets racing callers that settle
+    /// after the reap observe the winning terminal.
+    #[must_use]
+    pub fn shutdown_terminal_kind(&self, id: &OperationId) -> Option<OperationTerminalKind> {
+        self.shutdown_tombstones.get(id).copied()
+    }
+
     pub fn report_release_success(&mut self, id: &OperationId) -> Result<(), CoreError> {
         match self.kernel.handle(
             KernelInput::ReleaseReport {
@@ -7758,6 +7862,121 @@ mod tests {
         let (_peer2, _path2) = live_characteristic(&mut central2, &mut out2)?;
         let mut small = EffectBatch::new(8);
         let _record2 = central2.destroy(&mut small)?;
+        Ok(())
+    }
+
+    #[test]
+    fn f15_legacy_destroy_recycles_small_batches_and_merges_releases() -> Result<(), CoreError> {
+        use crate::contracts::ContenderKind;
+        use crate::ownership::EffectBatch;
+
+        // 12 queued subscribes with an 8-effect batch: 4 settlements per
+        // pass, so the recycle line runs several passes before the final
+        // non-truncated pass. A single-pass fixture would never stress it.
+        let config = CentralConfig::new(16, 16, 128, 32, 64, 256, KernelConfig::default())?;
+        let mut central = Central::new(fixture_attachment()?, Generation::new("g1")?, config)?;
+        let mut out = batch();
+        let (_peer, path) = live_characteristic(&mut central, &mut out)?;
+        for id in central.terminal_operation_ids() {
+            central.report_release_success(&id)?;
+        }
+        let _ = central.drain_typed_effects();
+        let _ = out.drain();
+        for i in 0..12u64 {
+            let consumer = format!("legacy-{i}");
+            let _op =
+                central.subscribe(path, "error", 4, 512, &consumer, 5000, 3000 + i, &mut out)?;
+            let _ = out.drain();
+            let _ = central.drain_typed_effects();
+        }
+        check(
+            central.live_operation_ids().len() == 12,
+            "12 queued ops before legacy destroy",
+        );
+        let mut small = EffectBatch::new(8);
+        let record = central.destroy(&mut small)?;
+        check(
+            record.state() == CleanupState::Released,
+            "clean multi-pass legacy destroy releases",
+        );
+        check(
+            central.live_operation_ids().is_empty(),
+            "no live ops remain after legacy destroy",
+        );
+        // A reported release failure reaches the legacy record through the
+        // same drain_cleanup merge `destroy_record` uses.
+        let mut central2 = fixture_central()?;
+        let mut out2 = batch();
+        let (_peer2, path2) = live_characteristic(&mut central2, &mut out2)?;
+        for id in central2.terminal_operation_ids() {
+            central2.report_release_success(&id)?;
+        }
+        let _ = central2.drain_typed_effects();
+        let _ = out2.drain();
+        let op =
+            central2.subscribe(path2, "error", 4, 512, "legacy-fail", 5000, 4000, &mut out2)?;
+        let _ = out2.drain();
+        central2.dispatch_op(&op, &mut out2)?;
+        let _ = out2.drain();
+        let mut settle_out = EffectBatch::new(64);
+        central2.settle_op(&op, ContenderKind::Success, true, 0, 4001, &mut settle_out)?;
+        let _ = settle_out.drain();
+        central2.report_release_failure(&op, BleErrorCode::PlatformFailure)?;
+        let mut small2 = EffectBatch::new(8);
+        let record2 = central2.destroy(&mut small2)?;
+        check(
+            record2.state() == CleanupState::ReleaseFailed,
+            "legacy record preserves the reported release failure",
+        );
+        check(
+            record2.failures().len() == 1,
+            "exactly one failure preserved",
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn f15_shutdown_release_keeps_winner_for_late_settlers() -> Result<(), CoreError> {
+        use crate::contracts::ContenderKind;
+        use crate::ownership::EffectBatch;
+
+        let mut central = fixture_central()?;
+        let mut out = batch();
+        let (_peer, path) = live_characteristic(&mut central, &mut out)?;
+        let op = central.start_read(path, 5000, 2000, &mut out)?;
+        central.dispatch_op(&op, &mut out)?;
+        central.cancel_op(&op, 2001, &mut out)?;
+        let kind = central.report_shutdown_release(&op)?;
+        check(
+            central.live_operation_ids().is_empty(),
+            "shutdown ack reaps the op",
+        );
+        // A late contender after the reap suppresses as a duplicate — never
+        // `argument.invalid` — and the winner stays observable.
+        let mut late = EffectBatch::new(64);
+        let outcome = central.settle_op(&op, ContenderKind::Success, true, 1, 2002, &mut late)?;
+        check(
+            matches!(outcome, CompletionOutcome::DuplicateSuppressed { .. }),
+            "late settle suppresses as duplicate",
+        );
+        check(
+            central.shutdown_terminal_kind(&op) == Some(kind),
+            "tombstone keeps the genuine winner",
+        );
+        // Unknown ops without a tombstone still fail closed.
+        let mut other = batch();
+        let missing = central.start_read(path, 5000, 2010, &mut other)?;
+        central.dispatch_op(&missing, &mut other)?;
+        central.cancel_op(&missing, 2011, &mut other)?;
+        central.report_release_success(&missing)?;
+        check(
+            central.shutdown_terminal_kind(&missing).is_none(),
+            "plain acks leave no tombstone",
+        );
+        let mut late2 = EffectBatch::new(64);
+        let refused =
+            central.settle_op(&missing, ContenderKind::Success, true, 2, 2012, &mut late2);
+        check(refused.is_err(), "untombstoned reap still fails closed");
         Ok(())
     }
 

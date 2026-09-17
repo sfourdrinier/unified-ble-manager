@@ -29,9 +29,11 @@ use ubm_core::contracts::{
     BackendInstanceId, BleErrorCode, BleErrorDomain, ContenderKind, Generation, OperationId,
     OperationTerminalKind,
 };
-use ubm_core::ownership::EffectBatch;
+use ubm_core::ownership::{CleanupRecord, EffectBatch};
 
-use crate::boundary::{InstanceKey, PeerSnapshot, RadioBoundary, RadioEvent, ScanFilterSpec};
+use crate::boundary::{
+    InstanceKey, PeerSnapshot, RadioBoundary, RadioCloseFailure, RadioEvent, ScanFilterSpec,
+};
 use crate::errors::DesktopError;
 
 /// Effect batch capacity per core call (matches the core's own default).
@@ -147,7 +149,9 @@ fn terminal_to_error(kind: OperationTerminalKind, operation: &'static str) -> De
 fn terminal_kind_of(core: &Central, op: &OperationId) -> Option<OperationTerminalKind> {
     match core.operation_state(op) {
         Some(ubm_core::ownership::OpStateView::Terminal(kind)) => Some(kind),
-        _ => None,
+        // Shutdown-reaped while this driver still awaited its radio: the
+        // tombstone keeps the genuine winner observable (F15).
+        _ => core.shutdown_terminal_kind(op),
     }
 }
 
@@ -388,6 +392,29 @@ pub struct DiscoveredPath {
     pub descriptor_occurrence: Option<u64>,
     /// GATT property bits (`GATT_PROP_*`, characteristic level only).
     pub properties: u8,
+}
+
+/// Authoritative per-central shutdown outcome (F14/F15): the final
+/// cleanup record plus every close-time release failure. A clean shutdown
+/// reports `Released` with no radio failures; anything else names exactly
+/// what did not release.
+#[derive(Debug)]
+pub struct ShutdownReport {
+    /// Final core cleanup record, taken only after every queued op settled,
+    /// every dispatched remainder was answered, and every terminal release
+    /// was acknowledged (F15). `Released` only when disconnect failures and
+    /// retained release failures are all absent; otherwise `ReleaseFailed`
+    /// with every failure preserved. `Err` only when the destroy drive
+    /// itself failed (a core invariant violation), never for radio faults —
+    /// those land in the record or in `radio_close_failures`.
+    pub record: Result<CleanupRecord, DesktopError>,
+    /// Close-time native release failures drained from the radio (F14
+    /// receipts): one entry per characteristic scope whose unsubscribe did
+    /// not complete. Empty means every live scope released.
+    pub radio_close_failures: Vec<RadioCloseFailure>,
+    /// Incremental destroy passes executed (F15): more than one when the
+    /// destroy workload exceeds one effect batch.
+    pub destroy_steps: usize,
 }
 
 /// Typed notification poll outcome (F17): empty-but-live is distinct from
@@ -2376,21 +2403,28 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         Ok(outcome)
     }
 
-    /// Per-central shutdown (F14): close this attachment's admission first
-    /// so no new work races cleanup, stop the owned scan, release owned
-    /// radio subscriptions through the boundary teardown hook, join the
-    /// event loop so nothing races teardown, and destroy the core owner.
-    /// Idempotent. Other centrals keep working and new centrals can open;
-    /// process-executor shutdown is a separate explicit process-owner step
+    /// Per-central shutdown (F14/F15): close this attachment's admission
+    /// first so no new work races cleanup, stop the owned scan, release
+    /// owned radio subscriptions through the boundary teardown hook, release
+    /// owned OS links with per-link receipts, join the event loop so nothing
+    /// races teardown, then drive incremental destruction to acknowledged
+    /// completion and return the authoritative report. Idempotent. Other
+    /// centrals keep working and new centrals can open; process-executor
+    /// shutdown is a separate explicit process-owner step
     /// ([`crate::executor::shutdown_desktop_runtime`]), never implied here.
-    pub async fn shutdown(&self) {
+    pub async fn shutdown(&self) -> ShutdownReport {
         // F14: admission closes before any cleanup starts, so a racing
         // starter cannot slip work in behind the scan stop.
         self.inner.shut_down.store(true, Ordering::SeqCst);
         let _ = self.stop_scan().await;
         // M3: abort forwarders and best-effort release OS-side CCCDs so no
-        // live subscription outlives the central.
+        // live subscription outlives the central. Per-scope release failures
+        // are drained as receipts (F14), never swallowed.
         self.inner.boundary.close().await;
+        let radio_close_failures = self.inner.boundary.take_close_failures();
+        // F14: release owned OS links with per-link receipts before the
+        // owner is destroyed.
+        self.release_owned_links().await;
         // F03: cancel remaining in-flight ops so late radio work cannot
         // resurrect after teardown — queued releases now, dispatched
         // observes the abort as the winning outcome when its radio finishes.
@@ -2406,9 +2440,149 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         if let Some(worker) = worker {
             let _ = worker.await;
         }
-        let mut core = self.inner.core.lock().await;
-        let mut out = batch();
-        let _ = core.destroy(&mut out);
+        // F15: the final record is taken only after every destroy pass
+        // executed, every dispatched remainder was answered, and every
+        // terminal release was acknowledged — never from the legacy
+        // unacknowledged `destroy()`.
+        let (record, destroy_steps) = self.drive_destroy().await;
+        ShutdownReport {
+            record,
+            radio_close_failures,
+            destroy_steps,
+        }
+    }
+
+    /// Release every owned OS link (F14): each peer whose core connection is
+    /// still live gets one bounded radio disconnect. Success confirms link
+    /// release (`Disconnected`); a radio failure or deadline marks the link
+    /// `Disconnecting` and records a disconnect failure, so the final
+    /// destroy record names it (receipt) instead of claiming a clean
+    /// release. Skips peers that already released, so repeat shutdowns stay
+    /// quiet and idempotent.
+    async fn release_owned_links(&self) {
+        let peers: Vec<(String, String)> = {
+            let peers = self.inner.peers.lock().await;
+            peers
+                .iter()
+                .map(|(peer_id, peer_key)| (peer_id.clone(), peer_key.clone()))
+                .collect()
+        };
+        for (peer_id, peer_key) in peers {
+            let live = {
+                let core = self.inner.core.lock().await;
+                matches!(
+                    core.connection_state(&peer_key),
+                    Some(
+                        ubm_core::central::ConnectionState::Connected
+                            | ubm_core::central::ConnectionState::Connecting
+                            | ubm_core::central::ConnectionState::Disconnecting
+                    )
+                )
+            };
+            if !live {
+                continue;
+            }
+            let outcome = tokio::time::timeout(
+                DISCONNECT_COMPLETION_TIMEOUT,
+                self.inner.boundary.disconnect(&peer_id),
+            )
+            .await;
+            // Late radio completions must not resurrect the link: drop local
+            // subscription routing for this peer now.
+            self.drop_peer_subscriptions(&peer_id).await;
+            let mut core = self.inner.core.lock().await;
+            match outcome {
+                Ok(Ok(())) => {
+                    let _ = core.shutdown_release_link(&peer_key);
+                }
+                Ok(Err(error)) => {
+                    core.note_shutdown_disconnect_failed(&peer_key, error.code());
+                }
+                Err(_) => {
+                    core.note_shutdown_disconnect_failed(
+                        &peer_key,
+                        BleErrorCode::OperationTimedOut,
+                    );
+                }
+            }
+        }
+    }
+
+    /// Drive incremental destruction to acknowledged completion (F15): one
+    /// `destroy_step` pass per loop iteration, executing each pass's effects,
+    /// settling dispatched remainders as destroyed, and acknowledging every
+    /// terminal release — the host protocol `destroy_step` requires. The
+    /// final record comes from `destroy_record`, which refuses while work
+    /// pends and merges disconnect and release failures. Bounded: the pass
+    /// budget is one per live op plus a final pass, so a wedged kernel
+    /// surfaces `central.destroy.truncated` instead of looping forever.
+    async fn drive_destroy(&self) -> (Result<CleanupRecord, DesktopError>, usize) {
+        let mut steps = 0usize;
+        let mut budget = {
+            let core = self.inner.core.lock().await;
+            core.live_operation_ids().len().saturating_add(2)
+        };
+        loop {
+            let progress = {
+                let mut core = self.inner.core.lock().await;
+                let mut out = batch();
+                let progress = match core.destroy_step(&mut out) {
+                    Ok(progress) => progress,
+                    Err(error) => return (Err(DesktopError::from(error)), steps),
+                };
+                // Execute the pass outside radio work: shutdown emits logical
+                // StatePublish/CleanupRelease effects (OS releases already ran
+                // above), so draining executes the batch.
+                let _ = out.drain();
+                // Settle dispatched remainders as destroyed before acking.
+                for id in core.live_operation_ids() {
+                    if core.operation_state(&id)
+                        == Some(ubm_core::ownership::OpStateView::Dispatched)
+                    {
+                        let mut settle_out = batch();
+                        let _ = core.settle_op(
+                            &id,
+                            ContenderKind::Destroy,
+                            true,
+                            0,
+                            now_ms(),
+                            &mut settle_out,
+                        );
+                        let _ = settle_out.drain();
+                    }
+                }
+                // Ack every terminal: the host did release its tracking for
+                // each (OS CCCDs via `close`, OS links via
+                // `release_owned_links`), so success is the truthful report.
+                // Shutdown acks keep tombstones: racing callers that settle
+                // after the reap still observe their winning terminal.
+                for id in core.terminal_operation_ids() {
+                    let _ = core.report_shutdown_release(&id);
+                }
+                recycle_observations(&mut core);
+                progress
+            };
+            steps += 1;
+            if progress.done {
+                break;
+            }
+            if budget == 0 {
+                return (
+                    Err(contract_error(
+                        BleErrorCode::StreamQuota,
+                        BleErrorDomain::Stream,
+                        "central.destroy.truncated",
+                    )),
+                    steps,
+                );
+            }
+            budget -= 1;
+        }
+        let record = {
+            let mut core = self.inner.core.lock().await;
+            core.destroy_record().map_err(DesktopError::from)
+        };
+        (record, steps)
     }
 
     /// Compose the effective single-write maximum for one peer: the ATT
@@ -5658,6 +5832,205 @@ mod adapter_tests {
             .await
             .expect("admission remains");
         assert_eq!(value, vec![0x42]);
+    }
+
+    #[tokio::test]
+    async fn f15_shutdown_drives_incremental_destroy_with_pending_work() {
+        use ubm_core::ownership::CleanupState;
+
+        let central = open().await;
+        central.boundary().block_op(FaultOp::Connect);
+        // 16 dispatched connects pile up behind the blocked radio with
+        // generous deadlines, so shutdown — not a timeout — must settle
+        // every remainder and ack every terminal. (One gate waiter releases
+        // per unblock, so the stuck callers resolve via their own deadline
+        // arms after shutdown settles their ops.)
+        let mut pending = Vec::new();
+        for index in 0..16u32 {
+            let task = central.clone();
+            let peer = format!("peer-f15-{index}");
+            let lease = format!("lease-{index}");
+            pending.push(tokio::spawn(async move {
+                task.connect(&peer, &lease, 5000).await
+            }));
+        }
+        for _ in 0..200 {
+            if central.with_core(|core| core.live_operation_count()).await == 16 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert_eq!(
+            central.with_core(|core| core.live_operation_count()).await,
+            16,
+            "all 16 connects dispatched behind the blocked radio"
+        );
+        let report = tokio::time::timeout(Duration::from_secs(10), central.shutdown())
+            .await
+            .expect("shutdown completes while callers are stuck");
+        let record = report.record.expect("destroy drive succeeds");
+        assert_eq!(
+            record.state(),
+            CleanupState::Released,
+            "cancelled-then-acked workload releases clean"
+        );
+        assert!(record.failures().is_empty(), "no failures preserved");
+        assert!(
+            report.destroy_steps >= 2,
+            "settle+ack workload needs more than the single idle pass"
+        );
+        assert!(
+            report.radio_close_failures.is_empty(),
+            "no subscriptions were live, so no close receipts"
+        );
+        assert_eq!(
+            central.with_core(|core| core.live_operation_count()).await,
+            0,
+            "no live ops remain after acknowledged destroy"
+        );
+        // The stuck callers resolve via their deadline arms: their ops
+        // already settled under shutdown, so they observe the winning
+        // terminal (cancelled family) instead of hanging or succeeding late.
+        for task in pending {
+            let outcome = tokio::time::timeout(Duration::from_secs(15), task)
+                .await
+                .expect("caller resolves via deadline")
+                .expect("task joins");
+            assert!(outcome.is_err(), "stuck connect fails, never succeeds late");
+        }
+        // Admission stays closed after the acknowledged shutdown.
+        let error = central
+            .connect("peer-late", "lease-late", 5000)
+            .await
+            .expect_err("no connects after shutdown");
+        assert_eq!(error.code_str(), "adapter.unavailable");
+    }
+
+    #[tokio::test]
+    async fn f15_shutdown_record_preserves_disconnect_failure() {
+        use ubm_core::ownership::CleanupState;
+
+        let central = open().await;
+        ready_peer(&central, "peer-f15d", vec![hrm_service()]).await;
+        central
+            .boundary()
+            .fail_next(FaultOp::Disconnect, "os refused");
+        let report = central.shutdown().await;
+        assert!(
+            central
+                .boundary()
+                .calls()
+                .contains(&"disconnect".to_owned()),
+            "shutdown releases the owned link"
+        );
+        let record = report.record.expect("destroy drive succeeds");
+        assert_eq!(
+            record.state(),
+            CleanupState::ReleaseFailed,
+            "refused disconnect flips the final record"
+        );
+        assert_eq!(
+            record.failures().len(),
+            1,
+            "the refused disconnect is preserved exactly once"
+        );
+        let peer_key = central
+            .peer_key_for("peer-f15d")
+            .await
+            .expect("peer still known");
+        assert_eq!(
+            central
+                .with_core(|core| core.connection_state(&peer_key))
+                .await,
+            Some(ConnectionState::Disconnecting),
+            "failed release leaves the link Disconnecting, never silently Connected"
+        );
+    }
+
+    #[tokio::test]
+    async fn f14_shutdown_releases_owned_link() {
+        use ubm_core::ownership::CleanupState;
+
+        let central = open().await;
+        ready_peer(&central, "peer-f14l", vec![hrm_service()]).await;
+        let report = central.shutdown().await;
+        assert!(
+            central
+                .boundary()
+                .calls()
+                .contains(&"disconnect".to_owned()),
+            "shutdown releases the owned OS link"
+        );
+        let peer_key = central
+            .peer_key_for("peer-f14l")
+            .await
+            .expect("peer still known");
+        assert_eq!(
+            central
+                .with_core(|core| core.connection_state(&peer_key))
+                .await,
+            Some(ConnectionState::Disconnected),
+            "released link confirms Disconnected in the core"
+        );
+        let record = report.record.expect("destroy drive succeeds");
+        assert_eq!(record.state(), CleanupState::Released);
+        assert!(report.radio_close_failures.is_empty());
+        // Idempotent: a second shutdown re-reports clean without new radio work.
+        let disconnects = central
+            .boundary()
+            .calls()
+            .iter()
+            .filter(|call| *call == "disconnect")
+            .count();
+        let again = central.shutdown().await;
+        assert_eq!(
+            central
+                .boundary()
+                .calls()
+                .iter()
+                .filter(|call| *call == "disconnect")
+                .count(),
+            disconnects,
+            "repeat shutdown issues no new disconnects"
+        );
+        assert_eq!(
+            again.record.expect("second drive succeeds").state(),
+            CleanupState::Released
+        );
+    }
+
+    #[tokio::test]
+    async fn f14_shutdown_surfaces_close_failures() {
+        use ubm_core::ownership::CleanupState;
+
+        let central = open().await;
+        ready_peer(&central, "peer-f14c", vec![hrm_service()]).await;
+        let selector = hrm_selector(0);
+        central
+            .subscribe("peer-f14c", &selector, "consumer-c", 5000)
+            .await
+            .expect("subscribe");
+        central
+            .boundary()
+            .fail_next(FaultOp::Unsubscribe, "os stuck");
+        let report = central.shutdown().await;
+        assert_eq!(
+            report.radio_close_failures.len(),
+            1,
+            "exactly one close receipt"
+        );
+        assert_eq!(report.radio_close_failures[0].detail, "os stuck");
+        assert_eq!(report.radio_close_failures[0].scope.0, "peer-f14c");
+        assert_eq!(
+            central.boundary().live_subscription_count(),
+            1,
+            "failed scope stays live at the radio"
+        );
+        // The core-tracked cleanup still succeeded: the radio failure is
+        // reported alongside in the same report, neither hidden inside the
+        // core record nor conflated with it.
+        let record = report.record.expect("destroy drive succeeds");
+        assert_eq!(record.state(), CleanupState::Released);
     }
 }
 

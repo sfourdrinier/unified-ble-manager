@@ -26,7 +26,7 @@ use ubm_core::contracts::{BleErrorCode, BleErrorDomain, CoreError, OperationId};
 use ubm_desktop::{
     BtleplugRadio, CompletionOutcome, DesktopCentral, DesktopError, DiscoveredPath, FakeRadio,
     FaultOp, ManufacturerData, PathSelector, PeerSnapshot, PropertyFlags, RadioBoundary,
-    RadioEvent, ScanFilterSpec, ServiceData, ServiceSnapshot,
+    RadioCloseFailure, RadioEvent, ScanFilterSpec, ServiceData, ServiceSnapshot,
 };
 
 /// Typed dispatch failure carrying a frozen C-UBM identity. [`DesktopError`]
@@ -399,6 +399,13 @@ impl RadioBoundary for DispatchRadio {
         match self {
             Self::Radio(radio) => radio.close().await,
             Self::Synthetic(radio) => radio.close().await,
+        }
+    }
+
+    fn take_close_failures(&self) -> Vec<RadioCloseFailure> {
+        match self {
+            Self::Radio(radio) => radio.take_close_failures(),
+            Self::Synthetic(radio) => radio.take_close_failures(),
         }
     }
 }

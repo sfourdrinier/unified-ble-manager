@@ -37,4 +37,93 @@ describe('Android Rust cdylib packaging (UBM 5.0 HOST-ANDROID)', () => {
     expect(buildGradle).toContain('packed-consumer context')
     expect(buildGradle).toContain('no committed prebuilts')
   })
+
+  // F20: the Gradle input graph must cover the cdylib crate plus its
+  // TRANSITIVE path dependencies (from the manifests, not from memory), the
+  // workspace manifest + lockfile + toolchain pin, and the build script
+  // itself — so a core-only edit invalidates the staged .so. A full
+  // Gradle rebuild-identity run needs SDK+NDK (host-gated); this pins the
+  // graph structurally: removing `ubm-core/src` from the inputs, or adding
+  // a path-dep without declaring it, fails here.
+  test('Gradle inputs cover the transitive Rust path-dependency graph', () => {
+    const jniDir = path.join(root, 'bindings', 'jni')
+    // Transitive path-deps from the manifests (single-line `{ path = ... }`
+    // form, as written in this repo).
+    const transitive = new Map() // crate dir (repo-relative) -> manifest path
+    const visit = manifestPath => {
+      const manifest = fs.readFileSync(manifestPath, 'utf8')
+      const dir = path.dirname(manifestPath)
+      const depPattern = /^\s*[A-Za-z0-9_-]+\s*=\s*\{[^}\n]*path\s*=\s*"([^"]+)"/gm
+      for (const match of manifest.matchAll(depPattern)) {
+        const depDir = path.normalize(path.join(dir, match[1]))
+        const key = path.relative(root, depDir)
+        if (!transitive.has(key)) {
+          transitive.set(key, path.join(depDir, 'Cargo.toml'))
+          visit(path.join(depDir, 'Cargo.toml'))
+        }
+      }
+    }
+    visit(path.join(jniDir, 'Cargo.toml'))
+    expect([...transitive.keys()].sort()).toEqual(['crates/ubm-core', 'crates/ubm-fake-radio'])
+
+    // Declared Gradle inputs: resolve `projectDir`-relative `../...` refs
+    // plus the two hoisted variables.
+    const buildGradle = fs.readFileSync(path.join(root, 'android/build.gradle'), 'utf8')
+    const listBlock = name => {
+      const match = buildGradle.match(new RegExp(`def ${name} = \\[([\\s\\S]*?)\\]`))
+      expect(match).not.toBeNull()
+      return match[1]
+    }
+    const resolveRef = ref => {
+      if (ref === 'ubmRustSrcDir') return 'bindings/jni/src'
+      if (ref === 'ubmRustManifest') return 'bindings/jni/Cargo.toml'
+      const inline = ref.match(/resolve\("([^"]+)"\)/)
+      expect(inline).not.toBeNull()
+      return path.normalize(path.join('android', inline[1]))
+    }
+    const declaredDirs = new Set(
+      listBlock('ubmRustInputDirs')
+        .split('\n')
+        .map(line => line.trim().replace(/,$/, ''))
+        .filter(line => line.length > 0 && !line.startsWith('//'))
+        .map(resolveRef)
+    )
+    const declaredFiles = new Set(
+      listBlock('ubmRustInputFiles')
+        .split('\n')
+        .map(line => line.trim().replace(/,$/, ''))
+        .filter(line => line.length > 0 && !line.startsWith('//'))
+        .map(resolveRef)
+    )
+    // The crate itself plus every transitive path-dep contributes its `src`
+    // tree and its manifest.
+    const expectedDirs = ['bindings/jni/src', ...[...transitive.keys()].map(key => `${key}/src`)]
+    const expectedFiles = [
+      'bindings/jni/Cargo.toml',
+      ...[...transitive.keys()].map(key => `${key}/Cargo.toml`),
+      'Cargo.toml',
+      'Cargo.lock',
+      'rust-toolchain.toml',
+    ]
+    for (const dir of expectedDirs) {
+      expect([...declaredDirs]).toContain(dir)
+    }
+    for (const file of expectedFiles) {
+      expect([...declaredFiles]).toContain(file)
+    }
+    // Every declared input must exist on disk: the Gradle guards
+    // (`isDirectory`/`isFile`) silently skip missing paths, so a typo
+    // would drop graph coverage without failing the build.
+    for (const dir of declaredDirs) {
+      expect(fs.statSync(path.join(root, dir)).isDirectory()).toBe(true)
+    }
+    for (const file of declaredFiles) {
+      expect(fs.statSync(path.join(root, file)).isFile()).toBe(true)
+    }
+    // The build script itself is an input (a script fix rebuilds).
+    expect(buildGradle).toContain('inputs.file(ubmRustScript)')
+    const scriptDef = buildGradle.match(/def ubmRustScript = file\("([^"]+)"\)/)
+    expect(scriptDef).not.toBeNull()
+    expect(fs.existsSync(path.join(root, 'android', scriptDef[1]))).toBe(true)
+  })
 })

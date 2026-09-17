@@ -21,8 +21,8 @@ pub mod executor;
 
 pub use boundary::{
     CharacteristicSnapshot, DescriptorKey, DescriptorSnapshot, FakeRadio, FaultOp, InstanceKey,
-    ManufacturerData, PeerSnapshot, PropertyFlags, RadioBoundary, RadioEvent, ScanFilterSpec,
-    ServiceData, ServiceSnapshot,
+    ManufacturerData, PeerSnapshot, PropertyFlags, RadioBoundary, RadioCloseFailure, RadioEvent,
+    ScanFilterSpec, ServiceData, ServiceSnapshot,
 };
 pub use btleplug_backend::BtleplugRadio;
 pub use capabilities::{
@@ -30,7 +30,7 @@ pub use capabilities::{
 };
 pub use central::{
     ConnectionHandle, DesktopCentral, DiscoveredPath, DiscoveryReport, NotificationPoll,
-    ScanSession,
+    ScanSession, ShutdownReport,
 };
 pub use errors::DesktopError;
 pub use ubm_core::central::{CompletionOutcome, PathSelector};
