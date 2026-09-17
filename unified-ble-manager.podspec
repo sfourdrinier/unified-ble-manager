@@ -83,10 +83,17 @@ Pod::Spec.new do |s|
       'bindings/uniffi/generated/swift/ubm_echoFFI.h',
       'bindings/uniffi/generated/swift/ubm_echoFFI.modulemap'
     ]
-    # s.xcconfig (unset above) merges with pod_target_xcconfig at build
-    # time without clobbering the React Native branch assignments.
-    s.xcconfig = {
+    # ubm_echo.swift compiles in the POD target, so SWIFT_INCLUDE_PATHS
+    # (which exposes the ubm_echoFFI modulemap defining RustBuffer and
+    # friends) must be set here — s.xcconfig reaches only the consumer
+    # target and leaves `canImport(ubm_echoFFI)` false at pod compile
+    # time. Pod::Specification has no getters: read-modify-write via
+    # to_hash, the same pattern React Native's
+    # install_modules_dependencies uses, so neither the helper branch
+    # nor the legacy branch assignments are clobbered.
+    ubm_pod_xcconfig = s.to_hash['pod_target_xcconfig'] || {}
+    s.pod_target_xcconfig = ubm_pod_xcconfig.merge(
       'SWIFT_INCLUDE_PATHS' => '$(PODS_TARGET_SRCROOT)/bindings/uniffi/generated/swift'
-    }
+    )
   end
 end

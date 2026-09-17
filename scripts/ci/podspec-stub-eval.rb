@@ -27,6 +27,14 @@ module Pod
       @attrs = {}
     end
 
+    # Pod::Specification has no getters; the podspec (like React Native's
+    # install_modules_dependencies) reads state back through to_hash for
+    # read-modify-write. method_missing would answer nil here and break
+    # that pattern, so to_hash is explicit.
+    def to_hash
+      @attrs.dup
+    end
+
     def method_missing(name, *args)
       key = name.to_s
       if key.end_with?('=')

@@ -88,13 +88,26 @@ function checkPodspecSelection() {
       fail(`5.x podspec preserve_paths is missing ${selected}`)
     }
   }
+  // ubm_echo.swift compiles in the POD target: SWIFT_INCLUDE_PATHS must
+  // be on pod_target_xcconfig (s.xcconfig reaches only the consumer
+  // target and left canImport(ubm_echoFFI) false at pod compile time).
+  // The merge must preserve the branch assignments, not clobber them.
+  const podXcconfig = lane.pod_target_xcconfig
   if (
-    lane.xcconfig === null ||
-    typeof lane.xcconfig !== 'object' ||
-    typeof lane.xcconfig.SWIFT_INCLUDE_PATHS !== 'string' ||
-    !lane.xcconfig.SWIFT_INCLUDE_PATHS.includes('bindings/uniffi/generated/swift')
+    podXcconfig === null ||
+    typeof podXcconfig !== 'object' ||
+    typeof podXcconfig.SWIFT_INCLUDE_PATHS !== 'string' ||
+    !podXcconfig.SWIFT_INCLUDE_PATHS.includes('bindings/uniffi/generated/swift')
   ) {
-    fail('5.x podspec must put the FFI modulemap on SWIFT_INCLUDE_PATHS')
+    fail('5.x podspec must put the FFI modulemap on pod_target_xcconfig SWIFT_INCLUDE_PATHS')
+  }
+  for (const preserved of ['HEADER_SEARCH_PATHS', 'OTHER_CPLUSPLUSFLAGS', 'CLANG_CXX_LANGUAGE_STANDARD']) {
+    if (typeof podXcconfig[preserved] !== 'string') {
+      fail(`5.x podspec must preserve pod_target_xcconfig ${preserved} when merging SWIFT_INCLUDE_PATHS`)
+    }
+  }
+  if (lane.xcconfig !== undefined && lane.xcconfig !== null) {
+    fail('5.x podspec must not duplicate SWIFT_INCLUDE_PATHS onto consumer s.xcconfig')
   }
   // 4.x outcome, executed (stubbed package.json): Owned-only, no Rust.
   const legacyDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ubm-podspec-4x-'))
