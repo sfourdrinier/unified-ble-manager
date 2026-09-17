@@ -491,7 +491,8 @@ export const PROGRAM_GATT_DISCOVERY: StagedProgram = {
   provenance:
     'Pins transcribe path resolution (ambiguous/not-found), stale-handle after services-changed, ' +
     'rediscovery re-arming, and driver-side read echo (read.taken survives invalidation while the ' +
-    'core path stays stale); captured from a staged run of this program.',
+    'core path stays stale); captured from a staged run of this program. ' +
+    'F04: rediscovery counts current-generation paths only (revive, no stale accumulation).',
   steps: [
     ADVERTISE_P,
     step('{"step":"link.connect","peer":"p","lease":"lease-a","op":"conn0"}'),
@@ -504,7 +505,7 @@ export const PROGRAM_GATT_DISCOVERY: StagedProgram = {
     step('{"step":"gatt.read","op":"r0","path":1,"value":"aa","settle":"success"}'),
     step('{"step":"gatt.require-rediscovery","peer":"p"}'),
     discoverDupDb('lease-a'),
-    step('{"step":"gatt.read","op":"r1","path":5,"value":"bb","settle":"success"}'),
+    step('{"step":"gatt.read","op":"r1","path":3,"value":"bb","settle":"success"}'),
     // Post-invalidation echo pin: `services-changed` stales the database,
     // yet `read.taken` still mirrors the scripted `bb` — the echo never
     // transits the core.
@@ -582,13 +583,17 @@ export const PROGRAM_GATT_DISCOVERY: StagedProgram = {
       staged: 0,
       effects: ''
     }),
+    // F04 contract update (justified): rediscovery revives identical-selector
+    // stale slots and reports current-generation paths only — the old pin
+    // (paths:8 = 4 stale + 4 new, first_path:4) transcribed the pre-fix
+    // stale accumulation F04 removed.
     norm({
       step: 'gatt.discover',
       ok: true,
       peer_key: 'platform-guid:peer-1',
       services: 1,
-      paths: 8,
-      first_path: 4,
+      paths: 4,
+      first_path: 0,
       staged: 0,
       effects: ''
     }),

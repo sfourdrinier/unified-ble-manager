@@ -168,7 +168,7 @@ describe('U7 staged race/fault vectors (synthetic radio, real core)', () => {
           `"uuid":"${SVC}","occurrence":0,"characteristics":[{` +
           `"uuid":"${CHR}","occurrence":0,"properties":"read+write+notify"}]}]}`
       ),
-      run('{"step":"gatt.read","op":"r1","path":4,"value":"bb","settle":"success"}')
+      run('{"step":"gatt.read","op":"r1","path":1,"value":"bb","settle":"success"}')
     ])
     expect(JSON.parse(changed)).toMatchObject({ database: 'changed' })
     expect(JSON.parse(reread)).toMatchObject({
@@ -176,7 +176,12 @@ describe('U7 staged race/fault vectors (synthetic radio, real core)', () => {
       error: 'gatt.stale-handle|gatt|staged-gatt-read|path.generation'
     })
     expect(JSON.parse(rediscover)).toMatchObject({ database: 'undiscovered' })
-    expect(JSON.parse(again)).toMatchObject({ paths: 5, first_path: 3 })
+    // F04 contract update (justified): rediscovery revives identical-selector
+    // stale slots and reports current-generation paths only — the old pin
+    // (paths:5 = 3 stale + 2 new, first_path:3) transcribed the pre-fix
+    // stale accumulation F04 removed. The re-discovered chr (occurrence 0)
+    // revives slot 1, so the follow-on read addresses path:1, not path:4.
+    expect(JSON.parse(again)).toMatchObject({ paths: 2, first_path: 0 })
     expect(JSON.parse(read)).toMatchObject({ bytes: 'bb', terminal: 'succeeded' })
     driver.close()
   })
