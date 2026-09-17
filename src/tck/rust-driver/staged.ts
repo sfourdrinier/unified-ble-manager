@@ -221,7 +221,9 @@ export const PROGRAM_SCAN_FAIRNESS: StagedProgram = {
   scenarioId: 'scan.fairness-abort-deadline-and-final-cleanup',
   provenance:
     'Pins transcribe cancel-before-dispatch receipts (commit not-dispatched) and expiry-sweep ' +
-    'settlement; captured from a staged run of this program.',
+    'settlement; captured from a staged run of this program. The sweep pin includes the ' +
+    'scan.timeout session transition: a sweep that settles a Starting scan op fails the ' +
+    'session (Starting->Failed) so no ownerless live session survives.',
   steps: [
     step('{"step":"scan.start","op":"s0","owner":"owner-a","timeout_ms":5000,"now":100}'),
     step('{"step":"op.cancel","op":"s0"}'),
@@ -281,7 +283,7 @@ export const PROGRAM_SCAN_FAIRNESS: StagedProgram = {
       settled: 1,
       truncated: false,
       staged: 2,
-      effects: ''
+      effects: 'central.scan-settled#@op1:scan.timeout'
     })
   ]
 }

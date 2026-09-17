@@ -65,6 +65,10 @@ const canonicalAdrDocuments = [
   'docs/ADR/2026-08-4.0-public-contract-reset.md'
 ]
 
+// Lane-scoped working decision records: pinned deliberately, but NOT
+// canonical product ADRs (no accepted-baseline structure required).
+const laneAdrDocuments = ['docs/ADR/2026-09-5.0-pr210-review-cutover-scope.md']
+
 const deletedTransitionalAdrs = [
   'docs/ADR/2026-07-4.0-host-and-bytes.md',
   'docs/ADR/2026-07-4.0-electron-macos-corebluetooth.md',
@@ -225,10 +229,12 @@ describe('consumer documentation matches the published package', () => {
     expect(document).toContain('UNIFIED_BLE_4.0_IMPLEMENTATION_PLAN.md')
   })
 
-  test('the eight canonical ADRs replace every transitional ADR path', () => {
+  test('the eight canonical ADRs plus registered lane ADRs cover every ADR path', () => {
     const adrDirectory = path.join(root, 'docs/ADR')
     const actual = fs.readdirSync(adrDirectory).sort()
-    const expected = canonicalAdrDocuments.map(relativePath => path.basename(relativePath)).sort()
+    const expected = [...canonicalAdrDocuments, ...laneAdrDocuments]
+      .map(relativePath => path.basename(relativePath))
+      .sort()
 
     expect(actual).toEqual(expected)
     deletedTransitionalAdrs.forEach(relativePath => {
@@ -244,6 +250,13 @@ describe('consumer documentation matches the published package', () => {
     expect(document).toContain('## Decision')
     expect(document).toContain('## Consequences and gates')
     expect(document).toContain('## Rejected alternatives')
+  })
+
+  test.each(laneAdrDocuments)('%s is a lane-scoped working record', relativePath => {
+    const document = read(relativePath)
+
+    expect(document.split('\n')[0]).toBe(`<!-- ${relativePath} -->`)
+    expect(document).toContain('**Status:** Draft')
   })
 
   test('canonical ADRs record the accepted binary, restoration, and scope decisions', () => {

@@ -50,6 +50,7 @@ describe('Unified Android native protocol structure', () => {
       'protocol/UnifiedBleProtocolControlModule.java',
       'protocol/UnifiedBleProtocolJsiBinding.java',
       'protocol/generated/NativeProtocolV2Schema.kt',
+      'radio/DeferredCoreShadow.kt',
       'radio/GattCentralWire.kt',
       'radio/GattOccurrenceResolver.kt',
       'radio/OwnedAndroidGattRadio.kt',

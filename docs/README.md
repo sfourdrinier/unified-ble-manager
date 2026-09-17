@@ -66,6 +66,7 @@ and coding agents should read [`../AGENTS.md`](../AGENTS.md) first.
 | [`ADR/2026-07-4.0-public-api.md`](ADR/2026-07-4.0-public-api.md) | ADR: clean-baseline public API, no 3.x emulation | Current |
 | [`ADR/2026-07-4.0-rn-restoration-bootstrap.md`](ADR/2026-07-4.0-rn-restoration-bootstrap.md) | ADR: native-owned Apple restoration bootstrap before JS manager construction | Current |
 | [`ADR/2026-08-4.0-public-contract-reset.md`](ADR/2026-08-4.0-public-contract-reset.md) | ADR: stable application boundary; supersedes RC1 provisional names | Current |
+| [`ADR/2026-09-5.0-pr210-review-cutover-scope.md`](ADR/2026-09-5.0-pr210-review-cutover-scope.md) | ADR (Draft, 5.0 lane): PR210 review cutover + distribution scope (D1/D2) | Current |
 
 ## Platform support, evidence, and performance
 
