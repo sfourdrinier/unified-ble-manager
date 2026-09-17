@@ -513,6 +513,9 @@ jobs:
     runs-on: ubuntu-latest
     env:
       NODE_OPTIONS: --max-old-space-size=8192
+      # D2(iii): CI builds the Rust cdylib from source explicitly; packed
+      # consumers get prebuilts by default without this variable.
+      UBM_NATIVE_BUILD: source
     steps:
       - name: Checkout
         uses: actions/checkout@v7.0.0
@@ -573,6 +576,9 @@ jobs:
       NODE_OPTIONS: --max-old-space-size=8192
       # JetifyTransform of react-android AAR OOM'd on default heap (see CI logs).
       GRADLE_OPTS: -Dorg.gradle.jvmargs=-Xmx6g\ -XX:MaxMetaspaceSize=1g\ -Dfile.encoding=UTF-8
+      # D2(iii): CI builds the Rust cdylib from source explicitly; packed
+      # consumers get prebuilts by default without this variable.
+      UBM_NATIVE_BUILD: source
     steps:
       - name: Checkout
         uses: actions/checkout@v7.0.0

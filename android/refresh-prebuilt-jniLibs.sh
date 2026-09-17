@@ -75,6 +75,10 @@ for abi in $ABIS; do
   else
     echo "refresh-prebuilt-jniLibs: WARN readelf absent — machine check skipped" >&2
   fi
+  # D2(iii): hard 16 KB gate — a maintainer refresh must never ship a
+  # 4 KB-aligned library (Android 15+ install-time requirement).
+  sh "$ROOT/android/check-elf-16k-pages.sh" --so "$BUILT" --abi "$abi" \
+    || fail "16 KB page-size check failed for $abi (see output above)"
   mkdir -p "$OUT/$abi"
   cp -f "$BUILT" "$OUT/$abi/$LIB"
   sha="$(sha256sum "$OUT/$abi/$LIB" | cut -d' ' -f1)"

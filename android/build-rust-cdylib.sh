@@ -66,8 +66,15 @@ else
   done
   [ -n "$NDK" ] || fail "no NDK found (tried ANDROID_NDK_HOME='${ANDROID_NDK_HOME:-}' and $SDK/ndk/27.1.12297006 + 27.0.12077973). Install NDK 27.x via: sdkmanager 'ndk;27.1.12297006'"
 fi
-LINKER="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/${TARGET}${MINSDK}-clang"
-[ -x "$LINKER" ] || fail "NDK linker missing: $LINKER (NDK=$NDK). Reinstall NDK 27.x via: sdkmanager 'ndk;27.1.12297006'"
+# NDK prebuilt dir is host-tagged: contributors build on Linux AND macOS.
+HOST_TAG=""
+case "$(uname -s)" in
+  Linux) HOST_TAG="linux-x86_64" ;;
+  Darwin) HOST_TAG="darwin-x86_64" ;;
+  *) fail "unsupported build host '$(uname -s)' (Linux and macOS only)" ;;
+esac
+LINKER="$NDK/toolchains/llvm/prebuilt/$HOST_TAG/bin/${TARGET}${MINSDK}-clang"
+[ -x "$LINKER" ] || fail "NDK linker missing: $LINKER (NDK=$NDK host=$HOST_TAG). Reinstall NDK 27.x via: sdkmanager 'ndk;27.1.12297006'"
 
 command -v rustup >/dev/null 2>&1 || fail "rustup not on PATH (needed to pin toolchain $PINNED_TOOLCHAIN)"
 rustup target list --installed --toolchain "$PINNED_TOOLCHAIN" 2>/dev/null | grep -q "^${TARGET}$" \
@@ -80,8 +87,13 @@ PROFILE_FLAG=""
 
 # Linker env var is per-target (uppercase, hyphens to underscores).
 LINKER_ENV="$(printf 'CARGO_TARGET_%s_LINKER' "$(printf '%s' "$TARGET" | tr '[:lower:]-' '[:upper:]_')")"
+# Android 15+ requires 16 KB ELF alignment on every shipped .so (the CMake
+# native lib already links -z max-page-size=16384 via AGP): pass the same
+# flags through the clang linker driver so the cdylib is 16K-clean by
+# construction. Appended ahead of any caller RUSTFLAGS, never replacing.
 # shellcheck disable=SC2086
-env "${LINKER_ENV}=${LINKER}" \
+UBM_RUSTFLAGS="-C link-arg=-Wl,-z,max-page-size=16384 -C link-arg=-Wl,-z,common-page-size=16384${RUSTFLAGS:+ $RUSTFLAGS}"
+env "${LINKER_ENV}=${LINKER}" RUSTFLAGS="$UBM_RUSTFLAGS" \
   rustup run "$PINNED_TOOLCHAIN" cargo build -p "$CRATE" --locked --target "$TARGET" $PROFILE_FLAG \
   || fail "cargo build failed for $TARGET/$PROFILE (pinned $PINNED_TOOLCHAIN). See the cargo output above; common causes: stale Cargo.lock (run cargo update -p $CRATE on the host target first) or a missing NDK platform for minsdk $MINSDK."
 
