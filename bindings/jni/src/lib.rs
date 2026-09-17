@@ -515,6 +515,84 @@ pub extern "system" fn Java_com_ubm_echo_EchoBridge_nativeStagedDrainLog<'caller
         .resolve_with::<ThrowEchoAndDefault, _>(|| "staged-drain-log")
 }
 
+/// First-class BLE scan start (mirrors UniFFI U8): real kernel scan
+/// admission (synthetic radio) through non-echo core. Returns the start
+/// observation JSON (with the core-minted `op_id`). Decimal-string times.
+/// Unknown/closed handles throw `lifecycle.destroyed`.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_ubm_echo_EchoBridge_nativeBleScanStart<'caller>(
+    mut unowned_env: EnvUnowned<'caller>,
+    _class: JClass<'caller>,
+    handle: jlong,
+    owner: JString<'caller>,
+    timeout_ms: JString<'caller>,
+    now_ms: JString<'caller>,
+) -> jstring {
+    unowned_env
+        .with_env(|env| -> BridgeResult<jstring> {
+            const OP: &str = "ble-scan-start";
+            let session = lookup_session(handle, OP)?;
+            let owner = read_string(env, &owner, OP)?;
+            let timeout_ms = read_string(env, &timeout_ms, OP)?;
+            let now_ms = read_string(env, &now_ms, OP)?;
+            let out = {
+                let mut core = lock_session(&session, OP)?;
+                core.ble_scan_start(&owner, &timeout_ms, &now_ms, OP)
+                    .map_err(BridgeError::echo)?
+            };
+            publish_string(env, out, OP)
+        })
+        .resolve_with::<ThrowEchoAndDefault, _>(|| "ble-scan-start")
+}
+
+/// First-class BLE scan take: drains the session observation log (FIFO,
+/// newline-joined JSON lines; empty string when quiet).
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_ubm_echo_EchoBridge_nativeBleScanTake<'caller>(
+    mut unowned_env: EnvUnowned<'caller>,
+    _class: JClass<'caller>,
+    handle: jlong,
+) -> jstring {
+    unowned_env
+        .with_env(|env| -> BridgeResult<jstring> {
+            const OP: &str = "ble-scan-take";
+            let session = lookup_session(handle, OP)?;
+            let out = {
+                let mut core = lock_session(&session, OP)?;
+                core.ble_scan_take(OP).map_err(BridgeError::echo)?
+            };
+            publish_string(env, out, OP)
+        })
+        .resolve_with::<ThrowEchoAndDefault, _>(|| "ble-scan-take")
+}
+
+/// First-class BLE scan stop: stops the core scan admitted under `op_id`
+/// at host time; returns the stop observation JSON. Unknown op ids throw
+/// `argument.invalid`; a stop is never fabricated.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_ubm_echo_EchoBridge_nativeBleScanStop<'caller>(
+    mut unowned_env: EnvUnowned<'caller>,
+    _class: JClass<'caller>,
+    handle: jlong,
+    op_id: JString<'caller>,
+    now_ms: JString<'caller>,
+) -> jstring {
+    unowned_env
+        .with_env(|env| -> BridgeResult<jstring> {
+            const OP: &str = "ble-scan-stop";
+            let session = lookup_session(handle, OP)?;
+            let op_id = read_string(env, &op_id, OP)?;
+            let now_ms = read_string(env, &now_ms, OP)?;
+            let out = {
+                let mut core = lock_session(&session, OP)?;
+                core.ble_scan_stop(&op_id, &now_ms, OP)
+                    .map_err(BridgeError::echo)?
+            };
+            publish_string(env, out, OP)
+        })
+        .resolve_with::<ThrowEchoAndDefault, _>(|| "ble-scan-stop")
+}
+
 /// Observes the staged batch accounting as JSON. Unknown/closed handles
 /// throw `lifecycle.destroyed`.
 #[unsafe(no_mangle)]

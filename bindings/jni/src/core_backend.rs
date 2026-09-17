@@ -15,7 +15,7 @@
 //! transitions through it. BLE transitions beyond the driven slice reject
 //! loudly with contract identities; nothing unimplemented passes silently.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -204,6 +204,21 @@ pub(crate) fn central_error(core: CoreError, operation: &'static str) -> EchoErr
     )
 }
 
+/// Extracts the core-minted scan op id (`"op_id":"..."`) from a staged
+/// scan-start observation. `None` when the line carries none (mirrors
+/// UniFFI U8).
+fn extract_op_id(observation: &str) -> Option<String> {
+    const KEY: &str = "\"op_id\":\"";
+    let start = observation.find(KEY)? + KEY.len();
+    let end = observation[start..].find('"')?;
+    let op_id = &observation[start..start + end];
+    if op_id.is_empty() {
+        None
+    } else {
+        Some(op_id.to_owned())
+    }
+}
+
 /// Parses a host-supplied monotonic millisecond reading over the
 /// single-owned decimal-string mapping (DATA-02); anything else is
 /// `bytes.invalid`, exactly like the counter path.
@@ -235,6 +250,11 @@ pub struct CoreSession {
     staged: StagedDriver,
     pub(crate) gatt_queue: GattQueue,
     pub(crate) gatt_resets: u64,
+    /// First-class BLE scan slice (mirrors UniFFI U8): staged op-name
+    /// sequence plus the core-minted op id to staged-name map for stop
+    /// attribution.
+    scan_seq: u64,
+    scan_names: HashMap<String, String>,
 }
 
 impl CoreSession {
@@ -251,6 +271,8 @@ impl CoreSession {
                 staged: StagedDriver::open().map_err(|_| construct_failed("echo-session.open"))?,
                 gatt_queue: VecDeque::new(),
                 gatt_resets: 0,
+                scan_seq: 0,
+                scan_names: HashMap::new(),
             }),
             Err(_) => Err(EchoError::new(
                 "protocol.incompatible",
@@ -440,6 +462,68 @@ impl CoreSession {
         ))
     }
 
+    /// First-class BLE scan start (mirrors UniFFI U8): real kernel scan
+    /// admission (synthetic radio) through non-echo core. Carries the start
+    /// observation JSON (with the core-minted `op_id`) in the returned
+    /// string. Decimal-string times (DATA-02); the core owns the deadline.
+    pub fn ble_scan_start(
+        &mut self,
+        owner: &str,
+        timeout_ms_decimal: &str,
+        now_ms_decimal: &str,
+        operation: &'static str,
+    ) -> Result<String, EchoError> {
+        self.check_usable(operation)?;
+        let timeout_ms = parse_monotonic_ms(timeout_ms_decimal, operation)?;
+        let now_ms = parse_monotonic_ms(now_ms_decimal, operation)?;
+        let name = format!("android-scan-{}", self.scan_seq);
+        self.scan_seq = self.scan_seq.saturating_add(1);
+        let mut escaped_owner = String::new();
+        json_escape_into(&mut escaped_owner, owner);
+        let line = format!(
+            "{{\"step\":\"scan.start\",\"op\":\"{name}\",\"owner\":\"{escaped_owner}\",\"duplicate\":\"first\",\"merge\":\"none\",\"timeout_ms\":{timeout_ms},\"services\":[],\"now\":{now_ms}}}"
+        );
+        let observation = self.staged.run_step(&line);
+        if let Some(op_id) = extract_op_id(&observation) {
+            self.scan_names.insert(op_id, name);
+        }
+        Ok(observation)
+    }
+
+    /// First-class BLE scan take: drains the session observation log
+    /// (FIFO, newline-joined JSON lines; empty string when quiet).
+    /// Delivery pacing only — admission/overflow stay core-owned.
+    pub fn ble_scan_take(&mut self, operation: &'static str) -> Result<String, EchoError> {
+        self.check_usable(operation)?;
+        Ok(self.staged.drain_log().join("\n"))
+    }
+
+    /// First-class BLE scan stop: stops the core scan admitted under
+    /// `op_id` (the `"op_id"` from [`CoreSession::ble_scan_start`]) at host
+    /// time and returns the stop observation JSON. An unknown op id fails
+    /// closed (`argument.invalid`); a stop is never fabricated.
+    pub fn ble_scan_stop(
+        &mut self,
+        op_id: &str,
+        now_ms_decimal: &str,
+        operation: &'static str,
+    ) -> Result<String, EchoError> {
+        self.check_usable(operation)?;
+        let now_ms = parse_monotonic_ms(now_ms_decimal, operation)?;
+        let Some(name) = self.scan_names.remove(op_id) else {
+            return Err(EchoError::new(
+                "argument.invalid",
+                "core",
+                operation,
+                "unknown-scan-op",
+            ));
+        };
+        let line = format!(
+            "{{\"step\":\"scan.platform\",\"op\":\"{name}\",\"event\":\"stop\",\"now\":{now_ms}}}"
+        );
+        Ok(self.staged.run_step(&line))
+    }
+
     fn check_usable_staged(&self, operation: &'static str) -> Result<(), StagedError> {
         if self.destroyed {
             return Err(StagedError::new(
@@ -517,6 +601,28 @@ mod tests {
         assert_eq!(
             err.wire_message(),
             "lifecycle.destroyed|core|staged-step|session-closed"
+        );
+    }
+
+    #[test]
+    fn scan_slice_roundtrip() {
+        let mut core = CoreSession::open(REV).unwrap();
+        let start = core
+            .ble_scan_start("owner-a", "8000", "1000", "ble-scan")
+            .unwrap();
+        assert!(start.contains("\"ok\":true"), "{start}");
+        let op_id = extract_op_id(&start).expect("start carries op_id");
+        let take = core.ble_scan_take("ble-scan").unwrap();
+        assert!(!take.is_empty(), "take drains the log");
+        let stop = core.ble_scan_stop(&op_id, "2000", "ble-scan").unwrap();
+        assert!(stop.contains("\"ok\":true"), "{stop}");
+        let unknown = core.ble_scan_stop("no-such-op", "3000", "ble-scan");
+        let err = unknown.expect_err("unknown op id must reject");
+        assert_eq!((err.code, err.domain), ("argument.invalid", "core"));
+        core.close();
+        assert!(
+            core.ble_scan_take("ble-scan").is_err(),
+            "closed session rejects"
         );
     }
 
