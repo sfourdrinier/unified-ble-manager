@@ -689,6 +689,10 @@ impl RadioBoundary for FakeRadio {
         if let Some(detail) = self.take_fault(FaultOp::StartScan) {
             return Err(DesktopError::scan_start_failed(detail));
         }
+        // Contention gate (mirrors connect/disconnect): tests close it via
+        // `block_op(FaultOp::StartScan)` to hold a scan start in flight for
+        // stop-while-starting and shutdown-during-start races.
+        self.gate(FaultOp::StartScan).await;
         self.state.lock().expect("fake radio state").scan_active = true;
         Ok(())
     }
@@ -698,6 +702,9 @@ impl RadioBoundary for FakeRadio {
         if let Some(detail) = self.take_fault(FaultOp::StopScan) {
             return Err(DesktopError::scan_stop_failed(detail));
         }
+        // Contention gate (mirrors connect/disconnect): tests close it via
+        // `block_op(FaultOp::StopScan)` to hold a scan stop in flight.
+        self.gate(FaultOp::StopScan).await;
         self.state.lock().expect("fake radio state").scan_active = false;
         Ok(())
     }

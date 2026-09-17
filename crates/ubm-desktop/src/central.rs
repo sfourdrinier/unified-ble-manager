@@ -194,6 +194,30 @@ fn release_duplicate(
     kind
 }
 
+/// Retain one scan's completed ticket (R15, first writer wins): call with
+/// the core lock held, between settlement and release, so no racing
+/// duplicate can observe a settled-but-unretained op. Sync: no await
+/// between settle and retain, and none inside.
+fn retain_completed_scan<B>(inner: &Inner<B>, op: &OperationId, kind: OperationTerminalKind) {
+    inner
+        .completed_scans
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .entry(op.clone())
+        .or_insert(kind);
+}
+
+/// Retained terminal for a released scan op, if this central completed that
+/// scan. Sync; safe under the core lock.
+fn completed_scan_kind<B>(inner: &Inner<B>, op: &OperationId) -> Option<OperationTerminalKind> {
+    inner
+        .completed_scans
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(op)
+        .copied()
+}
+
 /// Per-op detached cleanup for a dropped caller future (F03).
 #[derive(Debug)]
 enum DropCleanup {
@@ -461,6 +485,14 @@ struct Inner<B> {
     core: Mutex<Central>,
     boundary: B,
     scan: Mutex<Option<ActiveScan>>,
+    /// Completed scan tickets retained after release (R15): the kernel op
+    /// is reaped by the release report, so a late duplicate completion for
+    /// that scan would otherwise miss the forgotten op and report
+    /// `argument.invalid` instead of suppressing onto the genuine settled
+    /// terminal. First writer wins, matching the kernel's first-settlement
+    /// rule. A plain mutex: held for a bare map insert/get with no await,
+    /// never across radio work.
+    completed_scans: std::sync::Mutex<HashMap<OperationId, OperationTerminalKind>>,
     /// Radio peripheral id -> core session peer key.
     peers: Mutex<HashMap<String, String>>,
     /// Per-instance subscription routing: (peer, service uuid, service
@@ -565,6 +597,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             core: Mutex::new(core),
             boundary,
             scan: Mutex::new(None),
+            completed_scans: std::sync::Mutex::new(HashMap::new()),
             peers: Mutex::new(HashMap::new()),
             subscriptions: Mutex::new(HashMap::new()),
             epochs: Mutex::new(HashMap::new()),
@@ -736,6 +769,15 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             core.start_scan(&request, None, owner, now_ms(), &mut out)
                 .map_err(DesktopError::from)?
         };
+        // R14b/R14c: own the scan slot BEFORE the radio await (core
+        // arbitration already refused a second live scan, so this marker is
+        // ours). A concurrent stop/shutdown then observes — and wins over —
+        // this in-flight start instead of seeing an empty slot, returning,
+        // and letting us activate behind it.
+        {
+            let mut scan = self.inner.scan.lock().await;
+            *scan = Some(ActiveScan { id: id.clone() });
+        }
         // F03: the OS start races the op deadline; a stuck start becomes a
         // start failure, not a hang.
         let start_outcome = tokio::time::timeout(
@@ -752,6 +794,15 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             )),
         };
         if let Err(error) = start_outcome {
+            // Drop our marker when we still own it: a winning stop took it
+            // already (leave a newer scan's marker alone — it owns the
+            // radio now). Our radio never started, so no orphan stop.
+            {
+                let mut scan = self.inner.scan.lock().await;
+                if scan.as_ref().is_some_and(|active| active.id == id) {
+                    *scan = None;
+                }
+            }
             let mut core = self.inner.core.lock().await;
             let mut out = batch();
             let _ = core.note_scan_platform(
@@ -763,20 +814,92 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             let _ = out.drain();
             let _ = core.settle_op(&id, ContenderKind::Failure, true, 0, now_ms(), &mut out);
             let _ = out.drain();
+            // R15: retain the completed ticket between settlement and
+            // release (first writer wins), then release.
+            if let Some(kind) = terminal_kind_of(&core, &id) {
+                retain_completed_scan(&self.inner, &id, kind);
+            }
             report_terminal_release(&mut core, &id, true, None);
             recycle_observations(&mut core);
             return Err(error);
         }
-        {
-            let mut core = self.inner.core.lock().await;
-            // `start_scan` returning `Ok` is the OS acknowledgement.
-            let _ = core.platform_scan_started(&id);
+        // R14b/R14c: re-verify ownership after the radio await. A concurrent
+        // stop or shutdown may have taken our marker while the OS call was
+        // in flight, or admission may have closed under us. Only the
+        // verified owner may activate the session; the loser compensates
+        // (never activates) so stop/shutdown win deterministically.
+        let owned = self
+            .inner
+            .scan
+            .lock()
+            .await
+            .as_ref()
+            .is_some_and(|active| active.id == id);
+        if owned && !self.inner.shut_down.load(Ordering::SeqCst) {
+            {
+                let mut core = self.inner.core.lock().await;
+                // `start_scan` returning `Ok` is the OS acknowledgement.
+                let _ = core.platform_scan_started(&id);
+            }
+            // Re-check under the slot lock: a stop that took the marker
+            // between activation and return still owns the outcome — fall
+            // through to compensation so no live handle escapes a won stop.
+            let still_owned = self
+                .inner
+                .scan
+                .lock()
+                .await
+                .as_ref()
+                .is_some_and(|active| active.id == id);
+            if still_owned && !self.inner.shut_down.load(Ordering::SeqCst) {
+                return Ok(ScanSession { id });
+            }
         }
-        {
+        self.compensate_lost_start(&id).await;
+        Err(DesktopError::cancelled("scan.start"))
+    }
+
+    /// Settle a scan start that lost to a concurrent stop/shutdown (R14b/R14c):
+    /// never activate, take our marker when still present (a newer scan's
+    /// marker owns the radio now and is left alone), stop the orphaned OS
+    /// scan only when no newer scan owns the radio, then drive our session
+    /// terminal without activating it. Every core step is best-effort: the
+    /// winning stop already drove — or is driving — the same transitions,
+    /// and duplicates only observe.
+    async fn compensate_lost_start(&self, id: &OperationId) {
+        // Take our marker when still present; a newer owner's marker stays.
+        // An empty slot afterwards means no newer scan owns the radio, so
+        // the orphaned OS scan (if our start took effect) is ours to stop.
+        let radio_free = {
             let mut scan = self.inner.scan.lock().await;
-            *scan = Some(ActiveScan { id: id.clone() });
+            if scan.as_ref().is_some_and(|active| active.id == *id) {
+                *scan = None;
+            }
+            scan.is_none()
+        };
+        if radio_free {
+            let _ = self.inner.boundary.stop_scan().await;
         }
-        Ok(ScanSession { id })
+        let mut core = self.inner.core.lock().await;
+        let mut out = batch();
+        let _ = core.stop_scan(id, now_ms(), &mut out);
+        let _ = out.drain();
+        let _ = core.note_scan_platform(
+            id,
+            ubm_core::central::ScanPlatformEvent::PlatformStopped,
+            now_ms(),
+            &mut out,
+        );
+        let _ = out.drain();
+        let _ = core.settle_op(id, ContenderKind::Success, true, 0, now_ms(), &mut out);
+        let _ = out.drain();
+        // R15: retain the completed ticket between settlement and release
+        // (first writer wins), then release.
+        if let Some(kind) = terminal_kind_of(&core, id) {
+            retain_completed_scan(&self.inner, id, kind);
+        }
+        report_terminal_release(&mut core, id, true, None);
+        recycle_observations(&mut core);
     }
 
     /// Stop the owned scan (idempotent): move the core session to stopping,
@@ -823,6 +946,11 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                     &mut out,
                 );
                 let _ = out.drain();
+                // R15: retain the completed ticket between settlement and
+                // release (first writer wins), then release.
+                if let Some(kind) = terminal_kind_of(&core, &active.id) {
+                    retain_completed_scan(&self.inner, &active.id, kind);
+                }
                 report_terminal_release(&mut core, &active.id, true, None);
                 recycle_observations(&mut core);
                 Ok(())
@@ -844,6 +972,11 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                     &mut out,
                 );
                 let _ = out.drain();
+                // R15: retain the completed ticket between settlement and
+                // release (first writer wins), then release.
+                if let Some(kind) = terminal_kind_of(&core, &active.id) {
+                    retain_completed_scan(&self.inner, &active.id, kind);
+                }
                 report_terminal_release(&mut core, &active.id, false, Some(error.code()));
                 recycle_observations(&mut core);
                 Err(error)
@@ -2387,9 +2520,26 @@ impl<B: RadioBoundary> DesktopCentral<B> {
     ) -> Result<ubm_core::central::CompletionOutcome, DesktopError> {
         let mut core = self.inner.core.lock().await;
         let mut out = batch();
-        let outcome = core
-            .cancel_op(operation, now_ms(), &mut out)
-            .map_err(DesktopError::from)?;
+        let outcome = match core.cancel_op(operation, now_ms(), &mut out) {
+            Ok(outcome) => outcome,
+            Err(error) if error.code() == BleErrorCode::ArgumentInvalid => {
+                // R15: the op settled and was released (reaped) before this
+                // cancel arrived — the kernel forgot it. A retained scan
+                // ticket or an F15 shutdown tombstone still names the
+                // genuine settled terminal, so suppress onto it exactly as
+                // a cancel against the still-present terminal would. Truly
+                // unknown ids keep failing closed with `argument.invalid`.
+                if completed_scan_kind(&self.inner, operation).is_some()
+                    || core.shutdown_terminal_kind(operation).is_some()
+                {
+                    let suppressed = core.suppressed_count(operation).unwrap_or(0);
+                    ubm_core::central::CompletionOutcome::DuplicateSuppressed { suppressed }
+                } else {
+                    return Err(DesktopError::from(error));
+                }
+            }
+            Err(error) => return Err(DesktopError::from(error)),
+        };
         let _ = out.drain();
         recycle_observations(&mut core);
         if let CompletionOutcome::Settled { commit, .. } = &outcome {
@@ -2397,6 +2547,13 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             // `Released` (dispatched abort) stays for the driver, which will
             // see `DuplicateSuppressed` and report after observing the win.
             if *commit == ubm_core::contracts::CommitState::NotDispatched {
+                // R15: retain a scan's completed ticket between settlement
+                // and release (first writer wins), then release.
+                if core.scan_session_state(operation).is_some()
+                    && let Some(kind) = terminal_kind_of(&core, operation)
+                {
+                    retain_completed_scan(&self.inner, operation, kind);
+                }
                 report_terminal_release(&mut core, operation, true, None);
             }
         }
@@ -2416,6 +2573,23 @@ impl<B: RadioBoundary> DesktopCentral<B> {
         // F14: admission closes before any cleanup starts, so a racing
         // starter cannot slip work in behind the scan stop.
         self.inner.shut_down.store(true, Ordering::SeqCst);
+        // R14c: cancel live scan ops by id before the slot stop. A starter
+        // admitted before admission closed may still be awaiting its radio
+        // start: its kernel op goes terminal (and released, ticket retained
+        // per R15) now, so when its radio resolves the post-await check —
+        // marker stolen by the stop below, shutdown flag set — forces it
+        // into compensation instead of activating behind cleanup.
+        // Repeating the same ids in the sweep below stays safe.
+        let racing_scans: Vec<OperationId> = {
+            let core = self.inner.core.lock().await;
+            core.live_operation_ids()
+                .into_iter()
+                .filter(|id| core.scan_session_state(id).is_some())
+                .collect()
+        };
+        for id in racing_scans {
+            let _ = self.cancel_operation(&id).await;
+        }
         let _ = self.stop_scan().await;
         // M3: abort forwarders and best-effort release OS-side CCCDs so no
         // live subscription outlives the central. Per-scope release failures
@@ -2685,8 +2859,21 @@ async fn scan_loop<B: RadioBoundary>(inner: Arc<Inner<B>>, mut stop: watch::Rece
                                 &mut out,
                             );
                             let _ = out.drain();
+                            // R15: retain the completed ticket between
+                            // settlement and release (first writer wins).
+                            if let Some(kind) = terminal_kind_of(&core, &id) {
+                                retain_completed_scan(&inner, &id, kind);
+                            }
                             report_terminal_release(&mut core, &id, true, None);
                             recycle_observations(&mut core);
+                            drop(core);
+                            // No stale owner: clear the marker when it still
+                            // names this session so no scan reads owned after
+                            // the source died (a newer scan's marker stays).
+                            let mut scan = inner.scan.lock().await;
+                            if scan.as_ref().is_some_and(|active| active.id == id) {
+                                *scan = None;
+                            }
                         }
                         break;
                     }
