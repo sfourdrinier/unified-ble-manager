@@ -80,6 +80,15 @@ command -v rustup >/dev/null 2>&1 || fail "rustup not on PATH (needed to pin too
 rustup target list --installed --toolchain "$PINNED_TOOLCHAIN" 2>/dev/null | grep -q "^${TARGET}$" \
   || fail "target $TARGET missing on toolchain $PINNED_TOOLCHAIN. Add it with: rustup target add --toolchain $PINNED_TOOLCHAIN $TARGET"
 
+# Cargo resolves its workspace (and target dir) from the CALLER's working
+# directory, but $BUILT below is $ROOT-relative: every Gradle call site
+# inherits a foreign CWD (example/android, example-expo/android, probe-app),
+# so without this cd a foreign checkout (Expo CNG's pnpm copy) builds the
+# wrong workspace and the expected cdylib is "missing after a successful
+# build". Anchor cargo at this script's own package root instead.
+[ -f "$ROOT/Cargo.toml" ] || fail "no Cargo workspace at script root $ROOT (Expo CNG/packed copy without Rust sources?)"
+cd "$ROOT" || fail "cannot cd to script root $ROOT"
+
 echo "build-rust-cdylib: abi=$ABI target=$TARGET profile=$PROFILE ndk=$NDK minsdk=$MINSDK toolchain=$PINNED_TOOLCHAIN"
 
 PROFILE_FLAG=""

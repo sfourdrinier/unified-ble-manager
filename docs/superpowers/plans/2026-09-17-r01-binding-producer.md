@@ -263,22 +263,29 @@ git commit -m "feat(probe): 5.0 RustCore emulator leg (lane only, no merge)"
 
 ### Task 7: Merge + full gates + push (push discipline applies)
 
-- [ ] **Step 1: Full jest**
+- [x] **Step 1: Full jest**
 
 Run: `pnpm test:package`
 Expected: 227+ suites green (new counts recorded in the merge message).
+Observed 2026-09-17: 228 suites / 2356 tests green. Fixes: docs index row for this plan; `NativeUnifiedBleRustCore.ts` in the artifact verifier's internal-runtime list; R01 contract updates in the two Android structure tests (3 TurboModules, +2 rustcore sources).
 
-- [ ] **Step 2: tsc + lint**
+- [x] **Step 2: tsc + lint**
 
 Run: `npx tsc --noEmit -p tsconfig.json && pnpm lint`
 Expected: exit 0.
+Observed 2026-09-17: exit 0.
 
-- [ ] **Step 3: Gradle unit tests**
+- [x] **Step 3: Gradle unit tests**
 
 Run: `cd example/android && ./gradlew :unified-ble-manager:testDebugUnitTest --no-daemon`
 Expected: BUILD SUCCESSFUL, 187/187.
+Observed 2026-09-17: BUILD SUCCESSFUL, 191/191 (includes RustCoreSessionRouterTest).
 
-- [ ] **Step 4: Merge to lane and push (ONLY when no Apple legs are in flight)**
+- [x] **Step 4: Lane CI red on Expo CNG cdylib fixed before merge**
+
+Observed 2026-09-17: lane head 4ee6a549 CI run 35275687755 failed only `Expo CNG Android build` with `expected cdylib missing after a successful build`. Root cause: Gradle runs the script with CWD=example-expo/android, cargo walked up to the outer repo workspace, artifacts landed outside the pnpm copy's target dir. Fix: `cd $ROOT` (+ Cargo.toml guard) in `android/build-rust-cdylib.sh`. Proven both directions in the exact pnpm layout (old script reproduces the CI failure, new script builds OK with JNI symbols verified).
+
+- [ ] **Step 5: Merge to lane and push (ONLY when no Apple legs are in flight)**
 
 ```bash
 git checkout 5.0.0 && git merge --no-ff r01-binding-producer -m "merge(5.0.0): R01 binding producer (lane only, no merge)" && git push origin 5.0.0
