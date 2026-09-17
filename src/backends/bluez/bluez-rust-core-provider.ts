@@ -41,7 +41,7 @@
 //     dispatch surface, and non-service filters fail closed (below).
 
 import { createRequire } from 'node:module'
-import path from 'node:path'
+import nodePath from 'node:path'
 import { contractError, BackendContractError } from '../../backend-contract/errors'
 import type { BackendAttachment, BackendAttachmentRequest, BackendEvent } from '../../backend-contract/backend'
 import type {
@@ -67,11 +67,7 @@ import type {
   HostNeutralBackendIdentity
 } from '../../backend-contract/identity'
 import type { AdapterSelection } from '../../backend-contract/identity'
-import type {
-  AdvertisementObservation,
-  OwnerScanOptions,
-  SourceTimestamp
-} from '../../backend-contract/advertisement'
+import type { AdvertisementObservation, OwnerScanOptions, SourceTimestamp } from '../../backend-contract/advertisement'
 import {
   canonicalUuid,
   capacity,
@@ -102,11 +98,7 @@ import type {
   WriteRequest,
   WriteResult
 } from '../../backend-contract/operations'
-import type {
-  CharacteristicPath,
-  DescriptorPath,
-  GattDatabase
-} from '../../backend-contract/gatt'
+import type { CharacteristicPath, DescriptorPath, GattDatabase } from '../../backend-contract/gatt'
 import type { BoundedAsyncStream } from '../../backend-contract/streams'
 import { CoreBoundedStream } from '../../core/bounded-stream'
 import {
@@ -117,10 +109,7 @@ import {
 } from '../../backend-contract/capabilities'
 import { UNIFIED_BLE_IMPLEMENTATION_VERSION } from '../../implementation-version'
 import { BLUEZ_NO_AUTHORIZATION_CONCEPT_REASON } from './bluez-dbus-contract'
-import {
-  BLUEZ_PLATFORM_ID,
-  bluezCompatibility
-} from './bluez-backend-provider'
+import { BLUEZ_PLATFORM_ID, bluezCompatibility } from './bluez-backend-provider'
 
 export const BLUEZ_RUST_CORE_BACKEND_ID = 'unified-ble:bluez-rust-core'
 export const BLUEZ_RUST_CORE_PROVIDER_ID = 'unified-ble:bluez-rust-core-provider'
@@ -297,8 +286,8 @@ function packageBindingsDir(): string | null {
   // repository root when running this checkout's own tests).
   try {
     const scoped = createRequire(`${process.cwd()}/package.json`)
-    const root = path.dirname(scoped.resolve('unified-ble-manager/package.json'))
-    return path.join(root, 'bindings', 'napi')
+    const root = nodePath.dirname(scoped.resolve('unified-ble-manager/package.json'))
+    return nodePath.join(root, 'bindings', 'napi')
   } catch {
     return null
   }
@@ -310,13 +299,13 @@ function addonCandidates(): string[] {
   // loudly instead of silently probing another artifact.
   if (typeof fromEnv === 'string' && fromEnv.length > 0) return [fromEnv]
   const platformSuffix = `${process.platform}-${process.arch}`
-  const roots = [packageBindingsDir(), path.join(process.cwd(), 'bindings', 'napi')].filter(
+  const roots = [packageBindingsDir(), nodePath.join(process.cwd(), 'bindings', 'napi')].filter(
     (root): root is string => typeof root === 'string' && root.length > 0
   )
   const names = [`ubm_echo.${platformSuffix}.node`, 'ubm_echo.linux-x64.node']
   const candidates: string[] = []
   for (const root of roots) {
-    for (const name of names) candidates.push(path.join(root, name))
+    for (const name of names) candidates.push(nodePath.join(root, name))
   }
   return candidates
 }
@@ -545,7 +534,9 @@ export class BluezRustCoreBackend implements BleCentralBackend<string, HostNeutr
   private destroyResult: Promise<import('../../backend-contract/errors').CleanupRecord> | null = null
   private readonly eventsStream: CoreBoundedStream<BackendEvent<string>>
   private readonly activeScanObservations = new Set<CoreBoundedStream<AdvertisementObservation<string>>>()
-  private readonly activeNotificationStreams = new Set<BoundedAsyncStream<import('../../backend-contract/gatt').NotificationValue>>()
+  private readonly activeNotificationStreams = new Set<
+    BoundedAsyncStream<import('../../backend-contract/gatt').NotificationValue>
+  >()
   private readonly activeAdapterTransitions = new Set<CoreBoundedStream<AdapterStateSnapshot<string>>>()
   private readonly adapterWatchers = new Set<(state: AdapterStateSnapshot<string>) => void>()
   private readonly connectionLeases = new Map<string, { lease: string; nativePeerId: string }>()
@@ -697,7 +688,9 @@ export class BluezRustCoreBackend implements BleCentralBackend<string, HostNeutr
     })
   }
 
-  async attach(_request: BackendAttachmentRequest): Promise<BackendAttachment<string, HostNeutralBackendIdentity<string>>> {
+  async attach(
+    _request: BackendAttachmentRequest
+  ): Promise<BackendAttachment<string, HostNeutralBackendIdentity<string>>> {
     this.assertOperational('bluez-rust-core.attach')
     if (!this.opened) {
       throw contractError('lifecycle.invalid-state', 'core', 'bluez-rust-core.attach-before-open')
@@ -1553,11 +1546,7 @@ export class BluezRustCoreBackend implements BleCentralBackend<string, HostNeutr
     options: PublicOperationOptions
   ): Promise<import('../../backend-contract/primitives').OwnedBytes> {
     const stored = this.storedDatabase(path, 'bluez-rust-core.gatt.database-read-descriptor')
-    const resolved = this.resolveCharacteristic(
-      stored,
-      descriptor,
-      'bluez-rust-core.gatt.database-read-descriptor'
-    )
+    const resolved = this.resolveCharacteristic(stored, descriptor, 'bluez-rust-core.gatt.database-read-descriptor')
     const full = Object.freeze({
       ...resolved,
       descriptorUuid: (descriptor as unknown as Record<string, unknown>)
@@ -1585,11 +1574,7 @@ export class BluezRustCoreBackend implements BleCentralBackend<string, HostNeutr
     options: import('../../backend-contract/operations').WritePolicy
   ): Promise<import('../../backend-contract/operations').WriteReceipt<string, string>> {
     const stored = this.storedDatabase(path, 'bluez-rust-core.gatt.database-write-descriptor')
-    const resolved = this.resolveCharacteristic(
-      stored,
-      descriptor,
-      'bluez-rust-core.gatt.database-write-descriptor'
-    )
+    const resolved = this.resolveCharacteristic(stored, descriptor, 'bluez-rust-core.gatt.database-write-descriptor')
     const full = Object.freeze({
       ...resolved,
       descriptorUuid: (descriptor as unknown as Record<string, unknown>)
@@ -1931,12 +1916,22 @@ export class BluezRustCoreBackend implements BleCentralBackend<string, HostNeutr
  * tree structure the core did not report would corrupt every later selector.
  */
 function groupCorePaths(paths: BluezRustCorePath[], operation: string): CoreDatabaseTree {
-  const services = new Map<string, { uuid: string; occurrence: number; characteristics: Map<string, {
-    uuid: string
-    occurrence: number
-    properties: number
-    descriptors: Map<string, { uuid: string; occurrence: number }>
-  }> }>()
+  const services = new Map<
+    string,
+    {
+      uuid: string
+      occurrence: number
+      characteristics: Map<
+        string,
+        {
+          uuid: string
+          occurrence: number
+          properties: number
+          descriptors: Map<string, { uuid: string; occurrence: number }>
+        }
+      >
+    }
+  >()
   const serviceKey = (uuid: string, occurrence: number): string => `${uuid}#${occurrence}`
   for (const path of paths) {
     if (typeof path.serviceUuid !== 'string' || typeof path.serviceOccurrence !== 'number') {
@@ -2054,9 +2049,7 @@ function presentField<Value>(
   }) as import('../../backend-contract/advertisement').AdvertisementField<Value>
 }
 
-function absentField<Value>(
-  reason: string
-): import('../../backend-contract/advertisement').AdvertisementField<Value> {
+function absentField<Value>(reason: string): import('../../backend-contract/advertisement').AdvertisementField<Value> {
   return Object.freeze({
     state: 'absent',
     reason,

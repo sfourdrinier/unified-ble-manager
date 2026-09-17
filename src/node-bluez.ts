@@ -161,7 +161,5 @@ export function createDbusNextBluezBackendProvider(
   options: DbusNextBluezProviderOptions
 ): BackendProvider<string, HostNeutralBackendIdentity<string>> {
   rejectPairingGeneration(options.pairingGeneration)
-  return createBluezRustCoreBackendProvider(
-    coreProviderOptions(options, 'bluez-manager.owner')
-  )
+  return createBluezRustCoreBackendProvider(coreProviderOptions(options, 'bluez-manager.owner'))
 }
