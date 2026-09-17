@@ -41,6 +41,34 @@ function fixtureRoot() {
   )
   writeFile(root, '__tests__/a.test.js', "test('a', () => {})\n")
   writeFile(root, 'lib/.gitkeep', '')
+  // D2(iv) extended identities: deployment floors, per-crate features (jni
+  // declares [features], uniffi relies on the implicit default), and a
+  // staged Apple slice pair with LibraryIdentifiers.
+  writeFile(
+    root,
+    'unified-ble-manager.podspec',
+    'Pod::Spec.new do |s|\n  s.platforms    = { :ios => "16.4", :tvos => "16.4" }\nend\n'
+  )
+  writeFile(root, 'android/gradle.properties', 'BlePlx_minSdkVersion=24\n')
+  writeFile(
+    root,
+    'bindings/jni/Cargo.toml',
+    '[package]\nname = "ubm5_jni_echo"\n\n[features]\nbeta = []\nalpha = []\n'
+  )
+  writeFile(root, 'bindings/uniffi/Cargo.toml', '[package]\nname = "ubm5_uniffi_echo"\n')
+  writeFile(
+    root,
+    'ios/RustCore/RustCore.xcframework/Info.plist',
+    '<?xml version="1.0"?>\n<plist><dict><key>AvailableLibraries</key><array>' +
+      '<dict><key>LibraryIdentifier</key><string>ios-arm64</string></dict>' +
+      '<dict><key>LibraryIdentifier</key><string>ios-arm64-simulator</string></dict>' +
+      '</array></dict></plist>\n'
+  )
+  writeFile(
+    root,
+    'ios/RustCore/RustCore.xcframework/ios-arm64/libubm5_uniffi_echo.a',
+    Buffer.from([0x21, 0x3c, 0x61, 0x72, 0x63, 0x68, 0x3e, 0x0a])
+  )
   return root
 }
 
@@ -142,5 +170,38 @@ describe('build fingerprint (F23)', () => {
   test('a missing seal fails with a rebuild message', () => {
     const root = fixtureRoot()
     expect(() => checkBuildFingerprint(root)).toThrow(/prepack|rebuild|missing/i)
+  })
+
+  test('extended identities bind toolchain, features, targets, floors, apple slices', () => {
+    const root = fixtureRoot()
+    const seal = generateBuildFingerprint(root)
+    expect(seal.toolchain.rust).toBe('1.98.1')
+    expect(seal.features).toEqual({ jni: ['alpha', 'beta'], uniffi: ['default'] })
+    expect(seal.deploymentMinimum).toEqual({ ios: '16.4', tvos: '16.4', androidMinSdk: 24 })
+    expect(seal.targets.android).toEqual({ 'arm64-v8a': 'aarch64-linux-android' })
+    expect(seal.targets.apple).toEqual(['ios-arm64', 'ios-arm64-simulator'])
+    expect(seal.native.apple.staged).toBe(true)
+    expect(seal.native.apple.libraryIdentifiers).toEqual(['ios-arm64', 'ios-arm64-simulator'])
+    expect(seal.native.apple.slices).toHaveLength(1)
+    expect(seal.native.apple.slices[0]).toMatchObject({
+      slice: 'ios-arm64',
+      file: 'ios/RustCore/RustCore.xcframework/ios-arm64/libubm5_uniffi_echo.a',
+      bytes: 8
+    })
+  })
+
+  test('unstaged apple framework seals empty without failing', () => {
+    const root = fixtureRoot()
+    fs.rmSync(path.join(root, 'ios'), { recursive: true, force: true })
+    const seal = generateBuildFingerprint(root)
+    expect(seal.native.apple).toEqual({ staged: false, slices: [], libraryIdentifiers: [] })
+    expect(seal.targets.apple).toEqual([])
+  })
+
+  test('identity drift fails closed and names the identity', () => {
+    const root = fixtureRoot()
+    writeBuildFingerprint(root)
+    writeFile(root, 'android/gradle.properties', 'BlePlx_minSdkVersion=26\n')
+    expect(() => checkBuildFingerprint(root)).toThrow(/deploymentMinimum/)
   })
 })

@@ -101,9 +101,49 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  # D2(iv): the npm artifact ships the CI-built RustCore XCFramework staged
+  # in ios/RustCore (prebuilt podspec mode is the default; consumers never
+  # need the Rust toolchain). macOS-only: assembly needs xcodebuild. The
+  # canonical builder is the same ios/build-rust-core.sh that source mode
+  # and apple-ci use — no second producer, no drift.
+  native-rustcore:
+    name: Native RustCore XCFramework (macOS)
+    runs-on: macos-26
+    steps:
+      - name: Checkout tag
+        uses: actions/checkout@v7.0.0
+
+      - name: Select Xcode
+        uses: ./.github/actions/select-xcode
+
+      - name: Setup JS package
+        uses: ./.github/actions/setup-js-package
+        with:
+          prepack: 'false'
+          node-version: '24'
+
+      - name: Install pinned Rust + Apple targets
+        run: |
+          cargo --version
+          PINNED_TOOLCHAIN="$(grep -E '^channel[[:space:]]*=' rust-toolchain.toml | sed -E 's/.*"([^"]+)".*/\1/' || true)"
+          test -n "$PINNED_TOOLCHAIN" || { echo "could not parse pinned toolchain channel from rust-toolchain.toml"; exit 1; }
+          rustup target add --toolchain "$PINNED_TOOLCHAIN" aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios aarch64-apple-tvos aarch64-apple-tvos-sim
+
+      - name: Build RustCore XCFramework from source
+        run: sh ios/build-rust-core.sh
+
+      - name: Upload staged RustCore
+        uses: actions/upload-artifact@v7
+        with:
+          name: rustcore-xcframework
+          path: ios/RustCore
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 7
+
   publish:
     name: Publish canonical package
-    needs: native-prebuild
+    needs: [native-prebuild, native-rustcore]
     runs-on: ubuntu-latest
     environment: npm
     permissions:
@@ -112,6 +152,8 @@ jobs:
     env:
       NODE_OPTIONS: --max-old-space-size=8192
       GRADLE_OPTS: -Dorg.gradle.jvmargs=-Xmx6g\ -XX:MaxMetaspaceSize=1g\ -Dfile.encoding=UTF-8
+      # D2(iii): the release builds Android natives from source explicitly.
+      UBM_NATIVE_BUILD: source
 
     steps:
       - name: Checkout tag
@@ -162,6 +204,27 @@ jobs:
 
       - name: Verify and bind complete native prebuild matrix
         run: pnpm native-prebuild:verify --require-all --write-manifest
+
+      - name: Stage CI-built RustCore XCFramework
+        # D2(iv) pre-pack staging (T5): the macOS producer's ios/RustCore
+        # lands exactly where the prebuilt podspec mode consumes it, so the
+        # packed tarball carries the same immutable artifacts CI attested.
+        uses: actions/download-artifact@v8
+        with:
+          name: rustcore-xcframework
+          path: ios/RustCore
+
+      - name: Verify staged RustCore before pack
+        # Same rule as the podspec Verify phase (framework + identity +
+        # exactly 4 slices): a partial staging fails the release here,
+        # never a consumer's pod install.
+        run: |
+          set -euo pipefail
+          test -d ios/RustCore/RustCore.xcframework || { echo "staged RustCore.xcframework missing"; exit 1; }
+          test -f ios/RustCore/build-identity.txt || { echo "staged RustCore build-identity.txt missing"; exit 1; }
+          SLICES="$(grep -c 'LibraryIdentifier' ios/RustCore/RustCore.xcframework/Info.plist)"
+          test "${SLICES}" = '4' || { echo "expected 4 platform slices, found '${SLICES}'"; exit 1; }
+          echo "staged RustCore verified: 4 slices + identity"
 
       - name: Install pinned Rust
         # ReleaseArtifacts/License suites shell to
