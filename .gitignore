@@ -114,3 +114,7 @@ example/vendor/bundle/
 example/ios/Pods/
 example/ios/build/
 example/ios/Podfile.lock
+
+# Built by ios/build-rust-core.sh via the podspec prepare_command at pod
+# install; never shipped, always rebuilt from bindings/uniffi sources.
+ios/RustCore/

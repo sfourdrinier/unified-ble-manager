@@ -23,9 +23,12 @@
 # Each `-library` passed to `xcodebuild -create-xcframework` defines exactly
 # one platform slice, so a platform's simulator archs are first merged with
 # `lipo -create` into one fat archive per simulator slice (a duplicate
-# platform slice is rejected by xcodebuild). All paths are quoted throughout
-# — consumer checkouts may live under directories with spaces — and the
-# xcodebuild invocation is issued directly, never accumulated in a string.
+# platform slice is rejected by xcodebuild). Every `-library` input keeps the
+# same basename (`libubm5_uniffi_echo.a`, staged in per-slice dirs) because
+# CocoaPods rejects a vendored XCFramework whose slices carry differing
+# static-library names. All paths are quoted throughout — consumer checkouts
+# may live under directories with spaces — and the xcodebuild invocation is
+# issued directly, never accumulated in a string.
 #
 # Usage:
 #   sh ios/build-rust-core.sh --check
@@ -159,6 +162,7 @@ build_sim_slice() {
   # themselves never contain whitespace.
   FAT_LIB="$1"; shift
   TRIPLES="$*"
+  mkdir -p "$(dirname -- "$FAT_LIB")"
   set --
   # shellcheck disable=SC2086
   for triple in $TRIPLES; do
@@ -180,14 +184,18 @@ build_sim_slice() {
 
 build_target "$MATRIX_DEVICE"
 IOS_DEVICE_LIB="$BUILT_LIB"
+# Fat simulator slices stage under the same lib basename as the device
+# slices (CocoaPods: one binary name per vendored XCFramework).
 # shellcheck disable=SC2086
-build_sim_slice "$OUT_DIR/fat-ios-simulator-$PROFILE_DIR.a" $MATRIX_SIM
+build_sim_slice "$OUT_DIR/slices/ios-sim/$LIB_NAME" $MATRIX_SIM
 IOS_SIM_FAT="$FAT_LIB"
 build_target "$MATRIX_TVOS_DEVICE"
 TVOS_DEVICE_LIB="$BUILT_LIB"
 # shellcheck disable=SC2086
-build_sim_slice "$OUT_DIR/fat-tvos-simulator-$PROFILE_DIR.a" $MATRIX_TVOS_SIM
+build_sim_slice "$OUT_DIR/slices/tvos-sim/$LIB_NAME" $MATRIX_TVOS_SIM
 TVOS_SIM_FAT="$FAT_LIB"
+# Drop staging archives from the pre-fix layout, if a rerun overlays them.
+rm -f "$OUT_DIR"/fat-ios-simulator-*.a "$OUT_DIR"/fat-tvos-simulator-*.a
 
 FRAMEWORK_DIR="$OUT_DIR/RustCore.xcframework"
 rm -rf "$FRAMEWORK_DIR"
