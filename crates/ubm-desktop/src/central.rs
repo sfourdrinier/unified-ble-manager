@@ -190,6 +190,127 @@ fn release_duplicate(
     kind
 }
 
+/// Per-op detached cleanup for a dropped caller future (F03).
+#[derive(Debug)]
+enum DropCleanup {
+    /// Plain ops (read/write/descriptors): cancel + reap.
+    Op,
+    /// Connect: also record peer loss + a compensating disconnect (mirrors
+    /// the timeout arm, aborted instead of timed out).
+    Connect { peer_id: String, peer_key: String },
+    /// Subscribe: also fail the shared enable + remove routing + sweep
+    /// (mirrors the timeout arm, aborted instead of timed out).
+    Subscribe { key: InstanceKey, path_index: usize },
+}
+
+/// Cancels + reaps a dispatched op when its awaiting caller future is
+/// dropped (task abort, select loss). Without this the core keeps the op
+/// dispatched and live forever: the driver that would have settled it is
+/// gone. Normal completion defuses the guard; only the drop path fires.
+///
+/// Abort cleanup runs on the runtime, so `Drop` can spawn the detached
+/// task. An unpolled future dropped off-runtime has no in-flight radio to
+/// reap, so the guard stays silent there instead of panicking in `Drop`.
+struct CancelOnDrop<B: RadioBoundary> {
+    central: Option<DesktopCentral<B>>,
+    operation: Option<OperationId>,
+    cleanup: Option<DropCleanup>,
+}
+
+impl<B: RadioBoundary> CancelOnDrop<B> {
+    fn armed(central: &DesktopCentral<B>, operation: OperationId, cleanup: DropCleanup) -> Self {
+        Self {
+            central: Some(central.clone()),
+            operation: Some(operation),
+            cleanup: Some(cleanup),
+        }
+    }
+
+    fn defuse(&mut self) {
+        self.central.take();
+    }
+}
+
+impl<B: RadioBoundary> Drop for CancelOnDrop<B> {
+    fn drop(&mut self) {
+        let (Some(central), Some(operation), Some(cleanup)) = (
+            self.central.take(),
+            self.operation.take(),
+            self.cleanup.take(),
+        ) else {
+            return;
+        };
+        if tokio::runtime::Handle::try_current().is_err() {
+            return;
+        }
+        tokio::spawn(run_drop_cleanup(central, operation, cleanup));
+    }
+}
+
+/// Report a terminal op's release when the driver is gone (drop path only).
+/// Unlike `release_duplicate`, this never reports a live op.
+async fn reap_if_terminal<B>(central: &DesktopCentral<B>, operation: &OperationId) {
+    let mut core = central.inner.core.lock().await;
+    if terminal_kind_of(&core, operation).is_some() {
+        report_terminal_release(&mut core, operation, true, None);
+        recycle_observations(&mut core);
+    }
+}
+
+async fn run_drop_cleanup<B: RadioBoundary>(
+    central: DesktopCentral<B>,
+    operation: OperationId,
+    cleanup: DropCleanup,
+) {
+    match cleanup {
+        DropCleanup::Op => {
+            let _ = central.cancel_operation(&operation).await;
+            reap_if_terminal(&central, &operation).await;
+        }
+        DropCleanup::Connect { peer_id, peer_key } => {
+            {
+                let mut core = central.inner.core.lock().await;
+                let mut out = batch();
+                let _ = core.note_peer_loss(&peer_key, now_ms(), &mut out);
+                let _ = out.drain();
+            }
+            let _ = central.cancel_operation(&operation).await;
+            reap_if_terminal(&central, &operation).await;
+            // A half-open OS link must not linger ownerless. Bounded and
+            // outside the core lock per F24.
+            match tokio::time::timeout(
+                DISCONNECT_COMPLETION_TIMEOUT,
+                central.inner.boundary.disconnect(&peer_id),
+            )
+            .await
+            {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => {
+                    let mut core = central.inner.core.lock().await;
+                    let _ = core.report_disconnect_failure(&peer_key, error.code());
+                }
+                Err(_) => {
+                    let mut core = central.inner.core.lock().await;
+                    let _ =
+                        core.report_disconnect_failure(&peer_key, BleErrorCode::OperationTimedOut);
+                }
+            }
+        }
+        DropCleanup::Subscribe { key, path_index } => {
+            central.inner.subscriptions.lock().await.remove(&key);
+            let _ = central.cancel_operation(&operation).await;
+            {
+                let mut core = central.inner.core.lock().await;
+                let mut out = batch();
+                let _ = core.settle_subscribe_enable(path_index, false, now_ms(), &mut out);
+                let _ = out.drain();
+                sweep_terminal_successes(&mut core);
+            }
+            reap_if_terminal(&central, &operation).await;
+        }
+    }
+}
+
 /// Release every terminal op whose cleanup already succeeded (F02): joiners
 /// settled by a shared enable, immediate-success shares on an enabled hub,
 /// and disable tickets settled by `settle_subscribe_disable`. Each has no
@@ -737,8 +858,18 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                 .map_err(DesktopError::from)?;
             id
         };
+        let mut drop_guard = CancelOnDrop::armed(
+            self,
+            operation.clone(),
+            DropCleanup::Connect {
+                peer_id: peer_id.to_owned(),
+                peer_key: peer_key.clone(),
+            },
+        );
         let deadline = Duration::from_millis(timeout_ms);
-        match tokio::time::timeout(deadline, self.inner.boundary.connect(peer_id)).await {
+        let result = match tokio::time::timeout(deadline, self.inner.boundary.connect(peer_id))
+            .await
+        {
             Ok(Ok(())) => {
                 let mut core = self.inner.core.lock().await;
                 let mut out = batch();
@@ -846,7 +977,9 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                 .await;
                 Err(self.settle_timeout(&operation, "connection.connect").await)
             }
-        }
+        };
+        drop_guard.defuse();
+        result
     }
 
     /// Explicit disconnect with a bounded radio wait: the link releases on
@@ -1142,12 +1275,13 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                 peer_key,
             )
         };
+        let mut drop_guard = CancelOnDrop::armed(self, operation.clone(), DropCleanup::Op);
         // F03: the op timeout is an end-to-end deadline for dispatched work.
         // `expire_sweep` only covers queued ops, so dispatched reads race the
         // radio against their own deadline; the winning core outcome is the
         // only caller result.
         let deadline = Duration::from_millis(timeout_ms);
-        match tokio::time::timeout(
+        let result = match tokio::time::timeout(
             deadline,
             self.inner
                 .boundary
@@ -1174,6 +1308,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                         None,
                         &mut out,
                     );
+                    drop_guard.defuse();
                     return Err(contract_error(
                         BleErrorCode::OperationDisconnected,
                         BleErrorDomain::Connection,
@@ -1285,7 +1420,9 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                     )),
                 }
             }
-        }
+        };
+        drop_guard.defuse();
+        result
     }
 
     /// GATT write. `"long-write"` is rejected up front: prepared-write
@@ -1371,7 +1508,8 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                 .map_err(DesktopError::from)?;
             (id, instance_key(peer_id, &stored, &characteristic))
         };
-        match tokio::time::timeout(
+        let mut drop_guard = CancelOnDrop::armed(self, operation.clone(), DropCleanup::Op);
+        let result = match tokio::time::timeout(
             remaining,
             self.inner.boundary.write_characteristic(
                 peer_id,
@@ -1452,7 +1590,9 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                 }
             }
             Err(_) => Err(self.settle_timeout(&operation, "gatt.write").await),
-        }
+        };
+        drop_guard.defuse();
+        result
     }
 
     /// Descriptor read through a validated descriptor path.
@@ -1504,8 +1644,9 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             let descriptor_occurrence = stored.descriptor_occurrence().unwrap_or(0);
             (id, key, descriptor, descriptor_occurrence)
         };
+        let mut drop_guard = CancelOnDrop::armed(self, operation.clone(), DropCleanup::Op);
         let deadline = Duration::from_millis(timeout_ms);
-        match tokio::time::timeout(
+        let result = match tokio::time::timeout(
             deadline,
             self.inner.boundary.read_descriptor(
                 peer_id,
@@ -1588,7 +1729,9 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             Err(_) => Err(self
                 .settle_timeout(&operation, "gatt.read-descriptor")
                 .await),
-        }
+        };
+        drop_guard.defuse();
+        result
     }
 
     /// Descriptor write through a validated descriptor path. Direct CCCD
@@ -1669,7 +1812,8 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             let descriptor_occurrence = stored.descriptor_occurrence().unwrap_or(0);
             (id, key, descriptor, descriptor_occurrence)
         };
-        match tokio::time::timeout(
+        let mut drop_guard = CancelOnDrop::armed(self, operation.clone(), DropCleanup::Op);
+        let result = match tokio::time::timeout(
             remaining,
             self.inner.boundary.write_descriptor(
                 peer_id,
@@ -1753,7 +1897,9 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             Err(_) => Err(self
                 .settle_timeout(&operation, "gatt.write-descriptor")
                 .await),
-        }
+        };
+        drop_guard.defuse();
+        result
     }
 
     /// Subscribe one consumer: admit in the core, route early values through
@@ -1870,6 +2016,14 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             }
             (id, index, drive_enable)
         };
+        let mut drop_guard = CancelOnDrop::armed(
+            self,
+            operation.clone(),
+            DropCleanup::Subscribe {
+                key: key.clone(),
+                path_index,
+            },
+        );
         // Route before the physical enable so values arriving mid-enable
         // quarantine in the hub instead of dropping on the floor. The
         // routing carries the epoch the forwarder is about to capture, so
@@ -1887,10 +2041,11 @@ impl<B: RadioBoundary> DesktopCentral<B> {
             let mut core = self.inner.core.lock().await;
             report_terminal_release(&mut core, &operation, true, None);
             recycle_observations(&mut core);
+            drop_guard.defuse();
             return Ok(());
         }
         let deadline = Duration::from_millis(timeout_ms);
-        match tokio::time::timeout(
+        let result = match tokio::time::timeout(
             deadline,
             self.inner
                 .boundary
@@ -1936,6 +2091,7 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                     let _ = out.drain();
                     sweep_terminal_successes(&mut core);
                     self.inner.subscriptions.lock().await.remove(&key);
+                    drop_guard.defuse();
                     return Err(DesktopError::cancelled("gatt.subscribe"));
                 }
                 match own_kind {
@@ -1989,7 +2145,9 @@ impl<B: RadioBoundary> DesktopCentral<B> {
                     "gatt.subscribe",
                 ))
             }
-        }
+        };
+        drop_guard.defuse();
+        result
     }
 
     /// Remove one consumer. Removing one consumer never disables another
@@ -5189,7 +5347,6 @@ mod adapter_tests {
     }
 
     #[tokio::test]
-    #[ignore = "F03 dropped-future detachment requires spawned completion tasks; shutdown cancel covers shutdown-dropped, general dropped without shutdown still leaks (BLOCKED, see report)"]
     async fn f03_dropped_caller_still_releases() {
         let central = open().await;
         ready_peer(&central, "peer-f03q", vec![hrm_service()]).await;
@@ -5227,6 +5384,231 @@ mod adapter_tests {
             .await
             .expect("admission remains after drop");
         assert_eq!(value, vec![0x42]);
+    }
+
+    #[tokio::test]
+    async fn f03_dropped_write_still_releases() {
+        let central = open().await;
+        let peer = "peer-f03w".to_owned();
+        ready_peer(&central, &peer, vec![battery_service()]).await;
+        central.boundary().set_mtu(&peer, 23);
+        let selector = DesktopCentral::<FakeRadio>::selector(
+            BATTERY_SERVICE,
+            Some(0),
+            Some(BATTERY_LEVEL),
+            Some(0),
+            None,
+            None,
+        )
+        .expect("selector");
+        let baseline = central.with_core(|core| core.live_operation_count()).await;
+        central.boundary().block_op(FaultOp::Write);
+        let caller = central.clone();
+        let peer_clone = peer.clone();
+        let selector_clone = selector.clone();
+        let pending = tokio::spawn(async move {
+            caller
+                .write(
+                    &peer_clone,
+                    &selector_clone,
+                    vec![0x02],
+                    "with-response",
+                    5000,
+                )
+                .await
+        });
+        let mut saw_live = false;
+        for _ in 0..200 {
+            let live = central.with_core(|core| core.live_operation_count()).await;
+            if live > baseline {
+                saw_live = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert!(saw_live, "write in flight before abort (non-vacuous)");
+        pending.abort();
+        let _ = pending.await;
+        central.boundary().unblock_op(FaultOp::Write);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let live = central.with_core(|core| core.live_operation_count()).await;
+        assert_eq!(live, baseline, "dropped write still reaps its op");
+        central
+            .write(&peer, &selector, vec![0x02], "with-response", 5000)
+            .await
+            .expect("post-drop admission");
+    }
+
+    #[tokio::test]
+    async fn f03_dropped_connect_still_releases() {
+        let central = open().await;
+        let peer = "peer-f03c".to_owned();
+        central.boundary().push_event(advertisement(&peer));
+        let baseline = central.with_core(|core| core.live_operation_count()).await;
+        central.boundary().block_op(FaultOp::Connect);
+        let caller = central.clone();
+        let peer_clone = peer.clone();
+        let pending =
+            tokio::spawn(async move { caller.connect(&peer_clone, "lease-x", 10_000).await });
+        let mut saw_live = false;
+        for _ in 0..200 {
+            let live = central.with_core(|core| core.live_operation_count()).await;
+            if live > baseline {
+                saw_live = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert!(saw_live, "connect in flight before abort (non-vacuous)");
+        pending.abort();
+        let _ = pending.await;
+        central.boundary().unblock_op(FaultOp::Connect);
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let live = central.with_core(|core| core.live_operation_count()).await;
+        assert_eq!(live, baseline, "dropped connect still reaps its op");
+        central
+            .connect(&peer, "lease-x", 10_000)
+            .await
+            .expect("post-drop admission");
+    }
+
+    #[tokio::test]
+    async fn f03_dropped_subscribe_still_releases() {
+        let central = open().await;
+        let peer = "peer-f03s".to_owned();
+        ready_peer(&central, &peer, vec![hrm_service()]).await;
+        let baseline = central.with_core(|core| core.live_operation_count()).await;
+        central.boundary().block_op(FaultOp::Subscribe);
+        let caller = central.clone();
+        let peer_clone = peer.clone();
+        let pending = tokio::spawn(async move {
+            caller
+                .subscribe(&peer_clone, &hrm_selector(0), "consumer-drop", 5000)
+                .await
+        });
+        let mut saw_live = false;
+        for _ in 0..200 {
+            let live = central.with_core(|core| core.live_operation_count()).await;
+            if live > baseline {
+                saw_live = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert!(saw_live, "subscribe in flight before abort (non-vacuous)");
+        pending.abort();
+        let _ = pending.await;
+        central.boundary().unblock_op(FaultOp::Subscribe);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let live = central.with_core(|core| core.live_operation_count()).await;
+        assert_eq!(live, baseline, "dropped subscribe still reaps its op");
+        central
+            .subscribe(&peer, &hrm_selector(0), "consumer-drop", 5000)
+            .await
+            .expect("post-drop admission");
+    }
+
+    #[tokio::test]
+    async fn f03_dropped_read_descriptor_still_releases() {
+        let central = open().await;
+        let peer = "peer-f03rd".to_owned();
+        ready_peer(&central, &peer, vec![hrm_service()]).await;
+        central.boundary().set_mtu(&peer, 23);
+        let selector = DesktopCentral::<FakeRadio>::selector(
+            HRM_SERVICE,
+            Some(0),
+            Some(HRM_MEASUREMENT),
+            Some(0),
+            Some(USER_DESCRIPTION),
+            Some(0),
+        )
+        .expect("descriptor selector");
+        let baseline = central.with_core(|core| core.live_operation_count()).await;
+        central.boundary().block_op(FaultOp::Read);
+        let caller = central.clone();
+        let peer_clone = peer.clone();
+        let selector_clone = selector.clone();
+        let pending = tokio::spawn(async move {
+            caller
+                .read_descriptor(&peer_clone, &selector_clone, 5000)
+                .await
+        });
+        let mut saw_live = false;
+        for _ in 0..200 {
+            let live = central.with_core(|core| core.live_operation_count()).await;
+            if live > baseline {
+                saw_live = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert!(
+            saw_live,
+            "descriptor read in flight before abort (non-vacuous)"
+        );
+        pending.abort();
+        let _ = pending.await;
+        central.boundary().unblock_op(FaultOp::Read);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let live = central.with_core(|core| core.live_operation_count()).await;
+        assert_eq!(live, baseline, "dropped descriptor read still reaps its op");
+        central
+            .read_descriptor(&peer, &selector, 5000)
+            .await
+            .expect("post-drop admission");
+    }
+
+    #[tokio::test]
+    async fn f03_dropped_write_descriptor_still_releases() {
+        let central = open().await;
+        let peer = "peer-f03wd".to_owned();
+        ready_peer(&central, &peer, vec![hrm_service()]).await;
+        central.boundary().set_mtu(&peer, 23);
+        let selector = DesktopCentral::<FakeRadio>::selector(
+            HRM_SERVICE,
+            Some(0),
+            Some(HRM_MEASUREMENT),
+            Some(0),
+            Some(USER_DESCRIPTION),
+            Some(0),
+        )
+        .expect("descriptor selector");
+        let baseline = central.with_core(|core| core.live_operation_count()).await;
+        central.boundary().block_op(FaultOp::Write);
+        let caller = central.clone();
+        let peer_clone = peer.clone();
+        let selector_clone = selector.clone();
+        let pending = tokio::spawn(async move {
+            caller
+                .write_descriptor(&peer_clone, &selector_clone, vec![1], 5000)
+                .await
+        });
+        let mut saw_live = false;
+        for _ in 0..200 {
+            let live = central.with_core(|core| core.live_operation_count()).await;
+            if live > baseline {
+                saw_live = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert!(
+            saw_live,
+            "descriptor write in flight before abort (non-vacuous)"
+        );
+        pending.abort();
+        let _ = pending.await;
+        central.boundary().unblock_op(FaultOp::Write);
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let live = central.with_core(|core| core.live_operation_count()).await;
+        assert_eq!(
+            live, baseline,
+            "dropped descriptor write still reaps its op"
+        );
+        central
+            .write_descriptor(&peer, &selector, vec![1], 5000)
+            .await
+            .expect("post-drop admission");
     }
 
     #[tokio::test]

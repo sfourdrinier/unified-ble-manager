@@ -750,6 +750,7 @@ impl RadioBoundary for FakeRadio {
         if let Some(detail) = self.take_fault(FaultOp::Write) {
             return Err(DesktopError::write_failed(detail));
         }
+        self.gate(FaultOp::Write).await;
         self.state.lock().expect("fake radio state").writes.push((
             (
                 peer_id.to_owned(),
@@ -777,6 +778,7 @@ impl RadioBoundary for FakeRadio {
         if let Some(detail) = self.take_fault(FaultOp::Read) {
             return Err(DesktopError::read_failed(detail));
         }
+        self.gate(FaultOp::Read).await;
         self.state
             .lock()
             .expect("fake radio state")
@@ -808,6 +810,7 @@ impl RadioBoundary for FakeRadio {
         if let Some(detail) = self.take_fault(FaultOp::Write) {
             return Err(DesktopError::write_failed(detail));
         }
+        self.gate(FaultOp::Write).await;
         self.state
             .lock()
             .expect("fake radio state")
