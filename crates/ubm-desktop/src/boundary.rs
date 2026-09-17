@@ -319,6 +319,11 @@ struct FakeInner {
     /// Data notifications dropped by explicit overload (F07): bounded
     /// ingress never grows memory, and drops are counted, never silent.
     dropped_data: u64,
+    /// Control events dropped by explicit overload past [`FAKE_CONTROL_CAP`]:
+    /// counted like data drops, never silent. Control is low-volume (tests
+    /// push far fewer than 64), so any nonzero count here is a test-design
+    /// signal, not expected backpressure.
+    dropped_control: u64,
     calls: Vec<String>,
     connected: Vec<String>,
     notifications: Vec<(String, String, bool)>,
@@ -363,6 +368,7 @@ impl FakeRadio {
                 events_closed: false,
                 data_bytes: 0,
                 dropped_data: 0,
+                dropped_control: 0,
                 calls: Vec::new(),
                 connected: Vec::new(),
                 notifications: Vec::new(),
@@ -430,6 +436,7 @@ impl FakeRadio {
             }
             control => {
                 if state.control.len() >= FAKE_CONTROL_CAP {
+                    state.dropped_control = state.dropped_control.saturating_add(1);
                     return;
                 }
                 state.control.push_back((seq, control));
@@ -450,6 +457,13 @@ impl FakeRadio {
     /// Data notifications dropped by explicit ingress overload (F07).
     pub fn dropped_notification_count(&self) -> u64 {
         self.state.lock().expect("fake radio state").dropped_data
+    }
+
+    /// Control events dropped by explicit ingress overload past the control
+    /// cap (64). Always zero in well-formed tests; nonzero means the test
+    /// pushed more control than the bound admits.
+    pub fn dropped_control_count(&self) -> u64 {
+        self.state.lock().expect("fake radio state").dropped_control
     }
 
     /// Bytes currently queued in the data ingress (F07 bound evidence).
