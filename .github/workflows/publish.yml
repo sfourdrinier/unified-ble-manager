@@ -172,6 +172,20 @@ jobs:
       - name: Warm cargo cache for offline metadata
         run: cargo fetch --locked
 
+      - name: Install Linux build sysdeps
+        # napi -> ubm-desktop -> btleplug -> bluez-async -> libdbus-sys needs
+        # pkg-config + D-Bus headers at compile time (same subset as CI).
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y libdbus-1-dev pkg-config
+
+      - name: Build NAPI dispatch addon (R03 converged path)
+        # The bluez-rust-core-routing converged-path tests require the REAL
+        # addon; build it before jest (also covers test:parity below).
+        # (pretest:package rebuilds it too — this explicit step keeps addon
+        # failures diagnosable apart from jest.)
+        run: node scripts/ci/build-napi-addon.js
+
       - name: Run package tests
         run: pnpm test:package
 

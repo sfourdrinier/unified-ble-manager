@@ -69,7 +69,7 @@
   "scripts": {
     "build": "pnpm prepack",
     "test": "pnpm test:package",
-    "pretest:package": "pnpm prepack",
+    "pretest:package": "pnpm prepack && node scripts/ci/build-napi-addon.js",
     "test:package": "jest --config jest.package.config.js",
     "test:parity": "bindings/napi/run_napi_roundtrip.sh && jest --config jest.config.js __tests__/tck/rust-parity",
     "contracts:test": "jest --config contracts/jest.config.cjs",
