@@ -21,6 +21,7 @@ import {
   type ReactNativeRustCorePlatform
 } from './backends/reactnative/react-native-rust-core-provider'
 import type { ReactNativeRustCoreBinding } from './backends/reactnative/react-native-rust-core'
+import { createReactNativeRustCoreBinding } from './backends/reactnative/react-native-rust-core-binding'
 import { rehydratePublicPromise } from './public/error-bridge'
 import type { Spec as NativeUnifiedBleProtocolControl } from './NativeUnifiedBleProtocolControl'
 import type { ReactNativeRestorationBackendProvider } from './backends/reactnative/react-native-restoration'
@@ -41,14 +42,20 @@ export interface ReactNativeBleManagerOptions {
   readonly diagnostics?: DiagnosticsOptions
   readonly createOwnerId?: () => string
   /**
-   * F01 shared-core binding. When present, manager creation, scan, connect,
-   * subscribe, timeout, and dispose execute the native Rust core through the
-   * binding-backed provider (no TypeScript scheduling, subscription, or
-   * timeout authority). When absent, the manager builds on the TypeScript
-   * protocol providers; the F01 acceptance proof always injects a binding
-   * and fails if the TypeScript surface executes BLE work.
+   * R01 shared-core binding override. When absent (the ordinary case), the
+   * factory resolves the production `UnifiedBleRustCore` TurboModule binding
+   * and every BLE data-path operation executes the native Rust core through
+   * the binding-backed provider. Inject a binding only to substitute the
+   * native module (tests); a missing native module rejects with
+   * `capability.unsupported` before any BLE effect, never a silent fallback.
    */
   readonly rustCore?: ReactNativeRustCoreBinding
+  /**
+   * R01 isolated legacy route. The TypeScript protocol providers survive
+   * ONLY behind this exact, separately authorized value — never as a
+   * default, never inferred, never a hidden fallback. Test/reference use.
+   */
+  readonly legacyTypeScriptCore?: 'isolated-test-reference'
 }
 
 /**
@@ -75,9 +82,20 @@ async function createReactNativeBleManagerWithEnvironmentInternal(
   if (options.adapterId !== undefined && options.adapterId !== String(expectedAdapterId)) {
     throw contractError('adapter.unavailable', 'adapter', 'react-native-manager.adapter')
   }
-  if (options.rustCore !== undefined) {
-    return createRustCoreManager(options)
+  if (options.legacyTypeScriptCore === 'isolated-test-reference') {
+    return createTypeScriptCoreManager(options)
   }
+  const binding = options.rustCore ?? createReactNativeRustCoreBinding()
+  return createRustCoreManager(options, binding)
+}
+
+/**
+ * R01 isolated legacy route: the pre-cutover TypeScript protocol providers.
+ * Reachable ONLY via the explicit `legacyTypeScriptCore` authorization.
+ */
+async function createTypeScriptCoreManager(
+  options: ReactNativeBleManagerOptions
+): Promise<BleManager<string, NativeBackendIdentity<string>>> {
   const provider = providerFor(options)
   const managerOptions = managerOptionsFor(options)
   const scope: `${string}:${string}` = `react-native:${options.platform}`
@@ -102,13 +120,14 @@ async function createReactNativeBleManagerWithEnvironmentInternal(
 }
 
 /**
- * F01 shared-core path: the manager builds on the binding-backed provider,
+ * R01 production path: the manager builds on the binding-backed provider,
  * so every BLE data-path operation dispatches through the admitted native
  * Rust core session. The generated protocol control is used only for
  * restoration identity, never for BLE work.
  */
 async function createRustCoreManager(
-  options: ReactNativeBleManagerOptions
+  options: ReactNativeBleManagerOptions,
+  binding: ReactNativeRustCoreBinding
 ): Promise<BleManager<string, NativeBackendIdentity<string>>> {
   if (options.hostSessionScope.length === 0) {
     throw contractError('argument.invalid', 'restoration', 'react-native-manager.host-session-scope')
@@ -116,7 +135,7 @@ async function createRustCoreManager(
   const platform: ReactNativeRustCorePlatform = options.platform
   const provider = createReactNativeRustCoreBackendProvider({
     platform,
-    binding: options.rustCore ?? missingRustCoreBinding(),
+    binding,
     owner: `${options.clientId}/${options.managerId}`,
     now: options.now,
     control: options.control,
@@ -141,10 +160,6 @@ async function createRustCoreManager(
     },
     managerOptionsFor(options)
   )
-}
-
-function missingRustCoreBinding(): ReactNativeRustCoreBinding {
-  throw contractError('capability.unsupported', 'capability', 'react-native-manager.rust-core-missing')
 }
 
 function managerOptionsFor(options: ReactNativeBleManagerOptions) {

@@ -9,14 +9,17 @@ import type { BleManagerCreateOptions } from './public/host-identity'
 import { bootstrapReactNativeRestorationIdentity } from './backends/reactnative/react-native-restoration'
 import type { ReactNativeRustCoreBinding } from './backends/reactnative/react-native-rust-core'
 import { createNativeRandomBytesSource } from './react-native-entropy'
+import { createReactNativeRustCoreBinding } from './backends/reactnative/react-native-rust-core-binding'
 import { createReactNativeBleManagerWithEnvironment } from './react-native-manager'
 
 /**
- * Application factory options: the public create options plus the F01
- * shared-core binding. When `rustCore` is present, manager creation, scan,
- * connect, subscribe, timeout, and dispose execute the native Rust core
- * through the binding-backed provider; the TurboModule control is then used
- * for restoration identity only, never for BLE work.
+ * Application factory options: the public create options plus the R01
+ * shared-core binding override. When `rustCore` is absent (the ordinary
+ * case), the factory resolves the production `UnifiedBleRustCore`
+ * TurboModule binding: manager creation, scan, connect, subscribe, timeout,
+ * and dispose execute the native Rust core through the binding-backed
+ * provider, and the TurboModule control is used for restoration identity
+ * only, never for BLE work.
  */
 export interface CreateReactNativeBleManagerOptions extends BleManagerCreateOptions {
   readonly rustCore?: ReactNativeRustCoreBinding
@@ -61,7 +64,7 @@ async function createReactNativeBleManagerInternal(options: CreateReactNativeBle
     hostSessionScope,
     adapterId: normalized.adapterId,
     diagnostics: normalized.diagnostics,
-    ...(rustCore === undefined ? {} : { rustCore })
+    rustCore: rustCore ?? createReactNativeRustCoreBinding()
   })
   return createPublicBleManager(internal, () => performance.now())
 }

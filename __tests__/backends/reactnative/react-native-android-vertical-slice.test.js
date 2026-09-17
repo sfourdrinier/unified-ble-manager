@@ -522,7 +522,10 @@ describe('React Native Android canonical protocol vertical slice', () => {
       clientId: 'canonical-react-native-client',
       managerId: 'canonical-react-native-manager',
       hostSessionScope: 'canonical-host-session',
-      createOwnerId: () => 'canonical-react-native-owner'
+      createOwnerId: () => 'canonical-react-native-owner',
+      // R01: this slice pins the pre-cutover TypeScript route, kept only
+      // behind the isolated legacy authorization — never the default.
+      legacyTypeScriptCore: 'isolated-test-reference'
     })
 
     await expect(manager.adapterState()).resolves.toMatchObject({
