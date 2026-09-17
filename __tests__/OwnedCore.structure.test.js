@@ -66,7 +66,13 @@ describe('Unified Android native protocol structure', () => {
       // (the gap F01 flagged) — a thin fail-closed Android adapter in the
       // same `radio` package, covered by `UbmGattCoreBindingTest`. It is a
       // boundary member by design, not boundary growth by accident.
-      'radio/UbmGattCoreBinding.kt'
+      'radio/UbmGattCoreBinding.kt',
+      // R01 contract update (justified): the `rustcore` package is the
+      // D3(a) production session facade (module shell + JVM-tested op
+      // router over the JNI cdylib), covered by
+      // `RustCoreSessionRouterTest`. Boundary member by design.
+      'rustcore/RustCoreSessionRouter.java',
+      'rustcore/UnifiedBleRustCoreModule.java'
     ])
     expect(dispatcher).toContain('OwnedAndroidGattRadio')
     expect(dispatcher).not.toMatch(/com\.sfourdrinier\.unifiedblemanager\.(adapter|converter)|Base64|BlePlxModule/)
