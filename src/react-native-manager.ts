@@ -22,6 +22,7 @@ import {
 } from './backends/reactnative/react-native-rust-core-provider'
 import type { ReactNativeRustCoreBinding } from './backends/reactnative/react-native-rust-core'
 import { createReactNativeRustCoreBinding } from './backends/reactnative/react-native-rust-core-binding'
+import { createReactNativeRustCoreManager } from './backends/reactnative/react-native-rust-core-manager'
 import { rehydratePublicPromise } from './public/error-bridge'
 import type { Spec as NativeUnifiedBleProtocolControl } from './NativeUnifiedBleProtocolControl'
 import type { ReactNativeRestorationBackendProvider } from './backends/reactnative/react-native-restoration'
@@ -141,25 +142,27 @@ async function createRustCoreManager(
     control: options.control,
     ...(options.createOwnerId === undefined ? {} : { createOwnerId: options.createOwnerId })
   })
+  const backend = await provider.create({ selectedAdapterId: adapterIdFor(options.platform) })
   const scope: `${string}:${string}` = `react-native:${options.platform}`
   const clientId = opaqueId(options.clientId, 'client', scope)
-  return createBleManagerFromProvider(
-    {
-      provider,
-      selection: { selectedAdapterId: adapterIdFor(options.platform) },
+  try {
+    return await createReactNativeRustCoreManager({
+      backend,
       coreCompatibility: compatibilityFor(options.platform),
-      manager: {
-        clientId,
-        managerId: opaqueId(options.managerId, 'manager', scope),
-        ownerMode: 'owning',
-        restoration: Object.freeze({
-          client: Object.freeze({ clientId, hostSessionScope: options.hostSessionScope }),
-          coordinator: provider.restoration
-        })
-      }
-    },
-    managerOptionsFor(options)
-  )
+      clientId,
+      managerId: opaqueId(options.managerId, 'manager', scope),
+      ownerMode: 'owning',
+      restoration: Object.freeze({
+        client: Object.freeze({ clientId, hostSessionScope: options.hostSessionScope }),
+        coordinator: provider.restoration
+      }),
+      now: options.now,
+      maximumValueBytes: managerOptionsFor(options).maximumValueBytes
+    })
+  } catch (error) {
+    await backend.destroy().catch(() => undefined)
+    throw error
+  }
 }
 
 function managerOptionsFor(options: ReactNativeBleManagerOptions) {
