@@ -2043,6 +2043,11 @@ function bytesFromCore(value: unknown): Uint8Array {
     return Uint8Array.from(value as number[])
   }
   if (typeof value === 'object' && value !== null && typeof (value as { base64?: unknown }).base64 === 'string') {
+    // R16 non-Node boundary: base64 decode needs Buffer (Node) — without
+    // it (Hermes/JSC) fail structurally, never ReferenceError.
+    if (typeof Buffer === 'undefined') {
+      throw contractError('protocol.malformed', 'core', 'react-native-rust-core.bytes')
+    }
     const binary = Buffer.from((value as { base64: string }).base64, 'base64')
     return new Uint8Array(binary)
   }

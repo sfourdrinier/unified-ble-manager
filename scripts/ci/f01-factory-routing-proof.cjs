@@ -1,7 +1,25 @@
 // scripts/ci/f01-factory-routing-proof.cjs
 //
-// F01 Leg G: the REAL production factories route through the shared Rust
-// core, and any TypeScript fallback fails the proof loudly.
+// F01 Leg G (SYNTHETIC-SEAM PROOF — R16 relabel; kept for its narrow value,
+// not as a binding receipt): the REAL production factories route through a
+// JS binding over the PACKED NAPI synthetic central, and any TypeScript
+// fallback fails the proof loudly.
+//
+// REAL in this proof: the packed `lib/` factory code, the packed NAPI
+// addon genuinely executing DesktopCentral/ubm-core policy (scan/connect/
+// GATT/subscribe state machines), the frozen contract revision pinned by
+// the committed suites, and the throwing control proxy (any TS-fallback
+// BLE work throws and fails the proof).
+//
+// SYNTHETIC in this proof (mocked/staged, never a device claim):
+// react-native Platform/TurboModuleRegistry are stubbed; the binding is
+// INJECTED via the `rustCore` test option (the boundary under test — the
+// real-binding counterpart is the R01FACTORY emulator leg, which drives
+// the ordinary no-options factory against the installed native module);
+// adapter state and counters are hardcoded; scan IDs are fabricated;
+// cancellation always reports `not-cancellable`; radio inputs are staged
+// (`openSynthetic`), not observed; the Tauri leg replays a stub transport
+// (revision admission only, not production IPC dispatch).
 //
 // This is the exact cited defect the previous acceptance run missed: Leg G
 // checked `'UbmCentral' in m` without ever invoking
@@ -37,6 +55,7 @@ const path = require('path')
 const HRM_SERVICE = '0000180d-0000-1000-8000-00805f9b34fb'
 const HRM_MEASUREMENT = '00002a37-0000-1000-8000-00805f9b34fb'
 const HRM_BODY_LOCATION = '00002a38-0000-1000-8000-00805f9b34fb'
+const HRM_CCCD = '00002902-0000-1000-8000-00805f9b34fb'
 const PEER_ID = 'aa:bb:cc:dd:ee:ff'
 
 function fail(step, detail) {
@@ -169,7 +188,10 @@ function createNapiBinding(sharedCentral, revision, log) {
               const paths = await central.discoveredPaths(args.peerId)
               const services = new Map()
               for (const entry of paths) {
-                if (entry.descriptorUuid) continue
+                // R16: descriptor entries carry full paths and must resolve
+                // their service+characteristic like any entry; skipping them
+                // (the old `continue`) made descriptor reconstruction
+                // unreachable and descriptor parity unprovable.
                 let service = services.get(`${entry.serviceUuid}#${entry.serviceOccurrence ?? 0}`)
                 if (!service) {
                   service = { uuid: entry.serviceUuid, occurrence: entry.serviceOccurrence ?? 0, characteristics: [] }
@@ -332,7 +354,12 @@ async function proveReactNative(installed, UbmCentral, packedRevision) {
           uuid: HRM_MEASUREMENT,
           occurrence: 0,
           properties: { read: true, write: false, writeWithoutResponse: false, notify: true, indicate: false },
-          descriptors: []
+          // R16 descriptor parity: duplicate CCCD occurrences; the proof
+          // asserts the exact intended instance is addressed.
+          descriptors: [
+            { uuid: HRM_CCCD, occurrence: 0 },
+            { uuid: HRM_CCCD, occurrence: 1 }
+          ]
         },
         // Writes need a writable property (enforced in Rust: the notify-only
         // measurement rejects): the body-location characteristic carries the
@@ -385,6 +412,14 @@ async function proveReactNative(installed, UbmCentral, packedRevision) {
   const services = database.servicesByUuid(HRM_SERVICE)
   check('rn-discovers-tree', services.length === 1, `expected 1 staged service, got ${services.length}`)
   const characteristic = database.characteristic(HRM_SERVICE, HRM_MEASUREMENT)
+  check(
+    'rn-descriptor-parity',
+    characteristic.descriptors.length === 2 &&
+      characteristic.descriptor(HRM_CCCD, { occurrence: 0 }).occurrence === 0 &&
+      characteristic.descriptor(HRM_CCCD, { occurrence: 1 }).occurrence === 1 &&
+      characteristic.descriptor(HRM_CCCD, { occurrence: 1 }).uuid === HRM_CCCD,
+    `expected 2 staged CCCD occurrences addressable by occurrence, got ${characteristic.descriptors.length}`
+  )
   const value = await characteristic.read()
   check('rn-read-routes', log.includes('gatt.read') && value && value.length > 0, 'read must dispatch gatt.read and return bytes')
   const writable = database.characteristic(HRM_SERVICE, HRM_BODY_LOCATION)

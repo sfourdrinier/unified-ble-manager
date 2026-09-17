@@ -26,6 +26,14 @@
 //   J. check the Rust core for the Apple matrix from packed sources and
 //      evaluate the shipped podspec selection per lane.
 //
+// R16 labelling: legs A-E and G-J are REAL (packed candidate,
+// pinned-toolchain builds from packed sources, runtime identity,
+// compile/ELF checks). Leg F runs the REAL packed addon but with STAGED
+// radio inputs — see the hardware-boundary declaration in
+// bindings/napi/js/dispatch_roundtrip.cjs, which prints the branch taken.
+// Real-binding device counterpart: the R01FACTORY emulator leg (ordinary
+// factory, installed native module, no injection).
+//
 // Runtime: ~10-15 minutes (fresh cargo builds). Keeps the consumer and
 // target dir under a temp root it prints; pass --keep to retain them.
 
