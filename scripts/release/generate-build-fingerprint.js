@@ -18,8 +18,20 @@
 // Identities sealed alongside the file map:
 //   package          name@version that produced the build (version skew fails)
 //   contractRevision C-UBM revision from crates/ubm-core/src/contracts.rs
+//   toolchain        pinned Rust channel + CI producer SDKs (Xcode/NDK,
+//                    null where unresolvable on this machine)
+//   features         enabled feature set per shipped Rust crate
+//                    (default-only when the manifest declares no [features])
+//   targets          per-artifact target triple / slice
+//   deploymentMinimum iOS/tvOS floors (podspec) + Android minSdk
+//                    (android/gradle.properties default)
 //   native.android   committed jniLibs per ABI (file, sha256, bytes)
+//   native.apple     staged RustCore XCFramework slices (file, sha256,
+//                    bytes) + LibraryIdentifiers (empty when unstaged —
+//                    the framework is macOS-built at release time)
 //   fingerprint      sha256 over the canonical seal (tamper-evident)
+// bindingSchema (contract §4) stays unsealed: T1 is open — the cutover has
+// not defined the authoritative binding revision source yet.
 //
 // Usage:
 //   node scripts/release/generate-build-fingerprint.js [--check] [--root <dir>]
@@ -167,10 +179,142 @@ function androidNativeIdentity(root, files) {
     }))
 }
 
-function canonicalSeal({ packageName, packageVersion, contractRevision, files, native }) {
+const ANDROID_ABI_TRIPLES = {
+  'arm64-v8a': 'aarch64-linux-android',
+  x86_64: 'x86_64-linux-android'
+}
+
+function readToolchain(root) {
+  const toolchainFile = path.join(root, 'rust-toolchain.toml')
+  let rust = null
+  if (fs.existsSync(toolchainFile)) {
+    const pin = /^channel\s*=\s*"([^"]+)"/m.exec(fs.readFileSync(toolchainFile, 'utf8'))
+    rust = pin ? pin[1] : null
+  }
+  let xcode = null
+  if (process.platform === 'darwin') {
+    try {
+      const { execFileSync } = require('node:child_process')
+      xcode = execFileSync('xcodebuild', ['-version'], { encoding: 'utf8' }).split('\n')[0].trim() || null
+    } catch {
+      xcode = null
+    }
+  }
+  let ndk = null
+  const ndkHome = process.env.ANDROID_NDK_HOME
+  if (ndkHome !== undefined && ndkHome !== '' && fs.existsSync(ndkHome)) {
+    ndk = path.basename(ndkHome)
+  } else {
+    const os = require('node:os')
+    const sdk =
+      process.env.ANDROID_HOME ?? process.env.ANDROID_SDK_ROOT ?? path.join(os.homedir(), 'Android', 'Sdk')
+    const sdkNdk = path.join(sdk, 'ndk')
+    if (fs.existsSync(sdkNdk)) {
+      const installed = fs
+        .readdirSync(sdkNdk, { withFileTypes: true })
+        .filter(entry => entry.isDirectory())
+        .map(entry => entry.name)
+        .sort()
+      ndk = installed.length > 0 ? installed[installed.length - 1] : null
+    }
+  }
+  return { rust, xcode, ndk }
+}
+
+function readCrateFeatures(root, manifestRelative) {
+  const manifestPath = path.join(root, manifestRelative)
+  if (!fs.existsSync(manifestPath)) return null
+  const manifest = fs.readFileSync(manifestPath, 'utf8')
+  const section = /^\[features\]\s*$/m.exec(manifest)
+  if (section === null) return ['default']
+  const names = []
+  const rest = manifest.slice(section.index + section[0].length).split('\n')
+  for (const line of rest) {
+    if (/^\[.*\]\s*$/.test(line)) break
+    const feature = /^\s*([A-Za-z0-9_-]+)\s*=/.exec(line)
+    if (feature !== null) names.push(feature[1])
+  }
+  return names.sort()
+}
+
+function readFeatures(root) {
+  return {
+    jni: readCrateFeatures(root, path.join('bindings', 'jni', 'Cargo.toml')),
+    uniffi: readCrateFeatures(root, path.join('bindings', 'uniffi', 'Cargo.toml'))
+  }
+}
+
+function readDeploymentMinimum(root) {
+  let ios = null
+  let tvos = null
+  const podspec = path.join(root, 'unified-ble-manager.podspec')
+  if (fs.existsSync(podspec)) {
+    const text = fs.readFileSync(podspec, 'utf8')
+    ios = /:ios\s*=>\s*"([^"]+)"/.exec(text)?.[1] ?? null
+    tvos = /:tvos\s*=>\s*"([^"]+)"/.exec(text)?.[1] ?? null
+  }
+  let androidMinSdk = null
+  const properties = path.join(root, 'android', 'gradle.properties')
+  if (fs.existsSync(properties)) {
+    const sdk = /^BlePlx_minSdkVersion\s*=\s*(\d+)\s*$/m.exec(fs.readFileSync(properties, 'utf8'))
+    androidMinSdk = sdk ? Number(sdk[1]) : null
+  }
+  return { ios, tvos, androidMinSdk }
+}
+
+function appleNativeIdentity(root, files) {
+  const prefix = 'ios/RustCore/'
+  const slices = Object.keys(files)
+    .filter(relative => relative.startsWith(prefix) && relative.endsWith('.a'))
+    .sort()
+    .map(relative => ({
+      slice: relative.slice(prefix.length).split('/')[1] ?? null,
+      file: relative,
+      sha256: files[relative],
+      bytes: fs.statSync(path.join(root, relative)).size
+    }))
+  let libraryIdentifiers = []
+  const infoPlist = path.join(root, 'ios', 'RustCore', 'RustCore.xcframework', 'Info.plist')
+  if (fs.existsSync(infoPlist)) {
+    const text = fs.readFileSync(infoPlist, 'utf8')
+    const identifiers = [...text.matchAll(/<key>LibraryIdentifier<\/key>\s*<string>([^<]+)<\/string>/g)]
+    libraryIdentifiers = identifiers.map(match => match[1]).sort()
+  }
+  return { staged: slices.length > 0, slices, libraryIdentifiers }
+}
+
+function nativeTargets(android, apple) {
+  return {
+    android: Object.fromEntries(
+      android.map(entry => [entry.abi, ANDROID_ABI_TRIPLES[entry.abi] ?? null])
+    ),
+    apple: [...apple.libraryIdentifiers]
+  }
+}
+
+function canonicalSeal({
+  packageName,
+  packageVersion,
+  contractRevision,
+  toolchain,
+  features,
+  targets,
+  deploymentMinimum,
+  files,
+  native
+}) {
   const sortedFiles = {}
   for (const relative of Object.keys(files).sort()) sortedFiles[relative] = files[relative]
-  return { package: { name: packageName, version: packageVersion }, contractRevision, files: sortedFiles, native }
+  return {
+    package: { name: packageName, version: packageVersion },
+    contractRevision,
+    toolchain,
+    features,
+    targets,
+    deploymentMinimum,
+    files: sortedFiles,
+    native
+  }
 }
 
 function sealDigest(canonical) {
@@ -184,12 +328,18 @@ function generateBuildFingerprint(root) {
   if (Object.keys(files).length === 0) {
     throw new Error('fingerprint refuses an empty input set: refusing a vacuous seal')
   }
+  const android = androidNativeIdentity(absoluteRoot, files)
+  const apple = appleNativeIdentity(absoluteRoot, files)
   const canonical = canonicalSeal({
     packageName: manifest.name,
     packageVersion: manifest.version,
     contractRevision: readContractRevision(absoluteRoot),
+    toolchain: readToolchain(absoluteRoot),
+    features: readFeatures(absoluteRoot),
+    targets: nativeTargets(android, apple),
+    deploymentMinimum: readDeploymentMinimum(absoluteRoot),
     files,
-    native: { android: androidNativeIdentity(absoluteRoot, files) }
+    native: { android, apple }
   })
   return { ...canonical, fingerprint: sealDigest(canonical) }
 }
@@ -246,6 +396,13 @@ function checkBuildFingerprint(root) {
   const drifted = driftReport(stored.files === undefined ? {} : stored.files, fresh.files)
   if (stored.contractRevision !== fresh.contractRevision) {
     drifted.unshift(`contract revision ${String(stored.contractRevision)} -> ${String(fresh.contractRevision)}`)
+  }
+  // Identity drift fails closed like file drift (a seal written before an
+  // identity field existed reports it as changed: rebuild the library).
+  for (const identity of ['toolchain', 'features', 'targets', 'deploymentMinimum', 'native']) {
+    if (JSON.stringify(stored[identity] ?? null) !== JSON.stringify(fresh[identity])) {
+      drifted.unshift(`${identity} identity changed since the seal was written`)
+    }
   }
   if (drifted.length > 0) {
     const shown = drifted.slice(0, MAX_DRIFT_REPORT).join('\n  ')

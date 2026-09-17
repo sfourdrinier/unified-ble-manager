@@ -478,6 +478,113 @@ function isRootArchiveEntryAllowed(
   )
 }
 
+// D2(iv): contract §3 ABI set. Any change (e.g. adding armeabi-v7a) is a
+// deliberate contract revision, not drift — update the contract first.
+const PACKED_ANDROID_ABIS = Object.freeze(['arm64-v8a', 'x86_64'])
+const PACKED_ANDROID_SONAME = 'libubm5_jni_echo.so'
+
+// D2(iv): contract §2 slice count. Matches the podspec Verify-phase rule
+// (4 platform slices) — the two run in different runtimes (Xcode shell vs
+// Node), so the rule is stated in both, not shared.
+const PACKED_APPLE_SLICE_COUNT = 4
+
+// D2(iv): the npm artifact ships CI-built Android release prebuilts. Verify
+// them byte-for-byte against the packed build-identity.txt (presence,
+// bytes, sha256 per ABI) — the same triple the Gradle packed path and the
+// AndroidPrebuilds suite enforce. Returns total prebuilt bytes (T5 size
+// measurement).
+function assertPackedAndroidPrebuilts(files) {
+  const identityPath = 'package/android/src/main/jniLibs/build-identity.txt'
+  const identityBuffer = files.get(identityPath)
+  if (!identityBuffer) {
+    throw new Error(`Packed canonical package is missing Android prebuilt identity: ${identityPath}`)
+  }
+  const entries = new Map()
+  for (const line of identityBuffer.toString('utf8').split('\n')) {
+    const match = /^abi=(\S+) sha256=([0-9a-f]{64}) bytes=(\d+) file=(\S+)$/.exec(line)
+    if (match !== null) entries.set(match[1], { sha256: match[2], bytes: Number(match[3]), file: match[4] })
+  }
+  let totalBytes = 0
+  for (const abi of PACKED_ANDROID_ABIS) {
+    const want = entries.get(abi)
+    if (!want) {
+      throw new Error(`Packed Android build-identity.txt has no entry for ABI ${abi}`)
+    }
+    if (want.file !== PACKED_ANDROID_SONAME) {
+      throw new Error(`Packed Android ABI ${abi} must ship ${PACKED_ANDROID_SONAME}, identity says ${want.file}`)
+    }
+    const entryPath = `package/android/src/main/jniLibs/${abi}/${want.file}`
+    const contents = files.get(entryPath)
+    if (!contents) {
+      throw new Error(`Packed canonical package is missing Android prebuilt: ${entryPath}`)
+    }
+    if (contents.length === 0) {
+      throw new Error(`Packed Android prebuilt is empty: ${entryPath}`)
+    }
+    if (contents.length !== want.bytes) {
+      throw new Error(
+        `Packed Android prebuilt ${entryPath} is ${contents.length} bytes, identity says ${want.bytes}`
+      )
+    }
+    const actual = crypto.createHash('sha256').update(contents).digest('hex')
+    if (actual !== want.sha256) {
+      throw new Error(`Packed Android prebuilt ${entryPath} sha256 ${actual} does not match identity (${want.sha256})`)
+    }
+    totalBytes += contents.length
+  }
+  return totalBytes
+}
+
+// D2(iv): the npm artifact ships the macOS-built RustCore XCFramework staged
+// into ios/RustCore before pack. Require the identity file, the framework
+// Info.plist with exactly PACKED_APPLE_SLICE_COUNT slices, and every
+// LibraryPath the plist declares (present + non-empty). Returns total
+// staged bytes (T5 size measurement).
+function assertPackedRustCore(files) {
+  const identityPath = 'package/ios/RustCore/build-identity.txt'
+  if (!files.has(identityPath)) {
+    throw new Error(`Packed canonical package is missing Apple staging identity: ${identityPath}`)
+  }
+  const infoPath = 'package/ios/RustCore/RustCore.xcframework/Info.plist'
+  const infoBuffer = files.get(infoPath)
+  if (!infoBuffer) {
+    throw new Error(`Packed canonical package is missing Apple framework plist: ${infoPath}`)
+  }
+  const info = infoBuffer.toString('utf8')
+  const identifiers = [...info.matchAll(/<key>LibraryIdentifier<\/key>\s*<string>([^<]+)<\/string>/g)].map(
+    match => match[1]
+  )
+  if (identifiers.length !== PACKED_APPLE_SLICE_COUNT) {
+    throw new Error(
+      `Packed RustCore.xcframework must carry exactly ${PACKED_APPLE_SLICE_COUNT} platform slices, found ${identifiers.length}`
+    )
+  }
+  const libraryPaths = [...info.matchAll(/<key>LibraryPath<\/key>\s*<string>([^<]+)<\/string>/g)].map(
+    match => match[1]
+  )
+  if (libraryPaths.length !== PACKED_APPLE_SLICE_COUNT) {
+    throw new Error(
+      `Packed RustCore.xcframework must declare exactly ${PACKED_APPLE_SLICE_COUNT} LibraryPaths, found ${libraryPaths.length}`
+    )
+  }
+  let totalBytes = infoBuffer.length + files.get(identityPath).length
+  for (const libraryPath of libraryPaths) {
+    if (libraryPath.includes('..') || path.isAbsolute(libraryPath)) {
+      throw new Error(`Packed RustCore LibraryPath escapes the framework: ${libraryPath}`)
+    }
+    const entryPath = `package/ios/RustCore/RustCore.xcframework/${libraryPath}`
+    const contents = files.get(entryPath)
+    if (!contents) {
+      throw new Error(`Packed RustCore slice is missing: ${entryPath}`)
+    }
+    if (contents.length === 0) {
+      throw new Error(`Packed RustCore slice is empty: ${entryPath}`)
+    }
+    totalBytes += contents.length
+  }
+  return totalBytes
+}
+
 function verifyRootTarball(tarballPath) {
   const files = readTarball(tarballPath)
   const packageJsonBuffer = files.get('package/package.json')
@@ -502,6 +609,11 @@ function verifyRootTarball(tarballPath) {
       throw new Error(`Packed canonical package is missing Rust source-build input ${required}`)
     }
   }
+  // D2(iv): the artifact ships CI-built native prebuilts for both mobile
+  // hosts — verify them here so a missing/partial/tampered staging fails
+  // the release, never a consumer's pod install or Gradle build.
+  const packedAndroidBytes = assertPackedAndroidPrebuilts(files)
+  const packedAppleBytes = assertPackedRustCore(files)
   assertExactObjectKeys(
     packageJson.optionalDependencies,
     Object.keys(publishedOptionalHostDependencies),
@@ -735,7 +847,7 @@ function verifyRootTarball(tarballPath) {
   }
 
   console.log(
-    `canonical tarball verified: ${sourceFiles.length} published source files, ${codegenSourceFiles.length} exact React Native Codegen source files, ${internalRuntimeSourceFiles.length} exact internal runtime sources, ${internalTypeOnlySourceFiles.length} exact internal declaration-only sources, ${expectedArtifacts.size} required runtime/type artifacts, ${pluginSourceFiles.length} plugin source files, ${targets.length} current entrypoint targets`
+    `canonical tarball verified: ${sourceFiles.length} published source files, ${codegenSourceFiles.length} exact React Native Codegen source files, ${internalRuntimeSourceFiles.length} exact internal runtime sources, ${internalTypeOnlySourceFiles.length} exact internal declaration-only sources, ${expectedArtifacts.size} required runtime/type artifacts, ${pluginSourceFiles.length} plugin source files, ${targets.length} current entrypoint targets, ${packedAndroidBytes + packedAppleBytes} native prebuilt bytes (android ${packedAndroidBytes}, apple ${packedAppleBytes})`
   )
   return packageJson.version
 }
@@ -753,5 +865,7 @@ if (require.main === module) {
 
 module.exports = {
   readTarball,
-  verifyRootTarball
+  verifyRootTarball,
+  assertPackedAndroidPrebuilts,
+  assertPackedRustCore
 }
